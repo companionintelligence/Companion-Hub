@@ -1051,6 +1051,54 @@ describe('PoolProxyService', () => {
         });
       });
 
+      it('tells the operator to check the key on the last candidate too, where the app gets the refusal', async () => {
+        const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+        try {
+          peers(peerA);
+          vi.mocked(global.fetch).mockResolvedValueOnce(engineRefusal(401));
+
+          const res = await route();
+
+          expect(res.status).toHaveBeenCalledWith(401);
+          expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("peer a.tailxyz.ts.net's ollama engine answered 401"));
+          expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('check the API key that peer holds for it'));
+        } finally {
+          warnSpy.mockRestore();
+        }
+      });
+
+      it('warns once per peer engine for a refusal that recurs, and at debug after that', async () => {
+        const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+        const debugSpy = vi.spyOn(Logger.prototype, 'debug').mockImplementation(() => undefined);
+        try {
+          peers(peerA, peerB);
+          const refusalLines = (spy: typeof warnSpy) => spy.mock.calls.filter(([line]) => String(line).includes('check the API key')).length;
+          for (let turn = 0; turn < 3; turn += 1) {
+            vi.mocked(global.fetch)
+              .mockResolvedValueOnce(engineRefusal(401))
+              .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+            await route();
+          }
+
+          expect(refusalLines(warnSpy)).toBe(1);
+          expect(refusalLines(debugSpy)).toBe(2);
+
+          // Another engine's refusal on the same peer is its own line.
+          const vllmOnA = capabilitiesWithModel(MODEL, { backends: [{ type: 'vllm', healthy: true, modelsLoaded: [MODEL] }] });
+          peers(mockPeer({ id: 'peer-a', nodeFqdn: 'a.tailxyz.ts.net', lastCapabilities: vllmOnA as unknown as Record<string, unknown> }), peerB);
+          vi.mocked(global.fetch)
+            .mockResolvedValueOnce(engineRefusal(401))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+          await route();
+
+          expect(refusalLines(warnSpy)).toBe(2);
+          expect(warnSpy).toHaveBeenLastCalledWith(expect.stringContaining("peer a.tailxyz.ts.net's vllm engine answered 401"));
+        } finally {
+          warnSpy.mockRestore();
+          debugSpy.mockRestore();
+        }
+      });
+
       it('treats a marked 403 the same way', async () => {
         peers(peerA, peerB);
         vi.mocked(global.fetch)
@@ -5532,6 +5580,138 @@ describe('PoolProxyService', () => {
 
         expect(forwardedTo()).toEqual([LOCAL_CANDIDATE_KEY, LOCAL_CANDIDATE_KEY]);
         expect(routingLog.list()[0]?.contention?.demoted[0]).toMatchObject({ behind: [], overriddenBy: null });
+      });
+
+      /**
+       * The engine is held only while the session's prefix can still be warm on it. Both cases
+       * below are beta-max's 2026-09-26 wait — a 35b turn at 65536 behind a reload, then an
+       * eviction, for its whole 327 s budget — which contention placement exists to prevent. A
+       * reload discards the prefix, so holding the engine for it would buy the wait and nothing else.
+       */
+      it('moves it as before when this model is generating here at another window: that reload discarded the prefix', async () => {
+        setPoolPreferences({ poolPrefixAffinityMaxInFlight: 2 });
+        await sessionWarmHere();
+        // A Hermes `/v1` request for 35b: Ollama reloaded it at its default, and must reload it again for 65536.
+        generating(MODEL, null);
+
+        await hermes();
+
+        expect(forwardedTo()).toEqual([LOCAL_CANDIDATE_KEY, CORE_2_FQDN]);
+        const entry = routingLog.list()[0];
+        expect(entry).toMatchObject({ node: CORE_2_FQDN, failedOverFrom: [], outcome: 'served' });
+        // Affinity still qualified the engine; contention, not affinity, placed core-2 first.
+        expect(entry?.affinity).toMatchObject({ outcome: 'skipped', qualified: true, remembered: LOCAL_CANDIDATE_KEY });
+        expect(entry?.contention?.demoted[0]).toMatchObject({
+          node: LOCAL_CANDIDATE_KEY,
+          busyWith: [{ model: MODEL, numCtx: null }],
+          runsAt: HERMES_NUM_CTX,
+          behind: [CORE_2_FQDN],
+          overriddenBy: null,
+        });
+        // Judged from this node's own records: the engine is not asked.
+        expect(ollama.listResident).not.toHaveBeenCalled();
+      });
+
+      it('moves it as before when the model is no longer resident here: the prefix went with it, and the turn waits for an eviction', async () => {
+        setPoolPreferences({ poolPrefixAffinityMaxInFlight: 2 });
+        await sessionWarmHere();
+        // 27b's load evicted 35b, and 27b is generating.
+        ollama.listResident.mockResolvedValue(residency([OTHER, HERMES_NUM_CTX]));
+        generating(OTHER, HERMES_NUM_CTX);
+
+        await hermes();
+
+        expect(forwardedTo()).toEqual([LOCAL_CANDIDATE_KEY, CORE_2_FQDN]);
+        const entry = routingLog.list()[0];
+        expect(entry?.affinity).toMatchObject({ outcome: 'skipped', qualified: true, remembered: LOCAL_CANDIDATE_KEY });
+        expect(entry?.contention?.demoted[0]).toMatchObject({
+          node: LOCAL_CANDIDATE_KEY,
+          busyWith: [{ model: OTHER, numCtx: HERMES_NUM_CTX }],
+          behind: [CORE_2_FQDN],
+          overriddenBy: null,
+        });
+      });
+
+      it('moves it as before when the engine cannot say what is resident: a warm prefix has to be shown, not assumed', async () => {
+        setPoolPreferences({ poolPrefixAffinityMaxInFlight: 2 });
+        await sessionWarmHere();
+        ollama.listResident.mockResolvedValue({ backend: 'ollama', source: 'unreachable', models: null, error: 'connect ECONNREFUSED' });
+        generating(OTHER, HERMES_NUM_CTX);
+
+        await hermes();
+
+        expect(forwardedTo()).toEqual([LOCAL_CANDIDATE_KEY, CORE_2_FQDN]);
+        expect(routingLog.list()[0]?.contention?.demoted[0]).toMatchObject({ behind: [CORE_2_FQDN], overriddenBy: null });
+      });
+
+      it('moves it as before when the residency read throws', async () => {
+        setPoolPreferences({ poolPrefixAffinityMaxInFlight: 2 });
+        await sessionWarmHere();
+        ollama.listResident.mockRejectedValue(new Error('socket hang up'));
+        generating(OTHER, HERMES_NUM_CTX);
+
+        await hermes();
+
+        expect(forwardedTo()).toEqual([LOCAL_CANDIDATE_KEY, CORE_2_FQDN]);
+        expect(routingLog.list()[0]?.contention?.demoted[0]).toMatchObject({ behind: [CORE_2_FQDN], overriddenBy: null });
+      });
+
+      it('moves it as before when the residency read outlasts the placement budget, rather than holding the turn for it', async () => {
+        setPoolPreferences({ poolPrefixAffinityMaxInFlight: 2 });
+        await sessionWarmHere();
+        generating(OTHER, HERMES_NUM_CTX);
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        try {
+          // `/api/ps` behind a DROP rule: it would answer only at the transport's 5 s timeout.
+          ollama.listResident.mockReturnValue(new Promise(() => {}));
+
+          const turn = hermes();
+          await vi.advanceTimersByTimeAsync(PLACEMENT_PROBE_BUDGET_MS);
+          await turn;
+        } finally {
+          vi.useRealTimers();
+        }
+
+        expect(forwardedTo()).toEqual([LOCAL_CANDIDATE_KEY, CORE_2_FQDN]);
+        expect(routingLog.list()[0]?.contention?.demoted[0]).toMatchObject({ behind: [CORE_2_FQDN], overriddenBy: null });
+      });
+
+      it('holds an engine with no residency to read: it serves what it was started with, which is what made it a candidate', async () => {
+        setPoolPreferences({ poolPrefixAffinityMaxInFlight: 2 });
+        ollama.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+        vllm.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+        vllm.getBaseUrl.mockReturnValue('http://local-vllm:8000');
+        // VllmBackend declares no `listResident`; the mock would otherwise answer for any name.
+        Object.assign(vllm, { listResident: undefined });
+        const v1Turn = () =>
+          service.proxyRequest({
+            path: '/v1/chat/completions',
+            method: 'POST',
+            body: { model: MODEL, stream: true, messages: [{ role: 'user', content: 'hello' }] },
+            model: MODEL,
+            res: createMockResponse(),
+          });
+        await v1Turn();
+        generating(OTHER, null, 'vllm');
+
+        await v1Turn();
+
+        expect(forwardedTo()).toEqual(['local-vllm', 'local-vllm']);
+        expect(routingLog.list()[0]?.contention?.demoted[0]).toMatchObject({
+          node: LOCAL_CANDIDATE_KEY,
+          backend: 'vllm',
+          behind: [],
+          overriddenBy: 'affinity',
+        });
+      });
+
+      it('asks the engine what is resident only when the answer could hold it: never with affinity off', async () => {
+        await sessionWarmHere();
+        generating(OTHER, HERMES_NUM_CTX);
+
+        await hermes();
+
+        expect(ollama.listResident).not.toHaveBeenCalled();
       });
 
       it('leaves the same model at the same window alone, as before: that is a queue, not contention', async () => {

@@ -816,6 +816,45 @@ describe('hub-pool-cli prompt ceiling', () => {
     expect(text).toContain(`landed on ${PEER_A}, which holds this prompt's prefix, by ranking alone`);
   });
 
+  /**
+   * #1665 shipped the margin before the row carried `leastLoadedInFlight` or `qualified`, so a row
+   * from it over the limit with a margin may have qualified by the margin or not, and the row alone
+   * cannot say which. Neither "followed" nor "by ranking alone" is true of it.
+   */
+  it('says a margin row from a Hub predating `qualified` cannot be read either way', () => {
+    const text = logOf([
+      routingEntry({ affinity: { key: 'hashed', outcome: 'hit', remembered: PEER_A, inFlight: 2, maxInFlight: 2, affinityMargin: 1 } }),
+      routingEntry({
+        node: 'local',
+        peerId: null,
+        affinity: { key: 'header', outcome: 'skipped', remembered: PEER_A, inFlight: 3, maxInFlight: 2, affinityMargin: 1 },
+      }),
+    ]);
+
+    expect(text).toContain(
+      `landed on ${PEER_A}, which holds this prompt's prefix, at 2 in flight: this Hub's row does not say whether its margin qualified it (limit 2, margin 1; session from prompt digest)`,
+    );
+    expect(text).toContain(
+      `${PEER_A} holds this prompt's prefix but had 3 in flight, and another node was placed first: this Hub's row does not say whether its margin qualified it (limit 2, margin 1; session from X-Hub-Pool-Session)`,
+    );
+    expect(text).not.toContain('by ranking alone');
+    expect(text).not.toContain('followed its prompt prefix');
+  });
+
+  it('reads a row from a Hub predating `qualified` by the margin when it names the queue the margin is measured from', () => {
+    const text = logOf([
+      routingEntry({
+        affinity: { key: 'hashed', outcome: 'hit', remembered: PEER_A, inFlight: 2, leastLoadedInFlight: 1, maxInFlight: 2, affinityMargin: 1 },
+      }),
+      routingEntry({
+        affinity: { key: 'hashed', outcome: 'hit', remembered: PEER_A, inFlight: 4, leastLoadedInFlight: 1, maxInFlight: 2, affinityMargin: 1 },
+      }),
+    ]);
+
+    expect(text).toContain(`followed its prompt prefix to ${PEER_A} (2 in flight, limit 2, margin 1, 1 on the least-loaded other node;`);
+    expect(text).toContain(`landed on ${PEER_A}, which holds this prompt's prefix, by ranking alone: affinity stood aside at 4 in flight`);
+  });
+
   it('names the margin and the queue it was measured from when a margin decided the row', () => {
     const text = logOf([
       routingEntry({

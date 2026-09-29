@@ -48,7 +48,7 @@ import {
   type PoolRoutingUsage,
 } from './hub-pool-routing-log.service';
 import { HubPoolPressureService } from './hub-pool-pressure.service';
-import { HubPoolLocalHealthService, type LocalBackendHealth } from './hub-pool-local-health.service';
+import { HubPoolLocalHealthService, PLACEMENT_PROBE_BUDGET_MS, type LocalBackendHealth } from './hub-pool-local-health.service';
 import {
   HubPoolThroughputService,
   missesBudget,
@@ -485,6 +485,14 @@ export function isRelayedEngineResponse(headers: Headers): boolean {
 const PEER_PAIRING_STATUSES: ReadonlySet<number> = new Set([401, 403]);
 
 /**
+ * How often a peer engine's refusal of its own key is warned about, per peer, engine and status;
+ * at debug in between. Unlike a pairing refusal, which drops the peer's capabilities and so stops
+ * recurring until the next probe, this one leaves the peer a candidate, so it recurs on every
+ * request that ranks it, and agent traffic ranks all day. Each refusal is still in the routing log.
+ */
+const PEER_ENGINE_REFUSAL_WARN_INTERVAL_MS = 10 * 60_000;
+
+/**
  * Load assumed for a peer whose snapshot is stale, or predates `inFlightRequests` entirely.
  * Deliberately not 0: an unmeasured node must never outrank one we know to be idle. Same
  * neutral-when-stale rule NVIDIA's PAIR applies to its GPU-pressure band.
@@ -804,6 +812,9 @@ export function applySlotPlacement(
  * a load parameter. Every other engine runs the window it was started with, whatever a request names.
  */
 const WINDOW_RELOADING_BACKENDS: ReadonlySet<InferenceBackendType> = new Set<InferenceBackendType>(['ollama']);
+
+/** Sentinel a residency read's placement budget resolves to, distinct from any answer the engine gives — see `prefixCanStillBeWarm`. */
+const RESIDENCY_BUDGET_ELAPSED = Symbol('residency budget elapsed');
 
 /** The window a request runs at when it names one: `options.num_ctx` on Ollama's native routes, never on `/v1`, where Ollama drops `options` and its default applies. */
 function requestedWindow(path: string, body: unknown): number | null {
@@ -1138,6 +1149,8 @@ export class PoolProxyService {
   private readonly localHealth: HubPoolLocalHealthService;
   /** Where each recent prompt prefix was last placed — see `hub-pool-prefix-affinity.ts`. */
   private readonly prefixAffinity = new PrefixAffinityStore();
+  /** When each peer engine's key refusal was last warned about — see {@link warnPeerEngineRefusal}. Bounded by peers × engines × two statuses. */
+  private readonly peerEngineRefusalWarnedAt = new Map<string, number>();
 
   /**
    * `auto` → the engine id of the chat model the POOL should run it on; any other model unchanged.
@@ -1265,7 +1278,7 @@ export class PoolProxyService {
    * is above zero: the node and engine that last served this prefix move to the front while their
    * queue is under the limit — see {@link applyPrefixAffinity}. Applied before every step below, so
    * each of them still wins over it, except local-engine contention, which leaves the engine it
-   * qualified in place.
+   * qualified in place while the session's prefix can still be warm there.
    *
    * Then the context caps, when `promptBytes` is given: a node whose cap is below the window the
    * request asks for — `numCtx` when the body carried `options.num_ctx`, else the prompt estimate —
@@ -1294,8 +1307,10 @@ export class PoolProxyService {
    * one at another window — gives up the local head start and moves behind the candidates after it
    * that are no busier — see {@link applyLocalContention}. Inside throughput, unlike slots: a node
    * measured too slow misses its whole budget, while a contended engine may only be waiting out a
-   * turn that is nearly done. The one engine exempt is the one prefix affinity qualified: the
-   * session's prefix is warm there, and a cold prefill elsewhere costs more than sharing the engine.
+   * turn that is nearly done. The one engine exempt is the one prefix affinity qualified, while the
+   * session's prefix can still be warm there: a cold prefill elsewhere costs more than sharing the
+   * engine, but a reload behind this model at another window, or a model no longer resident, has
+   * discarded the prefix and makes the turn wait as well — see {@link prefixCanStillBeWarm}.
    *
    * An operator pin is applied LAST, within each of the resulting groups — see {@link applyPin}. It
    * reorders; it cannot admit a node the steps above excluded.
@@ -1388,11 +1403,14 @@ export class PoolProxyService {
     const scoreOf = (candidate: PoolCandidate) => scores.get(candidate) ?? 0;
     const headStart = this.localAffinity();
     const gaveWayTo = new Map<PoolCandidate, PoolCandidate[]>();
-    // The engine affinity qualified is exempt: its warm prefix is worth more than a turn beside
-    // another model costs it — see the header of `hub-pool-prefix-affinity.ts`. `heldByAffinity`
-    // records that the exemption changed something, so the log does not credit affinity with an
-    // engine that every candidate after it was busier than anyway.
-    const held = affinity.held;
+    // The engine affinity qualified is exempt while the session's prefix can still be warm on it:
+    // that prefix is worth more than a turn beside another model costs — see the header of
+    // `hub-pool-prefix-affinity.ts` — but only while it is there, which contention is exactly when it
+    // may not be (see `prefixCanStillBeWarm`). `heldByAffinity` records that the exemption changed
+    // something, so the log does not credit affinity with an engine that every candidate after it was
+    // busier than anyway.
+    const heldEngine = affinity.held ? contended?.engines.get(affinity.held) : undefined;
+    const held = affinity.held && heldEngine && (await this.prefixCanStillBeWarm(model, affinity.held, heldEngine)) ? affinity.held : null;
     let heldByAffinity = false;
     const giveWay = (part: PoolCandidate[]): PoolCandidate[][] => {
       if (!contended || !part.some((candidate) => contended.engines.has(candidate))) {
@@ -1457,8 +1475,9 @@ export class PoolProxyService {
    * request affinity changed or stood aside on, never at info, for the same reason the ceiling logs
    * that way: the routing log is where decisions are read, and an agent turns all day.
    *
-   * `held` is the candidate affinity qualified, which local-engine contention then leaves in place;
-   * `null` whenever affinity did not put the remembered engine first itself.
+   * `held` is the candidate affinity qualified, which local-engine contention then leaves in place
+   * while its prefix can still be warm; `null` whenever affinity did not put the remembered engine
+   * first itself.
    */
   private applyRememberedPlacement(
     ranked: RankedCandidate[],
@@ -1760,6 +1779,70 @@ export class PoolProxyService {
       }
     }
     return { numCtx, engines };
+  }
+
+  /**
+   * Whether a session's prompt prefix can still be warm on `held`, the contended local engine prefix
+   * affinity qualified, so that contention may leave it where affinity put it. `false` sends it
+   * through contention like any other engine, which is the build before the exemption.
+   *
+   * Affinity remembers where a session was placed, not whether the engine kept what it read, and a
+   * contended engine is exactly one that may not have. Two things discard the prefix, and each also
+   * makes the turn wait, which is what contention placement exists to prevent — beta-max, 2026-09-26,
+   * had a 35b turn wait out its whole 327 s budget behind both in turn:
+   *
+   * - This model generating there at another window (`found.busyWith`, this node's own records): Ollama
+   *   reloaded the runner for it, and must wait for it and reload again for this one.
+   * - This model no longer resident there: the turn waits out the other model's generation and an
+   *   eviction, or a load beside it, and then prefills cold anyway.
+   *
+   * Residency is asked of the engine only here, after the first test passes, so a node with affinity
+   * off, or whose held engine is not contended, never asks. A residency it cannot read does not show
+   * the prefix warm: the engine says it cannot tell, the read throws, or it has not answered within
+   * {@link PLACEMENT_PROBE_BUDGET_MS} — the budget the local health read holds an `/api/ps` behind a
+   * DROP rule to, rather than its 5 s transport timeout. An engine with no residency concept serves
+   * what it was started with, so the inventory that made it a candidate is its residency.
+   *
+   * One debug line when it refuses, never at info, for the ceiling's reason.
+   */
+  private async prefixCanStillBeWarm(model: string, held: PoolCandidate, found: LocalEngineContention): Promise<boolean> {
+    const reload = found.busyWith.find((generation) => sameModelId(generation.model, model));
+    const refusal = reload
+      ? `${reload.model} is generating there at ${describeWindow(reload.numCtx)}, not this turn's ${describeWindow(found.runsAt)}: the load that runs it replaced the one the prefix was read on, and this turn waits for it and reloads`
+      : await this.localResidencyRefusal(model, held.backend);
+    if (refusal === null) {
+      return true;
+    }
+    this.logger.debug(
+      `[PoolProxy] "${model}" is not holding ${held.nodeFqdn ?? LOCAL_CANDIDATE_KEY} ${held.backend} over contention for its session prefix: ${refusal}`,
+    );
+    return false;
+  }
+
+  /** Why this node's `backend` cannot be shown to hold `model` resident, or `null` when it can — see {@link prefixCanStillBeWarm}. */
+  private async localResidencyRefusal(model: string, backend: InferenceBackendType): Promise<string | null> {
+    const engine = this.backends.tryGet(backend);
+    if (typeof engine?.listResident !== 'function') {
+      return null;
+    }
+    let budgetTimer: NodeJS.Timeout | undefined;
+    const budget = new Promise<typeof RESIDENCY_BUDGET_ELAPSED>((resolve) => {
+      budgetTimer = setTimeout(() => resolve(RESIDENCY_BUDGET_ELAPSED), PLACEMENT_PROBE_BUDGET_MS);
+    });
+    try {
+      const residency = await Promise.race([engine.listResident(), budget]);
+      if (residency === RESIDENCY_BUDGET_ELAPSED) {
+        return `its residency did not answer within ${PLACEMENT_PROBE_BUDGET_MS} ms`;
+      }
+      if (!residency?.models) {
+        return `it cannot say what is resident (${residency?.source ?? 'no answer'}${residency?.error ? `: ${residency.error}` : ''})`;
+      }
+      return residency.models.some((resident) => sameModelId(resident.id, model)) ? null : `${model} is no longer resident there`;
+    } catch (error) {
+      return `its residency could not be read: ${error instanceof Error ? error.message : String(error)}`;
+    } finally {
+      clearTimeout(budgetTimer);
+    }
   }
 
   /**
@@ -2115,6 +2198,12 @@ export class PoolProxyService {
           await this.noteRejectedCandidate(candidate, upstream.status, upstream.headers);
           continue;
         }
+        if (peerEngineRefusal) {
+          // The one case where the app gets this refusal, so the one case the operator most needs
+          // told: the routing log reads it as a refused request, which a key mismatch on a peer's
+          // engine is not.
+          this.warnPeerEngineRefusal(candidate, upstream.status, 'relaying its answer to the caller: no candidate is left to try');
+        }
         const relayedStatus = verdict && requestError ? relayedRequestErrorStatus(verdict, upstream.status) : upstream.status;
         if (requestError) {
           // Warn, like a candidate failing: the app is sending something no node will run, and this
@@ -2412,9 +2501,7 @@ export class PoolProxyService {
       return;
     }
     if (isRelayedEngineResponse(headers)) {
-      this.logger.warn(
-        `[PoolProxy] peer ${candidate.nodeFqdn}'s ${candidate.backend} engine answered ${status} to the request it relayed: check the API key that peer holds for it. Its pairing is fine; keeping its cached capabilities`,
-      );
+      this.warnPeerEngineRefusal(candidate, status, 'asking the next candidate');
       return;
     }
     this.logger.warn(`[PoolProxy] peer ${candidate.nodeFqdn} rejected our forward with ${status}; dropping its cached capabilities`);
@@ -2425,6 +2512,26 @@ export class PoolProxyService {
         `[PoolProxy] could not clear capabilities for ${candidate.nodeFqdn}: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+  }
+
+  /**
+   * The operator's line for a peer's engine refusing the key that peer holds for it — a vLLM,
+   * Lemonade or oMLX key mismatch there (see {@link isRelayedEngineResponse}) — whether the walk
+   * went on past it or relayed it from the last candidate. Only that peer's operator can fix it.
+   * At warn once per {@link PEER_ENGINE_REFUSAL_WARN_INTERVAL_MS} for each peer, engine and status,
+   * and at debug in between, because the peer stays a candidate and the refusal recurs.
+   */
+  private warnPeerEngineRefusal(candidate: PoolCandidate, status: number, then: string): void {
+    const line = `[PoolProxy] peer ${candidate.nodeFqdn}'s ${candidate.backend} engine answered ${status} to the request it relayed: check the API key that peer holds for it. Its pairing is fine, so it keeps its cached capabilities; ${then}`;
+    const key = `${candidate.peerId}\n${candidate.backend}\n${status}`;
+    const now = Date.now();
+    const warnedAt = this.peerEngineRefusalWarnedAt.get(key);
+    if (warnedAt !== undefined && now - warnedAt < PEER_ENGINE_REFUSAL_WARN_INTERVAL_MS) {
+      this.logger.debug(line);
+      return;
+    }
+    this.peerEngineRefusalWarnedAt.set(key, now);
+    this.logger.warn(line);
   }
 
   /** Terminal error write that never touches an already-committed response. */

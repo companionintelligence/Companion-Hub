@@ -325,8 +325,10 @@ export interface PoolRoutingAffinity {
   key: 'header' | 'hashed';
   outcome: 'hit' | 'miss' | 'skipped';
   /**
-   * Whether affinity itself put the remembered engine first. `false` on a `hit` is the ranker doing
-   * it alone. Absent on a Hub predating the field, where it is inferred from `inFlight < maxInFlight`.
+   * Whether the remembered engine passed affinity's own test (under the limit, or within the margin),
+   * whether or not passing changed the order. `false` on a `hit` is the ranker doing it alone. Absent
+   * on a Hub predating the field, where it is inferred from what the row carries — see
+   * {@link affinityQualified}.
    */
   qualified?: boolean;
   remembered: string | null;
@@ -1625,6 +1627,36 @@ function describeAffinityLimit(affinity: PoolRoutingAffinity): string {
   return `limit ${affinity.maxInFlight}, margin ${margin}${leastLoaded === null || leastLoaded === undefined ? '' : `, ${leastLoaded} on the least-loaded other node`}`;
 }
 
+/**
+ * Whether the remembered engine passed affinity's test, as the row states it, or as it can be
+ * worked out on a Hub predating `qualified`: under the limit passes, and a margin is judged from
+ * `leastLoadedInFlight` the way the proxy judges it. `null` when it cannot be worked out: a Hub
+ * that shipped the margin before `leastLoadedInFlight` states the margin but not the queue it was
+ * measured from, so a row over the limit there may have qualified by it or not. Printing that row
+ * as "ranking alone" would call a margin decision the ranker's.
+ */
+function affinityQualified(affinity: PoolRoutingAffinity): boolean | null {
+  if (affinity.qualified !== undefined) {
+    return affinity.qualified;
+  }
+  if (affinity.inFlight === null) {
+    return false;
+  }
+  if (affinity.inFlight < affinity.maxInFlight) {
+    return true;
+  }
+  const margin = affinity.affinityMargin ?? 0;
+  if (!(margin > 0) || !(affinity.maxInFlight > 0)) {
+    return false;
+  }
+  const leastLoaded = affinity.leastLoadedInFlight;
+  if (leastLoaded === undefined || leastLoaded === null) {
+    return null;
+  }
+  // The proxy's own test, including its hard stop at 20 in flight — see `applyPrefixAffinity`.
+  return affinity.inFlight <= leastLoaded + margin && affinity.inFlight < 20;
+}
+
 /** A window from a contention record: `null` is a request that named none, on a node that states no default. */
 function describeContextWindow(numCtx: number | null): string {
   return numCtx === null ? 'the engine default' : `num_ctx ${numCtx}`;
@@ -1784,25 +1816,30 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
     //
     // A `hit` affinity did not qualify is the ranker landing the session on its warm node by itself,
     // and is not printed as affinity following it: a fleet test on 2026-09-29 read such a row, at one
-    // in flight against a limit of 1, as affinity working. A Hub predating `qualified` is read by
-    // the limit alone, which is all it judged by.
+    // in flight against a limit of 1, as affinity working. A Hub predating `qualified` is read from
+    // what its row carries, and a row it cannot be read from says so rather than guessing either way.
     const affinity = entry.affinity;
     if (affinity) {
       const underLimit = affinity.inFlight !== null && affinity.inFlight < affinity.maxInFlight;
-      const qualified = affinity.qualified ?? underLimit;
+      const qualified = affinityQualified(affinity);
       const node = sanitizeForBox(affinity.remembered ?? '?');
       const inFlight = affinity.inFlight ?? 0;
+      const undetermined = `this Hub's row does not say whether its margin qualified it (${describeAffinityLimit(affinity)}; ${describeAffinityKey(affinity)})`;
       if (affinity.outcome === 'hit') {
         lines.push(
-          qualified
-            ? `  ↳ followed its prompt prefix to ${node} (${inFlight} in flight, ${describeAffinityLimit(affinity)}; ${describeAffinityKey(affinity)})`
-            : `  ↳ landed on ${node}, which holds this prompt's prefix, by ranking alone: affinity stood aside at ${inFlight} in flight (${describeAffinityLimit(affinity)}; ${describeAffinityKey(affinity)})`,
+          qualified === null
+            ? `  ↳ landed on ${node}, which holds this prompt's prefix, at ${inFlight} in flight: ${undetermined}`
+            : qualified
+              ? `  ↳ followed its prompt prefix to ${node} (${inFlight} in flight, ${describeAffinityLimit(affinity)}; ${describeAffinityKey(affinity)})`
+              : `  ↳ landed on ${node}, which holds this prompt's prefix, by ranking alone: affinity stood aside at ${inFlight} in flight (${describeAffinityLimit(affinity)}; ${describeAffinityKey(affinity)})`,
         );
       } else if (affinity.outcome === 'skipped') {
         lines.push(
-          qualified
-            ? `  ↳ ${node} holds this prompt's prefix and was ${underLimit ? 'under the limit' : 'within its margin'}, but a ceiling, a demotion or a pin placed another node first (${describeAffinityKey(affinity)})`
-            : `  ↳ ${node} holds this prompt's prefix but had ${inFlight} in flight (${describeAffinityLimit(affinity)}); ranked as usual (${describeAffinityKey(affinity)})`,
+          qualified === null
+            ? `  ↳ ${node} holds this prompt's prefix but had ${inFlight} in flight, and another node was placed first: ${undetermined}`
+            : qualified
+              ? `  ↳ ${node} holds this prompt's prefix and was ${underLimit ? 'under the limit' : 'within its margin'}, but a ceiling, a demotion or a pin placed another node first (${describeAffinityKey(affinity)})`
+              : `  ↳ ${node} holds this prompt's prefix but had ${inFlight} in flight (${describeAffinityLimit(affinity)}); ranked as usual (${describeAffinityKey(affinity)})`,
         );
       }
     }

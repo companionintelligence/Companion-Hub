@@ -358,12 +358,14 @@ export interface PoolRoutingAffinity {
    */
   outcome: 'hit' | 'miss' | 'skipped';
   /**
-   * Whether affinity itself placed the remembered engine first: its queue was under `maxInFlight`, or
-   * within `affinityMargin` of `leastLoadedInFlight`. On a `hit`, `false` means the ranker put it first
-   * on its own and affinity stood aside — the fleet test of 2026-09-29, at `maxInFlight` 1, margin 0
-   * and one in flight there, logged a `hit` that affinity had no part in. On a `skipped`, `true` means
-   * a later step — a ceiling, a throughput demotion, or a pin — put another node first, and `false`
-   * that the remembered engine was too busy to qualify. Always `false` on a `miss`.
+   * Whether the remembered engine passed affinity's own test: its queue was under `maxInFlight`, or
+   * within `affinityMargin` of `leastLoadedInFlight`. It says the test passed, not that passing moved
+   * anything: a `hit` the ranker would have made anyway is `true` too. On a `hit`, `false` means the
+   * ranker put it first on its own and affinity stood aside — the fleet test of 2026-09-29, at
+   * `maxInFlight` 1, margin 0 and one in flight there, logged a `hit` that affinity had no part in. On
+   * a `skipped`, `true` means a later step — a ceiling, a throughput demotion, a pin, or local-engine
+   * contention on an engine the session's prefix could no longer be warm on — put another node first,
+   * and `false` that the remembered engine was too busy to qualify. Always `false` on a `miss`.
    */
   qualified: boolean;
   /** The node remembered for this prefix, `'local'` for this one; `null` when nothing was. */
@@ -442,7 +444,9 @@ export interface PoolRoutingContentionDemotion {
    * session prefix and prefix affinity qualified it (see `PoolRoutingAffinity.qualified`): a warm
    * prefix beside another model's turn beats a cold prefill on a node that is merely no busier.
    * `behind` is then empty. `null` whenever contention decided alone — affinity off, standing aside,
-   * or remembering another engine — and when the engine would have kept its place anyway.
+   * or remembering another engine; the prefix unable to be warm there, because `busyWith` holds this
+   * model at another window or the engine does not show it resident — and when the engine would
+   * have kept its place anyway.
    */
   overriddenBy: 'affinity' | null;
 }

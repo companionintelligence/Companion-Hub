@@ -45,8 +45,13 @@ import type { PoolCandidate } from './hub-pool.types';
 // on, where the alternative is a cold prefill of the whole prompt: moving a 30k-token Hermes turn
 // off core-2 because OpenClaw's model was generating there cost it a cold prefill on the leaf it
 // went to (~100 s at ~300 tok/s), and the table then remembered the leaf, so the session stayed
-// migrated. So an engine affinity QUALIFIED is not demoted for contention; one it stood aside from
-// is judged as before.
+// migrated. So an engine affinity QUALIFIED is not demoted for contention, while the prefix can
+// still be warm there; one it stood aside from is judged as before. "Can still be warm" is the
+// whole argument, so it is checked, not assumed: this model generating on that engine at another
+// window means Ollama reloaded it since, and the model no longer being resident means it was
+// evicted. Either way the prefix is gone and the turn would wait for a reload or an eviction as
+// well — beta-max's 327 s wait on 2026-09-26, which contention exists to prevent — so contention
+// judges that engine like any other.
 
 /**
  * Request header an app may send to name its session. Any opaque string it likes — a chat id, an
@@ -243,10 +248,12 @@ export interface PrefixAffinityPlacement<T> {
   /** The ranked entry that matched the remembered node and engine, whatever was done with it; `null` when none did. */
   sticky: T | null;
   /**
-   * Whether affinity itself placed `sticky` first: its queue was under `maxInFlight`, or within the
-   * margin of the least-loaded alternative. `false` when `sticky` is `null`, and `false` when the
-   * ranker had put `sticky` first on its own — a remembered node that also scores best has to be told
-   * apart from one affinity moved, or every busy node the ranker still favours reads as a `hit`.
+   * Whether `sticky` passed affinity's own test: its queue was under `maxInFlight`, or within the
+   * margin of the least-loaded alternative. It says the test passed, not that passing changed the
+   * order: a remembered engine under the limit that the ranker had already put first is `true` too.
+   * `false` when `sticky` is `null`, or when it failed the test — then any `hit` is the ranker's
+   * doing, and a remembered node that also scores best has to be told apart from one affinity
+   * followed, or every busy node the ranker still favours reads as affinity working.
    */
   qualified: boolean;
   /** The lowest queue depth among every candidate but `sticky` — what the margin is measured from. `null` with no `sticky`, or none beside it. */
