@@ -38,6 +38,20 @@ import type { PoolCandidate } from './hub-pool.types';
 // throughput demotion (evidence the node is slow cold — which is exactly when its cache matters least
 // to the ranker and most to the session, a trade left unmade on purpose) and a pin (an operator's
 // preference) each still win over it.
+//
+// Local-engine contention is the one later step it wins over. Contention demotes a local engine
+// that is generating for another model, because a turn placed there shares the engine and reads
+// slowly, or waits for an eviction. The trade is different on the engine a session's prefix is warm
+// on, where the alternative is a cold prefill of the whole prompt: moving a 30k-token Hermes turn
+// off core-2 because OpenClaw's model was generating there cost it a cold prefill on the leaf it
+// went to (~100 s at ~300 tok/s), and the table then remembered the leaf, so the session stayed
+// migrated. So an engine affinity QUALIFIED is not demoted for contention, while the prefix can
+// still be warm there; one it stood aside from is judged as before. "Can still be warm" is the
+// whole argument, so it is checked, not assumed: this model generating on that engine at another
+// window means Ollama reloaded it since, and the model no longer being resident means it was
+// evicted. Either way the prefix is gone and the turn would wait for a reload or an eviction as
+// well — beta-max's 327 s wait on 2026-09-26, which contention exists to prevent — so contention
+// judges that engine like any other.
 
 /**
  * Request header an app may send to name its session. Any opaque string it likes — a chat id, an
@@ -168,33 +182,10 @@ export function derivePrefixKey(model: string, body: unknown, sessionHeader: str
 }
 
 /**
- * Common interface for prefix affinity storage. Allows single-instance Hubs to use
- * the zero-dependency in-memory LRU store while multi-gateway deployments can
- * plug in a database-backed or distributed (Redis/Valkey) store for cluster-wide coherence.
- */
-export interface IPrefixAffinityStore {
-  get(key: string, now?: number): Promise<PrefixAffinityEntry | null> | PrefixAffinityEntry | null;
-  remember(key: string, candidate: PoolCandidate, now?: number): Promise<void> | void;
-  forget(key: string): Promise<void> | void;
-  readonly size: number | Promise<number>;
-}
-
-/**
- * Driver interface for pluggable key-value stores (e.g. Redis, Valkey, PostgreSQL)
- * used for cluster-wide prefix coherence across multiple Hub gateway instances.
- */
-export interface PrefixAffinityDriver {
-  get(key: string): Promise<string | null>;
-  set(key: string, value: string, ttlMs: number): Promise<void>;
-  del(key: string): Promise<void>;
-  count?(): Promise<number>;
-}
-
-/**
  * Where each recently seen prefix was last placed. Process-local and bounded, like the routing log
  * and the throughput store: a routing hint, never a record, and a restart forgets it.
  */
-export class PrefixAffinityStore implements IPrefixAffinityStore {
+export class PrefixAffinityStore {
   private readonly entries = new Map<string, PrefixAffinityEntry>();
 
   constructor(
@@ -250,76 +241,38 @@ export class PrefixAffinityStore implements IPrefixAffinityStore {
   }
 }
 
-/**
- * Distributed prefix affinity store for multi-Hub / multi-gateway deployments.
- * Stores prefix placement metadata in a shared backend (Redis/Valkey/Database)
- * while maintaining a local in-memory fallback for high resilience.
- */
-export class DistributedPrefixAffinityStore implements IPrefixAffinityStore {
-  private readonly fallback = new PrefixAffinityStore();
-
-  constructor(
-    private readonly driver: PrefixAffinityDriver,
-    private readonly ttlMs = PREFIX_AFFINITY_TTL_MS,
-  ) {}
-
-  async get(key: string, now = Date.now()): Promise<PrefixAffinityEntry | null> {
-    try {
-      const raw = await this.driver.get(key);
-      if (raw) {
-        const parsed = JSON.parse(raw) as PrefixAffinityEntry;
-        if (now - parsed.at <= this.ttlMs) {
-          return parsed;
-        }
-      }
-    } catch {
-      // Driver error: seamlessly use local fallback
-    }
-    return this.fallback.get(key, now);
-  }
-
-  async remember(key: string, candidate: PoolCandidate, now = Date.now()): Promise<void> {
-    const entry: PrefixAffinityEntry = {
-      nodeKey: candidate.peerId ?? LOCAL_CANDIDATE_KEY,
-      node: candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY,
-      backend: candidate.backend,
-      at: now,
-    };
-    this.fallback.remember(key, candidate, now);
-    try {
-      await this.driver.set(key, JSON.stringify(entry), this.ttlMs);
-    } catch {
-      // Driver error: local fallback already recorded it
-    }
-  }
-
-  async forget(key: string): Promise<void> {
-    this.fallback.forget(key);
-    try {
-      await this.driver.del(key);
-    } catch {
-      // Ignore driver failure on forget
-    }
-  }
-
-  get size(): number {
-    return this.fallback.size;
-  }
+/** What {@link applyPrefixAffinity} saw and did, for the caller to act on and the routing log to state. */
+export interface PrefixAffinityPlacement<T> {
+  /** `ranked` with the remembered entry moved to the front when it qualified; otherwise a copy of `ranked`, unchanged. */
+  ordered: T[];
+  /** The ranked entry that matched the remembered node and engine, whatever was done with it; `null` when none did. */
+  sticky: T | null;
+  /**
+   * Whether `sticky` passed affinity's own test: its queue was under `maxInFlight`, or within the
+   * margin of the least-loaded alternative. It says the test passed, not that passing changed the
+   * order: a remembered engine under the limit that the ranker had already put first is `true` too.
+   * `false` when `sticky` is `null`, or when it failed the test — then any `hit` is the ranker's
+   * doing, and a remembered node that also scores best has to be told apart from one affinity
+   * followed, or every busy node the ranker still favours reads as affinity working.
+   */
+  qualified: boolean;
+  /** The lowest queue depth among every candidate but `sticky` — what the margin is measured from. `null` with no `sticky`, or none beside it. */
+  leastLoadedInFlight: number | null;
 }
 
 /**
  * Move the remembered candidate to the front of an already-ranked list when its queue is under the
- * limit or within the configured affinity margin. `sticky` is the ranked entry that matched, whatever
- * was done with it, so the caller can say what it saw; `ordered` is byte-identical to `ranked` unless
- * something moved.
+ * limit, or within the configured margin of the least-loaded alternative. `sticky` is the ranked
+ * entry that matched, whatever was done with it, so the caller can say what it saw; `ordered` is
+ * byte-identical to `ranked` unless something moved.
  *
  * Matched on node AND engine: two engines on one node have two caches, and the one that read the
  * prefix is the one worth returning to.
  *
- * Xinity AI Affinity Margin:
- * When affinityMargin > 0, sticky can retain affinity under high concurrency even if sticky.inFlight >= maxInFlight,
- * provided its queue is within affinityMargin of the least-busy alternative candidate, preventing prefix
- * thrashing across nodes when the whole fleet is busy.
+ * The margin keeps a session where its prefix is when the whole fleet is busy: past the limit, the
+ * remembered engine still qualifies while its queue is no more than `affinityMargin` deeper than the
+ * least-loaded alternative's, since re-prefilling elsewhere then saves no queue worth the prefill. It
+ * only widens a limit that is on: at `maxInFlight` 0 affinity is off, and a margin alone does nothing.
  *
  * Pure and exported for its own test, like `applyPin`.
  */
@@ -328,27 +281,25 @@ export function applyPrefixAffinity<T extends { candidate: PoolCandidate; inFlig
   remembered: Pick<PrefixAffinityEntry, 'nodeKey' | 'backend'> | null,
   maxInFlight: number,
   affinityMargin = 0,
-): { ordered: T[]; sticky: T | null } {
-  if (!remembered) {
-    return { ordered: [...ranked], sticky: null };
-  }
-  const sticky =
-    ranked.find(
-      (entry) => (entry.candidate.peerId ?? LOCAL_CANDIDATE_KEY) === remembered.nodeKey && entry.candidate.backend === remembered.backend,
-    ) ?? null;
+): PrefixAffinityPlacement<T> {
+  const sticky = remembered
+    ? (ranked.find(
+        (entry) => (entry.candidate.peerId ?? LOCAL_CANDIDATE_KEY) === remembered.nodeKey && entry.candidate.backend === remembered.backend,
+      ) ?? null)
+    : null;
   if (!sticky) {
-    return { ordered: [...ranked], sticky: null };
+    return { ordered: [...ranked], sticky: null, qualified: false, leastLoadedInFlight: null };
   }
 
   const others = ranked.filter((entry) => entry !== sticky);
-  const minOtherInFlight = others.length > 0 ? Math.min(...others.map((entry) => entry.inFlight)) : sticky.inFlight;
+  const leastLoadedInFlight = others.length > 0 ? Math.min(...others.map((entry) => entry.inFlight)) : null;
 
-  const qualifies =
+  const qualified =
     sticky.inFlight < maxInFlight ||
-    (maxInFlight > 0 && affinityMargin > 0 && sticky.inFlight <= minOtherInFlight + affinityMargin && sticky.inFlight < 20);
+    (maxInFlight > 0 && affinityMargin > 0 && sticky.inFlight <= (leastLoadedInFlight ?? sticky.inFlight) + affinityMargin && sticky.inFlight < 20);
 
-  if (!qualifies) {
-    return { ordered: [...ranked], sticky };
+  if (!qualified) {
+    return { ordered: [...ranked], sticky, qualified, leastLoadedInFlight };
   }
-  return { ordered: [sticky, ...ranked.filter((entry) => entry !== sticky)], sticky };
+  return { ordered: [sticky, ...others], sticky, qualified, leastLoadedInFlight };
 }
