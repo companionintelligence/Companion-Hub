@@ -1676,6 +1676,32 @@ describe('Hub Pool across two nodes', () => {
       expect(betaLog.list()[0]).toMatchObject({ id, direction: 'inbound', outcome: 'failed', status: 500, requestError: null });
       expect(betaOllama.noteServingFailure).not.toHaveBeenCalled();
     });
+
+    /**
+     * An engine on beta refusing the key beta holds for it — a vLLM, Lemonade or oMLX key mismatch —
+     * reaches core as a 401 under beta's real relay. Core read that as beta refusing the pairing and
+     * dropped beta's whole inventory; beta's mark on what it relays is what now tells the two apart.
+     */
+    it('relays an engine’s 401 through beta without core dropping beta’s inventory', async () => {
+      await pairNodes();
+      await core.poll();
+      betaEngineReply = () =>
+        new Response(JSON.stringify({ error: { message: 'Invalid API key' } }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        });
+
+      const response = await routeFromCore('hello');
+
+      // Beta was the only candidate, so the engine's own answer is what the caller gets.
+      expect(response.status()).toBe(401);
+      expect(JSON.parse(response.body())).toEqual({ error: { message: 'Invalid API key' } });
+      expect(response.headers[POOL_SERVED_BY_HEADER.toLowerCase()]).toBe(BETA_FQDN);
+      expect(betaEngineCalls).toHaveLength(1);
+      const cached = core.repo.only().lastCapabilities as unknown as PoolPeerCapabilities | null;
+      expect(cached?.backends.flatMap((backend) => backend.modelsLoaded)).toContain(BETA_ONLY_MODEL);
+      expect(coreLog.list()[0]).toMatchObject({ node: BETA_FQDN, outcome: 'failed', status: 401, failedOverFrom: [] });
+    });
   });
 
   /**

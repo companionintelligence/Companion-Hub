@@ -806,6 +806,135 @@ describe('hub-pool-cli prompt ceiling', () => {
     expect(text.match(/prefix/g)).toHaveLength(3);
   });
 
+  /**
+   * The 2026-09-29 fleet test logged a `hit` at one in flight against a limit of 1 and margin 0: the
+   * ranker had put the remembered node first on its own. The row now says so with `qualified`, and
+   * the line must not read as affinity following the session.
+   */
+  it('does not print a hit affinity did not qualify as affinity following the prefix', () => {
+    const text = logOf([
+      routingEntry({
+        node: 'local',
+        peerId: null,
+        affinity: {
+          key: 'hashed',
+          outcome: 'hit',
+          qualified: false,
+          remembered: 'local',
+          inFlight: 1,
+          leastLoadedInFlight: 3,
+          maxInFlight: 1,
+          affinityMargin: 0,
+        },
+      }),
+    ]);
+
+    expect(text).toContain(
+      "landed on local, which holds this prompt's prefix, by ranking alone: affinity stood aside at 1 in flight (limit 1; session from prompt digest)",
+    );
+    expect(text).not.toContain('followed its prompt prefix');
+  });
+
+  it('reads a hit from a Hub predating `qualified` by the limit alone', () => {
+    const text = logOf([routingEntry({ affinity: { key: 'hashed', outcome: 'hit', remembered: PEER_A, inFlight: 2, maxInFlight: 2 } })]);
+
+    expect(text).toContain(`landed on ${PEER_A}, which holds this prompt's prefix, by ranking alone`);
+  });
+
+  /**
+   * #1665 shipped the margin before the row carried `leastLoadedInFlight` or `qualified`, so a row
+   * from it over the limit with a margin may have qualified by the margin or not, and the row alone
+   * cannot say which. Neither "followed" nor "by ranking alone" is true of it.
+   */
+  it('says a margin row from a Hub predating `qualified` cannot be read either way', () => {
+    const text = logOf([
+      routingEntry({ affinity: { key: 'hashed', outcome: 'hit', remembered: PEER_A, inFlight: 2, maxInFlight: 2, affinityMargin: 1 } }),
+      routingEntry({
+        node: 'local',
+        peerId: null,
+        affinity: { key: 'header', outcome: 'skipped', remembered: PEER_A, inFlight: 3, maxInFlight: 2, affinityMargin: 1 },
+      }),
+    ]);
+
+    expect(text).toContain(
+      `landed on ${PEER_A}, which holds this prompt's prefix, at 2 in flight: this Hub's row does not say whether its margin qualified it (limit 2, margin 1; session from prompt digest)`,
+    );
+    expect(text).toContain(
+      `${PEER_A} holds this prompt's prefix but had 3 in flight, and another node was placed first: this Hub's row does not say whether its margin qualified it (limit 2, margin 1; session from X-Hub-Pool-Session)`,
+    );
+    expect(text).not.toContain('by ranking alone');
+    expect(text).not.toContain('followed its prompt prefix');
+  });
+
+  it('reads a row from a Hub predating `qualified` by the margin when it names the queue the margin is measured from', () => {
+    const text = logOf([
+      routingEntry({
+        affinity: { key: 'hashed', outcome: 'hit', remembered: PEER_A, inFlight: 2, leastLoadedInFlight: 1, maxInFlight: 2, affinityMargin: 1 },
+      }),
+      routingEntry({
+        affinity: { key: 'hashed', outcome: 'hit', remembered: PEER_A, inFlight: 4, leastLoadedInFlight: 1, maxInFlight: 2, affinityMargin: 1 },
+      }),
+    ]);
+
+    expect(text).toContain(`followed its prompt prefix to ${PEER_A} (2 in flight, limit 2, margin 1, 1 on the least-loaded other node;`);
+    expect(text).toContain(`landed on ${PEER_A}, which holds this prompt's prefix, by ranking alone: affinity stood aside at 4 in flight`);
+  });
+
+  it('names the margin and the queue it was measured from when a margin decided the row', () => {
+    const text = logOf([
+      routingEntry({
+        affinity: {
+          key: 'header',
+          outcome: 'hit',
+          qualified: true,
+          remembered: PEER_A,
+          inFlight: 2,
+          leastLoadedInFlight: 1,
+          maxInFlight: 1,
+          affinityMargin: 1,
+        },
+      }),
+      routingEntry({
+        node: 'local',
+        peerId: null,
+        affinity: {
+          key: 'header',
+          outcome: 'skipped',
+          qualified: true,
+          remembered: PEER_A,
+          inFlight: 2,
+          leastLoadedInFlight: 1,
+          maxInFlight: 1,
+          affinityMargin: 1,
+        },
+      }),
+      routingEntry({
+        node: 'local',
+        peerId: null,
+        affinity: {
+          key: 'hashed',
+          outcome: 'skipped',
+          qualified: false,
+          remembered: PEER_A,
+          inFlight: 4,
+          leastLoadedInFlight: 1,
+          maxInFlight: 1,
+          affinityMargin: 1,
+        },
+      }),
+    ]);
+
+    expect(text).toContain(
+      `followed its prompt prefix to ${PEER_A} (2 in flight, limit 1, margin 1, 1 on the least-loaded other node; session from X-Hub-Pool-Session)`,
+    );
+    expect(text).toContain(
+      `${PEER_A} holds this prompt's prefix and was within its margin, but a ceiling, a demotion or a pin placed another node first (session from X-Hub-Pool-Session)`,
+    );
+    expect(text).toContain(
+      `${PEER_A} holds this prompt's prefix but had 4 in flight (limit 1, margin 1, 1 on the least-loaded other node); ranked as usual (session from prompt digest)`,
+    );
+  });
+
   it('says so when a long prompt was placed over a ceiling after all, rather than hiding the override', () => {
     const text = logOf([
       routingEntry({
@@ -1318,6 +1447,19 @@ describe('hub-pool-cli local engine contention', () => {
     ]);
 
     expect(text).toContain(`↳ kept ${engine} first: every node after it was busier, or moved behind it by a line above`);
+  });
+
+  it('says a contended engine kept its place because prefix affinity held it there', () => {
+    const text = logOf([
+      routingEntry({
+        node: 'local',
+        peerId: null,
+        contention: { numCtx: 65_536, demoted: [{ ...betaMax, behind: [], overriddenBy: 'affinity' }], overridden: true },
+      }),
+    ]);
+
+    expect(text).toContain(`↳ kept ${engine} first: it holds this session's prompt prefix, which prefix affinity follows over contention`);
+    expect(text).not.toContain('every node after it was busier');
   });
 
   it('adds nothing to a row contention did not change, or from a Hub predating it', () => {
