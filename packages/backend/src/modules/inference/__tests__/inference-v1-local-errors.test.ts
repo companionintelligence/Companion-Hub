@@ -48,6 +48,48 @@ const TOOLS_REFUSAL = {
   },
 };
 
+/** Prompts the fake engine answers by holding its connection open, for the client hang-up tests. */
+const HOLD_SILENT = 'hold: read the prompt and never answer';
+const HOLD_AFTER_FRAME = 'hold: one frame, then nothing';
+const DROP_AFTER_FRAME = 'drop: one frame, then the connection';
+const FRAME = 'data: {"choices":[{"index":0,"delta":{"content":"hi"}}]}\n\n';
+
+/** How long a teardown gets to reach the other end. It takes milliseconds; this only bounds a failure. */
+const TEARDOWN_MS = 3_000;
+
+async function within<T>(promise: Promise<T> | undefined, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} did not happen within ${ms}ms`)), ms);
+  });
+  try {
+    return await Promise.race([promise ?? Promise.reject(new Error(`${what}: nothing to wait on`)), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** A client that posts `body`, can read the first chunk of the answer, and can hang up at any point. */
+function connect(url: string, body: unknown): { firstChunk: Promise<string>; ended: Promise<{ complete: boolean }>; hangUp: () => void } {
+  let resolveFirst!: (chunk: string) => void;
+  let resolveEnded!: (outcome: { complete: boolean }) => void;
+  const firstChunk = new Promise<string>((resolve) => {
+    resolveFirst = resolve;
+  });
+  const ended = new Promise<{ complete: boolean }>((resolve) => {
+    resolveEnded = resolve;
+  });
+  const req = http.request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } }, (res) => {
+    res.once('data', (chunk: Buffer) => resolveFirst(chunk.toString()));
+    res.on('close', () => resolveEnded({ complete: res.complete }));
+    res.resume();
+  });
+  // A hang-up before the answer surfaces here as "socket hang up"; that is the point of it.
+  req.on('error', () => undefined);
+  req.end(JSON.stringify(body));
+  return { firstChunk, ended, hangUp: () => req.destroy() };
+}
+
 /**
  * The local (no-peer) `/v1` path, end to end over real HTTP: a real Nest server running the real
  * controller and the real `InferenceRouterService`, whose axios calls land on a fake engine in this
@@ -65,6 +107,10 @@ describe('InferenceController — local /v1 path answers with the engine, not a 
   let ollamaBackend: MockProxy<OllamaBackend>;
   let router: InferenceRouterService;
   let engineRequests: Array<{ path: string; body: Record<string, unknown> }>;
+  /** One per request the engine held open: resolves when the engine's end of that connection closes. */
+  let heldClosed: Array<Promise<void>>;
+  let heldArrived: Promise<void>;
+  let arriveHeld: () => void;
 
   beforeAll(async () => {
     engine = http.createServer((req, res) => {
@@ -75,6 +121,17 @@ describe('InferenceController — local /v1 path answers with the engine, not a 
       req.on('end', () => {
         const body = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
         engineRequests.push({ path: req.url ?? '', body });
+        const lastMessage = Array.isArray(body.messages) ? (body.messages as Array<{ content?: unknown }>).at(-1)?.content : undefined;
+        const prompt = typeof body.prompt === 'string' ? body.prompt : lastMessage;
+        if (prompt === HOLD_SILENT || prompt === HOLD_AFTER_FRAME || prompt === DROP_AFTER_FRAME) {
+          heldClosed.push(new Promise<void>((resolve) => req.socket.once('close', () => resolve())));
+          arriveHeld();
+          if (prompt === HOLD_SILENT) return;
+          res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+          res.write(FRAME);
+          if (prompt === DROP_AFTER_FRAME) setTimeout(() => req.socket.destroy(), 50);
+          return;
+        }
         const json = (status: number, payload: unknown) => {
           res.writeHead(status, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(payload));
@@ -173,6 +230,10 @@ describe('InferenceController — local /v1 path answers with the engine, not a 
 
   beforeEach(() => {
     engineRequests = [];
+    heldClosed = [];
+    heldArrived = new Promise<void>((resolve) => {
+      arriveHeld = resolve;
+    });
     vi.restoreAllMocks();
     // A healthy Ollama holding one model, at the fake engine. Tests that need a dead engine re-point it.
     ollamaBackend.getBaseUrl.mockReturnValue(engineUrl);
@@ -181,7 +242,10 @@ describe('InferenceController — local /v1 path answers with the engine, not a 
   });
 
   afterAll(async () => {
+    // A held connection a failing hang-up test left open would otherwise keep either `close` waiting.
+    (app?.getHttpServer() as http.Server | undefined)?.closeAllConnections();
     await app?.close();
+    engine?.closeAllConnections();
     await new Promise<void>((resolve) => engine?.close(() => resolve()));
   });
 
@@ -263,6 +327,48 @@ describe('InferenceController — local /v1 path answers with the engine, not a 
     const embeddings = await post('/v1/embeddings', { model: 'nomic-embed-text', input: 'hello' });
     expect(embeddings.status).toBe(200);
     await expect(embeddings.json()).resolves.toMatchObject({ object: 'list' });
+  });
+
+  // `result.stream.pipe(res)` never destroyed its source, and nothing tied the engine request to the
+  // client, so an app or editor that disconnected left the Hub holding the engine connection for as
+  // long as the engine kept it open. The engine here never ends a held request on its own, so only
+  // the Hub closing its side can pass these.
+  describe('a client that hangs up takes its engine request with it', () => {
+    it.each([
+      ['/v1/chat/completions', { model: 'gemma3:4b', messages: [{ role: 'user', content: HOLD_AFTER_FRAME }], stream: true }],
+      ['/v1/completions', { model: 'gemma3:4b', prompt: HOLD_AFTER_FRAME, stream: true }],
+    ])('closes the engine connection when the client leaves %s mid-stream', async (path, body) => {
+      const client = connect(`${baseUrl}${path}`, body);
+      await expect(within(client.firstChunk, TEARDOWN_MS, 'the first frame')).resolves.toBe(FRAME);
+
+      client.hangUp();
+
+      await within(heldClosed[0], TEARDOWN_MS, "the engine's connection closing");
+    });
+
+    it.each([
+      ['a streamed', true],
+      ['a whole-answer', false],
+    ])('closes the engine connection when the client leaves %s request before the engine answered', async (_label, stream) => {
+      const client = connect(`${baseUrl}/v1/chat/completions`, { model: 'gemma3:4b', messages: [{ role: 'user', content: HOLD_SILENT }], stream });
+      await within(heldArrived, TEARDOWN_MS, 'the request reaching the engine');
+
+      client.hangUp();
+
+      await within(heldClosed[0], TEARDOWN_MS, "the engine's connection closing");
+    });
+
+    it("ends the client's response when the engine drops mid-stream, instead of leaving it open", async () => {
+      const client = connect(`${baseUrl}/v1/chat/completions`, {
+        model: 'gemma3:4b',
+        messages: [{ role: 'user', content: DROP_AFTER_FRAME }],
+        stream: true,
+      });
+      await within(client.firstChunk, TEARDOWN_MS, 'the first frame');
+
+      // Cut, not complete: the client learns the answer was lost instead of waiting on it for good.
+      await expect(within(client.ended, TEARDOWN_MS, "the client's response ending")).resolves.toEqual({ complete: false });
+    });
   });
 
   it('answers speech with 200 and the audio type', async () => {

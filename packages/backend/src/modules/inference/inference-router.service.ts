@@ -292,8 +292,17 @@ export class InferenceRouterService {
     return !/embed/i.test(engineId);
   }
 
-  /** Route chat completion request */
-  async routeChatCompletion(body: Record<string, unknown>): Promise<{
+  /**
+   * Route chat completion request.
+   *
+   * `clientClosed` (`abortWhenClientCloses` in `upstream-stream.ts`) rides to whichever upstream
+   * serves the request, local engine or cloud provider, so a client that leaves abandons it there
+   * too — before the answer or mid-stream — instead of leaving the Hub holding the connection.
+   */
+  async routeChatCompletion(
+    body: Record<string, unknown>,
+    clientClosed?: AbortSignal,
+  ): Promise<{
     data: unknown;
     headers?: Record<string, string>;
     stream?: NodeJS.ReadableStream;
@@ -314,7 +323,7 @@ export class InferenceRouterService {
       // No local model, try cloud
       const provider = this.cloudFallback.getEnabledProviders()[0];
       if (provider) {
-        const result = await this.cloudFallback.proxyChatCompletion(provider, { ...body, model: provider.defaultModel });
+        const result = await this.cloudFallback.proxyChatCompletion(provider, { ...body, model: provider.defaultModel }, clientClosed);
         return { data: result.data, stream: result.stream, headers: result.headers, backend: `cloud:${provider.provider}` };
       }
       throw new Error('No models available — no local models loaded and no cloud providers configured');
@@ -324,7 +333,7 @@ export class InferenceRouterService {
     // proxy so an app that calls the engine's native routes gets the same arbitration.
     const prepared = await this.prepareTrackedModel(resolvedModel);
     if (prepared) {
-      return this.proxyToBackend(prepared.backend, prepared.backendModelId, body);
+      return this.proxyToBackend(prepared.backend, prepared.backendModelId, body, '/v1/chat/completions', clientClosed);
     }
 
     // 4. Check if model is directly available on a local backend (not tracked/curated)
@@ -332,7 +341,7 @@ export class InferenceRouterService {
       if (health.running && health.healthy) {
         const modelNames = health.modelsLoaded;
         if (modelNames.some((m) => m === resolvedModel || m.startsWith(`${resolvedModel}:`))) {
-          return this.proxyToBackend(backendType, resolvedModel, body);
+          return this.proxyToBackend(backendType, resolvedModel, body, '/v1/chat/completions', clientClosed);
         }
       }
     }
@@ -340,15 +349,18 @@ export class InferenceRouterService {
     // 5. Check if it's a cloud model
     const provider = this.cloudFallback.resolveProvider(resolvedModel);
     if (provider) {
-      const result = await this.cloudFallback.proxyChatCompletion(provider, body);
+      const result = await this.cloudFallback.proxyChatCompletion(provider, body, clientClosed);
       return { data: result.data, stream: result.stream, headers: result.headers, backend: `cloud:${provider.provider}` };
     }
 
     throw modelNotFound(`Model ${resolvedModel} not found or not available`);
   }
 
-  /** Route text / FIM completion request (e.g. for editor code completion) */
-  async routeCompletion(body: Record<string, unknown>): Promise<{
+  /** Route text / FIM completion request (e.g. for editor code completion). `clientClosed` as for chat. */
+  async routeCompletion(
+    body: Record<string, unknown>,
+    clientClosed?: AbortSignal,
+  ): Promise<{
     data: unknown;
     headers?: Record<string, string>;
     stream?: NodeJS.ReadableStream;
@@ -365,14 +377,14 @@ export class InferenceRouterService {
 
     const prepared = await this.prepareTrackedModel(resolvedModel);
     if (prepared) {
-      return this.proxyToBackend(prepared.backend, prepared.backendModelId, body, '/v1/completions');
+      return this.proxyToBackend(prepared.backend, prepared.backendModelId, body, '/v1/completions', clientClosed);
     }
 
     for (const [backendType, , health] of await probeOnce()) {
       if (health.running && health.healthy) {
         const modelNames = health.modelsLoaded;
         if (modelNames.some((m) => m === resolvedModel || m.startsWith(`${resolvedModel}:`))) {
-          return this.proxyToBackend(backendType, resolvedModel, body, '/v1/completions');
+          return this.proxyToBackend(backendType, resolvedModel, body, '/v1/completions', clientClosed);
         }
       }
     }
@@ -397,14 +409,20 @@ export class InferenceRouterService {
       // The same budgets as the cloud chat path and the local engines: a header deadline for a
       // stream, the pool's completion budget for a whole answer.
       if (body.stream) {
-        const response = await postStreamUnderHeaderDeadline(url, body, headers, {
-          budgetMs: firstByteBudgetMs(bodyBytes),
-          upstream: `cloud provider ${provider.provider}`,
-          hint: ` ${BUDGET_SETTINGS_HINT}`,
-        });
+        const response = await postStreamUnderHeaderDeadline(
+          url,
+          body,
+          headers,
+          {
+            budgetMs: firstByteBudgetMs(bodyBytes),
+            upstream: `cloud provider ${provider.provider}`,
+            hint: ` ${BUDGET_SETTINGS_HINT}`,
+          },
+          clientClosed,
+        );
         return { data: null, stream: response.data, headers: response.headers as Record<string, string>, backend: `cloud:${provider.provider}` };
       }
-      const response = await axios.post(url, body, { headers, timeout: forwardBudgetMs(false, bodyBytes) });
+      const response = await axios.post(url, body, { headers, timeout: forwardBudgetMs(false, bodyBytes), signal: clientClosed });
       return { data: response.data, headers: response.headers as Record<string, string>, backend: `cloud:${provider.provider}` };
     }
 
@@ -572,6 +590,7 @@ export class InferenceRouterService {
     backendModelId: string,
     body: Record<string, unknown>,
     endpointPath = '/v1/chat/completions',
+    clientClosed?: AbortSignal,
   ): Promise<{ data: unknown; headers?: Record<string, string>; stream?: NodeJS.ReadableStream; backend: string }> {
     const backend = this.backends.get(backendType);
     const url = `${backend.getBaseUrl()}${endpointPath}`;
@@ -590,7 +609,7 @@ export class InferenceRouterService {
       ...backendAuthHeaders(backend),
     };
 
-    return this.sendToBackend(url, requestBody, backendType, !!body.stream, headers);
+    return this.sendToBackend(url, requestBody, backendType, !!body.stream, headers, clientClosed);
   }
 
   private async sendToBackend(
@@ -599,6 +618,7 @@ export class InferenceRouterService {
     backendType: InferenceBackendType,
     stream: boolean,
     headers: Record<string, string>,
+    clientClosed?: AbortSignal,
   ): Promise<{ data: unknown; headers?: Record<string, string>; stream?: NodeJS.ReadableStream; backend: string }> {
     // The pool's own budgets (`hub-pool-budget.ts`), not a copy of their formula: a request must wait
     // as long on this node whether or not the Hub has peers. A local 120 s floor cut a streamed 19 KB
@@ -609,19 +629,28 @@ export class InferenceRouterService {
     if (stream) {
       // A header deadline, not axios's `timeout`, which would also cut the stream mid-generation;
       // see `postStreamUnderHeaderDeadline`.
-      const response = await postStreamUnderHeaderDeadline(url, requestBody, headers, {
-        budgetMs: firstByteBudgetMs(bodyBytes),
-        upstream: backendType,
-        hint: ` — it may still be loading the model or reading a long prompt ${BUDGET_SETTINGS_HINT}`,
-      });
+      const response = await postStreamUnderHeaderDeadline(
+        url,
+        requestBody,
+        headers,
+        {
+          budgetMs: firstByteBudgetMs(bodyBytes),
+          upstream: backendType,
+          hint: ` — it may still be loading the model or reading a long prompt ${BUDGET_SETTINGS_HINT}`,
+        },
+        clientClosed,
+      );
       return { data: null, stream: response.data, backend: backendType };
     }
 
     // Non-streamed: the engine sends its headers only with the finished completion, so axios's
     // `timeout` here is the whole generation — which is what the pool's completion budget sizes.
+    // `clientClosed` here too: an engine that is still generating a whole answer for a client that
+    // left holds its sequence slot for nobody until the budget runs out.
     const response = await axios.post(url, requestBody, {
       timeout: forwardBudgetMs(false, bodyBytes),
       headers,
+      signal: clientClosed,
     });
 
     return { data: response.data, headers: response.headers as Record<string, string>, backend: backendType };

@@ -212,6 +212,28 @@ describe('CloudFallbackService — request budgets', () => {
     expect((await outcome) as Error).toBeInstanceOf(Error);
   });
 
+  // The only thing that used to close a stream whose client had left was the 120 s idle timeout this
+  // took out. The client-closed signal replaces it, so it has to outlive the header deadline.
+  // `upstream-stream.test.ts` shows the same over real sockets.
+  it.each([
+    ['an OpenAI-compatible provider', openai],
+    ['Anthropic', anthropic],
+  ])('abandons a request to %s when its client leaves: armed past the headers on a stream, as is on a whole answer', async (_label, provider) => {
+    const clientClosed = new AbortController();
+    const sent = providerAnsweringAfter(1_000, new PassThrough());
+    const pending = service.proxyChatCompletion(provider, streamedTurn, clientClosed.signal);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await pending;
+
+    post.mockResolvedValueOnce({ data: { content: [], id: 'x', model: 'm', stop_reason: 'end_turn' }, headers: {} });
+    await service.proxyChatCompletion(provider, { ...streamedTurn, stream: false }, clientClosed.signal);
+    expect(post.mock.calls[1]?.[2]).toMatchObject({ signal: clientClosed.signal });
+
+    expect(sent()?.signal?.aborted).toBe(false);
+    clientClosed.abort();
+    expect(sent()?.signal?.aborted).toBe(true);
+  });
+
   it('relays a provider refusal as the axios error it is, not as our own deadline', async () => {
     const refusal = Object.assign(new Error('Request failed with status code 429'), { isAxiosError: true, response: { status: 429 } });
     post.mockRejectedValueOnce(refusal);

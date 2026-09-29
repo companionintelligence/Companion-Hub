@@ -539,6 +539,22 @@ describe('InferenceRouterService', () => {
         expect.objectContaining({ responseType: 'stream', timeout: 0, signal: expect.any(AbortSignal) }),
       );
     });
+
+    it("abandons the OpenAI fallback when its client leaves: a stream's signal stays armed past the headers, a whole answer gets it as is", async () => {
+      cloudFallback.resolveProvider.mockReturnValue(cloud('openai', 'https://api.openai.com/v1'));
+      const clientClosed = new AbortController();
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: {} as NodeJS.ReadableStream, headers: {} });
+      await service.routeCompletion({ model: 'gpt-3.5-turbo-instruct', prompt: 'x', stream: true }, clientClosed.signal);
+      const streamed = vi.mocked(axios.post).mock.calls[0]?.[2]?.signal as AbortSignal;
+
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: { object: 'text_completion' }, headers: {} });
+      await service.routeCompletion({ model: 'gpt-3.5-turbo-instruct', prompt: 'x' }, clientClosed.signal);
+      expect(vi.mocked(axios.post).mock.calls[1]?.[2]).toMatchObject({ signal: clientClosed.signal });
+
+      expect(streamed.aborted).toBe(false);
+      clientClosed.abort();
+      expect(streamed.aborted).toBe(true);
+    });
   });
 
   // ─── How long a local request may wait ───────────────
