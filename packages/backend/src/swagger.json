@@ -7039,6 +7039,9 @@
               "hubPoolRouteAppsAlways": {
                 "type": "boolean"
               },
+              "hubPoolMdnsEnabled": {
+                "type": "boolean"
+              },
               "inferenceSupervisionMode": {
                 "type": "string",
                 "enum": [
@@ -7576,6 +7579,9 @@
             "maximum": 1
           },
           "hubPoolRouteAppsAlways": {
+            "type": "boolean"
+          },
+          "hubPoolMdnsEnabled": {
             "type": "boolean"
           },
           "inferenceSupervisionMode": {
@@ -13144,6 +13150,9 @@
             "maximum": 1
           },
           "poolRouteAppsAlways": {
+            "type": "boolean"
+          },
+          "poolMdnsEnabled": {
             "type": "boolean"
           }
         },
