@@ -462,6 +462,31 @@ describe('hub-pool-cli discovery', () => {
     expect(text).toContain('--pin');
   });
 
+  it('lists an unverified LAN row apart, with no pair hint for it, and does not count it as found', async () => {
+    const lanRows: DiscoverablePoolPeer[] = [
+      { tailscaleDeviceId: '', nodeFqdn: 'core-9.local', hostname: 'core-9', source: 'mdns', verified: false, address: '172.18.0.66:5002' },
+      // The build that introduced mDNS discovery sent no `verified` flag at all.
+      { tailscaleDeviceId: '', nodeFqdn: 'lookalike.tailxyz.ts.net', hostname: 'lookalike', source: 'mdns', address: '172.18.0.67:5002' },
+    ];
+    hubApiFetch.mockResolvedValueOnce(status()).mockResolvedValueOnce(lanRows);
+
+    const result = await runPoolDiscover('.env.local');
+    const text = result.lines.join('\n');
+
+    expect(result.found).toBe(false);
+    expect(text).toContain('UNVERIFIED');
+    expect(text).toContain('172.18.0.66:5002');
+    // Neither name reaches the copy-pasteable table or the pair hint.
+    expect(text).not.toContain('core-9.local');
+    expect(text).not.toContain('lookalike.tailxyz.ts.net');
+    expect(text).not.toContain('Pair one with');
+
+    const mixed = formatPoolDiscoverLines([{ tailscaleDeviceId: 'dev-1', nodeFqdn: PEER_A, hostname: 'hub-b' }, ...lanRows], true).join('\n');
+    expect(mixed).toContain(PEER_A);
+    expect(mixed).toContain('Pair one with: cihub pool pair <node>');
+    expect(mixed).not.toContain('lookalike.tailxyz.ts.net');
+  });
+
   it('renders an off-box hostname through sanitizeForBox', () => {
     // Box output is ANSI-injectable, and every string on a candidate row is authored off-box.
     const devices: DiscoverablePoolPeer[] = [{ tailscaleDeviceId: '', nodeFqdn: PEER_A, hostname: '[31mred[0m' }];

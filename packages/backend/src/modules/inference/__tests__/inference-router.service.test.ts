@@ -23,6 +23,26 @@ import { InferenceRouteError } from '../inference-error-reply';
 
 vi.mock('axios');
 
+/**
+ * No operator preference at all. Typed as the real return shape, so a field added to
+ * `getInferencePreferences` fails this one declaration instead of every mock that spells the
+ * object out by hand — which is how the two below fell four fields behind without anyone noticing,
+ * since test files are outside `pnpm run tsc`.
+ */
+const NO_PREFERENCES: ReturnType<ConfigurationService['getInferencePreferences']> = {
+  preferredBackend: null,
+  preferredModel: null,
+  preferredEmbeddingModel: null,
+  preferredVisionModel: null,
+  preferredVllmApiKey: null,
+  preferredVllmUrl: null,
+  preferredOmlxUrl: null,
+  preferredDecodeEndpoint: null,
+  preferredEncodeEndpoint: null,
+  maxNumCtx: null,
+  ollamaSlots: null,
+};
+
 describe('InferenceRouterService', () => {
   let service: InferenceRouterService;
   let loggerService: MockProxy<LoggerService>;
@@ -60,15 +80,7 @@ describe('InferenceRouterService', () => {
     omlxBackend = mock<OmlxBackend>();
     configuration = mock<ConfigurationService>();
     // No operator preference by default, so every existing case resolves exactly as before.
-    configuration.getInferencePreferences.mockReturnValue({
-      preferredBackend: null,
-      preferredModel: null,
-      preferredEmbeddingModel: null,
-      preferredVisionModel: null,
-      preferredVllmApiKey: null,
-      preferredVllmUrl: null,
-      preferredOmlxUrl: null,
-    });
+    configuration.getInferencePreferences.mockReturnValue({ ...NO_PREFERENCES });
 
     hardwareInspector.getProfile.mockResolvedValue(defaultProfile);
     modelRegistry.getTrackedModels.mockReturnValue([]);
@@ -283,15 +295,7 @@ describe('InferenceRouterService', () => {
   // told `qwen3.6:27b`, nothing was pinned, and `auto` ran whatever ollama listed first.
   describe('resolveAutoModel and the operator preference', () => {
     const preferred = (preferredModel: string | null) =>
-      configuration.getInferencePreferences.mockReturnValue({
-        preferredBackend: 'ollama',
-        preferredModel,
-        preferredEmbeddingModel: null,
-        preferredVisionModel: null,
-        preferredVllmApiKey: null,
-        preferredVllmUrl: null,
-        preferredOmlxUrl: null,
-      });
+      configuration.getInferencePreferences.mockReturnValue({ ...NO_PREFERENCES, preferredBackend: 'ollama', preferredModel });
     const curatedQwen36 = { catalogId: 'qwen3-6-27b', backend: 'ollama', backendModelId: 'qwen3.6:27b', modality: 'llm' } as unknown as CuratedModel;
 
     it('returns the preferred model, as its engine id, when a healthy backend has it', async () => {
@@ -513,7 +517,43 @@ describe('InferenceRouterService', () => {
 
       const res = await service.routeCompletion({ model: 'gpt-3.5-turbo-instruct', prompt: 'x' });
       expect(res.backend).toBe('cloud:openai');
-      expect(axios.post).toHaveBeenCalledWith('https://api.openai.com/v1/completions', expect.anything(), expect.anything());
+      // A whole answer gets the pool completion budget, not the 120 s it had.
+      expect(axios.post).toHaveBeenCalledWith(
+        'https://api.openai.com/v1/completions',
+        expect.anything(),
+        expect.objectContaining({ timeout: 300_000 }),
+      );
+    });
+
+    it('streams the OpenAI fallback under a header deadline, not an axios timeout that would cut a pause mid-stream', async () => {
+      cloudFallback.resolveProvider.mockReturnValue(cloud('openai', 'https://api.openai.com/v1'));
+      const mockStream = {} as NodeJS.ReadableStream;
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: mockStream, headers: {} });
+
+      const res = await service.routeCompletion({ model: 'gpt-3.5-turbo-instruct', prompt: 'x', stream: true });
+
+      expect(res.stream).toBe(mockStream);
+      expect(axios.post).toHaveBeenCalledWith(
+        'https://api.openai.com/v1/completions',
+        expect.anything(),
+        expect.objectContaining({ responseType: 'stream', timeout: 0, signal: expect.any(AbortSignal) }),
+      );
+    });
+
+    it("abandons the OpenAI fallback when its client leaves: a stream's signal stays armed past the headers, a whole answer gets it as is", async () => {
+      cloudFallback.resolveProvider.mockReturnValue(cloud('openai', 'https://api.openai.com/v1'));
+      const clientClosed = new AbortController();
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: {} as NodeJS.ReadableStream, headers: {} });
+      await service.routeCompletion({ model: 'gpt-3.5-turbo-instruct', prompt: 'x', stream: true }, clientClosed.signal);
+      const streamed = vi.mocked(axios.post).mock.calls[0]?.[2]?.signal as AbortSignal;
+
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: { object: 'text_completion' }, headers: {} });
+      await service.routeCompletion({ model: 'gpt-3.5-turbo-instruct', prompt: 'x' }, clientClosed.signal);
+      expect(vi.mocked(axios.post).mock.calls[1]?.[2]).toMatchObject({ signal: clientClosed.signal });
+
+      expect(streamed.aborted).toBe(false);
+      clientClosed.abort();
+      expect(streamed.aborted).toBe(true);
     });
   });
 

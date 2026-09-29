@@ -273,5 +273,55 @@ describe('OmlxBackend', () => {
         }),
       );
     });
+
+    // `omlx/status` and `onboarding-profile` pass their `?url=` straight to healthCheck, and
+    // OMLX_API_KEY used to go to whatever URL that was.
+    describe('which key a Re-check probe carries', () => {
+      const CONFIGURED = 'http://mac-studio.lan:8000';
+      const modelsCall = () => get.mock.calls.find(([url]) => String(url).endsWith('/v1/models'));
+
+      beforeEach(() => {
+        process.env.OMLX_API_KEY = 'omlx-secret';
+        configuration.getInferencePreferences.mockReturnValue(preferences(CONFIGURED));
+        serve({ '/v1/models': { data: OMLX_MODELS }, '/health': { data: OMLX_HEALTH } });
+      });
+
+      it('sends no key to a URL other than the configured oMLX when no probe key is given', async () => {
+        await backend.healthCheck('http://attacker.example:9999');
+
+        expect(modelsCall()?.[0]).toBe('http://attacker.example:9999/v1/models');
+        expect((modelsCall()?.[1] as { headers?: unknown }).headers).toBeUndefined();
+      });
+
+      it.each([
+        CONFIGURED,
+        `${CONFIGURED}/v1/`,
+        'HTTP://MAC-STUDIO.LAN:8000',
+      ])('sends OMLX_API_KEY when re-checking the configured server, spelled %s', async (url) => {
+        await backend.healthCheck(url);
+
+        expect((modelsCall()?.[1] as { headers?: unknown }).headers).toEqual({ Authorization: 'Bearer omlx-secret' });
+      });
+
+      it('sends OMLX_API_KEY on the plain health probe of the configured server', async () => {
+        await backend.healthCheck();
+
+        expect((modelsCall()?.[1] as { headers?: unknown }).headers).toEqual({ Authorization: 'Bearer omlx-secret' });
+      });
+
+      it('sends the key typed for the probe to any URL, as before', async () => {
+        await backend.healthCheck('http://other-mac.lan:8000', 'typed-key');
+
+        expect((modelsCall()?.[1] as { headers?: unknown }).headers).toEqual({ Authorization: 'Bearer typed-key' });
+      });
+
+      it('says why no key went out when the other server refuses it', async () => {
+        serve({ '/v1/models': httpError(401), '/health': { data: OMLX_HEALTH } });
+
+        const health = await backend.healthCheck('http://other-mac.lan:8000');
+
+        expect(health.error).toContain('sent only to the configured oMLX URL');
+      });
+    });
   });
 });

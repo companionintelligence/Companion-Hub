@@ -9,15 +9,8 @@ import { InferenceEndpointService } from './inference-endpoint.service';
 import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
 import { appInferenceRequirements, checkModelRequirements, type AppInferenceRequirements } from './app-inference-requirements';
 import { describeContextHandout, describeNoSuitableChatModel, handoutContextLength, selectPoolChatModel } from './app-model-handout';
+import { appBearerFor } from './engine-credential-scope';
 import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
-
-/** Fallback keys for backends that do not expose a configured or desktop-managed key. */
-export const BACKEND_API_KEY: Record<InferenceBackendType, string> = {
-  ollama: 'ollama',
-  vllm: 'vllm',
-  lemonade: 'lemonade',
-  omlx: 'omlx',
-};
 
 /**
  * Standardized AI environment variables injected into an app's `app.env` when
@@ -30,7 +23,11 @@ export const BACKEND_API_KEY: Record<InferenceBackendType, string> = {
 export interface StandardizedAiEnv {
   /** OpenAI-compatible base URL (Ollama `/v1`, the pool proxy, or a cloud provider). */
   CI_LLM_BASE_URL?: string;
-  /** API key for the base URL. `"ollama"` for local Ollama. */
+  /**
+   * API key for the base URL. The engine's key only when the base URL is that engine; the backend's
+   * placeholder (`"ollama"`, `"vllm"`, …) when it is this Hub's proxy or a decode override on
+   * another server. See `appBearerFor`.
+   */
   CI_LLM_API_KEY?: string;
   /** Default chat/general LLM backend model ID, if available. */
   CI_CHAT_MODEL?: string;
@@ -161,9 +158,10 @@ export class InferenceEnvResolver {
     const decodeOverride = preferences.preferredDecodeEndpoint?.trim();
     const decodeOrigin = decodeOverride?.replace(/\/$/, '').replace(/\/v1$/, '');
     const baseUrl = decodeOrigin ? `${decodeOrigin}/v1` : `${backendBaseUrl}/v1`;
+    // The engine's own credential. It goes into the env only if the app ends up talking to the
+    // engine directly, which is decided after pool routing below.
     const configuredVllmKey = preferences.preferredVllmApiKey?.trim();
-    const managedBackendKey = backend.getApiKey?.()?.trim();
-    const apiKey = backendType === 'vllm' && configuredVllmKey ? configuredVllmKey : managedBackendKey || BACKEND_API_KEY[backendType];
+    const engineKey = (backendType === 'vllm' && configuredVllmKey) || backend.getApiKey?.()?.trim();
 
     // ── Chat model ────────────────────────────────────────────────────────
     let chatCurated: CuratedModel | undefined;
@@ -242,7 +240,6 @@ export class InferenceEnvResolver {
 
     const env: StandardizedAiEnv = {
       CI_LLM_BASE_URL: baseUrl,
-      CI_LLM_API_KEY: apiKey,
       CI_INFERENCE_BACKEND: backendType,
     };
     // OLLAMA_HOST is Ollama's native (non-OpenAI-compatible) protocol URL — only meaningful,
@@ -310,6 +307,9 @@ export class InferenceEnvResolver {
     env.CI_LLM_BASE_URL = routed.openAiBaseUrl;
     if (env.OLLAMA_HOST) env.OLLAMA_HOST = routed.ollamaHost;
     if (env.CI_OLLAMA_EMBED_HOST) env.CI_OLLAMA_EMBED_HOST = routed.ollamaEmbedHost;
+    // Against the URL the app is actually handed: through the pool proxy, or to a decode override
+    // on another server, the engine key would reach a server it does not belong to.
+    env.CI_LLM_API_KEY = appBearerFor({ endpointUrl: env.CI_LLM_BASE_URL, backendType, engineUrl: backendBaseUrl, engineKey });
 
     this.logger.info(
       `[InferenceEnvResolver] backend=${backendType} chat=${chatModel ?? 'none'} embedding=${embeddingModel ?? 'none'} ` +

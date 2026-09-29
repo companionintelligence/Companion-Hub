@@ -248,6 +248,10 @@ export class HubPoolController {
    * to `peers/pair`, and the unauthenticated probe is told no name. Those are paired with through
    * `peers/pair` in its address form instead. See `HubPoolDiscoveryService`.
    *
+   * The exception: with LAN discovery (`poolMdnsEnabled`) on, Hubs heard over mDNS follow the
+   * attested rows as `verified: false`. Those are for display only — every field came from an
+   * unauthenticated datagram — and a client must never post one to `peers/pair`.
+   *
    * Not a polling route. Every source probes: one `/identify` per unpaired candidate, plus a Portal
    * dispatch call and, with a credential, a Tailscale OAuth exchange.
    */

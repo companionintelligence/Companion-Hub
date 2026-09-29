@@ -20,6 +20,7 @@ import { HubPoolRoutingLogService } from '../hub-pool-routing-log.service';
 import { PoolProxyService } from '../hub-pool-proxy.service';
 import { HubPoolController } from '../hub-pool.controller';
 import { HubPoolDiscoveryService, mergePoolCandidates } from '../hub-pool-discovery.service';
+import type { HubPoolMdnsService } from '../hub-pool-mdns.service';
 import type { DiscoverablePoolPeer } from '../hub-pool.types';
 
 const lookup = vi.hoisted(() => vi.fn());
@@ -458,6 +459,39 @@ describe('HubPoolDiscoveryService', () => {
 
       expect(await service.listDiscoverableNodes()).toEqual([]);
       expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('asks mDNS for nothing and lists no LAN rows while LAN discovery is off, which is the default', async () => {
+      const mdns = mock<HubPoolMdnsService>();
+      mdns.isActive.mockReturnValue(false);
+      const withMdnsOff = new HubPoolDiscoveryService(mock<LoggerService>(), peerService, tailscaleService, portalClient, mdns);
+      peerService.listDiscoverableDevices.mockResolvedValue([
+        { tailscaleDeviceId: 'ts-1', nodeFqdn: 'peer-hub.tailxyz.ts.net', hostname: 'peer-hub' },
+      ]);
+
+      expect(await withMdnsOff.listDiscoverableNodes()).toEqual([
+        { tailscaleDeviceId: 'ts-1', nodeFqdn: 'peer-hub.tailxyz.ts.net', hostname: 'peer-hub' },
+      ]);
+      expect(mdns.scan).not.toHaveBeenCalled();
+      expect(mdns.getDiscoverableCandidates).not.toHaveBeenCalled();
+    });
+
+    it('lists Hubs heard over mDNS after every attested row, unverified, and never merges them in', async () => {
+      const mdns = mock<HubPoolMdnsService>();
+      mdns.isActive.mockReturnValue(true);
+      mdns.getDiscoverableCandidates.mockReturnValue([
+        // A lookalike of the tailnet peer, and one Hub only the LAN knows.
+        { tailscaleDeviceId: '', nodeFqdn: 'peer-hub.local', hostname: 'peer-hub', source: 'mdns', verified: false, address: '172.18.0.66:5002' },
+        { tailscaleDeviceId: '', nodeFqdn: 'lan-hub.local', hostname: 'lan-hub', source: 'mdns', verified: false, address: '192.168.1.43:5002' },
+      ]);
+      peerService.listDiscoverableDevices.mockResolvedValue([{ tailscaleDeviceId: '', nodeFqdn: 'peer-hub.tailxyz.ts.net', hostname: 'peer-hub' }]);
+      const withMdnsOn = new HubPoolDiscoveryService(mock<LoggerService>(), peerService, tailscaleService, portalClient, mdns);
+
+      expect(await withMdnsOn.listDiscoverableNodes()).toEqual([
+        { tailscaleDeviceId: '', nodeFqdn: 'peer-hub.tailxyz.ts.net', hostname: 'peer-hub' },
+        { tailscaleDeviceId: '', nodeFqdn: 'lan-hub.local', hostname: 'lan-hub', source: 'mdns', verified: false, address: '192.168.1.43:5002' },
+      ]);
+      expect(mdns.scan).toHaveBeenCalledTimes(1);
     });
 
     it('works with no Portal client wired in at all, which is every unregistered Hub', async () => {

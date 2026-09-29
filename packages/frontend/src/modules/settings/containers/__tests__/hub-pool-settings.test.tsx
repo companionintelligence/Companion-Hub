@@ -572,6 +572,63 @@ describe('HubPoolSection', () => {
     });
   });
 
+  describe('LAN discovery (mDNS)', () => {
+    it('renders off when the setting is absent, and PATCHes only its own field when switched on', async () => {
+      renderSection();
+
+      const toggle = await screen.findByTestId('hub-pool-mdns-toggle');
+      expect(toggle.getAttribute('aria-checked')).toBe('false');
+      await userEvent.click(toggle);
+
+      await waitFor(() => expect(fixtures.updateSettings).toHaveBeenCalledTimes(1));
+      expect(fixtures.updateSettings.mock.calls[0]?.[0]).toEqual({ body: { poolMdnsEnabled: true } });
+    });
+
+    it('says in its help that it needs host networking', async () => {
+      renderSection();
+
+      await screen.findByTestId('hub-pool-mdns-toggle');
+      expect(screen.getByText('HUB_POOL_MDNS_LABEL')).toBeTruthy();
+      // The text itself is in the translation file; this pins that the switch carries it.
+      expect(document.querySelector('.field-hint-hub-pool-mdns')).toBeTruthy();
+    });
+
+    it('is disabled while pooling is off, since mDNS only runs with the pool', async () => {
+      fixtures.status = baseStatus({
+        enabled: false,
+        disabledBy: 'setting',
+        reason: 'disabled_by_setting',
+        routingActive: false,
+        settings: {
+          poolEnabled: false,
+          poolOutboundEnabled: true,
+          poolInboundEnabled: true,
+          poolLocalAffinity: 1,
+          poolHealthPollSeconds: 30,
+          poolMdnsEnabled: true,
+        },
+      });
+      renderSection();
+
+      expect((await screen.findByTestId('hub-pool-mdns-toggle')).hasAttribute('disabled')).toBe(true);
+    });
+
+    it('lists an unverified LAN row without a Pair button, and keeps Pair on attested rows', async () => {
+      fixtures.discoverable = [
+        { tailscaleDeviceId: 'ts-1', nodeFqdn: 'hub-b.example-tailnet.ts.net', hostname: 'hub-b' },
+        // What this build sends, and what the build that introduced mDNS sent (no `verified` at all).
+        { tailscaleDeviceId: '', nodeFqdn: 'core-9.local', hostname: 'core-9', source: 'mdns', verified: false, address: '172.18.0.66:5002' },
+        { tailscaleDeviceId: '', nodeFqdn: 'core-9.tailxyz.ts.net', hostname: 'lookalike', source: 'mdns', address: '172.18.0.67:5002' },
+      ];
+      renderSection();
+
+      await waitFor(() => expect(screen.getAllByTestId('hub-pool-discoverable-unverified')).toHaveLength(2));
+      expect(screen.getAllByRole('button', { name: 'HUB_POOL_PAIR_BUTTON' })).toHaveLength(1);
+      expect(screen.getByText('172.18.0.66:5002')).toBeTruthy();
+      expect(screen.getAllByText('HUB_POOL_DISCOVERABLE_UNVERIFIED')).toHaveLength(2);
+    });
+  });
+
   it('names the missing tailnet-enumeration credential instead of showing a bare empty device list', async () => {
     fixtures.status = baseStatus({ tailscaleAdminApiConfigured: false, reason: 'no_peers', routingActive: false });
 

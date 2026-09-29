@@ -223,6 +223,9 @@ export const settingsSchema = z.object({
   // Opt-OUT: absent means every app is handed this Hub's proxy as its inference endpoint, peers or
   // not. See `HubPoolPreferences.poolRouteAppsAlways`.
   hubPoolRouteAppsAlways: z.boolean().optional(),
+  // Opt-IN, like `hubPoolRequireSignedPeers`: absent means this Hub neither binds UDP 5353 nor
+  // announces itself. See `HubPoolPreferences.poolMdnsEnabled` for why off is the default.
+  hubPoolMdnsEnabled: z.boolean().optional(),
   // Inference-backend observation. Opt-IN, unlike the pool switches: absent means `'off'`, which is
   // the only value that costs a deployed Hub literally nothing — no timer, no probe, no boot work.
   // `CI_HUB_INFERENCE_SUPERVISION_DISABLED=true` in the environment overrides it
