@@ -274,7 +274,19 @@ export interface DiscoverablePoolPeer {
    */
   source?: 'portal' | 'mdns';
   /**
-   * Network address (host:port) for directly pairable LAN candidates (discovered via mDNS or LAN probe).
+   * `false` on a row nothing attested: an mDNS announcement, whose every field was chosen by
+   * whoever sent the datagram. Such a row is shown and never paired from — no Pair action, and
+   * nothing it carries may reach `peers/pair`. Absent on tailnet and Portal rows, which a directory
+   * named (the same convention as an absent `source`).
+   *
+   * Consumers must treat a row as unverified when this is `false` OR `source` is `'mdns'`: a Hub on
+   * the #1665 build sends mDNS rows with neither this field nor any restraint on what they carry.
+   */
+  verified?: boolean;
+  /**
+   * `host:port` of an unverified mDNS row: the datagram's real sender and the port its SRV record
+   * claimed. For the operator to read, never to dial with a pairing token. Absent on attested rows —
+   * {@link mergePoolCandidates} never copies it onto one.
    */
   address?: string;
   /**
