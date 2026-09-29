@@ -2950,7 +2950,7 @@
         "operationId": "v1ChatCompletions",
         "parameters": [],
         "responses": {
-          "201": {
+          "200": {
             "description": ""
           }
         },
@@ -2964,7 +2964,7 @@
         "operationId": "v1Completions",
         "parameters": [],
         "responses": {
-          "201": {
+          "200": {
             "description": ""
           }
         },
@@ -2978,7 +2978,7 @@
         "operationId": "v1Embeddings",
         "parameters": [],
         "responses": {
-          "201": {
+          "200": {
             "description": ""
           }
         },
@@ -3006,7 +3006,7 @@
         "operationId": "v1AudioSpeech",
         "parameters": [],
         "responses": {
-          "201": {
+          "200": {
             "description": ""
           }
         },
@@ -3020,7 +3020,7 @@
         "operationId": "v1AudioTranscriptions",
         "parameters": [],
         "responses": {
-          "201": {
+          "200": {
             "description": ""
           }
         },

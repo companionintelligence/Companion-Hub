@@ -14,7 +14,8 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { describeAllCandidatesFailed, firstByteBudgetMs } from '../hub-pool-proxy.service';
+import { describeAllCandidatesFailed } from '../hub-pool-proxy.service';
+import { firstByteBudgetMs } from '../hub-pool-budget';
 
 describe('describeAllCandidatesFailed', () => {
   it('names the deadline, and refuses to call a slow node unreachable', () => {
