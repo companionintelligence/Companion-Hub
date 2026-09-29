@@ -75,7 +75,7 @@ class FakeHostTailscaled {
         BackendState: 'Running',
         Self: { HostName: this.selfDnsName.split('.')[0], DNSName: `${this.selfDnsName}.`, TailscaleIPs: ['100.64.0.17'] },
         CertDomains: [this.selfDnsName],
-        MagicDNSSuffix: 'capybara-ulmer.ts.net',
+        MagicDNSSuffix: 'tailxyz.ts.net',
       });
       return { stdout, stderr: '' };
     }
@@ -164,7 +164,7 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
   }
 
   it('does not re-run tailscale serve on every pass once the Hub is published (core-6)', async () => {
-    const tailscaled = new FakeHostTailscaled('core-6.capybara-ulmer.ts.net', CORE_6_SERVE_STATUS);
+    const tailscaled = new FakeHostTailscaled('core-6.tailxyz.ts.net', CORE_6_SERVE_STATUS);
     const sync = buildSync(tailscaled);
 
     // Three passes stand in for fifteen minutes of the exposure poll.
@@ -178,7 +178,7 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
   });
 
   it('republishes the Hub under the new name after a tailnet rename, as the operator had to by hand on core-17', async () => {
-    const tailscaled = new FakeHostTailscaled('core-17.capybara-ulmer.ts.net', CORE_17_SERVE_STATUS_BEFORE_REPAIR);
+    const tailscaled = new FakeHostTailscaled('core-17.tailxyz.ts.net', CORE_17_SERVE_STATUS_BEFORE_REPAIR);
     const sync = buildSync(tailscaled);
 
     await sync.syncTailscaleExposurePublic();
@@ -186,7 +186,7 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
     expect(tailscaled.writes).toEqual([HUB_PUBLISH]);
     expect(tailscaled.serveConfig()).toEqual(JSON.parse(CORE_17_SERVE_STATUS_AFTER_MANUAL_REPAIR));
     expect(logger.info).toHaveBeenCalledWith(
-      expect.stringContaining('served for bench-1.capybara-ulmer.ts.net but this node is now core-17.capybara-ulmer.ts.net'),
+      expect.stringContaining('served for bench-1.tailxyz.ts.net but this node is now core-17.tailxyz.ts.net'),
     );
 
     // The leftover bench-1 listener must not read as missing, or the rename repair becomes a loop.
@@ -196,7 +196,7 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
 
   it('leaves Tailscale Serve alone when PRIVATE_VPN_USER_DISABLED=true and the Hub is already published (beta-max, core-6, beta-ms-a2)', async () => {
     process.env.PRIVATE_VPN_USER_DISABLED = 'true';
-    const tailscaled = new FakeHostTailscaled('core-6.capybara-ulmer.ts.net', CORE_6_SERVE_STATUS);
+    const tailscaled = new FakeHostTailscaled('core-6.tailxyz.ts.net', CORE_6_SERVE_STATUS);
     const sync = buildSync(tailscaled);
 
     await sync.syncTailscaleExposurePublic();
@@ -213,7 +213,7 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
     process.env.PRIVATE_VPN_USER_DISABLED = 'true';
     // Without the opt-out this state gets a publish, as the rename test shows. core-17 and core-14
     // were both renamed and both opted out, so the Hub cannot repair either; it can only say so.
-    const tailscaled = new FakeHostTailscaled('core-17.capybara-ulmer.ts.net', CORE_17_SERVE_STATUS_BEFORE_REPAIR);
+    const tailscaled = new FakeHostTailscaled('core-17.tailxyz.ts.net', CORE_17_SERVE_STATUS_BEFORE_REPAIR);
     const sync = buildSync(tailscaled);
 
     await sync.syncTailscaleExposurePublic();
@@ -223,7 +223,7 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
     expect(tailscaled.writes).toEqual([]);
     expect(tailscaled.serveConfig()).toEqual(JSON.parse(CORE_17_SERVE_STATUS_BEFORE_REPAIR));
     expect(logger.warn).toHaveBeenCalledTimes(1);
-    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('only bench-1.capybara-ulmer.ts.net'));
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('only bench-1.tailxyz.ts.net'));
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('sudo tailscale serve --bg --yes --https=443 http://localhost:5002'));
 
     // The operator publishes by hand, as on core-17; a later loss of the entry must warn again.
@@ -237,9 +237,9 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
 
   it('logs the operator refusal once with the command that fixes it, instead of the CLI error every five minutes', async () => {
     const withStaleAppListener = JSON.stringify({
-      Web: { 'beta-ms-a2.capybara-ulmer.ts.net:3001': { Handlers: { '/': { Proxy: 'http://172.18.0.10:3001' } } } },
+      Web: { 'beta-ms-a2.tailxyz.ts.net:3001': { Handlers: { '/': { Proxy: 'http://172.18.0.10:3001' } } } },
     });
-    const tailscaled = new FakeHostTailscaled('beta-ms-a2.capybara-ulmer.ts.net', withStaleAppListener);
+    const tailscaled = new FakeHostTailscaled('beta-ms-a2.tailxyz.ts.net', withStaleAppListener);
     tailscaled.deniesServeWrites = true;
     const sync = buildSync(tailscaled);
 
@@ -257,7 +257,7 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
   });
 
   it('warns again if the refusal returns after a publish has succeeded', async () => {
-    const tailscaled = new FakeHostTailscaled('beta-nas.capybara-ulmer.ts.net', '{}');
+    const tailscaled = new FakeHostTailscaled('beta-nas.tailxyz.ts.net', '{}');
     tailscaled.deniesServeWrites = true;
     const sync = buildSync(tailscaled);
 
@@ -281,8 +281,8 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
     // The Hub entry needs no write, so the only write in the pass is the cleanup; before, that
     // refusal was logged by the cleanup on every pass even though the publish path went quiet.
     const config = JSON.parse(CORE_6_SERVE_STATUS) as ServeConfig;
-    config.Web = { ...config.Web, 'core-6.capybara-ulmer.ts.net:3001': { Handlers: { '/': { Proxy: 'http://172.18.0.10:3001' } } } };
-    const tailscaled = new FakeHostTailscaled('core-6.capybara-ulmer.ts.net', JSON.stringify(config));
+    config.Web = { ...config.Web, 'core-6.tailxyz.ts.net:3001': { Handlers: { '/': { Proxy: 'http://172.18.0.10:3001' } } } };
+    const tailscaled = new FakeHostTailscaled('core-6.tailxyz.ts.net', JSON.stringify(config));
     tailscaled.deniesServeWrites = true;
     // The Hub published :3001 for an app that has since stopped, so the listener is its to remove.
     const ownership = await new TailscaleServeOwnership().load();
@@ -302,7 +302,7 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
   });
 
   it('logs a rename once while tailscaled keeps refusing the republish (core-17 before its operator was set)', async () => {
-    const tailscaled = new FakeHostTailscaled('core-17.capybara-ulmer.ts.net', CORE_17_SERVE_STATUS_BEFORE_REPAIR);
+    const tailscaled = new FakeHostTailscaled('core-17.tailxyz.ts.net', CORE_17_SERVE_STATUS_BEFORE_REPAIR);
     tailscaled.deniesServeWrites = true;
     const sync = buildSync(tailscaled);
 
@@ -317,8 +317,8 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
 
   it('leaves a listener under the pre-rename name alone, which tailscale serve off cannot reach', async () => {
     const config = JSON.parse(CORE_17_SERVE_STATUS_AFTER_MANUAL_REPAIR) as ServeConfig;
-    config.Web = { ...config.Web, 'bench-1.capybara-ulmer.ts.net:3001': { Handlers: { '/': { Proxy: 'http://172.18.0.10:3001' } } } };
-    const tailscaled = new FakeHostTailscaled('core-17.capybara-ulmer.ts.net', JSON.stringify(config));
+    config.Web = { ...config.Web, 'bench-1.tailxyz.ts.net:3001': { Handlers: { '/': { Proxy: 'http://172.18.0.10:3001' } } } };
+    const tailscaled = new FakeHostTailscaled('core-17.tailxyz.ts.net', JSON.stringify(config));
     const sync = buildSync(tailscaled);
 
     await sync.syncTailscaleExposurePublic();
@@ -350,7 +350,7 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
       config.Services = {
         'svc:grafana': {
           TCP: { '443': { HTTPS: true } },
-          Web: { 'grafana.capybara-ulmer.ts.net:443': { Handlers: { '/': { Proxy: 'http://localhost:3000' } } } },
+          Web: { 'grafana.tailxyz.ts.net:443': { Handlers: { '/': { Proxy: 'http://localhost:3000' } } } },
         },
       };
       const tailscaled = new FakeHostTailscaled(FZZY, JSON.stringify(config));

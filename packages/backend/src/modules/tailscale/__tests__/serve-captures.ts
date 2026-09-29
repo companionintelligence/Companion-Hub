@@ -15,7 +15,7 @@ export const CORE_6_SERVE_STATUS = `{
     }
   },
   "Web": {
-    "core-6.capybara-ulmer.ts.net:443": {
+    "core-6.tailxyz.ts.net:443": {
       "Handlers": {
         "/": {
           "Proxy": "http://localhost:5002"
@@ -37,14 +37,14 @@ export const CORE_17_SERVE_STATUS_AFTER_MANUAL_REPAIR = `{
     }
   },
   "Web": {
-    "bench-1.capybara-ulmer.ts.net:443": {
+    "bench-1.tailxyz.ts.net:443": {
       "Handlers": {
         "/": {
           "Proxy": "http://localhost:5002"
         }
       }
     },
-    "core-17.capybara-ulmer.ts.net:443": {
+    "core-17.tailxyz.ts.net:443": {
       "Handlers": {
         "/": {
           "Proxy": "http://localhost:5002"
@@ -65,7 +65,7 @@ export const CORE_17_SERVE_STATUS_BEFORE_REPAIR = `{
     }
   },
   "Web": {
-    "bench-1.capybara-ulmer.ts.net:443": {
+    "bench-1.tailxyz.ts.net:443": {
       "Handlers": {
         "/": {
           "Proxy": "http://localhost:5002"
