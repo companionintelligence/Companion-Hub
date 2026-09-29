@@ -20,6 +20,18 @@ const CLOUD_DEFAULTS: Record<CloudProviderType, string> = {
 };
 
 /**
+ * Whether a provider serves OpenAI's legacy text-completions route, `POST {baseUrl}/completions`.
+ *
+ * Only OpenAI itself. Anthropic speaks its own Messages API (see `proxyAnthropicChat`), and the
+ * OpenAI-compatible surfaces of Google and GitHub Copilot are chat-only. The router's
+ * `/v1/completions` cloud fallback asks this before posting, rather than sending a request to a route
+ * that does not exist and relaying the provider's 404 as though the model were missing.
+ */
+export function speaksOpenAiCompletions(provider: CloudProviderType): boolean {
+  return provider === 'openai';
+}
+
+/**
  * Cloud provider key store.
  *
  * The Hub no longer proxies inference requests, so this service no longer makes
