@@ -18,8 +18,12 @@ const DOMAIN_LIST_NOTE_KEYS = {
 interface CloudflareSubdomainFieldProps<TFormValues extends FieldValues> {
   control: Control<TFormValues>;
   availableDomains: AvailableDomain[];
-  watchPublicDomain?: string;
-  domain?: string;
+  /**
+   * The domain the form will publish on — `publicDomainToUse` — or `undefined`
+   * while it has none to offer. Never a stand-in: until the domain is known the
+   * suffix shows none, beside the list's loading or retry mark.
+   */
+  shownDomain?: string;
   cloudflareSuffix: string;
   register: UseFormRegister<TFormValues>;
   loading?: boolean;
@@ -37,8 +41,7 @@ interface CloudflareSubdomainFieldProps<TFormValues extends FieldValues> {
 export function CloudflareSubdomainField<TFormValues extends FieldValues>({
   control,
   availableDomains,
-  watchPublicDomain,
-  domain,
+  shownDomain,
   cloudflareSuffix,
   register,
   loading,
@@ -73,7 +76,7 @@ export function CloudflareSubdomainField<TFormValues extends FieldValues>({
               name={'publicDomain' as Path<TFormValues>}
               render={({ field: { onChange, value } }) => {
                 const prefixText = `-${cloudflareSuffix}.`;
-                const selectedDomain = (value as string) || watchPublicDomain || domain || '';
+                const selectedDomain = (value as string) || shownDomain || '';
 
                 return (
                   <div className="flex h-9 w-full min-w-0 overflow-hidden items-stretch rounded-r-md border border-l-0 border-input bg-muted text-sm text-muted-foreground">
@@ -117,7 +120,7 @@ export function CloudflareSubdomainField<TFormValues extends FieldValues>({
             />
           ) : (
             <PlainDomainSuffix
-              text={`-${cloudflareSuffix}.${watchPublicDomain || domain}`}
+              text={shownDomain ? `-${cloudflareSuffix}.${shownDomain}` : `-${cloudflareSuffix}.`}
               note={domainListNote}
               hint={noteHint}
               anchorClass={noteAnchorClass}
