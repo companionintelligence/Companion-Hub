@@ -14,6 +14,7 @@ import type { InferenceBackend } from './backends/backend.interface';
 import { resolveInstalledCatalogIds } from './model-availability.util';
 import { InferenceRouteError, modelNotFound } from './inference-error-reply';
 import { firstByteBudgetMs, forwardBudgetMs } from '@/modules/hub-pool/hub-pool-budget';
+import { BUDGET_SETTINGS_HINT, postStreamUnderHeaderDeadline } from './upstream-stream';
 
 /** One parallel health sweep over every registered backend. */
 type ProbedBackends = ReadonlyArray<readonly [InferenceBackendType, InferenceBackend, BackendHealthStatus]>;
@@ -390,19 +391,20 @@ export class InferenceRouterService {
       );
     }
     if (provider) {
-      const baseUrl = provider.baseUrl || this.cloudFallback.getDefaultBaseUrl(provider.provider);
-      const isStream = !!body.stream;
-      const response = await axios.post(`${baseUrl}/completions`, body, {
-        headers: {
-          Authorization: `Bearer ${provider.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        responseType: isStream ? 'stream' : 'json',
-        timeout: 120000,
-      });
-      if (isStream) {
+      const url = `${provider.baseUrl || this.cloudFallback.getDefaultBaseUrl(provider.provider)}/completions`;
+      const headers = { Authorization: `Bearer ${provider.apiKey}`, 'Content-Type': 'application/json' };
+      const bodyBytes = Buffer.byteLength(JSON.stringify(body));
+      // The same budgets as the cloud chat path and the local engines: a header deadline for a
+      // stream, the pool's completion budget for a whole answer.
+      if (body.stream) {
+        const response = await postStreamUnderHeaderDeadline(url, body, headers, {
+          budgetMs: firstByteBudgetMs(bodyBytes),
+          upstream: `cloud provider ${provider.provider}`,
+          hint: ` ${BUDGET_SETTINGS_HINT}`,
+        });
         return { data: null, stream: response.data, headers: response.headers as Record<string, string>, backend: `cloud:${provider.provider}` };
       }
+      const response = await axios.post(url, body, { headers, timeout: forwardBudgetMs(false, bodyBytes) });
       return { data: response.data, headers: response.headers as Record<string, string>, backend: `cloud:${provider.provider}` };
     }
 
@@ -605,7 +607,14 @@ export class InferenceRouterService {
     const bodyBytes = Buffer.byteLength(JSON.stringify(requestBody));
 
     if (stream) {
-      return this.openBackendStream(url, requestBody, backendType, headers, firstByteBudgetMs(bodyBytes));
+      // A header deadline, not axios's `timeout`, which would also cut the stream mid-generation;
+      // see `postStreamUnderHeaderDeadline`.
+      const response = await postStreamUnderHeaderDeadline(url, requestBody, headers, {
+        budgetMs: firstByteBudgetMs(bodyBytes),
+        upstream: backendType,
+        hint: ` — it may still be loading the model or reading a long prompt ${BUDGET_SETTINGS_HINT}`,
+      });
+      return { data: null, stream: response.data, backend: backendType };
     }
 
     // Non-streamed: the engine sends its headers only with the finished completion, so axios's
@@ -616,52 +625,6 @@ export class InferenceRouterService {
     });
 
     return { data: response.data, headers: response.headers as Record<string, string>, backend: backendType };
-  }
-
-  /**
-   * Open a streamed request, giving the engine `budgetMs` to answer with its headers and no deadline
-   * at all once it has — a long generation is never cut, exactly as through the pool.
-   *
-   * Not axios's `timeout`, because that does not stop at the headers. With axios's default transport
-   * (follow-redirects) the wall-clock timer is cleared on the response, but the socket idle timeout
-   * installed alongside it (`socket.setTimeout(timeout)`, then `socket.destroy` on expiry) stays for
-   * the life of the stream: any gap between chunks as long as the budget kills the generation
-   * mid-stream with ECONNRESET, after the client has already been sent a 200. Measured against this
-   * repo's axios 1.18 / follow-redirects 1.16 with a server that pauses mid-stream. An engine that
-   * sends its headers before it reads the prompt (vLLM, llama-server) has exactly such a gap. So
-   * `timeout: 0`, and an abort signal whose timer is cleared the moment axios resolves — at the
-   * headers — which is what the pool's `fetchWithConnectTimeout` does with `fetch`.
-   */
-  private async openBackendStream(
-    url: string,
-    requestBody: Record<string, unknown>,
-    backendType: InferenceBackendType,
-    headers: Record<string, string>,
-    budgetMs: number,
-  ): Promise<{ data: unknown; stream: NodeJS.ReadableStream; backend: string }> {
-    const deadline = new AbortController();
-    const timer = setTimeout(() => deadline.abort(), budgetMs);
-    try {
-      const response = await axios.post(url, requestBody, {
-        responseType: 'stream',
-        timeout: 0,
-        signal: deadline.signal,
-        headers,
-      });
-      return { data: null, stream: response.data, backend: backendType };
-    } catch (err) {
-      // axios reports our own abort as a bare "canceled"; say which deadline it was. Still a 502 at
-      // the controller: nothing answered, and a slow engine can be healthy.
-      if (deadline.signal.aborted) {
-        throw new Error(
-          `${backendType} sent no response headers within ${budgetMs}ms — it may still be loading the model or reading a long prompt ` +
-            '(HUB_POOL_FIRST_BYTE_TIMEOUT_MS / HUB_POOL_MIN_PREFILL_TOKENS_PER_SEC size this budget)',
-        );
-      }
-      throw err;
-    } finally {
-      clearTimeout(timer);
-    }
   }
 
   /** Get the inference endpoint URL for injection into app environments */

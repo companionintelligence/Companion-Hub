@@ -7,6 +7,7 @@ import type { BackendHealthStatus, BackendModelInfo, PullProgress } from '@ci-hu
 import axios from 'axios';
 import { foreignEngineHealth, openAiModelIds } from './engine-identity';
 import { OpenAiCompatibleClient } from './openai-compatible.client';
+import { isSameServer } from '../engine-credential-scope';
 
 /** Candidate API key for a Re-check probe — header, not query, so it stays out of access logs. */
 export const VLLM_PROBE_API_KEY_HEADER = 'x-ci-vllm-api-key';
@@ -74,14 +75,27 @@ export class VllmBackend implements InferenceBackend {
     return apiKeyOverride?.trim() || this.configuration.getInferencePreferences().preferredVllmApiKey?.trim() || process.env.VLLM_API_KEY?.trim();
   }
 
+  /**
+   * The key a probe of `probeUrl` carries: one typed for this probe goes wherever the operator is
+   * probing, and the saved key only to the server it was saved for (`getBaseUrl`, compared by
+   * `isSameServer`). `vllm/status` and `onboarding-profile` hand their `?url=` straight to
+   * {@link healthCheck}, so attaching the saved key to any URL let any caller of those routes
+   * collect it by naming a listener, and sent the old server's key to every new one re-checked.
+   */
+  private probeApiKey(probeUrl: string, apiKeyOverride?: string): { apiKey: string | undefined; savedKeyWithheld: boolean } {
+    const typed = apiKeyOverride?.trim();
+    if (typed) return { apiKey: typed, savedKeyWithheld: false };
+    const saved = this.vllmAuthKey();
+    if (isSameServer(probeUrl, this.getBaseUrl())) return { apiKey: saved, savedKeyWithheld: false };
+    return { apiKey: undefined, savedKeyWithheld: Boolean(saved) };
+  }
+
   /** Overrides let status + onboarding probe unsaved Settings input without persisting it. */
   async healthCheck(baseUrlOverride?: string, apiKeyOverride?: string): Promise<BackendHealthStatus> {
     const baseUrl = baseUrlOverride ? resolveVllmProbeUrl(baseUrlOverride) : this.getBaseUrl();
+    const { apiKey, savedKeyWithheld } = this.probeApiKey(baseUrl, apiKeyOverride);
     try {
-      const body = await this.api.fetchModels(baseUrl, {
-        timeout: 5000,
-        apiKey: this.vllmAuthKey(apiKeyOverride),
-      });
+      const body = await this.api.fetchModels(baseUrl, { timeout: 5000, apiKey });
       // vLLM and oMLX both default to this same host port (:8000); whoever is actually listening there
       // says so in `owned_by`, and only that backend gets to offer its models.
       const foreign = foreignEngineHealth('vllm', body, baseUrl);
@@ -94,7 +108,12 @@ export class VllmBackend implements InferenceBackend {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const status = axios.isAxiosError(err) ? err.response?.status : undefined;
-      const hint = status === 401 ? 'vLLM rejected the API key — it must match the --api-key you passed when starting vLLM.' : undefined;
+      const hint =
+        status === 401
+          ? savedKeyWithheld
+            ? "vLLM wants an API key. The saved key is sent only to the saved vLLM URL; enter this server's key to check it."
+            : 'vLLM rejected the API key — it must match the --api-key you passed when starting vLLM.'
+          : undefined;
       return {
         running: false,
         healthy: false,
