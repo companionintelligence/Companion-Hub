@@ -19,6 +19,17 @@ import { firstByteBudgetMs, forwardBudgetMs } from '@/modules/hub-pool/hub-pool-
 type ProbedBackends = ReadonlyArray<readonly [InferenceBackendType, InferenceBackend, BackendHealthStatus]>;
 
 /**
+ * `Authorization` for a backend that authenticates its requests (its `getApiKey()`: VLLM_API_KEY,
+ * OMLX_API_KEY, LEMONADE_API_KEY), or no header at all. The chat/completion proxy and the Lemonade
+ * audio routes share it, so a keyed engine is not probed healthy with its key and then sent work
+ * without it (Lemonade TTS/STT did exactly that: healthy, then a 401 on every call).
+ */
+function backendAuthHeaders(backend: InferenceBackend): Record<string, string> {
+  const apiKey = backend.getApiKey?.();
+  return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+}
+
+/**
  * Inference router — unified routing view over local backends + multi-node pool + cloud fallback.
  */
 @Injectable()
@@ -406,6 +417,7 @@ export class InferenceRouterService {
       if (lemonadeHealth.running && lemonadeHealth.healthy) {
         try {
           const response = await axios.post(`${lemonadeBackend.getBaseUrl()}/v1/audio/speech`, body, {
+            headers: backendAuthHeaders(lemonadeBackend),
             responseType: 'arraybuffer',
             timeout: 60000,
           });
@@ -434,7 +446,10 @@ export class InferenceRouterService {
       const lemonadeHealth = await lemonadeBackend.healthCheck().catch(() => ({ running: false, healthy: false }));
       if (lemonadeHealth.running && lemonadeHealth.healthy) {
         try {
-          const response = await axios.post(`${lemonadeBackend.getBaseUrl()}/v1/audio/transcriptions`, formData, { timeout: 120000 });
+          const response = await axios.post(`${lemonadeBackend.getBaseUrl()}/v1/audio/transcriptions`, formData, {
+            headers: backendAuthHeaders(lemonadeBackend),
+            timeout: 120000,
+          });
           return { data: response.data, backend: 'lemonade' };
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -568,10 +583,9 @@ export class InferenceRouterService {
       this.modelRegistry.recordUsage(tracked.catalogId);
     }
 
-    const apiKey = backend.getApiKey?.();
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      ...backendAuthHeaders(backend),
     };
 
     return this.sendToBackend(url, requestBody, backendType, !!body.stream, headers);

@@ -258,6 +258,13 @@ export interface RoutingLogEntry {
    * routing or capacity problem. Absent on a Hub predating the flag.
    */
   clientClosed?: boolean;
+  /**
+   * Why the row stopped at a node that answered with an error about the REQUEST rather than serving
+   * it: `signature` labels the engine's message, or is `client-error` for a 4xx relayed on its status.
+   * Present on outbound rows only; `null`/absent on every other row and on a Hub predating the field.
+   * Read through `isRefused`, which also reads the status, so neither gap makes a refusal look served.
+   */
+  requestError?: { signature?: string; basis?: string; confirms?: string | null } | null;
   pin?: unknown;
   /**
    * Token counts, attached once the backend's response finished — `null`/absent while pending,

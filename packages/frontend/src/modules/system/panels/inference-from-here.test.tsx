@@ -179,6 +179,27 @@ describe('InferenceFromHere', () => {
     expect(chip(container, 'Failed')).toBe('2Failed1 past budget · 1 caller left');
   });
 
+  it('names a refused request under Failed, not as served, and keeps it out of the first byte', () => {
+    const own = inferenceFromHere(
+      [
+        row('2026-09-28T15:00:00Z', { stream: true, status: 400, durationMs: 18 }),
+        row('2026-09-28T15:01:00Z', {
+          stream: true,
+          outcome: 'failed',
+          status: 400,
+          durationMs: 5,
+          requestError: { signature: 'client-error', basis: 'status' },
+        }),
+        row('2026-09-28T15:02:00Z', { stream: true, durationMs: 90_000 }),
+      ],
+      WINDOW,
+    );
+    const container = renderTile(own);
+
+    expect(chip(container, 'Failed')).toBe('2Failed2 refused');
+    expect(own.firstByte).toEqual({ count: 1, p50Ms: 90_000, p90Ms: null });
+  });
+
   it('says when the log itself starts inside the window', () => {
     const container = renderTile(inferenceFromHere([row('2026-09-28T15:00:00Z')], WINDOW), { startedAt: '2026-09-28T15:01:30Z' });
 

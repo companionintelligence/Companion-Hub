@@ -170,6 +170,48 @@ describe('HubPoolRoutingLogService', () => {
       expect(service.summary()).toMatchObject({ served: 1, failed: 2, clientClosed: 1, requestErrors: 1 });
     });
 
+    /**
+     * The summary is what `cihub pool status` and the dashboard's header read, and the rows are what
+     * the feed and the per-minute bars read. When the two disagree an operator is shown two answers
+     * to one question, so every count is checked against a recount of the rows it summarises —
+     * including the refusals this log used to settle `served`: a 4xx relayed on its status, and a
+     * verdict relayed from the last candidate with nobody left to confirm it.
+     */
+    it('states counts that equal a recount of its own rows, key by key', () => {
+      const settled = (patch: Parameters<HubPoolRoutingLogService['settle']>[1], placement: Partial<PoolRoutingRecordInput> = {}) => {
+        const row = service.open((({ outcome: _o, status: _s, durationMs: _d, ...rest }) => rest)(record(placement)));
+        service.settle(row, patch);
+      };
+      service.record(record());
+      settled({ outcome: 'served', status: 200, durationMs: 90_000 }, { failedOverFrom: ['core-7'], attempt: 2 });
+      settled({ outcome: 'failed', status: 400, durationMs: 5, requestError: { signature: 'client-error', basis: 'status', confirms: null } });
+      settled({
+        outcome: 'failed',
+        status: 500,
+        durationMs: 42,
+        requestError: { signature: 'invalid-message', basis: 'last-candidate', confirms: null },
+      });
+      settled({ outcome: 'failed', status: 500, durationMs: 128, requestError: { signature: 'no-user-query', basis: 'definitive', confirms: null } });
+      settled({ outcome: 'failed', status: null, clientClosed: true, durationMs: 30_031 });
+      settled({ node: null, outcome: 'failed', status: null, durationMs: 307_336 }, { failedOverFrom: ['a', 'b'], attempt: 3, candidates: 3 });
+      service.record(record({ direction: 'inbound', outcome: 'failed', status: 400, durationMs: 4 }));
+      service.open((({ outcome: _o, status: _s, durationMs: _d, ...rest }) => rest)(record()));
+
+      const rows = service.list();
+      const count = (test: (row: (typeof rows)[number]) => boolean) => rows.filter(test).length;
+      expect(service.summary()).toMatchObject({
+        recorded: rows.length,
+        served: count((row) => row.outcome === 'served'),
+        failed: count((row) => row.outcome === 'failed'),
+        pending: count((row) => row.outcome === 'pending'),
+        clientClosed: count((row) => row.clientClosed),
+        requestErrors: count((row) => row.requestError !== null),
+        failovers: count((row) => row.failedOverFrom.length > 0),
+      });
+      // And the figures themselves, so a recount that drifted with the summary cannot pass.
+      expect(service.summary()).toMatchObject({ recorded: 9, served: 2, failed: 6, pending: 1, clientClosed: 1, requestErrors: 3, failovers: 2 });
+    });
+
     it('opens with no usage, and settling at headers time does not invent one', () => {
       const { outcome: _o, status: _s, durationMs: _d, ...placement } = record();
       const row = service.open(placement);

@@ -110,8 +110,9 @@ export function InferenceFromHere({
                     own.pending > 0 ? t('DASHBOARD_OWN_WAITING', { count: own.pending }) : undefined,
                   )}
                 />
-                {/* Split as the rail splits "Failed 30m": a caller that hung up and a failure that ran a
-                    whole budget point at different fixes, and neither is a node refusing work. */}
+                {/* Split as the rail splits "Failed 30m": a caller that hung up, a failure that ran a
+                    whole budget, and a request a node refused as bad point at different fixes, and
+                    none of them is a node failing to do work it was able to do. */}
                 <StatChip
                   value={own.failed}
                   label={t('DASHBOARD_FAILED')}
@@ -119,6 +120,7 @@ export function InferenceFromHere({
                   sub={joinSubs(
                     own.overBudget > 0 ? t('DASHBOARD_RAIL_PAST_BUDGET', { count: own.overBudget }) : undefined,
                     own.clientClosed > 0 ? t('DASHBOARD_RAIL_CALLERS_LEFT', { count: own.clientClosed }) : undefined,
+                    own.refused > 0 ? t('DASHBOARD_RAIL_REFUSED', { count: own.refused }) : undefined,
                   )}
                 />
                 <StatChip value={own.failovers} label={t('DASHBOARD_FAILOVERS')} tone={own.failovers > 0 ? 'warn' : 'muted'} />
