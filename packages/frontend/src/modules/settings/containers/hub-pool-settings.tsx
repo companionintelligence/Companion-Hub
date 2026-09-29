@@ -115,6 +115,8 @@ interface PoolSettings {
   poolLocalAffinity: number;
   poolHealthPollSeconds: number;
   poolRequireSignedPeers: boolean;
+  /** Optional so a cached payload from a build before the switch reads as off, which is its default. */
+  poolMdnsEnabled?: boolean;
 }
 
 /** This node's own pool identity. Never the private key — only the UUID and a short fingerprint. */
@@ -189,19 +191,33 @@ interface PoolRoutingLog {
  * An unpaired node this Hub can offer to pair with **by name**, from any directory that can attest
  * one: the tailnet (the local Tailscale daemon's peer map, plus the Admin API when a credential is
  * configured) or the CI Portal device registry. The backend merges the two, so a node both know
- * appears once; which directory named it is not rendered, and this shape deliberately omits the
- * `source` badge the backend type carries.
+ * appears once; which of those two directories named it is not rendered.
  *
- * A Hub found by LAN address is deliberately not in here: `GET /identify` is unauthenticated and
- * reports no MagicDNS name, so an address has no name to hand the Pair button. Those are paired with
- * from the CLI, where the operator also supplies the PIN that makes the far side disclose its name —
+ * The one other kind of row is an UNVERIFIED one — a Hub heard over LAN mDNS, when that is switched
+ * on. Every field of it came from an unauthenticated datagram, so it is shown for the operator to
+ * read and never gets a Pair button: clicking one would send this Hub's name, a fresh peer token and
+ * any typed PIN to whatever host the packet named. See {@link isUnverifiedCandidate}.
+ *
+ * A Hub found by typed address is not in here either: `GET /identify` is unauthenticated and reports
+ * no MagicDNS name, so an address has no name to hand the Pair button. Those are paired with from the
+ * CLI, where the operator also supplies the PIN that makes the far side disclose its name —
  * `cihub pool pair <address> --pin <digits>`.
  */
 interface DiscoverablePoolPeer {
   tailscaleDeviceId: string;
   nodeFqdn: string;
   hostname: string;
+  source?: 'portal' | 'mdns';
+  verified?: boolean;
+  /** `host:port` of an unverified mDNS row — the datagram's sender. Display only. */
+  address?: string;
 }
+
+/**
+ * Either mark makes a row unverified. `source` alone covers a Hub on the build that introduced mDNS
+ * discovery, which sent neither the flag nor any restraint on what its rows carried.
+ */
+const isUnverifiedCandidate = (device: DiscoverablePoolPeer) => device.verified === false || device.source === 'mdns';
 
 /** How many routing decisions to render. The buffer holds 200; an operator reads the recent ones. */
 const ROUTING_LOG_LIMIT = 25;
@@ -755,6 +771,28 @@ export const HubPoolSection = () => {
                 />
                 {inboundEnvLocked ? <p className="text-[10px] text-warning">{t('HUB_POOL_INBOUND_ENV_LOCKED')}</p> : null}
               </div>
+
+              {/* Opt-in, and only in force while pooling is on — so it disables with the master,
+                  like the two directions. The help text is the important part: on the default
+                  bridge network this reaches nothing but the Hub's own sibling containers. */}
+              <div className="space-y-1">
+                <Switch
+                  name="hubPoolMdnsEnabled"
+                  data-testid="hub-pool-mdns-toggle"
+                  checked={status.settings.poolMdnsEnabled ?? false}
+                  disabled={demoMode || envLocked || !status.settings.poolEnabled || settingsMutation.isPending}
+                  onCheckedChange={(checked: boolean) => settingsMutation.mutate({ body: { poolMdnsEnabled: checked } })}
+                  label={
+                    <HintText
+                      id="hub-pool-mdns"
+                      hint={t('HUB_POOL_MDNS_HELP')}
+                      className="cursor-help underline decoration-dotted underline-offset-2"
+                    >
+                      {t('HUB_POOL_MDNS_LABEL')}
+                    </HintText>
+                  }
+                />
+              </div>
             </div>
 
             {/* The two tuning numbers sit on the switch row's line rather than in a grid of
@@ -1298,24 +1336,47 @@ export const HubPoolSection = () => {
           {status.tailscaleAdminApiConfigured || discoverable?.length ? (
             discoverable?.length ? (
               <ul className="space-y-2">
-                {discoverable.map((device) => (
+                {discoverable.map((device) =>
                   // Keyed on the FQDN, not the Tailscale device id: the FQDN is unique across this
                   // list by construction, and it is the value the Pair button posts.
-                  <li key={device.nodeFqdn} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
-                    <span className="min-w-0 break-all font-mono text-xs sm:truncate" title={device.nodeFqdn}>
-                      {device.hostname}
-                    </span>
-                    <Button
-                      type="button"
-                      size="sm"
-                      disabled={demoMode || pairMutation.isPending}
-                      loading={pairMutation.isPending && pairMutation.variables === device.nodeFqdn}
-                      onClick={() => pairMutation.mutate(device.nodeFqdn)}
+                  isUnverifiedCandidate(device) ? (
+                    // No Pair button, by design: nothing on this row was attested by anyone.
+                    <li
+                      key={device.nodeFqdn}
+                      data-testid="hub-pool-discoverable-unverified"
+                      className="flex items-center justify-between gap-3 rounded-md border border-dashed px-3 py-2"
                     >
-                      {pairMutation.isPending && pairMutation.variables === device.nodeFqdn ? t('HUB_POOL_PAIRING') : t('HUB_POOL_PAIR_BUTTON')}
-                    </Button>
-                  </li>
-                ))}
+                      <span className="min-w-0">
+                        <span className="block break-all font-mono text-xs sm:truncate">{device.hostname}</span>
+                        {device.address ? (
+                          <span className="block break-all font-mono text-[11px] text-muted-foreground">{device.address}</span>
+                        ) : null}
+                      </span>
+                      <HintText
+                        id={`hub-pool-unverified-${device.nodeFqdn}`}
+                        hint={t('HUB_POOL_DISCOVERABLE_UNVERIFIED_HELP')}
+                        className="shrink-0 cursor-help text-xs text-warning underline decoration-dotted underline-offset-2"
+                      >
+                        {t('HUB_POOL_DISCOVERABLE_UNVERIFIED')}
+                      </HintText>
+                    </li>
+                  ) : (
+                    <li key={device.nodeFqdn} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+                      <span className="min-w-0 break-all font-mono text-xs sm:truncate" title={device.nodeFqdn}>
+                        {device.hostname}
+                      </span>
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={demoMode || pairMutation.isPending}
+                        loading={pairMutation.isPending && pairMutation.variables === device.nodeFqdn}
+                        onClick={() => pairMutation.mutate(device.nodeFqdn)}
+                      >
+                        {pairMutation.isPending && pairMutation.variables === device.nodeFqdn ? t('HUB_POOL_PAIRING') : t('HUB_POOL_PAIR_BUTTON')}
+                      </Button>
+                    </li>
+                  ),
+                )}
               </ul>
             ) : (
               <p className="py-2 text-center text-xs italic text-muted-foreground">

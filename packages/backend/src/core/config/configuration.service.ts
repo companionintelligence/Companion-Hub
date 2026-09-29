@@ -102,6 +102,9 @@ function describeSettingsError(error: unknown): string {
   return scrubString(String(error));
 }
 
+/** Called after a successful settings write with the settings.json keys it wrote. See `onUserSettingsChanged`. */
+export type UserSettingsListener = (changedKeys: readonly string[]) => void;
+
 /**
  * The settings.json fields lifted straight out of the file because they have no `.env` equivalent.
  * `ciHubApiKey` is the Hub's Portal credential; losing it looks exactly like an unregistered
@@ -153,6 +156,7 @@ type PersistedSettingsValues = {
   inferenceSupervisionPollSeconds: number | undefined;
   hubPoolPins: HubPoolPin[] | undefined;
   hubPoolRouteAppsAlways: boolean | undefined;
+  hubPoolMdnsEnabled: boolean | undefined;
 };
 
 const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
@@ -196,6 +200,7 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   inferenceSupervisionPollSeconds: undefined,
   hubPoolPins: undefined,
   hubPoolRouteAppsAlways: undefined,
+  hubPoolMdnsEnabled: undefined,
 };
 
 @Injectable()
@@ -203,6 +208,12 @@ export class ConfigurationService {
   private config: ReturnType<typeof this.configure>;
   private envPath = path.join(DATA_DIR, '.env');
   private logger: LoggerService;
+  /**
+   * Created on first subscription rather than as an initializer: several tests build this service
+   * with `Object.create(ConfigurationService.prototype)`, which runs no field initializers, and
+   * `setUserSettings` has to keep working on those instances.
+   */
+  private userSettingsListeners?: Set<UserSettingsListener>;
 
   // Lowest level, cannot use any other service or module to avoid circular dependencies
   constructor(private readonly envUtils: EnvUtils) {
@@ -297,6 +308,7 @@ export class ConfigurationService {
       inferenceSupervisionPollSeconds: settings.inferenceSupervisionPollSeconds,
       hubPoolPins: settings.hubPoolPins,
       hubPoolRouteAppsAlways: settings.hubPoolRouteAppsAlways,
+      hubPoolMdnsEnabled: settings.hubPoolMdnsEnabled,
     };
   }
 
@@ -405,6 +417,7 @@ export class ConfigurationService {
         inferenceSupervisionPollSeconds: settingsValues.inferenceSupervisionPollSeconds,
         hubPoolPins: settingsValues.hubPoolPins,
         hubPoolRouteAppsAlways: settingsValues.hubPoolRouteAppsAlways,
+        hubPoolMdnsEnabled: settingsValues.hubPoolMdnsEnabled,
         experimental: {
           insecureCookie: env.data.EXPERIMENTAL_INSECURE_COOKIE,
         },
@@ -478,6 +491,40 @@ export class ConfigurationService {
     } catch (error) {
       this.logger.error(`Failed to set user settings: ${describeSettingsError(error)}; attemptedKeys=${Object.keys(settings).join(',') || '(none)'}`);
       throw new InternalServerErrorException('Failed to set user settings');
+    }
+
+    // Outside the try on purpose: the write has already succeeded, and a listener that throws must
+    // neither turn that into a 500 nor stop the listeners after it from hearing about the change.
+    this.notifyUserSettingsListeners(Object.keys(settings));
+  }
+
+  /**
+   * Run `listener` after every successful {@link setUserSettings}, with the keys that call wrote.
+   * Returns the unsubscribe function.
+   *
+   * For state that has to follow a setting at runtime rather than be read on each request — the one
+   * user today is the mDNS socket, which must open and close as `hubPoolMdnsEnabled` or
+   * `hubPoolEnabled` flips. Every settings write funnels through `setUserSettings`, so this sees the
+   * pool route's PATCH and the generic settings PATCH alike; a hook on one controller would miss the
+   * other. Listeners run synchronously after the in-memory copy is updated, so reading preferences
+   * from inside one returns the new values.
+   */
+  public onUserSettingsChanged(listener: UserSettingsListener): () => void {
+    this.userSettingsListeners ??= new Set();
+    this.userSettingsListeners.add(listener);
+    return () => {
+      this.userSettingsListeners?.delete(listener);
+    };
+  }
+
+  private notifyUserSettingsListeners(changedKeys: string[]): void {
+    if (!this.userSettingsListeners || changedKeys.length === 0) return;
+    for (const listener of [...this.userSettingsListeners]) {
+      try {
+        listener(changedKeys);
+      } catch (error) {
+        this.logger.warn(`A settings-change listener failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
   }
 
@@ -661,6 +708,9 @@ export class ConfigurationService {
       poolPins: [...(this.config.userSettings.hubPoolPins ?? [])],
       // `?? true`: opt-OUT. See `HubPoolPreferences.poolRouteAppsAlways` for the measurement behind it.
       poolRouteAppsAlways: this.config.userSettings.hubPoolRouteAppsAlways ?? true,
+      // `?? false`: opt-IN, like `poolRequireSignedPeers`. See `HubPoolPreferences.poolMdnsEnabled`
+      // for the fleet measurement that made off the default.
+      poolMdnsEnabled: this.config.userSettings.hubPoolMdnsEnabled ?? false,
     };
   }
 
@@ -687,6 +737,7 @@ export class ConfigurationService {
       hubPoolSlotAwareness?: number;
       hubPoolPins?: HubPoolPin[];
       hubPoolRouteAppsAlways?: boolean;
+      hubPoolMdnsEnabled?: boolean;
     } = {};
     if (preferences.poolEnabled !== undefined) {
       settings.hubPoolEnabled = preferences.poolEnabled;
@@ -738,6 +789,9 @@ export class ConfigurationService {
     }
     if (preferences.poolRouteAppsAlways !== undefined) {
       settings.hubPoolRouteAppsAlways = preferences.poolRouteAppsAlways;
+    }
+    if (preferences.poolMdnsEnabled !== undefined) {
+      settings.hubPoolMdnsEnabled = preferences.poolMdnsEnabled;
     }
     // A no-op PATCH must not rewrite settings.json: every write is a read-modify-write of the whole
     // file with no locking, so an empty one can still clobber a concurrent inference-preferences save.

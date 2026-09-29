@@ -150,7 +150,47 @@ describe('ConfigurationService Hub Pool preferences', () => {
       // Opt-OUT: every app is handed this Hub's proxy, peers or not, so one place sees all the
       // node's inference. See `HubPoolPreferences.poolRouteAppsAlways`.
       poolRouteAppsAlways: true,
+      // Opt-IN: an untouched Hub binds nothing on UDP 5353. On the shipped bridge network the socket
+      // reached only sibling containers, so on by default was attack surface with no function.
+      poolMdnsEnabled: false,
     });
+  });
+
+  it('persists the LAN discovery switch and reads it back, off as well as on', async () => {
+    const svc = makePoolService();
+
+    await svc.setHubPoolPreferences({ poolMdnsEnabled: true });
+    expect(svc.mergeSettingsToDisk.mock.calls[0]?.[0]).toEqual({ hubPoolMdnsEnabled: true });
+    expect(svc.getHubPoolPreferences()).toMatchObject({ poolMdnsEnabled: true });
+
+    await svc.setHubPoolPreferences({ poolMdnsEnabled: false });
+    expect(svc.mergeSettingsToDisk.mock.calls[1]?.[0]).toEqual({ hubPoolMdnsEnabled: false });
+    expect(svc.getHubPoolPreferences()).toMatchObject({ poolMdnsEnabled: false });
+  });
+
+  it('tells settings-change listeners which keys a write touched, after the in-memory copy is updated', async () => {
+    const svc = makePoolService() as unknown as ConfigurationService;
+    const seen: Array<{ keys: readonly string[]; mdns: boolean }> = [];
+    const unsubscribe = svc.onUserSettingsChanged((keys) => seen.push({ keys, mdns: svc.getHubPoolPreferences().poolMdnsEnabled }));
+
+    await svc.setHubPoolPreferences({ poolMdnsEnabled: true });
+    unsubscribe();
+    await svc.setHubPoolPreferences({ poolMdnsEnabled: false });
+
+    // The listener read the NEW value, and heard nothing after unsubscribing.
+    expect(seen).toEqual([{ keys: ['hubPoolMdnsEnabled'], mdns: true }]);
+  });
+
+  it('keeps a settings write successful when a listener throws, and still runs the others', async () => {
+    const svc = makePoolService() as unknown as ConfigurationService;
+    const after = vi.fn();
+    svc.onUserSettingsChanged(() => {
+      throw new Error('listener bug');
+    });
+    svc.onUserSettingsChanged(after);
+
+    await expect(svc.setHubPoolPreferences({ poolMdnsEnabled: true })).resolves.toMatchObject({ poolMdnsEnabled: true });
+    expect(after).toHaveBeenCalledWith(['hubPoolMdnsEnabled']);
   });
 
   it('keeps a persisted opt-out from routing apps through the proxy', () => {
