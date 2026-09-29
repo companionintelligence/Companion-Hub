@@ -26,11 +26,14 @@ function Field({
   onRetry = vi.fn(),
   availableDomains = [],
   onSubmit = vi.fn(),
+  shownDomain = 'ci0.pw',
 }: {
   note: DomainListNote;
   onRetry?: () => void;
   availableDomains?: AvailableDomain[];
   onSubmit?: () => void;
+  /** `null`: the form has no domain to show yet. */
+  shownDomain?: string | null;
 }) {
   const { control, register, handleSubmit } = useForm<Values>({ defaultValues: { localSubdomain: '', publicDomain: 'ci0.pw' } });
 
@@ -40,8 +43,7 @@ function Field({
         control={control}
         register={register}
         availableDomains={availableDomains}
-        watchPublicDomain="ci0.pw"
-        domain="ci0.pw"
+        shownDomain={shownDomain ?? undefined}
         cloudflareSuffix="acme"
         placeholder="app"
         isCheckingDns={false}
@@ -61,6 +63,21 @@ describe('CloudflareSubdomainField', () => {
     const mark = screen.getByRole('status', { name: 'APP_INSTALL_FORM_DOMAINS_LOADING' });
     expect(mark.querySelector('svg')).toHaveClass('animate-spin');
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
+  });
+
+  /*
+   * A new name has no domain until Companion Portal's list gives it one. The suffix must not show a
+   * stand-in meanwhile: the Hub's own domain there read as the domain the app would get.
+   */
+  it.each([
+    ['still loading', 'loading', 'status', 'APP_INSTALL_FORM_DOMAINS_LOADING'],
+    ['that could not be loaded', 'unavailable', 'button', 'APP_INSTALL_FORM_DOMAINS_UNAVAILABLE'],
+  ] as const)('shows no domain beside a list %s when there is none to show', (_label, note, role, name) => {
+    render(<Field note={note} shownDomain={null} />);
+
+    expect(screen.getByText('-acme.')).toHaveAttribute('title', '-acme.');
+    expect(screen.queryByText(/undefined/)).not.toBeInTheDocument();
+    expect(screen.getByRole(role, { name })).toBeInTheDocument();
   });
 
   it('explains the spinner in a tooltip on hover', async () => {

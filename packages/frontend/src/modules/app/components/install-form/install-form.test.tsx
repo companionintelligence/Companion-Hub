@@ -57,7 +57,7 @@ vi.mock('@tauri-apps/api/core', () => ({
  */
 vi.mock('./preselected-public-domain', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./preselected-public-domain')>();
-  return { preselectedPublicDomain: vi.fn(actual.preselectedPublicDomain) };
+  return { ...actual, preselectedPublicDomain: vi.fn(actual.preselectedPublicDomain) };
 });
 
 const { toast } = vi.hoisted(() => ({
@@ -148,6 +148,7 @@ describe('InstallForm', () => {
     MOCK_AVAILABLE_DOMAINS.supported = true;
     MOCK_AVAILABLE_DOMAINS.domains = [];
     MOCK_USE_QUERY_RESULT.isFetching = false;
+    MOCK_USE_QUERY_RESULT.isLoading = false;
     MOCK_CUSTOM_DOMAINS.supported = false;
     MOCK_CUSTOM_DOMAINS.domains = [];
     MOCK_PORTAL_CONFIG.portalUrl = null;
@@ -1928,6 +1929,200 @@ describe('InstallForm', () => {
       await settle();
 
       expect(preselections()).toContain('ci1.pw');
+    });
+
+    /*
+     * Until the list loads, the field holds the Hub's own domain. A Hub on a Portal zone
+     * (`ci.computer`) is refused new names there, so checking it told the operator the domain
+     * could take no more apps — about a domain the form was about to leave.
+     */
+    it("checks only the preselected domain, never the Hub's own domain while the list loads", async () => {
+      vi.useFakeTimers();
+      vi.mocked(useAppContext).mockReturnValue(exposableContext({ tailscaleAvailable: false }));
+      fetchDnsAvailability.mockImplementation(
+        async () => new Response(JSON.stringify({ available: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      );
+      // A first load, as TanStack Query reports it: loading and fetching, with no data yet.
+      MOCK_USE_QUERY_RESULT.isLoading = true;
+      MOCK_USE_QUERY_RESULT.isFetching = true;
+
+      const form = () => (
+        <MemoryRouter>
+          <InstallForm info={exposableInfo()} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+        </MemoryRouter>
+      );
+      const { rerender } = render(form());
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(fetchDnsAvailability).not.toHaveBeenCalled();
+
+      MOCK_USE_QUERY_RESULT.isLoading = false;
+      MOCK_USE_QUERY_RESULT.isFetching = false;
+      domainsWithPoolDefault();
+      rerender(form());
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+
+      expect(fetchDnsAvailability).toHaveBeenCalledTimes(1);
+      expect(fetchDnsAvailability).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ domain: 'ci1.pw' }));
+    });
+
+    /*
+     * The Hub is `hub-hanz-hanz-corp.ci.computer`. `ci.computer` is a Portal zone: it takes no new
+     * names, and Companion Portal lists it only as the Hub's current zone, not offered. A new install
+     * must never show it, list it, or ask about it — asking is what answered "We can't serve any more
+     * apps from this domain" while the picker showed `ci0.pw`.
+     */
+    describe('on a Hub whose own domain takes no new names', () => {
+      const onCiComputer = () =>
+        exposableContext({
+          tailscaleAvailable: false,
+          userSettings: {
+            ciHubOrganizationSlug: 'hanz-corp',
+            ciHubDeviceSlug: 'hanz',
+            localDomain: 'ci.lan',
+            domain: 'ci.computer',
+            maxBackups: 5,
+            guestDashboard: false,
+          },
+        });
+      const portalAnswers = () => {
+        MOCK_AVAILABLE_DOMAINS.domains = [
+          { id: 'ci0', domain: 'ci0.pw', isDefault: true, offered: true },
+          { id: 'current-ci.computer', domain: 'ci.computer', isDefault: false, offered: false },
+        ];
+      };
+      const available = () => new Response(JSON.stringify({ available: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      const offeredToPicker = () =>
+        (vi.mocked(preselectedPublicDomain).mock.lastCall?.[0].availableDomains ?? []).map((entry: { domain: string }) => entry.domain);
+
+      it('shows, lists and checks only the domain Companion Portal gives a new install', async () => {
+        vi.useFakeTimers();
+        vi.mocked(useAppContext).mockReturnValue(onCiComputer());
+        fetchDnsAvailability.mockImplementation(async () => available());
+        MOCK_USE_QUERY_RESULT.isLoading = true;
+        MOCK_USE_QUERY_RESULT.isFetching = true;
+
+        const form = () => (
+          <MemoryRouter>
+            <InstallForm info={exposableInfo()} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+          </MemoryRouter>
+        );
+        const { rerender } = render(form());
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1000);
+        });
+        expect(fetchDnsAvailability).not.toHaveBeenCalled();
+        expect(screen.queryByText(/ci\.computer/)).not.toBeInTheDocument();
+
+        MOCK_USE_QUERY_RESULT.isLoading = false;
+        MOCK_USE_QUERY_RESULT.isFetching = false;
+        portalAnswers();
+        rerender(form());
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1000);
+        });
+
+        expect(trigger()).toHaveAttribute('title', 'ci0.pw');
+        expect(offeredToPicker()).toEqual(['ci0.pw']);
+        expect(fetchDnsAvailability).toHaveBeenCalledTimes(1);
+        expect(fetchDnsAvailability).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ domain: 'ci0.pw' }));
+        expect(screen.queryByText(/ci\.computer/)).not.toBeInTheDocument();
+      });
+
+      it('saves no domain when the list cannot be loaded, and checks nothing', async () => {
+        vi.useFakeTimers();
+        vi.mocked(useAppContext).mockReturnValue(onCiComputer());
+        fetchDnsAvailability.mockImplementation(async () => available());
+        // The Hub could not get the list from Companion Portal.
+        MOCK_AVAILABLE_DOMAINS.supported = false;
+        const onSubmit = vi.fn();
+
+        const { container } = render(
+          <MemoryRouter>
+            <InstallForm info={exposableInfo()} onSubmit={onSubmit} formId="test-form" formFields={[]} />
+          </MemoryRouter>,
+        );
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1000);
+        });
+        expect(screen.getByRole('button', { name: 'APP_INSTALL_FORM_DOMAINS_UNAVAILABLE' })).toBeInTheDocument();
+        expect(screen.queryByText(/ci\.computer/)).not.toBeInTheDocument();
+
+        await act(async () => {
+          fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+          await vi.advanceTimersByTimeAsync(1000);
+        });
+
+        // No domain: Companion Portal places the app, as it does any app that names none.
+        expect(onSubmit).toHaveBeenCalledOnce();
+        expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ exposureMode: 'cloudflare' });
+        expect(onSubmit.mock.calls[0]?.[0].publicDomain).toBeUndefined();
+        expect(fetchDnsAvailability).not.toHaveBeenCalled();
+      });
+
+      it("gives the next app Companion Portal's domain when the form is reused after a pick", async () => {
+        vi.mocked(useAppContext).mockReturnValue(onCiComputer());
+        MOCK_AVAILABLE_DOMAINS.domains = [
+          { id: 'ci0', domain: 'ci0.pw', isDefault: true, offered: true },
+          { id: 'ci1', domain: 'ci1.pw', isDefault: false, offered: true },
+          { id: 'current-ci.computer', domain: 'ci.computer', isDefault: false, offered: false },
+        ];
+
+        const { rerender } = render(
+          <MemoryRouter>
+            <InstallForm info={exposableInfo()} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+          </MemoryRouter>,
+        );
+        await waitFor(() => expect(trigger()).toHaveAttribute('title', 'ci0.pw'));
+
+        // The operator picks another domain for this app.
+        const native = trigger().parentElement?.querySelector('select') as HTMLSelectElement;
+        await act(async () => {
+          fireEvent.change(native, { target: { value: 'ci1.pw' } });
+        });
+        await waitFor(() => expect(trigger()).toHaveAttribute('title', 'ci1.pw'));
+
+        // The dialog hands the same form another app: a new name again, so the Portal's pick again.
+        rerender(
+          <MemoryRouter>
+            <InstallForm info={{ ...exposableInfo(), urn: 'other-app:store' } as never} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+          </MemoryRouter>,
+        );
+
+        await waitFor(() => expect(trigger()).toHaveAttribute('title', 'ci0.pw'));
+      });
+
+      it('keeps an app already served on ci.computer there, and lists it', async () => {
+        vi.mocked(useAppContext).mockReturnValue(onCiComputer());
+        portalAnswers();
+
+        render(
+          <MemoryRouter>
+            <InstallForm
+              info={exposableInfo()}
+              onSubmit={vi.fn()}
+              formId="test-form"
+              formFields={[]}
+              initialValues={{ exposureMode: 'cloudflare', publicDomain: 'ci.computer' }}
+              isEdit
+            />
+          </MemoryRouter>,
+        );
+
+        await settle();
+
+        expect(trigger()).toHaveAttribute('title', 'ci.computer');
+        expect(offeredToPicker()).toEqual(['ci0.pw', 'ci.computer']);
+        expect(preselections().every((value) => value === null)).toBe(true);
+      });
     });
   });
 
