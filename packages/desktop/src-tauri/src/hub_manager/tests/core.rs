@@ -377,3 +377,93 @@ fn rotates_desktop_log_when_it_exceeds_max_size() {
         "active-1active-2"
     );
 }
+
+// The same cases as `XDG_DATA_HOME set by a snap` in `scripts/__tests__/paths.test.ts`.
+#[cfg(target_os = "linux")]
+fn linux_data_home_for(xdg_data_home: Option<&str>, snap_name: Option<&str>) -> PathBuf {
+    crate::hub_manager::linux_data_home(
+        xdg_data_home.map(Path::new),
+        snap_name,
+        Path::new("/home/tester"),
+    )
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_data_home_is_local_share_when_xdg_data_home_is_unset_blank_or_relative() {
+    let local_share = Path::new("/home/tester/.local/share");
+    assert_eq!(linux_data_home_for(None, None), local_share);
+    assert_eq!(linux_data_home_for(Some(""), None), local_share);
+    assert_eq!(linux_data_home_for(Some("  "), None), local_share);
+    // `dirs::data_dir()` ignores a relative XDG_DATA_HOME too.
+    assert_eq!(linux_data_home_for(Some("xdg/data"), None), local_share);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_data_home_ignores_xdg_data_home_whenever_another_snap_runs_the_app() {
+    let local_share = Path::new("/home/tester/.local/share");
+    let code_snap_data = "/home/tester/snap/code/264/.local/share";
+    assert_eq!(
+        linux_data_home_for(Some(code_snap_data), Some("code")),
+        local_share
+    );
+    assert_eq!(
+        linux_data_home_for(Some("/xdg/data"), Some("code")),
+        local_share
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_data_home_ignores_another_snaps_folder_by_its_path_alone() {
+    // A process can inherit XDG_DATA_HOME from that snap's terminal without SNAP_NAME.
+    let local_share = Path::new("/home/tester/.local/share");
+    let code_snap_data = "/home/tester/snap/code/264/.local/share";
+    assert_eq!(linux_data_home_for(Some(code_snap_data), None), local_share);
+    assert_eq!(
+        linux_data_home_for(Some(code_snap_data), Some("")),
+        local_share
+    );
+    assert_eq!(
+        linux_data_home_for(Some(code_snap_data), Some("companion-hub")),
+        local_share
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_data_home_keeps_the_folder_our_own_snap_sets() {
+    let own_snap_data = "/home/tester/snap/companion-hub/12/.local/share";
+    assert_eq!(
+        linux_data_home_for(Some(own_snap_data), Some("companion-hub")),
+        Path::new(own_snap_data)
+    );
+    // A parallel install lives in `~/snap/<name>_<key>/`.
+    let instance_data = "/home/tester/snap/companion-hub_beta/3/.local/share";
+    assert_eq!(
+        linux_data_home_for(Some(instance_data), Some("companion-hub")),
+        Path::new(instance_data)
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_data_home_keeps_xdg_data_home_outside_any_snap_folder() {
+    assert_eq!(
+        linux_data_home_for(Some("/xdg/data"), None),
+        Path::new("/xdg/data")
+    );
+    assert_eq!(
+        linux_data_home_for(Some("/home/tester/snapshots/share"), None),
+        Path::new("/home/tester/snapshots/share")
+    );
+    assert_eq!(
+        linux_data_home_for(Some("/xdg/data"), Some("companion-hub")),
+        Path::new("/xdg/data")
+    );
+    assert_eq!(
+        linux_data_home_for(Some("/xdg/data"), Some("  ")),
+        Path::new("/xdg/data")
+    );
+}

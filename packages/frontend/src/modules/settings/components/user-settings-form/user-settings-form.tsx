@@ -37,6 +37,10 @@ const LOG_LEVEL_ENUM = {
 } as const;
 type LogLevel = (typeof LOG_LEVEL_ENUM)[keyof typeof LOG_LEVEL_ENUM];
 
+// The Hub fills in `localhost` when no Local domain is set, and browsers resolve `<app>.localhost` to
+// this machine. `isFQDN` rejects every name without a dot, so `localhost` is allowed by name.
+const isValidLocalDomain = (value: string) => value.toLowerCase() === 'localhost' || validator.isFQDN(value);
+
 const settingsSchema = z.object({
   appsRepoUrl: z.string().optional(),
   localDomain: z.string().optional(),
@@ -104,7 +108,9 @@ export const UserSettingsForm = (props: IProps) => {
   const validateFields = (values: SettingsFormValues) => {
     const errors: { [K in keyof SettingsFormValues]?: string } = {};
 
-    if (values.localDomain && !validator.isFQDN(values.localDomain)) {
+    // Check only a Local domain the person changed. The field is read-only until Advanced settings
+    // are on, so a value the Hub already had that fails the check would block every save on the page.
+    if (values.localDomain && values.localDomain !== initialValues?.localDomain && !isValidLocalDomain(values.localDomain)) {
       errors.localDomain = t('SETTINGS_GENERAL_INVALID_DOMAIN');
     }
 

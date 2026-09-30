@@ -424,11 +424,14 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
                     "state/settings.json not writable as Hub container {container_uid}:{container_gid}; repairing bind-mount permissions via Docker..."
                 ),
             );
+            // The update listener's token stays as the listener wrote it: the Hub only reads
+            // it, and the listener trusts it only while it is this user's own and private.
             heal_bind_mount_permissions_via_docker(
                 data_dir,
                 "state",
                 container_uid,
                 container_gid,
+                &[crate::updater::UPDATE_LISTENER_TOKEN_FILENAME],
             )?;
             // The heal's `chmod -R a+rwX` just made the credential files world-writable.
             // Where it also left them owned by this user, they come straight back to
@@ -576,12 +579,36 @@ fn verify_container_can_write_dir(host_dir: &Path, uid: u32, gid: u32) -> bool {
     }
 }
 
+/// The Docker permission repair's script: `uid:gid` owns everything on the mount, and everyone
+/// can read and write it. The files in `keep`, named relative to the mount, are left exactly as
+/// they are: the tree is walked with `find` instead, whose `chown -h` and skipped symlinks do what
+/// `-R` does for the rest.
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn bind_mount_heal_script(uid: u32, gid: u32, keep: &[&str]) -> String {
+    if keep.is_empty() {
+        return format!(
+            "chown -R {uid}:{gid} /mnt 2>/dev/null || true; \
+             chmod -R u+rwX,g+rwX,o+rwX /mnt 2>/dev/null || chmod -R a+rwX /mnt 2>/dev/null || true"
+        );
+    }
+    let walk = std::iter::once("find /mnt".to_string())
+        .chain(keep.iter().map(|file| format!("! -path '/mnt/{file}'")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "{walk} -exec chown -h {uid}:{gid} {{}} + 2>/dev/null || true; \
+         {walk} ! -type l -exec chmod u+rwX,g+rwX,o+rwX {{}} + 2>/dev/null || \
+         {walk} ! -type l -exec chmod a+rwX {{}} + 2>/dev/null || true"
+    )
+}
+
 #[cfg(not(target_os = "windows"))]
 fn heal_bind_mount_permissions_via_docker(
     data_dir: &Path,
     subdir: &str,
     uid: u32,
     gid: u32,
+    keep: &[&str],
 ) -> Result<(), String> {
     let host_subdir = data_dir.join(subdir);
     if !host_subdir.exists() {
@@ -589,10 +616,7 @@ fn heal_bind_mount_permissions_via_docker(
     }
 
     let mount_spec = format!("{}:/mnt:rw", docker_bind_mount_path(&host_subdir));
-    let script = format!(
-        "chown -R {uid}:{gid} /mnt 2>/dev/null || true; \
-         chmod -R u+rwX,g+rwX,o+rwX /mnt 2>/dev/null || chmod -R a+rwX /mnt 2>/dev/null || true"
-    );
+    let script = bind_mount_heal_script(uid, gid, keep);
 
     let output = docker_command()
         .args([

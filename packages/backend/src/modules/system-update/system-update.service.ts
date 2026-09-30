@@ -62,6 +62,35 @@ export function resolveHostListenerBaseUrl(inContainer: boolean = detectHubConta
   return `http://${host}:${HOST_LISTENER_PORT}`;
 }
 
+/** The desktop app writes a 48-character token; anything much bigger in its place is not one. */
+const MAX_LISTENER_TOKEN_BYTES = 1024;
+
+/**
+ * One listener token file, or null. `state/` is a host folder, and whatever the Hub reads here it sends
+ * to whoever answers on the listener port, so a symlink is not followed, and only a small regular file
+ * holding one printable word counts. O_NONBLOCK, because opening a FIFO put in its place would wait for
+ * a writer, on the event loop.
+ */
+function readListenerTokenFile(tokenPath: string): string | null {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(tokenPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.size > MAX_LISTENER_TOKEN_BYTES) {
+      return null;
+    }
+    const token = fs.readFileSync(fd, 'utf8').trim();
+    return /^[\x21-\x7E]+$/.test(token) ? token : null;
+  } catch {
+    // Missing, unreadable, or a symlink: try the next location.
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      fs.closeSync(fd);
+    }
+  }
+}
+
 /** GHCR tags are unprefixed (`0.2.56`). A leading `v` makes the pull 404. */
 function normalizeHubVersionTag(version: string): string {
   const tag = version.trim();
@@ -558,17 +587,18 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     }
   }
 
-  /** Token for the desktop host update listener (Hub POSTs to host.docker.internal:17400). */
-  getHostUpdateListenerToken(): string | null {
-    const tokenPath = path.join(DATA_DIR, UPDATE_LISTENER_TOKEN_FILENAME);
-    if (!fs.existsSync(tokenPath)) {
-      return null;
+  /**
+   * Token for the desktop host update listener (Hub POSTs to host.docker.internal:17400). The desktop
+   * keeps it in `state/`, which this container mounts. Older desktop builds wrote it at the data dir's
+   * root, which only a Hub running on the host can see, so that file is the fallback.
+   */
+  private getHostUpdateListenerToken(): string | null {
+    for (const tokenPath of [path.join(DATA_DIR, 'state', UPDATE_LISTENER_TOKEN_FILENAME), path.join(DATA_DIR, UPDATE_LISTENER_TOKEN_FILENAME)]) {
+      const token = readListenerTokenFile(tokenPath);
+      if (token) {
+        return token;
+      }
     }
-    try {
-      const token = fs.readFileSync(tokenPath, 'utf8').trim();
-      return token || null;
-    } catch {
-      return null;
-    }
+    return null;
   }
 }

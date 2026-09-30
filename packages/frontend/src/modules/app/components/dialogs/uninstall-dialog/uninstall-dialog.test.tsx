@@ -62,6 +62,9 @@ vi.mock('sonner', () => ({
 const normalApp = { id: 'plane', name: 'Plane', urn: 'plane:ci-marketplace' } as never;
 const providerApp = { id: 'ci-memory', name: 'CI Memory', urn: 'ci-memory:ci-marketplace' } as never;
 
+const DATA_LOST = 'All data for this app will be lost.';
+const DATA_KEPT = "This app's data and backups stay on this Hub.";
+
 describe('UninstallDialog', () => {
   beforeEach(() => {
     h.mutate.mockReset();
@@ -79,6 +82,27 @@ describe('UninstallDialog', () => {
 
     await user.click(screen.getByRole('button', { name: 'Uninstall' }));
     expect(h.mutate).toHaveBeenCalledWith({ path: { urn: 'plane:ci-marketplace' }, body: { deleteAllData: true, force: false } });
+  });
+
+  it('says the data will be lost while Delete all data is on', () => {
+    render(<UninstallDialog info={normalApp} isOpen onClose={vi.fn()} />);
+
+    expect(screen.getByRole('switch', { name: 'uninstall-delete-all-data' })).toBeChecked();
+    expect(screen.getByText(DATA_LOST)).toBeInTheDocument();
+    expect(screen.queryByText(DATA_KEPT)).not.toBeInTheDocument();
+  });
+
+  it('says the data will be kept once Delete all data is off, and uninstalls without deleting it', async () => {
+    const user = userEvent.setup();
+    render(<UninstallDialog info={normalApp} isOpen onClose={vi.fn()} />);
+
+    await user.click(screen.getByRole('switch', { name: 'uninstall-delete-all-data' }));
+
+    expect(screen.getByText(DATA_KEPT)).toBeInTheDocument();
+    expect(screen.queryByText(DATA_LOST)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Uninstall' }));
+    expect(h.mutate).toHaveBeenCalledWith({ path: { urn: 'plane:ci-marketplace' }, body: { deleteAllData: false, force: false } });
   });
 
   it('lists connected consumers and gates the provider uninstall behind the force switch', async () => {

@@ -6199,20 +6199,6 @@
         ]
       }
     },
-    "/api/system/update/host-listener-token": {
-      "get": {
-        "operationId": "getHostListenerToken",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "SystemUpdate"
-        ]
-      }
-    },
     "/api/system/update/desktop-release": {
       "get": {
         "operationId": "getDesktopRelease",

@@ -5835,17 +5835,6 @@ export type GetHostListenerStatusResponses = {
     200: unknown;
 };
 
-export type GetHostListenerTokenData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/system/update/host-listener-token';
-};
-
-export type GetHostListenerTokenResponses = {
-    200: unknown;
-};
-
 export type GetDesktopReleaseData = {
     body?: never;
     path?: never;

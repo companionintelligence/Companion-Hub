@@ -1,4 +1,4 @@
-import { BadRequestException, Controller, Get, Post, Query, UseGuards, Body, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Post, Query, UseGuards, Body } from '@nestjs/common';
 import { ApiResponse } from '@nestjs/swagger';
 import { AuthGuard } from '../auth/auth.guard';
 import { DesktopReleaseService } from './desktop-release.service';
@@ -48,16 +48,6 @@ export class SystemUpdateController {
   @UseGuards(AuthGuard)
   async getHostListenerStatus() {
     return this.systemUpdateService.getHostListenerStatus();
-  }
-
-  @Get('host-listener-token')
-  @UseGuards(AuthGuard)
-  getHostListenerToken() {
-    const token = this.systemUpdateService.getHostUpdateListenerToken();
-    if (!token) {
-      throw new NotFoundException('Host update listener not available');
-    }
-    return { token };
   }
 
   /** The newest desktop app and its installer for one platform, for a browser that cannot read the download servers. */

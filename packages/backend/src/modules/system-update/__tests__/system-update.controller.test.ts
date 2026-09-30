@@ -95,21 +95,6 @@ describe('SystemUpdateController', () => {
     });
   });
 
-  describe('getHostListenerToken', () => {
-    it('should return token when listener is available', () => {
-      updateService.getHostUpdateListenerToken.mockReturnValue('secret-token');
-
-      const result = controller.getHostListenerToken();
-      expect(result).toEqual({ token: 'secret-token' });
-    });
-
-    it('should throw when listener token is unavailable', () => {
-      updateService.getHostUpdateListenerToken.mockReturnValue(null);
-
-      expect(() => controller.getHostListenerToken()).toThrow('Host update listener not available');
-    });
-  });
-
   describe('getDesktopRelease', () => {
     it('answers with the release read for the page environment, platform, and architecture', async () => {
       const release = { latestVersion: '0.2.77', downloadUrl: 'https://dl.ci.computer/v0.2.77/linux/deb/x64/Companion%20Hub_0.2.77_amd64.deb' };
