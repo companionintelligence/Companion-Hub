@@ -65,17 +65,21 @@ export function modelTags(model: CuratedModel, t?: TranslateFn): string[] {
   return purpose ? [purpose.charAt(0).toUpperCase() + purpose.slice(1)] : [];
 }
 
+/**
+ * What a model costs: "12.3 GB VRAM · 16.0 GB Disk", each with its icon. The icons alone (12 px)
+ * did not say which figure was which; the words do, and the icons stay for the glance.
+ */
 export function modelMeta(model: CuratedModel, includeStorage = true): ReactNode {
   return (
     <span className="flex items-center gap-3">
       <span className="flex items-center gap-1">
-        <MemoryStick className="h-3 w-3 flex-shrink-0" />
-        {formatSize(model.runtime.memoryFootprintMb)}
+        <MemoryStick className="h-3 w-3 flex-shrink-0" aria-hidden="true" />
+        {formatSize(model.runtime.memoryFootprintMb)} VRAM
       </span>
       {includeStorage && model.requirements?.diskMb != null && (
         <span className="flex items-center gap-1">
-          <HardDrive className="h-3 w-3 flex-shrink-0" />
-          {formatSize(model.requirements.diskMb)}
+          <HardDrive className="h-3 w-3 flex-shrink-0" aria-hidden="true" />
+          {formatSize(model.requirements.diskMb)} Disk
         </span>
       )}
     </span>

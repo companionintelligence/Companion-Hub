@@ -10,30 +10,52 @@ import type { ModelRegistryService } from './model-registry.service';
  */
 export const LEMONADE_V1_EMBEDDER_ID = 'nomic-embed-text-v1-lemonade';
 
+type EmbedderRegistry = Pick<ModelRegistryService, 'getCuratedModel' | 'getRecommendedEmbeddingModel'>;
+
 /**
- * The engine that embeds for an app, given the chat engine and whether a local Ollama is healthy.
- *
- * Ollama and oMLX embed for themselves. Next to vLLM or Lemonade a healthy Ollama embeds (Companion
- * Memory's pgvector index is built on Ollama's 768-dim `nomic-embed-text`); a Lemonade with no
- * Ollama embeds itself, through the Ollama-compatible `/api/embed` it serves. vLLM with no Ollama
- * has nothing: the catalog ships no vLLM embedder. Both handout paths — the app.env resolver and the
- * bootstrap credentials — decide with this, so an app is never told one embedder by one and another
- * by the other.
- *
- * Except where no catalog embedder is found here, and that is deliberate. For vLLM with no healthy
- * Ollama (null), and for oMLX (the catalog has no oMLX embedder, so `pickEmbeddingModel` finds none),
- * the resolver hands out no embedder. The bootstrap credentials keep Ollama's `nomic-embed-text`, as
- * they did before this function existed, because a pool node may serve it. No fleet node runs either
- * setup. Give oMLX an embedder row before relying on either path there.
+ * Whether the catalog gives `backend` an embedder to hand out on this hardware — the operator's
+ * preference when it runs there, else the tier's recommendation. The test for "this engine embeds
+ * for itself" in {@link embeddingBackendFor}; the same lookup {@link pickEmbeddingModel} makes, so
+ * an engine judged able to embed is never then found to have nothing.
  */
-export function embeddingBackendFor(active: InferenceBackendType, ollamaHealthy: boolean): InferenceBackendType | null {
-  if (active === 'ollama' || active === 'omlx') return active;
-  if (ollamaHealthy) return 'ollama';
-  if (active === 'lemonade') return 'lemonade';
-  return null;
+export function catalogEmbedsOn(
+  registry: EmbedderRegistry,
+  input: { backend: InferenceBackendType; preferredId?: string | null; profile: HardwareProfile },
+): boolean {
+  return pickEmbeddingModel(registry, { ...input, served: [] }) != null;
 }
 
-type EmbedderRegistry = Pick<ModelRegistryService, 'getCuratedModel' | 'getRecommendedEmbeddingModel'>;
+/**
+ * The engine that embeds for an app, given the chat engine.
+ *
+ * The chat engine embeds for itself whenever the catalog gives it an embedder (`activeEmbeds`, from
+ * {@link catalogEmbedsOn}): one engine then holds one card's budget, the Hub's fit check sees the
+ * embedder next to the chat model, and the app's chat host and embed host name the same engine. An
+ * engine with no catalog embedder (vLLM, oMLX) borrows a healthy Ollama, and has nothing without one.
+ * Both handout paths — the app.env resolver and the bootstrap credentials — decide with this, so an
+ * app is never told one embedder by one and another by the other.
+ *
+ * Until 2026-09-30 a healthy Ollama embedded next to Lemonade instead, to keep Companion Memory's
+ * pgvector index on Ollama's 768-dim `nomic-embed-text`. That protected nothing: the Lemonade
+ * embedder is the same nomic v1.5 weights (see the catalog row — cosine 0.99996+ on the same text),
+ * CI-Server declares both names one embedding generation, and a genuinely different embedder is
+ * re-embedded by CI-Server's own stage versioning, not prevented by routing. What the split did do
+ * was put two engines that cannot see each other's memory on one card: a Lemonade 27B pinned at boot
+ * left Ollama 1.6 GiB, so Ollama ran the embedder — and the chat model an app still asked it for —
+ * on the CPU, and the desktop stuttered under 130 % of a core per token.
+ *
+ * Where nothing embeds (null) the resolver hands out no embedder; the bootstrap credentials keep
+ * Ollama's `nomic-embed-text`, as they did before this function existed, because a pool node may
+ * serve it. Give oMLX an embedder row before relying on either path there.
+ */
+export function embeddingBackendFor(
+  active: InferenceBackendType,
+  input: { activeEmbeds: boolean; ollamaHealthy: boolean },
+): InferenceBackendType | null {
+  if (input.activeEmbeds) return active;
+  if (input.ollamaHealthy) return 'ollama';
+  return null;
+}
 
 /**
  * The catalog embedder to hand out on `backend`: the operator's preference when it runs there, else

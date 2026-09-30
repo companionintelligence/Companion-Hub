@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 import type { CuratedModel, HardwareProfile, HardwareTier, PullProgress } from '@ci-hub/common/types';
+import { embedderRunsOnCpu } from './embedder-placement';
 import { ModelRegistryService } from './model-registry.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { MemoryManagerService } from './memory-manager.service';
@@ -434,10 +435,13 @@ export class ModelPullerService {
     try {
       // The engine's spelling: Lemonade 10.x knows a Hub-registered model only as `user.<id>`.
       const engineId = backend.engineModelId?.(curated.backendModelId) ?? curated.backendModelId;
+      const embedding = curated.modality === 'embedding';
+      const onCpu = embedding && embedderRunsOnCpu(await this.hardwareInspector.getProfile());
       await backend.loadModel(engineId, {
-        embedding: curated.modality === 'embedding',
+        embedding,
         contextLength: options?.contextLength,
         ...(options?.provisionalWindow ? { provisionalWindow: true } : {}),
+        ...(onCpu && { device: 'cpu' }),
       });
       this.modelRegistry.updateModelState(catalogId, 'loaded');
       this.logger.info(`[ModelPuller] Loaded ${catalogId}`);

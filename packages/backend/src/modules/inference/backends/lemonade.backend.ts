@@ -44,6 +44,17 @@ export const LEMONADE_REGISTRATIONS: Readonly<Record<string, Record<string, unkn
   },
 };
 
+/**
+ * llama-server flags an embedder is loaded with. A non-causal embedding model must fit each input in
+ * one physical batch: llama-server's default `--ubatch-size 512` answers any input past 512 tokens
+ * with `input (N tokens) is too large to process. increase the physical batch size` (500), which is
+ * what every Companion Memory embed of a long note came back with on 2026-09-30, while Ollama sizes
+ * the batch to the context for embedders and truncates the rest. 8192 is nomic's window (the
+ * `--ctx-size` Lemonade loads it with); a larger ubatch than context costs nothing. Passed as
+ * `llamacpp_args` on the load and saved, so Lemonade's own loads of the embedder keep it.
+ */
+export const EMBEDDER_LLAMACPP_ARGS = '--batch-size 8192 --ubatch-size 8192';
+
 /** One entry of `/v1/health` `all_models_loaded`; every field optional, since the two versions differ (see `listResident`). */
 interface LemonadeLoadedRecord {
   model_name?: string;
@@ -331,27 +342,38 @@ export class LemonadeBackend implements InferenceBackend {
     // caller with the catalog id from loading (and saving options under) a name 10.2.0 does not know.
     const engineId = this.engineModelId(modelId);
     const window = options?.embedding || !options?.contextLength ? null : options.contextLength;
-    this.logger.info(`[Lemonade] Loading model: ${engineId}${window ? ` at ctx_size ${window}` : ''}`);
+    // An embedder gets the batch flags instead of a window (see EMBEDDER_LLAMACPP_ARGS), and on a
+    // host where a second GPU process spins the card, the CPU backend (see `embedderRunsOnCpu`).
+    const wanted: Record<string, unknown> = options?.embedding
+      ? { llamacpp_args: EMBEDDER_LLAMACPP_ARGS, ...(options.device === 'cpu' && { llamacpp_backend: 'cpu' }) }
+      : window
+        ? { ctx_size: window }
+        : {};
+    this.logger.info(
+      `[Lemonade] Loading model: ${engineId}${window ? ` at ctx_size ${window}` : ''}${options?.embedding ? ` with ${EMBEDDER_LLAMACPP_ARGS}` : ''}${options?.device === 'cpu' ? ' on the CPU' : ''}`,
+    );
     const auth = this.authHeaders();
     const config = { ...(auth ? { headers: auth } : {}) };
     let body: Record<string, unknown> = { model_name: engineId };
-    if (window) {
+    if (Object.keys(wanted).length > 0) {
       const saved = await this.readModelInfo(engineId);
       const savedOptions = saved ? recipeOptionsOf(saved) : null;
       const savedWindow = positiveWindow(savedOptions?.ctx_size);
-      if (savedOptions && options?.provisionalWindow && savedWindow !== null && savedWindow > window) {
+      // A provisional window is a text model's concern (an embedder has no window here): loaded at it
+      // with the saved options, unsaved, so the larger saved window survives for the next load.
+      if (savedOptions && options?.provisionalWindow && window !== null && savedWindow !== null && savedWindow > window) {
         this.logger.info(
           `[Lemonade] Loading ${engineId} at ctx_size ${window} for now, without saving it: its saved ctx_size ${savedWindow} is kept for its next load.`,
         );
         body = { ...savedOptions, model_name: engineId, ctx_size: window };
       } else if (savedOptions) {
-        body = { ...savedOptions, model_name: engineId, ctx_size: window, save_options: true };
+        body = { ...savedOptions, model_name: engineId, ...wanted, save_options: true };
       } else {
         this.logger.warn(
-          `[Lemonade] Could not read ${engineId}'s saved options, so ctx_size ${window} is used for this load but not saved; ` +
-            "Lemonade's own loads of it keep whatever window it had.",
+          `[Lemonade] Could not read ${engineId}'s saved options, so ${JSON.stringify(wanted)} is used for this load but not saved; ` +
+            "Lemonade's own loads of it keep whatever options it had.",
         );
-        body = { model_name: engineId, ctx_size: window };
+        body = { model_name: engineId, ...wanted };
       }
     }
     await axios.post(`${this.getBaseUrl()}/v1/load`, body, { timeout: 120000, ...config });

@@ -553,8 +553,10 @@ describe('AiSetupStep', () => {
     await waitFor(() => expect(screen.getByTestId('model-row-phi-4-mini')).toBeInTheDocument());
 
     const modelCard = screen.getByTestId('model-row-phi-4-mini');
-    expect(modelCard).toHaveTextContent('23.0 GB');
+    // The figure says what it is — the icon it used to rely on is too small to read.
+    expect(modelCard).toHaveTextContent('23.0 GB VRAM');
     expect(modelCard).not.toHaveTextContent('23.5 GB');
+    expect(modelCard).not.toHaveTextContent('Disk');
     expect(modelCard.querySelector('[data-testid="model-meta-inline"]')).toBeInTheDocument();
   });
 
@@ -1155,7 +1157,7 @@ describe('AiSetupStep', () => {
     expect(screen.getByText('1 model selected')).toBeInTheDocument();
   });
 
-  it('warns but does not block when new downloads exceed inference memory', async () => {
+  it('neither warns nor blocks when a selection is larger than the free inference memory', async () => {
     const bigModel = {
       id: 'qwen-coder',
       displayName: 'Qwen 2.5 Coder',
@@ -1186,8 +1188,12 @@ describe('AiSetupStep', () => {
     const user = userEvent.setup();
     await user.click(screen.getByTestId('model-checkbox-qwen-coder'));
 
-    expect(screen.getByTestId('resource-memory-warning')).toHaveTextContent(/You can continue/i);
+    // No warning and no block: the selection is judged by disk, and the memory row is a plain
+    // gauge of what the engines hold now (4 GB of a 24 GB budget free), not of the selection.
+    expect(screen.queryByTestId('resource-memory-warning')).not.toBeInTheDocument();
     expect(screen.queryByTestId('resource-warning')).not.toBeInTheDocument();
+    // The fixture's VRAM budget is 24 064 MB with 4 096 MB free.
+    expect(screen.getByTestId('resource-memory-summary')).toHaveTextContent(/4\.0 GB inference memory free \/ 23\.5 GB inference memory total/);
   });
 
   it('does not block when selected models are already installed in Ollama', async () => {

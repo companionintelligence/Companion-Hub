@@ -3,7 +3,7 @@ import { mock } from 'vitest-mock-extended';
 import type { HardwareProfile } from '@ci-hub/common/types';
 import type { LoggerService } from '@/core/logger/logger.service';
 import { LemonadeBackend } from '../backends/lemonade.backend';
-import { embedderEngineId, embeddingBackendFor, LEMONADE_V1_EMBEDDER_ID, pickEmbeddingModel } from '../embedder-handout';
+import { catalogEmbedsOn, embedderEngineId, embeddingBackendFor, LEMONADE_V1_EMBEDDER_ID, pickEmbeddingModel } from '../embedder-handout';
 import { ModelRegistryService } from '../model-registry.service';
 
 const profile = {
@@ -19,13 +19,31 @@ const profile = {
 const registry = new ModelRegistryService(mock<LoggerService>());
 
 describe('embeddingBackendFor', () => {
-  it('embeds on the decoder itself, on a healthy Ollama next to vLLM or Lemonade, and on Lemonade alone', () => {
-    expect(embeddingBackendFor('ollama', false)).toBe('ollama');
-    expect(embeddingBackendFor('omlx', true)).toBe('omlx');
-    expect(embeddingBackendFor('lemonade', true)).toBe('ollama');
-    expect(embeddingBackendFor('vllm', true)).toBe('ollama');
-    expect(embeddingBackendFor('lemonade', false)).toBe('lemonade');
-    expect(embeddingBackendFor('vllm', false)).toBeNull();
+  it('embeds on the chat engine whenever the catalog gives it an embedder, healthy Ollama beside it or not', () => {
+    expect(embeddingBackendFor('ollama', { activeEmbeds: true, ollamaHealthy: true })).toBe('ollama');
+    expect(embeddingBackendFor('lemonade', { activeEmbeds: true, ollamaHealthy: true })).toBe('lemonade');
+    expect(embeddingBackendFor('lemonade', { activeEmbeds: true, ollamaHealthy: false })).toBe('lemonade');
+  });
+
+  it('borrows a healthy Ollama only for an engine with no embedder of its own, and has nothing without one', () => {
+    expect(embeddingBackendFor('vllm', { activeEmbeds: false, ollamaHealthy: true })).toBe('ollama');
+    expect(embeddingBackendFor('omlx', { activeEmbeds: false, ollamaHealthy: true })).toBe('ollama');
+    expect(embeddingBackendFor('vllm', { activeEmbeds: false, ollamaHealthy: false })).toBeNull();
+    expect(embeddingBackendFor('omlx', { activeEmbeds: false, ollamaHealthy: false })).toBeNull();
+  });
+});
+
+describe('catalogEmbedsOn', () => {
+  it('says which engines the shipped catalog gives an embedder: Ollama and Lemonade, not vLLM or oMLX', () => {
+    expect(catalogEmbedsOn(registry, { backend: 'ollama', profile })).toBe(true);
+    expect(catalogEmbedsOn(registry, { backend: 'lemonade', profile })).toBe(true);
+    expect(catalogEmbedsOn(registry, { backend: 'vllm', profile })).toBe(false);
+    expect(catalogEmbedsOn(registry, { backend: 'omlx', profile })).toBe(false);
+  });
+
+  it("counts the operator's preferred embedder only on the engine it runs on", () => {
+    expect(catalogEmbedsOn(registry, { backend: 'vllm', preferredId: 'nomic-embed-text-v1-5-lemonade', profile })).toBe(false);
+    expect(catalogEmbedsOn(registry, { backend: 'lemonade', preferredId: 'nomic-embed-text-v1-5-lemonade', profile })).toBe(true);
   });
 });
 

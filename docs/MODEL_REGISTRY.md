@@ -195,4 +195,35 @@ avoid that:
 - A host moves to v1.5 when the operator picks it as the preferred embedding model in
   Settings → AI, or once v1.5 is on the host. **Re-embed the stored memories after that switch**: vectors
   written with v1 do not match queries embedded with v1.5.
-- Hosts with a healthy Ollama are unaffected. They embed with Ollama's `nomic-embed-text` as before.
+- A host running Ollama as its chat engine embeds with Ollama's `nomic-embed-text` as before.
+
+### The embedder runs on the CPU on AMD ROCm hosts
+
+Two llama-server processes on one AMD card make the GPU spin at 100 % and max clock while idle
+(ROCm/ROCm#5107 — MES hardware-queue oversubscription; AMD has a firmware fix for gfx12 only, gfx11
+including Strix Halo is pending). Lemonade spawns llama-servers with its own environment, so the
+`GPU_MAX_HW_QUEUES=1` workaround cannot reach them. So on an AMD host with ROCm the Hub loads an
+embedder with `llamacpp_backend: cpu` (saved beside the batch flags), leaving the chat model as the
+card's only process; `embedderRunsOnCpu` in `embedder-placement.ts` is the rule, with the
+measurements. nomic v1.5 on a Ryzen 9 7900X embeds a 32-text batch in 1.6 s and a query in 21 ms.
+
+### `embedding_base_url` replaces `ollama_embed_host`
+
+An app's manifest may now map `embedding_base_url` (an OpenAI-style base, `…/v1`, the sibling of
+`llm_base_url` — whichever engine embeds for the app, or the pool proxy) instead of
+`ollama_embed_host` (the same server as a root, named when only Ollama embedded). Both are emitted;
+Companion Memory reads the new one as `LLM_EMBEDDING_API_BASE`. Move a manifest to the new key only
+once every Hub that installs it carries this version: an older Hub's manifest schema rejects an
+unknown inference key and reports the app not found.
+
+### The chat engine embeds for itself
+
+Since 2026-09-30 an app embeds on the same engine it chats on whenever the catalog gives that
+engine an embedder (Ollama, Lemonade). Only an engine with no embedder (vLLM, oMLX) borrows a
+healthy Ollama, and has no embedder without one. Until then a healthy Ollama embedded next to
+Lemonade, to keep Memory's index on Ollama's `nomic-embed-text` — but the Lemonade embedder is
+the same v1.5 weights, CI-Server declares both names one embedding generation (and re-embeds by
+stage version if an embedder really changes), and the split put two engines that cannot see each
+other's memory on one card: a Lemonade 27B pinned at boot left Ollama 1.6 GiB, so its embedder ran
+on the CPU. `embeddingBackendFor` in `embedder-handout.ts` is the rule; both handout paths use it,
+and the Hub's own `/v1/embeddings` routes each request to the engine that lists its model.

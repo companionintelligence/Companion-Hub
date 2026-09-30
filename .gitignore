@@ -43,6 +43,11 @@ github.secrets
 node_modules/
 /app-data/
 /data/
+# A Hub run from this checkout with APP_DATA_DIR pointing at the repo root writes its app data
+# here: one folder per marketplace app (`ci-marketplace/<app>/app.env` holds that app's secrets —
+# RabbitMQ, OpenClaw's gateway token, Memory's LLM key) plus the init sentinel. Never commit either.
+/ci-marketplace/
+/.ci-hub-initialized
 /repos/
 /apps/
 /traefik/
@@ -104,6 +109,7 @@ tunnel.stale-*
 /bin/cihub
 /packages/desktop/src-tauri/resources/cihub
 /packages/desktop/src-tauri/resources/cihub.exe
+/packages/desktop/src-tauri/resources/cihub.gz
 # Private fleet inventories and skills must never re-enter the tip.
 /.claude/skills/run-fleet-qa/
 /.cursor/skills/run-fleet-qa/

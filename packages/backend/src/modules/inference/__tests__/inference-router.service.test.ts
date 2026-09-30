@@ -1064,6 +1064,47 @@ describe('InferenceRouterService', () => {
     });
   });
 
+  // ─── routeEmbeddings ─────────────────────────────────
+  describe('routeEmbeddings', () => {
+    const body = { model: 'user.nomic-embed-text-v1.5-GGUF', input: ['hello'] };
+
+    it('routes to the engine that serves the model, not to Ollama just because Ollama is healthy', async () => {
+      const tracked = {
+        catalogId: 'nomic-embed-text-v1-5-lemonade',
+        backendModelId: 'user.nomic-embed-text-v1.5-GGUF',
+        backend: 'lemonade',
+        state: 'loaded',
+      } as TrackedModel;
+      modelRegistry.getTrackedModel.mockReturnValue(tracked);
+      modelRegistry.getTrackedModels.mockReturnValue([tracked]);
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: { data: [{ embedding: [0.1] }] }, headers: {} });
+
+      const res = await service.routeEmbeddings(body);
+
+      expect(res.backend).toBe('lemonade');
+      expect(axios.post).toHaveBeenCalledWith('http://ci-hub-lemonade:13305/v1/embeddings', expect.objectContaining(body), expect.anything());
+    });
+
+    it('routes an untracked model to whichever healthy engine lists it', async () => {
+      lemonadeBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['user.nomic-embed-text-v1.5-GGUF'] });
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: { data: [] }, headers: {} });
+
+      const res = await service.routeEmbeddings(body);
+
+      expect(res.backend).toBe('lemonade');
+      expect(axios.post).toHaveBeenCalledWith('http://ci-hub-lemonade:13305/v1/embeddings', expect.anything(), expect.anything());
+    });
+
+    it('falls back to a healthy Ollama for a model nothing lists, as it always did', async () => {
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: { data: [] }, headers: {} });
+
+      const res = await service.routeEmbeddings({ model: 'nomic-embed-text', input: 'x' });
+
+      expect(res.backend).toBe('ollama');
+      expect(axios.post).toHaveBeenCalledWith('http://ci-hub-ollama:11434/v1/embeddings', expect.anything(), expect.anything());
+    });
+  });
+
   // ─── routeCompletion ─────────────────────────────────
   describe('routeCompletion', () => {
     it('routes text completions to /v1/completions on the active backend', async () => {

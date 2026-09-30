@@ -1,19 +1,20 @@
 import {
   getCloudProviders,
+  getLemonadeStatus,
+  getManualEndpointStatus,
+  getOllamaStatus,
+  getOmlxStatus,
   getOnboardingProfile,
   getPreferences,
   getRocmStatus,
   getRuntimeModels,
   getTrackedModels,
-  getLemonadeStatus,
-  getManualEndpointStatus,
-  getOllamaStatus,
-  getOmlxStatus,
   getVllmStatus,
   pinModel,
   rescanHardware,
   setCloudProvider,
   startPullModel,
+  unloadModel,
   unpinModel,
   updatePreferences,
   updateRocmInstallState,
@@ -177,6 +178,15 @@ export async function pinInferenceModel(modelId: string): Promise<void> {
 
 export async function unpinInferenceModel(modelId: string): Promise<void> {
   await unwrap(unpinModel({ body: { modelId } } as Parameters<typeof unpinModel>[0]));
+}
+
+/**
+ * Take a model out of its engine's memory. The Hub then tracks it as `pulled` — pinned no more —
+ * so the next Save pins it again through the load path, which is the one way to make the engine
+ * pick up new load options: a pin of a model that is already resident reloads nothing.
+ */
+export async function unloadInferenceModel(modelId: string): Promise<void> {
+  await unwrap(unloadModel({ body: { modelId } } as Parameters<typeof unloadModel>[0]));
 }
 
 export async function fetchOllamaInstallStatus() {

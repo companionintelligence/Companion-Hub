@@ -240,6 +240,16 @@ describe('ModelPullerService.evaluatePull', () => {
 
     expect(lemonadeBackend.loadModel).toHaveBeenCalledWith('user.nomic-embed-text-v1.5-GGUF', { embedding: true, contextLength: undefined });
     expect(lemonadeBackend.unloadModel).toHaveBeenCalledWith('user.nomic-embed-text-v1.5-GGUF', { embedding: true });
+
+    // On an AMD ROCm host the embedder goes to the CPU, so the chat model is the card's only
+    // llama-server (ROCm/ROCm#5107: a second one spins the GPU at 100 % while idle).
+    hardwareInspector.getProfile.mockResolvedValue({ ...profile, gpu: { ...profile.gpu, vendor: 'amd', hostRocmAvailable: true } });
+    await service.loadModel('nomic-embed-text-v1-5-lemonade');
+    expect(lemonadeBackend.loadModel).toHaveBeenLastCalledWith('user.nomic-embed-text-v1.5-GGUF', {
+      embedding: true,
+      contextLength: undefined,
+      device: 'cpu',
+    });
   });
 
   // L3: the router marks a window it stepped below an app's floor for memory it could not free; the
