@@ -23,6 +23,7 @@ import { HardwareInspectorService } from './hardware-inspector.service';
 import { ModelRegistryService } from './model-registry.service';
 import {
   type EvictionCandidate,
+  type EvictionOptions,
   type EvictionPlan,
   type EvictionScope,
   MemoryManagerService,
@@ -61,12 +62,29 @@ const SELF_ARBITRATING_BACKENDS: ReadonlySet<InferenceBackendType> = new Set<Inf
 /** What {@link InferenceRouterService.loadTrackedModel} did: the model is in memory, or why it is not. */
 export type LoadOutcome = { loaded: true } | { loaded: false; reason: string };
 
-/** Who asked for a load, and whether they are still waiting for it. */
-export type LoadOptions = {
-  /** What may be unloaded to make room; see {@link EvictionScope}. `request` when unset. */
-  scope?: EvictionScope;
-  /** The window the app's request that triggered this load runs at; see `prepareTrackedModel`. */
-  request?: { numCtx: number | null };
+/**
+ * Who asked for a load. The one field decides both what the load may do: the window it is loaded at
+ * ({@link InferenceRouterService.planLoad}) and what may be unloaded to make room for it
+ * ({@link EvictionScope}, through {@link evictionScopeOf}). They used to be two options with opposite
+ * defaults — a bare call planned its window as an operator's load and evicted as an app's request —
+ * so the pin, which made a bare call, sized its window for an eviction it was then not allowed.
+ *
+ * - `operator`: a signed-in operator — the REST pin and load, or a run from the Hub UI's MCP tool
+ *   runner. The Hub picks the window. Any idle unpinned model may be unloaded, including one an app
+ *   loaded, and a model never measured here may be tried on a discrete card
+ *   ({@link InferenceRouterService.loadUnmeasured}).
+ * - `agent`: an MCP call on an API key (`hub_load_model`, `hub_pin_model`). The Hub picks the window,
+ *   as for an operator: nothing about the call says what window it will run at. Only the Hub's own
+ *   idle loads may be unloaded, as on the request path, and nothing is tried unmeasured, since Ollama
+ *   would make that room itself among runners apps loaded.
+ * - `request`: an app's generation reaching the pool proxy or the router. It runs at its own window
+ *   (`numCtx`: its `options.num_ctx` on Ollama's native routes, null on `/v1`), so an Ollama load is
+ *   made at that window. Only the Hub's own idle loads may be unloaded.
+ */
+export type LoadOrigin = 'operator' | 'agent' | 'request';
+
+/** Who asked for a load (see {@link LoadOrigin}), and whether they are still waiting for it. */
+export type LoadOptions = ({ origin: 'operator' | 'agent' } | { origin: 'request'; numCtx: number | null }) & {
   /**
    * The client's hang-up (the pool proxy's `clientClosed`). Checked once this load's turn in the
    * per-node queue comes: a request abandoned while it waited behind another model's cold load
@@ -75,12 +93,24 @@ export type LoadOptions = {
   signal?: AbortSignal;
 };
 
+/** What a load from `origin` may unload: only a signed-in operator may clear a model an app loaded. */
+export function evictionScopeOf(origin: LoadOrigin): EvictionScope {
+  return origin === 'operator' ? 'operator' : 'request';
+}
+
+/** What a load with `scope` may unload, in the words a refusal or a warning uses. */
+function evictableBy(scope: EvictionScope): string {
+  return scope === 'operator' ? 'every idle unpinned model' : 'every idle model the Hub loaded itself';
+}
+
+/** The models a plan left alone because a request is running on them, as a clause, or nothing. */
+function busyClause(busy: readonly string[]): string {
+  return busy.length > 0 ? `; ${busy.join(', ')} ${busy.length === 1 ? 'is' : 'are'} serving a request and will not be unloaded` : '';
+}
+
 /** A refusal that says what the plan could free and why no more: who asked, and what was busy. */
 function describeRefusal(catalogId: string, footprintMb: number, availableMb: number, scope: EvictionScope, plan: EvictionPlan): string {
-  const evictable = scope === 'operator' ? 'every idle unpinned model' : 'every idle model the Hub loaded itself';
-  const busy =
-    plan.busy.length > 0 ? `; ${plan.busy.join(', ')} ${plan.busy.length === 1 ? 'is' : 'are'} serving a request and will not be unloaded` : '';
-  return `${catalogId} needs ${footprintMb} MB but only ${availableMb} MB is free, and unloading ${evictable} would free ${plan.freedMb} MB${busy}`;
+  return `${catalogId} needs ${footprintMb} MB but only ${availableMb} MB is free, and unloading ${evictableBy(scope)} would free ${plan.freedMb} MB${busyClause(plan.busy)}`;
 }
 
 /** A model {@link InferenceRouterService.loadTrackedModel} may load: what the registry and catalog know of it, and where it runs. */
@@ -101,7 +131,8 @@ type LoadPlan = {
   /**
    * Set when the load is to be tried rather than fit-checked (see {@link InferenceRouterService.loadUnmeasured}):
    * an operator's Ollama load of a model never measured on this node, which only the catalog's figure
-   * says no empty card here could hold. `ceilingMb` is what an empty card here holds.
+   * says no empty card here could hold. `ceilingMb` is what an empty card here holds. Never set for a
+   * request's or an agent's load (see {@link LoadOrigin}).
    */
   unmeasured?: { ceilingMb: number };
 };
@@ -112,7 +143,9 @@ type LoadPlan = {
  * but unloading what may be unloaded would not free enough of what is in use (`held`). `null` where
  * memory is not the reason: this node's `inferenceMaxNumCtx` caps the window below the floor.
  */
-type FloorShortfall = { kind: 'empty'; window: number | null } | { kind: 'held'; heldMb: number; freedMb: number };
+type FloorShortfall =
+  | { kind: 'empty'; window: number | null }
+  | { kind: 'held'; heldMb: number; freedMb: number; scope: EvictionScope; busy: string[] };
 
 /**
  * `Authorization` for a backend that authenticates its requests (its `getApiKey()`: VLLM_API_KEY,
@@ -133,9 +166,14 @@ function describeFloorShortfall(shortfall: FloorShortfall | null, wanted: number
       : `an empty card here holds at most ${shortfall.window} tokens of it, so unloading other models cannot help; choose a smaller model for this node`;
   }
   if (shortfall?.kind === 'held') {
+    // An app's request may not clear what an operator may: say so, or the advice reads as if nothing could.
+    const remedy =
+      shortfall.scope === 'operator'
+        ? 'unpin or unload what holds the rest, then load this model again'
+        : "an operator's load of this model may unload the models apps loaded; unload this model and load it again from the Hub";
     return (
-      `an empty card here would hold the floor, but of the ${shortfall.heldMb} MB in use, unloading every model that may be ` +
-      `unloaded for it would free ${shortfall.freedMb} MB; unpin or unload what holds the rest, then load this model again`
+      `an empty card here would hold the floor, but of the ${shortfall.heldMb} MB in use, unloading ${evictableBy(shortfall.scope)} ` +
+      `would free ${shortfall.freedMb} MB${busyClause(shortfall.busy)}; ${remedy}`
     );
   }
   return wanted < floor && localCap !== null && localCap === wanted
@@ -665,12 +703,16 @@ export class InferenceRouterService {
    * Null means "not a tracked model, or it does not fit and nothing can be freed"; the caller then
    * falls through to the engine as before. Never throws for a residency probe that fails.
    *
-   * `request.numCtx` is the window the request that triggered this runs at: its own `options.num_ctx`
+   * `options.numCtx` is the window the request that triggered this runs at: its own `options.num_ctx`
    * on Ollama's native routes, null on `/v1`, where Ollama drops `options` and runs its default. An
    * Ollama load is made at exactly that window (none for null) so the request that follows finds the
    * model as loaded; any other window is reloaded by that very request — measured 2026-09-29, a load
    * at 8192 went to 32768 on the next `/v1` call. The default is the `/v1` answer, which is what the
-   * Hub's own `/v1/chat/completions` and `/v1/completions` forward to.
+   * Hub's own `/v1/chat/completions` and `/v1/completions` forward to. `options.signal` is the
+   * client's hang-up; see {@link LoadOptions}.
+   *
+   * Always a `request` load (see {@link LoadOrigin}): only the Hub's own idle loads may be unloaded
+   * for it, never a model an app loaded or one serving a request.
    */
   async prepareTrackedModel(
     model: string,
@@ -691,11 +733,7 @@ export class InferenceRouterService {
       return null;
     }
 
-    const outcome = await this.loadTrackedModel(tracked.catalogId, {
-      scope: 'request',
-      request: { numCtx: options.numCtx ?? null },
-      signal: options.signal,
-    });
+    const outcome = await this.loadTrackedModel(tracked.catalogId, { origin: 'request', numCtx: options.numCtx ?? null, signal: options.signal });
     return outcome.loaded ? served : null;
   }
 
@@ -705,9 +743,13 @@ export class InferenceRouterService {
    * pin used to call the engine's load straight away, with no fit check at all, and that is how a
    * Lemonade 27B went onto a card where Ollama already held one.
    *
+   * `options.origin` says who asked, and decides both the window the model is loaded at (see
+   * {@link planLoad}) and what may be unloaded for it (see {@link LoadOrigin}). It has no default:
+   * the two halves once read a bare call in opposite ways.
+   *
    * Asks the engine first (a model another caller loaded is resident without the registry
    * knowing), then refuses a model that is not downloaded here, then fits. When the model does not
-   * fit, `scope` decides what may be unloaded for it (see {@link EvictionScope}); a model with a
+   * fit, the origin's {@link EvictionScope} decides what may be unloaded for it; a model with a
    * request in flight through the pool (a turn or an embedding batch) is never unloaded. Then:
    *
    * - The plan cannot make room: refused with the reason, and nothing has been unloaded.
@@ -721,16 +763,13 @@ export class InferenceRouterService {
    *   cannot see, and the load is refused rather than landing on top of it, as #1679 itself did.
    *   An unload the engine refused stops the plan at once: the rest would be lost for nothing.
    *
-   * Serialized per node: fit, eviction and load run under one lock, so two loads cannot both plan
-   * against the same free memory, and a second load of the same model finds it resident instead of
-   * loading it again. A model that is already resident is answered before the lock: that check is
-   * one engine call, and a request for it must not queue behind another model's cold load, which
-   * takes up to two minutes.
-   *
-   * `options.request` marks a load an app's request triggered, with the window that request runs at
-   * (see {@link prepareTrackedModel}); without it the Hub picks the window (see {@link planLoad}).
+   * Serialized per node: fit, eviction and load — and an unmeasured trial load with the measurement
+   * that follows it — run under one lock, so two loads cannot both plan against the same free memory,
+   * and a second load of the same model finds it resident instead of loading it again. A model that
+   * is already resident is answered before the lock: that check is one engine call, and a request for
+   * it must not queue behind another model's cold load, which takes up to two minutes.
    */
-  async loadTrackedModel(catalogId: string, options: LoadOptions = {}): Promise<LoadOutcome> {
+  async loadTrackedModel(catalogId: string, options: LoadOptions): Promise<LoadOutcome> {
     const target = this.loadTarget(catalogId);
     if (!target) {
       return { loaded: false, reason: `Model ${catalogId} not found in catalog` };
@@ -742,7 +781,7 @@ export class InferenceRouterService {
       if (options.signal?.aborted) {
         return { loaded: false, reason: `The request for ${catalogId} was abandoned while it waited for another load to finish` };
       }
-      return this.loadTrackedModelLocked(catalogId, options.scope ?? 'request', options.request);
+      return this.loadTrackedModelLocked(catalogId, options);
     });
   }
 
@@ -771,7 +810,8 @@ export class InferenceRouterService {
     return true;
   }
 
-  private async loadTrackedModelLocked(catalogId: string, scope: EvictionScope, request?: { numCtx: number | null }): Promise<LoadOutcome> {
+  private async loadTrackedModelLocked(catalogId: string, options: LoadOptions): Promise<LoadOutcome> {
+    const scope = evictionScopeOf(options.origin);
     // Read again under the lock: the load this one queued behind may have loaded or evicted it.
     const target = this.loadTarget(catalogId);
     if (!target) {
@@ -790,8 +830,10 @@ export class InferenceRouterService {
       return { loaded: false, reason: `${catalogId} is not downloaded on this node; pull it first` };
     }
 
+    // Here, after the not-downloaded refusal and under the lock: an unmeasured trial is a load like
+    // any other, and the measurement taken after it must not race another load on this node.
     const profile = await this.hardwareInspector.getProfile();
-    const plan = await this.planLoad(curated, { backend: backendType, backendModelId }, profile, request);
+    const plan = await this.planLoad(curated, { backend: backendType, backendModelId }, profile, options);
     const { contextLength, footprintMb: footprint } = plan;
     if (plan.unmeasured) {
       return this.loadUnmeasured(catalogId, { backend: backendType, backendModelId }, plan, plan.unmeasured.ceilingMb);
@@ -799,12 +841,7 @@ export class InferenceRouterService {
     const fit = await this.memoryManager.canFitModel(profile, footprint);
     if (!fit.fits) {
       const deficit = footprint - fit.availableMb;
-      const plan = await this.memoryManager.planEviction(
-        profile,
-        deficit,
-        { backend: backendType, backendModelId },
-        { scope, inUse: (engine) => this.poolLoad?.localBusyModelsOn(engine) ?? [] },
-      );
+      const plan = await this.memoryManager.planEviction(profile, deficit, { backend: backendType, backendModelId }, this.evictionOptions(scope));
       if (!plan.canFree) {
         return { loaded: false, reason: describeRefusal(catalogId, footprint, fit.availableMb, scope, plan) };
       }
@@ -875,6 +912,15 @@ export class InferenceRouterService {
       : isServedModelForCatalog(curated, inventory);
   }
 
+  /**
+   * What a load with `scope` may unload, and what the pool has in flight on each engine right now,
+   * which it may not. {@link planLoad}'s floor decision asks with exactly these, so it keeps a
+   * Lemonade window at an app's floor only when the eviction the load then makes can pay for it.
+   */
+  private evictionOptions(scope: EvictionScope): EvictionOptions {
+    return { scope, inUse: (engine) => this.poolLoad?.localBusyModelsOn(engine) ?? [] };
+  }
+
   /** Runs `fn` after every load already queued on this node has finished, whatever its outcome. */
   private withLoadLock<T>(fn: () => Promise<T>): Promise<T> {
     const run = this.loadQueue.then(fn);
@@ -902,13 +948,18 @@ export class InferenceRouterService {
    * figure still refuses there. Nothing is evicted for it by the Hub: eviction is sized from the
    * estimate, and this estimate is the one thing not trusted. What the engine then holds is measured at
    * once, so the next fit check, pin and handout use it.
+   *
+   * Only an `operator` load is tried (see {@link LoadOrigin}): Ollama makes the room among its own idle
+   * runners, including ones an app loaded, which is what an operator may unload and a request or an
+   * agent may not. Called from {@link loadTrackedModelLocked}, so under the per-node lock and after the
+   * not-downloaded refusal: the trial and the measurement after it cannot race another load.
    */
   private async loadUnmeasured(
     catalogId: string,
     target: { backend: InferenceBackendType; backendModelId: string },
     plan: LoadPlan,
     ceilingMb: number,
-  ): Promise<{ loaded: true } | { loaded: false; reason: string }> {
+  ): Promise<LoadOutcome> {
     const window = plan.contextLength === null ? 'its default window' : `a ${plan.contextLength}-token window`;
     this._logger.warn(
       `[Inference] ${catalogId} has never been measured on this node, and its catalog figure (${plan.footprintMb} MB at ${window}) is more than ` +
@@ -919,9 +970,11 @@ export class InferenceRouterService {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return { loaded: false, reason: `Loading ${catalogId}, which was never measured on this node, failed: ${msg}` };
+    } finally {
+      // Measured now, not from the reading taken before the load; a failed load may have left part of
+      // the model behind, which the next plan must see too.
+      this.memoryManager.invalidateObservation();
     }
-    // Measured now, not from the reading taken before the load.
-    this.memoryManager.invalidateObservation();
     const profile = await this.hardwareInspector.getProfile();
     const measured = await this.memoryManager.footprintSighting(profile, target.backend, target.backendModelId).catch(() => null);
     if (measured) {
@@ -938,49 +991,59 @@ export class InferenceRouterService {
   }
 
   /**
-   * Pin a catalog model: load it through {@link loadTrackedModel} when it is not in memory, then mark
-   * it pinned when the pinned models still fit this node's budget. The REST pin and MCP
-   * `hub_pin_model` both take this path.
+   * Pin a catalog model: load it the way {@link loadTrackedModel} does when it is not in memory, then
+   * mark it pinned when the pinned models still fit this node's budget. The REST pin (`operator`) and
+   * MCP `hub_pin_model` (`operator` from the Hub UI's tool runner, else `agent`) both take this path;
+   * the origin decides the load's window and what it may unload, as for any load (see {@link LoadOrigin}).
+   * An operator's pin can therefore still clear an idle model an app loaded; an agent's cannot.
    *
    * The pinned-sum check reads what the model was measured occupying here, and the catalog's figure
    * only for a model never measured here. A refusal on a measurement is final and loads nothing. A
    * refusal on the catalog's figure alone is not: the load measures the model, and the check is asked
    * again with that. The catalog's 10,813 MB for gemma4:e4b refused the pin outright on the 8 and
    * 10 GB cards that serve it in 5,550 MiB.
+   *
+   * The whole pin runs under the per-node load lock, not only its load. Between a load and the pin
+   * that follows it the model is an idle Hub load, which is exactly what a queued request's load may
+   * evict: without the lock a pin could load its model, lose it to the next load in the queue, and
+   * then mark pinned a model that is no longer in memory.
    */
-  async pinTrackedModel(catalogId: string): Promise<{ pinned: true } | { pinned: false; reason: string }> {
-    const curated = this.modelRegistry.getCuratedModel(catalogId);
-    const served = this.modelRegistry.getTrackedModel(catalogId) ?? curated;
-    const model = served ? { backend: served.backend, backendModelId: served.backendModelId } : undefined;
-    const catalogMb = curated?.runtime.memoryFootprintMb || 0;
+  async pinTrackedModel(catalogId: string, options: { origin: 'operator' | 'agent' }): Promise<{ pinned: true } | { pinned: false; reason: string }> {
+    return this.withLoadLock(async () => {
+      const curated = this.modelRegistry.getCuratedModel(catalogId);
+      const served = this.modelRegistry.getTrackedModel(catalogId) ?? curated;
+      const model = served ? { backend: served.backend, backendModelId: served.backendModelId } : undefined;
+      const catalogMb = curated?.runtime.memoryFootprintMb || 0;
 
-    const profile = await this.hardwareInspector.getProfile();
-    const first = await this.memoryManager.canPinModel(profile, catalogMb, model);
-    if (!first.canPin) {
-      const measured = model ? await this.memoryManager.footprintSighting(profile, model.backend, model.backendModelId) : null;
-      if (measured || !model) {
-        return { pinned: false, reason: first.reason ?? `${catalogId} does not fit this node's pinned-model budget` };
+      const profile = await this.hardwareInspector.getProfile();
+      const first = await this.memoryManager.canPinModel(profile, catalogMb, model);
+      if (!first.canPin) {
+        const measured = model ? await this.memoryManager.footprintSighting(profile, model.backend, model.backendModelId) : null;
+        if (measured || !model) {
+          return { pinned: false, reason: first.reason ?? `${catalogId} does not fit this node's pinned-model budget` };
+        }
       }
-    }
 
-    const tracked = this.modelRegistry.getTrackedModel(catalogId);
-    if (!tracked || (tracked.state !== 'loaded' && tracked.state !== 'pinned')) {
-      const outcome = await this.loadTrackedModel(catalogId);
-      if (!outcome.loaded) {
-        return { pinned: false, reason: outcome.reason };
+      const tracked = this.modelRegistry.getTrackedModel(catalogId);
+      if (!tracked || (tracked.state !== 'loaded' && tracked.state !== 'pinned')) {
+        // The locked half of loadTrackedModel: this pin already holds the lock.
+        const outcome = await this.loadTrackedModelLocked(catalogId, { origin: options.origin });
+        if (!outcome.loaded) {
+          return { pinned: false, reason: outcome.reason };
+        }
       }
-    }
 
-    if (!first.canPin) {
-      this.memoryManager.invalidateObservation();
-      const again = await this.memoryManager.canPinModel(await this.hardwareInspector.getProfile(), catalogMb, model);
-      if (!again.canPin) {
-        return { pinned: false, reason: `${catalogId} is loaded, but not pinned: ${again.reason}` };
+      if (!first.canPin) {
+        this.memoryManager.invalidateObservation();
+        const again = await this.memoryManager.canPinModel(await this.hardwareInspector.getProfile(), catalogMb, model);
+        if (!again.canPin) {
+          return { pinned: false, reason: `${catalogId} is loaded, but not pinned: ${again.reason}` };
+        }
       }
-    }
 
-    this.modelRegistry.pinModel(catalogId);
-    return { pinned: true };
+      this.modelRegistry.pinModel(catalogId);
+      return { pinned: true };
+    });
   }
 
   /**
@@ -992,13 +1055,13 @@ export class InferenceRouterService {
    * the per-token cost, the slot count it multiplies by, and what the model was last seen occupying
    * here (`MemoryManagerService.footprintSighting`), which replaces the catalog's figure.
    *
-   * - **An app's request on Ollama** runs at its own window whatever the Hub loads at, so the load
-   *   is made at that window and sized at it: `request.numCtx`, or — on `/v1`, which carries none —
-   *   no window at all, sized at the default this node states for the engine (its own statement,
-   *   else `inferenceMaxNumCtx`), else at the handout. Stepping the window down would only buy a
-   *   reload by the very request that asked.
-   * - **Otherwise** (an operator's pin or load, and every Lemonade load, since Lemonade has no
-   *   per-request window) the Hub picks: the window it hands its apps for this model, raised on
+   * - **An app's request on Ollama** (`origin: 'request'`) runs at its own window whatever the Hub
+   *   loads at, so the load is made at that window and sized at it: `numCtx`, or — on `/v1`, which
+   *   carries none — no window at all, sized at the default this node states for the engine (its own
+   *   statement, else `inferenceMaxNumCtx`), else at the handout. Stepping the window down would only
+   *   buy a reload by the very request that asked.
+   * - **Otherwise** (an operator's or an agent's pin or load, and every Lemonade load, since Lemonade
+   *   has no per-request window) the Hub picks: the window it hands its apps for this model, raised on
    *   Lemonade to the floor of any installed app it could be handed to, then stepped down — 65536,
    *   32768, … 4096 — to the largest that fits what is free now. Only when not even 4096 fits does
    *   it size for the largest window an empty card could hold, which is what eviction then frees.
@@ -1006,8 +1069,12 @@ export class InferenceRouterService {
    *   the one window it loaded at to every app, so a window sized to what was free beside an idle
    *   Ollama model was saved below Hermes' 64000 on a card that holds 64000 when empty, and Hermes
    *   then refused to start. When the floor fits an empty card but not what is free now, the load is
-   *   sized at the floor and eviction makes the room. It goes below the floor only when an empty card
-   *   cannot hold it, or when what holds the card now cannot be unloaded for it, and says which.
+   *   sized at the floor and eviction makes the room. What eviction can make is asked of the same
+   *   plan, with the same scope and in-flight work, that the load path then executes: a request's
+   *   load may unload only the Hub's own idle loads, so beside an idle model an app loaded it goes
+   *   below the floor rather than keep one it could not pay for. It goes below the floor only when an
+   *   empty card cannot hold it, or when what holds the card now cannot be unloaded for this load,
+   *   and says which.
    * - **Never measured, and over an empty card by the catalog alone**: an operator's Ollama load onto
    *   a discrete card is tried instead of refused (`unmeasured`; see {@link loadUnmeasured}).
    * - `null` for anything but a text LLM, or a model the catalog does not describe: an embedding,
@@ -1017,8 +1084,10 @@ export class InferenceRouterService {
     curated: CuratedModel | undefined,
     target: { backend: InferenceBackendType; backendModelId: string },
     profile: HardwareProfile,
-    request?: { numCtx: number | null },
+    options: LoadOptions,
   ): Promise<LoadPlan> {
+    const request = options.origin === 'request' ? { numCtx: options.numCtx } : null;
+    const scope = evictionScopeOf(options.origin);
     const catalogFootprint = curated?.runtime.memoryFootprintMb || 0;
     // Lemonade's kokoro and whisper rows carry a 0 window, fell back to 8192, and were charged a
     // phantom 2 GB of KV cache and sent a llama.cpp ctx_size they have no use for.
@@ -1080,13 +1149,14 @@ export class InferenceRouterService {
         const emptyFit = largestFittingWindow({ ...sizing, from: floorWindow, budgetMb: ceilingMb });
         if (emptyFit === floorWindow) {
           const footprintMb = estimateLoadedFootprintMb({ ...sizing, numCtx: floorWindow });
-          // Asked of the eviction plan the load path then follows, so the floor is kept exactly when
-          // that path can make room for it; what it may unload is its rule, not this one's.
-          const eviction = await this.memoryManager.planEviction(profile, footprintMb - availableMb, target);
+          // Asked of the eviction plan the load path then follows — this load's own scope and what
+          // the pool has in flight — so the floor is kept exactly when that path can make room for it.
+          // What it may unload is its rule, not this one's.
+          const eviction = await this.memoryManager.planEviction(profile, footprintMb - availableMb, target, this.evictionOptions(scope));
           if (eviction.canFree) {
             return { contextLength: floorWindow, footprintMb };
           }
-          shortfall = { kind: 'held', heldMb: Math.max(0, ceilingMb - availableMb), freedMb: eviction.freedMb };
+          shortfall = { kind: 'held', heldMb: Math.max(0, ceilingMb - availableMb), freedMb: eviction.freedMb, scope, busy: eviction.busy };
         } else {
           shortfall = { kind: 'empty', window: emptyFit };
         }
@@ -1099,8 +1169,9 @@ export class InferenceRouterService {
     if (contextLength !== null) {
       footprintMb = estimateLoadedFootprintMb({ ...sizing, numCtx: contextLength });
     } else if (!request && sighting && sighting.footprintMb <= availableMb) {
-      // What the operator asked for has been measured running on this card in what is free now; only
-      // the reserves charged on top of that measurement are over. That is worth a warning, not a refusal.
+      // What an operator or agent asked for has been measured running on this card in what is free
+      // now; only the reserves charged on top of that measurement are over. That is worth a warning,
+      // not a refusal, and it unloads nothing.
       contextLength = Math.min(wanted, sighting.contextLength);
       footprintMb = sighting.footprintMb;
       const charged = estimateLoadedFootprintMb({ ...sizing, numCtx: contextLength });
@@ -1112,7 +1183,7 @@ export class InferenceRouterService {
       const emptyFit = largestFittingWindow({ ...sizing, from: wanted, budgetMb: ceilingMb });
       contextLength = emptyFit ?? Math.min(wanted, FLOOR_CONTEXT);
       footprintMb = estimateLoadedFootprintMb({ ...sizing, numCtx: contextLength });
-      if (emptyFit === null && !request && !sighting && this.mayTryUnmeasured(target, profile)) {
+      if (emptyFit === null && options.origin === 'operator' && !sighting && this.mayTryUnmeasured(target, profile)) {
         unmeasured = { ceilingMb };
       }
     }

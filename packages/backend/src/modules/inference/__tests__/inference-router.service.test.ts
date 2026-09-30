@@ -517,7 +517,7 @@ describe('InferenceRouterService', () => {
         .mockResolvedValueOnce({ fits: true, availableMb: 23_000, requiredMb: 18_000 });
       memoryManager.planEviction.mockResolvedValue({ canFree: true, candidates: [ollamaResident], freedMb: 17_000, busy: [] });
 
-      await expect(service.loadTrackedModel(lemonadeModel.id, { scope: 'operator' })).resolves.toEqual({ loaded: true });
+      await expect(service.loadTrackedModel(lemonadeModel.id, { origin: 'operator' })).resolves.toEqual({ loaded: true });
 
       expect(memoryManager.planEviction.mock.calls[0]?.[3]).toMatchObject({ scope: 'operator' });
       expect(ollamaBackend.unloadModel).toHaveBeenCalledWith('qwen3.8:27b-mtp-q4_K_M');
@@ -535,7 +535,7 @@ describe('InferenceRouterService', () => {
       poolLoad.acquire(LOCAL_CANDIDATE_KEY, hermesTurn);
       poolLoad.acquire(LOCAL_CANDIDATE_KEY, undefined, memoryBatch);
 
-      await service.loadTrackedModel(lemonadeModel.id, { scope: 'operator' });
+      await service.loadTrackedModel(lemonadeModel.id, { origin: 'operator' });
 
       const inUse = memoryManager.planEviction.mock.calls[0]?.[3].inUse;
       expect(inUse?.('ollama')).toEqual([{ model: 'gemma4:e4b' }, { model: 'nomic-embed-text:latest' }]);
@@ -544,11 +544,25 @@ describe('InferenceRouterService', () => {
       poolLoad.release(LOCAL_CANDIDATE_KEY, undefined, memoryBatch);
     });
 
-    it("plans as an app's request unless the caller says it is an operator", async () => {
+    // One origin decides the eviction scope: only a signed-in operator may clear a model an app loaded.
+    // An agent's MCP key plans exactly as an app's request does.
+    it.each([
+      ['operator', 'operator'],
+      ['agent', 'request'],
+    ] as const)('plans an %s load with the %s scope', async (origin, scope) => {
       memoryManager.canFitModel.mockResolvedValue({ fits: false, availableMb: 6_000, requiredMb: 18_000 });
       memoryManager.planEviction.mockResolvedValue({ canFree: false, candidates: [], freedMb: 0, busy: [] });
 
-      await service.loadTrackedModel(lemonadeModel.id);
+      await service.loadTrackedModel(lemonadeModel.id, { origin });
+
+      expect(memoryManager.planEviction.mock.calls[0]?.[3]).toMatchObject({ scope });
+    });
+
+    it("plans an app request's load with the request scope", async () => {
+      memoryManager.canFitModel.mockResolvedValue({ fits: false, availableMb: 6_000, requiredMb: 18_000 });
+      memoryManager.planEviction.mockResolvedValue({ canFree: false, candidates: [], freedMb: 0, busy: [] });
+
+      await service.loadTrackedModel(lemonadeModel.id, { origin: 'request', numCtx: null });
 
       expect(memoryManager.planEviction.mock.calls[0]?.[3]).toMatchObject({ scope: 'request' });
     });
@@ -560,7 +574,7 @@ describe('InferenceRouterService', () => {
       memoryManager.canFitModel.mockResolvedValue({ fits: false, availableMb: 6_000, requiredMb: 18_000 });
       memoryManager.planEviction.mockResolvedValue({ canFree: true, candidates: [ollamaResident], freedMb: 17_000, busy: [] });
 
-      const outcome = await service.loadTrackedModel(lemonadeModel.id, { scope: 'operator' });
+      const outcome = await service.loadTrackedModel(lemonadeModel.id, { origin: 'operator' });
 
       expect(outcome).toEqual({
         loaded: false,
@@ -577,7 +591,7 @@ describe('InferenceRouterService', () => {
       const lemonadeResident = { backend: 'lemonade' as const, backendModelId: 'Gemma-4-E4B-it-GGUF', catalogId: null, estimatedMb: 17_000 };
       memoryManager.planEviction.mockResolvedValue({ canFree: true, candidates: [lemonadeResident], freedMb: 17_000, busy: [] });
 
-      const outcome = await service.loadTrackedModel(lemonadeModel.id, { scope: 'operator' });
+      const outcome = await service.loadTrackedModel(lemonadeModel.id, { origin: 'operator' });
 
       expect(outcome).toEqual({ loaded: false, reason: expect.stringContaining('may still be finishing work the Hub cannot see') });
       expect(lemonadeBackend.unloadModel).toHaveBeenCalledWith('Gemma-4-E4B-it-GGUF');
@@ -610,11 +624,11 @@ describe('InferenceRouterService', () => {
       it("loads once its plan has unloaded Ollama's own models, even when the re-measure has not caught up", async () => {
         memoryManager.planEviction.mockResolvedValue({ canFree: true, candidates: [ollamaResident], freedMb: 17_000, busy: [] });
 
-        const outcome = await service.loadTrackedModel(ollamaModel.id);
+        const outcome = await service.loadTrackedModel(ollamaModel.id, { origin: 'request', numCtx: null });
 
         expect(outcome).toEqual({ loaded: true });
         expect(ollamaBackend.unloadModel).toHaveBeenCalledWith('qwen3.8:27b-mtp-q4_K_M');
-        expect(modelPuller.loadModel).toHaveBeenCalledWith(ollamaModel.id, expect.anything());
+        expect(modelPuller.loadModel).toHaveBeenCalledWith(ollamaModel.id, undefined); // a /v1 request: Ollama's own default window
         expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('has not shown up yet; ollama waits for it itself'));
       });
 
@@ -627,7 +641,7 @@ describe('InferenceRouterService', () => {
           busy: [],
         });
 
-        const outcome = await service.loadTrackedModel(ollamaModel.id, { scope: 'operator' });
+        const outcome = await service.loadTrackedModel(ollamaModel.id, { origin: 'operator' });
 
         expect(outcome).toEqual({ loaded: false, reason: expect.stringContaining('may still be finishing work the Hub cannot see') });
         expect(modelPuller.loadModel).not.toHaveBeenCalled();
@@ -639,7 +653,7 @@ describe('InferenceRouterService', () => {
       memoryManager.planEviction.mockResolvedValue({ canFree: true, candidates: [ollamaResident], freedMb: 17_000, busy: [] });
       ollamaBackend.unloadModel.mockRejectedValueOnce(new Error('boom'));
 
-      const outcome = await service.loadTrackedModel(lemonadeModel.id);
+      const outcome = await service.loadTrackedModel(lemonadeModel.id, { origin: 'request', numCtx: null });
 
       expect(outcome).toEqual({ loaded: false, reason: `${lemonadeModel.id} does not fit: ollama refused to unload qwen3.8:27b-mtp-q4_K_M` });
       expect(memoryManager.canFitModel).toHaveBeenCalledTimes(1);
@@ -650,7 +664,7 @@ describe('InferenceRouterService', () => {
       memoryManager.canFitModel.mockResolvedValue({ fits: false, availableMb: 6_000, requiredMb: 18_000 });
       memoryManager.planEviction.mockResolvedValue({ canFree: false, candidates: [], freedMb: 2_000, busy: [] });
 
-      const outcome = await service.loadTrackedModel(lemonadeModel.id);
+      const outcome = await service.loadTrackedModel(lemonadeModel.id, { origin: 'request', numCtx: null });
 
       expect(outcome).toEqual({ loaded: false, reason: expect.stringContaining('would free 2000 MB') });
       expect(ollamaBackend.unloadModel).not.toHaveBeenCalled();
@@ -662,7 +676,7 @@ describe('InferenceRouterService', () => {
       memoryManager.canFitModel.mockResolvedValue({ fits: false, availableMb: 6_000, requiredMb: 18_000 });
       memoryManager.planEviction.mockResolvedValue({ canFree: false, candidates: [], freedMb: 0, busy: ['gemma4:e4b'] });
 
-      const outcome = await service.loadTrackedModel(lemonadeModel.id, { scope: 'operator' });
+      const outcome = await service.loadTrackedModel(lemonadeModel.id, { origin: 'operator' });
 
       expect(outcome).toEqual({ loaded: false, reason: expect.stringContaining('gemma4:e4b is serving a request and will not be unloaded') });
       expect(outcome).toEqual({ loaded: false, reason: expect.stringContaining('every idle unpinned model') });
@@ -686,7 +700,7 @@ describe('InferenceRouterService', () => {
       });
       ollamaBackend.unloadModel.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('boom'));
 
-      await expect(service.loadTrackedModel(lemonadeModel.id)).resolves.toEqual({ loaded: true });
+      await expect(service.loadTrackedModel(lemonadeModel.id, { origin: 'request', numCtx: null })).resolves.toEqual({ loaded: true });
       expect(ollamaBackend.unloadModel.mock.calls.map(([id]) => id)).toEqual(['qwen3.8:27b-mtp-q4_K_M', 'gemma4:e4b']);
     });
 
@@ -700,7 +714,7 @@ describe('InferenceRouterService', () => {
       });
       ollamaBackend.unloadModel.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('boom'));
 
-      await expect(service.loadTrackedModel(lemonadeModel.id)).resolves.toEqual({
+      await expect(service.loadTrackedModel(lemonadeModel.id, { origin: 'request', numCtx: null })).resolves.toEqual({
         loaded: false,
         reason: `${lemonadeModel.id} still does not fit after unloading qwen3.8:27b-mtp-q4_K_M: ollama refused to unload gemma4:e4b`,
       });
@@ -718,7 +732,7 @@ describe('InferenceRouterService', () => {
       );
       memoryManager.planEviction.mockResolvedValue({ canFree: true, candidates: [ollamaResident], freedMb: 17_000, busy: [] });
 
-      await expect(service.loadTrackedModel(lemonadeModel.id, { scope: 'operator' })).resolves.toEqual({ loaded: true });
+      await expect(service.loadTrackedModel(lemonadeModel.id, { origin: 'operator' })).resolves.toEqual({ loaded: true });
 
       expect(hardwareInspector.getProfile).toHaveBeenCalledWith({ freshRam: true });
       expect(memoryManager.canFitModel).toHaveBeenLastCalledWith(after, expect.any(Number));
@@ -730,7 +744,7 @@ describe('InferenceRouterService', () => {
       modelRegistry.getTrackedModel.mockReturnValue(undefined);
       lemonadeBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Gemma-4-E4B-it-GGUF'] });
 
-      const outcome = await service.loadTrackedModel(lemonadeModel.id, { scope: 'operator' });
+      const outcome = await service.loadTrackedModel(lemonadeModel.id, { origin: 'operator' });
 
       expect(outcome).toEqual({ loaded: false, reason: `${lemonadeModel.id} is not downloaded on this node; pull it first` });
       expect(memoryManager.canFitModel).not.toHaveBeenCalled();
@@ -744,7 +758,7 @@ describe('InferenceRouterService', () => {
       lemonadeBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Qwen3.8-27B-GGUF'] });
       memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 22_096 });
 
-      await expect(service.loadTrackedModel(lemonadeModel.id)).resolves.toEqual({ loaded: true });
+      await expect(service.loadTrackedModel(lemonadeModel.id, { origin: 'request', numCtx: null })).resolves.toEqual({ loaded: true });
       expect(modelPuller.loadModel).toHaveBeenCalled();
     });
 
@@ -752,7 +766,7 @@ describe('InferenceRouterService', () => {
       memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 22_096 });
       modelPuller.loadModel.mockRejectedValueOnce(new Error('model "Qwen3.8-27B-GGUF" not found'));
 
-      await expect(service.loadTrackedModel(lemonadeModel.id)).resolves.toEqual({
+      await expect(service.loadTrackedModel(lemonadeModel.id, { origin: 'request', numCtx: null })).resolves.toEqual({
         loaded: false,
         reason: `Loading ${lemonadeModel.id} failed: model "Qwen3.8-27B-GGUF" not found`,
       });
@@ -762,7 +776,7 @@ describe('InferenceRouterService', () => {
     it('drops the cached memory reading after a load, so the next plan sees the new model', async () => {
       memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 22_096 });
 
-      await service.loadTrackedModel(lemonadeModel.id);
+      await service.loadTrackedModel(lemonadeModel.id, { origin: 'request', numCtx: null });
 
       const loadedAt = modelPuller.loadModel.mock.invocationCallOrder[0] ?? 0;
       const invalidatedAt = memoryManager.invalidateObservation.mock.invocationCallOrder.at(-1) ?? 0;
@@ -786,8 +800,8 @@ describe('InferenceRouterService', () => {
           }),
       );
 
-      const first = service.loadTrackedModel(lemonadeModel.id);
-      const second = service.loadTrackedModel(lemonadeModel.id);
+      const first = service.loadTrackedModel(lemonadeModel.id, { origin: 'request', numCtx: null });
+      const second = service.loadTrackedModel(lemonadeModel.id, { origin: 'request', numCtx: null });
       await vi.waitFor(() => expect(modelPuller.loadModel).toHaveBeenCalledTimes(1));
       // The second asked the engine once, found nothing, and is queued behind the first: it has not
       // measured or planned anything yet.
@@ -811,14 +825,14 @@ describe('InferenceRouterService', () => {
             finishLoad = resolve;
           }),
       );
-      const cold = service.loadTrackedModel(lemonadeModel.id);
+      const cold = service.loadTrackedModel(lemonadeModel.id, { origin: 'request', numCtx: null });
       await vi.waitFor(() => expect(modelPuller.loadModel).toHaveBeenCalledTimes(1));
 
       const residentModel = { catalogId: 'gemma4-e4b', backend: 'ollama', backendModelId: 'gemma4:e4b', state: 'pulled' } as TrackedModel;
       modelRegistry.getTrackedModel.mockImplementation((id) => (id === 'gemma4-e4b' ? residentModel : undefined));
       ollamaBackend.isModelLoaded.mockResolvedValue(true);
 
-      await expect(service.loadTrackedModel('gemma4-e4b')).resolves.toEqual({ loaded: true });
+      await expect(service.loadTrackedModel('gemma4-e4b', { origin: 'request', numCtx: null })).resolves.toEqual({ loaded: true });
       expect(modelRegistry.updateModelState).toHaveBeenCalledWith('gemma4-e4b', 'loaded');
 
       finishLoad();
@@ -834,7 +848,7 @@ describe('InferenceRouterService', () => {
             finishLoad = resolve;
           }),
       );
-      const cold = service.loadTrackedModel(lemonadeModel.id);
+      const cold = service.loadTrackedModel(lemonadeModel.id, { origin: 'request', numCtx: null });
       await vi.waitFor(() => expect(modelPuller.loadModel).toHaveBeenCalledTimes(1));
 
       // An app's request for another Hub-tracked model, through the pool proxy's arbitration.
@@ -854,13 +868,51 @@ describe('InferenceRouterService', () => {
       expect(memoryManager.canFitModel).toHaveBeenCalledTimes(1);
     });
 
+    // Between a pin's load and the pin itself the model is an idle Hub load, which is what a queued
+    // request's load may evict: the whole pin holds the node's lock, so that load plans only once the
+    // model is pinned and no longer a candidate.
+    it('holds the load lock through the pin, so a load queued behind it plans only after the model is pinned', async () => {
+      // Refused on the catalog figure alone (nothing measured here): the pin loads, then re-measures and
+      // asks again, the longest stretch in which its model is loaded and not yet pinned.
+      // The second ask reads the budget again, which takes a moment: the moment a queued load could use.
+      memoryManager.canPinModel.mockResolvedValueOnce({ canPin: false, reason: 'Pinning would use 18000 MB' }).mockImplementation(async () => {
+        await new Promise((resolve) => setImmediate(resolve));
+        return { canPin: true };
+      });
+      memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 22_096 });
+      let finishLoad!: () => void;
+      modelPuller.loadModel.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finishLoad = resolve;
+          }),
+      );
+      const pin = service.pinTrackedModel(lemonadeModel.id, { origin: 'operator' });
+      await vi.waitFor(() => expect(modelPuller.loadModel).toHaveBeenCalledTimes(1));
+
+      // An app's request for another Hub-tracked model arrives while the pin's load is running.
+      const pinned = modelRegistry.getTrackedModel(lemonadeModel.id);
+      const other = { catalogId: 'qwen3-coder-30b', backend: 'ollama', backendModelId: 'qwen3-coder:30b', state: 'pulled' } as TrackedModel;
+      modelRegistry.getTrackedModel.mockImplementation((id) => (id === 'qwen3-coder-30b' ? other : pinned));
+      ollamaBackend.isModelLoaded.mockResolvedValue(false);
+      const queued = service.prepareTrackedModel('qwen3-coder-30b', { numCtx: null });
+      await vi.waitFor(() => expect(ollamaBackend.isModelLoaded).toHaveBeenCalledWith('qwen3-coder:30b'));
+      expect(memoryManager.canFitModel).toHaveBeenCalledTimes(1);
+
+      finishLoad();
+      await expect(pin).resolves.toEqual({ pinned: true });
+      await queued;
+      expect(memoryManager.canFitModel).toHaveBeenCalledTimes(2);
+      expect(modelRegistry.pinModel.mock.invocationCallOrder[0]).toBeLessThan(memoryManager.canFitModel.mock.invocationCallOrder[1] ?? 0);
+    });
+
     it('lets the next load run after one that threw', async () => {
       lemonadeBackend.isModelLoaded.mockRejectedValueOnce(new Error('probe blew up')).mockResolvedValue(false);
       hardwareInspector.getProfile.mockRejectedValueOnce(new Error('inspector down'));
       memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 22_096 });
 
-      await expect(service.loadTrackedModel(lemonadeModel.id)).rejects.toThrow('inspector down');
-      await expect(service.loadTrackedModel(lemonadeModel.id)).resolves.toEqual({ loaded: true });
+      await expect(service.loadTrackedModel(lemonadeModel.id, { origin: 'request', numCtx: null })).rejects.toThrow('inspector down');
+      await expect(service.loadTrackedModel(lemonadeModel.id, { origin: 'request', numCtx: null })).resolves.toEqual({ loaded: true });
     });
 
     // ── the window a load is sized at ──
@@ -870,7 +922,7 @@ describe('InferenceRouterService', () => {
     it('sizes a Lemonade load by the ladder, and fit-checks what the model will hold at that window', async () => {
       memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 22_096 });
 
-      await service.loadTrackedModel(lemonadeModel.id);
+      await service.loadTrackedModel(lemonadeModel.id, { origin: 'operator' });
 
       // 24064 (the card less its display reserve) - 18000 = 6064 MB free for context → the 16k rung,
       // charged at the ladder's 0.25 MB/token.
@@ -897,7 +949,7 @@ describe('InferenceRouterService', () => {
       ollamaBackend.contextCostForModel.mockResolvedValue({ kvMbPerToken: 0.0625, weightMb: 16_000, source: 'geometry' });
       memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 23_120 });
 
-      await service.loadTrackedModel(ollamaModel.id);
+      await service.loadTrackedModel(ollamaModel.id, { origin: 'operator' });
 
       // 24064 - 18000 - 1024 margin = 5040 MB; 65536 × 0.0625 = 4096 fits, the top unprompted rung.
       expect(memoryManager.canFitModel).toHaveBeenCalledWith(defaultProfile, 18_000 + 4_096 + 1_024);
@@ -908,7 +960,7 @@ describe('InferenceRouterService', () => {
       configuration.getInferencePreferences.mockReturnValue({ ...configuration.getInferencePreferences(), maxNumCtx: 8192 } as never);
       memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 20_048 });
 
-      await service.loadTrackedModel(lemonadeModel.id);
+      await service.loadTrackedModel(lemonadeModel.id, { origin: 'operator' });
 
       expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 8192 });
     });
@@ -917,7 +969,7 @@ describe('InferenceRouterService', () => {
       modelRegistry.getCuratedModel.mockReturnValue({ ...lemonadeModel, modality: 'embedding' } as CuratedModel);
       memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 18_000 });
 
-      await service.loadTrackedModel(lemonadeModel.id);
+      await service.loadTrackedModel(lemonadeModel.id, { origin: 'operator' });
 
       expect(memoryManager.canFitModel).toHaveBeenCalledWith(defaultProfile, 18_000);
       expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, undefined);
@@ -929,7 +981,7 @@ describe('InferenceRouterService', () => {
       memoryManager.loadHeadroomMb.mockResolvedValue(20_500);
       memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 20_500, requiredMb: 20_048 });
 
-      await expect(service.loadTrackedModel(lemonadeModel.id)).resolves.toEqual({ loaded: true });
+      await expect(service.loadTrackedModel(lemonadeModel.id, { origin: 'operator' })).resolves.toEqual({ loaded: true });
 
       expect(memoryManager.canFitModel).toHaveBeenCalledWith(defaultProfile, 18_000 + 8_192 * 0.25);
       expect(memoryManager.planEviction).not.toHaveBeenCalled();
@@ -941,30 +993,17 @@ describe('InferenceRouterService', () => {
       memoryManager.canFitModel
         .mockResolvedValueOnce({ fits: false, availableMb: 6_000, requiredMb: 22_096 })
         .mockResolvedValueOnce({ fits: true, availableMb: 23_000, requiredMb: 22_096 });
-      memoryManager.planEviction.mockResolvedValue({ canFree: true, candidates: [ollamaResident], freedMb: 17_000 });
+      memoryManager.planEviction.mockResolvedValue({ canFree: true, candidates: [ollamaResident], freedMb: 17_000, busy: [] });
 
-      await service.loadTrackedModel(lemonadeModel.id);
+      await service.loadTrackedModel(lemonadeModel.id, { origin: 'operator' });
 
-      expect(memoryManager.planEviction).toHaveBeenCalledWith(defaultProfile, 22_096 - 6_000, {
-        backend: 'lemonade',
-        backendModelId: 'Qwen3.8-27B-GGUF',
-      });
+      expect(memoryManager.planEviction).toHaveBeenCalledWith(
+        defaultProfile,
+        22_096 - 6_000,
+        { backend: 'lemonade', backendModelId: 'Qwen3.8-27B-GGUF' },
+        { scope: 'operator', inUse: expect.any(Function) },
+      );
       expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 16_384 });
-    });
-
-    it('re-reads the hardware profile with a fresh RAM sample on each re-measure after an eviction', async () => {
-      memoryManager.loadHeadroomMb.mockResolvedValue(6_000);
-      memoryManager.canFitModel
-        .mockResolvedValueOnce({ fits: false, availableMb: 6_000, requiredMb: 22_096 })
-        .mockResolvedValueOnce({ fits: false, availableMb: 6_000, requiredMb: 22_096 })
-        .mockResolvedValueOnce({ fits: true, availableMb: 23_000, requiredMb: 22_096 });
-      memoryManager.planEviction.mockResolvedValue({ canFree: true, candidates: [ollamaResident], freedMb: 17_000 });
-
-      await service.loadTrackedModel(lemonadeModel.id);
-
-      expect(hardwareInspector.getProfile).toHaveBeenNthCalledWith(1);
-      expect(hardwareInspector.getProfile).toHaveBeenNthCalledWith(2, { freshRam: true });
-      expect(hardwareInspector.getProfile).toHaveBeenNthCalledWith(3, { freshRam: true });
     });
 
     it('warns instead of refusing an operator load that was measured running here in what is free now', async () => {
@@ -977,13 +1016,14 @@ describe('InferenceRouterService', () => {
         runtime: { memoryFootprintMb: 10_813, contextWindow: 128_000, input: ['text', 'image'] },
       } as CuratedModel;
       modelRegistry.getTrackedModel.mockReturnValue(undefined);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma4:e4b'] });
       modelRegistry.getCuratedModel.mockReturnValue(ollamaModel);
       ollamaBackend.isModelLoaded.mockResolvedValue(false);
       memoryManager.footprintSighting.mockResolvedValue({ footprintMb: 6_800, contextLength: 16_384, source: 'process' });
       memoryManager.loadHeadroomMb.mockResolvedValue(7_003);
       memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 7_003, requiredMb: 6_800 });
 
-      await expect(service.loadTrackedModel(ollamaModel.id)).resolves.toEqual({ loaded: true });
+      await expect(service.loadTrackedModel(ollamaModel.id, { origin: 'operator' })).resolves.toEqual({ loaded: true });
 
       expect(memoryManager.canFitModel).toHaveBeenCalledWith(defaultProfile, 6_800);
       expect(modelPuller.loadModel).toHaveBeenCalledWith(ollamaModel.id, { contextLength: 16_384 });
@@ -1001,14 +1041,15 @@ describe('InferenceRouterService', () => {
         runtime: { memoryFootprintMb: 10_813, contextWindow: 128_000, input: ['text', 'image'] },
       } as CuratedModel;
       modelRegistry.getTrackedModel.mockReturnValue(undefined);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma4:e4b'] });
       modelRegistry.getCuratedModel.mockReturnValue(ollamaModel);
       ollamaBackend.isModelLoaded.mockResolvedValue(false);
       memoryManager.footprintSighting.mockResolvedValue({ footprintMb: 6_800, contextLength: 16_384, source: 'process' });
       memoryManager.loadHeadroomMb.mockResolvedValue(7_003);
       memoryManager.canFitModel.mockResolvedValue({ fits: false, availableMb: 7_003, requiredMb: 7_824 });
-      memoryManager.planEviction.mockResolvedValue({ canFree: false, candidates: [], freedMb: 0 });
+      memoryManager.planEviction.mockResolvedValue({ canFree: false, candidates: [], freedMb: 0, busy: [] });
 
-      await expect(service.loadTrackedModel(ollamaModel.id, { request: { numCtx: 16_384 } })).resolves.toMatchObject({ loaded: false });
+      await expect(service.loadTrackedModel(ollamaModel.id, { origin: 'request', numCtx: 16_384 })).resolves.toMatchObject({ loaded: false });
       expect(memoryManager.canFitModel).toHaveBeenCalledWith(defaultProfile, 6_800 + 1_024);
     });
 
@@ -1016,7 +1057,7 @@ describe('InferenceRouterService', () => {
       modelRegistry.getTrackedModel.mockReturnValue(undefined);
       lemonadeBackend.isModelLoaded.mockResolvedValue(true);
 
-      await expect(service.loadTrackedModel(lemonadeModel.id)).resolves.toEqual({ loaded: true });
+      await expect(service.loadTrackedModel(lemonadeModel.id, { origin: 'operator' })).resolves.toEqual({ loaded: true });
       expect(modelRegistry.trackModel).toHaveBeenCalledWith(lemonadeModel.id, 'loaded');
       expect(memoryManager.canFitModel).not.toHaveBeenCalled();
       expect(modelPuller.loadModel).not.toHaveBeenCalled();

@@ -33,6 +33,7 @@ import type { BackendResidency, HardwareProfile, InferenceBackendType } from '@c
 import { LoggerService } from '@/core/logger/logger.service';
 import type { ConfigurationService } from '@/core/config/configuration.service';
 import type { AppsRepository } from '@/modules/apps/apps.repository';
+import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from '@/modules/hub-pool/hub-pool-load.service';
 import { handoutContextLength } from '../app-model-handout';
 import { InferenceBackendRegistry } from '../backends/backend-registry';
 import type { InferenceBackend } from '../backends/backend.interface';
@@ -158,7 +159,11 @@ class FakeOllama {
   }
 }
 
-/** Lemonade: one saved window per model, no window per request, no per-model sizes. */
+/**
+ * Lemonade: one saved window per model, no window per request, no per-model sizes. Its inventory lists
+ * the models these cases load as downloaded, so a load reaches the fit check rather than the
+ * not-downloaded refusal that comes first.
+ */
 class FakeLemonade {
   readonly type = 'lemonade' as const;
   loads: { id: string; ctx: number | undefined }[] = [];
@@ -167,7 +172,11 @@ class FakeLemonade {
     return {
       type: this.type,
       getBaseUrl: () => 'http://fake-lemonade:13305',
-      healthCheck: async () => ({ running: true, healthy: true, modelsLoaded: [] }),
+      healthCheck: async () => ({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['Gemma-4-E4B-it-GGUF', 'kokoro-v1', 'Whisper-Base', 'Whisper-Large-v3-Turbo'],
+      }),
       isModelLoaded: async () => false,
       loadModel: async (id: string, options?: { contextLength?: number }) => {
         this.loads.push({ id, ctx: options?.contextLength });
@@ -255,6 +264,8 @@ function world(opts: {
     getInferencePreferences: () => ({ maxNumCtx: null, ollamaSlots: opts.ollamaSlots ?? null, preferredModel: null }),
   } as unknown as ConfigurationService;
   const apps = { getApps: async () => (opts.installedApps ?? []).map((appName) => ({ appName })) } as unknown as AppsRepository;
+  // The pool's real record of what is in flight, which the eviction plan (and so the floor decision) reads.
+  const poolLoad = new HubPoolLoadService();
 
   const router = new InferenceRouterService(
     logger,
@@ -265,10 +276,11 @@ function world(opts: {
     backends,
     puller,
     configuration,
+    poolLoad,
     apps,
   );
   vi.spyOn(router as unknown as { delay: (ms: number) => Promise<void> }, 'delay').mockResolvedValue(undefined);
-  return { router, registry, memoryManager, logger, engines, hardwareInspector };
+  return { router, registry, memoryManager, logger, engines, hardwareInspector, poolLoad };
 }
 
 describe('the load window on the fleet', () => {
@@ -276,7 +288,7 @@ describe('the load window on the fleet', () => {
     const ollama = new FakeOllama(65_536);
     const { router } = world({ profile: BETA_1, ollama });
 
-    await expect(router.loadTrackedModel('qwen3-8-27b')).resolves.toEqual({ loaded: true });
+    await expect(router.loadTrackedModel('qwen3-8-27b', { origin: 'operator' })).resolves.toEqual({ loaded: true });
 
     // 32768 is 24,371 MB with the vision reserve, over the 24,048 the card has for models; 16384 is 23,347.
     expect(ollama.loads).toEqual([{ id: 'qwen3.8:27b', ctx: 16_384 }]);
@@ -292,7 +304,7 @@ describe('the load window on the fleet', () => {
       servedOnBetaRed(ollama);
 
       // Already resident: the load path takes it as it is.
-      await expect(router.loadTrackedModel('gemma4-e4b')).resolves.toEqual({ loaded: true });
+      await expect(router.loadTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toEqual({ loaded: true });
       expect(ollama.loads).toEqual([]);
       // The operator's pin was refused on the catalog figure before it ever reached the load path.
       await expect(memoryManager.canPinModel(BETA_RED, 10_813, { backend: 'ollama', backendModelId: 'gemma4:e4b' })).resolves.toEqual({
@@ -304,7 +316,7 @@ describe('the load window on the fleet', () => {
       // holds it at 65536 on four in 3.4 GB) + the 1,024 MB vision reserve = 8,110, inside 9,728.
       ollama.resident.clear();
       memoryManager.invalidateObservation();
-      await expect(router.loadTrackedModel('gemma4-e4b')).resolves.toEqual({ loaded: true });
+      await expect(router.loadTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toEqual({ loaded: true });
       expect(ollama.loads).toEqual([{ id: 'gemma4:e4b', ctx: 32_768 }]);
     });
 
@@ -317,7 +329,7 @@ describe('the load window on the fleet', () => {
       const ollama = new FakeOllama(16_384, () => ({ psMb: 3209, processMb: 5550 }));
       const { router, registry, memoryManager } = world({ profile, ollama, ollamaSlots: 4 });
 
-      await expect(router.pinTrackedModel('gemma4-e4b')).resolves.toEqual({ pinned: true });
+      await expect(router.pinTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toEqual({ pinned: true });
 
       // At the smallest window, since the estimate fits no window at all; nothing was evicted for it.
       expect(ollama.loads).toEqual([{ id: 'gemma4:e4b', ctx: 4_096 }]);
@@ -330,12 +342,23 @@ describe('the load window on the fleet', () => {
       });
     });
 
-    it('loads on a fresh beta-3-glass through /models/load and MCP hub_load_model, which share the load path', async () => {
+    it("loads on a fresh beta-3-glass through /models/load and an operator's MCP hub_load_model, which share the load path", async () => {
       const ollama = new FakeOllama(16_384, () => ({ psMb: 3209, processMb: 5550 }));
       const { router } = world({ profile: BETA_3_GLASS, ollama, ollamaSlots: 4 });
 
-      await expect(router.loadTrackedModel('gemma4-e4b')).resolves.toEqual({ loaded: true });
+      await expect(router.loadTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toEqual({ loaded: true });
       expect([...ollama.resident.keys()]).toEqual(['gemma4:e4b']);
+    });
+
+    // Ollama makes room for a trial load itself, among runners apps loaded too: an operator may have
+    // those unloaded, an agent's key may not (#1684), so an agent's load is refused on the catalog as before.
+    it("does not try one for an agent's MCP key, whose loads may not unload what apps loaded", async () => {
+      const ollama = new FakeOllama(16_384, () => ({ psMb: 3209, processMb: 5550 }));
+      const { router } = world({ profile: BETA_3_GLASS, ollama, ollamaSlots: 4 });
+
+      await expect(router.loadTrackedModel('gemma4-e4b', { origin: 'agent' })).resolves.toMatchObject({ loaded: false });
+      await expect(router.pinTrackedModel('gemma4-e4b', { origin: 'agent' })).resolves.toMatchObject({ pinned: false });
+      expect(ollama.loads).toEqual([]);
     });
 
     it('keeps a tried model loaded but does not pin it when Ollama could not put it wholly on the card', async () => {
@@ -343,7 +366,7 @@ describe('the load window on the fleet', () => {
       const ollama = new FakeOllama(16_384, () => ({ psMb: 12_400, processMb: 7_100, gpuMb: 7_000 }));
       const { router, registry } = world({ profile: BETA_3_GLASS, ollama, ollamaSlots: 4 });
 
-      const outcome = await router.pinTrackedModel('gemma4-e4b');
+      const outcome = await router.pinTrackedModel('gemma4-e4b', { origin: 'operator' });
 
       expect(outcome).toMatchObject({ pinned: false, reason: expect.stringContaining('gemma4-e4b is loaded, but not pinned') });
       expect(registry.getTrackedModel('gemma4-e4b')?.state).toBe('loaded');
@@ -355,7 +378,7 @@ describe('the load window on the fleet', () => {
       registry.trackModel('gemma3-1b', 'loaded');
       registry.pinModel('gemma3-1b');
 
-      await expect(router.loadTrackedModel('gemma4-e4b')).resolves.toMatchObject({ loaded: false });
+      await expect(router.loadTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toMatchObject({ loaded: false });
       expect(ollama.loads).toEqual([]);
     });
 
@@ -364,7 +387,7 @@ describe('the load window on the fleet', () => {
       const lemonade = new FakeLemonade();
       const { router } = world({ profile: BETA_3_GLASS, lemonade });
 
-      await expect(router.loadTrackedModel('gemma4-e4b-lemonade')).resolves.toMatchObject({ loaded: false });
+      await expect(router.loadTrackedModel('gemma4-e4b-lemonade', { origin: 'operator' })).resolves.toMatchObject({ loaded: false });
       expect(lemonade.loads).toEqual([]);
     });
 
@@ -385,7 +408,7 @@ describe('the load window on the fleet', () => {
       // Measured now. Expired, and loaded again by the operator: it fits.
       ollama.resident.clear();
       memoryManager.invalidateObservation();
-      await expect(router.loadTrackedModel('gemma4-e4b')).resolves.toEqual({ loaded: true });
+      await expect(router.loadTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toEqual({ loaded: true });
       expect(ollama.loads.at(-1)).toEqual({ id: 'gemma4:e4b', ctx: 16_384 });
     });
   });
@@ -407,7 +430,7 @@ describe('the load window on the fleet', () => {
         contextLength: 16_384,
         source: 'process',
       });
-      await expect(after.router.pinTrackedModel('gemma4-e4b')).resolves.toEqual({ pinned: true });
+      await expect(after.router.pinTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toEqual({ pinned: true });
       // The window the measurement allows (see above), where the catalog alone could only try 4096.
       expect(ollama.loads).toEqual([{ id: 'gemma4:e4b', ctx: 32_768 }]);
     });
@@ -430,7 +453,7 @@ describe('the load window on the fleet', () => {
       const lemonade = new FakeLemonade();
       const { router } = world({ profile: BETA_1, lemonade, installedApps: ['ci-hermes', 'ci-openclaw'] });
 
-      await expect(router.loadTrackedModel('gemma4-e4b-lemonade')).resolves.toEqual({ loaded: true });
+      await expect(router.loadTrackedModel('gemma4-e4b-lemonade', { origin: 'operator' })).resolves.toEqual({ loaded: true });
 
       expect(lemonade.loads).toEqual([{ id: 'Gemma-4-E4B-it-GGUF', ctx: 64_000 }]);
     });
@@ -439,7 +462,7 @@ describe('the load window on the fleet', () => {
       const lemonade = new FakeLemonade();
       const { router, logger } = world({ profile: discrete('nvidia', '12 GB card', 12_288), lemonade, installedApps: ['ci-hermes'] });
 
-      await expect(router.loadTrackedModel('gemma4-e4b-lemonade')).resolves.toEqual({ loaded: true });
+      await expect(router.loadTrackedModel('gemma4-e4b-lemonade', { origin: 'operator' })).resolves.toEqual({ loaded: true });
 
       // 64000, 32768 and 16384 are over the 11,776 MB; 8192 fits.
       expect(lemonade.loads).toEqual([{ id: 'Gemma-4-E4B-it-GGUF', ctx: 8_192 }]);
@@ -457,7 +480,7 @@ describe('the load window on the fleet', () => {
       const lemonade = new FakeLemonade();
       const { router, logger } = world({ profile: BETA_1, ollama, lemonade, installedApps: ['ci-hermes'] });
 
-      await expect(router.loadTrackedModel('gemma4-e4b-lemonade')).resolves.toEqual({ loaded: true });
+      await expect(router.loadTrackedModel('gemma4-e4b-lemonade', { origin: 'operator' })).resolves.toEqual({ loaded: true });
 
       expect(lemonade.loads).toEqual([{ id: 'Gemma-4-E4B-it-GGUF', ctx: 64_000 }]);
       expect([...ollama.resident.keys()]).toEqual([]);
@@ -473,7 +496,7 @@ describe('the load window on the fleet', () => {
       registry.trackModel('gemma4-e4b', 'loaded');
       registry.pinModel('gemma4-e4b');
 
-      await expect(router.loadTrackedModel('gemma4-e4b-lemonade')).resolves.toEqual({ loaded: true });
+      await expect(router.loadTrackedModel('gemma4-e4b-lemonade', { origin: 'operator' })).resolves.toEqual({ loaded: true });
 
       expect(lemonade.loads).toEqual([{ id: 'Gemma-4-E4B-it-GGUF', ctx: 32_768 }]);
       expect([...ollama.resident.keys()]).toEqual(['gemma4:e4b']);
@@ -482,11 +505,50 @@ describe('the load window on the fleet', () => {
       expect(warning).not.toContain('all this node has room for');
     });
 
+    // The floor decision asks the eviction plan the load then executes, with this load's own scope. An
+    // app's request may unload only the Hub's own idle loads (#1684), so beside an idle model an app
+    // loaded it must not keep a floor its eviction could not pay for: it would size the load at 64000,
+    // find it does not fit, refuse, and leave the request to Lemonade's own load at its old window.
+    it("on an app's request, steps below the floor rather than keep one only an operator could free", async () => {
+      const ollama = new FakeOllama(65_536);
+      ollama.hold('gemma4:e4b', 16_384, 5963, 5963);
+      const lemonade = new FakeLemonade();
+      const { router, registry, logger } = world({ profile: BETA_1, ollama, lemonade, installedApps: ['ci-hermes'] });
+      registry.trackModel('gemma4-e4b-lemonade', 'pulled');
+
+      await expect(router.prepareTrackedModel('Gemma-4-E4B-it-GGUF', { numCtx: null })).resolves.not.toBeNull();
+
+      expect(lemonade.loads).toEqual([{ id: 'Gemma-4-E4B-it-GGUF', ctx: 32_768 }]);
+      // The app's Ollama copy stays: the request scope may not unload it.
+      expect([...ollama.resident.keys()]).toEqual(['gemma4:e4b']);
+      const warning = logger.warn.mock.calls.map(([message]) => String(message)).find((message) => message.includes('64000-token floor'));
+      expect(warning).toContain('unloading every idle model the Hub loaded itself would free 0 MB');
+      expect(warning).toContain("an operator's load of this model may unload the models apps loaded");
+    });
+
+    it('keeps an operator load below the floor while the model holding the card is serving a request, and names it', async () => {
+      const ollama = new FakeOllama(65_536);
+      ollama.hold('gemma4:e4b', 16_384, 5963, 5963);
+      const lemonade = new FakeLemonade();
+      const { router, logger, poolLoad } = world({ profile: BETA_1, ollama, lemonade, installedApps: ['ci-hermes'] });
+      // Hermes is mid-turn on the Ollama copy, through the pool.
+      const turn = { backend: 'ollama' as const, model: 'gemma4:e4b', numCtx: 16_384 };
+      poolLoad.acquire(LOCAL_CANDIDATE_KEY, turn);
+
+      await expect(router.loadTrackedModel('gemma4-e4b-lemonade', { origin: 'operator' })).resolves.toEqual({ loaded: true });
+      poolLoad.release(LOCAL_CANDIDATE_KEY, turn);
+
+      expect(lemonade.loads).toEqual([{ id: 'Gemma-4-E4B-it-GGUF', ctx: 32_768 }]);
+      expect([...ollama.resident.keys()]).toEqual(['gemma4:e4b']);
+      const warning = logger.warn.mock.calls.map(([message]) => String(message)).find((message) => message.includes('64000-token floor'));
+      expect(warning).toContain('gemma4:e4b is serving a request and will not be unloaded');
+    });
+
     it('applies no floor when no installed app has one', async () => {
       const lemonade = new FakeLemonade();
       const { router } = world({ profile: BETA_1, lemonade, installedApps: ['ci-openclaw'] });
 
-      await router.loadTrackedModel('gemma4-e4b-lemonade');
+      await router.loadTrackedModel('gemma4-e4b-lemonade', { origin: 'operator' });
 
       expect(lemonade.loads).toEqual([{ id: 'Gemma-4-E4B-it-GGUF', ctx: 32_768 }]);
     });
@@ -530,7 +592,7 @@ describe('the load window on the fleet', () => {
       const ollama = new FakeOllama(32_768);
       const { router } = world({ profile: BETA_MAX, ollama, ollamaSlots: 4 });
 
-      await router.loadTrackedModel('gemma4-e4b');
+      await router.loadTrackedModel('gemma4-e4b', { origin: 'operator' });
 
       expect(ollama.loads).toEqual([{ id: 'gemma4:e4b', ctx: 65_536 }]);
     });
@@ -542,7 +604,7 @@ describe('the load window on the fleet', () => {
     const fit = vi.spyOn(memoryManager, 'canFitModel');
 
     for (const id of ['kokoro-v1', 'whisper-base', 'whisper-large-v3-turbo']) {
-      await expect(router.loadTrackedModel(id)).resolves.toEqual({ loaded: true });
+      await expect(router.loadTrackedModel(id, { origin: 'operator' })).resolves.toEqual({ loaded: true });
     }
 
     expect(lemonade.loads.map((load) => load.ctx)).toEqual([undefined, undefined, undefined]);
@@ -601,10 +663,13 @@ describe('the load window on the fleet', () => {
       effectiveInferenceMemoryMb: 0,
       tier: 'high',
     };
-    const { router, engines } = world({ profile: cpu, ollama, freeWithNothingLoadedMb: 20_000 + 17_406 });
+    const { router, registry, engines } = world({ profile: cpu, ollama, freeWithNothingLoadedMb: 20_000 + 17_406 });
+    // Pulled by the Hub, so the load gets past the not-downloaded refusal that comes before any eviction.
+    registry.trackModel('qwen3-coder-30b', 'pulled');
 
-    // qwen3-coder-30b: 20,951 MB, no geometry here (the ladder), text only.
-    await expect(router.loadTrackedModel('qwen3-coder-30b')).resolves.toEqual({ loaded: true });
+    // qwen3-coder-30b: 20,951 MB, no geometry here (the ladder), text only. The qwen3.8:27b it evicts
+    // was loaded by an app, which only an operator's load may unload.
+    await expect(router.loadTrackedModel('qwen3-coder-30b', { origin: 'operator' })).resolves.toEqual({ loaded: true });
 
     expect([...engines.ollama.resident.keys()]).toEqual(['qwen3-coder:30b']);
   });
