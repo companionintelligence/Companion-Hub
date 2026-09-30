@@ -361,6 +361,13 @@ keys `LLM_API_BASE`, `LLM_API_KEY`, `LLM_DEFAULT_CHAT_MODEL`, `LLM_DEFAULT_EMBED
   app's floor, with a warning; a handout that differs from the window the local Ollama holds the
   model at (`/api/ps` `context_length`) is also logged, since it is a reload. See
   [Context caps](../hub-pool.md#context-caps-the-window-an-app-asks-for-is-the-window-the-engine-runs).
+- **Memory sizing.** The memory-sized recommendation uses the same inputs and budget as a
+  [model load](#model-loads): the model budget with nothing loaded (`modelMemoryCeilingMb`: the card
+  less its 512 MB display reserve, or live MemAvailable less 2048 MB on unified memory), not the whole
+  card. The KV cache is charged per Ollama slot, and a model this node has measured replaces the
+  catalog footprint. A handout for a Lemonade model is never above the `ctx_size` Lemonade serves it
+  at (`servedContextLength`). When that window is below the handout, the Hub hands out the saved
+  window and logs a warning, naming the app's floor when it is under it.
 - **Pre-pull.** `decideModelPrePull` returns a logged decision for every handout. A credentials GET
   never pulls a model a pool node already serves, nor one the app's requirements rule out. When the
   pool already serves the app a suitable model, it pulls only the operator's preferred model, never
@@ -381,6 +388,46 @@ keys `LLM_API_BASE`, `LLM_API_KEY`, `LLM_DEFAULT_CHAT_MODEL`, `LLM_DEFAULT_EMBED
   sweep restarts only stale apps. An automatic sweep also skips an app whose regeneration would
   remove its endpoint or its chat model, and restarts an app at most once per 10 minutes, checking
   again when that window ends. The Hub-upgrade sync still restarts every AI app unconditionally.
+
+## Model loads
+
+An operator's pin or load (`POST /api/inference/models/pin`, `POST /api/inference/models/load`, MCP
+`hub_load_model`) and a pool request for a tracked model that is not resident all go through
+`InferenceRouterService.loadTrackedModel`. `planLoad` picks the context window and the footprint that
+the fit check and any eviction are sized to.
+
+- **One budget.** The window is sized against the budget the fit check applies: `modelMemoryCeilingMb`
+  with nothing loaded, and `MemoryManagerService.loadHeadroomMb` for what is free now. Sizing against
+  the whole card refused qwen3.8:27b on an empty 24 GB RX 7900 XTX: 32768 tokens cost 24,371 MB
+  against a 24,048 MB budget.
+- **Step-down before eviction.** The Hub wants the window it hands its apps, then halves it (65536,
+  32768, down to 4096) to the largest that fits what is free now. It evicts only when not even 4096
+  fits, and then sizes for the largest window an empty card holds.
+- **Measurements over the catalog.** `MemoryManagerService` records what each model was measured
+  occupying at its window. It takes the engine's process figure from nvidia-smi or rocm-smi, split
+  between models in the engine's own proportions, or else the engine's own figure. On a discrete card
+  it records only a model that was wholly on the GPU. That measurement replaces the catalog footprint
+  in the estimate and in `canPinModel`. gemma4:e4b's catalog row says 10,813 MB, and beta-red's RTX 3080
+  serves it in 5,550 MiB. For an operator's load, a model measured here in what is free now is loaded
+  with a warning even when the reserves charged on top of the measurement are over.
+- **Slots.** The KV cache is charged once per Ollama slot. The slot count is the engine's own
+  statement, else `inferenceOllamaSlots`, else 1. It is 1 for the families Ollama 0.34 runs on a
+  single slot (`qwen35`, which includes qwen3.8:27b, `qwen3vl`, `mllama`, and others; see
+  `OLLAMA_SINGLE_SLOT_ARCHITECTURES`), and for a cost calibrated from a sighting.
+- **The request's window.** A load triggered by an app's request on Ollama uses the window that
+  request runs at: its `options.num_ctx` on the native routes, and no `num_ctx` on `/v1`, where
+  Ollama's default applies. A load at any other window is reloaded by that request. An operator's
+  pin or load uses the Hub's own window.
+- **Lemonade.** Lemonade has one saved `ctx_size` per model and no window per request. The Hub loads
+  at the larger of its own window and the context floor of any installed app the model qualifies for
+  (Hermes: 64000), then steps down to fit and warns when it lands below the floor. The window is saved
+  with `save_options` on `/v1/load`, which Lemonade 10.2.0 and 2026.x both accept. The options already
+  saved are sent back with it, because 10.2.0 replaces them instead of merging. `engineCapabilities`
+  reports the saved window of the model Lemonade holds, for pool placement.
+- **No window for non-LLMs.** Embedding, TTS, and STT models get no window and no KV charge.
+- **Re-measuring.** After an eviction, each re-measure reads the hardware profile with a fresh RAM
+  sample (`getProfile({ freshRam: true })`). On unified memory the pre-eviction MemAvailable used to
+  report a successful eviction as a refusal.
 
 ## App readiness endpoint
 

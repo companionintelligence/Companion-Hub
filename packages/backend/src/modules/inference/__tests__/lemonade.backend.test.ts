@@ -157,42 +157,51 @@ describe('LemonadeBackend', () => {
       expect(post).toHaveBeenCalledWith('http://ci-hub-lemonade:13305/v1/load', { model_name: 'Qwen3-8B-GGUF' }, { timeout: 120000 });
     });
 
-    it('saves the window as the model’s own option, then loads at it', async () => {
-      const post = vi.fn().mockResolvedValue({ data: { status: 'ok' } });
+    // Lemonade 10.2.0 — every Lemonade on the fleet — has no `/v1/models/{id}/options` route, so the
+    // window is saved by the load itself (`save_options`), which both 10.2.0 and 2026.x take. 10.2.0
+    // REPLACES the saved options with the request's, so what is already saved rides along.
+    it('saves the window with the load itself, carrying back the options already saved', async () => {
+      const get = vi.fn().mockResolvedValue({ data: { id: 'Qwen3.8-27B-GGUF', recipe_options: { llamacpp_backend: 'vulkan', ctx_size: 4096 } } });
+      const post = vi.fn().mockResolvedValue({ data: { status: 'success' } });
+      (axios.get as never) = get;
       (axios.post as never) = post;
 
       await backend.loadModel('Qwen3.8-27B-GGUF', { contextLength: 16384 });
 
-      // Saved first so Lemonade's OWN loads (an inference request for a model not resident) use it
-      // too, instead of its auto-sizing against the whole card.
-      expect(post).toHaveBeenNthCalledWith(
-        1,
-        'http://ci-hub-lemonade:13305/v1/models/Qwen3.8-27B-GGUF/options',
-        { ctx_size: 16384 },
-        { timeout: 10000 },
-      );
-      expect(post).toHaveBeenNthCalledWith(
-        2,
+      expect(get).toHaveBeenCalledWith('http://ci-hub-lemonade:13305/v1/models/Qwen3.8-27B-GGUF', { timeout: 5000 });
+      expect(post).toHaveBeenCalledTimes(1);
+      expect(post).toHaveBeenCalledWith(
         'http://ci-hub-lemonade:13305/v1/load',
-        { model_name: 'Qwen3.8-27B-GGUF', ctx_size: 16384 },
+        { llamacpp_backend: 'vulkan', model_name: 'Qwen3.8-27B-GGUF', ctx_size: 16384, save_options: true },
         { timeout: 120000 },
       );
     });
 
-    it('still loads at the window when saving it fails', async () => {
-      const post = vi
-        .fn()
-        .mockRejectedValueOnce(new Error('404'))
-        .mockResolvedValue({ data: { status: 'ok' } });
+    it('loads at the window without saving it when the saved options cannot be read, rather than wiping them', async () => {
+      (axios.get as never) = vi.fn().mockRejectedValue(new Error('timeout'));
+      const post = vi.fn().mockResolvedValue({ data: { status: 'success' } });
       (axios.post as never) = post;
 
       await backend.loadModel('Qwen3.8-27B-GGUF', { contextLength: 16384 });
 
-      expect(post).toHaveBeenLastCalledWith(
+      expect(post).toHaveBeenCalledWith(
         'http://ci-hub-lemonade:13305/v1/load',
         { model_name: 'Qwen3.8-27B-GGUF', ctx_size: 16384 },
         { timeout: 120000 },
       );
+      expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('not saved'));
+    });
+
+    it('sends no window, and reads nothing first, for an embedding model', async () => {
+      const get = vi.fn();
+      const post = vi.fn().mockResolvedValue({ data: { status: 'success' } });
+      (axios.get as never) = get;
+      (axios.post as never) = post;
+
+      await backend.loadModel('nomic-embed-text-v1-GGUF', { embedding: true, contextLength: 8192 });
+
+      expect(get).not.toHaveBeenCalled();
+      expect(post).toHaveBeenCalledWith('http://ci-hub-lemonade:13305/v1/load', { model_name: 'nomic-embed-text-v1-GGUF' }, { timeout: 120000 });
     });
 
     it('unloads through Lemonade’s documented /v1/unload endpoint', async () => {
@@ -202,6 +211,86 @@ describe('LemonadeBackend', () => {
       await backend.unloadModel('Qwen3-8B-GGUF');
 
       expect(post).toHaveBeenCalledWith('http://ci-hub-lemonade:13305/v1/unload', { model_name: 'Qwen3-8B-GGUF' }, { timeout: 30000 });
+    });
+  });
+
+  describe('the window it serves', () => {
+    it('reads the saved ctx_size as the window every caller gets, and nothing when none is saved', async () => {
+      (axios.get as never) = vi.fn().mockResolvedValue({ data: { id: 'Gemma-4-E4B-it-GGUF', recipe_options: { ctx_size: 32768 } } });
+      await expect(backend.servedContextLength('Gemma-4-E4B-it-GGUF')).resolves.toBe(32768);
+
+      // What beta-red's 10.2.0 lists for a model nothing was ever saved for, and Lemonade's "auto".
+      for (const recipe_options of [{}, { ctx_size: -1 }]) {
+        (axios.get as never) = vi.fn().mockResolvedValue({ data: { id: 'Gemma-4-E4B-it-GGUF', recipe_options } });
+        await expect(backend.servedContextLength('Gemma-4-E4B-it-GGUF')).resolves.toBeNull();
+      }
+      (axios.get as never) = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+      await expect(backend.servedContextLength('Gemma-4-E4B-it-GGUF')).resolves.toBeNull();
+    });
+  });
+
+  describe('residency', () => {
+    // `/v1/health` on Lemonade 10.2.0 lists what its router holds with none of 2026.x's
+    // loaded/status/backend_alive markers; requiring them read every fleet Lemonade as empty.
+    const health102 = {
+      status: 'ok',
+      version: '10.2.0',
+      all_models_loaded: [
+        { model_name: 'Gemma-4-E4B-it-GGUF', type: 'llm', recipe: 'llamacpp', recipe_options: { ctx_size: 32768 } },
+        { model_name: 'nomic-embed-text-v1-GGUF', type: 'embedding', recipe: 'llamacpp', recipe_options: { ctx_size: 8192 } },
+      ],
+    };
+
+    it("reads 10.2.0's records as resident, with the window each was loaded at", async () => {
+      (axios.get as never) = vi.fn().mockResolvedValue({ data: health102 });
+
+      const residency = await backend.listResident();
+
+      expect(residency.source).toBe('measured');
+      expect(residency.models?.map((model) => [model.id, model.contextLength])).toEqual([
+        ['Gemma-4-E4B-it-GGUF', 32768],
+        ['nomic-embed-text-v1-GGUF', 8192],
+      ]);
+    });
+
+    it('still drops a 2026.x record whose backend is gone or not ready', async () => {
+      (axios.get as never) = vi.fn().mockResolvedValue({
+        data: {
+          all_models_loaded: [
+            { model_name: 'a', loaded: true, status: 'ready', backend_alive: true },
+            { model_name: 'b', loaded: true, status: 'ready', backend_alive: false },
+            { model_name: 'c', loaded: true, status: 'loading' },
+            { model_name: 'd', loaded: false },
+          ],
+        },
+      });
+
+      await expect(backend.listResident()).resolves.toMatchObject({ models: [expect.objectContaining({ id: 'a' })] });
+    });
+
+    it('answers "loaded" only for what it holds, not for everything downloaded', async () => {
+      // The inventory (`/v1/models`) lists every downloaded model; only one of them is in memory.
+      (axios.get as never) = vi.fn(async (url: string) =>
+        url.endsWith('/v1/health')
+          ? { status: 200, data: health102 }
+          : { data: { data: [{ id: 'Gemma-4-E4B-it-GGUF' }, { id: 'Qwen3.5-9B-GGUF' }] } },
+      );
+
+      await expect(backend.isModelLoaded('Gemma-4-E4B-it-GGUF')).resolves.toBe(true);
+      await expect(backend.isModelLoaded('Qwen3.5-9B-GGUF')).resolves.toBe(false);
+    });
+
+    it("states the resident LLM's window to pool placement, and nothing before it has been read", async () => {
+      expect(backend.engineCapabilities()).toBeNull();
+
+      (axios.get as never) = vi.fn().mockResolvedValue({ data: health102 });
+      await backend.listResident();
+      // The embedder's 8192 is not a window any chat request gets.
+      expect(backend.engineCapabilities()).toEqual({ slots: null, contextLength: 32768 });
+
+      (axios.get as never) = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+      await backend.listResident();
+      expect(backend.engineCapabilities()).toBeNull();
     });
   });
 

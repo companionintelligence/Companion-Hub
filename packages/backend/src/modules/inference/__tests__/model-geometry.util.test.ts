@@ -104,4 +104,13 @@ describe('estimateContextCost', () => {
     expect(estimateContextCost({ geometry: null, weightBytes: GEMMA4_WEIGHTS, sighting })?.source).toBe('calibrated');
     expect(estimateContextCost({ geometry: null, weightBytes: GEMMA4_WEIGHTS, sighting: null })).toBeNull();
   });
+
+  // The slot rule needs the family: Ollama runs qwen35 (qwen3.8:27b) on one slot whatever
+  // OLLAMA_NUM_PARALLEL says, and gemma4 on all of them.
+  it('carries the architecture the geometry names, and none when there was no geometry', () => {
+    expect(estimateContextCost({ geometry: parseModelGeometry(QWEN38_INFO), weightBytes: QWEN38_WEIGHTS })?.architecture).toBe('qwen35');
+    expect(estimateContextCost({ geometry: parseModelGeometry(GEMMA4_INFO), weightBytes: GEMMA4_WEIGHTS })?.architecture).toBe('gemma4');
+    const sighting = { contextLength: 16_384, vramBytes: GEMMA4_WEIGHTS + 768 * MIB + 1_000 * MIB };
+    expect(estimateContextCost({ geometry: null, weightBytes: GEMMA4_WEIGHTS, sighting })).not.toHaveProperty('architecture');
+  });
 });

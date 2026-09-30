@@ -203,7 +203,8 @@ export class InferenceTools implements OnModuleInit {
         const profile = await this.hardwareInspector.getProfile();
         const curated = this.modelRegistry.getCuratedModel(modelId);
         const footprint = curated?.runtime.memoryFootprintMb || 0;
-        const canPin = await this.memoryManager.canPinModel(profile, footprint);
+        // Named, so a measurement of this model on this node stands in for the catalog's figure.
+        const canPin = await this.memoryManager.canPinModel(profile, footprint, curated);
 
         if (!canPin.canPin) {
           return { success: false, message: canPin.reason };

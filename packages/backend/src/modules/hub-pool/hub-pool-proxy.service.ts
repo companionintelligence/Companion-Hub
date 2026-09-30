@@ -4105,7 +4105,9 @@ export class PoolProxyService {
       // is the opposite of what the client-abort propagation is for. The `fetch` below rejects on
       // the same signal anyway, so nothing would have used the model we just made room for.
       if (GENERATION_PATHS.has(path) && this.router && !clientClosed?.aborted) {
-        await this.router.prepareTrackedModel(model).catch((error: unknown) => {
+        // With the window this request will run at, so a model loaded for it is loaded at that
+        // window and the request itself does not reload it (none on `/v1`: Ollama's default).
+        await this.router.prepareTrackedModel(model, { numCtx: requestedWindow(path, body) }).catch((error: unknown) => {
           this.logger.debug(
             `[PoolProxy] residency arbitration for ${model} failed; forwarding anyway: ${error instanceof Error ? error.message : String(error)}`,
           );

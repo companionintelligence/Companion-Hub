@@ -12,12 +12,14 @@ import type {
   InferenceStatus,
 } from '@ci-hub/common/types';
 import { clampContextCap } from '@/common/helpers/inference-context-cap';
+import { AppsRepository } from '@/modules/apps/apps.repository';
+import { appInferenceRequirements, checkModelRequirements } from './app-inference-requirements';
 import { handoutContextLength, visionReserveMbFor } from './app-model-handout';
-import { probeContextCost } from './context-cost.util';
-import { estimateLoadedFootprintMb } from './context-length.util';
+import { kvSequencesFor, probeContextCost } from './context-cost.util';
+import { estimateLoadedFootprintMb, FLOOR_CONTEXT, largestFittingWindow, type ModelMemoryInput } from './context-length.util';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { ModelRegistryService } from './model-registry.service';
-import { type EvictionCandidate, MemoryManagerService } from './memory-manager.service';
+import { type EvictionCandidate, MemoryManagerService, modelMemoryCeilingMb } from './memory-manager.service';
 import { CloudFallbackService, speaksOpenAiCompletions } from './cloud-fallback.service';
 import { ModelPullerService } from './model-puller.service';
 import { InferenceBackendRegistry } from './backends/backend-registry';
@@ -62,6 +64,8 @@ export class InferenceRouterService {
     // Optional and last: the router's own tests build it through Nest without configuration, and
     // only the `auto` resolution below reads a preference.
     @Optional() private readonly configuration?: ConfigurationService,
+    // Optional for the same reason: only a Lemonade load reads it, for installed apps' context floors.
+    @Optional() private readonly apps?: AppsRepository,
   ) {}
 
   /**
@@ -556,8 +560,18 @@ export class InferenceRouterService {
    *
    * Null means "not a tracked model, or it does not fit and nothing can be freed"; the caller then
    * falls through to the engine as before. Never throws for a residency probe that fails.
+   *
+   * `request.numCtx` is the window the request that triggered this runs at: its own `options.num_ctx`
+   * on Ollama's native routes, null on `/v1`, where Ollama drops `options` and runs its default. An
+   * Ollama load is made at exactly that window (none for null) so the request that follows finds the
+   * model as loaded; any other window is reloaded by that very request — measured 2026-09-29, a load
+   * at 8192 went to 32768 on the next `/v1` call. The default is the `/v1` answer, which is what the
+   * Hub's own `/v1/chat/completions` and `/v1/completions` forward to.
    */
-  async prepareTrackedModel(model: string): Promise<{ backend: InferenceBackendType; backendModelId: string } | null> {
+  async prepareTrackedModel(
+    model: string,
+    request: { numCtx: number | null } = { numCtx: null },
+  ): Promise<{ backend: InferenceBackendType; backendModelId: string } | null> {
     const tracked =
       this.modelRegistry.getTrackedModel(model) ?? this.modelRegistry.getTrackedModels().find((entry) => entry.backendModelId === model);
     if (!tracked) {
@@ -571,7 +585,7 @@ export class InferenceRouterService {
       return null;
     }
 
-    const outcome = await this.loadTrackedModel(tracked.catalogId);
+    const outcome = await this.loadTrackedModel(tracked.catalogId, { request });
     return outcome.loaded ? served : null;
   }
 
@@ -585,8 +599,15 @@ export class InferenceRouterService {
    * knowing), then fits, then evicts whatever unpinned models the engines hold — the Hub's own
    * loads or not — and re-measures before loading. It never loads on top of a card it could not
    * clear: a load that does not fit is refused with the reason, not attempted.
+   *
+   * `options.request` marks a load an app's request triggered, with the window that request runs at
+   * (see {@link prepareTrackedModel}); without it this is an operator's pin or load, and the Hub
+   * picks the window (see {@link planLoad}).
    */
-  async loadTrackedModel(catalogId: string): Promise<{ loaded: true } | { loaded: false; reason: string }> {
+  async loadTrackedModel(
+    catalogId: string,
+    options: { request?: { numCtx: number | null } } = {},
+  ): Promise<{ loaded: true } | { loaded: false; reason: string }> {
     const tracked = this.modelRegistry.getTrackedModel(catalogId);
     const curated = this.modelRegistry.getCuratedModel(catalogId);
     const target = tracked ?? curated;
@@ -607,7 +628,12 @@ export class InferenceRouterService {
     }
 
     const profile = await this.hardwareInspector.getProfile();
-    const { contextLength, footprintMb: footprint } = await this.planLoad(curated, { backend: backendType, backendModelId }, profile);
+    const { contextLength, footprintMb: footprint } = await this.planLoad(
+      curated,
+      { backend: backendType, backendModelId },
+      profile,
+      options.request,
+    );
     const fit = await this.memoryManager.canFitModel(profile, footprint);
     if (!fit.fits) {
       const deficit = footprint - fit.availableMb;
@@ -621,7 +647,7 @@ export class InferenceRouterService {
       for (const candidate of plan.candidates) {
         await this.evict(candidate);
       }
-      if (!(await this.waitForFit(profile, footprint))) {
+      if (!(await this.waitForFit(footprint))) {
         return {
           loaded: false,
           reason: `${catalogId} still does not fit after unloading ${plan.candidates.map((c) => c.backendModelId).join(', ')}`,
@@ -634,39 +660,160 @@ export class InferenceRouterService {
   }
 
   /**
-   * The window to load a model at and what it will then occupy. The window is the one the Hub
-   * hands its apps as `CI_LLM_NUM_CTX` for this model (`handoutContextLength`, same inputs, same
-   * operator cap) minus any one app's floor: on Ollama a load at any other window is reloaded by
-   * the apps' first native request, and on Lemonade, which takes no window per request, it is the
-   * window every app gets. `null` for an embedding model, or one the catalog does not describe.
+   * The window to load a model at, and what it will then occupy — the figure the fit check and any
+   * eviction are sized to. `contextLength` null sends the engine no window.
+   *
+   * Everything is sized against the budget the fit check itself uses (`modelMemoryCeilingMb`, and
+   * `loadHeadroomMb` for what is free now), from the engine's own measurements where it has them:
+   * the per-token cost, the slot count it multiplies by, and what the model was last seen occupying
+   * here (`MemoryManagerService.footprintSighting`), which replaces the catalog's figure.
+   *
+   * - **An app's request on Ollama** runs at its own window whatever the Hub loads at, so the load
+   *   is made at that window and sized at it: `request.numCtx`, or — on `/v1`, which carries none —
+   *   no window at all, sized at the default this node states for the engine (its own statement,
+   *   else `inferenceMaxNumCtx`), else at the handout. Stepping the window down would only buy a
+   *   reload by the very request that asked.
+   * - **Otherwise** (an operator's pin or load, and every Lemonade load, since Lemonade has no
+   *   per-request window) the Hub picks: the window it hands its apps for this model, raised on
+   *   Lemonade to the floor of any installed app it could be handed to, then stepped down — 65536,
+   *   32768, … 4096 — to the largest that fits what is free now. Only when not even 4096 fits does
+   *   it size for the largest window an empty card could hold, which is what eviction then frees.
+   * - `null` for anything but a text LLM, or a model the catalog does not describe: an embedding,
+   *   TTS or STT model has no context window to size.
    */
   private async planLoad(
     curated: CuratedModel | undefined,
     target: { backend: InferenceBackendType; backendModelId: string },
     profile: HardwareProfile,
+    request?: { numCtx: number | null },
   ): Promise<{ contextLength: number | null; footprintMb: number }> {
     const catalogFootprint = curated?.runtime.memoryFootprintMb || 0;
-    if (!curated || curated.modality === 'embedding') {
+    // Lemonade's kokoro and whisper rows carry a 0 window, fell back to 8192, and were charged a
+    // phantom 2 GB of KV cache and sent a llama.cpp ctx_size they have no use for.
+    if (!curated || curated.modality !== 'llm') {
       return { contextLength: null, footprintMb: catalogFootprint };
     }
     const backend = this.backends.get(target.backend);
-    const cost = await probeContextCost(backend, { ...curated, backendModelId: target.backendModelId });
-    const contextLength = handoutContextLength({
-      model: curated,
-      servedLocally: true,
-      effectiveInferenceMemoryMb: profile.effectiveInferenceMemoryMb,
-      kvMbPerToken: cost?.kvMbPerToken ?? null,
-      weightMb: cost?.weightMb ?? null,
-      maxContextLength: this.localContextCap(),
-    });
-    const footprintMb = estimateLoadedFootprintMb({
+    const [cost, sighting, availableMb] = await Promise.all([
+      probeContextCost(backend, { ...curated, backendModelId: target.backendModelId }),
+      this.memoryManager.footprintSighting(profile, target.backend, target.backendModelId),
+      this.memoryManager.loadHeadroomMb(profile),
+    ]);
+    const sizing: ModelMemoryInput = {
       modelFootprintMb: catalogFootprint,
-      numCtx: contextLength,
       kvMbPerToken: cost?.kvMbPerToken ?? null,
       weightMb: cost?.weightMb ?? null,
       visionReserveMb: visionReserveMbFor(curated),
+      kvSlots: kvSequencesFor(target.backend, cost, this.statedSlots(target.backend, backend)),
+      sighting,
+    };
+    const ceilingMb = modelMemoryCeilingMb(profile);
+    const localCap = this.localContextCap();
+    const handout = handoutContextLength({
+      model: curated,
+      servedLocally: true,
+      effectiveInferenceMemoryMb: ceilingMb,
+      kvMbPerToken: sizing.kvMbPerToken,
+      weightMb: sizing.weightMb,
+      kvSlots: sizing.kvSlots,
+      sighting,
+      maxContextLength: localCap,
     });
+    const modelWindow = curated.runtime.contextWindow > 0 ? Math.floor(curated.runtime.contextWindow) : null;
+
+    if (request && target.backend === 'ollama') {
+      const runsAt = request.numCtx ?? this.ollamaDefaultWindow(backend) ?? handout;
+      const window = modelWindow === null ? runsAt : Math.min(runsAt, modelWindow);
+      return { contextLength: request.numCtx, footprintMb: estimateLoadedFootprintMb({ ...sizing, numCtx: window }) };
+    }
+
+    const floor = target.backend === 'lemonade' ? await this.installedAppFloor(curated) : null;
+    let wanted = floor ? Math.max(handout, floor.minContextLength) : handout;
+    if (modelWindow !== null) wanted = Math.min(wanted, modelWindow);
+    if (localCap !== null) wanted = Math.min(wanted, localCap);
+
+    let contextLength = largestFittingWindow({ ...sizing, from: wanted, budgetMb: availableMb });
+    let footprintMb: number;
+    if (contextLength !== null) {
+      footprintMb = estimateLoadedFootprintMb({ ...sizing, numCtx: contextLength });
+    } else if (!request && sighting && sighting.footprintMb <= availableMb) {
+      // What the operator asked for has been measured running on this card in what is free now; only
+      // the reserves charged on top of that measurement are over. That is worth a warning, not a refusal.
+      contextLength = Math.min(wanted, sighting.contextLength);
+      footprintMb = sighting.footprintMb;
+      const charged = estimateLoadedFootprintMb({ ...sizing, numCtx: contextLength });
+      this._logger.warn(
+        `[Inference] ${curated.id} is charged ${charged} MB at a ${contextLength}-token window with its reserves, above the ${availableMb} MB free; ` +
+          `loading it anyway, because ${target.backend} was measured serving it here at ${sighting.contextLength} in ${sighting.footprintMb} MB`,
+      );
+    } else {
+      contextLength = largestFittingWindow({ ...sizing, from: wanted, budgetMb: ceilingMb }) ?? Math.min(wanted, FLOOR_CONTEXT);
+      footprintMb = estimateLoadedFootprintMb({ ...sizing, numCtx: contextLength });
+    }
+
+    if (floor && floor.minContextLength > contextLength) {
+      this._logger.warn(
+        `[Inference] ${target.backend} will serve ${target.backendModelId} at ctx_size ${contextLength}, below the ${floor.minContextLength}-token floor of ` +
+          `${floor.apps.join(', ')}: that is all this node has room for, so apps are handed ${contextLength} for it and may refuse to start. ` +
+          'Free memory or choose a smaller model for this node.',
+      );
+    }
     return { contextLength, footprintMb };
+  }
+
+  /**
+   * The largest context floor among installed apps `model` could be handed to — an app with a floor
+   * whose requirements the model meets — or null when there is none.
+   *
+   * Lemonade serves one window per model to every caller, so an app that needs 64000 tokens (Hermes)
+   * is only served that if the model was loaded at it; a load sized for the handout alone saved 32768
+   * while Hermes was told 64000. Every installed app the model qualifies for counts, not only the one
+   * handed it right now: the saved window outlives the handout, and the pool can route any of them to
+   * it. An app list that cannot be read costs the floor, never the load.
+   */
+  private async installedAppFloor(model: CuratedModel): Promise<{ minContextLength: number; apps: string[] } | null> {
+    if (!this.apps) return null;
+    let installed: { appName: string }[];
+    try {
+      installed = await this.apps.getApps();
+    } catch (err) {
+      this._logger.debug(`[Inference] Could not read installed apps for their context floors: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+    let minContextLength = 0;
+    const apps: string[] = [];
+    for (const { appName } of installed) {
+      const requirements = appInferenceRequirements(appName);
+      const appFloor = requirements.minContextLength ?? 0;
+      if (appFloor <= 0 || checkModelRequirements(model, requirements).verdict !== 'meets') continue;
+      apps.push(appName);
+      minContextLength = Math.max(minContextLength, appFloor);
+    }
+    return apps.length > 0 ? { minContextLength, apps } : null;
+  }
+
+  /**
+   * How many requests `backend` runs at once, as far as this node knows: the engine's own statement,
+   * else — for Ollama, whose `OLLAMA_NUM_PARALLEL` the API does not expose — the operator's
+   * `inferenceOllamaSlots`. Null when neither says.
+   */
+  private statedSlots(backendType: InferenceBackendType, backend: InferenceBackend): number | null {
+    const stated = backend.engineCapabilities?.()?.slots ?? null;
+    if (stated !== null || backendType !== 'ollama') return stated;
+    try {
+      return this.configuration?.getInferencePreferences()?.ollamaSlots ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The window Ollama runs a request that names none at: its own statement when it makes one, else
+   * this node's `inferenceMaxNumCtx`, which the operator sets to `OLLAMA_CONTEXT_LENGTH` because the
+   * API does not expose it. The same reading the pool proxy's `localEngineWindow` makes.
+   */
+  private ollamaDefaultWindow(backend: InferenceBackend): number | null {
+    return clampContextCap(backend.engineCapabilities?.()?.contextLength) ?? this.localContextCap();
   }
 
   /** This node's `inferenceMaxNumCtx`, as `InferenceEndpointService.localContextCap` reads it. */
@@ -702,11 +849,17 @@ export class InferenceRouterService {
    * Re-measure until the model fits or the wait runs out. Engines release memory after the unload
    * call returns (Ollama stops its runner asynchronously), so one immediate reading can still show
    * the model just evicted.
+   *
+   * Each attempt re-reads the hardware profile with a fresh RAM sample. On unified memory the fit is
+   * capped by live MemAvailable, and the profile read before the unload kept that cap at its
+   * pre-eviction value however much the unload freed: an eviction that worked was reported as "still
+   * does not fit", and the operator's retry then succeeded.
    */
-  private async waitForFit(profile: HardwareProfile, footprintMb: number): Promise<boolean> {
+  private async waitForFit(footprintMb: number): Promise<boolean> {
     for (let attempt = 0; attempt < EVICTION_SETTLE_ATTEMPTS; attempt++) {
       if (attempt > 0) await this.delay(EVICTION_SETTLE_INTERVAL_MS);
       this.memoryManager.invalidateObservation();
+      const profile = await this.hardwareInspector.getProfile({ freshRam: true });
       if ((await this.memoryManager.canFitModel(profile, footprintMb)).fits) return true;
     }
     return false;

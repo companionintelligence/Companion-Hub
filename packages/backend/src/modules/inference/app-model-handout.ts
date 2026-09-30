@@ -2,7 +2,7 @@ import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
 import { inventoryListsModel, sameModelId } from '@/common/helpers/hub-pool';
 import { clampContextCap } from '@/common/helpers/inference-context-cap';
 import { checkModelRequirements, describeRequirements, hasInferenceRequirements, type AppInferenceRequirements } from './app-inference-requirements';
-import { recommendContextLength, VISION_ENCODER_RESERVE_MB } from './context-length.util';
+import { type FootprintSighting, recommendContextLength, VISION_ENCODER_RESERVE_MB } from './context-length.util';
 import { compareLlmCandidates } from './model-registry.service';
 
 /**
@@ -259,6 +259,11 @@ export const PEER_SERVED_CONTEXT_LENGTH = 32_768;
 export interface ContextHandoutInput {
   model: CuratedModel;
   servedLocally: boolean;
+  /**
+   * Memory the model may use on this node: `modelMemoryCeilingMb(profile)`, the budget the load is
+   * fit-checked against with nothing else loaded, so the window an app is told is one the load path
+   * will not refuse or step down on an empty card.
+   */
   effectiveInferenceMemoryMb: number;
   minContextLength?: number;
   /**
@@ -269,6 +274,10 @@ export interface ContextHandoutInput {
    */
   kvMbPerToken?: number | null;
   weightMb?: number | null;
+  /** Sequences the engine allocates a KV cache for (`kvSequencesFor`); local path only, like the cost. */
+  kvSlots?: number | null;
+  /** What this node's engine was seen holding for the model (`MemoryManagerService`); local path only. */
+  sighting?: FootprintSighting | null;
   /**
    * The engine-runtime ceiling: this node's `inferenceMaxNumCtx` on the direct path, or for a
    * pooled handout the largest cap among the serving nodes from {@link poolContextCap}. `null` or
@@ -302,6 +311,8 @@ function uncappedContextLength(input: ContextHandoutInput): number {
       minContextLength,
       kvMbPerToken: input.kvMbPerToken ?? null,
       weightMb: input.weightMb ?? null,
+      kvSlots: input.kvSlots ?? null,
+      sighting: input.sighting ?? null,
       visionReserveMb: visionReserveMbFor(model),
     });
   }
@@ -367,6 +378,39 @@ export function describeContextHandout(input: {
     );
   }
   return notes;
+}
+
+/**
+ * The handout for a model whose engine serves one window whatever a request asks — Lemonade, whose
+ * saved `ctx_size` is the window every caller gets — lowered to that window when it is smaller, with
+ * a line for the operator.
+ *
+ * The Hub loads a Lemonade model at the largest window up to the installed apps' floors that fits
+ * (`InferenceRouterService.planLoad`); when the card cannot hold the floor, the saved window is
+ * smaller than what an app would be told, and the app would find out only once its conversation
+ * outgrew it. Handing it the served window says so at startup instead — an app with a floor above
+ * it refuses there, which is the honest failure — and the warning names the fix.
+ */
+export function capHandoutAtServedWindow(input: {
+  appSlug: string;
+  engineId: string;
+  backendType: InferenceBackendType;
+  numCtx: number;
+  /** The engine's `servedContextLength`, or null when it states none. */
+  servedContextLength: number | null;
+  minContextLength?: number;
+}): { numCtx: number; notes: string[] } {
+  const { appSlug, engineId, backendType, numCtx, servedContextLength: served } = input;
+  if (served === null || !(served > 0) || served >= numCtx) {
+    return { numCtx, notes: [] };
+  }
+  const floor = input.minContextLength ?? 0;
+  const note =
+    `${appSlug}: ${backendType} serves ${engineId} at ctx_size ${served}, below the ${numCtx} it would be handed, so it is handed ${served}` +
+    (floor > served
+      ? `, under its ${floor}-token floor, and may refuse to start; free memory on this node so the model loads at a larger window, or choose a smaller model.`
+      : '.');
+  return { numCtx: served, notes: [note] };
 }
 
 export interface PrePullDecision {

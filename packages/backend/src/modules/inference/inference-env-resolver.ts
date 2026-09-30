@@ -1,5 +1,5 @@
-import { Injectable } from '@nestjs/common';
-import { probeContextCost } from './context-cost.util';
+import { Injectable, Optional } from '@nestjs/common';
+import { probeLocalSizing } from './context-cost.util';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { ModelRegistryService } from './model-registry.service';
@@ -9,7 +9,14 @@ import { CloudFallbackService } from './cloud-fallback.service';
 import { InferenceEndpointService } from './inference-endpoint.service';
 import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
 import { appInferenceRequirements, checkModelRequirements, type AppInferenceRequirements } from './app-inference-requirements';
-import { describeContextHandout, describeNoSuitableChatModel, handoutContextLength, selectPoolChatModel } from './app-model-handout';
+import {
+  capHandoutAtServedWindow,
+  describeContextHandout,
+  describeNoSuitableChatModel,
+  handoutContextLength,
+  selectPoolChatModel,
+} from './app-model-handout';
+import { MemoryManagerService, modelMemoryCeilingMb } from './memory-manager.service';
 import { appBearerFor } from './engine-credential-scope';
 import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
 
@@ -96,6 +103,9 @@ export class InferenceEnvResolver {
     private readonly ollamaBackend: OllamaBackend,
     private readonly cloudFallback: CloudFallbackService,
     private readonly endpoints: InferenceEndpointService,
+    // Optional and last, so a resolver built without it sizes from the catalog as before: it only
+    // contributes what a model was measured occupying here (see `probeLocalSizing`).
+    @Optional() private readonly memoryManager?: MemoryManagerService,
   ) {}
 
   async resolve(options?: InferenceEnvResolveOptions): Promise<StandardizedAiEnv> {
@@ -263,30 +273,57 @@ export class InferenceEnvResolver {
     // node serves the model, and capped at what the engine that will serve it runs at; see
     // handoutContextLength.
     if (chatCurated && chatModel) {
-      // What a token of context costs THIS model, before falling back to the fixed ladder — the
-      // engine's measurement and the catalog's (see `context-cost.util`). Only a model this node
-      // serves can be measured: a peer's is not measurable from here, so a pool-served model keeps
-      // the heuristic. The load path sizes its window with the same probe, so the two agree.
+      // What a token of context costs THIS model, on how many slots, and what it was last measured
+      // occupying here, before falling back to the fixed ladder and the catalog (see
+      // `probeLocalSizing`). Only a model this node serves can be measured: a peer's is not
+      // measurable from here, so a pool-served model keeps the heuristic. The load path reads the
+      // same three sources against the same ceiling; it differs by the app's floor and cap, and it
+      // asks the model's own engine where this asks the active one.
       const askOllama = chatServedLocally && backendType === 'ollama';
-      const [cost, residentContextLength] = await Promise.all([
-        chatServedLocally ? probeContextCost(backend, chatCurated) : null,
+      const [sizing, residentContextLength, servedContextLength] = await Promise.all([
+        chatServedLocally
+          ? probeLocalSizing({
+              backendType,
+              backend,
+              model: chatCurated,
+              profile,
+              statedOllamaSlots: preferences.ollamaSlots,
+              sightings: this.memoryManager,
+            })
+          : null,
         askOllama ? this.ollamaBackend.residentContextLength(chatCurated.backendModelId) : null,
+        chatServedLocally ? Promise.resolve(backend.servedContextLength?.(chatCurated.backendModelId) ?? null).catch(() => null) : null,
       ]);
       // Through the pool, the largest cap among the nodes serving the model — the proxy places a
       // request only on nodes whose cap can take its window, so no smaller node binds (see
       // `poolContextCap`); this node's own cap on the direct path.
       const localContextCap = this.endpoints.localContextCap();
       const maxContextLength = poolChoice ? poolChoice.contextCap : localContextCap;
-      const numCtx = handoutContextLength({
+      const sized = handoutContextLength({
         model: chatCurated,
         servedLocally: chatServedLocally,
-        effectiveInferenceMemoryMb: profile.effectiveInferenceMemoryMb,
+        effectiveInferenceMemoryMb: modelMemoryCeilingMb(profile),
         minContextLength: requirements.minContextLength,
-        kvMbPerToken: cost?.kvMbPerToken ?? null,
-        weightMb: cost?.weightMb ?? null,
+        kvMbPerToken: sizing?.kvMbPerToken ?? null,
+        weightMb: sizing?.weightMb ?? null,
+        kvSlots: sizing?.kvSlots ?? null,
+        sighting: sizing?.sighting ?? null,
         maxContextLength,
       });
+      // Never above the one window Lemonade serves this model at to every caller.
+      const served = capHandoutAtServedWindow({
+        appSlug: appLabel,
+        engineId: chatModel,
+        backendType,
+        numCtx: sized,
+        servedContextLength: servedContextLength ?? null,
+        minContextLength: requirements.minContextLength,
+      });
+      const numCtx = served.numCtx;
       env.CI_LLM_NUM_CTX = String(numCtx);
+      for (const note of served.notes) {
+        this.logger.warn(`[InferenceEnvResolver] ${note}`);
+      }
       for (const note of describeContextHandout({
         appSlug: appLabel,
         engineId: chatModel,

@@ -84,11 +84,19 @@ export interface InferenceBackend {
   /**
    * The engine's own statement of slots and per-slot context, from the LAST health probe — never a
    * request of its own, because the pool proxy reads it while ranking every request. Optional:
-   * only an engine that exposes the figures implements it (llama-server's `/props`); for the rest
-   * the operator's statement in the inference preferences is the only source. `null` when the last
-   * probe did not reach the engine.
+   * only an engine that exposes the figures implements it (llama-server's `/props`, Lemonade's
+   * saved `ctx_size` for the model it holds); for the rest the operator's statement in the inference
+   * preferences is the only source. `null` when the last probe did not reach the engine.
    */
   engineCapabilities?(): EngineCapabilities | null;
+
+  /**
+   * The window this engine serves `modelId` at whatever a request asks, for an engine that takes no
+   * window per request: Lemonade's saved `ctx_size`. A handout for such a model is never above it,
+   * since the engine would not serve more. Optional: Ollama loads at the window each request names,
+   * and an engine that cannot say leaves the handout as sized. Null when nothing is saved.
+   */
+  servedContextLength?(modelId: string): Promise<number | null>;
 
   /**
    * Tell the backend that a request it accepted for `modelId` failed in a way that suggests it

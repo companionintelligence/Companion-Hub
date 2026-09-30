@@ -8145,9 +8145,33 @@ describe('PoolProxyService', () => {
 
       await withRouter.proxyRequest({ path: '/api/chat', method: 'POST', body: { model: MODEL, messages: [] }, model: MODEL, res });
 
-      expect(router.prepareTrackedModel).toHaveBeenCalledWith(MODEL);
+      // No `options.num_ctx` on this request: it runs at the engine's default, and so must the load.
+      expect(router.prepareTrackedModel).toHaveBeenCalledWith(MODEL, { numCtx: null });
       expect(router.prepareTrackedModel.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(global.fetch).mock.invocationCallOrder[0]);
       expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    // A load at any other window than the request's is reloaded by that very request (Ollama's
+    // `num_ctx` is a load parameter), so arbitration is told the window the request will run at.
+    it('hands arbitration the window the request runs at: its own num_ctx natively, the engine default on /v1', async () => {
+      await withRouter.proxyRequest({
+        path: '/api/chat',
+        method: 'POST',
+        body: { model: MODEL, messages: [], options: { num_ctx: 65536 } },
+        model: MODEL,
+        res: createMockResponse(),
+      });
+      expect(router.prepareTrackedModel).toHaveBeenLastCalledWith(MODEL, { numCtx: 65536 });
+
+      // `/v1` drops `options` on Ollama, so a num_ctx there says nothing about the window it runs at.
+      await withRouter.proxyRequest({
+        path: '/v1/chat/completions',
+        method: 'POST',
+        body: { model: MODEL, messages: [], options: { num_ctx: 65536 } },
+        model: MODEL,
+        res: createMockResponse(),
+      });
+      expect(router.prepareTrackedModel).toHaveBeenLastCalledWith(MODEL, { numCtx: null });
     });
 
     it('still forwards when the arbitration itself fails: it is advice to the engine, not a gate', async () => {

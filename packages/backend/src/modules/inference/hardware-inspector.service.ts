@@ -82,8 +82,15 @@ export class HardwareInspectorService {
   /**
    * The cached hardware profile (re-detected if not available), with the one figure that
    * changes between detections — free host RAM — read live. See {@link withLiveRam}.
+   *
+   * `freshRam` re-reads that figure now rather than accepting a sample up to
+   * {@link LIVE_RAM_SAMPLE_INTERVAL_MS} old. For a caller that has just freed memory and must see
+   * it — the router re-measuring after an eviction — never for a poll.
    */
-  async getProfile(): Promise<HardwareProfile> {
+  async getProfile(options?: { freshRam?: boolean }): Promise<HardwareProfile> {
+    if (options?.freshRam) {
+      this.liveRamSample = null;
+    }
     return this.withLiveRam(await this.getCachedProfile());
   }
 

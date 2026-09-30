@@ -1,5 +1,6 @@
-import { BadRequestException, Injectable, NotFoundException, type OnApplicationShutdown } from '@nestjs/common';
-import { probeContextCost } from './context-cost.util';
+import { BadRequestException, Injectable, NotFoundException, type OnApplicationShutdown, Optional } from '@nestjs/common';
+import { probeLocalSizing } from './context-cost.util';
+import { MemoryManagerService, modelMemoryCeilingMb } from './memory-manager.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
@@ -14,6 +15,7 @@ import { appBearerFor } from './engine-credential-scope';
 import { cloudProviderManagedKeys } from './cloud-provider-env';
 import { appInferenceRequirements, checkModelRequirements, type AppInferenceRequirements } from './app-inference-requirements';
 import {
+  capHandoutAtServedWindow,
   decideModelPrePull,
   describeContextHandout,
   describeNoSuitableChatModel,
@@ -139,6 +141,9 @@ export class AppCredentialsService implements OnApplicationShutdown {
     private readonly ollamaBackend: OllamaBackend,
     private readonly configurationService: ConfigurationService,
     private readonly endpoints: InferenceEndpointService,
+    // Optional and last, as in InferenceEnvResolver: it only contributes what a model was measured
+    // occupying here (see `probeLocalSizing`), and a service built without it sizes from the catalog.
+    @Optional() private readonly memoryManager?: MemoryManagerService,
   ) {}
 
   isSupported(slug: string): slug is AppSlug {
@@ -418,28 +423,53 @@ export class AppCredentialsService implements OnApplicationShutdown {
     // default (e.g. 262144 on unified-memory APUs). The model already meets the app's minimum, so
     // the floor below is always reachable.
     if (provider !== 'cloud' && chatModel && chatModelId === chatModel.backendModelId) {
-      // Same measured-first sizing as InferenceEnvResolver; see `model-geometry.util`. Only a
+      // Same measured-first sizing as InferenceEnvResolver; see `probeLocalSizing`. Only a
       // model this node serves can be measured, so a pool-served one keeps the heuristic.
       const askOllama = chatServedLocally && backendType === 'ollama';
-      const [cost, residentContextLength] = await Promise.all([
-        chatServedLocally ? probeContextCost(backend, chatModel) : null,
+      const [sizing, residentContextLength, servedContextLength] = await Promise.all([
+        chatServedLocally
+          ? probeLocalSizing({
+              backendType,
+              backend,
+              model: chatModel,
+              profile,
+              statedOllamaSlots: preferences.ollamaSlots,
+              sightings: this.memoryManager,
+            })
+          : null,
         askOllama ? this.ollamaBackend.residentContextLength(chatModel.backendModelId) : null,
+        chatServedLocally ? Promise.resolve(backend.servedContextLength?.(chatModel.backendModelId) ?? null).catch(() => null) : null,
       ]);
       // Same cap as the resolver: through the pool, the largest cap among the nodes serving the
       // model (placement keeps the request off the smaller ones — see `poolContextCap`); this
       // node's own cap on the direct path. See `inference-context-cap.ts`.
       const localContextCap = this.endpoints.localContextCap();
       const maxContextLength = poolChoice ? poolChoice.contextCap : localContextCap;
-      const numCtx = handoutContextLength({
+      const sized = handoutContextLength({
         model: chatModel,
         servedLocally: chatServedLocally,
-        effectiveInferenceMemoryMb: profile.effectiveInferenceMemoryMb,
+        effectiveInferenceMemoryMb: modelMemoryCeilingMb(profile),
         minContextLength: requirements.minContextLength,
-        kvMbPerToken: cost?.kvMbPerToken ?? null,
-        weightMb: cost?.weightMb ?? null,
+        kvMbPerToken: sizing?.kvMbPerToken ?? null,
+        weightMb: sizing?.weightMb ?? null,
+        kvSlots: sizing?.kvSlots ?? null,
+        sighting: sizing?.sighting ?? null,
         maxContextLength,
       });
+      // Never above the one window Lemonade serves this model at to every caller.
+      const served = capHandoutAtServedWindow({
+        appSlug: slug,
+        engineId: chatModelId,
+        backendType,
+        numCtx: sized,
+        servedContextLength: servedContextLength ?? null,
+        minContextLength: requirements.minContextLength,
+      });
+      const numCtx = served.numCtx;
       env[keys.numCtx] = String(numCtx);
+      for (const note of served.notes) {
+        this.logger.warn(`[AppCredentials] ${note}`);
+      }
       for (const note of describeContextHandout({
         appSlug: slug,
         engineId: chatModelId,

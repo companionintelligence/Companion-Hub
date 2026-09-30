@@ -4,6 +4,7 @@ import { InternalOriginGuard } from '@/modules/auth/internal-origin.guard';
 import { FilesystemModule } from '@/core/filesystem/filesystem.module';
 import { SystemModule } from '@/modules/system/system.module';
 import { DockerModule } from '@/modules/docker/docker.module';
+import { AppsDataModule } from '@/modules/apps/apps-data.module';
 import { HubPoolModule } from '@/modules/hub-pool/hub-pool.module';
 import { ApiKeyModule } from '@/modules/api-keys/api-key.module';
 import { InferenceAccessGuard } from '@/modules/auth/inference-access.guard';
@@ -34,7 +35,17 @@ import { InferenceController } from './inference.controller';
   // nothing, so there is no cycle back to inference. (SystemModule does forwardRef DockerModule, but
   // that edge is SystemModule's, not this one's.) ApiKeyModule likewise: it imports only LoggerModule
   // and the global database module, and InferenceAccessGuard's key leg needs its ApiKeyService.
-  imports: [LoggerModule, FilesystemModule, DockerModule, ApiKeyModule, forwardRef(() => SystemModule), forwardRef(() => HubPoolModule)],
+  // AppsDataModule, for the same reason as DockerModule's import of it, is cycle-free: the router
+  // reads installed apps' context floors through its AppsRepository when it sizes a Lemonade load.
+  imports: [
+    LoggerModule,
+    FilesystemModule,
+    DockerModule,
+    AppsDataModule,
+    ApiKeyModule,
+    forwardRef(() => SystemModule),
+    forwardRef(() => HubPoolModule),
+  ],
   controllers: [InferenceController],
   providers: [
     InferenceAccessGuard,
