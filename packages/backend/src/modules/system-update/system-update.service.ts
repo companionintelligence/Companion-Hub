@@ -68,12 +68,13 @@ const MAX_LISTENER_TOKEN_BYTES = 1024;
 /**
  * One listener token file, or null. `state/` is a host folder, and whatever the Hub reads here it sends
  * to whoever answers on the listener port, so a symlink is not followed, and only a small regular file
- * holding one printable word counts.
+ * holding one printable word counts. O_NONBLOCK, because opening a FIFO put in its place would wait for
+ * a writer, on the event loop.
  */
 function readListenerTokenFile(tokenPath: string): string | null {
   let fd: number | undefined;
   try {
-    fd = fs.openSync(tokenPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    fd = fs.openSync(tokenPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
     const stat = fs.fstatSync(fd);
     if (!stat.isFile() || stat.size > MAX_LISTENER_TOKEN_BYTES) {
       return null;

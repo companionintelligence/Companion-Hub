@@ -1247,14 +1247,15 @@ fn update_listener_token_path(data_dir: &Path) -> PathBuf {
 /// Reads a token file only when it is this user's own regular file and nobody else can read or
 /// write it. `state/` is shared with the Hub container, and a permission repair can leave the
 /// folder open to every local user, so a token file there may have been planted or read by
-/// someone else. Opened without following a symlink, and checked on the open file.
+/// someone else. Opened without following a symlink or waiting on a FIFO (whose open blocks until
+/// a writer comes, holding up the listener), and checked on the open file.
 fn read_private_token_file(path: &Path) -> Result<String, String> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     let mut file = options
         .open(path)
@@ -1669,6 +1670,39 @@ mod tests {
         let request = "POST /update HTTP/1.1\r\nAuthorization: Bearer expected-token\r\n\r\n";
         assert_eq!(
             authorize_update_listener_request(request, data_dir.path()),
+            Err("update listener token is not private to this user".to_string())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_listener_does_not_wait_on_a_fifo_in_place_of_the_token() {
+        use std::os::unix::ffi::OsStrExt;
+        let data_dir = tempfile::tempdir().expect("tempdir");
+        let state_dir = data_dir.path().join("state");
+        std::fs::create_dir_all(&state_dir).expect("mkdir state");
+        let token_path = std::ffi::CString::new(
+            state_dir
+                .join("update-listener.token")
+                .as_os_str()
+                .as_bytes(),
+        )
+        .expect("token path");
+        assert_eq!(unsafe { libc::mkfifo(token_path.as_ptr(), 0o600) }, 0);
+
+        // Opening a FIFO for reading waits for a writer; on a thread, so a wait fails the test
+        // instead of hanging it.
+        let dir = data_dir.path().to_path_buf();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let request = "GET /health HTTP/1.1\r\nAuthorization: Bearer anything\r\n\r\n";
+            let _ = sender.send(authorize_update_listener_request(request, &dir));
+        });
+        let result = receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the listener waited on the FIFO");
+        assert_eq!(
+            result,
             Err("update listener token is not private to this user".to_string())
         );
     }

@@ -30,7 +30,7 @@ vi.mock('node:fs', () => ({
     openSync: vi.fn(() => 3),
     fstatSync: vi.fn(),
     closeSync: vi.fn(),
-    constants: { O_RDONLY: 0, O_NOFOLLOW: 0o400000 },
+    constants: { O_RDONLY: 0, O_NOFOLLOW: 0o400000, O_NONBLOCK: 0o4000 },
     promises: { writeFile: vi.fn() },
   },
 }));
@@ -482,11 +482,16 @@ describe('SystemUpdateService', () => {
 
     const SYMLINK = '<symlink>';
     const FOLDER = '<folder>';
+    const FIFO = '<fifo>';
+    /** The flags each path was opened with. */
+    const openFlags = new Map<string, number>();
 
     /** Only these exist: each is a regular file holding that text, or stands in for a symlink or a folder. */
     function withFiles(files: Record<string, string>) {
       const openFiles = new Map<number, string>();
+      openFlags.clear();
       vi.mocked(fs.openSync).mockImplementation(((target: unknown, flags: unknown) => {
+        openFlags.set(String(target), Number(flags));
         const entry = files[String(target)];
         if (entry === undefined) throw Object.assign(new Error(`ENOENT: ${String(target)}`), { code: 'ENOENT' });
         // What the kernel does when O_NOFOLLOW meets a symlink.
@@ -497,11 +502,12 @@ describe('SystemUpdateService', () => {
       }) as never);
       vi.mocked(fs.fstatSync).mockImplementation(((fd: number) => {
         const entry = files[openFiles.get(fd) ?? ''] ?? '';
-        return { isFile: () => entry !== FOLDER, size: entry === FOLDER ? 4096 : Buffer.byteLength(entry) };
+        const isFile = entry !== FOLDER && entry !== FIFO;
+        return { isFile: () => isFile, size: isFile ? Buffer.byteLength(entry) : 0 };
       }) as never);
       vi.mocked(fs.readFileSync).mockImplementation(((fd: unknown) => {
         const entry = files[openFiles.get(Number(fd)) ?? ''];
-        if (entry === undefined || entry === FOLDER) throw new Error(`unexpected read of ${String(fd)}`);
+        if (entry === undefined || entry === FOLDER || entry === FIFO) throw new Error(`unexpected read of ${String(fd)}`);
         return entry === SYMLINK ? 'a-secret-in-the-file-the-symlink-points-at\n' : entry;
       }) as never);
     }
@@ -549,6 +555,15 @@ describe('SystemUpdateService', () => {
       withFiles({ [STATE_TOKEN]: SYMLINK });
 
       await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+      expect(axios.get).not.toHaveBeenCalled();
+    });
+
+    // Opening a FIFO for reading waits for a writer, and this runs on the Hub's event loop.
+    it('does not wait on a FIFO in place of the token', async () => {
+      withFiles({ [STATE_TOKEN]: FIFO });
+
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+      expect((openFlags.get(STATE_TOKEN) ?? 0) & fs.constants.O_NONBLOCK).not.toBe(0);
       expect(axios.get).not.toHaveBeenCalled();
     });
 
