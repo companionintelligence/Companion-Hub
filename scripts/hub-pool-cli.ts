@@ -413,6 +413,21 @@ export interface PoolRoutingThroughput {
    * unmeasured ones too. Absent on a Hub predating it, which left every unmeasured node in place.
    */
   unmeasured?: { node: string; backend: string; prior: 'unknown' | 'cpu-only' }[];
+  /**
+   * Nodes that were about to go first and went behind one predicted to be much faster and at most one
+   * request busier, with both predictions. Absent on a Hub predating it, which placed on the first
+   * node predicted to meet the budget however much faster another was.
+   */
+  slowerDemoted?: {
+    node: string;
+    backend: string;
+    predictedMs: number;
+    inFlight: number;
+    fasterNode: string;
+    fasterBackend: string;
+    fasterMs: number;
+    fasterInFlight: number;
+  }[];
   /** Placed on a node predicted to miss the budget anyway: every candidate was, or every faster one failed first. */
   overridden: boolean;
 }
@@ -1849,6 +1864,19 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
       lines.push(
         `  ↳ ~${throughput.estimatedTokens}-token prompt put ${nodes} behind nodes measured to answer within ${Math.round(throughput.budgetMs / 1000)} s`,
       );
+    }
+    // Its own line too: every node here meets the budget, and what an operator reading why core-7 got
+    // no long turns needs is the pair of predictions that moved it, not a deadline.
+    const slowerDemoted = throughput?.slowerDemoted ?? [];
+    if (throughput && slowerDemoted.length > 0) {
+      const seconds = (ms: number) => `~${Math.round(ms / 1000)} s`;
+      const moves = slowerDemoted
+        .map(
+          (entry) =>
+            `${sanitizeForBox(entry.node)} (${seconds(entry.predictedMs)}) behind ${sanitizeForBox(entry.fasterNode)} (${seconds(entry.fasterMs)})`,
+        )
+        .join(', ');
+      lines.push(`  ↳ ~${throughput.estimatedTokens}-token prompt moved ${moves}: predicted much faster`);
     }
     // Only when a full engine was moved: the record is present, with an empty `demoted`, on every
     // request where some candidate stated a count, and a note on each of those would bury the one

@@ -323,6 +323,13 @@ export interface PoolRoutingThroughput {
    */
   unmeasured: PoolRoutingThroughputUnmeasured[];
   /**
+   * Every candidate that was about to go first, in its group, and went behind candidates predicted to
+   * be much faster and no more than one request busier — see `applySlowerPlacement`. In the order the
+   * moves were made. Empty when none moved, which includes every prompt under the size the rule applies
+   * from and every group led by a pinned node or the engine prefix affinity holds.
+   */
+  slowerDemoted: PoolRoutingThroughputSlowerDemotion[];
+  /**
    * `true` when the request was placed on a `slow` candidate anyway: every candidate was predicted to
    * miss the budget, or every one that was not failed first.
    */
@@ -358,6 +365,25 @@ export interface PoolRoutingThroughputUnmeasured {
    * no GPU to use, so it went behind the other unmeasured candidates too.
    */
   prior: 'unknown' | 'cpu-only';
+}
+
+/**
+ * A measured candidate that was about to go first and went behind one predicted to be much faster.
+ * Both predictions are real evidence, in `estimates`; this names the pair the rule compared.
+ */
+export interface PoolRoutingThroughputSlowerDemotion {
+  node: string;
+  backend: InferenceBackendType;
+  /** Its predicted time to a first byte, as in `estimates`. */
+  predictedMs: number;
+  /** Its queue depth as the ranker read it. */
+  inFlight: number;
+  /** The candidate that went ahead of it: the first, in ranked order, of those that did. */
+  fasterNode: string;
+  fasterBackend: InferenceBackendType;
+  fasterMs: number;
+  /** Never more than `inFlight` + `SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT` (1). */
+  fasterInFlight: number;
 }
 
 /**

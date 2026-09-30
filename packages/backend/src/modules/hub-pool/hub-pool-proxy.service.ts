@@ -45,6 +45,7 @@ import {
   type PoolRoutingSlots,
   type PoolRoutingThroughput,
   type PoolRoutingThroughputEstimate,
+  type PoolRoutingThroughputSlowerDemotion,
   type PoolRoutingThroughputUnmeasured,
   type PoolRoutingUsage,
 } from './hub-pool-routing-log.service';
@@ -56,6 +57,9 @@ import {
   predictPrefill,
   prefillPointsOf,
   readAdvertisedThroughput,
+  SLOWER_PLACEMENT_FLOOR_MS,
+  SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT,
+  SLOWER_PLACEMENT_RATIO,
   UNMEASURED_DEFER_MIN_PROMPT_TOKENS,
   unmeasuredPriorOf,
   type PrefillPrediction,
@@ -128,6 +132,35 @@ export const HUB_POOL_CONTENTION_PLACEMENT_ENV_VAR = 'HUB_POOL_CONTENTION_PLACEM
 function placementSwitchOn(envVar: string): boolean {
   const raw = process.env[envVar]?.trim().toLowerCase();
   return !(raw === 'off' || raw === '0' || raw === 'false');
+}
+
+/**
+ * `HUB_POOL_SLOWER_PLACEMENT_RATIO` and `HUB_POOL_SLOWER_PLACEMENT_FLOOR_MS` retune how much slower
+ * the candidate about to go first must be predicted to be before a faster one goes ahead of it — see
+ * {@link applySlowerPlacement}. A ratio below 1, a negative floor, or anything that is not a finite
+ * number reads as the default rather than a guess, and a very large ratio (1000) turns the rule off
+ * on its own; `HUB_POOL_THROUGHPUT_PLACEMENT=off` turns it off with the rest of throughput placement.
+ * Read per request, like the switches above.
+ */
+export const HUB_POOL_SLOWER_PLACEMENT_RATIO_ENV_VAR = 'HUB_POOL_SLOWER_PLACEMENT_RATIO';
+export const HUB_POOL_SLOWER_PLACEMENT_FLOOR_MS_ENV_VAR = 'HUB_POOL_SLOWER_PLACEMENT_FLOOR_MS';
+function slowerPlacementThresholds(): { ratio: number; floorMs: number } {
+  const ratio = finiteEnvNumber(HUB_POOL_SLOWER_PLACEMENT_RATIO_ENV_VAR);
+  const floorMs = finiteEnvNumber(HUB_POOL_SLOWER_PLACEMENT_FLOOR_MS_ENV_VAR);
+  return {
+    ratio: ratio !== null && ratio >= 1 ? ratio : SLOWER_PLACEMENT_RATIO,
+    floorMs: floorMs !== null && floorMs >= 0 ? floorMs : SLOWER_PLACEMENT_FLOOR_MS,
+  };
+}
+
+/** An env var as a finite number, `null` when unset or blank — `Number('')` is 0, which is a value, not an absence. */
+function finiteEnvNumber(envVar: string): number | null {
+  const raw = process.env[envVar]?.trim();
+  if (!raw) {
+    return null;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
 }
 
 function memoize<T>(compute: () => T): () => T {
@@ -555,11 +588,15 @@ export function applyPin(ordered: PoolCandidate[], pin: HubPoolPin | null): Pool
   if (!pin) {
     return ordered;
   }
-  const matches = (candidate: PoolCandidate) => (pin.targetKind === 'local' ? candidate.peerId === null : candidate.peerId === pin.peerId);
-  const pinned = ordered.filter(matches);
+  const pinned = ordered.filter((candidate) => pinMatches(candidate, pin));
   // Identity-preserving when nothing matched, so "pinned node cannot serve this" and "no pin" are
   // the same list rather than two code paths that could drift.
-  return pinned.length === 0 ? ordered : [...pinned, ...ordered.filter((candidate) => !matches(candidate))];
+  return pinned.length === 0 ? ordered : [...pinned, ...ordered.filter((candidate) => !pinMatches(candidate, pin))];
+}
+
+/** Whether `candidate` is on the node `pin` names. One predicate, so what a pin moves and what later steps leave alone for it agree. */
+function pinMatches(candidate: PoolCandidate, pin: HubPoolPin): boolean {
+  return pin.targetKind === 'local' ? candidate.peerId === null : candidate.peerId === pin.peerId;
 }
 
 /**
@@ -676,6 +713,7 @@ export function applyContextCap(
 
 const NOTHING_DEMOTED: ReadonlySet<PoolCandidate> = new Set();
 const NOTHING_DEFERRED: ReadonlyMap<PoolCandidate, UnmeasuredPrior> = new Map();
+const NOTHING_MEASURED: ReadonlyMap<PoolCandidate, MeasuredPrefill> = new Map();
 
 /** What {@link applyThroughputPlacement} needs to judge a candidate nothing applicable has been measured on. */
 export interface UnmeasuredPlacement {
@@ -709,12 +747,20 @@ export interface UnmeasuredPlacement {
 /** The default: every unmeasured candidate keeps its place, as it did before priors existed. */
 const KEEP_UNMEASURED_IN_PLACE: UnmeasuredPlacement = { priorOf: () => null, groupOf: () => 0, scoreOf: () => 0, staysInPlace: () => true };
 
+/** One candidate's prediction, and whether it misses the request's budget. */
+export interface MeasuredPrefill {
+  prediction: PrefillPrediction;
+  slow: boolean;
+}
+
 /** What {@link applyThroughputPlacement} decided, for {@link splitByThroughput} to apply to each group. */
 export interface ThroughputPlacement {
   /** Measured and predicted to miss the budget: behind every other candidate in their group. */
   demoted: ReadonlySet<PoolCandidate>;
   /** Unmeasured, with the prior each was judged on, and giving way to the candidates measured to meet the budget that the ranker scored the same. */
   deferred: ReadonlyMap<PoolCandidate, UnmeasuredPrior>;
+  /** Every candidate with applicable evidence and what it predicts, for {@link applySlowerPlacement} to compare once the order is otherwise final. */
+  measured: ReadonlyMap<PoolCandidate, MeasuredPrefill>;
   decision: PoolRoutingThroughput | null;
 }
 
@@ -772,6 +818,7 @@ export function applyThroughputPlacement(
 ): ThroughputPlacement {
   const estimates: PoolRoutingThroughputEstimate[] = [];
   const slow = new Set<PoolCandidate>();
+  const measured = new Map<PoolCandidate, MeasuredPrefill>();
   const unmeasuredCandidates: PoolCandidate[] = [];
   // The candidates an unmeasured one is judged beside: the same outer group, and the same ranker
   // score. A newline cannot appear in either number's string form, so no two pairs collide.
@@ -784,6 +831,7 @@ export function applyThroughputPlacement(
       continue;
     }
     const isSlow = missesBudget(prediction, budgetMs);
+    measured.set(candidate, { prediction, slow: isSlow });
     if (isSlow) {
       slow.add(candidate);
     } else if (unmeasured.staysInPlace(candidate)) {
@@ -802,7 +850,7 @@ export function applyThroughputPlacement(
     });
   }
   if (estimates.length === 0) {
-    return { demoted: NOTHING_DEMOTED, deferred: NOTHING_DEFERRED, decision: null };
+    return { demoted: NOTHING_DEMOTED, deferred: NOTHING_DEFERRED, measured: NOTHING_MEASURED, decision: null };
   }
   const deferred = new Map<PoolCandidate, UnmeasuredPrior>();
   const deferredEntries: PoolRoutingThroughputUnmeasured[] = [];
@@ -820,7 +868,10 @@ export function applyThroughputPlacement(
   return {
     demoted: overridden ? NOTHING_DEMOTED : slow,
     deferred,
-    decision: { estimatedTokens, budgetMs, estimates, unmeasured: deferredEntries, overridden },
+    measured,
+    // `slowerDemoted` is filled in by the caller: which candidate goes first is known only once
+    // contention and pins have acted, after this step — see `applySlowerPlacement`.
+    decision: { estimatedTokens, budgetMs, estimates, unmeasured: deferredEntries, slowerDemoted: [], overridden },
   };
 }
 
@@ -877,6 +928,120 @@ export function splitByThroughput(
     }
   }
   return [placed, group.filter((candidate) => demoted.has(candidate))].filter((part) => part.length > 0);
+}
+
+/** What {@link applySlowerPlacement} needs to know about the candidates of one group. */
+export interface SlowerPlacement {
+  /** The request's prompt estimate. Nothing moves below {@link UNMEASURED_DEFER_MIN_PROMPT_TOKENS}. */
+  estimatedTokens: number;
+  /** What {@link applyThroughputPlacement} predicted for the candidate; `undefined` when nothing applicable measured it. */
+  measuredOf: (candidate: PoolCandidate) => MeasuredPrefill | undefined;
+  /** The queue depth the ranker read for the candidate. */
+  inFlightOf: (candidate: PoolCandidate) => number;
+  /** A candidate that keeps the front when it has it: the pinned node, and the engine prefix affinity holds. */
+  holdsFront: (candidate: PoolCandidate) => boolean;
+  /** A candidate that may go ahead of the first: not a local engine contention moves behind the peers. */
+  mayGoAhead: (candidate: PoolCandidate) => boolean;
+  /** {@link SLOWER_PLACEMENT_RATIO}, or its env override. */
+  ratio: number;
+  /** {@link SLOWER_PLACEMENT_FLOOR_MS}, or its env override. */
+  floorMs: number;
+}
+
+/**
+ * Put the candidates predicted to be much faster than the one about to go first ahead of it, within
+ * one group of the final order.
+ *
+ * Budget demotion only asks whether a node will answer in time, and the budget is sized so that a GPU
+ * node reading a large prompt is never mistaken for a dead one, so a CPU node clears it too. Fleet
+ * re-bank, 2026-09-30, core-2 entering with 15 leaves: a 35,809-token OpenClaw turn went to core-7,
+ * reading on CPU, at a predicted 162,910 ms, while beta-1 was predicted at 22,080 ms, beta-max at
+ * 34,651 ms and beta-red at 38,973 ms, all idle; and a 14.5k-token Hermes turn, the local engine moved
+ * aside for contention, went to core-7 at 54,854 ms predicted — 57 s to its first byte — while beta-1
+ * was predicted at 8,959 ms. The ranker could not see it: the nodes were equally idle, and neither
+ * queue depth nor an advertised tier tells a GPU read from a CPU one (core-7 advertises `high`).
+ *
+ * So when the first candidate has a prediction T1 and a later one T2 with T1 at least `ratio` times
+ * T2 and at least `floorMs` longer, the later one goes ahead, provided that it is:
+ *
+ * - **Measured to meet the budget, on a reading that is not a lower bound.** A missed deadline says
+ *   "at least this slow", which says nothing about how much faster than the first it is.
+ * - **No more than {@link SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT} busier.** Queue depth stays the
+ *   ranker's first key; this settles a tie, or a single request, not a queue.
+ * - **Not a local engine that contention moves**, which would put it back where contention just took
+ *   it from.
+ *
+ * Every candidate that qualifies goes ahead, keeping the ranker's order among them, and everything
+ * else keeps its place behind the first; then the new first is judged the same way, so a turn ends up
+ * on a node no candidate is predicted to beat by that much. Each move puts a strictly faster candidate
+ * first, so none can lead twice.
+ *
+ * What it never does:
+ *
+ * - **Judge an unmeasured candidate.** It is never the first here, nor goes ahead; how unmeasured
+ *   peers give way to measured ones is {@link applyThroughputPlacement}'s deferral, and a group led by
+ *   one is left alone.
+ * - **Move a pinned node or the engine prefix affinity holds from the front** (`holdsFront`). A pin is
+ *   the operator's statement and a held engine has the session's prefix warm, where the prediction is
+ *   of a cold read.
+ * - **Cross a group.** Called within each group the cap, ceiling, slot, budget and contention steps
+ *   made, so a node over its cap or ceiling, one whose slots are full, and one predicted to miss the
+ *   budget are never brought forward; when every candidate is predicted to miss, none qualifies to go
+ *   ahead and the ranker's order stands. Withheld models and quarantined engines are not candidates.
+ * - **Apply to a small prompt.** Below {@link UNMEASURED_DEFER_MIN_PROMPT_TOKENS} the smaller bands
+ *   keep reaching a node measured slow, which is how a node whose engine has since moved onto its GPU
+ *   gets measured fast again.
+ *
+ * Pure and exported for its own test. `ordered` is `group` itself when nothing moved.
+ */
+export function applySlowerPlacement(
+  group: PoolCandidate[],
+  placement: SlowerPlacement,
+): { ordered: PoolCandidate[]; demoted: PoolRoutingThroughputSlowerDemotion[] } {
+  const demoted: PoolRoutingThroughputSlowerDemotion[] = [];
+  if (group.length < 2 || placement.estimatedTokens < UNMEASURED_DEFER_MIN_PROMPT_TOKENS) {
+    return { ordered: group, demoted };
+  }
+  let ordered = group;
+  // Bounded as well as terminating: each move puts a strictly faster candidate first.
+  for (let moves = 0; moves < group.length; moves += 1) {
+    const [first, ...rest] = ordered;
+    const firstMeasured = first ? placement.measuredOf(first) : undefined;
+    if (!first || !firstMeasured || placement.holdsFront(first)) {
+      break;
+    }
+    const slowerMs = firstMeasured.prediction.predictedMs;
+    const busiest = placement.inFlightOf(first) + SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT;
+    const faster = rest.filter((candidate) => {
+      const measured = placement.measuredOf(candidate);
+      if (!measured || measured.slow || measured.prediction.deadline) {
+        return false;
+      }
+      if (!placement.mayGoAhead(candidate) || placement.inFlightOf(candidate) > busiest) {
+        return false;
+      }
+      const fasterMs = measured.prediction.predictedMs;
+      return fasterMs < slowerMs && slowerMs >= placement.ratio * fasterMs && slowerMs - fasterMs >= placement.floorMs;
+    });
+    const ahead = faster[0];
+    const aheadMeasured = ahead ? placement.measuredOf(ahead) : undefined;
+    if (!ahead || !aheadMeasured) {
+      break;
+    }
+    demoted.push({
+      node: first.nodeFqdn ?? LOCAL_CANDIDATE_KEY,
+      backend: first.backend,
+      predictedMs: slowerMs,
+      inFlight: placement.inFlightOf(first),
+      fasterNode: ahead.nodeFqdn ?? LOCAL_CANDIDATE_KEY,
+      fasterBackend: ahead.backend,
+      fasterMs: aheadMeasured.prediction.predictedMs,
+      fasterInFlight: placement.inFlightOf(ahead),
+    });
+    const movedAhead = new Set(faster);
+    ordered = [...faster, first, ...rest.filter((candidate) => !movedAhead.has(candidate))];
+  }
+  return { ordered, demoted };
 }
 
 /** What slot-aware placement knows about one candidate: the queue depth the ranker sorted on, and the slots its node advertised. */
@@ -1457,8 +1622,16 @@ export class PoolProxyService {
    * engine, but a reload behind this model at another window, or a model no longer resident, has
    * discarded the prefix and makes the turn wait as well — see {@link prefixCanStillBeWarm}.
    *
-   * An operator pin is applied LAST, within each of the resulting groups — see {@link applyPin}. It
+   * An operator pin is applied next, within each of the resulting groups — see {@link applyPin}. It
    * reorders; it cannot admit a node the steps above excluded.
+   *
+   * Last, within each of those groups and for a large prompt only: when the candidate the group would
+   * try first is predicted {@link SLOWER_PLACEMENT_RATIO} times and {@link SLOWER_PLACEMENT_FLOOR_MS}
+   * slower than another measured to meet the budget, and that one has at most one request more in
+   * flight, the faster one goes ahead — see {@link applySlowerPlacement}. Meeting the budget is a low
+   * bar that a CPU node can clear, and this is what stops a turn waiting minutes on one while a GPU
+   * node as idle would answer in seconds. Last because it needs the final first candidate, and never
+   * moves the pinned node or the engine prefix affinity holds from the front.
    */
   async buildCandidateList(model: string, promptBytes?: number, streaming = true, numCtx: number | null = null): Promise<PoolCandidate[]> {
     return (await this.rankCandidates(model, promptBytes === undefined ? undefined : { bytes: () => promptBytes, streaming, numCtx: () => numCtx }))
@@ -1559,6 +1732,10 @@ export class PoolProxyService {
     // busier than anyway.
     const heldEngine = affinity.held ? contended?.engines.get(affinity.held) : undefined;
     const held = affinity.held && heldEngine && (await this.prefixCanStillBeWarm(model, affinity.held, heldEngine)) ? affinity.held : null;
+    // Not an engine contention will move: every contended one but the engine held for affinity, the
+    // predicate `giveWay` below applies. Neither an unmeasured peer nor the first of a group gives way
+    // to one of those, since contention would then leave the turn waiting on it.
+    const staysInPlace = (candidate: PoolCandidate) => candidate === held || !contended?.engines.has(candidate);
     const throughput: ThroughputPlacement =
       prompt && measurePromptBytes
         ? this.applyMeasuredThroughput(model, ordered, peers, measurePromptBytes, prompt.streaming, {
@@ -1566,13 +1743,11 @@ export class PoolProxyService {
             // only to a measured one it is ranked beside.
             groupOf: (candidate) => (overCap.has(candidate) ? 4 : 0) + (overCeiling.has(candidate) ? 2 : 0) + (slots.demoted.has(candidate) ? 1 : 0),
             scoreOf,
-            // Not an engine contention will move: every contended one but the engine held for affinity,
-            // the predicate `giveWay` below applies.
-            staysInPlace: (candidate) => candidate === held || !contended?.engines.has(candidate),
+            staysInPlace,
             pinned: (candidate) => pin !== null && pin.targetKind === 'peer' && candidate.peerId === pin.peerId,
             held: affinity.held,
           })
-        : { demoted: NOTHING_DEMOTED, deferred: NOTHING_DEFERRED, decision: null };
+        : { demoted: NOTHING_DEMOTED, deferred: NOTHING_DEFERRED, measured: NOTHING_MEASURED, decision: null };
     let heldByAffinity = false;
     const giveWay = (part: PoolCandidate[]): PoolCandidate[][] => {
       if (!contended || !part.some((candidate) => contended.engines.has(candidate))) {
@@ -1588,29 +1763,63 @@ export class PoolProxyService {
       }
       return result.pieces;
     };
+    // Last within each group, after contention and the pin, because only then is it known which
+    // candidate a group would try first — see `applySlowerPlacement`.
+    const inFlight = new Map(affinity.ordered.map((entry) => [entry.candidate, entry.inFlight]));
+    const thresholds = slowerPlacementThresholds();
+    const slowerDemoted: PoolRoutingThroughputSlowerDemotion[] = [];
+    const preferMuchFaster = (piece: PoolCandidate[]): PoolCandidate[] => {
+      if (!throughput.decision) {
+        return piece;
+      }
+      const result = applySlowerPlacement(piece, {
+        estimatedTokens: throughput.decision.estimatedTokens,
+        measuredOf: (candidate) => throughput.measured.get(candidate),
+        inFlightOf: (candidate) => inFlight.get(candidate) ?? 0,
+        holdsFront: (candidate) => candidate === affinity.held || (pin !== null && pinMatches(candidate, pin)),
+        mayGoAhead: staysInPlace,
+        ...thresholds,
+      });
+      slowerDemoted.push(...result.demoted);
+      return result.ordered;
+    };
     // The cap is the outermost split and the ceiling the next, because both are operator statements
     // and a node over its cap reloads or truncates where a node over its ceiling is merely slow. The
     // other three are inferences and act within those: slots outside throughput, because a full
     // engine queues the request whole where a slow one merely reads it slowly, and contention inside
     // throughput, because a slow node misses its whole budget where a contended one may be waiting
-    // out a turn that is nearly done. With nothing demoted or deferred and no over-cap or
-    // over-ceiling tail this is `applyPin(ordered, pin)` exactly, which keeps an unmeasured fleet on
-    // the order it had before any of the five existed. The ceiling's own "everything over means
-    // nothing moves" rule was judged on the whole list, so `overCeiling` is already empty in that case.
+    // out a turn that is nearly done. With nothing demoted, deferred or preferred for speed and no
+    // over-cap or over-ceiling tail this is `applyPin(ordered, pin)` exactly, which keeps an
+    // unmeasured fleet on the order it had before any of the five existed. The ceiling's own
+    // "everything over means nothing moves" rule was judged on the whole list, so `overCeiling` is
+    // already empty in that case.
     const candidates = [cap.preferred, cap.overCap].flatMap((capGroup) =>
       splitDemoted(capGroup, overCeiling).flatMap((group) =>
         splitDemoted(group, slots.demoted).flatMap((slotPart) =>
-          splitByThroughput(slotPart, throughput, scoreOf).flatMap((part) => giveWay(part).flatMap((piece) => applyPin(piece, pin))),
+          splitByThroughput(slotPart, throughput, scoreOf).flatMap((part) =>
+            giveWay(part).flatMap((piece) => preferMuchFaster(applyPin(piece, pin))),
+          ),
         ),
       ),
     );
+    if (throughput.decision && slowerDemoted.length > 0) {
+      const moves = slowerDemoted
+        .map(
+          (entry) =>
+            `${entry.node} (~${entry.predictedMs}ms, ${entry.inFlight} in flight) behind ${entry.fasterNode} (~${entry.fasterMs}ms, ${entry.fasterInFlight} in flight)`,
+        )
+        .join('; ');
+      this.logger.debug(
+        `[PoolProxy] ~${throughput.decision.estimatedTokens}-token prompt for "${model}" put ${moves}: predicted at least ${thresholds.ratio}x and ${thresholds.floorMs}ms faster`,
+      );
+    }
     return {
       candidates,
       pin,
       promptCeiling: ceiling.decision,
       contextCap: cap.decision,
       slots: slots.decision,
-      throughput: throughput.decision,
+      throughput: throughput.decision && slowerDemoted.length > 0 ? { ...throughput.decision, slowerDemoted } : throughput.decision,
       contention: contended ? this.describeContention(model, contended, gaveWayTo, heldByAffinity ? held : null) : null,
       // Judged on the FINAL list: `hit` is a promise that the request goes to the remembered engine
       // first, and a ceiling, a demotion or a pin applied after affinity can each have put another
@@ -1722,7 +1931,7 @@ export class PoolProxyService {
     },
   ): ThroughputPlacement {
     if (!throughputPlacementEnabled()) {
-      return { demoted: NOTHING_DEMOTED, deferred: NOTHING_DEFERRED, decision: null };
+      return { demoted: NOTHING_DEMOTED, deferred: NOTHING_DEFERRED, measured: NOTHING_MEASURED, decision: null };
     }
     const now = Date.now();
     const advertised = new Map(
@@ -1747,7 +1956,7 @@ export class PoolProxyService {
     };
     const points = new Map(ordered.map((candidate) => [candidate, pointsOf(candidate)]));
     if (![...points.values()].some((list) => list.length > 0)) {
-      return { demoted: NOTHING_DEMOTED, deferred: NOTHING_DEFERRED, decision: null };
+      return { demoted: NOTHING_DEMOTED, deferred: NOTHING_DEFERRED, measured: NOTHING_MEASURED, decision: null };
     }
     const tiers = new Map(peers.map((peer) => [peer.id, (peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.hardwareTier]));
     const priorOf = (candidate: PoolCandidate): UnmeasuredPrior | null =>

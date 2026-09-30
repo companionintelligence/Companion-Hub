@@ -1598,6 +1598,59 @@ describe('hub-pool-cli throughput', () => {
     expect(text).not.toContain('moved');
   });
 
+  it('names the node a much faster one went ahead of, with both predictions, on their own line', () => {
+    const CORE_7 = 'core-7.tailxyz.ts.net';
+    const BETA_MAX = 'beta-max.tailxyz.ts.net';
+    const measured = (node: string, predictedMs: number) => ({
+      ...slowFzzy,
+      node,
+      tokensPerSec: Math.floor((35_809 / predictedMs) * 1000),
+      fromPromptTokens: 35_809,
+      predictedMs,
+      deadline: false,
+      slow: false,
+    });
+    // The OpenClaw turn of the 2026-09-30 re-bank.
+    const text = logOf([
+      routingEntry({
+        throughput: {
+          estimatedTokens: 35_809,
+          budgetMs: 717_000,
+          estimates: [measured(BETA_MAX, 34_651), measured(CORE_7, 162_910)],
+          unmeasured: [],
+          slowerDemoted: [
+            {
+              node: CORE_7,
+              backend: 'ollama',
+              predictedMs: 162_910,
+              inFlight: 0,
+              fasterNode: BETA_MAX,
+              fasterBackend: 'ollama',
+              fasterMs: 34_651,
+              fasterInFlight: 0,
+            },
+          ],
+          overridden: false,
+        },
+      }),
+    ]);
+
+    expect(text).toContain(`~35809-token prompt moved ${CORE_7} (~163 s) behind ${BETA_MAX} (~35 s): predicted much faster`);
+    expect(text).not.toContain('behind nodes');
+  });
+
+  it('adds no such line to a row nothing much faster moved, or from a Hub predating it', () => {
+    const fast = { ...slowFzzy, tokensPerSec: 496, predictedMs: 93_000, deadline: false, slow: false };
+    const text = logOf([
+      routingEntry({
+        throughput: { estimatedTokens: 46_031, budgetMs: 921_000, estimates: [fast], unmeasured: [], slowerDemoted: [], overridden: false },
+      }),
+      routingEntry({ throughput: { estimatedTokens: 46_031, budgetMs: 921_000, estimates: [fast], unmeasured: [], overridden: false } }),
+    ]);
+
+    expect(text).not.toContain('token prompt');
+  });
+
   it('lists measured speed per node in status — this node, and each peer as timed here and as reported', () => {
     const base = status({
       peers: [
