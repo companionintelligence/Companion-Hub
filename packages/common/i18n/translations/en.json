@@ -466,6 +466,7 @@
   "APP_STORE_ADD_SUCCESS": "Appstore added successfully",
   "APP_UNINSTALL_FORM_REMOVE_BACKUPS": "Remove backups",
   "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Delete all data",
+  "APP_UNINSTALL_FORM_DATA_KEPT": "This app's data and backups stay on this Hub.",
   "APP_UNINSTALL_FORM_SUBMIT": "Uninstall",
   "APP_UNINSTALL_FORM_TITLE": "Uninstall {{name}} ?",
   "APP_UNINSTALL_MEMORY_PROVIDER_WARNING": "{{count}} installed app(s) are still connected to CI Memory:",

@@ -56,7 +56,8 @@ export const UninstallDialog = ({ info, isOpen, onClose }: IProps) => {
         <DialogDescription className="text-center py-4">
           <AlertTriangle className="mb-2 text-destructive size-12 mx-auto" />
           <h3>{t('COMMON_ACTION_CANNOT_BE_UNDONE')}</h3>
-          <span className="text-muted-foreground">{t('COMMON_ALL_DATA_LOST')}</span>
+          {/* With Delete all data off, the uninstall keeps the app's data folder, volumes, and backups. */}
+          <span className="text-muted-foreground">{t(shouldDeleteAllData ? 'COMMON_ALL_DATA_LOST' : 'APP_UNINSTALL_FORM_DATA_KEPT')}</span>
           {requiresForce && (
             <MemoryProviderForceWarning
               consumers={consumers}
