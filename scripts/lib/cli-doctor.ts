@@ -291,8 +291,8 @@ export function describeCheckoutTarget(checkoutRoot: string, running: RunningHub
       ...lines,
       'The running Hub was started from another folder:',
       dim(otherFolder),
-      'The env file, root folder, and tunnel token lines describe this checkout.',
-      'The live checks, such as operator, registration, and bridge, reach that Hub.',
+      'File checks, such as env file and root folder, describe this checkout.',
+      'Live checks, such as operator, registration, and bridge, reach that Hub.',
       running?.workingDirIsCheckout
         ? `To check that Hub, run ${BASE_COMMAND} doctor in that checkout.`
         : `To check that Hub, run ${BASE_COMMAND} doctor from outside this checkout.`,
