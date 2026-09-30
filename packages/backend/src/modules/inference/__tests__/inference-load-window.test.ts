@@ -194,7 +194,7 @@ const dead = (type: InferenceBackendType) => ({
   healthCheck: async () => ({ running: false, healthy: false, modelsLoaded: [] }),
 });
 
-const discrete = (vendor: string, model: string, vramMb: number): HardwareProfile => ({
+const discrete = (vendor: HardwareProfile['gpu']['vendor'], model: string, vramMb: number): HardwareProfile => ({
   gpu: { available: true, vendor, model, vramMb, unifiedMemory: false, driverVersion: '', runtimeAvailable: true },
   npu: { available: false, model: '' },
   ram: { totalMb: 32_000, availableMb: 29_000, sampledAt: '2026-09-29T00:00:00.000Z' },
