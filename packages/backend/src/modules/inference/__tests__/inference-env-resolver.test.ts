@@ -114,6 +114,16 @@ const baseProfile: HardwareProfile = {
   tier: 'high',
 };
 
+/**
+ * A discrete card whose model budget is `budgetMb`: the handout is sized against what a load may use,
+ * the card less its 512 MB display reserve (`modelMemoryCeilingMb`), not the card itself.
+ */
+const cardOf = (budgetMb: number): HardwareProfile => ({
+  ...baseProfile,
+  gpu: { ...baseProfile.gpu, vramMb: budgetMb + 512 },
+  effectiveInferenceMemoryMb: budgetMb + 512,
+});
+
 describe('InferenceEnvResolver', () => {
   let service: InferenceEnvResolver;
   let config: MockProxy<ConfigurationService>;
@@ -209,7 +219,7 @@ describe('InferenceEnvResolver', () => {
   });
 
   it('emits a hardware-aware num_ctx scaled to the inference memory budget', async () => {
-    hardwareInspector.getProfile.mockResolvedValue({ ...baseProfile, effectiveInferenceMemoryMb: 4096 });
+    hardwareInspector.getProfile.mockResolvedValue(cardOf(4096));
 
     const env = await service.resolve();
 
@@ -219,7 +229,7 @@ describe('InferenceEnvResolver', () => {
 
   it('raises num_ctx to an app-specific minContextLength floor when given', async () => {
     // 4096 MB budget → 16384 tier, but the caller (e.g. hermes-agent) requires 64K.
-    hardwareInspector.getProfile.mockResolvedValue({ ...baseProfile, effectiveInferenceMemoryMb: 4096 });
+    hardwareInspector.getProfile.mockResolvedValue(cardOf(4096));
 
     const env = await service.resolve({ minContextLength: 64_000 });
 
@@ -228,7 +238,7 @@ describe('InferenceEnvResolver', () => {
   });
 
   it('does not apply any floor when minContextLength is omitted (default behavior)', async () => {
-    hardwareInspector.getProfile.mockResolvedValue({ ...baseProfile, effectiveInferenceMemoryMb: 4096 });
+    hardwareInspector.getProfile.mockResolvedValue(cardOf(4096));
 
     const env = await service.resolve();
 
@@ -581,6 +591,28 @@ describe('InferenceEnvResolver', () => {
 
       expect(env.CI_OLLAMA_EMBED_HOST).toBe(LEMONADE_BASE_URL);
       expect(env.CI_EMBEDDING_MODEL).toBe('nomic-embed-text-v1.5-GGUF');
+    });
+
+    // Lemonade serves one saved ctx_size per model to every caller. When the card could not hold an
+    // app's floor, the Hub saved less — and Hermes was still told 64000, to fail once its
+    // conversation outgrew the saved window.
+    it('hands an app no more than the window Lemonade serves the model at, and says so under its floor', async () => {
+      lemonadeBackend.servedContextLength.mockResolvedValue(8192);
+
+      const env = await service.resolve({ minContextLength: 64_000 });
+
+      expect(env.CI_LLM_NUM_CTX).toBe('8192');
+      expect(lemonadeBackend.servedContextLength).toHaveBeenCalledWith('Qwen3.8-27B-GGUF');
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/serves Qwen3\.8-27B-GGUF at ctx_size 8192.*under its 64000-token floor/));
+    });
+
+    it('leaves the handout as sized when Lemonade serves at least that much, or has no saved window', async () => {
+      lemonadeBackend.servedContextLength.mockResolvedValue(65_536);
+      expect((await service.resolve({ minContextLength: 64_000 })).CI_LLM_NUM_CTX).toBe('65536');
+
+      lemonadeBackend.servedContextLength.mockResolvedValue(null);
+      expect((await service.resolve({ minContextLength: 64_000 })).CI_LLM_NUM_CTX).toBe('65536');
+      expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('ctx_size'));
     });
 
     // Lemonade 10.2.0 lists and serves a Hub-registered model only as `user.<id>` and answers the

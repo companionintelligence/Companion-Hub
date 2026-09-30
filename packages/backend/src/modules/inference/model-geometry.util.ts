@@ -109,11 +109,20 @@ export interface ContextCostInput {
 }
 
 export interface ContextCost {
-  /** MB of memory one token of context costs, for the ladder to multiply. */
+  /**
+   * MB of memory one token of context costs ONE sequence, for the ladder to multiply — except a
+   * `calibrated` cost, which comes from a sighting of the whole runner and so already carries every
+   * slot's share (see `kvSequencesFor`).
+   */
   kvMbPerToken: number;
   weightMb: number | null;
   /** `catalog`: the catalog's measured `kvMbPerToken` (see `context-cost.util`), for an engine that cannot say. */
   source: 'geometry' | 'calibrated' | 'catalog';
+  /**
+   * `general.architecture` from `/api/show` when the geometry was readable: Ollama runs some
+   * families on one slot whatever `OLLAMA_NUM_PARALLEL` says, and this is how that is recognised.
+   */
+  architecture?: string;
 }
 
 /**
@@ -136,10 +145,16 @@ export function estimateContextCost({ geometry, weightBytes, sighting }: Context
   }
 
   if (formulaMb == null && calibratedMb == null) return null;
+  const architecture = geometry ? { architecture: geometry.architecture } : {};
   if (formulaMb != null && calibratedMb != null) {
-    return { kvMbPerToken: Math.min(formulaMb, calibratedMb), weightMb, source: calibratedMb < formulaMb ? 'calibrated' : 'geometry' };
+    return {
+      kvMbPerToken: Math.min(formulaMb, calibratedMb),
+      weightMb,
+      source: calibratedMb < formulaMb ? 'calibrated' : 'geometry',
+      ...architecture,
+    };
   }
   return formulaMb == null
-    ? { kvMbPerToken: calibratedMb as number, weightMb, source: 'calibrated' }
-    : { kvMbPerToken: formulaMb, weightMb, source: 'geometry' };
+    ? { kvMbPerToken: calibratedMb as number, weightMb, source: 'calibrated', ...architecture }
+    : { kvMbPerToken: formulaMb, weightMb, source: 'geometry', ...architecture };
 }

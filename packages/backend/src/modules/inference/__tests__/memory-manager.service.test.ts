@@ -1,5 +1,6 @@
 import { Test, type TestingModule } from '@nestjs/testing';
-import { MemoryManagerService } from '../memory-manager.service';
+import { MemoryManagerService, modelMemoryCeilingMb } from '../memory-manager.service';
+import { readFootprintSightings } from '../footprint-sighting-record';
 import { ModelRegistryService } from '../model-registry.service';
 import { ModelResidencyService } from '../model-residency.service';
 import { GpuProcessSamplerService } from '../gpu-process-sampler.service';
@@ -659,6 +660,181 @@ describe('MemoryManagerService', () => {
       ]);
       const result = await service.canPinModel(makeProfile(), 5000);
       expect(result.canPin).toBe(false);
+    });
+
+    // beta-red: the catalog's 10,813 MB for gemma4:e4b is over the 9,728 MB a 3080 has for models,
+    // while the card was serving it in 5,550 MiB at that moment.
+    it('uses what the model was measured holding here over the catalog figure', async () => {
+      const betaRed = makeProfile({ gpu: { ...makeProfile().gpu, vramMb: 10_240, model: 'RTX 3080' }, effectiveInferenceMemoryMb: 10_240 });
+      const gemma = { backend: 'ollama' as const, backendModelId: 'gemma4:e4b' };
+      await expect(service.canPinModel(betaRed, 10_813, gemma)).resolves.toMatchObject({ canPin: false });
+
+      gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 3697148, processName: '/usr/local/lib/ollama/llama-server', vramMb: 5550 }]);
+      reportResidency([
+        ...nothingResident().filter((entry) => entry.backend !== 'ollama'),
+        {
+          backend: 'ollama',
+          source: 'measured',
+          models: [resident('gemma4:e4b', { engineGpuBytes: 3_364_754_553, totalBytes: 3_364_754_553, contextLength: 16_384 })],
+        },
+      ]);
+      await service.calculateBudget(betaRed);
+      service.invalidateObservation();
+
+      await expect(service.canPinModel(betaRed, 10_813, gemma)).resolves.toEqual({ canPin: true });
+    });
+  });
+
+  // ─── Load sizing ───────────────────────────────────────────────────
+  // What the router sizes a load's context window against, and the measurements it prefers to the
+  // catalog: the window must be chosen against the same budget the fit check then applies.
+  describe('load sizing', () => {
+    const betaRed = (): HardwareProfile =>
+      makeProfile({ gpu: { ...makeProfile().gpu, vramMb: 10_240, model: 'RTX 3080' }, effectiveInferenceMemoryMb: 10_240 });
+    const ollamaHolding = (...models: ResidentModel[]): BackendResidency[] => [
+      ...nothingResident().filter((entry) => entry.backend !== 'ollama'),
+      { backend: 'ollama', source: 'measured', models },
+    ];
+
+    it('modelMemoryCeilingMb is the budget canFitModel applies with nothing loaded', async () => {
+      // beta-1: 24,560 MB card, 24,048 for models.
+      const beta1 = makeProfile({ gpu: { ...makeProfile().gpu, vendor: 'amd', vramMb: 24_560 }, effectiveInferenceMemoryMb: 24_560 });
+      expect(modelMemoryCeilingMb(beta1)).toBe(24_048);
+      expect((await service.canFitModel(beta1, 0)).availableMb).toBe(24_048);
+      // Unified memory: live MemAvailable less the system reserve, the cap canFitModel applies there.
+      const unified = makeProfile({
+        gpu: { ...makeProfile().gpu, vendor: 'amd', unifiedMemory: true, vramMb: 128_085 },
+        ram: { totalMb: 128_085, availableMb: 103_309, sampledAt: '2026-09-29T00:00:00.000Z' },
+        effectiveInferenceMemoryMb: 103_309,
+      });
+      expect(modelMemoryCeilingMb(unified)).toBe(103_309 - 2048);
+      // A host-probe snapshot (macOS/Windows) is read as the sizing always read it.
+      expect(modelMemoryCeilingMb({ ...unified, ram: { totalMb: 98_304, availableMb: 12_288 }, effectiveInferenceMemoryMb: 12_288 })).toBe(12_288);
+    });
+
+    it('loadHeadroomMb is the figure canFitModel compares against', async () => {
+      reportResidency(ollamaHolding(resident('gemma4:e4b', { engineGpuBytes: 3_364_754_553, totalBytes: 3_364_754_553, contextLength: 16_384 })));
+      gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 1, processName: '/usr/local/lib/ollama/llama-server', vramMb: 5550 }]);
+      await expect(service.loadHeadroomMb(betaRed())).resolves.toBe(9_728 - 5_550);
+      await expect(service.canFitModel(betaRed(), 0)).resolves.toMatchObject({ availableMb: 9_728 - 5_550 });
+    });
+
+    it("records a model's process figure, with its window, and keeps it after the model unloads", async () => {
+      reportResidency(ollamaHolding(resident('gemma4:e4b', { engineGpuBytes: 3_364_754_553, totalBytes: 3_364_754_553, contextLength: 16_384 })));
+      gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 1, processName: '/usr/local/lib/ollama/llama-server', vramMb: 5550 }]);
+      await expect(service.footprintSighting(betaRed(), 'ollama', 'gemma4:e4b')).resolves.toEqual({
+        footprintMb: 5550,
+        contextLength: 16_384,
+        source: 'process',
+      });
+
+      // Expired: the next load of it is exactly when the measurement is needed.
+      reportResidency(nothingResident());
+      gpuSampler.sampleVramByProcess.mockResolvedValue([]);
+      service.invalidateObservation();
+      await expect(service.footprintSighting(betaRed(), 'ollama', 'gemma4:e4b')).resolves.toMatchObject({ footprintMb: 5550 });
+    });
+
+    it('keeps what it measured across a Hub restart, and rewrites the file only when a figure moved', async () => {
+      reportResidency(ollamaHolding(resident('gemma4:e4b', { engineGpuBytes: 3_364_754_553, totalBytes: 3_364_754_553, contextLength: 16_384 })));
+      gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 1, processName: '/usr/local/lib/ollama/llama-server', vramMb: 5550 }]);
+      await service.calculateBudget(betaRed());
+      await service.sightingsPersisted();
+      const written = await readFootprintSightings();
+      expect(written?.sightings.map(({ model, footprintMb }) => [model, footprintMb])).toEqual([['gemma4:e4b', 5550]]);
+
+      // A few MB of drift between samples is the same measurement: the file keeps what it had.
+      gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 1, processName: '/usr/local/lib/ollama/llama-server', vramMb: 5580 }]);
+      service.invalidateObservation();
+      await service.calculateBudget(betaRed());
+      await service.sightingsPersisted();
+      await expect(readFootprintSightings()).resolves.toEqual(written);
+
+      // The next Hub process, with the model expired: the measurement is still there to size it by.
+      reportResidency(nothingResident());
+      gpuSampler.sampleVramByProcess.mockResolvedValue([]);
+      const restarted = new MemoryManagerService(loggerService, modelRegistry, backendRegistry, residency, gpuSampler);
+      await expect(restarted.footprintSighting(betaRed(), 'ollama', 'gemma4:e4b')).resolves.toEqual({
+        footprintMb: 5550,
+        contextLength: 16_384,
+        source: 'process',
+      });
+      // And a pin counts at it, where the registry says the catalog's 10,813.
+      modelRegistry.getLoadedModels.mockReturnValue([
+        tracked({ catalogId: 'gemma4-e4b', backendModelId: 'gemma4:e4b', state: 'pinned', pinned: true, memoryUsedMb: 10_813 }),
+      ]);
+      await expect(restarted.calculateBudget(betaRed())).resolves.toMatchObject({ pinnedVramMb: 5550 });
+    });
+
+    it('does not restore a measurement taken on other hardware', async () => {
+      reportResidency(ollamaHolding(resident('gemma4:e4b', { engineGpuBytes: 3_364_754_553, totalBytes: 3_364_754_553, contextLength: 16_384 })));
+      gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 1, processName: '/usr/local/lib/ollama/llama-server', vramMb: 5550 }]);
+      await service.calculateBudget(betaRed());
+      await service.sightingsPersisted();
+
+      reportResidency(nothingResident());
+      gpuSampler.sampleVramByProcess.mockResolvedValue([]);
+      const swapped = makeProfile({ gpu: { ...makeProfile().gpu, vramMb: 8_192, model: 'RTX 3070' }, effectiveInferenceMemoryMb: 8_192 });
+      const restarted = new MemoryManagerService(loggerService, modelRegistry, backendRegistry, residency, gpuSampler);
+      await expect(restarted.footprintSighting(swapped, 'ollama', 'gemma4:e4b')).resolves.toBeNull();
+    });
+
+    it("splits one process figure between models in the engine's own proportions (beta-1: gemma4 and the embedder)", async () => {
+      const beta1 = makeProfile({ gpu: { ...makeProfile().gpu, vendor: 'amd', vramMb: 24_560 }, effectiveInferenceMemoryMb: 24_560 });
+      reportResidency(
+        ollamaHolding(
+          resident('gemma4:e4b', { engineGpuBytes: 3_573_442_149, totalBytes: 3_573_442_149, contextLength: 16_384 }),
+          resident('nomic-embed-text:latest', { engineGpuBytes: 323_150_151, totalBytes: 323_150_151, contextLength: 2048 }),
+        ),
+      );
+      // rocm-smi: 5,963 + 677 MiB, both bare `llama-server`.
+      gpuSampler.sampleVramByProcess.mockResolvedValue([
+        { pid: 776965, processName: 'llama-server', vramMb: 5963 },
+        { pid: 592858, processName: 'llama-server', vramMb: 677 },
+      ]);
+      const gemma = await service.footprintSighting(beta1, 'ollama', 'gemma4:e4b');
+      expect(gemma?.footprintMb).toBe(Math.round((6640 * 3_573_442_149) / (3_573_442_149 + 323_150_151)));
+      // Keyed by the model, not the spelling: the catalog says `nomic-embed-text`.
+      await expect(service.footprintSighting(beta1, 'ollama', 'nomic-embed-text')).resolves.toMatchObject({ contextLength: 2048 });
+    });
+
+    it("keeps the engine's own figure, marked as such, when no process figure exists", async () => {
+      reportResidency(ollamaHolding(resident('gemma4:e4b', { engineGpuBytes: 3_364_754_553, totalBytes: 3_364_754_553, contextLength: 16_384 })));
+      await expect(service.footprintSighting(betaRed(), 'ollama', 'gemma4:e4b')).resolves.toEqual({
+        footprintMb: Math.round(3_364_754_553 / MiB),
+        contextLength: 16_384,
+        source: 'engine',
+      });
+    });
+
+    it('records nothing for a model partly in system RAM: that says nothing about what the card must hold', async () => {
+      // beta-3-glass, RTX 3070, 2026-09-29: qwen3.8:27b at 16384, 18.1 GB of which 4.6 GB on the card, 6,104 MiB process.
+      const glass = makeProfile({ gpu: { ...makeProfile().gpu, vramMb: 8192, model: 'RTX 3070' }, effectiveInferenceMemoryMb: 8192 });
+      reportResidency(ollamaHolding(resident('qwen3.8:27b', { engineGpuBytes: 4_798_839_519, totalBytes: 18_968_320_405, contextLength: 16_384 })));
+      gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 3961994, processName: '/usr/local/lib/ollama/llama-server', vramMb: 6104 }]);
+      await expect(service.footprintSighting(glass, 'ollama', 'qwen3.8:27b')).resolves.toBeNull();
+    });
+
+    it('records nothing without a window, or from the registry’s bookkeeping', async () => {
+      reportResidency([
+        ...nothingResident().filter((entry) => entry.backend !== 'ollama' && entry.backend !== 'lemonade'),
+        { backend: 'ollama', source: 'measured', models: [resident('gemma4:e4b', { engineGpuBytes: 3_364_754_553, totalBytes: 3_364_754_553 })] },
+        { backend: 'lemonade', source: 'unreachable', models: null },
+      ]);
+      modelRegistry.getLoadedModels.mockReturnValue([tracked({ catalogId: 'x', backend: 'lemonade', backendModelId: 'X-GGUF', memoryUsedMb: 6000 })]);
+      await expect(service.footprintSighting(betaRed(), 'ollama', 'gemma4:e4b')).resolves.toBeNull();
+      await expect(service.footprintSighting(betaRed(), 'lemonade', 'X-GGUF')).resolves.toBeNull();
+    });
+
+    it('counts a pin at what it was measured holding', async () => {
+      modelRegistry.getLoadedModels.mockReturnValue([
+        tracked({ catalogId: 'gemma4-e4b', backendModelId: 'gemma4:e4b', state: 'pinned', pinned: true, memoryUsedMb: 10_813 }),
+      ]);
+      reportResidency(ollamaHolding(resident('gemma4:e4b', { engineGpuBytes: 3_364_754_553, totalBytes: 3_364_754_553, contextLength: 16_384 })));
+      gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 1, processName: '/usr/local/lib/ollama/llama-server', vramMb: 5550 }]);
+      await service.calculateBudget(betaRed());
+      service.invalidateObservation();
+      await expect(service.calculateBudget(betaRed())).resolves.toMatchObject({ pinnedVramMb: 5550 });
     });
   });
 

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import type { CuratedModel, HardwareProfile, TrackedModel } from '@ci-hub/common/types';
+import type { CuratedModel, HardwareProfile } from '@ci-hub/common/types';
 import type { LifecycleActorFor } from '@/core/portal/lifecycle-actor';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { ApiKeyContext } from '@/modules/api-keys/api-key.service';
@@ -61,24 +61,25 @@ describe('InferenceTools — loading and pinning', () => {
   // SEC-2: Hermes' and OpenClaw's managed keys are 'write', and hub_load_model used to let them
   // evict the model every other app on the node was serving.
   describe('hub_load_model', () => {
+    // `agent` evicts by the app request path's rule (the router maps it to the `request` scope).
     it("gives an agent's key the app request path's rule: only the Hub's own idle loads may go", async () => {
       await asKey(HERMES_KEY, () => call('hub_load_model', { modelId: 'qwen3-coder-30b' }));
-      expect(router.loadTrackedModel).toHaveBeenCalledWith('qwen3-coder-30b', { scope: 'request' });
+      expect(router.loadTrackedModel).toHaveBeenCalledWith('qwen3-coder-30b', { origin: 'agent' });
     });
 
     it("gives a 'full' key the same rule: it is still an agent, not an operator at the Hub", async () => {
       await asKey(FULL_KEY, () => call('hub_load_model', { modelId: 'qwen3-coder-30b' }));
-      expect(router.loadTrackedModel).toHaveBeenCalledWith('qwen3-coder-30b', { scope: 'request' });
+      expect(router.loadTrackedModel).toHaveBeenCalledWith('qwen3-coder-30b', { origin: 'agent' });
     });
 
     it("gives an operator's run from the tool runner the operator's rule", async () => {
       await asOperator(() => call('hub_load_model', { modelId: 'qwen3-coder-30b' }));
-      expect(router.loadTrackedModel).toHaveBeenCalledWith('qwen3-coder-30b', { scope: 'operator' });
+      expect(router.loadTrackedModel).toHaveBeenCalledWith('qwen3-coder-30b', { origin: 'operator' });
     });
 
-    it('fails closed to the request rule when the call carries no context', async () => {
+    it("fails closed to the agent's rule when the call carries no context", async () => {
       await call('hub_load_model', { modelId: 'qwen3-coder-30b' });
-      expect(router.loadTrackedModel).toHaveBeenCalledWith('qwen3-coder-30b', { scope: 'request' });
+      expect(router.loadTrackedModel).toHaveBeenCalledWith('qwen3-coder-30b', { origin: 'agent' });
     });
 
     it('answers a refusal with its reason', async () => {
@@ -93,35 +94,26 @@ describe('InferenceTools — loading and pinning', () => {
 
   // NIT-1: the tool marked a model pinned without loading it — and, untracked, pinned nothing while
   // answering success.
+  // The pin goes through the router's pinTrackedModel, which loads a model not in memory through the
+  // same load path first (see the router's tests); what this tool decides is who is asking.
   describe('hub_pin_model', () => {
-    it('loads a model that is not in memory first, under the same rule as hub_load_model', async () => {
-      modelRegistry.getTrackedModel.mockReturnValue({ catalogId: 'gemma4-e4b', state: 'pulled' } as TrackedModel);
+    it('pins under the same rule as hub_load_model', async () => {
+      router.pinTrackedModel.mockResolvedValue({ pinned: true });
 
       await expect(asKey(HERMES_KEY, () => call('hub_pin_model', { modelId: 'gemma4-e4b' }))).resolves.toMatchObject({ success: true });
+      expect(router.pinTrackedModel).toHaveBeenLastCalledWith('gemma4-e4b', { origin: 'agent' });
 
-      expect(router.loadTrackedModel).toHaveBeenCalledWith('gemma4-e4b', { scope: 'request' });
-      expect(modelRegistry.pinModel).toHaveBeenCalledWith('gemma4-e4b');
+      await expect(asOperator(() => call('hub_pin_model', { modelId: 'gemma4-e4b' }))).resolves.toMatchObject({ success: true });
+      expect(router.pinTrackedModel).toHaveBeenLastCalledWith('gemma4-e4b', { origin: 'operator' });
     });
 
-    it('does not pin a model it could not load', async () => {
-      modelRegistry.getTrackedModel.mockReturnValue(undefined);
-      router.loadTrackedModel.mockResolvedValue({ loaded: false, reason: 'gemma4-e4b is not downloaded on this node; pull it first' });
+    it('answers a pin the router refused with its reason', async () => {
+      router.pinTrackedModel.mockResolvedValue({ pinned: false, reason: 'gemma4-e4b is not downloaded on this node; pull it first' });
 
       await expect(asOperator(() => call('hub_pin_model', { modelId: 'gemma4-e4b' }))).resolves.toEqual({
         success: false,
         message: 'gemma4-e4b is not downloaded on this node; pull it first',
       });
-      expect(router.loadTrackedModel).toHaveBeenCalledWith('gemma4-e4b', { scope: 'operator' });
-      expect(modelRegistry.pinModel).not.toHaveBeenCalled();
-    });
-
-    it('pins a loaded model without loading it again', async () => {
-      modelRegistry.getTrackedModel.mockReturnValue({ catalogId: 'gemma4-e4b', state: 'loaded' } as TrackedModel);
-
-      await expect(asKey(HERMES_KEY, () => call('hub_pin_model', { modelId: 'gemma4-e4b' }))).resolves.toMatchObject({ success: true });
-
-      expect(router.loadTrackedModel).not.toHaveBeenCalled();
-      expect(modelRegistry.pinModel).toHaveBeenCalledWith('gemma4-e4b');
     });
   });
 });

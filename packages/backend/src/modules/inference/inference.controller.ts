@@ -542,8 +542,9 @@ export class InferenceController {
     // Through the router, like a pin: it makes room, sizes the context window and refuses a load
     // that cannot fit, where the engine's own load would go on top of whatever holds the card.
     // `operator`: AuthGuard admits only a signed-in operator or a host-local credential acting as
-    // one, never an app's key, so this load may unload any idle model — an app's included.
-    const outcome = await this.router.loadTrackedModel(body.modelId, { scope: 'operator' });
+    // one, never an app's key, so this load may unload any idle model — an app's included — and
+    // the Hub picks its window.
+    const outcome = await this.router.loadTrackedModel(body.modelId, { origin: 'operator' });
     if (!outcome.loaded) {
       return { success: false, message: outcome.reason };
     }
@@ -560,26 +561,14 @@ export class InferenceController {
   @UseGuards(AuthGuard)
   @Post('models/pin')
   async pinModel(@Body() body: { modelId: string }) {
-    const profile = await this.hardwareInspector.getProfile();
-    const curated = this.modelRegistry.getCuratedModel(body.modelId);
-    const footprint = curated?.runtime.memoryFootprintMb || 0;
-    const canPin = await this.memoryManager.canPinModel(profile, footprint);
-
-    if (!canPin.canPin) {
-      return { success: false, message: canPin.reason };
+    // Through the router's load path, so the pin fits, evicts or refuses exactly as a load does
+    // instead of loading on top of the card, then checks the pinned-model budget against what the
+    // model was measured occupying here. `operator` for the same reason as the load above: a pin
+    // may clear an idle model an app loaded.
+    const outcome = await this.router.pinTrackedModel(body.modelId, { origin: 'operator' });
+    if (!outcome.pinned) {
+      return { success: false, message: outcome.reason };
     }
-
-    // Ensure model is loaded before pinning — through the router's load path, so the pin fits,
-    // evicts or refuses exactly as load-on-demand does instead of loading on top of the card.
-    const tracked = this.modelRegistry.getTrackedModel(body.modelId);
-    if (!tracked || (tracked.state !== 'loaded' && tracked.state !== 'pinned')) {
-      const outcome = await this.router.loadTrackedModel(body.modelId, { scope: 'operator' });
-      if (!outcome.loaded) {
-        return { success: false, message: outcome.reason };
-      }
-    }
-
-    this.modelRegistry.pinModel(body.modelId);
     return { success: true, message: `Model ${body.modelId} pinned` };
   }
 
