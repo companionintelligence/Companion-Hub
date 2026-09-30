@@ -103,16 +103,22 @@ off the instance, because test doubles are mock proxies whose `type` is undefine
 
 `InferenceRouterService.loadTrackedModel` is the one path that puts a catalog model into memory.
 The pool proxy reaches it through `prepareTrackedModel` for every app generation naming a
-Hub-tracked model that the engine does not hold. `POST /api/inference/models/load` and `models/pin`
-reach it, and so do MCP `hub_load_model` and `hub_pin_model`. When the model does not fit,
-`MemoryManagerService.planEviction` decides what may be unloaded. Who asked decides the scope:
+Hub-tracked model that the engine does not hold. `POST /api/inference/models/load` and MCP
+`hub_load_model` reach it directly; `models/pin` and MCP `hub_pin_model` reach it through
+`pinTrackedModel`. Every caller states its origin (`LoadOrigin`); there is no default. The origin
+decides both the window the model is loaded at (see [Model loads](#model-loads)) and the scope
+`MemoryManagerService.planEviction` uses when the model does not fit:
 
-| Caller | Scope | May unload |
-|---|---|---|
-| An app's request, through the pool proxy or the router | `request` | Idle models the Hub loaded itself |
-| An MCP tool called with any API key, `full` included | `request` | Idle models the Hub loaded itself |
-| REST load or pin (`AuthGuard`: an operator session or a host-local credential) | `operator` | Any idle, unpinned model on any engine |
-| An MCP tool run from the Hub UI's tool runner (`/api/mcp-admin`) | `operator` | Any idle, unpinned model on any engine |
+| Caller | Origin | Scope | May unload |
+|---|---|---|---|
+| An app's request, through the pool proxy or the router | `request` | `request` | Idle models the Hub loaded itself |
+| An MCP tool called with any API key, `full` included | `agent` | `request` | Idle models the Hub loaded itself |
+| REST load or pin (`AuthGuard`: an operator session or a host-local credential) | `operator` | `operator` | Any idle, unpinned model on any engine |
+| An MCP tool run from the Hub UI's tool runner (`/api/mcp-admin`) | `operator` | `operator` | Any idle, unpinned model on any engine |
+
+Window and scope used to be two separate options with opposite defaults: a call that named neither
+planned its window as an operator's load and evicted as an app's request. The pin made exactly that
+call, so a REST pin could no longer clear an idle model an app loaded, while a REST load could.
 
 Hermes' and OpenClaw's managed keys are `write` keys, so without the `request` scope an agent
 could evict the model every other app on the node is serving.
@@ -147,12 +153,14 @@ Both scopes share these rules:
   if what was already freed shows up in the re-measure.
 - **A model that is not downloaded is refused first.** The check runs before any fit check or
   eviction.
-- **Loads are serialized per node.** Fit, eviction, and load run under one lock. A second load of
-  the same model finds it resident, and the cached memory reading is dropped after every load. A
-  model the engine already holds is answered before the lock, so a request for it never queues
-  behind another model's cold load. The pool proxy passes the client's hang-up signal along, and a
-  load whose client went away while it was queued is dropped before it measures, evicts or loads
-  anything.
+- **Loads are serialized per node.** Fit, eviction, and load run under one lock, and so do a
+  never-measured model's trial load and the measurement after it. A pin holds the lock from its
+  budget check to the pin itself: between the load and the pin the model is an idle Hub load, which
+  a queued request's load could otherwise evict before it is pinned. A second load of the same model
+  finds it resident, and the cached memory reading is dropped after every load. A model the engine
+  already holds is answered before the lock, so a request for it never queues behind another model's
+  cold load. The pool proxy passes the client's hang-up signal along, and a load whose client went
+  away while it was queued is dropped before it measures, evicts or loads anything.
 - **Pins match under `:latest`.** Pins and the model being loaded are matched with
   `sameModelId`, so a pinned `nomic-embed-text` is protected while `/api/ps` lists
   `nomic-embed-text:latest`.
@@ -457,10 +465,12 @@ keys `LLM_API_BASE`, `LLM_API_KEY`, `LLM_DEFAULT_CHAT_MODEL`, `LLM_DEFAULT_EMBED
 
 ## Model loads
 
-An operator's pin or load (`POST /api/inference/models/pin`, `POST /api/inference/models/load`, MCP
-`hub_load_model`) and a pool request for a tracked model that is not resident all go through
-`InferenceRouterService.loadTrackedModel`. `planLoad` picks the context window and the footprint that
-the fit check and any eviction are sized to.
+An operator's or an agent's pin or load (`POST /api/inference/models/pin`, `POST
+/api/inference/models/load`, MCP `hub_load_model` and `hub_pin_model`) and a pool request for a
+tracked model that is not resident all go through `InferenceRouterService.loadTrackedModel`.
+`planLoad` picks the context window and the footprint that the fit check and any eviction are sized
+to. The load's origin decides whose window it is, as below, and what may be unloaded for it, as in
+[Model loading and eviction](#model-loading-and-eviction).
 
 - **One budget.** The window is sized against the budget the fit check applies: `modelMemoryCeilingMb`
   with nothing loaded, and `MemoryManagerService.loadHeadroomMb` for what is free now. Sizing against
@@ -474,8 +484,9 @@ the fit check and any eviction are sized to.
   between models in the engine's own proportions, or else the engine's own figure. On a discrete card
   it records only a model that was wholly on the GPU. That measurement replaces the catalog footprint
   in the estimate and in `canPinModel`. gemma4:e4b's catalog row says 10,813 MB, and beta-red's RTX 3080
-  serves it in 5,550 MiB. For an operator's load, a model measured here in what is free now is loaded
-  with a warning even when the reserves charged on top of the measurement are over.
+  serves it in 5,550 MiB. For an operator's or an agent's load, a model measured here in what is free
+  now is loaded with a warning even when the reserves charged on top of the measurement are over.
+  Nothing is unloaded for it.
 - **Measurements survive a restart.** The measurements are written to
   `<data dir>/state/inference-footprint-sightings.json`, tagged with the card they were taken on (or
   the machine, on unified memory and CPU), and read back by the next Hub process on the same hardware.
@@ -484,18 +495,21 @@ the fit check and any eviction are sized to.
   10 GB cards serving gemma4:e4b refused to pin or load it again.
 - **Never measured: try the load.** An operator's load of an Ollama model onto a discrete card, for a
   model never measured here, whose catalog figure alone says no empty card here holds it even at 4096,
-  is tried at 4096 instead of refused. Nothing is evicted for it: Ollama makes room among its own idle
-  runners and puts what the card cannot take in system RAM. The model is measured as soon as it lands,
-  and a warning is logged when Ollama could not put it wholly on the card. Lemonade and unified memory
-  keep the refusal: Lemonade loads the whole model on the card, and on unified memory the spill would
-  come out of the memory the OS itself runs in. So does an Ollama the Hub holds a pin on, since Ollama
-  could make room by unloading the pinned model. On the request path a refusal is forwarded to the
-  engine as before, which loads the model at the window the request runs at.
-- **Pins.** The REST pin and MCP `hub_pin_model` share `InferenceRouterService.pinTrackedModel`: load
-  the model through `loadTrackedModel` when it is not resident, then check the pinned-model budget
-  with what it was measured occupying. A pin refused on a measurement is final and loads nothing. A
-  pin refused on the catalog figure alone loads first and asks again; a model that then could not be
-  measured on the card stays loaded but unpinned.
+  is tried at 4096 instead of refused. The Hub evicts nothing for it: Ollama makes room among its own
+  idle runners and puts what the card cannot take in system RAM. The model is measured as soon as it
+  lands, and a warning is logged when Ollama could not put it wholly on the card. Lemonade and unified
+  memory keep the refusal: Lemonade loads the whole model on the card, and on unified memory the spill
+  would come out of the memory the OS itself runs in. So does an Ollama the Hub holds a pin on, since
+  Ollama could make room by unloading the pinned model. An agent's MCP key and an app's request keep
+  it too: the room Ollama makes can include runners apps loaded, which only an operator may have
+  unloaded. On the request path a refusal is forwarded to the engine as before, which loads the model
+  at the window the request runs at.
+- **Pins.** The REST pin (`operator`) and MCP `hub_pin_model` (`operator` from the tool runner, else
+  `agent`) share `InferenceRouterService.pinTrackedModel`, which holds the per-node load lock
+  throughout: load the model the way `loadTrackedModel` does when it is not resident, then check the
+  pinned-model budget with what it was measured occupying. A pin refused on a measurement is final
+  and loads nothing. A pin refused on the catalog figure alone loads first and asks again; a model
+  that then could not be measured on the card stays loaded but unpinned.
 - **Slots.** The KV cache is charged once per Ollama slot. The slot count is the engine's own
   statement, else `inferenceOllamaSlots`, else 1. It is 1 for the families Ollama 0.34 runs on a
   single slot (`qwen35`, which includes qwen3.8:27b, `qwen3vl`, `mllama`, and others; see
@@ -505,27 +519,34 @@ the fit check and any eviction are sized to.
   slots in 3.4 GB in all.
 - **The request's window.** A load triggered by an app's request on Ollama uses the window that
   request runs at: its `options.num_ctx` on the native routes, and no `num_ctx` on `/v1`, where
-  Ollama's default applies. A load at any other window is reloaded by that request. An operator's
-  pin or load uses the Hub's own window. For a `/v1` load the fit check sizes Ollama's default window,
-  which the API does not expose: set `inferenceMaxNumCtx` to the node's `OLLAMA_CONTEXT_LENGTH`.
-  Without it the check sizes the handout instead, and says so at debug level.
+  Ollama's default applies. A load at any other window is reloaded by that request. An operator's or
+  an agent's pin or load uses the Hub's own window. For a `/v1` load the fit check sizes Ollama's
+  default window, which the API does not expose: set `inferenceMaxNumCtx` to the node's
+  `OLLAMA_CONTEXT_LENGTH`. Without it the check sizes the handout instead, and says so at debug level.
 - **Lemonade.** Lemonade has one saved `ctx_size` per model and no window per request. The Hub loads
   at the larger of its own window and the context floor of any installed app the model qualifies for
   (Hermes: 64000). It does not step below that floor for memory that eviction can free: when an empty
   card holds the floor but what is free now does not, the load is sized at the floor and the eviction
-  path unloads idle models for it. It goes below the floor only when not even an empty card holds it,
-  or when unloading every model that may be unloaded would not free enough, and the warning says which.
-  Before this, beta-1 saved 32768 for Gemma-4-E4B-it-GGUF beside an idle Ollama gemma4:e4b, on a card
-  that holds 64000 empty. The window is saved with `save_options` on `/v1/load`, which Lemonade 10.2.0
-  and 2026.x both accept. The options already saved are sent back with it, because 10.2.0 replaces them
-  instead of merging. `engineCapabilities` reports the saved window of the model Lemonade holds, for
-  pool placement. `servedContextLength` reads the saved `ctx_size`, and, when nothing is saved, the
-  window a resident model is running at: a model Lemonade loaded by itself runs at its configured
+  path unloads idle models for it. Whether eviction can free it is asked of the same plan the load
+  then executes, with the load's own scope and the pool's in-flight work, so the floor is kept only
+  where this load may pay for it. An operator's load may unload any idle unpinned model; an app's
+  request or an agent only the Hub's own idle loads; nobody a busy one. The load goes below the floor
+  only when not even an empty card holds it, or when what this load may unload would not free enough,
+  and the warning says which, naming any busy model and, for a request or agent, that an operator's
+  load could free more. Before this, beta-1 saved 32768 for Gemma-4-E4B-it-GGUF beside an idle Ollama
+  gemma4:e4b, on a card that holds 64000 empty. The window is saved with `save_options` on
+  `/v1/load`, which Lemonade 10.2.0 and 2026.x both accept. The options already saved are sent back
+  with it, because 10.2.0 replaces them instead of merging. `engineCapabilities` reports the saved
+  window of the LLM Lemonade holds, for pool placement (the smallest, when it holds more than one; it
+  is not yet per model). `servedContextLength` reads the saved `ctx_size`, and, when nothing is saved,
+  the window a resident model is running at: a model Lemonade loaded by itself runs at its configured
   default (4096 on 10.2.0).
+- **Lemonade's names.** 10.2.0 lists, loads and describes a model the Hub registered (the
+  `nomic-embed-text-v1.5-GGUF` embedder) only as `user.<id>`. Residency (`isModelLoaded`), saved
+  options (`GET /v1/models/{id}`), `servedContextLength` and `loadModel` resolve the catalog id through
+  `engineModelId`, and a resident record matches under either spelling, so a resident embedder is
+  adopted rather than loaded and registered again.
 - **No window for non-LLMs.** Embedding, TTS, and STT models get no window and no KV charge.
-- **Re-measuring.** After an eviction, each re-measure reads the hardware profile with a fresh RAM
-  sample (`getProfile({ freshRam: true })`). On unified memory the pre-eviction MemAvailable used to
-  report a successful eviction as a refusal.
 
 ## App readiness endpoint
 
