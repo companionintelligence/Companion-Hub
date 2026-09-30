@@ -159,3 +159,19 @@ fn restricting_a_missing_file_is_a_no_op() {
     let dir = tempfile::tempdir().expect("tempdir");
     assert_eq!(restrict_private_state_file(&dir.path().join("seed")), None);
 }
+
+#[cfg(unix)]
+#[test]
+fn restores_the_update_listener_token_with_the_other_credential_files() {
+    // What the Docker permission repair's `chmod -R a+rwX` leaves in state/.
+    let data_dir = tempfile::tempdir().expect("tempdir");
+    let state_dir = data_dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).expect("mkdir state");
+    let settings = state_file_with_mode(&state_dir, "settings.json", 0o666);
+    let token = state_file_with_mode(&state_dir, "update-listener.token", 0o666);
+
+    restrict_private_state_files(data_dir.path());
+
+    assert_eq!(mode_of(&settings), 0o600);
+    assert_eq!(mode_of(&token), 0o600);
+}

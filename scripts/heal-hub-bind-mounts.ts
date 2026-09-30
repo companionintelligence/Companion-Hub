@@ -202,10 +202,19 @@ export const STATE_FILES_NEED_WRITE = [
 ] as const;
 
 /**
- * The mode for the state files that hold credentials, which are exactly STATE_FILES_NEED_WRITE:
- * settings.json carries the host-local and Portal device keys, and `seed` derives JWT_SECRET and
- * every app's generated passwords. Owner read and write only, the mode the backend creates and
- * keeps them at (PRIVATE_STATE_FILE_MODE in packages/backend/src/common/helpers/env-helpers.ts).
+ * Credential files in state/ that the Hub only reads, so they are not in STATE_FILES_NEED_WRITE and
+ * its root-owned quarantine: the desktop app's update listener token (UPDATE_LISTENER_TOKEN_FILENAME
+ * in updater.rs), which the listener writes owner-only. The Docker heal's `chmod -R` opens them with
+ * the rest of state/, so they are restricted along with those files.
+ */
+const PRIVATE_READ_ONLY_STATE_FILES = [['state', 'update-listener.token']] as const;
+
+/**
+ * The mode for the state files that hold credentials: STATE_FILES_NEED_WRITE, where settings.json
+ * carries the host-local and Portal device keys and `seed` derives JWT_SECRET and every app's
+ * generated passwords, and PRIVATE_READ_ONLY_STATE_FILES. Owner read and write only, the mode the
+ * backend creates and keeps its files at (PRIVATE_STATE_FILE_MODE in
+ * packages/backend/src/common/helpers/env-helpers.ts) and the desktop app writes its token at.
  *
  * This used to chmod both to 0666 on every start so a container running as someone else could
  * write them, which also let every local user read the device key or plant one of their own. The
@@ -725,7 +734,7 @@ function seedSettingsJson(stateDir: string, runtime: { uid: number; gid: number 
  * Only a file owned by `ownerUid`, the host owner the Hub reads these files as
  * (`hubStateFileOwnerUid`); null tightens nothing. Taking bits off anyone else's file could lock
  * the Hub out of it, so those are left to the Docker chown in `ensureHubBindMountsWritable`, after
- * which the Hub, as their new owner, restricts them on boot.
+ * which the Hub, as their new owner, restricts the ones it writes on boot.
  */
 export function restrictPrivateStateFile(filePath: string, ownerUid: number | null): number | null {
   // NTFS has no POSIX modes, and statSync reports uid 0 for everything there.
@@ -746,7 +755,7 @@ export function restrictPrivateStateFile(filePath: string, ownerUid: number | nu
 
 function restrictPrivateStateFiles(root: string, ownerUid: number | null): void {
   const restricted: string[] = [];
-  for (const [subdir, file] of STATE_FILES_NEED_WRITE) {
+  for (const [subdir, file] of [...STATE_FILES_NEED_WRITE, ...PRIVATE_READ_ONLY_STATE_FILES]) {
     const previous = restrictPrivateStateFile(path.join(root, subdir, file), ownerUid);
     if (previous !== null) restricted.push(`${subdir}/${file} (was 0${previous.toString(8)})`);
   }

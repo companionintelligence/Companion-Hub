@@ -164,7 +164,7 @@ describe('ensureHubBindMountsWritable', () => {
 
 // Owners are real here, so these only mean anything where uids exist; Windows has no POSIX modes
 // and the code under test returns early there.
-describe.skipIf(process.platform === 'win32')('credential files in state/ (settings.json, seed)', () => {
+describe.skipIf(process.platform === 'win32')('credential files in state/ (settings.json, seed, update-listener.token)', () => {
   const tmpRoot = join(process.cwd(), '.tmp-heal-hub-private-state-test');
   // Read once, before any test stands in for root by mocking these.
   const ownUid = (process.getuid as () => number)();
@@ -362,6 +362,8 @@ describe.skipIf(process.platform === 'win32')('credential files in state/ (setti
     const { internalRoot } = makeHubDataLayout(tmpRoot);
     const settingsPath = stateFile(internalRoot, 'settings.json', 0o600, '{"hubLocalKey":"k"}');
     const seedPath = stateFile(internalRoot, 'seed', 0o600, 'a'.repeat(64));
+    // The desktop app's update listener token, which the Hub only reads.
+    const tokenPath = stateFile(internalRoot, 'update-listener.token', 0o600, 'listener-token\n');
     execSyncMock.mockReturnValue('');
     let healed = false;
     let stateHealed = false;
@@ -373,6 +375,7 @@ describe.skipIf(process.platform === 'win32')('credential files in state/ (setti
         if (mount.startsWith(`${join(internalRoot, 'state')}:`)) {
           chmodSync(settingsPath, 0o666);
           chmodSync(seedPath, 0o666);
+          chmodSync(tokenPath, 0o666);
           stateHealed = true;
         }
         healed = true;
@@ -387,6 +390,7 @@ describe.skipIf(process.platform === 'win32')('credential files in state/ (setti
     expect(stateHealed).toBe(true);
     expect(modeOf(settingsPath)).toBe(0o600);
     expect(modeOf(seedPath)).toBe(0o600);
+    expect(modeOf(tokenPath)).toBe(0o600);
   });
 });
 

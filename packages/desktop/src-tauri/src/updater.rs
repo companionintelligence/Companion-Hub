@@ -18,7 +18,7 @@ use crate::hub_manager::{self, PersistedLaunchMode};
 /// host gateway. `POST /update` (and `/health`) still require the bearer token.
 const UPDATE_LISTENER_BIND_ADDR: &str = "0.0.0.0:17400";
 const UPDATE_LISTENER_LOCAL_URL: &str = "http://127.0.0.1:17400";
-const UPDATE_LISTENER_TOKEN_FILENAME: &str = "update-listener.token";
+pub(crate) const UPDATE_LISTENER_TOKEN_FILENAME: &str = "update-listener.token";
 #[cfg(debug_assertions)]
 const UPDATE_BASE_URL_ENV: &str = "CI_HUB_UPDATE_BASE_URL";
 

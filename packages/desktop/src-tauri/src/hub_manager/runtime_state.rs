@@ -61,8 +61,16 @@ const HUB_STALE_ROOT_OWNED_FILES: &[(&str, &str)] = &[
 const HUB_STATE_FILES_NEED_WRITE: &[(&str, &str)] =
     &[("state", "settings.json"), ("state", "seed")];
 
-/// Owner read and write only, the mode the backend creates and keeps the credential files
-/// at (`PRIVATE_STATE_FILE_MODE` in packages/backend/src/common/helpers/env-helpers.ts).
+/// Credential files in `state/` that the backend only reads, so they are not in
+/// [`HUB_STATE_FILES_NEED_WRITE`] and its root-owned cleanup: the update listener token, which
+/// the listener writes owner-only. The Docker permission repair's `chmod -R` opens them with the
+/// rest of `state/`, so they are restricted along with those files.
+const HUB_PRIVATE_READ_ONLY_STATE_FILES: &[(&str, &str)] =
+    &[("state", crate::updater::UPDATE_LISTENER_TOKEN_FILENAME)];
+
+/// Owner read and write only: the mode the backend creates and keeps its credential files at
+/// (`PRIVATE_STATE_FILE_MODE` in packages/backend/src/common/helpers/env-helpers.ts), and the
+/// one the update listener writes its token at.
 ///
 /// 0o666 was there so a container running as someone else could write them. It also let
 /// every local user read the device key or plant one of their own. The Hub container
@@ -77,7 +85,7 @@ const PRIVATE_STATE_FILE_MODE: u32 = 0o600;
 ///
 /// Only a file this user owns. The Hub container writes as this user, so taking bits off
 /// anyone else's file could lock it out; those are left for the Docker chown, after which
-/// the Hub restricts them itself on boot.
+/// the Hub restricts the ones it writes itself on boot.
 #[cfg(unix)]
 pub(crate) fn restrict_private_state_file(path: &Path) -> Option<u32> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -112,8 +120,11 @@ pub(crate) fn restrict_private_state_file(_path: &Path) -> Option<u32> {
     None
 }
 
-fn restrict_private_state_files(data_dir: &Path) {
-    for (subdir, file) in HUB_STATE_FILES_NEED_WRITE {
+pub(crate) fn restrict_private_state_files(data_dir: &Path) {
+    for (subdir, file) in HUB_STATE_FILES_NEED_WRITE
+        .iter()
+        .chain(HUB_PRIVATE_READ_ONLY_STATE_FILES)
+    {
         let path = data_dir.join(subdir).join(file);
         if let Some(previous) = restrict_private_state_file(&path) {
             let _ = append_desktop_log_for(
