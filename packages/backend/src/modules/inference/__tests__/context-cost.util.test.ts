@@ -43,6 +43,24 @@ describe('probeContextCost', () => {
     await expect(probeContextCost(failing, model(0.0667))).resolves.toEqual({ kvMbPerToken: 0.0667, weightMb: null, source: 'catalog' });
   });
 
+  // gemma4:e4b on beta-red: `/api/tags` says 9,163 MiB, and its weights, encoders and runtime hold
+  // 4,046 there. The file plus runner overhead (9,931) would raise the row's measured 4,362 back over
+  // a 10 GB card's budget.
+  it('drops the file size for a model whose catalog footprint was measured, and keeps its KV cost', async () => {
+    const measuredRow = { id: 'gemma4-e4b', backendModelId: 'gemma4:e4b', runtime: { footprintMeasured: true } } as unknown as CuratedModel;
+    const backend = {
+      contextCostForModel: vi.fn().mockResolvedValue({ kvMbPerToken: 0.09375, weightMb: 9_163, source: 'geometry' }),
+    } as unknown as InferenceBackend;
+    await expect(probeContextCost(backend, measuredRow)).resolves.toEqual({ kvMbPerToken: 0.09375, weightMb: null, source: 'geometry' });
+
+    const lemonadeRow = { id: 'q', backendModelId: 'Q-GGUF', runtime: { kvMbPerToken: 0.0667, footprintMeasured: true } } as unknown as CuratedModel;
+    const lemonade = { weightsOnDiskMb: vi.fn().mockResolvedValue(17_630) } as unknown as InferenceBackend;
+    await expect(probeContextCost(lemonade, lemonadeRow)).resolves.toEqual({ kvMbPerToken: 0.0667, weightMb: null, source: 'catalog' });
+    await expect(
+      probeContextCost({} as InferenceBackend, { ...measuredRow, runtime: { footprintMeasured: true } } as CuratedModel),
+    ).resolves.toBeNull();
+  });
+
   it('ignores a catalog figure that is not a positive number', async () => {
     for (const kv of [0, -1, Number.NaN]) {
       await expect(probeContextCost({} as InferenceBackend, model(kv))).resolves.toBeNull();

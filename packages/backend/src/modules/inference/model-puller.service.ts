@@ -19,13 +19,13 @@ const MIN_BITS_PER_WEIGHT = 4;
  * The least memory a model's weights can take once an engine has loaded them, in MB: 4 bits per
  * parameter, and never more than the download.
  *
- * The download gate needs a lower bound, not the catalog footprint. That footprint is the download
- * plus 10 %, and a download can hold far more than the engine puts on the card. gemma4:e4b downloads
- * 9,163 MiB, but most of that is per-layer embedding tables that stay in system RAM. On beta-red's
- * RTX 3080, Ollama holds it at 3,209 MiB (`/api/ps` size equal to size_vram), and nvidia-smi shows
- * 5,550 MiB for the whole runner at 16384 tokens. The catalog footprint is 10,813 MB, which refused the
- * fleet's default app model on every 8 and 10 GB card. The row's `params` is the effective 4B, not the
- * 8B Ollama reports, so this floor (1,907 MB) stays below what the card really holds.
+ * The download gate needs a lower bound, not the catalog footprint. For most rows that footprint is
+ * the download plus 10 %, and a download can hold far more than the engine puts on the card. gemma4:e4b
+ * downloads 9,163 MiB, but most of that is per-layer embedding tables that stay in system RAM:
+ * nvidia-smi shows 5,550 MiB for beta-red's whole runner at 16384 tokens, KV cache included. Its
+ * footprint was 10,813 MB until the row got a measured one (4,362, `ramGb` in curated-models.ts), and
+ * the rows nobody has measured still derive theirs from the download. The row's `params` is the
+ * effective 4B, not the 8B Ollama reports, so this floor (1,907 MB) stays below what the card holds.
  *
  * With no parameter count (speech and embedding rows), the download itself is the only size known.
  */

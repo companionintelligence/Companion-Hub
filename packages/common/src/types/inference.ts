@@ -212,6 +212,14 @@ export interface CuratedModel {
     pinnedByDefault: boolean;
     memoryFootprintMb: number;
     /**
+     * True when `memoryFootprintMb` was measured on a running engine (what its process held, less its
+     * KV cache and compute buffers) instead of derived from the download. Context sizing then takes it
+     * as the base and does not raise it to the file size: a gemma4 E2B/E4B download is mostly a
+     * per-layer embedding table the engine leaves memory-mapped on the host, so the file is about twice
+     * what the model holds on the card.
+     */
+    footprintMeasured?: boolean;
+    /**
      * Measured MB of memory one token of context costs this model on its engine, for engines that
      * cannot report the model's geometry (Lemonade) or report it wrongly (Ollama drops a per-layer
      * `head_count_kv`). Absent: the engine's own figure, else the context ladder's assumption.

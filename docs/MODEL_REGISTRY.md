@@ -26,7 +26,9 @@ where the model is listed; they're left blank otherwise.
 
 `curated-models.ts` derives everything else (VRAM/RAM requirements, disk size, memory footprint,
 per-tier recommendation flags) from the row's `params`/`gb`/`tier` columns — there is no separate
-hand-maintained sizing formula to keep in sync.
+hand-maintained sizing formula to keep in sync. The one exception is the optional `ramGb` column: a
+memory footprint measured on a running engine, for a row whose download does not predict it (see
+[Measured footprints](#measured-footprints)).
 
 ## 2. How recommendations are computed
 
@@ -50,16 +52,38 @@ there is no separate hand-maintained ID→hardware-bracket table to keep in sync
    only when its weights cannot fit in the node's whole model budget with nothing else loaded: a
    discrete card's VRAM less 512 MB, otherwise the RAM budget. The weights are measured by a lower
    bound, 4 bits per parameter (`params`) capped at the download size, not by `memoryFootprintMb`.
-   That footprint is the download plus 10 %, and some downloads hold far more than the engine puts on
-   the card. gemma4:e4b is a 9,163 MiB download, but Ollama holds it at 3,209 MiB on beta-red's
-   RTX 3080; most of the file is per-layer embeddings that stay in system RAM. A model that only its
-   footprint says will not fit still downloads, and the Hub logs a warning that a pin or load may
-   refuse it. So a 10 GB card downloads gemma4-e4b and refuses gemma4-31b (at least 14,781 MB).
+   For most rows that footprint is the download plus 10 %, and some downloads hold far more than the
+   engine puts on the card. A model that only its footprint says will not fit still downloads, and
+   the Hub logs a warning that a pin or load may refuse it. So a 10 GB card downloads gemma4-e4b and
+   refuses gemma4-31b (at least 14,781 MB).
 
 The frontend (onboarding `RecommendedModels`/`OtherModels` in
 `packages/frontend/src/modules/onboarding/components/ai-setup/model-selection-card.tsx`, and the
 equivalent Settings AI page) reads the same `CuratedModel[]` the backend serves — there's no separate
 model list to update on the frontend side.
+
+### Measured footprints
+
+A row with a `ramGb` value carries a footprint measured on the fleet instead of one derived from `gb`.
+The figure is what the engine process held once loaded, less the KV cache and compute buffers its load
+log reports. Read the process with nvidia-smi or rocm-smi on a discrete card, or with the process's DRM
+fdinfo on a unified-memory APU. The Hub charges the KV cache separately, per token of the window it
+loads, and the compute buffers fall inside the fixed safety margin it adds, so what is left is the
+weights, the encoders, and the runtime, which do not change with the window. Such a row is marked
+`footprintMeasured`, and context sizing then uses the measurement as the base instead of raising it to
+the file size.
+
+Use this column only for a figure you measured. Do not read the figure from `/api/ps`: Ollama 0.34
+builds that value from llama-server's log lines, and for gemma4 it drops a KV cache and the image
+and audio encoder weights. On beta-red it reported 3,209 MiB for gemma4:e4b while nvidia-smi showed
+5,550 MiB for the process.
+
+The gemma4 E2B and E4B downloads are the reason for the column. Most of gemma4:e4b's 9,163 MiB file
+is a per-layer embedding table (5,376 MiB) that llama.cpp leaves memory-mapped on the host. Its
+weights, encoders, and runtime come to 4,046 MiB on an RTX 3080 and 4,357 MiB on Strix Halo, and the
+row carries the larger. Derived from the download, the footprint was 10,813 MB, which refused the
+fleet's default app model on 8 and 10 GB cards. The dated note above `CATALOG_TOON` records every
+measurement and the node it came from.
 
 ## 3. How to add a new model
 
@@ -94,6 +118,8 @@ newmodel-72b|newmodel:72b|NewModel 72B|reasoning|72|43|high|128|SomeLab|38.2|41.
   similar size.
 - `intel`/`tps`/`ttft`/`e2e` — from the Artificial Analysis leaderboard if the model is
   listed there; leave blank (`|`) otherwise. Don't invent numbers.
+- `ramGb` — leave it blank. Fill it in only with a footprint you measured on a running engine, as
+  [Measured footprints](#measured-footprints) describes, and record the measurement in a dated note.
 - If the model is a Mixture-of-Experts (MoE) model, also add its active-parameter count (billions) to
   the `MOE_ACTIVE_PARAMS_B` map just below the LLM table — this governs shared-memory/APU selection,
   which is bandwidth- (active-param-) bound rather than capacity-bound.

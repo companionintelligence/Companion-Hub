@@ -40,9 +40,12 @@ describe('curated-models (TOON catalog)', () => {
   });
 
   it('leaves every row without a ramGb column on the historical diskMb x 1.1 footprint', () => {
-    // Regression guard for the optional `ramGb` column added for mlx-dspark: adding it must not
-    // have shifted a single pre-existing row's memory numbers.
-    for (const m of CURATED_MODELS.filter((m) => m.modality === 'llm')) {
+    // Regression guard for the optional `ramGb` column: only a row that states a measured figure
+    // may leave the derived numbers, so adding one must not shift any other row.
+    const measured = CURATED_MODELS.filter((m) => m.runtime.footprintMeasured).map((m) => m.id);
+    expect(measured.sort()).toEqual(['gemma4-26b', 'gemma4-31b', 'gemma4-e2b', 'gemma4-e4b', 'qwen3-8-27b-lemonade']);
+    for (const m of CURATED_MODELS.filter((m) => m.modality === 'llm' && !m.runtime.footprintMeasured)) {
+      expect(m.runtime, `${m.id} runtime`).not.toHaveProperty('footprintMeasured');
       expect(m.runtime.memoryFootprintMb, `${m.id} footprint`).toBe(Math.round(m.requirements.diskMb * 1.1));
       expect(m.requirements.minVramMb, `${m.id} minVram`).toBe(m.requirements.diskMb);
       expect(m.requirements.recommendedVramMb, `${m.id} recVram`).toBe(Math.round(m.requirements.diskMb * 1.1 + 1024));
@@ -108,16 +111,53 @@ describe('curated-models (TOON catalog)', () => {
     expect(coder?.activeParameterScale).toBe(3);
   });
 
-  it('derives requirements + context from the TOON row (gemma4-31b)', () => {
-    const g = byId.get('gemma4-31b');
+  it('derives requirements + context from the TOON row (gemma4-12b)', () => {
+    const g = byId.get('gemma4-12b');
     expect(g).toBeDefined();
-    expect(g?.backendModelId).toBe('gemma4:31b');
-    expect(g?.parameterScale).toBe(31);
-    // gb=20 → diskMb 20*1024, footprint ~1.1x.
-    expect(g?.requirements.diskMb).toBe(20480);
-    expect(g?.runtime.memoryFootprintMb).toBe(Math.round(20480 * 1.1));
+    expect(g?.backendModelId).toBe('gemma4:12b');
+    expect(g?.parameterScale).toBe(12);
+    // gb=7.6 → diskMb 7.6*1024, footprint ~1.1x: no node has it downloaded, so nothing was measured.
+    expect(g?.requirements.diskMb).toBe(7782);
+    expect(g?.runtime.memoryFootprintMb).toBe(Math.round(7782 * 1.1));
+    expect(g?.runtime.footprintMeasured).toBeUndefined();
     // ctxK=256 → 256000 (not the 131072 default).
     expect(g?.runtime.contextWindow).toBe(256000);
+  });
+
+  // The fleet's measurements, 2026-09-30 (see the note above CATALOG_TOON): the engine process less
+  // its KV cache and compute buffers. The disk figure stays the download, which is what a pull writes.
+  it.each([
+    // id, measured footprint MB, download MB
+    ['gemma4-e4b', 4_362, 9_830],
+    ['gemma4-e2b', 2_929, 7_373],
+    ['gemma4-26b', 18_780, 18_432],
+    ['gemma4-31b', 19_651, 20_480],
+  ])('carries the measured footprint of %s and keeps its download as the disk size', (id, footprintMb, diskMb) => {
+    const m = byId.get(id);
+    expect(m?.runtime.memoryFootprintMb).toBe(footprintMb);
+    expect(m?.runtime.footprintMeasured).toBe(true);
+    expect(m?.requirements.diskMb).toBe(diskMb);
+    expect(m?.requirements.minVramMb).toBe(footprintMb);
+    expect(m?.requirements.recommendedVramMb).toBe(footprintMb + 1024);
+    expect(m?.requirements.minRamMb).toBe(Math.round(footprintMb * 1.05));
+  });
+
+  it('puts gemma4 E4B well under half its download, the ratio that refused it on 8 and 10 GB cards', () => {
+    const e4b = byId.get('gemma4-e4b');
+    // 10,813 MB when derived from the 9.6 GB download; weights, encoders and runtime hold 4,046-4,357 MiB.
+    expect(Math.round((e4b?.requirements.diskMb ?? 0) * 1.1)).toBe(10_813);
+    expect(e4b?.runtime.memoryFootprintMb).toBeLessThan((e4b?.requirements.diskMb ?? 0) / 2);
+  });
+
+  // F7 in the #1679 audit: the row carried 17.2, its files measured in GiB, where every other Lemonade
+  // row carries the registry's size. The measurement now sets the footprint through `ramGb` instead.
+  it("gives qwen3-8-27b-lemonade the registry's 18.8 GB and its measured footprint", () => {
+    const m = byId.get('qwen3-8-27b-lemonade');
+    expect(m?.requirements.diskMb).toBe(Math.round(18.8 * 1024));
+    // 19,017 MiB held at 8192 tokens, less 0.0667 MiB/token of KV for that window.
+    expect(m?.runtime.memoryFootprintMb).toBe(18_473);
+    expect(m?.runtime.footprintMeasured).toBe(true);
+    expect(m?.runtime.kvMbPerToken).toBe(0.0667);
   });
 
   it('carries Artificial Analysis metadata for leaderboard models', () => {

@@ -115,6 +115,36 @@ import type {
 // q4_K_M build: 7.6 GB, 256K, text + image per ollama.com/library/gemma4/tags), scored from AA "Gemma 4
 // 12B (Reasoning)" like the rest of the family; `gemma4-12b-lemonade` now inherits it.
 //
+// 2026-09-30: the four gemma4 rows the fleet has downloaded carry a measured `ramGb`, because their
+// download is no measure of what the engine holds. Each figure is what the engine process held, less
+// the KV cache and compute buffers its own load log reports: the Hub charges KV per token of the window
+// it loads, and compute buffers, which grow with the window, fall inside the estimate's fixed safety
+// margin. What is left is weights, encoders and the runtime, and it does not move with the window.
+// Read with Ollama 0.34.0 (llama-server): nvidia-smi or rocm-smi for the process on a discrete card,
+// its DRM fdinfo on a unified-memory APU. `/api/ps` cannot be used: Ollama sums llama-server's "buffer
+// size" log lines keyed by component, device and kind, so gemma4's second KV cache and second encoder
+// buffer overwrite the first, and the encoder weights are never logged. beta-red's `/api/ps` said
+// 3,209 MiB for e4b while nvidia-smi held 5,550.
+//   gemma4:e4b  4,357 MiB, the largest of four readings: core-2 and beta-max (Strix Halo, Vulkan) 4,356
+//               and 4,357 at 65536 tokens x 4 slots, beta-1 (RX 7900 XTX, ROCm) 4,260 and beta-red
+//               (RTX 3080, CUDA) 4,046 at 16384 x 4. beta-red: 5,550 less 1,184 of KV and 320 of
+//               compute. Of the 9,163 MiB file, llama.cpp leaves the 5,376 MiB per-layer embedding
+//               table memory-mapped on the host and puts 2,830 MiB of weights on the card, plus the
+//               vision and audio encoders; unified memory also holds the 525 MiB token table.
+//   gemma4:e2b  2,925 MiB, derived: resident on no node. Its load logs (core-6, core-17) put 1,397.5
+//               MiB of weights on the card against e4b's 2,829.7, with the same encoders (`/api/show`),
+//               so this is e4b's figure less the 1,432 MiB difference.
+//   gemma4:26b  18,773 MiB. beta-max: DRM 21,246 less 1,920 of KV and 553 of compute, 4096 x 4. That
+//               includes 1,020 MiB of host-side embedding buffers a discrete card keeps in system RAM.
+//   gemma4:31b  19,646 MiB. beta-1: rocm-smi 28,393 less 7,680 of KV and 1,067 of compute, 4096 x 4,
+//               split over both cards, so a second card's runtime is in it.
+// 26b and 31b were made resident for this with one 1-token generation at num_ctx 4096. The whole
+// process, KV and compute included, stayed inside what the Hub charges for each window (footprint,
+// KV at the geometry's per-token cost, the 1,024 MB margin and the vision reserve) on all four e4b
+// nodes. core-7 runs e4b on the CPU, where RSS also holds llama-server's prompt cache, so it is not a
+// reading of the weights. `gb` stays the download. Still derived from `gb`, because no node has them
+// to measure: gemma4-12b, the MTP and community 26B rows, and every Lemonade and MLX gemma4 row.
+//
 // 2026-09-16: two changes, both mechanical and both re-derivable.
 //
 // (a) `intel`/`tps`/`ttft`/`e2e` re-pulled for every Ollama row from the Artificial Analysis open-weights
@@ -179,6 +209,9 @@ import type {
 //   tps             AA median output tokens/sec (cloud reference; blank when unknown)
 //   ttft            AA median latency to first chunk, seconds (cloud reference)
 //   e2e             AA median end-to-end response time, seconds (cloud reference)
+//   ramGb           optional: memory the model holds once loaded, less its KV cache and compute buffers,
+//                   in GB, measured on a running engine (see the 2026-09-30 note). Replaces `gb` for the
+//                   memory footprint and requirements, not for disk. Leave it blank unless measured.
 //
 // `intel`, `tps`, `ttft`, `e2e` are Artificial Analysis open-weights leaderboard figures (artificialanalysis.ai;
 // most re-verified 2026-07-27, a few pre-2026-05 rows left as unconfirmed where independent re-fetches gave
@@ -188,13 +221,13 @@ import type {
 // passes (e.g. gpt-oss-120b 33.3→24, llama-3.3-70b 14.5→9) — consistent with AA having rebased/recalibrated
 // the index in between, not with the older numbers being wrong at the time they were entered.
 const CATALOG_TOON = `
-llms[105|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reason,vision,tools,audio,tps,ttft,e2e}:
-  gemma4-e2b|gemma4:e2b|Gemma 4 E2B|general|2|7.2|cpu-only|128|Google|7.8|1|1|1|1|||
-  gemma4-e4b|gemma4:e4b|Gemma 4 E4B|general|4|9.6|cpu-only|128|Google|8.9|1|1|1|1|63.2|0.84|40.4
+llms[105|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reason,vision,tools,audio,tps,ttft,e2e,ramGb}:
+  gemma4-e2b|gemma4:e2b|Gemma 4 E2B|general|2|7.2|cpu-only|128|Google|7.8|1|1|1|1||||2.86
+  gemma4-e4b|gemma4:e4b|Gemma 4 E4B|general|4|9.6|cpu-only|128|Google|8.9|1|1|1|1|63.2|0.84|40.4|4.26
   gemma4-12b|gemma4:12b|Gemma 4 12B|general|12|7.6|low|256|Google|14.2|1|1|1|0|114.2|2.46|24.4
-  gemma4-26b|gemma4:26b|Gemma 4 26B|general|26|18|medium|256|Google|16.7|1|1|1|0|||
+  gemma4-26b|gemma4:26b|Gemma 4 26B|general|26|18|medium|256|Google|16.7|1|1|1|0||||18.34
   gemma4-26b-mtp|gemma4:26b-a4b-it-mtp-q4_K_M|Gemma 4 26B (MTP)|general|26|19|medium|256|Google|16.7|1|1|1|0|||
-  gemma4-31b|gemma4:31b|Gemma 4 31B|general|31|20|medium|256|Google|19|1|1|1|0|35.6|1|63.9
+  gemma4-31b|gemma4:31b|Gemma 4 31B|general|31|20|medium|256|Google|19|1|1|1|0|35.6|1|63.9|19.19
   qwen3-8-27b|qwen3.8:27b|Qwen 3.8 27B|reasoning|27|18|medium|256|Alibaba|33.7|1|1|1|0|43.8|3.87|60.9
   qwen3-8-27b-mtp|qwen3.8:27b-mtp-q4_K_M|Qwen 3.8 27B (MTP)|reasoning|27|18|medium|256|Alibaba|33.7|1|1|1|0|43.8|3.87|60.9
   qwen3-6-27b|qwen3.6:27b|Qwen 3.6 27B|coding|27|17|medium|262|Alibaba|21.4|1|1|1|0|56.2|3.68|113.6
@@ -459,7 +492,9 @@ function buildLlmModel(
   const diskMb = Math.round(gb * 1024);
   // Optional `ramGb` column: resident RAM stated directly, for rows where it is NOT a fixed
   // multiple of on-disk size. Every row without the column keeps the
-  // historical `diskMb * 1.1` exactly (asserted in curated-models.test.ts).
+  // historical `diskMb * 1.1` exactly (asserted in curated-models.test.ts). A stated figure is a
+  // measurement (see the 2026-09-30 note above CATALOG_TOON), so the row says so: context sizing
+  // then trusts it over the file size, which for gemma4 E2B/E4B is twice what the card holds.
   const ramGb = numOrUndef(row.ramGb);
   // Runtime RAM ≈ weights on disk plus KV-cache / runtime overhead. The tier budget fractions
   // (0.9 VRAM, 0.7 unified/RAM) provide the remaining headroom for the OS, app container, and context.
@@ -520,6 +555,7 @@ function buildLlmModel(
       quantization,
       pinnedByDefault: params <= 4,
       memoryFootprintMb: footprintMb,
+      ...(ramGb === undefined ? {} : { footprintMeasured: true }),
     },
     tiers: {
       high: tier === 'high' ? 'recommended' : 'available',
@@ -575,8 +611,15 @@ const generatedLlms: CuratedModel[] = decodeToonTable(CATALOG_TOON, 'llms').map(
 // Muse Glimmer, LFM2.5-8B-A1B, Llama-4-Scout). The registry service drops any row the connected
 // server's `GET /v1/models?show_all=true` does not list (`LemonadeBackend.offersModel`), so these stay
 // in the table for newer servers and never reach a node that cannot pull them.
+//
+// 2026-09-30: `qwen3-8-27b-lemonade` takes its registry size, 18.8, like the other 40 rows. It carried
+// 17.2, its files measured in GiB (17,630 MiB), a different unit from the rest of the column. That
+// measurement's companion now sets the footprint instead: `ramGb` 18.04 is what Lemonade held at 8192
+// tokens (19,017 MiB, see MEASURED_KV_MB_PER_TOKEN) less that window's 546 MiB of KV. Its compute
+// buffers were not recorded, so unlike the gemma4 figures above they are still in it. Derived from
+// 18.8, the footprint would have charged 2.7 GB more than the model was seen to use.
 const LEMONADE_LLM_TOON = `
-llms[41|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reason,vision,tools,audio,tps,ttft,e2e,quant}:
+llms[41|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reason,vision,tools,audio,tps,ttft,e2e,quant,ramGb}:
   llama3-2-3b-lemonade|Llama-3.2-3B-Instruct-GGUF|Llama 3.2 3B (Lemonade)|general|3|2.06|cpu-only||Meta||0|0|0|0||||ud-q4_K_XL
   qwen3-8b-lemonade|Qwen3-8B-GGUF|Qwen 3 8B (Lemonade)|reasoning|8|5.25|low||Alibaba||1|0|0|0||||q4_1
   gemma4-12b-lemonade|Gemma-4-12B-it-GGUF|Gemma 4 12B (Lemonade)|general|12|7.29|low||Google||0|1|1|0||||q4_K_M
@@ -586,7 +629,7 @@ llms[41|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reaso
   gemma4-26b-lemonade|Gemma-4-26B-A4B-it-GGUF|Gemma 4 26B (Lemonade)|general|26|18.1|medium|256|Google||0|1|1|0||||ud-q4_K_M
   gemma4-26b-mtp-lemonade|Gemma-4-26B-A4B-it-MTP-GGUF|Gemma 4 26B (MTP, Lemonade)|general|26|18.5|medium|256|Google||0|1|1|0||||ud-q4_K_M
   gemma4-31b-lemonade|Gemma-4-31B-it-GGUF|Gemma 4 31B (Lemonade)|general|31|19.5|medium|256|Google||0|1|1|0||||q4_K_M
-  qwen3-8-27b-lemonade|Qwen3.8-27B-GGUF|Qwen 3.8 27B (Lemonade)|reasoning|27|17.2|medium|256|Alibaba||1|1|1|0||||ud-q4_K_XL
+  qwen3-8-27b-lemonade|Qwen3.8-27B-GGUF|Qwen 3.8 27B (Lemonade)|reasoning|27|18.8|medium|256|Alibaba||1|1|1|0||||ud-q4_K_XL|18.04
   qwen3-6-27b-lemonade|Qwen3.6-27B-GGUF|Qwen 3.6 27B (Lemonade)|coding|27|18.5|medium|262|Alibaba||0|1|1|0||||ud-q4_K_XL
   qwen3-6-27b-mtp-lemonade|Qwen3.6-27B-MTP-GGUF|Qwen 3.6 27B (MTP, Lemonade)|coding|27|18.8|medium|262|Alibaba||0|1|1|0||||ud-q4_K_XL
   qwen3-6-35b-lemonade|Qwen3.6-35B-A3B-GGUF|Qwen 3.6 35B (Lemonade)|coding|35|23.3|medium|262|Alibaba||0|1|1|0||||ud-q4_K_XL
@@ -871,8 +914,8 @@ const extraModels: CuratedModel[] = decodeToonTable(EXTRAS_TOON, 'extras').map((
  * Qwen 3.8 27B, measured 2026-09-29 on a 7900 XTX: Lemonade used 19,017 MiB at 8192 tokens and
  * 20,657 MiB at 32768, 0.0667 MiB/token (llama.cpp logs 512 MiB of KV at 8192 = 0.0625, plus the
  * MTP draft context's own KV). The Ollama rows run the same weights; without MTP it is the 0.0625.
- * (The `gb` column of the Lemonade row is the same measurement: its model and mmproj files together,
- * 17,630 MiB.)
+ * The same load, less its KV at 8192, is the Lemonade row's measured `ramGb`; its model and mmproj
+ * files came to 17,630 MiB, against the registry's 18.8 GB that the row's `gb` carries.
  */
 const MEASURED_KV_MB_PER_TOKEN: Record<string, number> = {
   'qwen3-8-27b': 0.0625,
