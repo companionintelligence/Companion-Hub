@@ -18,7 +18,7 @@ import { Switch } from '@/components/ui/Switch';
 import { HintText } from '@/components/ui/field-hint/field-hint';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
 import { cn } from '@/lib/utils';
-import { isRefused, settledOutcome } from '@/modules/system/pool-node-series';
+import { isRefused, outputFault, settledOutcome } from '@/modules/system/pool-node-series';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowRightLeft, ChevronRight, Network } from 'lucide-react';
 import { useState } from 'react';
@@ -186,8 +186,16 @@ interface PoolRoutingRecord {
   durationMs: number | null;
   /** Which pin shaped this decision, if any. */
   pin?: { scope: 'default' | 'model'; mode: 'prefer'; targetKind: 'local' | 'peer' } | null;
-  /** Why the walk stopped at a node that refused the request itself. Absent on a Hub predating it — see `isRefused`. */
+  /**
+   * Why the walk stopped at a node that refused the request itself — or, with basis `node`, at one
+   * that answered with cut-off or degenerate output. Absent on a Hub predating it — see `isRefused`
+   * and `outputFault`.
+   */
   requestError?: { signature?: string; basis?: string; confirms?: string | null } | null;
+  /** Why a failed row failed, in a few words. Absent on a Hub predating it. */
+  reason?: string | null;
+  /** Each node passed over, and what it answered. Absent on a Hub predating it. */
+  attempts?: { node: string; backend?: string; status: number | null; reason: string }[];
   /** The app hung up before any node answered. Absent on a Hub predating it. */
   clientClosed?: boolean;
 }
@@ -346,7 +354,19 @@ const RoutingResult = ({ entry, t }: { entry: PoolRoutingRecord; t: Translate })
       </span>
     );
   }
-  return <>{t('HUB_POOL_ROUTING_FAILED_LABEL')}</>;
+  // The node answered, with output nobody could use: its fault, not the request's and not "no node".
+  const fault = outputFault(entry);
+  if (fault) {
+    return (
+      <span
+        data-testid="hub-pool-routing-bad-output"
+        title={t(fault === 'degenerate-output' ? 'HUB_POOL_ROUTING_DEGENERATE_HINT' : 'HUB_POOL_ROUTING_TRUNCATED_HINT')}
+      >
+        {t(fault === 'degenerate-output' ? 'HUB_POOL_ROUTING_DEGENERATE_LABEL' : 'HUB_POOL_ROUTING_TRUNCATED_LABEL')}
+      </span>
+    );
+  }
+  return <span title={entry.reason ?? undefined}>{t('HUB_POOL_ROUTING_FAILED_LABEL')}</span>;
 };
 
 /**
@@ -1277,6 +1297,7 @@ export const HubPoolSection = () => {
                       direction: entry.direction,
                       outcome: settledOutcome(entry),
                       ...(isRefused(entry) ? { refused: String(entry.status ?? '') } : {}),
+                      ...(outputFault(entry) ? { badoutput: outputFault(entry) ?? '' } : {}),
                       ...(entry.pin ? { pinned: 'true' } : {}),
                       ...(entry.failedOverFrom.length ? { failedover: entry.failedOverFrom.join(',') } : {}),
                     }}
@@ -1308,7 +1329,12 @@ export const HubPoolSection = () => {
                         {entry.failedOverFrom.length ? (
                           <span
                             data-testid="hub-pool-routing-failover"
-                            title={t('HUB_POOL_ROUTING_FAILOVER', { nodes: entry.failedOverFrom.join(' → ') })}
+                            title={t('HUB_POOL_ROUTING_FAILOVER', {
+                              // With what each answered, where the Hub says: which nodes refused is half of it, why is the rest.
+                              nodes: entry.attempts?.length
+                                ? entry.attempts.map((attempt) => `${attempt.node} (${attempt.reason})`).join(' → ')
+                                : entry.failedOverFrom.join(' → '),
+                            })}
                             className="shrink-0 rounded-sm border border-warning/40 px-1 text-[9px] uppercase tracking-wide text-warning"
                           >
                             {t('HUB_POOL_ROUTING_FAILOVER_MARK', { count: entry.failedOverFrom.length })}

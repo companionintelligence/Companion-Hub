@@ -1187,9 +1187,13 @@ describe('PoolProxyService', () => {
     });
 
     /**
-     * The row settled `served` at headers time, and the dead stream then appends to its
-     * `failedOverFrom`. A mutation that skipped `updatedAt` was invisible to a `?since=` poller, which
-     * had already seen the row and was told nothing had changed.
+     * The row settled `served` at headers time, and the relay's end then records the response's total
+     * time on it. A mutation that skipped `updatedAt` was invisible to a `?since=` poller, which had
+     * already seen the row and was told nothing had changed.
+     *
+     * The CLIENT's socket failing here is not the node failing: nothing is failed over, so
+     * `failedOverFrom` stays empty. It used to name the serving node, which counted a failover that
+     * never happened in the summary's `failovers`.
      */
     it('moves the row past a cursor when the stream dies after the commit', async () => {
       vi.useFakeTimers({ toFake: ['Date'] });
@@ -1214,10 +1218,42 @@ describe('PoolProxyService', () => {
 
         const page = routingLog.query({ since: '2026-09-17T10:00:00.500Z' });
         expect(page.entries).toHaveLength(1);
-        expect(page.entries[0]).toMatchObject({ outcome: 'served', failedOverFrom: [POOL_SERVED_LOCALLY], updatedAt: '2026-09-17T10:00:01.000Z' });
+        expect(page.entries[0]).toMatchObject({ outcome: 'served', failedOverFrom: [], totalMs: 1000, updatedAt: '2026-09-17T10:00:01.000Z' });
+        expect(routingLog.summary()).toMatchObject({ served: 1, failovers: 0 });
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it('records an upstream that dies after the commit as the node failing the request, not as a failover', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['llama3.2:3b'] });
+      const dying = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.error(new TypeError('terminated'));
+        },
+      });
+      vi.mocked(global.fetch).mockResolvedValue(new Response(dying, { status: 200 }));
+      const res = createMockResponse();
+      const destroySpy = vi.spyOn(res, 'destroy');
+
+      await service.proxyRequest({
+        path: '/api/chat',
+        method: 'POST',
+        body: { model: 'llama3.2:3b', stream: true },
+        model: 'llama3.2:3b',
+        res,
+      });
+
+      expect(destroySpy).toHaveBeenCalled();
+      expect(routingLog.list()[0]).toMatchObject({
+        outcome: 'failed',
+        status: 200,
+        failedOverFrom: [],
+        attempts: [],
+        requestError: { signature: 'truncated-upstream', basis: 'node' },
+        reason: 'truncated-upstream',
+      });
+      expect(routingLog.summary()).toMatchObject({ served: 0, failed: 1, failovers: 0, requestErrors: 0, outputFaults: 1 });
     });
   });
 
@@ -2434,9 +2470,29 @@ describe('PoolProxyService', () => {
         backend: 'ollama',
         outcome: 'served',
         status: 200,
-        // The peer's body is passed through untouched, so the model it asked for is never parsed.
-        model: null,
+        // No `X-Hub-Pool-Model` from this sender, so the body's own `model` names it. Every inbound
+        // row on the 2026-09-29 fleet run read `model=null`, so a leaf could not say what it served.
+        model: MODEL,
       });
+    });
+
+    it('names the model the sender put in X-Hub-Pool-Model over the body’s, and records none when neither says', async () => {
+      vi.mocked(global.fetch).mockImplementation(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+      await service.forwardToLocalBackendAndRespond(
+        'ollama',
+        '/v1/embeddings',
+        'POST',
+        { model: 'body-says' },
+        createMockResponse(),
+        'p',
+        'header-says',
+      );
+      await service.forwardToLocalBackendAndRespond('ollama', '/v1/embeddings', 'POST', { input: 'x' }, createMockResponse(), 'p');
+
+      const [second, first] = routingLog.list();
+      expect(first).toMatchObject({ direction: 'inbound', model: 'header-says' });
+      expect(second).toMatchObject({ direction: 'inbound', model: null });
     });
 
     /**
