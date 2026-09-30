@@ -691,16 +691,29 @@ export interface UnmeasuredPlacement {
    * for it to go behind, and a row that said it had would be describing a move that never happened.
    */
   groupOf: (candidate: PoolCandidate) => number;
+  /**
+   * The score the ranker sorted the candidate on: its queue depth, plus the local head start for a
+   * peer and the pressure term when that is weighted. An unmeasured candidate gives way only to a
+   * measured one scored the same — see {@link applyThroughputPlacement} for why never a busier one.
+   */
+  scoreOf: (candidate: PoolCandidate) => number;
+  /**
+   * Whether a candidate measured to meet the budget stays where the steps before contention put it, so
+   * that an unmeasured one may give way to it. Not a local engine that contention will move behind the
+   * peers no busier than it: giving way to that engine would put those peers behind it first, where
+   * contention cannot move it past them, and keep a turn waiting on an engine busy with other work.
+   */
+  staysInPlace: (candidate: PoolCandidate) => boolean;
 }
 
 /** The default: every unmeasured candidate keeps its place, as it did before priors existed. */
-const KEEP_UNMEASURED_IN_PLACE: UnmeasuredPlacement = { priorOf: () => null, groupOf: () => 0 };
+const KEEP_UNMEASURED_IN_PLACE: UnmeasuredPlacement = { priorOf: () => null, groupOf: () => 0, scoreOf: () => 0, staysInPlace: () => true };
 
 /** What {@link applyThroughputPlacement} decided, for {@link splitByThroughput} to apply to each group. */
 export interface ThroughputPlacement {
   /** Measured and predicted to miss the budget: behind every other candidate in their group. */
   demoted: ReadonlySet<PoolCandidate>;
-  /** Unmeasured, with the prior each was judged on, and giving way to the candidates measured to meet the budget. */
+  /** Unmeasured, with the prior each was judged on, and giving way to the candidates measured to meet the budget that the ranker scored the same. */
   deferred: ReadonlyMap<PoolCandidate, UnmeasuredPrior>;
   decision: PoolRoutingThroughput | null;
 }
@@ -708,26 +721,44 @@ export interface ThroughputPlacement {
 /**
  * Judge each candidate's measured prefill rate against the request's budget. `demoted` is the set of
  * candidates predicted to miss it, to be moved behind every candidate that is not; `deferred` is the
- * unmeasured candidates that, for a prompt this large, give way to one measured to meet it.
+ * unmeasured candidates that, for a prompt this large, give way to one measured to meet it that the
+ * ranker holds level with them.
  *
  * The rules are the prompt ceiling's, because the risk is the same — a preference must never become a
  * refusal:
  *
  * 1. **Unmeasured is not known to be fast.** A candidate with no applicable evidence is not in
  *    `estimates`. For a prompt under {@link UNMEASURED_DEFER_MIN_PROMPT_TOKENS} it keeps its place,
- *    which is how it gets measured at all. From that size up, when a candidate ranked in its group is
- *    measured to meet the budget, it goes behind that candidate — and with a `cpu-only` prior behind
- *    the other unmeasured ones too — but stays ahead of every candidate predicted to miss, since a
- *    measurement that says "too slow" is worse news than no measurement. Taking it for fast is what
- *    sent a 7,731-token turn to core-7 on 2026-09-29: nothing had timed it, it read the prompt on CPU,
- *    and its first byte came after 169.8 s where measured GPU peers were predicted at ~32–36 s. With
- *    no candidate measured to meet the budget nothing is deferred, so an unmeasured fleet, or one
- *    where every measured node is slow, ranks as it did before. A candidate whose prior is `null`
- *    keeps its place whatever the prompt, and is not listed.
- * 2. **Demoted or deferred, never removed**, so failover still reaches a slow or unmeasured node when
+ *    which is how it gets measured at all. From that size up, when a candidate in its group that the
+ *    ranker scored the same is measured to meet the budget, it goes behind that candidate — and with a
+ *    `cpu-only` prior behind the other unmeasured ones scored the same too — but stays ahead of every
+ *    candidate predicted to miss, since a measurement that says "too slow" is worse news than no
+ *    measurement. Taking it for fast is what sent a 7,731-token turn to core-7 on 2026-09-29: nothing
+ *    had timed it, it read the prompt on CPU, and its first byte came after 169.8 s where measured GPU
+ *    peers, as idle as it, were predicted at ~32–36 s. With no candidate measured to meet the budget
+ *    nothing is deferred, so an unmeasured fleet, or one where every measured node is slow, ranks as
+ *    it did before. A candidate whose prior is `null` keeps its place whatever the prompt, and is not
+ *    listed.
+ * 2. **Never behind a busier candidate.** The ranker's first key is queue depth, and on this fleet's
+ *    `-np 1` engines every request queued ahead is a whole turn, ~300 s for a large one — as long as
+ *    the CPU read this guards against. So a measurement only settles the ranker's ties: an unmeasured
+ *    candidate gives way to a measured one scored the same, never to one scored higher, and keeps its
+ *    place ahead of every busier candidate (one scored lower is ranked ahead of it already). A
+ *    measured node with a queue therefore does not hold back idle unmeasured peers, and a burst of
+ *    large turns spreads over the pool by queue depth as it did before. That is also what keeps the
+ *    measured nodes from starving the rest of large turns while evidence ages out
+ *    (`THROUGHPUT_FORGET_AFTER_MS`): a node is passed over only while a measured one is exactly as
+ *    free, and gets the next turn as soon as that one is not. Nor does anything give way to a
+ *    measured candidate contention will move (`staysInPlace` is false).
+ * 3. **Demoted or deferred, never removed**, so failover still reaches a slow or unmeasured node when
  *    every other one fails.
- * 3. **All slow means nothing moves.** When every candidate is predicted to miss, `demoted` is empty,
+ * 4. **All slow means nothing moves.** When every candidate is predicted to miss, `demoted` is empty,
  *    the ranker's order stands, and `overridden: true` says so.
+ *
+ * A measurement says how fast an engine reads a prompt, not whether what it writes is sound: an engine
+ * answering in garbage tokens reaches its first byte as fast as a healthy one and counts here as
+ * measured to meet the budget, whether this node timed it or the peer advertised it. Rule 2 bounds what
+ * that costs to the ranker's ties; judging output is not this step's job.
  *
  * `decision` is `null` when no candidate had applicable evidence, so a fleet nothing has been timed on
  * gets the list back untouched. Pure and exported for its own test, like `applyPromptCeiling`.
@@ -742,7 +773,10 @@ export function applyThroughputPlacement(
   const estimates: PoolRoutingThroughputEstimate[] = [];
   const slow = new Set<PoolCandidate>();
   const unmeasuredCandidates: PoolCandidate[] = [];
-  const groupsWithAFastCandidate = new Set<number>();
+  // The candidates an unmeasured one is judged beside: the same outer group, and the same ranker
+  // score. A newline cannot appear in either number's string form, so no two pairs collide.
+  const levelWith = (candidate: PoolCandidate) => `${unmeasured.groupOf(candidate)}\n${unmeasured.scoreOf(candidate)}`;
+  const levelsWithAFastCandidate = new Set<string>();
   for (const candidate of ordered) {
     const prediction = predictionOf(candidate);
     if (!prediction) {
@@ -752,8 +786,8 @@ export function applyThroughputPlacement(
     const isSlow = missesBudget(prediction, budgetMs);
     if (isSlow) {
       slow.add(candidate);
-    } else {
-      groupsWithAFastCandidate.add(unmeasured.groupOf(candidate));
+    } else if (unmeasured.staysInPlace(candidate)) {
+      levelsWithAFastCandidate.add(levelWith(candidate));
     }
     estimates.push({
       node: candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY,
@@ -772,10 +806,10 @@ export function applyThroughputPlacement(
   }
   const deferred = new Map<PoolCandidate, UnmeasuredPrior>();
   const deferredEntries: PoolRoutingThroughputUnmeasured[] = [];
-  if (estimatedTokens >= UNMEASURED_DEFER_MIN_PROMPT_TOKENS && groupsWithAFastCandidate.size > 0) {
+  if (estimatedTokens >= UNMEASURED_DEFER_MIN_PROMPT_TOKENS && levelsWithAFastCandidate.size > 0) {
     for (const candidate of unmeasuredCandidates) {
       const prior = unmeasured.priorOf(candidate);
-      if (prior === null || !groupsWithAFastCandidate.has(unmeasured.groupOf(candidate))) {
+      if (prior === null || !levelsWithAFastCandidate.has(levelWith(candidate))) {
         continue;
       }
       deferred.set(candidate, prior);
@@ -803,23 +837,46 @@ export function splitDemoted(group: PoolCandidate[], demoted: ReadonlySet<PoolCa
 }
 
 /**
- * One group split by what {@link applyThroughputPlacement} decided, each part in the order given: the
- * candidates measured to meet the budget together with the unmeasured ones that kept their place, then
- * the unmeasured ones that gave way — an `unknown` prior before a `cpu-only` one — then the ones
- * predicted to miss. A group nothing moved in comes back whole, so pins see the exact list they did
- * before throughput existed.
+ * One group placed by what {@link applyThroughputPlacement} decided. Each unmeasured candidate that
+ * gave way moves to just behind the last candidate in the group that `scoreOf` scores the same as it —
+ * an `unknown` prior ahead of a `cpu-only` one — which puts it behind the measured candidates it gave
+ * way to and keeps it ahead of every busier one. The candidates predicted to miss follow as a part of
+ * their own. Everything else keeps the order given, and a group nothing moved in comes back whole, so
+ * pins see the exact list they did before throughput existed.
+ *
+ * The ones that gave way stay in the same part as the ones they gave way to, so local-engine
+ * contention, applied within each part, can still move a contended engine behind them. A pin cannot
+ * undo the move from there: it only moves its own node, and a pinned node never gives way.
  */
-export function splitByThroughput(group: PoolCandidate[], placement: Pick<ThroughputPlacement, 'demoted' | 'deferred'>): PoolCandidate[][] {
+export function splitByThroughput(
+  group: PoolCandidate[],
+  placement: Pick<ThroughputPlacement, 'demoted' | 'deferred'>,
+  scoreOf: (candidate: PoolCandidate) => number,
+): PoolCandidate[][] {
   const { demoted, deferred } = placement;
   if (!group.some((candidate) => demoted.has(candidate) || deferred.has(candidate))) {
     return [group];
   }
-  return [
-    group.filter((candidate) => !demoted.has(candidate) && !deferred.has(candidate)),
-    group.filter((candidate) => deferred.get(candidate) === 'unknown'),
-    group.filter((candidate) => deferred.get(candidate) === 'cpu-only'),
-    group.filter((candidate) => demoted.has(candidate)),
-  ].filter((part) => part.length > 0);
+  const kept = group.filter((candidate) => !demoted.has(candidate));
+  const lastAtScore = new Map<number, PoolCandidate>();
+  for (const candidate of kept) {
+    lastAtScore.set(scoreOf(candidate), candidate);
+  }
+  const placed: PoolCandidate[] = [];
+  const waiting = new Map<number, PoolCandidate[]>();
+  for (const candidate of kept) {
+    const score = scoreOf(candidate);
+    if (deferred.has(candidate)) {
+      waiting.set(score, [...(waiting.get(score) ?? []), candidate]);
+    } else {
+      placed.push(candidate);
+    }
+    if (lastAtScore.get(score) === candidate) {
+      const behind = waiting.get(score) ?? [];
+      placed.push(...behind.filter((entry) => deferred.get(entry) === 'unknown'), ...behind.filter((entry) => deferred.get(entry) === 'cpu-only'));
+    }
+  }
+  return [placed, group.filter((candidate) => demoted.has(candidate))].filter((part) => part.length > 0);
 }
 
 /** What slot-aware placement knows about one candidate: the queue depth the ranker sorted on, and the slots its node advertised. */
@@ -1386,7 +1443,8 @@ export class PoolProxyService {
    *
    * Then measured throughput, within each of those groups: a candidate whose measured prefill rate
    * would take it past the request's budget moves behind the ones that would not, and for a large
-   * prompt a peer nothing has measured moves behind the ones measured to meet it — see
+   * prompt a peer nothing has measured moves behind the ones measured to meet it that are exactly as
+   * busy, never a busier one, and never an engine contention is about to move — see
    * {@link applyThroughputPlacement}. `streaming` picks the budget, as it does for the forward.
    *
    * Then local-engine contention, within each of those groups and only for a generation with a peer
@@ -1485,18 +1543,9 @@ export class PoolProxyService {
     const pin = resolvePinFor(this.configuration.getHubPoolPreferences().poolPins, model);
     const overCap = new Set(cap.overCap);
     const overCeiling = new Set(ceiling.overCeiling);
-    const throughput: ThroughputPlacement =
-      prompt && measurePromptBytes
-        ? this.applyMeasuredThroughput(model, ordered, peers, measurePromptBytes, prompt.streaming, {
-            // The group the three outer splits below put a candidate in, so an unmeasured one gives way
-            // only to a measured one it is ranked beside.
-            groupOf: (candidate) => (overCap.has(candidate) ? 4 : 0) + (overCeiling.has(candidate) ? 2 : 0) + (slots.demoted.has(candidate) ? 1 : 0),
-            pinned: (candidate) => pin !== null && pin.targetKind === 'peer' && candidate.peerId === pin.peerId,
-            held: affinity.held,
-          })
-        : { demoted: NOTHING_DEMOTED, deferred: NOTHING_DEFERRED, decision: null };
     // Judged, like throughput, only on the routes `prompt` is passed for: a turn is what a reload
-    // behind another turn, or an engine shared with one, can keep waiting for minutes.
+    // behind another turn, or an engine shared with one, can keep waiting for minutes. Judged before
+    // throughput, which must know which engines contention will move.
     const contended = prompt ? this.judgeLocalContention(model, ordered, prompt.numCtx) : null;
     const scores = new Map(affinity.ordered.map((entry) => [entry.candidate, entry.score]));
     const scoreOf = (candidate: PoolCandidate) => scores.get(candidate) ?? 0;
@@ -1510,6 +1559,20 @@ export class PoolProxyService {
     // busier than anyway.
     const heldEngine = affinity.held ? contended?.engines.get(affinity.held) : undefined;
     const held = affinity.held && heldEngine && (await this.prefixCanStillBeWarm(model, affinity.held, heldEngine)) ? affinity.held : null;
+    const throughput: ThroughputPlacement =
+      prompt && measurePromptBytes
+        ? this.applyMeasuredThroughput(model, ordered, peers, measurePromptBytes, prompt.streaming, {
+            // The group the three outer splits below put a candidate in, so an unmeasured one gives way
+            // only to a measured one it is ranked beside.
+            groupOf: (candidate) => (overCap.has(candidate) ? 4 : 0) + (overCeiling.has(candidate) ? 2 : 0) + (slots.demoted.has(candidate) ? 1 : 0),
+            scoreOf,
+            // Not an engine contention will move: every contended one but the engine held for affinity,
+            // the predicate `giveWay` below applies.
+            staysInPlace: (candidate) => candidate === held || !contended?.engines.has(candidate),
+            pinned: (candidate) => pin !== null && pin.targetKind === 'peer' && candidate.peerId === pin.peerId,
+            held: affinity.held,
+          })
+        : { demoted: NOTHING_DEMOTED, deferred: NOTHING_DEFERRED, decision: null };
     let heldByAffinity = false;
     const giveWay = (part: PoolCandidate[]): PoolCandidate[][] => {
       if (!contended || !part.some((candidate) => contended.engines.has(candidate))) {
@@ -1537,7 +1600,7 @@ export class PoolProxyService {
     const candidates = [cap.preferred, cap.overCap].flatMap((capGroup) =>
       splitDemoted(capGroup, overCeiling).flatMap((group) =>
         splitDemoted(group, slots.demoted).flatMap((slotPart) =>
-          splitByThroughput(slotPart, throughput).flatMap((part) => giveWay(part).flatMap((piece) => applyPin(piece, pin))),
+          splitByThroughput(slotPart, throughput, scoreOf).flatMap((part) => giveWay(part).flatMap((piece) => applyPin(piece, pin))),
         ),
       ),
     );
@@ -1653,8 +1716,7 @@ export class PoolProxyService {
     peers: HubPoolPeer[],
     measurePromptBytes: () => number,
     streaming: boolean,
-    placement: {
-      groupOf: UnmeasuredPlacement['groupOf'];
+    placement: Pick<UnmeasuredPlacement, 'groupOf' | 'scoreOf' | 'staysInPlace'> & {
       pinned: (candidate: PoolCandidate) => boolean;
       held: PoolCandidate | null;
     },
@@ -1699,7 +1761,7 @@ export class PoolProxyService {
       (candidate) => predictPrefill(points.get(candidate) ?? [], estimatedTokens, now),
       estimatedTokens,
       forwardBudgetMs(streaming, bytes),
-      { priorOf, groupOf: placement.groupOf },
+      { priorOf, groupOf: placement.groupOf, scoreOf: placement.scoreOf, staysInPlace: placement.staysInPlace },
     );
     const decision = result.decision;
     if (decision && result.demoted.size > 0) {
@@ -1719,7 +1781,7 @@ export class PoolProxyService {
         .map((entry) => `${entry.node} (${entry.prior === 'cpu-only' ? 'unmeasured, no GPU advertised' : 'unmeasured'})`)
         .join(', ');
       this.logger.debug(
-        `[PoolProxy] ~${estimatedTokens}-token prompt for "${model}" put ${nodes} behind the candidates measured to meet its ${decision.budgetMs}ms budget`,
+        `[PoolProxy] ~${estimatedTokens}-token prompt for "${model}" put ${nodes} behind the candidates as busy as them measured to meet its ${decision.budgetMs}ms budget`,
       );
     }
     return result;

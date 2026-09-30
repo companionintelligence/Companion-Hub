@@ -4459,11 +4459,11 @@ describe('PoolProxyService', () => {
         expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-6', 'fzzy']);
       });
 
-      it('puts a node nothing has measured behind one measured to meet the budget, and ahead of one measured to miss it', async () => {
+      it('puts a node nothing has measured behind one as busy measured to meet the budget, and ahead of one measured to miss it', async () => {
         usePeers(() => [
           node('fzzy', { hardwareTier: 'cpu-only' }),
           node('core-7', { inFlightRequests: 1 }),
-          node('core-6', { inFlightRequests: 2 }),
+          node('core-6', { inFlightRequests: 1 }),
         ]);
         recordFzzyOnTheFleet();
         throughput.recordPrefill(CORE_6, { promptTokens: 48_000, ms: (48_000 / 496) * 1000, deadline: false });
@@ -4541,18 +4541,24 @@ describe('PoolProxyService', () => {
 
         it('goes last among the unmeasured for a large prompt when it advertises no GPU, and is still explored with a small one', async () => {
           usePeers(() => [
-            node('beta-ms-a2', { hardwareTier: 'cpu-only' }),
-            node('fzzy', { hardwareTier: 'cpu-only', inFlightRequests: 1 }),
+            node('beta-ms-a2', { hardwareTier: 'cpu-only', inFlightRequests: 1 }),
+            node('fzzy', { hardwareTier: 'cpu-only' }),
             node('core-7', { inFlightRequests: 1 }),
-            node('core-6', { inFlightRequests: 2 }),
+            node('core-6', { inFlightRequests: 1 }),
           ]);
           recordFzzyOnTheFleet();
           measureCore6AtTheFleetRate();
 
-          // Measured-fast, then unmeasured, then unmeasured with no GPU, then measured too slow.
+          // Measured-fast, then unmeasured, then unmeasured with no GPU, all equally busy; then measured too slow.
           expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-6', 'core-7', 'beta-ms-a2', 'fzzy']);
+
           // A hint orders the ones that give way; it does not stop a node being measured.
-          expect(ids(await service.buildCandidateList(MODEL, SMALL_PROMPT_BYTES))).toEqual(['beta-ms-a2', 'core-7', 'fzzy', 'core-6']);
+          usePeers(() => [
+            node('beta-ms-a2', { hardwareTier: 'cpu-only' }),
+            node('core-7', { inFlightRequests: 1 }),
+            node('core-6', { inFlightRequests: 1 }),
+          ]);
+          expect(ids(await service.buildCandidateList(MODEL, SMALL_PROMPT_BYTES))).toEqual(['beta-ms-a2', 'core-7', 'core-6']);
         });
 
         it("leaves this node's own engine in place: its evidence is forgotten on a restart that its prefix cache survives", async () => {
@@ -4584,12 +4590,80 @@ describe('PoolProxyService', () => {
           usePeers(() => [
             node('beta-ms-a2', { hardwareTier: 'cpu-only' }),
             node('core-7', { inFlightRequests: 1 }),
-            node('core-6', { inFlightRequests: 2, maxPromptTokens: 16_000 }),
+            node('core-6', { inFlightRequests: 1, maxPromptTokens: 16_000 }),
           ]);
           throughput.recordPrefill(CORE_6, { promptTokens: 48_000, ms: (48_000 / 496) * 1000, deadline: false });
 
-          // core-6 is behind both on its ceiling, so there is nothing measured for them to give way to.
+          // core-6 is as busy as core-7 but behind it on its ceiling, so there is nothing measured for core-7 to give way to.
           expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['beta-ms-a2', 'core-7', 'core-6']);
+        });
+
+        /**
+         * The ranker's first key is queue depth, and on this fleet's `-np 1` engines each request queued
+         * ahead is a whole turn, ~300 s for a large one. A measured node with eight queued is not a
+         * better bet than an idle one nothing has timed, and taking it for one piled every large turn
+         * onto the few measured nodes while idle GPU peers waited.
+         */
+        it('is not held back by a measured node with a queue, so a burst of large turns still spreads by queue depth', async () => {
+          const idle = Array.from({ length: 12 }, (_, index) => node(`gpu-${index}`));
+          usePeers(() => [node('core-6', { inFlightRequests: 8 }), ...idle]);
+          measureCore6AtTheFleetRate();
+
+          const ranked = [...idle.map((peer) => peer.id), 'core-6'];
+          expect(ids(await service.buildCandidateList(MODEL, OPENCODE_TURN_BYTES))).toEqual(ranked);
+          expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(ranked);
+        });
+
+        it('gives way only to a measured node the ranker holds level with it, not to one with a request more', async () => {
+          usePeers(() => [node('core-7'), node('core-6', { inFlightRequests: 1 })]);
+          measureCore6AtTheFleetRate();
+          expect(ids(await service.buildCandidateList(MODEL, OPENCODE_TURN_BYTES))).toEqual(['core-7', 'core-6']);
+
+          usePeers(() => [node('core-7', { inFlightRequests: 1 }), node('core-6', { inFlightRequests: 1 })]);
+          expect(ids(await service.buildCandidateList(MODEL, OPENCODE_TURN_BYTES))).toEqual(['core-6', 'core-7']);
+        });
+
+        it('stays ahead of a busier measured node in the failover order', async () => {
+          usePeers(() => [node('core-7'), node('core-5', { inFlightRequests: 3 }), node('core-6')]);
+          measureCore6AtTheFleetRate();
+          throughput.recordPrefill({ ...CORE_6, nodeKey: 'core-5' }, { promptTokens: 7_000, ms: (7_000 / 230) * 1000, deadline: false });
+
+          // Behind core-6, which is as free as it; ahead of core-5, which has three queued.
+          expect(ids(await service.buildCandidateList(MODEL, OPENCODE_TURN_BYTES))).toEqual(['core-6', 'core-7', 'core-5']);
+        });
+
+        describe("beside this node's own engine while it is generating another model", () => {
+          const OTHER = 'qwen3.6:27b';
+          const LOCAL = { ...CORE_6, nodeKey: LOCAL_CANDIDATE_KEY };
+
+          /** This node's Ollama holds both models and is generating OTHER: one in flight here, level with an idle peer. */
+          function generatingAnotherModelHere(): void {
+            ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL, OTHER] });
+            loadService.acquire(LOCAL_CANDIDATE_KEY, { backend: 'ollama', model: OTHER, numCtx: null });
+          }
+
+          /**
+           * Contention moves that engine behind the peers no busier than it. A measurement of the same
+           * engine must not undo that by holding those peers back first: it would keep a large turn
+           * waiting on an engine that is busy with another model, while a peer sat idle.
+           */
+          it('does not give way to it, however fast it has been measured', async () => {
+            generatingAnotherModelHere();
+            usePeers(() => [node('core-2')]);
+            expect(ids(await service.buildCandidateList(MODEL, OPENCODE_TURN_BYTES))).toEqual(['core-2', null]);
+
+            throughput.recordPrefill(LOCAL, { promptTokens: 7_000, ms: (7_000 / 230) * 1000, deadline: false });
+            expect(ids(await service.buildCandidateList(MODEL, OPENCODE_TURN_BYTES))).toEqual(['core-2', null]);
+          });
+
+          it('lets it give way to an unmeasured peer that gave way to a measured one', async () => {
+            generatingAnotherModelHere();
+            usePeers(() => [node('core-2'), node('core-6')]);
+            measureCore6AtTheFleetRate();
+            throughput.recordPrefill(LOCAL, { promptTokens: 7_000, ms: (7_000 / 230) * 1000, deadline: false });
+
+            expect(ids(await service.buildCandidateList(MODEL, OPENCODE_TURN_BYTES))).toEqual(['core-6', 'core-2', null]);
+          });
         });
       });
 
@@ -4827,7 +4901,7 @@ describe('PoolProxyService', () => {
       });
 
       it('names the unmeasured node a large prompt went past, and the prior it was judged on', async () => {
-        usePeers(() => [node('beta-ms-a2', { hardwareTier: 'cpu-only' }), node('core-7'), node('core-6', { inFlightRequests: 1 })]);
+        usePeers(() => [node('beta-ms-a2', { hardwareTier: 'cpu-only' }), node('core-7'), node('core-6')]);
         throughput.recordPrefill(CORE_6, { promptTokens: 7_000, ms: (7_000 / 230) * 1000, deadline: false });
         answerWith200();
 
@@ -4846,7 +4920,7 @@ describe('PoolProxyService', () => {
       });
 
       it('lists no unmeasured node for a prompt small enough to explore one with', async () => {
-        usePeers(() => [node('core-7'), node('core-6', { inFlightRequests: 1 })]);
+        usePeers(() => [node('core-7'), node('core-6')]);
         throughput.recordPrefill(CORE_6, { promptTokens: 4_500, ms: (4_500 / 230) * 1000, deadline: false });
         answerWith200();
 
@@ -4858,7 +4932,7 @@ describe('PoolProxyService', () => {
       });
 
       it('still fails over to an unmeasured node when the measured one fails', async () => {
-        usePeers(() => [node('core-7'), node('core-6', { inFlightRequests: 1 })]);
+        usePeers(() => [node('core-7'), node('core-6')]);
         throughput.recordPrefill(CORE_6, { promptTokens: 7_000, ms: (7_000 / 230) * 1000, deadline: false });
         vi.mocked(global.fetch).mockImplementation(async (url) =>
           String(url).includes('core-6') ? new Response('model not loaded', { status: 503 }) : new Response('data: [DONE]\n\n', { status: 200 }),
@@ -4873,7 +4947,7 @@ describe('PoolProxyService', () => {
 
       it('leaves the engine prefix affinity holds in place, where the session prefix is warm', async () => {
         setPoolPreferences({ poolPrefixAffinityMaxInFlight: 2 });
-        usePeers(() => [node('core-7'), node('core-6', { inFlightRequests: 1 })]);
+        usePeers(() => [node('core-7'), node('core-6')]);
         peerService.getPresentToken.mockResolvedValue('raw-token');
         answerWith200();
         const head = [
@@ -5182,6 +5256,8 @@ describe('PoolProxyService', () => {
         deadline: false,
         source: 'advertised',
       };
+      /** Every candidate scored the same by the ranker. */
+      const LEVEL = () => 0;
 
       it('returns no decision, and demotes nothing, when no candidate has a measurement', () => {
         expect(applyThroughputPlacement([fzzy, core6], () => null, 46_000, 920_000)).toEqual({
@@ -5231,7 +5307,7 @@ describe('PoolProxyService', () => {
           overridden: false,
         });
         expect(splitDemoted([fzzy, local, core6], result.demoted)).toEqual([[local, core6], [fzzy]]);
-        expect(splitByThroughput([fzzy, local, core6], result)).toEqual([[local, core6], [fzzy]]);
+        expect(splitByThroughput([fzzy, local, core6], result, LEVEL)).toEqual([[local, core6], [fzzy]]);
       });
 
       it('demotes nothing, and says it was overridden, when every candidate is predicted to miss', () => {
@@ -5240,19 +5316,34 @@ describe('PoolProxyService', () => {
         expect(result.demoted.size).toBe(0);
         expect(result.decision?.overridden).toBe(true);
         expect(splitDemoted([fzzy, local], result.demoted)).toEqual([[fzzy, local]]);
-        expect(splitByThroughput([fzzy, local], result)).toEqual([[fzzy, local]]);
+        expect(splitByThroughput([fzzy, local], result, LEVEL)).toEqual([[fzzy, local]]);
       });
 
       describe('candidates nothing has measured', () => {
         const core7 = { peerId: 'core-7', nodeFqdn: 'core-7.tailxyz.ts.net', backend: 'ollama' } as const;
+        const core5 = { peerId: 'core-5', nodeFqdn: 'core-5.tailxyz.ts.net', backend: 'ollama' } as const;
         const betaMsA2 = { peerId: 'beta-ms-a2', nodeFqdn: 'beta-ms-a2.tailxyz.ts.net', backend: 'ollama' } as const;
         const LARGE = UNMEASURED_DEFER_MIN_PROMPT_TOKENS;
         const BUDGET = 300_000;
-        /** Priors for the named candidates; any other candidate keeps its place unmeasured. Everything in one group unless `groups` says otherwise. */
-        function priors(entries: [PoolCandidate, UnmeasuredPrior][], groups: [PoolCandidate, number][] = []): UnmeasuredPlacement {
+        /**
+         * Priors for the named candidates; any other candidate keeps its place unmeasured. Every candidate
+         * is in one group, scored the same by the ranker, and left in place by contention, unless `layout`
+         * says otherwise.
+         */
+        function priors(
+          entries: [PoolCandidate, UnmeasuredPrior][],
+          layout: { groups?: [PoolCandidate, number][]; scores?: [PoolCandidate, number][]; contended?: PoolCandidate[] } = {},
+        ): UnmeasuredPlacement {
           const prior = new Map(entries);
-          const group = new Map(groups);
-          return { priorOf: (candidate) => prior.get(candidate) ?? null, groupOf: (candidate) => group.get(candidate) ?? 0 };
+          const group = new Map(layout.groups ?? []);
+          const score = new Map(layout.scores ?? []);
+          const contended = new Set(layout.contended ?? []);
+          return {
+            priorOf: (candidate) => prior.get(candidate) ?? null,
+            groupOf: (candidate) => group.get(candidate) ?? 0,
+            scoreOf: (candidate) => score.get(candidate) ?? 0,
+            staysInPlace: (candidate) => !contended.has(candidate),
+          };
         }
         const measured = (predictions: [PoolCandidate, PrefillPrediction][]) => {
           const map = new Map<PoolCandidate, PrefillPrediction>(predictions);
@@ -5265,12 +5356,13 @@ describe('PoolProxyService', () => {
 
           expect([...large.deferred]).toEqual([[core7, 'unknown']]);
           expect(large.decision?.unmeasured).toEqual([{ node: 'core-7.tailxyz.ts.net', backend: 'ollama', prior: 'unknown' }]);
-          expect(splitByThroughput([core7, core6], large)).toEqual([[core6], [core7]]);
+          // One part: contention, applied within it, can still move a contended engine behind both.
+          expect(splitByThroughput([core7, core6], large, LEVEL)).toEqual([[core6, core7]]);
 
           const small = applyThroughputPlacement([core7, core6], measured([[core6, fast]]), LARGE - 1, BUDGET, unmeasured);
           expect(small.deferred.size).toBe(0);
           expect(small.decision?.unmeasured).toEqual([]);
-          expect(splitByThroughput([core7, core6], small)).toEqual([[core7, core6]]);
+          expect(splitByThroughput([core7, core6], small, LEVEL)).toEqual([[core7, core6]]);
         });
 
         it('orders the measured-fast first, then an unknown prior, then cpu-only, then the ones predicted to miss', () => {
@@ -5290,7 +5382,7 @@ describe('PoolProxyService', () => {
           );
 
           // `local` has no prior: it keeps its place beside the measured-fast candidate, and is not listed.
-          expect(splitByThroughput(ordered, result)).toEqual([[local, core6], [core7], [betaMsA2], [fzzy]]);
+          expect(splitByThroughput(ordered, result, LEVEL)).toEqual([[local, core6, core7, betaMsA2], [fzzy]]);
           expect(result.decision?.unmeasured).toEqual([
             { node: 'beta-ms-a2.tailxyz.ts.net', backend: 'ollama', prior: 'cpu-only' },
             { node: 'core-7.tailxyz.ts.net', backend: 'ollama', prior: 'unknown' },
@@ -5312,23 +5404,21 @@ describe('PoolProxyService', () => {
 
           expect(result.deferred.size).toBe(0);
           expect(result.decision?.unmeasured).toEqual([]);
-          expect(splitByThroughput(ordered, result)).toEqual([[core7, betaMsA2], [fzzy]]);
+          expect(splitByThroughput(ordered, result, LEVEL)).toEqual([[core7, betaMsA2], [fzzy]]);
         });
 
         it('defers only where a candidate measured to meet the budget is ranked in the same group', () => {
           const ordered = [betaMsA2, core7, core6];
+          const unmeasured: [PoolCandidate, UnmeasuredPrior][] = [
+            [betaMsA2, 'cpu-only'],
+            [core7, 'unknown'],
+          ];
           const elsewhere = applyThroughputPlacement(
             ordered,
             measured([[core6, fast]]),
             46_000,
             920_000,
-            priors(
-              [
-                [betaMsA2, 'cpu-only'],
-                [core7, 'unknown'],
-              ],
-              [[core6, 1]],
-            ),
+            priors(unmeasured, { groups: [[core6, 1]] }),
           );
           expect(elsewhere.deferred.size).toBe(0);
           expect(elsewhere.decision?.unmeasured).toEqual([]);
@@ -5338,25 +5428,85 @@ describe('PoolProxyService', () => {
             measured([[core6, fast]]),
             46_000,
             920_000,
-            priors(
-              [
-                [betaMsA2, 'cpu-only'],
-                [core7, 'unknown'],
-              ],
-              [
+            priors(unmeasured, {
+              groups: [
                 [core6, 1],
                 [core7, 1],
               ],
-            ),
+            }),
           );
           expect([...beside.deferred]).toEqual([[core7, 'unknown']]);
+        });
+
+        it('defers only behind a candidate the ranker scored the same, never a busier one', () => {
+          const ordered = [core7, core6];
+          const busier = priors([[core7, 'unknown']], { scores: [[core6, 8]] });
+          const queued = applyThroughputPlacement(ordered, measured([[core6, fast]]), LARGE, BUDGET, busier);
+          expect(queued.deferred.size).toBe(0);
+          expect(queued.decision?.unmeasured).toEqual([]);
+          expect(splitByThroughput(ordered, queued, busier.scoreOf)).toEqual([[core7, core6]]);
+
+          const level = applyThroughputPlacement(ordered, measured([[core6, fast]]), LARGE, BUDGET, priors([[core7, 'unknown']]));
+          expect([...level.deferred]).toEqual([[core7, 'unknown']]);
+        });
+
+        it('places one just behind the last candidate scored the same, and ahead of every busier one', () => {
+          const ordered = [core7, core6, betaMsA2, core5];
+          const unmeasured = priors(
+            [
+              [core7, 'unknown'],
+              [betaMsA2, 'cpu-only'],
+            ],
+            {
+              scores: [
+                [betaMsA2, 3],
+                [core5, 3],
+              ],
+            },
+          );
+          const result = applyThroughputPlacement(
+            ordered,
+            measured([
+              [core6, fast],
+              [core5, fast],
+            ]),
+            LARGE,
+            BUDGET,
+            unmeasured,
+          );
+
+          // core-7 gives way to core-6 and stays ahead of core-5, which has three more in flight.
+          expect(splitByThroughput(ordered, result, unmeasured.scoreOf)).toEqual([[core6, core7, core5, betaMsA2]]);
+        });
+
+        it('does not defer behind a measured candidate that contention will move', () => {
+          const ordered = [local, core7, core6];
+          const contended = priors([[core7, 'unknown']], { contended: [local] });
+
+          const alone = applyThroughputPlacement([local, core7], measured([[local, fast]]), LARGE, BUDGET, contended);
+          expect(alone.deferred.size).toBe(0);
+          expect(alone.decision?.unmeasured).toEqual([]);
+
+          // Behind core-6, which stays in place; in one part with the local engine, so contention can still move it behind both.
+          const beside = applyThroughputPlacement(
+            ordered,
+            measured([
+              [local, fast],
+              [core6, fast],
+            ]),
+            LARGE,
+            BUDGET,
+            contended,
+          );
+          expect([...beside.deferred]).toEqual([[core7, 'unknown']]);
+          expect(splitByThroughput(ordered, beside, LEVEL)).toEqual([[local, core6, core7]]);
         });
 
         it('keeps every unmeasured candidate in place when the caller gives no priors', () => {
           const result = applyThroughputPlacement([core7, core6], measured([[core6, fast]]), 46_000, 920_000);
 
           expect(result.deferred.size).toBe(0);
-          expect(splitByThroughput([core7, core6], result)).toEqual([[core7, core6]]);
+          expect(splitByThroughput([core7, core6], result, LEVEL)).toEqual([[core7, core6]]);
         });
       });
     });

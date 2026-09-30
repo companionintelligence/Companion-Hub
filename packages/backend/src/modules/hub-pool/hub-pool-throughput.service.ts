@@ -327,8 +327,9 @@ export function prefillPointsOf(estimate: PoolThroughputEstimate, source: Throug
  * There is no anti-gaming concern that needs more than this: an advertised rate is only ever combined
  * with what this node timed itself by taking the slower, so a peer can make itself look slow (which
  * `acceptingWork: false` already allows) but not faster than it was timed here. A peer this node has
- * not timed can, by advertising a rate, count as measured, and so be placed ahead of unmeasured peers
- * for a large prompt; that is the trust its self-reported queue depth already carries in the ranker.
+ * not timed can, by advertising a rate, count as measured, and so be placed ahead of the unmeasured
+ * peers the ranker scored the same for a large prompt — never ahead of an idler one; that is the trust
+ * its self-reported queue depth already carries in the ranker.
  */
 export function readAdvertisedThroughput(raw: unknown, snapshotAgeMs: number): PoolThroughputEstimate[] {
   if (!Array.isArray(raw)) {

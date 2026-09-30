@@ -410,13 +410,24 @@ rules are a ceiling's:
 
 - **Unmeasured is not known to be fast.** For a prompt under 6144 estimated tokens, a peer with no
   applicable evidence keeps its place, which is how it gets measured. For a larger prompt, if a
-  candidate in its group is measured to meet the budget, the unmeasured peer moves behind it. A peer
-  that advertises `hardwareTier` `cpu-only` or `insufficient` also moves behind the other unmeasured
-  peers. An unmeasured peer still ranks ahead of a node measured too slow, and when no candidate is
-  measured to meet the budget nothing moves. On the fleet, 2026-09-29, a 7,731-token turn went to
-  core-7, which nothing had timed, and waited 169.8 s for a first byte while measured GPU peers were
-  predicted at ~32–36 s. A GPU tier is not read as fast: core-7 advertised `high` in the fleet
-  capture of 2026-09-27, but its Ollama reads prompts on CPU.
+  candidate in its group with the same ranker score is measured to meet the budget, the unmeasured
+  peer moves behind it. A peer that advertises `hardwareTier` `cpu-only` or `insufficient` also moves
+  behind the other unmeasured peers with that score. An unmeasured peer still ranks ahead of a node
+  measured too slow, and when no candidate is measured to meet the budget nothing moves. On the
+  fleet, 2026-09-29, a 7,731-token turn went to core-7, which nothing had timed, and waited 169.8 s
+  for a first byte while measured GPU peers, as idle as core-7, were predicted at ~32–36 s. A GPU
+  tier is not read as fast: core-7 advertised `high` in the fleet capture of 2026-09-27, but its
+  Ollama reads prompts on CPU.
+- **Never behind a busier node.** Queue depth stays the ranker's first key: an unmeasured peer moves
+  behind a measured one only when the ranker scored the two the same, and it stays ahead of every
+  busier node. On this fleet's `-np 1` engines each queued request is a whole turn, ~300 s for a
+  large one, which is as long as the CPU read this guards against. So a measured node with a queue
+  does not hold back idle unmeasured peers, and a burst of large turns spreads over the pool by queue
+  depth. Nor does this node's own engine hold peers back while it is generating another model, or
+  this model at another window: [contention](#local-engine-contention) is about to move it behind
+  them, unless [prefix affinity](#prefix-affinity) holds it. A measurement is a rate, not a health
+  check: an engine answering in garbage reaches its first byte as fast as a sound one and counts as
+  measured, so this rule is also what limits such an engine to the ranker's ties.
 - **Some candidates keep their place unmeasured.** This node's own engine does, because its evidence
   is forgotten on every restart while the engine's prefix cache is not. So do the engine
   [prefix affinity](#prefix-affinity) holds, where the session's prefix is warm, and a
@@ -438,10 +449,10 @@ evidence, otherwise `{ estimatedTokens, budgetMs, estimates: [{ node, backend, t
 fromPromptTokens, extrapolated, predictedMs, source, deadline, slow }], unmeasured: [{ node, backend,
 prior }], overridden }`. `tokensPerSec` is the rate as measured, at `fromPromptTokens`, so it can be
 compared with an engine's own log; `predictedMs` includes the growth factor when `extrapolated` is
-true. `unmeasured` lists the peers that moved behind a node measured to meet the budget, with the
-`prior` each was judged on (`unknown` or `cpu-only`). It is empty when none moved, including every
-prompt small enough to explore with. `overridden` is `true` when the request was placed on a `slow`
-node anyway. `cihub pool status` lists measured speed per node, and `cihub pool log` marks the
+true. `unmeasured` lists the peers that moved behind a node measured to meet the budget and scored
+the same, with the `prior` each was judged on (`unknown` or `cpu-only`). It is empty when none
+moved, including every prompt small enough to explore with. `overridden` is `true` when the request
+was placed on a `slow` node anyway. `cihub pool status` lists measured speed per node, and `cihub pool log` marks the
 requests that a measurement, or the lack of one, moved.
 
 ## Local engine contention
