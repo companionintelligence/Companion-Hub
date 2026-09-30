@@ -404,6 +404,11 @@ export function decideModelPrePull(input: {
   /** `model` is the operator's preferred model, not a substitute the recommender picked for this hardware. */
   operatorPreferred?: boolean;
   requirements?: AppInferenceRequirements;
+  /**
+   * Whether the engine's server can supply `model` (`InferenceBackend.offersModel`). `false` refuses
+   * the pull; `null` or absent means the engine cannot say, and the pull goes ahead as before.
+   */
+  engineOffers?: boolean | null;
 }): PrePullDecision | null {
   const { kind, model } = input;
   if (!model) return null;
@@ -418,6 +423,11 @@ export function decideModelPrePull(input: {
   }
   if (!input.endpointReady) return decide(false, `the local ${input.backendType} backend is not ready`);
   if (input.installedLocally) return decide(false, 'already installed on this node');
+  // #1679 turned pre-pull on for Lemonade, whose registry varies by version: 10.2.0 (the fleet's)
+  // lacks 13 of the catalog's Lemonade rows and answers a pull of one with a misleading error.
+  if (input.engineOffers === false) {
+    return decide(false, `the local ${input.backendType} server does not list ${model.backendModelId} in its model registry`);
+  }
   if (input.poolServedBy.length > 0) {
     return decide(false, `already served by pool node(s) ${input.poolServedBy.join(', ')}`);
   }

@@ -7,6 +7,7 @@ import axios from 'axios';
 // need the same host GIDs. See that module for the full rationale.
 import { type DeviceGroupProbe, resolveAmdDeviceGroupIds } from './amd-device-groups.util';
 import { OpenAiCompatibleClient } from './openai-compatible.client';
+import { LEMONADE_USER_NAMESPACE } from '../model-availability.util';
 
 /** Extra deployment hints beyond the shared `{ rocmReady, unifiedMemory }` pair. */
 export interface LemonadeComposeOptions {
@@ -24,25 +25,76 @@ export interface LemonadeComposeOptions {
 
 /**
  * Catalog models the Hub installs into Lemonade from Hugging Face because Lemonade's own registry does
- * not carry them, keyed by the public id Lemonade then lists them under (the `user.` namespace is
- * dropped from `/v1/models`). `/v1/pull` with a `user.*` name, a recipe and a checkpoint registers and
- * downloads in one call; loads and requests use the public id. Verified against lemonade-server
- * 2026.39.1, 2026-09-29.
+ * not carry them, keyed by the catalog's `backendModelId`. `/v1/pull` with a `user.*` name, a recipe
+ * and a checkpoint registers and downloads in one call (verified against lemonade-server 2026.39.1,
+ * 2026-09-29, and in the 10.2.0 source).
+ *
+ * What the server then calls the model depends on its version: 2026.39.1 lists it under the bare
+ * key, but 10.2.0 — the apt package on every fleet Lemonade node — lists and resolves it only as
+ * `user.<key>`, and answers the bare key with "Model not found". So loads and handouts never assume
+ * a spelling: they use the one the server lists ({@link LemonadeBackend.engineModelId}).
  */
 export const LEMONADE_REGISTRATIONS: Readonly<Record<string, Record<string, unknown>>> = {
   // The embedder every install shares; see the 2026-09-29 note above EXTRAS_TOON in curated-models.ts.
   'nomic-embed-text-v1.5-GGUF': {
-    model_name: 'user.nomic-embed-text-v1.5-GGUF',
+    model_name: `${LEMONADE_USER_NAMESPACE}nomic-embed-text-v1.5-GGUF`,
     recipe: 'llamacpp',
     checkpoint: 'nomic-ai/nomic-embed-text-v1.5-GGUF:nomic-embed-text-v1.5.f16.gguf',
     embedding: true,
   },
 };
 
+/**
+ * How long one `GET /v1/models?show_all=true` stands for the server's registry. The listing only
+ * changes when Lemonade is upgraded or the Hub registers a model (which drops the cache itself), and
+ * the pool's local-health loop probes every few seconds, so re-reading 70-odd entries on each probe
+ * would buy nothing.
+ */
+const OFFER_TTL_MS = 60_000;
+
+/** What the connected Lemonade can supply, read from `GET /v1/models?show_all=true`. */
+interface LemonadeOffer {
+  baseUrl: string;
+  /** Every id the server lists, downloaded or not, in the server's own spelling. */
+  ids: ReadonlySet<string>;
+  /** `/v1/health`'s `version`, for messages. */
+  version: string | null;
+  fetchedAt: number;
+}
+
+/**
+ * Lemonade's own reason from a failed call, not axios's "Request failed with status code 500".
+ * Its handlers answer `{"error": "<text>"}`; the OpenAI-shaped routes `{"error": {"message": …}}`.
+ */
+export function lemonadeErrorDetail(err: unknown): string {
+  const response = (err as { response?: { status?: number; data?: unknown } } | null)?.response;
+  const data = response?.data;
+  let detail: string | undefined;
+  if (typeof data === 'string' && data.trim()) {
+    detail = data.trim();
+  } else if (data && typeof data === 'object') {
+    const body = data as { error?: unknown; message?: unknown; detail?: unknown };
+    const error = body.error as { message?: unknown } | string | undefined;
+    const candidate = typeof error === 'string' ? error : (error?.message ?? body.message ?? body.detail);
+    if (typeof candidate === 'string' && candidate.trim()) detail = candidate.trim();
+  }
+  const fallback = err instanceof Error ? err.message : String(err);
+  if (!detail) return fallback;
+  return response?.status ? `${detail} (HTTP ${response.status})` : detail;
+}
+
 @Injectable()
 export class LemonadeBackend implements InferenceBackend {
   readonly type = 'lemonade' as const;
   private baseUrl: string;
+  /** The registry listing the last health probe read; see {@link offersModel}. */
+  private offer: LemonadeOffer | null = null;
+  /** The registry read in flight, if any; see {@link refreshOffer}. */
+  private offerRead: { baseUrl: string; promise: Promise<void> } | null = null;
+  /** Bumped by each pull, so a registry read that began before it does not store its older listing. */
+  private offerGeneration = 0;
+  /** What the last health probe found downloaded (`/v1/models`), for {@link engineModelId}. */
+  private downloaded: { baseUrl: string; ids: ReadonlySet<string> } | null = null;
 
   constructor(private readonly logger: LoggerService) {
     this.baseUrl = process.env.LEMONADE_URL || 'http://ci-hub-lemonade:13305';
@@ -71,7 +123,13 @@ export class LemonadeBackend implements InferenceBackend {
         ...(auth ? { headers: auth } : {}),
       });
       if (response.status === 200) {
-        const models = await new OpenAiCompatibleClient().listModelIds(baseUrl, { timeout: 5000, apiKey }).catch(() => []);
+        const version = typeof response.data?.version === 'string' ? response.data.version : null;
+        // In parallel, so the registry read (at most once a minute) never lengthens the probe.
+        const [models] = await Promise.all([
+          new OpenAiCompatibleClient().listModelIds(baseUrl, { timeout: 5000, apiKey }).catch(() => [] as string[]),
+          this.refreshOffer(baseUrl, version),
+        ]);
+        this.downloaded = { baseUrl, ids: new Set(models) };
         return {
           running: true,
           healthy: true,
@@ -89,6 +147,100 @@ export class LemonadeBackend implements InferenceBackend {
     }
   }
 
+  /**
+   * Re-read the server's whole registry when the cached listing is older than {@link OFFER_TTL_MS}
+   * or belongs to another URL. A read that fails keeps the last good listing; a server that ignores
+   * `show_all` (it answers the downloaded list, whose entries carry no `downloaded` flag) cannot say
+   * what it offers, so the listing is dropped and nothing is filtered — the behaviour before this.
+   *
+   * Probes that arrive while a read is in flight share it. The pool's health loop, the status route
+   * and a pull check can all probe at once when the TTL runs out, and each used to send its own
+   * `show_all` request for the same 70-odd entries.
+   */
+  private refreshOffer(baseUrl: string, version: string | null): Promise<void> {
+    const cached = this.offer;
+    if (cached && cached.baseUrl === baseUrl && Date.now() - cached.fetchedAt < OFFER_TTL_MS) return Promise.resolve();
+    if (this.offerRead?.baseUrl === baseUrl) return this.offerRead.promise;
+    const promise = this.readOffer(baseUrl, version).finally(() => {
+      if (this.offerRead?.promise === promise) this.offerRead = null;
+    });
+    this.offerRead = { baseUrl, promise };
+    return promise;
+  }
+
+  private async readOffer(baseUrl: string, version: string | null): Promise<void> {
+    const auth = this.authHeaders();
+    const generation = this.offerGeneration;
+    try {
+      const response = await axios.get(`${baseUrl}/v1/models?show_all=true`, { timeout: 5000, ...(auth ? { headers: auth } : {}) });
+      if (generation !== this.offerGeneration) return;
+      const entries: unknown = response.data?.data;
+      const listing = Array.isArray(entries) ? (entries as { id?: unknown; downloaded?: unknown }[]) : [];
+      const isRegistryListing = listing.some((entry) => typeof entry?.downloaded === 'boolean');
+      if (!isRegistryListing) {
+        this.offer = null;
+        return;
+      }
+      const ids = listing.map((entry) => entry?.id).filter((id): id is string => typeof id === 'string' && id.length > 0);
+      this.offer = { baseUrl, ids: new Set(ids), version, fetchedAt: Date.now() };
+    } catch (err) {
+      this.logger.debug(`[Lemonade] Could not read the model registry: ${lemonadeErrorDetail(err)}`);
+    }
+  }
+
+  /** The cached listing, when it belongs to the server this backend talks to now. */
+  private currentOffer(): LemonadeOffer | null {
+    return this.offer && this.offer.baseUrl === this.getBaseUrl() ? this.offer : null;
+  }
+
+  /** Every id the server listed on its last probe, downloaded or offered, in its own spelling. */
+  private listedIds(): Set<string> {
+    const baseUrl = this.getBaseUrl();
+    const ids = new Set<string>(this.currentOffer()?.ids ?? []);
+    if (this.downloaded?.baseUrl === baseUrl) {
+      for (const id of this.downloaded.ids) ids.add(id);
+    }
+    return ids;
+  }
+
+  /** `/v1/health`'s version string from the last registry read, or null. */
+  serverVersion(): string | null {
+    return this.currentOffer()?.version ?? null;
+  }
+
+  /**
+   * Whether this Lemonade can supply `modelId`: its registry lists it (in either spelling, see
+   * `LEMONADE_USER_NAMESPACE`), or the Hub registers it on pull. Null when no registry listing has
+   * been read, so a caller keeps its old behaviour instead of hiding every row.
+   *
+   * The catalog's Lemonade rows were checked against lemonade-server 2026.39.1, but every fleet
+   * node runs 10.2.0, whose registry lacks 13 of them — including every default the Hub would hand
+   * a Lemonade node. A pull of such a name fails there with a misleading demand for the `user.`
+   * namespace.
+   */
+  offersModel(modelId: string): boolean | null {
+    const offer = this.currentOffer();
+    if (!offer) return null;
+    const listed = this.listedIds();
+    if (listed.has(modelId) || listed.has(`${LEMONADE_USER_NAMESPACE}${modelId}`)) return true;
+    return Object.hasOwn(LEMONADE_REGISTRATIONS, modelId);
+  }
+
+  /**
+   * The name this server knows a catalog `backendModelId` by: the spelling it lists, else — for a
+   * model the Hub registers that it has not listed yet — the registration name, `user.<id>`, which
+   * resolves on every version (10.2.0 keys it that way; later versions still accept it beside the
+   * bare alias they list). Everything else keeps its catalog name.
+   */
+  engineModelId(modelId: string): string {
+    if (modelId.startsWith(LEMONADE_USER_NAMESPACE)) return modelId;
+    const listed = this.listedIds();
+    if (listed.has(modelId)) return modelId;
+    const namespaced = `${LEMONADE_USER_NAMESPACE}${modelId}`;
+    if (listed.has(namespaced) || Object.hasOwn(LEMONADE_REGISTRATIONS, modelId)) return namespaced;
+    return modelId;
+  }
+
   async listModels(): Promise<BackendModelInfo[]> {
     try {
       return await new OpenAiCompatibleClient().listModels(this.getBaseUrl(), { apiKey: this.getApiKey() });
@@ -99,6 +251,15 @@ export class LemonadeBackend implements InferenceBackend {
 
   async pullModel(modelId: string, onProgress?: (progress: PullProgress) => void): Promise<void> {
     this.logger.info(`[Lemonade] Pulling model: ${modelId}`);
+    if (this.offersModel(modelId) === false) {
+      // Refused here rather than sent: 10.2.0 answers an unknown bare name by demanding the `user.`
+      // namespace, which reads as a Hub bug instead of "this Lemonade does not have that model".
+      const version = this.serverVersion();
+      throw new Error(
+        `Lemonade${version ? ` ${version}` : ''} does not offer ${modelId}: its registry (GET /v1/models?show_all=true) does not list it. ` +
+          'Upgrade Lemonade, or choose a model it lists.',
+      );
+    }
     try {
       const auth = this.authHeaders();
       // A model the Hub installs from Hugging Face is registered by the same call that downloads it.
@@ -107,8 +268,16 @@ export class LemonadeBackend implements InferenceBackend {
       onProgress?.({ status: 'complete', percent: 100 });
       this.logger.info(`[Lemonade] Model pulled: ${modelId}`);
     } catch (err) {
-      this.logger.error(`[Lemonade] Pull failed for ${modelId}: ${err}`);
-      throw err;
+      const detail = lemonadeErrorDetail(err);
+      this.logger.error(`[Lemonade] Pull failed for ${modelId}: ${detail}`);
+      throw new Error(`Lemonade could not pull ${modelId}: ${detail}`);
+    } finally {
+      // A registration adds a name to the registry (and a failed pull may have registered it anyway),
+      // so the next probe re-reads it. The old listing keeps answering until then. A read already in
+      // flight began before the registration, so the next probe does not join it.
+      if (this.offer) this.offer = { ...this.offer, fetchedAt: 0 };
+      this.offerGeneration += 1;
+      this.offerRead = null;
     }
   }
 
@@ -148,7 +317,7 @@ export class LemonadeBackend implements InferenceBackend {
   async weightsOnDiskMb(modelId: string): Promise<number | null> {
     const auth = this.authHeaders();
     try {
-      const response = await axios.get(`${this.getBaseUrl()}/v1/models/${encodeURIComponent(modelId)}/files`, {
+      const response = await axios.get(`${this.getBaseUrl()}/v1/models/${encodeURIComponent(this.engineModelId(modelId))}/files`, {
         timeout: 5000,
         ...(auth ? { headers: auth } : {}),
       });
@@ -227,7 +396,7 @@ export class LemonadeBackend implements InferenceBackend {
 
   async isModelLoaded(modelId: string): Promise<boolean> {
     const health = await this.healthCheck();
-    return health.modelsLoaded.includes(modelId);
+    return health.modelsLoaded.includes(this.engineModelId(modelId));
   }
 
   /** Detect NPU via Lemonade's system-info endpoint */

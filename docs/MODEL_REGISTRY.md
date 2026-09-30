@@ -46,6 +46,15 @@ there is no separate hand-maintained ID→hardware-bracket table to keep in sync
    `not-recommended`) still gates which models are browsable at all for a given hardware tier
    (`getModelsForTier`) and drives the *non-LLM* recommended defaults (voice/embedding), but for LLMs
    the actual best-fit ranking above is what selects the recommended set — not this field alone.
+4. A download (`ModelPullerService.evaluatePull`) ignores what is loaded right now. It refuses a model
+   only when its weights cannot fit in the node's whole model budget with nothing else loaded: a
+   discrete card's VRAM less 512 MB, otherwise the RAM budget. The weights are measured by a lower
+   bound, 4 bits per parameter (`params`) capped at the download size, not by `memoryFootprintMb`.
+   That footprint is the download plus 10 %, and some downloads hold far more than the engine puts on
+   the card. gemma4:e4b is a 9,163 MiB download, but Ollama holds it at 3,209 MiB on beta-red's
+   RTX 3080; most of the file is per-layer embeddings that stay in system RAM. A model that only its
+   footprint says will not fit still downloads, and the Hub logs a warning that a pin or load may
+   refuse it. So a 10 GB card downloads gemma4-e4b and refuses gemma4-31b (at least 14,781 MB).
 
 The frontend (onboarding `RecommendedModels`/`OtherModels` in
 `packages/frontend/src/modules/onboarding/components/ai-setup/model-selection-card.tsx`, and the
@@ -77,6 +86,9 @@ newmodel-72b|newmodel:72b|NewModel 72B|reasoning|72|43|high|128|SomeLab|38.2|41.
 - `params`/`gb` — parameter count (billions) and the *default* (`q4_K_M`) on-disk size in GB, exactly
   as shown on the Ollama library page. These two columns drive every derived requirement
   (`minVramMb`/`recommendedVramMb`/`minRamMb`/`diskMb`/`memoryFootprintMb`) — don't hand-compute them.
+  For a model named by its *effective* size, use that figure: the Gemma E4B row carries 4, not the
+  8.0B Ollama reports, because the download gate reads `params` as a lower bound on what the engine
+  holds (§2, item 4).
 - `tier` — the lowest hardware tier this size should be offered as a default recommendation for
   (`cpu-only`/`low`/`medium`/`high`), based on the model's footprint relative to existing rows of
   similar size.
@@ -103,3 +115,39 @@ No changes are needed in `model-registry.service.ts`, the frontend model-selecti
 `icons.tsx` for a model whose creator already has a brand mark in `packages/frontend/public/brands/`
 (check the `CREATOR_BRAND` map) — the new row is picked up automatically everywhere. A creator without
 a brand SVG just falls back to a generic icon; that's expected and fine.
+
+## 4. Lemonade rows
+
+`LEMONADE_LLM_TOON` names models by their key in Lemonade's own registry (`server_models.json`). The
+rows were checked against lemonade-server 2026.39.1, but a host runs whatever Lemonade it has: every
+fleet Lemonade node runs the Ubuntu apt package 10.2.0, which lacks 13 of the 41 rows.
+
+- **The catalog follows the connected server.** On each health probe (at most once a minute) the Hub
+  reads `GET /v1/models?show_all=true`. A Lemonade row that listing does not name is dropped from
+  `getModelsForTier()`, so it is not browsable, recommended, or pre-pulled, and `evaluatePull` refuses
+  it with a reason that names the registry. A model the Hub registers itself (`LEMONADE_REGISTRATIONS`)
+  counts as offered. A Lemonade that ignores `show_all`, or one the Hub has not reached, filters nothing.
+- **Registered models may carry a namespace.** `/v1/pull` registers a Hugging Face checkpoint under
+  `user.<id>`. Lemonade 10.2.0 lists and serves it only under that name; 2026.39.1 lists it as `<id>`.
+  The Hub treats `user.<id>` as serving catalog `<id>`, and hands out and loads whichever spelling the
+  server lists. `user.<id>` resolves on every version, so it is the name used before the server lists it.
+- **Names are case-sensitive.** The Whisper rows use Lemonade's keys (`Whisper-Base`,
+  `Whisper-Large-v3-Turbo`); the lowercase ids they carried until 2026-09-29 were never servable.
+
+### Lemonade embedder: v1 and v1.5
+
+Until #1679 (2026-09-29) a Lemonade-only host embedded with Lemonade's built-in
+`nomic-embed-text-v1-GGUF`. The recommended Lemonade embedder is now nomic v1.5
+(`nomic-embed-text-v1.5-GGUF`, registered by the Hub on pull), the same weights as Ollama's
+`nomic-embed-text`, so switching engines no longer strands an index.
+
+v1 and v1.5 are different vector spaces (cosine about 0.7 on the same text) at the same 768
+dimensions, so pgvector accepts a mix of them without complaint and search quietly gets worse. To
+avoid that:
+
+- A Lemonade-only host that has v1 downloaded and not v1.5 keeps being handed v1
+  (`nomic-embed-text-v1-lemonade`, still in the catalog but never recommended).
+- A host moves to v1.5 when the operator picks it as the preferred embedding model in
+  Settings → AI, or once v1.5 is on the host. **Re-embed the stored memories after that switch**: vectors
+  written with v1 do not match queries embedded with v1.5.
+- Hosts with a healthy Ollama are unaffected. They embed with Ollama's `nomic-embed-text` as before.

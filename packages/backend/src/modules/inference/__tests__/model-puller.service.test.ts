@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { HardwareInspectorService } from '../hardware-inspector.service';
 import { MemoryManagerService } from '../memory-manager.service';
-import { ModelPullerService } from '../model-puller.service';
+import { ModelPullerService, weightsFloorMb } from '../model-puller.service';
 import { ModelRegistryService } from '../model-registry.service';
 import { InferenceBackendRegistry } from '../backends/backend-registry';
 import { OllamaBackend } from '../backends/ollama.backend';
@@ -43,14 +43,17 @@ describe('ModelPullerService.evaluatePull', () => {
   let hostMetrics: MockProxy<HostMetricsService>;
   let modelRegistry: MockProxy<ModelRegistryService>;
   let ollamaBackend: MockProxy<OllamaBackend>;
+  let lemonadeBackend: MockProxy<LemonadeBackend>;
+  let hardwareInspector: MockProxy<HardwareInspectorService>;
 
   beforeEach(async () => {
-    const hardwareInspector = mock<HardwareInspectorService>();
+    hardwareInspector = mock<HardwareInspectorService>();
     logger = mock<LoggerService>();
     memoryManager = mock<MemoryManagerService>();
     hostMetrics = mock<HostMetricsService>();
     modelRegistry = mock<ModelRegistryService>();
     ollamaBackend = mock<OllamaBackend>();
+    lemonadeBackend = mock<LemonadeBackend>();
 
     hardwareInspector.getProfile.mockResolvedValue(profile);
     memoryManager.calculateBudget.mockResolvedValue({
@@ -96,7 +99,7 @@ describe('ModelPullerService.evaluatePull', () => {
         { provide: HostMetricsService, useValue: hostMetrics },
         { provide: OllamaBackend, useValue: ollamaBackend },
         { provide: VllmBackend, useValue: mock<VllmBackend>() },
-        { provide: LemonadeBackend, useValue: mock<LemonadeBackend>() },
+        { provide: LemonadeBackend, useValue: lemonadeBackend },
         { provide: OmlxBackend, useValue: mock<OmlxBackend>() },
         InferenceBackendRegistry,
       ],
@@ -142,6 +145,101 @@ describe('ModelPullerService.evaluatePull', () => {
     expect(result.canPull).toBe(true);
     expect(result.reason).toBeUndefined();
     expect(memoryManager.canFitModel).not.toHaveBeenCalled();
+  });
+
+  // An RTX 3080 (10 GB) reads as tier `medium`, which admits 20+ GB models. A model whose weights
+  // alone are larger than the node's whole model budget with nothing loaded is refused by every load
+  // and pin, so downloading it only spends the disk. Free memory right now still does not matter (the
+  // case above).
+  it('refuses a model whose weights alone are bigger than the whole model budget with nothing loaded', async () => {
+    modelRegistry.getCuratedModel.mockReturnValue({
+      ...curated,
+      parameterScale: 31,
+      requirements: { ...curated.requirements, diskMb: 20_480 },
+      runtime: { ...curated.runtime, memoryFootprintMb: 22_528 },
+    } as CuratedModel);
+
+    const result = await service.evaluatePull('phi-4-mini');
+
+    expect(result.canPull).toBe(false);
+    // 31B parameters at 4 bits each, not the catalog's 22528 MB footprint.
+    expect(result.reason).toMatch(
+      /weights need at least 14781 MB, more than the 7000 MB of GPU memory this node has for models with nothing else loaded/,
+    );
+  });
+
+  it('judges a row with no parameter count by its download size', async () => {
+    modelRegistry.getCuratedModel.mockReturnValue({
+      ...curated,
+      requirements: { ...curated.requirements, diskMb: 9_000 },
+      runtime: { ...curated.runtime, memoryFootprintMb: 9_900 },
+    } as CuratedModel);
+
+    const result = await service.evaluatePull('phi-4-mini');
+
+    expect(result.canPull).toBe(false);
+    expect(result.reason).toMatch(/at least 9000 MB/);
+  });
+
+  it('judges a unified-memory node against its RAM budget, not what is free now', async () => {
+    hardwareInspector.getProfile.mockResolvedValue({ ...profile, gpu: { ...profile.gpu, unifiedMemory: true } });
+    modelRegistry.getCuratedModel.mockReturnValue({ ...curated, runtime: { ...curated.runtime, memoryFootprintMb: 14_000 } } as CuratedModel);
+    // 15000 MB of RAM for models, 12000 of it held by something else right now.
+    memoryManager.calculateBudget.mockResolvedValue({
+      ...(await memoryManager.calculateBudget(profile)),
+      modelUsedRamMb: 12_000,
+    });
+
+    const result = await service.evaluatePull('phi-4-mini');
+
+    expect(result.canPull).toBe(true);
+  });
+
+  it("refuses a Lemonade model the connected server's registry does not list, naming the registry", async () => {
+    const lemonadeRow = { ...curated, id: 'qwen3-8-27b-lemonade', backend: 'lemonade', backendModelId: 'Qwen3.8-27B-GGUF' } as CuratedModel;
+    modelRegistry.getCuratedModel.mockReturnValue(lemonadeRow);
+    lemonadeBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
+    lemonadeBackend.offersModel.mockReturnValue(false);
+
+    const result = await service.evaluatePull('qwen3-8-27b-lemonade');
+
+    expect(result.canPull).toBe(false);
+    expect(result.reason).toMatch(/lemonade on this node does not list Qwen3\.8-27B-GGUF in its model registry/);
+    expect(result.reason).not.toMatch(/hardware tier/);
+  });
+
+  it('counts a model Lemonade lists as user.<id> as installed, so a restart does not re-register it', async () => {
+    const embedder = {
+      ...curated,
+      id: 'nomic-embed-text-v1-5-lemonade',
+      backend: 'lemonade',
+      backendModelId: 'nomic-embed-text-v1.5-GGUF',
+      modality: 'embedding',
+    } as CuratedModel;
+    modelRegistry.getCuratedModel.mockReturnValue(embedder);
+    lemonadeBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['user.nomic-embed-text-v1.5-GGUF'] });
+
+    const result = await service.evaluatePull('nomic-embed-text-v1-5-lemonade');
+
+    expect(result.alreadyInstalled).toBe(true);
+  });
+
+  it('loads and unloads under the name the engine knows the model by', async () => {
+    const embedder = {
+      ...curated,
+      id: 'nomic-embed-text-v1-5-lemonade',
+      backend: 'lemonade',
+      backendModelId: 'nomic-embed-text-v1.5-GGUF',
+      modality: 'embedding',
+    } as CuratedModel;
+    modelRegistry.getCuratedModel.mockReturnValue(embedder);
+    lemonadeBackend.engineModelId.mockImplementation((id) => `user.${id}`);
+
+    await service.loadModel('nomic-embed-text-v1-5-lemonade');
+    await service.unloadModel('nomic-embed-text-v1-5-lemonade');
+
+    expect(lemonadeBackend.loadModel).toHaveBeenCalledWith('user.nomic-embed-text-v1.5-GGUF', { embedding: true, contextLength: undefined });
+    expect(lemonadeBackend.unloadModel).toHaveBeenCalledWith('user.nomic-embed-text-v1.5-GGUF', { embedding: true });
   });
 
   it('logs pull progress so model downloads appear in hub logs', async () => {
@@ -235,6 +333,16 @@ describe('ModelPullerService.startPull', () => {
     service = moduleRef.get(ModelPullerService);
   });
 
+  // Nest's exception filter turns a plain Error into `INTERNAL_SERVER_ERROR`, so a throw here reached
+  // the Settings page as a download that failed for no stated reason.
+  it('answers an unknown catalog id with a reason instead of throwing', async () => {
+    modelRegistry.getCuratedModel.mockReturnValue(undefined);
+
+    const result = await service.startPull('no-such-model');
+
+    expect(result).toEqual({ catalogId: 'no-such-model', status: 'error', reason: 'Model no-such-model not found in catalog' });
+  });
+
   it('returns already_installed without enqueueing', async () => {
     ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['phi4-mini'] });
     const result = await service.startPull('phi-4-mini');
@@ -294,5 +402,135 @@ describe('ModelPullerService.startPull', () => {
     await new Promise((r) => setTimeout(r, 10));
 
     expect(order).toEqual(['phi4-mini', 'llama3.3:70b']);
+  });
+});
+
+// The real catalog and registry, sized with the fleet's discrete cards. beta-red's figures are its
+// live `GET /api/inference/memory` of 2026-09-29, taken while it served gemma4:e4b: an RTX 3080 with
+// 10240 MB, 9728 MB of it for models, 5550 MB in use by the runner. Ollama held that model at
+// 3,209 MiB on the card (`/api/ps` size equal to size_vram) against the catalog's 10,813 MB.
+describe('ModelPullerService download gate on the fleet', () => {
+  const discreteNode = (vramMb: number, ramMb: number): HardwareProfile => ({
+    gpu: { available: true, vendor: 'nvidia', model: 'RTX', vramMb, unifiedMemory: false, driverVersion: '1', runtimeAvailable: true },
+    npu: { available: false, model: '' },
+    ram: { totalMb: ramMb, availableMb: ramMb - 3396 },
+    cpu: { arch: 'x86_64', cores: 12, model: 'CPU' },
+    effectiveInferenceMemoryMb: vramMb,
+    tier: 'medium',
+  });
+
+  async function pullerOn(vramMb: number, ramMb: number, modelUsedVramMb: number) {
+    const hardwareInspector = mock<HardwareInspectorService>();
+    const memoryManager = mock<MemoryManagerService>();
+    const hostMetrics = mock<HostMetricsService>();
+    const ollamaBackend = mock<OllamaBackend>();
+    const logger = mock<LoggerService>();
+    hardwareInspector.getProfile.mockResolvedValue(discreteNode(vramMb, ramMb));
+    memoryManager.calculateBudget.mockResolvedValue({
+      totalVramMb: vramMb,
+      totalRamMb: ramMb,
+      systemReservedRamMb: 2048,
+      dockerOverheadMb: 0,
+      appContainerBudgetMb: 0,
+      modelBudgetVramMb: vramMb - 512,
+      modelBudgetRamMb: ramMb - 2048,
+      modelUsedVramMb,
+      modelUsedRamMb: 0,
+      pinnedVramMb: 0,
+      pinnedRamMb: 0,
+      usage: { sampledAt: '2026-09-29T00:00:00.000Z', backends: [] },
+    });
+    hostMetrics.readHostSection.mockResolvedValue(null);
+    hostMetrics.getDisplayLoad.mockResolvedValue({
+      diskSize: 1000,
+      diskUsed: 100,
+      percentUsed: 10,
+      cpuLoad: 0,
+      cpuCores: 12,
+      memoryTotal: 32,
+      memoryUsed: 4,
+      percentUsedMemory: 12,
+      hasVmWedge: false,
+      runtimeKind: 'container-only',
+    });
+    ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
+    ollamaBackend.pullModel.mockResolvedValue(undefined);
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        ModelPullerService,
+        { provide: LoggerService, useValue: logger },
+        { provide: ModelRegistryService, useValue: new ModelRegistryService(mock<LoggerService>()) },
+        { provide: HardwareInspectorService, useValue: hardwareInspector },
+        { provide: MemoryManagerService, useValue: memoryManager },
+        { provide: HostMetricsService, useValue: hostMetrics },
+        { provide: OllamaBackend, useValue: ollamaBackend },
+        { provide: VllmBackend, useValue: mock<VllmBackend>() },
+        { provide: LemonadeBackend, useValue: mock<LemonadeBackend>() },
+        { provide: OmlxBackend, useValue: mock<OmlxBackend>() },
+        InferenceBackendRegistry,
+      ],
+    }).compile();
+    return { service: moduleRef.get(ModelPullerService), logger, ollamaBackend };
+  }
+
+  it('lets beta-red download gemma4-e4b, the model it serves, with a warning about the catalog estimate', async () => {
+    const { service } = await pullerOn(10_240, 31_017, 5_550);
+
+    const result = await service.evaluatePull('gemma4-e4b');
+
+    expect(result.canPull).toBe(true);
+    expect(result.reason).toBeUndefined();
+    expect(result.warning).toMatch(/estimates 10813 MB .* more than the 9728 MB of GPU memory .* at least 1907 MB/);
+  });
+
+  it('still refuses beta-red a 22.5 GB row such as gemma4-31b', async () => {
+    const { service } = await pullerOn(10_240, 31_017, 5_550);
+
+    const result = await service.evaluatePull('gemma4-31b');
+
+    expect(result.canPull).toBe(false);
+    expect(result.reason).toMatch(
+      /weights need at least 14781 MB, more than the 9728 MB of GPU memory this node has for models with nothing else loaded, so it could never be loaded onto the GPU here/,
+    );
+  });
+
+  it('lets an 8 GB card (beta-3-glass) download gemma4-e4b', async () => {
+    const { service } = await pullerOn(8_192, 31_017, 0);
+
+    const result = await service.evaluatePull('gemma4-e4b');
+
+    expect(result.canPull).toBe(true);
+  });
+
+  it('lets a 24 GB card (beta-1) download gemma4-31b without a warning', async () => {
+    const { service } = await pullerOn(24_560, 63_000, 0);
+
+    const result = await service.evaluatePull('gemma4-31b');
+
+    expect(result.canPull).toBe(true);
+    expect(result.warning).toBeUndefined();
+  });
+
+  // App pre-pull (decideModelPrePull -> startPull with bestEffort) is how a fresh node gets its app
+  // model, so a refusal there left Hermes and OpenClaw with nothing to run.
+  it('queues the app pre-pull of gemma4-e4b on beta-red and logs the warning', async () => {
+    const { service, logger, ollamaBackend } = await pullerOn(10_240, 31_017, 0);
+
+    const result = await service.startPull('gemma4-e4b', { bestEffort: true });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(result.status).toBe('queued');
+    expect(ollamaBackend.pullModel).toHaveBeenCalledWith('gemma4:e4b', expect.any(Function));
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/^\[ModelPuller\] gemma4-e4b: The catalog estimates 10813 MB/));
+  });
+
+  // The floor may only ever admit more than the catalog footprint did, never refuse a row the
+  // footprint admitted.
+  it('never puts a catalog row above its own catalog footprint', () => {
+    const registry = new ModelRegistryService(mock<LoggerService>());
+    const over = registry.getCatalog().filter((m) => weightsFloorMb(m) > m.runtime.memoryFootprintMb);
+
+    expect(over.map((m) => m.id)).toEqual([]);
   });
 });
