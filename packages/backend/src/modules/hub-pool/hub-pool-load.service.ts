@@ -13,6 +13,17 @@ export interface LocalGeneration {
   numCtx: number | null;
 }
 
+/**
+ * Work one of this node's engines is doing for a model that is not a generation: an embedding
+ * batch. It holds the model's runner exactly as a turn does — Ollama will not unload it until the
+ * batch ends — but it has no window and joins no queue of turns, so it is kept out of
+ * {@link HubPoolLoadService.localGenerationsOn}, which the contention and throughput judgements read.
+ */
+export interface LocalModelWork {
+  backend: InferenceBackendType;
+  model: string;
+}
+
 /** One model at one window on one engine, and how many of its generations are in flight there. */
 interface RunningGenerations {
   model: string;
@@ -44,10 +55,21 @@ export class HubPoolLoadService {
    * this model's at another window, which Ollama must reload for (see `applyLocalContention`).
    */
   private readonly generations = new Map<InferenceBackendType, Map<string, RunningGenerations>>();
+  /** The local {@link LocalModelWork} among that work, per engine: canonical model id → requests in flight. */
+  private readonly otherWork = new Map<InferenceBackendType, Map<string, number>>();
 
-  /** `generation` is recorded only under {@link LOCAL_CANDIDATE_KEY}: a peer's engines are its own to report. */
-  acquire(key: string, generation?: LocalGeneration): void {
+  /**
+   * `generation` and `work` are recorded only under {@link LOCAL_CANDIDATE_KEY}: a peer's engines are
+   * its own to report. A request passes one or the other, never both.
+   */
+  acquire(key: string, generation?: LocalGeneration, work?: LocalModelWork): void {
     this.inFlight.set(key, this.get(key) + 1);
+    if (work && key === LOCAL_CANDIDATE_KEY) {
+      const running = this.otherWork.get(work.backend) ?? new Map<string, number>();
+      const model = canonicalModelId(work.model);
+      running.set(model, (running.get(model) ?? 0) + 1);
+      this.otherWork.set(work.backend, running);
+    }
     if (generation && key === LOCAL_CANDIDATE_KEY) {
       const running = this.generations.get(generation.backend) ?? new Map<string, RunningGenerations>();
       const model = canonicalModelId(generation.model);
@@ -59,8 +81,15 @@ export class HubPoolLoadService {
     }
   }
 
-  /** Takes the same `generation` its `acquire` did. */
-  release(key: string, generation?: LocalGeneration): void {
+  /** Takes the same `generation` and `work` its `acquire` did. */
+  release(key: string, generation?: LocalGeneration, work?: LocalModelWork): void {
+    if (work && key === LOCAL_CANDIDATE_KEY) {
+      const running = this.otherWork.get(work.backend);
+      const model = canonicalModelId(work.model);
+      const count = running?.get(model) ?? 0;
+      if (count > 1) running?.set(model, count - 1);
+      else running?.delete(model);
+    }
     if (generation && key === LOCAL_CANDIDATE_KEY) {
       const running = this.generations.get(generation.backend);
       const id = generationKey(canonicalModelId(generation.model), generation.numCtx);
@@ -92,6 +121,20 @@ export class HubPoolLoadService {
   /** What `backend` has generations in flight for right now: one entry per canonical model id and window. */
   localGenerationsOn(backend: InferenceBackendType): { model: string; numCtx: number | null }[] {
     return [...(this.generations.get(backend)?.values() ?? [])].map(({ model, numCtx }) => ({ model, numCtx }));
+  }
+
+  /**
+   * Every model `backend` is doing work for right now, generation or embedding, once each by
+   * canonical id: what a load must not evict. An embedding batch is here and not in
+   * {@link localGenerationsOn}; evicting the embedder mid-batch only made Memory's next batch reload
+   * it cold, the same as a turn's model.
+   */
+  localBusyModelsOn(backend: InferenceBackendType): { model: string }[] {
+    const models = new Set<string>([
+      ...[...(this.generations.get(backend)?.values() ?? [])].map(({ model }) => model),
+      ...(this.otherWork.get(backend)?.keys() ?? []),
+    ]);
+    return [...models].map((model) => ({ model }));
   }
 }
 

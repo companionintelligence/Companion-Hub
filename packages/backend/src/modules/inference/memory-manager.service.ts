@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
+import { canonicalModelId, sameModelId } from '@/common/helpers/hub-pool';
 import {
   type BackendHealthStatus,
   type BackendResidency,
@@ -9,6 +10,7 @@ import {
   type MemoryBudget,
   type ModelMemoryUsage,
   type ModelMemoryUsageEntry,
+  type ResidentModel,
   type TrackedModel,
 } from '@ci-hub/common/types';
 import { InferenceBackendRegistry } from './backends/backend-registry';
@@ -196,27 +198,72 @@ export class MemoryManagerService {
   }
 
   /**
-   * What to unload so `requiredMb` more fits, drawn from what the engines hold NOW rather than
-   * from what this Hub loaded. {@link getModelsToEvict} only sees the registry's own loads, and a
-   * model an app loaded by calling the engine directly is `pulled` there while it occupies the
-   * card — so it could never be evicted, and the load went ahead on top of it. Measured on a
-   * 24 GiB 7900 XTX: ci-server's Ollama 27B (17 GiB) stayed put while a pin loaded Lemonade's
-   * copy of the same model, and the driver's eviction thrash froze the desktop until a reboot.
+   * What to unload so `requiredMb` more fits, or that nothing may be.
    *
-   * Order: the Hub's own loads least-recently-used first (the order it always evicted in), then
-   * everything else the engines report, largest first so as few as possible go. Pinned models and
-   * `keep` are never candidates. A model whose size nothing can say counts as 0 towards the
-   * target, and `canFree` is then optimistic — the caller re-measures after unloading anyway.
+   * Every candidate is a model an engine holds right now, sized in the units the budget itself
+   * counted: the share of its engine's `usedMb` that is this model's (see
+   * {@link residentSharesMb}). Sizing a candidate any other way plans in different units from the
+   * figure it is meant to free. On beta-red the budget read gemma4:e4b's runner at 5,550 MB
+   * (nvidia-smi) while `/api/ps` said 3,208, so the plan refused a load that evicting gemma4 would
+   * have made room for; on beta-1 a Hub-tracked gemma4 was counted at its catalog 10,813 MB, evicted,
+   * and the load refused anyway. A Hub-loaded model the engine no longer holds frees nothing, so it
+   * is not a candidate at all.
+   *
+   * What a load may unload depends on who asked ({@link EvictionScope}), and a model with a
+   * request running on it (a turn or an embedding batch) is never a candidate for anyone. Order:
+   * the Hub's own loads least-recently-used first (the order it always evicted in), then, for an
+   * operator, every other idle model the engines report, largest first so as few as possible go.
+   * Pinned models and `keep` are never candidates, matched with Ollama's `name` ≡ `name:latest`
+   * folding: `/api/ps` names the pinned embedder `nomic-embed-text:latest` while the catalog says
+   * `nomic-embed-text`.
+   *
+   * A candidate nothing can size, or one sized at 0 (Ollama puts a model wholly on the CPU at
+   * `size_vram` 0, which frees no VRAM), is never unloaded: it cannot be shown to help. When the
+   * sized candidates cannot cover `requiredMb` the plan is empty — a refusal unloads nothing, where
+   * it used to unload every candidate on the strength of one it could not size and then refuse.
    */
   async planEviction(
     profile: HardwareProfile,
     requiredMb: number,
     keep: { backend: InferenceBackendType; backendModelId: string },
-  ): Promise<{ canFree: boolean; candidates: EvictionCandidate[]; freedMb: number }> {
+    options: EvictionOptions,
+  ): Promise<EvictionPlan> {
     const pool = modelPoolFor(profile);
     const observation = await this.observe(profile.gpu.vendor);
     const usage = deriveModelMemoryUsage({ pool, observation, tracked: this.modelRegistry.getLoadedModels() });
     const tracked = this.modelRegistry.getTrackedModels();
+    const catalog = this.modelRegistry.getCatalog();
+    const catalogRow = (backend: InferenceBackendType, backendModelId: string) =>
+      catalog.find((model) => model.backend === backend && sameModelId(model.backendModelId, backendModelId));
+
+    // What each resident model frees, per engine. `registry` rows are the engine NOT answering: there
+    // is nothing live to unload through it, and nothing measured to size a candidate by.
+    const residents = new Map<InferenceBackendType, Map<string, number | null>>();
+    for (const entry of usage.backends) {
+      if (entry.source === 'registry') continue;
+      const reported = observation.residency.get(entry.backend)?.models ?? [];
+      residents.set(
+        entry.backend,
+        residentSharesMb(entry, reported, pool, (id) => catalogRow(entry.backend, id)?.runtime.memoryFootprintMb ?? null),
+      );
+    }
+    /** The engine's own spelling of `backendModelId` and what unloading it frees, or `undefined` when it is not resident. */
+    const residentAs = (backend: InferenceBackendType, backendModelId: string): { id: string; sizeMb: number | null } | undefined => {
+      for (const [id, sizeMb] of residents.get(backend) ?? []) {
+        if (sameModelId(id, backendModelId)) return { id, sizeMb };
+      }
+      return undefined;
+    };
+
+    const busy: string[] = [];
+    const isBusy = (candidate: EvictionCandidate): boolean => {
+      const working = options.inUse?.(candidate.backend) ?? [];
+      const inUse = working.some(
+        (work) => sameModelId(work.model, candidate.backendModelId) || (candidate.catalogId !== null && work.model === candidate.catalogId),
+      );
+      if (inUse) busy.push(candidate.backendModelId);
+      return inUse;
+    };
 
     const ordered: EvictionCandidate[] = [];
     const seen = new Set<string>([evictionKey(keep.backend, keep.backendModelId)]);
@@ -224,49 +271,43 @@ export class MemoryManagerService {
       const key = evictionKey(candidate.backend, candidate.backendModelId);
       if (seen.has(key)) return;
       seen.add(key);
+      if (isBusy(candidate)) return;
       ordered.push(candidate);
     };
 
     for (const model of this.modelRegistry.getEvictionCandidates()) {
-      add({ backend: model.backend, backendModelId: model.backendModelId, catalogId: model.catalogId, estimatedMb: model.memoryUsedMb });
+      const resident = residentAs(model.backend, model.backendModelId);
+      if (!resident) continue;
+      add({ backend: model.backend, backendModelId: resident.id, catalogId: model.catalogId, estimatedMb: resident.sizeMb });
     }
 
-    const residents: EvictionCandidate[] = [];
-    for (const entry of usage.backends) {
-      // `registry` rows are the engine NOT answering; there is nothing live to unload through it.
-      if (entry.source === 'registry') continue;
-      const reported = observation.residency.get(entry.backend)?.models ?? [];
-      for (const backendModelId of entry.models) {
-        const own = tracked.find((model) => model.backend === entry.backend && model.backendModelId === backendModelId);
-        if (own?.pinned) continue;
-        const catalogId =
-          own?.catalogId ??
-          this.modelRegistry.getCatalog().find((m) => m.backend === entry.backend && m.backendModelId === backendModelId)?.id ??
-          null;
-        const bytes = reported.find((model) => model.id === backendModelId)?.[pool === 'vram' ? 'engineGpuBytes' : 'totalBytes'] ?? null;
-        const estimatedMb =
-          bytes === null
-            ? (own?.memoryUsedMb ??
-              (catalogId ? this.modelRegistry.getCuratedModel(catalogId)?.runtime.memoryFootprintMb : undefined) ??
-              (entry.models.length === 1 ? entry.usedMb : null))
-            : Math.round(bytes / (1024 * 1024));
-        residents.push({ backend: entry.backend, backendModelId, catalogId, estimatedMb: estimatedMb || null });
+    if (options.scope === 'operator') {
+      const others: EvictionCandidate[] = [];
+      for (const [backend, models] of residents) {
+        for (const [backendModelId, estimatedMb] of models) {
+          const own = tracked.find((model) => model.backend === backend && sameModelId(model.backendModelId, backendModelId));
+          if (own?.pinned) continue;
+          const catalogId = own?.catalogId ?? catalogRow(backend, backendModelId)?.id ?? null;
+          others.push({ backend, backendModelId, catalogId, estimatedMb });
+        }
       }
+      others.sort((a, b) => (b.estimatedMb ?? 0) - (a.estimatedMb ?? 0));
+      for (const candidate of others) add(candidate);
     }
-    residents.sort((a, b) => (b.estimatedMb ?? 0) - (a.estimatedMb ?? 0));
-    for (const candidate of residents) add(candidate);
 
     const candidates: EvictionCandidate[] = [];
     let freedMb = 0;
-    let unsized = false;
     for (const candidate of ordered) {
       if (freedMb >= requiredMb) break;
+      if (candidate.estimatedMb === null || candidate.estimatedMb <= 0) continue;
       candidates.push(candidate);
-      if (candidate.estimatedMb === null) unsized = true;
-      else freedMb += candidate.estimatedMb;
+      freedMb += candidate.estimatedMb;
     }
 
-    return { canFree: freedMb >= requiredMb || unsized, candidates, freedMb };
+    if (freedMb < requiredMb) {
+      return { canFree: false, candidates: [], freedMb, busy };
+    }
+    return { canFree: true, candidates, freedMb, busy };
   }
 
   /**
@@ -396,15 +437,97 @@ export class MemoryManagerService {
 /** One model {@link MemoryManagerService.planEviction} would unload, whether or not the Hub loaded it. */
 export type EvictionCandidate = {
   backend: InferenceBackendType;
+  /** The engine's own spelling, as its residency listed it. */
   backendModelId: string;
   /** The catalog entry it corresponds to, when there is one; unloads then go through the registry. */
   catalogId: string | null;
-  /** `null` when neither the engine, the registry nor the catalog can size it. */
+  /** What unloading it frees, in the budget's own units; `null` when its engine's figure cannot be split to it. */
   estimatedMb: number | null;
 };
 
+/**
+ * Who asked for a load, which decides what may be unloaded to make room for it.
+ *
+ * - `request`: an app's generation reaching the pool proxy or the router, or an agent's MCP call.
+ *   Only models the Hub itself loaded may go, as before #1679. The app that loaded any other model
+ *   is usually about to use it again: evicting Hermes' gemma4:e4b for an opencode turn on beta-1
+ *   only made Hermes' next turn reload it cold.
+ * - `operator`: a signed-in operator's pin or load. Any idle model any engine holds may go — that is
+ *   how a pin clears the 27B an app loaded through Ollama directly before loading Lemonade's copy.
+ */
+export type EvictionScope = 'request' | 'operator';
+
+export type EvictionOptions = {
+  scope: EvictionScope;
+  /**
+   * What each engine has requests in flight for, generations and embedding batches alike
+   * (`HubPoolLoadService.localBusyModelsOn`). Such a model is never a candidate, for either scope:
+   * Ollama only marks a busy runner to expire and unloads it once its request ends, so the memory
+   * does not come back in time for this load, and the app that was using it reloads it cold on its
+   * next request. Only requests that pass through the pool proxy are seen.
+   */
+  inUse?: (backend: InferenceBackendType) => readonly { model: string }[];
+};
+
+export type EvictionPlan = {
+  /** True only when the sized candidates free at least what was asked for. */
+  canFree: boolean;
+  /** What to unload, in order. Empty whenever `canFree` is false, so a refusal unloads nothing. */
+  candidates: EvictionCandidate[];
+  /** What `candidates` free; when `canFree` is false, everything this scope could have freed. */
+  freedMb: number;
+  /** Models left alone because a request is running on them, for the refusal's reason. */
+  busy: string[];
+};
+
+/** Keyed under Ollama's `name` ≡ `name:latest` folding, so the kept model and a pin match however the engine spells them. */
 function evictionKey(backend: InferenceBackendType, backendModelId: string): string {
-  return `${backend}\u0000${backendModelId}`;
+  return `${backend}\u0000${canonicalModelId(backendModelId)}`;
+}
+
+/**
+ * What unloading each of an engine's resident models frees, in the units the budget counted that
+ * engine in, so a plan and the fit check it serves agree on what an eviction buys.
+ *
+ * With one model the engine's whole figure is that model's. With several, the figure is split in
+ * the engine's own proportions (`size_vram` or `size` per model), else the catalog's footprints; a
+ * model the engine reports at 0 bytes gets 0. When neither proportion exists — Lemonade sizes
+ * nothing, and not every model it serves is in the catalog — or the engine is `unmeasured`, each
+ * model is `null`: unsizable, so {@link MemoryManagerService.planEviction} will not unload it.
+ */
+function residentSharesMb(
+  entry: ModelMemoryUsageEntry,
+  reported: readonly ResidentModel[],
+  pool: 'vram' | 'ram',
+  footprintMb: (backendModelId: string) => number | null,
+): Map<string, number | null> {
+  const shares = new Map<string, number | null>();
+  const usedMb = entry.usedMb;
+  const [only] = entry.models;
+  if (usedMb === null) {
+    for (const id of entry.models) shares.set(id, null);
+    return shares;
+  }
+  if (entry.models.length === 1 && only !== undefined) {
+    shares.set(only, usedMb);
+    return shares;
+  }
+
+  const engineWeights = entry.models.map((id) => {
+    const model = reported.find((candidate) => candidate.id === id);
+    return model ? (pool === 'vram' ? model.engineGpuBytes : model.totalBytes) : null;
+  });
+  const catalogWeights = entry.models.map((id) => footprintMb(id));
+  const weights = [engineWeights, catalogWeights].find((set): set is number[] => set.every((w) => w !== null) && sum(set as number[]) > 0);
+  const total = weights ? sum(weights) : 0;
+  entry.models.forEach((id, index) => {
+    shares.set(id, weights ? Math.round((usedMb * (weights[index] ?? 0)) / total) : null);
+  });
+  return shares;
+}
+
+function sum(values: readonly number[]): number {
+  return values.reduce((total, value) => total + value, 0);
 }
 
 /** Where models live on this node. Mirrors the branch the budget has always taken. */

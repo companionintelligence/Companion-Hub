@@ -82,9 +82,14 @@ export class HardwareInspectorService {
   /**
    * The cached hardware profile (re-detected if not available), with the one figure that
    * changes between detections — free host RAM — read live. See {@link withLiveRam}.
+   *
+   * `freshRam` skips the {@link LIVE_RAM_SAMPLE_INTERVAL_MS} reuse for this one read. The router
+   * sets it while it waits for an evicted model's memory to come back: on a unified-memory node
+   * MemAvailable is the figure that shows the memory returning, and a sample from before the
+   * unload would keep the load refused for up to five seconds after it had room.
    */
-  async getProfile(): Promise<HardwareProfile> {
-    return this.withLiveRam(await this.getCachedProfile());
+  async getProfile(options: { freshRam?: boolean } = {}): Promise<HardwareProfile> {
+    return this.withLiveRam(await this.getCachedProfile(), options.freshRam === true);
   }
 
   private async getCachedProfile(): Promise<HardwareProfile> {
@@ -133,11 +138,11 @@ export class HardwareInspectorService {
    * though it is a snapshot. `hostProbeRefreshResolved` is exactly "such a probe backs this
    * profile" — it is only ever set for a darwin/win32 probe.
    */
-  private async withLiveRam(profile: HardwareProfile): Promise<HardwareProfile> {
+  private async withLiveRam(profile: HardwareProfile, fresh = false): Promise<HardwareProfile> {
     if (this.hostProbeRefreshResolved) {
       return profile;
     }
-    const liveAvailableMb = await this.readLiveAvailableRamMb();
+    const liveAvailableMb = await this.readLiveAvailableRamMb(fresh);
     if (liveAvailableMb === null) {
       return profile;
     }
@@ -155,11 +160,11 @@ export class HardwareInspectorService {
   /**
    * The live MemAvailable sample, at most {@link LIVE_RAM_SAMPLE_INTERVAL_MS} old. `null` when
    * this host has no live reading to give (see {@link readRam}), in which case the caller keeps
-   * what it had.
+   * what it had. `fresh` reads it now whatever the age of the last sample.
    */
-  private async readLiveAvailableRamMb(): Promise<{ availableMb: number; sampledAt: number } | null> {
+  private async readLiveAvailableRamMb(fresh = false): Promise<{ availableMb: number; sampledAt: number } | null> {
     const now = Date.now();
-    if (this.liveRamSample && now - this.liveRamSample.sampledAt < LIVE_RAM_SAMPLE_INTERVAL_MS) {
+    if (!fresh && this.liveRamSample && now - this.liveRamSample.sampledAt < LIVE_RAM_SAMPLE_INTERVAL_MS) {
       return this.liveRamSample;
     }
     const ram = await this.readRam();

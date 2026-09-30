@@ -539,7 +539,9 @@ export class InferenceController {
   async loadModel(@Body() body: { modelId: string }) {
     // Through the router, like a pin: it makes room, sizes the context window and refuses a load
     // that cannot fit, where the engine's own load would go on top of whatever holds the card.
-    const outcome = await this.router.loadTrackedModel(body.modelId);
+    // `operator`: AuthGuard admits only a signed-in operator or a host-local credential acting as
+    // one, never an app's key, so this load may unload any idle model — an app's included.
+    const outcome = await this.router.loadTrackedModel(body.modelId, { scope: 'operator' });
     if (!outcome.loaded) {
       return { success: false, message: outcome.reason };
     }
@@ -569,7 +571,7 @@ export class InferenceController {
     // evicts or refuses exactly as load-on-demand does instead of loading on top of the card.
     const tracked = this.modelRegistry.getTrackedModel(body.modelId);
     if (!tracked || (tracked.state !== 'loaded' && tracked.state !== 'pinned')) {
-      const outcome = await this.router.loadTrackedModel(body.modelId);
+      const outcome = await this.router.loadTrackedModel(body.modelId, { scope: 'operator' });
       if (!outcome.loaded) {
         return { success: false, message: outcome.reason };
       }
