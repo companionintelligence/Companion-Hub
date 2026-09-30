@@ -16,6 +16,11 @@ const RELEASE_CACHE_TTL_MS = 5 * 60 * 1000;
 /** Ask again sooner after a failed read, so a short outage does not hide the download for long. */
 const RELEASE_RETRY_AFTER_MS = 30 * 1000;
 
+/** This Hub's own release channel: compose sets `CI_HUB_ENVIRONMENT`, `production` unless told otherwise. */
+function isProductionHub(): boolean {
+  return process.env.CI_HUB_ENVIRONMENT === 'production';
+}
+
 type CachedRelease = {
   version: string | null;
   manifest: DesktopReleaseManifest | null;
@@ -38,7 +43,10 @@ export class DesktopReleaseService {
   ) {}
 
   async getDesktopRelease(query: DesktopReleaseQueryDto): Promise<DesktopReleaseDto> {
-    const cdn = desktopReleaseCdn(query.environment);
+    // A production Hub offers only production releases, whatever the page says it was built as. A page
+    // built without its environment asks for the dev server, and would be offered a dev build; the
+    // production link fails its own trust check instead, so it shows no download.
+    const cdn = desktopReleaseCdn(isProductionHub() ? 'production' : query.environment);
     const { version, manifest } = await this.getRelease(cdn.base);
     const url = manifest && query.platform ? desktopInstallerUrl(manifest, query.platform, query.arch ?? 'x86_64') : null;
 

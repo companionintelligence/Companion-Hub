@@ -60,10 +60,27 @@ describe('DesktopReleaseService', () => {
     }).compile();
 
     service = moduleRef.get(DesktopReleaseService);
+    // A Hub that isn't production: the page's environment picks the server.
+    vi.stubEnv('CI_HUB_ENVIRONMENT', 'development');
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  // A release image whose page was built without its environment asks for the dev server.
+  it('reads only the production server on a production Hub, whatever the page asks for', async () => {
+    vi.stubEnv('CI_HUB_ENVIRONMENT', 'production');
+    serve({ [PROD]: { version: '0.2.77' }, [DEV]: { version: '0.2.61' } });
+
+    for (const environment of ['development', '', undefined]) {
+      await expect(service.getDesktopRelease({ environment, platform: 'macos', arch: 'aarch64' })).resolves.toEqual({
+        latestVersion: '0.2.77',
+        downloadUrl: `${PROD}/v0.2.77/macos/arm/Companion%20Hub_0.2.77_aarch64.dmg`,
+      });
+    }
+    expect(readUrls().every((url) => url.startsWith(`${PROD}/`))).toBe(true);
   });
 
   it('reads dl.ci.computer for a production page and returns its installer', async () => {
@@ -109,7 +126,7 @@ describe('DesktopReleaseService', () => {
       latestVersion: '0.2.77',
       downloadUrl: `${PROD}/v0.2.77/windows/x64/Companion%20Hub_0.2.77_x64-setup.exe`,
     });
-    // The release has no Intel Mac build, and no platform means no installer to pick.
+    // This test release has no Intel Mac build, and no platform means no installer to pick.
     await expect(release('macos', 'x86_64')).resolves.toEqual({ latestVersion: '0.2.77', downloadUrl: null });
     await expect(release()).resolves.toEqual({ latestVersion: '0.2.77', downloadUrl: null });
   });

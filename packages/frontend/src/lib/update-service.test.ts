@@ -46,10 +46,17 @@ vi.mock('@/lib/helpers/open-external', () => ({
 const jsdomUserAgent = navigator.userAgent;
 const MAC_SAFARI_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15';
 const MAC_DMG_URL = 'https://dl.ci.computer/v0.2.77/macos/arm/Companion%20Hub_0.2.77_aarch64.dmg';
+const MAC_CHROME_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
 
 function setBrowser(userAgent: string, maxTouchPoints = 0) {
   Object.defineProperty(window.navigator, 'userAgent', { value: userAgent, configurable: true });
   Object.defineProperty(window.navigator, 'maxTouchPoints', { value: maxTouchPoints, configurable: true });
+}
+
+/** Chromium's client hints; `architecture` is what it reports for the CPU, or the error it refuses with. */
+function setClientHints(architecture: string | Error) {
+  const getHighEntropyValues = vi.fn(() => (architecture instanceof Error ? Promise.reject(architecture) : Promise.resolve({ architecture })));
+  Object.defineProperty(window.navigator, 'userAgentData', { value: { getHighEntropyValues }, configurable: true });
 }
 
 describe('update-service', () => {
@@ -60,6 +67,7 @@ describe('update-service', () => {
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
     Object.defineProperty(window.navigator, 'userAgent', { value: jsdomUserAgent, configurable: true });
     delete (window.navigator as { maxTouchPoints?: number }).maxTouchPoints;
+    delete (window.navigator as { userAgentData?: unknown }).userAgentData;
   });
 
   beforeEach(() => {
@@ -228,6 +236,37 @@ describe('update-service', () => {
 
       await expect(checkForUpdates()).resolves.toMatchObject({ latestVersion: '0.2.77', downloadUrl, platform: target.platform });
       expect(mockGetDesktopRelease).toHaveBeenCalledWith({ query: { environment: 'production', ...target } });
+    });
+
+    // Chrome's user agent says "Intel Mac" on Apple silicon too; its client hints tell the two apart.
+    it.each([
+      ['an Intel Mac', 'x86', 'x86_64', 'https://dl.ci.computer/v0.2.77/macos/intel/Companion%20Hub_0.2.77_x64.dmg'],
+      ['an Apple silicon Mac', 'arm', 'aarch64', MAC_DMG_URL],
+    ])('asks for the installer that runs on %s when Chrome reports its CPU', async (_mac, architecture, arch, downloadUrl) => {
+      setBrowser(MAC_CHROME_UA);
+      setClientHints(architecture);
+      mockGetDesktopRelease.mockResolvedValue(sdkOk({ latestVersion: '0.2.77', downloadUrl }));
+
+      await expect(checkForUpdates()).resolves.toMatchObject({ latestVersion: '0.2.77', downloadUrl, platform: 'macos' });
+      expect(mockGetDesktopRelease).toHaveBeenCalledWith({ query: { environment: 'production', platform: 'macos', arch } });
+    });
+
+    it('asks for the Windows on Arm installer when Chrome reports an Arm CPU', async () => {
+      setBrowser('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36');
+      setClientHints('arm');
+      mockGetDesktopRelease.mockResolvedValue(sdkOk({ latestVersion: '0.2.77', downloadUrl: null }));
+
+      await checkForUpdates();
+      expect(mockGetDesktopRelease).toHaveBeenCalledWith({ query: { environment: 'production', platform: 'windows', arch: 'aarch64' } });
+    });
+
+    it('goes by the user agent when the browser refuses the client hint', async () => {
+      setBrowser(MAC_CHROME_UA);
+      setClientHints(new Error('NotAllowedError'));
+      mockGetDesktopRelease.mockResolvedValue(sdkOk({ latestVersion: '0.2.77', downloadUrl: MAC_DMG_URL }));
+
+      await checkForUpdates();
+      expect(mockGetDesktopRelease).toHaveBeenCalledWith({ query: { environment: 'production', platform: 'macos', arch: 'aarch64' } });
     });
 
     it.each([

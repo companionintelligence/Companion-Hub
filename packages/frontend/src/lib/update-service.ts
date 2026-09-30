@@ -92,6 +92,24 @@ export async function getDesktopPlatform(): Promise<DesktopPlatform | null> {
   return detectBrowserPlatform();
 }
 
+/**
+ * The CPU a Chromium browser reports through client hints, or null. Its user agent says "Intel Mac" on
+ * Apple silicon too, so this is how a page tells the two Macs apart. Safari and Firefox don't report it.
+ */
+async function browserArchFromClientHints(): Promise<string | null> {
+  if (typeof navigator === 'undefined') return null;
+  const uad = (navigator as unknown as { userAgentData?: { getHighEntropyValues?: (hints: string[]) => Promise<{ architecture?: string }> } })
+    .userAgentData;
+  try {
+    const hints = await uad?.getHighEntropyValues?.(['architecture']);
+    if (hints?.architecture === 'arm') return 'aarch64';
+    if (hints?.architecture === 'x86') return 'x86_64';
+  } catch {
+    // The browser refused the hint: the user agent decides.
+  }
+  return null;
+}
+
 export async function getDesktopArch(): Promise<string> {
   if (isTauri()) {
     try {
@@ -104,7 +122,7 @@ export async function getDesktopArch(): Promise<string> {
     }
   }
 
-  return detectBrowserArch();
+  return (await browserArchFromClientHints()) ?? detectBrowserArch();
 }
 
 /** Every platform downloads an installer; none replace the running binary in-place. */
