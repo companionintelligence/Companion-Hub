@@ -1,4 +1,4 @@
-import { BadRequestException, Controller, Get, Post, UseGuards, Body, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Post, UseGuards, Body } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
 import { HUB_VERSION_TAG_MESSAGE, isHubVersionTag } from './hub-deployment';
 import { SystemUpdateService } from './system-update.service';
@@ -42,15 +42,5 @@ export class SystemUpdateController {
   @UseGuards(AuthGuard)
   async getHostListenerStatus() {
     return this.systemUpdateService.getHostListenerStatus();
-  }
-
-  @Get('host-listener-token')
-  @UseGuards(AuthGuard)
-  getHostListenerToken() {
-    const token = this.systemUpdateService.getHostUpdateListenerToken();
-    if (!token) {
-      throw new NotFoundException('Host update listener not available');
-    }
-    return { token };
   }
 }

@@ -61,16 +61,8 @@ const HUB_STALE_ROOT_OWNED_FILES: &[(&str, &str)] = &[
 const HUB_STATE_FILES_NEED_WRITE: &[(&str, &str)] =
     &[("state", "settings.json"), ("state", "seed")];
 
-/// Credential files in `state/` that the backend only reads, so they are not in
-/// [`HUB_STATE_FILES_NEED_WRITE`] and its root-owned cleanup: the update listener token, which
-/// the listener writes owner-only. The Docker permission repair's `chmod -R` opens them with the
-/// rest of `state/`, so they are restricted along with those files.
-const HUB_PRIVATE_READ_ONLY_STATE_FILES: &[(&str, &str)] =
-    &[("state", crate::updater::UPDATE_LISTENER_TOKEN_FILENAME)];
-
-/// Owner read and write only: the mode the backend creates and keeps its credential files at
-/// (`PRIVATE_STATE_FILE_MODE` in packages/backend/src/common/helpers/env-helpers.ts), and the
-/// one the update listener writes its token at.
+/// Owner read and write only, the mode the backend creates and keeps the credential files
+/// at (`PRIVATE_STATE_FILE_MODE` in packages/backend/src/common/helpers/env-helpers.ts).
 ///
 /// 0o666 was there so a container running as someone else could write them. It also let
 /// every local user read the device key or plant one of their own. The Hub container
@@ -85,7 +77,7 @@ const PRIVATE_STATE_FILE_MODE: u32 = 0o600;
 ///
 /// Only a file this user owns. The Hub container writes as this user, so taking bits off
 /// anyone else's file could lock it out; those are left for the Docker chown, after which
-/// the Hub restricts the ones it writes itself on boot.
+/// the Hub restricts them itself on boot.
 #[cfg(unix)]
 pub(crate) fn restrict_private_state_file(path: &Path) -> Option<u32> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -120,11 +112,8 @@ pub(crate) fn restrict_private_state_file(_path: &Path) -> Option<u32> {
     None
 }
 
-pub(crate) fn restrict_private_state_files(data_dir: &Path) {
-    for (subdir, file) in HUB_STATE_FILES_NEED_WRITE
-        .iter()
-        .chain(HUB_PRIVATE_READ_ONLY_STATE_FILES)
-    {
+fn restrict_private_state_files(data_dir: &Path) {
+    for (subdir, file) in HUB_STATE_FILES_NEED_WRITE {
         let path = data_dir.join(subdir).join(file);
         if let Some(previous) = restrict_private_state_file(&path) {
             let _ = append_desktop_log_for(
@@ -435,11 +424,14 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
                     "state/settings.json not writable as Hub container {container_uid}:{container_gid}; repairing bind-mount permissions via Docker..."
                 ),
             );
+            // The update listener's token stays as the listener wrote it: the Hub only reads
+            // it, and the listener trusts it only while it is this user's own and private.
             heal_bind_mount_permissions_via_docker(
                 data_dir,
                 "state",
                 container_uid,
                 container_gid,
+                &[crate::updater::UPDATE_LISTENER_TOKEN_FILENAME],
             )?;
             // The heal's `chmod -R a+rwX` just made the credential files world-writable.
             // Where it also left them owned by this user, they come straight back to
@@ -587,12 +579,36 @@ fn verify_container_can_write_dir(host_dir: &Path, uid: u32, gid: u32) -> bool {
     }
 }
 
+/// The Docker permission repair's script: `uid:gid` owns everything on the mount, and everyone
+/// can read and write it. The files in `keep`, named relative to the mount, are left exactly as
+/// they are: the tree is walked with `find` instead, whose `chown -h` and skipped symlinks do what
+/// `-R` does for the rest.
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn bind_mount_heal_script(uid: u32, gid: u32, keep: &[&str]) -> String {
+    if keep.is_empty() {
+        return format!(
+            "chown -R {uid}:{gid} /mnt 2>/dev/null || true; \
+             chmod -R u+rwX,g+rwX,o+rwX /mnt 2>/dev/null || chmod -R a+rwX /mnt 2>/dev/null || true"
+        );
+    }
+    let walk = std::iter::once("find /mnt".to_string())
+        .chain(keep.iter().map(|file| format!("! -path '/mnt/{file}'")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "{walk} -exec chown -h {uid}:{gid} {{}} + 2>/dev/null || true; \
+         {walk} ! -type l -exec chmod u+rwX,g+rwX,o+rwX {{}} + 2>/dev/null || \
+         {walk} ! -type l -exec chmod a+rwX {{}} + 2>/dev/null || true"
+    )
+}
+
 #[cfg(not(target_os = "windows"))]
 fn heal_bind_mount_permissions_via_docker(
     data_dir: &Path,
     subdir: &str,
     uid: u32,
     gid: u32,
+    keep: &[&str],
 ) -> Result<(), String> {
     let host_subdir = data_dir.join(subdir);
     if !host_subdir.exists() {
@@ -600,10 +616,7 @@ fn heal_bind_mount_permissions_via_docker(
     }
 
     let mount_spec = format!("{}:/mnt:rw", docker_bind_mount_path(&host_subdir));
-    let script = format!(
-        "chown -R {uid}:{gid} /mnt 2>/dev/null || true; \
-         chmod -R u+rwX,g+rwX,o+rwX /mnt 2>/dev/null || chmod -R a+rwX /mnt 2>/dev/null || true"
-    );
+    let script = bind_mount_heal_script(uid, gid, keep);
 
     let output = docker_command()
         .args([

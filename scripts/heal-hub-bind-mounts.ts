@@ -202,19 +202,18 @@ export const STATE_FILES_NEED_WRITE = [
 ] as const;
 
 /**
- * Credential files in state/ that the Hub only reads, so they are not in STATE_FILES_NEED_WRITE and
- * its root-owned quarantine: the desktop app's update listener token (UPDATE_LISTENER_TOKEN_FILENAME
- * in updater.rs), which the listener writes owner-only. The Docker heal's `chmod -R` opens them with
- * the rest of state/, so they are restricted along with those files.
+ * Files in state/ that the Docker heal leaves exactly as they are: the desktop app's update listener
+ * token (UPDATE_LISTENER_TOKEN_FILENAME in updater.rs). The Hub only reads it, and the listener
+ * trusts it only while it is the desktop user's own file that nobody else can read or write, so the
+ * heal's chown or chmod would shut the listener out.
  */
-const PRIVATE_READ_ONLY_STATE_FILES = [['state', 'update-listener.token']] as const;
+const STATE_FILES_THE_HEAL_KEEPS = ['update-listener.token'] as const;
 
 /**
- * The mode for the state files that hold credentials: STATE_FILES_NEED_WRITE, where settings.json
- * carries the host-local and Portal device keys and `seed` derives JWT_SECRET and every app's
- * generated passwords, and PRIVATE_READ_ONLY_STATE_FILES. Owner read and write only, the mode the
- * backend creates and keeps its files at (PRIVATE_STATE_FILE_MODE in
- * packages/backend/src/common/helpers/env-helpers.ts) and the desktop app writes its token at.
+ * The mode for the state files that hold credentials, which are exactly STATE_FILES_NEED_WRITE:
+ * settings.json carries the host-local and Portal device keys, and `seed` derives JWT_SECRET and
+ * every app's generated passwords. Owner read and write only, the mode the backend creates and
+ * keeps them at (PRIVATE_STATE_FILE_MODE in packages/backend/src/common/helpers/env-helpers.ts).
  *
  * This used to chmod both to 0666 on every start so a container running as someone else could
  * write them, which also let every local user read the device key or plant one of their own. The
@@ -473,7 +472,21 @@ export function verifyContainerCanWriteFile(hostFilePath: string, uid: number, g
   return result?.status === 0;
 }
 
-export function healBindMountViaDocker(hostSubdir: string, uid: number, gid: number): void {
+/**
+ * The Docker heal's script: `uid:gid` owns everything on the mount, and everyone can read and write
+ * it. The files in `keep`, named relative to the mount, are left exactly as they are: the tree is
+ * walked with `find` instead, whose `chown -h` and skipped symlinks do what `-R` does for the rest.
+ * Mirrors `bind_mount_heal_script` in the desktop app's runtime_state.rs.
+ */
+export function bindMountHealScript(uid: number, gid: number, keep: readonly string[] = []): string {
+  if (keep.length === 0) {
+    return `chown -R ${uid}:${gid} /mnt 2>/dev/null || true; chmod -R u+rwX,g+rwX,o+rwX /mnt 2>/dev/null || chmod -R a+rwX /mnt 2>/dev/null || true`;
+  }
+  const walk = ['find /mnt', ...keep.map((file) => `! -path '/mnt/${file}'`)].join(' ');
+  return `${walk} -exec chown -h ${uid}:${gid} {} + 2>/dev/null || true; ${walk} ! -type l -exec chmod u+rwX,g+rwX,o+rwX {} + 2>/dev/null || ${walk} ! -type l -exec chmod a+rwX {} + 2>/dev/null || true`;
+}
+
+export function healBindMountViaDocker(hostSubdir: string, uid: number, gid: number, keep: readonly string[] = []): void {
   if (!existsSync(hostSubdir)) {
     throw new Error(`Cannot repair permissions: directory does not exist: ${hostSubdir}`);
   }
@@ -482,7 +495,7 @@ export function healBindMountViaDocker(hostSubdir: string, uid: number, gid: num
   }
 
   const mount = `${dockerBindMountPath(hostSubdir)}:/mnt:rw`;
-  const script = `chown -R ${uid}:${gid} /mnt 2>/dev/null || true; chmod -R u+rwX,g+rwX,o+rwX /mnt 2>/dev/null || chmod -R a+rwX /mnt 2>/dev/null || true`;
+  const script = bindMountHealScript(uid, gid, keep);
 
   const result = spawnSync('docker', ['run', '--rm', '--user', '0:0', '-v', mount, 'alpine:3.20', 'sh', '-c', script], {
     encoding: 'utf8',
@@ -734,7 +747,7 @@ function seedSettingsJson(stateDir: string, runtime: { uid: number; gid: number 
  * Only a file owned by `ownerUid`, the host owner the Hub reads these files as
  * (`hubStateFileOwnerUid`); null tightens nothing. Taking bits off anyone else's file could lock
  * the Hub out of it, so those are left to the Docker chown in `ensureHubBindMountsWritable`, after
- * which the Hub, as their new owner, restricts the ones it writes on boot.
+ * which the Hub, as their new owner, restricts them on boot.
  */
 export function restrictPrivateStateFile(filePath: string, ownerUid: number | null): number | null {
   // NTFS has no POSIX modes, and statSync reports uid 0 for everything there.
@@ -755,7 +768,7 @@ export function restrictPrivateStateFile(filePath: string, ownerUid: number | nu
 
 function restrictPrivateStateFiles(root: string, ownerUid: number | null): void {
   const restricted: string[] = [];
-  for (const [subdir, file] of [...STATE_FILES_NEED_WRITE, ...PRIVATE_READ_ONLY_STATE_FILES]) {
+  for (const [subdir, file] of STATE_FILES_NEED_WRITE) {
     const previous = restrictPrivateStateFile(path.join(root, subdir, file), ownerUid);
     if (previous !== null) restricted.push(`${subdir}/${file} (was 0${previous.toString(8)})`);
   }
@@ -901,7 +914,7 @@ export function ensureHubBindMountsWritable(rootFolderHost: string, options: Ens
       containerCanWriteCache = verifyContainerCanWriteDir(cacheDir, identity.uid, identity.gid);
     }
     if (!containerCanWriteSettings) {
-      healBindMountViaDocker(stateDir, effective.uid, effective.gid);
+      healBindMountViaDocker(stateDir, effective.uid, effective.gid, STATE_FILES_THE_HEAL_KEEPS);
       // The heal's `chmod -R a+rwX` just made the credential files world-writable. Where its chown
       // left them with the owner the Hub reads them as, they come straight back to owner-only,
       // before the check below confirms the container can still write them.

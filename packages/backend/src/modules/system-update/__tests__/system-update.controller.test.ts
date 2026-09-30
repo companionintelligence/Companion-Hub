@@ -89,19 +89,4 @@ describe('SystemUpdateController', () => {
       await expect(controller.getHostListenerStatus()).resolves.toEqual({ reachable: false });
     });
   });
-
-  describe('getHostListenerToken', () => {
-    it('should return token when listener is available', () => {
-      updateService.getHostUpdateListenerToken.mockReturnValue('secret-token');
-
-      const result = controller.getHostListenerToken();
-      expect(result).toEqual({ token: 'secret-token' });
-    });
-
-    it('should throw when listener token is unavailable', () => {
-      updateService.getHostUpdateListenerToken.mockReturnValue(null);
-
-      expect(() => controller.getHostListenerToken()).toThrow('Host update listener not available');
-    });
-  });
 });

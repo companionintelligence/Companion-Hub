@@ -723,14 +723,13 @@ pub fn run() {
             }
 
             // Start the host update listener (0.0.0.0:17400) in desktop mode too,
-            // not just headless/detached. The Hub backend hands its token to
-            // authenticated browser/in-container Settings UIs, which POST to this
-            // listener to trigger a host update that controls the stack and repulls
-            // container images (see docs/DESKTOP-AUTO-UPDATE.md). Without this, that
-            // documented trigger path is dead whenever the Hub runs via the desktop
-            // app, and the backend never sees a listener token to hand out. The
-            // listener binds a fixed port, so a duplicate/leftover instance simply
-            // fails to bind and exits — spawning here is idempotent.
+            // not just headless/detached. When Settings asks for an update, the Hub
+            // backend calls this listener with its token, so the app updates along
+            // with the stack (see docs/DESKTOP-AUTO-UPDATE.md). Without this, that
+            // path is dead whenever the Hub runs via the desktop app. The listener
+            // binds a fixed port, so a duplicate/leftover instance fails to bind and
+            // exits. It has issued a new token by then, which the running listener
+            // picks up: it reads the token file on every request.
             updater::spawn_update_listener_daemon();
 
             // Defer Docker probing and auto-start reconciliation until after setup returns

@@ -1244,53 +1244,84 @@ fn update_listener_token_path(data_dir: &Path) -> PathBuf {
     data_dir.join("state").join(UPDATE_LISTENER_TOKEN_FILENAME)
 }
 
-fn read_token_file(path: &Path) -> Result<String, String> {
-    std::fs::read_to_string(path)
-        .map(|token| token.trim().to_string())
-        .map_err(|e| format!("Failed to read update listener token: {}", e))
+/// Reads a token file only when it is this user's own regular file and nobody else can read or
+/// write it. `state/` is shared with the Hub container, and a permission repair can leave the
+/// folder open to every local user, so a token file there may have been planted or read by
+/// someone else. Opened without following a symlink, and checked on the open file.
+fn read_private_token_file(path: &Path) -> Result<String, String> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|e| format!("Failed to read update listener token: {}", e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = file
+            .metadata()
+            .map_err(|e| format!("Failed to read update listener token: {}", e))?;
+        let own_uid = unsafe { libc::geteuid() };
+        if !metadata.is_file() || metadata.uid() != own_uid || metadata.mode() & 0o077 != 0 {
+            return Err("update listener token is not private to this user".to_string());
+        }
+    }
+    let mut token = String::new();
+    file.read_to_string(&mut token)
+        .map_err(|e| format!("Failed to read update listener token: {}", e))?;
+    Ok(token.trim().to_string())
 }
 
 fn read_update_listener_token(data_dir: &Path) -> Result<String, String> {
-    read_token_file(&update_listener_token_path(data_dir))
+    read_private_token_file(&update_listener_token_path(data_dir))
 }
 
-fn ensure_update_listener_token(data_dir: &Path) -> Result<String, String> {
-    let path = update_listener_token_path(data_dir);
-    if path.exists() {
-        return read_token_file(&path);
-    }
-
-    // Older builds kept the token at the data dir's root. Reuse it: a listener one of them started
-    // holds the port until it exits and checks requests against that file.
-    let token = match read_token_file(&data_dir.join(UPDATE_LISTENER_TOKEN_FILENAME)) {
-        Ok(token) if !token.is_empty() => token,
-        _ => {
-            use rand::Rng;
-            rand::thread_rng()
-                .sample_iter(rand::distributions::Alphanumeric)
-                .take(48)
-                .map(char::from)
-                .collect()
-        }
-    };
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create state dir: {}", e))?;
-    }
-    std::fs::write(&path, format!("{token}\n"))
+/// Writes the token owner-only and whole: a new file, created 0600, renamed over the old one, so
+/// a reader never sees it empty or half written and nobody else can read it, even for a moment.
+fn write_token_file(path: &Path, token: &str) -> Result<(), String> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| "update listener token path has no folder".to_string())?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("Failed to create state dir: {}", e))?;
+    let mut file = tempfile::Builder::new()
+        .prefix(".update-listener.token.")
+        .tempfile_in(dir)
         .map_err(|e| format!("Failed to write update listener token: {}", e))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&path)
-            .map_err(|e| format!("Failed to stat token file: {}", e))?
-            .permissions();
-        perms.set_mode(0o600);
-        std::fs::set_permissions(&path, perms)
-            .map_err(|e| format!("Failed to chmod token file: {}", e))?;
-    }
+    file.write_all(format!("{token}\n").as_bytes())
+        .map_err(|e| format!("Failed to write update listener token: {}", e))?;
+    file.persist(path)
+        .map_err(|e| format!("Failed to write update listener token: {}", e.error))?;
+    Ok(())
+}
+
+/// A new token each time the listener starts. The Hub sends it to whatever answers on port
+/// 17400, so a token that was read, planted, or caught while no listener ran stops working at the
+/// next start.
+fn issue_update_listener_token(data_dir: &Path) -> Result<String, String> {
+    use rand::Rng;
+    let token: String = rand::thread_rng()
+        .sample_iter(rand::distributions::Alphanumeric)
+        .take(48)
+        .map(char::from)
+        .collect();
+    write_token_file(&update_listener_token_path(data_dir), &token)?;
+    keep_legacy_token_in_step(data_dir, &token);
     Ok(token)
+}
+
+/// Older builds keep the token at the data dir's root, and a listener one of them started holds
+/// the port until it exits, even after an update, checking each request against that file. Where
+/// the file exists it gets the new token too, so whichever listener answers accepts the Hub. It is
+/// never created: a build that reads it writes its own.
+fn keep_legacy_token_in_step(data_dir: &Path, token: &str) {
+    let legacy_path = data_dir.join(UPDATE_LISTENER_TOKEN_FILENAME);
+    if std::fs::symlink_metadata(&legacy_path).is_ok() {
+        let _ = write_token_file(&legacy_path, token);
+    }
 }
 
 fn extract_update_listener_token_from_request(request: &str) -> Option<String> {
@@ -1333,6 +1364,11 @@ fn tokens_match(provided: &str, expected: &str) -> bool {
 
 fn authorize_update_listener_request(request: &str, data_dir: &Path) -> Result<(), String> {
     let expected = read_update_listener_token(data_dir)?;
+    // An empty `X-Companion-Hub-Update-Token:` header reads as "", so an empty file would let
+    // anyone who can reach the port through.
+    if expected.is_empty() {
+        return Err("update listener token is empty".to_string());
+    }
     let provided = extract_update_listener_token_from_request(request)
         .ok_or_else(|| "missing update listener token".to_string())?;
     if tokens_match(&provided, &expected) {
@@ -1371,7 +1407,7 @@ fn check_and_trigger_update_from_listener() -> Result<String, String> {
 
 pub fn run_update_listener() {
     let data_dir = hub_manager::get_hub_data_dir();
-    if ensure_update_listener_token(&data_dir).is_err() {
+    if issue_update_listener_token(&data_dir).is_err() {
         return;
     }
     let listener = match TcpListener::bind(UPDATE_LISTENER_BIND_ADDR) {
@@ -1540,12 +1576,23 @@ mod tests {
         let data_dir = tempfile::tempdir().expect("tempdir");
         let state_dir = data_dir.path().join("state");
         std::fs::create_dir_all(&state_dir).expect("mkdir state");
-        std::fs::write(
-            state_dir.join("update-listener.token"),
-            format!("{token}\n"),
-        )
-        .expect("write token");
+        let token_path = state_dir.join("update-listener.token");
+        std::fs::write(&token_path, format!("{token}\n")).expect("write token");
+        #[cfg(unix)]
+        set_mode(&token_path, 0o600);
         data_dir
+    }
+
+    #[cfg(unix)]
+    fn set_mode(path: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+    }
+
+    #[cfg(unix)]
+    fn mode_of(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).expect("stat").permissions().mode() & 0o777
     }
 
     #[test]
@@ -1557,61 +1604,89 @@ mod tests {
     }
 
     #[test]
-    fn update_listener_token_is_created_in_state_owner_only() {
+    fn update_listener_issues_a_new_owner_only_token_in_state_on_each_start() {
         let data_dir = tempfile::tempdir().expect("tempdir");
 
-        let token = ensure_update_listener_token(data_dir.path()).expect("token");
+        let first = issue_update_listener_token(data_dir.path()).expect("token");
+        let second = issue_update_listener_token(data_dir.path()).expect("token");
 
-        let token_path = data_dir.path().join("state").join("update-listener.token");
-        assert_eq!(token.len(), 48);
+        let state_dir = data_dir.path().join("state");
+        let token_path = state_dir.join("update-listener.token");
+        assert_eq!(first.len(), 48);
+        assert_ne!(first, second);
         assert_eq!(
             std::fs::read_to_string(&token_path).expect("read token"),
-            format!("{token}\n")
+            format!("{second}\n")
         );
-        assert!(!data_dir.path().join("update-listener.token").exists());
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&token_path)
-                .expect("stat token")
-                .permissions()
-                .mode();
-            assert_eq!(mode & 0o777, 0o600);
-        }
+        assert_eq!(mode_of(&token_path), 0o600);
+        // The file it was written through was renamed into place, not left beside it.
+        assert_eq!(
+            std::fs::read_dir(&state_dir).expect("read state").count(),
+            1
+        );
+        // No older build ran here, so there is no root file to keep in step.
+        assert!(!data_dir.path().join("update-listener.token").exists());
     }
 
     #[test]
-    fn update_listener_token_carries_over_the_one_an_older_build_wrote() {
+    fn update_listener_token_keeps_the_file_older_builds_check_in_step() {
         let data_dir = tempfile::tempdir().expect("tempdir");
         let legacy_path = data_dir.path().join("update-listener.token");
         std::fs::write(&legacy_path, "legacy-token\n").expect("write legacy token");
 
+        let token = issue_update_listener_token(data_dir.path()).expect("token");
+
+        // A listener an older build started checks each request against the root file.
         assert_eq!(
-            ensure_update_listener_token(data_dir.path()).as_deref(),
-            Ok("legacy-token")
+            std::fs::read_to_string(&legacy_path).expect("read legacy token"),
+            format!("{token}\n")
         );
-        assert_eq!(
-            std::fs::read_to_string(data_dir.path().join("state").join("update-listener.token"))
-                .expect("read token"),
-            "legacy-token\n"
-        );
-        // A listener the older build started still checks requests against this file.
-        assert!(legacy_path.exists());
+        #[cfg(unix)]
+        assert_eq!(mode_of(&legacy_path), 0o600);
     }
 
     #[test]
-    fn update_listener_token_in_state_wins_over_the_old_location() {
-        let data_dir = data_dir_with_state_token("current-token");
-        std::fs::write(
-            data_dir.path().join("update-listener.token"),
-            "legacy-token\n",
-        )
-        .expect("write legacy token");
+    fn update_listener_rejects_an_empty_token_header_when_the_token_file_is_empty() {
+        let data_dir = data_dir_with_state_token("");
 
+        let request = "POST /update HTTP/1.1\r\nX-Companion-Hub-Update-Token:\r\n\r\n";
         assert_eq!(
-            ensure_update_listener_token(data_dir.path()).as_deref(),
-            Ok("current-token")
+            authorize_update_listener_request(request, data_dir.path()),
+            Err("update listener token is empty".to_string())
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_listener_rejects_a_token_file_other_users_can_read() {
+        let data_dir = data_dir_with_state_token("expected-token");
+        set_mode(
+            &data_dir.path().join("state").join("update-listener.token"),
+            0o644,
+        );
+
+        let request = "POST /update HTTP/1.1\r\nAuthorization: Bearer expected-token\r\n\r\n";
+        assert_eq!(
+            authorize_update_listener_request(request, data_dir.path()),
+            Err("update listener token is not private to this user".to_string())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_listener_rejects_a_symlink_in_place_of_the_token() {
+        let data_dir = tempfile::tempdir().expect("tempdir");
+        let state_dir = data_dir.path().join("state");
+        std::fs::create_dir_all(&state_dir).expect("mkdir state");
+        let planted = data_dir.path().join("planted-token");
+        std::fs::write(&planted, "planted-token\n").expect("write planted token");
+        set_mode(&planted, 0o600);
+        std::os::unix::fs::symlink(&planted, state_dir.join("update-listener.token"))
+            .expect("symlink");
+
+        let request = "POST /update HTTP/1.1\r\nAuthorization: Bearer planted-token\r\n\r\n";
+        assert!(authorize_update_listener_request(request, data_dir.path()).is_err());
     }
 
     #[test]

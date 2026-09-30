@@ -160,18 +160,26 @@ fn restricting_a_missing_file_is_a_no_op() {
     assert_eq!(restrict_private_state_file(&dir.path().join("seed")), None);
 }
 
-#[cfg(unix)]
+#[cfg(not(target_os = "windows"))]
 #[test]
-fn restores_the_update_listener_token_with_the_other_credential_files() {
-    // What the Docker permission repair's `chmod -R a+rwX` leaves in state/.
-    let data_dir = tempfile::tempdir().expect("tempdir");
-    let state_dir = data_dir.path().join("state");
-    std::fs::create_dir_all(&state_dir).expect("mkdir state");
-    let settings = state_file_with_mode(&state_dir, "settings.json", 0o666);
-    let token = state_file_with_mode(&state_dir, "update-listener.token", 0o666);
+fn docker_permission_repair_leaves_the_update_listener_token_alone() {
+    let script = bind_mount_heal_script(1000, 1000, &["update-listener.token"]);
 
-    restrict_private_state_files(data_dir.path());
+    let walk = "find /mnt ! -path '/mnt/update-listener.token'";
+    assert!(script.contains(&format!("{walk} -exec chown -h 1000:1000 {{}} +")));
+    assert!(script.contains(&format!(
+        "{walk} ! -type l -exec chmod u+rwX,g+rwX,o+rwX {{}} +"
+    )));
+    // Nothing recursive that would reach the token.
+    assert!(!script.contains(" -R "));
+}
 
-    assert_eq!(mode_of(&settings), 0o600);
-    assert_eq!(mode_of(&token), 0o600);
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn docker_permission_repair_with_nothing_to_keep_is_the_recursive_one() {
+    assert_eq!(
+        bind_mount_heal_script(1000, 1000, &[]),
+        "chown -R 1000:1000 /mnt 2>/dev/null || true; \
+         chmod -R u+rwX,g+rwX,o+rwX /mnt 2>/dev/null || chmod -R a+rwX /mnt 2>/dev/null || true"
+    );
 }

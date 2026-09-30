@@ -43,16 +43,26 @@ images** auto-update daily when the toggle is on.
 
 The listener accepts a request only with the token in `state/update-listener.token`
 under the Hub data folder, for example `~/.local/share/companion-hub/state/update-listener.token`
-on Linux. The listener creates it, owner-only, when it starts. The Hub container mounts
-`state/` at `/data/state` and reads the token there.
+on Linux. The Hub container mounts `state/` at `/data/state` and reads the token there.
 
+- **A new token on every start.** The listener writes a new token, owner-only, each time it
+  starts. The Hub sends the token to whatever answers on port 17400, so a token that was
+  read, or caught while no listener was running, stops working at the next start.
+- **Only a private file counts.** The listener checks requests against the file only while it
+  is the desktop user's own regular file that nobody else can read or write. A permission
+  repair can leave `state/` open to every local user, so a file there that isn't private may
+  have been planted or read. The Docker permission repair, in the desktop app and in `cihub`,
+  leaves the token as it is.
+- **The Hub keeps it to itself.** The Hub reads the token only to call the listener, and no
+  API returns it. It doesn't follow a symlink in the token's place, and it sends nothing but
+  one printable word.
 - **Older desktop builds** wrote the token at the root of the data folder. The Hub
   container doesn't mount the root, so the Hub never found the token, and Settings said
   the desktop app wasn't running while it was.
 - **Upgrading the desktop app.** A listener that an older build started keeps port 17400
-  until it exits, and it checks requests against the file at the root. On its first start,
-  a newer build copies that token into `state/` and leaves the root file in place, so the
-  Hub reaches whichever listener is running.
+  until it exits, and it checks each request against the file at the root. Where that file
+  exists, a newer listener writes the same token there too, so the Hub reaches whichever
+  listener is running.
 - **The Hub's fallback.** When `state/` has no token, the Hub reads the file at the root.
   Only a Hub that runs on the host, outside Docker, can see that file.
 - **Both halves.** A Hub in a container finds the token only when the desktop app writes
