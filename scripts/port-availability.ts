@@ -88,7 +88,11 @@ export function isPortAvailableViaTcpBind(port: number): boolean {
   return result.status === 0;
 }
 
-/** Prefer TCP bind probe when the runtime supports it; otherwise use ss, then /proc (Linux), lsof (macOS), or netstat (Windows). */
+/**
+ * The TCP bind probe first, where the runtime can run it: a port it cannot bind is taken. Then the
+ * listener tools, which also see listeners the 127.0.0.1 probe misses: ss, then /proc (Linux), lsof
+ * (other Unix), or netstat (Windows).
+ */
 export function isPortAvailable(port: number): boolean {
   if (!execPathSupportsEvalProbe()) {
     return !isPortListeningViaExternalTools(port);
