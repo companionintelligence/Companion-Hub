@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { CuratedModel } from '@ci-hub/common/types';
 import { CURATED_MODELS } from '../catalog/curated-models';
+import { VISION_ENCODER_RESERVE_MB } from '../context-length.util';
 import { appInferenceRequirements, checkModelRequirements } from '../app-inference-requirements';
 import {
   decideModelPrePull,
   describeContextHandout,
   handoutContextLength,
+  visionReserveMbFor,
   LOCAL_POOL_NODE,
   nodesServing,
   PEER_SERVED_CONTEXT_LENGTH,
@@ -226,6 +228,27 @@ describe('handoutContextLength', () => {
  * own engine served the model at 65536. The proxy now keeps a 65536 request off core-17, so the
  * handout is bound by the LARGEST cap among the serving nodes, and not at all when one has none.
  */
+describe('handoutContextLength for Qwen 3.8 27B on Lemonade (7900 XTX, measured 2026-09-29)', () => {
+  // Measured on the card: 20,657 MiB at 32k, +560 MiB after one 1280×960 image, ~1,150 MiB held by
+  // the desktop and the embedder → 22,387 of 24,560. At 64k the same load needs ~24,570: over.
+  const card = 24_560;
+  const model = CURATED_MODELS.find((m) => m.id === 'qwen3-8-27b-lemonade') as CuratedModel;
+
+  it('carries the measured per-token cost and takes images, so it gets the vision reserve', () => {
+    expect(model.runtime.kvMbPerToken).toBe(0.0667);
+    expect(visionReserveMbFor(model)).toBe(VISION_ENCODER_RESERVE_MB);
+  });
+
+  it('lands on 32k with the catalog cost and the files Lemonade lists, where the ladder alone said 8k before', () => {
+    const numCtx = handoutContextLength({ model, servedLocally: true, effectiveInferenceMemoryMb: card, kvMbPerToken: 0.0667, weightMb: 17_630 });
+    expect(numCtx).toBe(32_768);
+  });
+
+  it('still gets a usable window from the ladder when nothing could be measured', () => {
+    expect(handoutContextLength({ model, servedLocally: true, effectiveInferenceMemoryMb: card })).toBe(16_384);
+  });
+});
+
 describe('poolContextCap', () => {
   const allCapped: PoolInventory = {
     backends: [
@@ -386,5 +409,16 @@ describe('decideModelPrePull', () => {
     expect(decideModelPrePull({ ...base, cloudPrimary: true })).toMatchObject({ pull: false });
     expect(decideModelPrePull({ ...base, backendType: 'vllm' })).toMatchObject({ pull: false });
     expect(decideModelPrePull({ ...base, model: null })).toBeNull();
+  });
+
+  it('pulls a Lemonade model through the Hub too, but never a vLLM or oMLX one', () => {
+    expect(decideModelPrePull({ ...base, backendType: 'lemonade' })).toMatchObject({ pull: true });
+    expect(decideModelPrePull({ ...base, backendType: 'lemonade', endpointReady: false })).toMatchObject({
+      pull: false,
+      reason: 'the local lemonade backend is not ready',
+    });
+    for (const backendType of ['vllm', 'omlx'] as const) {
+      expect(decideModelPrePull({ ...base, backendType })).toMatchObject({ pull: false, reason: `${backendType} has no Hub-managed pull registry` });
+    }
   });
 });

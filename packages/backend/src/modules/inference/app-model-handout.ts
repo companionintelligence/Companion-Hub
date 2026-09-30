@@ -2,7 +2,7 @@ import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
 import { inventoryListsModel, sameModelId } from '@/common/helpers/hub-pool';
 import { clampContextCap } from '@/common/helpers/inference-context-cap';
 import { checkModelRequirements, describeRequirements, hasInferenceRequirements, type AppInferenceRequirements } from './app-inference-requirements';
-import { recommendContextLength } from './context-length.util';
+import { recommendContextLength, VISION_ENCODER_RESERVE_MB } from './context-length.util';
 import { compareLlmCandidates } from './model-registry.service';
 
 /**
@@ -277,6 +277,15 @@ export interface ContextHandoutInput {
   maxContextLength?: number | null;
 }
 
+/**
+ * What to keep free for `model`'s image encoder: {@link VISION_ENCODER_RESERVE_MB} when it takes
+ * images, else nothing. Apps are handed a vision model as their chat model too (ci-memory's image
+ * descriptions run on it), so the reserve belongs to the model, not to one app's use of it.
+ */
+export function visionReserveMbFor(model: CuratedModel): number {
+  return model.runtime.input?.includes('image') || model.metadata?.capabilities?.vision ? VISION_ENCODER_RESERVE_MB : 0;
+}
+
 export function handoutContextLength(input: ContextHandoutInput): number {
   const cap = clampContextCap(input.maxContextLength);
   const sized = uncappedContextLength(input);
@@ -293,6 +302,7 @@ function uncappedContextLength(input: ContextHandoutInput): number {
       minContextLength,
       kvMbPerToken: input.kvMbPerToken ?? null,
       weightMb: input.weightMb ?? null,
+      visionReserveMb: visionReserveMbFor(model),
     });
   }
   const cap = Math.floor(model.runtime.contextWindow > 0 ? model.runtime.contextWindow : PEER_SERVED_CONTEXT_LENGTH);
@@ -400,8 +410,13 @@ export function decideModelPrePull(input: {
   const decide = (pull: boolean, reason: string): PrePullDecision => ({ kind, catalogId: model.id, pull, reason });
 
   if (input.cloudPrimary && kind === 'chat') return decide(false, 'a cloud provider is serving chat for this app');
-  if (input.backendType !== 'ollama') return decide(false, `${input.backendType} has no Hub-managed pull registry`);
-  if (!input.endpointReady) return decide(false, 'the local ollama backend is not ready');
+  // Ollama and Lemonade download through the Hub (`ModelPullerService`). vLLM has no download API
+  // (its model is fixed when the server starts). oMLX has one, `POST /admin/api/hf/download`, but it
+  // needs an admin session from oMLX's main key, and the Hub does not use it.
+  if (input.backendType !== 'ollama' && input.backendType !== 'lemonade') {
+    return decide(false, `${input.backendType} has no Hub-managed pull registry`);
+  }
+  if (!input.endpointReady) return decide(false, `the local ${input.backendType} backend is not ready`);
   if (input.installedLocally) return decide(false, 'already installed on this node');
   if (input.poolServedBy.length > 0) {
     return decide(false, `already served by pool node(s) ${input.poolServedBy.join(', ')}`);

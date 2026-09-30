@@ -136,7 +136,11 @@ export class InferenceEndpointService {
     return { backendType: 'ollama', backend: this.ollamaBackend, health: ollamaHealth, ready: true };
   }
 
-  /** This Hub's own pool proxy prefix, reachable container-to-container from an installed app. */
+  /**
+   * This Hub's own pool proxy prefix. From an app service on the Hub networks the name resolves to
+   * this container; every other app service gets `<hub>:host-gateway` in its `extra_hosts`
+   * (`DockerComposeBuilder.buildService`), which reaches the same API through its published port.
+   */
   private poolBaseUrl(): string {
     return `http://${hubContainerName()}:${process.env.API_PORT || '3000'}${POOL_PROXY_PATH}`;
   }

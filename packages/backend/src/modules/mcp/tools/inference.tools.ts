@@ -157,7 +157,10 @@ export class InferenceTools implements OnModuleInit {
       },
       handler: async (params) => {
         const modelId = params.modelId as string;
-        await this.modelPuller.loadModel(modelId);
+        const outcome = await this.inferenceRouter.loadTrackedModel(modelId);
+        if (!outcome.loaded) {
+          return { success: false, message: outcome.reason };
+        }
         return { success: true, message: `Model ${modelId} loaded` };
       },
     });

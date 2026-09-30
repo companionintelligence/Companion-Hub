@@ -320,6 +320,30 @@ describe('OllamaBackend', () => {
       );
     });
 
+    it('loads at the window it was given, as options.num_ctx', async () => {
+      (axios.post as any) = vi.fn().mockResolvedValue({ data: {} });
+
+      await backend.loadModel('phi4-mini', { contextLength: 16384 });
+
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.stringContaining('/api/generate'),
+        { model: 'phi4-mini', prompt: '', keep_alive: -1, options: { num_ctx: 16384 } },
+        expect.any(Object),
+      );
+    });
+
+    it('sends no window for an embedding model, whose load goes through /api/embed', async () => {
+      (axios.post as any) = vi.fn().mockResolvedValue({ data: {} });
+
+      await backend.loadModel('nomic-embed-text', { embedding: true, contextLength: 16384 });
+
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.stringContaining('/api/embed'),
+        { model: 'nomic-embed-text', input: '', keep_alive: -1 },
+        expect.any(Object),
+      );
+    });
+
     it('should log error and rethrow when loadModel fails', async () => {
       const state = inspectable();
       state.resolvedUrl = 'http://cached:11434';

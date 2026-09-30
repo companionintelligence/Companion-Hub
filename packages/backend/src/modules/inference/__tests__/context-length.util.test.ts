@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { appMinContextLength, recommendContextLength } from '../context-length.util';
+import {
+  appMinContextLength,
+  estimateLoadedFootprintMb,
+  LADDER_KV_MB_PER_TOKEN,
+  recommendContextLength,
+  VISION_ENCODER_RESERVE_MB,
+} from '../context-length.util';
 
 describe('recommendContextLength', () => {
   it('scales the context window up with available memory', () => {
@@ -182,5 +188,64 @@ describe('recommendContextLength', () => {
       expect(appMinContextLength('__proto__')).toBeUndefined();
       expect(appMinContextLength('hasOwnProperty')).toBeUndefined();
     });
+  });
+});
+
+describe('estimateLoadedFootprintMb', () => {
+  it('charges the ladder its own per-token assumption, so every rung it picks fits by its own arithmetic', () => {
+    // The ladder hands 8192 tokens to 2048 MB of free memory, 16384 to 4096, and so on.
+    expect(LADDER_KV_MB_PER_TOKEN * 8192).toBe(2048);
+    const footprint = 18_000;
+    const numCtx = recommendContextLength({ effectiveInferenceMemoryMb: 24_576, modelFootprintMb: footprint, modelContextWindow: 262_144 });
+    expect(numCtx).toBe(16_384);
+    expect(estimateLoadedFootprintMb({ modelFootprintMb: footprint, numCtx })).toBeLessThanOrEqual(24_576);
+  });
+
+  it('charges the measured path the base, KV cache and margin recommendContextLength sized against', () => {
+    const input = { modelFootprintMb: 18_000, kvMbPerToken: 0.0625, weightMb: 16_000 };
+    const numCtx = recommendContextLength({ effectiveInferenceMemoryMb: 24_576, modelContextWindow: 262_144, ...input });
+    expect(numCtx).toBe(65_536);
+    expect(estimateLoadedFootprintMb({ ...input, numCtx })).toBe(18_000 + 4_096 + 1_024);
+  });
+
+  it('takes the measured weights plus runner overhead when they exceed the catalog figure', () => {
+    expect(estimateLoadedFootprintMb({ modelFootprintMb: 10_000, kvMbPerToken: 0.125, weightMb: 16_000, numCtx: 8192 })).toBe(
+      16_000 + 768 + 1_024 + 1_024,
+    );
+  });
+});
+
+describe('the vision encoder reserve', () => {
+  const card = 24_560;
+  const qwen = { modelFootprintMb: 19_374, weightMb: 17_630, kvMbPerToken: 0.0667, modelContextWindow: 262_144 };
+
+  it('is charged before any context on the measured path', () => {
+    // 24,560 - 19,374 - 1,024 margin = 4,162 MB → 64k (4,371 MB) does not fit, 32k does; the reserve
+    // leaves 3,138 MB, still 32k. A larger reserve would have to push it down a rung.
+    expect(recommendContextLength({ effectiveInferenceMemoryMb: card, ...qwen })).toBe(32_768);
+    expect(recommendContextLength({ effectiveInferenceMemoryMb: card, ...qwen, visionReserveMb: VISION_ENCODER_RESERVE_MB })).toBe(32_768);
+    expect(recommendContextLength({ effectiveInferenceMemoryMb: card, ...qwen, visionReserveMb: 2_000 })).toBe(16_384);
+  });
+
+  it('is charged before any context on the ladder too', () => {
+    // 28,000 - 19,374 = 8,626 MB → the 32k rung; the reserve leaves 7,602 → 16k.
+    const ladder = { effectiveInferenceMemoryMb: 28_000, modelFootprintMb: 19_374, modelContextWindow: 262_144 };
+    expect(recommendContextLength(ladder)).toBe(32_768);
+    expect(recommendContextLength({ ...ladder, visionReserveMb: VISION_ENCODER_RESERVE_MB })).toBe(16_384);
+  });
+
+  it('is part of what a load is fit-checked against', () => {
+    expect(estimateLoadedFootprintMb({ ...qwen, numCtx: 32_768, visionReserveMb: VISION_ENCODER_RESERVE_MB })).toBe(
+      Math.ceil(19_374 + 32_768 * 0.0667 + 1_024 + VISION_ENCODER_RESERVE_MB),
+    );
+    expect(estimateLoadedFootprintMb({ modelFootprintMb: 19_374, numCtx: 16_384, visionReserveMb: VISION_ENCODER_RESERVE_MB })).toBe(
+      19_374 + 16_384 * LADDER_KV_MB_PER_TOKEN + VISION_ENCODER_RESERVE_MB,
+    );
+  });
+
+  it('ignores a reserve that is not a positive number', () => {
+    for (const visionReserveMb of [0, -500, Number.NaN]) {
+      expect(recommendContextLength({ effectiveInferenceMemoryMb: card, ...qwen, visionReserveMb })).toBe(32_768);
+    }
   });
 });

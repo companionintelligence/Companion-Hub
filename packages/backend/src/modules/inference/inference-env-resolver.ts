@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { probeContextCost } from './context-cost.util';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { ModelRegistryService } from './model-registry.service';
@@ -195,9 +196,11 @@ export class InferenceEnvResolver {
     // Embeddings are split-backend capable: chat can run on vLLM/Lemonade while
     // embeddings stay on Ollama (e.g. CI-Server's pgvector index is built on
     // Ollama's 768-dim nomic-embed-text; moving embedders would force a full
-    // reindex). Resolve an embedder on the active backend first; when it has
-    // none (vLLM ships no embedding rows in the catalog), fall back to a
-    // healthy Ollama and expose its host separately as CI_OLLAMA_EMBED_HOST.
+    // reindex). The host and the model must name the same engine: with chat on
+    // Lemonade and Ollama healthy, this used to emit Ollama's host with Lemonade's
+    // embedder id. So a healthy Ollama supplies both; a Lemonade with no Ollama
+    // supplies both itself (it serves Ollama's native `/api/embed`); vLLM, which
+    // ships no embedder and speaks no native dialect, still gets neither.
     const resolveEmbedding = (type: InferenceBackendType): string | undefined => {
       if (preferences.preferredEmbeddingModel) {
         const curated = this.modelRegistry.getCuratedModel(preferences.preferredEmbeddingModel);
@@ -218,7 +221,9 @@ export class InferenceEnvResolver {
       });
       if (ollamaHealth.running && ollamaHealth.healthy) {
         embedHost = this.ollamaBackend.getBaseUrl();
-        if (!embeddingModel) embeddingModel = resolveEmbedding('ollama');
+        embeddingModel = resolveEmbedding('ollama') ?? embeddingModel;
+      } else if (backendType === 'lemonade' && embeddingModel) {
+        embedHost = backendBaseUrl;
       }
     }
     if (encodeOverride) {
@@ -258,13 +263,13 @@ export class InferenceEnvResolver {
     // node serves the model, and capped at what the engine that will serve it runs at; see
     // handoutContextLength.
     if (chatCurated && chatModel) {
-      // Ask the engine what a token of context costs THIS model before falling back to the fixed
-      // ladder — see `model-geometry.util`. Only Ollama can be asked, and only about a model this
-      // node serves: a peer's geometry is not measurable from here, so a pool-served model keeps
-      // the heuristic, as do the other backends.
+      // What a token of context costs THIS model, before falling back to the fixed ladder — the
+      // engine's measurement and the catalog's (see `context-cost.util`). Only a model this node
+      // serves can be measured: a peer's is not measurable from here, so a pool-served model keeps
+      // the heuristic. The load path sizes its window with the same probe, so the two agree.
       const askOllama = chatServedLocally && backendType === 'ollama';
       const [cost, residentContextLength] = await Promise.all([
-        askOllama ? this.ollamaBackend.contextCostForModel(chatCurated.backendModelId) : null,
+        chatServedLocally ? probeContextCost(backend, chatCurated) : null,
         askOllama ? this.ollamaBackend.residentContextLength(chatCurated.backendModelId) : null,
       ]);
       // Through the pool, the largest cap among the nodes serving the model — the proxy places a

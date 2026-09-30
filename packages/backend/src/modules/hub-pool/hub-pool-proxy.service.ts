@@ -94,7 +94,7 @@ import {
   type OutputVerdict,
   type PoolOutputFault,
 } from './hub-pool-output-check';
-import { MERGED_LISTING_PATHS, listedModelIds, mergeModelListing, peerOnlyModels } from './pool-model-listing';
+import { MERGED_LISTING_PATHS, listedModelIds, mergeLocalListings, mergeModelListing, peerOnlyModels } from './pool-model-listing';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import type { PoolCandidate, PoolPeerCapabilities } from './hub-pool.types';
 
@@ -3641,7 +3641,7 @@ export class PoolProxyService {
    * generations, which this is not.
    */
   private async serveMergedListing(path: string, method: string, res: Response, clientClosed: AbortSignal): Promise<void> {
-    const local = await this.firstLocalListing(path, method, clientClosed);
+    const local = await this.localListing(path, method, clientClosed);
     if (clientClosed.aborted) {
       res.destroy();
       return;
@@ -3673,6 +3673,40 @@ export class PoolProxyService {
       this.logger.debug(`[PoolProxy] ${path} merged ${extra.length} peer-only model(s) from ${peers.length} peer(s)`);
     }
     this.respondUncommitted(res, 200, mergeModelListing(path, local, extra));
+  }
+
+  /**
+   * Every healthy local backend's listing, merged (`mergeLocalListings`), or the first backend's
+   * alone when at most one is healthy. Only the backends the health snapshot calls healthy are asked,
+   * and in parallel: a client may fetch this before every request (ci-server checks its model against
+   * it per call), and an unconfigured backend's URL can sit behind a host firewall that drops rather
+   * than refuses — one listing must not wait out a connect timeout per absent engine.
+   */
+  private async localListing(path: string, method: string, clientClosed: AbortSignal): Promise<unknown> {
+    const healthy = await this.localHealth
+      .read()
+      .then((snapshot) => snapshot.filter(({ health }) => health.running && health.healthy).map(({ type }) => type))
+      .catch(() => [] as InferenceBackendType[]);
+    if (healthy.length <= 1) {
+      return this.firstLocalListing(path, method, clientClosed);
+    }
+    const bodies = await Promise.all(
+      INFERENCE_BACKEND_TYPES.filter((type) => healthy.includes(type)).map(async (type) => {
+        try {
+          const upstream = await this.callBackend(type, path, method, undefined, undefined, clientClosed);
+          if (!upstream.ok) {
+            this.logger.debug(`[PoolProxy] ${path} via local ${type} answered ${upstream.status}; leaving it out of the listing`);
+            return null;
+          }
+          return (await upstream.json()) as unknown;
+        } catch (error) {
+          this.logger.debug(`[PoolProxy] ${path} via local ${type} failed: ${error instanceof Error ? error.message : String(error)}`);
+          return null;
+        }
+      }),
+    );
+    const answered = bodies.filter((body) => body !== null);
+    return answered.length === 0 ? this.firstLocalListing(path, method, clientClosed) : mergeLocalListings(path, answered);
   }
 
   /**

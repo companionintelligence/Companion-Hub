@@ -211,6 +211,12 @@ export interface CuratedModel {
     quantization?: string;
     pinnedByDefault: boolean;
     memoryFootprintMb: number;
+    /**
+     * Measured MB of memory one token of context costs this model on its engine, for engines that
+     * cannot report the model's geometry (Lemonade) or report it wrongly (Ollama drops a per-layer
+     * `head_count_kv`). Absent: the engine's own figure, else the context ladder's assumption.
+     */
+    kvMbPerToken?: number;
   };
   tiers: {
     high: TierRecommendation;

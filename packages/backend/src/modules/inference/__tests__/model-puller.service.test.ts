@@ -136,11 +136,12 @@ describe('ModelPullerService.evaluatePull', () => {
     expect(result.reason).toMatch(/disk/i);
   });
 
-  it('blocks pull when memory budget is insufficient', async () => {
+  it('allows pull when the model does not fit in free memory right now (loading decides that)', async () => {
     memoryManager.canFitModel.mockResolvedValue({ fits: false, availableMb: 1024, requiredMb: 4096 });
     const result = await service.evaluatePull('phi-4-mini');
-    expect(result.canPull).toBe(false);
-    expect(result.reason).toMatch(/memory/i);
+    expect(result.canPull).toBe(true);
+    expect(result.reason).toBeUndefined();
+    expect(memoryManager.canFitModel).not.toHaveBeenCalled();
   });
 
   it('logs pull progress so model downloads appear in hub logs', async () => {
@@ -260,10 +261,21 @@ describe('ModelPullerService.startPull', () => {
   });
 
   it('skips blocked pulls when bestEffort is true', async () => {
-    memoryManager.canFitModel.mockResolvedValue({ fits: false, availableMb: 1024, requiredMb: 4096 });
+    hostMetrics.getDisplayLoad.mockResolvedValue({
+      diskSize: 10,
+      diskUsed: 9,
+      percentUsed: 90,
+      cpuLoad: 0,
+      cpuCores: 8,
+      memoryTotal: 16,
+      memoryUsed: 8,
+      percentUsedMemory: 50,
+      hasVmWedge: false,
+      runtimeKind: 'container-only',
+    });
     const result = await service.startPull('phi-4-mini', { bestEffort: true });
     expect(result.status).toBe('skipped');
-    expect(result.reason).toMatch(/memory/i);
+    expect(result.reason).toMatch(/disk/i);
     expect(ollamaBackend.pullModel).not.toHaveBeenCalled();
   });
 

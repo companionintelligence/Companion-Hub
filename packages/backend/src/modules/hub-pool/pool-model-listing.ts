@@ -72,6 +72,36 @@ export function peerOnlyModels(localIds: readonly string[], peerModels: readonly
   return merged;
 }
 
+/**
+ * Several local backends' listings as one body, in the order given (the caller's backend order).
+ *
+ * The listing used to be the FIRST local backend that answered, and Ollama answers first — so on a
+ * node running Ollama beside Lemonade, `/v1/models` never named a Lemonade model, and an app handed a
+ * Lemonade chat model (ci-memory, 2026-09-29: `Qwen3.8-27B-GGUF`) rejected it as "Invalid model
+ * specified" on every job, although a completion for it would have routed and served fine. Unlike a
+ * peer's, a local backend's rows are real — size, digest, `details` — so they are kept whole. A model
+ * two backends both hold appears once, as the earlier backend's row, folded through `sameModelId`
+ * like everything else here. The first body's other fields (`object` and the like) are kept.
+ */
+export function mergeLocalListings(path: string, bodies: readonly unknown[]): unknown {
+  const [first, ...rest] = bodies;
+  if (rest.length === 0) return first ?? null;
+  const key = path === '/v1/models' ? 'data' : 'models';
+  const base = isRecord(first) ? first : {};
+  const rows: unknown[] = Array.isArray(base[key]) ? [...(base[key] as unknown[])] : [];
+  const ids = listedModelIds(path, first);
+  for (const body of rest) {
+    const bodyRows = isRecord(body) && Array.isArray(body[key]) ? (body[key] as unknown[]) : [];
+    for (const row of bodyRows) {
+      const id = path === '/v1/models' ? stringField(row, 'id') : stringField(row, 'model', 'name');
+      if (!id || ids.some((known) => sameModelId(known, id))) continue;
+      ids.push(id);
+      rows.push(row);
+    }
+  }
+  return path === '/v1/models' ? { ...base, object: 'list', data: rows } : { ...base, models: rows };
+}
+
 /** An OpenAI `/v1/models` row for a model only a peer holds. `created` is required by the shape; 0 says "unknown". */
 function openAiRow(model: string): Record<string, unknown> {
   return { id: model, object: 'model', created: 0, owned_by: POOL_OWNED_BY };

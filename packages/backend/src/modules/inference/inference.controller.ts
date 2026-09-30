@@ -537,7 +537,12 @@ export class InferenceController {
   @UseGuards(AuthGuard)
   @Post('models/load')
   async loadModel(@Body() body: { modelId: string }) {
-    await this.modelPuller.loadModel(body.modelId);
+    // Through the router, like a pin: it makes room, sizes the context window and refuses a load
+    // that cannot fit, where the engine's own load would go on top of whatever holds the card.
+    const outcome = await this.router.loadTrackedModel(body.modelId);
+    if (!outcome.loaded) {
+      return { success: false, message: outcome.reason };
+    }
     return { success: true, message: `Model ${body.modelId} loaded` };
   }
 
@@ -560,10 +565,14 @@ export class InferenceController {
       return { success: false, message: canPin.reason };
     }
 
-    // Ensure model is loaded before pinning
+    // Ensure model is loaded before pinning — through the router's load path, so the pin fits,
+    // evicts or refuses exactly as load-on-demand does instead of loading on top of the card.
     const tracked = this.modelRegistry.getTrackedModel(body.modelId);
     if (!tracked || (tracked.state !== 'loaded' && tracked.state !== 'pinned')) {
-      await this.modelPuller.loadModel(body.modelId);
+      const outcome = await this.router.loadTrackedModel(body.modelId);
+      if (!outcome.loaded) {
+        return { success: false, message: outcome.reason };
+      }
     }
 
     this.modelRegistry.pinModel(body.modelId);
