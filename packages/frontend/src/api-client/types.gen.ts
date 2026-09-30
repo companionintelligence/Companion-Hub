@@ -2105,6 +2105,11 @@ export type UpdateAppMetadataDto = {
     data: string;
 };
 
+export type DesktopReleaseDto = {
+    latestVersion: string;
+    downloadUrl: string;
+};
+
 export type McpToolCallBody = {
     arguments?: {
         [key: string]: unknown;
@@ -5829,6 +5834,23 @@ export type GetHostListenerStatusData = {
 export type GetHostListenerStatusResponses = {
     200: unknown;
 };
+
+export type GetDesktopReleaseData = {
+    body?: never;
+    path?: never;
+    query?: {
+        environment?: string;
+        platform?: 'linux' | 'macos' | 'windows';
+        arch?: 'x86_64' | 'aarch64';
+    };
+    url: '/api/system/update/desktop-release';
+};
+
+export type GetDesktopReleaseResponses = {
+    default: DesktopReleaseDto;
+};
+
+export type GetDesktopReleaseResponse = GetDesktopReleaseResponses[keyof GetDesktopReleaseResponses];
 
 export type WakeData = {
     body?: never;

@@ -91,6 +91,7 @@ import { McpToolCallBody } from './modules/mcp/mcp-admin.dto';
 import { McpInstallSchemaDto, McpProbeResultDto, ValidateConfigResultDto } from './modules/mcp/dto/mcp-app.dto';
 import { FactoryResetDto } from './modules/system/dto/factory-reset.dto';
 import { LoadDto, SystemResourcesDto } from './modules/system/dto/system.dto';
+import { DesktopReleaseDto } from './modules/system-update/dto/desktop-release.dto';
 import { GetUserConfigDto, UpdateUserConfigDto } from './modules/user-config/dto/user-config.dto';
 import { PublicWebRepairBody } from './modules/public-web/public-web.dto';
 
@@ -188,6 +189,7 @@ export const SWAGGER_ZOD_DTOS: ZodDto[] = [
   FactoryResetDto,
   LoadDto,
   SystemResourcesDto,
+  DesktopReleaseDto,
   GetUserConfigDto,
   UpdateUserConfigDto,
   PublicWebRepairBody,

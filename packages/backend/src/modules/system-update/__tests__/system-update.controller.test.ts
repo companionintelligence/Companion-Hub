@@ -2,6 +2,8 @@ import { BadRequestException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+import { AuthGuard } from '../../auth/auth.guard';
+import { DesktopReleaseService } from '../desktop-release.service';
 import { SystemUpdateController } from '../system-update.controller';
 import { SystemUpdateService } from '../system-update.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -9,18 +11,21 @@ import { LoggerService } from '@/core/logger/logger.service';
 describe('SystemUpdateController', () => {
   let controller: SystemUpdateController;
   let updateService: MockProxy<SystemUpdateService>;
+  let desktopReleaseService: MockProxy<DesktopReleaseService>;
 
   beforeEach(async () => {
     const moduleRef = await Test.createTestingModule({
       controllers: [SystemUpdateController],
       providers: [
         { provide: SystemUpdateService, useValue: mock<SystemUpdateService>() },
+        { provide: DesktopReleaseService, useValue: mock<DesktopReleaseService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     }).compile();
 
     controller = moduleRef.get(SystemUpdateController);
     updateService = moduleRef.get(SystemUpdateService);
+    desktopReleaseService = moduleRef.get(DesktopReleaseService);
   });
 
   it('should be defined', () => {
@@ -87,6 +92,23 @@ describe('SystemUpdateController', () => {
       updateService.getHostListenerStatus.mockResolvedValue({ reachable: false });
 
       await expect(controller.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+    });
+  });
+
+  describe('getDesktopRelease', () => {
+    it('answers with the release read for the page environment, platform, and architecture', async () => {
+      const release = { latestVersion: '0.2.77', downloadUrl: 'https://dl.ci.computer/v0.2.77/linux/deb/x64/Companion%20Hub_0.2.77_amd64.deb' };
+      desktopReleaseService.getDesktopRelease.mockResolvedValue(release);
+
+      await expect(controller.getDesktopRelease({ environment: 'production', platform: 'linux', arch: 'x86_64' })).resolves.toEqual(release);
+      expect(desktopReleaseService.getDesktopRelease).toHaveBeenCalledWith({ environment: 'production', platform: 'linux', arch: 'x86_64' });
+    });
+
+    it('is only for a signed-in user', () => {
+      // An unguarded route reads back `undefined`; default to [] so the assertion cannot pass on it.
+      const guards = (Reflect.getMetadata('__guards__', SystemUpdateController.prototype.getDesktopRelease) ?? []) as unknown[];
+
+      expect(guards).toContain(AuthGuard);
     });
   });
 });

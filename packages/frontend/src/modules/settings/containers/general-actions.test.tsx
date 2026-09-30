@@ -4,12 +4,13 @@ import { checkForUpdates, fetchHostListenerStatus, getInstalledDesktopVersion, i
 import { factoryReset } from '@/api-client/sdk.gen';
 import { sdkOk } from '@/tests/sdk-mock-helpers';
 import { toast } from 'sonner';
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import { GeneralActionsContainer } from './general-actions';
 
-const { getAutoUpdates, checkHubForUpdatesApi } = vi.hoisted(() => ({
+const { getAutoUpdates, checkHubForUpdatesApi, getDesktopRelease } = vi.hoisted(() => ({
   getAutoUpdates: vi.fn(),
   checkHubForUpdatesApi: vi.fn(),
+  getDesktopRelease: vi.fn(),
 }));
 
 vi.mock('@/context/app-context', () => ({
@@ -25,6 +26,7 @@ vi.mock('@/api-client/sdk.gen', async (importOriginal) => {
     restartOnboarding: vi.fn(),
     factoryReset: vi.fn(),
     checkForUpdates: checkHubForUpdatesApi,
+    getDesktopRelease,
   };
 });
 
@@ -68,8 +70,15 @@ const mockPerformUpdate = vi.mocked(performUpdate);
 const mockFetchHostListenerStatus = vi.mocked(fetchHostListenerStatus);
 const mockToastSuccess = vi.mocked(toast.success);
 const mockFactoryReset = vi.mocked(factoryReset);
+const jsdomUserAgent = navigator.userAgent;
 
 describe('GeneralActionsContainer', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    Object.defineProperty(window.navigator, 'userAgent', { value: jsdomUserAgent, configurable: true });
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
 
@@ -199,6 +208,56 @@ describe('GeneralActionsContainer', () => {
     expect(screen.getByText('Current version: 4.7.0')).toBeInTheDocument();
     expect(screen.getByTestId('desktop-shell-update-card')).toBeInTheDocument();
     expect(screen.getByTestId('host-listener-unavailable')).toHaveTextContent('Start Companion Hub');
+  });
+
+  it('offers the desktop installer the Hub looked up when opened in a browser', async () => {
+    const downloadUrl = 'https://dl.ci.computer/v0.2.77/linux/deb/x64/Companion%20Hub_0.2.77_amd64.deb';
+    const actual = await vi.importActual<typeof import('@/lib/update-service')>('@/lib/update-service');
+    mockCheckForUpdates.mockImplementation(actual.checkForUpdates);
+    vi.stubEnv('CI_HUB_ENVIRONMENT', 'production');
+    Object.defineProperty(window.navigator, 'userAgent', {
+      value: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+      configurable: true,
+    });
+    // A page cannot read the download server itself: it sends no CORS headers.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))),
+    );
+    getDesktopRelease.mockResolvedValue(sdkOk({ latestVersion: '0.2.77', downloadUrl }));
+    mockPerformUpdate.mockResolvedValue({ ok: true, messageKey: 'SETTINGS_ACTIONS_DOWNLOAD_INSTALLER_OPENED' });
+
+    render(<GeneralActionsContainer />);
+
+    const download = await screen.findByTestId('hub-shell-update-btn');
+    expect(download).toHaveTextContent('Download 0.2.77');
+    expect(screen.queryByText('No download URL available for this platform.')).not.toBeInTheDocument();
+
+    await userEvent.click(download);
+    await waitFor(() => expect(mockPerformUpdate).toHaveBeenCalledWith(expect.objectContaining({ latestVersion: '0.2.77', downloadUrl })));
+    expect(getDesktopRelease).toHaveBeenCalledWith({ query: { environment: 'production', platform: 'linux', arch: 'x86_64' } });
+  });
+
+  it('offers no desktop download on a phone', async () => {
+    const actual = await vi.importActual<typeof import('@/lib/update-service')>('@/lib/update-service');
+    mockCheckForUpdates.mockImplementation(actual.checkForUpdates);
+    vi.stubEnv('CI_HUB_ENVIRONMENT', 'production');
+    Object.defineProperty(window.navigator, 'userAgent', {
+      value:
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+      configurable: true,
+    });
+    getDesktopRelease.mockResolvedValue(
+      sdkOk({ latestVersion: '0.2.77', downloadUrl: 'https://dl.ci.computer/v0.2.77/macos/arm/Companion%20Hub_0.2.77_aarch64.dmg' }),
+    );
+
+    render(<GeneralActionsContainer />);
+
+    // The card reads the same before the check ends, so wait for the check before looking at it.
+    await waitFor(() => expect(mockCheckForUpdates.mock.settledResults).toHaveLength(1));
+    await waitFor(() => expect(screen.getByTestId('desktop-shell-update-card')).toHaveTextContent('No download URL available for this platform.'));
+    expect(screen.queryByTestId('hub-shell-update-btn')).not.toBeInTheDocument();
+    expect(getDesktopRelease).not.toHaveBeenCalled();
   });
 
   it('tells the operator to start the desktop app when the host listener is down', async () => {
