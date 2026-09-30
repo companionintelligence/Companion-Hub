@@ -171,7 +171,8 @@ class FakeOllama {
  */
 class FakeLemonade {
   readonly type = 'lemonade' as const;
-  loads: { id: string; ctx: number | undefined }[] = [];
+  /** `provisional` only when the load said its window is not to replace a larger saved one. */
+  loads: { id: string; ctx: number | undefined; provisional?: true }[] = [];
 
   backend(): Record<string, unknown> {
     return {
@@ -183,8 +184,8 @@ class FakeLemonade {
         modelsLoaded: ['Gemma-4-E4B-it-GGUF', 'kokoro-v1', 'Whisper-Base', 'Whisper-Large-v3-Turbo'],
       }),
       isModelLoaded: async () => false,
-      loadModel: async (id: string, options?: { contextLength?: number }) => {
-        this.loads.push({ id, ctx: options?.contextLength });
+      loadModel: async (id: string, options?: { contextLength?: number; provisionalWindow?: boolean }) => {
+        this.loads.push({ id, ctx: options?.contextLength, ...(options?.provisionalWindow ? { provisional: true as const } : {}) });
       },
       unloadModel: async () => undefined,
       weightsOnDiskMb: async () => null,
@@ -262,13 +263,17 @@ function world(opts: {
 
   const engines = { ollama, lemonade } as const;
   const puller = {
-    loadModel: vi.fn(async (catalogId: string, options?: { contextLength?: number }) => {
+    loadModel: vi.fn(async (catalogId: string, options?: { contextLength?: number; provisionalWindow?: boolean }) => {
       const curated = registry.getCuratedModel(catalogId);
       if (!curated) throw new Error(`no ${catalogId}`);
       if (registry.getTrackedModel(catalogId)) registry.updateModelState(catalogId, 'loading');
       else registry.trackModel(catalogId, 'loading');
       const backend = backends.get(curated.backend);
-      await backend.loadModel(curated.backendModelId, { embedding: curated.modality === 'embedding', contextLength: options?.contextLength });
+      await backend.loadModel(curated.backendModelId, {
+        embedding: curated.modality === 'embedding',
+        contextLength: options?.contextLength,
+        ...(options?.provisionalWindow ? { provisionalWindow: true } : {}),
+      });
       registry.updateModelState(catalogId, 'loaded');
     }),
     unloadModel: vi.fn(async (catalogId: string) => {
@@ -438,6 +443,23 @@ describe('the load window on the fleet', () => {
       expect(ollama.loads).toEqual([]);
     });
 
+    // PIN-2: after a Hub restart the pin is read back before this process has tracked the model, and
+    // Ollama may still hold it; a trial load could have Ollama unload it to make room.
+    it('does not try one after a Hub restart either, while the pin is persisted but the model not yet re-marked', async () => {
+      const before = world({ profile: BETA_RED, ollama: new FakeOllama(16_384), ollamaSlots: 4 });
+      before.registry.trackModel('gemma3-1b', 'loaded');
+      before.registry.pinModel('gemma3-1b');
+      await before.registry.pinsPersisted();
+
+      const ollama = new FakeOllama(16_384, () => ({ psMb: 3209, processMb: 5550 }));
+      const { router, registry } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+      await registry.onModuleInit();
+      expect(registry.getTrackedModel('gemma3-1b')).toBeUndefined();
+
+      await expect(router.loadTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toMatchObject({ loaded: false });
+      expect(ollama.loads).toEqual([]);
+    });
+
     it('still refuses on the catalog where the engine would not place the model itself (Lemonade)', async () => {
       // gemma4-e4b-lemonade: 6,724 MB, the ladder's 0.25 MB/token and the vision reserve: 8,772 at 4096.
       const lemonade = new FakeLemonade();
@@ -528,7 +550,8 @@ describe('the load window on the fleet', () => {
 
       await expect(router.loadTrackedModel('gemma4-e4b-lemonade', { origin: 'operator' })).resolves.toEqual({ loaded: true });
 
-      // 64000, 32768 and 16384 are over the 11,776 MB; 8192 fits.
+      // 64000, 32768 and 16384 are over the 11,776 MB; 8192 fits. That is this card's limit, not a
+      // passing state, so the window is saved (no `provisional`): a larger one would not load here.
       expect(lemonade.loads).toEqual([{ id: 'Gemma-4-E4B-it-GGUF', ctx: 8_192 }]);
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('below the 64000-token floor of ci-hermes'));
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('an empty card here holds at most 8192 tokens of it'));
@@ -562,10 +585,12 @@ describe('the load window on the fleet', () => {
 
       await expect(router.loadTrackedModel('gemma4-e4b-lemonade', { origin: 'operator' })).resolves.toEqual({ loaded: true });
 
-      expect(lemonade.loads).toEqual([{ id: 'Gemma-4-E4B-it-GGUF', ctx: 32_768 }]);
+      // For this residency only (L3): a larger window Lemonade has saved stays for its next load.
+      expect(lemonade.loads).toEqual([{ id: 'Gemma-4-E4B-it-GGUF', ctx: 32_768, provisional: true }]);
       expect([...ollama.resident.keys()]).toEqual(['gemma4:e4b']);
       const warning = logger.warn.mock.calls.map(([message]) => String(message)).find((message) => message.includes('64000-token floor'));
       expect(warning).toContain('an empty card here would hold the floor, but of the 5963 MB in use');
+      expect(warning).toContain('a larger window Lemonade already has saved for it is kept for its next load');
       expect(warning).not.toContain('all this node has room for');
     });
 
@@ -582,7 +607,9 @@ describe('the load window on the fleet', () => {
 
       await expect(router.prepareTrackedModel('Gemma-4-E4B-it-GGUF', { numCtx: null })).resolves.not.toBeNull();
 
-      expect(lemonade.loads).toEqual([{ id: 'Gemma-4-E4B-it-GGUF', ctx: 32_768 }]);
+      // L3: a brief condition (an app's idle model beside the card) must not lower the saved window
+      // for every later load and app, so the window is marked for this residency only.
+      expect(lemonade.loads).toEqual([{ id: 'Gemma-4-E4B-it-GGUF', ctx: 32_768, provisional: true }]);
       // The app's Ollama copy stays: the request scope may not unload it.
       expect([...ollama.resident.keys()]).toEqual(['gemma4:e4b']);
       const warning = logger.warn.mock.calls.map(([message]) => String(message)).find((message) => message.includes('64000-token floor'));
@@ -602,7 +629,7 @@ describe('the load window on the fleet', () => {
       await expect(router.loadTrackedModel('gemma4-e4b-lemonade', { origin: 'operator' })).resolves.toEqual({ loaded: true });
       poolLoad.release(LOCAL_CANDIDATE_KEY, turn);
 
-      expect(lemonade.loads).toEqual([{ id: 'Gemma-4-E4B-it-GGUF', ctx: 32_768 }]);
+      expect(lemonade.loads).toEqual([{ id: 'Gemma-4-E4B-it-GGUF', ctx: 32_768, provisional: true }]);
       expect([...ollama.resident.keys()]).toEqual(['gemma4:e4b']);
       const warning = logger.warn.mock.calls.map(([message]) => String(message)).find((message) => message.includes('64000-token floor'));
       expect(warning).toContain('gemma4:e4b is serving a request and will not be unloaded');

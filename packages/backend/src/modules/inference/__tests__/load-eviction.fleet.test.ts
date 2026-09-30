@@ -140,12 +140,19 @@ class FakeLemonade {
     return [...this.resident.values()].reduce((sum, mb) => sum + mb, 0);
   }
 
+  /** A model already in memory, under the name 10.2.0 lists it by (`user.<id>` for one the Hub registered). */
+  hold(id: string, processMb: number): void {
+    this.installed.add(id);
+    this.resident.set(id, processMb);
+  }
+
   backend(): Record<string, unknown> {
     return {
       type: 'lemonade',
       getBaseUrl: () => 'http://fake-lemonade:13305',
       healthCheck: async () => ({ running: true, healthy: true, modelsLoaded: [...this.installed] }),
-      isModelLoaded: async (id: string) => this.resident.has(id),
+      // Either spelling, as the real backend's `residentRecordOf` matches.
+      isModelLoaded: async (id: string) => [...this.resident.keys()].some((held) => held.replace(/^user\./, '') === id.replace(/^user\./, '')),
       loadModel: async (id: string) => {
         this.loads.push(id);
         this.resident.set(id, this.loadSizesMb[id] ?? 1_000);
@@ -505,6 +512,25 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
       expect(ollama.unloads).toEqual([]);
     });
 
+    // L1 after #1684/#1685/#1686, reproduced by the review of #1686 on this harness: Lemonade 10.2.0
+    // lists the embedder the Hub registers as `user.nomic-embed-text-v1.5-GGUF`, the registry says
+    // `nomic-embed-text-v1.5-GGUF`, and the pin was never matched to what Lemonade held.
+    it('never evicts the pinned Lemonade embedder that 10.2.0 lists as user.<id> — beta-1', async () => {
+      const lemonade = new FakeLemonade({ 'Gemma-4-E4B-it-GGUF': 23_900 }, ollama);
+      lemonade.hold('user.nomic-embed-text-v1.5-GGUF', 300);
+      const w = world(BETA_1, ollama, { 'gemma4-e4b-lemonade': 23_900 }, { lemonade });
+      w.registry.trackModel('nomic-embed-text-v1-5-lemonade', 'loaded');
+      w.registry.pinModel('nomic-embed-text-v1-5-lemonade');
+      w.pulled('gemma4-e4b-lemonade');
+
+      // 24,048 − 300 = 23,748 free: 152 MB short, and only the pinned embedder could cover it.
+      const outcome = await w.router.loadTrackedModel('gemma4-e4b-lemonade', { origin: 'operator' });
+
+      expect(outcome).toEqual({ loaded: false, reason: expect.stringContaining('would free 0 MB') });
+      expect([...lemonade.resident.keys()]).toEqual(['user.nomic-embed-text-v1.5-GGUF']);
+      expect(lemonade.loads).toEqual([]);
+    });
+
     // R4: the embedder on the CPU has `size_vram` 0. It used to read as "unknown", which made the
     // plan optimistic: unload everything, then refuse anyway.
     it('treats a model on the CPU as freeing 0 MB, and refuses without unloading when that is all that is left', async () => {
@@ -593,6 +619,116 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
 
       expect(ollama.unloads).toEqual(['qwen3.8:27b']);
       expect(lemonade.loads).toEqual(['Qwen3.6-35B-A3B-GGUF']);
+    });
+  });
+
+  // L2 after #1684/#1686, reproduced by the review of #1686: the model stayed pinned (never an eviction
+  // candidate), but the load that found it resident recorded it `loaded`, and the Hub UI, which reads
+  // `state === 'pinned'`, showed it unpinned.
+  describe('a pinned model that a later load finds in memory', () => {
+    it('stays pinned when a request for it was queued behind its own pin — beta-1', async () => {
+      const w = world(BETA_1, ollama, { 'qwen3-coder-30b': 19_000 });
+      w.pulled('qwen3-coder-30b');
+
+      const pin = w.router.pinTrackedModel('qwen3-coder-30b', { origin: 'operator' });
+      const request = w.router.prepareTrackedModel('qwen3-coder:30b', { numCtx: null });
+
+      await expect(pin).resolves.toEqual({ pinned: true });
+      await expect(request).resolves.toEqual({ backend: 'ollama', backendModelId: 'qwen3-coder:30b' });
+      expect(ollama.loads).toEqual(['qwen3-coder:30b']);
+      expect(w.registry.getTrackedModel('qwen3-coder-30b')).toMatchObject({ state: 'pinned', pinned: true });
+    });
+
+    it("stays pinned through an operator's load of it", async () => {
+      ollama.hold('gemma4:e4b', 6_640);
+      const w = world(BETA_1, ollama, {});
+      w.registry.trackModel('gemma4-e4b', 'loaded');
+      w.registry.pinModel('gemma4-e4b');
+
+      await expect(w.router.loadTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toEqual({ loaded: true });
+
+      expect(w.registry.getTrackedModel('gemma4-e4b')).toMatchObject({ state: 'pinned', pinned: true });
+      expect(ollama.loads).toEqual([]);
+    });
+  });
+
+  // PIN-2 in the audit of #1679, and its live check 5: pin the embedder, restart the Hub, then make a
+  // load need room. Ollama keeps the pinned embedder at keep_alive -1 through the restart; the new Hub
+  // process used to know nothing of the pin and offered it to the eviction.
+  describe('a pin across a Hub restart', () => {
+    /** The first Hub process pins the embedder and goes away; the engines keep what they hold. */
+    const pinThenRestart = async () => {
+      ollama.hold('nomic-embed-text:latest', 308);
+      ollama.hold('gemma4:e4b', 6_640);
+      const before = world(BETA_1, ollama, {});
+      before.registry.trackModel('nomic-embed-text', 'loaded');
+      await expect(before.router.pinTrackedModel('nomic-embed-text', { origin: 'operator' })).resolves.toEqual({ pinned: true });
+      await before.registry.pinsPersisted();
+
+      const after = world(BETA_1, ollama, { 'qwen3-coder-30b': 23_900 });
+      // What Nest runs at boot: the registry reads the pins (`onModuleInit`) before anything tracks a model.
+      await after.registry.onModuleInit();
+      after.pulled('qwen3-coder-30b');
+      return after;
+    };
+
+    it('never evicts the pinned embedder the engine still holds, before the new process has tracked it', async () => {
+      const w = await pinThenRestart();
+
+      // 24,048 − 6,948 = 17,100 free; 23,900 needs 6,800 more: gemma4 frees 6,640, only the pin closes it.
+      const outcome = await w.router.loadTrackedModel('qwen3-coder-30b', { origin: 'operator' });
+
+      expect(outcome).toEqual({ loaded: false, reason: expect.stringContaining('would free 6640 MB') });
+      expect(ollama.unloads).toEqual([]);
+      expect(ollama.resident.has('nomic-embed-text:latest')).toBe(true);
+    });
+
+    it('re-marks it pinned at boot, for the UI, the budget and the default model', async () => {
+      const w = await pinThenRestart();
+
+      await expect(w.router.readoptPinnedModels()).resolves.toEqual(['nomic-embed-text']);
+
+      expect(w.registry.getTrackedModel('nomic-embed-text')).toMatchObject({ state: 'pinned', pinned: true });
+      expect(w.registry.getEvictionCandidates()).toEqual([]);
+      await expect(w.router.loadTrackedModel('qwen3-coder-30b', { origin: 'operator' })).resolves.toMatchObject({ loaded: false });
+      expect(ollama.unloads).toEqual([]);
+    });
+
+    it('does that from onApplicationBootstrap, without holding up the boot', async () => {
+      const w = await pinThenRestart();
+
+      expect(w.router.onApplicationBootstrap()).toBeUndefined();
+
+      await vi.waitFor(() => expect(w.registry.getTrackedModel('nomic-embed-text')).toMatchObject({ state: 'pinned', pinned: true }));
+      expect(w.logger.info).toHaveBeenCalledWith(expect.stringContaining('pinned again: nomic-embed-text'));
+    });
+
+    it('keeps the pin of a model the engine dropped, and pins it again when the Hub next loads it', async () => {
+      const w = await pinThenRestart();
+      // Ollama restarted too: it holds nothing it held before.
+      ollama.resident.clear();
+
+      await expect(w.router.readoptPinnedModels()).resolves.toEqual([]);
+      expect(w.registry.getTrackedModel('nomic-embed-text')).toBeUndefined();
+      expect(w.registry.isPinned('nomic-embed-text')).toBe(true);
+
+      await expect(w.router.loadTrackedModel('nomic-embed-text', { origin: 'operator' })).resolves.toEqual({ loaded: true });
+      expect(w.registry.getTrackedModel('nomic-embed-text')).toMatchObject({ state: 'pinned', pinned: true });
+    });
+
+    it('forgets it once the operator unpins it', async () => {
+      const w = await pinThenRestart();
+      w.registry.unpinModel('nomic-embed-text');
+      await w.registry.pinsPersisted();
+
+      const again = world(BETA_1, ollama, { 'qwen3-coder-30b': 23_900 });
+      await again.registry.onModuleInit();
+      again.pulled('qwen3-coder-30b');
+
+      await expect(again.router.loadTrackedModel('qwen3-coder-30b', { origin: 'operator' })).resolves.toEqual({ loaded: true });
+      // The embedder goes through its catalog row, under the catalog's name.
+      expect(ollama.unloads).toEqual(['gemma4:e4b', 'nomic-embed-text']);
+      expect(ollama.resident.has('nomic-embed-text:latest')).toBe(false);
     });
   });
 

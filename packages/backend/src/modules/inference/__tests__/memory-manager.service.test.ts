@@ -1,6 +1,7 @@
 import { Test, type TestingModule } from '@nestjs/testing';
 import { MemoryManagerService, modelMemoryCeilingMb } from '../memory-manager.service';
 import { readFootprintSightings } from '../footprint-sighting-record';
+import { CURATED_MODELS } from '../catalog/curated-models';
 import { ModelRegistryService } from '../model-registry.service';
 import { ModelResidencyService } from '../model-residency.service';
 import { GpuProcessSamplerService } from '../gpu-process-sampler.service';
@@ -932,6 +933,120 @@ describe('MemoryManagerService', () => {
       // Needing more than gemma4 frees, the plan would have reached for the embedder next.
       const more = await service.planEviction(makeProfile(), 6_800, { backend: 'ollama', backendModelId: 'qwen3-coder:30b' }, operator);
       expect(more).toEqual({ canFree: false, candidates: [], freedMb: 6_640, busy: [] });
+    });
+
+    // L1 after #1684/#1685/#1686: Lemonade 10.2.0 lists the embedder the Hub registers as
+    // `user.nomic-embed-text-v1.5-GGUF` (its `/v1/health` record, as `Router::get_all_loaded_models`
+    // writes it), while the registry and the catalog carry `nomic-embed-text-v1.5-GGUF`. Matched with
+    // the `:latest` folding alone, the pin was never seen and an operator's load unloaded it.
+    describe('a Lemonade embedder that 10.2.0 lists as user.<id>', () => {
+      const EMBEDDER = 'user.nomic-embed-text-v1.5-GGUF';
+      const embedderRow = CURATED_MODELS.find((model) => model.id === 'nomic-embed-text-v1-5-lemonade');
+      const gemmaLemonade = { backend: 'lemonade' as const, backendModelId: 'Gemma-4-E4B-it-GGUF' };
+      const lemonadeHoldingEmbedder = () => {
+        reportResidency([
+          { backend: 'ollama', source: 'measured', models: [] },
+          { backend: 'lemonade', source: 'measured', models: [resident(EMBEDDER, { contextLength: 8192 })] },
+        ]);
+        // The one model Lemonade holds, so its process figure is all the embedder's.
+        gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 5202, processName: 'lemond', vramMb: 300 }]);
+      };
+
+      beforeEach(() => {
+        if (!embedderRow) throw new Error('the catalog lost its Lemonade embedder row');
+        modelRegistry.getCatalog.mockReturnValue([embedderRow]);
+      });
+
+      it('never names it when the operator pinned it', async () => {
+        modelRegistry.getTrackedModels.mockReturnValue([
+          tracked({
+            catalogId: 'nomic-embed-text-v1-5-lemonade',
+            backend: 'lemonade',
+            backendModelId: 'nomic-embed-text-v1.5-GGUF',
+            pinned: true,
+            state: 'pinned',
+          }),
+        ]);
+        lemonadeHoldingEmbedder();
+
+        const plan = await service.planEviction(makeProfile(), 152, gemmaLemonade, operator);
+
+        expect(plan).toEqual({ canFree: false, candidates: [], freedMb: 0, busy: [] });
+      });
+
+      // PIN-2: after a Hub restart the engine still holds what the operator pinned, and the new process
+      // has tracked nothing yet. The persisted pin, looked up through the catalog row, keeps it.
+      it('never names it when the pin was persisted by the last Hub process and nothing tracks it yet', async () => {
+        modelRegistry.isPinned.mockImplementation((catalogId) => catalogId === 'nomic-embed-text-v1-5-lemonade');
+        lemonadeHoldingEmbedder();
+
+        const plan = await service.planEviction(makeProfile(), 152, gemmaLemonade, operator);
+
+        expect(plan.candidates).toEqual([]);
+        expect(modelRegistry.isPinned).toHaveBeenCalledWith('nomic-embed-text-v1-5-lemonade');
+      });
+
+      it('names it, under its catalog row, when nothing pinned it', async () => {
+        lemonadeHoldingEmbedder();
+
+        const plan = await service.planEviction(makeProfile(), 152, gemmaLemonade, operator);
+
+        expect(plan.candidates).toEqual([
+          { backend: 'lemonade', backendModelId: EMBEDDER, catalogId: 'nomic-embed-text-v1-5-lemonade', estimatedMb: 300 },
+        ]);
+      });
+
+      it("finds the Hub's own load of it, and leaves it alone while an embedding batch runs on it", async () => {
+        const embedder = tracked({ catalogId: 'nomic-embed-text-v1-5-lemonade', backend: 'lemonade', backendModelId: 'nomic-embed-text-v1.5-GGUF' });
+        modelRegistry.getEvictionCandidates.mockReturnValue([embedder]);
+        modelRegistry.getTrackedModels.mockReturnValue([embedder]);
+        lemonadeHoldingEmbedder();
+
+        const idle = await service.planEviction(makeProfile(), 152, gemmaLemonade, request);
+        expect(idle.candidates).toEqual([
+          { backend: 'lemonade', backendModelId: EMBEDDER, catalogId: 'nomic-embed-text-v1-5-lemonade', estimatedMb: 300 },
+        ]);
+
+        // Memory batch-embedding through the pool, under the bare name it was handed on another version.
+        const inUse = (backend: InferenceBackendType) => (backend === 'lemonade' ? [{ model: 'nomic-embed-text-v1.5-GGUF' }] : []);
+        const busy = await service.planEviction(makeProfile(), 152, gemmaLemonade, { scope: 'operator', inUse });
+        expect(busy).toEqual({ canFree: false, candidates: [], freedMb: 0, busy: [EMBEDDER] });
+      });
+
+      it('matches the model being loaded under either spelling', async () => {
+        lemonadeHoldingEmbedder();
+
+        const plan = await service.planEviction(makeProfile(), 100, { backend: 'lemonade', backendModelId: 'nomic-embed-text-v1.5-GGUF' }, operator);
+
+        expect(plan.candidates).toEqual([]);
+      });
+
+      it('shares a sighting between the two spellings, on unified memory where one lone process is measurable', async () => {
+        lemonadeHoldingEmbedder();
+        const strixHalo = makeProfile({
+          gpu: { available: true, vendor: 'amd', model: 'Radeon 8060S', vramMb: 0, unifiedMemory: true, driverVersion: '', runtimeAvailable: true },
+          ram: { totalMb: 125_781, availableMb: 90_000 },
+        });
+
+        await expect(service.footprintSighting(strixHalo, 'lemonade', 'nomic-embed-text-v1.5-GGUF')).resolves.toMatchObject({
+          footprintMb: 300,
+          contextLength: 8192,
+        });
+      });
+
+      it('folds nothing for another engine: `user.` means nothing to Ollama', async () => {
+        reportResidency([
+          { backend: 'ollama', source: 'measured', models: [resident('user.nomic-embed-text', { engineGpuBytes: 300 * MiB })] },
+          { backend: 'lemonade', source: 'measured', models: [] },
+        ]);
+        modelRegistry.getTrackedModels.mockReturnValue([
+          tracked({ catalogId: 'nomic-embed-text', backendModelId: 'nomic-embed-text', pinned: true }),
+        ]);
+
+        const plan = await service.planEviction(makeProfile(), 100, keepLemonade, operator);
+
+        expect(plan.candidates.map((candidate) => candidate.backendModelId)).toEqual(['user.nomic-embed-text']);
+      });
     });
 
     it('matches the model being loaded under :latest too', async () => {

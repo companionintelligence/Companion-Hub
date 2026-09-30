@@ -203,6 +203,58 @@ describe('LemonadeBackend', () => {
       expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('not saved'));
     });
 
+    // L3: a request's load stepped below Hermes' 64000 floor because an app's idle Ollama model held the
+    // card. Saved, that window outlived the shortfall: Lemonade's own later loads and every handout
+    // capped at the saved window stayed below the floor after the memory came back.
+    describe('a provisional window, below an installed app floor for memory this load could not free', () => {
+      const savedAt = (recipe_options: Record<string, unknown>) => {
+        (axios.get as never) = vi.fn().mockResolvedValue({ data: { id: 'Gemma-4-E4B-it-GGUF', recipe_options } });
+        const post = vi.fn().mockResolvedValue({ data: { status: 'success' } });
+        (axios.post as never) = post;
+        return post;
+      };
+
+      it('loads at it, with the options already saved, but keeps the larger saved window for the next load', async () => {
+        const post = savedAt({ llamacpp_backend: 'vulkan', ctx_size: 64_000 });
+
+        await backend.loadModel('Gemma-4-E4B-it-GGUF', { contextLength: 32_768, provisionalWindow: true });
+
+        expect(post).toHaveBeenCalledWith(
+          'http://ci-hub-lemonade:13305/v1/load',
+          { llamacpp_backend: 'vulkan', model_name: 'Gemma-4-E4B-it-GGUF', ctx_size: 32_768 },
+          { timeout: 120000 },
+        );
+      });
+
+      // Lemonade's own default is worse than any window the Hub chose: 4096 on 10.2.0, and the whole
+      // card's worth on 2026.x, which is how Lemonade and Ollama together froze beta-1 on 2026-09-29.
+      it('still saves it where nothing, or a smaller window, is saved', async () => {
+        for (const recipe_options of [{}, { ctx_size: -1 }, { ctx_size: 16_384 }]) {
+          const post = savedAt(recipe_options);
+
+          await backend.loadModel('Gemma-4-E4B-it-GGUF', { contextLength: 32_768, provisionalWindow: true });
+
+          expect(post).toHaveBeenCalledWith(
+            'http://ci-hub-lemonade:13305/v1/load',
+            expect.objectContaining({ model_name: 'Gemma-4-E4B-it-GGUF', ctx_size: 32_768, save_options: true }),
+            { timeout: 120000 },
+          );
+        }
+      });
+
+      it('is saved like any other window when the load is not provisional', async () => {
+        const post = savedAt({ ctx_size: 64_000 });
+
+        await backend.loadModel('Gemma-4-E4B-it-GGUF', { contextLength: 32_768 });
+
+        expect(post).toHaveBeenCalledWith(
+          'http://ci-hub-lemonade:13305/v1/load',
+          { model_name: 'Gemma-4-E4B-it-GGUF', ctx_size: 32_768, save_options: true },
+          { timeout: 120000 },
+        );
+      });
+    });
+
     it('sends no window, and reads nothing first, for an embedding model', async () => {
       const get = vi.fn();
       const post = vi.fn().mockResolvedValue({ data: { status: 'success' } });
@@ -256,6 +308,28 @@ describe('LemonadeBackend', () => {
       await expect(backend.servedContextLength('Gemma-4-E4B-it-GGUF')).resolves.toBe(4096);
       // Not resident, nothing saved: nothing to say, as before.
       await expect(backend.servedContextLength('Qwen3-4B-GGUF')).resolves.toBeNull();
+    });
+
+    // L3: a provisional load runs below the saved window without saving (see loadModel). A handout read
+    // from the saved window alone promised Hermes 64000 while Lemonade served 32768; one read from what
+    // runs now alone would promise more than the next load gives, where the saved window is the smaller.
+    it('is the smaller of the window it runs at and the saved one, when it is resident', async () => {
+      const serve = (running: number, saved: number) => {
+        (axios.get as never) = vi
+          .fn()
+          .mockImplementation(async (url: string) =>
+            url.endsWith('/v1/health')
+              ? { data: { all_models_loaded: [{ model_name: 'Gemma-4-E4B-it-GGUF', type: 'llm', recipe_options: { ctx_size: running } }] } }
+              : { data: { id: 'Gemma-4-E4B-it-GGUF', recipe_options: { ctx_size: saved } } },
+          );
+      };
+
+      serve(32_768, 64_000);
+      await expect(backend.servedContextLength('Gemma-4-E4B-it-GGUF')).resolves.toBe(32_768);
+      serve(64_000, 32_768);
+      await expect(backend.servedContextLength('Gemma-4-E4B-it-GGUF')).resolves.toBe(32_768);
+      serve(64_000, 64_000);
+      await expect(backend.servedContextLength('Gemma-4-E4B-it-GGUF')).resolves.toBe(64_000);
     });
   });
 

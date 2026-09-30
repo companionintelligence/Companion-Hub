@@ -1,4 +1,5 @@
-import type { CuratedModel } from '@ci-hub/common/types';
+import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
+import { canonicalModelId } from '@/common/helpers/hub-pool';
 
 /** True when an Ollama tag name matches a catalog model's native backend id. */
 export function isOllamaTagForModel(tagName: string, backendModelId: string): boolean {
@@ -76,6 +77,30 @@ export function isCatalogModelInstalled(
  * `appear-builtin` label; 2026.39.1 lists it bare. The prefixed name resolves on every one of them.
  */
 export const LEMONADE_USER_NAMESPACE = 'user.';
+
+/** `modelId` without {@link LEMONADE_USER_NAMESPACE}: the one spelling both of Lemonade's names for a model share. */
+export function withoutLemonadeUserNamespace(modelId: string): string {
+  return modelId.startsWith(LEMONADE_USER_NAMESPACE) ? modelId.slice(LEMONADE_USER_NAMESPACE.length) : modelId;
+}
+
+/**
+ * One spelling per model on `backend`, for matching what an engine reports resident against the
+ * registry and the catalog, which carry the catalog's `backendModelId`.
+ *
+ * Every engine folds Ollama's `name` ≡ `name:latest` ({@link canonicalModelId}): `/api/ps` names the
+ * catalog's `nomic-embed-text` `nomic-embed-text:latest`. Lemonade also folds its `user.` namespace:
+ * 10.2.0 lists the embedder the Hub registers as `user.nomic-embed-text-v1.5-GGUF` while the catalog
+ * row says `nomic-embed-text-v1.5-GGUF`, and an exact match there let an operator's load evict that
+ * embedder although it was pinned. Only Lemonade: `user.` means nothing to any other engine.
+ */
+export function engineModelKey(backend: InferenceBackendType, modelId: string): string {
+  return canonicalModelId(backend === 'lemonade' ? withoutLemonadeUserNamespace(modelId) : modelId);
+}
+
+/** Whether `a` and `b` name one model on `backend`, under {@link engineModelKey}'s folding. */
+export function sameEngineModelId(backend: InferenceBackendType, a: string, b: string): boolean {
+  return a === b || engineModelKey(backend, a) === engineModelKey(backend, b);
+}
 
 /**
  * The spelling under which `servedModelIds` names a catalog model, or null when it does not.

@@ -1,6 +1,5 @@
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
-import { canonicalModelId, sameModelId } from '@/common/helpers/hub-pool';
 import {
   type BackendHealthStatus,
   type BackendResidency,
@@ -14,6 +13,7 @@ import {
   type TrackedModel,
 } from '@ci-hub/common/types';
 import { InferenceBackendRegistry } from './backends/backend-registry';
+import { engineModelKey, sameEngineModelId } from './model-availability.util';
 import type { FootprintSighting } from './context-length.util';
 import {
   readFootprintSightings,
@@ -286,9 +286,13 @@ export class MemoryManagerService {
    * request running on it (a turn or an embedding batch) is never a candidate for anyone. Order:
    * the Hub's own loads least-recently-used first (the order it always evicted in), then, for an
    * operator, every other idle model the engines report, largest first so as few as possible go.
-   * Pinned models and `keep` are never candidates, matched with Ollama's `name` ≡ `name:latest`
-   * folding: `/api/ps` names the pinned embedder `nomic-embed-text:latest` while the catalog says
-   * `nomic-embed-text`.
+   * Pinned models and `keep` are never candidates. The engine's spelling is matched to the registry's
+   * and the catalog's under {@link engineModelKey}: `/api/ps` names the pinned embedder
+   * `nomic-embed-text:latest` while the catalog says `nomic-embed-text`, and Lemonade 10.2.0 lists the
+   * one the Hub registers as `user.nomic-embed-text-v1.5-GGUF` while the catalog says
+   * `nomic-embed-text-v1.5-GGUF`. A resident model the registry is not tracking is still pinned when
+   * the operator pinned its catalog row: pins outlive a Hub restart (see `pinned-models-record.ts`),
+   * and the engine keeps the model through it while the new Hub process has tracked nothing yet.
    *
    * A candidate nothing can size, or one sized at 0 (Ollama puts a model wholly on the CPU at
    * `size_vram` 0, which frees no VRAM), is never unloaded: it cannot be shown to help. When the
@@ -307,7 +311,7 @@ export class MemoryManagerService {
     const tracked = this.modelRegistry.getTrackedModels();
     const catalog = this.modelRegistry.getCatalog();
     const catalogRow = (backend: InferenceBackendType, backendModelId: string) =>
-      catalog.find((model) => model.backend === backend && sameModelId(model.backendModelId, backendModelId));
+      catalog.find((model) => model.backend === backend && sameEngineModelId(backend, model.backendModelId, backendModelId));
 
     // What each resident model frees, per engine. `registry` rows are the engine NOT answering: there
     // is nothing live to unload through it, and nothing measured to size a candidate by.
@@ -320,19 +324,24 @@ export class MemoryManagerService {
         residentSharesMb(entry, reported, pool, (id) => catalogRow(entry.backend, id)?.runtime.memoryFootprintMb ?? null),
       );
     }
-    /** The engine's own spelling of `backendModelId` and what unloading it frees, or `undefined` when it is not resident. */
+    /**
+     * The engine's own spelling of `backendModelId` and what unloading it frees, or `undefined` when it
+     * is not resident. The exact spelling wins where the engine lists both, so a Hub load is never
+     * matched to a different resident that only folds to the same name.
+     */
     const residentAs = (backend: InferenceBackendType, backendModelId: string): { id: string; sizeMb: number | null } | undefined => {
-      for (const [id, sizeMb] of residents.get(backend) ?? []) {
-        if (sameModelId(id, backendModelId)) return { id, sizeMb };
-      }
-      return undefined;
+      const held = [...(residents.get(backend) ?? [])];
+      const found = held.find(([id]) => id === backendModelId) ?? held.find(([id]) => sameEngineModelId(backend, id, backendModelId));
+      return found ? { id: found[0], sizeMb: found[1] } : undefined;
     };
 
     const busy: string[] = [];
     const isBusy = (candidate: EvictionCandidate): boolean => {
       const working = options.inUse?.(candidate.backend) ?? [];
       const inUse = working.some(
-        (work) => sameModelId(work.model, candidate.backendModelId) || (candidate.catalogId !== null && work.model === candidate.catalogId),
+        (work) =>
+          sameEngineModelId(candidate.backend, work.model, candidate.backendModelId) ||
+          (candidate.catalogId !== null && work.model === candidate.catalogId),
       );
       if (inUse) busy.push(candidate.backendModelId);
       return inUse;
@@ -358,9 +367,11 @@ export class MemoryManagerService {
       const others: EvictionCandidate[] = [];
       for (const [backend, models] of residents) {
         for (const [backendModelId, estimatedMb] of models) {
-          const own = tracked.find((model) => model.backend === backend && sameModelId(model.backendModelId, backendModelId));
-          if (own?.pinned) continue;
+          const own = tracked.find((model) => model.backend === backend && sameEngineModelId(backend, model.backendModelId, backendModelId));
           const catalogId = own?.catalogId ?? catalogRow(backend, backendModelId)?.id ?? null;
+          // The persisted pin too, not only `own.pinned`: a model this Hub process has not tracked since
+          // it started can still be one the operator pinned, held by the engine from before the restart.
+          if (own?.pinned || (catalogId !== null && this.modelRegistry.isPinned(catalogId))) continue;
           others.push({ backend, backendModelId, catalogId, estimatedMb });
         }
       }
@@ -604,9 +615,9 @@ export type EvictionPlan = {
   busy: string[];
 };
 
-/** Keyed under Ollama's `name` ≡ `name:latest` folding, so the kept model and a pin match however the engine spells them. */
+/** Keyed under {@link engineModelKey}'s folding, so the kept model and a pin match however the engine spells them. */
 function evictionKey(backend: InferenceBackendType, backendModelId: string): string {
-  return `${backend}\u0000${canonicalModelId(backendModelId)}`;
+  return `${backend}\u0000${engineModelKey(backend, backendModelId)}`;
 }
 
 /**
@@ -654,9 +665,13 @@ function sum(values: readonly number[]): number {
   return values.reduce((total, value) => total + value, 0);
 }
 
-/** One spelling per model, so `nomic-embed-text` and the `nomic-embed-text:latest` `/api/ps` names share a sighting. */
+/**
+ * One spelling per model ({@link engineModelKey}), so `nomic-embed-text` and the
+ * `nomic-embed-text:latest` `/api/ps` names share a sighting, and so do the catalog's
+ * `nomic-embed-text-v1.5-GGUF` and the `user.` name Lemonade 10.2.0 lists it under.
+ */
 function sightingKey(backend: InferenceBackendType, backendModelId: string): string {
-  return `${backend}\u0000${canonicalModelId(backendModelId)}`;
+  return `${backend}\u0000${engineModelKey(backend, backendModelId)}`;
 }
 
 /**
