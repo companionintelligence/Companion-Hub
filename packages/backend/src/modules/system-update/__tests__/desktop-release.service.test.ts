@@ -191,6 +191,19 @@ describe('DesktopReleaseService', () => {
     });
   });
 
+  it('reads the server once for requests that arrive while a read is in progress', async () => {
+    serve({ [PROD]: { version: '0.2.77' } });
+
+    const [mac, windows] = await Promise.all([
+      service.getDesktopRelease({ environment: 'production', platform: 'macos', arch: 'aarch64' }),
+      service.getDesktopRelease({ environment: 'production', platform: 'windows', arch: 'x86_64' }),
+    ]);
+
+    expect(mac.downloadUrl).toBe(`${PROD}/v0.2.77/macos/arm/Companion%20Hub_0.2.77_aarch64.dmg`);
+    expect(windows.downloadUrl).toBe(`${PROD}/v0.2.77/windows/x64/Companion%20Hub_0.2.77_x64-setup.exe`);
+    expect(readUrls()).toEqual([`${PROD}/latest.json`, `${PROD}/v0.2.77/manifest.json`]);
+  });
+
   it('keeps the two download servers apart', async () => {
     serve({ [PROD]: { version: '0.2.77' }, [DEV]: { version: '0.2.61' } });
 

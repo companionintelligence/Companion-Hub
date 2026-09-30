@@ -29,6 +29,8 @@ type CachedRelease = {
 @Injectable()
 export class DesktopReleaseService {
   private readonly releases = new Map<string, CachedRelease>();
+  /** The read in progress for each server, so Settings open in several tabs asks the server once. */
+  private readonly pendingReads = new Map<string, Promise<CachedRelease>>();
 
   constructor(
     private readonly httpService: HttpService,
@@ -52,9 +54,18 @@ export class DesktopReleaseService {
       return cached;
     }
 
-    const release = await this.fetchRelease(base);
-    this.releases.set(base, release);
-    return release;
+    let pending = this.pendingReads.get(base);
+    if (!pending) {
+      // fetchRelease settles every failure into a short-lived entry, so this never rejects.
+      pending = this.fetchRelease(base)
+        .then((release) => {
+          this.releases.set(base, release);
+          return release;
+        })
+        .finally(() => this.pendingReads.delete(base));
+      this.pendingReads.set(base, pending);
+    }
+    return pending;
   }
 
   private async fetchRelease(base: string): Promise<CachedRelease> {
