@@ -116,9 +116,76 @@ export function extractEngineTimingsFromParsedJson(value: unknown): EngineTiming
   return null;
 }
 
+/**
+ * How much of its prompt an engine read, against how much it took from its prompt cache: `evaluated`
+ * tokens were read, `cached` were reused, and `cached` is `null` when the engine said how many it read
+ * but not how many it reused. Both in the engine's own tokens.
+ */
+export interface PromptRead {
+  evaluated: number;
+  cached: number | null;
+}
+
+/**
+ * What the engine said about its prompt cache in one parsed frame, for throughput placement: a turn
+ * that reused most of its prompt answers in seconds on any hardware, and timed as a cold read it makes
+ * a CPU node look like a GPU one. `null` when the frame does not say, or says only something that
+ * cannot be split into read and reused. Three dialects, on the frame that ends the response:
+ *
+ *   - Ollama native: `prompt_eval_count` is the WHOLE prompt, reused part included, and
+ *     `prompt_eval_cached_count` the reused part. Measured against Ollama 0.34.4 with `gemma3:1b`: a
+ *     repeated 7,615-token prompt reported `prompt_eval_count` 7,615 both times, with
+ *     `prompt_eval_duration` falling from 2,735 ms to 19 ms. So a count without the cached one says
+ *     nothing about the cache, and nothing is reported for it.
+ *   - llama.cpp's server (llama-server, lemonade): `timings.prompt_n` is the tokens it processed and
+ *     `timings.cache_n` the tokens it reused.
+ *   - OpenAI-compatible: `usage.prompt_tokens` is the whole prompt and
+ *     `usage.prompt_tokens_details.cached_tokens` the reused part — Ollama's `/v1` (the same probe:
+ *     7,619 then 7,619 with 7,618 cached), and vLLM or llama-server when they report details. Without
+ *     the details `prompt_tokens` is only the prompt's size.
+ */
+export function extractPromptReadFromParsedJson(value: unknown): PromptRead | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  if (value.done === true) {
+    const total = toCountOrNull(value.prompt_eval_count);
+    const cached = toCountOrNull(value.prompt_eval_cached_count);
+    if (total !== null && cached !== null) {
+      return { evaluated: Math.max(0, total - cached), cached };
+    }
+  }
+  if (isRecord(value.timings)) {
+    const evaluated = toCountOrNull(value.timings.prompt_n);
+    if (evaluated !== null) {
+      return { evaluated, cached: toCountOrNull(value.timings.cache_n) };
+    }
+  }
+  if (isRecord(value.usage) && isRecord(value.usage.prompt_tokens_details)) {
+    const total = toCountOrNull(value.usage.prompt_tokens);
+    const cached = toCountOrNull(value.usage.prompt_tokens_details.cached_tokens);
+    if (total !== null && cached !== null) {
+      return { evaluated: Math.max(0, total - cached), cached };
+    }
+  }
+  return null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** A token count as an engine would write one: finite and not negative. */
+function toCountOrNull(value: unknown): number | null {
+  const number = toFiniteNumberOrNull(value);
+  return number !== null && number >= 0 ? number : null;
+}
+
 /** The rest of what a response can tell throughput placement while it streams through. Every callback is optional and at most once. */
 export interface ResponseTapObserver {
   onEngineTimings?: (timings: EngineTimings) => void;
+  /** How much of the prompt the engine read rather than reused — see {@link extractPromptReadFromParsedJson}. */
+  onPromptRead?: (read: PromptRead) => void;
   /** The first body chunk arrived. For an engine that holds its headers until it has a token, that is the same moment. */
   onFirstChunk?: () => void;
   /** The body ended normally. Never called for a stream that was cut off. */
@@ -173,9 +240,10 @@ export function tapResponseUsageWhileStreaming(
   let usageFired = false;
   // Nothing to look for when nobody asked, so a usage-only tap stops parsing where it always did.
   let timingsFired = !observer.onEngineTimings;
+  let readFired = !observer.onPromptRead;
   let sawFirstChunk = false;
   let sawNewline = false;
-  const fired = () => usageFired && timingsFired;
+  const fired = () => usageFired && timingsFired && readFired;
 
   const tryLine = (line: string) => {
     if (fired()) return;
@@ -197,6 +265,13 @@ export function tapResponseUsageWhileStreaming(
         if (timings) {
           timingsFired = true;
           observer.onEngineTimings?.(timings);
+        }
+      }
+      if (!readFired) {
+        const read = extractPromptReadFromParsedJson(parsed);
+        if (read) {
+          readFired = true;
+          observer.onPromptRead?.(read);
         }
       }
     } catch {

@@ -387,7 +387,8 @@ export interface PoolRoutingThroughput {
   unmeasured: PoolRoutingThroughputUnmeasured[];
   /**
    * Every candidate that was about to go first, in its group, and went behind candidates predicted to
-   * be much faster and no more than one request busier — see `applySlowerPlacement`. In the order the
+   * be much faster and no busier, or one request busier on a node with a slot free for it — see
+   * `applySlowerPlacement`. In the order the
    * moves were made. Empty when none moved, which includes every prompt under the size the rule applies
    * from and every group led by a pinned node or the engine prefix affinity holds.
    */
@@ -445,7 +446,10 @@ export interface PoolRoutingThroughputSlowerDemotion {
   fasterNode: string;
   fasterBackend: InferenceBackendType;
   fasterMs: number;
-  /** Never more than `inFlight` + `SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT` (1). */
+  /**
+   * Never more than `inFlight`, nor than the in-flight count of the node the ranker put first, except by
+   * `SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT` (1) on a node that advertised a slot free for the request.
+   */
   fasterInFlight: number;
 }
 

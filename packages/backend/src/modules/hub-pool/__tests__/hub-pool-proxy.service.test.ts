@@ -4848,13 +4848,44 @@ describe('PoolProxyService', () => {
         });
 
         it('does not send the turn to a faster node with more than one request more in flight', async () => {
-          usePeers(() => [node('core-7'), node('beta-1', { inFlightRequests: 2 })]);
+          usePeers(() => [node('core-7'), node('beta-1', { inFlightRequests: 2, ollamaSlots: 4 })]);
           measureTheHermesTurn();
           expect(ids(await service.buildCandidateList(MODEL, bytesOf(HERMES_TURN_TOKENS)))).toEqual(['core-7', 'beta-1']);
 
-          // One more is a request it may be nearly done with, and all the ranker's order rested on.
-          usePeers(() => [node('core-7'), node('beta-1', { inFlightRequests: 1 })]);
+          // One more, on a node advertising a slot free for it: the turn runs beside that request.
+          usePeers(() => [node('core-7'), node('beta-1', { inFlightRequests: 1, ollamaSlots: 2 })]);
           expect(ids(await service.buildCandidateList(MODEL, bytesOf(HERMES_TURN_TOKENS)))).toEqual(['beta-1', 'core-7']);
+        });
+
+        it('with slot awareness off, sends a turn to a faster node one request busier only when it advertises a slot free for it', async () => {
+          measureTheHermesTurn();
+          const order = async (beta1: Parameters<typeof node>[1]) => {
+            usePeers(() => [node('core-7'), node('beta-1', beta1)]);
+            return ids(await service.buildCandidateList(MODEL, bytesOf(HERMES_TURN_TOKENS)));
+          };
+
+          // The second of two large turns in a row: the first is in flight on beta-1. With one slot
+          // there, or none stated, this one would queue behind a whole turn while core-7 sat idle.
+          expect(await order({ inFlightRequests: 1 })).toEqual(['core-7', 'beta-1']);
+          expect(await order({ inFlightRequests: 1, ollamaSlots: 1 })).toEqual(['core-7', 'beta-1']);
+          expect(await order({ inFlightRequests: 1, ollamaSlots: 2 })).toEqual(['beta-1', 'core-7']);
+          // As idle as core-7, it goes ahead whatever it states.
+          expect(await order({})).toEqual(['beta-1', 'core-7']);
+        });
+
+        it("never lets a chain of moves put a node two requests busier than the ranker's first in front", async () => {
+          usePeers(() => [
+            node('core-7'),
+            node('beta-red', { inFlightRequests: 1, ollamaSlots: 4 }),
+            node('beta-1', { inFlightRequests: 2, ollamaSlots: 4 }),
+          ]);
+          measure('core-7', OPENCLAW_TURN_TOKENS, 200_000);
+          measure('beta-red', OPENCLAW_TURN_TOKENS, 60_000);
+          measure('beta-1', OPENCLAW_TURN_TOKENS, 10_000);
+
+          // beta-red, a request busier and over three times as fast, passes core-7. beta-1 is six times
+          // as fast again, but two requests busier than core-7, which the ranker put first.
+          expect(ids(await service.buildCandidateList(MODEL, bytesOf(OPENCLAW_TURN_TOKENS)))).toEqual(['beta-red', 'core-7', 'beta-1']);
         });
 
         it('does not bring forward a faster node whose slots are full', async () => {
@@ -5477,6 +5508,115 @@ describe('PoolProxyService', () => {
         expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['fzzy', 'core-6']);
       });
 
+      describe('a turn the engine answered from its prompt cache', () => {
+        /** Ollama's native trailer: `prompt_eval_count` is the whole prompt whether or not it was cached, as on Ollama 0.34.4. */
+        const nativeTrailer = (cached: number, promptMs: number) => ({
+          done: true,
+          prompt_eval_count: 10_600,
+          prompt_eval_cached_count: cached,
+          prompt_eval_duration: promptMs * 1_000_000,
+          eval_count: 64,
+          eval_duration: 4_000_000_000,
+        });
+        /** An OpenAI-compatible stream whose usage frame says how much of the prompt was cached, as Ollama's `/v1` sends it. */
+        const v1Stream = (promptTokens: number, cached: number | null) =>
+          new Response(
+            `data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: ${JSON.stringify({
+              choices: [],
+              usage: {
+                prompt_tokens: promptTokens,
+                completion_tokens: 1,
+                total_tokens: promptTokens + 1,
+                ...(cached === null ? {} : { prompt_tokens_details: { cached_tokens: cached } }),
+              },
+            })}\n\ndata: [DONE]\n\n`,
+            { status: 200 },
+          );
+        const serveNative = () =>
+          service.proxyRequest({ path: '/api/chat', method: 'POST', body: turn(MEDIUM_PROMPT_BYTES), model: MODEL, res: createMockResponse() });
+        const serveV1 = (bytes = MEDIUM_PROMPT_BYTES) =>
+          service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: turn(bytes), model: MODEL, res: createMockResponse() });
+        const estimateOf = (call = 0) => Math.ceil(String(vi.mocked(global.fetch).mock.calls[call]?.[1]?.body).length / 4);
+        const rateOf = (target: { nodeKey: string; backend: 'ollama'; model: string }) =>
+          1000 / (throughput.prefillPoints(target)[0]?.msPerToken ?? Number.POSITIVE_INFINITY);
+
+        it("records no prefill sample for a turn that reused most of its prompt, by Ollama's native count or its /v1 detail", async () => {
+          vi.useFakeTimers({ toFake: ['Date'] });
+          usePeers(fzzyAndCore6);
+          // 150 ms of prompt evaluation for 10,600 tokens: 70,000 tok/s timed against the whole prompt.
+          vi.mocked(global.fetch).mockImplementation(async () => new Response(`${JSON.stringify(nativeTrailer(10_500, 150))}\n`, { status: 200 }));
+          await serveNative();
+          expect(throughput.prefillPoints(FZZY)).toEqual([]);
+
+          vi.mocked(global.fetch).mockImplementation(async () => {
+            vi.setSystemTime(Date.now() + 400);
+            return v1Stream(10_620, 10_400);
+          });
+          await serveV1();
+          expect(routingLog.list()[0]).toMatchObject({ node: 'fzzy.tailxyz.ts.net', outcome: 'served' });
+          expect(throughput.prefillPoints(FZZY)).toEqual([]);
+        });
+
+        it('times a cold read as before, and one that reused part of its prompt on the part it read', async () => {
+          usePeers(fzzyAndCore6);
+          vi.mocked(global.fetch).mockImplementation(async () => new Response(`${JSON.stringify(nativeTrailer(0, 20_000))}\n`, { status: 200 }));
+          await serveNative();
+          expect(rateOf(FZZY)).toBeCloseTo(estimateOf() / 20, 6);
+
+          // 30% reused: the 20 s went on the other 70%.
+          const partly = { ...FZZY, nodeKey: 'core-6' };
+          usePeers(() => [node('core-6')]);
+          vi.mocked(global.fetch).mockImplementation(async () => new Response(`${JSON.stringify(nativeTrailer(3_180, 20_000))}\n`, { status: 200 }));
+          await serveNative();
+          expect(rateOf(partly)).toBeCloseTo((estimateOf(1) * 0.7) / 20, 6);
+        });
+
+        it('keeps timing an engine that does not say what it reused, as before', async () => {
+          vi.useFakeTimers({ toFake: ['Date'] });
+          usePeers(fzzyAndCore6);
+          vi.mocked(global.fetch).mockImplementation(async () => {
+            vi.setSystemTime(Date.now() + 2_000);
+            return v1Stream(10_620, null);
+          });
+
+          await serveV1();
+
+          expect(rateOf(FZZY)).toBeCloseTo(estimateOf() / 2, 6);
+        });
+
+        it('never takes a node whose only samples were cache hits for the much faster one, and does once it reads a turn cold', async () => {
+          vi.useFakeTimers({ toFake: ['Date'] });
+          const HERMES_TURN_TOKENS = 14_500;
+          const HERMES_TURN_BYTES = HERMES_TURN_TOKENS * 4;
+          let firstByteMs = 400;
+          let cached = 14_300;
+          vi.mocked(global.fetch).mockImplementation(async () => {
+            vi.setSystemTime(Date.now() + firstByteMs);
+            return v1Stream(HERMES_TURN_TOKENS, cached);
+          });
+          // A session's turns on beta-1, each reusing all but its last couple of hundred tokens.
+          usePeers(() => [node('beta-1')]);
+          for (const _ of [1, 2, 3]) {
+            await serveV1(HERMES_TURN_BYTES - 400);
+          }
+          expect(throughput.prefillPoints({ ...FZZY, nodeKey: 'beta-1' })).toEqual([]);
+
+          // Timed against the whole prompt, each of those read ~36,000 tok/s. Unmeasured, beta-1
+          // instead gives way to core-7, measured to meet the budget on the Hermes turn of 2026-09-30.
+          usePeers(() => [node('core-7'), node('beta-1')]);
+          throughput.recordPrefill({ ...FZZY, nodeKey: 'core-7' }, { promptTokens: HERMES_TURN_TOKENS, ms: 54_854, deadline: false });
+          expect(ids(await service.buildCandidateList(MODEL, HERMES_TURN_BYTES))).toEqual(['core-7', 'beta-1']);
+
+          // A turn beta-1 read cold, in the 8,959 ms predicted for it that day, is evidence.
+          usePeers(() => [node('beta-1')]);
+          firstByteMs = 8_959;
+          cached = 0;
+          await serveV1(HERMES_TURN_BYTES - 400);
+          usePeers(() => [node('core-7'), node('beta-1')]);
+          expect(ids(await service.buildCandidateList(MODEL, HERMES_TURN_BYTES))).toEqual(['beta-1', 'core-7']);
+        });
+      });
+
       it('learns nothing about prefill from a non-streamed response that carries no engine timings', async () => {
         usePeers(fzzyAndCore6);
         vi.mocked(global.fetch).mockImplementation(
@@ -5874,18 +6014,26 @@ describe('PoolProxyService', () => {
         };
       }
 
-      /** Every candidate idle, none holding the front or withheld, every one free to go ahead, at the default thresholds, unless told otherwise. */
+      /**
+       * Every candidate idle and stating no slot count, none holding the front or withheld, every one
+       * free to go ahead, at the default thresholds, unless told otherwise.
+       */
       function placement(
         predictions: [PoolCandidate, MeasuredPrefill][],
-        options: Partial<Omit<SlowerPlacement, 'measuredOf' | 'inFlightOf'>> & { inFlight?: [PoolCandidate, number][] } = {},
+        options: Partial<Omit<SlowerPlacement, 'measuredOf' | 'inFlightOf' | 'hasFreeSlot'>> & {
+          inFlight?: [PoolCandidate, number][];
+          slots?: [PoolCandidate, number][];
+        } = {},
       ): SlowerPlacement {
-        const { inFlight = [], ...rest } = options;
+        const { inFlight = [], slots = [], ...rest } = options;
         const measured = new Map(predictions);
         const queue = new Map(inFlight);
+        const stated = new Map(slots);
         return {
           estimatedTokens: TOKENS,
           measuredOf: (candidate) => measured.get(candidate),
           inFlightOf: (candidate) => queue.get(candidate) ?? 0,
+          hasFreeSlot: (candidate) => (queue.get(candidate) ?? 0) < (stated.get(candidate) ?? 0),
           holdsFront: () => false,
           mayGoAhead: () => true,
           withheld: () => false,
@@ -5980,30 +6128,102 @@ describe('PoolProxyService', () => {
         expect(result.demoted).toHaveLength(1);
       });
 
-      it('lets a faster candidate with one request more go ahead, and not one with two', () => {
+      it('lets a faster candidate with one request more go ahead only when its node states a slot free for it, and never one with two', () => {
         const pair: [PoolCandidate, MeasuredPrefill][] = [
           [core7, predicted(54_854)],
           [beta1, predicted(8_959)],
         ];
-        const oneMore = applySlowerPlacement([core7, beta1], placement(pair, { inFlight: [[beta1, SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT]] }));
-        expect(oneMore.ordered).toEqual([beta1, core7]);
-        expect(oneMore.demoted[0]).toMatchObject({ inFlight: 0, fasterInFlight: 1 });
+        const oneMore: [PoolCandidate, number][] = [[beta1, SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT]];
 
-        const twoMore = applySlowerPlacement([core7, beta1], placement(pair, { inFlight: [[beta1, SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT + 1]] }));
+        const freeSlot = applySlowerPlacement([core7, beta1], placement(pair, { inFlight: oneMore, slots: [[beta1, 2]] }));
+        expect(freeSlot.ordered).toEqual([beta1, core7]);
+        expect(freeSlot.demoted[0]).toMatchObject({ inFlight: 0, fasterInFlight: 1 });
+
+        // On a node that states no slot count, or whose one slot that request fills, the turn would
+        // queue behind a whole turn while core-7 sat idle.
+        expect(applySlowerPlacement([core7, beta1], placement(pair, { inFlight: oneMore })).ordered).toEqual([core7, beta1]);
+        expect(applySlowerPlacement([core7, beta1], placement(pair, { inFlight: oneMore, slots: [[beta1, 1]] })).ordered).toEqual([core7, beta1]);
+
+        const twoMore = applySlowerPlacement(
+          [core7, beta1],
+          placement(pair, { inFlight: [[beta1, SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT + 1]], slots: [[beta1, 8]] }),
+        );
         expect(twoMore.ordered).toEqual([core7, beta1]);
         expect(twoMore.demoted).toEqual([]);
 
-        // Measured from the first's own queue: a busy first is passed by a node as busy as it.
-        const bothBusy = applySlowerPlacement(
-          [core7, beta1],
-          placement(pair, {
-            inFlight: [
-              [core7, 3],
-              [beta1, 4],
+        // Measured from the first's own queue: a busy first is passed by a node as busy as it, slots or
+        // not, and by one a request busier with a slot free.
+        const busy = (beta1InFlight: number, slots: [PoolCandidate, number][] = []) =>
+          applySlowerPlacement(
+            [core7, beta1],
+            placement(pair, {
+              inFlight: [
+                [core7, 3],
+                [beta1, beta1InFlight],
+              ],
+              slots,
+            }),
+          ).ordered;
+        expect(busy(3)).toEqual([beta1, core7]);
+        expect(busy(4)).toEqual([core7, beta1]);
+        expect(busy(4, [[beta1, 8]])).toEqual([beta1, core7]);
+      });
+
+      it("bounds every move by the ranker's first, so a chain of moves never leads to a node two requests busier", () => {
+        // core-7 idle and first; beta-red a request busier and much faster; beta-1 two busier and
+        // much faster again. Both state slots free. Counted from each new first, beta-red's move would
+        // let beta-1 pass it at one more than beta-red: two more than the node the ranker chose.
+        const result = applySlowerPlacement(
+          [core7, betaRed, beta1],
+          placement(
+            [
+              [core7, predicted(200_000)],
+              [betaRed, predicted(60_000)],
+              [beta1, predicted(10_000)],
             ],
-          }),
+            {
+              inFlight: [
+                [betaRed, 1],
+                [beta1, 2],
+              ],
+              slots: [
+                [betaRed, 4],
+                [beta1, 4],
+              ],
+            },
+          ),
         );
-        expect(bothBusy.ordered).toEqual([beta1, core7]);
+
+        expect(result.ordered).toEqual([betaRed, core7, beta1]);
+        expect(result.demoted.map((entry) => [entry.node, entry.inFlight, entry.fasterNode, entry.fasterInFlight])).toEqual([
+          ['core-7.tailxyz.ts.net', 0, 'beta-red.tailxyz.ts.net', 1],
+        ]);
+      });
+
+      it('bounds a move by the node it passes as well, when a move put a node idler than the ranker chose in front', () => {
+        // This node's engine first on its head start with two in flight; beta-red, idle, is much faster
+        // and goes ahead, and beta-1 with two in flight is as busy as the engine, so it goes too. Then
+        // beta-1 is much faster than beta-red, but two requests busier than it: it stays behind.
+        const result = applySlowerPlacement(
+          [local, betaRed, beta1],
+          placement(
+            [
+              [local, predicted(300_000)],
+              [betaRed, predicted(60_000)],
+              [beta1, predicted(10_000)],
+            ],
+            {
+              inFlight: [
+                [local, 2],
+                [beta1, 2],
+              ],
+              slots: [[beta1, 4]],
+            },
+          ),
+        );
+
+        expect(result.ordered).toEqual([betaRed, beta1, local]);
+        expect(result.demoted).toHaveLength(1);
       });
 
       it('leaves the group whole when the first holds the front: a pinned node, or the engine affinity holds', () => {

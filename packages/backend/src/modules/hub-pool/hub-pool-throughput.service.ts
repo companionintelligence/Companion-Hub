@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/common/types';
 import { canonicalModelId } from '@/common/helpers/hub-pool';
 import type { PoolDecodeEstimate, PoolPrefillEstimate, PoolThroughputEstimate } from './hub-pool.types';
+import type { PromptRead } from './response-usage-tap';
 
 /**
  * How fast each engine has read prompts and written tokens, per (node, backend, model), for
@@ -32,6 +33,13 @@ import type { PoolDecodeEstimate, PoolPrefillEstimate, PoolThroughputEstimate } 
  * - **Missed deadlines count.** A request that ran out of its budget with no first byte carries no
  *   usage frame, and it is exactly the failure placement exists to avoid repeating, so it is recorded
  *   as "at least this slow".
+ * - **A cache hit is not a read.** When the engine says how much of the prompt it reused, a turn that
+ *   reused most of it is not evidence at all, and the time of one that reused part of it is charged to
+ *   the part it read — see {@link coldReadShare}. Keeping the slow evidence apart bounds how long a
+ *   cache hit can hide a slow read, not whether it can: once the slow evidence is forgotten a band reads
+ *   as its latest faster sample alone, and a node whose only samples were cache hits reads as fast as
+ *   the cache. That is what would put a turn read cold on a CPU node because it answered warm turns in
+ *   milliseconds. An engine that does not say keeps being timed as before.
  *
  * Rates are in estimated tokens (`bytes / 4` of the forwarded body), the unit the budget is sized in.
  * In memory and process-local, like the load counter and the routing log: a restart forgets it.
@@ -128,11 +136,18 @@ export const SLOWER_PLACEMENT_FLOOR_MS = 20_000;
 
 /**
  * How many more requests in flight than the first candidate a faster one may have and still go ahead
- * of it — see `applySlowerPlacement`. One lets the rule act where the ranker put a CPU node first
- * because the faster node has a single request in flight, which it may be nearly done with. That is a
- * bet: on this fleet's `-np 1` engines a request in flight can be a whole turn, ~300 s for a large
- * one. More than one is a queue, and queue depth stays the ranker's to judge. With slot awareness on,
- * a node whose slots that request fills is in a later group and is never considered at all.
+ * of it — see `applySlowerPlacement` — and only when its node advertises a slot free for the request.
+ * One lets the rule act where the ranker put a CPU node first because the faster node has a single
+ * request in flight that it can serve beside this one. Without a free slot that is a bet that the
+ * request is nearly done, and on this fleet's `-np 1` engines it can be a whole turn, ~300 s for a
+ * large one: two large turns in a row would both go to the one fast node, the second queued behind the
+ * first, while the slower node sat idle. So a node that states no slot count, or whose slots its queue
+ * already fills, goes ahead only when it is no busier. More than one is a queue, and queue depth stays
+ * the ranker's to judge.
+ *
+ * Counted from the node the ranker put first, not from whichever node the last move put there, so
+ * moves cannot add up: after one move put a node one request busier first, a second must not put one
+ * two busier there.
  */
 export const SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT = 1;
 
@@ -156,6 +171,43 @@ export type UnmeasuredPrior = 'unknown' | 'cpu-only';
 /** The prior for a peer that advertised `hardwareTier`. The value is the peer's to write, so anything unrecognised is `unknown`. */
 export function unmeasuredPriorOf(hardwareTier: unknown): UnmeasuredPrior {
   return hardwareTier === 'cpu-only' || hardwareTier === 'insufficient' ? 'cpu-only' : 'unknown';
+}
+
+/**
+ * The least share of a prompt an engine must have read, rather than reused from its prompt cache, for
+ * the time it took to count as prefill evidence — see {@link coldReadShare}.
+ *
+ * A cache hit on an agent turn reuses nearly all of it: the probe behind `extractPromptReadFromParsedJson`
+ * reused 7,618 of 7,619 tokens, and a turn that appends a tool result to a 30k-token history reads the
+ * few thousand new ones. Such a turn times the cache, not the hardware. Half is where the read part stops
+ * being most of the turn; above it, dividing the time by the part read still gives a rate for this
+ * hardware at this size, if a slightly pessimistic one, since the part read is the end of the prompt,
+ * where attention costs the most per token.
+ */
+export const COLD_READ_MIN_SHARE = 0.5;
+
+/**
+ * The share of a prompt of `estimatedTokens` that the engine read rather than reused, from what it said
+ * about it — see `extractPromptReadFromParsedJson`. `1` when it said nothing, so an engine that does
+ * not report its cache is timed exactly as before.
+ *
+ * With both counts the share is the engine's own `evaluated / (evaluated + cached)`, in its own tokens,
+ * and the pool's estimate does not enter into it. That matters because the estimate is `bytes / 4` of
+ * the forwarded JSON and the engine counts after its template and tokenizer: the same probe was 5,033
+ * estimated tokens and 7,615 real ones. With only the part read (a llama-server that predates
+ * `cache_n`), it is judged against the estimate, capped at the whole prompt. That is coarser — a
+ * densely tokenized prompt that reused just over half can pass for cold — but the cache hits that
+ * matter, a long history reused and a few thousand tokens appended, are far below half on any count.
+ */
+export function coldReadShare(read: PromptRead | null | undefined, estimatedTokens: number): number {
+  if (!read) {
+    return 1;
+  }
+  if (read.cached !== null) {
+    const total = read.evaluated + read.cached;
+    return total > 0 ? read.evaluated / total : 0;
+  }
+  return estimatedTokens > 0 ? Math.min(1, read.evaluated / estimatedTokens) : 1;
 }
 
 /** How many (backend, model) entries a node advertises, and how many of a peer's a reader accepts. */
@@ -449,16 +501,31 @@ export class HubPoolThroughputService {
   /** Insertion order is recency order: every write re-inserts, so the first key is the one to evict. */
   private readonly tracked = new Map<string, TrackedThroughput>();
 
-  /** A prompt of `promptTokens` reached its first byte after `ms` — or, with `deadline`, had not after `ms`. */
-  recordPrefill(target: ThroughputTarget, sample: { promptTokens: number; ms: number; deadline: boolean }, now = Date.now()): void {
+  /**
+   * A prompt of `promptTokens` reached its first byte after `ms` — or, with `deadline`, had not after
+   * `ms`. `read` is what the engine said about its prompt cache, if anything: a sample that reused more
+   * than {@link COLD_READ_MIN_SHARE} of the prompt is dropped, and the time of one that reused less is
+   * charged to the part it read — see {@link coldReadShare}. The band stays the whole prompt's, since
+   * the part read was read at that context.
+   */
+  recordPrefill(
+    target: ThroughputTarget,
+    sample: { promptTokens: number; ms: number; deadline: boolean; read?: PromptRead | null },
+    now = Date.now(),
+  ): void {
     const band = prefillBand(sample.promptTokens);
     if (band === null || !Number.isFinite(sample.ms) || sample.ms <= 0) {
+      return;
+    }
+    // A missed deadline produced no answer, so no engine said anything about its cache: it stands whole.
+    const share = sample.deadline ? 1 : coldReadShare(sample.read, sample.promptTokens);
+    if (share < COLD_READ_MIN_SHARE) {
       return;
     }
     const entry = this.touch(target, now);
     entry.prefill[band] = mergePrefillEvidence(
       entry.prefill[band],
-      { msPerToken: sample.ms / sample.promptTokens, promptTokens: sample.promptTokens, deadline: sample.deadline, at: now },
+      { msPerToken: sample.ms / (sample.promptTokens * share), promptTokens: sample.promptTokens, deadline: sample.deadline, at: now },
       now,
     );
   }

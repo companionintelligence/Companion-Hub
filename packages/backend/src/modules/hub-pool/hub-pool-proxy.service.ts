@@ -69,7 +69,13 @@ import {
   type ThroughputTarget,
   type UnmeasuredPrior,
 } from './hub-pool-throughput.service';
-import { injectUsageOptIn, tapResponseUsageWhileStreaming, type EngineTimings, type ResponseTapObserver } from './response-usage-tap';
+import {
+  injectUsageOptIn,
+  tapResponseUsageWhileStreaming,
+  type EngineTimings,
+  type PromptRead,
+  type ResponseTapObserver,
+} from './response-usage-tap';
 import { POOL_AFFINITY_HEADER, PrefixAffinityStore, applyPrefixAffinity, derivePrefixKey, type PrefixKey } from './hub-pool-prefix-affinity';
 import { chooseAutoModel, collectPoolModelOffers, type AutoModelPreference, type NodeModelInventory } from './pool-auto-model';
 import {
@@ -974,6 +980,12 @@ export interface SlowerPlacement {
   measuredOf: (candidate: PoolCandidate) => MeasuredPrefill | undefined;
   /** The queue depth the ranker read for the candidate. */
   inFlightOf: (candidate: PoolCandidate) => number;
+  /**
+   * Whether the candidate's node advertises a slot count above the queue depth `inFlightOf` reads, so
+   * that one request more there runs beside the others rather than waiting for them. `false` for a
+   * node that states no count, or an engine whose slots the pool does not read.
+   */
+  hasFreeSlot: (candidate: PoolCandidate) => boolean;
   /** A candidate that keeps the front when it has it: the pinned node, and the engine prefix affinity holds. */
   holdsFront: (candidate: PoolCandidate) => boolean;
   /** A candidate that may go ahead of the first: not a local engine contention moves behind the peers. */
@@ -1008,8 +1020,16 @@ export interface SlowerPlacement {
  *
  * - **Measured to meet the budget, on a reading that is not a lower bound.** A missed deadline says
  *   "at least this slow", which says nothing about how much faster than the first it is.
- * - **No more than {@link SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT} busier.** Queue depth stays the
- *   ranker's first key; this settles a tie, or a single request, not a queue.
+ * - **Measured on cold reads.** The faster prediction is only as good as the samples under it, and a
+ *   turn that reused its prompt from the engine's cache times the cache. Those never become evidence
+ *   when the engine says how much it reused (see `HubPoolThroughputService.recordPrefill`), so a node
+ *   whose only samples were cache hits is unmeasured here and never goes ahead. An engine that does not
+ *   say is timed as it always was, and an advertised rate is the peer's own reading of the same.
+ * - **No busier than the first, or one request busier on a node with a slot free for it.** Queue depth
+ *   stays the ranker's first key; this settles a tie, or a single request an engine can serve beside
+ *   this one, not a queue — see {@link SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT}. Counted from the node the
+ *   ranker put first, and from the node being passed when that one is idler, so no chain of moves ends
+ *   on a node more than that one request busier than either.
  * - **Not a local engine that contention moves**, which would put it back where contention just took
  *   it from.
  *
@@ -1051,6 +1071,11 @@ export function applySlowerPlacement(
   // Asked once per candidate, so a withhold running out mid-call cannot leave a slot without a candidate.
   const withheld = new Set(group.filter((candidate) => placement.withheld(candidate)));
   let ordered = group.filter((candidate) => !withheld.has(candidate));
+  // The queue the ranker chose, read once. Measured from each new first instead, the margin would
+  // compound: one move puts a node a request busier first, the next lets a node two busier pass it,
+  // and every move stays within the margin of the one before while the turn drifts onto a queue.
+  const rankedFirst = ordered[0];
+  const rankedInFlight = rankedFirst ? placement.inFlightOf(rankedFirst) : 0;
   // Bounded as well as terminating: each move puts a strictly faster candidate first.
   for (let moves = 0; moves < group.length; moves += 1) {
     const [first, ...rest] = ordered;
@@ -1059,13 +1084,20 @@ export function applySlowerPlacement(
       break;
     }
     const slowerMs = firstMeasured.prediction.predictedMs;
-    const busiest = placement.inFlightOf(first) + SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT;
+    // The idler of the ranker's first and the node being passed. A move can put a node idler than the
+    // ranker's first in front; whatever passes it then is held to its queue too, so no move is ever to
+    // a node more than the margin busier than the one it passes.
+    const level = Math.min(rankedInFlight, placement.inFlightOf(first));
     const faster = rest.filter((candidate) => {
       const measured = placement.measuredOf(candidate);
       if (!measured || measured.slow || measured.prediction.deadline) {
         return false;
       }
-      if (!placement.mayGoAhead(candidate) || placement.inFlightOf(candidate) > busiest) {
+      if (!placement.mayGoAhead(candidate)) {
+        return false;
+      }
+      const inFlight = placement.inFlightOf(candidate);
+      if (inFlight > level && !(inFlight <= level + SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT && placement.hasFreeSlot(candidate))) {
         return false;
       }
       const fasterMs = measured.prediction.predictedMs;
@@ -1268,10 +1300,12 @@ interface ResponseTiming {
   completedAt: number | null;
   engine: EngineTimings | null;
   usage: PoolRoutingUsage | null;
+  /** How much of the prompt the engine read rather than took from its cache, when it said. */
+  promptRead: PromptRead | null;
 }
 
 function startResponseTiming(): { timing: ResponseTiming; observer: ResponseTapObserver } {
-  const timing: ResponseTiming = { firstChunkAt: null, completedAt: null, engine: null, usage: null };
+  const timing: ResponseTiming = { firstChunkAt: null, completedAt: null, engine: null, usage: null, promptRead: null };
   return {
     timing,
     observer: {
@@ -1283,6 +1317,9 @@ function startResponseTiming(): { timing: ResponseTiming; observer: ResponseTapO
       },
       onEngineTimings: (engine) => {
         timing.engine = engine;
+      },
+      onPromptRead: (read) => {
+        timing.promptRead = read;
       },
     },
   };
@@ -1770,11 +1807,12 @@ export class PoolProxyService {
    *
    * Last, within each of those groups and for a large prompt only: when the candidate the group would
    * try first is predicted {@link SLOWER_PLACEMENT_RATIO} times and {@link SLOWER_PLACEMENT_FLOOR_MS}
-   * slower than another measured to meet the budget, and that one has at most one request more in
-   * flight, the faster one goes ahead — see {@link applySlowerPlacement}. Meeting the budget is a low
-   * bar that a CPU node can clear, and this is what stops a turn waiting minutes on one while a GPU
-   * node as idle would answer in seconds. Last because it needs the final first candidate, and never
-   * moves the pinned node or the engine prefix affinity holds from the front.
+   * slower than another measured to meet the budget, and that one is no busier than the ranker's first
+   * (or one request busier on a node advertising a slot free for it), the faster one goes ahead — see
+   * {@link applySlowerPlacement}. Meeting the budget is a low bar that a CPU node can clear, and this
+   * is what stops a turn waiting minutes on one while a GPU node as idle would answer in seconds. Last
+   * because it needs the final first candidate, and never moves the pinned node or the engine prefix
+   * affinity holds from the front.
    */
   async buildCandidateList(model: string, promptBytes?: number, streaming = true, numCtx: number | null = null): Promise<PoolCandidate[]> {
     return (await this.rankCandidates(model, promptBytes === undefined ? undefined : { bytes: () => promptBytes, streaming, numCtx: () => numCtx }))
@@ -1913,6 +1951,15 @@ export class PoolProxyService {
     // Asked of the same quarantine `demoteWithheldEngines` reads just after, and not at all while it is empty.
     const quarantineEmpty = this.outputQuarantine.isEmpty();
     const slowerDemoted: PoolRoutingThroughputSlowerDemotion[] = [];
+    // Read with slot awareness off too, its shipped default: that knob decides whether a full engine
+    // is moved back, while this only decides whether a faster node one request busier may go ahead,
+    // and without it the margin would queue a turn behind a whole turn on a `-np 1` engine. Built the
+    // first time a candidate that much busier is weighed, which most requests never reach.
+    const slotsOf = memoize(() => this.advertisedSlotsOf(peers));
+    const hasFreeSlot = (candidate: PoolCandidate) => {
+      const slots = slotsOf()(candidate);
+      return slots !== null && (inFlight.get(candidate) ?? 0) < slots;
+    };
     const preferMuchFaster = (piece: PoolCandidate[]): PoolCandidate[] => {
       if (!throughput.decision) {
         return piece;
@@ -1921,6 +1968,7 @@ export class PoolProxyService {
         estimatedTokens: throughput.decision.estimatedTokens,
         measuredOf: (candidate) => throughput.measured.get(candidate),
         inFlightOf: (candidate) => inFlight.get(candidate) ?? 0,
+        hasFreeSlot,
         holdsFront: (candidate) => candidate === affinity.held || (pin !== null && pinMatches(candidate, pin)),
         mayGoAhead: staysInPlace,
         withheld: (candidate) =>
@@ -2225,6 +2273,28 @@ export class PoolProxyService {
   }
 
   /**
+   * The slot count each candidate's node states for it — this node's own `inferenceOllamaSlots` (or a
+   * local engine's own count) for a local candidate, the figure a peer advertised for a peer — or
+   * `null` for a node that states none, or an engine not in {@link SLOT_STATED_BACKENDS}. From the
+   * in-memory settings object and the snapshots `usablePeers` already loaded, so it costs no query.
+   */
+  private advertisedSlotsOf(peers: HubPoolPeer[]): (candidate: PoolCandidate) => number | null {
+    const localSlots = clampOllamaSlots(this.configuration.getInferencePreferences()?.ollamaSlots);
+    const peerSlots = new Map<string, number | null>(
+      peers.map((peer) => [peer.id, clampOllamaSlots((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.ollamaSlots)]),
+    );
+    return (candidate) => {
+      if (!SLOT_STATED_BACKENDS.has(candidate.backend)) {
+        return null;
+      }
+      // Same precedence as the cap: a local engine's own slot count first, the node's statement after.
+      return candidate.peerId === null
+        ? (clampOllamaSlots(this.localEngineStatement(candidate.backend)?.slots) ?? localSlots)
+        : (peerSlots.get(candidate.peerId) ?? null);
+    };
+  }
+
+  /**
    * Each Ollama candidate's queue depth against the slot count its node stated — this node's own
    * `inferenceOllamaSlots` for a local candidate, the figure a peer advertised for a peer — then
    * {@link applySlotPlacement}.
@@ -2242,22 +2312,12 @@ export class PoolProxyService {
     if (!(this.slotAwareness() > 0)) {
       return { demoted: NOTHING_DEMOTED, decision: null };
     }
-    const localSlots = clampOllamaSlots(this.configuration.getInferencePreferences()?.ollamaSlots);
-    const peerSlots = new Map<string, number | null>(
-      peers.map((peer) => [peer.id, clampOllamaSlots((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.ollamaSlots)]),
-    );
+    const slotsOf = this.advertisedSlotsOf(peers);
     const inFlightOf = new Map(ranked.map((entry) => [entry.candidate, entry.inFlight]));
     const result = applySlotPlacement(
       ranked.map((entry) => entry.candidate),
       (candidate) => {
-        if (!SLOT_STATED_BACKENDS.has(candidate.backend)) {
-          return null;
-        }
-        // Same precedence as the cap: a local engine's own slot count first, the node's statement after.
-        const slots =
-          candidate.peerId === null
-            ? (clampOllamaSlots(this.localEngineStatement(candidate.backend)?.slots) ?? localSlots)
-            : (peerSlots.get(candidate.peerId) ?? null);
+        const slots = slotsOf(candidate);
         const inFlight = inFlightOf.get(candidate);
         return slots === null || inFlight === undefined ? null : { inFlight, slots };
       },
@@ -3144,6 +3204,13 @@ export class PoolProxyService {
    * one, since that leaves out the model load and the queue; otherwise, for a streamed request, the
    * wait for the first chunk. A non-streamed request with no engine timings says nothing about
    * prefill, because its wait was the whole generation. Decode is reported, never ranked on.
+   *
+   * Either prefill figure goes with what the engine said about its prompt cache, when it said anything:
+   * a turn that reused most of its prompt is not timed at all, and one that reused part of it is timed
+   * on the part it read — see `HubPoolThroughputService.recordPrefill`. Timed against the whole prompt,
+   * a cache hit reads as hundreds of thousands of tokens a second (Ollama 0.34.4 read a 7,615-token
+   * prompt in 2,735 ms cold and 19 ms warm), and a node that answered warm turns would be placed as if
+   * it read cold ones that fast.
    */
   private recordServedThroughput(
     target: ThroughputTarget,
@@ -3155,7 +3222,12 @@ export class PoolProxyService {
   ): void {
     const prefillMs = timing.engine?.promptMs ?? (streaming ? (timing.firstChunkAt ?? headersAt) - startedAt : null);
     if (prefillMs !== null) {
-      this.throughput.recordPrefill(target, { promptTokens: estimatePromptTokens(promptBytes), ms: prefillMs, deadline: false });
+      this.throughput.recordPrefill(target, {
+        promptTokens: estimatePromptTokens(promptBytes),
+        ms: prefillMs,
+        deadline: false,
+        read: timing.promptRead,
+      });
     }
     const engine = timing.engine;
     if (engine && engine.completionTokens !== null && engine.decodeMs !== null) {

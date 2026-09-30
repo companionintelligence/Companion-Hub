@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   extractEngineTimingsFromParsedJson,
+  extractPromptReadFromParsedJson,
   extractUsageFromParsedJson,
   injectUsageOptIn,
   tapResponseUsageWhileStreaming,
@@ -209,7 +210,63 @@ describe('extractEngineTimingsFromParsedJson', () => {
   });
 });
 
+describe('extractPromptReadFromParsedJson', () => {
+  // The shapes of a repeated prompt on Ollama 0.34.4: the same prompt_eval_count cold and warm.
+  const OLLAMA_COLD = { done: true, prompt_eval_count: 7_615, prompt_eval_cached_count: 0, prompt_eval_duration: 2_735_386_000 };
+  const OLLAMA_WARM = { done: true, prompt_eval_count: 7_615, prompt_eval_cached_count: 7_614, prompt_eval_duration: 18_803_000 };
+
+  it("splits Ollama's native count into read and reused by its cached count", () => {
+    expect(extractPromptReadFromParsedJson(OLLAMA_COLD)).toEqual({ evaluated: 7_615, cached: 0 });
+    expect(extractPromptReadFromParsedJson(OLLAMA_WARM)).toEqual({ evaluated: 1, cached: 7_614 });
+  });
+
+  it('says nothing for an Ollama count with no cached count: it is the whole prompt, cold or warm', () => {
+    expect(extractPromptReadFromParsedJson({ done: true, prompt_eval_count: 7_615, prompt_eval_duration: 18_803_000 })).toBeNull();
+  });
+
+  it("reads llama.cpp's processed and reused counts, and the processed count alone from a build without cache_n", () => {
+    expect(extractPromptReadFromParsedJson({ timings: { prompt_n: 212, cache_n: 30_100, prompt_ms: 410 } })).toEqual({
+      evaluated: 212,
+      cached: 30_100,
+    });
+    expect(extractPromptReadFromParsedJson({ timings: { prompt_n: 9_800, prompt_ms: 20_110 } })).toEqual({ evaluated: 9_800, cached: null });
+  });
+
+  it('reads an OpenAI-compatible cached_tokens detail, as Ollama /v1 sends it, and nothing from a bare prompt_tokens', () => {
+    const usage = (details?: Record<string, unknown>) => ({
+      choices: [],
+      usage: { prompt_tokens: 7_619, completion_tokens: 4, total_tokens: 7_623, ...(details ? { prompt_tokens_details: details } : {}) },
+    });
+    expect(extractPromptReadFromParsedJson(usage({ cached_tokens: 7_618 }))).toEqual({ evaluated: 1, cached: 7_618 });
+    expect(extractPromptReadFromParsedJson(usage({ cached_tokens: 0 }))).toEqual({ evaluated: 7_619, cached: 0 });
+    expect(extractPromptReadFromParsedJson(usage())).toBeNull();
+    expect(extractPromptReadFromParsedJson(usage({}))).toBeNull();
+  });
+
+  it('refuses counts no engine would write', () => {
+    expect(extractPromptReadFromParsedJson({ done: true, prompt_eval_count: 100, prompt_eval_cached_count: -1 })).toBeNull();
+    expect(extractPromptReadFromParsedJson({ timings: { prompt_n: Number.NaN, cache_n: 4 } })).toBeNull();
+    expect(extractPromptReadFromParsedJson({ timings: [1, 2] })).toBeNull();
+    expect(extractPromptReadFromParsedJson(null)).toBeNull();
+    expect(extractPromptReadFromParsedJson('done')).toBeNull();
+  });
+});
+
 describe('tapResponseUsageWhileStreaming observer', () => {
+  it('reports what the engine read of the prompt once, from the frame that ends the answer', async () => {
+    const frames = [
+      '{"done":false,"message":{"content":"a"}}\n',
+      '{"done":true,"prompt_eval_count":7615,"prompt_eval_cached_count":7614,"prompt_eval_duration":18803000,"eval_count":2,"eval_duration":1000000}\n',
+      '{"done":true,"prompt_eval_count":7615,"prompt_eval_cached_count":0}\n',
+    ];
+    const reads: unknown[] = [];
+
+    const text = await drain(tapResponseUsageWhileStreaming(streamOf(frames), () => undefined, { onPromptRead: (read) => reads.push(read) }));
+
+    expect(text).toBe(frames.join(''));
+    expect(reads).toEqual([{ evaluated: 1, cached: 7_614 }]);
+  });
+
   it('reports the first chunk, the engine timings and completion, once each, without touching the bytes', async () => {
     const frames = [
       '{"done":false,"message":{"content":"a"}}\n',
