@@ -33,7 +33,8 @@ interface TurboEnvironment {
 
 interface TurboDryRun {
   globalCacheInputs: { environmentVariables: TurboEnvironment };
-  tasks: { taskId: string; environmentVariables: TurboEnvironment }[];
+  /** `inputs` maps each hashed file, relative to the package, to its hash. */
+  tasks: { taskId: string; environmentVariables: TurboEnvironment; inputs: Record<string, string> }[];
 }
 
 /**
@@ -74,5 +75,13 @@ describe('turbo hands the frontend build every variable vite.config.ts bakes in'
       bakedNames.filter((name) => !hashed.has(name)),
       `declare these under "env" for ${taskId} in turbo.json`,
     ).toEqual([]);
+  });
+
+  // vite.config.ts also reads these variables from the env files at the repo root. A package-relative
+  // `.env*` input never matches them, so a changed root file would replay a bundle baked from the old one.
+  it.each(FRONTEND_BUILD_TASKS)("%s hashes the repo root's env files", (taskId) => {
+    const task = dryRun.tasks.find((candidate) => candidate.taskId === taskId);
+    if (!task) throw new Error(`${taskId} is missing from the turbo dry run`);
+    expect(Object.keys(task.inputs)).toContain('../../.env.example');
   });
 });
