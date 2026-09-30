@@ -70,6 +70,11 @@ describe('XDG_DATA_HOME set by a snap', () => {
     expect(usableXdgDataHome({ XDG_DATA_HOME: instanceData, SNAP_NAME: 'companion-hub' }, HOME)).toBe(instanceData);
   });
 
+  it('ignores a relative XDG_DATA_HOME, as the desktop app does', () => {
+    expect(resolveCanonicalDataDir({ XDG_DATA_HOME: 'xdg/data' }, 'linux', HOME)).toBe(realDataDir);
+    expect(usableXdgDataHome({ XDG_DATA_HOME: ' /xdg/data' }, HOME)).toBeUndefined();
+  });
+
   it('keeps an XDG_DATA_HOME outside any snap folder', () => {
     expect(usableXdgDataHome({ XDG_DATA_HOME: '/xdg/data' }, HOME)).toBe('/xdg/data');
     expect(usableXdgDataHome({ XDG_DATA_HOME: join(HOME, 'snapshots', 'share') }, HOME)).toBe(join(HOME, 'snapshots', 'share'));

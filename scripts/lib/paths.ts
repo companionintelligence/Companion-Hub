@@ -17,16 +17,18 @@ export const CANONICAL_DATA_DIR_NAME = 'companion-hub';
 const OWN_SNAP_NAME = 'companion-hub';
 
 /**
- * XDG_DATA_HOME, or undefined when it is unset or belongs to another snap.
+ * XDG_DATA_HOME, or undefined when it is unset, relative, or belongs to another snap.
  *
  * A snap app points XDG_DATA_HOME at its own folder (`~/snap/<name>/<rev>/.local/share`) for every
  * process it starts, so `cihub` in the terminal of VS Code installed as a snap read a stale copy
  * there instead of the Hub's data dir (CI-Hub#1698). Inside our own snap it is the value the desktop
- * app uses too, so it stays.
+ * app uses too, so it stays. The desktop app applies the same rule (`linux_data_home` in
+ * `packages/desktop/src-tauri/src/hub_manager/mod.rs`), so keep the two in step.
  */
 export function usableXdgDataHome(env: NodeJS.ProcessEnv, home: string): string | undefined {
-  const configured = env.XDG_DATA_HOME?.trim();
-  if (!configured) return undefined;
+  const configured = env.XDG_DATA_HOME;
+  // A relative value is invalid under the XDG spec, and the desktop app ignores it too.
+  if (!configured || !path.isAbsolute(configured)) return undefined;
   const snapName = env.SNAP_NAME?.trim();
   if (snapName && snapName !== OWN_SNAP_NAME) return undefined;
   const snapsRoot = path.join(home, 'snap') + path.sep;
@@ -41,8 +43,9 @@ export function usableXdgDataHome(env: NodeJS.ProcessEnv, home: string): string 
 
 /**
  * Canonical prod data directory, mirroring the Tauri desktop `get_hub_data_dir()`
- * (`dirs::data_dir()/companion-hub`). A `CI_HUB_DATA_DIR` override always wins so the
- * desktop can pass an explicit location when it invokes the bundled CLI.
+ * (`dirs::data_dir()/companion-hub`, with the same snap rule for XDG_DATA_HOME on Linux).
+ * A `CI_HUB_DATA_DIR` override always wins so the desktop can pass an explicit location
+ * when it invokes the bundled CLI.
  *
  * - Linux:   $XDG_DATA_HOME/companion-hub        (default ~/.local/share/companion-hub; see usableXdgDataHome)
  * - macOS:   ~/Library/Application Support/companion-hub
