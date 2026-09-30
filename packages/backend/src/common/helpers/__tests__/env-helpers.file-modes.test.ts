@@ -162,7 +162,13 @@ describe('restrictStateFileMode', () => {
     expect(log.warns).toHaveLength(1);
     expect(log.warns[0]).toContain(settingsPath);
     expect(log.warns[0]).toContain('EPERM');
-    expect(log.warns[0]).toContain('chmod 600');
+    // Someone else owns it, so chmod alone would lock this Hub out of its own settings: the advice
+    // gives it to the Hub first.
+    const uid = (process.getuid as () => number)();
+    const owner = uid === 0 ? '<hub-uid>:<hub-gid>' : `${uid}:${(process.getgid as () => number)()}`;
+    expect(log.warns[0]).toContain(
+      `sudo chown ${owner} "$ROOT_FOLDER_HOST/state/settings.json" && sudo chmod 600 "$ROOT_FOLDER_HOST/state/settings.json"`,
+    );
     expect(log.infos).toEqual([]);
   });
 

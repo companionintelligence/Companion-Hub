@@ -11,6 +11,25 @@ vi.mock('node:child_process', () => ({
   execSync: (...args: unknown[]) => execSyncMock(...args),
 }));
 
+// A test cannot create a file owned by root or by another user, so it names the owner the host
+// should report for a path instead, and records chowns rather than attempting them. Everything
+// else about the file, its mode above all, is real.
+const { fakeOwners, chownSyncMock } = vi.hoisted(() => ({
+  fakeOwners: new Map<string, { uid: number; gid: number }>(),
+  chownSyncMock: vi.fn(),
+}));
+
+vi.mock('node:fs', async () => {
+  const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+  const statSync = ((target: import('node:fs').PathLike, options?: import('node:fs').StatSyncOptions) => {
+    const st = actual.statSync(target, options);
+    const owner = fakeOwners.get(path.resolve(String(target)));
+    return st && owner ? Object.assign(st, owner) : st;
+  }) as typeof actual.statSync;
+  const chownSync = (...args: Parameters<typeof actual.chownSync>) => chownSyncMock(...args);
+  return { ...actual, default: { ...actual, statSync, chownSync }, statSync, chownSync };
+});
+
 import { DATA_BEARING_BIND_MOUNT_DIRS, RECREATABLE_BIND_MOUNT_DIRS } from '../lib/bind-mounts';
 import {
   dockerBindMountPath,
@@ -23,6 +42,7 @@ import {
   restrictPrivateStateFile,
   repairHostRootOwnedBindMounts,
   resolveHubContainerIdentity,
+  resolveHubRuntimeIdentity,
   resolveTraefikHubRoutePath,
   resolveTunnelTokenPath,
 } from '../heal-hub-bind-mounts';
@@ -146,9 +166,22 @@ describe('ensureHubBindMountsWritable', () => {
 // and the code under test returns early there.
 describe.skipIf(process.platform === 'win32')('credential files in state/ (settings.json, seed)', () => {
   const tmpRoot = join(process.cwd(), '.tmp-heal-hub-private-state-test');
-  const ownUid = () => (process.getuid as () => number)();
-  const ownGid = () => (process.getgid as () => number)();
+  // Read once, before any test stands in for root by mocking these.
+  const ownUid = (process.getuid as () => number)();
+  const ownGid = (process.getgid as () => number)();
   const modeOf = (filePath: string) => statSync(filePath).mode & 0o777;
+  const ownedBy = (filePath: string, owner: { uid: number; gid: number }) => fakeOwners.set(path.resolve(filePath), owner);
+  const root = { uid: 0, gid: 0 };
+  // Not 1000, which is also the entrypoint's last-resort default: a Hub found by falling back to it
+  // would pass for one found by reading the env file's owner.
+  const hubUser = { uid: 1234, gid: 2345 };
+
+  function hubEnvFile(hubRoot: string, content = 'ROOT_FOLDER_HOST=/srv/hub/.internal\n'): string {
+    const envFile = join(hubRoot, '.env.dev');
+    writeFileSync(envFile, content);
+    chmodSync(envFile, 0o600);
+    return envFile;
+  }
 
   function stateFile(internalRoot: string, name: string, mode: number, content = '{}'): string {
     const filePath = join(internalRoot, 'state', name);
@@ -164,15 +197,19 @@ describe.skipIf(process.platform === 'win32')('credential files in state/ (setti
     mkdirSync(tmpRoot, { recursive: true });
     spawnSyncMock.mockReset();
     execSyncMock.mockReset();
+    chownSyncMock.mockReset();
+    fakeOwners.clear();
     // The Hub runs as this user: the ordinary install, where the container drops to the owner.
-    process.env.CI_HUB_CONTAINER_UID = String(ownUid());
-    process.env.CI_HUB_CONTAINER_GID = String(ownGid());
+    process.env.CI_HUB_CONTAINER_UID = String(ownUid);
+    process.env.CI_HUB_CONTAINER_GID = String(ownGid);
     execSyncMock.mockImplementation(() => {
       throw new Error('docker unavailable');
     });
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
+    fakeOwners.clear();
     rmSync(tmpRoot, { recursive: true, force: true });
     delete process.env.CI_HUB_CONTAINER_UID;
     delete process.env.CI_HUB_CONTAINER_GID;
@@ -184,6 +221,8 @@ describe.skipIf(process.platform === 'win32')('credential files in state/ (setti
     ensureHubBindMountsWritable(internalRoot, { skipDockerHeal: true });
 
     expect(modeOf(join(internalRoot, 'state', 'settings.json'))).toBe(0o600);
+    // Created by the user the Hub runs as, so already the Hub's.
+    expect(chownSyncMock).not.toHaveBeenCalled();
   });
 
   it('restricts a world-writable settings.json and a world-readable seed it owns, on every start', () => {
@@ -206,13 +245,117 @@ describe.skipIf(process.platform === 'win32')('credential files in state/ (setti
     expect(modeOf(seedPath)).toBe(0o400);
   });
 
-  it('leaves a file alone when the Hub container will not own it, so it cannot lock the container out', () => {
+  it('leaves a file alone when the Hub will not own it, so it cannot lock the Hub out', () => {
     const { internalRoot } = makeHubDataLayout(tmpRoot);
     const settingsPath = stateFile(internalRoot, 'settings.json', 0o666);
-    const foreign: Parameters<typeof restrictPrivateStateFile>[1] = { uid: ownUid() + 1, gid: ownGid(), dockerGid: 0, source: 'env' };
 
-    expect(restrictPrivateStateFile(settingsPath, foreign)).toBeNull();
+    expect(restrictPrivateStateFile(settingsPath, ownUid + 1)).toBeNull();
+    expect(restrictPrivateStateFile(settingsPath, null)).toBeNull();
     expect(modeOf(settingsPath)).toBe(0o666);
+  });
+
+  // `sudo cihub up` or `sudo pnpm run dev` on an install a user owns. The CLI is root, nothing is
+  // pinned (init-hub-data-dirs unpins on purpose), and the container drops to the env file's owner.
+  describe('driven through sudo on an install a user owns', () => {
+    beforeEach(() => {
+      delete process.env.CI_HUB_CONTAINER_UID;
+      delete process.env.CI_HUB_CONTAINER_GID;
+      vi.spyOn(process, 'getuid').mockReturnValue(0);
+      vi.spyOn(process, 'getgid').mockReturnValue(0);
+      // Native Linux: the socket is root:docker inside a container, so the CLI's own guess at the
+      // container identity is itself, root.
+      spawnSyncMock.mockImplementation((_cmd: string, args: string[] = []) =>
+        args.includes('%u:%g') ? { status: 0, stdout: '0:973\n', stderr: '' } : { status: 1, stdout: '', stderr: 'denied' },
+      );
+    });
+
+    it('leaves a root-owned settings.json and seed readable by the Hub instead of locking them to root', () => {
+      const { internalRoot, hubRoot } = makeHubDataLayout(tmpRoot);
+      const envFile = hubEnvFile(hubRoot);
+      ownedBy(envFile, hubUser);
+      // What an older root-owned container left behind, and what the stale-root repairs exist for.
+      const settingsPath = stateFile(internalRoot, 'settings.json', 0o666, '{"hubLocalKey":"k"}');
+      const seedPath = stateFile(internalRoot, 'seed', 0o666, 'a'.repeat(64));
+      ownedBy(settingsPath, root);
+      ownedBy(seedPath, root);
+
+      const identity = ensureHubBindMountsWritable(internalRoot, { envFile, skipDockerHeal: true });
+
+      // The CLI's guess, which used to decide this. The post-heal check runs as it too, so a 0600
+      // root file would pass that check.
+      expect(identity.uid).toBe(0);
+      // At 0600 the Hub, running as 1234, could read neither: it would set settings.json aside and
+      // boot looking unpaired, and crash-loop reading seed.
+      expect(modeOf(settingsPath)).toBe(0o666);
+      expect(modeOf(seedPath)).toBe(0o666);
+    });
+
+    it('still restricts the files the Hub itself owns', () => {
+      const { internalRoot, hubRoot } = makeHubDataLayout(tmpRoot);
+      const envFile = hubEnvFile(hubRoot);
+      ownedBy(envFile, hubUser);
+      const settingsPath = stateFile(internalRoot, 'settings.json', 0o666, '{"hubLocalKey":"k"}');
+      ownedBy(settingsPath, hubUser);
+
+      ensureHubBindMountsWritable(internalRoot, { envFile, skipDockerHeal: true });
+
+      expect(modeOf(settingsPath)).toBe(0o600);
+    });
+
+    it('hands a settings.json it has to create to the Hub, not to root', () => {
+      const { internalRoot, hubRoot } = makeHubDataLayout(tmpRoot);
+      const envFile = hubEnvFile(hubRoot);
+      ownedBy(envFile, hubUser);
+      const settingsPath = join(internalRoot, 'state', 'settings.json');
+
+      ensureHubBindMountsWritable(internalRoot, { envFile, skipDockerHeal: true });
+
+      expect(modeOf(settingsPath)).toBe(0o600);
+      expect(chownSyncMock).toHaveBeenCalledWith(settingsPath, hubUser.uid, hubUser.gid);
+    });
+
+    it('follows a pin in the env file over its owner, as the entrypoint does', () => {
+      const { internalRoot, hubRoot } = makeHubDataLayout(tmpRoot);
+      const envFile = hubEnvFile(hubRoot, `CI_HUB_CONTAINER_UID=${hubUser.uid}\nCI_HUB_CONTAINER_GID=${hubUser.gid}\n`);
+      ownedBy(envFile, root);
+      const settingsPath = stateFile(internalRoot, 'settings.json', 0o666);
+      ownedBy(settingsPath, root);
+
+      ensureHubBindMountsWritable(internalRoot, { envFile, skipDockerHeal: true });
+
+      expect(modeOf(settingsPath)).toBe(0o666);
+    });
+  });
+
+  // Docker Desktop and rootless Docker, where init-hub-data-dirs pins 0:0: container root's files
+  // on the host are those of the user running the engine.
+  describe('when the Hub runs as root', () => {
+    beforeEach(() => {
+      process.env.CI_HUB_CONTAINER_UID = '0';
+      process.env.CI_HUB_CONTAINER_GID = '0';
+    });
+
+    it("restricts the CLI user's own files, which are the engine user's", () => {
+      const { internalRoot } = makeHubDataLayout(tmpRoot);
+      const settingsPath = stateFile(internalRoot, 'settings.json', 0o666, '{"hubLocalKey":"k"}');
+
+      ensureHubBindMountsWritable(internalRoot, { skipDockerHeal: true });
+
+      expect(modeOf(settingsPath)).toBe(0o600);
+    });
+
+    it('leaves them to the Hub when the CLI is root as well, since whose engine it is cannot be told', () => {
+      vi.spyOn(process, 'getuid').mockReturnValue(0);
+      vi.spyOn(process, 'getgid').mockReturnValue(0);
+      const { internalRoot } = makeHubDataLayout(tmpRoot);
+      const settingsPath = stateFile(internalRoot, 'settings.json', 0o666, '{"hubLocalKey":"k"}');
+      ownedBy(settingsPath, root);
+
+      ensureHubBindMountsWritable(internalRoot, { skipDockerHeal: true });
+
+      expect(modeOf(settingsPath)).toBe(0o666);
+      expect(chownSyncMock).not.toHaveBeenCalled();
+    });
   });
 
   it('takes the credential files back to owner-only after the Docker heal opens the state dir up', () => {
@@ -244,6 +387,58 @@ describe.skipIf(process.platform === 'win32')('credential files in state/ (setti
     expect(stateHealed).toBe(true);
     expect(modeOf(settingsPath)).toBe(0o600);
     expect(modeOf(seedPath)).toBe(0o600);
+  });
+});
+
+// The same order docker-entrypoint.sh uses to pick the uid:gid it drops to.
+describe.skipIf(process.platform === 'win32')('resolveHubRuntimeIdentity', () => {
+  const tmpRoot = join(process.cwd(), '.tmp-heal-hub-runtime-identity-test');
+
+  beforeEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+    mkdirSync(tmpRoot, { recursive: true });
+    fakeOwners.clear();
+    delete process.env.CI_HUB_CONTAINER_UID;
+    delete process.env.CI_HUB_CONTAINER_GID;
+  });
+
+  afterEach(() => {
+    fakeOwners.clear();
+    rmSync(tmpRoot, { recursive: true, force: true });
+    delete process.env.CI_HUB_CONTAINER_UID;
+    delete process.env.CI_HUB_CONTAINER_GID;
+  });
+
+  function layout(envContent: string | null): { internalRoot: string; envFile: string } {
+    const { internalRoot, hubRoot } = makeHubDataLayout(tmpRoot);
+    mkdirSync(join(internalRoot, 'state'), { recursive: true });
+    const envFile = join(hubRoot, '.env.dev');
+    if (envContent !== null) writeFileSync(envFile, envContent);
+    return { internalRoot, envFile };
+  }
+
+  it('takes a pin first, from the environment and then the env file, each half on its own', () => {
+    const { internalRoot, envFile } = layout('CI_HUB_CONTAINER_GID=0\n');
+    fakeOwners.set(path.resolve(envFile), { uid: 1234, gid: 2345 });
+    process.env.CI_HUB_CONTAINER_UID = '0';
+
+    expect(resolveHubRuntimeIdentity(internalRoot, envFile)).toEqual({ uid: 0, gid: 0 });
+  });
+
+  it("uses the env file's owner when nothing is pinned", () => {
+    const { internalRoot, envFile } = layout('ROOT_FOLDER_HOST=/srv/hub/.internal\n');
+    fakeOwners.set(path.resolve(envFile), { uid: 1234, gid: 2345 });
+    fakeOwners.set(path.resolve(internalRoot, 'state'), { uid: 0, gid: 0 });
+
+    expect(resolveHubRuntimeIdentity(internalRoot, envFile)).toEqual({ uid: 1234, gid: 2345 });
+  });
+
+  it("falls back to state/'s owner without an env file, and to 1000 without either", () => {
+    const { internalRoot, envFile } = layout(null);
+    fakeOwners.set(path.resolve(internalRoot, 'state'), { uid: 3456, gid: 4567 });
+
+    expect(resolveHubRuntimeIdentity(internalRoot, envFile)).toEqual({ uid: 3456, gid: 4567 });
+    expect(resolveHubRuntimeIdentity(join(tmpRoot, 'no-such-install'))).toEqual({ uid: 1000, gid: 1000 });
   });
 });
 

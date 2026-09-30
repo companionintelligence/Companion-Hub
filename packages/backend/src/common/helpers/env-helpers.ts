@@ -348,12 +348,15 @@ export async function restrictStateFileMode(filePath: string, log: StateFileLog 
     }
   } catch (error) {
     const code = fsErrorCode(error);
-    warnOnce(
-      filePath,
-      `Could not restrict ${filePath} to ${octalMode(PRIVATE_STATE_FILE_MODE)}: ${code === 'EPERM' ? 'this process does not own it (EPERM)' : `chmod failed (${code})`}. ` +
-        `It holds credentials and is ${octalMode(current)}. On the host: chmod 600 "$ROOT_FOLDER_HOST/state/${path.basename(filePath)}" (with sudo if the Hub's user does not own it).`,
-      log,
-    );
+    const hostPath = `"$ROOT_FOLDER_HOST/state/${path.basename(filePath)}"`;
+    // EPERM means someone else owns it, and a bare `sudo chmod 600` then leaves it readable only by
+    // that someone: the Hub would quarantine settings.json and boot unpaired, or crash-loop on seed.
+    // So the fix hands it to the Hub first.
+    const fix =
+      code === 'EPERM'
+        ? `this process does not own it (EPERM). It holds credentials and is ${octalMode(current)}. On the host, give it to the Hub's user first, then restrict it: sudo chown ${hubOwnerForHint()} ${hostPath} && sudo chmod 600 ${hostPath}`
+        : `chmod failed (${code}). It holds credentials and is ${octalMode(current)}. On the host: chmod 600 ${hostPath}`;
+    warnOnce(filePath, `Could not restrict ${filePath} to ${octalMode(PRIVATE_STATE_FILE_MODE)}: ${fix}.`, log);
     return;
   }
 
@@ -361,6 +364,17 @@ export async function restrictStateFileMode(filePath: string, log: StateFileLog 
   log.info(
     `Restricted ${filePath} from ${octalMode(current)} to ${octalMode(restricted)}: it holds credentials, and other local users could read or write it.`,
   );
+}
+
+/**
+ * This process's uid:gid, for a chown the operator runs on the host. Not when it is root: a root
+ * Hub that still gets EPERM is on a mount that maps root to someone else (Docker Desktop, rootless
+ * Docker, NFS root_squash), and chowning to 0:0 there is the wrong answer.
+ */
+function hubOwnerForHint(): string {
+  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+  const gid = typeof process.getgid === 'function' ? process.getgid() : undefined;
+  return uid !== undefined && gid !== undefined && uid !== 0 ? `${uid}:${gid}` : '<hub-uid>:<hub-gid>';
 }
 
 function warnOnce(key: string, message: string, log: StateFileLog): void {
