@@ -100,7 +100,15 @@ import {
   type OutputVerdict,
   type PoolOutputFault,
 } from './hub-pool-output-check';
-import { MERGED_LISTING_PATHS, listedModelIds, mergeLocalListings, mergeModelListing, peerOnlyModels } from './pool-model-listing';
+import {
+  LOCAL_LISTING_DEADLINE_MS,
+  MERGED_LISTING_PATHS,
+  gatherListings,
+  listedModelIds,
+  mergeLocalListings,
+  mergeModelListing,
+  peerOnlyModels,
+} from './pool-model-listing';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import type { PoolCandidate, PoolPeerCapabilities } from './hub-pool.types';
 
@@ -3767,6 +3775,11 @@ export class PoolProxyService {
    * and in parallel: a client may fetch this before every request (ci-server checks its model against
    * it per call), and an unconfigured backend's URL can sit behind a host firewall that drops rather
    * than refuses — one listing must not wait out a connect timeout per absent engine.
+   *
+   * Nor does it wait on a healthy engine that has stopped answering: each backend gets
+   * `LOCAL_LISTING_DEADLINE_MS` from the start, and one still out then is left out of this listing
+   * when another has answered (see `gatherListings`). The health snapshot is up to a poll old, and an
+   * engine wedged since it was taken used to hold the listing for the whole forward budget.
    */
   private async localListing(path: string, method: string, clientClosed: AbortSignal): Promise<unknown> {
     const healthy = await this.localHealth
@@ -3776,22 +3789,30 @@ export class PoolProxyService {
     if (healthy.length <= 1) {
       return this.firstLocalListing(path, method, clientClosed);
     }
-    const bodies = await Promise.all(
-      INFERENCE_BACKEND_TYPES.filter((type) => healthy.includes(type)).map(async (type) => {
+    const answered = await gatherListings(
+      INFERENCE_BACKEND_TYPES.filter((type) => healthy.includes(type)),
+      async (type, dropped) => {
         try {
-          const upstream = await this.callBackend(type, path, method, undefined, undefined, clientClosed);
+          const upstream = await this.callBackend(type, path, method, undefined, undefined, AbortSignal.any([clientClosed, dropped]));
           if (!upstream.ok) {
             this.logger.debug(`[PoolProxy] ${path} via local ${type} answered ${upstream.status}; leaving it out of the listing`);
             return null;
           }
           return (await upstream.json()) as unknown;
         } catch (error) {
-          this.logger.debug(`[PoolProxy] ${path} via local ${type} failed: ${error instanceof Error ? error.message : String(error)}`);
+          // A backend dropped for its deadline was logged when it was dropped.
+          if (!dropped.aborted) {
+            this.logger.debug(`[PoolProxy] ${path} via local ${type} failed: ${error instanceof Error ? error.message : String(error)}`);
+          }
           return null;
         }
-      }),
+      },
+      LOCAL_LISTING_DEADLINE_MS,
+      (type) =>
+        this.logger.debug(
+          `[PoolProxy] ${path} via local ${type} had not answered within ${LOCAL_LISTING_DEADLINE_MS}ms; leaving it out of the listing`,
+        ),
     );
-    const answered = bodies.filter((body) => body !== null);
     return answered.length === 0 ? this.firstLocalListing(path, method, clientClosed) : mergeLocalListings(path, answered);
   }
 

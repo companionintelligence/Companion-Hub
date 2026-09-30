@@ -70,6 +70,7 @@ import {
 } from '../hub-pool-proxy.service';
 import { firstByteBudgetMs, forwardBudgetMs } from '../hub-pool-budget';
 import type { PoolOutputQuarantine } from '../hub-pool-output-check';
+import { LOCAL_LISTING_DEADLINE_MS } from '../pool-model-listing';
 import {
   POOL_AFFINITY_HEADER,
   PREFIX_AFFINITY_TTL_MS,
@@ -7274,6 +7275,76 @@ describe('PoolProxyService', () => {
 
         const urls = vi.mocked(global.fetch).mock.calls.map(([input]) => String(input));
         expect(urls.some((url) => url.includes(':8000'))).toBe(false);
+      });
+
+      /*
+       * Audit F5 of #1679: the health snapshot is up to a poll old, and an engine that wedged since
+       * it was taken held every app's listing until the forward budget ran out (five minutes), while
+       * Ollama beside it had answered in milliseconds.
+       */
+      describe('with a backend that has stopped answering', () => {
+        const OLLAMA_MODELS = { object: 'list', data: [{ id: 'qwen3.8:27b-mtp-q4_K_M', object: 'model', created: 1, owned_by: 'library' }] };
+        let lemonadeSignal: AbortSignal | undefined;
+
+        beforeEach(() => {
+          vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+          lemonadeSignal = undefined;
+          vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+            if (String(input).startsWith('http://local-ollama:11434')) {
+              return new Response(JSON.stringify(OLLAMA_MODELS), { status: 200 });
+            }
+            // Lemonade: healthy at the last poll, and silent now until the request is aborted.
+            const signal = init?.signal ?? undefined;
+            lemonadeSignal = signal;
+            return new Promise<globalThis.Response>((_resolve, reject) => signal?.addEventListener('abort', () => reject(signal.reason)));
+          });
+        });
+
+        afterEach(() => {
+          vi.useRealTimers();
+        });
+
+        it('answers with the backends that listed within the deadline, and aborts the one that did not', async () => {
+          const res = createMockResponse();
+
+          const listing = service.proxyLocalOnlyRequest('/v1/models', 'GET', undefined, res);
+          await vi.advanceTimersByTimeAsync(LOCAL_LISTING_DEADLINE_MS - 1);
+          expect(res.status).not.toHaveBeenCalled();
+          await vi.advanceTimersByTimeAsync(1);
+          await listing;
+
+          expect(res.status).toHaveBeenCalledWith(200);
+          const body = vi.mocked(res.json).mock.calls[0]?.[0] as { data: { id: string }[] };
+          expect(body.data.map((row) => row.id)).toEqual(['qwen3.8:27b-mtp-q4_K_M']);
+          expect(lemonadeSignal?.aborted).toBe(true);
+        });
+
+        it('still waits for the stalled backend when it is the only one the snapshot calls healthy', async () => {
+          ollama.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+          vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+            if (String(input).startsWith('http://local-ollama:11434')) {
+              return new Response('connection refused', { status: 502 });
+            }
+            const signal = init?.signal ?? undefined;
+            lemonadeSignal = signal;
+            return new Promise<globalThis.Response>((resolve) =>
+              setTimeout(
+                () => resolve(new Response(JSON.stringify({ object: 'list', data: [{ id: 'Qwen3.8-27B-GGUF' }] }), { status: 200 })),
+                10_000,
+              ),
+            );
+          });
+          const res = createMockResponse();
+
+          // One healthy backend has nothing to be merged with, so leaving it out would leave nothing.
+          const listing = service.proxyLocalOnlyRequest('/v1/models', 'GET', undefined, res);
+          await vi.advanceTimersByTimeAsync(10_000);
+          await listing;
+
+          const body = vi.mocked(res.json).mock.calls[0]?.[0] as { data: { id: string }[] };
+          expect(body.data.map((row) => row.id)).toEqual(['Qwen3.8-27B-GGUF']);
+          expect(lemonadeSignal?.aborted).toBe(false);
+        });
       });
     });
 

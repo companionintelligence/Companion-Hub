@@ -1257,6 +1257,14 @@ digest, or modified time to report. Those fields are emitted empty or zero rathe
 A Hub whose own engines are down or absent now answers these two routes from its peers instead of
 `502`. The 502 remains for the case where neither this node nor any peer has anything.
 
+This node's half is every backend the health snapshot calls healthy, asked in parallel. The snapshot
+can be a poll old, so an engine that has stopped answering since is not waited for. Each backend gets
+2.5 s from the start of the listing (`LOCAL_LISTING_DEADLINE_MS`). If another has answered by then,
+one still silent is left out of that listing, its request is aborted, and a debug line names it.
+When none has answered by then, the first to answer is used and the rest are left out. A working
+engine answers in milliseconds: Ollama and Lemonade took at most 2.2 ms on beta-red and beta-1 on
+2026-09-30. With one healthy backend there is nothing to merge, and it is waited for as before.
+
 Ranking is not consulted here. The listing answers "what may I ask for", not "where would it run" —
 `X-Hub-Pool-Served-By` on the response to the actual request answers the second.
 
