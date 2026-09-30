@@ -478,6 +478,61 @@ describe('SystemUpdateService', () => {
     });
   });
 
+  // The Hub container mounts the desktop data folder's `state/` at /data/state, never its root, so
+  // a token only at the root is invisible to a containerized Hub (#1694).
+  describe('getHostListenerStatus', () => {
+    const STATE_TOKEN = '/data/state/update-listener.token';
+    const ROOT_TOKEN = '/data/update-listener.token';
+
+    /** Only these files exist. */
+    function withFiles(files: Record<string, string>) {
+      vi.mocked(fs.existsSync).mockImplementation((target) => files[String(target)] !== undefined);
+      vi.mocked(fs.readFileSync).mockImplementation(((target: unknown) => {
+        const content = files[String(target)];
+        if (content === undefined) throw new Error(`unexpected read of ${String(target)}`);
+        return content;
+      }) as never);
+    }
+
+    const expectSentToken = (token: string) =>
+      expect(axios.get).toHaveBeenCalledWith(
+        expect.stringMatching(/\/health$/),
+        expect.objectContaining({ headers: { Authorization: `Bearer ${token}` } }),
+      );
+
+    beforeEach(() => {
+      vi.mocked(axios.get).mockResolvedValue({ status: 200 });
+    });
+
+    it('reaches the listener with the token the desktop app keeps in state/', async () => {
+      withFiles({ [STATE_TOKEN]: 'state-token\n' });
+
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: true });
+      expectSentToken('state-token');
+    });
+
+    it('prefers state/ over a token an older desktop build left at the data folder root', async () => {
+      withFiles({ [STATE_TOKEN]: 'state-token\n', [ROOT_TOKEN]: 'legacy-token\n' });
+
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: true });
+      expectSentToken('state-token');
+    });
+
+    it('falls back to the data folder root, where older desktop builds wrote the token', async () => {
+      withFiles({ [ROOT_TOKEN]: 'legacy-token\n' });
+
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: true });
+      expectSentToken('legacy-token');
+    });
+
+    it('reports the listener unreachable, without calling it, when neither file exists', async () => {
+      withFiles({});
+
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+      expect(axios.get).not.toHaveBeenCalled();
+    });
+  });
+
   // Asserted against literals, not the constants themselves: the other tests interpolate
   // HUB_STACK_IMAGE_REPO and so would follow a bad edit silently. Pinning this image at the
   // private ci-os-hub package is what stopped Hub 0.2.44 from starting (#920), and it must

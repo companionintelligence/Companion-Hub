@@ -39,6 +39,26 @@ separate dev feed so dev desktop builds can update without touching production.
 The desktop **app binary** is never updated without a user action; the **stack
 images** auto-update daily when the toggle is on.
 
+### The listener token
+
+The listener accepts a request only with the token in `state/update-listener.token`
+under the Hub data folder, for example `~/.local/share/companion-hub/state/update-listener.token`
+on Linux. The listener creates it, owner-only, when it starts. The Hub container mounts
+`state/` at `/data/state` and reads the token there.
+
+- **Older desktop builds** wrote the token at the root of the data folder. The Hub
+  container doesn't mount the root, so the Hub never found the token, and Settings said
+  the desktop app wasn't running while it was.
+- **Upgrading the desktop app.** A listener that an older build started keeps port 17400
+  until it exits, and it checks requests against the file at the root. On its first start,
+  a newer build copies that token into `state/` and leaves the root file in place, so the
+  Hub reaches whichever listener is running.
+- **The Hub's fallback.** When `state/` has no token, the Hub reads the file at the root.
+  Only a Hub that runs on the host, outside Docker, can see that file.
+- **Both halves.** A Hub in a container finds the token only when the desktop app writes
+  it to `state/` and the Hub image reads it there. With either one older, Settings still
+  says the desktop app isn't running.
+
 ### The CLI is on this channel, not the stack's
 
 `cihub` ships *inside* the desktop package, so `companion-hub update` replaces the app and its

@@ -1204,7 +1204,7 @@ pub fn run_update_cli(check_only: bool) -> Result<i32, String> {
     Ok(0)
 }
 
-fn handle_update_http_request(mut stream: TcpStream) {
+fn handle_update_http_request(mut stream: TcpStream, data_dir: &Path) {
     let mut buffer = [0u8; 4096];
     let read = stream.read(&mut buffer).unwrap_or(0);
     if read == 0 {
@@ -1213,7 +1213,7 @@ fn handle_update_http_request(mut stream: TcpStream) {
     let request = String::from_utf8_lossy(&buffer[..read]);
     let is_post_update = request.starts_with("POST /update");
     let (status, body) = if is_post_update {
-        match authorize_update_listener_request(&request) {
+        match authorize_update_listener_request(&request, data_dir) {
             Err(err) => ("401 Unauthorized", err),
             Ok(()) => match check_and_trigger_update_from_listener() {
                 Ok(msg) => ("200 OK", msg),
@@ -1221,7 +1221,7 @@ fn handle_update_http_request(mut stream: TcpStream) {
             },
         }
     } else if request.starts_with("GET /health") {
-        match authorize_update_listener_request(&request) {
+        match authorize_update_listener_request(&request, data_dir) {
             Err(err) => ("401 Unauthorized", err),
             Ok(()) => ("200 OK", "ok".to_string()),
         }
@@ -1238,31 +1238,45 @@ fn handle_update_http_request(mut stream: TcpStream) {
     let _ = stream.write_all(response.as_bytes());
 }
 
-fn update_listener_token_path() -> PathBuf {
-    hub_manager::get_hub_data_dir().join(UPDATE_LISTENER_TOKEN_FILENAME)
+/// In `state/` because the Hub container mounts that folder (as `/data/state`) but not the data
+/// dir's root, so this is the only place the backend can read the token from.
+fn update_listener_token_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("state").join(UPDATE_LISTENER_TOKEN_FILENAME)
 }
 
-fn read_update_listener_token() -> Result<String, String> {
-    std::fs::read_to_string(update_listener_token_path())
+fn read_token_file(path: &Path) -> Result<String, String> {
+    std::fs::read_to_string(path)
         .map(|token| token.trim().to_string())
         .map_err(|e| format!("Failed to read update listener token: {}", e))
 }
 
-fn ensure_update_listener_token() -> Result<String, String> {
-    let path = update_listener_token_path();
+fn read_update_listener_token(data_dir: &Path) -> Result<String, String> {
+    read_token_file(&update_listener_token_path(data_dir))
+}
+
+fn ensure_update_listener_token(data_dir: &Path) -> Result<String, String> {
+    let path = update_listener_token_path(data_dir);
     if path.exists() {
-        return read_update_listener_token();
+        return read_token_file(&path);
     }
 
-    use rand::Rng;
-    let token: String = rand::thread_rng()
-        .sample_iter(rand::distributions::Alphanumeric)
-        .take(48)
-        .map(char::from)
-        .collect();
+    // Older builds kept the token at the data dir's root. Reuse it: a listener one of them started
+    // holds the port until it exits and checks requests against that file.
+    let token = match read_token_file(&data_dir.join(UPDATE_LISTENER_TOKEN_FILENAME)) {
+        Ok(token) if !token.is_empty() => token,
+        _ => {
+            use rand::Rng;
+            rand::thread_rng()
+                .sample_iter(rand::distributions::Alphanumeric)
+                .take(48)
+                .map(char::from)
+                .collect()
+        }
+    };
 
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create data dir: {}", e))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create state dir: {}", e))?;
     }
     std::fs::write(&path, format!("{token}\n"))
         .map_err(|e| format!("Failed to write update listener token: {}", e))?;
@@ -1317,8 +1331,8 @@ fn tokens_match(provided: &str, expected: &str) -> bool {
             == 0
 }
 
-fn authorize_update_listener_request(request: &str) -> Result<(), String> {
-    let expected = read_update_listener_token()?;
+fn authorize_update_listener_request(request: &str, data_dir: &Path) -> Result<(), String> {
+    let expected = read_update_listener_token(data_dir)?;
     let provided = extract_update_listener_token_from_request(request)
         .ok_or_else(|| "missing update listener token".to_string())?;
     if tokens_match(&provided, &expected) {
@@ -1356,7 +1370,8 @@ fn check_and_trigger_update_from_listener() -> Result<String, String> {
 }
 
 pub fn run_update_listener() {
-    if ensure_update_listener_token().is_err() {
+    let data_dir = hub_manager::get_hub_data_dir();
+    if ensure_update_listener_token(&data_dir).is_err() {
         return;
     }
     let listener = match TcpListener::bind(UPDATE_LISTENER_BIND_ADDR) {
@@ -1364,7 +1379,7 @@ pub fn run_update_listener() {
         Err(_) => return,
     };
     for stream in listener.incoming().flatten() {
-        handle_update_http_request(stream);
+        handle_update_http_request(stream, &data_dir);
     }
 }
 
@@ -1403,7 +1418,7 @@ pub fn spawn_update_listener_daemon() {
 }
 
 pub fn trigger_host_update_via_listener() -> Result<String, String> {
-    let token = read_update_listener_token()?;
+    let token = read_update_listener_token(&hub_manager::get_hub_data_dir())?;
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -1519,50 +1534,117 @@ mod tests {
         );
     }
 
+    /// A data dir holding `token` where the desktop app keeps it. The path is spelled out, not
+    /// taken from `update_listener_token_path`, because the backend reads this exact location.
+    fn data_dir_with_state_token(token: &str) -> tempfile::TempDir {
+        let data_dir = tempfile::tempdir().expect("tempdir");
+        let state_dir = data_dir.path().join("state");
+        std::fs::create_dir_all(&state_dir).expect("mkdir state");
+        std::fs::write(
+            state_dir.join("update-listener.token"),
+            format!("{token}\n"),
+        )
+        .expect("write token");
+        data_dir
+    }
+
+    #[test]
+    fn update_listener_token_lives_in_the_state_folder_the_hub_mounts() {
+        assert_eq!(
+            update_listener_token_path(Path::new("/hub-data")),
+            Path::new("/hub-data/state/update-listener.token")
+        );
+    }
+
+    #[test]
+    fn update_listener_token_is_created_in_state_owner_only() {
+        let data_dir = tempfile::tempdir().expect("tempdir");
+
+        let token = ensure_update_listener_token(data_dir.path()).expect("token");
+
+        let token_path = data_dir.path().join("state").join("update-listener.token");
+        assert_eq!(token.len(), 48);
+        assert_eq!(
+            std::fs::read_to_string(&token_path).expect("read token"),
+            format!("{token}\n")
+        );
+        assert!(!data_dir.path().join("update-listener.token").exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&token_path)
+                .expect("stat token")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn update_listener_token_carries_over_the_one_an_older_build_wrote() {
+        let data_dir = tempfile::tempdir().expect("tempdir");
+        let legacy_path = data_dir.path().join("update-listener.token");
+        std::fs::write(&legacy_path, "legacy-token\n").expect("write legacy token");
+
+        assert_eq!(
+            ensure_update_listener_token(data_dir.path()).as_deref(),
+            Ok("legacy-token")
+        );
+        assert_eq!(
+            std::fs::read_to_string(data_dir.path().join("state").join("update-listener.token"))
+                .expect("read token"),
+            "legacy-token\n"
+        );
+        // A listener the older build started still checks requests against this file.
+        assert!(legacy_path.exists());
+    }
+
+    #[test]
+    fn update_listener_token_in_state_wins_over_the_old_location() {
+        let data_dir = data_dir_with_state_token("current-token");
+        std::fs::write(
+            data_dir.path().join("update-listener.token"),
+            "legacy-token\n",
+        )
+        .expect("write legacy token");
+
+        assert_eq!(
+            ensure_update_listener_token(data_dir.path()).as_deref(),
+            Ok("current-token")
+        );
+    }
+
     #[test]
     fn update_listener_authorizes_valid_token() {
-        let tempdir = tempfile::tempdir().expect("tempdir");
-        let token_path = tempdir.path().join(UPDATE_LISTENER_TOKEN_FILENAME);
-        std::fs::write(&token_path, "expected-token\n").expect("write token");
+        let data_dir = data_dir_with_state_token("expected-token");
 
         let request = "POST /update HTTP/1.1\r\nAuthorization: Bearer expected-token\r\n\r\n";
-        assert!(authorize_update_listener_request_with_path(&request, &token_path).is_ok());
+        assert_eq!(
+            authorize_update_listener_request(request, data_dir.path()),
+            Ok(())
+        );
     }
 
     #[test]
     fn update_listener_rejects_missing_token() {
-        let tempdir = tempfile::tempdir().expect("tempdir");
-        let token_path = tempdir.path().join(UPDATE_LISTENER_TOKEN_FILENAME);
-        std::fs::write(&token_path, "expected-token\n").expect("write token");
+        let data_dir = data_dir_with_state_token("expected-token");
 
         let request = "POST /update HTTP/1.1\r\n\r\n";
-        assert!(authorize_update_listener_request_with_path(&request, &token_path).is_err());
+        assert_eq!(
+            authorize_update_listener_request(request, data_dir.path()),
+            Err("missing update listener token".to_string())
+        );
     }
 
     #[test]
     fn update_listener_rejects_invalid_token() {
-        let tempdir = tempfile::tempdir().expect("tempdir");
-        let token_path = tempdir.path().join(UPDATE_LISTENER_TOKEN_FILENAME);
-        std::fs::write(&token_path, "expected-token\n").expect("write token");
+        let data_dir = data_dir_with_state_token("expected-token");
 
         let request = "POST /update HTTP/1.1\r\nAuthorization: Bearer wrong-token\r\n\r\n";
-        assert!(authorize_update_listener_request_with_path(&request, &token_path).is_err());
-    }
-
-    fn authorize_update_listener_request_with_path(
-        request: &str,
-        token_path: &Path,
-    ) -> Result<(), String> {
-        let expected = std::fs::read_to_string(token_path)
-            .map(|token| token.trim().to_string())
-            .map_err(|e| format!("Failed to read update listener token: {}", e))?;
-        let provided = extract_update_listener_token_from_request(request)
-            .ok_or_else(|| "missing update listener token".to_string())?;
-        if tokens_match(&provided, &expected) {
-            Ok(())
-        } else {
+        assert_eq!(
+            authorize_update_listener_request(request, data_dir.path()),
             Err("invalid update listener token".to_string())
-        }
+        );
     }
 
     #[test]

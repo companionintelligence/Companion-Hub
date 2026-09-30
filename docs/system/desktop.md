@@ -5,7 +5,7 @@
 > **Key paths:** `packages/desktop/src-tauri/src/hub_manager.rs`, `packages/desktop/src-tauri/resources/`
 > **Commands:** `pnpm run local:desktop` (Vite :5005), `pnpm run dev:desktop` (appliance :5002), `cd packages/desktop/src-tauri && cargo test`
 > **Owner persona:** maintainability + security
-> **Last updated:** 2026-09-17
+> **Last updated:** 2026-09-30
 > **Related:** docs/system/frontend.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/AUTO_HEALING.md
 
 ---
@@ -169,6 +169,10 @@ Authorization codes and desktop-exchange tokens are single-use. Restarting the H
 Desktop app spawns `docker compose` against bundled `docker-compose.prod.yml`.
 
 Container identity: `CI_HUB_CONTAINER_UID/GID`, `DOCKER_GID` env vars from `resolve_hub_container_identity()`.
+
+## Host update listener
+
+`companion-hub --update-listener` (`updater.rs`) listens on `0.0.0.0:17400`, so the Hub container can hand a desktop update to the host. Requests need the token in `<data dir>/state/update-listener.token`, which the Hub reads as `/data/state/update-listener.token`. Compose mounts `state/` and other subfolders into the Hub, never the data dir itself, so a file the desktop writes for the Hub to read belongs in one of them. See [The listener token](../DESKTOP-AUTO-UPDATE.md#the-listener-token).
 
 ## Testing
 

@@ -558,17 +558,25 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     }
   }
 
-  /** Token for the desktop host update listener (Hub POSTs to host.docker.internal:17400). */
+  /**
+   * Token for the desktop host update listener (Hub POSTs to host.docker.internal:17400). The desktop
+   * keeps it in `state/`, which this container mounts. Older desktop builds wrote it at the data dir's
+   * root, which only a Hub running on the host can see, so that file is the fallback.
+   */
   getHostUpdateListenerToken(): string | null {
-    const tokenPath = path.join(DATA_DIR, UPDATE_LISTENER_TOKEN_FILENAME);
-    if (!fs.existsSync(tokenPath)) {
-      return null;
+    for (const tokenPath of [path.join(DATA_DIR, 'state', UPDATE_LISTENER_TOKEN_FILENAME), path.join(DATA_DIR, UPDATE_LISTENER_TOKEN_FILENAME)]) {
+      if (!fs.existsSync(tokenPath)) {
+        continue;
+      }
+      try {
+        const token = fs.readFileSync(tokenPath, 'utf8').trim();
+        if (token) {
+          return token;
+        }
+      } catch {
+        // Unreadable: try the next location.
+      }
     }
-    try {
-      const token = fs.readFileSync(tokenPath, 'utf8').trim();
-      return token || null;
-    } catch {
-      return null;
-    }
+    return null;
   }
 }
