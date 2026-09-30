@@ -516,6 +516,65 @@ describe('HubPoolSection', () => {
     expect(screen.getAllByText('HUB_POOL_ROUTING_FAILED_LABEL')).toHaveLength(1);
   });
 
+  /**
+   * core-2, 2026-09-29: its engine answered gemma4 turns 200 with `<unused49>` tokens. Those rows now
+   * carry `requestError.basis: 'node'`, and this table must say the node failed — never "refused",
+   * which tells the operator to fix the app's request, and never "no node served this".
+   */
+  it('names a node’s bad output as the node’s fault, not a refusal, and says why each failed-over node was passed', async () => {
+    const row = (overrides: Json): Json => ({
+      at: '2026-09-29T10:05:00.000Z',
+      direction: 'outbound',
+      path: '/api/chat',
+      model: 'gemma4:e4b',
+      node: 'local',
+      peerId: null,
+      backend: 'ollama',
+      candidates: 2,
+      attempt: 1,
+      failedOverFrom: [],
+      durationMs: 900,
+      ...overrides,
+    });
+    fixtures.routingLog = {
+      entries: [
+        row({
+          outcome: 'failed',
+          status: 200,
+          requestError: { signature: 'degenerate-output', basis: 'node', confirms: null },
+          reason: 'degenerate-output',
+        }),
+        row({
+          outcome: 'failed',
+          status: 200,
+          requestError: { signature: 'truncated-upstream', basis: 'node', confirms: null },
+          reason: 'truncated-upstream',
+        }),
+        row({
+          outcome: 'served',
+          status: 200,
+          node: 'core-17.tailxyz.ts.net',
+          attempt: 2,
+          failedOverFrom: ['local'],
+          attempts: [{ node: 'local', backend: 'ollama', status: 200, reason: 'truncated-upstream' }],
+        }),
+      ],
+      summary: { recorded: 3, capacity: 200, served: 1, failed: 2, failovers: 1, lastAt: '2026-09-29T10:05:00.000Z' },
+    };
+
+    renderSection();
+
+    const entries = await screen.findAllByTestId('hub-pool-routing-entry');
+    expect(entries.map((entry) => entry.getAttribute('data-outcome'))).toEqual(['failed', 'failed', 'served']);
+    expect(entries.map((entry) => entry.getAttribute('data-badoutput'))).toEqual(['degenerate-output', 'truncated-upstream', null]);
+    expect(screen.queryAllByTestId('hub-pool-routing-refused')).toHaveLength(0);
+    expect(screen.getAllByTestId('hub-pool-routing-bad-output').map((cell) => cell.textContent)).toEqual([
+      'HUB_POOL_ROUTING_DEGENERATE_LABEL',
+      'HUB_POOL_ROUTING_TRUNCATED_LABEL',
+    ]);
+    expect(screen.getByTestId('hub-pool-routing-failover').getAttribute('title')).toBe('HUB_POOL_ROUTING_FAILOVER');
+  });
+
   describe('prefix affinity', () => {
     const withAffinity = (poolPrefixAffinityMaxInFlight: number, poolPrefixAffinityMargin: number): Json =>
       baseStatus({

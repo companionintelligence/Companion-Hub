@@ -29,7 +29,7 @@ import { INFERENCE_ENV_REFRESHER, type InferenceEnvRefresher } from '@/common/he
 import { PoolPeerGuard } from './guards/pool-peer.guard';
 import { HubPoolPeerService } from './hub-pool-peer.service';
 import { HubPoolRoutingLogService } from './hub-pool-routing-log.service';
-import { POOL_REQUEST_ID_HEADER, PoolProxyService, normalizePoolRequestId } from './hub-pool-proxy.service';
+import { POOL_MODEL_HEADER, POOL_REQUEST_ID_HEADER, PoolProxyService, forwardedModel, normalizePoolRequestId } from './hub-pool-proxy.service';
 import { POOL_SESSION_HEADER } from './hub-pool-prefix-affinity';
 import { HubPoolDiscoveryService } from './hub-pool-discovery.service';
 import { HubPoolPinService } from './hub-pool-pin.service';
@@ -655,12 +655,25 @@ export class HubPoolController {
     const peer = req.poolPeer;
     // Read before any refusal, so a refused forward joins to the sender's failover row by id too.
     const requestId = normalizePoolRequestId(req.header(POOL_REQUEST_ID_HEADER));
+    // Unlike the backend header this is advisory: it only attributes the serving outcome to a
+    // model, so an absent or bogus value costs a strike, never the forward.
+    const model = req.header(POOL_MODEL_HEADER) || undefined;
+    // For the routing row only, where a refusal is worth naming the model of too.
+    const rowModel = forwardedModel(model, body);
     // `isPairingIncomplete`, not `status !== 'connected'`: a peer we have marked unreachable is
     // still paired, and 403 here is read by the sender's `noteRejectedCandidate` as "it no longer
     // considers us paired", dropping a valid pairing's cached capabilities over our own stale
     // outbound health opinion. Only a pairing that was never completed has nothing to serve.
     if (!peer || isPairingIncomplete(peer.status)) {
-      this.proxyService.recordRefusedInboundForward({ backend: null, path, fromPeerFqdn: peer?.nodeFqdn, status: 403, requestId });
+      this.proxyService.recordRefusedInboundForward({
+        backend: null,
+        path,
+        fromPeerFqdn: peer?.nodeFqdn,
+        status: 403,
+        requestId,
+        model: rowModel,
+        reason: 'refused: the peer is not connected here',
+      });
       res.status(403).json({ error: 'Peer is not connected' });
       return;
     }
@@ -673,7 +686,15 @@ export class HubPoolController {
     // decision would make a healthy pairing repeatedly invalidate itself.
     const refusal = this.peerService.inboundRefusal(peer);
     if (refusal) {
-      this.proxyService.recordRefusedInboundForward({ backend: null, path, fromPeerFqdn: peer.nodeFqdn, status: 503, requestId });
+      this.proxyService.recordRefusedInboundForward({
+        backend: null,
+        path,
+        fromPeerFqdn: peer.nodeFqdn,
+        status: 503,
+        requestId,
+        model: rowModel,
+        reason: 'refused: not accepting work from this peer',
+      });
       res.status(503).json({ error: describeHubPoolInboundRefused(refusal) });
       return;
     }
@@ -685,9 +706,6 @@ export class HubPoolController {
       res.status(400).json({ error: 'Missing or invalid X-Hub-Pool-Backend header' });
       return;
     }
-    // Unlike the backend header this is advisory: it only attributes the serving outcome to a
-    // model, so an absent or bogus value costs a strike, never the forward.
-    const model = req.header('x-hub-pool-model') || undefined;
     // The peer's FQDN comes from its `hub_pool_peer` row, not the caller-supplied header, so the
     // routing log records who the guard actually authenticated rather than who claimed to call.
     await this.proxyService.forwardToLocalBackendAndRespond(backend, path, method, body, res, peer.nodeFqdn, model, requestId);

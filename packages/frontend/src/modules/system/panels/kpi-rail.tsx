@@ -219,6 +219,7 @@ export function DashboardRail({
   const callersLeft = buckets.reduce((sum, bucket) => sum + bucket.clientClosed, 0);
   const overBudget = buckets.reduce((sum, bucket) => sum + bucket.overBudget, 0);
   const refused = buckets.reduce((sum, bucket) => sum + bucket.refused, 0);
+  const badOutput = buckets.reduce((sum, bucket) => sum + bucket.badOutput, 0);
 
   /*
    * The 30-minute counts are a FLOOR, not a total, when the log held may be missing part of the
@@ -382,7 +383,9 @@ export function DashboardRail({
        * a whole first-byte budget to happen, which on this fleet is a prompt placed on a node too slow
        * to read it (fzzy and core-7 serve the 27B on CPU at 27-37 tok/s), and requests a node answered
        * by refusing the request itself — a 4xx, or an engine's verdict on the body — which are the
-       * app's to fix. Those were counted as served until 2026-09-29; see `isRefused`.
+       * app's to fix. Those were counted as served until 2026-09-29; see `isRefused`. And the
+       * opposite: a node answering 200 with output cut off or nothing but placeholder tokens, which
+       * is the node's to fix — also counted as served until then; see `outputFault`.
        */
       id: 'failed-30m',
       value: failed,
@@ -392,6 +395,7 @@ export function DashboardRail({
         overBudget > 0 ? t('DASHBOARD_RAIL_PAST_BUDGET', { count: overBudget }) : undefined,
         callersLeft > 0 ? t('DASHBOARD_RAIL_CALLERS_LEFT', { count: callersLeft }) : undefined,
         refused > 0 ? t('DASHBOARD_RAIL_REFUSED', { count: refused }) : undefined,
+        badOutput > 0 ? t('DASHBOARD_RAIL_BAD_OUTPUT', { count: badOutput }) : undefined,
       ),
       tone: failed > 0 ? 'bad' : 'muted',
       state: routingState,

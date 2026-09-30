@@ -1,6 +1,4 @@
-import { Readable } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
-import type { ReadableStream as WebReadableStream } from 'node:stream/web';
+import { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { forwardRef, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import type { Response } from 'express';
 import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/common/types';
@@ -9,6 +7,8 @@ import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-r
 import type { EngineCapabilities } from '@/modules/inference/backends/backend.interface';
 import { ModelRegistryService } from '@/modules/inference/model-registry.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
+import { RelayError, relayToResponse, watchResponseClose, type ResponseCloseWatch } from '@/modules/inference/upstream-stream';
+import { QUARANTINE_STRIKES, STRIKE_WINDOW_MS } from '@/modules/inference/backends/serving-quarantine';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { clampContextCap } from '@/common/helpers/inference-context-cap';
 import {
@@ -38,7 +38,9 @@ import {
   type PoolRoutingContextCapExclusion,
   type PoolRoutingOutcome,
   type PoolRoutingPin,
+  type PoolRoutingAttempt,
   type PoolRoutingPromptCeiling,
+  type PoolRoutingRecord,
   type PoolRoutingRecordInput,
   type PoolRoutingRequestError,
   type PoolRoutingSlotDemotion,
@@ -79,6 +81,19 @@ import {
   type UnconfirmedRequestError,
 } from './hub-pool-request-error';
 import { CONNECT_TIMEOUT_MS, MIN_PREFILL_TOKENS_PER_SEC, estimatePromptTokens, forwardBudgetMs } from './hub-pool-budget';
+import {
+  MAX_JUDGED_BODY_BYTES,
+  OutputJudge,
+  PoolOutputQuarantine,
+  applyOutputQuarantine,
+  describeOutputFault,
+  isStreamedContentType,
+  judgeWholeBody,
+  outputDialectOf,
+  type OutputTarget,
+  type OutputVerdict,
+  type PoolOutputFault,
+} from './hub-pool-output-check';
 import { MERGED_LISTING_PATHS, listedModelIds, mergeModelListing, peerOnlyModels } from './pool-model-listing';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import type { PoolCandidate, PoolPeerCapabilities } from './hub-pool.types';
@@ -201,9 +216,9 @@ const PROMPT_CEILING_PATHS: ReadonlySet<string> = new Set(['/v1/chat/completions
  * budget reads the string length, exactly as the forward's timer does; `bodyBytes` is the UTF-8 size
  * on the wire, and the two differ only for non-ASCII text.
  */
-export function describeRequestShape(method: string, body: unknown): { stream: boolean; bodyBytes: number; budgetMs: number } {
+export function describeRequestShape(method: string, body: unknown, path?: string): { stream: boolean; bodyBytes: number; budgetMs: number } {
   const payload = method === 'GET' ? '' : (JSON.stringify(body) ?? '');
-  const stream = isStreamingRequest(body);
+  const stream = isStreamingRequest(body, path);
   return { stream, bodyBytes: Buffer.byteLength(payload, 'utf8'), budgetMs: forwardBudgetMs(stream, payload.length) };
 }
 
@@ -260,9 +275,30 @@ export function resetPoolFetchDispatcherForTests(): void {
   poolDispatcherMemo = undefined;
 }
 
-/** Does this body ask for a streamed response? Decides which of the two budgets applies. */
-export function isStreamingRequest(body: unknown): boolean {
-  return !!(body && typeof body === 'object' && (body as { stream?: unknown }).stream === true);
+/**
+ * Ollama's native generation routes, which stream unless the body says `stream: false`. Every other
+ * pooled route — the OpenAI-compatible ones, and `/api/embed` — answers in one body unless asked to
+ * stream.
+ */
+const STREAMS_BY_DEFAULT_PATHS: ReadonlySet<string> = new Set(['/api/chat', '/api/generate']);
+
+/**
+ * Does this request get a streamed response? Decides which of the two budgets applies, and whether
+ * the pool can hold the answer to judge it before sending any of it.
+ *
+ * `path` because the default is the route's: `/api/chat` with no `stream` streams NDJSON. Read as
+ * non-streamed, such a turn was budgeted as a whole completion rather than a first byte, and held
+ * whole to be judged — the caller got nothing until the generation ended, and the NDJSON held could
+ * not be judged as one body. Without a path, the OpenAI default.
+ */
+export function isStreamingRequest(body: unknown, path?: string): boolean {
+  if (!isRecord(body)) {
+    return false;
+  }
+  if (path !== undefined && STREAMS_BY_DEFAULT_PATHS.has(path)) {
+    return body.stream !== false;
+  }
+  return body.stream === true;
 }
 
 /**
@@ -1273,32 +1309,104 @@ export function describeUnresolvableAuto(): string {
 const CLIENT_CLOSED_MESSAGE = 'The client closed the connection before the pool response finished';
 
 /**
- * An `AbortSignal` that fires when `res`'s connection closes before the response was finished.
- * Keyed on `writableFinished`, because a response that completed normally closes too. Attach it
- * before the first `await` of a handler, so a client that leaves while candidates are still being
- * ranked is not missed.
+ * The response's one close watch (see `watchResponseClose`): `clientClosed` fires when `res`'s
+ * connection closes before the response was finished. Keyed on `writableFinished`, because a
+ * response that completed normally closes too. Attach it before the first `await` of a handler, so a
+ * client that leaves while candidates are still being ranked is not missed, and dispose of it once
+ * the handler has settled.
  *
  * And keyed on `errored`, because a client leaving is not the only way `res` closes unfinished:
- * when the ENGINE dies mid-stream, `pipeline` destroys `res` with the engine's error, which closes
- * it too. Without that check the catch blocks read their own teardown as a hang-up — measured
- * against a real socket, an engine that dropped its connection mid-generation was logged at debug as
- * "client closed a streaming response", the candidate-failure warning never appeared, and the
- * peer-facing forward swallowed the error instead of surfacing it. A client that disconnects leaves
- * `errored` null: Node closes the response from the socket, not through `destroy(err)`.
+ * when the ENGINE dies mid-stream, the relay destroys `res` with the engine's error, which closes it
+ * too. Without that check the catch blocks read their own teardown as a hang-up — measured against a
+ * real socket, an engine that dropped its connection mid-generation was logged at debug as "client
+ * closed a streaming response", the candidate-failure warning never appeared, and the peer-facing
+ * forward swallowed the error instead of surfacing it. A client that disconnects leaves `errored`
+ * null: Node closes the response from the socket, not through `destroy(err)`.
+ *
+ * One listener for the whole request, however many candidates it walks — every forward shares its
+ * signal, and the relay hears the close through it rather than adding `pipeline`'s seven.
  */
-function abortWhenClientCloses(res: Response): AbortSignal {
-  const controller = new AbortController();
-  const onClose = () => {
-    if (!res.writableFinished && !res.errored) controller.abort(new Error(CLIENT_CLOSED_MESSAGE));
-  };
-  if (res.destroyed) {
-    onClose();
-  } else {
-    // `once`, and never removed: every response closes exactly once, finished or not, so the
-    // listener is gone by the time the response is, and after a normal finish it is a no-op.
-    res.once('close', onClose);
+function watchClient(res: Response): ResponseCloseWatch {
+  return watchResponseClose(res, CLIENT_CLOSED_MESSAGE);
+}
+
+/** Longest attempt reason kept on a routing row: a status, a deadline or an error code, never a paragraph. */
+const MAX_ATTEMPT_REASON_CHARS = 200;
+
+/**
+ * Why a forward failed without an answer, in the few words a routing row keeps: the deadline that
+ * expired, or the transport error and its code. A `fetch` failure's own message is only "fetch
+ * failed"; the code on its `cause` is the part an operator can act on.
+ */
+export function describeAttemptError(error: unknown): string {
+  const message =
+    error instanceof Error ? error.message : error == null ? 'unknown error' : typeof error === 'object' ? safeJson(error) : String(error);
+  const cause = error instanceof Error ? (error as Error & { cause?: { code?: unknown } }).cause : undefined;
+  const code = typeof cause?.code === 'string' && !message.includes(cause.code) ? ` (${cause.code})` : '';
+  const text = `${message}${code}`;
+  return text.length > MAX_ATTEMPT_REASON_CHARS ? `${text.slice(0, MAX_ATTEMPT_REASON_CHARS - 1)}…` : text;
+}
+
+/** A routing row's reason for an answer that was an error status, with the engine's verdict label when one was read. */
+function describeStatusReason(status: number, signature?: string): string {
+  return signature ? `HTTP ${status} (${signature})` : `HTTP ${status}`;
+}
+
+/**
+ * The model a peer's forward is for: the `X-Hub-Pool-Model` it sent, or else the forwarded body's own
+ * `model`. The body is already parsed by the time the route runs; reading one field of it holds
+ * nothing the relay does not already hold.
+ */
+export function forwardedModel(header: string | undefined, body: unknown): string | undefined {
+  if (header) return header;
+  return isRecord(body) && typeof body.model === 'string' && body.model.length > 0 ? body.model : undefined;
+}
+
+/**
+ * A non-streamed body read whole before anything is sent, so it can be judged — and, if the engine's
+ * answer was cut off or degenerate, not sent at all while another candidate can still be asked. `text`
+ * is `null` when the body ran past `maxBytes`: it is then relayed unjudged. `body` replays what was
+ * read and then whatever is left, so the caller gets every byte either way.
+ */
+async function holdWholeBody(
+  source: WebReadableStream<Uint8Array>,
+  maxBytes: number,
+): Promise<{ body: WebReadableStream<Uint8Array>; text: string | null }> {
+  const reader = source.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const next = await reader.read();
+    if (next.done) {
+      return { body: replayBody(chunks, null), text: Buffer.concat(chunks).toString('utf8') };
+    }
+    chunks.push(next.value);
+    size += next.value.byteLength;
+    if (size > maxBytes) {
+      return { body: replayBody(chunks, reader), text: null };
+    }
   }
-  return controller.signal;
+}
+
+function replayBody(chunks: Uint8Array[], rest: ReadableStreamDefaultReader<Uint8Array> | null): WebReadableStream<Uint8Array> {
+  let index = 0;
+  return new WebReadableStream<Uint8Array>({
+    pull: async (controller) => {
+      const held = chunks[index];
+      if (held) {
+        index += 1;
+        controller.enqueue(held);
+        return;
+      }
+      const next = rest ? await rest.read() : null;
+      if (!next || next.done) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(next.value);
+    },
+    cancel: (reason) => rest?.cancel(reason),
+  });
 }
 
 /**
@@ -1412,6 +1520,12 @@ function describeLocalProbes(probes: LocalBackendProbe[]): string {
  *
  * Failover stops the instant a response is committed: once status and headers
  * have gone to the client, a second candidate has nowhere to write.
+ *
+ * A 200 is not taken on trust either (see `hub-pool-output-check.ts`): a
+ * non-streamed completion that was cut off or is only placeholder tokens fails
+ * over like a 5xx, a stream that turns out so is recorded as the node failing
+ * it, and an engine that does either twice in five minutes is tried last for a
+ * cooldown.
  */
 @Injectable()
 export class PoolProxyService {
@@ -1459,6 +1573,11 @@ export class PoolProxyService {
   private readonly prefixAffinity = new PrefixAffinityStore();
   /** When each peer engine's key refusal was last warned about — see {@link warnPeerEngineRefusal}. Bounded by peers × engines × two statuses. */
   private readonly peerEngineRefusalWarnedAt = new Map<string, number>();
+  /**
+   * Engines that have been answering 200 with cut-off or degenerate output, and are withheld from the
+   * front of the walk for a cooldown — see `hub-pool-output-check.ts`. Per node, engine and model.
+   */
+  private readonly outputQuarantine = new PoolOutputQuarantine();
 
   /**
    * `auto` → the engine id of the chat model the POOL should run it on; any other model unchanged.
@@ -2355,9 +2474,19 @@ export class PoolProxyService {
     /** The app's `X-Hub-Pool-Session` header as Express read it, if it sent one — see `POOL_SESSION_HEADER`. */
     sessionHeader?: string | string[];
   }): Promise<void> {
+    // One close watch for the whole request, taken off the response once it has settled — see `watchClient`.
+    const watch = watchClient(params.res);
+    try {
+      await this.routeRequest(params, watch);
+    } finally {
+      watch.dispose();
+    }
+  }
+
+  private async routeRequest(params: Parameters<PoolProxyService['proxyRequest']>[0], watch: ResponseCloseWatch): Promise<void> {
     const { path, method, res } = params;
     const startedAt = Date.now();
-    const clientClosed = abortWhenClientCloses(res);
+    const clientClosed = watch.clientClosed;
     const model = await this.resolveModelAlias(params.model);
     if (!model) {
       const failed = this.routingLog.record({
@@ -2382,6 +2511,7 @@ export class PoolProxyService {
         status: null,
         durationMs: Date.now() - startedAt,
         usage: null,
+        reason: `nothing in the pool can stand in for "${AUTO_MODEL}"`,
       });
       res.setHeader(POOL_REQUEST_ID_HEADER, failed.id);
       res.status(502).json({ error: describeUnresolvableAuto() });
@@ -2394,7 +2524,7 @@ export class PoolProxyService {
     // app that originated this call has no reason to know that, so the proxy adds it here rather
     // than never seeing a usage frame at all. See `response-usage-tap.ts`.
     const body = injectUsageOptIn(aliasedBody);
-    const streaming = isStreamingRequest(body);
+    const streaming = isStreamingRequest(body, path);
     // Throughput is judged, and measured, on exactly the routes the ceiling is: a body that is one
     // context the engine reads before its first token.
     const judged = PROMPT_CEILING_PATHS.has(path);
@@ -2403,13 +2533,35 @@ export class PoolProxyService {
     // Keyed on the resolved model, never the alias: `auto` on two Hubs can mean two models, and the
     // cache a session warms is the resolved one's.
     const prefixKey = memoize(() => derivePrefixKey(model, body, params.sessionHeader));
-    const { candidates, pin, promptCeiling, contextCap, slots, throughput, contention, affinity, peers, localProbes } = await this.rankCandidates(
+    const {
+      candidates: ranked,
+      pin,
+      promptCeiling,
+      contextCap,
+      slots,
+      throughput,
+      contention,
+      affinity,
+      peers,
+      localProbes,
+    } = await this.rankCandidates(
       model,
       judged ? { bytes: () => payload()?.length ?? 0, streaming, prefixKey, numCtx: () => requestedWindow(path, body) } : undefined,
     );
+    // After every placement step and the pin, so nothing puts an engine that has been answering with
+    // garbage back in front — the local head start included.
+    const candidates = this.demoteWithheldEngines(model, ranked, affinity.decision);
     // Nodes a candidate rejected before one answered. Non-empty in the finished record is exactly
     // what makes it a failover, so the whole chain is one entry rather than one per attempt.
     const failedOverFrom: string[] = [];
+    // Why each of them was passed over, in the same order — see `PoolRoutingRecord.attempts`.
+    const attempts: PoolRoutingAttempt[] = [];
+    const passOver = (candidate: PoolCandidate, node: string, status: number | null, reason: string) => {
+      failedOverFrom.push(node);
+      attempts.push({ node, backend: candidate.backend, status, reason });
+    };
+    // The completion dialect this path answers in, whose output is judged; `null` for every other route.
+    const dialect = outputDialectOf(path);
 
     if (candidates.length === 0) {
       const failed = this.routingLog.record({
@@ -2434,7 +2586,8 @@ export class PoolProxyService {
         status: null,
         durationMs: Date.now() - startedAt,
         usage: null,
-        ...describeRequestShape(method, body),
+        reason: 'no candidate',
+        ...describeRequestShape(method, body, path),
       });
       res.setHeader(POOL_REQUEST_ID_HEADER, failed.id);
       // `localBackends` is the container's-eye view of every local engine: the operator reading
@@ -2462,11 +2615,12 @@ export class PoolProxyService {
       candidates: candidates.length,
       attempt: 1,
       failedOverFrom,
+      attempts,
       pin: describePinForLog(pin),
       promptCeiling,
       contextCap,
       slots,
-      ...describeRequestShape(method, body),
+      ...describeRequestShape(method, body, path),
       throughput,
       contention,
       affinity: affinity.decision,
@@ -2591,7 +2745,9 @@ export class PoolProxyService {
             );
           }
           lastError = new Error(`${candidate.nodeFqdn ?? 'local'} returned ${upstream.status}`);
-          failedOverFrom.push(nodeLabel);
+          const reason = describeStatusReason(upstream.status, verdict?.signature);
+          passOver(candidate, nodeLabel, upstream.status, reason);
+          this.logFailover(model, candidate, nodeLabel, upstream.status, reason, untried.length);
           await this.noteRejectedCandidate(candidate, upstream.status, upstream.headers);
           continue;
         }
@@ -2618,6 +2774,44 @@ export class PoolProxyService {
         // Everything the walk did not fail over and is not an engine's verdict is relayed on its
         // status, as it always was; a 4xx among those is the request refused, and is recorded so.
         const refusal = requestError ?? passedThroughRequestError(upstream.status);
+        // A non-streamed completion is read whole before anything is sent, which is what lets an
+        // answer that was cut off or degenerate go no further than this Hub while another candidate
+        // can still be asked. Reading it costs the caller nothing: the engine sends the body with its
+        // headers, the whole completion at once. A stream cannot be held — its first frame is on the
+        // wire before its last exists — so it is judged on the way past, below, and only recorded.
+        // A stream is whatever the engine sent as one, not only what the request asked for: holding
+        // one would send the caller nothing until the generation ended.
+        const streamedAnswer = streaming || isStreamedContentType(upstream.headers.get('content-type'));
+        let heldBody: WebReadableStream<Uint8Array> | undefined;
+        let outputFault: PoolOutputFault | null = null;
+        if (dialect && !streamedAnswer && !refusal && upstream.ok && upstream.body) {
+          const held = await holdWholeBody(upstream.body as WebReadableStream<Uint8Array>, MAX_JUDGED_BODY_BYTES).catch((error: unknown) => {
+            // Said as the upstream failing mid-body, like the relay says it, so the catch below
+            // reads it as the engine's failure rather than a transport error before any answer.
+            throw new RelayError('upstream', error);
+          });
+          heldBody = held.body;
+          const judgedBody = held.text === null ? null : judgeWholeBody(dialect, held.text);
+          if (judgedBody?.fault) {
+            this.strikeOutput(target, judgedBody.fault, nodeLabel);
+            if (untried.length > 0) {
+              lastError = new Error(`${nodeLabel} answered with ${describeOutputFault(judgedBody.fault)}`);
+              passOver(candidate, nodeLabel, upstream.status, judgedBody.fault);
+              this.logFailover(model, candidate, nodeLabel, upstream.status, describeOutputFault(judgedBody.fault), untried.length);
+              continue;
+            }
+            // The last candidate: its answer goes to the caller as the engine gave it, which is all
+            // there is, and the row says the node failed rather than that it served. Nor should the
+            // session follow its prefix back to this engine on its next turn.
+            outputFault = judgedBody.fault;
+            if (affinity.key) {
+              this.prefixAffinity.forget(affinity.key.key);
+            }
+          } else if (judgedBody?.complete) {
+            this.clearOutputStrikes(target, nodeLabel);
+          }
+        }
+        const nodeFault: PoolRoutingRequestError | null = outputFault ? { signature: outputFault, basis: 'node', confirms: null } : null;
         // Settled here rather than after the stream: headers are the routing decision, and the
         // generation that follows can run for minutes (or never end, if the client hung up).
         this.routingLog.settle(row, {
@@ -2627,10 +2821,11 @@ export class PoolProxyService {
           attempt: index + 1,
           // `failed` for any refusal of the request: the node answered, but nothing was served. A
           // 4xx settled `served` was read as a success with a first byte of a few milliseconds.
-          outcome: refusal ? 'failed' : 'served',
+          outcome: refusal || nodeFault ? 'failed' : 'served',
           status: upstream.status,
           durationMs: Date.now() - startedAt,
-          requestError: refusal,
+          requestError: refusal ?? nodeFault,
+          reason: outputFault ?? (refusal ? describeStatusReason(upstream.status, refusal.signature) : null),
         });
         // Attribution rides on the commit, so it is on the wire before the first body byte on the
         // streamed path too — the headers are the point of no return, the body follows.
@@ -2646,20 +2841,35 @@ export class PoolProxyService {
         );
         committed = true;
         const meter = measurable && upstream.ok ? startResponseTiming() : null;
+        // Only a 200 that was relayed as the engine's answer: a refusal is not output, and a held
+        // body was judged above.
+        const judge = dialect && streamedAnswer && upstream.ok && !refusal ? new OutputJudge(dialect, true) : null;
+        let relayCut = false;
         try {
-          await this.streamResponse(
-            upstream,
-            res,
-            (usage) => {
+          await this.streamResponse(upstream, res, watch, {
+            onUsage: (usage) => {
               this.routingLog.attachUsage(row, usage);
               if (meter) meter.timing.usage = usage;
             },
-            meter?.observer,
-          );
+            observer: meter?.observer,
+            judge,
+            body: heldBody,
+          });
+        } catch (error) {
+          relayCut = error instanceof RelayError && error.side === 'upstream';
+          throw error;
         } finally {
-          if (meter) {
+          // An answer the row records as the node failing is no measure of the engine serving: an
+          // engine that emits placeholder tokens quickly would otherwise read as a fast one, and
+          // placement would keep favouring it once its withhold ran out.
+          if (meter && !outputFault && !relayCut && !judge?.verdict()?.fault) {
             this.recordServedThroughput(target, streaming, payload()?.length ?? 0, attemptStartedAt, headersAt, meter.timing);
           }
+          this.routingLog.update(row, { totalMs: Date.now() - startedAt });
+        }
+        if (judge && this.settleStreamVerdict(row, judge.verdict(), target, nodeLabel) && affinity.key) {
+          // A session must not keep following its prefix back to an engine that answered it with garbage.
+          this.prefixAffinity.forget(affinity.key.key);
         }
         return;
       } catch (error) {
@@ -2673,20 +2883,50 @@ export class PoolProxyService {
         if (!committed && measurable && streaming) {
           this.recordMissedDeadline(target, payload()?.length ?? 0, attemptStartedAt, error);
         }
-        failedOverFrom.push(nodeLabel);
-        this.logger.warn(
-          `[PoolProxy] candidate ${candidate.nodeFqdn ?? 'local'} (${candidate.backend}) failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
         if (committed) {
+          if (error instanceof RelayError && error.side === 'downstream') {
+            // The response to the caller failed under the relay — its socket, not the node. Nobody is
+            // left to read the answer, and the node served what it was asked.
+            this.logger.debug(`[PoolProxy] the response from ${nodeLabel} could not be written to the client: ${error.message}`);
+            res.destroy();
+            return;
+          }
+          this.logger.warn(`[PoolProxy] candidate ${candidate.nodeFqdn ?? 'local'} (${candidate.backend}) failed: ${describeAttemptError(error)}`);
           // Status and headers (and likely some generated tokens) are already on the wire. Another
           // candidate would restart the answer into a response the client is mid-way through
           // reading, so let the stream die instead and leave the client to retry.
           this.logger.warn('[PoolProxy] response already committed to the client; not failing over');
-          // The push above changed a row that settled at headers time; through `update` so `?since=` returns it.
-          this.routingLog.update(row, { failedOverFrom });
+          // The row settled `served` at headers time, and the caller got a cut-off answer from this
+          // node: the node failed it. Not a failover, which nothing was — through `update` so
+          // `?since=` returns the change.
+          this.routingLog.update(row, {
+            outcome: 'failed',
+            requestError: { signature: 'truncated-upstream', basis: 'node', confirms: null },
+            reason: 'truncated-upstream',
+          });
+          // Struck like an answer that ended without its final frame, which is what the caller got:
+          // an engine that keeps dying mid-generation must not keep drawing every retry, the local
+          // head start included. Nor should the session follow its prefix back to it.
+          if (dialect && error instanceof RelayError && error.side === 'upstream') {
+            this.strikeOutput(target, 'truncated-upstream', nodeLabel);
+            if (affinity.key) {
+              this.prefixAffinity.forget(affinity.key.key);
+            }
+          }
           res.destroy();
           return;
         }
+        if (dialect && error instanceof RelayError && error.side === 'upstream') {
+          // A held body the engine stopped sending part-way: cut off exactly as a streamed answer that
+          // dies after the commit is, only caught while the next candidate can still be asked.
+          this.strikeOutput(target, 'truncated-upstream', nodeLabel);
+        }
+        const reason = describeAttemptError(error);
+        passOver(candidate, nodeLabel, null, reason);
+        this.logger.warn(
+          `[PoolProxy] candidate ${candidate.nodeFqdn ?? 'local'} (${candidate.backend}) failed: ${reason}` +
+            (index + 1 < candidates.length ? `; failing over (${candidates.length - index - 1} candidate(s) left)` : '; no candidate left'),
+        );
       } finally {
         this.loadService.release(key, generation);
       }
@@ -2700,6 +2940,8 @@ export class PoolProxyService {
       outcome: 'failed',
       status: null,
       durationMs: Date.now() - startedAt,
+      // The last candidate's; `attempts` holds every one.
+      reason: attempts[attempts.length - 1]?.reason ?? null,
     });
     this.logger.error(
       `[PoolProxy] all ${candidates.length} candidate(s) for model "${model}" failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
@@ -2753,6 +2995,105 @@ export class PoolProxyService {
       durationMs: waitedMs,
     });
     this.logger.log(`[PoolProxy] client closed the request after ${waitedMs}ms while ${nodeLabel} had not answered; upstream request aborted`);
+  }
+
+  /**
+   * One line per failover, naming the node, what it answered and why it was passed over. Without it
+   * a failover was visible only in the routing log's `failedOverFrom`: two 2026-09-29 failovers from
+   * beta-1 to core-17 left no line on either Hub. At warn for a node failing (a 5xx, an output fault),
+   * at log for one saying "not now" (408/429) or refusing the pairing, which is load shedding or has
+   * a warning of its own.
+   */
+  private logFailover(model: string, candidate: PoolCandidate, nodeLabel: string, status: number | null, reason: string, left: number): void {
+    const line =
+      `[PoolProxy] ${nodeLabel} (${candidate.backend}) failed "${model}": ${reason}; ` +
+      (left > 0 ? `failing over (${left} candidate(s) left)` : 'no candidate left');
+    if (status !== null && status >= 400 && status < 500) {
+      this.logger.log(line);
+    } else {
+      this.logger.warn(line);
+    }
+  }
+
+  /**
+   * {@link applyOutputQuarantine} against this node's output strikes. The affinity decision is
+   * corrected when the engine it put first was moved back, so the row does not claim a `hit` that
+   * was not placed first. One debug line when anything moved; the warn was written when it was withheld.
+   */
+  private demoteWithheldEngines(model: string, ranked: PoolCandidate[], affinity: PoolRoutingAffinity | null): PoolCandidate[] {
+    if (this.outputQuarantine.isEmpty()) {
+      return ranked;
+    }
+    const { candidates, withheld } = applyOutputQuarantine(ranked, (candidate) =>
+      this.outputQuarantine.isWithheld({ nodeKey: candidate.peerId ?? LOCAL_CANDIDATE_KEY, backend: candidate.backend, model }),
+    );
+    if (withheld.length === 0) {
+      return ranked;
+    }
+    if (affinity?.outcome === 'hit' && ranked[0] && withheld.includes(ranked[0])) {
+      affinity.outcome = 'skipped';
+    }
+    this.logger.debug(
+      `[PoolProxy] "${model}" moved ${withheld.map((candidate) => `${candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY} ${candidate.backend}`).join(', ')} behind every other candidate: withheld after answering with bad output`,
+    );
+    return candidates;
+  }
+
+  /**
+   * One cut-off or degenerate answer, struck against the engine that gave it. The strike that
+   * withholds it is the one warn line an operator gets for the whole run of them, and says why; every
+   * answer is on its routing row either way.
+   */
+  private strikeOutput(target: OutputTarget, fault: PoolOutputFault, nodeLabel: string): void {
+    const decision = this.outputQuarantine.strike(target, fault);
+    if (!decision.withheld) {
+      this.logger.debug(
+        `[PoolProxy] ${nodeLabel} ${target.backend} answered "${target.model}" with ${describeOutputFault(fault)}; strike ${decision.strikes} of ${QUARANTINE_STRIKES}`,
+      );
+      return;
+    }
+    const why =
+      decision.strikes > 1
+        ? `${decision.strikes} times within ${Math.round(STRIKE_WINDOW_MS / 60_000)} minutes`
+        : 'again, on its first request after the last withhold ran out';
+    this.logger.warn(
+      `[PoolProxy] ${nodeLabel} ${target.backend} answered "${target.model}" with ${describeOutputFault(fault)} ${why}; ` +
+        `withholding it from routing for ${Math.round(decision.forMs / 1000)}s — every other candidate is tried first`,
+    );
+  }
+
+  /** A clean, complete answer clears the engine's strikes, and ends a withhold outright. */
+  private clearOutputStrikes(target: OutputTarget, nodeLabel: string): void {
+    if (this.outputQuarantine.isEmpty()) {
+      return;
+    }
+    if (this.outputQuarantine.clear(target)) {
+      this.logger.log(`[PoolProxy] ${nodeLabel} ${target.backend} answered "${target.model}" cleanly again — no longer withheld from routing`);
+    }
+  }
+
+  /**
+   * A relayed stream's verdict, once it has ended: a fault turns the row `failed` on the node's account
+   * and strikes the engine, a clean complete answer clears it. `true` when the stream was faulty. A
+   * stream that was cut, by either end, has no verdict and changes nothing here.
+   */
+  private settleStreamVerdict(row: PoolRoutingRecord, verdict: OutputVerdict | null, target: OutputTarget, nodeLabel: string): boolean {
+    if (!verdict) {
+      return false;
+    }
+    if (verdict.fault) {
+      this.routingLog.update(row, {
+        outcome: 'failed',
+        requestError: { signature: verdict.fault, basis: 'node', confirms: null },
+        reason: verdict.fault,
+      });
+      this.strikeOutput(target, verdict.fault, nodeLabel);
+      return true;
+    }
+    if (verdict.complete) {
+      this.clearOutputStrikes(target, nodeLabel);
+    }
+    return false;
   }
 
   /**
@@ -2965,13 +3306,16 @@ export class PoolProxyService {
     const startedAt = Date.now();
     // The sending node aborting its own fetch closes this response, and this is the node whose engine
     // is doing the prefill — so the close has to be carried one hop further, to the engine.
-    const senderClosed = abortWhenClientCloses(res);
+    const watch = watchClient(res);
+    const senderClosed = watch.clientClosed;
+    // The model for the row and the output strikes; the serving record keeps reading the header alone.
+    const rowModel = forwardedModel(model, body) ?? null;
     // Timed exactly like a request this node's own apps sent here, because it is the same engine
     // doing the same work — and a node that mostly serves peers learns its own speed only this way.
     // It reads the response for timing frames as the outbound tap does, and never the request body.
     const target: ThroughputTarget | null =
       model && PROMPT_CEILING_PATHS.has(path) && this.loadService.localInFlight() === 0 ? { nodeKey: LOCAL_CANDIDATE_KEY, backend, model } : null;
-    const streaming = isStreamingRequest(body);
+    const streaming = isStreamingRequest(body, path);
     const payload = forwardedPayload(method, body);
     // A peer's turn holds a runner here exactly as a local app's does, so it is named the same way.
     const generation: LocalGeneration | undefined =
@@ -2979,15 +3323,14 @@ export class PoolProxyService {
     this.loadService.acquire(LOCAL_CANDIDATE_KEY, generation);
     // Recorded once per forward, whichever way it ends: a stream that dies after the backend
     // answered is the same routing decision, not a second one.
-    let recorded = false;
-    const request = { id: requestId, ...describeRequestShape(method, body) };
+    let row: PoolRoutingRecord | null = null;
+    const request = { id: requestId, ...describeRequestShape(method, body, path) };
+    // This node's engine is the one answering, so this node strikes it too — for its own apps'
+    // next requests. The sender judges the same bytes and keeps its own account of this engine.
+    const dialect = outputDialectOf(path);
     try {
       const upstream = await this.callBackend(backend, path, method, body, payload, senderClosed);
       const headersAt = Date.now();
-      // Logged from the receiving side too, so an operator can answer "which of my peers is
-      // spending my GPU time" — the sender's own log only covers what it sent.
-      this.recordInbound(backend, path, fromPeerFqdn, upstream.status, startedAt, undefined, request);
-      recorded = true;
       // A peer's forward is the only evidence an inbound-only node ever gets that one of its own
       // models cannot run: nothing here goes through `proxyRequest`, so without this the node
       // earns no strikes, withholds nothing, and keeps advertising the dead model to its peers.
@@ -2995,34 +3338,81 @@ export class PoolProxyService {
       // it serves, so a peer-forwarded `/api/show` must not credit or strike its serving record.
       // The error body is read from a clone, so the sender still gets it whole and judges it itself.
       const verdict = await readRequestErrorVerdict(upstream);
+      // Logged from the receiving side too, so an operator can answer "which of my peers is
+      // spending my GPU time" — the sender's own log only covers what it sent. An error status says
+      // why on the row, which until 2026-09-29 read a bare 500 on beta-1 for every turn it failed.
+      row = this.recordInbound({
+        backend,
+        path,
+        fromPeerFqdn,
+        model: rowModel,
+        status: upstream.status,
+        startedAt,
+        request,
+        reason: upstream.status >= 400 ? describeStatusReason(upstream.status, verdict?.signature) : null,
+      });
       this.noteLocalServingOutcome(backend, MODEL_METADATA_PATHS.has(path) ? undefined : model, upstream.status, verdict);
       // Marks the answer as the engine's, so the sender can tell an engine refusing its key here
       // from this Hub refusing the pairing: see `isRelayedEngineResponse`. The sender drops every
       // `x-hub-pool-*` header from a peer's answer, so the caller never sees it.
       const relayed = { [POOL_BACKEND_HEADER]: backend };
-      if (!target || !upstream.ok) {
-        await this.pipeResponse(upstream, res, relayed);
-        return;
-      }
-      const meter = startResponseTiming();
+      const meter = target && upstream.ok ? startResponseTiming() : null;
+      const judge =
+        dialect && upstream.ok ? new OutputJudge(dialect, streaming || isStreamedContentType(upstream.headers.get('content-type'))) : null;
       this.commitResponse(upstream, res, relayed);
+      const settledRow = row;
+      let relayCut = false;
       try {
-        await this.streamResponse(
-          upstream,
-          res,
-          (usage) => {
-            meter.timing.usage = usage;
-          },
-          meter.observer,
-        );
+        await this.streamResponse(upstream, res, watch, {
+          onUsage: meter
+            ? (usage) => {
+                meter.timing.usage = usage;
+              }
+            : undefined,
+          observer: meter?.observer,
+          judge,
+        });
+      } catch (error) {
+        relayCut = error instanceof RelayError && error.side === 'upstream';
+        throw error;
       } finally {
-        this.recordServedThroughput(target, streaming, payload?.length ?? 0, startedAt, headersAt, meter.timing);
+        // Not from an answer that failed on this engine's account — see the same guard in `routeRequest`.
+        if (meter && target && !relayCut && !judge?.verdict()?.fault) {
+          this.recordServedThroughput(target, streaming, payload?.length ?? 0, startedAt, headersAt, meter.timing);
+        }
+        this.routingLog.update(settledRow, { totalMs: Date.now() - startedAt });
+      }
+      const judged = judge?.verdict();
+      if (judged?.fault) {
+        this.routingLog.update(settledRow, { outcome: 'failed', reason: judged.fault });
+        if (rowModel) this.strikeOutput({ nodeKey: LOCAL_CANDIDATE_KEY, backend, model: rowModel }, judged.fault, LOCAL_CANDIDATE_KEY);
+      } else if (judged?.complete && rowModel) {
+        this.clearOutputStrikes({ nodeKey: LOCAL_CANDIDATE_KEY, backend, model: rowModel }, LOCAL_CANDIDATE_KEY);
       }
     } catch (error) {
-      if (!recorded) {
-        this.recordInbound(backend, path, fromPeerFqdn, null, startedAt, undefined, request);
+      if (!row) {
+        // A sender that gave up on this forward is not this node failing it, and says so: the sender's
+        // walk moved on, or its caller left, and counting it failed here read as a peer failure.
+        this.recordInbound({
+          backend,
+          path,
+          fromPeerFqdn,
+          model: rowModel,
+          status: null,
+          startedAt,
+          request,
+          clientClosed: senderClosed.aborted,
+          reason: senderClosed.aborted ? null : describeAttemptError(error),
+        });
         if (target && streaming) {
           this.recordMissedDeadline(target, payload?.length ?? 0, startedAt, error);
+        }
+      } else if (!senderClosed.aborted && error instanceof RelayError && error.side === 'upstream') {
+        // The engine died mid-answer: the sender got a cut-off response from this node, and this
+        // node's own apps would get the same, so it is struck here as a judged cut-off answer is.
+        this.routingLog.update(row, { outcome: 'failed', reason: 'truncated-upstream' });
+        if (dialect && rowModel) {
+          this.strikeOutput({ nodeKey: LOCAL_CANDIDATE_KEY, backend, model: rowModel }, 'truncated-upstream', LOCAL_CANDIDATE_KEY);
         }
       }
       if (senderClosed.aborted) {
@@ -3034,6 +3424,7 @@ export class PoolProxyService {
       throw error;
     } finally {
       this.loadService.release(LOCAL_CANDIDATE_KEY, generation);
+      watch.dispose();
     }
   }
 
@@ -3053,29 +3444,47 @@ export class PoolProxyService {
     status: number;
     /** The sender's routing-log id, when it sent one — so a refusal joins to the sender's failover row too. */
     requestId?: string;
+    /** The model the forward was for, when the sender named it — see {@link forwardedModel}. */
+    model?: string;
+    /** Why it was refused, in the row's few words. */
+    reason?: string;
   }): void {
     // 'failed' explicitly: nothing was served. The rule below now reads a 4xx as failed too, but that
     // rule describes an engine's answer, and a refusal at the door should not depend on it.
-    this.recordInbound(params.backend, params.path, params.fromPeerFqdn, params.status, Date.now(), 'failed', { id: params.requestId });
+    this.recordInbound({
+      backend: params.backend,
+      path: params.path,
+      fromPeerFqdn: params.fromPeerFqdn,
+      model: params.model ?? null,
+      status: params.status,
+      startedAt: Date.now(),
+      outcome: 'failed',
+      request: { id: params.requestId },
+      reason: params.reason ?? describeStatusReason(params.status),
+    });
   }
 
-  private recordInbound(
-    backend: InferenceBackendType | null,
-    path: string,
-    fromPeerFqdn: string | undefined,
-    status: number | null,
-    startedAt: number,
-    outcome?: PoolRoutingOutcome,
-    request: Pick<PoolRoutingRecordInput, 'id' | 'stream' | 'bodyBytes' | 'budgetMs'> = {},
-  ): void {
-    this.routingLog.record({
-      ...request,
+  private recordInbound(entry: {
+    backend: InferenceBackendType | null;
+    path: string;
+    fromPeerFqdn: string | undefined;
+    model: string | null;
+    status: number | null;
+    startedAt: number;
+    outcome?: PoolRoutingOutcome;
+    request?: Pick<PoolRoutingRecordInput, 'id' | 'stream' | 'bodyBytes' | 'budgetMs'>;
+    reason?: string | null;
+    clientClosed?: boolean;
+  }): PoolRoutingRecord {
+    const { backend, path, fromPeerFqdn, status, startedAt, outcome } = entry;
+    return this.routingLog.record({
+      ...entry.request,
       at: new Date().toISOString(),
       direction: 'inbound',
       path,
-      // A peer forward carries the model in a body we deliberately never parse — it is passed
-      // through untouched, and reading it here would mean holding the payload we promise not to log.
-      model: null,
+      // The sender's `X-Hub-Pool-Model`, or the body's own `model`: the body is passed through
+      // untouched, and only that one field of it is read.
+      model: entry.model,
       node: fromPeerFqdn ?? null,
       peerId: null,
       backend,
@@ -3098,9 +3507,10 @@ export class PoolProxyService {
       status,
       durationMs: Date.now() - startedAt,
       // Inbound (peer-forwarded) usage capture is out of scope for now — see the PR description.
-      // `forwardToLocalBackendAndRespond` calls the shared `pipeResponse`/`callBackend` path, not
-      // `proxyRequest`, so wiring this in later means threading the same tap through there too.
+      // `forwardToLocalBackendAndRespond` taps the response for timings only, not for this row.
       usage: null,
+      reason: entry.reason ?? null,
+      clientClosed: entry.clientClosed ?? false,
     });
   }
 
@@ -3116,7 +3526,16 @@ export class PoolProxyService {
    * to a peer wholesale rather than blending.
    */
   async proxyLocalOnlyRequest(path: string, method: string, body: unknown, res: Response): Promise<void> {
-    const clientClosed = abortWhenClientCloses(res);
+    const watch = watchClient(res);
+    try {
+      await this.serveLocalOnly(path, method, body, res, watch);
+    } finally {
+      watch.dispose();
+    }
+  }
+
+  private async serveLocalOnly(path: string, method: string, body: unknown, res: Response, watch: ResponseCloseWatch): Promise<void> {
+    const clientClosed = watch.clientClosed;
     if (MERGED_LISTING_PATHS.has(path)) {
       await this.serveMergedListing(path, method, res, clientClosed);
       return;
@@ -3143,7 +3562,7 @@ export class PoolProxyService {
         }
         this.commitResponse(upstream, res);
         committed = true;
-        await this.streamResponse(upstream, res);
+        await this.streamResponse(upstream, res, watch);
         return;
       } catch (error) {
         this.logger.debug(`[PoolProxy] ${path} via local ${type} failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -3153,7 +3572,7 @@ export class PoolProxyService {
         }
       }
     }
-    if (MODEL_METADATA_PATHS.has(path) && (await this.describeFromPeer(path, resolvedBody, res, clientClosed))) {
+    if (MODEL_METADATA_PATHS.has(path) && (await this.describeFromPeer(path, resolvedBody, res, watch))) {
       return;
     }
     // `/api/version` and `/api/tags` are how an Ollama-native caller (e.g. ci-hermes with
@@ -3261,7 +3680,8 @@ export class PoolProxyService {
    * or feed the model's serving record. A peer on a build without `local/api/show` answers 404,
    * which moves on to the next peer and, with none left, to the same 502 as before.
    */
-  private async describeFromPeer(path: string, body: unknown, res: Response, clientClosed: AbortSignal): Promise<boolean> {
+  private async describeFromPeer(path: string, body: unknown, res: Response, watch: ResponseCloseWatch): Promise<boolean> {
+    const clientClosed = watch.clientClosed;
     const model = isRecord(body)
       ? [body.model, body.name].find((value): value is string => typeof value === 'string' && value.length > 0)
       : undefined;
@@ -3302,7 +3722,7 @@ export class PoolProxyService {
         }
         this.commitResponse(upstream, res, servedByHeaders(candidate, model));
         committed = true;
-        await this.streamResponse(upstream, res);
+        await this.streamResponse(upstream, res, watch);
         return true;
       } catch (error) {
         this.logger.debug(
@@ -3519,7 +3939,7 @@ export class PoolProxyService {
         headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
         body: payload,
       },
-      isStreamingRequest(body),
+      isStreamingRequest(body, path),
       payload?.length ?? 0,
       clientClosed,
     );
@@ -3588,7 +4008,7 @@ export class PoolProxyService {
         },
         body: peerPayload,
       },
-      isStreamingRequest(body),
+      isStreamingRequest(body, path),
       peerPayload?.length ?? 0,
       clientClosed,
     );
@@ -3663,27 +4083,38 @@ export class PoolProxyService {
   }
 
   /**
-   * `onUsage`, when given, taps the body for a token-usage frame while it streams through — see
-   * `response-usage-tap.ts`. Optional because not every caller has a routing-log row to attach it
-   * to (`pipeResponse`, the inbound/listing paths below, records usage nowhere today).
+   * Relay the body to the caller. Everything in `taps` is optional and reads the body on the way past
+   * without changing a byte: `onUsage` and `observer` a token-usage frame and engine timings (see
+   * `response-usage-tap.ts`), `judge` whether the answer finished and said anything (see
+   * `hub-pool-output-check.ts`). `body` replaces the upstream's own when the caller has already read
+   * it — a non-streamed completion held to be judged.
+   *
+   * Through `relayToResponse`, not `pipeline`: the relay hears the response close through the request's
+   * one watch, where `pipeline` added seven `close` listeners of its own — see `watchResponseClose`.
    */
   private async streamResponse(
     upstream: globalThis.Response,
     res: Response,
-    onUsage?: (usage: PoolRoutingUsage) => void,
-    observer?: ResponseTapObserver,
+    watch: ResponseCloseWatch,
+    taps: {
+      onUsage?: (usage: PoolRoutingUsage) => void;
+      observer?: ResponseTapObserver;
+      judge?: OutputJudge | null;
+      body?: WebReadableStream<Uint8Array>;
+    } = {},
   ): Promise<void> {
-    if (!upstream.body) {
+    const source = taps.body ?? (upstream.body as WebReadableStream<Uint8Array> | null);
+    if (!source) {
       res.end();
       return;
     }
-    const webBody = upstream.body as WebReadableStream<Uint8Array>;
-    const body = onUsage || observer ? tapResponseUsageWhileStreaming(webBody, onUsage ?? (() => undefined), observer) : webBody;
-    await pipeline(Readable.fromWeb(body), res);
-  }
-
-  private async pipeResponse(upstream: globalThis.Response, res: Response, attribution?: Record<string, string>): Promise<void> {
-    this.commitResponse(upstream, res, attribution);
-    await this.streamResponse(upstream, res);
+    let body = source;
+    if (taps.onUsage || taps.observer) {
+      body = tapResponseUsageWhileStreaming(body, taps.onUsage ?? (() => undefined), taps.observer);
+    }
+    if (taps.judge) {
+      body = taps.judge.tap(body);
+    }
+    await relayToResponse(body as unknown as ReadableStream<Uint8Array>, res, watch);
   }
 }

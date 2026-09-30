@@ -370,6 +370,57 @@ describe('hub-pool-cli formatters', () => {
     );
   });
 
+  /**
+   * core-2, 2026-09-29: its engine answered gemma4 turns 200 with `<unused49>` tokens and streams with
+   * no closing frame, and every row read `served`. Those rows are `failed` now, with basis `node` —
+   * and the line under them must blame the node, where a refusal's line blames the request.
+   */
+  it('says a node answered with bad output, why each failed-over node was passed, and the whole response time', () => {
+    const row = (over: Partial<PoolRoutingLogResponse['entries'][number]>): PoolRoutingLogResponse['entries'][number] => ({
+      at: '2026-09-29T10:00:01.000Z',
+      direction: 'outbound',
+      path: '/api/chat',
+      model: 'gemma4:e4b',
+      node: 'local',
+      peerId: null,
+      backend: 'ollama',
+      candidates: 3,
+      attempt: 1,
+      failedOverFrom: [],
+      outcome: 'failed',
+      status: 200,
+      durationMs: 812,
+      ...over,
+    });
+    const text = formatPoolRoutingLogLines({
+      entries: [
+        row({ requestError: { signature: 'degenerate-output', basis: 'node', confirms: null }, reason: 'degenerate-output', totalMs: 41_207 }),
+        row({
+          node: 'core-17.tailxyz.ts.net',
+          attempt: 3,
+          outcome: 'served',
+          failedOverFrom: ['local', 'beta-1.tailxyz.ts.net'],
+          attempts: [
+            { node: 'local', backend: 'ollama', status: 200, reason: 'truncated-upstream' },
+            { node: 'beta-1.tailxyz.ts.net', backend: 'ollama', status: 500, reason: 'HTTP 500' },
+          ],
+        }),
+        row({ direction: 'inbound', node: 'core-2.tailxyz.ts.net', reason: 'truncated-upstream' }),
+        row({ node: null, status: null, attempt: 3, reason: 'fetch failed (ECONNREFUSED)' }),
+      ],
+      summary: { recorded: 4, capacity: 200, served: 1, failed: 3, requestErrors: 0, outputFaults: 2, failovers: 1, lastAt: null },
+    }).join('\n');
+
+    expect(text).toContain('3 failed (2 bad answers from their nodes) ·');
+    expect(text).toContain("↳ local answered with only <unusedN> placeholder tokens — the node's fault, not the request's");
+    expect(text).not.toContain('refused the request itself');
+    expect(text).toContain('↳ failed over from local (truncated-upstream), beta-1.tailxyz.ts.net (HTTP 500)');
+    expect(text).toContain("↳ the node answered with a response cut off before the dialect's final frame");
+    expect(text).toContain('↳ fetch failed (ECONNREFUSED)');
+    expect(text).toContain('41207');
+    expect(text).toContain('TOTAL');
+  });
+
   it('leaves the counts line alone on a Hub that reports no hang-ups, and on one too old to report them', () => {
     const entries: PoolRoutingLogResponse['entries'] = [];
     const base = { recorded: 3, capacity: 200, served: 3, failed: 0, failovers: 0, lastAt: null };
