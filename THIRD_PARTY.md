@@ -239,10 +239,7 @@ package manager's own `licenses` command.
 ## first-party (internal)
 
 1. [`@ci-hub/common`](https://github.com/companionintelligence/CI-Hub) `workspace:*` — runtime
-2. [`@companionintelligence/tokens`](https://github.com/companionintelligence/CI-Hub) `^1.1.0` — runtime
-3. [`@companionintelligence/assets`](https://github.com/companionintelligence/CI-Hub) `^1.0.0` — dev
-4. [`@companionintelligence/config`](https://github.com/companionintelligence/CI-Hub) `^1.0.0` — dev
-5. [`@companionintelligence/video-kit`](https://github.com/companionintelligence/CI-Hub) `^0.32.2` — dev
+2. [`@companionintelligence/video-kit`](https://github.com/companionintelligence/CI-Hub) `^0.32.2` — dev
 
 
 ---

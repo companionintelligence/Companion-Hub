@@ -36,7 +36,6 @@ The frameworks and libraries that define how this repository is built.
 |  | [`@ci-hub/common`](https://github.com/companionintelligence/CI-Hub) | first-party (internal) |  |
 | <img src="https://github.com/codemirror.png?size=40" width="20" height="20" alt=""> | [`@codemirror/lang-json`](https://github.com/codemirror/lang-json#readme) | MIT | JSON language support for the CodeMirror code editor |
 |  | [`@codemirror/lang-markdown`](https://code.haverbeke.berlin/codemirror/lang-markdown) | MIT | Markdown language support for the CodeMirror code editor |
-|  | [`@companionintelligence/tokens`](https://github.com/companionintelligence/CI-Hub) | first-party (internal) |  |
 | <img src="https://github.com/react-hook-form.png?size=40" width="20" height="20" alt=""> | [`@hookform/resolvers`](https://react-hook-form.com) | MIT | React Hook Form validation resolvers: Yup, Joi, Superstruct, Zod, Vest, Class Validator, io- |
 | <img src="https://github.com/modelcontextprotocol.png?size=40" width="20" height="20" alt=""> | [`@modelcontextprotocol/client`](https://modelcontextprotocol.io) | MIT | Model Context Protocol implementation for TypeScript - Client package |
 | <img src="https://github.com/modelcontextprotocol.png?size=40" width="20" height="20" alt=""> | [`@modelcontextprotocol/node`](https://modelcontextprotocol.io) | MIT | Model Context Protocol implementation for TypeScript - Node.js middleware |
@@ -161,8 +160,6 @@ The frameworks and libraries that define how this repository is built.
 | <img src="https://github.com/arethetypeswrong.png?size=40" width="20" height="20" alt=""> | [`@arethetypeswrong/cli`](https://github.com/arethetypeswrong/arethetypeswrong.github.io) | MIT | A CLI tool for arethetypeswrong.github.io |
 | <img src="https://github.com/biomejs.png?size=40" width="20" height="20" alt=""> | [`@biomejs/biome`](https://biomejs.dev) | MIT OR Apache-2.0 | Biome is a toolchain for the web: formatter, linter and more |
 | <img src="https://github.com/changesets.png?size=40" width="20" height="20" alt=""> | [`@changesets/cli`](https://changesets.dev) | MIT | A tool to manage versioning and changelogs with a focus on monorepos |
-|  | [`@companionintelligence/assets`](https://github.com/companionintelligence/CI-Hub) | first-party (internal) |  |
-|  | [`@companionintelligence/config`](https://github.com/companionintelligence/CI-Hub) | first-party (internal) |  |
 |  | [`@companionintelligence/video-kit`](https://github.com/companionintelligence/CI-Hub) | first-party (internal) |  |
 | <img src="https://github.com/faker-js.png?size=40" width="20" height="20" alt=""> | [`@faker-js/faker`](https://fakerjs.dev) | MIT | Generate massive amounts of fake contextual data |
 | <img src="https://github.com/hey-api.png?size=40" width="20" height="20" alt=""> | [`@hey-api/openapi-ts`](https://heyapi.dev/docs/openapi/typescript/get-started) | MIT | 🌀 OpenAPI to TypeScript code generator. Production-grade SDKs, Zod schemas, TanStack Query  |

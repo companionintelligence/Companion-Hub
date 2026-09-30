@@ -1,0 +1,115 @@
+{
+  "note": "Copies of the CI Common files the Hub needs so a public clone can build. Search vendored-from. Refresh with: node scripts/vendor-ci-common.mjs --from <ci-common-checkout> --ref <tag>",
+  "files": [
+    {
+      "package": "@companionintelligence/tokens",
+      "version": "1.1.0",
+      "packageJson": "styles/tokens/package.json",
+      "source": "styles/tokens/src/globals.css",
+      "dest": "packages/frontend/src/styles/ci-tokens.css",
+      "stamp": "css",
+      "sha256": "057bcc2466bff603374594c69fc38d29bfd7f951994c94de5409dbe1a64dd20d",
+      "mark": "vendored-from: @companionintelligence/tokens@1.1.0 styles/tokens/src/globals.css"
+    },
+    {
+      "package": "@companionintelligence/tokens",
+      "version": "1.1.0",
+      "packageJson": "styles/tokens/package.json",
+      "source": "styles/tokens/src/tokens.json",
+      "dest": "packages/frontend/src/styles/tokens.json",
+      "sha256": "9a7436e7c0fa14fed71a823fc6d585d19466aa5b2ee1e629b2829a7a38f08a55",
+      "mark": "vendored-from: @companionintelligence/tokens@1.1.0 styles/tokens/src/tokens.json"
+    },
+    {
+      "package": "@companionintelligence/config",
+      "version": "1.1.0",
+      "packageJson": "packages/config/package.json",
+      "source": "packages/config/bin/lint-canon.mjs",
+      "dest": "packages/frontend/scripts/lint-canon.mjs",
+      "stamp": "js",
+      "sha256": "709991ab3e769ee1659c9b4222c22454a6ec683f03720492fb57a1a5747545f1",
+      "mark": "vendored-from: @companionintelligence/config@1.1.0 packages/config/bin/lint-canon.mjs"
+    },
+    {
+      "package": "@companionintelligence/assets",
+      "version": "1.1.0",
+      "packageJson": "assets/package.json",
+      "source": "assets/logos/mark-tight.svg",
+      "dest": "packages/frontend/brand/logos/mark-tight.svg",
+      "sha256": "e8027914c1df1fa8366e56a17b4b7950daa4b63dd7ac15fe5af978b67628b1e4",
+      "mark": "vendored-from: @companionintelligence/assets@1.1.0 assets/logos/mark-tight.svg"
+    },
+    {
+      "package": "@companionintelligence/assets",
+      "version": "1.1.0",
+      "packageJson": "assets/package.json",
+      "source": "assets/logos/mark.svg",
+      "dest": "packages/frontend/brand/logos/mark.svg",
+      "sha256": "899e688da651e8010c409a63c8aacb49ef25e02c2eb0a38f2c8ea2e1eacee98b",
+      "mark": "vendored-from: @companionintelligence/assets@1.1.0 assets/logos/mark.svg"
+    },
+    {
+      "package": "@companionintelligence/assets",
+      "version": "1.1.0",
+      "packageJson": "assets/package.json",
+      "source": "assets/logos/lockup.svg",
+      "dest": "packages/frontend/brand/logos/lockup.svg",
+      "sha256": "74bb5627b31039482b9852b40413184f323f9369b46a2d48bc99e655d3c4b13b",
+      "mark": "vendored-from: @companionintelligence/assets@1.1.0 assets/logos/lockup.svg"
+    },
+    {
+      "package": "@companionintelligence/assets",
+      "version": "1.1.0",
+      "packageJson": "assets/package.json",
+      "source": "assets/logos/app-icon-source.png",
+      "dest": "packages/frontend/brand/logos/app-icon-source.png",
+      "sha256": "3d1ed395a89a9ee26efbac710a43e33f4155690b0a1765d5189c8242895cca3b",
+      "mark": "vendored-from: @companionintelligence/assets@1.1.0 assets/logos/app-icon-source.png"
+    },
+    {
+      "package": "@companionintelligence/assets",
+      "version": "1.1.0",
+      "packageJson": "assets/package.json",
+      "source": "assets/icons/png/favicon.ico",
+      "dest": "packages/frontend/brand/icons/png/favicon.ico",
+      "sha256": "e1b1e7de2e0fe3c39e94d3b3d0ed795d043e28abffcf9a7cc338d6023122c7f3",
+      "mark": "vendored-from: @companionintelligence/assets@1.1.0 assets/icons/png/favicon.ico"
+    },
+    {
+      "package": "@companionintelligence/assets",
+      "version": "1.1.0",
+      "packageJson": "assets/package.json",
+      "source": "assets/icons/png/favicon-96.png",
+      "dest": "packages/frontend/brand/icons/png/favicon-96.png",
+      "sha256": "2140afe820ab64b0f333363cffccf7882124dbf4058eb807f696f449c5e87621",
+      "mark": "vendored-from: @companionintelligence/assets@1.1.0 assets/icons/png/favicon-96.png"
+    },
+    {
+      "package": "@companionintelligence/assets",
+      "version": "1.1.0",
+      "packageJson": "assets/package.json",
+      "source": "assets/icons/png/apple-touch-icon-180.png",
+      "dest": "packages/frontend/brand/icons/png/apple-touch-icon-180.png",
+      "sha256": "e36bea80b7424b65591be076bf5426f24bb75ef6d6774f57bf848f7fcdb67091",
+      "mark": "vendored-from: @companionintelligence/assets@1.1.0 assets/icons/png/apple-touch-icon-180.png"
+    },
+    {
+      "package": "@companionintelligence/assets",
+      "version": "1.1.0",
+      "packageJson": "assets/package.json",
+      "source": "assets/icons/png/icon-192.png",
+      "dest": "packages/frontend/brand/icons/png/icon-192.png",
+      "sha256": "f46cf93a54279f131d9341d852b06e6db9060ae3fde27bc7d3a6c6956bbfe9a4",
+      "mark": "vendored-from: @companionintelligence/assets@1.1.0 assets/icons/png/icon-192.png"
+    },
+    {
+      "package": "@companionintelligence/assets",
+      "version": "1.1.0",
+      "packageJson": "assets/package.json",
+      "source": "assets/icons/png/icon-512.png",
+      "dest": "packages/frontend/brand/icons/png/icon-512.png",
+      "sha256": "b16858181735e30643e9b022d0bde90433bc72465c27d0d591c92ea35aaa386a",
+      "mark": "vendored-from: @companionintelligence/assets@1.1.0 assets/icons/png/icon-512.png"
+    }
+  ]
+}
