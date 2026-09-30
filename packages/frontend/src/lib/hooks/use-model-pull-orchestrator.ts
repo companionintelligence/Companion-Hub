@@ -1,5 +1,6 @@
 import { fetchLemonadeInstallStatus, fetchOllamaInstallStatus, fetchOmlxInstallStatus, fetchVllmInstallStatus } from '@/lib/inference/inference-api';
 import {
+  describePullStartError,
   ensurePullStarted,
   ensurePullsStarted,
   fetchTrackedModels,
@@ -124,7 +125,7 @@ export function useModelPullOrchestrator({
 
     for (const modelId of modelsNeedingDownload) {
       void ensurePullStarted(modelId, bestEffort)
-        .catch((err: unknown) => (err instanceof Error ? err.message : String(err)))
+        .catch((err: unknown) => describePullStartError(err))
         .then((reason) => {
           const { [modelId]: _previous, ...others } = refusedByIdRef.current;
           refusedByIdRef.current = reason ? { ...others, [modelId]: reason } : others;

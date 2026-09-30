@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { CuratedModel } from '@ci-hub/common/types';
-import { isCuratedModelInstalled, isOllamaTagForCatalogModel, isOllamaTagForModel, resolveInstalledCatalogIds } from '../model-availability.util';
+import {
+  isCatalogModelInstalled,
+  isCuratedModelInstalled,
+  isOllamaTagForCatalogModel,
+  isOllamaTagForModel,
+  isServedModelForCatalog,
+  resolveInstalledCatalogIds,
+  resolveInstalledCatalogIdsFromServedModels,
+  servedIdForCatalogModel,
+} from '../model-availability.util';
 
 const model = {
   id: 'hermes4-70b',
@@ -64,6 +73,30 @@ describe('model-availability.util', () => {
 
     it('still honours a tracked pull regardless of tag shape', () => {
       expect(isCuratedModelInstalled(plain, [], true, ids)).toBe(true);
+    });
+  });
+  // Lemonade 10.2.0, the fleet's apt package, lists a model the Hub registered only as `user.<id>`.
+  // Matching the bare id alone read the embedder the Hub had just registered as missing.
+  describe('Lemonade user-namespace spelling', () => {
+    const v15 = { id: 'nomic-embed-text-v1-5-lemonade', backend: 'lemonade', backendModelId: 'nomic-embed-text-v1.5-GGUF' } as CuratedModel;
+    const ollamaNomic = { id: 'nomic-embed-text', backend: 'ollama', backendModelId: 'nomic-embed-text' } as CuratedModel;
+
+    it('treats user.<id> as serving catalog <id> on Lemonade, and returns the listed spelling', () => {
+      expect(servedIdForCatalogModel(v15, ['user.nomic-embed-text-v1.5-GGUF'])).toBe('user.nomic-embed-text-v1.5-GGUF');
+      expect(servedIdForCatalogModel(v15, ['nomic-embed-text-v1.5-GGUF'])).toBe('nomic-embed-text-v1.5-GGUF');
+      expect(isServedModelForCatalog(v15, ['user.nomic-embed-text-v1.5-GGUF'])).toBe(true);
+      expect(isServedModelForCatalog(v15, ['nomic-embed-text-v1-GGUF'])).toBe(false);
+    });
+
+    it('never applies the namespace to another engine', () => {
+      expect(servedIdForCatalogModel(ollamaNomic, ['user.nomic-embed-text'])).toBeNull();
+    });
+
+    it('counts a user.-listed model as installed on every availability path', () => {
+      expect(isCatalogModelInstalled(v15, ['user.nomic-embed-text-v1.5-GGUF'])).toBe(true);
+      expect(resolveInstalledCatalogIdsFromServedModels([v15], ['user.nomic-embed-text-v1.5-GGUF'], 'lemonade')).toEqual([
+        'nomic-embed-text-v1-5-lemonade',
+      ]);
     });
   });
 });

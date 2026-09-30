@@ -103,3 +103,39 @@ No changes are needed in `model-registry.service.ts`, the frontend model-selecti
 `icons.tsx` for a model whose creator already has a brand mark in `packages/frontend/public/brands/`
 (check the `CREATOR_BRAND` map) — the new row is picked up automatically everywhere. A creator without
 a brand SVG just falls back to a generic icon; that's expected and fine.
+
+## 4. Lemonade rows
+
+`LEMONADE_LLM_TOON` names models by their key in Lemonade's own registry (`server_models.json`). The
+rows were checked against lemonade-server 2026.39.1, but a host runs whatever Lemonade it has: every
+fleet Lemonade node runs the Ubuntu apt package 10.2.0, which lacks 13 of the 41 rows.
+
+- **The catalog follows the connected server.** On each health probe (at most once a minute) the Hub
+  reads `GET /v1/models?show_all=true`. A Lemonade row that listing does not name is dropped from
+  `getModelsForTier()`, so it is not browsable, recommended, or pre-pulled, and `evaluatePull` refuses
+  it with a reason that names the registry. A model the Hub registers itself (`LEMONADE_REGISTRATIONS`)
+  counts as offered. A Lemonade that ignores `show_all`, or one the Hub has not reached, filters nothing.
+- **Registered models may carry a namespace.** `/v1/pull` registers a Hugging Face checkpoint under
+  `user.<id>`. Lemonade 10.2.0 lists and serves it only under that name; 2026.39.1 lists it as `<id>`.
+  The Hub treats `user.<id>` as serving catalog `<id>`, and hands out and loads whichever spelling the
+  server lists. `user.<id>` resolves on every version, so it is the name used before the server lists it.
+- **Names are case-sensitive.** The Whisper rows use Lemonade's keys (`Whisper-Base`,
+  `Whisper-Large-v3-Turbo`); the lowercase ids they carried until 2026-09-29 were never servable.
+
+### Lemonade embedder: v1 and v1.5
+
+Until #1679 (2026-09-29) a Lemonade-only host embedded with Lemonade's built-in
+`nomic-embed-text-v1-GGUF`. The recommended Lemonade embedder is now nomic v1.5
+(`nomic-embed-text-v1.5-GGUF`, registered by the Hub on pull), the same weights as Ollama's
+`nomic-embed-text`, so switching engines no longer strands an index.
+
+v1 and v1.5 are different vector spaces (cosine about 0.7 on the same text) at the same 768
+dimensions, so pgvector accepts a mix of them without complaint and search quietly gets worse. To
+avoid that:
+
+- A Lemonade-only host that has v1 downloaded and not v1.5 keeps being handed v1
+  (`nomic-embed-text-v1-lemonade`, still in the catalog but never recommended).
+- A host moves to v1.5 when the operator picks it as the preferred embedding model in
+  Settings → AI, or once v1.5 is on the host. **Re-embed the stored memories after that switch**: vectors
+  written with v1 do not match queries embedded with v1.5.
+- Hosts with a healthy Ollama are unaffected. They embed with Ollama's `nomic-embed-text` as before.

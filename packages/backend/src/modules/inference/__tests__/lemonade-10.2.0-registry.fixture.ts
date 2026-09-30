@@ -1,0 +1,93 @@
+/**
+ * What lemonade-server 10.2.0 — the Ubuntu apt package (10.2.0-0ubuntu2) on every fleet Lemonade node —
+ * answers to `GET /v1/models?show_all=true`: the 74 ids of its registry this host can run, none of them
+ * downloaded. Read on beta-red (RTX 3080) on 2026-09-29; its `server_models.json` has the md5 of
+ * upstream v10.2.0's. The listing is what the Hub filters the catalog's Lemonade rows by, so the tests
+ * that use it are checking the catalog against the Lemonade the fleet actually runs, not the 2026.39.1
+ * registry the rows were written from.
+ */
+export const LEMONADE_10_2_0_SHOW_ALL_IDS: readonly string[] = [
+  'DeepSeek-Qwen3-8B-GGUF',
+  'Devstral-Small-2507-GGUF',
+  'Flux-2-Klein-4B',
+  'Flux-2-Klein-9B-GGUF',
+  'GLM-4.7-Flash-GGUF',
+  'Gemma-3-4b-it-GGUF',
+  'Gemma-4-26B-A4B-it-GGUF',
+  'Gemma-4-31B-it-GGUF',
+  'Gemma-4-E2B-it-GGUF',
+  'Gemma-4-E4B-it-GGUF',
+  'Jan-nano-128k-GGUF',
+  'Jan-v1-4B-GGUF',
+  'LFM2-1.2B-GGUF',
+  'LFM2-24B-A2B-GGUF',
+  'LFM2-8B-A1B-GGUF',
+  'LFM2.5-1.2B-Instruct-GGUF',
+  'Lemonade Lite',
+  'Lemonade Medium',
+  'Lemonade Ultra',
+  'Llama-3.2-1B-Instruct-GGUF',
+  'Llama-3.2-3B-Instruct-GGUF',
+  'Ministral-3-3B-Instruct-2512-GGUF',
+  'Nemotron-3-Nano-30B-A3B-GGUF',
+  'Phi-4-mini-instruct-GGUF',
+  'Playable1-GGUF',
+  'PromptBridge-0.6b-Alpha-GGUF',
+  'Qwen-Image-2512-GGUF',
+  'Qwen-Image-GGUF',
+  'Qwen2.5-Coder-32B-Instruct-GGUF',
+  'Qwen2.5-VL-3B-Instruct-GGUF',
+  'Qwen2.5-VL-7B-Instruct-GGUF',
+  'Qwen3-0.6B-GGUF',
+  'Qwen3-1.7B-GGUF',
+  'Qwen3-14B-GGUF',
+  'Qwen3-30B-A3B-GGUF',
+  'Qwen3-30B-A3B-Instruct-2507-GGUF',
+  'Qwen3-4B-GGUF',
+  'Qwen3-4B-Instruct-2507-GGUF',
+  'Qwen3-8B-GGUF',
+  'Qwen3-Coder-30B-A3B-Instruct-GGUF',
+  'Qwen3-Embedding-0.6B-GGUF',
+  'Qwen3-Embedding-4B-GGUF',
+  'Qwen3-Embedding-8B-GGUF',
+  'Qwen3-VL-4B-Instruct-GGUF',
+  'Qwen3-VL-8B-Instruct-GGUF',
+  'Qwen3.5-0.8B-GGUF',
+  'Qwen3.5-27B-GGUF',
+  'Qwen3.5-2B-GGUF',
+  'Qwen3.5-35B-A3B-GGUF',
+  'Qwen3.5-4B-GGUF',
+  'Qwen3.5-9B-GGUF',
+  'RealESRGAN-x4plus',
+  'RealESRGAN-x4plus-anime',
+  'SD-1.5',
+  'SD-Turbo',
+  'SDXL-Base-1.0',
+  'SDXL-Turbo',
+  'SmolLM3-3B-GGUF',
+  'Tiny-Test-Model-GGUF',
+  'Whisper-Base',
+  'Whisper-Large-v3',
+  'Whisper-Large-v3-Turbo',
+  'Whisper-Medium',
+  'Whisper-Small',
+  'Whisper-Tiny',
+  'Z-Image-Turbo',
+  'bge-reranker-v2-m3-GGUF',
+  'gpt-oss-20b-GGUF',
+  'gpt-oss-20b-mxfp4-GGUF',
+  'granite-4.0-h-tiny-GGUF',
+  'jina-reranker-v1-tiny-en-GGUF',
+  'kokoro-v1',
+  'nomic-embed-text-v1-GGUF',
+  'nomic-embed-text-v2-moe-GGUF',
+];
+
+/** The response body, in 10.2.0's shape (`handle_models` → `model_info_to_json`), trimmed to what the Hub reads. */
+export function lemonadeShowAllBody(downloaded: readonly string[] = [], extra: readonly string[] = []) {
+  const all = [...LEMONADE_10_2_0_SHOW_ALL_IDS, ...extra];
+  return {
+    object: 'list',
+    data: all.map((id) => ({ id, object: 'model', owned_by: 'lemonade', downloaded: downloaded.includes(id) })),
+  };
+}

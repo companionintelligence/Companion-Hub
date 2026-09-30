@@ -43,14 +43,17 @@ describe('ModelPullerService.evaluatePull', () => {
   let hostMetrics: MockProxy<HostMetricsService>;
   let modelRegistry: MockProxy<ModelRegistryService>;
   let ollamaBackend: MockProxy<OllamaBackend>;
+  let lemonadeBackend: MockProxy<LemonadeBackend>;
+  let hardwareInspector: MockProxy<HardwareInspectorService>;
 
   beforeEach(async () => {
-    const hardwareInspector = mock<HardwareInspectorService>();
+    hardwareInspector = mock<HardwareInspectorService>();
     logger = mock<LoggerService>();
     memoryManager = mock<MemoryManagerService>();
     hostMetrics = mock<HostMetricsService>();
     modelRegistry = mock<ModelRegistryService>();
     ollamaBackend = mock<OllamaBackend>();
+    lemonadeBackend = mock<LemonadeBackend>();
 
     hardwareInspector.getProfile.mockResolvedValue(profile);
     memoryManager.calculateBudget.mockResolvedValue({
@@ -96,7 +99,7 @@ describe('ModelPullerService.evaluatePull', () => {
         { provide: HostMetricsService, useValue: hostMetrics },
         { provide: OllamaBackend, useValue: ollamaBackend },
         { provide: VllmBackend, useValue: mock<VllmBackend>() },
-        { provide: LemonadeBackend, useValue: mock<LemonadeBackend>() },
+        { provide: LemonadeBackend, useValue: lemonadeBackend },
         { provide: OmlxBackend, useValue: mock<OmlxBackend>() },
         InferenceBackendRegistry,
       ],
@@ -142,6 +145,79 @@ describe('ModelPullerService.evaluatePull', () => {
     expect(result.canPull).toBe(true);
     expect(result.reason).toBeUndefined();
     expect(memoryManager.canFitModel).not.toHaveBeenCalled();
+  });
+
+  // An RTX 3080 (10 GB) reads as tier `medium`, which admits 20+ GB models. A model larger than the
+  // node's whole model budget with nothing loaded is refused by every load and pin, so downloading it
+  // only spends the disk. Free memory right now still does not matter (the case above).
+  it('refuses a model bigger than the whole model budget with nothing loaded', async () => {
+    modelRegistry.getCuratedModel.mockReturnValue({ ...curated, runtime: { ...curated.runtime, memoryFootprintMb: 22_528 } } as CuratedModel);
+
+    const result = await service.evaluatePull('phi-4-mini');
+
+    expect(result.canPull).toBe(false);
+    expect(result.reason).toMatch(/needs 22528 MB .* 7000 MB this node has for models with nothing else loaded/);
+  });
+
+  it('judges a unified-memory node against its RAM budget, not what is free now', async () => {
+    hardwareInspector.getProfile.mockResolvedValue({ ...profile, gpu: { ...profile.gpu, unifiedMemory: true } });
+    modelRegistry.getCuratedModel.mockReturnValue({ ...curated, runtime: { ...curated.runtime, memoryFootprintMb: 14_000 } } as CuratedModel);
+    // 15000 MB of RAM for models, 12000 of it held by something else right now.
+    memoryManager.calculateBudget.mockResolvedValue({
+      ...(await memoryManager.calculateBudget(profile)),
+      modelUsedRamMb: 12_000,
+    });
+
+    const result = await service.evaluatePull('phi-4-mini');
+
+    expect(result.canPull).toBe(true);
+  });
+
+  it("refuses a Lemonade model the connected server's registry does not list, naming the registry", async () => {
+    const lemonadeRow = { ...curated, id: 'qwen3-8-27b-lemonade', backend: 'lemonade', backendModelId: 'Qwen3.8-27B-GGUF' } as CuratedModel;
+    modelRegistry.getCuratedModel.mockReturnValue(lemonadeRow);
+    lemonadeBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
+    lemonadeBackend.offersModel.mockReturnValue(false);
+
+    const result = await service.evaluatePull('qwen3-8-27b-lemonade');
+
+    expect(result.canPull).toBe(false);
+    expect(result.reason).toMatch(/lemonade on this node does not list Qwen3\.8-27B-GGUF in its model registry/);
+    expect(result.reason).not.toMatch(/hardware tier/);
+  });
+
+  it('counts a model Lemonade lists as user.<id> as installed, so a restart does not re-register it', async () => {
+    const embedder = {
+      ...curated,
+      id: 'nomic-embed-text-v1-5-lemonade',
+      backend: 'lemonade',
+      backendModelId: 'nomic-embed-text-v1.5-GGUF',
+      modality: 'embedding',
+    } as CuratedModel;
+    modelRegistry.getCuratedModel.mockReturnValue(embedder);
+    lemonadeBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['user.nomic-embed-text-v1.5-GGUF'] });
+
+    const result = await service.evaluatePull('nomic-embed-text-v1-5-lemonade');
+
+    expect(result.alreadyInstalled).toBe(true);
+  });
+
+  it('loads and unloads under the name the engine knows the model by', async () => {
+    const embedder = {
+      ...curated,
+      id: 'nomic-embed-text-v1-5-lemonade',
+      backend: 'lemonade',
+      backendModelId: 'nomic-embed-text-v1.5-GGUF',
+      modality: 'embedding',
+    } as CuratedModel;
+    modelRegistry.getCuratedModel.mockReturnValue(embedder);
+    lemonadeBackend.engineModelId.mockImplementation((id) => `user.${id}`);
+
+    await service.loadModel('nomic-embed-text-v1-5-lemonade');
+    await service.unloadModel('nomic-embed-text-v1-5-lemonade');
+
+    expect(lemonadeBackend.loadModel).toHaveBeenCalledWith('user.nomic-embed-text-v1.5-GGUF', { embedding: true, contextLength: undefined });
+    expect(lemonadeBackend.unloadModel).toHaveBeenCalledWith('user.nomic-embed-text-v1.5-GGUF', { embedding: true });
   });
 
   it('logs pull progress so model downloads appear in hub logs', async () => {
@@ -233,6 +309,16 @@ describe('ModelPullerService.startPull', () => {
     }).compile();
 
     service = moduleRef.get(ModelPullerService);
+  });
+
+  // Nest's exception filter turns a plain Error into `INTERNAL_SERVER_ERROR`, so a throw here reached
+  // the Settings page as a download that failed for no stated reason.
+  it('answers an unknown catalog id with a reason instead of throwing', async () => {
+    modelRegistry.getCuratedModel.mockReturnValue(undefined);
+
+    const result = await service.startPull('no-such-model');
+
+    expect(result).toEqual({ catalogId: 'no-such-model', status: 'error', reason: 'Model no-such-model not found in catalog' });
   });
 
   it('returns already_installed without enqueueing', async () => {

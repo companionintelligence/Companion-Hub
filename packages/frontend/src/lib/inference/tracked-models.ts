@@ -1,4 +1,8 @@
+import i18next from 'i18next';
 import { fetchInferenceTrackedModels, startInferenceModelPull } from '@/lib/inference/inference-api';
+import { isI18nKey } from '@/lib/format-api-error';
+import { sdkErrorMessage } from '@/lib/sdk-unwrap';
+import { TranslatableError } from '@/types/error.types';
 import type { TrackedModel } from '@ci-hub/common/types';
 
 const PULLED_MODEL_STATES = new Set(['pulled', 'loaded', 'pinned']);
@@ -70,6 +74,18 @@ export async function ensurePullStarted(modelId: string, bestEffort = true): Pro
   return null;
 }
 
+/**
+ * The reason to show when the request to start a download failed outright. The app's response
+ * interceptor turns an HTTP error into a TranslatableError whose message is often an i18n key
+ * (`INTERNAL_SERVER_ERROR`), which the pull toast printed verbatim; other errors keep their text.
+ */
+export function describePullStartError(err: unknown): string {
+  if (err instanceof TranslatableError && isI18nKey(err.message)) {
+    return i18next.t(err.message, { ...(err.intlParams ?? {}), defaultValue: err.message });
+  }
+  return sdkErrorMessage(err);
+}
+
 /** Start each download; returns why the Hub refused, by model id. A failed request counts as refused. */
 export async function ensurePullsStarted(modelIds: string[], bestEffort = true): Promise<Record<string, string>> {
   const refusedById: Record<string, string> = {};
@@ -78,7 +94,7 @@ export async function ensurePullsStarted(modelIds: string[], bestEffort = true):
       const reason = await ensurePullStarted(modelId, bestEffort);
       if (reason) refusedById[modelId] = reason;
     } catch (err) {
-      refusedById[modelId] = err instanceof Error ? err.message : String(err);
+      refusedById[modelId] = describePullStartError(err);
     }
   }
   return refusedById;

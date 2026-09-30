@@ -32,12 +32,17 @@ export class ModelPullerService {
     return Math.max(0, (diskTotalGb - diskUsedGb) * 1024);
   }
 
-  private async getAvailableMemoryMb(profile: HardwareProfile): Promise<number> {
+  /**
+   * The node's model memory twice over: `availableMb` is what is free right now (reported, never
+   * gated on — see evaluatePull), `capacityMb` is the whole budget with nothing loaded, which a model
+   * must fit to be loadable here at all.
+   */
+  private async getModelMemoryMb(profile: HardwareProfile): Promise<{ availableMb: number; capacityMb: number }> {
     const budget = await this.memoryManager.calculateBudget(profile);
     if (profile.gpu.available && !profile.gpu.unifiedMemory) {
-      return Math.max(0, budget.modelBudgetVramMb - budget.modelUsedVramMb);
+      return { availableMb: Math.max(0, budget.modelBudgetVramMb - budget.modelUsedVramMb), capacityMb: budget.modelBudgetVramMb };
     }
-    return Math.max(0, budget.modelBudgetRamMb - budget.modelUsedRamMb);
+    return { availableMb: Math.max(0, budget.modelBudgetRamMb - budget.modelUsedRamMb), capacityMb: budget.modelBudgetRamMb };
   }
 
   /** Evaluate whether a catalog model can be pulled given hardware, disk, and Ollama state. */
@@ -51,7 +56,7 @@ export class ModelPullerService {
     const effectiveTier = tier ?? profile.tier;
     const tierModels = this.modelRegistry.getModelsForTier(effectiveTier);
     const availableDiskMb = await this.getAvailableDiskMb();
-    const availableMemoryMb = await this.getAvailableMemoryMb(profile);
+    const { availableMb: availableMemoryMb, capacityMb: memoryCapacityMb } = await this.getModelMemoryMb(profile);
     const requiredDiskMb = curated.requirements?.diskMb ?? 0;
     const requiredMemoryMb = curated.runtime.memoryFootprintMb;
 
@@ -71,6 +76,23 @@ export class ModelPullerService {
         catalogId,
         alreadyInstalled: true,
         canPull: true,
+        requiredDiskMb,
+        requiredMemoryMb,
+        availableDiskMb,
+        availableMemoryMb,
+      };
+    }
+
+    // Before the tier check, which would otherwise misreport this as a hardware limit: the registry
+    // drops such a row from every tier (ModelRegistryService.engineOffers).
+    if (backend.offersModel?.(curated.backendModelId) === false) {
+      return {
+        catalogId,
+        alreadyInstalled: false,
+        canPull: false,
+        reason:
+          `${curated.backend} on this node does not list ${curated.backendModelId} in its model registry, so it cannot download it. ` +
+          `Upgrade ${curated.backend}, or choose a model it lists.`,
         requiredDiskMb,
         requiredMemoryMb,
         availableDiskMb,
@@ -120,8 +142,27 @@ export class ModelPullerService {
     // No free-memory check here: a download writes to disk, not to VRAM. Whether the model fits
     // right now depends on what else is resident, which is the load path's question — the router
     // checks `canFitModel` there and evicts to make room. Gating the download on it refused any
-    // large model while another engine held the GPU, even though the tier check above already
-    // says this hardware can run it.
+    // large model while another engine held the GPU.
+    //
+    // The whole budget is a different matter. The tier check above is coarse — an RTX 3080 (10 GB)
+    // reads as tier `medium`, which admits 20+ GB models — and a model bigger than everything this
+    // node can give a model with nothing else loaded is refused by every load and pin, so
+    // downloading it only spends the disk.
+    if (requiredMemoryMb > memoryCapacityMb) {
+      return {
+        catalogId,
+        alreadyInstalled: false,
+        canPull: false,
+        reason:
+          `Model needs ${requiredMemoryMb} MB of inference memory, more than the ${Math.floor(memoryCapacityMb)} MB this node has for models ` +
+          'with nothing else loaded, so it could never be loaded here.',
+        requiredDiskMb,
+        requiredMemoryMb,
+        availableDiskMb,
+        availableMemoryMb,
+      };
+    }
+
     return {
       catalogId,
       alreadyInstalled: false,
@@ -143,7 +184,16 @@ export class ModelPullerService {
 
   /** Enqueue a model pull and return immediately. One Ollama pull runs at a time. */
   async startPull(catalogId: string, options?: { bestEffort?: boolean; tier?: HardwareTier }): Promise<PullStartResult> {
-    const evaluation = await this.evaluatePull(catalogId, options?.tier);
+    let evaluation: PullEvaluation;
+    try {
+      evaluation = await this.evaluatePull(catalogId, options?.tier);
+    } catch (err) {
+      // A refusal the caller can show, not an HTTP 500: the exception filter replaces a plain Error's
+      // message with INTERNAL_SERVER_ERROR, so the UI could only say that a download failed.
+      const reason = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`[ModelPuller] Pull of ${catalogId} not started: ${reason}`);
+      return { catalogId, status: 'error', reason };
+    }
 
     if (evaluation.alreadyInstalled) {
       this.markAlreadyInstalled(catalogId);
@@ -328,7 +378,9 @@ export class ModelPullerService {
     this.logger.info(`[ModelPuller] Loading ${catalogId} into memory`);
 
     try {
-      await backend.loadModel(curated.backendModelId, { embedding: curated.modality === 'embedding', contextLength: options?.contextLength });
+      // The engine's spelling: Lemonade 10.x knows a Hub-registered model only as `user.<id>`.
+      const engineId = backend.engineModelId?.(curated.backendModelId) ?? curated.backendModelId;
+      await backend.loadModel(engineId, { embedding: curated.modality === 'embedding', contextLength: options?.contextLength });
       this.modelRegistry.updateModelState(catalogId, 'loaded');
       this.logger.info(`[ModelPuller] Loaded ${catalogId}`);
     } catch (err) {
@@ -351,7 +403,8 @@ export class ModelPullerService {
     this.logger.info(`[ModelPuller] Unloading ${catalogId} from memory`);
 
     try {
-      await backend.unloadModel(curated.backendModelId, { embedding: curated.modality === 'embedding' });
+      const engineId = backend.engineModelId?.(curated.backendModelId) ?? curated.backendModelId;
+      await backend.unloadModel(engineId, { embedding: curated.modality === 'embedding' });
       this.modelRegistry.updateModelState(catalogId, 'pulled');
       this.logger.info(`[ModelPuller] Unloaded ${catalogId}`);
     } catch (err) {

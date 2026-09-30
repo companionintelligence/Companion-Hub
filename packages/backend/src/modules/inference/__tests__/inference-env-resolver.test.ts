@@ -75,10 +75,10 @@ const makePeer = (name: string, modelsLoaded: string[], capabilities: Record<str
     lastCapabilities: { hardwareTier: 'high', backends: [{ type: 'ollama', healthy: true, modelsLoaded }], ...capabilities },
   }) as unknown as HubPoolPeer;
 
-const makeEmbedding = (id: string, backendModelId: string): CuratedModel =>
+const makeEmbedding = (id: string, backendModelId: string, backend: CuratedModel['backend'] = 'ollama'): CuratedModel =>
   ({
     id,
-    backend: 'ollama',
+    backend,
     backendModelId,
     modality: 'embedding',
     purpose: 'general',
@@ -560,7 +560,7 @@ describe('InferenceEnvResolver', () => {
         backend === 'ollama'
           ? makeEmbedding('nomic-embed-text', 'nomic-embed-text')
           : backend === 'lemonade'
-            ? makeEmbedding('nomic-embed-text-v1-5-lemonade', 'nomic-embed-text-v1.5-GGUF')
+            ? makeEmbedding('nomic-embed-text-v1-5-lemonade', 'nomic-embed-text-v1.5-GGUF', 'lemonade')
             : undefined,
       );
       modelRegistry.getRecommendedVisionModel.mockReturnValue(undefined);
@@ -581,6 +581,44 @@ describe('InferenceEnvResolver', () => {
 
       expect(env.CI_OLLAMA_EMBED_HOST).toBe(LEMONADE_BASE_URL);
       expect(env.CI_EMBEDDING_MODEL).toBe('nomic-embed-text-v1.5-GGUF');
+    });
+
+    // Lemonade 10.2.0 lists and serves a Hub-registered model only as `user.<id>` and answers the
+    // bare id with "Model not found", so the bare id left Memory unable to embed anything.
+    it('hands out the spelling Lemonade lists the registered embedder under', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      lemonadeBackend.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['Qwen3.8-27B-GGUF', 'user.nomic-embed-text-v1.5-GGUF'],
+      });
+
+      const env = await service.resolve();
+
+      expect(env.CI_EMBEDDING_MODEL).toBe('user.nomic-embed-text-v1.5-GGUF');
+      expect(env.CI_OLLAMA_EMBED_HOST).toBe(LEMONADE_BASE_URL);
+    });
+
+    it('asks Lemonade for its own name for an embedder it has not listed yet', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      lemonadeBackend.engineModelId.mockImplementation((id) => `user.${id}`);
+
+      const env = await service.resolve();
+
+      expect(env.CI_EMBEDDING_MODEL).toBe('user.nomic-embed-text-v1.5-GGUF');
+    });
+
+    // Until #1679 the Lemonade default was v1, a different vector space at the same 768 dimensions.
+    it('keeps a host that embedded with v1 on v1 instead of mixing v1.5 vectors into its index', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      lemonadeBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Qwen3.8-27B-GGUF', 'nomic-embed-text-v1-GGUF'] });
+      modelRegistry.getCuratedModel.mockImplementation((id) =>
+        id === 'nomic-embed-text-v1-lemonade' ? makeEmbedding('nomic-embed-text-v1-lemonade', 'nomic-embed-text-v1-GGUF', 'lemonade') : undefined,
+      );
+
+      const env = await service.resolve();
+
+      expect(env.CI_EMBEDDING_MODEL).toBe('nomic-embed-text-v1-GGUF');
     });
   });
 

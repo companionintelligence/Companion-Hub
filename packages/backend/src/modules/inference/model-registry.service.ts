@@ -1,4 +1,4 @@
-import { Injectable, type OnModuleInit } from '@nestjs/common';
+import { Injectable, type OnModuleInit, Optional } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import type {
   CuratedModel,
@@ -11,6 +11,8 @@ import type {
   TrackedModel,
 } from '@ci-hub/common/types';
 import { CURATED_MODELS } from './catalog/curated-models';
+// A value import: Nest reads the constructor's parameter types from emitted decorator metadata.
+import { LemonadeBackend } from './backends/lemonade.backend';
 
 // ─── Hardware-fit selection tuning ──────────────────────────────────────────
 // The curated catalog (CURATED_MODELS) is the single source of truth for model sizing.
@@ -130,7 +132,14 @@ export class ModelRegistryService implements OnModuleInit {
   /** Tracked model states (in-memory only; does not survive process restarts) */
   private readonly trackedModels = new Map<string, TrackedModel>();
 
-  constructor(private readonly logger: LoggerService) {}
+  /**
+   * `@Optional()` so the many tests that build a registry from the logger alone keep working; with no
+   * Lemonade backend nothing is filtered, as before. See {@link engineOffers}.
+   */
+  constructor(
+    private readonly logger: LoggerService,
+    @Optional() private readonly lemonade?: LemonadeBackend,
+  ) {}
 
   onModuleInit() {
     this.logger.info(`[ModelRegistry] Loaded ${CURATED_MODELS.length} curated models`);
@@ -151,15 +160,35 @@ export class ModelRegistryService implements OnModuleInit {
     return CURATED_MODELS.map((model) => model.backendModelId);
   }
 
-  /** Filter catalog by hardware tier. Platform-specific filtering is applied by getModelsForHardware. */
+  /**
+   * Filter catalog by hardware tier. Platform-specific filtering is applied by getModelsForHardware.
+   * Also drops a row its engine's server has said it cannot supply ({@link engineOffers}); every
+   * browsing, recommendation and pull-evaluation path goes through here, so none of them offers it.
+   */
   getModelsForTier(tier: HardwareTier): CuratedModel[] {
     const tierKey = tier === 'cpu-only' ? 'cpuOnly' : tier;
     if (tier === 'insufficient') return [];
     return CURATED_MODELS.filter((m) => {
       if (isCloudProxyModel(m)) return false;
+      if (!this.engineOffers(m)) return false;
       const rec = m.tiers[tierKey as keyof typeof m.tiers];
       return rec === 'recommended' || rec === 'available';
     });
+  }
+
+  /**
+   * False only when the model's engine has read its server's registry and the model is not in it.
+   *
+   * The Lemonade rows name models in lemonade-server 2026.39.1's registry, but a host runs whatever
+   * Lemonade it has — every fleet Lemonade node runs the 10.2.0 apt package, which lacks 13 of the 41
+   * rows, among them every default the recommender picked for a Lemonade node (Gemma-4-12B-it-GGUF on
+   * a 3080, Qwen3.8-27B-GGUF on a 7900 XTX, Qwen3.6-35B-A3B-GGUF on Strix Halo). Offering, recommending
+   * or pre-pulling those ends in a failed download. An engine that has not been read (or cannot list
+   * its registry) filters nothing.
+   */
+  private engineOffers(model: CuratedModel): boolean {
+    if (model.backend !== 'lemonade') return true;
+    return this.lemonade?.offersModel(model.backendModelId) !== false;
   }
 
   /**

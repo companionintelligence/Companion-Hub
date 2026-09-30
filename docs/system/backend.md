@@ -289,6 +289,10 @@ Setup offers Ollama, oMLX, vLLM, or Lemonade, and only the ones the detected mac
 
 oMLX is Apple Silicon only. Install it with `brew tap jundot/omlx https://github.com/jundot/omlx`, then `brew install jundot/omlx/omlx`, then `omlx start`. It serves chat and embeddings. vLLM is NVIDIA only. Its serve command is `vllm serve <model> --host 0.0.0.0 --port 8000`. Lemonade is AMD or NPU, operator-managed, and hidden on Mac. Ollama embeds when the chosen decoder cannot. vLLM and oMLX both default to port 8000, and `owned_by` on `/v1/models` is what tells them apart. Ollama answering is only Ollama.
 
+Lemonade's model registry depends on its version, so the Hub reads it: each health probe (at most once a minute) fetches `GET /v1/models?show_all=true`, and a catalog Lemonade row that listing does not name is not offered, recommended, or pre-pulled, and a pull of it is refused with that reason. A Lemonade that ignores `show_all` filters nothing. Lemonade 10.x lists a model the Hub registered (the v1.5 embedder) only as `user.<id>`; the Hub counts that spelling as installed and hands it out. See [`MODEL_REGISTRY.md`](../MODEL_REGISTRY.md#lemonade-rows).
+
+`GET /api/inference/lemonade/status` says how the probe failed (`failureMode`: `refused`, `filtered`, `dns`, `auth` for a 401 or 403, or `none`), the host platform, whether the Hub holds `LEMONADE_API_KEY`, and `firewallCommands` for the host's firewall, which admit both the Hub's network and the app subnet (`10.128.0.0/9`) to Lemonade's port. The setup card shows the rebind to `0.0.0.0` only for a refused or unclassified probe on Linux, and always with an API-key step, because the bind alone leaves Lemonade open to the network with no authentication.
+
 ## Inference cloud providers
 
 Settings → AI saves OpenAI / Anthropic / Google / GitHub Copilot keys to `settings.json`
