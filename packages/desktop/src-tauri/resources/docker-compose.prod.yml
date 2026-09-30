@@ -501,9 +501,3 @@ volumes:
     name: ci_hub_pgdata
   hub_tailscale_state:
     name: hub_tailscale_state
-
-secrets:
-  # Build-time only: read from the operator's environment (or .env.prod) so the
-  # token is never baked into image history. Needs the read:packages scope.
-  npm_auth_token:
-    environment: NODE_AUTH_TOKEN

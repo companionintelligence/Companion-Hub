@@ -265,7 +265,7 @@ pnpm install
 pnpm run local
 ```
 
-`pnpm install` needs a `NODE_AUTH_TOKEN` for the `@companionintelligence` package scope, and the desktop app needs GTK and WebKit headers. Both failures and their fixes are in [`docs/DEVELOPMENT_SETUP.md`](docs/DEVELOPMENT_SETUP.md).
+`pnpm install` is enough to build and run the web stack. The desktop app needs GTK and WebKit headers. That failure and its fix are in [`docs/DEVELOPMENT_SETUP.md`](docs/DEVELOPMENT_SETUP.md).
 
 - [`CONTRIBUTING.md`](CONTRIBUTING.md): issues, pull requests, code structure, and screenshots
 - [Running locally](https://docs.ci.computer/docs/contributing/running-locally) and [running the CLI locally](https://docs.ci.computer/docs/contributing/running-the-cli-locally)

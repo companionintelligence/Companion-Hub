@@ -129,7 +129,7 @@ Rules:
 
 The desktop doesn't warn about a switch, because nothing records which Portal issued a registration. To test against another Portal, use a Hub that isn't paired, or switch back before you rely on the paired Hub again.
 
-`pnpm run dev` always passes `docker compose up --build`. A source image build needs `NODE_AUTH_TOKEN` (GitHub `read:packages` for `@companionintelligence/tokens`). To skip the build, set `CI_HUB_IMAGE` in `.env.dev` so `docker-compose.dev-image.yml` pulls `ghcr.io/companionintelligence/ci-hub:dev` (or the tag you set).
+`pnpm run dev` always passes `docker compose up --build`. The design tokens and brand files the image build needs are in this repo, so the build does not need a GitHub Packages token. To skip the build, set `CI_HUB_IMAGE` in `.env.dev` so `docker-compose.dev-image.yml` pulls `ghcr.io/companionintelligence/ci-hub:dev` (or the tag you set).
 
 ## Two stacks — do not mix
 

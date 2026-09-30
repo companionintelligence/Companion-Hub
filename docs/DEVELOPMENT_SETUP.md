@@ -3,8 +3,8 @@
 What a fresh clone needs before `pnpm install`, `pnpm test`, and `cargo test` all work.
 
 The quick start in [`../README.md`](../README.md) is enough to run the web stack. Read this page when
-an install or a test run fails on a machine that looks correctly configured — the two failures below
-are the common ones, and neither error message names its own fix.
+an install or a test run fails on a machine that looks correctly configured. The two that show up
+most are an unbuilt `common` package and missing GTK headers, and neither error message names its own fix.
 
 ## Prerequisites
 
@@ -15,35 +15,11 @@ are the common ones, and neither error message names its own fix.
 | Docker | Engine or Desktop | Needed for the stack, integration tests, and e2e |
 | Rust | stable | Desktop app only. Skip unless you build `packages/desktop`. |
 
-## `pnpm install` fails with a 401
+## Build `common` before backend tests
 
-```
-ERR_PNPM_FETCH_401  GET https://npm.pkg.github.com/download/@companionintelligence/tokens/...
-Unauthorized - 401
-```
-
-`packages/frontend` depends on `@companionintelligence/tokens`, published to GitHub Packages.
-[`.npmrc`](../.npmrc) points that scope at `npm.pkg.github.com` and reads the credential from
-`NODE_AUTH_TOKEN`, which is not set for you automatically.
-
-If you have the [`gh` CLI](https://cli.github.com) authenticated with the `read:packages` scope, its
-token works:
-
-```bash
-NODE_AUTH_TOKEN="$(gh auth token)" pnpm install
-```
-
-To make it permanent, export `NODE_AUTH_TOKEN` from your shell profile, or use a personal access
-token with `read:packages`. Confirm your scopes with `gh auth status`.
-
-### Working without the token
-
-Only `packages/frontend` needs that package. Everything else installs without it, so a backend or
-CLI change is still workable:
-
-```bash
-pnpm install --filter backend --filter common --filter "./"
-```
+`pnpm install` does not need a GitHub Packages token. The stylesheet, canon file, and the logo
+files the Hub ships are already in this repo (`packages/frontend/src/styles/ci-tokens.css`,
+`packages/frontend/src/styles/tokens.json`, and `packages/frontend/brand`).
 
 Build `packages/common` before running backend tests — the backend's vitest config aliases
 `@ci-hub/common/schemas` and `/types` to source, but `/validation` resolves through the package's

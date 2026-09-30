@@ -48,8 +48,8 @@ also packaged as a Tauri 2 desktop app.
 
 ### Conformance to canon
 
-- ✅ Tokens are canon phthalo-mist (`--primary: #0a6358` / `#c5e8dc`), imported directly from
-  `@companionintelligence/tokens/globals.css` — no local copy to drift.
+- ✅ Tokens are canon phthalo-mist (`--primary: #0a6358` / `#c5e8dc`), imported from
+  `packages/frontend/src/styles/ci-tokens.css` (vendored from `@companionintelligence/tokens` 1.1.0).
 - ✅ `cn()` is canonical (`twMerge(clsx(inputs))`).
 - ✅ Radius, font, custom font-sizes, `.dark` theming, lucide sizing all match canon.
 - ✅ Primitives via Radix UI; `glass-container` present.
@@ -95,11 +95,10 @@ values is exactly what drifted in this file before (`--primary: #0f717a` long af
 canon moved to `#0a6358`; the chart series, sidebar, and several other tokens had
 drifted the same way). The live values are always
 [`packages/frontend/src/styles/globals.css`](../packages/frontend/src/styles/globals.css)
-— that file imports `@companionintelligence/tokens/globals.css` directly and defines
+— that file imports `ci-tokens.css` (vendored from `@companionintelligence/tokens` 1.1.0) and defines
 nothing of its own beyond the Hub-only extensions in Part II, so it cannot disagree
 with canon by construction. For the values themselves, read
-[`CI-Common/styles/colors.md`](https://github.com/companionintelligence/CI-Common/blob/main/styles/colors.md)
-(generated from `tokens.json`, always current) rather than either file.
+[`packages/frontend/src/styles/tokens.json`](../packages/frontend/src/styles/tokens.json).
 
 `cn()` (identical in every repo):
 
