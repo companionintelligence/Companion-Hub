@@ -66,6 +66,11 @@ function positiveWindow(value: unknown): number | null {
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : null;
 }
 
+/** `modelId` without the `user.` namespace, the one spelling both of Lemonade's names for a model share. */
+function withoutUserNamespace(modelId: string): string {
+  return modelId.startsWith(LEMONADE_USER_NAMESPACE) ? modelId.slice(LEMONADE_USER_NAMESPACE.length) : modelId;
+}
+
 /**
  * How long one `GET /v1/models?show_all=true` stands for the server's registry. The listing only
  * changes when Lemonade is upgraded or the Hub registers a model (which drops the cache itself), and
@@ -321,22 +326,25 @@ export class LemonadeBackend implements InferenceBackend {
    * be read, the load still goes at the window but saves nothing, rather than wiping them.
    */
   async loadModel(modelId: string, options?: LoadModelOptions): Promise<void> {
+    // The puller already hands over the engine's spelling; resolving again is a no-op then, and keeps a
+    // caller with the catalog id from loading (and saving options under) a name 10.2.0 does not know.
+    const engineId = this.engineModelId(modelId);
     const window = options?.embedding || !options?.contextLength ? null : options.contextLength;
-    this.logger.info(`[Lemonade] Loading model: ${modelId}${window ? ` at ctx_size ${window}` : ''}`);
+    this.logger.info(`[Lemonade] Loading model: ${engineId}${window ? ` at ctx_size ${window}` : ''}`);
     const auth = this.authHeaders();
     const config = { ...(auth ? { headers: auth } : {}) };
-    let body: Record<string, unknown> = { model_name: modelId };
+    let body: Record<string, unknown> = { model_name: engineId };
     if (window) {
-      const saved = await this.readModelInfo(modelId);
+      const saved = await this.readModelInfo(engineId);
       const savedOptions = saved ? recipeOptionsOf(saved) : null;
       if (savedOptions) {
-        body = { ...savedOptions, model_name: modelId, ctx_size: window, save_options: true };
+        body = { ...savedOptions, model_name: engineId, ctx_size: window, save_options: true };
       } else {
         this.logger.warn(
-          `[Lemonade] Could not read ${modelId}'s saved options, so ctx_size ${window} is used for this load but not saved; ` +
+          `[Lemonade] Could not read ${engineId}'s saved options, so ctx_size ${window} is used for this load but not saved; ` +
             "Lemonade's own loads of it keep whatever window it had.",
         );
-        body = { model_name: modelId, ctx_size: window };
+        body = { model_name: engineId, ctx_size: window };
       }
     }
     await axios.post(`${this.getBaseUrl()}/v1/load`, body, { timeout: 120000, ...config });
@@ -357,7 +365,7 @@ export class LemonadeBackend implements InferenceBackend {
     const saved = info ? positiveWindow(recipeOptionsOf(info)?.ctx_size) : null;
     if (saved !== null) return saved;
     const residency = await this.listResident();
-    return residency.models?.find((model) => model.id === modelId)?.contextLength ?? null;
+    return this.residentRecordOf(residency.models ?? [], modelId)?.contextLength ?? null;
   }
 
   /**
@@ -372,11 +380,15 @@ export class LemonadeBackend implements InferenceBackend {
     return { slots: null, contextLength: windows.length > 0 ? Math.min(...windows) : null };
   }
 
-  /** `GET /v1/models/{id}`, or null when Lemonade cannot be asked or does not know the model. */
+  /**
+   * `GET /v1/models/{id}` under the name the server knows the model by ({@link engineModelId}), or null
+   * when Lemonade cannot be asked or does not know the model. 10.2.0 answers the bare id of a model the
+   * Hub registered with "Model not found": it knows it only as `user.<id>`.
+   */
   private async readModelInfo(modelId: string): Promise<Record<string, unknown> | null> {
     const auth = this.authHeaders();
     try {
-      const response = await axios.get(`${this.getBaseUrl()}/v1/models/${encodeURIComponent(modelId)}`, {
+      const response = await axios.get(`${this.getBaseUrl()}/v1/models/${encodeURIComponent(this.engineModelId(modelId))}`, {
         timeout: 5000,
         ...(auth ? { headers: auth } : {}),
       });
@@ -492,17 +504,33 @@ export class LemonadeBackend implements InferenceBackend {
    * `healthCheck` reports is every DOWNLOADED model, so asking it answered "loaded" for anything on
    * disk, and the Hub's load path — which asks this first — never loaded (or sent a window to) a
    * downloaded Lemonade model at all. The inventory is the answer only where Lemonade cannot say.
+   *
+   * Matched under either of the model's names (see {@link residentRecordOf}): 10.2.0 lists the
+   * embedder the Hub registers as `user.nomic-embed-text-v1.5-GGUF`, and an exact match on the catalog's
+   * bare id read it as not resident, so every load of it reloaded (and re-registered) a model in memory.
    */
   async isModelLoaded(modelId: string): Promise<boolean> {
     const residency = await this.listResident();
     if (residency.source === 'measured' && residency.models) {
-      return residency.models.some((model) => model.id === modelId);
+      return this.residentRecordOf(residency.models, modelId) !== undefined;
     }
     if (residency.source === 'unreachable') {
       return false;
     }
     const health = await this.healthCheck();
     return health.modelsLoaded.includes(this.engineModelId(modelId));
+  }
+
+  /**
+   * The residency record for `modelId`: the one listed under the name the server knows it by
+   * ({@link engineModelId}), else one listed under its other spelling — with the `user.` namespace
+   * added or dropped, the rule `servedIdForCatalogModel` applies to the inventory. The engine's own
+   * spelling wins when both are resident.
+   */
+  private residentRecordOf<T extends { id: string }>(models: readonly T[], modelId: string): T | undefined {
+    const engineId = this.engineModelId(modelId);
+    const bare = withoutUserNamespace(modelId);
+    return models.find((model) => model.id === engineId) ?? models.find((model) => withoutUserNamespace(model.id) === bare);
   }
 
   /** Detect NPU via Lemonade's system-info endpoint */
