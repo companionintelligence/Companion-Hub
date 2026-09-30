@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  COLD_READ_MIN_SHARE,
   HubPoolThroughputService,
   MAX_ADVERTISED_THROUGHPUT,
   THROUGHPUT_FORGET_AFTER_MS,
@@ -8,6 +9,7 @@ import {
   MAX_PREFILL_GROWTH,
   THROUGHPUT_MIN_PROMPT_TOKENS,
   UNMEASURED_DEFER_MIN_PROMPT_TOKENS,
+  coldReadShare,
   evidenceWeight,
   effectivePrefillPoint,
   mergeDecode,
@@ -304,6 +306,26 @@ describe('readAdvertisedThroughput', () => {
   });
 });
 
+describe('coldReadShare', () => {
+  it("is the engine's own read share when it says both, whatever the pool estimated", () => {
+    // Ollama 0.34.4 on a repeated prompt: 7,615 tokens by its count, 5,033 by bytes / 4.
+    expect(coldReadShare({ evaluated: 7_615, cached: 0 }, 5_033)).toBe(1);
+    expect(coldReadShare({ evaluated: 1, cached: 7_614 }, 5_033)).toBeCloseTo(1 / 7_615, 9);
+    expect(coldReadShare({ evaluated: 20_000, cached: 20_000 }, 5_033)).toBe(COLD_READ_MIN_SHARE);
+    expect(coldReadShare({ evaluated: 0, cached: 0 }, 5_033)).toBe(0);
+  });
+
+  it('judges a read count alone against the estimate, never above the whole prompt', () => {
+    expect(coldReadShare({ evaluated: 900, cached: null }, 30_000)).toBeCloseTo(0.03, 9);
+    expect(coldReadShare({ evaluated: 45_000, cached: null }, 30_000)).toBe(1);
+  });
+
+  it('is whole when the engine said nothing', () => {
+    expect(coldReadShare(null, 30_000)).toBe(1);
+    expect(coldReadShare(undefined, 30_000)).toBe(1);
+  });
+});
+
 describe('HubPoolThroughputService', () => {
   it('reports what it recorded, per band, in the shape it advertises', () => {
     const service = new HubPoolThroughputService();
@@ -333,6 +355,76 @@ describe('HubPoolThroughputService', () => {
     service.recordDecode(FZZY, { tokens: 400, ms: 100 }, NOW);
 
     expect(service.estimatesFor('fzzy', NOW)).toEqual([]);
+  });
+
+  describe('a turn the engine answered partly or wholly from its prompt cache', () => {
+    const CORE_7 = { nodeKey: 'core-7', backend: 'ollama', model: MODEL } as const;
+    const ESTIMATE = 30_000;
+
+    it('is no evidence when it reused more than COLD_READ_MIN_SHARE of the prompt', () => {
+      const service = new HubPoolThroughputService();
+      // A 30k-token history reused and 1,500 new tokens read: 400 ms, which timed against the whole
+      // prompt would be 75,000 tok/s on a node that reads cold at 45.
+      service.recordPrefill(CORE_7, { promptTokens: ESTIMATE, ms: 400, deadline: false, read: { evaluated: 1_500, cached: 38_500 } }, NOW);
+      // Just under half read: still more reused than read.
+      service.recordPrefill(CORE_7, { promptTokens: ESTIMATE, ms: 400, deadline: false, read: { evaluated: 19_999, cached: 20_001 } }, NOW);
+      // A llama-server with no cache_n, judged against the estimate.
+      service.recordPrefill(CORE_7, { promptTokens: ESTIMATE, ms: 400, deadline: false, read: { evaluated: 900, cached: null } }, NOW);
+
+      expect(service.prefillPoints(CORE_7, NOW)).toEqual([]);
+      expect(service.estimatesFor('core-7', NOW)).toEqual([]);
+    });
+
+    it('is timed on the part it read when it reused less', () => {
+      const service = new HubPoolThroughputService();
+      // 30% reused: 20 s for the 70% read is 1,050 tok/s of the estimate, not the 1,500 the whole prompt would claim.
+      service.recordPrefill(CORE_7, { promptTokens: ESTIMATE, ms: 20_000, deadline: false, read: { evaluated: 28_000, cached: 12_000 } }, NOW);
+
+      const [point] = service.prefillPoints(CORE_7, NOW);
+      expect(point).toMatchObject({ promptTokens: ESTIMATE, deadline: false });
+      expect(1000 / (point?.msPerToken ?? 1)).toBeCloseTo(1_050, 6);
+    });
+
+    it('is timed exactly as before when read cold, or when the engine said nothing about its cache', () => {
+      const cold = new HubPoolThroughputService();
+      const silent = new HubPoolThroughputService();
+      // In the engine's own tokens the prompt is larger than the estimate; the share is still whole.
+      cold.recordPrefill(CORE_7, { promptTokens: ESTIMATE, ms: 20_000, deadline: false, read: { evaluated: 45_000, cached: 0 } }, NOW);
+      cold.recordPrefill(FZZY, { promptTokens: ESTIMATE, ms: 20_000, deadline: false, read: { evaluated: 45_000, cached: null } }, NOW);
+      silent.recordPrefill(CORE_7, { promptTokens: ESTIMATE, ms: 20_000, deadline: false }, NOW);
+      silent.recordPrefill(FZZY, { promptTokens: ESTIMATE, ms: 20_000, deadline: false, read: null }, NOW);
+
+      const rate = (service: HubPoolThroughputService, target: typeof CORE_7 | typeof FZZY) =>
+        1000 / (service.prefillPoints(target, NOW)[0]?.msPerToken ?? 1);
+      for (const service of [cold, silent]) {
+        expect(rate(service, CORE_7)).toBeCloseTo(1_500, 6);
+        expect(rate(service, FZZY)).toBeCloseTo(1_500, 6);
+      }
+    });
+
+    it('leaves a slow cold reading standing however many cache hits follow it, and past its hold', () => {
+      const service = new HubPoolThroughputService();
+      service.recordPrefill(
+        CORE_7,
+        { promptTokens: ESTIMATE, ms: (ESTIMATE / 45) * 1000, deadline: false, read: { evaluated: 40_000, cached: 0 } },
+        NOW,
+      );
+      for (let turn = 1; turn <= 10; turn += 1) {
+        const at = NOW + turn * 10 * 60_000;
+        service.recordPrefill(CORE_7, { promptTokens: ESTIMATE, ms: 400, deadline: false, read: { evaluated: 1_500, cached: 38_500 } }, at);
+      }
+
+      // Past the hold, with no faster sample recorded to decay toward, the band still reads 45 tok/s.
+      const later = NOW + THROUGHPUT_HOLD_MS + THROUGHPUT_HALF_LIFE_MS;
+      expect(1000 / (service.prefillPoints(CORE_7, later)[0]?.msPerToken ?? 1)).toBeCloseTo(45, 6);
+    });
+
+    it('never touches a missed deadline, which no engine answered', () => {
+      const service = new HubPoolThroughputService();
+      service.recordPrefill(CORE_7, { promptTokens: 46_000, ms: 922_000, deadline: true, read: { evaluated: 0, cached: 46_000 } }, NOW);
+
+      expect(service.prefillPoints(CORE_7, NOW)).toEqual([expect.objectContaining({ msPerToken: 922_000 / 46_000, deadline: true })]);
+    });
   });
 
   it('keys `name` and `name:latest` as one model, as the inventory does', () => {

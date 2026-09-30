@@ -369,6 +369,17 @@ is timed per node, engine, and model, both on the entry node and on the node tha
   `prompt_eval_duration`, llama.cpp's `timings.prompt_ms`), which leaves out the model load and the
   queue. Otherwise, for a streamed request, the wait for the first byte. A non-streamed request without
   engine timings gives no prefill sample, because its wait was the whole generation.
+- **Cache hits are not reads.** When the engine says how much of the prompt it took from its prompt
+  cache (Ollama's native `prompt_eval_cached_count`, llama.cpp's `timings.cache_n`, or
+  `usage.prompt_tokens_details.cached_tokens` on an OpenAI-compatible route, Ollama's `/v1` included),
+  a turn that reused more than half of its prompt gives no prefill sample, and one that reused less is
+  timed on the part it read. Timed against the whole prompt, a cache hit reads as hundreds of thousands
+  of tokens a second: Ollama 0.34.4 read a repeated 7,615-token prompt in 2,735 ms and then in 19 ms,
+  reporting the same `prompt_eval_count` both times, so that count alone cannot tell the two apart. A
+  node whose only samples were cache hits would otherwise be taken for one that reads cold prompts that
+  fast. The share is the engine's own count of read against reused tokens; the pool's `bytes / 4`
+  estimate was 5,033 for that same prompt, so it is not what a share is judged against. An engine that
+  does not report its cache is timed as before.
 - **Missed deadlines.** A streamed request that ran out of its first-byte budget with no answer is
   recorded as "at least this slow". It carries no usage frame, and it is the failure placement exists
   to stop repeating.
@@ -479,7 +490,8 @@ aside for [contention](#local-engine-contention), also went to core-7: predicted
 So after every other step, including contention and the pin, the entry node looks at the node each
 group would try first. If another node in that group is predicted to answer at least **3 times** as
 fast and at least **20 s** sooner (`HUB_POOL_SLOWER_PLACEMENT_RATIO`,
-`HUB_POOL_SLOWER_PLACEMENT_FLOOR_MS`), and has **at most one request more** in flight, it goes ahead.
+`HUB_POOL_SLOWER_PLACEMENT_FLOOR_MS`), and has **no more requests** in flight (or **one more**, on a
+node that advertises a slot free for it), it goes ahead.
 Every node that qualifies goes ahead, in the ranker's order, and the new first node is then judged the
 same way. For the OpenClaw turn that is beta-max, beta-red, beta-1, then core-7: beta-max at ~35 s is
 not three times beta-1's ~22 s, so the ranker's order among the GPU nodes stands. GPU nodes on this
@@ -488,14 +500,25 @@ two GPU nodes are three times apart only at the ends of their range. The floor k
 ranker put it when the gap is seconds: a prediction is of a cold read, and a turn that shares its
 prefix with the last one answers in seconds on the node that read it. The one-request margin lets the
 rule act when the ranker put the CPU node first because the faster node had a single request in
-flight. That is a bet that the request is part done, since on `-np 1` engines it can be a whole turn.
+flight, and only when the faster node advertises more slots (`ollamaSlots`) than it has requests in
+flight, so the turn runs beside that request rather than behind it. This is read whether or not
+[slot awareness](#slot-aware-placement) is on. A node that states no slot count, or whose slots are
+full, goes ahead only when it has no more in flight than the node it passes: on a `-np 1` engine a
+request in flight can be a whole turn, and without this two large turns in a row would both go to the
+one fast node, the second queued behind the first, while the slower node sat idle.
+
+The margin is counted from the node the ranker put first, and from the node being passed when that
+one is idler. It is not counted afresh from each node a move puts first: then one move could put a node
+one request busier first, the next a node two busier, and so on.
 
 The limits:
 
 - **Measured on both sides.** Both nodes need a prediction, measured here or advertised, and the
   faster one's must not be a missed deadline, which is only a lower bound. A group led by a node
   nothing has measured is left alone, and an unmeasured node is never moved ahead: how those give
-  way is the deferral above.
+  way is the deferral above. A node whose only samples were cache hits is unmeasured, when its engine
+  reports its cache (see **Cache hits are not reads** above), so warm turns never make a node the
+  faster one.
 - **Large prompts only.** Below 6144 estimated tokens nothing moves, so the smaller prompts keep
   reaching a node measured slow. That is how a node whose engine has moved onto its GPU gets measured
   fast again.
