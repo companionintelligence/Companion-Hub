@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MERGED_LISTING_PATHS, POOL_OWNED_BY, listedModelIds, mergeModelListing, peerOnlyModels } from '../pool-model-listing';
+import { MERGED_LISTING_PATHS, POOL_OWNED_BY, listedModelIds, mergeLocalListings, mergeModelListing, peerOnlyModels } from '../pool-model-listing';
 
 describe('MERGED_LISTING_PATHS', () => {
   /*
@@ -112,5 +112,39 @@ describe('mergeModelListing', () => {
   it('preserves sibling fields the local body carried', () => {
     const merged = mergeModelListing('/api/tags', { models: [], engine: 'ollama/0.30.11' }, []);
     expect(merged).toHaveProperty('engine', 'ollama/0.30.11');
+  });
+});
+
+describe('mergeLocalListings', () => {
+  it('returns a single body unchanged', () => {
+    const body = { object: 'list', data: [{ id: 'a' }] };
+    expect(mergeLocalListings('/v1/models', [body])).toBe(body);
+  });
+
+  it('appends later backends’ rows whole, skipping any model an earlier backend already listed', () => {
+    const merged = mergeLocalListings('/v1/models', [
+      { object: 'list', data: [{ id: 'qwen3:latest', owned_by: 'library' }] },
+      { object: 'list', data: [{ id: 'qwen3' }, { id: 'Qwen3-8B-GGUF', owned_by: 'lemonade', created: 5 }] },
+    ]);
+    expect(merged).toEqual({
+      object: 'list',
+      data: [
+        { id: 'qwen3:latest', owned_by: 'library' },
+        { id: 'Qwen3-8B-GGUF', owned_by: 'lemonade', created: 5 },
+      ],
+    });
+  });
+
+  it('merges Ollama-shaped bodies by `model`/`name`', () => {
+    const merged = mergeLocalListings('/api/tags', [
+      { models: [{ name: 'a:latest', model: 'a:latest' }] },
+      { models: [{ name: 'a' }, { name: 'b', size: 2 }] },
+    ]);
+    expect(merged).toEqual({
+      models: [
+        { name: 'a:latest', model: 'a:latest' },
+        { name: 'b', size: 2 },
+      ],
+    });
   });
 });

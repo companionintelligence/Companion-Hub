@@ -5881,6 +5881,72 @@ describe('PoolProxyService', () => {
     });
 
     /*
+     * A node running Ollama beside Lemonade listed Ollama's models only — the first backend to answer
+     * won — so an app handed a Lemonade chat model rejected it before ever sending a completion
+     * (ci-memory, 2026-09-29: 582 dead jobs in two hours, "Invalid model specified: Qwen3.8-27B-GGUF").
+     */
+    describe('merging every healthy local backend into the listing', () => {
+      const byUrl = (bodies: Record<string, unknown>) =>
+        vi.mocked(global.fetch).mockImplementation(async (input) => {
+          const url = String(input);
+          const hit = Object.entries(bodies).find(([prefix]) => url.startsWith(prefix));
+          return hit ? new Response(JSON.stringify(hit[1]), { status: 200 }) : new Response('not found', { status: 404 });
+        });
+
+      beforeEach(() => {
+        ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['qwen3.8:27b-mtp-q4_K_M', 'nomic-embed-text:latest'] });
+        lemonade.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Qwen3.8-27B-GGUF'] });
+        lemonade.getBaseUrl.mockReturnValue('http://local-lemonade:13305');
+      });
+
+      it('lists Lemonade’s models after Ollama’s in /v1/models', async () => {
+        byUrl({
+          'http://local-ollama:11434': { object: 'list', data: [{ id: 'qwen3.8:27b-mtp-q4_K_M', object: 'model', created: 1, owned_by: 'library' }] },
+          'http://local-lemonade:13305': { object: 'list', data: [{ id: 'Qwen3.8-27B-GGUF', object: 'model', created: 2, owned_by: 'lemonade' }] },
+        });
+
+        const res = createMockResponse();
+        await service.proxyLocalOnlyRequest('/v1/models', 'GET', undefined, res);
+
+        const body = vi.mocked(res.json).mock.calls[0]?.[0] as { data: { id: string }[] };
+        expect(body.data.map((row) => row.id)).toEqual(['qwen3.8:27b-mtp-q4_K_M', 'Qwen3.8-27B-GGUF']);
+      });
+
+      it('keeps each backend’s own rows in /api/tags and lists a model two backends hold once', async () => {
+        byUrl({
+          'http://local-ollama:11434': { models: [{ name: 'nomic-embed-text:latest', model: 'nomic-embed-text:latest', size: 274302450 }] },
+          'http://local-lemonade:13305': {
+            models: [
+              { name: 'Qwen3.8-27B-GGUF:latest', model: 'Qwen3.8-27B-GGUF:latest', size: 17559178144 },
+              { name: 'nomic-embed-text', model: 'nomic-embed-text', size: 1 },
+            ],
+          },
+        });
+
+        const res = createMockResponse();
+        await service.proxyLocalOnlyRequest('/api/tags', 'GET', undefined, res);
+
+        expect(vi.mocked(res.json).mock.calls[0]?.[0]).toEqual({
+          models: [
+            { name: 'nomic-embed-text:latest', model: 'nomic-embed-text:latest', size: 274302450 },
+            { name: 'Qwen3.8-27B-GGUF:latest', model: 'Qwen3.8-27B-GGUF:latest', size: 17559178144 },
+          ],
+        });
+      });
+
+      it('never asks a backend the health snapshot does not call healthy', async () => {
+        vllm.getBaseUrl.mockReturnValue('http://local-vllm:8000');
+        omlx.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
+        byUrl({ 'http://local-ollama:11434': { object: 'list', data: [] }, 'http://local-lemonade:13305': { object: 'list', data: [] } });
+
+        await service.proxyLocalOnlyRequest('/v1/models', 'GET', undefined, createMockResponse());
+
+        const urls = vi.mocked(global.fetch).mock.calls.map(([input]) => String(input));
+        expect(urls.some((url) => url.includes(':8000'))).toBe(false);
+      });
+    });
+
+    /*
      * The listing used to answer for this node while every generation path already answered for the
      * pool, so a client was told one set of models and then found another one served. These pin the
      * merge: peer-held models appear, local metadata is untouched, and a duplicate never does.

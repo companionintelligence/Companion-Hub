@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
-import type { InferenceBackend } from './backend.interface';
+import type { InferenceBackend, LoadModelOptions } from './backend.interface';
 import type { BackendHealthStatus, BackendResidency, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
 import axios from 'axios';
 // Shared with the Ollama backend: both mount the same AMD device nodes and so
@@ -21,6 +21,23 @@ export interface LemonadeComposeOptions {
   /** Test seam for {@link resolveAmdDeviceGroupIds}. */
   deviceProbe?: DeviceGroupProbe;
 }
+
+/**
+ * Catalog models the Hub installs into Lemonade from Hugging Face because Lemonade's own registry does
+ * not carry them, keyed by the public id Lemonade then lists them under (the `user.` namespace is
+ * dropped from `/v1/models`). `/v1/pull` with a `user.*` name, a recipe and a checkpoint registers and
+ * downloads in one call; loads and requests use the public id. Verified against lemonade-server
+ * 2026.39.1, 2026-09-29.
+ */
+export const LEMONADE_REGISTRATIONS: Readonly<Record<string, Record<string, unknown>>> = {
+  // The embedder every install shares; see the 2026-09-29 note above EXTRAS_TOON in curated-models.ts.
+  'nomic-embed-text-v1.5-GGUF': {
+    model_name: 'user.nomic-embed-text-v1.5-GGUF',
+    recipe: 'llamacpp',
+    checkpoint: 'nomic-ai/nomic-embed-text-v1.5-GGUF:nomic-embed-text-v1.5.f16.gguf',
+    embedding: true,
+  },
+};
 
 @Injectable()
 export class LemonadeBackend implements InferenceBackend {
@@ -84,7 +101,9 @@ export class LemonadeBackend implements InferenceBackend {
     this.logger.info(`[Lemonade] Pulling model: ${modelId}`);
     try {
       const auth = this.authHeaders();
-      await axios.post(`${this.getBaseUrl()}/v1/pull`, { model_name: modelId }, { timeout: 0, ...(auth ? { headers: auth } : {}) });
+      // A model the Hub installs from Hugging Face is registered by the same call that downloads it.
+      const body = LEMONADE_REGISTRATIONS[modelId] ?? { model_name: modelId };
+      await axios.post(`${this.getBaseUrl()}/v1/pull`, body, { timeout: 0, ...(auth ? { headers: auth } : {}) });
       onProgress?.({ status: 'complete', percent: 100 });
       this.logger.info(`[Lemonade] Model pulled: ${modelId}`);
     } catch (err) {
@@ -93,10 +112,55 @@ export class LemonadeBackend implements InferenceBackend {
     }
   }
 
-  async loadModel(modelId: string): Promise<void> {
-    this.logger.info(`[Lemonade] Loading model: ${modelId}`);
+  /**
+   * Lemonade sizes an unspecified context itself, from the card's TOTAL memory: 220509 tokens for
+   * a 27B on a 24 GiB 7900 XTX, whether or not Ollama already held 17 GiB of it — which is how
+   * the two together froze that machine on 2026-09-29. So the window is always sent, and also
+   * saved as the model's own option: Lemonade loads models by itself too (an inference request for
+   * one that is not resident), and those loads read the saved value, not this call.
+   */
+  async loadModel(modelId: string, options?: LoadModelOptions): Promise<void> {
+    const window = options?.embedding || !options?.contextLength ? null : options.contextLength;
+    this.logger.info(`[Lemonade] Loading model: ${modelId}${window ? ` at ctx_size ${window}` : ''}`);
     const auth = this.authHeaders();
-    await axios.post(`${this.getBaseUrl()}/v1/load`, { model_name: modelId }, { timeout: 120000, ...(auth ? { headers: auth } : {}) });
+    const config = { ...(auth ? { headers: auth } : {}) };
+    if (window) {
+      // Merges into the saved entry, leaving every other option alone; never loads anything.
+      await axios
+        .post(`${this.getBaseUrl()}/v1/models/${encodeURIComponent(modelId)}/options`, { ctx_size: window }, { timeout: 10000, ...config })
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.logger.warn(`[Lemonade] Could not save ctx_size ${window} for ${modelId}; Lemonade's own loads of it will size themselves: ${msg}`);
+        });
+    }
+    await axios.post(
+      `${this.getBaseUrl()}/v1/load`,
+      { model_name: modelId, ...(window ? { ctx_size: window } : {}) },
+      { timeout: 120000, ...config },
+    );
+  }
+
+  /**
+   * The model's files as Lemonade lists them (`GET /v1/models/{id}/files`): the weights and, for a
+   * vision model, the mmproj it loads beside them — both occupy the card. Null when Lemonade cannot
+   * say, or has not downloaded the model yet.
+   */
+  async weightsOnDiskMb(modelId: string): Promise<number | null> {
+    const auth = this.authHeaders();
+    try {
+      const response = await axios.get(`${this.getBaseUrl()}/v1/models/${encodeURIComponent(modelId)}/files`, {
+        timeout: 5000,
+        ...(auth ? { headers: auth } : {}),
+      });
+      const files = response.data?.files;
+      if (!Array.isArray(files)) return null;
+      const bytes = (files as { exists?: boolean; size_bytes?: number }[])
+        .filter((file) => file.exists !== false && typeof file.size_bytes === 'number' && file.size_bytes > 0)
+        .reduce((sum, file) => sum + (file.size_bytes as number), 0);
+      return bytes > 0 ? Math.round(bytes / (1024 * 1024)) : null;
+    } catch {
+      return null;
+    }
   }
 
   async unloadModel(modelId: string): Promise<void> {

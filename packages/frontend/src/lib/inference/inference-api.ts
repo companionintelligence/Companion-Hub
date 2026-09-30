@@ -66,8 +66,14 @@ export async function fetchInferenceTrackedModels(): Promise<TrackedModel[]> {
   return (tracked ?? []) as TrackedModel[];
 }
 
-export async function startInferenceModelPull(modelId: string, bestEffort = true): Promise<void> {
-  await startPullModel({ body: { modelId, bestEffort } } as Parameters<typeof startPullModel>[0]);
+/** `POST /inference/models/pull/start`'s body (`PullStartResult` in the backend). The SDK types it `unknown`. */
+export interface PullStartReply {
+  status: 'already_installed' | 'queued' | 'in_progress' | 'skipped' | 'error';
+  reason?: string;
+}
+
+export async function startInferenceModelPull(modelId: string, bestEffort = true): Promise<PullStartReply | null> {
+  return ((await unwrap(startPullModel({ body: { modelId, bestEffort } } as Parameters<typeof startPullModel>[0]))) ?? null) as PullStartReply | null;
 }
 
 export async function fetchRocmInstallStatus<T = unknown>(): Promise<T | null> {
@@ -159,7 +165,14 @@ export async function saveCloudProviderConfig(body: { provider: CloudProviderTyp
 }
 
 export async function pinInferenceModel(modelId: string): Promise<void> {
-  await unwrap(pinModel({ body: { modelId } } as Parameters<typeof pinModel>[0]));
+  // A refused pin (over the pin budget, or the model cannot be made to fit) is a 201 with
+  // `success: false`, not an HTTP error — surface it, or callers report a pin that never happened.
+  const result = (await unwrap(pinModel({ body: { modelId } } as Parameters<typeof pinModel>[0]))) as
+    | { success?: boolean; message?: string }
+    | undefined;
+  if (result?.success === false) {
+    throw new Error(result.message ?? `Could not pin ${modelId}`);
+  }
 }
 
 export async function unpinInferenceModel(modelId: string): Promise<void> {

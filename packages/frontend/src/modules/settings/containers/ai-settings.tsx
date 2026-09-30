@@ -466,10 +466,15 @@ export const AiSettingsContainer = () => {
       );
       const compatiblePinnedModelIds = unpinnablePins(availableModelById, pinnedModelIds);
       const modelOperationErrors: string[] = [];
-      const modelsToPull = pullableSelectedModelIds.filter((modelId) => !compatiblePinnedModelIds.includes(modelId));
+      const requestedPulls = pullableSelectedModelIds.filter((modelId) => !compatiblePinnedModelIds.includes(modelId));
 
-      if (modelsToPull.length > 0) {
-        await ensurePullsStarted(modelsToPull, false);
+      if (requestedPulls.length > 0) {
+        // Report a refusal now; waiting on it would only run out the ten-minute timeout.
+        const refusedById = await ensurePullsStarted(requestedPulls, false);
+        for (const [modelId, reason] of Object.entries(refusedById)) {
+          modelOperationErrors.push(`Failed to pull ${modelId}: ${reason}`);
+        }
+        const modelsToPull = requestedPulls.filter((modelId) => !refusedById[modelId]);
 
         const pullResult = await waitForModelPulls(modelsToPull, profile.installedCatalogIds ?? [], { timeoutMs: 600_000 });
         for (const [modelId, message] of Object.entries(pullResult.errorsById)) {
@@ -503,7 +508,13 @@ export const AiSettingsContainer = () => {
       }
 
       if (modelOperationErrors.length > 0) {
-        toast.success(t('AI_SETTINGS_SAVED_WITH_ISSUES', { count: modelOperationErrors.length }));
+        // The reasons are the useful part (why a model did not download), so show them and keep the
+        // toast up until dismissed rather than flashing a bare count.
+        toast.warning(t('AI_SETTINGS_SAVED_WITH_ISSUES', { count: modelOperationErrors.length }), {
+          description: modelOperationErrors.join('\n'),
+          duration: Number.POSITIVE_INFINITY,
+          closeButton: true,
+        });
       } else {
         toast.success(t('AI_SETTINGS_SAVED'));
       }

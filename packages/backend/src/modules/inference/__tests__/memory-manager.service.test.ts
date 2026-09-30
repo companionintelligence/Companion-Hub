@@ -661,4 +661,96 @@ describe('MemoryManagerService', () => {
       expect(result.canPin).toBe(false);
     });
   });
+
+  // ─── planEviction ──────────────────────────────────────────────────
+  // Eviction drawn from what the engines hold, not only from the Hub's own loads: the 27B an app
+  // loaded through Ollama directly is `pulled` in the registry, and getModelsToEvict never sees it.
+  describe('planEviction', () => {
+    const keepLemonade = { backend: 'lemonade' as const, backendModelId: 'Qwen3.8-27B-GGUF' };
+
+    beforeEach(() => {
+      modelRegistry.getTrackedModels.mockReturnValue([]);
+      modelRegistry.getCatalog.mockReturnValue([]);
+      modelRegistry.getCuratedModel.mockReturnValue(undefined);
+    });
+
+    it('names a model an app loaded on another engine, sized from the engine', async () => {
+      reportResidency([
+        {
+          backend: 'ollama',
+          source: 'measured',
+          models: [resident('qwen3.8:27b-mtp-q4_K_M', { engineGpuBytes: 17_000 * MiB, totalBytes: 17_000 * MiB })],
+        },
+        { backend: 'lemonade', source: 'measured', models: [] },
+      ]);
+
+      const plan = await service.planEviction(makeProfile(), 12_000, keepLemonade);
+
+      expect(plan).toEqual({
+        canFree: true,
+        freedMb: 17_000,
+        candidates: [{ backend: 'ollama', backendModelId: 'qwen3.8:27b-mtp-q4_K_M', catalogId: null, estimatedMb: 17_000 }],
+      });
+    });
+
+    it('never names a pinned model or the one being loaded', async () => {
+      modelRegistry.getTrackedModels.mockReturnValue([
+        tracked({ catalogId: 'qwen3-8-27b-mtp', backendModelId: 'qwen3.8:27b-mtp-q4_K_M', pinned: true, state: 'pinned' }),
+      ]);
+      reportResidency([
+        { backend: 'ollama', source: 'measured', models: [resident('qwen3.8:27b-mtp-q4_K_M', { engineGpuBytes: 17_000 * MiB })] },
+        { backend: 'lemonade', source: 'measured', models: [resident('Qwen3.8-27B-GGUF')] },
+      ]);
+
+      const plan = await service.planEviction(makeProfile(), 12_000, keepLemonade);
+
+      expect(plan.candidates).toEqual([]);
+      expect(plan.canFree).toBe(false);
+    });
+
+    it("takes the Hub's own loads first, least recently used, and stops once enough is freed", async () => {
+      const gemma = tracked({ catalogId: 'gemma4-e4b', backendModelId: 'gemma4:e4b', memoryUsedMb: 5_000 });
+      modelRegistry.getEvictionCandidates.mockReturnValue([gemma]);
+      modelRegistry.getTrackedModels.mockReturnValue([gemma]);
+      reportResidency([
+        {
+          backend: 'ollama',
+          source: 'measured',
+          models: [resident('gemma4:e4b', { engineGpuBytes: 5_000 * MiB }), resident('qwen3.8:27b-mtp-q4_K_M', { engineGpuBytes: 17_000 * MiB })],
+        },
+        { backend: 'lemonade', source: 'measured', models: [] },
+      ]);
+
+      const plan = await service.planEviction(makeProfile(), 4_000, keepLemonade);
+
+      expect(plan.candidates.map((c) => c.backendModelId)).toEqual(['gemma4:e4b']);
+      expect(plan.freedMb).toBe(5_000);
+    });
+
+    it('goes ahead optimistically when a candidate cannot be sized, leaving the re-measure to decide', async () => {
+      reportResidency([
+        { backend: 'ollama', source: 'measured', models: [] },
+        { backend: 'lemonade', source: 'measured', models: [resident('Gemma-4-E4B-GGUF'), resident('nomic-embed-text-v1-GGUF')] },
+      ]);
+
+      const plan = await service.planEviction(makeProfile(), 12_000, { backend: 'ollama', backendModelId: 'qwen3.8:27b-mtp-q4_K_M' });
+
+      expect(plan.canFree).toBe(true);
+      expect(plan.candidates.map((c) => c.estimatedMb)).toEqual([null, null]);
+    });
+
+    it('names nothing live from an engine that did not answer', async () => {
+      modelRegistry.getLoadedModels.mockReturnValue([
+        tracked({ catalogId: 'qwen3-8-27b-mtp', backendModelId: 'qwen3.8:27b-mtp-q4_K_M', memoryUsedMb: 17_000 }),
+      ]);
+      reportResidency([
+        { backend: 'ollama', source: 'unreachable', models: null },
+        { backend: 'lemonade', source: 'measured', models: [] },
+      ]);
+
+      const plan = await service.planEviction(makeProfile(), 12_000, keepLemonade);
+
+      expect(plan.candidates).toEqual([]);
+    });
+  });
 });

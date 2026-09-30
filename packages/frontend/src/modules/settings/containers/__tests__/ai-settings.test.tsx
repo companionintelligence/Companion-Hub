@@ -68,6 +68,7 @@ vi.mock('sonner', () => ({
   toast: {
     success: vi.fn(),
     error: vi.fn(),
+    warning: vi.fn(),
   },
 }));
 
@@ -234,7 +235,7 @@ describe('AiSettingsContainer', () => {
     fetchLemonadeInstallStatus.mockResolvedValue({ ready: true, running: true, endpointUrl: 'http://localhost:13305' });
     saveInferencePreferences.mockResolvedValue(undefined);
     rescanInferenceHardware.mockResolvedValue(undefined);
-    ensurePullsStarted.mockResolvedValue(undefined);
+    ensurePullsStarted.mockResolvedValue({});
   });
 
   it('loads preferred backend from preferences endpoint', async () => {
@@ -372,7 +373,7 @@ describe('AiSettingsContainer', () => {
   });
 
   it('only pulls models compatible with the selected backend', async () => {
-    ensurePullsStarted.mockResolvedValue(undefined);
+    ensurePullsStarted.mockResolvedValue({});
     fetchInferenceOnboardingProfile.mockResolvedValue({
       ...profile,
       recommendedModels: [
@@ -424,6 +425,30 @@ describe('AiSettingsContainer', () => {
     });
 
     expect(ensurePullsStarted).not.toHaveBeenCalledWith(['whisper-base'], expect.anything());
+  });
+
+  it('reports a refused download at once instead of waiting for it to time out', async () => {
+    const { waitForModelPulls } = await import('@/lib/inference/tracked-models');
+    const reason = 'Model requires 21176 MB disk but only 1024 MB is available.';
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'lemonade' });
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled([], [llm('q27', 'lemonade')]));
+    ensurePullsStarted.mockResolvedValue({ q27: reason });
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await user.click(await screen.findByTestId('recommended-model-checkbox-q27'));
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(toast.warning).toHaveBeenCalled());
+    expect(ensurePullsStarted).toHaveBeenCalledWith(['q27'], false);
+    expect(waitForModelPulls).toHaveBeenCalledWith([], [], expect.anything());
+    expect(toast.warning).toHaveBeenCalledWith(
+      'AI settings saved with 1 model issue(s).',
+      expect.objectContaining({ description: `Failed to pull q27: ${reason}` }),
+    );
+    expect(pinInferenceModel).not.toHaveBeenCalled();
   });
 
   it('pre-selects models the backend reports installed even when the tracked registry is empty', async () => {

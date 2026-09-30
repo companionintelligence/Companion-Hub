@@ -117,20 +117,11 @@ export class ModelPullerService {
       };
     }
 
-    const memoryCheck = await this.memoryManager.canFitModel(profile, requiredMemoryMb);
-    if (!memoryCheck.fits) {
-      return {
-        catalogId,
-        alreadyInstalled: false,
-        canPull: false,
-        reason: `Model requires ${requiredMemoryMb} MB inference memory but only ${Math.floor(memoryCheck.availableMb)} MB is available.`,
-        requiredDiskMb,
-        requiredMemoryMb,
-        availableDiskMb,
-        availableMemoryMb,
-      };
-    }
-
+    // No free-memory check here: a download writes to disk, not to VRAM. Whether the model fits
+    // right now depends on what else is resident, which is the load path's question — the router
+    // checks `canFitModel` there and evicts to make room. Gating the download on it refused any
+    // large model while another engine held the GPU, even though the tier check above already
+    // says this hardware can run it.
     return {
       catalogId,
       alreadyInstalled: false,
@@ -316,8 +307,12 @@ export class ModelPullerService {
     }
   }
 
-  /** Load a model into memory */
-  async loadModel(catalogId: string): Promise<void> {
+  /**
+   * Load a model into memory, at `contextLength` when the caller sized one. Callers outside the
+   * inference router should go through `InferenceRouterService.loadTrackedModel`, which makes room
+   * and sizes the window first; this only talks to the engine.
+   */
+  async loadModel(catalogId: string, options?: { contextLength?: number }): Promise<void> {
     const curated = this.modelRegistry.getCuratedModel(catalogId);
     if (!curated) {
       throw new Error(`Model ${catalogId} not found in catalog`);
@@ -333,7 +328,7 @@ export class ModelPullerService {
     this.logger.info(`[ModelPuller] Loading ${catalogId} into memory`);
 
     try {
-      await backend.loadModel(curated.backendModelId, { embedding: curated.modality === 'embedding' });
+      await backend.loadModel(curated.backendModelId, { embedding: curated.modality === 'embedding', contextLength: options?.contextLength });
       this.modelRegistry.updateModelState(catalogId, 'loaded');
       this.logger.info(`[ModelPuller] Loaded ${catalogId}`);
     } catch (err) {

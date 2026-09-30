@@ -112,7 +112,8 @@ export interface ContextCost {
   /** MB of memory one token of context costs, for the ladder to multiply. */
   kvMbPerToken: number;
   weightMb: number | null;
-  source: 'geometry' | 'calibrated';
+  /** `catalog`: the catalog's measured `kvMbPerToken` (see `context-cost.util`), for an engine that cannot say. */
+  source: 'geometry' | 'calibrated' | 'catalog';
 }
 
 /**

@@ -219,8 +219,9 @@ describe('ModelRegistryService', () => {
           .filter((m) => m.modality === 'llm');
         const top = recs[0];
         expect(top).toBeDefined();
-        // index 0 is the highest Intelligence Index among the fitting picks…
-        expect(intel(top)).toBe(Math.max(...recs.map(intel)));
+        // index 0 is the highest Intelligence Index among its engine's fitting picks (the list is grouped
+        // per engine, each best-first; another engine's row can outscore the first engine's best)…
+        expect(intel(top)).toBe(Math.max(...recs.filter((m) => m.backend === top?.backend).map(intel)));
         // …and it actually fits the unified-memory budget.
         expect(top?.runtime.memoryFootprintMb).toBeLessThanOrEqual(16 * GB * 0.7);
       });

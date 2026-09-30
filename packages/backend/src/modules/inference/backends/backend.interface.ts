@@ -1,4 +1,11 @@
 import type { BackendHealthStatus, BackendModelInfo, BackendResidency, InferenceBackendType, PullProgress } from '@ci-hub/common/types';
+import type { ContextCost } from '../model-geometry.util';
+
+export interface LoadModelOptions {
+  embedding?: boolean;
+  /** The context window, in tokens, to load a text model with. Absent leaves it to the engine. */
+  contextLength?: number;
+}
 
 /**
  * What an engine says about its own concurrency, when it says anything: how many requests it runs
@@ -35,8 +42,9 @@ export interface InferenceBackend {
   pullModel(modelId: string, onProgress?: (progress: PullProgress) => void): Promise<void>;
 
   /** Load a model into memory. Embedding models must be loaded via the
-   * embeddings endpoint, so pass `{ embedding: true }` for them. */
-  loadModel(modelId: string, options?: { embedding?: boolean }): Promise<void>;
+   * embeddings endpoint, so pass `{ embedding: true }` for them. `contextLength` is the window to
+   * load it with, for an engine that takes one at load time; one that cannot ignores it. */
+  loadModel(modelId: string, options?: LoadModelOptions): Promise<void>;
 
   /** Unload a model from memory. Pass `{ embedding: true }` for embedding
    * models (they reject the text-generation endpoint). */
@@ -59,6 +67,19 @@ export interface InferenceBackend {
    * `'implicit'` when the engine can only ever serve what it was started with.
    */
   listResident?(): Promise<BackendResidency>;
+
+  /**
+   * What a token of context costs this model, from the engine's own description of it. Optional:
+   * only Ollama can say (`/api/show` geometry, `/api/ps` sightings); without it the context ladder
+   * keeps its fixed per-token assumption.
+   */
+  contextCostForModel?(modelId: string): Promise<ContextCost | null>;
+
+  /**
+   * MB the model's files take on disk — weights plus any vision projector — for an engine that
+   * lists them but cannot say what a token of context costs. Optional; null when it cannot say.
+   */
+  weightsOnDiskMb?(modelId: string): Promise<number | null>;
 
   /**
    * The engine's own statement of slots and per-slot context, from the LAST health probe — never a

@@ -55,18 +55,33 @@ export function parsePullProgress(modelIds: string[], installedCatalogIds: strin
   return { progressById, errorsById, pulledIds, allDone };
 }
 
-export async function ensurePullStarted(modelId: string, bestEffort = true): Promise<void> {
-  await startInferenceModelPull(modelId, bestEffort);
+/**
+ * Ask the Hub to start a download. Returns the Hub's reason when it refused (`error`, or `skipped`
+ * for a best-effort pull), otherwise null.
+ *
+ * A refused pull is never tracked, so tracked-model polling cannot report it: a caller that ignores
+ * this return waits out its whole timeout on a download that never began.
+ */
+export async function ensurePullStarted(modelId: string, bestEffort = true): Promise<string | null> {
+  const reply = await startInferenceModelPull(modelId, bestEffort);
+  if (reply?.status === 'error' || reply?.status === 'skipped') {
+    return reply.reason ?? `The Hub did not start a download for ${modelId}.`;
+  }
+  return null;
 }
 
-export async function ensurePullsStarted(modelIds: string[], bestEffort = true): Promise<void> {
+/** Start each download; returns why the Hub refused, by model id. A failed request counts as refused. */
+export async function ensurePullsStarted(modelIds: string[], bestEffort = true): Promise<Record<string, string>> {
+  const refusedById: Record<string, string> = {};
   for (const modelId of modelIds) {
     try {
-      await ensurePullStarted(modelId, bestEffort);
-    } catch {
-      // best-effort — tracked polling surfaces errors
+      const reason = await ensurePullStarted(modelId, bestEffort);
+      if (reason) refusedById[modelId] = reason;
+    } catch (err) {
+      refusedById[modelId] = err instanceof Error ? err.message : String(err);
     }
   }
+  return refusedById;
 }
 
 export async function waitForModelPulls(

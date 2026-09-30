@@ -7,6 +7,38 @@ import { useTranslation } from 'react-i18next';
 import { LemonadeIcon } from './icons';
 
 const LEMONADE_DOCS_URL = 'https://github.com/lemonade-sdk/lemonade';
+const LEMONADE_DEFAULT_PORT = '13305';
+
+/** The port the Hub probes, so the firewall command opens the right one. */
+function lemonadePort(endpointUrl: string): string {
+  try {
+    return new URL(endpointUrl).port || LEMONADE_DEFAULT_PORT;
+  } catch {
+    return LEMONADE_DEFAULT_PORT;
+  }
+}
+
+/**
+ * Lemonade's Linux package runs `lemond` as a system service listening on localhost, and the Hub
+ * probes it from inside Docker, so a running server still reads as "not detected". A refused or
+ * timed-out probe looks the same whether Lemonade is stopped or only listening on localhost, so this
+ * shows on every not-detected state rather than guessing from the error.
+ */
+const LemonadeDockerAccessHint = ({ endpointUrl }: { endpointUrl: string }) => {
+  const { t } = useTranslation();
+  const port = lemonadePort(endpointUrl);
+  const codeClass = 'block w-full max-w-full overflow-x-auto whitespace-pre-wrap break-all rounded bg-warning/10 px-2 py-1.5 text-xs text-warning';
+
+  return (
+    <div className="mb-3 min-w-0 space-y-2" data-testid="lemonade-docker-access-hint">
+      <div className="text-xs font-medium text-warning">{t('ONBOARDING_LEMONADE_DOCKER_ACCESS_TITLE')}</div>
+      <div className="text-xs text-warning">{t('ONBOARDING_LEMONADE_DOCKER_ACCESS_DESC')}</div>
+      <code className={codeClass}>{'lemonade config set host=0.0.0.0\nsudo systemctl restart lemond'}</code>
+      <div className="text-xs text-warning">{t('ONBOARDING_LEMONADE_FIREWALL_DESC', { port })}</div>
+      <code className={codeClass}>{`sudo ufw allow from 172.16.0.0/12 to any port ${port} proto tcp`}</code>
+    </div>
+  );
+};
 
 interface LemonadeSetupCardProps {
   status: LemonadeStatus | null;
@@ -91,6 +123,7 @@ export const LemonadeSetupCard = ({ status, checking, onRecheck }: LemonadeSetup
                 </div>
               </div>
             )}
+            <LemonadeDockerAccessHint endpointUrl={status.endpointUrl} />
             <div className="flex flex-wrap gap-2">
               <Button size="sm" variant="ghost" onClick={() => openExternal(LEMONADE_DOCS_URL)}>
                 {t('ONBOARDING_LEMONADE_DOCS')}

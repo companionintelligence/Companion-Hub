@@ -94,6 +94,59 @@ describe('LemonadeBackend', () => {
     });
   });
 
+  describe('pullModel', () => {
+    it('registers and downloads a model the Hub installs from Hugging Face in one call', async () => {
+      const post = vi.fn().mockResolvedValue({ data: { status: 'success' } });
+      (axios.post as never) = post;
+
+      await backend.pullModel('nomic-embed-text-v1.5-GGUF');
+
+      expect(post).toHaveBeenCalledWith(
+        'http://ci-hub-lemonade:13305/v1/pull',
+        {
+          model_name: 'user.nomic-embed-text-v1.5-GGUF',
+          recipe: 'llamacpp',
+          checkpoint: 'nomic-ai/nomic-embed-text-v1.5-GGUF:nomic-embed-text-v1.5.f16.gguf',
+          embedding: true,
+        },
+        { timeout: 0 },
+      );
+    });
+
+    it("pulls a model from Lemonade's own registry by name", async () => {
+      const post = vi.fn().mockResolvedValue({ data: { status: 'success' } });
+      (axios.post as never) = post;
+
+      await backend.pullModel('Qwen3.8-27B-GGUF');
+
+      expect(post).toHaveBeenCalledWith('http://ci-hub-lemonade:13305/v1/pull', { model_name: 'Qwen3.8-27B-GGUF' }, { timeout: 0 });
+    });
+  });
+
+  describe('weightsOnDiskMb', () => {
+    it('sums the files Lemonade lists for the model, weights and mmproj alike', async () => {
+      (axios.get as any) = vi.fn().mockResolvedValue({
+        data: {
+          files: [
+            { role: 'main', exists: true, size_bytes: 17_559_178_144 },
+            { role: 'mmproj', exists: true, size_bytes: 927_607_488 },
+          ],
+        },
+      });
+
+      await expect(backend.weightsOnDiskMb('Qwen3.8-27B-GGUF')).resolves.toBe(17_630);
+      expect(axios.get).toHaveBeenCalledWith('http://ci-hub-lemonade:13305/v1/models/Qwen3.8-27B-GGUF/files', { timeout: 5000 });
+    });
+
+    it('answers null for a model not downloaded yet, or when Lemonade cannot be asked', async () => {
+      (axios.get as any) = vi.fn().mockResolvedValue({ data: { files: [{ role: 'main', exists: false, size_bytes: 0 }] } });
+      await expect(backend.weightsOnDiskMb('Qwen3.8-27B-GGUF')).resolves.toBeNull();
+
+      (axios.get as any) = vi.fn().mockRejectedValue(new Error('404'));
+      await expect(backend.weightsOnDiskMb('Qwen3.8-27B-GGUF')).resolves.toBeNull();
+    });
+  });
+
   describe('Model lifecycle', () => {
     it('loads through Lemonade’s documented /v1/load endpoint', async () => {
       const post = vi.fn().mockResolvedValue({ data: { status: 'ok' } });
@@ -102,6 +155,44 @@ describe('LemonadeBackend', () => {
       await backend.loadModel('Qwen3-8B-GGUF');
 
       expect(post).toHaveBeenCalledWith('http://ci-hub-lemonade:13305/v1/load', { model_name: 'Qwen3-8B-GGUF' }, { timeout: 120000 });
+    });
+
+    it('saves the window as the model’s own option, then loads at it', async () => {
+      const post = vi.fn().mockResolvedValue({ data: { status: 'ok' } });
+      (axios.post as never) = post;
+
+      await backend.loadModel('Qwen3.8-27B-GGUF', { contextLength: 16384 });
+
+      // Saved first so Lemonade's OWN loads (an inference request for a model not resident) use it
+      // too, instead of its auto-sizing against the whole card.
+      expect(post).toHaveBeenNthCalledWith(
+        1,
+        'http://ci-hub-lemonade:13305/v1/models/Qwen3.8-27B-GGUF/options',
+        { ctx_size: 16384 },
+        { timeout: 10000 },
+      );
+      expect(post).toHaveBeenNthCalledWith(
+        2,
+        'http://ci-hub-lemonade:13305/v1/load',
+        { model_name: 'Qwen3.8-27B-GGUF', ctx_size: 16384 },
+        { timeout: 120000 },
+      );
+    });
+
+    it('still loads at the window when saving it fails', async () => {
+      const post = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('404'))
+        .mockResolvedValue({ data: { status: 'ok' } });
+      (axios.post as never) = post;
+
+      await backend.loadModel('Qwen3.8-27B-GGUF', { contextLength: 16384 });
+
+      expect(post).toHaveBeenLastCalledWith(
+        'http://ci-hub-lemonade:13305/v1/load',
+        { model_name: 'Qwen3.8-27B-GGUF', ctx_size: 16384 },
+        { timeout: 120000 },
+      );
     });
 
     it('unloads through Lemonade’s documented /v1/unload endpoint', async () => {
