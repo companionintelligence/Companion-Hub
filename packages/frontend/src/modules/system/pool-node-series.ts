@@ -479,6 +479,8 @@ export interface RoutingBucket {
   clientClosed: number;
   /** The subset of `failed` a node answered with a refusal of the request itself — see {@link isRefused}. */
   refused: number;
+  /** The subset of `failed` a node answered 200 for with cut-off or degenerate output — see {@link outputFault}. */
+  badOutput: number;
   /** The subset of `failed` that took at least a first-byte budget to fail — see {@link isOverBudgetFailure}. */
   overBudget: number;
   /** Engine-reported prompt tokens on rows placed in this minute. Rows with no usage frame add nothing. */
@@ -495,6 +497,7 @@ const EMPTY_BUCKET: Omit<RoutingBucket, 'at'> = {
   failovers: 0,
   clientClosed: 0,
   refused: 0,
+  badOutput: 0,
   overBudget: 0,
   promptTokens: 0,
   completionTokens: 0,
@@ -522,13 +525,32 @@ export function bucketTotal(bucket: RoutingBucket): number {
  * because an inbound row never carries a `requestError`, and a Hub built before the change still
  * says `served`.
  *
- * Not a caller that hung up (that has its own count), and not a row still waiting for its answer.
+ * Not a caller that hung up (that has its own count), not a row still waiting for its answer, and
+ * not a node's own bad output (`requestError.basis: 'node'`, see {@link outputFault}): telling the
+ * app to fix a request the node answered with garbage would send its operator after the wrong box.
  */
 export function isRefused(entry: RoutingLogEntry): boolean {
   if (entry.outcome === 'pending' || entry.clientClosed === true) return false;
-  if (entry.requestError) return true;
+  if (entry.requestError) return entry.requestError.basis !== 'node';
 
   return typeof entry.status === 'number' && entry.status >= 400 && entry.status < 500;
+}
+
+/** The two ways a node's 200 can fail its caller — see `hub-pool-output-check.ts` on the backend. */
+export type OutputFault = 'truncated-upstream' | 'degenerate-output';
+
+const OUTPUT_FAULTS: ReadonlySet<string> = new Set<OutputFault>(['truncated-upstream', 'degenerate-output']);
+
+/**
+ * What was wrong with the output a node answered 200 for, or `null`: cut off before the dialect's
+ * final frame, or nothing but `<unusedN>` placeholder tokens. core-2, 2026-09-29: 167 of 237 local
+ * gemma4 rows were one or the other and every one read `served`. An outbound row says so in
+ * `requestError` with basis `node`; an inbound row, which never carries a `requestError`, in `reason`.
+ */
+export function outputFault(entry: RoutingLogEntry): OutputFault | null {
+  if (entry.outcome === 'pending') return null;
+  const signature = entry.requestError?.basis === 'node' ? entry.requestError.signature : entry.reason;
+  return typeof signature === 'string' && OUTPUT_FAULTS.has(signature) ? (signature as OutputFault) : null;
 }
 
 /**
@@ -621,6 +643,7 @@ export function routingBuckets(entries: RoutingLogEntry[], options: { now: numbe
     if ((entry.failedOverFrom?.length ?? 0) > 0) slot.failovers += 1;
     if (entry.clientClosed === true && outcome === 'failed') slot.clientClosed += 1;
     if (isRefused(entry)) slot.refused += 1;
+    if (outputFault(entry)) slot.badOutput += 1;
     if (isOverBudgetFailure(entry)) slot.overBudget += 1;
     slot.promptTokens += usageCount(entry.usage?.promptTokens);
     slot.completionTokens += usageCount(entry.usage?.completionTokens);

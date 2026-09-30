@@ -17,7 +17,7 @@ import {
   Tr,
 } from '@/components/ui/dense/dense';
 import { cn } from '@/lib/utils';
-import { bucketTotal, isRefused, type RoutingBucket, routingActivity, settledOutcome } from '@/modules/system/pool-node-series';
+import { bucketTotal, isRefused, outputFault, type RoutingBucket, routingActivity, settledOutcome } from '@/modules/system/pool-node-series';
 import {
   estimatedPromptTokens,
   isExhausted,
@@ -299,6 +299,13 @@ export function PoolActivity({
                   // beside it, since "failed" alone reads as the node breaking. See `isRefused`.
                   const served = settledOutcome(entry) === 'served';
                   const refused = isRefused(entry);
+                  // The node's own bad answer, named so it is not read as the app's request or a dead node.
+                  const fault = outputFault(entry);
+                  // Each node passed over and what it answered, where the Hub says; the names alone otherwise.
+                  const failoverDetail =
+                    entry.attempts && entry.attempts.length > 0
+                      ? entry.attempts.map((attempt) => `${attempt.node} (${attempt.reason})`).join(', ')
+                      : failedOver.join(', ');
                   // A nodeless outbound row is one of two outcomes, and they are named apart: every
                   // candidate tried and failed, or none existed. Either way it must not read as the
                   // local node having served it. The first used to render "Unplaced · +9 tried",
@@ -321,7 +328,7 @@ export function PoolActivity({
                           {inbound ? '↓' : '↑'}
                         </span>
                         {exhausted ? (
-                          <span className="italic text-destructive" title={t('DASHBOARD_ACTIVITY_FAILOVER_FROM', { nodes: failedOver.join(', ') })}>
+                          <span className="italic text-destructive" title={t('DASHBOARD_ACTIVITY_FAILOVER_FROM', { nodes: failoverDetail })}>
                             {t('DASHBOARD_ROUTING_EXHAUSTED', { count: triedCount })}
                           </span>
                         ) : unplaced ? (
@@ -330,11 +337,11 @@ export function PoolActivity({
                           (entry.node ?? DASH).split('.')[0]
                         )}
                       </Td>
-                      {/* An inbound row never carries a model — the peer asked, it did not say what
-                        for. A dash here is the record, not a gap. */}
+                      {/* An inbound row names the model the peer asked for; a Hub predating that, or a
+                        peer that said nothing, leaves it empty, and a dash here is the record. */}
                       <Td
                         className="max-w-[88px] truncate font-mono @sm:max-w-[140px] @2xl:max-w-[200px]"
-                        title={inbound ? t('DASHBOARD_INBOUND_NO_MODEL') : (entry.model ?? undefined)}
+                        title={inbound && !entry.model ? t('DASHBOARD_INBOUND_NO_MODEL') : (entry.model ?? undefined)}
                       >
                         {entry.model ?? DASH}
                       </Td>
@@ -349,12 +356,18 @@ export function PoolActivity({
                         align="right"
                         className="hidden whitespace-nowrap @sm:table-cell"
                         title={
-                          promptEstimate !== null || typeof entry.budgetMs === 'number'
-                            ? t('DASHBOARD_FIRST_BYTE_HINT', {
-                                tokens: promptEstimate === null ? DASH : compactTokens(promptEstimate),
-                                budget: humanDuration(entry.budgetMs),
-                              })
-                            : undefined
+                          [
+                            promptEstimate !== null || typeof entry.budgetMs === 'number'
+                              ? t('DASHBOARD_FIRST_BYTE_HINT', {
+                                  tokens: promptEstimate === null ? DASH : compactTokens(promptEstimate),
+                                  budget: humanDuration(entry.budgetMs),
+                                })
+                              : undefined,
+                            // The cell is the wait for headers; the whole answer took this long.
+                            typeof entry.totalMs === 'number' ? t('DASHBOARD_TOTAL_TIME_HINT', { total: humanDuration(entry.totalMs) }) : undefined,
+                          ]
+                            .filter(Boolean)
+                            .join(' · ') || undefined
                         }
                       >
                         {pending ? (
@@ -363,19 +376,30 @@ export function PoolActivity({
                           humanDuration(entry.durationMs)
                         )}
                       </Td>
-                      <Td align="right" title={typeof entry.status === 'number' ? `${entry.outcome} ${entry.status}` : entry.outcome}>
+                      <Td
+                        align="right"
+                        title={[typeof entry.status === 'number' ? `${entry.outcome} ${entry.status}` : entry.outcome, entry.reason ?? undefined]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      >
                         <span className="inline-flex items-center justify-end gap-1.5">
                           {refused ? (
                             <span className="text-[11px] text-destructive" title={t('DASHBOARD_REFUSED_ROW_HINT', { status: entry.status ?? DASH })}>
                               {t('DASHBOARD_REFUSED_SHORT', { status: entry.status ?? DASH })}
                             </span>
                           ) : null}
+                          {fault ? (
+                            <span
+                              className="text-[11px] text-destructive"
+                              data-testid="pool-activity-bad-output"
+                              title={t(fault === 'degenerate-output' ? 'DASHBOARD_DEGENERATE_ROW_HINT' : 'DASHBOARD_TRUNCATED_ROW_HINT')}
+                            >
+                              {t(fault === 'degenerate-output' ? 'DASHBOARD_DEGENERATE_SHORT' : 'DASHBOARD_TRUNCATED_SHORT')}
+                            </span>
+                          ) : null}
                           {/* Not on an exhausted row: its node cell already says how many were tried. */}
                           {failedOver.length > 0 && !exhausted ? (
-                            <span
-                              className="text-[11px] text-warning"
-                              title={t('DASHBOARD_ACTIVITY_FAILOVER_FROM', { nodes: failedOver.join(', ') })}
-                            >
+                            <span className="text-[11px] text-warning" title={t('DASHBOARD_ACTIVITY_FAILOVER_FROM', { nodes: failoverDetail })}>
                               {t('DASHBOARD_FAILOVER_SHORT', { total: failedOver.length })}
                             </span>
                           ) : null}

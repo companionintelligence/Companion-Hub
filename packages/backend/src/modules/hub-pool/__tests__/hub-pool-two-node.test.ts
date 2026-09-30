@@ -1600,7 +1600,8 @@ describe('Hub Pool across two nodes', () => {
       expect(inbound).toMatchObject({ id, direction: 'inbound', node: CORE_FQDN, outcome: 'served' });
       // Both sides describe the same body, so a budget read on one node means the same thing on the other.
       expect(inbound?.bodyBytes).toBe(outbound?.bodyBytes);
-      expect(inbound).toMatchObject({ stream: false, budgetMs: outbound?.budgetMs });
+      // `/api/chat` with no `stream` field streams, as Ollama's native routes do, on both sides.
+      expect(inbound).toMatchObject({ stream: true, budgetMs: outbound?.budgetMs });
     });
 
     it('tells two concurrent calls for the same model apart, which a time window could not', async () => {

@@ -38,13 +38,21 @@ import {
 import { quarantineStalePath } from './bind-mount-helpers';
 import { canonicalTimeZone, getHostTimeZone } from './timezone-helpers';
 
-const generateSeed = async () => {
+/**
+ * The seed every derived secret comes from: JWT_SECRET and the forward-auth secret when the
+ * environment does not set them, and each app's generated passwords (`EnvUtils.createRandomString`).
+ * Anyone who can read it can recompute all of them, so it is created at PRIVATE_STATE_FILE_MODE and
+ * an existing one is restricted on every boot. It used to be created with the default mode, 0644.
+ */
+const generateSeed = async (log: StateFileLog) => {
   const seedFilePath = path.join(DATA_DIR, 'state', 'seed');
   if (!fs.existsSync(seedFilePath)) {
     const randomBytes = crypto.randomBytes(32);
     const seed = randomBytes.toString('hex');
-    await fs.promises.writeFile(seedFilePath, seed);
+    await fs.promises.writeFile(seedFilePath, seed, { mode: PRIVATE_STATE_FILE_MODE });
+    return;
   }
+  await restrictStateFileMode(seedFilePath, log);
 };
 
 /**
@@ -238,27 +246,168 @@ function isFsErrorWithCode(error: unknown, code: string): boolean {
   return Boolean(error && typeof error === 'object' && 'code' in error && (error as NodeJS.ErrnoException).code === code);
 }
 
-const SETTINGS_JSON_MODE = 0o666;
+/**
+ * The mode of every file in state/ that holds a credential: owner read and write, nobody else anything.
+ *
+ * Three files qualify. settings.json carries the host-local key (`hubLocalKey`), the Portal device
+ * key (`ciHubApiKey`) and the move key. `seed` derives JWT_SECRET, the forward-auth secret and every
+ * app's generated passwords. `.env.resolved` holds the resolved JWT_SECRET and RabbitMQ password in
+ * plain text. The host-local key is what the claim route and the operator API accept as proof that
+ * the caller can read this box's disk (`AuthController.requireDeviceKeyPrincipal`), so a copy every
+ * local user can read is a way in, and one every local user can write lets them plant a key of
+ * their own.
+ *
+ * Owner-only rather than 0640 because every legitimate reader is the owner. The container drops to
+ * the uid that owns the install (docker-entrypoint.sh derives it from the config file's owner), and
+ * `cihub` and the desktop app read the file on the host as that same user, or as root under sudo
+ * (scripts/lib/paths.ts). Nothing reads it through the group. It is the mode /data/.env already has.
+ *
+ * The 0666 this replaces was meant to let a container running as someone other than the file's
+ * owner write it. It could not: the container's umask trimmed it to 0644 at creation, and chmod
+ * succeeds only for the owner, who needs none of the extra bits. Fixing ownership is the host's
+ * job, and the desktop app and `cihub` do it with a Docker chown (scripts/heal-hub-bind-mounts.ts).
+ * What the 0666 chmods here and on the host did do was leave the file world-writable: on core-2,
+ * settings.json was 0666 while everything else in state/ was 0644.
+ */
+export const PRIVATE_STATE_FILE_MODE = 0o600;
+
+/** The state directory itself. Group-writable, never world-writable; see `retrySettingsJsonPermissions`. */
+const STATE_DIR_MODE = 0o775;
+
+/** Where `restrictStateFileMode` reports. The Hub passes its logger; the default keeps it callable before Nest exists. */
+export interface StateFileLog {
+  info(message: string): void;
+  warn(message: string): void;
+}
+
+const consoleStateFileLog: StateFileLog = {
+  info: (message) => console.info(message),
+  warn: (message) => console.warn(message),
+};
+
+/**
+ * What this process has already warned it could not restrict: a file, or a whole directory whose
+ * mount ignores chmod. Without it the warning would repeat on every settings write; once per
+ * process is enough to act on.
+ */
+const unrestrictableStateFiles = new Set<string>();
+
+const octalMode = (mode: number) => `0${mode.toString(8).padStart(3, '0')}`;
+
+function fsErrorCode(error: unknown): string {
+  return error && typeof error === 'object' && 'code' in error ? String((error as NodeJS.ErrnoException).code) : String(error);
+}
+
+/**
+ * Takes group and other permissions off a credential-bearing state file, and never adds any.
+ *
+ * `writeFile`'s `mode` applies only when it creates the file, so one that already exists keeps
+ * whatever mode it had, through every write after. Every boot and every settings write calls this
+ * instead. It only clears bits, so an operator who made a file 0400 keeps 0400; the one place that
+ * adds bits back is the EACCES repair in `retrySettingsJsonPermissions`, and only the owner's read
+ * and write, which the Hub cannot run without.
+ *
+ * Never fatal. chmod works only for the owner, and a Hub that does not own the file (after a uid
+ * change the host has not repaired yet) or sits on a mount that ignores chmod still has to boot. It
+ * warns once, with the command that fixes it, and carries on.
+ */
+export async function restrictStateFileMode(filePath: string, log: StateFileLog = consoleStateFileLog): Promise<void> {
+  let current: number;
+  try {
+    current = (await fs.promises.stat(filePath)).mode & 0o777;
+  } catch (error) {
+    // Nothing to restrict yet; the writer creates it at PRIVATE_STATE_FILE_MODE.
+    if (isFsErrorWithCode(error, 'ENOENT')) return;
+    warnOnce(
+      filePath,
+      `Could not read the mode of ${filePath} (${fsErrorCode(error)}), so it was not checked for other users' access. It holds credentials.`,
+      log,
+    );
+    return;
+  }
+
+  const restricted = current & PRIVATE_STATE_FILE_MODE;
+  if (restricted === current) return;
+
+  try {
+    await fs.promises.chmod(filePath, restricted);
+    // Some bind mounts (a Windows data directory through Docker Desktop, for one) accept chmod
+    // and change nothing. Reporting that as done would be the same false comfort this function
+    // exists to remove, so check, and say it once for the directory rather than once per file:
+    // it is a fact about the mount, and there the host's own permissions are what protect it.
+    const after = (await fs.promises.stat(filePath)).mode & 0o777;
+    if (after !== restricted) {
+      const dir = path.dirname(filePath);
+      warnOnce(
+        `mount:${dir}`,
+        `${dir} is on a mount that ignores chmod: ${path.basename(filePath)} stays ${octalMode(after)} and cannot be made ${octalMode(PRIVATE_STATE_FILE_MODE)} from inside the container. ` +
+          'It holds credentials, so the host directory it lives in should be readable only by the user that runs the Hub.',
+        log,
+      );
+      return;
+    }
+  } catch (error) {
+    const code = fsErrorCode(error);
+    const hostPath = `"$ROOT_FOLDER_HOST/state/${path.basename(filePath)}"`;
+    // EPERM means someone else owns it, and a bare `sudo chmod 600` then leaves it readable only by
+    // that someone: the Hub would quarantine settings.json and boot unpaired, or crash-loop on seed.
+    // So the fix hands it to the Hub first.
+    const fix =
+      code === 'EPERM'
+        ? `this process does not own it (EPERM). It holds credentials and is ${octalMode(current)}. On the host, give it to the Hub's user first, then restrict it: sudo chown ${hubOwnerForHint()} ${hostPath} && sudo chmod 600 ${hostPath}`
+        : `chmod failed (${code}). It holds credentials and is ${octalMode(current)}. On the host: chmod 600 ${hostPath}`;
+    warnOnce(filePath, `Could not restrict ${filePath} to ${octalMode(PRIVATE_STATE_FILE_MODE)}: ${fix}.`, log);
+    return;
+  }
+
+  unrestrictableStateFiles.delete(filePath);
+  log.info(
+    `Restricted ${filePath} from ${octalMode(current)} to ${octalMode(restricted)}: it holds credentials, and other local users could read or write it.`,
+  );
+}
+
+/**
+ * This process's uid:gid, for a chown the operator runs on the host. Not when it is root: a root
+ * Hub that still gets EPERM is on a mount that maps root to someone else (Docker Desktop, rootless
+ * Docker, NFS root_squash), and chowning to 0:0 there is the wrong answer.
+ */
+function hubOwnerForHint(): string {
+  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+  const gid = typeof process.getgid === 'function' ? process.getgid() : undefined;
+  return uid !== undefined && gid !== undefined && uid !== 0 ? `${uid}:${gid}` : '<hub-uid>:<hub-gid>';
+}
+
+function warnOnce(key: string, message: string, log: StateFileLog): void {
+  if (unrestrictableStateFiles.has(key)) return;
+  unrestrictableStateFiles.add(key);
+  log.warn(message);
+}
 
 /** Repairs bind-mounted state permissions for the Hub process. */
 export async function ensureHubStateDirWritable(stateDir: string): Promise<void> {
-  await fs.promises.mkdir(stateDir, { recursive: true, mode: 0o775 });
+  await fs.promises.mkdir(stateDir, { recursive: true, mode: STATE_DIR_MODE });
   try {
-    await fs.promises.chmod(stateDir, 0o775);
+    await fs.promises.chmod(stateDir, STATE_DIR_MODE);
   } catch {
     // Some mounts reject chmod; later writes still provide the authoritative check.
   }
 }
 
 async function retrySettingsJsonPermissions(settingsFilePath: string, stateDir: string): Promise<void> {
+  // The directory gets the same mode as ensureHubStateDirWritable, not the 0777 it used to. chmod
+  // only succeeds for the owner, who already has rwx at 0775, so 0777 could only ever add write for
+  // every other user, and write on the directory lets them rename a settings.json of their own over
+  // this one, whatever mode the file has.
   try {
-    await fs.promises.chmod(stateDir, 0o777);
+    await fs.promises.chmod(stateDir, STATE_DIR_MODE);
   } catch {
     // A previous root-owned container can leave the host user without ownership.
   }
   if (fs.existsSync(settingsFilePath)) {
     try {
-      await fs.promises.chmod(settingsFilePath, SETTINGS_JSON_MODE);
+      // The Hub cannot run without owner read and write, so this repair may add those. It adds
+      // nothing for the group or anyone else.
+      await fs.promises.chmod(settingsFilePath, PRIVATE_STATE_FILE_MODE);
       return;
     } catch {
       try {
@@ -279,13 +428,25 @@ function settingsJsonPermissionError(settingsFilePath: string, cause: unknown): 
   );
 }
 
-/** Ensures settings.json exists and is readable and writable by the Hub process. */
-export async function ensureSettingsJsonReady(settingsFilePath: string): Promise<void> {
+/**
+ * Ensures settings.json exists, is readable and writable by the Hub process, and is readable by
+ * nobody else.
+ *
+ * Every boot and every settings write come through here, which is what lets an existing file that
+ * an older build or a host-side repair left at 0666 be restricted without a separate migration.
+ */
+export async function ensureSettingsJsonReady(settingsFilePath: string, log?: StateFileLog): Promise<void> {
+  await prepareSettingsJson(settingsFilePath);
+  // After the file is known to be usable, and before any caller writes a key into it.
+  await restrictStateFileMode(settingsFilePath, log);
+}
+
+async function prepareSettingsJson(settingsFilePath: string): Promise<void> {
   const stateDir = path.dirname(settingsFilePath);
   await ensureHubStateDirWritable(stateDir);
 
   const createEmpty = async () => {
-    await fs.promises.writeFile(settingsFilePath, '{}', { encoding: 'utf8', mode: SETTINGS_JSON_MODE });
+    await fs.promises.writeFile(settingsFilePath, '{}', { encoding: 'utf8', mode: PRIVATE_STATE_FILE_MODE });
   };
 
   if (!fs.existsSync(settingsFilePath)) {
@@ -319,26 +480,32 @@ export async function ensureSettingsJsonReady(settingsFilePath: string): Promise
 }
 
 /** Writes settings.json with permission recovery for stale root-owned bind mounts. */
-export async function writeSettingsJsonFile(settingsFilePath: string, content: string): Promise<void> {
-  await ensureSettingsJsonReady(settingsFilePath);
+export async function writeSettingsJsonFile(settingsFilePath: string, content: string, log?: StateFileLog): Promise<void> {
+  await ensureSettingsJsonReady(settingsFilePath, log);
 
   try {
-    await fs.promises.writeFile(settingsFilePath, content, { encoding: 'utf8', mode: SETTINGS_JSON_MODE });
+    await fs.promises.writeFile(settingsFilePath, content, { encoding: 'utf8', mode: PRIVATE_STATE_FILE_MODE });
   } catch (error) {
     if (!isFsErrorWithCode(error, 'EACCES')) {
       throw error;
     }
     await retrySettingsJsonPermissions(settingsFilePath, path.dirname(settingsFilePath));
     try {
-      await fs.promises.writeFile(settingsFilePath, content, { encoding: 'utf8', mode: SETTINGS_JSON_MODE });
+      await fs.promises.writeFile(settingsFilePath, content, { encoding: 'utf8', mode: PRIVATE_STATE_FILE_MODE });
     } catch (retryError) {
       throw settingsJsonPermissionError(settingsFilePath, retryError);
     }
   }
 }
 
-/** Persists resolved environment when the mount permits writes. Returns false otherwise. */
-export async function writeResolvedEnvFile(targetPath: string, content: string): Promise<boolean> {
+/**
+ * Persists resolved environment when the mount permits writes. Returns false otherwise.
+ *
+ * The file is JWT_SECRET, the forward-auth secret and the RabbitMQ password in plain text, so it
+ * gets PRIVATE_STATE_FILE_MODE like settings.json. It was 0664, which the container's umask made
+ * 0644: readable by every local user, beside a /data/.env that is 0600 for the same values.
+ */
+export async function writeResolvedEnvFile(targetPath: string, content: string, log?: StateFileLog): Promise<boolean> {
   const stateDir = path.dirname(targetPath);
   await ensureHubStateDirWritable(stateDir);
 
@@ -347,9 +514,13 @@ export async function writeResolvedEnvFile(targetPath: string, content: string):
   } catch {
     // File may not exist yet.
   }
+  // The unlink is what lets the write below create the file at its mode. When it failed, the old
+  // file is still here with its old mode, which writeFile would keep, so restrict it before the
+  // secrets go in. After a successful unlink this finds nothing and returns.
+  await restrictStateFileMode(targetPath, log);
 
   const attemptWrite = async () => {
-    await fs.promises.writeFile(targetPath, content, { mode: 0o664 });
+    await fs.promises.writeFile(targetPath, content, { mode: PRIVATE_STATE_FILE_MODE });
   };
 
   try {
@@ -360,7 +531,8 @@ export async function writeResolvedEnvFile(targetPath: string, content: string):
       throw error;
     }
     try {
-      await fs.promises.chmod(targetPath, 0o664);
+      // Owner read and write back, as in retrySettingsJsonPermissions; nothing for anyone else.
+      await fs.promises.chmod(targetPath, PRIVATE_STATE_FILE_MODE);
     } catch {
       // Some mounts do not support chmod.
     }
@@ -413,7 +585,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   const { NODE_ENV } = process.env;
   envMap.set('NODE_ENV', NODE_ENV || 'production');
 
-  await ensureSettingsJsonReady(settingsFilePath);
+  await ensureSettingsJsonReady(settingsFilePath, logger);
 
   const settingsFile = await fs.promises.readFile(settingsFilePath, 'utf-8');
 
@@ -433,7 +605,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
 
   const settingsData = settings.settings;
 
-  await generateSeed();
+  await generateSeed(logger);
 
   const jwtSecret = resolve('JWT_SECRET', { envMap, fallback: '' }) || envUtils.deriveEntropy('jwt_secret');
   // Derive forward-auth independently so consumer access cannot expose the Hub JWT secret.
@@ -614,7 +786,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
 
   applyEnvMapToProcess(envMap);
 
-  const wroteResolved = await writeResolvedEnvFile(resolvedEnvFilePath, newEnvContent);
+  const wroteResolved = await writeResolvedEnvFile(resolvedEnvFilePath, newEnvContent, logger);
   if (wroteResolved) {
     logger.debug('Resolved environment written to state/.env.resolved');
     // Preserve runtime and .env.local values while exposing the snapshot to other processes.

@@ -370,6 +370,57 @@ describe('hub-pool-cli formatters', () => {
     );
   });
 
+  /**
+   * core-2, 2026-09-29: its engine answered gemma4 turns 200 with `<unused49>` tokens and streams with
+   * no closing frame, and every row read `served`. Those rows are `failed` now, with basis `node` —
+   * and the line under them must blame the node, where a refusal's line blames the request.
+   */
+  it('says a node answered with bad output, why each failed-over node was passed, and the whole response time', () => {
+    const row = (over: Partial<PoolRoutingLogResponse['entries'][number]>): PoolRoutingLogResponse['entries'][number] => ({
+      at: '2026-09-29T10:00:01.000Z',
+      direction: 'outbound',
+      path: '/api/chat',
+      model: 'gemma4:e4b',
+      node: 'local',
+      peerId: null,
+      backend: 'ollama',
+      candidates: 3,
+      attempt: 1,
+      failedOverFrom: [],
+      outcome: 'failed',
+      status: 200,
+      durationMs: 812,
+      ...over,
+    });
+    const text = formatPoolRoutingLogLines({
+      entries: [
+        row({ requestError: { signature: 'degenerate-output', basis: 'node', confirms: null }, reason: 'degenerate-output', totalMs: 41_207 }),
+        row({
+          node: 'core-17.tailxyz.ts.net',
+          attempt: 3,
+          outcome: 'served',
+          failedOverFrom: ['local', 'beta-1.tailxyz.ts.net'],
+          attempts: [
+            { node: 'local', backend: 'ollama', status: 200, reason: 'truncated-upstream' },
+            { node: 'beta-1.tailxyz.ts.net', backend: 'ollama', status: 500, reason: 'HTTP 500' },
+          ],
+        }),
+        row({ direction: 'inbound', node: 'core-2.tailxyz.ts.net', reason: 'truncated-upstream' }),
+        row({ node: null, status: null, attempt: 3, reason: 'fetch failed (ECONNREFUSED)' }),
+      ],
+      summary: { recorded: 4, capacity: 200, served: 1, failed: 3, requestErrors: 0, outputFaults: 2, failovers: 1, lastAt: null },
+    }).join('\n');
+
+    expect(text).toContain('3 failed (2 bad answers from their nodes) ·');
+    expect(text).toContain("↳ local answered with only <unusedN> placeholder tokens — the node's fault, not the request's");
+    expect(text).not.toContain('refused the request itself');
+    expect(text).toContain('↳ failed over from local (truncated-upstream), beta-1.tailxyz.ts.net (HTTP 500)');
+    expect(text).toContain("↳ the node answered with a response cut off before the dialect's final frame");
+    expect(text).toContain('↳ fetch failed (ECONNREFUSED)');
+    expect(text).toContain('41207');
+    expect(text).toContain('TOTAL');
+  });
+
   it('leaves the counts line alone on a Hub that reports no hang-ups, and on one too old to report them', () => {
     const entries: PoolRoutingLogResponse['entries'] = [];
     const base = { recorded: 3, capacity: 200, served: 3, failed: 0, failovers: 0, lastAt: null };
@@ -1565,8 +1616,87 @@ describe('hub-pool-cli throughput', () => {
     const fast = { ...slowFzzy, tokensPerSec: 496, predictedMs: 93_000, deadline: false, slow: false };
     const text = logOf([
       routingEntry({ throughput: { estimatedTokens: 46_031, budgetMs: 921_000, estimates: [fast], overridden: false } }),
+      routingEntry({ throughput: { estimatedTokens: 46_031, budgetMs: 921_000, estimates: [fast], unmeasured: [], overridden: false } }),
       routingEntry({ throughput: null }),
       routingEntry(),
+    ]);
+
+    expect(text).not.toContain('token prompt');
+  });
+
+  it('names the unmeasured nodes a large prompt went past, on their own line, and which advertised no GPU', () => {
+    const CORE_7 = 'core-7.tailxyz.ts.net';
+    const NO_GPU = 'beta-ms-a2.tailxyz.ts.net';
+    const fast = { ...slowFzzy, node: PEER_A, tokensPerSec: 230, fromPromptTokens: 7_000, predictedMs: 33_700, deadline: false, slow: false };
+    const text = logOf([
+      routingEntry({
+        throughput: {
+          estimatedTokens: 7_731,
+          budgetMs: 300_000,
+          estimates: [fast],
+          unmeasured: [
+            { node: CORE_7, backend: 'ollama', prior: 'unknown' },
+            { node: NO_GPU, backend: 'ollama', prior: 'cpu-only' },
+          ],
+          overridden: false,
+        },
+      }),
+    ]);
+
+    expect(text).toContain(
+      `~7731-token prompt put ${CORE_7} (unmeasured), ${NO_GPU} (unmeasured, no GPU advertised) behind nodes measured to answer within 300 s`,
+    );
+    expect(text).not.toContain('moved');
+  });
+
+  it('names the node a much faster one went ahead of, with both predictions, on their own line', () => {
+    const CORE_7 = 'core-7.tailxyz.ts.net';
+    const BETA_MAX = 'beta-max.tailxyz.ts.net';
+    const measured = (node: string, predictedMs: number) => ({
+      ...slowFzzy,
+      node,
+      tokensPerSec: Math.floor((35_809 / predictedMs) * 1000),
+      fromPromptTokens: 35_809,
+      predictedMs,
+      deadline: false,
+      slow: false,
+    });
+    // The OpenClaw turn of the 2026-09-30 re-bank.
+    const text = logOf([
+      routingEntry({
+        throughput: {
+          estimatedTokens: 35_809,
+          budgetMs: 717_000,
+          estimates: [measured(BETA_MAX, 34_651), measured(CORE_7, 162_910)],
+          unmeasured: [],
+          slowerDemoted: [
+            {
+              node: CORE_7,
+              backend: 'ollama',
+              predictedMs: 162_910,
+              inFlight: 0,
+              fasterNode: BETA_MAX,
+              fasterBackend: 'ollama',
+              fasterMs: 34_651,
+              fasterInFlight: 0,
+            },
+          ],
+          overridden: false,
+        },
+      }),
+    ]);
+
+    expect(text).toContain(`~35809-token prompt moved ${CORE_7} (~163 s) behind ${BETA_MAX} (~35 s): predicted much faster`);
+    expect(text).not.toContain('behind nodes');
+  });
+
+  it('adds no such line to a row nothing much faster moved, or from a Hub predating it', () => {
+    const fast = { ...slowFzzy, tokensPerSec: 496, predictedMs: 93_000, deadline: false, slow: false };
+    const text = logOf([
+      routingEntry({
+        throughput: { estimatedTokens: 46_031, budgetMs: 921_000, estimates: [fast], unmeasured: [], slowerDemoted: [], overridden: false },
+      }),
+      routingEntry({ throughput: { estimatedTokens: 46_031, budgetMs: 921_000, estimates: [fast], unmeasured: [], overridden: false } }),
     ]);
 
     expect(text).not.toContain('token prompt');

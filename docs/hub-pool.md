@@ -22,6 +22,12 @@ This complements, and does not replace, the existing single-node model recommend
   - Everything else still fails over: a 500 whose body matches nothing, a 502, 503 or 504, a 408 or 429, a timeout, a refused connection, and the Hub's own 500 from a peer. An error body that is not JSON in one of the engines' shapes, is over 64 KB, or takes more than 5 s to arrive is treated as no verdict.
   - The app gets the engine's body and headers, with **status 400** and `X-Hub-Pool-Upstream-Status: 500`. The OpenAI SDKs retry any 5xx twice on their own, and OpenClaw reported the 2026-09-26 turns as "provider internal error … usually temporary — try again shortly"; a 400 is what the proxy already treats as the request's fault. The exception is a template that would not render, which keeps the engine's 500: it can be the node's own copy of the model, which no change to the request fixes.
   - The routing log records these as `failed` with the engine's status, the node that answered, and `requestError` — see [Operator status and routing log](#operator-status-and-routing-log). `cihub pool status` and `cihub pool log` break them out of the failure count beside hang-ups, for example `3 failed (1 abandoned by the caller, 2 refused as bad requests)`, from the summary's `requestErrors`. None counts against the model's [serving record](#when-a-node-lists-a-model-it-cannot-actually-serve), except a template that would not render, which can be the node's own copy of the model.
+- **A 200 that is not an answer**: an engine can answer 200 with output nobody can use. On 2026-09-29 core-2's local Ollama answered `gemma4:e4b` turns with nothing but `<unused49>` tokens, its streams ended without Ollama's closing `{"done":true}` frame, and its non-streamed bodies came back `done: false`. 167 of 237 local gemma4 rows were one or the other, the summary read `served=895 failed=0 failovers=0`, and `poolLocalAffinity` sent every retry from Hermes, OpenClaw and Memory back to the same engine. The proxy now checks every completion it relays on `/api/chat`, `/api/generate`, `/v1/chat/completions` and `/v1/completions` (`hub-pool-output-check.ts`):
+  - **Cut off** (`truncated-upstream`): the response lacks its dialect's final frame — `done: true` on Ollama's last line or non-streamed body, `data: [DONE]` or a set `finish_reason` on an OpenAI-compatible stream, `choices[0].finish_reason` on a non-streamed body — or an OpenAI-compatible stream carried an error frame (`data: {"error": …}`), which vLLM follows with `[DONE]` all the same, or the engine's connection dropped part-way through the body. A body not recognisably in the dialect is not judged. Token usage is not a signal: correct peer streams carry none.
+  - **Degenerate** (`degenerate-output`): the first 256 characters of generated text, answer and reasoning together, are nothing but `<unusedN>` placeholders — reserved vocabulary a healthy model never emits.
+  - A **non-streamed** completion is read whole before anything is sent (it arrives with its headers anyway), so a faulty one **fails over** to the next candidate like a 5xx; on the last candidate it is relayed as the engine gave it. A **stream** is judged on the way past, reading only its first slice and last line, and cannot be recalled once sent: it is recorded, not failed over. A body without `stream` counts as Ollama counts it: `/api/chat` and `/api/generate` stream unless the body says `stream: false` (the OpenAI-compatible routes only when it says `stream: true`), and an answer labelled `application/x-ndjson` or `text/event-stream` is relayed as a stream whatever the request asked for. Holding one of those would send the app nothing until the generation ended.
+  - Either way the row settles `failed` on that node with `requestError: { signature, basis: "node" }` — the node's fault, not the request's, so nothing tells the app to fix it — and counts in the summary's `outputFaults`, not `requestErrors`.
+  - **Two faults within five minutes** withhold that engine for that model on that node — local or peer — for 60 s, doubling to 15 minutes while it keeps failing its re-probe; one clean, complete answer ends it. A withheld engine is moved behind every other candidate, after the pin and the local head start, so retries go elsewhere; it is still asked if every other candidate fails. One warn line names the engine and the fault when it is withheld. The leaf serving a peer's forward judges the same bytes and strikes its own engine too, so its own apps stop using it. An answer the row records as the node failing is also no [throughput](#throughput-aware-placement) sample: an engine that emits placeholders quickly would otherwise read as a fast one once its withhold ran out. This is the pool's own record, separate from the [serving record](#when-a-node-lists-a-model-it-cannot-actually-serve): a model answering placeholders is loaded, resident and answering 200, all of which clear that one.
 - **Client hang-ups**: if the app closes its connection before the response finishes, the proxy aborts the upstream request, so the engine stops instead of prefilling a turn nobody will read (a 47k-token agent turn is about 300 s of prefill on a GPU node). This holds on both ends of a pool hop: the peer that served the work sees the sending Hub's aborted forward close and aborts its own engine request. A hang-up before response headers is never failed over — the turn is not placed on another candidate — and the routing log records it as `failed` with no status, **`clientClosed: true`, and the node it was waiting on**.
 
   That last part is not cosmetic. Until it was fixed the row was settled with no node at all, which made it identical to the row a request that every candidate rejected produces. On beta-max (2026-09-21) four rows reading
@@ -44,6 +50,7 @@ This complements, and does not replace, the existing single-node model recommend
 - **`HUB_POOL_MAX_PROMPT_TOKENS=<tokens>`**: this node's [prompt ceiling](#prompt-ceilings), overriding the persisted `poolMaxPromptTokens`. A value outside 1024–1048576, or not a whole number, is ignored rather than guessed at. `GET /inference/pool/status` reports `localNode.maxPromptTokensSetBy: "env"` while it is in force. Not projected into `.env` by `generateSystemEnvFile`.
 - **`HUB_POOL_THROUGHPUT_PLACEMENT=off`** (or `0`, `false`): stop [measured throughput](#throughput-aware-placement) from reordering candidates. This node keeps measuring, reporting and advertising, so turning it back on needs no warm-up. Read per request.
 - **`HUB_POOL_CONTENTION_PLACEMENT=off`** (or `0`, `false`): stop [local engine contention](#local-engine-contention) from moving this node's engine behind peers. Read per request.
+- **`HUB_POOL_SLOWER_PLACEMENT_RATIO=<n>`** / **`HUB_POOL_SLOWER_PLACEMENT_FLOOR_MS=<ms>`**: how much slower the node about to go first must be predicted to be before a [much faster one](#much-slower-than-a-node-as-free) goes ahead of it. Defaults 3 and 20000. A ratio below 1, a negative floor, or anything that is not a number reads as the default; a very large ratio (1000) turns the rule off on its own, and `HUB_POOL_THROUGHPUT_PLACEMENT=off` turns it off with the rest. Read per request.
 
 ## Operator settings
 
@@ -408,10 +415,32 @@ the two, so a peer cannot advertise its way out of a deadline this node watched 
 predicted to take longer than the request's budget moves behind every candidate that is not. The
 rules are a ceiling's:
 
-- **Unmeasured is neither fast nor slow.** It keeps its place, and a measured-fast node is never
-  promoted past it.
-- **Demoted, never removed.** A slow node stays at the end of the failover order and still serves the
-  request when every faster node fails.
+- **Unmeasured is not known to be fast.** For a prompt under 6144 estimated tokens, a peer with no
+  applicable evidence keeps its place, which is how it gets measured. For a larger prompt, if a
+  candidate in its group with the same ranker score is measured to meet the budget, the unmeasured
+  peer moves behind it. A peer that advertises `hardwareTier` `cpu-only` or `insufficient` also moves
+  behind the other unmeasured peers with that score. An unmeasured peer still ranks ahead of a node
+  measured too slow, and when no candidate is measured to meet the budget nothing moves. On the
+  fleet, 2026-09-29, a 7,731-token turn went to core-7, which nothing had timed, and waited 169.8 s
+  for a first byte while measured GPU peers, as idle as core-7, were predicted at ~32–36 s. A GPU
+  tier is not read as fast: core-7 advertised `high` in the fleet capture of 2026-09-27, but its
+  Ollama reads prompts on CPU.
+- **Never behind a busier node.** Queue depth stays the ranker's first key: an unmeasured peer moves
+  behind a measured one only when the ranker scored the two the same, and it stays ahead of every
+  busier node. On this fleet's `-np 1` engines each queued request is a whole turn, ~300 s for a
+  large one, which is as long as the CPU read this guards against. So a measured node with a queue
+  does not hold back idle unmeasured peers, and a burst of large turns spreads over the pool by queue
+  depth. Nor does this node's own engine hold peers back while it is generating another model, or
+  this model at another window: [contention](#local-engine-contention) is about to move it behind
+  them, unless [prefix affinity](#prefix-affinity) holds it. A measurement is a rate, not a health
+  check: an engine answering in garbage reaches its first byte as fast as a sound one and counts as
+  measured, so this rule is also what limits such an engine to the ranker's ties.
+- **Some candidates keep their place unmeasured.** This node's own engine does, because its evidence
+  is forgotten on every restart while the engine's prefix cache is not. So do the engine
+  [prefix affinity](#prefix-affinity) holds, where the session's prefix is warm, and a
+  [pinned](#manual-routing-pins) peer, because a pin is a statement and unmeasured is only a prior.
+- **Demoted or deferred, never removed.** A slow or unmeasured node stays in the failover order and
+  still serves the request when every node ahead of it fails.
 - **All slow means nothing moves.** When every candidate is predicted to miss, the ranker's order
   stands.
 - **Ceilings stay outside.** A ceiling is an operator's statement and a measurement is an inference,
@@ -424,11 +453,63 @@ this node timed, and the peer's report after the validation and ageing routing a
 lists its prefill bands (`fromTokens`, `promptTokens`, `tokensPerSec`, `deadline`, `ageMs`) and its
 `decode` rate. Each routing-log entry carries `throughput`: `null` when no candidate had applicable
 evidence, otherwise `{ estimatedTokens, budgetMs, estimates: [{ node, backend, tokensPerSec,
-fromPromptTokens, extrapolated, predictedMs, source, deadline, slow }], overridden }`. `tokensPerSec`
-is the rate as measured, at `fromPromptTokens`, so it can be compared with an engine's own log;
-`predictedMs` includes the growth factor when `extrapolated` is true. `overridden` is `true` when the request was
-placed on a `slow` node anyway. `cihub pool status` lists measured speed per node, and `cihub pool log`
-marks the requests a measurement moved.
+fromPromptTokens, extrapolated, predictedMs, source, deadline, slow }], unmeasured: [{ node, backend,
+prior }], slowerDemoted: [{ node, backend, predictedMs, inFlight, fasterNode, fasterBackend, fasterMs,
+fasterInFlight }], overridden }`. `tokensPerSec` is the rate as measured, at `fromPromptTokens`, so it
+can be compared with an engine's own log; `predictedMs` includes the growth factor when
+`extrapolated` is true. `unmeasured` lists the peers that moved behind a node measured to meet the
+budget and scored the same, with the `prior` each was judged on (`unknown` or `cpu-only`). It is
+empty when none moved, including every prompt small enough to explore with. `slowerDemoted` lists
+each node that was about to go first and went behind a [much faster one](#much-slower-than-a-node-as-free),
+in the order the moves were made, naming the first node that went ahead of it; it is empty when none
+moved. `overridden` is `true` when the request was placed on a `slow` node anyway.
+`cihub pool status` lists measured speed per node, and `cihub pool log` marks the requests that a
+measurement, or the lack of one, moved.
+
+### Much slower than a node as free
+
+Meeting the budget is a low bar. The budget is sized from a 50 tok/s floor so that a GPU node reading
+a large prompt is never mistaken for a dead one, and a CPU node can clear it too. On the fleet re-bank
+of 2026-09-30 (core-2 entering, 15 leaves), a 35,809-token OpenClaw turn went to core-7, which reads
+on CPU, at a predicted 162,910 ms. beta-1 was predicted at 22,080 ms, beta-max at 34,651 ms and
+beta-red at 38,973 ms, and all four were idle. A 14.5k-token Hermes turn, with this node's engine moved
+aside for [contention](#local-engine-contention), also went to core-7: predicted at 54,854 ms, it took
+57 s to its first byte, where beta-1 was predicted at 8,959 ms.
+
+So after every other step, including contention and the pin, the entry node looks at the node each
+group would try first. If another node in that group is predicted to answer at least **3 times** as
+fast and at least **20 s** sooner (`HUB_POOL_SLOWER_PLACEMENT_RATIO`,
+`HUB_POOL_SLOWER_PLACEMENT_FLOOR_MS`), and has **at most one request more** in flight, it goes ahead.
+Every node that qualifies goes ahead, in the ranker's order, and the new first node is then judged the
+same way. For the OpenClaw turn that is beta-max, beta-red, beta-1, then core-7: beta-max at ~35 s is
+not three times beta-1's ~22 s, so the ranker's order among the GPU nodes stands. GPU nodes on this
+fleet measured 157–496 tok/s and CPU-served ones 27–45, so a CPU read is 3.5–18 times a GPU one, while
+two GPU nodes are three times apart only at the ends of their range. The floor keeps a turn where the
+ranker put it when the gap is seconds: a prediction is of a cold read, and a turn that shares its
+prefix with the last one answers in seconds on the node that read it. The one-request margin lets the
+rule act when the ranker put the CPU node first because the faster node had a single request in
+flight. That is a bet that the request is part done, since on `-np 1` engines it can be a whole turn.
+
+The limits:
+
+- **Measured on both sides.** Both nodes need a prediction, measured here or advertised, and the
+  faster one's must not be a missed deadline, which is only a lower bound. A group led by a node
+  nothing has measured is left alone, and an unmeasured node is never moved ahead: how those give
+  way is the deferral above.
+- **Large prompts only.** Below 6144 estimated tokens nothing moves, so the smaller prompts keep
+  reaching a node measured slow. That is how a node whose engine has moved onto its GPU gets measured
+  fast again.
+- **Never past a statement or a held prefix.** A [pinned](#manual-routing-pins) node, and the engine
+  [prefix affinity](#prefix-affinity) holds, keep the front. A local engine that contention moved
+  behind the peers is never brought back ahead of them.
+- **Within a group.** A node over its cap or ceiling, one whose slots are full, and one predicted to
+  miss the budget are in other groups and are never brought forward. When every node is predicted to
+  miss, nothing moves.
+- **Never toward a withheld engine.** An engine withheld for answering with bad output (see **A 200
+  that is not an answer** under [How it fits together](#how-it-fits-together)) goes behind every other
+  candidate after this step. So the node judged first is the first one not withheld, and a withheld
+  engine is never brought forward, however fast it reads a prompt: a degenerate engine reaches its
+  first byte as fast as a sound one. A model a node has been unable to serve is not a candidate at all.
 
 ## Local engine contention
 
@@ -705,7 +786,7 @@ Per-peer disable keeps the pairing, both directional tokens and the health poll 
   | `X-Hub-Pool-Upstream-Status` | The status the engine answered with, when this Hub relayed it under another: `500` on the 400 an engine's refusal of the request goes out as (see **A request no node can serve** under [How it fits together](#how-it-fits-together)). Absent otherwise |
 
   A request that failed over names the node that *answered*, not the one tried first. On a 502 only `X-Hub-Pool-Request-Id` (and `X-Hub-Pool-Affinity`, when affinity applied) is set: a failed call is the one most worth looking up, and there is no serving node to name. `local` is deliberately not this node's own MagicDNS name: the proxy admits any caller inside the appliance without a credential, and `/identify` stopped disclosing the name to unauthenticated callers for the same reason — see [What `/identify` no longer says](#what-identify-no-longer-says-and-where-the-name-went-instead). Nothing else about the peer appears: never its node UUID, and never a container name. Any `x-hub-pool-*` header the upstream engine or peer returns is dropped, so the attribution is always this Hub's own statement. To check by hand: `curl -i` and read the headers, or `curl -sD - -o /dev/null` for headers only.
-- **`GET /api/inference/pool/routing-log?limit=&since=`** (session auth, or see below) returns recent routing decisions, newest first: `id`, timestamp, `updatedAt`, direction, path, model, the node that served it, how many candidates were ranked, which attempt won, the chain of nodes that were tried and rejected before it, outcome, upstream status and time to response headers, and `pin` — the shape of the operator pin that ordered the candidates, or `null` (always `null` inbound: a peer's forward is never re-routed) — `promptCeiling`, what [prompt ceilings](#prompt-ceilings) did to the decision, or `null` (inbound too, and for the same reason), `throughput`, what [measured throughput](#throughput-aware-placement) did to it, or `null`, `contention`, what [local engine contention](#local-engine-contention) did to it, or `null`, and `affinity`, what [prefix affinity](#prefix-affinity) did to it, or `null` when it is off or the route is not one it judges. `clientClosed` says the row ended because the caller hung up rather than because routing failed — see the **Client hang-ups** bullet under [How it fits together](#how-it-fits-together), and note that the row still names the node it was waiting on. `requestError` says the row stopped at a node whose error proved the request itself was bad, so the app got that node's answer instead of the next node getting the request: `signature` labels the engine's message (`no-user-query`, `missing-messages`, `invalid-message`, `context-length` or `chat-template` — never the message, which can quote the prompt), or is `client-error` for a 4xx passed through on its status, whose body is never read. `basis` is `definitive`, `confirmed`, `last-candidate` (a verdict returned unconfirmed because no candidate was left to ask) or `status` (the 4xx), and `confirms` names the earlier node a `confirmed` answer agreed with. It is `null` on every other row, and always `null` inbound, where `node` is the peer that sent the work; see the **A request no node can serve** bullet under [How it fits together](#how-it-fits-together). `outcome` is `served` only for an answer below 400: a 4xx, and an engine's verdict on the request, settle `failed` on the node that answered, in both directions. Until 2026-09-29 a 4xx settled `served`, and the Resource Monitor timed each engine refusal (`gemma3:1b does not support tools`, ~5 ms) as a first byte — one moved a node's p50 from 90 s to 18 ms — and left it out of "Failed 30m". The dashboard now counts these as failed, names them as refused, and reads a 4xx status as a refusal even on a row that says `served`. `stream`, `bodyBytes` and `budgetMs` describe the request: whether it streamed, the UTF-8 size of the body as forwarded, and the header deadline it was given, from the same function the forward's timer uses — a row that failed at exactly `budgetMs` failed on the deadline. A request that failed over is **one** entry carrying `failedOverFrom`, not one per attempt. Inbound entries record work a *peer* forwarded to this node's engines, attributed to the peer the guard authenticated, under the `id` the sender minted. It is bounded, in-memory and process-local — no database table, and nothing survives a restart — and it records metadata only: never a prompt, a request body, or a response.
+- **`GET /api/inference/pool/routing-log?limit=&since=`** (session auth, or see below) returns recent routing decisions, newest first: `id`, timestamp, `updatedAt`, direction, path, model, the node that served it, how many candidates were ranked, which attempt won, the chain of nodes that were tried and rejected before it, outcome, upstream status and time to response headers, and `pin` — the shape of the operator pin that ordered the candidates, or `null` (always `null` inbound: a peer's forward is never re-routed) — `promptCeiling`, what [prompt ceilings](#prompt-ceilings) did to the decision, or `null` (inbound too, and for the same reason), `throughput`, what [measured throughput](#throughput-aware-placement) did to it, or `null`, `contention`, what [local engine contention](#local-engine-contention) did to it, or `null`, and `affinity`, what [prefix affinity](#prefix-affinity) did to it, or `null` when it is off or the route is not one it judges. `clientClosed` says the row ended because the caller hung up rather than because routing failed — see the **Client hang-ups** bullet under [How it fits together](#how-it-fits-together), and note that the row still names the node it was waiting on. `requestError` says the row stopped at a node whose error proved the request itself was bad, so the app got that node's answer instead of the next node getting the request: `signature` labels the engine's message (`no-user-query`, `missing-messages`, `invalid-message`, `context-length` or `chat-template` — never the message, which can quote the prompt), or is `client-error` for a 4xx passed through on its status, whose body is never read. `basis` is `definitive`, `confirmed`, `last-candidate` (a verdict returned unconfirmed because no candidate was left to ask) or `status` (the 4xx), and `confirms` names the earlier node a `confirmed` answer agreed with. It is `null` on every other row, and always `null` inbound, where `node` is the peer that sent the work; see the **A request no node can serve** bullet under [How it fits together](#how-it-fits-together). `outcome` is `served` only for an answer below 400: a 4xx, and an engine's verdict on the request, settle `failed` on the node that answered, in both directions. Until 2026-09-29 a 4xx settled `served`, and the Resource Monitor timed each engine refusal (`gemma3:1b does not support tools`, ~5 ms) as a first byte — one moved a node's p50 from 90 s to 18 ms — and left it out of "Failed 30m". The dashboard now counts these as failed, names them as refused, and reads a 4xx status as a refusal even on a row that says `served`. `stream`, `bodyBytes` and `budgetMs` describe the request: whether it streamed (on `/api/chat` and `/api/generate`, a body without `stream` does, as Ollama's native routes do), the UTF-8 size of the body as forwarded, and the header deadline it was given, from the same function the forward's timer uses — a row that failed at exactly `budgetMs` failed on the deadline. `durationMs` stops at the first response headers, which is what the dashboard's first-byte figures read; `totalMs` runs to the end of the response body relayed to the caller, however it ended. A request that failed over is **one** entry carrying `failedOverFrom`, not one per attempt, and `attempts` says why each of those nodes was passed over, in the same order: `{ node, backend, status, reason }`, where `reason` is a status (`HTTP 503`, `HTTP 500 (no-user-query)`), a deadline (`No response headers within 327000ms`), a transport error and its code (`fetch failed (ECONNREFUSED)`) or an output fault — never an engine's message. Each failover also writes one log line naming the node, the status and the reason. A `requestError` with `basis: "node"` is the opposite of a refusal: the node answered 200 with output that was cut off or degenerate (see **A 200 that is not an answer** under [How it fits together](#how-it-fits-together)), and the summary counts those in `outputFaults`. `reason` says, in the same few words, why a failed row failed — for a walk that ran out, the last candidate's. Inbound entries record work a *peer* forwarded to this node's engines, attributed to the peer the guard authenticated, under the `id` the sender minted, naming the model the sender put in `X-Hub-Pool-Model` (or the forwarded body's `model`), with a `reason` when the engine answered 5xx or its output was faulty, and `clientClosed: true` when the sender gave up on the forward before this node's engine answered — the sender's walk moving on is not this node failing. It is bounded, in-memory and process-local — no database table, and nothing survives a restart — and it records metadata only: never a prompt, a request body, or a response.
 
   - **Joining both nodes' rows for one call.** Take `X-Hub-Pool-Request-Id` from the response, or the `id` of the entry Hub's outbound row, and find the row with the same `id` in the serving peer's routing log. Two concurrent calls for the same model get different ids, which a time window cannot separate.
   - **Polling without losing rows.** Pass the previous response's `nextSince` as `since`. You get the rows placed **or changed** at or after it — including a row you last saw `pending` that has since settled — and the row carrying `nextSince` comes back once more, because `since` is inclusive: keep the newest copy of each `id`. `matched` greater than the number of `entries` means `limit` cut the page; a cut cursor page keeps the *oldest* changes, so following `nextSince` reaches the rest without losing any. A full page whose `nextSince` equals the `since` you sent means more than `limit` rows changed in one millisecond: ask again with a larger `limit`. Without `since` you get the newest placements and a `nextSince` to tail from. `since` must be ISO 8601 with a zone (`Z` or an offset); send an offset's `+` as `%2B`, because a query string reads a bare `+` as a space.

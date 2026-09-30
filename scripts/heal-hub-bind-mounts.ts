@@ -9,6 +9,7 @@ import { execSync, spawnSync } from 'node:child_process';
 import {
   appendFileSync,
   chmodSync,
+  chownSync,
   closeSync,
   existsSync,
   mkdirSync,
@@ -200,6 +201,19 @@ export const STATE_FILES_NEED_WRITE = [
   ['state', 'seed'],
 ] as const;
 
+/**
+ * The mode for the state files that hold credentials, which are exactly STATE_FILES_NEED_WRITE:
+ * settings.json carries the host-local and Portal device keys, and `seed` derives JWT_SECRET and
+ * every app's generated passwords. Owner read and write only, the mode the backend creates and
+ * keeps them at (PRIVATE_STATE_FILE_MODE in packages/backend/src/common/helpers/env-helpers.ts).
+ *
+ * This used to chmod both to 0666 on every start so a container running as someone else could
+ * write them, which also let every local user read the device key or plant one of their own. The
+ * container runs as the uid that owns the install (docker-entrypoint.sh), and where it does not,
+ * the Docker chown in `ensureHubBindMountsWritable` is the repair; world-writable never was.
+ */
+export const PRIVATE_STATE_FILE_MODE = 0o600;
+
 export interface HubContainerIdentity {
   uid: number;
   gid: number;
@@ -317,6 +331,54 @@ export function resolveHubContainerIdentity(envFilePath?: string): HubContainerI
   const hostUid = typeof process.getuid === 'function' ? process.getuid() : 1000;
   const hostGid = typeof process.getgid === 'function' ? process.getgid() : 1000;
   return { uid: hostUid, gid: hostGid, dockerGid, source: 'host-user' };
+}
+
+/**
+ * The uid:gid the Hub process will actually run as, decided the way docker-entrypoint.sh decides
+ * whom to drop to: CI_HUB_CONTAINER_UID/GID when pinned, else the owner of the env file compose
+ * mounts at /data/.env, else the owner of state/, else 1000. Each half falls back on its own, as
+ * the entrypoint's do.
+ *
+ * `resolveHubContainerIdentity` is not this. With no pin it answers with this CLI's own uid, and
+ * init-hub-data-dirs deliberately leaves the pin off. The two agree on an ordinary install and part
+ * exactly where a credential file can be locked away from the Hub: `sudo cihub up` on a user-owned
+ * install, where it says 0 and the container drops to the env file's owner, 1000.
+ */
+export function resolveHubRuntimeIdentity(rootFolderHost: string, envFilePath?: string): { uid: number; gid: number } {
+  const envVars = envFilePath && existsSync(envFilePath) ? parseEnvFile(envFilePath) : {};
+  let dataUid: number | undefined;
+  let dataGid: number | undefined;
+  for (const probe of [envFilePath, path.join(path.resolve(rootFolderHost), 'state')]) {
+    if (!probe) continue;
+    try {
+      const st = statSync(probe);
+      dataUid = st.uid;
+      dataGid = st.gid;
+      break;
+    } catch {
+      // Not there yet; the entrypoint moves on to the next probe too.
+    }
+  }
+  return {
+    uid: parseUidGid(process.env.CI_HUB_CONTAINER_UID || envVars.CI_HUB_CONTAINER_UID) ?? dataUid ?? 1000,
+    gid: parseUidGid(process.env.CI_HUB_CONTAINER_GID || envVars.CI_HUB_CONTAINER_GID) ?? dataGid ?? 1000,
+  };
+}
+
+/**
+ * Whose credential files this process may take to owner-only: the host owner the Hub reads them
+ * as, or null when that is not something this process can know.
+ *
+ * A Hub running as anyone but root reads them as its own uid. A Hub running as root reads them as
+ * whoever runs the Docker engine: host root on a rootful engine, which reads any file whatever its
+ * mode, or the user running Docker Desktop or rootless Docker, which is this CLI's user unless it
+ * was started through sudo. So for a root Hub only a non-root CLI tightens, and only its own files.
+ * Anything skipped here the Hub restricts itself on boot, as the files' owner or as root.
+ */
+function hubStateFileOwnerUid(runtime: { uid: number }): number | null {
+  if (runtime.uid !== 0) return runtime.uid;
+  const cliUid = typeof process.getuid === 'function' ? process.getuid() : null;
+  return cliUid !== null && cliUid !== 0 ? cliUid : null;
 }
 
 export function isDockerAvailable(): boolean {
@@ -640,16 +702,56 @@ export function repairHostRootOwnedBindMounts(
   return { repaired, blockedDataDirs };
 }
 
-function seedSettingsJson(stateDir: string): void {
+function seedSettingsJson(stateDir: string, runtime: { uid: number; gid: number }): void {
   const settingsPath = path.join(stateDir, 'settings.json');
-  if (!existsSync(settingsPath)) {
-    writeFileSync(settingsPath, '{}', { mode: 0o666 });
-    return;
+  if (existsSync(settingsPath)) return;
+  writeFileSync(settingsPath, '{}', { mode: PRIVATE_STATE_FILE_MODE });
+  // A root CLI seeding for a Hub that is not root (sudo on a user-owned install) would leave the Hub
+  // a 0600 file it cannot read, which it then quarantines and replaces. Hand it over instead.
+  const cliUid = typeof process.getuid === 'function' ? process.getuid() : null;
+  if (cliUid === 0 && runtime.uid !== 0) {
+    try {
+      chownSync(settingsPath, runtime.uid, runtime.gid);
+    } catch {
+      // The Hub copes with a file it cannot read by starting a fresh one; nothing is in this one yet.
+    }
   }
+}
+
+/**
+ * Clears group and other bits on a credential-bearing state file, and never adds any: a file an
+ * operator made 0400 stays 0400. Returns the mode it replaced, or null when it changed nothing.
+ *
+ * Only a file owned by `ownerUid`, the host owner the Hub reads these files as
+ * (`hubStateFileOwnerUid`); null tightens nothing. Taking bits off anyone else's file could lock
+ * the Hub out of it, so those are left to the Docker chown in `ensureHubBindMountsWritable`, after
+ * which the Hub, as their new owner, restricts them on boot.
+ */
+export function restrictPrivateStateFile(filePath: string, ownerUid: number | null): number | null {
+  // NTFS has no POSIX modes, and statSync reports uid 0 for everything there.
+  if (process.platform === 'win32' || ownerUid === null) return null;
   try {
-    chmodSync(settingsPath, 0o666);
+    const st = statSync(filePath);
+    if (!st.isFile() || st.uid !== ownerUid) return null;
+    const current = st.mode & 0o777;
+    const restricted = current & PRIVATE_STATE_FILE_MODE;
+    if (restricted === current) return null;
+    chmodSync(filePath, restricted);
+    return current;
   } catch {
-    // May be root-owned; Docker heal handles it.
+    // Missing, or a mount that refuses chmod. The Hub tries again on boot and says so if it cannot.
+    return null;
+  }
+}
+
+function restrictPrivateStateFiles(root: string, ownerUid: number | null): void {
+  const restricted: string[] = [];
+  for (const [subdir, file] of STATE_FILES_NEED_WRITE) {
+    const previous = restrictPrivateStateFile(path.join(root, subdir, file), ownerUid);
+    if (previous !== null) restricted.push(`${subdir}/${file} (was 0${previous.toString(8)})`);
+  }
+  if (restricted.length > 0) {
+    console.warn(`heal-hub-bind-mounts: restricted credential file(s) to owner-only 0600: ${restricted.join(', ')}`);
   }
 }
 
@@ -757,18 +859,12 @@ export function ensureHubBindMountsWritable(rootFolderHost: string, options: Ens
   }
 
   const stateDir = path.join(root, 'state');
-  seedSettingsJson(stateDir);
-
-  for (const [subdir, file] of STATE_FILES_NEED_WRITE) {
-    const filePath = path.join(root, subdir, file);
-    if (existsSync(filePath)) {
-      try {
-        chmodSync(filePath, 0o666);
-      } catch {
-        // ignore
-      }
-    }
-  }
+  // Not `identity`: that is this CLI's guess, used for the Docker probes, and under sudo it is root
+  // while the Hub is not. What a credential file's owner and mode must suit is the Hub itself.
+  const runtime = resolveHubRuntimeIdentity(root, options.envFile);
+  const privateFileOwnerUid = hubStateFileOwnerUid(runtime);
+  seedSettingsJson(stateDir, runtime);
+  restrictPrivateStateFiles(root, privateFileOwnerUid);
 
   if (options.skipDockerHeal) {
     return identity;
@@ -797,6 +893,10 @@ export function ensureHubBindMountsWritable(rootFolderHost: string, options: Ens
     }
     if (!containerCanWriteSettings) {
       healBindMountViaDocker(stateDir, effective.uid, effective.gid);
+      // The heal's `chmod -R a+rwX` just made the credential files world-writable. Where its chown
+      // left them with the owner the Hub reads them as, they come straight back to owner-only,
+      // before the check below confirms the container can still write them.
+      restrictPrivateStateFiles(root, privateFileOwnerUid);
       containerCanWriteSettings = verifyContainerCanWriteFile(settingsPath, identity.uid, identity.gid);
     }
     if (!containerCanWriteTunnelToken) {
@@ -812,7 +912,7 @@ export function ensureHubBindMountsWritable(rootFolderHost: string, options: Ens
   if (!containerCanWriteSettings) {
     const removedAfterHeal = removeHostRootOwnedStateFiles(root);
     if (removedAfterHeal.length > 0) {
-      seedSettingsJson(stateDir);
+      seedSettingsJson(stateDir, runtime);
       containerCanWriteSettings = verifyContainerCanWriteFile(settingsPath, identity.uid, identity.gid);
     }
   }

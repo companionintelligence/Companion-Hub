@@ -131,6 +131,8 @@ export interface PoolRoutingSummary {
    * app. Absent on a Hub predating the field, and never inferred from `failed` for the same reason.
    */
   requestErrors?: number;
+  /** How many of `failed` a node answered 200 for with output that was cut off or degenerate. Absent on a Hub predating it. */
+  outputFaults?: number;
   failovers: number;
   lastAt: string | null;
 }
@@ -304,9 +306,16 @@ export interface PoolRoutingRecord {
   clientClosed?: boolean;
   /**
    * Why the walk stopped at a node that answered with an error: its body proved the request itself
-   * was bad. `null` otherwise; absent on a Hub predating the field.
+   * was bad — or, with basis `node`, the node answered 200 with output that was cut off or only
+   * placeholder tokens. `null` otherwise; absent on a Hub predating the field.
    */
   requestError?: PoolRoutingRequestError | null;
+  /** Why a failed row failed, in a few words: a status, a deadline, an error code, an output fault. Absent on a Hub predating it. */
+  reason?: string | null;
+  /** Each node passed over before the one that answered, and what it answered. Absent on a Hub predating it. */
+  attempts?: PoolRoutingAttempt[];
+  /** Time to the end of the response body, where `durationMs` stops at the first headers. `null` until then; absent on a Hub predating it. */
+  totalMs?: number | null;
   /** Which operator pin shaped this decision, if any. Absent on a Hub predating pinning. */
   pin?: { scope: PoolPinScope; mode: 'prefer'; targetKind: PoolPinTargetKind } | null;
   /** What the prompt ceilings did to this decision, or `null` when no candidate had one. Absent on a Hub predating ceilings. */
@@ -355,10 +364,22 @@ export interface PoolRoutingContention {
 export interface PoolRoutingRequestError {
   /** A label for the engine's message; the message itself never leaves the Hub that read it. A string, so a newer Hub's label still prints. */
   signature: string;
-  /** A string beyond these from a newer Hub prints as the generic line, as `signature` does. */
-  basis: 'definitive' | 'confirmed' | 'last-candidate' | 'status';
+  /**
+   * A string beyond these from a newer Hub prints as the generic line, as `signature` does. `node` is
+   * not a verdict on the request at all: the node's own output was cut off or degenerate.
+   */
+  basis: 'definitive' | 'confirmed' | 'last-candidate' | 'status' | 'node';
   /** For `confirmed`, the node whose answer this one agreed with. */
   confirms: string | null;
+}
+
+/** Mirrors `PoolRoutingAttempt` in `hub-pool-routing-log.service.ts`. */
+export interface PoolRoutingAttempt {
+  node: string;
+  backend: string;
+  /** What it answered, or `null` when it never answered. */
+  status: number | null;
+  reason: string;
 }
 
 /** Mirrors `PoolRoutingSlots` in `hub-pool-routing-log.service.ts`. */
@@ -406,6 +427,27 @@ export interface PoolRoutingThroughput {
     source: 'observed' | 'advertised';
     deadline: boolean;
     slow: boolean;
+  }[];
+  /**
+   * Nodes nothing had measured for a prompt this size, moved behind the ones measured to meet the
+   * budget. `cpu-only`: the node advertised no GPU inference can use, so it went behind the other
+   * unmeasured ones too. Absent on a Hub predating it, which left every unmeasured node in place.
+   */
+  unmeasured?: { node: string; backend: string; prior: 'unknown' | 'cpu-only' }[];
+  /**
+   * Nodes that were about to go first and went behind one predicted to be much faster and at most one
+   * request busier, with both predictions. Absent on a Hub predating it, which placed on the first
+   * node predicted to meet the budget however much faster another was.
+   */
+  slowerDemoted?: {
+    node: string;
+    backend: string;
+    predictedMs: number;
+    inFlight: number;
+    fasterNode: string;
+    fasterBackend: string;
+    fasterMs: number;
+    fasterInFlight: number;
   }[];
   /** Placed on a node predicted to miss the budget anyway: every candidate was, or every faster one failed first. */
   overridden: boolean;
@@ -1650,19 +1692,24 @@ function formatRoutingCounts(summary: {
   failed: number;
   clientClosed?: number;
   requestErrors?: number;
+  outputFaults?: number;
   failovers: number;
 }): string {
   const abandoned = summary.clientClosed ?? 0;
   const refused = summary.requestErrors ?? 0;
+  // The opposite of a refusal, and why it is its own count: the node answered 200 with output nobody
+  // could use. core-2's summary read `failed=0` over 167 of them on 2026-09-29.
+  const badOutput = summary.outputFaults ?? 0;
   const reasons = [
     ...(abandoned > 0 ? [`${abandoned} abandoned by the caller`] : []),
     ...(refused > 0 ? [refused === 1 ? '1 refused as a bad request' : `${refused} refused as bad requests`] : []),
+    ...(badOutput > 0 ? [badOutput === 1 ? '1 bad answer from its node' : `${badOutput} bad answers from their nodes`] : []),
   ];
   const failed = reasons.length > 0 ? `${summary.failed} failed (${reasons.join(', ')})` : `${summary.failed} failed`;
   return `${summary.recorded}/${summary.capacity} recorded · ${summary.served} served · ${failed} · ${summary.failovers} failover(s)`;
 }
 
-const LOG_WIDTHS = [20, 4, 20, 34, 5, 7] as const;
+const LOG_WIDTHS = [20, 4, 20, 34, 5, 7, 8] as const;
 
 /** A request-error label in the words an app's operator can act on. An unknown label prints as itself. */
 function describeRequestErrorSignature(signature: string): string {
@@ -1673,8 +1720,19 @@ function describeRequestErrorSignature(signature: string): string {
     'context-length': 'prompt longer than the context window',
     'chat-template': 'chat template would not render',
     'client-error': 'an HTTP 4xx, relayed on its status',
+    'truncated-upstream': "a response cut off before the dialect's final frame",
+    'degenerate-output': 'only <unusedN> placeholder tokens',
   };
   return words[signature] ?? signature;
+}
+
+/** A failover chain with why each node was passed over, where the Hub says; the node names alone from an older one. */
+function describeFailoverChain(entry: Pick<PoolRoutingRecord, 'failedOverFrom' | 'attempts'>): string {
+  const attempts = entry.attempts ?? [];
+  if (attempts.length === 0) {
+    return entry.failedOverFrom.map(sanitizeForBox).join(', ');
+  }
+  return attempts.map((attempt) => `${sanitizeForBox(attempt.node)} (${sanitizeForBox(attempt.reason)})`).join(', ');
 }
 
 /** Where a routing-log row's affinity key came from, in the words an app operator can act on. Never the key itself. */
@@ -1747,7 +1805,7 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
 
   const lines = [
     ...header,
-    `${cell('TIME', LOG_WIDTHS[0])} ${cell('DIR', LOG_WIDTHS[1])} ${cell('MODEL', LOG_WIDTHS[2])} ${cell('NODE', LOG_WIDTHS[3])} ${cell('ATT', LOG_WIDTHS[4])} ${cell('MS', LOG_WIDTHS[5])} OUTCOME`,
+    `${cell('TIME', LOG_WIDTHS[0])} ${cell('DIR', LOG_WIDTHS[1])} ${cell('MODEL', LOG_WIDTHS[2])} ${cell('NODE', LOG_WIDTHS[3])} ${cell('ATT', LOG_WIDTHS[4])} ${cell('MS', LOG_WIDTHS[5])} ${cell('TOTAL', LOG_WIDTHS[6])} OUTCOME`,
     ruleRow([...LOG_WIDTHS, 'OUTCOME'.length]),
   ];
 
@@ -1762,6 +1820,7 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
         cell(entry.node ?? '-', LOG_WIDTHS[3]),
         cell(`${entry.attempt}/${entry.candidates}`, LOG_WIDTHS[4]),
         cell(String(entry.durationMs), LOG_WIDTHS[5]),
+        cell(typeof entry.totalMs === 'number' ? String(entry.totalMs) : '-', LOG_WIDTHS[6]),
         `${outcome}${status}`,
       ].join(' '),
     );
@@ -1777,7 +1836,12 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
     // Next, for the same reason: a `x failed 500` beside a node name reads as that node breaking,
     // and a short chain reads as the pool giving up early. Both are the request's doing.
     const requestError = entry.requestError;
-    if (requestError) {
+    if (requestError?.basis === 'node') {
+      // The opposite verdict, so the opposite sentence: a `x failed 200` IS that node breaking.
+      lines.push(
+        `  ↳ ${sanitizeForBox(entry.node ?? '?')} answered with ${describeRequestErrorSignature(requestError.signature)} — the node's fault, not the request's`,
+      );
+    } else if (requestError) {
       const node = sanitizeForBox(entry.node ?? '?');
       const agreed = requestError.basis === 'confirmed' && requestError.confirms ? `, as ${sanitizeForBox(requestError.confirms)} had` : '';
       const untried = Math.max(0, entry.candidates - entry.attempt);
@@ -1832,6 +1896,30 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
           ? `  ↳ ~${throughput.estimatedTokens}-token prompt placed anyway though ${nodes} ${slow.length === 1 ? 'is' : 'are'} expected to miss the ${budget} deadline: nothing faster could serve it`
           : `  ↳ ~${throughput.estimatedTokens}-token prompt moved ${nodes} behind nodes expected to answer within ${budget}`,
       );
+    }
+    // Its own line, because it is a different reason: nothing was measured on these nodes, and an
+    // operator reading why a fresh node got none of the long turns needs to see that, not a rate.
+    const unmeasured = throughput?.unmeasured ?? [];
+    if (throughput && unmeasured.length > 0) {
+      const nodes = unmeasured
+        .map((entry) => `${sanitizeForBox(entry.node)} (${entry.prior === 'cpu-only' ? 'unmeasured, no GPU advertised' : 'unmeasured'})`)
+        .join(', ');
+      lines.push(
+        `  ↳ ~${throughput.estimatedTokens}-token prompt put ${nodes} behind nodes measured to answer within ${Math.round(throughput.budgetMs / 1000)} s`,
+      );
+    }
+    // Its own line too: every node here meets the budget, and what an operator reading why core-7 got
+    // no long turns needs is the pair of predictions that moved it, not a deadline.
+    const slowerDemoted = throughput?.slowerDemoted ?? [];
+    if (throughput && slowerDemoted.length > 0) {
+      const seconds = (ms: number) => `~${Math.round(ms / 1000)} s`;
+      const moves = slowerDemoted
+        .map(
+          (entry) =>
+            `${sanitizeForBox(entry.node)} (${seconds(entry.predictedMs)}) behind ${sanitizeForBox(entry.fasterNode)} (${seconds(entry.fasterMs)})`,
+        )
+        .join(', ');
+      lines.push(`  ↳ ~${throughput.estimatedTokens}-token prompt moved ${moves}: predicted much faster`);
     }
     // Only when a full engine was moved: the record is present, with an empty `demoted`, on every
     // request where some candidate stated a count, and a note on each of those would bury the one
@@ -1911,13 +1999,19 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
         );
       }
     }
-    // The chain, not a count: which nodes refused is the whole point of reading this log.
+    // The chain, not a count: which nodes refused, and with what, is the whole point of reading this log.
     if (entry.failedOverFrom.length > 0) {
-      lines.push(`  ↳ failed over from ${entry.failedOverFrom.map(sanitizeForBox).join(', ')}`);
+      lines.push(`  ↳ failed over from ${describeFailoverChain(entry)}`);
+    }
+    // A failure nothing above explains — a walk that ran out, an inbound 5xx, a node's bad output on
+    // an inbound row — says why in the Hub's own few words.
+    if (entry.outcome === 'failed' && entry.reason && !entry.clientClosed && !entry.requestError) {
+      const reason = describeRequestErrorSignature(entry.reason);
+      lines.push(`  ↳ ${reason === entry.reason ? sanitizeForBox(entry.reason) : `the node answered with ${reason}`}`);
     }
   }
 
-  lines.push('', 'Duration is time to response headers, not the streamed generation. `in` rows are work a peer sent here.');
+  lines.push('', 'MS is time to response headers; TOTAL runs to the end of the response body. `in` rows are work a peer sent here.');
   return lines;
 }
 

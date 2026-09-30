@@ -1,6 +1,4 @@
-import { Readable } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
-import type { ReadableStream as WebReadableStream } from 'node:stream/web';
+import { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { forwardRef, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import type { Response } from 'express';
 import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/common/types';
@@ -9,6 +7,8 @@ import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-r
 import type { EngineCapabilities } from '@/modules/inference/backends/backend.interface';
 import { ModelRegistryService } from '@/modules/inference/model-registry.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
+import { RelayError, relayToResponse, watchResponseClose, type ResponseCloseWatch } from '@/modules/inference/upstream-stream';
+import { QUARANTINE_STRIKES, STRIKE_WINDOW_MS } from '@/modules/inference/backends/serving-quarantine';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { clampContextCap } from '@/common/helpers/inference-context-cap';
 import {
@@ -38,13 +38,17 @@ import {
   type PoolRoutingContextCapExclusion,
   type PoolRoutingOutcome,
   type PoolRoutingPin,
+  type PoolRoutingAttempt,
   type PoolRoutingPromptCeiling,
+  type PoolRoutingRecord,
   type PoolRoutingRecordInput,
   type PoolRoutingRequestError,
   type PoolRoutingSlotDemotion,
   type PoolRoutingSlots,
   type PoolRoutingThroughput,
   type PoolRoutingThroughputEstimate,
+  type PoolRoutingThroughputSlowerDemotion,
+  type PoolRoutingThroughputUnmeasured,
   type PoolRoutingUsage,
 } from './hub-pool-routing-log.service';
 import { HubPoolPressureService } from './hub-pool-pressure.service';
@@ -55,9 +59,15 @@ import {
   predictPrefill,
   prefillPointsOf,
   readAdvertisedThroughput,
+  SLOWER_PLACEMENT_FLOOR_MS,
+  SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT,
+  SLOWER_PLACEMENT_RATIO,
+  UNMEASURED_DEFER_MIN_PROMPT_TOKENS,
+  unmeasuredPriorOf,
   type PrefillPrediction,
   type SourcedPrefillPoint,
   type ThroughputTarget,
+  type UnmeasuredPrior,
 } from './hub-pool-throughput.service';
 import { injectUsageOptIn, tapResponseUsageWhileStreaming, type EngineTimings, type ResponseTapObserver } from './response-usage-tap';
 import { POOL_AFFINITY_HEADER, PrefixAffinityStore, applyPrefixAffinity, derivePrefixKey, type PrefixKey } from './hub-pool-prefix-affinity';
@@ -71,6 +81,19 @@ import {
   type UnconfirmedRequestError,
 } from './hub-pool-request-error';
 import { CONNECT_TIMEOUT_MS, MIN_PREFILL_TOKENS_PER_SEC, estimatePromptTokens, forwardBudgetMs } from './hub-pool-budget';
+import {
+  MAX_JUDGED_BODY_BYTES,
+  OutputJudge,
+  PoolOutputQuarantine,
+  applyOutputQuarantine,
+  describeOutputFault,
+  isStreamedContentType,
+  judgeWholeBody,
+  outputDialectOf,
+  type OutputTarget,
+  type OutputVerdict,
+  type PoolOutputFault,
+} from './hub-pool-output-check';
 import { MERGED_LISTING_PATHS, listedModelIds, mergeLocalListings, mergeModelListing, peerOnlyModels } from './pool-model-listing';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import type { PoolCandidate, PoolPeerCapabilities } from './hub-pool.types';
@@ -126,6 +149,35 @@ function placementSwitchOn(envVar: string): boolean {
   return !(raw === 'off' || raw === '0' || raw === 'false');
 }
 
+/**
+ * `HUB_POOL_SLOWER_PLACEMENT_RATIO` and `HUB_POOL_SLOWER_PLACEMENT_FLOOR_MS` retune how much slower
+ * the candidate about to go first must be predicted to be before a faster one goes ahead of it — see
+ * {@link applySlowerPlacement}. A ratio below 1, a negative floor, or anything that is not a finite
+ * number reads as the default rather than a guess, and a very large ratio (1000) turns the rule off
+ * on its own; `HUB_POOL_THROUGHPUT_PLACEMENT=off` turns it off with the rest of throughput placement.
+ * Read per request, like the switches above.
+ */
+export const HUB_POOL_SLOWER_PLACEMENT_RATIO_ENV_VAR = 'HUB_POOL_SLOWER_PLACEMENT_RATIO';
+export const HUB_POOL_SLOWER_PLACEMENT_FLOOR_MS_ENV_VAR = 'HUB_POOL_SLOWER_PLACEMENT_FLOOR_MS';
+function slowerPlacementThresholds(): { ratio: number; floorMs: number } {
+  const ratio = finiteEnvNumber(HUB_POOL_SLOWER_PLACEMENT_RATIO_ENV_VAR);
+  const floorMs = finiteEnvNumber(HUB_POOL_SLOWER_PLACEMENT_FLOOR_MS_ENV_VAR);
+  return {
+    ratio: ratio !== null && ratio >= 1 ? ratio : SLOWER_PLACEMENT_RATIO,
+    floorMs: floorMs !== null && floorMs >= 0 ? floorMs : SLOWER_PLACEMENT_FLOOR_MS,
+  };
+}
+
+/** An env var as a finite number, `null` when unset or blank — `Number('')` is 0, which is a value, not an absence. */
+function finiteEnvNumber(envVar: string): number | null {
+  const raw = process.env[envVar]?.trim();
+  if (!raw) {
+    return null;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
+}
+
 function memoize<T>(compute: () => T): () => T {
   let computed = false;
   let value: T;
@@ -164,9 +216,9 @@ const PROMPT_CEILING_PATHS: ReadonlySet<string> = new Set(['/v1/chat/completions
  * budget reads the string length, exactly as the forward's timer does; `bodyBytes` is the UTF-8 size
  * on the wire, and the two differ only for non-ASCII text.
  */
-export function describeRequestShape(method: string, body: unknown): { stream: boolean; bodyBytes: number; budgetMs: number } {
+export function describeRequestShape(method: string, body: unknown, path?: string): { stream: boolean; bodyBytes: number; budgetMs: number } {
   const payload = method === 'GET' ? '' : (JSON.stringify(body) ?? '');
-  const stream = isStreamingRequest(body);
+  const stream = isStreamingRequest(body, path);
   return { stream, bodyBytes: Buffer.byteLength(payload, 'utf8'), budgetMs: forwardBudgetMs(stream, payload.length) };
 }
 
@@ -223,9 +275,30 @@ export function resetPoolFetchDispatcherForTests(): void {
   poolDispatcherMemo = undefined;
 }
 
-/** Does this body ask for a streamed response? Decides which of the two budgets applies. */
-export function isStreamingRequest(body: unknown): boolean {
-  return !!(body && typeof body === 'object' && (body as { stream?: unknown }).stream === true);
+/**
+ * Ollama's native generation routes, which stream unless the body says `stream: false`. Every other
+ * pooled route — the OpenAI-compatible ones, and `/api/embed` — answers in one body unless asked to
+ * stream.
+ */
+const STREAMS_BY_DEFAULT_PATHS: ReadonlySet<string> = new Set(['/api/chat', '/api/generate']);
+
+/**
+ * Does this request get a streamed response? Decides which of the two budgets applies, and whether
+ * the pool can hold the answer to judge it before sending any of it.
+ *
+ * `path` because the default is the route's: `/api/chat` with no `stream` streams NDJSON. Read as
+ * non-streamed, such a turn was budgeted as a whole completion rather than a first byte, and held
+ * whole to be judged — the caller got nothing until the generation ended, and the NDJSON held could
+ * not be judged as one body. Without a path, the OpenAI default.
+ */
+export function isStreamingRequest(body: unknown, path?: string): boolean {
+  if (!isRecord(body)) {
+    return false;
+  }
+  if (path !== undefined && STREAMS_BY_DEFAULT_PATHS.has(path)) {
+    return body.stream !== false;
+  }
+  return body.stream === true;
 }
 
 /**
@@ -551,11 +624,15 @@ export function applyPin(ordered: PoolCandidate[], pin: HubPoolPin | null): Pool
   if (!pin) {
     return ordered;
   }
-  const matches = (candidate: PoolCandidate) => (pin.targetKind === 'local' ? candidate.peerId === null : candidate.peerId === pin.peerId);
-  const pinned = ordered.filter(matches);
+  const pinned = ordered.filter((candidate) => pinMatches(candidate, pin));
   // Identity-preserving when nothing matched, so "pinned node cannot serve this" and "no pin" are
   // the same list rather than two code paths that could drift.
-  return pinned.length === 0 ? ordered : [...pinned, ...ordered.filter((candidate) => !matches(candidate))];
+  return pinned.length === 0 ? ordered : [...pinned, ...ordered.filter((candidate) => !pinMatches(candidate, pin))];
+}
+
+/** Whether `candidate` is on the node `pin` names. One predicate, so what a pin moves and what later steps leave alone for it agree. */
+function pinMatches(candidate: PoolCandidate, pin: HubPoolPin): boolean {
+  return pin.targetKind === 'local' ? candidate.peerId === null : candidate.peerId === pin.peerId;
 }
 
 /**
@@ -671,19 +748,99 @@ export function applyContextCap(
 }
 
 const NOTHING_DEMOTED: ReadonlySet<PoolCandidate> = new Set();
+const NOTHING_DEFERRED: ReadonlyMap<PoolCandidate, UnmeasuredPrior> = new Map();
+const NOTHING_MEASURED: ReadonlyMap<PoolCandidate, MeasuredPrefill> = new Map();
+
+/** What {@link applyThroughputPlacement} needs to judge a candidate nothing applicable has been measured on. */
+export interface UnmeasuredPlacement {
+  /**
+   * The prior an unmeasured candidate is judged on, or `null` for one that keeps its place whatever
+   * the prompt — see `PoolProxyService.applyMeasuredThroughput` for which those are.
+   */
+  priorOf: (candidate: PoolCandidate) => UnmeasuredPrior | null;
+  /**
+   * Which of the outer placement groups — context cap, prompt ceiling, slots — the candidate is ranked
+   * in. Throughput reorders only within a group, so an unmeasured candidate gives way only when a
+   * candidate measured to meet the budget is ranked in the same one: anywhere else there is nothing
+   * for it to go behind, and a row that said it had would be describing a move that never happened.
+   */
+  groupOf: (candidate: PoolCandidate) => number;
+  /**
+   * The score the ranker sorted the candidate on: its queue depth, plus the local head start for a
+   * peer and the pressure term when that is weighted. An unmeasured candidate gives way only to a
+   * measured one scored the same — see {@link applyThroughputPlacement} for why never a busier one.
+   */
+  scoreOf: (candidate: PoolCandidate) => number;
+  /**
+   * Whether a candidate measured to meet the budget stays where the steps before contention put it, so
+   * that an unmeasured one may give way to it. Not a local engine that contention will move behind the
+   * peers no busier than it: giving way to that engine would put those peers behind it first, where
+   * contention cannot move it past them, and keep a turn waiting on an engine busy with other work.
+   */
+  staysInPlace: (candidate: PoolCandidate) => boolean;
+}
+
+/** The default: every unmeasured candidate keeps its place, as it did before priors existed. */
+const KEEP_UNMEASURED_IN_PLACE: UnmeasuredPlacement = { priorOf: () => null, groupOf: () => 0, scoreOf: () => 0, staysInPlace: () => true };
+
+/** One candidate's prediction, and whether it misses the request's budget. */
+export interface MeasuredPrefill {
+  prediction: PrefillPrediction;
+  slow: boolean;
+}
+
+/** What {@link applyThroughputPlacement} decided, for {@link splitByThroughput} to apply to each group. */
+export interface ThroughputPlacement {
+  /** Measured and predicted to miss the budget: behind every other candidate in their group. */
+  demoted: ReadonlySet<PoolCandidate>;
+  /** Unmeasured, with the prior each was judged on, and giving way to the candidates measured to meet the budget that the ranker scored the same. */
+  deferred: ReadonlyMap<PoolCandidate, UnmeasuredPrior>;
+  /** Every candidate with applicable evidence and what it predicts, for {@link applySlowerPlacement} to compare once the order is otherwise final. */
+  measured: ReadonlyMap<PoolCandidate, MeasuredPrefill>;
+  decision: PoolRoutingThroughput | null;
+}
 
 /**
  * Judge each candidate's measured prefill rate against the request's budget. `demoted` is the set of
- * candidates predicted to miss it, to be moved behind every candidate that is not.
+ * candidates predicted to miss it, to be moved behind every candidate that is not; `deferred` is the
+ * unmeasured candidates that, for a prompt this large, give way to one measured to meet it that the
+ * ranker holds level with them.
  *
  * The rules are the prompt ceiling's, because the risk is the same — a preference must never become a
  * refusal:
  *
- * 1. **Unmeasured is neither fast nor slow.** A candidate with no applicable evidence is not in
- *    `estimates`, is never demoted, and keeps its place relative to the ones that are not demoted.
- * 2. **Demoted, never removed**, so failover still reaches a slow node when every faster one fails.
- * 3. **All slow means nothing moves.** When every candidate is predicted to miss, `demoted` is empty,
+ * 1. **Unmeasured is not known to be fast.** A candidate with no applicable evidence is not in
+ *    `estimates`. For a prompt under {@link UNMEASURED_DEFER_MIN_PROMPT_TOKENS} it keeps its place,
+ *    which is how it gets measured at all. From that size up, when a candidate in its group that the
+ *    ranker scored the same is measured to meet the budget, it goes behind that candidate — and with a
+ *    `cpu-only` prior behind the other unmeasured ones scored the same too — but stays ahead of every
+ *    candidate predicted to miss, since a measurement that says "too slow" is worse news than no
+ *    measurement. Taking it for fast is what sent a 7,731-token turn to core-7 on 2026-09-29: nothing
+ *    had timed it, it read the prompt on CPU, and its first byte came after 169.8 s where measured GPU
+ *    peers, as idle as it, were predicted at ~32–36 s. With no candidate measured to meet the budget
+ *    nothing is deferred, so an unmeasured fleet, or one where every measured node is slow, ranks as
+ *    it did before. A candidate whose prior is `null` keeps its place whatever the prompt, and is not
+ *    listed.
+ * 2. **Never behind a busier candidate.** The ranker's first key is queue depth, and on this fleet's
+ *    `-np 1` engines every request queued ahead is a whole turn, ~300 s for a large one — as long as
+ *    the CPU read this guards against. So a measurement only settles the ranker's ties: an unmeasured
+ *    candidate gives way to a measured one scored the same, never to one scored higher, and keeps its
+ *    place ahead of every busier candidate (one scored lower is ranked ahead of it already). A
+ *    measured node with a queue therefore does not hold back idle unmeasured peers, and a burst of
+ *    large turns spreads over the pool by queue depth as it did before. That is also what keeps the
+ *    measured nodes from starving the rest of large turns while evidence ages out
+ *    (`THROUGHPUT_FORGET_AFTER_MS`): a node is passed over only while a measured one is exactly as
+ *    free, and gets the next turn as soon as that one is not. Nor does anything give way to a
+ *    measured candidate contention will move (`staysInPlace` is false).
+ * 3. **Demoted or deferred, never removed**, so failover still reaches a slow or unmeasured node when
+ *    every other one fails.
+ * 4. **All slow means nothing moves.** When every candidate is predicted to miss, `demoted` is empty,
  *    the ranker's order stands, and `overridden: true` says so.
+ *
+ * A measurement says how fast an engine reads a prompt, not whether what it writes is sound: an engine
+ * answering in garbage tokens reaches its first byte as fast as a healthy one and counts here as
+ * measured to meet the budget, whether this node timed it or the peer advertised it. Rule 2 bounds what
+ * that costs to the ranker's ties; judging output is not this step's job.
  *
  * `decision` is `null` when no candidate had applicable evidence, so a fleet nothing has been timed on
  * gets the list back untouched. Pure and exported for its own test, like `applyPromptCeiling`.
@@ -693,17 +850,28 @@ export function applyThroughputPlacement(
   predictionOf: (candidate: PoolCandidate) => PrefillPrediction | null,
   estimatedTokens: number,
   budgetMs: number,
-): { demoted: ReadonlySet<PoolCandidate>; decision: PoolRoutingThroughput | null } {
+  unmeasured: UnmeasuredPlacement = KEEP_UNMEASURED_IN_PLACE,
+): ThroughputPlacement {
   const estimates: PoolRoutingThroughputEstimate[] = [];
   const slow = new Set<PoolCandidate>();
+  const measured = new Map<PoolCandidate, MeasuredPrefill>();
+  const unmeasuredCandidates: PoolCandidate[] = [];
+  // The candidates an unmeasured one is judged beside: the same outer group, and the same ranker
+  // score. A newline cannot appear in either number's string form, so no two pairs collide.
+  const levelWith = (candidate: PoolCandidate) => `${unmeasured.groupOf(candidate)}\n${unmeasured.scoreOf(candidate)}`;
+  const levelsWithAFastCandidate = new Set<string>();
   for (const candidate of ordered) {
     const prediction = predictionOf(candidate);
     if (!prediction) {
+      unmeasuredCandidates.push(candidate);
       continue;
     }
     const isSlow = missesBudget(prediction, budgetMs);
+    measured.set(candidate, { prediction, slow: isSlow });
     if (isSlow) {
       slow.add(candidate);
+    } else if (unmeasured.staysInPlace(candidate)) {
+      levelsWithAFastCandidate.add(levelWith(candidate));
     }
     estimates.push({
       node: candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY,
@@ -718,10 +886,29 @@ export function applyThroughputPlacement(
     });
   }
   if (estimates.length === 0) {
-    return { demoted: NOTHING_DEMOTED, decision: null };
+    return { demoted: NOTHING_DEMOTED, deferred: NOTHING_DEFERRED, measured: NOTHING_MEASURED, decision: null };
+  }
+  const deferred = new Map<PoolCandidate, UnmeasuredPrior>();
+  const deferredEntries: PoolRoutingThroughputUnmeasured[] = [];
+  if (estimatedTokens >= UNMEASURED_DEFER_MIN_PROMPT_TOKENS && levelsWithAFastCandidate.size > 0) {
+    for (const candidate of unmeasuredCandidates) {
+      const prior = unmeasured.priorOf(candidate);
+      if (prior === null || !levelsWithAFastCandidate.has(levelWith(candidate))) {
+        continue;
+      }
+      deferred.set(candidate, prior);
+      deferredEntries.push({ node: candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY, backend: candidate.backend, prior });
+    }
   }
   const overridden = slow.size === ordered.length;
-  return { demoted: overridden ? NOTHING_DEMOTED : slow, decision: { estimatedTokens, budgetMs, estimates, overridden } };
+  return {
+    demoted: overridden ? NOTHING_DEMOTED : slow,
+    deferred,
+    measured,
+    // `slowerDemoted` is filled in by the caller: which candidate goes first is known only once
+    // contention and pins have acted, after this step — see `applySlowerPlacement`.
+    decision: { estimatedTokens, budgetMs, estimates, unmeasured: deferredEntries, slowerDemoted: [], overridden },
+  };
 }
 
 /**
@@ -734,6 +921,187 @@ export function splitDemoted(group: PoolCandidate[], demoted: ReadonlySet<PoolCa
     return [group];
   }
   return [group.filter((candidate) => !demoted.has(candidate)), group.filter((candidate) => demoted.has(candidate))];
+}
+
+/**
+ * One group placed by what {@link applyThroughputPlacement} decided. Each unmeasured candidate that
+ * gave way moves to just behind the last candidate in the group that `scoreOf` scores the same as it —
+ * an `unknown` prior ahead of a `cpu-only` one — which puts it behind the measured candidates it gave
+ * way to and keeps it ahead of every busier one. The candidates predicted to miss follow as a part of
+ * their own. Everything else keeps the order given, and a group nothing moved in comes back whole, so
+ * pins see the exact list they did before throughput existed.
+ *
+ * The ones that gave way stay in the same part as the ones they gave way to, so local-engine
+ * contention, applied within each part, can still move a contended engine behind them. A pin cannot
+ * undo the move from there: it only moves its own node, and a pinned node never gives way.
+ */
+export function splitByThroughput(
+  group: PoolCandidate[],
+  placement: Pick<ThroughputPlacement, 'demoted' | 'deferred'>,
+  scoreOf: (candidate: PoolCandidate) => number,
+): PoolCandidate[][] {
+  const { demoted, deferred } = placement;
+  if (!group.some((candidate) => demoted.has(candidate) || deferred.has(candidate))) {
+    return [group];
+  }
+  const kept = group.filter((candidate) => !demoted.has(candidate));
+  const lastAtScore = new Map<number, PoolCandidate>();
+  for (const candidate of kept) {
+    lastAtScore.set(scoreOf(candidate), candidate);
+  }
+  const placed: PoolCandidate[] = [];
+  const waiting = new Map<number, PoolCandidate[]>();
+  for (const candidate of kept) {
+    const score = scoreOf(candidate);
+    if (deferred.has(candidate)) {
+      waiting.set(score, [...(waiting.get(score) ?? []), candidate]);
+    } else {
+      placed.push(candidate);
+    }
+    if (lastAtScore.get(score) === candidate) {
+      const behind = waiting.get(score) ?? [];
+      placed.push(...behind.filter((entry) => deferred.get(entry) === 'unknown'), ...behind.filter((entry) => deferred.get(entry) === 'cpu-only'));
+    }
+  }
+  return [placed, group.filter((candidate) => demoted.has(candidate))].filter((part) => part.length > 0);
+}
+
+/** What {@link applySlowerPlacement} needs to know about the candidates of one group. */
+export interface SlowerPlacement {
+  /** The request's prompt estimate. Nothing moves below {@link UNMEASURED_DEFER_MIN_PROMPT_TOKENS}. */
+  estimatedTokens: number;
+  /** What {@link applyThroughputPlacement} predicted for the candidate; `undefined` when nothing applicable measured it. */
+  measuredOf: (candidate: PoolCandidate) => MeasuredPrefill | undefined;
+  /** The queue depth the ranker read for the candidate. */
+  inFlightOf: (candidate: PoolCandidate) => number;
+  /** A candidate that keeps the front when it has it: the pinned node, and the engine prefix affinity holds. */
+  holdsFront: (candidate: PoolCandidate) => boolean;
+  /** A candidate that may go ahead of the first: not a local engine contention moves behind the peers. */
+  mayGoAhead: (candidate: PoolCandidate) => boolean;
+  /**
+   * An engine withheld for answering with bad output, which the proxy moves behind every other
+   * candidate once placement is done: it is neither judged as the first nor brought forward, and
+   * keeps its slot here for that later step to move.
+   */
+  withheld: (candidate: PoolCandidate) => boolean;
+  /** {@link SLOWER_PLACEMENT_RATIO}, or its env override. */
+  ratio: number;
+  /** {@link SLOWER_PLACEMENT_FLOOR_MS}, or its env override. */
+  floorMs: number;
+}
+
+/**
+ * Put the candidates predicted to be much faster than the one about to go first ahead of it, within
+ * one group of the final order.
+ *
+ * Budget demotion only asks whether a node will answer in time, and the budget is sized so that a GPU
+ * node reading a large prompt is never mistaken for a dead one, so a CPU node clears it too. Fleet
+ * re-bank, 2026-09-30, core-2 entering with 15 leaves: a 35,809-token OpenClaw turn went to core-7,
+ * reading on CPU, at a predicted 162,910 ms, while beta-1 was predicted at 22,080 ms, beta-max at
+ * 34,651 ms and beta-red at 38,973 ms, all idle; and a 14.5k-token Hermes turn, the local engine moved
+ * aside for contention, went to core-7 at 54,854 ms predicted — 57 s to its first byte — while beta-1
+ * was predicted at 8,959 ms. The ranker could not see it: the nodes were equally idle, and neither
+ * queue depth nor an advertised tier tells a GPU read from a CPU one (core-7 advertises `high`).
+ *
+ * So when the first candidate has a prediction T1 and a later one T2 with T1 at least `ratio` times
+ * T2 and at least `floorMs` longer, the later one goes ahead, provided that it is:
+ *
+ * - **Measured to meet the budget, on a reading that is not a lower bound.** A missed deadline says
+ *   "at least this slow", which says nothing about how much faster than the first it is.
+ * - **No more than {@link SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT} busier.** Queue depth stays the
+ *   ranker's first key; this settles a tie, or a single request, not a queue.
+ * - **Not a local engine that contention moves**, which would put it back where contention just took
+ *   it from.
+ *
+ * Every candidate that qualifies goes ahead, keeping the ranker's order among them, and everything
+ * else keeps its place behind the first; then the new first is judged the same way, so a turn ends up
+ * on a node no candidate is predicted to beat by that much. Each move puts a strictly faster candidate
+ * first, so none can lead twice.
+ *
+ * What it never does:
+ *
+ * - **Judge an unmeasured candidate.** It is never the first here, nor goes ahead; how unmeasured
+ *   peers give way to measured ones is {@link applyThroughputPlacement}'s deferral, and a group led by
+ *   one is left alone.
+ * - **Move a pinned node or the engine prefix affinity holds from the front** (`holdsFront`). A pin is
+ *   the operator's statement and a held engine has the session's prefix warm, where the prediction is
+ *   of a cold read.
+ * - **Cross a group.** Called within each group the cap, ceiling, slot, budget and contention steps
+ *   made, so a node over its cap or ceiling, one whose slots are full, and one predicted to miss the
+ *   budget are never brought forward; when every candidate is predicted to miss, none qualifies to go
+ *   ahead and the ranker's order stands.
+ * - **Count a withheld engine.** One answering with bad output goes behind every other candidate
+ *   after this step, so the first candidate judged is the first one not withheld, and a withheld one
+ *   is never brought forward, however fast it reads a prompt — a degenerate engine reads as fast as a
+ *   sound one. A model an engine has been unable to serve is not a candidate at all.
+ * - **Apply to a small prompt.** Below {@link UNMEASURED_DEFER_MIN_PROMPT_TOKENS} the smaller bands
+ *   keep reaching a node measured slow, which is how a node whose engine has since moved onto its GPU
+ *   gets measured fast again.
+ *
+ * Pure and exported for its own test. `ordered` is `group` itself when nothing moved.
+ */
+export function applySlowerPlacement(
+  group: PoolCandidate[],
+  placement: SlowerPlacement,
+): { ordered: PoolCandidate[]; demoted: PoolRoutingThroughputSlowerDemotion[] } {
+  const demoted: PoolRoutingThroughputSlowerDemotion[] = [];
+  if (group.length < 2 || placement.estimatedTokens < UNMEASURED_DEFER_MIN_PROMPT_TOKENS) {
+    return { ordered: group, demoted };
+  }
+  // Asked once per candidate, so a withhold running out mid-call cannot leave a slot without a candidate.
+  const withheld = new Set(group.filter((candidate) => placement.withheld(candidate)));
+  let ordered = group.filter((candidate) => !withheld.has(candidate));
+  // Bounded as well as terminating: each move puts a strictly faster candidate first.
+  for (let moves = 0; moves < group.length; moves += 1) {
+    const [first, ...rest] = ordered;
+    const firstMeasured = first ? placement.measuredOf(first) : undefined;
+    if (!first || !firstMeasured || placement.holdsFront(first)) {
+      break;
+    }
+    const slowerMs = firstMeasured.prediction.predictedMs;
+    const busiest = placement.inFlightOf(first) + SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT;
+    const faster = rest.filter((candidate) => {
+      const measured = placement.measuredOf(candidate);
+      if (!measured || measured.slow || measured.prediction.deadline) {
+        return false;
+      }
+      if (!placement.mayGoAhead(candidate) || placement.inFlightOf(candidate) > busiest) {
+        return false;
+      }
+      const fasterMs = measured.prediction.predictedMs;
+      return fasterMs < slowerMs && slowerMs >= placement.ratio * fasterMs && slowerMs - fasterMs >= placement.floorMs;
+    });
+    const ahead = faster[0];
+    const aheadMeasured = ahead ? placement.measuredOf(ahead) : undefined;
+    if (!ahead || !aheadMeasured) {
+      break;
+    }
+    demoted.push({
+      node: first.nodeFqdn ?? LOCAL_CANDIDATE_KEY,
+      backend: first.backend,
+      predictedMs: slowerMs,
+      inFlight: placement.inFlightOf(first),
+      fasterNode: ahead.nodeFqdn ?? LOCAL_CANDIDATE_KEY,
+      fasterBackend: ahead.backend,
+      fasterMs: aheadMeasured.prediction.predictedMs,
+      fasterInFlight: placement.inFlightOf(ahead),
+    });
+    const movedAhead = new Set(faster);
+    ordered = [...faster, first, ...rest.filter((candidate) => !movedAhead.has(candidate))];
+  }
+  if (demoted.length === 0) {
+    return { ordered: group, demoted };
+  }
+  // Back into the slots the candidates judged came from, around the withheld ones.
+  const placed: PoolCandidate[] = [];
+  let next = 0;
+  for (const candidate of group) {
+    const slot = withheld.has(candidate) ? candidate : ordered[next++];
+    if (slot) {
+      placed.push(slot);
+    }
+  }
+  return { ordered: placed, demoted };
 }
 
 /** What slot-aware placement knows about one candidate: the queue depth the ranker sorted on, and the slots its node advertised. */
@@ -965,32 +1333,104 @@ export function describeUnresolvableAuto(): string {
 const CLIENT_CLOSED_MESSAGE = 'The client closed the connection before the pool response finished';
 
 /**
- * An `AbortSignal` that fires when `res`'s connection closes before the response was finished.
- * Keyed on `writableFinished`, because a response that completed normally closes too. Attach it
- * before the first `await` of a handler, so a client that leaves while candidates are still being
- * ranked is not missed.
+ * The response's one close watch (see `watchResponseClose`): `clientClosed` fires when `res`'s
+ * connection closes before the response was finished. Keyed on `writableFinished`, because a
+ * response that completed normally closes too. Attach it before the first `await` of a handler, so a
+ * client that leaves while candidates are still being ranked is not missed, and dispose of it once
+ * the handler has settled.
  *
  * And keyed on `errored`, because a client leaving is not the only way `res` closes unfinished:
- * when the ENGINE dies mid-stream, `pipeline` destroys `res` with the engine's error, which closes
- * it too. Without that check the catch blocks read their own teardown as a hang-up — measured
- * against a real socket, an engine that dropped its connection mid-generation was logged at debug as
- * "client closed a streaming response", the candidate-failure warning never appeared, and the
- * peer-facing forward swallowed the error instead of surfacing it. A client that disconnects leaves
- * `errored` null: Node closes the response from the socket, not through `destroy(err)`.
+ * when the ENGINE dies mid-stream, the relay destroys `res` with the engine's error, which closes it
+ * too. Without that check the catch blocks read their own teardown as a hang-up — measured against a
+ * real socket, an engine that dropped its connection mid-generation was logged at debug as "client
+ * closed a streaming response", the candidate-failure warning never appeared, and the peer-facing
+ * forward swallowed the error instead of surfacing it. A client that disconnects leaves `errored`
+ * null: Node closes the response from the socket, not through `destroy(err)`.
+ *
+ * One listener for the whole request, however many candidates it walks — every forward shares its
+ * signal, and the relay hears the close through it rather than adding `pipeline`'s seven.
  */
-function abortWhenClientCloses(res: Response): AbortSignal {
-  const controller = new AbortController();
-  const onClose = () => {
-    if (!res.writableFinished && !res.errored) controller.abort(new Error(CLIENT_CLOSED_MESSAGE));
-  };
-  if (res.destroyed) {
-    onClose();
-  } else {
-    // `once`, and never removed: every response closes exactly once, finished or not, so the
-    // listener is gone by the time the response is, and after a normal finish it is a no-op.
-    res.once('close', onClose);
+function watchClient(res: Response): ResponseCloseWatch {
+  return watchResponseClose(res, CLIENT_CLOSED_MESSAGE);
+}
+
+/** Longest attempt reason kept on a routing row: a status, a deadline or an error code, never a paragraph. */
+const MAX_ATTEMPT_REASON_CHARS = 200;
+
+/**
+ * Why a forward failed without an answer, in the few words a routing row keeps: the deadline that
+ * expired, or the transport error and its code. A `fetch` failure's own message is only "fetch
+ * failed"; the code on its `cause` is the part an operator can act on.
+ */
+export function describeAttemptError(error: unknown): string {
+  const message =
+    error instanceof Error ? error.message : error == null ? 'unknown error' : typeof error === 'object' ? safeJson(error) : String(error);
+  const cause = error instanceof Error ? (error as Error & { cause?: { code?: unknown } }).cause : undefined;
+  const code = typeof cause?.code === 'string' && !message.includes(cause.code) ? ` (${cause.code})` : '';
+  const text = `${message}${code}`;
+  return text.length > MAX_ATTEMPT_REASON_CHARS ? `${text.slice(0, MAX_ATTEMPT_REASON_CHARS - 1)}…` : text;
+}
+
+/** A routing row's reason for an answer that was an error status, with the engine's verdict label when one was read. */
+function describeStatusReason(status: number, signature?: string): string {
+  return signature ? `HTTP ${status} (${signature})` : `HTTP ${status}`;
+}
+
+/**
+ * The model a peer's forward is for: the `X-Hub-Pool-Model` it sent, or else the forwarded body's own
+ * `model`. The body is already parsed by the time the route runs; reading one field of it holds
+ * nothing the relay does not already hold.
+ */
+export function forwardedModel(header: string | undefined, body: unknown): string | undefined {
+  if (header) return header;
+  return isRecord(body) && typeof body.model === 'string' && body.model.length > 0 ? body.model : undefined;
+}
+
+/**
+ * A non-streamed body read whole before anything is sent, so it can be judged — and, if the engine's
+ * answer was cut off or degenerate, not sent at all while another candidate can still be asked. `text`
+ * is `null` when the body ran past `maxBytes`: it is then relayed unjudged. `body` replays what was
+ * read and then whatever is left, so the caller gets every byte either way.
+ */
+async function holdWholeBody(
+  source: WebReadableStream<Uint8Array>,
+  maxBytes: number,
+): Promise<{ body: WebReadableStream<Uint8Array>; text: string | null }> {
+  const reader = source.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const next = await reader.read();
+    if (next.done) {
+      return { body: replayBody(chunks, null), text: Buffer.concat(chunks).toString('utf8') };
+    }
+    chunks.push(next.value);
+    size += next.value.byteLength;
+    if (size > maxBytes) {
+      return { body: replayBody(chunks, reader), text: null };
+    }
   }
-  return controller.signal;
+}
+
+function replayBody(chunks: Uint8Array[], rest: ReadableStreamDefaultReader<Uint8Array> | null): WebReadableStream<Uint8Array> {
+  let index = 0;
+  return new WebReadableStream<Uint8Array>({
+    pull: async (controller) => {
+      const held = chunks[index];
+      if (held) {
+        index += 1;
+        controller.enqueue(held);
+        return;
+      }
+      const next = rest ? await rest.read() : null;
+      if (!next || next.done) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(next.value);
+    },
+    cancel: (reason) => rest?.cancel(reason),
+  });
 }
 
 /**
@@ -1104,6 +1544,12 @@ function describeLocalProbes(probes: LocalBackendProbe[]): string {
  *
  * Failover stops the instant a response is committed: once status and headers
  * have gone to the client, a second candidate has nowhere to write.
+ *
+ * A 200 is not taken on trust either (see `hub-pool-output-check.ts`): a
+ * non-streamed completion that was cut off or is only placeholder tokens fails
+ * over like a 5xx, a stream that turns out so is recorded as the node failing
+ * it, and an engine that does either twice in five minutes is tried last for a
+ * cooldown.
  */
 @Injectable()
 export class PoolProxyService {
@@ -1151,6 +1597,11 @@ export class PoolProxyService {
   private readonly prefixAffinity = new PrefixAffinityStore();
   /** When each peer engine's key refusal was last warned about — see {@link warnPeerEngineRefusal}. Bounded by peers × engines × two statuses. */
   private readonly peerEngineRefusalWarnedAt = new Map<string, number>();
+  /**
+   * Engines that have been answering 200 with cut-off or degenerate output, and are withheld from the
+   * front of the walk for a cooldown — see `hub-pool-output-check.ts`. Per node, engine and model.
+   */
+  private readonly outputQuarantine = new PoolOutputQuarantine();
 
   /**
    * `auto` → the engine id of the chat model the POOL should run it on; any other model unchanged.
@@ -1299,7 +1750,9 @@ export class PoolProxyService {
    * where a slow one merely reads it slowly. At 0, the shipped default, nothing here is read.
    *
    * Then measured throughput, within each of those groups: a candidate whose measured prefill rate
-   * would take it past the request's budget moves behind the ones that would not — see
+   * would take it past the request's budget moves behind the ones that would not, and for a large
+   * prompt a peer nothing has measured moves behind the ones measured to meet it that are exactly as
+   * busy, never a busier one, and never an engine contention is about to move — see
    * {@link applyThroughputPlacement}. `streaming` picks the budget, as it does for the forward.
    *
    * Then local-engine contention, within each of those groups and only for a generation with a peer
@@ -1312,8 +1765,16 @@ export class PoolProxyService {
    * engine, but a reload behind this model at another window, or a model no longer resident, has
    * discarded the prefix and makes the turn wait as well — see {@link prefixCanStillBeWarm}.
    *
-   * An operator pin is applied LAST, within each of the resulting groups — see {@link applyPin}. It
+   * An operator pin is applied next, within each of the resulting groups — see {@link applyPin}. It
    * reorders; it cannot admit a node the steps above excluded.
+   *
+   * Last, within each of those groups and for a large prompt only: when the candidate the group would
+   * try first is predicted {@link SLOWER_PLACEMENT_RATIO} times and {@link SLOWER_PLACEMENT_FLOOR_MS}
+   * slower than another measured to meet the budget, and that one has at most one request more in
+   * flight, the faster one goes ahead — see {@link applySlowerPlacement}. Meeting the budget is a low
+   * bar that a CPU node can clear, and this is what stops a turn waiting minutes on one while a GPU
+   * node as idle would answer in seconds. Last because it needs the final first candidate, and never
+   * moves the pinned node or the engine prefix affinity holds from the front.
    */
   async buildCandidateList(model: string, promptBytes?: number, streaming = true, numCtx: number | null = null): Promise<PoolCandidate[]> {
     return (await this.rankCandidates(model, promptBytes === undefined ? undefined : { bytes: () => promptBytes, streaming, numCtx: () => numCtx }))
@@ -1392,12 +1853,15 @@ export class PoolProxyService {
       ? this.applyPromptCeilings(model, ordered, peers, measurePromptBytes)
       : { preferred: ordered, overCeiling: [], decision: null };
     const slots = occupiesSlot ? this.applyAdvertisedSlots(model, affinity.ordered, peers) : { demoted: NOTHING_DEMOTED, decision: null };
-    const throughput =
-      prompt && measurePromptBytes
-        ? this.applyMeasuredThroughput(model, ordered, peers, measurePromptBytes, prompt.streaming)
-        : { demoted: NOTHING_DEMOTED, decision: null };
+    // Read from the same in-memory settings object every other pool knob comes from, so a pin takes
+    // effect on the next request and costs no query on the inference hot path. Read before throughput,
+    // which leaves a pinned node in place when nothing has measured it.
+    const pin = resolvePinFor(this.configuration.getHubPoolPreferences().poolPins, model);
+    const overCap = new Set(cap.overCap);
+    const overCeiling = new Set(ceiling.overCeiling);
     // Judged, like throughput, only on the routes `prompt` is passed for: a turn is what a reload
-    // behind another turn, or an engine shared with one, can keep waiting for minutes.
+    // behind another turn, or an engine shared with one, can keep waiting for minutes. Judged before
+    // throughput, which must know which engines contention will move.
     const contended = prompt ? this.judgeLocalContention(model, ordered, prompt.numCtx) : null;
     const scores = new Map(affinity.ordered.map((entry) => [entry.candidate, entry.score]));
     const scoreOf = (candidate: PoolCandidate) => scores.get(candidate) ?? 0;
@@ -1411,6 +1875,22 @@ export class PoolProxyService {
     // busier than anyway.
     const heldEngine = affinity.held ? contended?.engines.get(affinity.held) : undefined;
     const held = affinity.held && heldEngine && (await this.prefixCanStillBeWarm(model, affinity.held, heldEngine)) ? affinity.held : null;
+    // Not an engine contention will move: every contended one but the engine held for affinity, the
+    // predicate `giveWay` below applies. Neither an unmeasured peer nor the first of a group gives way
+    // to one of those, since contention would then leave the turn waiting on it.
+    const staysInPlace = (candidate: PoolCandidate) => candidate === held || !contended?.engines.has(candidate);
+    const throughput: ThroughputPlacement =
+      prompt && measurePromptBytes
+        ? this.applyMeasuredThroughput(model, ordered, peers, measurePromptBytes, prompt.streaming, {
+            // The group the three outer splits below put a candidate in, so an unmeasured one gives way
+            // only to a measured one it is ranked beside.
+            groupOf: (candidate) => (overCap.has(candidate) ? 4 : 0) + (overCeiling.has(candidate) ? 2 : 0) + (slots.demoted.has(candidate) ? 1 : 0),
+            scoreOf,
+            staysInPlace,
+            pinned: (candidate) => pin !== null && pin.targetKind === 'peer' && candidate.peerId === pin.peerId,
+            held: affinity.held,
+          })
+        : { demoted: NOTHING_DEMOTED, deferred: NOTHING_DEFERRED, measured: NOTHING_MEASURED, decision: null };
     let heldByAffinity = false;
     const giveWay = (part: PoolCandidate[]): PoolCandidate[][] => {
       if (!contended || !part.some((candidate) => contended.engines.has(candidate))) {
@@ -1426,33 +1906,68 @@ export class PoolProxyService {
       }
       return result.pieces;
     };
-    // Read from the same in-memory settings object every other pool knob comes from, so a pin takes
-    // effect on the next request and costs no query on the inference hot path.
-    const pin = resolvePinFor(this.configuration.getHubPoolPreferences().poolPins, model);
+    // Last within each group, after contention and the pin, because only then is it known which
+    // candidate a group would try first — see `applySlowerPlacement`.
+    const inFlight = new Map(affinity.ordered.map((entry) => [entry.candidate, entry.inFlight]));
+    const thresholds = slowerPlacementThresholds();
+    // Asked of the same quarantine `demoteWithheldEngines` reads just after, and not at all while it is empty.
+    const quarantineEmpty = this.outputQuarantine.isEmpty();
+    const slowerDemoted: PoolRoutingThroughputSlowerDemotion[] = [];
+    const preferMuchFaster = (piece: PoolCandidate[]): PoolCandidate[] => {
+      if (!throughput.decision) {
+        return piece;
+      }
+      const result = applySlowerPlacement(piece, {
+        estimatedTokens: throughput.decision.estimatedTokens,
+        measuredOf: (candidate) => throughput.measured.get(candidate),
+        inFlightOf: (candidate) => inFlight.get(candidate) ?? 0,
+        holdsFront: (candidate) => candidate === affinity.held || (pin !== null && pinMatches(candidate, pin)),
+        mayGoAhead: staysInPlace,
+        withheld: (candidate) =>
+          !quarantineEmpty &&
+          this.outputQuarantine.isWithheld({ nodeKey: candidate.peerId ?? LOCAL_CANDIDATE_KEY, backend: candidate.backend, model }),
+        ...thresholds,
+      });
+      slowerDemoted.push(...result.demoted);
+      return result.ordered;
+    };
     // The cap is the outermost split and the ceiling the next, because both are operator statements
     // and a node over its cap reloads or truncates where a node over its ceiling is merely slow. The
     // other three are inferences and act within those: slots outside throughput, because a full
     // engine queues the request whole where a slow one merely reads it slowly, and contention inside
     // throughput, because a slow node misses its whole budget where a contended one may be waiting
-    // out a turn that is nearly done. With nothing demoted and no over-cap or over-ceiling tail this
-    // is `applyPin(ordered, pin)` exactly, which keeps an unmeasured fleet on the order it had before
-    // any of the five existed. The ceiling's own "everything over means nothing moves" rule was
-    // judged on the whole list, so `overCeiling` is already empty in that case.
-    const overCeiling = new Set(ceiling.overCeiling);
+    // out a turn that is nearly done. With nothing demoted, deferred or preferred for speed and no
+    // over-cap or over-ceiling tail this is `applyPin(ordered, pin)` exactly, which keeps an
+    // unmeasured fleet on the order it had before any of the five existed. The ceiling's own
+    // "everything over means nothing moves" rule was judged on the whole list, so `overCeiling` is
+    // already empty in that case.
     const candidates = [cap.preferred, cap.overCap].flatMap((capGroup) =>
       splitDemoted(capGroup, overCeiling).flatMap((group) =>
         splitDemoted(group, slots.demoted).flatMap((slotPart) =>
-          splitDemoted(slotPart, throughput.demoted).flatMap((part) => giveWay(part).flatMap((piece) => applyPin(piece, pin))),
+          splitByThroughput(slotPart, throughput, scoreOf).flatMap((part) =>
+            giveWay(part).flatMap((piece) => preferMuchFaster(applyPin(piece, pin))),
+          ),
         ),
       ),
     );
+    if (throughput.decision && slowerDemoted.length > 0) {
+      const moves = slowerDemoted
+        .map(
+          (entry) =>
+            `${entry.node} (~${entry.predictedMs}ms, ${entry.inFlight} in flight) behind ${entry.fasterNode} (~${entry.fasterMs}ms, ${entry.fasterInFlight} in flight)`,
+        )
+        .join('; ');
+      this.logger.debug(
+        `[PoolProxy] ~${throughput.decision.estimatedTokens}-token prompt for "${model}" put ${moves}: predicted at least ${thresholds.ratio}x and ${thresholds.floorMs}ms faster`,
+      );
+    }
     return {
       candidates,
       pin,
       promptCeiling: ceiling.decision,
       contextCap: cap.decision,
       slots: slots.decision,
-      throughput: throughput.decision,
+      throughput: throughput.decision && slowerDemoted.length > 0 ? { ...throughput.decision, slowerDemoted } : throughput.decision,
       contention: contended ? this.describeContention(model, contended, gaveWayTo, heldByAffinity ? held : null) : null,
       // Judged on the FINAL list: `hit` is a promise that the request goes to the remembered engine
       // first, and a ceiling, a demotion or a pin applied after affinity can each have put another
@@ -1538,7 +2053,19 @@ export class PoolProxyService {
    *
    * Both sources feed one prediction that takes the slowest applicable point, so a peer cannot talk its
    * way out of a deadline this node watched it miss. The body is measured only when some candidate has
-   * evidence, and one debug line is written per request that demoted something, as for the ceiling.
+   * evidence, and one debug line is written per request that demoted or deferred something, as for
+   * the ceiling.
+   *
+   * An unmeasured peer is judged on the prior its advertised `hardwareTier` gives it (see
+   * {@link unmeasuredPriorOf}). Three kinds of candidate keep their place unmeasured whatever the prompt:
+   *
+   * - **This node's own engine.** Its evidence is forgotten on every Hub restart while the engine's
+   *   prefix cache is not, so deferring it then would trade a warm prefix for a cold prefill on a peer;
+   *   and `poolLocalAffinity` is the operator's statement about it.
+   * - **The engine prefix affinity holds.** The session's prefix is warm there, and the measured node
+   *   it would give way to reads the whole prompt cold.
+   * - **A pinned peer.** The pin is the operator's statement; unmeasured is a prior, not a measurement
+   *   that could overrule it the way a predicted miss does.
    */
   private applyMeasuredThroughput(
     model: string,
@@ -1546,9 +2073,13 @@ export class PoolProxyService {
     peers: HubPoolPeer[],
     measurePromptBytes: () => number,
     streaming: boolean,
-  ): ReturnType<typeof applyThroughputPlacement> {
+    placement: Pick<UnmeasuredPlacement, 'groupOf' | 'scoreOf' | 'staysInPlace'> & {
+      pinned: (candidate: PoolCandidate) => boolean;
+      held: PoolCandidate | null;
+    },
+  ): ThroughputPlacement {
     if (!throughputPlacementEnabled()) {
-      return { demoted: NOTHING_DEMOTED, decision: null };
+      return { demoted: NOTHING_DEMOTED, deferred: NOTHING_DEFERRED, measured: NOTHING_MEASURED, decision: null };
     }
     const now = Date.now();
     const advertised = new Map(
@@ -1573,8 +2104,13 @@ export class PoolProxyService {
     };
     const points = new Map(ordered.map((candidate) => [candidate, pointsOf(candidate)]));
     if (![...points.values()].some((list) => list.length > 0)) {
-      return { demoted: NOTHING_DEMOTED, decision: null };
+      return { demoted: NOTHING_DEMOTED, deferred: NOTHING_DEFERRED, measured: NOTHING_MEASURED, decision: null };
     }
+    const tiers = new Map(peers.map((peer) => [peer.id, (peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.hardwareTier]));
+    const priorOf = (candidate: PoolCandidate): UnmeasuredPrior | null =>
+      candidate.peerId === null || candidate === placement.held || placement.pinned(candidate)
+        ? null
+        : unmeasuredPriorOf(tiers.get(candidate.peerId));
     const bytes = measurePromptBytes();
     const estimatedTokens = estimatePromptTokens(bytes);
     const result = applyThroughputPlacement(
@@ -1582,6 +2118,7 @@ export class PoolProxyService {
       (candidate) => predictPrefill(points.get(candidate) ?? [], estimatedTokens, now),
       estimatedTokens,
       forwardBudgetMs(streaming, bytes),
+      { priorOf, groupOf: placement.groupOf, scoreOf: placement.scoreOf, staysInPlace: placement.staysInPlace },
     );
     const decision = result.decision;
     if (decision && result.demoted.size > 0) {
@@ -1594,6 +2131,14 @@ export class PoolProxyService {
         .join(', ');
       this.logger.debug(
         `[PoolProxy] ~${estimatedTokens}-token prompt for "${model}" put ${nodes} behind every candidate expected to meet its ${decision.budgetMs}ms budget`,
+      );
+    }
+    if (decision && decision.unmeasured.length > 0) {
+      const nodes = decision.unmeasured
+        .map((entry) => `${entry.node} (${entry.prior === 'cpu-only' ? 'unmeasured, no GPU advertised' : 'unmeasured'})`)
+        .join(', ');
+      this.logger.debug(
+        `[PoolProxy] ~${estimatedTokens}-token prompt for "${model}" put ${nodes} behind the candidates as busy as them measured to meet its ${decision.budgetMs}ms budget`,
       );
     }
     return result;
@@ -1958,9 +2503,19 @@ export class PoolProxyService {
     /** The app's `X-Hub-Pool-Session` header as Express read it, if it sent one — see `POOL_SESSION_HEADER`. */
     sessionHeader?: string | string[];
   }): Promise<void> {
+    // One close watch for the whole request, taken off the response once it has settled — see `watchClient`.
+    const watch = watchClient(params.res);
+    try {
+      await this.routeRequest(params, watch);
+    } finally {
+      watch.dispose();
+    }
+  }
+
+  private async routeRequest(params: Parameters<PoolProxyService['proxyRequest']>[0], watch: ResponseCloseWatch): Promise<void> {
     const { path, method, res } = params;
     const startedAt = Date.now();
-    const clientClosed = abortWhenClientCloses(res);
+    const clientClosed = watch.clientClosed;
     const model = await this.resolveModelAlias(params.model);
     if (!model) {
       const failed = this.routingLog.record({
@@ -1985,6 +2540,7 @@ export class PoolProxyService {
         status: null,
         durationMs: Date.now() - startedAt,
         usage: null,
+        reason: `nothing in the pool can stand in for "${AUTO_MODEL}"`,
       });
       res.setHeader(POOL_REQUEST_ID_HEADER, failed.id);
       res.status(502).json({ error: describeUnresolvableAuto() });
@@ -1997,7 +2553,7 @@ export class PoolProxyService {
     // app that originated this call has no reason to know that, so the proxy adds it here rather
     // than never seeing a usage frame at all. See `response-usage-tap.ts`.
     const body = injectUsageOptIn(aliasedBody);
-    const streaming = isStreamingRequest(body);
+    const streaming = isStreamingRequest(body, path);
     // Throughput is judged, and measured, on exactly the routes the ceiling is: a body that is one
     // context the engine reads before its first token.
     const judged = PROMPT_CEILING_PATHS.has(path);
@@ -2006,13 +2562,35 @@ export class PoolProxyService {
     // Keyed on the resolved model, never the alias: `auto` on two Hubs can mean two models, and the
     // cache a session warms is the resolved one's.
     const prefixKey = memoize(() => derivePrefixKey(model, body, params.sessionHeader));
-    const { candidates, pin, promptCeiling, contextCap, slots, throughput, contention, affinity, peers, localProbes } = await this.rankCandidates(
+    const {
+      candidates: ranked,
+      pin,
+      promptCeiling,
+      contextCap,
+      slots,
+      throughput,
+      contention,
+      affinity,
+      peers,
+      localProbes,
+    } = await this.rankCandidates(
       model,
       judged ? { bytes: () => payload()?.length ?? 0, streaming, prefixKey, numCtx: () => requestedWindow(path, body) } : undefined,
     );
+    // After every placement step and the pin, so nothing puts an engine that has been answering with
+    // garbage back in front — the local head start included.
+    const candidates = this.demoteWithheldEngines(model, ranked, affinity.decision);
     // Nodes a candidate rejected before one answered. Non-empty in the finished record is exactly
     // what makes it a failover, so the whole chain is one entry rather than one per attempt.
     const failedOverFrom: string[] = [];
+    // Why each of them was passed over, in the same order — see `PoolRoutingRecord.attempts`.
+    const attempts: PoolRoutingAttempt[] = [];
+    const passOver = (candidate: PoolCandidate, node: string, status: number | null, reason: string) => {
+      failedOverFrom.push(node);
+      attempts.push({ node, backend: candidate.backend, status, reason });
+    };
+    // The completion dialect this path answers in, whose output is judged; `null` for every other route.
+    const dialect = outputDialectOf(path);
 
     if (candidates.length === 0) {
       const failed = this.routingLog.record({
@@ -2037,7 +2615,8 @@ export class PoolProxyService {
         status: null,
         durationMs: Date.now() - startedAt,
         usage: null,
-        ...describeRequestShape(method, body),
+        reason: 'no candidate',
+        ...describeRequestShape(method, body, path),
       });
       res.setHeader(POOL_REQUEST_ID_HEADER, failed.id);
       // `localBackends` is the container's-eye view of every local engine: the operator reading
@@ -2065,11 +2644,12 @@ export class PoolProxyService {
       candidates: candidates.length,
       attempt: 1,
       failedOverFrom,
+      attempts,
       pin: describePinForLog(pin),
       promptCeiling,
       contextCap,
       slots,
-      ...describeRequestShape(method, body),
+      ...describeRequestShape(method, body, path),
       throughput,
       contention,
       affinity: affinity.decision,
@@ -2194,7 +2774,9 @@ export class PoolProxyService {
             );
           }
           lastError = new Error(`${candidate.nodeFqdn ?? 'local'} returned ${upstream.status}`);
-          failedOverFrom.push(nodeLabel);
+          const reason = describeStatusReason(upstream.status, verdict?.signature);
+          passOver(candidate, nodeLabel, upstream.status, reason);
+          this.logFailover(model, candidate, nodeLabel, upstream.status, reason, untried.length);
           await this.noteRejectedCandidate(candidate, upstream.status, upstream.headers);
           continue;
         }
@@ -2221,6 +2803,44 @@ export class PoolProxyService {
         // Everything the walk did not fail over and is not an engine's verdict is relayed on its
         // status, as it always was; a 4xx among those is the request refused, and is recorded so.
         const refusal = requestError ?? passedThroughRequestError(upstream.status);
+        // A non-streamed completion is read whole before anything is sent, which is what lets an
+        // answer that was cut off or degenerate go no further than this Hub while another candidate
+        // can still be asked. Reading it costs the caller nothing: the engine sends the body with its
+        // headers, the whole completion at once. A stream cannot be held — its first frame is on the
+        // wire before its last exists — so it is judged on the way past, below, and only recorded.
+        // A stream is whatever the engine sent as one, not only what the request asked for: holding
+        // one would send the caller nothing until the generation ended.
+        const streamedAnswer = streaming || isStreamedContentType(upstream.headers.get('content-type'));
+        let heldBody: WebReadableStream<Uint8Array> | undefined;
+        let outputFault: PoolOutputFault | null = null;
+        if (dialect && !streamedAnswer && !refusal && upstream.ok && upstream.body) {
+          const held = await holdWholeBody(upstream.body as WebReadableStream<Uint8Array>, MAX_JUDGED_BODY_BYTES).catch((error: unknown) => {
+            // Said as the upstream failing mid-body, like the relay says it, so the catch below
+            // reads it as the engine's failure rather than a transport error before any answer.
+            throw new RelayError('upstream', error);
+          });
+          heldBody = held.body;
+          const judgedBody = held.text === null ? null : judgeWholeBody(dialect, held.text);
+          if (judgedBody?.fault) {
+            this.strikeOutput(target, judgedBody.fault, nodeLabel);
+            if (untried.length > 0) {
+              lastError = new Error(`${nodeLabel} answered with ${describeOutputFault(judgedBody.fault)}`);
+              passOver(candidate, nodeLabel, upstream.status, judgedBody.fault);
+              this.logFailover(model, candidate, nodeLabel, upstream.status, describeOutputFault(judgedBody.fault), untried.length);
+              continue;
+            }
+            // The last candidate: its answer goes to the caller as the engine gave it, which is all
+            // there is, and the row says the node failed rather than that it served. Nor should the
+            // session follow its prefix back to this engine on its next turn.
+            outputFault = judgedBody.fault;
+            if (affinity.key) {
+              this.prefixAffinity.forget(affinity.key.key);
+            }
+          } else if (judgedBody?.complete) {
+            this.clearOutputStrikes(target, nodeLabel);
+          }
+        }
+        const nodeFault: PoolRoutingRequestError | null = outputFault ? { signature: outputFault, basis: 'node', confirms: null } : null;
         // Settled here rather than after the stream: headers are the routing decision, and the
         // generation that follows can run for minutes (or never end, if the client hung up).
         this.routingLog.settle(row, {
@@ -2230,10 +2850,11 @@ export class PoolProxyService {
           attempt: index + 1,
           // `failed` for any refusal of the request: the node answered, but nothing was served. A
           // 4xx settled `served` was read as a success with a first byte of a few milliseconds.
-          outcome: refusal ? 'failed' : 'served',
+          outcome: refusal || nodeFault ? 'failed' : 'served',
           status: upstream.status,
           durationMs: Date.now() - startedAt,
-          requestError: refusal,
+          requestError: refusal ?? nodeFault,
+          reason: outputFault ?? (refusal ? describeStatusReason(upstream.status, refusal.signature) : null),
         });
         // Attribution rides on the commit, so it is on the wire before the first body byte on the
         // streamed path too — the headers are the point of no return, the body follows.
@@ -2249,20 +2870,35 @@ export class PoolProxyService {
         );
         committed = true;
         const meter = measurable && upstream.ok ? startResponseTiming() : null;
+        // Only a 200 that was relayed as the engine's answer: a refusal is not output, and a held
+        // body was judged above.
+        const judge = dialect && streamedAnswer && upstream.ok && !refusal ? new OutputJudge(dialect, true) : null;
+        let relayCut = false;
         try {
-          await this.streamResponse(
-            upstream,
-            res,
-            (usage) => {
+          await this.streamResponse(upstream, res, watch, {
+            onUsage: (usage) => {
               this.routingLog.attachUsage(row, usage);
               if (meter) meter.timing.usage = usage;
             },
-            meter?.observer,
-          );
+            observer: meter?.observer,
+            judge,
+            body: heldBody,
+          });
+        } catch (error) {
+          relayCut = error instanceof RelayError && error.side === 'upstream';
+          throw error;
         } finally {
-          if (meter) {
+          // An answer the row records as the node failing is no measure of the engine serving: an
+          // engine that emits placeholder tokens quickly would otherwise read as a fast one, and
+          // placement would keep favouring it once its withhold ran out.
+          if (meter && !outputFault && !relayCut && !judge?.verdict()?.fault) {
             this.recordServedThroughput(target, streaming, payload()?.length ?? 0, attemptStartedAt, headersAt, meter.timing);
           }
+          this.routingLog.update(row, { totalMs: Date.now() - startedAt });
+        }
+        if (judge && this.settleStreamVerdict(row, judge.verdict(), target, nodeLabel) && affinity.key) {
+          // A session must not keep following its prefix back to an engine that answered it with garbage.
+          this.prefixAffinity.forget(affinity.key.key);
         }
         return;
       } catch (error) {
@@ -2276,20 +2912,50 @@ export class PoolProxyService {
         if (!committed && measurable && streaming) {
           this.recordMissedDeadline(target, payload()?.length ?? 0, attemptStartedAt, error);
         }
-        failedOverFrom.push(nodeLabel);
-        this.logger.warn(
-          `[PoolProxy] candidate ${candidate.nodeFqdn ?? 'local'} (${candidate.backend}) failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
         if (committed) {
+          if (error instanceof RelayError && error.side === 'downstream') {
+            // The response to the caller failed under the relay — its socket, not the node. Nobody is
+            // left to read the answer, and the node served what it was asked.
+            this.logger.debug(`[PoolProxy] the response from ${nodeLabel} could not be written to the client: ${error.message}`);
+            res.destroy();
+            return;
+          }
+          this.logger.warn(`[PoolProxy] candidate ${candidate.nodeFqdn ?? 'local'} (${candidate.backend}) failed: ${describeAttemptError(error)}`);
           // Status and headers (and likely some generated tokens) are already on the wire. Another
           // candidate would restart the answer into a response the client is mid-way through
           // reading, so let the stream die instead and leave the client to retry.
           this.logger.warn('[PoolProxy] response already committed to the client; not failing over');
-          // The push above changed a row that settled at headers time; through `update` so `?since=` returns it.
-          this.routingLog.update(row, { failedOverFrom });
+          // The row settled `served` at headers time, and the caller got a cut-off answer from this
+          // node: the node failed it. Not a failover, which nothing was — through `update` so
+          // `?since=` returns the change.
+          this.routingLog.update(row, {
+            outcome: 'failed',
+            requestError: { signature: 'truncated-upstream', basis: 'node', confirms: null },
+            reason: 'truncated-upstream',
+          });
+          // Struck like an answer that ended without its final frame, which is what the caller got:
+          // an engine that keeps dying mid-generation must not keep drawing every retry, the local
+          // head start included. Nor should the session follow its prefix back to it.
+          if (dialect && error instanceof RelayError && error.side === 'upstream') {
+            this.strikeOutput(target, 'truncated-upstream', nodeLabel);
+            if (affinity.key) {
+              this.prefixAffinity.forget(affinity.key.key);
+            }
+          }
           res.destroy();
           return;
         }
+        if (dialect && error instanceof RelayError && error.side === 'upstream') {
+          // A held body the engine stopped sending part-way: cut off exactly as a streamed answer that
+          // dies after the commit is, only caught while the next candidate can still be asked.
+          this.strikeOutput(target, 'truncated-upstream', nodeLabel);
+        }
+        const reason = describeAttemptError(error);
+        passOver(candidate, nodeLabel, null, reason);
+        this.logger.warn(
+          `[PoolProxy] candidate ${candidate.nodeFqdn ?? 'local'} (${candidate.backend}) failed: ${reason}` +
+            (index + 1 < candidates.length ? `; failing over (${candidates.length - index - 1} candidate(s) left)` : '; no candidate left'),
+        );
       } finally {
         this.loadService.release(key, generation);
       }
@@ -2303,6 +2969,8 @@ export class PoolProxyService {
       outcome: 'failed',
       status: null,
       durationMs: Date.now() - startedAt,
+      // The last candidate's; `attempts` holds every one.
+      reason: attempts[attempts.length - 1]?.reason ?? null,
     });
     this.logger.error(
       `[PoolProxy] all ${candidates.length} candidate(s) for model "${model}" failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
@@ -2356,6 +3024,105 @@ export class PoolProxyService {
       durationMs: waitedMs,
     });
     this.logger.log(`[PoolProxy] client closed the request after ${waitedMs}ms while ${nodeLabel} had not answered; upstream request aborted`);
+  }
+
+  /**
+   * One line per failover, naming the node, what it answered and why it was passed over. Without it
+   * a failover was visible only in the routing log's `failedOverFrom`: two 2026-09-29 failovers from
+   * beta-1 to core-17 left no line on either Hub. At warn for a node failing (a 5xx, an output fault),
+   * at log for one saying "not now" (408/429) or refusing the pairing, which is load shedding or has
+   * a warning of its own.
+   */
+  private logFailover(model: string, candidate: PoolCandidate, nodeLabel: string, status: number | null, reason: string, left: number): void {
+    const line =
+      `[PoolProxy] ${nodeLabel} (${candidate.backend}) failed "${model}": ${reason}; ` +
+      (left > 0 ? `failing over (${left} candidate(s) left)` : 'no candidate left');
+    if (status !== null && status >= 400 && status < 500) {
+      this.logger.log(line);
+    } else {
+      this.logger.warn(line);
+    }
+  }
+
+  /**
+   * {@link applyOutputQuarantine} against this node's output strikes. The affinity decision is
+   * corrected when the engine it put first was moved back, so the row does not claim a `hit` that
+   * was not placed first. One debug line when anything moved; the warn was written when it was withheld.
+   */
+  private demoteWithheldEngines(model: string, ranked: PoolCandidate[], affinity: PoolRoutingAffinity | null): PoolCandidate[] {
+    if (this.outputQuarantine.isEmpty()) {
+      return ranked;
+    }
+    const { candidates, withheld } = applyOutputQuarantine(ranked, (candidate) =>
+      this.outputQuarantine.isWithheld({ nodeKey: candidate.peerId ?? LOCAL_CANDIDATE_KEY, backend: candidate.backend, model }),
+    );
+    if (withheld.length === 0) {
+      return ranked;
+    }
+    if (affinity?.outcome === 'hit' && ranked[0] && withheld.includes(ranked[0])) {
+      affinity.outcome = 'skipped';
+    }
+    this.logger.debug(
+      `[PoolProxy] "${model}" moved ${withheld.map((candidate) => `${candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY} ${candidate.backend}`).join(', ')} behind every other candidate: withheld after answering with bad output`,
+    );
+    return candidates;
+  }
+
+  /**
+   * One cut-off or degenerate answer, struck against the engine that gave it. The strike that
+   * withholds it is the one warn line an operator gets for the whole run of them, and says why; every
+   * answer is on its routing row either way.
+   */
+  private strikeOutput(target: OutputTarget, fault: PoolOutputFault, nodeLabel: string): void {
+    const decision = this.outputQuarantine.strike(target, fault);
+    if (!decision.withheld) {
+      this.logger.debug(
+        `[PoolProxy] ${nodeLabel} ${target.backend} answered "${target.model}" with ${describeOutputFault(fault)}; strike ${decision.strikes} of ${QUARANTINE_STRIKES}`,
+      );
+      return;
+    }
+    const why =
+      decision.strikes > 1
+        ? `${decision.strikes} times within ${Math.round(STRIKE_WINDOW_MS / 60_000)} minutes`
+        : 'again, on its first request after the last withhold ran out';
+    this.logger.warn(
+      `[PoolProxy] ${nodeLabel} ${target.backend} answered "${target.model}" with ${describeOutputFault(fault)} ${why}; ` +
+        `withholding it from routing for ${Math.round(decision.forMs / 1000)}s — every other candidate is tried first`,
+    );
+  }
+
+  /** A clean, complete answer clears the engine's strikes, and ends a withhold outright. */
+  private clearOutputStrikes(target: OutputTarget, nodeLabel: string): void {
+    if (this.outputQuarantine.isEmpty()) {
+      return;
+    }
+    if (this.outputQuarantine.clear(target)) {
+      this.logger.log(`[PoolProxy] ${nodeLabel} ${target.backend} answered "${target.model}" cleanly again — no longer withheld from routing`);
+    }
+  }
+
+  /**
+   * A relayed stream's verdict, once it has ended: a fault turns the row `failed` on the node's account
+   * and strikes the engine, a clean complete answer clears it. `true` when the stream was faulty. A
+   * stream that was cut, by either end, has no verdict and changes nothing here.
+   */
+  private settleStreamVerdict(row: PoolRoutingRecord, verdict: OutputVerdict | null, target: OutputTarget, nodeLabel: string): boolean {
+    if (!verdict) {
+      return false;
+    }
+    if (verdict.fault) {
+      this.routingLog.update(row, {
+        outcome: 'failed',
+        requestError: { signature: verdict.fault, basis: 'node', confirms: null },
+        reason: verdict.fault,
+      });
+      this.strikeOutput(target, verdict.fault, nodeLabel);
+      return true;
+    }
+    if (verdict.complete) {
+      this.clearOutputStrikes(target, nodeLabel);
+    }
+    return false;
   }
 
   /**
@@ -2568,13 +3335,16 @@ export class PoolProxyService {
     const startedAt = Date.now();
     // The sending node aborting its own fetch closes this response, and this is the node whose engine
     // is doing the prefill — so the close has to be carried one hop further, to the engine.
-    const senderClosed = abortWhenClientCloses(res);
+    const watch = watchClient(res);
+    const senderClosed = watch.clientClosed;
+    // The model for the row and the output strikes; the serving record keeps reading the header alone.
+    const rowModel = forwardedModel(model, body) ?? null;
     // Timed exactly like a request this node's own apps sent here, because it is the same engine
     // doing the same work — and a node that mostly serves peers learns its own speed only this way.
     // It reads the response for timing frames as the outbound tap does, and never the request body.
     const target: ThroughputTarget | null =
       model && PROMPT_CEILING_PATHS.has(path) && this.loadService.localInFlight() === 0 ? { nodeKey: LOCAL_CANDIDATE_KEY, backend, model } : null;
-    const streaming = isStreamingRequest(body);
+    const streaming = isStreamingRequest(body, path);
     const payload = forwardedPayload(method, body);
     // A peer's turn holds a runner here exactly as a local app's does, so it is named the same way.
     const generation: LocalGeneration | undefined =
@@ -2582,15 +3352,14 @@ export class PoolProxyService {
     this.loadService.acquire(LOCAL_CANDIDATE_KEY, generation);
     // Recorded once per forward, whichever way it ends: a stream that dies after the backend
     // answered is the same routing decision, not a second one.
-    let recorded = false;
-    const request = { id: requestId, ...describeRequestShape(method, body) };
+    let row: PoolRoutingRecord | null = null;
+    const request = { id: requestId, ...describeRequestShape(method, body, path) };
+    // This node's engine is the one answering, so this node strikes it too — for its own apps'
+    // next requests. The sender judges the same bytes and keeps its own account of this engine.
+    const dialect = outputDialectOf(path);
     try {
       const upstream = await this.callBackend(backend, path, method, body, payload, senderClosed);
       const headersAt = Date.now();
-      // Logged from the receiving side too, so an operator can answer "which of my peers is
-      // spending my GPU time" — the sender's own log only covers what it sent.
-      this.recordInbound(backend, path, fromPeerFqdn, upstream.status, startedAt, undefined, request);
-      recorded = true;
       // A peer's forward is the only evidence an inbound-only node ever gets that one of its own
       // models cannot run: nothing here goes through `proxyRequest`, so without this the node
       // earns no strikes, withholds nothing, and keeps advertising the dead model to its peers.
@@ -2598,34 +3367,81 @@ export class PoolProxyService {
       // it serves, so a peer-forwarded `/api/show` must not credit or strike its serving record.
       // The error body is read from a clone, so the sender still gets it whole and judges it itself.
       const verdict = await readRequestErrorVerdict(upstream);
+      // Logged from the receiving side too, so an operator can answer "which of my peers is
+      // spending my GPU time" — the sender's own log only covers what it sent. An error status says
+      // why on the row, which until 2026-09-29 read a bare 500 on beta-1 for every turn it failed.
+      row = this.recordInbound({
+        backend,
+        path,
+        fromPeerFqdn,
+        model: rowModel,
+        status: upstream.status,
+        startedAt,
+        request,
+        reason: upstream.status >= 400 ? describeStatusReason(upstream.status, verdict?.signature) : null,
+      });
       this.noteLocalServingOutcome(backend, MODEL_METADATA_PATHS.has(path) ? undefined : model, upstream.status, verdict);
       // Marks the answer as the engine's, so the sender can tell an engine refusing its key here
       // from this Hub refusing the pairing: see `isRelayedEngineResponse`. The sender drops every
       // `x-hub-pool-*` header from a peer's answer, so the caller never sees it.
       const relayed = { [POOL_BACKEND_HEADER]: backend };
-      if (!target || !upstream.ok) {
-        await this.pipeResponse(upstream, res, relayed);
-        return;
-      }
-      const meter = startResponseTiming();
+      const meter = target && upstream.ok ? startResponseTiming() : null;
+      const judge =
+        dialect && upstream.ok ? new OutputJudge(dialect, streaming || isStreamedContentType(upstream.headers.get('content-type'))) : null;
       this.commitResponse(upstream, res, relayed);
+      const settledRow = row;
+      let relayCut = false;
       try {
-        await this.streamResponse(
-          upstream,
-          res,
-          (usage) => {
-            meter.timing.usage = usage;
-          },
-          meter.observer,
-        );
+        await this.streamResponse(upstream, res, watch, {
+          onUsage: meter
+            ? (usage) => {
+                meter.timing.usage = usage;
+              }
+            : undefined,
+          observer: meter?.observer,
+          judge,
+        });
+      } catch (error) {
+        relayCut = error instanceof RelayError && error.side === 'upstream';
+        throw error;
       } finally {
-        this.recordServedThroughput(target, streaming, payload?.length ?? 0, startedAt, headersAt, meter.timing);
+        // Not from an answer that failed on this engine's account — see the same guard in `routeRequest`.
+        if (meter && target && !relayCut && !judge?.verdict()?.fault) {
+          this.recordServedThroughput(target, streaming, payload?.length ?? 0, startedAt, headersAt, meter.timing);
+        }
+        this.routingLog.update(settledRow, { totalMs: Date.now() - startedAt });
+      }
+      const judged = judge?.verdict();
+      if (judged?.fault) {
+        this.routingLog.update(settledRow, { outcome: 'failed', reason: judged.fault });
+        if (rowModel) this.strikeOutput({ nodeKey: LOCAL_CANDIDATE_KEY, backend, model: rowModel }, judged.fault, LOCAL_CANDIDATE_KEY);
+      } else if (judged?.complete && rowModel) {
+        this.clearOutputStrikes({ nodeKey: LOCAL_CANDIDATE_KEY, backend, model: rowModel }, LOCAL_CANDIDATE_KEY);
       }
     } catch (error) {
-      if (!recorded) {
-        this.recordInbound(backend, path, fromPeerFqdn, null, startedAt, undefined, request);
+      if (!row) {
+        // A sender that gave up on this forward is not this node failing it, and says so: the sender's
+        // walk moved on, or its caller left, and counting it failed here read as a peer failure.
+        this.recordInbound({
+          backend,
+          path,
+          fromPeerFqdn,
+          model: rowModel,
+          status: null,
+          startedAt,
+          request,
+          clientClosed: senderClosed.aborted,
+          reason: senderClosed.aborted ? null : describeAttemptError(error),
+        });
         if (target && streaming) {
           this.recordMissedDeadline(target, payload?.length ?? 0, startedAt, error);
+        }
+      } else if (!senderClosed.aborted && error instanceof RelayError && error.side === 'upstream') {
+        // The engine died mid-answer: the sender got a cut-off response from this node, and this
+        // node's own apps would get the same, so it is struck here as a judged cut-off answer is.
+        this.routingLog.update(row, { outcome: 'failed', reason: 'truncated-upstream' });
+        if (dialect && rowModel) {
+          this.strikeOutput({ nodeKey: LOCAL_CANDIDATE_KEY, backend, model: rowModel }, 'truncated-upstream', LOCAL_CANDIDATE_KEY);
         }
       }
       if (senderClosed.aborted) {
@@ -2637,6 +3453,7 @@ export class PoolProxyService {
       throw error;
     } finally {
       this.loadService.release(LOCAL_CANDIDATE_KEY, generation);
+      watch.dispose();
     }
   }
 
@@ -2656,29 +3473,47 @@ export class PoolProxyService {
     status: number;
     /** The sender's routing-log id, when it sent one — so a refusal joins to the sender's failover row too. */
     requestId?: string;
+    /** The model the forward was for, when the sender named it — see {@link forwardedModel}. */
+    model?: string;
+    /** Why it was refused, in the row's few words. */
+    reason?: string;
   }): void {
     // 'failed' explicitly: nothing was served. The rule below now reads a 4xx as failed too, but that
     // rule describes an engine's answer, and a refusal at the door should not depend on it.
-    this.recordInbound(params.backend, params.path, params.fromPeerFqdn, params.status, Date.now(), 'failed', { id: params.requestId });
+    this.recordInbound({
+      backend: params.backend,
+      path: params.path,
+      fromPeerFqdn: params.fromPeerFqdn,
+      model: params.model ?? null,
+      status: params.status,
+      startedAt: Date.now(),
+      outcome: 'failed',
+      request: { id: params.requestId },
+      reason: params.reason ?? describeStatusReason(params.status),
+    });
   }
 
-  private recordInbound(
-    backend: InferenceBackendType | null,
-    path: string,
-    fromPeerFqdn: string | undefined,
-    status: number | null,
-    startedAt: number,
-    outcome?: PoolRoutingOutcome,
-    request: Pick<PoolRoutingRecordInput, 'id' | 'stream' | 'bodyBytes' | 'budgetMs'> = {},
-  ): void {
-    this.routingLog.record({
-      ...request,
+  private recordInbound(entry: {
+    backend: InferenceBackendType | null;
+    path: string;
+    fromPeerFqdn: string | undefined;
+    model: string | null;
+    status: number | null;
+    startedAt: number;
+    outcome?: PoolRoutingOutcome;
+    request?: Pick<PoolRoutingRecordInput, 'id' | 'stream' | 'bodyBytes' | 'budgetMs'>;
+    reason?: string | null;
+    clientClosed?: boolean;
+  }): PoolRoutingRecord {
+    const { backend, path, fromPeerFqdn, status, startedAt, outcome } = entry;
+    return this.routingLog.record({
+      ...entry.request,
       at: new Date().toISOString(),
       direction: 'inbound',
       path,
-      // A peer forward carries the model in a body we deliberately never parse — it is passed
-      // through untouched, and reading it here would mean holding the payload we promise not to log.
-      model: null,
+      // The sender's `X-Hub-Pool-Model`, or the body's own `model`: the body is passed through
+      // untouched, and only that one field of it is read.
+      model: entry.model,
       node: fromPeerFqdn ?? null,
       peerId: null,
       backend,
@@ -2701,9 +3536,10 @@ export class PoolProxyService {
       status,
       durationMs: Date.now() - startedAt,
       // Inbound (peer-forwarded) usage capture is out of scope for now — see the PR description.
-      // `forwardToLocalBackendAndRespond` calls the shared `pipeResponse`/`callBackend` path, not
-      // `proxyRequest`, so wiring this in later means threading the same tap through there too.
+      // `forwardToLocalBackendAndRespond` taps the response for timings only, not for this row.
       usage: null,
+      reason: entry.reason ?? null,
+      clientClosed: entry.clientClosed ?? false,
     });
   }
 
@@ -2719,7 +3555,16 @@ export class PoolProxyService {
    * to a peer wholesale rather than blending.
    */
   async proxyLocalOnlyRequest(path: string, method: string, body: unknown, res: Response): Promise<void> {
-    const clientClosed = abortWhenClientCloses(res);
+    const watch = watchClient(res);
+    try {
+      await this.serveLocalOnly(path, method, body, res, watch);
+    } finally {
+      watch.dispose();
+    }
+  }
+
+  private async serveLocalOnly(path: string, method: string, body: unknown, res: Response, watch: ResponseCloseWatch): Promise<void> {
+    const clientClosed = watch.clientClosed;
     if (MERGED_LISTING_PATHS.has(path)) {
       await this.serveMergedListing(path, method, res, clientClosed);
       return;
@@ -2746,7 +3591,7 @@ export class PoolProxyService {
         }
         this.commitResponse(upstream, res);
         committed = true;
-        await this.streamResponse(upstream, res);
+        await this.streamResponse(upstream, res, watch);
         return;
       } catch (error) {
         this.logger.debug(`[PoolProxy] ${path} via local ${type} failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -2756,7 +3601,7 @@ export class PoolProxyService {
         }
       }
     }
-    if (MODEL_METADATA_PATHS.has(path) && (await this.describeFromPeer(path, resolvedBody, res, clientClosed))) {
+    if (MODEL_METADATA_PATHS.has(path) && (await this.describeFromPeer(path, resolvedBody, res, watch))) {
       return;
     }
     // `/api/version` and `/api/tags` are how an Ollama-native caller (e.g. ci-hermes with
@@ -2898,7 +3743,8 @@ export class PoolProxyService {
    * or feed the model's serving record. A peer on a build without `local/api/show` answers 404,
    * which moves on to the next peer and, with none left, to the same 502 as before.
    */
-  private async describeFromPeer(path: string, body: unknown, res: Response, clientClosed: AbortSignal): Promise<boolean> {
+  private async describeFromPeer(path: string, body: unknown, res: Response, watch: ResponseCloseWatch): Promise<boolean> {
+    const clientClosed = watch.clientClosed;
     const model = isRecord(body)
       ? [body.model, body.name].find((value): value is string => typeof value === 'string' && value.length > 0)
       : undefined;
@@ -2939,7 +3785,7 @@ export class PoolProxyService {
         }
         this.commitResponse(upstream, res, servedByHeaders(candidate, model));
         committed = true;
-        await this.streamResponse(upstream, res);
+        await this.streamResponse(upstream, res, watch);
         return true;
       } catch (error) {
         this.logger.debug(
@@ -3156,7 +4002,7 @@ export class PoolProxyService {
         headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
         body: payload,
       },
-      isStreamingRequest(body),
+      isStreamingRequest(body, path),
       payload?.length ?? 0,
       clientClosed,
     );
@@ -3225,7 +4071,7 @@ export class PoolProxyService {
         },
         body: peerPayload,
       },
-      isStreamingRequest(body),
+      isStreamingRequest(body, path),
       peerPayload?.length ?? 0,
       clientClosed,
     );
@@ -3300,27 +4146,38 @@ export class PoolProxyService {
   }
 
   /**
-   * `onUsage`, when given, taps the body for a token-usage frame while it streams through — see
-   * `response-usage-tap.ts`. Optional because not every caller has a routing-log row to attach it
-   * to (`pipeResponse`, the inbound/listing paths below, records usage nowhere today).
+   * Relay the body to the caller. Everything in `taps` is optional and reads the body on the way past
+   * without changing a byte: `onUsage` and `observer` a token-usage frame and engine timings (see
+   * `response-usage-tap.ts`), `judge` whether the answer finished and said anything (see
+   * `hub-pool-output-check.ts`). `body` replaces the upstream's own when the caller has already read
+   * it — a non-streamed completion held to be judged.
+   *
+   * Through `relayToResponse`, not `pipeline`: the relay hears the response close through the request's
+   * one watch, where `pipeline` added seven `close` listeners of its own — see `watchResponseClose`.
    */
   private async streamResponse(
     upstream: globalThis.Response,
     res: Response,
-    onUsage?: (usage: PoolRoutingUsage) => void,
-    observer?: ResponseTapObserver,
+    watch: ResponseCloseWatch,
+    taps: {
+      onUsage?: (usage: PoolRoutingUsage) => void;
+      observer?: ResponseTapObserver;
+      judge?: OutputJudge | null;
+      body?: WebReadableStream<Uint8Array>;
+    } = {},
   ): Promise<void> {
-    if (!upstream.body) {
+    const source = taps.body ?? (upstream.body as WebReadableStream<Uint8Array> | null);
+    if (!source) {
       res.end();
       return;
     }
-    const webBody = upstream.body as WebReadableStream<Uint8Array>;
-    const body = onUsage || observer ? tapResponseUsageWhileStreaming(webBody, onUsage ?? (() => undefined), observer) : webBody;
-    await pipeline(Readable.fromWeb(body), res);
-  }
-
-  private async pipeResponse(upstream: globalThis.Response, res: Response, attribution?: Record<string, string>): Promise<void> {
-    this.commitResponse(upstream, res, attribution);
-    await this.streamResponse(upstream, res);
+    let body = source;
+    if (taps.onUsage || taps.observer) {
+      body = tapResponseUsageWhileStreaming(body, taps.onUsage ?? (() => undefined), taps.observer);
+    }
+    if (taps.judge) {
+      body = taps.judge.tap(body);
+    }
+    await relayToResponse(body as unknown as ReadableStream<Uint8Array>, res, watch);
   }
 }
