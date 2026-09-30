@@ -17,6 +17,15 @@ export function mcpCallerCapability(): ApiKeyCapability {
 }
 
 /**
+ * Whether the in-flight tool call is a signed-in operator's run from the Hub UI's tool runner
+ * (`/api/mcp-admin`), rather than an agent's key. Fails closed: anything that did not come through
+ * that route — a key of any capability, or a call whose context was lost — is not an operator.
+ */
+export function mcpCallerIsOperator(): boolean {
+  return mcpAdminCallContext.getStore() !== undefined;
+}
+
+/**
  * Who a lifecycle tool acts as for `action`, in the in-flight call: the signed-in person behind an
  * `/api/mcp-admin` run, or the `/api/mcp` key — which, when it is a managed one, may do anything on its
  * own app and on the others as far as its capability reaches (`AppLifecycleService.actorMay`), and acts

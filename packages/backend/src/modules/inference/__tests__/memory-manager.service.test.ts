@@ -663,10 +663,26 @@ describe('MemoryManagerService', () => {
   });
 
   // ─── planEviction ──────────────────────────────────────────────────
-  // Eviction drawn from what the engines hold, not only from the Hub's own loads: the 27B an app
-  // loaded through Ollama directly is `pulled` in the registry, and getModelsToEvict never sees it.
+  // What a load may unload to make room. Candidates are sized in the budget's own units, a model
+  // with a generation in flight is never one, and who asked decides whether models the Hub did not
+  // load itself are fair game (`request` no, `operator` yes).
   describe('planEviction', () => {
     const keepLemonade = { backend: 'lemonade' as const, backendModelId: 'Qwen3.8-27B-GGUF' };
+    const operator = { scope: 'operator' as const };
+    const request = { scope: 'request' as const };
+    /** beta-red: RTX 3080 10 GB, so a 9,728 MB model budget. */
+    const betaRed = () =>
+      makeProfile({
+        gpu: {
+          available: true,
+          vendor: 'nvidia',
+          model: 'RTX 3080',
+          vramMb: 10_240,
+          unifiedMemory: false,
+          driverVersion: '580',
+          runtimeAvailable: true,
+        },
+      });
 
     beforeEach(() => {
       modelRegistry.getTrackedModels.mockReturnValue([]);
@@ -674,7 +690,7 @@ describe('MemoryManagerService', () => {
       modelRegistry.getCuratedModel.mockReturnValue(undefined);
     });
 
-    it('names a model an app loaded on another engine, sized from the engine', async () => {
+    it('names a model an app loaded on another engine, for an operator, sized from the engine', async () => {
       reportResidency([
         {
           backend: 'ollama',
@@ -684,13 +700,25 @@ describe('MemoryManagerService', () => {
         { backend: 'lemonade', source: 'measured', models: [] },
       ]);
 
-      const plan = await service.planEviction(makeProfile(), 12_000, keepLemonade);
+      const plan = await service.planEviction(makeProfile(), 12_000, keepLemonade, operator);
 
       expect(plan).toEqual({
         canFree: true,
         freedMb: 17_000,
         candidates: [{ backend: 'ollama', backendModelId: 'qwen3.8:27b-mtp-q4_K_M', catalogId: null, estimatedMb: 17_000 }],
+        busy: [],
       });
+    });
+
+    it("never names a model an app loaded when an app's request asked, and so unloads nothing", async () => {
+      reportResidency([
+        { backend: 'ollama', source: 'measured', models: [resident('qwen3.8:27b-mtp-q4_K_M', { engineGpuBytes: 17_000 * MiB })] },
+        { backend: 'lemonade', source: 'measured', models: [] },
+      ]);
+
+      const plan = await service.planEviction(makeProfile(), 12_000, keepLemonade, request);
+
+      expect(plan).toEqual({ canFree: false, candidates: [], freedMb: 0, busy: [] });
     });
 
     it('never names a pinned model or the one being loaded', async () => {
@@ -702,14 +730,47 @@ describe('MemoryManagerService', () => {
         { backend: 'lemonade', source: 'measured', models: [resident('Qwen3.8-27B-GGUF')] },
       ]);
 
-      const plan = await service.planEviction(makeProfile(), 12_000, keepLemonade);
+      const plan = await service.planEviction(makeProfile(), 12_000, keepLemonade, operator);
 
       expect(plan.candidates).toEqual([]);
       expect(plan.canFree).toBe(false);
     });
 
+    // R1: `/api/ps` names an untagged catalog model `name:latest`, and an exact comparison missed the pin.
+    it('never names a pinned model the engine spells with :latest', async () => {
+      modelRegistry.getTrackedModels.mockReturnValue([
+        tracked({ catalogId: 'nomic-embed-text', backendModelId: 'nomic-embed-text', pinned: true, state: 'pinned' }),
+      ]);
+      reportResidency([
+        {
+          backend: 'ollama',
+          source: 'measured',
+          models: [resident('nomic-embed-text:latest', { engineGpuBytes: 308 * MiB }), resident('gemma4:e4b', { engineGpuBytes: 6_640 * MiB })],
+        },
+        { backend: 'lemonade', source: 'measured', models: [] },
+      ]);
+
+      const plan = await service.planEviction(makeProfile(), 6_000, { backend: 'ollama', backendModelId: 'qwen3-coder:30b' }, operator);
+      expect(plan.candidates.map((c) => c.backendModelId)).toEqual(['gemma4:e4b']);
+
+      // Needing more than gemma4 frees, the plan would have reached for the embedder next.
+      const more = await service.planEviction(makeProfile(), 6_800, { backend: 'ollama', backendModelId: 'qwen3-coder:30b' }, operator);
+      expect(more).toEqual({ canFree: false, candidates: [], freedMb: 6_640, busy: [] });
+    });
+
+    it('matches the model being loaded under :latest too', async () => {
+      reportResidency([
+        { backend: 'ollama', source: 'measured', models: [resident('nomic-embed-text:latest', { engineGpuBytes: 308 * MiB })] },
+        { backend: 'lemonade', source: 'measured', models: [] },
+      ]);
+
+      const plan = await service.planEviction(makeProfile(), 100, { backend: 'ollama', backendModelId: 'nomic-embed-text' }, operator);
+
+      expect(plan.candidates).toEqual([]);
+    });
+
     it("takes the Hub's own loads first, least recently used, and stops once enough is freed", async () => {
-      const gemma = tracked({ catalogId: 'gemma4-e4b', backendModelId: 'gemma4:e4b', memoryUsedMb: 5_000 });
+      const gemma = tracked({ catalogId: 'gemma4-e4b', backendModelId: 'gemma4:e4b', memoryUsedMb: 10_813 });
       modelRegistry.getEvictionCandidates.mockReturnValue([gemma]);
       modelRegistry.getTrackedModels.mockReturnValue([gemma]);
       reportResidency([
@@ -721,34 +782,163 @@ describe('MemoryManagerService', () => {
         { backend: 'lemonade', source: 'measured', models: [] },
       ]);
 
-      const plan = await service.planEviction(makeProfile(), 4_000, keepLemonade);
+      const plan = await service.planEviction(makeProfile(), 4_000, keepLemonade, operator);
 
       expect(plan.candidates.map((c) => c.backendModelId)).toEqual(['gemma4:e4b']);
+      // The engine's figure, not the catalog footprint the registry carries (10,813 MB).
       expect(plan.freedMb).toBe(5_000);
     });
 
-    it('goes ahead optimistically when a candidate cannot be sized, leaving the re-measure to decide', async () => {
+    it("offers the Hub's own idle loads to an app's request", async () => {
+      const gemma = tracked({ catalogId: 'gemma4-e4b', backendModelId: 'gemma4:e4b', memoryUsedMb: 10_813 });
+      modelRegistry.getEvictionCandidates.mockReturnValue([gemma]);
+      modelRegistry.getTrackedModels.mockReturnValue([gemma]);
+      reportResidency([
+        { backend: 'ollama', source: 'measured', models: [resident('gemma4:e4b', { engineGpuBytes: 6_640 * MiB })] },
+        { backend: 'lemonade', source: 'measured', models: [] },
+      ]);
+
+      const plan = await service.planEviction(makeProfile(), 4_000, { backend: 'ollama', backendModelId: 'qwen3-coder:30b' }, request);
+
+      expect(plan).toEqual({
+        canFree: true,
+        freedMb: 6_640,
+        candidates: [{ backend: 'ollama', backendModelId: 'gemma4:e4b', catalogId: 'gemma4-e4b', estimatedMb: 6_640 }],
+        busy: [],
+      });
+    });
+
+    it('drops a Hub load the engine no longer holds: unloading it frees nothing', async () => {
+      const gemma = tracked({ catalogId: 'gemma4-e4b', backendModelId: 'gemma4:e4b', memoryUsedMb: 10_813 });
+      modelRegistry.getEvictionCandidates.mockReturnValue([gemma]);
+      modelRegistry.getTrackedModels.mockReturnValue([gemma]);
+      // Ollama expired it on its own keep-alive; the registry still says `loaded`.
+      reportResidency(nothingResident());
+
+      const plan = await service.planEviction(makeProfile(), 4_000, { backend: 'ollama', backendModelId: 'qwen3-coder:30b' }, request);
+
+      expect(plan).toEqual({ canFree: false, candidates: [], freedMb: 0, busy: [] });
+    });
+
+    // REQ3: Ollama only marks a busy runner to expire, so evicting it frees nothing in time and costs
+    // its app a cold reload. Neither scope may do it.
+    it.each([
+      ['an operator', operator],
+      ["an app's request", request],
+    ])('never names a model with a generation in flight, for %s', async (_who, scope) => {
+      const gemma = tracked({ catalogId: 'gemma4-e4b', backendModelId: 'gemma4:e4b' });
+      modelRegistry.getEvictionCandidates.mockReturnValue([gemma]);
+      modelRegistry.getTrackedModels.mockReturnValue([gemma]);
+      reportResidency([
+        { backend: 'ollama', source: 'measured', models: [resident('gemma4:e4b', { engineGpuBytes: 6_640 * MiB })] },
+        { backend: 'lemonade', source: 'measured', models: [] },
+      ]);
+      const generating = (backend: InferenceBackendType) => (backend === 'ollama' ? [{ model: 'gemma4:e4b' }] : []);
+
+      const plan = await service.planEviction(
+        makeProfile(),
+        4_000,
+        { backend: 'ollama', backendModelId: 'qwen3-coder:30b' },
+        { ...scope, generating },
+      );
+
+      expect(plan).toEqual({ canFree: false, candidates: [], freedMb: 0, busy: ['gemma4:e4b'] });
+    });
+
+    it('still names the idle model beside a busy one', async () => {
+      reportResidency([
+        {
+          backend: 'ollama',
+          source: 'measured',
+          models: [resident('gemma4:e4b', { engineGpuBytes: 6_640 * MiB }), resident('qwen3.5:9b', { engineGpuBytes: 7_000 * MiB })],
+        },
+        { backend: 'lemonade', source: 'measured', models: [] },
+      ]);
+      const generating = (backend: InferenceBackendType) => (backend === 'ollama' ? [{ model: 'gemma4:e4b' }] : []);
+
+      const plan = await service.planEviction(makeProfile(), 5_000, keepLemonade, { scope: 'operator', generating });
+
+      expect(plan.candidates.map((c) => c.backendModelId)).toEqual(['qwen3.5:9b']);
+      expect(plan.busy).toEqual(['gemma4:e4b']);
+    });
+
+    // REQ4: the budget counted gemma4:e4b at its runner's 5,550 MB (nvidia-smi); a plan that sized it
+    // at `/api/ps`'s 3,208 refused llama3.1:8b on beta-red although evicting gemma4 made room.
+    it('sizes a lone model by the process figure the budget counted (beta-red, 2026-09-30)', async () => {
+      reportResidency([
+        { backend: 'ollama', source: 'measured', models: [resident('gemma4:e4b', { engineGpuBytes: 3_208 * MiB, totalBytes: 3_208 * MiB })] },
+        { backend: 'lemonade', source: 'measured', models: [] },
+      ]);
+      gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 4101, processName: '/usr/local/lib/ollama/llama-server', vramMb: 5_550 }]);
+      const fit = await service.canFitModel(betaRed(), 8_592);
+      expect(fit).toMatchObject({ fits: false, availableMb: 4_178 });
+
+      const plan = await service.planEviction(betaRed(), 8_592 - fit.availableMb, { backend: 'ollama', backendModelId: 'llama3.1:8b' }, operator);
+
+      expect(plan).toMatchObject({ canFree: true, freedMb: 5_550 });
+      expect(plan.candidates).toEqual([{ backend: 'ollama', backendModelId: 'gemma4:e4b', catalogId: null, estimatedMb: 5_550 }]);
+    });
+
+    it("splits a process figure across an engine's models in the engine's own proportions", async () => {
+      reportResidency([
+        {
+          backend: 'ollama',
+          source: 'measured',
+          models: [resident('gemma4:e4b', { engineGpuBytes: 3_000 * MiB }), resident('nomic-embed-text:latest', { engineGpuBytes: 1_000 * MiB })],
+        },
+        { backend: 'lemonade', source: 'measured', models: [] },
+      ]);
+      gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 4101, processName: '/usr/local/lib/ollama/llama-server', vramMb: 6_000 }]);
+
+      const plan = await service.planEviction(makeProfile(), 5_000, keepLemonade, operator);
+
+      expect(plan.candidates.map((c) => [c.backendModelId, c.estimatedMb])).toEqual([
+        ['gemma4:e4b', 4_500],
+        ['nomic-embed-text:latest', 1_500],
+      ]);
+    });
+
+    // R4: `estimatedMb || null` read a real 0 as "unknown", and one unknown made the plan unload everything.
+    it('never unloads a model that frees 0 MB of this pool', async () => {
+      reportResidency([
+        {
+          backend: 'ollama',
+          source: 'measured',
+          // Ollama placed the embedder wholly on the CPU: `size_vram` 0.
+          models: [resident('gemma4:e4b', { engineGpuBytes: 6_000 * MiB }), resident('nomic-embed-text:latest', { engineGpuBytes: 0 })],
+        },
+        { backend: 'lemonade', source: 'measured', models: [] },
+      ]);
+
+      const plan = await service.planEviction(makeProfile(), 5_000, keepLemonade, operator);
+      expect(plan.candidates.map((c) => c.backendModelId)).toEqual(['gemma4:e4b']);
+
+      const tooMuch = await service.planEviction(makeProfile(), 7_000, keepLemonade, operator);
+      expect(tooMuch).toEqual({ canFree: false, candidates: [], freedMb: 6_000, busy: [] });
+    });
+
+    it('refuses without unloading anything when the only candidates cannot be sized', async () => {
+      // Lemonade names its models and sizes none, and neither is in the catalog.
       reportResidency([
         { backend: 'ollama', source: 'measured', models: [] },
         { backend: 'lemonade', source: 'measured', models: [resident('Gemma-4-E4B-GGUF'), resident('nomic-embed-text-v1-GGUF')] },
       ]);
 
-      const plan = await service.planEviction(makeProfile(), 12_000, { backend: 'ollama', backendModelId: 'qwen3.8:27b-mtp-q4_K_M' });
+      const plan = await service.planEviction(makeProfile(), 12_000, { backend: 'ollama', backendModelId: 'qwen3.8:27b-mtp-q4_K_M' }, operator);
 
-      expect(plan.canFree).toBe(true);
-      expect(plan.candidates.map((c) => c.estimatedMb)).toEqual([null, null]);
+      expect(plan).toEqual({ canFree: false, candidates: [], freedMb: 0, busy: [] });
     });
 
     it('names nothing live from an engine that did not answer', async () => {
-      modelRegistry.getLoadedModels.mockReturnValue([
-        tracked({ catalogId: 'qwen3-8-27b-mtp', backendModelId: 'qwen3.8:27b-mtp-q4_K_M', memoryUsedMb: 17_000 }),
-      ]);
+      const qwen = tracked({ catalogId: 'qwen3-8-27b-mtp', backendModelId: 'qwen3.8:27b-mtp-q4_K_M', memoryUsedMb: 17_000 });
+      modelRegistry.getLoadedModels.mockReturnValue([qwen]);
+      modelRegistry.getEvictionCandidates.mockReturnValue([qwen]);
       reportResidency([
         { backend: 'ollama', source: 'unreachable', models: null },
         { backend: 'lemonade', source: 'measured', models: [] },
       ]);
 
-      const plan = await service.planEviction(makeProfile(), 12_000, keepLemonade);
+      const plan = await service.planEviction(makeProfile(), 12_000, keepLemonade, operator);
 
       expect(plan.candidates).toEqual([]);
     });

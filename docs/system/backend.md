@@ -99,6 +99,53 @@ deliberate and easy to undo by accident:
 `entries()` yields the type as the string from the source tuple rather than reading `backend.type`
 off the instance, because test doubles are mock proxies whose `type` is undefined.
 
+## Model loading and eviction
+
+`InferenceRouterService.loadTrackedModel` is the one path that puts a catalog model into memory.
+The pool proxy reaches it through `prepareTrackedModel` for every app generation naming a
+Hub-tracked model that the engine does not hold. `POST /api/inference/models/load` and `models/pin`
+reach it, and so do MCP `hub_load_model` and `hub_pin_model`. When the model does not fit,
+`MemoryManagerService.planEviction` decides what may be unloaded. Who asked decides the scope:
+
+| Caller | Scope | May unload |
+|---|---|---|
+| An app's request, through the pool proxy or the router | `request` | Idle models the Hub loaded itself |
+| An MCP tool called with any API key, `full` included | `request` | Idle models the Hub loaded itself |
+| REST load or pin (`AuthGuard`: an operator session or a host-local credential) | `operator` | Any idle, unpinned model on any engine |
+| An MCP tool run from the Hub UI's tool runner (`/api/mcp-admin`) | `operator` | Any idle, unpinned model on any engine |
+
+Hermes' and OpenClaw's managed keys are `write` keys, so without the `request` scope an agent
+could evict the model every other app on the node is serving.
+
+Both scopes share these rules:
+
+- **Busy models stay.** A model with a generation in flight is never unloaded, whoever asks.
+  `HubPoolLoadService.localGenerationsOn` supplies the list. Ollama only marks a busy runner to
+  expire, so evicting it frees nothing in time and its app reloads it cold on the next turn. Only
+  work that passes through the pool proxy is counted. An app calling the engine directly, or
+  `/api/inference/v1` on a Hub with no connected peers, is invisible to this check.
+- **Candidates are sized in the budget's units.** A candidate is sized by its share of the
+  figure the budget counted for its engine. With one model per engine process, that is the process
+  figure. With several, the figure is split in the engine's own proportions. A Hub-tracked model
+  that the engine no longer holds is not a candidate. A model that cannot be sized, or that frees
+  0 MB of the pool (Ollama on CPU reports `size_vram` 0), is never unloaded.
+- **Refuse or load, never both.** When the sized candidates cannot cover the shortfall, the load is
+  refused and nothing is unloaded. The reason names any busy model. When they can, they are
+  unloaded and the model is loaded, even if the re-measure has not caught up after the settle
+  wait. The one exception is an unload that the engine refused, because that memory is not
+  coming back.
+- **A model that is not downloaded is refused first.** The check runs before any fit check or
+  eviction.
+- **Loads are serialized per node.** Fit, eviction, and load run under one lock. A second load of
+  the same model finds it resident, and the cached memory reading is dropped after every load.
+- **Pins match under `:latest`.** Pins and the model being loaded are matched with
+  `sameModelId`, so a pinned `nomic-embed-text` is protected while `/api/ps` lists
+  `nomic-embed-text:latest`.
+
+A load refused on the request path is still forwarded to the engine. The pool proxy does that
+regardless of the answer. A refusal there means the Hub made no room, not that the engine does not
+try.
+
 ## Hub Pool
 
 `modules/hub-pool/` is the largest single module in the backend. It is worth knowing which service

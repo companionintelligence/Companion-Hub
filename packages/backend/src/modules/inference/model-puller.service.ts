@@ -359,13 +359,4 @@ export class ModelPullerService {
       throw err;
     }
   }
-
-  /** Pull and load a model, optionally pinning it */
-  async pullAndLoad(catalogId: string, pin = false): Promise<void> {
-    await this.pullAndWait(catalogId);
-    await this.loadModel(catalogId);
-    if (pin) {
-      this.modelRegistry.pinModel(catalogId);
-    }
-  }
 }
