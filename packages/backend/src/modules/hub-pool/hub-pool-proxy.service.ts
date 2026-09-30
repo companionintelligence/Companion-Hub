@@ -27,7 +27,7 @@ import {
 } from '@/common/helpers/hub-pool';
 import { clampOllamaSlots } from '@/common/helpers/inference-ollama-slots';
 import { HubPoolPeerService } from './hub-pool-peer.service';
-import { HubPoolLoadService, LOCAL_CANDIDATE_KEY, type LocalGeneration } from './hub-pool-load.service';
+import { HubPoolLoadService, LOCAL_CANDIDATE_KEY, type LocalGeneration, type LocalModelWork } from './hub-pool-load.service';
 import {
   HubPoolRoutingLogService,
   type PoolRoutingAffinity,
@@ -212,6 +212,13 @@ function forwardedPayload(method: string, body: unknown): string | undefined {
  * added later routes as it did before ceilings until someone decides it should be judged.
  */
 const PROMPT_CEILING_PATHS: ReadonlySet<string> = new Set(['/v1/chat/completions', '/v1/completions', '/api/chat', '/api/generate']);
+
+/**
+ * The embedding routes. A batch holds its model's runner for as long as it runs, exactly as a turn
+ * does, so it is recorded as work on that model ({@link LocalModelWork}) for the Hub's eviction plan
+ * to leave alone. It is not a generation: nothing in the contention or throughput judgements reads it.
+ */
+const EMBEDDING_PATHS: ReadonlySet<string> = new Set(['/v1/embeddings', '/api/embed', '/api/embeddings']);
 
 /**
  * `stream`, `bodyBytes` and `budgetMs` for the routing log, from the body as it will be forwarded.
@@ -2796,7 +2803,10 @@ export class PoolProxyService {
       // what the next request's contention judgement asks about.
       const generation: LocalGeneration | undefined =
         judged && candidate.peerId === null ? { backend: candidate.backend, model, numCtx: requestedWindow(path, body) } : undefined;
-      this.loadService.acquire(key, generation);
+      // An embedding batch on this node's engine: not a turn, but its model is busy until it ends.
+      const embedding: LocalModelWork | undefined =
+        EMBEDDING_PATHS.has(path) && candidate.peerId === null ? { backend: candidate.backend, model } : undefined;
+      this.loadService.acquire(key, generation, embedding);
       // At placement, before the engine answers, so a session's next call — an agent's parallel
       // tool calls arrive while the first is still prefilling — finds the engine already reading
       // the shared prefix. A failover overwrites it with the candidate that actually took the work.
@@ -3020,7 +3030,7 @@ export class PoolProxyService {
             (index + 1 < candidates.length ? `; failing over (${candidates.length - index - 1} candidate(s) left)` : '; no candidate left'),
         );
       } finally {
-        this.loadService.release(key, generation);
+        this.loadService.release(key, generation, embedding);
       }
     }
 
@@ -3424,7 +3434,8 @@ export class PoolProxyService {
     // A peer's turn holds a runner here exactly as a local app's does, so it is named the same way.
     const generation: LocalGeneration | undefined =
       model && PROMPT_CEILING_PATHS.has(path) ? { backend, model, numCtx: requestedWindow(path, body) } : undefined;
-    this.loadService.acquire(LOCAL_CANDIDATE_KEY, generation);
+    const embedding: LocalModelWork | undefined = model && EMBEDDING_PATHS.has(path) ? { backend, model } : undefined;
+    this.loadService.acquire(LOCAL_CANDIDATE_KEY, generation, embedding);
     // Recorded once per forward, whichever way it ends: a stream that dies after the backend
     // answered is the same routing decision, not a second one.
     let row: PoolRoutingRecord | null = null;
@@ -3527,7 +3538,7 @@ export class PoolProxyService {
       }
       throw error;
     } finally {
-      this.loadService.release(LOCAL_CANDIDATE_KEY, generation);
+      this.loadService.release(LOCAL_CANDIDATE_KEY, generation, embedding);
       watch.dispose();
     }
   }
@@ -4104,8 +4115,11 @@ export class PoolProxyService {
       // 27B reload measured ~168 s on core-6 — and running it for a request nobody is waiting for
       // is the opposite of what the client-abort propagation is for. The `fetch` below rejects on
       // the same signal anyway, so nothing would have used the model we just made room for.
+      //
+      // The signal goes with it, because arbitration queues: a request that hangs up while it waits
+      // behind another model's cold load must not go on to evict and load for nobody.
       if (GENERATION_PATHS.has(path) && this.router && !clientClosed?.aborted) {
-        await this.router.prepareTrackedModel(model).catch((error: unknown) => {
+        await this.router.prepareTrackedModel(model, { signal: clientClosed }).catch((error: unknown) => {
           this.logger.debug(
             `[PoolProxy] residency arbitration for ${model} failed; forwarding anyway: ${error instanceof Error ? error.message : String(error)}`,
           );

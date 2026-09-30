@@ -4,7 +4,7 @@ import type { BackendResidency, CuratedModel, HardwareProfile, InferenceBackendT
 import { sameModelId } from '@/common/helpers/hub-pool';
 import { LoggerService } from '@/core/logger/logger.service';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
-import { HubPoolLoadService, LOCAL_CANDIDATE_KEY, type LocalGeneration } from '@/modules/hub-pool/hub-pool-load.service';
+import { HubPoolLoadService, LOCAL_CANDIDATE_KEY, type LocalGeneration, type LocalModelWork } from '@/modules/hub-pool/hub-pool-load.service';
 import { InferenceRouterService } from '../inference-router.service';
 import { MemoryManagerService } from '../memory-manager.service';
 import { ModelRegistryService } from '../model-registry.service';
@@ -24,6 +24,11 @@ import type { GpuProcessSamplerService } from '../gpu-process-sampler.service';
  *
  * Only the window a load is sized at is stubbed (`planLoad`): that sizing is its own subject, and
  * these cases are about what is unloaded to make room for a footprint, not what the footprint is.
+ *
+ * Given a capacity, the fake Ollama also arbitrates its own loads the way the scheduler does
+ * (`processPending`): a load that does not fit beside a runner it has marked to expire waits for
+ * that runner's request to end. Nothing does that across engines, which is what the cross-engine
+ * cases are about.
  */
 
 const MiB = 1024 * 1024;
@@ -37,8 +42,22 @@ class FakeOllama {
   readonly unloads: string[] = [];
   /** The most memory the runner ever held at once. */
   peakMb = 0;
+  /** What this engine's own scheduler thinks it may fill; unset, it loads whatever it is asked to. */
+  capacityMb: number | undefined;
+  /** A load waiting, as Ollama's scheduler does, for an expiring runner's request to end. */
+  waitingForRoom = false;
+  private readonly released: Array<() => void> = [];
 
   constructor(private readonly loadSizesMb: Record<string, number>) {}
+
+  /** The request a busy runner was serving ends; a runner marked to expire goes with it. */
+  finish(id: string): void {
+    const model = this.find(id);
+    if (!model) return;
+    model.refs = Math.max(0, model.refs - 1);
+    if (model.refs === 0 && model.expireOnIdle) this.resident.delete(model.id);
+    for (const wake of this.released.splice(0)) wake();
+  }
 
   /** A model already in memory. `sizeVramMb` is what `/api/ps` says, when it differs from the process. */
   hold(id: string, processMb: number, options: { sizeVramMb?: number; busy?: boolean } = {}): void {
@@ -67,8 +86,14 @@ class FakeOllama {
       healthCheck: async () => ({ running: true, healthy: true, modelsLoaded: [...this.installed] }),
       isModelLoaded: async (id: string) => this.find(id) !== undefined,
       loadModel: async (id: string) => {
-        this.loads.push(id);
         const size = this.loadSizesMb[id] ?? 1_000;
+        while (this.capacityMb !== undefined && this.processMb() + size > this.capacityMb) {
+          if (![...this.resident.values()].some((model) => model.expireOnIdle && model.refs > 0)) break;
+          this.waitingForRoom = true;
+          await new Promise<void>((wake) => this.released.push(wake));
+        }
+        this.waitingForRoom = false;
+        this.loads.push(id);
         this.resident.set(id, { id, processMb: size, sizeVramMb: size, refs: 0, expireOnIdle: false });
         this.notePeak();
       },
@@ -86,6 +111,56 @@ class FakeOllama {
           id: model.id,
           engineGpuBytes: model.sizeVramMb * MiB,
           totalBytes: model.sizeVramMb * MiB,
+          expiresAt: null,
+          contextLength: null,
+          quantization: null,
+        })),
+      }),
+    };
+  }
+}
+
+/**
+ * Lemonade 10.2.0 as far as these cases need it: it loads what it is told the moment it is told,
+ * with no view of memory, and names what it holds without sizing it. Its peak is the card's: its
+ * own models plus whatever Ollama holds at that moment.
+ */
+class FakeLemonade {
+  readonly resident = new Map<string, number>();
+  readonly installed = new Set<string>();
+  readonly loads: string[] = [];
+  peakMb = 0;
+
+  constructor(
+    private readonly loadSizesMb: Record<string, number>,
+    private readonly ollama: FakeOllama,
+  ) {}
+
+  processMb(): number {
+    return [...this.resident.values()].reduce((sum, mb) => sum + mb, 0);
+  }
+
+  backend(): Record<string, unknown> {
+    return {
+      type: 'lemonade',
+      getBaseUrl: () => 'http://fake-lemonade:13305',
+      healthCheck: async () => ({ running: true, healthy: true, modelsLoaded: [...this.installed] }),
+      isModelLoaded: async (id: string) => this.resident.has(id),
+      loadModel: async (id: string) => {
+        this.loads.push(id);
+        this.resident.set(id, this.loadSizesMb[id] ?? 1_000);
+        this.peakMb = Math.max(this.peakMb, this.ollama.processMb() + this.processMb());
+      },
+      unloadModel: async (id: string) => {
+        this.resident.delete(id);
+      },
+      listResident: async (): Promise<BackendResidency> => ({
+        backend: 'lemonade',
+        source: 'measured',
+        models: [...this.resident.keys()].map((id) => ({
+          id,
+          engineGpuBytes: null,
+          totalBytes: null,
           expiresAt: null,
           contextLength: null,
           quantization: null,
@@ -119,24 +194,60 @@ const BETA_RED = discrete('nvidia', 10_240);
 /** Hermes' turn on gemma4:e4b, as the pool proxy records it while it streams. */
 const HERMES_TURN: LocalGeneration = { backend: 'ollama', model: 'gemma4:e4b', numCtx: 65_536 };
 
-function world(profile: HardwareProfile, ollama: FakeOllama, footprintsMb: Record<string, number>) {
+/**
+ * A Strix Halo node, where models load into system RAM and the fit is capped by MemAvailable:
+ * 125,781 MB total (core-7). `outsideEnginesMb` is what MemAvailable would read with every engine
+ * empty; the apps, the OS and the page cache hold the rest. Like the real inspector, a read reuses
+ * the last MemAvailable sample unless it asks for a fresh one (`freshRam`) or none has been taken.
+ */
+function strixHalo(outsideEnginesMb: number, engines: { processMb(): number }[]): HardwareInspectorService {
+  const totalMb = 125_781;
+  let sampleMb: number | null = null;
+  return {
+    getProfile: async (options?: { freshRam?: boolean }): Promise<HardwareProfile> => {
+      if (sampleMb === null || options?.freshRam) {
+        sampleMb = outsideEnginesMb - engines.reduce((sum, engine) => sum + engine.processMb(), 0);
+      }
+      return {
+        gpu: { available: true, vendor: 'amd', model: 'Radeon 8060S', vramMb: 0, unifiedMemory: true, driverVersion: '', runtimeAvailable: true },
+        npu: { available: false, model: '' },
+        ram: { totalMb, availableMb: sampleMb, sampledAt: new Date().toISOString() },
+        cpu: { arch: 'x86_64', cores: 32, model: 'Ryzen AI Max+ 395' },
+        effectiveInferenceMemoryMb: sampleMb,
+        tier: 'high',
+      };
+    },
+  } as unknown as HardwareInspectorService;
+}
+
+function world(
+  profile: HardwareProfile,
+  ollama: FakeOllama,
+  footprintsMb: Record<string, number>,
+  options: { lemonade?: FakeLemonade; hardware?: HardwareInspectorService } = {},
+) {
   const logger = mock<LoggerService>();
   const registry = new ModelRegistryService(logger);
+  const lemonade = options.lemonade;
   const backends = new InferenceBackendRegistry(
     ollama.backend() as never,
     silent('vllm') as never,
-    silent('lemonade') as never,
+    (lemonade?.backend() ?? silent('lemonade')) as never,
     silent('omlx') as never,
   );
   const residency = new ModelResidencyService(backends, logger);
   const sampler = {
     sampleVramByProcess: async () => {
       const used = ollama.processMb();
-      return used > 0 ? [{ pid: 4101, processName: '/usr/local/lib/ollama/llama-server', vramMb: used }] : [];
+      const lemonadeUsed = lemonade?.processMb() ?? 0;
+      return [
+        ...(used > 0 ? [{ pid: 4101, processName: '/usr/local/lib/ollama/llama-server', vramMb: used }] : []),
+        ...(lemonadeUsed > 0 ? [{ pid: 5202, processName: 'lemond', vramMb: lemonadeUsed }] : []),
+      ];
     },
   } as unknown as GpuProcessSamplerService;
   const memory = new MemoryManagerService(logger, registry, backends, residency, sampler);
-  const hardware = { getProfile: async () => structuredClone(profile) } as unknown as HardwareInspectorService;
+  const hardware = options.hardware ?? ({ getProfile: async () => structuredClone(profile) } as unknown as HardwareInspectorService);
   const puller = new ModelPullerService(logger, registry, hardware, memory, mock<HostMetricsService>(), backends);
   const poolLoad = new HubPoolLoadService();
   const router = new InferenceRouterService(logger, hardware, registry, memory, mock<CloudFallbackService>(), backends, puller, undefined, poolLoad);
@@ -147,12 +258,13 @@ function world(profile: HardwareProfile, ollama: FakeOllama, footprintsMb: Recor
   /** A model the Hub itself pulled since its last restart, so it is tracked and on disk. */
   const pulled = (catalogId: string) => {
     registry.trackModel(catalogId, 'pulled');
-    ollama.installed.add(registry.getCuratedModel(catalogId)?.backendModelId ?? catalogId);
+    const row = registry.getCuratedModel(catalogId);
+    (row?.backend === 'lemonade' && lemonade ? lemonade.installed : ollama.installed).add(row?.backendModelId ?? catalogId);
   };
-  return { router, registry, poolLoad, delay, pulled };
+  return { router, registry, poolLoad, delay, pulled, logger };
 }
 
-describe('load arbitration on the fleet (REQ3, REQ4, R1, R4, R5, R7)', () => {
+describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () => {
   let ollama: FakeOllama;
 
   beforeEach(() => {
@@ -224,6 +336,63 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R4, R5, R7)', () => {
       expect(outcome).toEqual({ loaded: false, reason: expect.stringContaining('would free 6640 MB') });
       expect(ollama.unloads).toEqual([]);
       expect(w.registry.getTrackedModel('gemma4-e4b')?.state).toBe('loaded');
+    });
+
+    // S2 in the review of #1684: only generations were recorded, so the embedder Memory was
+    // batch-embedding with was evictable, and Memory's next batch reloaded it cold.
+    it('never evicts the embedder while an embedding batch is running on it — beta-red', async () => {
+      ollama.hold('gemma4:e4b', 5_550, { sizeVramMb: 3_208, busy: true });
+      ollama.hold('nomic-embed-text:latest', 900, { sizeVramMb: 300, busy: true });
+      const w = world(BETA_RED, ollama, { 'qwen3-5-4b': 3_700 });
+      w.registry.trackModel('gemma4-e4b', 'loaded');
+      w.registry.trackModel('nomic-embed-text', 'loaded');
+      w.pulled('qwen3-5-4b');
+      w.poolLoad.acquire(LOCAL_CANDIDATE_KEY, HERMES_TURN);
+      // Memory's `/api/embed` through the pool proxy, as the proxy records it.
+      const memoryBatch: LocalModelWork = { backend: 'ollama', model: 'nomic-embed-text:latest' };
+      w.poolLoad.acquire(LOCAL_CANDIDATE_KEY, undefined, memoryBatch);
+
+      const outcome = await w.router.loadTrackedModel('qwen3-5-4b', { scope: 'request' });
+
+      expect(outcome).toEqual({ loaded: false, reason: expect.stringContaining('gemma4:e4b, nomic-embed-text:latest are serving a request') });
+      expect(ollama.unloads).toEqual([]);
+      expect(ollama.resident.get('nomic-embed-text:latest')?.expireOnIdle).toBe(false);
+    });
+
+    // S1 in the review of #1684: a request for a model already resident waited behind another
+    // model's cold load (up to 120 s) only to be told it was resident.
+    it("answers a model that is already resident at once, without queueing behind another model's cold load", async () => {
+      ollama.hold('gemma4:e4b', 6_640);
+      const w = world(BETA_1, ollama, { 'qwen3-8-27b': 17_000 });
+      w.pulled('qwen3-8-27b');
+      w.pulled('gemma4-e4b');
+      const engine = w.router as unknown as { backends: InferenceBackendRegistry };
+      const ollamaEngine = engine.backends.get('ollama') as unknown as { loadModel: (id: string) => Promise<void> };
+      const load = ollamaEngine.loadModel;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let coldLoadStarted = false;
+      ollamaEngine.loadModel = async (id: string) => {
+        if (id === 'qwen3.8:27b') {
+          coldLoadStarted = true;
+          await gate;
+        }
+        return load(id);
+      };
+
+      const cold = w.router.prepareTrackedModel('qwen3.8:27b');
+      await vi.waitFor(() => expect(coldLoadStarted).toBe(true));
+      const answered = await Promise.race([
+        w.router.prepareTrackedModel('gemma4:e4b'),
+        new Promise((resolve) => setTimeout(() => resolve('still queued behind qwen3.8:27b'), 1_000)),
+      ]);
+      expect(answered).toEqual({ backend: 'ollama', backendModelId: 'gemma4:e4b' });
+      expect(w.registry.getTrackedModel('gemma4-e4b')?.state).toBe('loaded');
+
+      release();
+      await expect(cold).resolves.toEqual({ backend: 'ollama', backendModelId: 'qwen3.8:27b' });
     });
 
     // REQ4, beta-red: the registry carries gemma4-e4b at its catalog 10,813 MB and `/api/ps` says
@@ -348,6 +517,60 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R4, R5, R7)', () => {
       expect(outcome).toEqual({ loaded: false, reason: 'qwen3-coder-30b is not downloaded on this node; pull it first' });
       expect(ollama.unloads).toEqual([]);
       expect(ollama.loads).toEqual([]);
+    });
+  });
+
+  // The review of #1684: once a plan had unloaded, the load went ahead even when the memory never came
+  // back. Only an engine that waits for its own expiring runner makes that safe, and only for its own.
+  describe('a load whose freed memory has not come back', () => {
+    it('refuses a Lemonade load beside an Ollama model still busy with work the Hub cannot see — beta-1', async () => {
+      // gpt-oss:20b is serving an app that calls Ollama directly: busy, and nothing in the pool's record.
+      ollama.hold('gpt-oss:20b', 14_000, { busy: true });
+      const lemonade = new FakeLemonade({ 'gpt-oss-20b-mxfp4-GGUF': 14_000 }, ollama);
+      const w = world(BETA_1, ollama, { 'gpt-oss-20b-lemonade': 14_000 }, { lemonade });
+      w.pulled('gpt-oss-20b-lemonade');
+
+      const outcome = await w.router.loadTrackedModel('gpt-oss-20b-lemonade', { scope: 'operator' });
+
+      expect(outcome).toEqual({ loaded: false, reason: expect.stringContaining('gpt-oss:20b may still be finishing work the Hub cannot see') });
+      expect(ollama.unloads).toEqual(['gpt-oss:20b']);
+      expect(lemonade.loads).toEqual([]);
+      // On dev before this, 14,000 + 14,000 = 28,000 MB on a 24,048 MB budget.
+      expect(Math.max(ollama.peakMb, lemonade.peakMb)).toBeLessThanOrEqual(24_048);
+    });
+
+    it('loads an Ollama model once Ollama itself has waited out the busy runner it evicted — beta-1', async () => {
+      ollama.hold('gpt-oss:20b', 14_000, { busy: true });
+      ollama.capacityMb = 24_048;
+      const w = world(BETA_1, ollama, { 'qwen3-coder-30b': 19_000 });
+      w.pulled('qwen3-coder-30b');
+
+      const pending = w.router.loadTrackedModel('qwen3-coder-30b', { scope: 'operator' });
+      // The Hub has let the load through; Ollama holds it until the direct caller's request ends.
+      await vi.waitFor(() => expect(ollama.waitingForRoom).toBe(true));
+      expect(ollama.loads).toEqual([]);
+      ollama.finish('gpt-oss:20b');
+
+      await expect(pending).resolves.toEqual({ loaded: true });
+      expect(ollama.loads).toEqual(['qwen3-coder:30b']);
+      expect(ollama.peakMb).toBeLessThanOrEqual(24_048);
+      expect(w.logger.warn).toHaveBeenCalledWith(expect.stringContaining('ollama waits for it itself'));
+    });
+
+    // FIT-2: on unified memory the fit is capped by MemAvailable, and the re-measure reused the
+    // sample from before the unload, so this load was refused although the eviction had made room.
+    it('sees the memory an eviction freed on unified memory, and loads Lemonade beside nothing — Strix Halo', async () => {
+      ollama.hold('qwen3.8:27b', 17_406);
+      const lemonade = new FakeLemonade({ 'Qwen3.6-35B-A3B-GGUF': 30_000 }, ollama);
+      // MemAvailable 27,594 with the 27B resident: 25,546 MB of headroom after the 2 GB reserve.
+      const hardware = strixHalo(45_000, [ollama, lemonade]);
+      const w = world(await hardware.getProfile(), ollama, { 'qwen3-6-35b-lemonade': 30_000 }, { lemonade, hardware });
+      w.pulled('qwen3-6-35b-lemonade');
+
+      await expect(w.router.loadTrackedModel('qwen3-6-35b-lemonade', { scope: 'operator' })).resolves.toEqual({ loaded: true });
+
+      expect(ollama.unloads).toEqual(['qwen3.8:27b']);
+      expect(lemonade.loads).toEqual(['Qwen3.6-35B-A3B-GGUF']);
     });
   });
 

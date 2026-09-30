@@ -210,11 +210,12 @@ export class MemoryManagerService {
    * is not a candidate at all.
    *
    * What a load may unload depends on who asked ({@link EvictionScope}), and a model with a
-   * generation running on it is never a candidate for anyone. Order: the Hub's own loads
-   * least-recently-used first (the order it always evicted in), then, for an operator, every other
-   * idle model the engines report, largest first so as few as possible go. Pinned models and `keep`
-   * are never candidates, matched with Ollama's `name` ≡ `name:latest` folding: `/api/ps` names the
-   * pinned embedder `nomic-embed-text:latest` while the catalog says `nomic-embed-text`.
+   * request running on it (a turn or an embedding batch) is never a candidate for anyone. Order:
+   * the Hub's own loads least-recently-used first (the order it always evicted in), then, for an
+   * operator, every other idle model the engines report, largest first so as few as possible go.
+   * Pinned models and `keep` are never candidates, matched with Ollama's `name` ≡ `name:latest`
+   * folding: `/api/ps` names the pinned embedder `nomic-embed-text:latest` while the catalog says
+   * `nomic-embed-text`.
    *
    * A candidate nothing can size, or one sized at 0 (Ollama puts a model wholly on the CPU at
    * `size_vram` 0, which frees no VRAM), is never unloaded: it cannot be shown to help. When the
@@ -256,13 +257,12 @@ export class MemoryManagerService {
 
     const busy: string[] = [];
     const isBusy = (candidate: EvictionCandidate): boolean => {
-      const running = options.generating?.(candidate.backend) ?? [];
-      const generating = running.some(
-        (generation) =>
-          sameModelId(generation.model, candidate.backendModelId) || (candidate.catalogId !== null && generation.model === candidate.catalogId),
+      const working = options.inUse?.(candidate.backend) ?? [];
+      const inUse = working.some(
+        (work) => sameModelId(work.model, candidate.backendModelId) || (candidate.catalogId !== null && work.model === candidate.catalogId),
       );
-      if (generating) busy.push(candidate.backendModelId);
-      return generating;
+      if (inUse) busy.push(candidate.backendModelId);
+      return inUse;
     };
 
     const ordered: EvictionCandidate[] = [];
@@ -460,12 +460,13 @@ export type EvictionScope = 'request' | 'operator';
 export type EvictionOptions = {
   scope: EvictionScope;
   /**
-   * What each engine has generations in flight for (`HubPoolLoadService.localGenerationsOn`). Such
-   * a model is never a candidate, for either scope: Ollama only marks a busy runner to expire and
-   * unloads it once its turn ends, so the memory does not come back in time for this load, and the
-   * app that was using it reloads it cold on its next turn.
+   * What each engine has requests in flight for, generations and embedding batches alike
+   * (`HubPoolLoadService.localBusyModelsOn`). Such a model is never a candidate, for either scope:
+   * Ollama only marks a busy runner to expire and unloads it once its request ends, so the memory
+   * does not come back in time for this load, and the app that was using it reloads it cold on its
+   * next request. Only requests that pass through the pool proxy are seen.
    */
-  generating?: (backend: InferenceBackendType) => readonly { model: string }[];
+  inUse?: (backend: InferenceBackendType) => readonly { model: string }[];
 };
 
 export type EvictionPlan = {
@@ -475,7 +476,7 @@ export type EvictionPlan = {
   candidates: EvictionCandidate[];
   /** What `candidates` free; when `canFree` is false, everything this scope could have freed. */
   freedMb: number;
-  /** Models left alone because a generation is running on them, for the refusal's reason. */
+  /** Models left alone because a request is running on them, for the refusal's reason. */
   busy: string[];
 };
 

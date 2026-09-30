@@ -1966,6 +1966,29 @@ describe('HardwareInspectorService', () => {
       expect(meminfoReads()).toBe(readsAfterDetect + 1);
     });
 
+    // The router asks for this while it waits for an evicted model's memory to come back: the
+    // sample from before the unload would hold the load refused for up to the whole window.
+    it('reads MemAvailable now, inside the sample window, when asked for fresh RAM', async () => {
+      const live = { current: meminfo(27594) };
+      mountHost(linuxProbe(124547), live);
+
+      await service.getProfile();
+      const readsAfterDetect = meminfoReads();
+
+      // Ollama has just unloaded a 27B: 1 s later, well inside the window.
+      live.current = meminfo(45000);
+      vi.setSystemTime(new Date('2026-09-20T12:00:01.000Z'));
+
+      expect((await service.getProfile()).ram.availableMb).toBe(27594);
+      const fresh = await service.getProfile({ freshRam: true });
+      expect(fresh.ram.availableMb).toBe(45000);
+      expect(fresh.effectiveInferenceMemoryMb).toBe(45000);
+      expect(fresh.ram.sampledAt).toBe('2026-09-20T12:00:01.000Z');
+      expect(meminfoReads()).toBe(readsAfterDetect + 1);
+      // And the fresh sample is the one the next ordinary read reuses.
+      expect((await service.getProfile()).ram.availableMb).toBe(45000);
+    });
+
     it('discrete node: free RAM is live but the inference budget stays the card', async () => {
       (si.graphics as any) = vi.fn().mockResolvedValue({
         controllers: [{ vendor: 'NVIDIA', model: 'RTX 4090', vram: 24576, driverVersion: '535.129.03' }],

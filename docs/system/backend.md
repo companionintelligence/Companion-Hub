@@ -119,25 +119,40 @@ could evict the model every other app on the node is serving.
 
 Both scopes share these rules:
 
-- **Busy models stay.** A model with a generation in flight is never unloaded, whoever asks.
-  `HubPoolLoadService.localGenerationsOn` supplies the list. Ollama only marks a busy runner to
-  expire, so evicting it frees nothing in time and its app reloads it cold on the next turn. Only
-  work that passes through the pool proxy is counted. An app calling the engine directly, or
-  `/api/inference/v1` on a Hub with no connected peers, is invisible to this check.
+- **Busy models stay.** A model with a request in flight is never unloaded, whoever asks.
+  `HubPoolLoadService.localBusyModelsOn` supplies the list: every generation, and every embedding
+  batch (`/v1/embeddings`, `/api/embed`, `/api/embeddings`), which is recorded apart from the
+  generations so the contention and throughput judgements never see it. Ollama only marks a busy
+  runner to expire, so evicting it frees nothing in time and its app reloads it cold on the next
+  request. Only work that passes through the pool proxy is counted. An app calling the engine
+  directly, or `/api/inference/v1` on a Hub with no connected peers, is invisible to this check.
 - **Candidates are sized in the budget's units.** A candidate is sized by its share of the
   figure the budget counted for its engine. With one model per engine process, that is the process
   figure. With several, the figure is split in the engine's own proportions. A Hub-tracked model
   that the engine no longer holds is not a candidate. A model that cannot be sized, or that frees
   0 MB of the pool (Ollama on CPU reports `size_vram` 0), is never unloaded.
-- **Refuse or load, never both.** When the sized candidates cannot cover the shortfall, the load is
-  refused and nothing is unloaded. The reason names any busy model. When they can, they are
-  unloaded and the model is loaded, even if the re-measure has not caught up after the settle
-  wait. The one exception is an unload that the engine refused, because that memory is not
-  coming back.
+- **Refuse without unloading where possible.** When the sized candidates cannot cover the
+  shortfall, the load is refused and nothing is unloaded. The reason names any busy model.
+- **After unloading, load only onto memory that is known to be free.** When the candidates can
+  cover it, they are unloaded and the fit is re-measured for up to 10 s. Each attempt re-reads the
+  engines and the hardware profile, with MemAvailable sampled at that moment rather than reused
+  from the last 5 s, because on unified memory MemAvailable is the figure that shows the memory
+  coming back. If the re-measure never catches up, the model is still loaded only when every
+  evicted model was on the target's own engine and that engine arbitrates its own memory. Today
+  only Ollama does: its scheduler will not load beside a runner it has marked to expire, and waits
+  for that runner's request to end. Otherwise the load is refused, because an evicted model may
+  still be serving work the Hub cannot see, and nothing stops a Lemonade load from landing on top
+  of a busy Ollama runner, or the reverse. That was the freeze #1679 fixed. An unload the engine
+  refuses stops the plan at once, so the models after it stay loaded, and the load goes ahead only
+  if what was already freed shows up in the re-measure.
 - **A model that is not downloaded is refused first.** The check runs before any fit check or
   eviction.
 - **Loads are serialized per node.** Fit, eviction, and load run under one lock. A second load of
-  the same model finds it resident, and the cached memory reading is dropped after every load.
+  the same model finds it resident, and the cached memory reading is dropped after every load. A
+  model the engine already holds is answered before the lock, so a request for it never queues
+  behind another model's cold load. The pool proxy passes the client's hang-up signal along, and a
+  load whose client went away while it was queued is dropped before it measures, evicts or loads
+  anything.
 - **Pins match under `:latest`.** Pins and the model being loaded are matched with
   `sameModelId`, so a pinned `nomic-embed-text` is protected while `/api/ps` lists
   `nomic-embed-text:latest`.

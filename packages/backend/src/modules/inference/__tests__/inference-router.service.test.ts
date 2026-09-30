@@ -449,7 +449,7 @@ describe('InferenceRouterService', () => {
         defaultProfile,
         14_048,
         { backend: 'ollama', backendModelId: 'qwen3.8:27b-mtp-q4_K_M' },
-        { scope: 'request', generating: expect.any(Function) },
+        { scope: 'request', inUse: expect.any(Function) },
       );
       expect(modelPuller.unloadModel).toHaveBeenCalledWith('gemma4-e4b');
       expect(memoryManager.invalidateObservation).toHaveBeenCalled();
@@ -520,18 +520,21 @@ describe('InferenceRouterService', () => {
       expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 16_384 });
     });
 
-    it("tells the plan what the pool has generating on each engine, from the pool's own record", async () => {
+    it("tells the plan what the pool has in flight on each engine, turns and embedding batches, from the pool's own record", async () => {
       memoryManager.canFitModel.mockResolvedValue({ fits: false, availableMb: 6_000, requiredMb: 18_000 });
       memoryManager.planEviction.mockResolvedValue({ canFree: false, candidates: [], freedMb: 0, busy: [] });
       const hermesTurn = { backend: 'ollama' as const, model: 'gemma4:e4b', numCtx: 65_536 };
+      const memoryBatch = { backend: 'ollama' as const, model: 'nomic-embed-text:latest' };
       poolLoad.acquire(LOCAL_CANDIDATE_KEY, hermesTurn);
+      poolLoad.acquire(LOCAL_CANDIDATE_KEY, undefined, memoryBatch);
 
       await service.loadTrackedModel(lemonadeModel.id, { scope: 'operator' });
 
-      const generating = memoryManager.planEviction.mock.calls[0]?.[3].generating;
-      expect(generating?.('ollama')).toEqual([{ model: 'gemma4:e4b', numCtx: 65_536 }]);
-      expect(generating?.('lemonade')).toEqual([]);
+      const inUse = memoryManager.planEviction.mock.calls[0]?.[3].inUse;
+      expect(inUse?.('ollama')).toEqual([{ model: 'gemma4:e4b' }, { model: 'nomic-embed-text:latest' }]);
+      expect(inUse?.('lemonade')).toEqual([]);
       poolLoad.release(LOCAL_CANDIDATE_KEY, hermesTurn);
+      poolLoad.release(LOCAL_CANDIDATE_KEY, undefined, memoryBatch);
     });
 
     it("plans as an app's request unless the caller says it is an operator", async () => {
@@ -543,28 +546,96 @@ describe('InferenceRouterService', () => {
       expect(memoryManager.planEviction.mock.calls[0]?.[3]).toMatchObject({ scope: 'request' });
     });
 
-    // REQ3 (c): unloading and then refusing is the worst of both — the pool forwards the request
-    // anyway, and whatever was evicted reloads cold on its app's next turn.
-    it('loads once its plan has unloaded, even when the re-measure has not caught up', async () => {
+    // The freeze #1679 fixed, and the PR's first cut brought back: an Ollama model busy with work the
+    // Hub cannot see (an app calling the engine directly) is only marked to expire, keeps its memory,
+    // and a Lemonade load beside it overcommits the card. Nothing arbitrates between two engines.
+    it('refuses when memory an unload on another engine freed has not come back, rather than loading on top of it', async () => {
       memoryManager.canFitModel.mockResolvedValue({ fits: false, availableMb: 6_000, requiredMb: 18_000 });
       memoryManager.planEviction.mockResolvedValue({ canFree: true, candidates: [ollamaResident], freedMb: 17_000, busy: [] });
 
-      const outcome = await service.loadTrackedModel(lemonadeModel.id);
+      const outcome = await service.loadTrackedModel(lemonadeModel.id, { scope: 'operator' });
 
-      expect(outcome).toEqual({ loaded: true });
+      expect(outcome).toEqual({
+        loaded: false,
+        reason:
+          `${lemonadeModel.id} still does not fit after unloading qwen3.8:27b-mtp-q4_K_M: that memory has not come back, and ` +
+          'qwen3.8:27b-mtp-q4_K_M may still be finishing work the Hub cannot see, so loading on lemonade now could land on top of it',
+      });
       expect(ollamaBackend.unloadModel).toHaveBeenCalledWith('qwen3.8:27b-mtp-q4_K_M');
-      expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 16_384 });
-      expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('has not shown up yet'));
+      expect(modelPuller.loadModel).not.toHaveBeenCalled();
     });
 
-    it('refuses rather than loading on top when the engine refused an unload and memory never freed', async () => {
+    it('refuses a Lemonade load after unloading Lemonade models: Lemonade never waits for memory itself', async () => {
+      memoryManager.canFitModel.mockResolvedValue({ fits: false, availableMb: 6_000, requiredMb: 18_000 });
+      const lemonadeResident = { backend: 'lemonade' as const, backendModelId: 'Gemma-4-E4B-it-GGUF', catalogId: null, estimatedMb: 17_000 };
+      memoryManager.planEviction.mockResolvedValue({ canFree: true, candidates: [lemonadeResident], freedMb: 17_000, busy: [] });
+
+      const outcome = await service.loadTrackedModel(lemonadeModel.id, { scope: 'operator' });
+
+      expect(outcome).toEqual({ loaded: false, reason: expect.stringContaining('may still be finishing work the Hub cannot see') });
+      expect(lemonadeBackend.unloadModel).toHaveBeenCalledWith('Gemma-4-E4B-it-GGUF');
+      expect(modelPuller.loadModel).not.toHaveBeenCalled();
+    });
+
+    describe('an Ollama target', () => {
+      const ollamaModel = {
+        id: 'qwen3-coder-30b',
+        backend: 'ollama',
+        backendModelId: 'qwen3-coder:30b',
+        runtime: { memoryFootprintMb: 18_000, contextWindow: 262_144 },
+      } as CuratedModel;
+
+      beforeEach(() => {
+        modelRegistry.getTrackedModel.mockReturnValue({
+          catalogId: ollamaModel.id,
+          backend: 'ollama',
+          backendModelId: ollamaModel.backendModelId,
+          state: 'pulled',
+        } as TrackedModel);
+        modelRegistry.getCuratedModel.mockImplementation((id) => (id === ollamaModel.id ? ollamaModel : undefined));
+        ollamaBackend.isModelLoaded.mockResolvedValue(false);
+        memoryManager.canFitModel.mockResolvedValue({ fits: false, availableMb: 6_000, requiredMb: 18_000 });
+      });
+
+      // REQ3 (c): unloading and then refusing is the worst of both — the pool forwards the request
+      // anyway, and whatever was evicted reloads cold on its app's next turn. Ollama's scheduler will
+      // not load on top of its own expiring runner (`sched.go` `processPending`), so the load is safe.
+      it("loads once its plan has unloaded Ollama's own models, even when the re-measure has not caught up", async () => {
+        memoryManager.planEviction.mockResolvedValue({ canFree: true, candidates: [ollamaResident], freedMb: 17_000, busy: [] });
+
+        const outcome = await service.loadTrackedModel(ollamaModel.id);
+
+        expect(outcome).toEqual({ loaded: true });
+        expect(ollamaBackend.unloadModel).toHaveBeenCalledWith('qwen3.8:27b-mtp-q4_K_M');
+        expect(modelPuller.loadModel).toHaveBeenCalledWith(ollamaModel.id, expect.anything());
+        expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('has not shown up yet; ollama waits for it itself'));
+      });
+
+      it('refuses when the plan also unloaded a model on another engine, whose memory Ollama cannot wait for', async () => {
+        const lemonadeResident = { backend: 'lemonade' as const, backendModelId: 'Gemma-4-E4B-it-GGUF', catalogId: null, estimatedMb: 6_000 };
+        memoryManager.planEviction.mockResolvedValue({
+          canFree: true,
+          candidates: [{ ...ollamaResident, estimatedMb: 11_000 }, lemonadeResident],
+          freedMb: 17_000,
+          busy: [],
+        });
+
+        const outcome = await service.loadTrackedModel(ollamaModel.id, { scope: 'operator' });
+
+        expect(outcome).toEqual({ loaded: false, reason: expect.stringContaining('may still be finishing work the Hub cannot see') });
+        expect(modelPuller.loadModel).not.toHaveBeenCalled();
+      });
+    });
+
+    it('refuses at once when the engine refused the only unload: nothing was freed, so there is nothing to wait for', async () => {
       memoryManager.canFitModel.mockResolvedValue({ fits: false, availableMb: 6_000, requiredMb: 18_000 });
       memoryManager.planEviction.mockResolvedValue({ canFree: true, candidates: [ollamaResident], freedMb: 17_000, busy: [] });
       ollamaBackend.unloadModel.mockRejectedValueOnce(new Error('boom'));
 
       const outcome = await service.loadTrackedModel(lemonadeModel.id);
 
-      expect(outcome).toEqual({ loaded: false, reason: expect.stringContaining('the engine refused to unload') });
+      expect(outcome).toEqual({ loaded: false, reason: `${lemonadeModel.id} does not fit: ollama refused to unload qwen3.8:27b-mtp-q4_K_M` });
+      expect(memoryManager.canFitModel).toHaveBeenCalledTimes(1);
       expect(modelPuller.loadModel).not.toHaveBeenCalled();
     });
 
@@ -590,20 +661,60 @@ describe('InferenceRouterService', () => {
       expect(outcome).toEqual({ loaded: false, reason: expect.stringContaining('every idle unpinned model') });
     });
 
-    it('keeps going when one unload fails, and lets the re-measure decide', async () => {
+    // A plan that cannot be completed stops losing models: the ones after the refusal stay loaded,
+    // and the re-measure decides whether what was freed is enough anyway.
+    it('stops the plan at the first unload the engine refuses, and lets the re-measure decide', async () => {
       memoryManager.canFitModel
         .mockResolvedValueOnce({ fits: false, availableMb: 6_000, requiredMb: 18_000 })
         .mockResolvedValueOnce({ fits: true, availableMb: 20_000, requiredMb: 18_000 });
+      memoryManager.planEviction.mockResolvedValue({
+        canFree: true,
+        candidates: [
+          ollamaResident,
+          { backend: 'ollama', backendModelId: 'gemma4:e4b', catalogId: null, estimatedMb: 3_000 },
+          { backend: 'ollama', backendModelId: 'llama3.2:3b', catalogId: null, estimatedMb: 2_000 },
+        ],
+        freedMb: 22_000,
+        busy: [],
+      });
+      ollamaBackend.unloadModel.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('boom'));
+
+      await expect(service.loadTrackedModel(lemonadeModel.id)).resolves.toEqual({ loaded: true });
+      expect(ollamaBackend.unloadModel.mock.calls.map(([id]) => id)).toEqual(['qwen3.8:27b-mtp-q4_K_M', 'gemma4:e4b']);
+    });
+
+    it('refuses when what was freed before a refused unload never shows up, naming both', async () => {
+      memoryManager.canFitModel.mockResolvedValue({ fits: false, availableMb: 6_000, requiredMb: 18_000 });
       memoryManager.planEviction.mockResolvedValue({
         canFree: true,
         candidates: [ollamaResident, { backend: 'ollama', backendModelId: 'gemma4:e4b', catalogId: null, estimatedMb: 3_000 }],
         freedMb: 20_000,
         busy: [],
       });
-      ollamaBackend.unloadModel.mockRejectedValueOnce(new Error('boom'));
+      ollamaBackend.unloadModel.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('boom'));
 
-      await expect(service.loadTrackedModel(lemonadeModel.id)).resolves.toEqual({ loaded: true });
-      expect(ollamaBackend.unloadModel).toHaveBeenCalledTimes(2);
+      await expect(service.loadTrackedModel(lemonadeModel.id)).resolves.toEqual({
+        loaded: false,
+        reason: `${lemonadeModel.id} still does not fit after unloading qwen3.8:27b-mtp-q4_K_M: ollama refused to unload gemma4:e4b`,
+      });
+      expect(modelPuller.loadModel).not.toHaveBeenCalled();
+    });
+
+    // FIT-2: the re-measure reused the profile read before the unload, so on unified memory it was
+    // capped at the MemAvailable from before the eviction and a working eviction read as a refusal.
+    it('re-reads the hardware profile, with a RAM sample taken now, on every settle attempt', async () => {
+      const before = { ...defaultProfile, ram: { ...defaultProfile.ram, availableMb: 4_000 } };
+      const after = { ...defaultProfile, ram: { ...defaultProfile.ram, availableMb: 30_000 } };
+      hardwareInspector.getProfile.mockImplementation(async (options) => (options?.freshRam ? after : before));
+      memoryManager.canFitModel.mockImplementation(async (profile) =>
+        profile === after ? { fits: true, availableMb: 28_000, requiredMb: 18_000 } : { fits: false, availableMb: 2_000, requiredMb: 18_000 },
+      );
+      memoryManager.planEviction.mockResolvedValue({ canFree: true, candidates: [ollamaResident], freedMb: 17_000, busy: [] });
+
+      await expect(service.loadTrackedModel(lemonadeModel.id, { scope: 'operator' })).resolves.toEqual({ loaded: true });
+
+      expect(hardwareInspector.getProfile).toHaveBeenCalledWith({ freshRam: true });
+      expect(memoryManager.canFitModel).toHaveBeenLastCalledWith(after, expect.any(Number));
     });
 
     // R7: evicting first and only then finding the model was never downloaded left a 500 and the
@@ -671,13 +782,69 @@ describe('InferenceRouterService', () => {
       const first = service.loadTrackedModel(lemonadeModel.id);
       const second = service.loadTrackedModel(lemonadeModel.id);
       await vi.waitFor(() => expect(modelPuller.loadModel).toHaveBeenCalledTimes(1));
-      // The second is queued behind the first: it has not even asked the engine yet.
-      expect(lemonadeBackend.isModelLoaded).toHaveBeenCalledTimes(1);
+      // The second asked the engine once, found nothing, and is queued behind the first: it has not
+      // measured or planned anything yet.
+      await vi.waitFor(() => expect(lemonadeBackend.isModelLoaded).toHaveBeenCalledTimes(3));
+      expect(memoryManager.canFitModel).toHaveBeenCalledTimes(1);
 
       finishLoad();
       await expect(first).resolves.toEqual({ loaded: true });
       await expect(second).resolves.toEqual({ loaded: true });
       expect(modelPuller.loadModel).toHaveBeenCalledTimes(1);
+    });
+
+    // S1 in the review of #1684: a request for a model that is already resident used to queue behind
+    // any other model's cold load (up to 120 s) only to be told it was resident.
+    it("answers a model that is already resident without waiting for another model's load", async () => {
+      memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 22_096 });
+      let finishLoad!: () => void;
+      modelPuller.loadModel.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finishLoad = resolve;
+          }),
+      );
+      const cold = service.loadTrackedModel(lemonadeModel.id);
+      await vi.waitFor(() => expect(modelPuller.loadModel).toHaveBeenCalledTimes(1));
+
+      const residentModel = { catalogId: 'gemma4-e4b', backend: 'ollama', backendModelId: 'gemma4:e4b', state: 'pulled' } as TrackedModel;
+      modelRegistry.getTrackedModel.mockImplementation((id) => (id === 'gemma4-e4b' ? residentModel : undefined));
+      ollamaBackend.isModelLoaded.mockResolvedValue(true);
+
+      await expect(service.loadTrackedModel('gemma4-e4b')).resolves.toEqual({ loaded: true });
+      expect(modelRegistry.updateModelState).toHaveBeenCalledWith('gemma4-e4b', 'loaded');
+
+      finishLoad();
+      await expect(cold).resolves.toEqual({ loaded: true });
+    });
+
+    it('drops a queued load whose client hung up while it waited, before it measures, evicts or loads', async () => {
+      memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 22_096 });
+      let finishLoad!: () => void;
+      modelPuller.loadModel.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finishLoad = resolve;
+          }),
+      );
+      const cold = service.loadTrackedModel(lemonadeModel.id);
+      await vi.waitFor(() => expect(modelPuller.loadModel).toHaveBeenCalledTimes(1));
+
+      // An app's request for another Hub-tracked model, through the pool proxy's arbitration.
+      const other = { catalogId: 'qwen3-coder-30b', backend: 'ollama', backendModelId: 'qwen3-coder:30b', state: 'pulled' } as TrackedModel;
+      modelRegistry.getTrackedModel.mockImplementation((id) => (id === 'qwen3-coder-30b' ? other : undefined));
+      ollamaBackend.isModelLoaded.mockResolvedValue(false);
+      const client = new AbortController();
+      const queued = service.prepareTrackedModel('qwen3-coder-30b', { signal: client.signal });
+      // Past the residency check and into the queue, then the client hangs up.
+      await vi.waitFor(() => expect(ollamaBackend.isModelLoaded).toHaveBeenCalledWith('qwen3-coder:30b'));
+      client.abort();
+
+      finishLoad();
+      await expect(cold).resolves.toEqual({ loaded: true });
+      await expect(queued).resolves.toBeNull();
+      expect(modelPuller.loadModel).toHaveBeenCalledTimes(1);
+      expect(memoryManager.canFitModel).toHaveBeenCalledTimes(1);
     });
 
     it('lets the next load run after one that threw', async () => {

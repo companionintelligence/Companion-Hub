@@ -825,7 +825,7 @@ describe('MemoryManagerService', () => {
     it.each([
       ['an operator', operator],
       ["an app's request", request],
-    ])('never names a model with a generation in flight, for %s', async (_who, scope) => {
+    ])('never names a model with a request in flight, for %s', async (_who, scope) => {
       const gemma = tracked({ catalogId: 'gemma4-e4b', backendModelId: 'gemma4:e4b' });
       modelRegistry.getEvictionCandidates.mockReturnValue([gemma]);
       modelRegistry.getTrackedModels.mockReturnValue([gemma]);
@@ -833,14 +833,9 @@ describe('MemoryManagerService', () => {
         { backend: 'ollama', source: 'measured', models: [resident('gemma4:e4b', { engineGpuBytes: 6_640 * MiB })] },
         { backend: 'lemonade', source: 'measured', models: [] },
       ]);
-      const generating = (backend: InferenceBackendType) => (backend === 'ollama' ? [{ model: 'gemma4:e4b' }] : []);
+      const inUse = (backend: InferenceBackendType) => (backend === 'ollama' ? [{ model: 'gemma4:e4b' }] : []);
 
-      const plan = await service.planEviction(
-        makeProfile(),
-        4_000,
-        { backend: 'ollama', backendModelId: 'qwen3-coder:30b' },
-        { ...scope, generating },
-      );
+      const plan = await service.planEviction(makeProfile(), 4_000, { backend: 'ollama', backendModelId: 'qwen3-coder:30b' }, { ...scope, inUse });
 
       expect(plan).toEqual({ canFree: false, candidates: [], freedMb: 0, busy: ['gemma4:e4b'] });
     });
@@ -854,9 +849,9 @@ describe('MemoryManagerService', () => {
         },
         { backend: 'lemonade', source: 'measured', models: [] },
       ]);
-      const generating = (backend: InferenceBackendType) => (backend === 'ollama' ? [{ model: 'gemma4:e4b' }] : []);
+      const inUse = (backend: InferenceBackendType) => (backend === 'ollama' ? [{ model: 'gemma4:e4b' }] : []);
 
-      const plan = await service.planEviction(makeProfile(), 5_000, keepLemonade, { scope: 'operator', generating });
+      const plan = await service.planEviction(makeProfile(), 5_000, keepLemonade, { scope: 'operator', inUse });
 
       expect(plan.candidates.map((c) => c.backendModelId)).toEqual(['qwen3.5:9b']);
       expect(plan.busy).toEqual(['gemma4:e4b']);
