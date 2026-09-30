@@ -377,8 +377,21 @@ export interface PoolRoutingThroughput {
   estimatedTokens: number;
   /** The deadline this request was placed under: the header wait if streamed, the whole completion otherwise. */
   budgetMs: number;
-  /** Every candidate with applicable evidence, in ranked order. Unmeasured candidates are absent: they kept their place. */
+  /** Every candidate with applicable evidence, in ranked order. Unmeasured candidates are absent: the ones that gave way are in `unmeasured`. */
   estimates: PoolRoutingThroughputEstimate[];
+  /**
+   * Every candidate with no applicable evidence that gave way to one measured to meet the budget, in
+   * ranked order — see `applyThroughputPlacement`. Empty when none did, which includes every prompt
+   * small enough to explore an unmeasured node with: one that kept its place is not listed.
+   */
+  unmeasured: PoolRoutingThroughputUnmeasured[];
+  /**
+   * Every candidate that was about to go first, in its group, and went behind candidates predicted to
+   * be much faster and no more than one request busier — see `applySlowerPlacement`. In the order the
+   * moves were made. Empty when none moved, which includes every prompt under the size the rule applies
+   * from and every group led by a pinned node or the engine prefix affinity holds.
+   */
+  slowerDemoted: PoolRoutingThroughputSlowerDemotion[];
   /**
    * `true` when the request was placed on a `slow` candidate anyway: every candidate was predicted to
    * miss the budget, or every one that was not failed first.
@@ -403,6 +416,37 @@ export interface PoolRoutingThroughputEstimate {
   deadline: boolean;
   /** Predicted to miss `budgetMs`, so moved behind every candidate that was not. */
   slow: boolean;
+}
+
+/** An unmeasured candidate moved behind the candidates measured to meet the budget. Still ahead of every `slow` one. */
+export interface PoolRoutingThroughputUnmeasured {
+  node: string;
+  backend: InferenceBackendType;
+  /**
+   * What it was judged on, from the hardware tier it advertised. `unknown`: nothing said how fast it
+   * reads a prompt, so it went behind the measured candidates only. `cpu-only`: it said inference has
+   * no GPU to use, so it went behind the other unmeasured candidates too.
+   */
+  prior: 'unknown' | 'cpu-only';
+}
+
+/**
+ * A measured candidate that was about to go first and went behind one predicted to be much faster.
+ * Both predictions are real evidence, in `estimates`; this names the pair the rule compared.
+ */
+export interface PoolRoutingThroughputSlowerDemotion {
+  node: string;
+  backend: InferenceBackendType;
+  /** Its predicted time to a first byte, as in `estimates`. */
+  predictedMs: number;
+  /** Its queue depth as the ranker read it. */
+  inFlight: number;
+  /** The candidate that went ahead of it: the first, in ranked order, of those that did. */
+  fasterNode: string;
+  fasterBackend: InferenceBackendType;
+  fasterMs: number;
+  /** Never more than `inFlight` + `SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT` (1). */
+  fasterInFlight: number;
 }
 
 /**

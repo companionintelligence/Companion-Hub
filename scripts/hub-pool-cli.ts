@@ -428,6 +428,27 @@ export interface PoolRoutingThroughput {
     deadline: boolean;
     slow: boolean;
   }[];
+  /**
+   * Nodes nothing had measured for a prompt this size, moved behind the ones measured to meet the
+   * budget. `cpu-only`: the node advertised no GPU inference can use, so it went behind the other
+   * unmeasured ones too. Absent on a Hub predating it, which left every unmeasured node in place.
+   */
+  unmeasured?: { node: string; backend: string; prior: 'unknown' | 'cpu-only' }[];
+  /**
+   * Nodes that were about to go first and went behind one predicted to be much faster and at most one
+   * request busier, with both predictions. Absent on a Hub predating it, which placed on the first
+   * node predicted to meet the budget however much faster another was.
+   */
+  slowerDemoted?: {
+    node: string;
+    backend: string;
+    predictedMs: number;
+    inFlight: number;
+    fasterNode: string;
+    fasterBackend: string;
+    fasterMs: number;
+    fasterInFlight: number;
+  }[];
   /** Placed on a node predicted to miss the budget anyway: every candidate was, or every faster one failed first. */
   overridden: boolean;
 }
@@ -1875,6 +1896,30 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
           ? `  ↳ ~${throughput.estimatedTokens}-token prompt placed anyway though ${nodes} ${slow.length === 1 ? 'is' : 'are'} expected to miss the ${budget} deadline: nothing faster could serve it`
           : `  ↳ ~${throughput.estimatedTokens}-token prompt moved ${nodes} behind nodes expected to answer within ${budget}`,
       );
+    }
+    // Its own line, because it is a different reason: nothing was measured on these nodes, and an
+    // operator reading why a fresh node got none of the long turns needs to see that, not a rate.
+    const unmeasured = throughput?.unmeasured ?? [];
+    if (throughput && unmeasured.length > 0) {
+      const nodes = unmeasured
+        .map((entry) => `${sanitizeForBox(entry.node)} (${entry.prior === 'cpu-only' ? 'unmeasured, no GPU advertised' : 'unmeasured'})`)
+        .join(', ');
+      lines.push(
+        `  ↳ ~${throughput.estimatedTokens}-token prompt put ${nodes} behind nodes measured to answer within ${Math.round(throughput.budgetMs / 1000)} s`,
+      );
+    }
+    // Its own line too: every node here meets the budget, and what an operator reading why core-7 got
+    // no long turns needs is the pair of predictions that moved it, not a deadline.
+    const slowerDemoted = throughput?.slowerDemoted ?? [];
+    if (throughput && slowerDemoted.length > 0) {
+      const seconds = (ms: number) => `~${Math.round(ms / 1000)} s`;
+      const moves = slowerDemoted
+        .map(
+          (entry) =>
+            `${sanitizeForBox(entry.node)} (${seconds(entry.predictedMs)}) behind ${sanitizeForBox(entry.fasterNode)} (${seconds(entry.fasterMs)})`,
+        )
+        .join(', ');
+      lines.push(`  ↳ ~${throughput.estimatedTokens}-token prompt moved ${moves}: predicted much faster`);
     }
     // Only when a full engine was moved: the record is present, with an empty `demoted`, on every
     // request where some candidate stated a count, and a note on each of those would bury the one

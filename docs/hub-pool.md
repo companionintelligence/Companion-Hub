@@ -50,6 +50,7 @@ This complements, and does not replace, the existing single-node model recommend
 - **`HUB_POOL_MAX_PROMPT_TOKENS=<tokens>`**: this node's [prompt ceiling](#prompt-ceilings), overriding the persisted `poolMaxPromptTokens`. A value outside 1024–1048576, or not a whole number, is ignored rather than guessed at. `GET /inference/pool/status` reports `localNode.maxPromptTokensSetBy: "env"` while it is in force. Not projected into `.env` by `generateSystemEnvFile`.
 - **`HUB_POOL_THROUGHPUT_PLACEMENT=off`** (or `0`, `false`): stop [measured throughput](#throughput-aware-placement) from reordering candidates. This node keeps measuring, reporting and advertising, so turning it back on needs no warm-up. Read per request.
 - **`HUB_POOL_CONTENTION_PLACEMENT=off`** (or `0`, `false`): stop [local engine contention](#local-engine-contention) from moving this node's engine behind peers. Read per request.
+- **`HUB_POOL_SLOWER_PLACEMENT_RATIO=<n>`** / **`HUB_POOL_SLOWER_PLACEMENT_FLOOR_MS=<ms>`**: how much slower the node about to go first must be predicted to be before a [much faster one](#much-slower-than-a-node-as-free) goes ahead of it. Defaults 3 and 20000. A ratio below 1, a negative floor, or anything that is not a number reads as the default; a very large ratio (1000) turns the rule off on its own, and `HUB_POOL_THROUGHPUT_PLACEMENT=off` turns it off with the rest. Read per request.
 
 ## Operator settings
 
@@ -414,10 +415,32 @@ the two, so a peer cannot advertise its way out of a deadline this node watched 
 predicted to take longer than the request's budget moves behind every candidate that is not. The
 rules are a ceiling's:
 
-- **Unmeasured is neither fast nor slow.** It keeps its place, and a measured-fast node is never
-  promoted past it.
-- **Demoted, never removed.** A slow node stays at the end of the failover order and still serves the
-  request when every faster node fails.
+- **Unmeasured is not known to be fast.** For a prompt under 6144 estimated tokens, a peer with no
+  applicable evidence keeps its place, which is how it gets measured. For a larger prompt, if a
+  candidate in its group with the same ranker score is measured to meet the budget, the unmeasured
+  peer moves behind it. A peer that advertises `hardwareTier` `cpu-only` or `insufficient` also moves
+  behind the other unmeasured peers with that score. An unmeasured peer still ranks ahead of a node
+  measured too slow, and when no candidate is measured to meet the budget nothing moves. On the
+  fleet, 2026-09-29, a 7,731-token turn went to core-7, which nothing had timed, and waited 169.8 s
+  for a first byte while measured GPU peers, as idle as core-7, were predicted at ~32–36 s. A GPU
+  tier is not read as fast: core-7 advertised `high` in the fleet capture of 2026-09-27, but its
+  Ollama reads prompts on CPU.
+- **Never behind a busier node.** Queue depth stays the ranker's first key: an unmeasured peer moves
+  behind a measured one only when the ranker scored the two the same, and it stays ahead of every
+  busier node. On this fleet's `-np 1` engines each queued request is a whole turn, ~300 s for a
+  large one, which is as long as the CPU read this guards against. So a measured node with a queue
+  does not hold back idle unmeasured peers, and a burst of large turns spreads over the pool by queue
+  depth. Nor does this node's own engine hold peers back while it is generating another model, or
+  this model at another window: [contention](#local-engine-contention) is about to move it behind
+  them, unless [prefix affinity](#prefix-affinity) holds it. A measurement is a rate, not a health
+  check: an engine answering in garbage reaches its first byte as fast as a sound one and counts as
+  measured, so this rule is also what limits such an engine to the ranker's ties.
+- **Some candidates keep their place unmeasured.** This node's own engine does, because its evidence
+  is forgotten on every restart while the engine's prefix cache is not. So do the engine
+  [prefix affinity](#prefix-affinity) holds, where the session's prefix is warm, and a
+  [pinned](#manual-routing-pins) peer, because a pin is a statement and unmeasured is only a prior.
+- **Demoted or deferred, never removed.** A slow or unmeasured node stays in the failover order and
+  still serves the request when every node ahead of it fails.
 - **All slow means nothing moves.** When every candidate is predicted to miss, the ranker's order
   stands.
 - **Ceilings stay outside.** A ceiling is an operator's statement and a measurement is an inference,
@@ -430,11 +453,63 @@ this node timed, and the peer's report after the validation and ageing routing a
 lists its prefill bands (`fromTokens`, `promptTokens`, `tokensPerSec`, `deadline`, `ageMs`) and its
 `decode` rate. Each routing-log entry carries `throughput`: `null` when no candidate had applicable
 evidence, otherwise `{ estimatedTokens, budgetMs, estimates: [{ node, backend, tokensPerSec,
-fromPromptTokens, extrapolated, predictedMs, source, deadline, slow }], overridden }`. `tokensPerSec`
-is the rate as measured, at `fromPromptTokens`, so it can be compared with an engine's own log;
-`predictedMs` includes the growth factor when `extrapolated` is true. `overridden` is `true` when the request was
-placed on a `slow` node anyway. `cihub pool status` lists measured speed per node, and `cihub pool log`
-marks the requests a measurement moved.
+fromPromptTokens, extrapolated, predictedMs, source, deadline, slow }], unmeasured: [{ node, backend,
+prior }], slowerDemoted: [{ node, backend, predictedMs, inFlight, fasterNode, fasterBackend, fasterMs,
+fasterInFlight }], overridden }`. `tokensPerSec` is the rate as measured, at `fromPromptTokens`, so it
+can be compared with an engine's own log; `predictedMs` includes the growth factor when
+`extrapolated` is true. `unmeasured` lists the peers that moved behind a node measured to meet the
+budget and scored the same, with the `prior` each was judged on (`unknown` or `cpu-only`). It is
+empty when none moved, including every prompt small enough to explore with. `slowerDemoted` lists
+each node that was about to go first and went behind a [much faster one](#much-slower-than-a-node-as-free),
+in the order the moves were made, naming the first node that went ahead of it; it is empty when none
+moved. `overridden` is `true` when the request was placed on a `slow` node anyway.
+`cihub pool status` lists measured speed per node, and `cihub pool log` marks the requests that a
+measurement, or the lack of one, moved.
+
+### Much slower than a node as free
+
+Meeting the budget is a low bar. The budget is sized from a 50 tok/s floor so that a GPU node reading
+a large prompt is never mistaken for a dead one, and a CPU node can clear it too. On the fleet re-bank
+of 2026-09-30 (core-2 entering, 15 leaves), a 35,809-token OpenClaw turn went to core-7, which reads
+on CPU, at a predicted 162,910 ms. beta-1 was predicted at 22,080 ms, beta-max at 34,651 ms and
+beta-red at 38,973 ms, and all four were idle. A 14.5k-token Hermes turn, with this node's engine moved
+aside for [contention](#local-engine-contention), also went to core-7: predicted at 54,854 ms, it took
+57 s to its first byte, where beta-1 was predicted at 8,959 ms.
+
+So after every other step, including contention and the pin, the entry node looks at the node each
+group would try first. If another node in that group is predicted to answer at least **3 times** as
+fast and at least **20 s** sooner (`HUB_POOL_SLOWER_PLACEMENT_RATIO`,
+`HUB_POOL_SLOWER_PLACEMENT_FLOOR_MS`), and has **at most one request more** in flight, it goes ahead.
+Every node that qualifies goes ahead, in the ranker's order, and the new first node is then judged the
+same way. For the OpenClaw turn that is beta-max, beta-red, beta-1, then core-7: beta-max at ~35 s is
+not three times beta-1's ~22 s, so the ranker's order among the GPU nodes stands. GPU nodes on this
+fleet measured 157–496 tok/s and CPU-served ones 27–45, so a CPU read is 3.5–18 times a GPU one, while
+two GPU nodes are three times apart only at the ends of their range. The floor keeps a turn where the
+ranker put it when the gap is seconds: a prediction is of a cold read, and a turn that shares its
+prefix with the last one answers in seconds on the node that read it. The one-request margin lets the
+rule act when the ranker put the CPU node first because the faster node had a single request in
+flight. That is a bet that the request is part done, since on `-np 1` engines it can be a whole turn.
+
+The limits:
+
+- **Measured on both sides.** Both nodes need a prediction, measured here or advertised, and the
+  faster one's must not be a missed deadline, which is only a lower bound. A group led by a node
+  nothing has measured is left alone, and an unmeasured node is never moved ahead: how those give
+  way is the deferral above.
+- **Large prompts only.** Below 6144 estimated tokens nothing moves, so the smaller prompts keep
+  reaching a node measured slow. That is how a node whose engine has moved onto its GPU gets measured
+  fast again.
+- **Never past a statement or a held prefix.** A [pinned](#manual-routing-pins) node, and the engine
+  [prefix affinity](#prefix-affinity) holds, keep the front. A local engine that contention moved
+  behind the peers is never brought back ahead of them.
+- **Within a group.** A node over its cap or ceiling, one whose slots are full, and one predicted to
+  miss the budget are in other groups and are never brought forward. When every node is predicted to
+  miss, nothing moves.
+- **Never toward a withheld engine.** An engine withheld for answering with bad output (see **A 200
+  that is not an answer** under [How it fits together](#how-it-fits-together)) goes behind every other
+  candidate after this step. So the node judged first is the first one not withheld, and a withheld
+  engine is never brought forward, however fast it reads a prompt: a degenerate engine reaches its
+  first byte as fast as a sound one. A model a node has been unable to serve is not a candidate at all.
 
 ## Local engine contention
 

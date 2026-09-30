@@ -28,9 +28,22 @@ import { HubPoolPeerService } from '../hub-pool-peer.service';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from '../hub-pool-load.service';
 import { PLACEMENT_PROBE_BUDGET_MS } from '../hub-pool-local-health.service';
 import { HubPoolRoutingLogService } from '../hub-pool-routing-log.service';
-import { HubPoolThroughputService, THROUGHPUT_FORGET_AFTER_MS, THROUGHPUT_HALF_LIFE_MS, THROUGHPUT_HOLD_MS } from '../hub-pool-throughput.service';
+import {
+  HubPoolThroughputService,
+  SLOWER_PLACEMENT_FLOOR_MS,
+  SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT,
+  SLOWER_PLACEMENT_RATIO,
+  THROUGHPUT_FORGET_AFTER_MS,
+  THROUGHPUT_HALF_LIFE_MS,
+  THROUGHPUT_HOLD_MS,
+  UNMEASURED_DEFER_MIN_PROMPT_TOKENS,
+  type PrefillPrediction,
+  type UnmeasuredPrior,
+} from '../hub-pool-throughput.service';
 import {
   AUTO_MODEL,
+  HUB_POOL_SLOWER_PLACEMENT_FLOOR_MS_ENV_VAR,
+  HUB_POOL_SLOWER_PLACEMENT_RATIO_ENV_VAR,
   POOL_BACKEND_HEADER,
   POOL_MODEL_HEADER,
   POOL_REQUEST_ID_HEADER,
@@ -42,15 +55,21 @@ import {
   applyLocalContention,
   applyPromptCeiling,
   applySlotPlacement,
+  applySlowerPlacement,
   applyThroughputPlacement,
   describeUnresolvableAuto,
   isRelayedEngineResponse,
   requestedNumCtx,
   normalizePoolRequestId,
   servedByHeaders,
+  splitByThroughput,
   splitDemoted,
+  type MeasuredPrefill,
+  type SlowerPlacement,
+  type UnmeasuredPlacement,
 } from '../hub-pool-proxy.service';
 import { firstByteBudgetMs, forwardBudgetMs } from '../hub-pool-budget';
+import type { PoolOutputQuarantine } from '../hub-pool-output-check';
 import {
   POOL_AFFINITY_HEADER,
   PREFIX_AFFINITY_TTL_MS,
@@ -4421,7 +4440,7 @@ describe('PoolProxyService', () => {
     /** A connected peer holding MODEL, idle unless told otherwise, optionally advertising throughput. */
     function node(
       id: string,
-      options: { inFlightRequests?: number; hardwareTier?: string; maxPromptTokens?: number; throughput?: unknown } = {},
+      options: { inFlightRequests?: number; hardwareTier?: string; maxPromptTokens?: number; ollamaSlots?: number; throughput?: unknown } = {},
     ): HubPoolPeer {
       return mockPeer({
         id,
@@ -4430,6 +4449,7 @@ describe('PoolProxyService', () => {
           inFlightRequests: options.inFlightRequests ?? 0,
           ...(options.hardwareTier ? { hardwareTier: options.hardwareTier } : {}),
           ...(options.maxPromptTokens ? { maxPromptTokens: options.maxPromptTokens } : {}),
+          ...(options.ollamaSlots ? { ollamaSlots: options.ollamaSlots } : {}),
           ...('throughput' in options ? { throughput: options.throughput as PoolThroughputEstimate[] } : {}),
         }) as unknown as Record<string, unknown>,
       });
@@ -4504,17 +4524,477 @@ describe('PoolProxyService', () => {
         expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-6', 'fzzy']);
       });
 
-      it('leaves an unmeasured node where the ranker put it, and never promotes a measured-fast one', async () => {
+      it('puts a node nothing has measured behind one as busy measured to meet the budget, and ahead of one measured to miss it', async () => {
         usePeers(() => [
           node('fzzy', { hardwareTier: 'cpu-only' }),
           node('core-7', { inFlightRequests: 1 }),
-          node('core-6', { inFlightRequests: 2 }),
+          node('core-6', { inFlightRequests: 1 }),
         ]);
         recordFzzyOnTheFleet();
         throughput.recordPrefill(CORE_6, { promptTokens: 48_000, ms: (48_000 / 496) * 1000, deadline: false });
 
-        // core-7 has no measurement: neither fast nor slow, so it keeps its place ahead of core-6.
-        expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-7', 'core-6', 'fzzy']);
+        // core-7 has no measurement, so it is not known to be fast; fzzy is known to be too slow.
+        expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-6', 'core-7', 'fzzy']);
+      });
+
+      it('keeps the ranked order among nodes measured to meet the budget while none is three times as fast', async () => {
+        usePeers(() => [node('core-7', { inFlightRequests: 1 }), node('core-6', { inFlightRequests: 2 })]);
+        // ~264.5 s against ~92.7 s: 2.85 times as long, just under SLOWER_PLACEMENT_RATIO.
+        throughput.recordPrefill({ ...CORE_6, nodeKey: 'core-7' }, { promptTokens: 40_000, ms: (40_000 / 200) * 1000, deadline: false });
+        throughput.recordPrefill(CORE_6, { promptTokens: 48_000, ms: (48_000 / 496) * 1000, deadline: false });
+
+        expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-7', 'core-6']);
+      });
+
+      /**
+       * Fleet, 2026-09-29, core-2 entering: a 7,731-token opencode turn, eight candidates, went to core-7
+       * — nothing had timed it there, it advertised `high`, and its Ollama read the prompt on CPU — and
+       * waited 169.8 s for a first byte, while the GPU peers beside it, idle and measured, were predicted
+       * at ~32–36 s. An unmeasured node was being taken for a fast one.
+       */
+      describe('a node nothing has measured', () => {
+        const OPENCODE_TURN_BYTES = 30_924; // ~7,731 estimated tokens
+        const CORE_7 = { ...CORE_6, nodeKey: 'core-7' };
+        /** ~230 tok/s at 7k: the ~34 s the measured GPU peers were predicted at for that turn. */
+        function measureCore6AtTheFleetRate(): void {
+          throughput.recordPrefill(CORE_6, { promptTokens: 7_000, ms: (7_000 / 230) * 1000, deadline: false });
+        }
+
+        it('gives way to a node measured to meet the budget on the turn that waited 169.8 s', async () => {
+          usePeers(() => [node('core-7'), node('core-6')]);
+          measureCore6AtTheFleetRate();
+
+          expect(ids(await service.buildCandidateList(MODEL, OPENCODE_TURN_BYTES))).toEqual(['core-6', 'core-7']);
+          expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-6', 'core-7']);
+        });
+
+        it('still gets the small prompts, which is how it gets measured, and is then judged on what was timed', async () => {
+          usePeers(() => [node('core-7'), node('core-6')]);
+          measureCore6AtTheFleetRate();
+
+          expect(ids(await service.buildCandidateList(MODEL, SMALL_PROMPT_BYTES))).toEqual(['core-7', 'core-6']);
+          expect(ids(await service.buildCandidateList(MODEL, UNMEASURED_DEFER_MIN_PROMPT_TOKENS * 4 - 4))).toEqual(['core-7', 'core-6']);
+          expect(ids(await service.buildCandidateList(MODEL, UNMEASURED_DEFER_MIN_PROMPT_TOKENS * 4))).toEqual(['core-6', 'core-7']);
+
+          // Explored at ~5k tokens and found as fast as core-6: the long prompt goes back to the ranker.
+          throughput.recordPrefill(CORE_7, { promptTokens: 5_000, ms: (5_000 / 250) * 1000, deadline: false });
+          expect(ids(await service.buildCandidateList(MODEL, OPENCODE_TURN_BYTES))).toEqual(['core-7', 'core-6']);
+        });
+
+        it('stays where the ranker put it in a pool nothing has been measured on, a node advertising no GPU included', async () => {
+          usePeers(() => [
+            node('beta-ms-a2', { hardwareTier: 'cpu-only' }),
+            node('core-7', { inFlightRequests: 1 }),
+            node('core-6', { inFlightRequests: 2 }),
+          ]);
+
+          const ranked = ids(await service.buildCandidateList(MODEL));
+          expect(ranked).toEqual(['beta-ms-a2', 'core-7', 'core-6']);
+          expect(ids(await service.buildCandidateList(MODEL, OPENCODE_TURN_BYTES))).toEqual(ranked);
+          expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(ranked);
+        });
+
+        it('stays where the ranker put it when every measured node is predicted to miss', async () => {
+          usePeers(() => [
+            node('fzzy', { hardwareTier: 'cpu-only' }),
+            node('core-7', { inFlightRequests: 1 }),
+            node('core-6', { inFlightRequests: 2 }),
+          ]);
+          recordFzzyOnTheFleet();
+
+          expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-7', 'core-6', 'fzzy']);
+        });
+
+        it('goes last among the unmeasured for a large prompt when it advertises no GPU, and is still explored with a small one', async () => {
+          usePeers(() => [
+            node('beta-ms-a2', { hardwareTier: 'cpu-only', inFlightRequests: 1 }),
+            node('fzzy', { hardwareTier: 'cpu-only' }),
+            node('core-7', { inFlightRequests: 1 }),
+            node('core-6', { inFlightRequests: 1 }),
+          ]);
+          recordFzzyOnTheFleet();
+          measureCore6AtTheFleetRate();
+
+          // Measured-fast, then unmeasured, then unmeasured with no GPU, all equally busy; then measured too slow.
+          expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-6', 'core-7', 'beta-ms-a2', 'fzzy']);
+
+          // A hint orders the ones that give way; it does not stop a node being measured.
+          usePeers(() => [
+            node('beta-ms-a2', { hardwareTier: 'cpu-only' }),
+            node('core-7', { inFlightRequests: 1 }),
+            node('core-6', { inFlightRequests: 1 }),
+          ]);
+          expect(ids(await service.buildCandidateList(MODEL, SMALL_PROMPT_BYTES))).toEqual(['beta-ms-a2', 'core-7', 'core-6']);
+        });
+
+        it("leaves this node's own engine in place: its evidence is forgotten on a restart that its prefix cache survives", async () => {
+          ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+          usePeers(() => [node('core-6', { inFlightRequests: 2 })]);
+          measureCore6AtTheFleetRate();
+
+          expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual([null, 'core-6']);
+        });
+
+        it('leaves a pinned node in front: the pin is a statement, and unmeasured is only a prior', async () => {
+          usePeers(() => [node('core-7'), node('core-6')]);
+          measureCore6AtTheFleetRate();
+          expect(ids(await service.buildCandidateList(MODEL, OPENCODE_TURN_BYTES))).toEqual(['core-6', 'core-7']);
+
+          setPoolPreferences({ poolPins: [{ scope: 'model', model: MODEL, targetKind: 'peer', peerId: 'core-7', mode: 'prefer' }] });
+          expect(ids(await service.buildCandidateList(MODEL, OPENCODE_TURN_BYTES))).toEqual(['core-7', 'core-6']);
+        });
+
+        it('is not deferred behind a measured node whose slots are full, so a burst still spreads onto it', async () => {
+          setPoolPreferences({ poolSlotAwareness: 1 });
+          usePeers(() => [node('core-6', { inFlightRequests: 2, ollamaSlots: 2 }), node('core-7', { inFlightRequests: 3 })]);
+          measureCore6AtTheFleetRate();
+
+          expect(ids(await service.buildCandidateList(MODEL, OPENCODE_TURN_BYTES))).toEqual(['core-7', 'core-6']);
+        });
+
+        it('gives way only to a measured node in its own ceiling group, since it can never be moved past that group', async () => {
+          usePeers(() => [
+            node('beta-ms-a2', { hardwareTier: 'cpu-only' }),
+            node('core-7', { inFlightRequests: 1 }),
+            node('core-6', { inFlightRequests: 1, maxPromptTokens: 16_000 }),
+          ]);
+          throughput.recordPrefill(CORE_6, { promptTokens: 48_000, ms: (48_000 / 496) * 1000, deadline: false });
+
+          // core-6 is as busy as core-7 but behind it on its ceiling, so there is nothing measured for core-7 to give way to.
+          expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['beta-ms-a2', 'core-7', 'core-6']);
+        });
+
+        /**
+         * The ranker's first key is queue depth, and on this fleet's `-np 1` engines each request queued
+         * ahead is a whole turn, ~300 s for a large one. A measured node with eight queued is not a
+         * better bet than an idle one nothing has timed, and taking it for one piled every large turn
+         * onto the few measured nodes while idle GPU peers waited.
+         */
+        it('is not held back by a measured node with a queue, so a burst of large turns still spreads by queue depth', async () => {
+          const idle = Array.from({ length: 12 }, (_, index) => node(`gpu-${index}`));
+          usePeers(() => [node('core-6', { inFlightRequests: 8 }), ...idle]);
+          measureCore6AtTheFleetRate();
+
+          const ranked = [...idle.map((peer) => peer.id), 'core-6'];
+          expect(ids(await service.buildCandidateList(MODEL, OPENCODE_TURN_BYTES))).toEqual(ranked);
+          expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(ranked);
+        });
+
+        it('gives way only to a measured node the ranker holds level with it, not to one with a request more', async () => {
+          usePeers(() => [node('core-7'), node('core-6', { inFlightRequests: 1 })]);
+          measureCore6AtTheFleetRate();
+          expect(ids(await service.buildCandidateList(MODEL, OPENCODE_TURN_BYTES))).toEqual(['core-7', 'core-6']);
+
+          usePeers(() => [node('core-7', { inFlightRequests: 1 }), node('core-6', { inFlightRequests: 1 })]);
+          expect(ids(await service.buildCandidateList(MODEL, OPENCODE_TURN_BYTES))).toEqual(['core-6', 'core-7']);
+        });
+
+        it('stays ahead of a busier measured node in the failover order', async () => {
+          usePeers(() => [node('core-7'), node('core-5', { inFlightRequests: 3 }), node('core-6')]);
+          measureCore6AtTheFleetRate();
+          throughput.recordPrefill({ ...CORE_6, nodeKey: 'core-5' }, { promptTokens: 7_000, ms: (7_000 / 230) * 1000, deadline: false });
+
+          // Behind core-6, which is as free as it; ahead of core-5, which has three queued.
+          expect(ids(await service.buildCandidateList(MODEL, OPENCODE_TURN_BYTES))).toEqual(['core-6', 'core-7', 'core-5']);
+        });
+
+        describe("beside this node's own engine while it is generating another model", () => {
+          const OTHER = 'qwen3.6:27b';
+          const LOCAL = { ...CORE_6, nodeKey: LOCAL_CANDIDATE_KEY };
+
+          /** This node's Ollama holds both models and is generating OTHER: one in flight here, level with an idle peer. */
+          function generatingAnotherModelHere(): void {
+            ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL, OTHER] });
+            loadService.acquire(LOCAL_CANDIDATE_KEY, { backend: 'ollama', model: OTHER, numCtx: null });
+          }
+
+          /**
+           * Contention moves that engine behind the peers no busier than it. A measurement of the same
+           * engine must not undo that by holding those peers back first: it would keep a large turn
+           * waiting on an engine that is busy with another model, while a peer sat idle.
+           */
+          it('does not give way to it, however fast it has been measured', async () => {
+            generatingAnotherModelHere();
+            usePeers(() => [node('core-2')]);
+            expect(ids(await service.buildCandidateList(MODEL, OPENCODE_TURN_BYTES))).toEqual(['core-2', null]);
+
+            throughput.recordPrefill(LOCAL, { promptTokens: 7_000, ms: (7_000 / 230) * 1000, deadline: false });
+            expect(ids(await service.buildCandidateList(MODEL, OPENCODE_TURN_BYTES))).toEqual(['core-2', null]);
+          });
+
+          it('lets it give way to an unmeasured peer that gave way to a measured one', async () => {
+            generatingAnotherModelHere();
+            usePeers(() => [node('core-2'), node('core-6')]);
+            measureCore6AtTheFleetRate();
+            throughput.recordPrefill(LOCAL, { promptTokens: 7_000, ms: (7_000 / 230) * 1000, deadline: false });
+
+            expect(ids(await service.buildCandidateList(MODEL, OPENCODE_TURN_BYTES))).toEqual(['core-6', 'core-2', null]);
+          });
+        });
+      });
+
+      /**
+       * Fleet re-bank, 2026-09-30, core-2 entering with 15 leaves. Budget demotion only asks whether a
+       * node answers in time, and core-7, reading on CPU, did: a 35,809-token OpenClaw turn went to it
+       * at a predicted 162,910 ms while beta-1, beta-max and beta-red, as idle, were predicted at
+       * 22–39 s; and a 14.5k-token Hermes turn, this node's engine moved aside for contention, went to
+       * it at 54,854 ms predicted — 57 s to its first byte — while beta-1 was predicted at 8,959 ms.
+       */
+      describe('a node predicted much slower than another as free', () => {
+        const OPENCLAW_TURN_TOKENS = 35_809;
+        const HERMES_TURN_TOKENS = 14_500;
+        const OTHER = 'qwen3.6:27b';
+        const bytesOf = (tokens: number) => tokens * 4;
+
+        /** Timed at exactly the turn's size, so the prediction for that turn is `ms` itself. */
+        function measure(nodeKey: string, promptTokens: number, ms: number): void {
+          throughput.recordPrefill({ ...CORE_6, nodeKey }, { promptTokens, ms, deadline: false });
+        }
+
+        function measureTheOpenClawTurn(): void {
+          measure('core-7', OPENCLAW_TURN_TOKENS, 162_910);
+          measure('beta-1', OPENCLAW_TURN_TOKENS, 22_080);
+          measure('beta-max', OPENCLAW_TURN_TOKENS, 34_651);
+          measure('beta-red', OPENCLAW_TURN_TOKENS, 38_973);
+        }
+
+        function measureTheHermesTurn(): void {
+          measure('core-7', HERMES_TURN_TOKENS, 54_854);
+          measure('beta-1', HERMES_TURN_TOKENS, 8_959);
+        }
+
+        /** This node's Ollama holds both models and is generating OTHER: one in flight here, level with an idle peer. */
+        function generatingAnotherModelHere(): void {
+          ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL, OTHER] });
+          loadService.acquire(LOCAL_CANDIDATE_KEY, { backend: 'ollama', model: OTHER, numCtx: null });
+        }
+
+        it('puts the idle GPU nodes ahead of the idle CPU node on the OpenClaw turn of 2026-09-30', async () => {
+          usePeers(() => [node('core-7'), node('beta-max'), node('beta-red'), node('beta-1')]);
+          measureTheOpenClawTurn();
+
+          // core-7 goes behind all three, which keep the ranker's order: beta-max's ~35 s is not three times beta-1's ~22 s.
+          expect(ids(await service.buildCandidateList(MODEL, bytesOf(OPENCLAW_TURN_TOKENS)))).toEqual(['beta-max', 'beta-red', 'beta-1', 'core-7']);
+        });
+
+        it("puts beta-1 ahead of core-7 on the Hermes turn this node's contended engine gave way on", async () => {
+          generatingAnotherModelHere();
+          usePeers(() => [node('core-7'), node('beta-1')]);
+          measureTheHermesTurn();
+
+          expect(ids(await service.buildCandidateList(MODEL, bytesOf(HERMES_TURN_TOKENS)))).toEqual(['beta-1', 'core-7', null]);
+
+          // The order contention alone left, with a ratio no prediction reaches turning the rule off.
+          vi.stubEnv(HUB_POOL_SLOWER_PLACEMENT_RATIO_ENV_VAR, '1000');
+          try {
+            expect(ids(await service.buildCandidateList(MODEL, bytesOf(HERMES_TURN_TOKENS)))).toEqual(['core-7', 'beta-1', null]);
+          } finally {
+            vi.unstubAllEnvs();
+          }
+        });
+
+        it('never brings a contended engine back to the front, however much faster it is predicted', async () => {
+          generatingAnotherModelHere();
+          usePeers(() => [node('core-7')]);
+          measure('core-7', HERMES_TURN_TOKENS, 54_854);
+          measure(LOCAL_CANDIDATE_KEY, HERMES_TURN_TOKENS, 8_959);
+
+          expect(ids(await service.buildCandidateList(MODEL, bytesOf(HERMES_TURN_TOKENS)))).toEqual(['core-7', null]);
+
+          // With no head start core-7 ranks first on its own and the engine, with nothing after it to
+          // give way to, stays beside it with one request more: this rule is all that could move it.
+          setPoolPreferences({ poolLocalAffinity: 0 });
+          expect(ids(await service.buildCandidateList(MODEL, bytesOf(HERMES_TURN_TOKENS)))).toEqual(['core-7', null]);
+        });
+
+        it('leaves the order alone while the first is under three times as slow', async () => {
+          usePeers(() => [node('core-7'), node('beta-1')]);
+          // 2.5 times as long, 30 s more: a GPU node slower than another, not a CPU read.
+          measure('core-7', HERMES_TURN_TOKENS, 50_000);
+          measure('beta-1', HERMES_TURN_TOKENS, 20_000);
+
+          expect(ids(await service.buildCandidateList(MODEL, bytesOf(HERMES_TURN_TOKENS)))).toEqual(['core-7', 'beta-1']);
+        });
+
+        it('leaves the order alone when the first is many times slower by under SLOWER_PLACEMENT_FLOOR_MS, until the floor is lowered', async () => {
+          usePeers(() => [node('core-7'), node('beta-1')]);
+          // Seven times as long, but 15.5 s: less than the move is worth against a prefix the ranker's choice may hold.
+          measure('core-7', HERMES_TURN_TOKENS, 18_000);
+          measure('beta-1', HERMES_TURN_TOKENS, 2_500);
+          expect(ids(await service.buildCandidateList(MODEL, bytesOf(HERMES_TURN_TOKENS)))).toEqual(['core-7', 'beta-1']);
+
+          vi.stubEnv(HUB_POOL_SLOWER_PLACEMENT_FLOOR_MS_ENV_VAR, '10000');
+          try {
+            expect(ids(await service.buildCandidateList(MODEL, bytesOf(HERMES_TURN_TOKENS)))).toEqual(['beta-1', 'core-7']);
+          } finally {
+            vi.unstubAllEnvs();
+          }
+        });
+
+        it.each([
+          ['a word', 'three'],
+          ['below 1', '0.5'],
+          ['blank', ' '],
+        ])('reads a ratio that is %s, and a negative floor, as the defaults rather than a guess', async (_label, raw) => {
+          usePeers(() => [node('core-7'), node('beta-1')]);
+          measureTheHermesTurn();
+          vi.stubEnv(HUB_POOL_SLOWER_PLACEMENT_RATIO_ENV_VAR, raw);
+          vi.stubEnv(HUB_POOL_SLOWER_PLACEMENT_FLOOR_MS_ENV_VAR, '-1');
+          try {
+            expect(ids(await service.buildCandidateList(MODEL, bytesOf(HERMES_TURN_TOKENS)))).toEqual(['beta-1', 'core-7']);
+          } finally {
+            vi.unstubAllEnvs();
+          }
+        });
+
+        it('does not send the turn to a faster node with more than one request more in flight', async () => {
+          usePeers(() => [node('core-7'), node('beta-1', { inFlightRequests: 2 })]);
+          measureTheHermesTurn();
+          expect(ids(await service.buildCandidateList(MODEL, bytesOf(HERMES_TURN_TOKENS)))).toEqual(['core-7', 'beta-1']);
+
+          // One more is a request it may be nearly done with, and all the ranker's order rested on.
+          usePeers(() => [node('core-7'), node('beta-1', { inFlightRequests: 1 })]);
+          expect(ids(await service.buildCandidateList(MODEL, bytesOf(HERMES_TURN_TOKENS)))).toEqual(['beta-1', 'core-7']);
+        });
+
+        it('does not bring forward a faster node whose slots are full', async () => {
+          setPoolPreferences({ poolSlotAwareness: 1 });
+          usePeers(() => [node('core-7'), node('beta-1', { inFlightRequests: 1, ollamaSlots: 1 })]);
+          measureTheHermesTurn();
+
+          expect(ids(await service.buildCandidateList(MODEL, bytesOf(HERMES_TURN_TOKENS)))).toEqual(['core-7', 'beta-1']);
+        });
+
+        it('leaves a pinned node in front: a pin is a statement, and a prediction an inference', async () => {
+          usePeers(() => [node('core-7'), node('beta-1')]);
+          measureTheHermesTurn();
+          setPoolPreferences({ poolPins: [{ scope: 'model', model: MODEL, targetKind: 'peer', peerId: 'core-7', mode: 'prefer' }] });
+
+          expect(ids(await service.buildCandidateList(MODEL, bytesOf(HERMES_TURN_TOKENS)))).toEqual(['core-7', 'beta-1']);
+        });
+
+        it('leaves prompts under UNMEASURED_DEFER_MIN_PROMPT_TOKENS alone, where a node measured slow gets measured again', async () => {
+          usePeers(() => [node('core-7'), node('beta-1')]);
+          // 30 against 230 tok/s at ~5k tokens: over seven times as slow, and over 140 s longer, at every size below.
+          throughput.recordPrefill({ ...CORE_6, nodeKey: 'core-7' }, { promptTokens: 5_000, ms: (5_000 / 30) * 1000, deadline: false });
+          throughput.recordPrefill({ ...CORE_6, nodeKey: 'beta-1' }, { promptTokens: 5_000, ms: (5_000 / 230) * 1000, deadline: false });
+
+          expect(ids(await service.buildCandidateList(MODEL, SMALL_PROMPT_BYTES))).toEqual(['core-7', 'beta-1']);
+          expect(ids(await service.buildCandidateList(MODEL, UNMEASURED_DEFER_MIN_PROMPT_TOKENS * 4 - 4))).toEqual(['core-7', 'beta-1']);
+          expect(ids(await service.buildCandidateList(MODEL, UNMEASURED_DEFER_MIN_PROMPT_TOKENS * 4))).toEqual(['beta-1', 'core-7']);
+        });
+
+        it('judges no node nothing has measured: an idler unmeasured one keeps the front, and the rule does not reach past it', async () => {
+          usePeers(() => [node('core-5'), node('core-7', { inFlightRequests: 1 }), node('beta-1', { inFlightRequests: 1 })]);
+          measureTheHermesTurn();
+
+          // No measured node is as free as core-5, so it is not deferred; and it has no prediction to compare.
+          expect(ids(await service.buildCandidateList(MODEL, bytesOf(HERMES_TURN_TOKENS)))).toEqual(['core-5', 'core-7', 'beta-1']);
+        });
+
+        it('leaves an unmeasured peer where its deferral put it, behind both measured nodes', async () => {
+          usePeers(() => [node('core-7'), node('core-5'), node('beta-1')]);
+          measureTheHermesTurn();
+
+          // core-5 gives way to the measured nodes as free as it; then core-7 goes behind beta-1, and core-5 stays last.
+          expect(ids(await service.buildCandidateList(MODEL, bytesOf(HERMES_TURN_TOKENS)))).toEqual(['beta-1', 'core-7', 'core-5']);
+        });
+
+        it('leaves the engine prefix affinity holds in front, where the session prefix is warm', async () => {
+          setPoolPreferences({ poolPrefixAffinityMaxInFlight: 2 });
+          usePeers(() => [node('core-7'), node('beta-1')]);
+          peerService.getPresentToken.mockResolvedValue('raw-token');
+          vi.mocked(global.fetch).mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
+          const head = [
+            { role: 'system', content: 'You are a coding agent.' },
+            { role: 'user', content: 'read the repo' },
+          ];
+
+          // A short first turn: placed by the ranker on core-7, and too short to measure it.
+          await service.proxyRequest({
+            path: '/v1/chat/completions',
+            method: 'POST',
+            body: { model: MODEL, stream: true, messages: head },
+            model: MODEL,
+            res: createMockResponse(),
+          });
+          expect(routingLog.list()[0]).toMatchObject({ node: 'core-7.tailxyz.ts.net' });
+          // 45 against 230 tok/s at 7k tokens: ~190 s against ~37 s for the grown turn.
+          throughput.recordPrefill({ ...CORE_6, nodeKey: 'core-7' }, { promptTokens: 7_000, ms: (7_000 / 45) * 1000, deadline: false });
+          throughput.recordPrefill({ ...CORE_6, nodeKey: 'beta-1' }, { promptTokens: 7_000, ms: (7_000 / 230) * 1000, deadline: false });
+
+          const grown = {
+            model: MODEL,
+            stream: true,
+            messages: [...head, { role: 'assistant', content: 'done' }, { role: 'user', content: 'x'.repeat(30_700) }],
+          };
+          await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: grown, model: MODEL, res: createMockResponse() });
+
+          const entry = routingLog.list()[0];
+          expect(entry).toMatchObject({ node: 'core-7.tailxyz.ts.net', affinity: expect.objectContaining({ outcome: 'hit', qualified: true }) });
+          expect(entry?.throughput?.estimatedTokens).toBeGreaterThanOrEqual(UNMEASURED_DEFER_MIN_PROMPT_TOKENS);
+          expect(entry?.throughput?.slowerDemoted).toEqual([]);
+          // The same turn with no session to hold goes to beta-1.
+          expect(ids(await service.buildCandidateList(MODEL, JSON.stringify(grown).length))).toEqual(['beta-1', 'core-7']);
+        });
+
+        it('never counts an engine withheld for bad output as the faster node, however fast it reads a prompt', async () => {
+          usePeers(() => [node('core-7'), node('beta-1'), node('beta-max')]);
+          measureTheHermesTurn();
+          measure('beta-max', HERMES_TURN_TOKENS, 15_000);
+          // beta-1 answered two turns with nothing but placeholder tokens, and is withheld for a cooldown.
+          const { outputQuarantine } = service as unknown as { outputQuarantine: PoolOutputQuarantine };
+          outputQuarantine.strike({ nodeKey: 'beta-1', backend: 'ollama', model: MODEL }, 'degenerate-output');
+          outputQuarantine.strike({ nodeKey: 'beta-1', backend: 'ollama', model: MODEL }, 'degenerate-output');
+          vi.mocked(global.fetch).mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
+
+          await service.proxyRequest({
+            path: '/v1/chat/completions',
+            method: 'POST',
+            body: turn(bytesOf(HERMES_TURN_TOKENS) - 400),
+            model: MODEL,
+            res: createMockResponse(),
+          });
+
+          const entry = routingLog.list()[0];
+          expect(entry).toMatchObject({ node: 'beta-max.tailxyz.ts.net', attempt: 1, outcome: 'served', failedOverFrom: [] });
+          expect(entry?.throughput?.slowerDemoted).toEqual([
+            expect.objectContaining({ node: 'core-7.tailxyz.ts.net', fasterNode: 'beta-max.tailxyz.ts.net' }),
+          ]);
+        });
+
+        it('names both nodes and both predictions in the routing log, and serves the turn from the faster', async () => {
+          usePeers(() => [node('core-7'), node('beta-max'), node('beta-red'), node('beta-1')]);
+          measureTheOpenClawTurn();
+          vi.mocked(global.fetch).mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
+
+          await service.proxyRequest({
+            path: '/v1/chat/completions',
+            method: 'POST',
+            body: turn(bytesOf(OPENCLAW_TURN_TOKENS) - 400),
+            model: MODEL,
+            res: createMockResponse(),
+          });
+
+          const entry = routingLog.list()[0];
+          expect(entry).toMatchObject({ node: 'beta-max.tailxyz.ts.net', candidates: 4, attempt: 1, outcome: 'served', failedOverFrom: [] });
+          const predictedFor = (id: string) => entry?.throughput?.estimates.find((estimate) => estimate.node === `${id}.tailxyz.ts.net`)?.predictedMs;
+          expect(predictedFor('core-7')).toBeGreaterThan(160_000);
+          expect(predictedFor('beta-max')).toBeLessThan(36_000);
+          expect(entry?.throughput?.slowerDemoted).toEqual([
+            {
+              node: 'core-7.tailxyz.ts.net',
+              backend: 'ollama',
+              predictedMs: predictedFor('core-7'),
+              inFlight: 0,
+              fasterNode: 'beta-max.tailxyz.ts.net',
+              fasterBackend: 'ollama',
+              fasterMs: predictedFor('beta-max'),
+              fasterInFlight: 0,
+            },
+          ]);
+          expect(entry?.throughput?.overridden).toBe(false);
+        });
       });
 
       it('keeps the ranked order when every candidate is predicted to miss its budget', async () => {
@@ -4744,8 +5224,89 @@ describe('PoolProxyService', () => {
               slow: true,
             },
           ],
+          // core-6 is unmeasured, but nothing is measured to meet the budget, so it kept its place.
+          unmeasured: [],
+          slowerDemoted: [],
           overridden: false,
         });
+      });
+
+      it('names the unmeasured node a large prompt went past, and the prior it was judged on', async () => {
+        usePeers(() => [node('beta-ms-a2', { hardwareTier: 'cpu-only' }), node('core-7'), node('core-6')]);
+        throughput.recordPrefill(CORE_6, { promptTokens: 7_000, ms: (7_000 / 230) * 1000, deadline: false });
+        answerWith200();
+
+        // The opencode turn from the fleet, 2026-09-29: ~7.7k tokens.
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: turn(30_700), model: MODEL, res: createMockResponse() });
+
+        const entry = routingLog.list()[0];
+        expect(entry).toMatchObject({ node: 'core-6.tailxyz.ts.net', candidates: 3, attempt: 1, outcome: 'served', failedOverFrom: [] });
+        expect(entry?.throughput?.estimatedTokens).toBeGreaterThanOrEqual(UNMEASURED_DEFER_MIN_PROMPT_TOKENS);
+        expect(entry?.throughput?.estimates).toEqual([expect.objectContaining({ node: 'core-6.tailxyz.ts.net', slow: false })]);
+        expect(entry?.throughput?.unmeasured).toEqual([
+          { node: 'core-7.tailxyz.ts.net', backend: 'ollama', prior: 'unknown' },
+          { node: 'beta-ms-a2.tailxyz.ts.net', backend: 'ollama', prior: 'cpu-only' },
+        ]);
+        expect(entry?.throughput?.overridden).toBe(false);
+      });
+
+      it('lists no unmeasured node for a prompt small enough to explore one with', async () => {
+        usePeers(() => [node('core-7'), node('core-6')]);
+        throughput.recordPrefill(CORE_6, { promptTokens: 4_500, ms: (4_500 / 230) * 1000, deadline: false });
+        answerWith200();
+
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: turn(18_000), model: MODEL, res: createMockResponse() });
+
+        const entry = routingLog.list()[0];
+        expect(entry).toMatchObject({ node: 'core-7.tailxyz.ts.net', attempt: 1 });
+        expect(entry?.throughput).toMatchObject({ estimates: [expect.objectContaining({ node: 'core-6.tailxyz.ts.net' })], unmeasured: [] });
+      });
+
+      it('still fails over to an unmeasured node when the measured one fails', async () => {
+        usePeers(() => [node('core-7'), node('core-6')]);
+        throughput.recordPrefill(CORE_6, { promptTokens: 7_000, ms: (7_000 / 230) * 1000, deadline: false });
+        vi.mocked(global.fetch).mockImplementation(async (url) =>
+          String(url).includes('core-6') ? new Response('model not loaded', { status: 503 }) : new Response('data: [DONE]\n\n', { status: 200 }),
+        );
+
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: turn(30_700), model: MODEL, res: createMockResponse() });
+
+        const entry = routingLog.list()[0];
+        expect(entry).toMatchObject({ node: 'core-7.tailxyz.ts.net', outcome: 'served', status: 200, failedOverFrom: ['core-6.tailxyz.ts.net'] });
+        expect(entry?.throughput?.unmeasured).toEqual([{ node: 'core-7.tailxyz.ts.net', backend: 'ollama', prior: 'unknown' }]);
+      });
+
+      it('leaves the engine prefix affinity holds in place, where the session prefix is warm', async () => {
+        setPoolPreferences({ poolPrefixAffinityMaxInFlight: 2 });
+        usePeers(() => [node('core-7'), node('core-6')]);
+        peerService.getPresentToken.mockResolvedValue('raw-token');
+        answerWith200();
+        const head = [
+          { role: 'system', content: 'You are a coding agent.' },
+          { role: 'user', content: 'read the repo' },
+        ];
+
+        // A short first turn: placed by the ranker on core-7, and too short to measure it.
+        await service.proxyRequest({
+          path: '/v1/chat/completions',
+          method: 'POST',
+          body: { model: MODEL, stream: true, messages: head },
+          model: MODEL,
+          res: createMockResponse(),
+        });
+        expect(routingLog.list()[0]).toMatchObject({ node: 'core-7.tailxyz.ts.net' });
+        throughput.recordPrefill(CORE_6, { promptTokens: 7_000, ms: (7_000 / 230) * 1000, deadline: false });
+
+        const grown = {
+          model: MODEL,
+          stream: true,
+          messages: [...head, { role: 'assistant', content: 'done' }, { role: 'user', content: 'x'.repeat(30_700) }],
+        };
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: grown, model: MODEL, res: createMockResponse() });
+
+        const entry = routingLog.list()[0];
+        expect(entry).toMatchObject({ node: 'core-7.tailxyz.ts.net', affinity: expect.objectContaining({ outcome: 'hit', qualified: true }) });
+        expect(entry?.throughput?.unmeasured).toEqual([]);
       });
 
       it('still fails over to the slow node when every faster one fails, and says it was placed there anyway', async () => {
@@ -5010,11 +5571,32 @@ describe('PoolProxyService', () => {
       const local = { peerId: null, nodeFqdn: null, backend: 'ollama' } as const;
       const fzzy = { peerId: 'fzzy', nodeFqdn: 'fzzy.tailxyz.ts.net', backend: 'ollama' } as const;
       const core6 = { peerId: 'core-6', nodeFqdn: 'core-6.tailxyz.ts.net', backend: 'ollama' } as const;
-      const slow = { predictedMs: 1_000_000, tokensPerSec: 46, deadline: false, source: 'observed' } as const;
-      const fast = { predictedMs: 93_000, tokensPerSec: 496, deadline: false, source: 'advertised' } as const;
+      const slow: PrefillPrediction = {
+        predictedMs: 1_000_000,
+        tokensPerSec: 46,
+        fromPromptTokens: 46_000,
+        extrapolated: false,
+        deadline: false,
+        source: 'observed',
+      };
+      const fast: PrefillPrediction = {
+        predictedMs: 93_000,
+        tokensPerSec: 496,
+        fromPromptTokens: 46_000,
+        extrapolated: false,
+        deadline: false,
+        source: 'advertised',
+      };
+      /** Every candidate scored the same by the ranker. */
+      const LEVEL = () => 0;
 
       it('returns no decision, and demotes nothing, when no candidate has a measurement', () => {
-        expect(applyThroughputPlacement([fzzy, core6], () => null, 46_000, 920_000)).toEqual({ demoted: new Set(), decision: null });
+        expect(applyThroughputPlacement([fzzy, core6], () => null, 46_000, 920_000)).toEqual({
+          demoted: new Set(),
+          deferred: new Map(),
+          measured: new Map(),
+          decision: null,
+        });
       });
 
       it('names every measured candidate and demotes only the ones predicted to miss', () => {
@@ -5034,6 +5616,8 @@ describe('PoolProxyService', () => {
               node: 'fzzy.tailxyz.ts.net',
               backend: 'ollama',
               tokensPerSec: 46,
+              fromPromptTokens: 46_000,
+              extrapolated: false,
               predictedMs: 1_000_000,
               source: 'observed',
               deadline: false,
@@ -5043,15 +5627,25 @@ describe('PoolProxyService', () => {
               node: 'core-6.tailxyz.ts.net',
               backend: 'ollama',
               tokensPerSec: 496,
+              fromPromptTokens: 46_000,
+              extrapolated: false,
               predictedMs: 93_000,
               source: 'advertised',
               deadline: false,
               slow: false,
             },
           ],
+          unmeasured: [],
+          // Filled in by the caller, once contention and pins have fixed which candidate goes first.
+          slowerDemoted: [],
           overridden: false,
         });
+        expect([...result.measured]).toEqual([
+          [fzzy, { prediction: slow, slow: true }],
+          [core6, { prediction: fast, slow: false }],
+        ]);
         expect(splitDemoted([fzzy, local, core6], result.demoted)).toEqual([[local, core6], [fzzy]]);
+        expect(splitByThroughput([fzzy, local, core6], result, LEVEL)).toEqual([[local, core6], [fzzy]]);
       });
 
       it('demotes nothing, and says it was overridden, when every candidate is predicted to miss', () => {
@@ -5060,6 +5654,458 @@ describe('PoolProxyService', () => {
         expect(result.demoted.size).toBe(0);
         expect(result.decision?.overridden).toBe(true);
         expect(splitDemoted([fzzy, local], result.demoted)).toEqual([[fzzy, local]]);
+        expect(splitByThroughput([fzzy, local], result, LEVEL)).toEqual([[fzzy, local]]);
+      });
+
+      describe('candidates nothing has measured', () => {
+        const core7 = { peerId: 'core-7', nodeFqdn: 'core-7.tailxyz.ts.net', backend: 'ollama' } as const;
+        const core5 = { peerId: 'core-5', nodeFqdn: 'core-5.tailxyz.ts.net', backend: 'ollama' } as const;
+        const betaMsA2 = { peerId: 'beta-ms-a2', nodeFqdn: 'beta-ms-a2.tailxyz.ts.net', backend: 'ollama' } as const;
+        const LARGE = UNMEASURED_DEFER_MIN_PROMPT_TOKENS;
+        const BUDGET = 300_000;
+        /**
+         * Priors for the named candidates; any other candidate keeps its place unmeasured. Every candidate
+         * is in one group, scored the same by the ranker, and left in place by contention, unless `layout`
+         * says otherwise.
+         */
+        function priors(
+          entries: [PoolCandidate, UnmeasuredPrior][],
+          layout: { groups?: [PoolCandidate, number][]; scores?: [PoolCandidate, number][]; contended?: PoolCandidate[] } = {},
+        ): UnmeasuredPlacement {
+          const prior = new Map(entries);
+          const group = new Map(layout.groups ?? []);
+          const score = new Map(layout.scores ?? []);
+          const contended = new Set(layout.contended ?? []);
+          return {
+            priorOf: (candidate) => prior.get(candidate) ?? null,
+            groupOf: (candidate) => group.get(candidate) ?? 0,
+            scoreOf: (candidate) => score.get(candidate) ?? 0,
+            staysInPlace: (candidate) => !contended.has(candidate),
+          };
+        }
+        const measured = (predictions: [PoolCandidate, PrefillPrediction][]) => {
+          const map = new Map<PoolCandidate, PrefillPrediction>(predictions);
+          return (candidate: PoolCandidate) => map.get(candidate) ?? null;
+        };
+
+        it('defers one behind a candidate measured to meet the budget from UNMEASURED_DEFER_MIN_PROMPT_TOKENS up, and names it', () => {
+          const unmeasured = priors([[core7, 'unknown']]);
+          const large = applyThroughputPlacement([core7, core6], measured([[core6, fast]]), LARGE, BUDGET, unmeasured);
+
+          expect([...large.deferred]).toEqual([[core7, 'unknown']]);
+          expect(large.decision?.unmeasured).toEqual([{ node: 'core-7.tailxyz.ts.net', backend: 'ollama', prior: 'unknown' }]);
+          // One part: contention, applied within it, can still move a contended engine behind both.
+          expect(splitByThroughput([core7, core6], large, LEVEL)).toEqual([[core6, core7]]);
+
+          const small = applyThroughputPlacement([core7, core6], measured([[core6, fast]]), LARGE - 1, BUDGET, unmeasured);
+          expect(small.deferred.size).toBe(0);
+          expect(small.decision?.unmeasured).toEqual([]);
+          expect(splitByThroughput([core7, core6], small, LEVEL)).toEqual([[core7, core6]]);
+        });
+
+        it('orders the measured-fast first, then an unknown prior, then cpu-only, then the ones predicted to miss', () => {
+          const ordered = [betaMsA2, fzzy, core7, local, core6];
+          const result = applyThroughputPlacement(
+            ordered,
+            measured([
+              [fzzy, slow],
+              [core6, fast],
+            ]),
+            46_000,
+            920_000,
+            priors([
+              [betaMsA2, 'cpu-only'],
+              [core7, 'unknown'],
+            ]),
+          );
+
+          // `local` has no prior: it keeps its place beside the measured-fast candidate, and is not listed.
+          expect(splitByThroughput(ordered, result, LEVEL)).toEqual([[local, core6, core7, betaMsA2], [fzzy]]);
+          expect(result.decision?.unmeasured).toEqual([
+            { node: 'beta-ms-a2.tailxyz.ts.net', backend: 'ollama', prior: 'cpu-only' },
+            { node: 'core-7.tailxyz.ts.net', backend: 'ollama', prior: 'unknown' },
+          ]);
+        });
+
+        it('defers nothing when no candidate is measured to meet the budget', () => {
+          const ordered = [core7, fzzy, betaMsA2];
+          const result = applyThroughputPlacement(
+            ordered,
+            measured([[fzzy, slow]]),
+            46_000,
+            920_000,
+            priors([
+              [betaMsA2, 'cpu-only'],
+              [core7, 'unknown'],
+            ]),
+          );
+
+          expect(result.deferred.size).toBe(0);
+          expect(result.decision?.unmeasured).toEqual([]);
+          expect(splitByThroughput(ordered, result, LEVEL)).toEqual([[core7, betaMsA2], [fzzy]]);
+        });
+
+        it('defers only where a candidate measured to meet the budget is ranked in the same group', () => {
+          const ordered = [betaMsA2, core7, core6];
+          const unmeasured: [PoolCandidate, UnmeasuredPrior][] = [
+            [betaMsA2, 'cpu-only'],
+            [core7, 'unknown'],
+          ];
+          const elsewhere = applyThroughputPlacement(
+            ordered,
+            measured([[core6, fast]]),
+            46_000,
+            920_000,
+            priors(unmeasured, { groups: [[core6, 1]] }),
+          );
+          expect(elsewhere.deferred.size).toBe(0);
+          expect(elsewhere.decision?.unmeasured).toEqual([]);
+
+          const beside = applyThroughputPlacement(
+            ordered,
+            measured([[core6, fast]]),
+            46_000,
+            920_000,
+            priors(unmeasured, {
+              groups: [
+                [core6, 1],
+                [core7, 1],
+              ],
+            }),
+          );
+          expect([...beside.deferred]).toEqual([[core7, 'unknown']]);
+        });
+
+        it('defers only behind a candidate the ranker scored the same, never a busier one', () => {
+          const ordered = [core7, core6];
+          const busier = priors([[core7, 'unknown']], { scores: [[core6, 8]] });
+          const queued = applyThroughputPlacement(ordered, measured([[core6, fast]]), LARGE, BUDGET, busier);
+          expect(queued.deferred.size).toBe(0);
+          expect(queued.decision?.unmeasured).toEqual([]);
+          expect(splitByThroughput(ordered, queued, busier.scoreOf)).toEqual([[core7, core6]]);
+
+          const level = applyThroughputPlacement(ordered, measured([[core6, fast]]), LARGE, BUDGET, priors([[core7, 'unknown']]));
+          expect([...level.deferred]).toEqual([[core7, 'unknown']]);
+        });
+
+        it('places one just behind the last candidate scored the same, and ahead of every busier one', () => {
+          const ordered = [core7, core6, betaMsA2, core5];
+          const unmeasured = priors(
+            [
+              [core7, 'unknown'],
+              [betaMsA2, 'cpu-only'],
+            ],
+            {
+              scores: [
+                [betaMsA2, 3],
+                [core5, 3],
+              ],
+            },
+          );
+          const result = applyThroughputPlacement(
+            ordered,
+            measured([
+              [core6, fast],
+              [core5, fast],
+            ]),
+            LARGE,
+            BUDGET,
+            unmeasured,
+          );
+
+          // core-7 gives way to core-6 and stays ahead of core-5, which has three more in flight.
+          expect(splitByThroughput(ordered, result, unmeasured.scoreOf)).toEqual([[core6, core7, core5, betaMsA2]]);
+        });
+
+        it('does not defer behind a measured candidate that contention will move', () => {
+          const ordered = [local, core7, core6];
+          const contended = priors([[core7, 'unknown']], { contended: [local] });
+
+          const alone = applyThroughputPlacement([local, core7], measured([[local, fast]]), LARGE, BUDGET, contended);
+          expect(alone.deferred.size).toBe(0);
+          expect(alone.decision?.unmeasured).toEqual([]);
+
+          // Behind core-6, which stays in place; in one part with the local engine, so contention can still move it behind both.
+          const beside = applyThroughputPlacement(
+            ordered,
+            measured([
+              [local, fast],
+              [core6, fast],
+            ]),
+            LARGE,
+            BUDGET,
+            contended,
+          );
+          expect([...beside.deferred]).toEqual([[core7, 'unknown']]);
+          expect(splitByThroughput(ordered, beside, LEVEL)).toEqual([[local, core6, core7]]);
+        });
+
+        it('keeps every unmeasured candidate in place when the caller gives no priors', () => {
+          const result = applyThroughputPlacement([core7, core6], measured([[core6, fast]]), 46_000, 920_000);
+
+          expect(result.deferred.size).toBe(0);
+          expect(splitByThroughput([core7, core6], result, LEVEL)).toEqual([[core7, core6]]);
+        });
+      });
+    });
+
+    describe('applySlowerPlacement', () => {
+      const peer = (id: string): PoolCandidate => ({ peerId: id, nodeFqdn: `${id}.tailxyz.ts.net`, backend: 'ollama' });
+      const core7 = peer('core-7');
+      const core5 = peer('core-5');
+      const beta1 = peer('beta-1');
+      const betaMax = peer('beta-max');
+      const betaRed = peer('beta-red');
+      const local: PoolCandidate = { peerId: null, nodeFqdn: null, backend: 'ollama' };
+      const TOKENS = 35_809;
+
+      /** A prediction measured to meet the budget, unless `measured` says otherwise. */
+      function predicted(predictedMs: number, measured: { slow?: boolean; deadline?: boolean } = {}): MeasuredPrefill {
+        return {
+          prediction: {
+            predictedMs,
+            tokensPerSec: Math.floor((TOKENS / predictedMs) * 1000),
+            fromPromptTokens: TOKENS,
+            extrapolated: false,
+            deadline: measured.deadline ?? false,
+            source: 'observed',
+          },
+          slow: measured.slow ?? false,
+        };
+      }
+
+      /** Every candidate idle, none holding the front or withheld, every one free to go ahead, at the default thresholds, unless told otherwise. */
+      function placement(
+        predictions: [PoolCandidate, MeasuredPrefill][],
+        options: Partial<Omit<SlowerPlacement, 'measuredOf' | 'inFlightOf'>> & { inFlight?: [PoolCandidate, number][] } = {},
+      ): SlowerPlacement {
+        const { inFlight = [], ...rest } = options;
+        const measured = new Map(predictions);
+        const queue = new Map(inFlight);
+        return {
+          estimatedTokens: TOKENS,
+          measuredOf: (candidate) => measured.get(candidate),
+          inFlightOf: (candidate) => queue.get(candidate) ?? 0,
+          holdsFront: () => false,
+          mayGoAhead: () => true,
+          withheld: () => false,
+          ratio: SLOWER_PLACEMENT_RATIO,
+          floorMs: SLOWER_PLACEMENT_FLOOR_MS,
+          ...rest,
+        };
+      }
+
+      const OPENCLAW_TURN: [PoolCandidate, MeasuredPrefill][] = [
+        [core7, predicted(162_910)],
+        [betaMax, predicted(34_651)],
+        [betaRed, predicted(38_973)],
+        [beta1, predicted(22_080)],
+      ];
+
+      it("puts every node predicted much faster ahead of the first, in the ranker's order, on the OpenClaw turn's numbers", () => {
+        const result = applySlowerPlacement([core7, betaMax, betaRed, beta1], placement(OPENCLAW_TURN));
+
+        expect(result.ordered).toEqual([betaMax, betaRed, beta1, core7]);
+        expect(result.demoted).toEqual([
+          {
+            node: 'core-7.tailxyz.ts.net',
+            backend: 'ollama',
+            predictedMs: 162_910,
+            inFlight: 0,
+            fasterNode: 'beta-max.tailxyz.ts.net',
+            fasterBackend: 'ollama',
+            fasterMs: 34_651,
+            fasterInFlight: 0,
+          },
+        ]);
+      });
+
+      it('judges the new first the same way, until nothing is predicted to beat the first by that much', () => {
+        const result = applySlowerPlacement(
+          [core7, betaRed, beta1],
+          placement([
+            [core7, predicted(300_000)],
+            [betaRed, predicted(90_000)],
+            [beta1, predicted(10_000)],
+          ]),
+        );
+
+        expect(result.ordered).toEqual([beta1, betaRed, core7]);
+        expect(result.demoted.map((entry) => [entry.node, entry.fasterNode])).toEqual([
+          ['core-7.tailxyz.ts.net', 'beta-red.tailxyz.ts.net'],
+          ['beta-red.tailxyz.ts.net', 'beta-1.tailxyz.ts.net'],
+        ]);
+      });
+
+      it('moves at exactly the ratio and the floor, and not a millisecond short of either', () => {
+        const at = (first: number, second: number) =>
+          applySlowerPlacement(
+            [core7, beta1],
+            placement([
+              [core7, predicted(first)],
+              [beta1, predicted(second)],
+            ]),
+          ).ordered;
+
+        expect(at(60_000, 20_000)).toEqual([beta1, core7]);
+        expect(at(59_999, 20_000)).toEqual([core7, beta1]);
+        expect(at(24_000, 4_000)).toEqual([beta1, core7]);
+        expect(at(23_999, 4_000)).toEqual([core7, beta1]);
+      });
+
+      it('takes its thresholds from the caller', () => {
+        const pair: [PoolCandidate, MeasuredPrefill][] = [
+          [core7, predicted(50_000)],
+          [beta1, predicted(20_000)],
+        ];
+        expect(applySlowerPlacement([core7, beta1], placement(pair)).ordered).toEqual([core7, beta1]);
+        expect(applySlowerPlacement([core7, beta1], placement(pair, { ratio: 2 })).ordered).toEqual([beta1, core7]);
+        expect(applySlowerPlacement([core7, beta1], placement(pair, { ratio: 2, floorMs: 40_000 })).ordered).toEqual([core7, beta1]);
+      });
+
+      it('never moves a candidate predicted the same, so a ratio of 1 with no floor still ends', () => {
+        const result = applySlowerPlacement(
+          [core7, beta1, betaMax],
+          placement(
+            [
+              [core7, predicted(30_000)],
+              [beta1, predicted(30_000)],
+              [betaMax, predicted(20_000)],
+            ],
+            { ratio: 1, floorMs: 0 },
+          ),
+        );
+
+        expect(result.ordered).toEqual([betaMax, core7, beta1]);
+        expect(result.demoted).toHaveLength(1);
+      });
+
+      it('lets a faster candidate with one request more go ahead, and not one with two', () => {
+        const pair: [PoolCandidate, MeasuredPrefill][] = [
+          [core7, predicted(54_854)],
+          [beta1, predicted(8_959)],
+        ];
+        const oneMore = applySlowerPlacement([core7, beta1], placement(pair, { inFlight: [[beta1, SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT]] }));
+        expect(oneMore.ordered).toEqual([beta1, core7]);
+        expect(oneMore.demoted[0]).toMatchObject({ inFlight: 0, fasterInFlight: 1 });
+
+        const twoMore = applySlowerPlacement([core7, beta1], placement(pair, { inFlight: [[beta1, SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT + 1]] }));
+        expect(twoMore.ordered).toEqual([core7, beta1]);
+        expect(twoMore.demoted).toEqual([]);
+
+        // Measured from the first's own queue: a busy first is passed by a node as busy as it.
+        const bothBusy = applySlowerPlacement(
+          [core7, beta1],
+          placement(pair, {
+            inFlight: [
+              [core7, 3],
+              [beta1, 4],
+            ],
+          }),
+        );
+        expect(bothBusy.ordered).toEqual([beta1, core7]);
+      });
+
+      it('leaves the group whole when the first holds the front: a pinned node, or the engine affinity holds', () => {
+        const group = [core7, beta1];
+        const result = applySlowerPlacement(
+          group,
+          placement(
+            [
+              [core7, predicted(54_854)],
+              [beta1, predicted(8_959)],
+            ],
+            { holdsFront: (candidate) => candidate === core7 },
+          ),
+        );
+
+        expect(result.ordered).toBe(group);
+        expect(result.demoted).toEqual([]);
+      });
+
+      it('never puts a candidate that may not go ahead in front, however fast: a local engine contention moves', () => {
+        const result = applySlowerPlacement(
+          [core7, local, beta1],
+          placement(
+            [
+              [core7, predicted(54_854)],
+              [local, predicted(2_000)],
+              [beta1, predicted(8_959)],
+            ],
+            { mayGoAhead: (candidate) => candidate !== local },
+          ),
+        );
+
+        expect(result.ordered).toEqual([beta1, core7, local]);
+        expect(result.demoted[0]).toMatchObject({ fasterNode: 'beta-1.tailxyz.ts.net' });
+      });
+
+      it('judges the first candidate not withheld, never brings a withheld one forward, and leaves withheld ones in their slots', () => {
+        const result = applySlowerPlacement(
+          [betaRed, core7, beta1, betaMax],
+          placement(
+            [
+              [betaRed, predicted(200_000)],
+              [core7, predicted(54_854)],
+              [beta1, predicted(2_000)],
+              [betaMax, predicted(15_000)],
+            ],
+            { withheld: (candidate) => candidate === betaRed || candidate === beta1 },
+          ),
+        );
+
+        // beta-red and beta-1 go behind everything once placement is done; of the rest, core-7 was first.
+        expect(result.ordered).toEqual([betaRed, betaMax, beta1, core7]);
+        expect(result.demoted.map((entry) => [entry.node, entry.fasterNode])).toEqual([['core-7.tailxyz.ts.net', 'beta-max.tailxyz.ts.net']]);
+      });
+
+      it('does not read a missed deadline, a lower bound, as a faster prediction', () => {
+        const result = applySlowerPlacement(
+          [core7, beta1],
+          placement([
+            [core7, predicted(162_910)],
+            [beta1, predicted(22_080, { deadline: true })],
+          ]),
+        );
+
+        expect(result.ordered).toEqual([core7, beta1]);
+      });
+
+      it('moves nothing when every candidate is predicted to miss the budget', () => {
+        const result = applySlowerPlacement(
+          [core7, beta1],
+          placement([
+            [core7, predicted(2_000_000, { slow: true })],
+            [beta1, predicted(400_000, { slow: true })],
+          ]),
+        );
+
+        expect(result.ordered).toEqual([core7, beta1]);
+        expect(result.demoted).toEqual([]);
+      });
+
+      it('judges no unmeasured candidate: one first leaves the group alone, and one behind keeps its place', () => {
+        const measuredPair: [PoolCandidate, MeasuredPrefill][] = [
+          [core7, predicted(54_854)],
+          [beta1, predicted(8_959)],
+        ];
+        const ledByUnmeasured = [core5, core7, beta1];
+        expect(applySlowerPlacement(ledByUnmeasured, placement(measuredPair)).ordered).toBe(ledByUnmeasured);
+
+        expect(applySlowerPlacement([core7, core5, beta1], placement(measuredPair)).ordered).toEqual([beta1, core7, core5]);
+      });
+
+      it('moves nothing for a prompt under UNMEASURED_DEFER_MIN_PROMPT_TOKENS', () => {
+        const pair: [PoolCandidate, MeasuredPrefill][] = [
+          [core7, predicted(200_000)],
+          [beta1, predicted(20_000)],
+        ];
+        const small = applySlowerPlacement([core7, beta1], placement(pair, { estimatedTokens: UNMEASURED_DEFER_MIN_PROMPT_TOKENS - 1 }));
+        expect(small.ordered).toEqual([core7, beta1]);
+        expect(small.demoted).toEqual([]);
+
+        const large = applySlowerPlacement([core7, beta1], placement(pair, { estimatedTokens: UNMEASURED_DEFER_MIN_PROMPT_TOKENS }));
+        expect(large.ordered).toEqual([beta1, core7]);
       });
     });
   });

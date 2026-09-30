@@ -7,6 +7,7 @@ import {
   THROUGHPUT_HOLD_MS,
   MAX_PREFILL_GROWTH,
   THROUGHPUT_MIN_PROMPT_TOKENS,
+  UNMEASURED_DEFER_MIN_PROMPT_TOKENS,
   evidenceWeight,
   effectivePrefillPoint,
   mergeDecode,
@@ -16,6 +17,7 @@ import {
   prefillBand,
   prefillPointsOf,
   readAdvertisedThroughput,
+  unmeasuredPriorOf,
   type PrefillBandEvidence,
   type PrefillPoint,
   type PrefillPrediction,
@@ -208,6 +210,26 @@ describe('missesBudget', () => {
     expect(deadline?.predictedMs).toBe(budget);
     expect(missesBudget(deadline as NonNullable<typeof deadline>, budget)).toBe(true);
     expect(missesBudget(served as NonNullable<typeof served>, budget)).toBe(false);
+  });
+});
+
+describe('unmeasuredPriorOf', () => {
+  it('reads the two tiers a node with no GPU for inference advertises as cpu-only', () => {
+    expect(unmeasuredPriorOf('cpu-only')).toBe('cpu-only');
+    expect(unmeasuredPriorOf('insufficient')).toBe('cpu-only');
+  });
+
+  it('never reads a GPU tier as fast: it is unknown, like anything the peer wrote that this build does not recognise', () => {
+    for (const tier of ['high', 'medium', 'low', 'CPU-ONLY', 'gpu', '', 0, null, undefined, { tier: 'cpu-only' }]) {
+      expect(unmeasuredPriorOf(tier)).toBe('unknown');
+    }
+  });
+
+  it('leaves a window of prompts that are measured but not deferred, inside the first band', () => {
+    // Below the first band nothing is recorded, so exploring there would never measure the node.
+    expect(prefillBand(THROUGHPUT_MIN_PROMPT_TOKENS)).toBe(0);
+    expect(UNMEASURED_DEFER_MIN_PROMPT_TOKENS).toBeGreaterThan(THROUGHPUT_MIN_PROMPT_TOKENS);
+    expect(prefillBand(UNMEASURED_DEFER_MIN_PROMPT_TOKENS - 1)).toBe(0);
   });
 });
 

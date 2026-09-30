@@ -79,6 +79,85 @@ export const THROUGHPUT_FORGET_AFTER_MS = THROUGHPUT_HOLD_MS + 3 * THROUGHPUT_HA
  */
 export const MAX_PREFILL_GROWTH = 3;
 
+/**
+ * The smallest prompt for which a peer engine with no applicable measurement gives way to one measured
+ * to meet the budget — see `applyThroughputPlacement`. Below it an unmeasured engine keeps the place
+ * the ranker gave it, which is how it gets measured at all.
+ *
+ * Exploring buys the same thing at any size in the first band, because a point there is read forward
+ * to every larger prompt (see {@link predictPrefill}), and costs a first byte in proportion to the
+ * prompt. So it is kept to the smallest prompts that measure anything: the lower half of that band,
+ * from {@link THROUGHPUT_MIN_PROMPT_TOKENS}. That leaves agent traffic a window to measure a node in,
+ * while holding what one exploration costs an engine that turns out to read on CPU (27–45 tok/s on
+ * this fleet) to ~135–230 s. The upper half is where the turn that showed the cost landed. Fleet,
+ * 2026-09-29: a 7,731-token opencode turn went to core-7, which nothing had timed, and waited 169.8 s
+ * for its first byte from an engine reading the prompt on CPU, while the GPU peers ranked beside it,
+ * measured and idle, were predicted at ~32–36 s.
+ */
+export const UNMEASURED_DEFER_MIN_PROMPT_TOKENS = 6144;
+
+/**
+ * How many times slower than another candidate the one placed first must be predicted to be before
+ * the faster one goes ahead of it — see `applySlowerPlacement`. `HUB_POOL_SLOWER_PLACEMENT_RATIO`
+ * overrides it.
+ *
+ * Meeting the budget is a low bar: the budget is sized from a 50 tok/s floor so that a GPU node
+ * working through a large prompt is never mistaken for a dead one, and a CPU node can clear it too.
+ * On the fleet re-bank of 2026-09-30 core-7, reading on CPU, was placed first for a 35,809-token
+ * OpenClaw turn at a predicted 162,910 ms while beta-1 was predicted at 22,080 ms (7.4x faster),
+ * beta-max at 34,651 ms and beta-red at 38,973 ms, all as idle. GPU nodes on this fleet measured
+ * 157–496 tok/s and CPU-served ones 27–45, so a CPU read is 3.5–18x a GPU one, while two GPU nodes
+ * are three times apart only at the two ends of their range. Three therefore catches the CPU case
+ * and leaves the ranker's order among GPU nodes that are merely faster than each other.
+ */
+export const SLOWER_PLACEMENT_RATIO = 3;
+
+/**
+ * How much longer, in milliseconds, the first candidate must be predicted to take than the faster
+ * one, as well as {@link SLOWER_PLACEMENT_RATIO} times as long — see `applySlowerPlacement`.
+ * `HUB_POOL_SLOWER_PLACEMENT_FLOOR_MS` overrides it.
+ *
+ * A ratio alone would move a turn over seconds: 6 s against 2 s is three times as long. A prediction
+ * is of a cold read, and most agent turns share a cached prefix with the turn before and answer in
+ * seconds on the node that read it, so a move is worth making only when the cold read it avoids is
+ * long enough to outweigh giving up the ranker's choice, which carries the local head start. Twenty
+ * seconds is under half of what the Hermes turn of 2026-09-30 lost on core-7: 54,854 ms predicted,
+ * 57 s to its first byte, against beta-1's 8,959 ms.
+ */
+export const SLOWER_PLACEMENT_FLOOR_MS = 20_000;
+
+/**
+ * How many more requests in flight than the first candidate a faster one may have and still go ahead
+ * of it — see `applySlowerPlacement`. One lets the rule act where the ranker put a CPU node first
+ * because the faster node has a single request in flight, which it may be nearly done with. That is a
+ * bet: on this fleet's `-np 1` engines a request in flight can be a whole turn, ~300 s for a large
+ * one. More than one is a queue, and queue depth stays the ranker's to judge. With slot awareness on,
+ * a node whose slots that request fills is in a later group and is never considered at all.
+ */
+export const SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT = 1;
+
+/**
+ * What placement assumes about a peer engine it has no applicable measurement for, from the one hint
+ * about its hardware a peer advertises (`hardwareTier`).
+ *
+ * - `cpu-only`: the node says inference has no GPU to use — `cpu-only`, or `insufficient`, which is
+ *   the same with less memory. Its prefill is a CPU's, 27–45 tok/s on this fleet against 157–496 on
+ *   GPU, so among the unmeasured candidates that give way it goes last.
+ * - `unknown`: everything else. A GPU tier is not read as fast: core-7 and fzzy advertised `high` in
+ *   the fleet capture of 2026-09-27, yet their Ollama reads prompts on CPU because a vLLM container of
+ *   their own holds the GPU. A tier says what the machine has, not where the engine put the model.
+ *
+ * A hint orders the unmeasured candidates that give way; it never decides whether one is explored,
+ * because it can be wrong in both directions — beta-nas advertised `cpu-only` with a working GPU
+ * until the tier learned to read the host's driver.
+ */
+export type UnmeasuredPrior = 'unknown' | 'cpu-only';
+
+/** The prior for a peer that advertised `hardwareTier`. The value is the peer's to write, so anything unrecognised is `unknown`. */
+export function unmeasuredPriorOf(hardwareTier: unknown): UnmeasuredPrior {
+  return hardwareTier === 'cpu-only' || hardwareTier === 'insufficient' ? 'cpu-only' : 'unknown';
+}
+
 /** How many (backend, model) entries a node advertises, and how many of a peer's a reader accepts. */
 export const MAX_ADVERTISED_THROUGHPUT = 32;
 
@@ -287,7 +366,10 @@ export function prefillPointsOf(estimate: PoolThroughputEstimate, source: Throug
  *
  * There is no anti-gaming concern that needs more than this: an advertised rate is only ever combined
  * with what this node timed itself by taking the slower, so a peer can make itself look slow (which
- * `acceptingWork: false` already allows) but not fast.
+ * `acceptingWork: false` already allows) but not faster than it was timed here. A peer this node has
+ * not timed can, by advertising a rate, count as measured, and so be placed ahead of the unmeasured
+ * peers the ranker scored the same for a large prompt — never ahead of an idler one; that is the trust
+ * its self-reported queue depth already carries in the ranker.
  */
 export function readAdvertisedThroughput(raw: unknown, snapshotAgeMs: number): PoolThroughputEstimate[] {
   if (!Array.isArray(raw)) {
