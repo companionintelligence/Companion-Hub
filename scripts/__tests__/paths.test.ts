@@ -8,6 +8,7 @@ import {
   resolveInvokingUserHome,
   resolveProdApplianceContext,
   settingsCandidatesFrom,
+  usableXdgDataHome,
 } from '../lib/paths';
 
 describe('resolveCanonicalDataDir', () => {
@@ -34,6 +35,56 @@ describe('resolveCanonicalDataDir', () => {
     expect(resolveCanonicalDataDir({ APPDATA: 'C:\\Users\\t\\AppData\\Roaming' }, 'win32', HOME)).toBe(
       path.join('C:\\Users\\t\\AppData\\Roaming', CANONICAL_DATA_DIR_NAME),
     );
+  });
+});
+
+/**
+ * A snap app points XDG_DATA_HOME at its own folder for every process it starts, so `cihub` run in
+ * the terminal of VS Code installed as a snap read `~/snap/code/<rev>/.local/share/companion-hub`,
+ * a stale or empty copy, instead of the Hub's data dir (CI-Hub#1698).
+ */
+describe('XDG_DATA_HOME set by a snap', () => {
+  const HOME = '/home/tester';
+  const realDataDir = join(HOME, '.local', 'share', CANONICAL_DATA_DIR_NAME);
+  const codeSnapData = join(HOME, 'snap', 'code', '264', '.local', 'share');
+
+  it("ignores another snap's folder inside that snap's terminal", () => {
+    expect(resolveCanonicalDataDir({ XDG_DATA_HOME: codeSnapData, SNAP_NAME: 'code' }, 'linux', HOME)).toBe(realDataDir);
+  });
+
+  it("ignores another snap's folder even without SNAP_NAME, as a process that inherited it has", () => {
+    expect(resolveCanonicalDataDir({ XDG_DATA_HOME: codeSnapData }, 'linux', HOME)).toBe(realDataDir);
+  });
+
+  it('ignores XDG_DATA_HOME whenever another snap is running the CLI', () => {
+    expect(resolveCanonicalDataDir({ XDG_DATA_HOME: '/xdg/data', SNAP_NAME: 'code' }, 'linux', HOME)).toBe(realDataDir);
+  });
+
+  it('keeps the folder our own snap sets, which the desktop app in it uses too', () => {
+    const ownSnapData = join(HOME, 'snap', 'companion-hub', '12', '.local', 'share');
+    expect(resolveCanonicalDataDir({ XDG_DATA_HOME: ownSnapData, SNAP_NAME: 'companion-hub' }, 'linux', HOME)).toBe(
+      join(ownSnapData, CANONICAL_DATA_DIR_NAME),
+    );
+    // A parallel install lives in `~/snap/<name>_<key>/`.
+    const instanceData = join(HOME, 'snap', 'companion-hub_beta', '3', '.local', 'share');
+    expect(usableXdgDataHome({ XDG_DATA_HOME: instanceData, SNAP_NAME: 'companion-hub' }, HOME)).toBe(instanceData);
+  });
+
+  it('ignores a relative XDG_DATA_HOME, as the desktop app does', () => {
+    expect(resolveCanonicalDataDir({ XDG_DATA_HOME: 'xdg/data' }, 'linux', HOME)).toBe(realDataDir);
+    expect(usableXdgDataHome({ XDG_DATA_HOME: ' /xdg/data' }, HOME)).toBeUndefined();
+  });
+
+  it('keeps an XDG_DATA_HOME outside any snap folder', () => {
+    expect(usableXdgDataHome({ XDG_DATA_HOME: '/xdg/data' }, HOME)).toBe('/xdg/data');
+    expect(usableXdgDataHome({ XDG_DATA_HOME: join(HOME, 'snapshots', 'share') }, HOME)).toBe(join(HOME, 'snapshots', 'share'));
+    expect(usableXdgDataHome({ XDG_DATA_HOME: '/xdg/data', SNAP_NAME: 'companion-hub' }, HOME)).toBe('/xdg/data');
+  });
+
+  it("looks for the device key in the real data dir from another snap's terminal", () => {
+    const candidates = settingsCandidatesFrom('/srv/hub/.internal', { XDG_DATA_HOME: codeSnapData, SNAP_NAME: 'code' }, 'linux', HOME, () => true);
+    expect(candidates).toContain(join(realDataDir, 'state', 'settings.json'));
+    expect(candidates.some((candidate) => candidate.startsWith(join(HOME, 'snap')))).toBe(false);
   });
 });
 

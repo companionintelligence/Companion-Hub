@@ -57,7 +57,7 @@ Compose mounts `${ROOT_FOLDER_HOST}/../tunnel`, and on an appliance `ROOT_FOLDER
 
 | Platform | Tunnel folder |
 |----------|---------------|
-| Linux | `~/.local/share/tunnel` (or `$XDG_DATA_HOME/tunnel`) |
+| Linux | `~/.local/share/tunnel` (or `$XDG_DATA_HOME/tunnel`, unless another snap set it) |
 | macOS | `~/Library/Application Support/tunnel` |
 | Windows | `%APPDATA%\tunnel` |
 

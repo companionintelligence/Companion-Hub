@@ -2027,3 +2027,8 @@ and `status --write-status-file` ignore it.
 
 Run outside a CI-Hub checkout (a packaged install), `up`/`down`/`reset`/`clean` infer `prod` and
 target the canonical desktop data dir, and any `[env]` argument is ignored.
+
+On Linux the canonical data dir is `$XDG_DATA_HOME/companion-hub`, or `~/.local/share/companion-hub`
+when `XDG_DATA_HOME` is unset. `cihub` and the desktop app ignore an `XDG_DATA_HOME` set by another
+snap: a terminal inside a snap app, such as VS Code installed from the Snap Store, points it at the
+app's own folder under `~/snap/`. For `cihub`, `CI_HUB_DATA_DIR` overrides both.

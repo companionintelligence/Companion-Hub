@@ -542,6 +542,34 @@ describe('isCloudflaredTunnelToken', () => {
 });
 
 describe('getDesktopTunnelDir', () => {
+  // The tunnel folder sits beside the data dir, so it follows the same rule for a snap's
+  // XDG_DATA_HOME as resolveCanonicalDataDir (CI-Hub#1698).
+  it('ignores the XDG_DATA_HOME another snap sets, like the data dir itself', () => {
+    const saved = {
+      XDG_DATA_HOME: process.env.XDG_DATA_HOME,
+      XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+      XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
+      SNAP_NAME: process.env.SNAP_NAME,
+    };
+    try {
+      process.env.XDG_DATA_HOME = '/home/dev/snap/code/264/.local/share';
+      process.env.XDG_CONFIG_HOME = '/home/dev/.config';
+      process.env.XDG_CACHE_HOME = '/home/dev/.cache';
+      process.env.SNAP_NAME = 'code';
+      expect(getDesktopTunnelDir({ homeDir: '/home/dev', platform: 'linux' })).toBe('/home/dev/.local/share/tunnel');
+      const dataDirs = getHubStateDirs({ cwd: '/home/dev/repo', homeDir: '/home/dev', platform: 'linux' })
+        .filter((dir) => dir.label === 'data dir')
+        .map((dir) => dir.path);
+      expect(dataDirs).toContain('/home/dev/.local/share/companion-hub');
+      expect(dataDirs.some((dir) => dir.includes('/snap/'))).toBe(false);
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it('is the tunnel folder beside the desktop data folder', () => {
     const saved = { XDG_DATA_HOME: process.env.XDG_DATA_HOME, APPDATA: process.env.APPDATA };
     try {
