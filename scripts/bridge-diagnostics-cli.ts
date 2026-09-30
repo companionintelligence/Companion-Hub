@@ -215,15 +215,21 @@ export function resolveBridgeServices(envFileName: string): BridgeServiceSpec[] 
     const parsed = Number(value);
     return Number.isInteger(parsed) && parsed > 0 && parsed <= 65535 ? parsed : fallback;
   };
+  // Nothing in the Hub dials these engines by default, so they are checked only when their URL is
+  // set. Probed at their usual port regardless, they found whatever else listened there, such as
+  // Traefik's dashboard on 8080, and reported it as an engine bound to loopback (CI-Hub#1695).
+  const ifSet = (label: string, url: string | undefined, fallback: number): BridgeServiceSpec[] =>
+    url?.trim() ? [{ label, port: port(portFromUrl(url), fallback) }] : [];
 
   return [
     { label: 'Hub API (cloudflared origin)', port: port(vars.API_PORT, 5002) },
     { label: 'Ollama', port: port(portFromUrl(vars.OLLAMA_URL), 11434) },
+    // Compose hands the Hub a host default for vLLM and Lemonade, so both are dialed even when unset.
     { label: 'vLLM', port: port(portFromUrl(vars.VLLM_URL), 8000) },
-    { label: 'MTPLX', port: port(portFromUrl(vars.MTPLX_URL), 8000) },
-    { label: 'Speculative inference', port: port(portFromUrl(vars.DSPARK_URL), 8080) },
+    ...ifSet('MTPLX', vars.MTPLX_URL, 8000),
+    ...ifSet('Speculative inference', vars.DSPARK_URL, 8080),
     { label: 'Lemonade', port: port(portFromUrl(vars.LEMONADE_URL), 13305) },
-    { label: 'Speculative inference', port: port(portFromUrl(vars.SPECULATIVE_INFERENCE_URL), 8000) },
+    ...ifSet('Speculative inference', vars.SPECULATIVE_INFERENCE_URL, 8000),
   ];
 }
 
