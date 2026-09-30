@@ -90,3 +90,72 @@ fn detects_docker_missing_resource_messages() {
         "permission denied while trying to connect"
     ));
 }
+
+#[cfg(unix)]
+fn mode_of(path: &std::path::Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .expect("metadata")
+        .permissions()
+        .mode()
+        & 0o777
+}
+
+#[cfg(unix)]
+fn state_file_with_mode(dir: &std::path::Path, name: &str, mode: u32) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join(name);
+    std::fs::write(&path, b"{}").expect("write");
+    // set_permissions, not a create mode: that one is masked by the umask, and 0o666 is the point.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+    path
+}
+
+#[cfg(unix)]
+#[test]
+fn seeds_settings_json_owner_only() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let settings = dir.path().join("settings.json");
+
+    seed_settings_json(&settings).expect("seed");
+
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), "{}");
+    assert_eq!(mode_of(&settings), 0o600);
+}
+
+#[cfg(unix)]
+#[test]
+fn restricts_world_writable_credential_file_to_owner_only() {
+    // core-2's settings.json was 0666 while holding the device keys.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let settings = state_file_with_mode(dir.path(), "settings.json", 0o666);
+
+    assert_eq!(restrict_private_state_file(&settings), Some(0o666));
+    assert_eq!(mode_of(&settings), 0o600);
+    // Already private: nothing to do, nothing reported.
+    assert_eq!(restrict_private_state_file(&settings), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn restricting_never_adds_a_bit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let read_only = state_file_with_mode(dir.path(), "seed", 0o400);
+    let owner_read_world_write = state_file_with_mode(dir.path(), "settings.json", 0o422);
+
+    assert_eq!(restrict_private_state_file(&read_only), None);
+    assert_eq!(mode_of(&read_only), 0o400);
+    // 0o422 & 0o600 = 0o400: the owner does not gain the write bit it lacked.
+    assert_eq!(
+        restrict_private_state_file(&owner_read_world_write),
+        Some(0o422)
+    );
+    assert_eq!(mode_of(&owner_read_world_write), 0o400);
+}
+
+#[cfg(unix)]
+#[test]
+fn restricting_a_missing_file_is_a_no_op() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    assert_eq!(restrict_private_state_file(&dir.path().join("seed")), None);
+}
