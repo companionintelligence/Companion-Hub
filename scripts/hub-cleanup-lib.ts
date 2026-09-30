@@ -2,6 +2,7 @@ import { execSync } from 'node:child_process';
 import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { usableXdgDataHome } from './lib/paths';
 
 type CleanupLevel = 'INFO' | 'WARN' | 'ERROR';
 
@@ -314,7 +315,7 @@ export function getHubStateDirs(input?: { cwd?: string; homeDir?: string; platfo
     ];
   }
 
-  const xdgDataHome = process.env.XDG_DATA_HOME || pathLib.join(homeDir, '.local', 'share');
+  const xdgDataHome = usableXdgDataHome(process.env, homeDir) || pathLib.join(homeDir, '.local', 'share');
   const xdgConfigHome = process.env.XDG_CONFIG_HOME || pathLib.join(homeDir, '.config');
   const xdgCacheHome = process.env.XDG_CACHE_HOME || pathLib.join(homeDir, '.cache');
 
@@ -347,7 +348,7 @@ export function getDesktopTunnelDir(input?: { homeDir?: string; platform?: NodeJ
   const dataHome =
     platform === 'win32'
       ? process.env.APPDATA || pathLib.join(homeDir, 'AppData', 'Roaming')
-      : process.env.XDG_DATA_HOME || pathLib.join(homeDir, '.local', 'share');
+      : usableXdgDataHome(process.env, homeDir) || pathLib.join(homeDir, '.local', 'share');
   return pathLib.join(dataHome, 'tunnel');
 }
 

@@ -13,12 +13,38 @@ export function resolveRootFolderHost(envFileName: string): string {
 /** Folder name the desktop app uses under the platform data dir (mirrors Rust `get_hub_data_dir`). */
 export const CANONICAL_DATA_DIR_NAME = 'companion-hub';
 
+/** The name this project's snap is published under (`snap/snapcraft.yaml`). */
+const OWN_SNAP_NAME = 'companion-hub';
+
+/**
+ * XDG_DATA_HOME, or undefined when it is unset or belongs to another snap.
+ *
+ * A snap app points XDG_DATA_HOME at its own folder (`~/snap/<name>/<rev>/.local/share`) for every
+ * process it starts, so `cihub` in the terminal of VS Code installed as a snap read a stale copy
+ * there instead of the Hub's data dir (CI-Hub#1698). Inside our own snap it is the value the desktop
+ * app uses too, so it stays.
+ */
+export function usableXdgDataHome(env: NodeJS.ProcessEnv, home: string): string | undefined {
+  const configured = env.XDG_DATA_HOME?.trim();
+  if (!configured) return undefined;
+  const snapName = env.SNAP_NAME?.trim();
+  if (snapName && snapName !== OWN_SNAP_NAME) return undefined;
+  const snapsRoot = path.join(home, 'snap') + path.sep;
+  const resolved = path.resolve(configured);
+  if (resolved.startsWith(snapsRoot)) {
+    // `<name>_<key>` is a parallel install of the snap `<name>`.
+    const folder = resolved.slice(snapsRoot.length).split(path.sep)[0] ?? '';
+    if (folder.split('_')[0] !== OWN_SNAP_NAME) return undefined;
+  }
+  return configured;
+}
+
 /**
  * Canonical prod data directory, mirroring the Tauri desktop `get_hub_data_dir()`
  * (`dirs::data_dir()/companion-hub`). A `CI_HUB_DATA_DIR` override always wins so the
  * desktop can pass an explicit location when it invokes the bundled CLI.
  *
- * - Linux:   $XDG_DATA_HOME/companion-hub        (default ~/.local/share/companion-hub)
+ * - Linux:   $XDG_DATA_HOME/companion-hub        (default ~/.local/share/companion-hub; see usableXdgDataHome)
  * - macOS:   ~/Library/Application Support/companion-hub
  * - Windows: %APPDATA%/companion-hub             (Roaming)
  */
@@ -37,7 +63,7 @@ export function resolveCanonicalDataDir(
   if (platform === 'darwin') {
     return path.join(home, 'Library', 'Application Support', CANONICAL_DATA_DIR_NAME);
   }
-  const xdgData = env.XDG_DATA_HOME || path.join(home, '.local', 'share');
+  const xdgData = usableXdgDataHome(env, home) || path.join(home, '.local', 'share');
   return path.join(xdgData, CANONICAL_DATA_DIR_NAME);
 }
 
