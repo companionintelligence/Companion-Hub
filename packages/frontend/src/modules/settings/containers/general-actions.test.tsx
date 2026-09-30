@@ -238,6 +238,28 @@ describe('GeneralActionsContainer', () => {
     expect(getDesktopRelease).toHaveBeenCalledWith({ query: { environment: 'production', platform: 'linux', arch: 'x86_64' } });
   });
 
+  it('offers no desktop download on a phone', async () => {
+    const actual = await vi.importActual<typeof import('@/lib/update-service')>('@/lib/update-service');
+    mockCheckForUpdates.mockImplementation(actual.checkForUpdates);
+    vi.stubEnv('CI_HUB_ENVIRONMENT', 'production');
+    Object.defineProperty(window.navigator, 'userAgent', {
+      value:
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+      configurable: true,
+    });
+    getDesktopRelease.mockResolvedValue(
+      sdkOk({ latestVersion: '0.2.77', downloadUrl: 'https://dl.ci.computer/v0.2.77/macos/arm/Companion%20Hub_0.2.77_aarch64.dmg' }),
+    );
+
+    render(<GeneralActionsContainer />);
+
+    // The card reads the same before the check ends, so wait for the check before looking at it.
+    await waitFor(() => expect(mockCheckForUpdates.mock.settledResults).toHaveLength(1));
+    await waitFor(() => expect(screen.getByTestId('desktop-shell-update-card')).toHaveTextContent('No download URL available for this platform.'));
+    expect(screen.queryByTestId('hub-shell-update-btn')).not.toBeInTheDocument();
+    expect(getDesktopRelease).not.toHaveBeenCalled();
+  });
+
   it('tells the operator to start the desktop app when the host listener is down', async () => {
     mockFetchHostListenerStatus.mockResolvedValue(false);
 

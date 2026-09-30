@@ -83,6 +83,7 @@ Tests: `packages/frontend/src/components/hub-status/hub-status.test.tsx`
 
 Settings → System → **Desktop app** offers the newest desktop installer for the computer you are on. The download servers (`dl.ci.computer` for a `production` build, `dl-dev.ci.computer` for every other build) send no CORS headers, so a browser cannot read them. A plain browser asks its Hub instead: `GET /api/system/update/desktop-release` with the page's build environment, platform, and architecture. The Hub reads only those two servers and reuses an answer for five minutes.
 
+- A phone or tablet browser gets no installer and does not ask the Hub. `isMobileUserAgent()` catches iPhone, iPod, Android, and an iPad, including an iPad that reports itself as a Mac (it has touch points). Without that check, an iPhone's user agent passes for macOS and an Android one for Linux.
 - The desktop app asks the Rust shell (`check_desktop_update_command`). When that fails it still reads the servers directly, and so does the phone app, which always lands there. Routing that fallback through the Hub would make the phone app offer desktop installers.
 - `desktop-release.ts` in `@ci-hub/common/types` holds the server choice, the installer choice, and the URL trust check for both the Hub and the page, so the page accepts the installer the Hub returns.
 

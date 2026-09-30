@@ -1,6 +1,7 @@
 import semver from 'semver';
 import { type DesktopReleaseManifest, desktopInstallerUrl, desktopReleaseCdn, isTrustedDownloadUrlForHost } from '@ci-hub/common/types';
 import { openExternal } from '@/lib/helpers/open-external';
+import { isMobileUserAgent } from '@/lib/mobile-connection';
 
 function updateCdnConfig() {
   return desktopReleaseCdn(import.meta.env.CI_HUB_ENVIRONMENT);
@@ -157,6 +158,10 @@ async function resolveInstallerFromHub(
   platform: DesktopPlatform | null,
   osArch: string,
 ): Promise<{ latestVersion: string; downloadUrl: string } | null> {
+  // A phone or tablet cannot install the desktop app, and its user agent passes for macOS (iOS)
+  // or Linux (Android), so it gets no installer and the Hub is not asked.
+  if (isMobileUserAgent()) return null;
+
   const { getDesktopRelease } = await import('@/api-client/sdk.gen');
   const { unwrapSdkOrNull } = await import('@/lib/sdk-unwrap');
   // The Hub sends null for what it could not find; the generated type loses that because the spec

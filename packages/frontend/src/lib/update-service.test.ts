@@ -47,6 +47,11 @@ const jsdomUserAgent = navigator.userAgent;
 const MAC_SAFARI_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15';
 const MAC_DMG_URL = 'https://dl.ci.computer/v0.2.77/macos/arm/Companion%20Hub_0.2.77_aarch64.dmg';
 
+function setBrowser(userAgent: string, maxTouchPoints = 0) {
+  Object.defineProperty(window.navigator, 'userAgent', { value: userAgent, configurable: true });
+  Object.defineProperty(window.navigator, 'maxTouchPoints', { value: maxTouchPoints, configurable: true });
+}
+
 describe('update-service', () => {
   afterEach(() => {
     vi.clearAllMocks();
@@ -54,6 +59,7 @@ describe('update-service', () => {
     vi.unstubAllEnvs();
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
     Object.defineProperty(window.navigator, 'userAgent', { value: jsdomUserAgent, configurable: true });
+    delete (window.navigator as { maxTouchPoints?: number }).maxTouchPoints;
   });
 
   beforeEach(() => {
@@ -165,7 +171,7 @@ describe('update-service', () => {
     const corsBlockedFetch = vi.fn(() => Promise.reject(new TypeError('Failed to fetch')));
 
     beforeEach(() => {
-      Object.defineProperty(window.navigator, 'userAgent', { value: MAC_SAFARI_UA, configurable: true });
+      setBrowser(MAC_SAFARI_UA);
       vi.stubGlobal('fetch', corsBlockedFetch);
     });
 
@@ -200,6 +206,55 @@ describe('update-service', () => {
 
       await expect(checkForUpdates()).resolves.toBeNull();
       expect(mockGetDesktopRelease).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      [
+        'Windows',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+        { platform: 'windows', arch: 'x86_64' },
+        'https://dl.ci.computer/v0.2.77/windows/x64/Companion%20Hub_0.2.77_x64-setup.exe',
+      ],
+      ['macOS', MAC_SAFARI_UA, { platform: 'macos', arch: 'aarch64' }, MAC_DMG_URL],
+      [
+        'Linux',
+        'Mozilla/5.0 (X11; Linux x86_64; rv:143.0) Gecko/20100101 Firefox/143.0',
+        { platform: 'linux', arch: 'x86_64' },
+        'https://dl.ci.computer/v0.2.77/linux/deb/x64/Companion%20Hub_0.2.77_amd64.deb',
+      ],
+    ])('offers the %s installer on a desktop browser', async (_os, userAgent, target, downloadUrl) => {
+      setBrowser(userAgent);
+      mockGetDesktopRelease.mockResolvedValue(sdkOk({ latestVersion: '0.2.77', downloadUrl }));
+
+      await expect(checkForUpdates()).resolves.toMatchObject({ latestVersion: '0.2.77', downloadUrl, platform: target.platform });
+      expect(mockGetDesktopRelease).toHaveBeenCalledWith({ query: { environment: 'production', ...target } });
+    });
+
+    it.each([
+      [
+        'an iPhone',
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+        5,
+      ],
+      [
+        'an Android phone',
+        'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36',
+        5,
+      ],
+      [
+        'an iPad',
+        'Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+        5,
+      ],
+      // iPadOS Safari asks for desktop sites by default, so only the touch points give it away.
+      ['an iPad that reports itself as a Mac', MAC_SAFARI_UA, 5],
+    ])('offers %s no installer and does not ask the Hub', async (_device, userAgent, maxTouchPoints) => {
+      setBrowser(userAgent, maxTouchPoints);
+      mockGetDesktopRelease.mockResolvedValue(sdkOk({ latestVersion: '0.2.77', downloadUrl: MAC_DMG_URL }));
+
+      await expect(checkForUpdates()).resolves.toBeNull();
+      expect(mockGetDesktopRelease).not.toHaveBeenCalled();
+      expect(corsBlockedFetch).not.toHaveBeenCalled();
     });
   });
 
