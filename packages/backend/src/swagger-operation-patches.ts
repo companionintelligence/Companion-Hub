@@ -12,6 +12,7 @@ import {
 import { DeletePoolPinQuery, RoutingLogQueryDto } from '@/modules/hub-pool/hub-pool.dto';
 import { StreamAppLogsQueryDto, StreamHubLogsQueryDto } from '@/core/sse/dto/sse.dto';
 import { dnsAvailabilitySchema } from '@/modules/cloudflare/dns-availability';
+import { DesktopReleaseQueryDto } from '@/modules/system-update/dto/desktop-release.dto';
 
 const availableDomainSchema = z.object({
   id: z.string(),
@@ -97,6 +98,7 @@ export const OPERATION_QUERY_DTOS: Record<string, ZodDto> = {
   getAppBackups: GetAppBackupsQueryDto,
   appLogsEvents: StreamAppLogsQueryDto,
   hubLogsEvents: StreamHubLogsQueryDto,
+  getDesktopRelease: DesktopReleaseQueryDto,
 };
 
 /** Adds inline `@Body()` types and request bodies missing from reflection. */

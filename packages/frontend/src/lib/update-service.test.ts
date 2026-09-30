@@ -7,13 +7,13 @@ import {
   isTrustedDownloadUrl,
   performStackUpdate,
   performUpdate,
-  platformManifestKey,
   requiresManualDesktopUpdate,
 } from '@/lib/update-service';
-import { sdkOk } from '@/tests/sdk-mock-helpers';
+import { sdkFail, sdkOk } from '@/tests/sdk-mock-helpers';
 
-const { mockSdkPerformUpdate } = vi.hoisted(() => ({
+const { mockSdkPerformUpdate, mockGetDesktopRelease } = vi.hoisted(() => ({
   mockSdkPerformUpdate: vi.fn(),
+  mockGetDesktopRelease: vi.fn(),
 }));
 
 vi.mock('@/api-client/sdk.gen', async (importOriginal) => {
@@ -21,6 +21,7 @@ vi.mock('@/api-client/sdk.gen', async (importOriginal) => {
   return {
     ...actual,
     performUpdate: (...args: unknown[]) => mockSdkPerformUpdate(...args),
+    getDesktopRelease: (...args: unknown[]) => mockGetDesktopRelease(...args),
   };
 });
 
@@ -42,12 +43,17 @@ vi.mock('@/lib/helpers/open-external', () => ({
   openExternal: (...args: unknown[]) => mockOpenExternal(...args),
 }));
 
+const jsdomUserAgent = navigator.userAgent;
+const MAC_SAFARI_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15';
+const MAC_DMG_URL = 'https://dl.ci.computer/v0.2.77/macos/arm/Companion%20Hub_0.2.77_aarch64.dmg';
+
 describe('update-service', () => {
   afterEach(() => {
     vi.clearAllMocks();
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    Object.defineProperty(window.navigator, 'userAgent', { value: jsdomUserAgent, configurable: true });
   });
 
   beforeEach(() => {
@@ -110,6 +116,7 @@ describe('update-service', () => {
       manualDownload: true,
     });
     expect(mockInvoke).toHaveBeenCalledWith('check_desktop_update_command');
+    expect(mockGetDesktopRelease).not.toHaveBeenCalled();
   });
 
   it('falls back to the fetch path when the native tauri update check fails', async () => {
@@ -150,6 +157,50 @@ describe('update-service', () => {
       manualDownload: true,
     });
     expect(mockInvoke).toHaveBeenCalledWith('check_desktop_update_command');
+    expect(mockGetDesktopRelease).not.toHaveBeenCalled();
+  });
+
+  describe('in a browser', () => {
+    // What a page sees when it reads a download server that sends no CORS headers.
+    const corsBlockedFetch = vi.fn(() => Promise.reject(new TypeError('Failed to fetch')));
+
+    beforeEach(() => {
+      Object.defineProperty(window.navigator, 'userAgent', { value: MAC_SAFARI_UA, configurable: true });
+      vi.stubGlobal('fetch', corsBlockedFetch);
+    });
+
+    it('asks the Hub for the release instead of reading the download server', async () => {
+      mockGetDesktopRelease.mockResolvedValue(sdkOk({ latestVersion: 'v0.2.77', downloadUrl: MAC_DMG_URL }));
+
+      await expect(checkForUpdates()).resolves.toEqual({
+        currentVersion: '0.2.77',
+        latestVersion: '0.2.77',
+        downloadUrl: MAC_DMG_URL,
+        updateAvailable: false,
+        platform: 'macos',
+        manualDownload: true,
+      });
+      expect(mockGetDesktopRelease).toHaveBeenCalledWith({ query: { environment: 'production', platform: 'macos', arch: 'aarch64' } });
+      expect(corsBlockedFetch).not.toHaveBeenCalled();
+    });
+
+    it('drops an installer URL this page does not trust', async () => {
+      vi.stubEnv('CI_HUB_ENVIRONMENT', 'dev');
+      mockGetDesktopRelease.mockResolvedValue(sdkOk({ latestVersion: '0.2.77', downloadUrl: MAC_DMG_URL }));
+
+      await expect(checkForUpdates()).resolves.toMatchObject({ latestVersion: '0.2.77', downloadUrl: '' });
+      expect(mockGetDesktopRelease).toHaveBeenCalledWith({ query: { environment: 'dev', platform: 'macos', arch: 'aarch64' } });
+    });
+
+    it.each([
+      ['the Hub found no release', () => sdkOk({ latestVersion: null, downloadUrl: null })],
+      ['the Hub request fails', () => sdkFail(500)],
+    ])('reports no update when %s', async (_case, response) => {
+      mockGetDesktopRelease.mockResolvedValue(response());
+
+      await expect(checkForUpdates()).resolves.toBeNull();
+      expect(mockGetDesktopRelease).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('accepts dl.ci.computer HTTPS URLs for production builds', () => {
@@ -199,21 +250,6 @@ describe('update-service', () => {
 
     it('returns false for invalid semver', () => {
       expect(isStackUpdateAvailable('nightly', '1.1.0')).toBe(false);
-    });
-  });
-
-  describe('platformManifestKey', () => {
-    it('maps all release-matrix platform/arch pairs', () => {
-      expect(platformManifestKey('macos', 'aarch64')).toBe('darwin-aarch64');
-      expect(platformManifestKey('macos', 'x86_64')).toBe('darwin-x86_64');
-      expect(platformManifestKey('windows', 'aarch64')).toBe('windows-aarch64');
-      expect(platformManifestKey('windows', 'x86_64')).toBe('windows-x86_64');
-      expect(platformManifestKey('linux', 'aarch64')).toBe('linux-aarch64');
-      expect(platformManifestKey('linux', 'x86_64')).toBe('linux-x86_64');
-    });
-
-    it('returns null for unknown platforms', () => {
-      expect(platformManifestKey('freebsd', 'x86_64')).toBeNull();
     });
   });
 

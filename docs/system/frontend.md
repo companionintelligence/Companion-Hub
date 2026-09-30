@@ -5,7 +5,7 @@
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-09-27 (iOS Portal sign-in uses the in-app Safari sheet)
+> **Last updated:** 2026-09-30 (a browser reads the desktop app release through the Hub)
 > **Related:** docs/system/desktop.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/system/e2e.md
 
 ---
@@ -78,6 +78,13 @@ Tests: `packages/frontend/src/components/hub-status/hub-status.test.tsx`
   - **`mobile-hub-sso`** — iOS/Android `/login` after a Hub is chosen. `{remoteHub}/api/auth/portal/start?desktop=1` via `openAuthSession` → `cihub://auth?token=…` → `deep-link-auth`. Never localhost. Button + `openAuthSession` so WKWebView stays mounted and iOS never jumps out to Safari.
   - **`desktop-hub-sso`** — Mac / Linux / Windows Tauri while the Hub is running. Same-origin (Vite `:5005` or packaged `:5002`) `/portal/start?desktop=1` in the system browser → `cihub-dev://` / `cihub://` → desktop-exchange on that Hub. Button + `openAuthInSystemBrowser`, never an `<a href>`: a same-origin anchor is left alone by the Providers link interceptor, so it navigates the app's own webview and unmounts `useDesktopPortalAuth` — the only code that exchanges the one-time token. Heartbeat `session-hint?desktop=1` so a Chrome loopback callback can hand off into Tauri.
   - **`browser-hub-sso`** — any browser on a Hub (including a phone browser). Same-origin `/portal/start` with no `desktop=1`; cookie session. On **loopback**, this is stolen into `desktop-hub-sso` while Tauri is announcing presence (10 min). Stop the desktop shell to test a real browser cookie session. Product origin is **`:5002`**; `:5005` is source-dev only — see `docs/system/desktop.md` ("Two stacks — do not mix").
+
+## Desktop app release
+
+Settings → System → **Desktop app** offers the newest desktop installer for the computer you are on. The download servers (`dl.ci.computer` for a `production` build, `dl-dev.ci.computer` for every other build) send no CORS headers, so a browser cannot read them. A plain browser asks its Hub instead: `GET /api/system/update/desktop-release` with the page's build environment, platform, and architecture. The Hub reads only those two servers and reuses an answer for five minutes.
+
+- The desktop app asks the Rust shell (`check_desktop_update_command`). When that fails it still reads the servers directly, and so does the phone app, which always lands there. Routing that fallback through the Hub would make the phone app offer desktop installers.
+- `desktop-release.ts` in `@ci-hub/common/types` holds the server choice, the installer choice, and the URL trust check for both the Hub and the page, so the page accepts the installer the Hub returns.
 
 ## Styling
 

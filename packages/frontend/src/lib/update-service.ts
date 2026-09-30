@@ -1,79 +1,21 @@
 import semver from 'semver';
+import { type DesktopReleaseManifest, desktopInstallerUrl, desktopReleaseCdn, isTrustedDownloadUrlForHost } from '@ci-hub/common/types';
 import { openExternal } from '@/lib/helpers/open-external';
 
 function updateCdnConfig() {
-  const isProduction = import.meta.env.CI_HUB_ENVIRONMENT === 'production';
-  return {
-    base: isProduction ? 'https://dl.ci.computer' : 'https://dl-dev.ci.computer',
-    host: isProduction ? 'dl.ci.computer' : 'dl-dev.ci.computer',
-  };
+  return desktopReleaseCdn(import.meta.env.CI_HUB_ENVIRONMENT);
 }
 
 const POLL_INTERVAL_MS = 4 * 60 * 60 * 1000;
 const DISMISSED_KEY = 'ci-hub-update-dismissed-version';
 const TOAST_SHOWN_KEY = 'ci-hub-update-toast-shown';
 
-function decodePathSegment(segment: string): string | null {
-  try {
-    let decoded = segment;
-    for (let i = 0; i < 3; i++) {
-      const next = decodeURIComponent(decoded.replace(/\+/g, ' '));
-      if (next === decoded) break;
-      decoded = next;
-    }
-    return decoded;
-  } catch {
-    return null;
-  }
-}
-
-/** Inspect raw path segments before URL normalization (which resolves %2e%2e → ..). */
-function pathHasParentTraversal(url: string): boolean {
-  const match = url.match(/^https?:\/\/[^/?#]+(\/[^?#]*)?/i);
-  if (!match?.[1]) return false;
-
-  return match[1]
-    .split('/')
-    .filter(Boolean)
-    .some((segment) => {
-      const decoded = decodePathSegment(segment);
-      if (decoded === null) return true;
-      return decoded.split('/').some((part) => part === '..');
-    });
-}
-
 export function isTrustedDownloadUrl(url: string): boolean {
-  try {
-    if (pathHasParentTraversal(url)) return false;
-    const parsed = new URL(url);
-    return parsed.protocol === 'https:' && parsed.hostname === updateCdnConfig().host;
-  } catch {
-    return false;
-  }
+  return isTrustedDownloadUrlForHost(url, updateCdnConfig().host);
 }
 
 interface LatestJson {
   version: string;
-}
-
-interface PlatformArtifact {
-  url: string;
-  size: number;
-}
-
-interface ManifestJson {
-  version: string;
-  platforms: Record<
-    string,
-    {
-      dmg?: PlatformArtifact;
-      msi?: PlatformArtifact;
-      exe?: PlatformArtifact;
-      deb?: PlatformArtifact;
-      rpm?: PlatformArtifact;
-      appimage?: PlatformArtifact;
-    }
-  >;
 }
 
 export interface UpdateInfo {
@@ -96,34 +38,6 @@ export type DesktopPlatform = 'linux' | 'macos' | 'windows';
 
 export function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-}
-
-/** Manifest platform key — must stay aligned with desktop-release.yml and updater.rs. */
-export function platformManifestKey(platform: string, osArch: string): string | null {
-  const archSuffix = osArch === 'aarch64' ? 'aarch64' : 'x86_64';
-  if (platform === 'macos') return `darwin-${archSuffix}`;
-  if (platform === 'windows') return `windows-${archSuffix}`;
-  if (platform === 'linux') return `linux-${archSuffix}`;
-  return null;
-}
-
-function artifactUrlForPlatform(platform: string, artifacts: ManifestJson['platforms'][string]): string | null {
-  if (platform === 'macos') return artifacts.dmg?.url ?? null;
-  if (platform === 'windows') return artifacts.exe?.url ?? artifacts.msi?.url ?? null;
-  if (platform === 'linux') {
-    return artifacts.appimage?.url ?? artifacts.deb?.url ?? artifacts.rpm?.url ?? null;
-  }
-  return null;
-}
-
-function getDownloadUrl(manifest: ManifestJson, platform: string, osArch: string): string | null {
-  const platformKey = platformManifestKey(platform, osArch);
-  if (!platformKey) return null;
-
-  const p = manifest.platforms[platformKey];
-  if (!p) return null;
-
-  return artifactUrlForPlatform(platform, p);
 }
 
 async function getCurrentVersion(): Promise<string | null> {
@@ -226,13 +140,41 @@ async function resolveInstallerFromCdn(
   const manifestRes = await fetch(`${base}/v${latestVersion}/manifest.json`, { cache: 'no-store' });
   if (!manifestRes.ok) return null;
 
-  const manifest = (await manifestRes.json()) as ManifestJson;
-  let downloadUrl = platform ? (getDownloadUrl(manifest, platform, osArch) ?? '') : '';
+  const manifest = (await manifestRes.json()) as DesktopReleaseManifest;
+  let downloadUrl = platform ? (desktopInstallerUrl(manifest, platform, osArch) ?? '') : '';
   if (downloadUrl && !isTrustedDownloadUrl(downloadUrl)) {
     downloadUrl = '';
   }
 
   return { latestVersion, downloadUrl };
+}
+
+/**
+ * A browser cannot read the download servers itself: they send no CORS headers. The Hub reads the
+ * server this page was built for, and the URL it returns still has to pass this page's trust check.
+ */
+async function resolveInstallerFromHub(
+  platform: DesktopPlatform | null,
+  osArch: string,
+): Promise<{ latestVersion: string; downloadUrl: string } | null> {
+  const { getDesktopRelease } = await import('@/api-client/sdk.gen');
+  const { unwrapSdkOrNull } = await import('@/lib/sdk-unwrap');
+  // The Hub sends null for what it could not find; the generated type loses that because the spec
+  // marks it with OpenAPI 3.0's `nullable`.
+  const release: { latestVersion: string | null; downloadUrl: string | null } | null = await unwrapSdkOrNull(
+    getDesktopRelease({
+      query: {
+        environment: import.meta.env.CI_HUB_ENVIRONMENT,
+        platform: platform ?? undefined,
+        arch: osArch === 'aarch64' ? 'aarch64' : 'x86_64',
+      },
+    }),
+  );
+  const latestVersion = release?.latestVersion?.replace(/^v/, '') ?? '';
+  if (!semver.valid(latestVersion)) return null;
+
+  const downloadUrl = release?.downloadUrl ?? '';
+  return { latestVersion, downloadUrl: isTrustedDownloadUrl(downloadUrl) ? downloadUrl : '' };
 }
 
 export async function checkForUpdates(fallbackCurrentVersion?: string): Promise<UpdateInfo | null> {
@@ -282,7 +224,9 @@ export async function checkForUpdates(fallbackCurrentVersion?: string): Promise<
       }
     }
 
-    const resolved = await resolveInstallerFromCdn(desktopPlatform, osArch);
+    // Only a plain browser asks the Hub. The desktop and phone apps land here when their native check
+    // fails and keep their direct read, so the phone app does not start offering desktop installers.
+    const resolved = isTauri() ? await resolveInstallerFromCdn(desktopPlatform, osArch) : await resolveInstallerFromHub(desktopPlatform, osArch);
     if (!resolved) return null;
 
     const updateAvailable = Boolean(currentVersion && semver.valid(currentVersion) && semver.gt(resolved.latestVersion, currentVersion));
