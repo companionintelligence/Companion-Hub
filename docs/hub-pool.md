@@ -504,8 +504,12 @@ The limits:
   behind the peers is never brought back ahead of them.
 - **Within a group.** A node over its cap or ceiling, one whose slots are full, and one predicted to
   miss the budget are in other groups and are never brought forward. When every node is predicted to
-  miss, nothing moves. A model a node has withheld, or an engine in quarantine, is not a candidate
-  at all.
+  miss, nothing moves.
+- **Never toward a withheld engine.** An engine withheld for answering with bad output (see **A 200
+  that is not an answer** under [How it fits together](#how-it-fits-together)) goes behind every other
+  candidate after this step. So the node judged first is the first one not withheld, and a withheld
+  engine is never brought forward, however fast it reads a prompt: a degenerate engine reaches its
+  first byte as fast as a sound one. A model a node has been unable to serve is not a candidate at all.
 
 ## Local engine contention
 

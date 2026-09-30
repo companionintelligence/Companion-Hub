@@ -69,6 +69,7 @@ import {
   type UnmeasuredPlacement,
 } from '../hub-pool-proxy.service';
 import { firstByteBudgetMs, forwardBudgetMs } from '../hub-pool-budget';
+import type { PoolOutputQuarantine } from '../hub-pool-output-check';
 import {
   POOL_AFFINITY_HEADER,
   PREFIX_AFFINITY_TTL_MS,
@@ -4937,6 +4938,31 @@ describe('PoolProxyService', () => {
           expect(ids(await service.buildCandidateList(MODEL, JSON.stringify(grown).length))).toEqual(['beta-1', 'core-7']);
         });
 
+        it('never counts an engine withheld for bad output as the faster node, however fast it reads a prompt', async () => {
+          usePeers(() => [node('core-7'), node('beta-1'), node('beta-max')]);
+          measureTheHermesTurn();
+          measure('beta-max', HERMES_TURN_TOKENS, 15_000);
+          // beta-1 answered two turns with nothing but placeholder tokens, and is withheld for a cooldown.
+          const { outputQuarantine } = service as unknown as { outputQuarantine: PoolOutputQuarantine };
+          outputQuarantine.strike({ nodeKey: 'beta-1', backend: 'ollama', model: MODEL }, 'degenerate-output');
+          outputQuarantine.strike({ nodeKey: 'beta-1', backend: 'ollama', model: MODEL }, 'degenerate-output');
+          vi.mocked(global.fetch).mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
+
+          await service.proxyRequest({
+            path: '/v1/chat/completions',
+            method: 'POST',
+            body: turn(bytesOf(HERMES_TURN_TOKENS) - 400),
+            model: MODEL,
+            res: createMockResponse(),
+          });
+
+          const entry = routingLog.list()[0];
+          expect(entry).toMatchObject({ node: 'beta-max.tailxyz.ts.net', attempt: 1, outcome: 'served', failedOverFrom: [] });
+          expect(entry?.throughput?.slowerDemoted).toEqual([
+            expect.objectContaining({ node: 'core-7.tailxyz.ts.net', fasterNode: 'beta-max.tailxyz.ts.net' }),
+          ]);
+        });
+
         it('names both nodes and both predictions in the routing log, and serves the turn from the faster', async () => {
           usePeers(() => [node('core-7'), node('beta-max'), node('beta-red'), node('beta-1')]);
           measureTheOpenClawTurn();
@@ -5848,7 +5874,7 @@ describe('PoolProxyService', () => {
         };
       }
 
-      /** Every candidate idle, none holding the front, every one free to go ahead, at the default thresholds, unless told otherwise. */
+      /** Every candidate idle, none holding the front or withheld, every one free to go ahead, at the default thresholds, unless told otherwise. */
       function placement(
         predictions: [PoolCandidate, MeasuredPrefill][],
         options: Partial<Omit<SlowerPlacement, 'measuredOf' | 'inFlightOf'>> & { inFlight?: [PoolCandidate, number][] } = {},
@@ -5862,6 +5888,7 @@ describe('PoolProxyService', () => {
           inFlightOf: (candidate) => queue.get(candidate) ?? 0,
           holdsFront: () => false,
           mayGoAhead: () => true,
+          withheld: () => false,
           ratio: SLOWER_PLACEMENT_RATIO,
           floorMs: SLOWER_PLACEMENT_FLOOR_MS,
           ...rest,
@@ -6011,6 +6038,25 @@ describe('PoolProxyService', () => {
 
         expect(result.ordered).toEqual([beta1, core7, local]);
         expect(result.demoted[0]).toMatchObject({ fasterNode: 'beta-1.tailxyz.ts.net' });
+      });
+
+      it('judges the first candidate not withheld, never brings a withheld one forward, and leaves withheld ones in their slots', () => {
+        const result = applySlowerPlacement(
+          [betaRed, core7, beta1, betaMax],
+          placement(
+            [
+              [betaRed, predicted(200_000)],
+              [core7, predicted(54_854)],
+              [beta1, predicted(2_000)],
+              [betaMax, predicted(15_000)],
+            ],
+            { withheld: (candidate) => candidate === betaRed || candidate === beta1 },
+          ),
+        );
+
+        // beta-red and beta-1 go behind everything once placement is done; of the rest, core-7 was first.
+        expect(result.ordered).toEqual([betaRed, betaMax, beta1, core7]);
+        expect(result.demoted.map((entry) => [entry.node, entry.fasterNode])).toEqual([['core-7.tailxyz.ts.net', 'beta-max.tailxyz.ts.net']]);
       });
 
       it('does not read a missed deadline, a lower bound, as a faster prediction', () => {

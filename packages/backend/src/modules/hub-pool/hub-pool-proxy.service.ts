@@ -978,6 +978,12 @@ export interface SlowerPlacement {
   holdsFront: (candidate: PoolCandidate) => boolean;
   /** A candidate that may go ahead of the first: not a local engine contention moves behind the peers. */
   mayGoAhead: (candidate: PoolCandidate) => boolean;
+  /**
+   * An engine withheld for answering with bad output, which the proxy moves behind every other
+   * candidate once placement is done: it is neither judged as the first nor brought forward, and
+   * keeps its slot here for that later step to move.
+   */
+  withheld: (candidate: PoolCandidate) => boolean;
   /** {@link SLOWER_PLACEMENT_RATIO}, or its env override. */
   ratio: number;
   /** {@link SLOWER_PLACEMENT_FLOOR_MS}, or its env override. */
@@ -1023,7 +1029,11 @@ export interface SlowerPlacement {
  * - **Cross a group.** Called within each group the cap, ceiling, slot, budget and contention steps
  *   made, so a node over its cap or ceiling, one whose slots are full, and one predicted to miss the
  *   budget are never brought forward; when every candidate is predicted to miss, none qualifies to go
- *   ahead and the ranker's order stands. Withheld models and quarantined engines are not candidates.
+ *   ahead and the ranker's order stands.
+ * - **Count a withheld engine.** One answering with bad output goes behind every other candidate
+ *   after this step, so the first candidate judged is the first one not withheld, and a withheld one
+ *   is never brought forward, however fast it reads a prompt — a degenerate engine reads as fast as a
+ *   sound one. A model an engine has been unable to serve is not a candidate at all.
  * - **Apply to a small prompt.** Below {@link UNMEASURED_DEFER_MIN_PROMPT_TOKENS} the smaller bands
  *   keep reaching a node measured slow, which is how a node whose engine has since moved onto its GPU
  *   gets measured fast again.
@@ -1038,7 +1048,9 @@ export function applySlowerPlacement(
   if (group.length < 2 || placement.estimatedTokens < UNMEASURED_DEFER_MIN_PROMPT_TOKENS) {
     return { ordered: group, demoted };
   }
-  let ordered = group;
+  // Asked once per candidate, so a withhold running out mid-call cannot leave a slot without a candidate.
+  const withheld = new Set(group.filter((candidate) => placement.withheld(candidate)));
+  let ordered = group.filter((candidate) => !withheld.has(candidate));
   // Bounded as well as terminating: each move puts a strictly faster candidate first.
   for (let moves = 0; moves < group.length; moves += 1) {
     const [first, ...rest] = ordered;
@@ -1077,7 +1089,19 @@ export function applySlowerPlacement(
     const movedAhead = new Set(faster);
     ordered = [...faster, first, ...rest.filter((candidate) => !movedAhead.has(candidate))];
   }
-  return { ordered, demoted };
+  if (demoted.length === 0) {
+    return { ordered: group, demoted };
+  }
+  // Back into the slots the candidates judged came from, around the withheld ones.
+  const placed: PoolCandidate[] = [];
+  let next = 0;
+  for (const candidate of group) {
+    const slot = withheld.has(candidate) ? candidate : ordered[next++];
+    if (slot) {
+      placed.push(slot);
+    }
+  }
+  return { ordered: placed, demoted };
 }
 
 /** What slot-aware placement knows about one candidate: the queue depth the ranker sorted on, and the slots its node advertised. */
@@ -1886,6 +1910,8 @@ export class PoolProxyService {
     // candidate a group would try first — see `applySlowerPlacement`.
     const inFlight = new Map(affinity.ordered.map((entry) => [entry.candidate, entry.inFlight]));
     const thresholds = slowerPlacementThresholds();
+    // Asked of the same quarantine `demoteWithheldEngines` reads just after, and not at all while it is empty.
+    const quarantineEmpty = this.outputQuarantine.isEmpty();
     const slowerDemoted: PoolRoutingThroughputSlowerDemotion[] = [];
     const preferMuchFaster = (piece: PoolCandidate[]): PoolCandidate[] => {
       if (!throughput.decision) {
@@ -1897,6 +1923,9 @@ export class PoolProxyService {
         inFlightOf: (candidate) => inFlight.get(candidate) ?? 0,
         holdsFront: (candidate) => candidate === affinity.held || (pin !== null && pinMatches(candidate, pin)),
         mayGoAhead: staysInPlace,
+        withheld: (candidate) =>
+          !quarantineEmpty &&
+          this.outputQuarantine.isWithheld({ nodeKey: candidate.peerId ?? LOCAL_CANDIDATE_KEY, backend: candidate.backend, model }),
         ...thresholds,
       });
       slowerDemoted.push(...result.demoted);
