@@ -17,8 +17,18 @@ export const clearDatabase = async () => {
   await emptyDir('./user-config');
   await emptyDir('./state');
 
-  // delete all data in table user
+  /*
+   * Children before parents. This list is hand-maintained, so a new table with a
+   * non-cascading FK to one of these breaks every test at fixture setup, not in the
+   * test body — the `page` fixture calls this before each test.
+   *
+   * `federated_identity.user_id` references `user.id` with no `onDelete`
+   * (schema.ts:183), so it MUST be deleted first. `api_key.created_by_user_id`
+   * cascades (schema.ts:261) and needs no entry. When you add a table that points
+   * at one of these, add it here above its parent.
+   */
   await db.delete(schema.link);
+  await db.delete(schema.federatedIdentity);
   await db.delete(schema.user);
   await db.delete(schema.app);
   await db.delete(schema.appStore);

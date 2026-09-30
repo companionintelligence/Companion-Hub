@@ -355,7 +355,9 @@ export const GeneralActionsContainer = () => {
           </Button>
           {release ? (
             <Card className="mt-3 relative overflow-hidden w-full max-w-md" data-testid="hub-latest-release-card">
-              <div className="absolute -right-3 -top-3 text-yellow-500 opacity-20 rotate-12 pointer-events-none">
+              {/* `--warning`, not `text-yellow-500`: the raw Tailwind palette does not follow
+                  the theme and is the drift docs/UI-STYLE-GUIDE.md exists to stop. */}
+              <div className="absolute -right-3 -top-3 text-warning opacity-20 rotate-12 pointer-events-none">
                 <Star size={40} fill="currentColor" />
               </div>
               <CardHeader className={showBody ? 'p-3 pb-2' : 'p-3'}>

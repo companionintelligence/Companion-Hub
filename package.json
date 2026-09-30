@@ -51,9 +51,11 @@
     "agent:sweep": "bin/agent-sweep",
     "test:visual": "pnpm exec playwright test e2e/visual/",
     "test:visual:update": "UPDATE_VISUAL_BASELINES=1 pnpm run test:visual",
+    "docs:screens": "docker compose -f e2e/docker-compose.e2e.yml up -d db queue && pnpm exec playwright test --config playwright.screens.config.ts",
+    "docs:cli-svgs": "pnpm exec tsx scripts/render-cli-svgs.ts",
     "benchmark:gate": "pnpm exec tsx scripts/agent/benchmark-gate.ts",
     "agent:validate": "bin/agent-validate-shift",
-    "lint:canon": "pnpm --filter frontend lint:canon && pnpm --filter frontend brand:check"
+    "lint:canon": "pnpm --filter frontend lint:canon && pnpm --filter frontend brand:check && pnpm --filter frontend lint:palette"
   },
   "lint-staged": {
     "*": [

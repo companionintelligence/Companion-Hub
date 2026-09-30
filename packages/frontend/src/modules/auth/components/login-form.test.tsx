@@ -94,6 +94,45 @@ describe('LoginForm', () => {
     expect(screen.getByLabelText('AUTH_FORM_EMAIL')).toHaveValue('operator@example.com');
   });
 
+  it('does not overwrite a typed email when the Portal hint resolves late', async () => {
+    // The hint is fetched asynchronously, so it can arrive after the operator has
+    // started typing. It is a default, not an instruction: clobbering the field here
+    // discarded their input and then failed the login with an address they never chose.
+    const { rerender } = render(
+      <MemoryRouter>
+        <LoginForm loading={false} loginType="your local admin account" onSubmit={vi.fn()} />
+      </MemoryRouter>,
+    );
+
+    await userEvent.type(screen.getByLabelText('AUTH_FORM_EMAIL'), 'typed@example.com');
+
+    rerender(
+      <MemoryRouter>
+        <LoginForm loading={false} loginType="your local admin account" onSubmit={vi.fn()} portalAccountEmail="hint@example.com" />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByLabelText('AUTH_FORM_EMAIL')).toHaveValue('typed@example.com');
+  });
+
+  it('still fills an untouched email field when the Portal hint resolves late', async () => {
+    const { rerender } = render(
+      <MemoryRouter>
+        <LoginForm loading={false} loginType="your local admin account" onSubmit={vi.fn()} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByLabelText('AUTH_FORM_EMAIL')).toHaveValue('');
+
+    rerender(
+      <MemoryRouter>
+        <LoginForm loading={false} loginType="your local admin account" onSubmit={vi.fn()} portalAccountEmail="hint@example.com" />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByLabelText('AUTH_FORM_EMAIL')).toHaveValue('hint@example.com');
+  });
+
   it('offers an account switcher when a Portal email is known', async () => {
     const onSwitchAccount = vi.fn();
     render(

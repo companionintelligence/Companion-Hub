@@ -23,13 +23,67 @@ Local full stack: `pnpm run test:e2e` (docker-compose + Playwright via `scripts/
 
 ## CI coverage
 
-| Workflow | Trigger | What runs |
-|----------|---------|-----------|
-| `ci.yml` | Every PR | lint, tsc, unit tests (not e2e) |
-| `e2e.yml` | Release / manual | Default Playwright |
-| `e2e-extended.yml` | Nightly / label | Cross-domain + future |
-| `e2e-mcp.yml` | Manual dispatch only | MCP connect recipe — protocol handshake + app env injection (12 tests) |
-| `agent-gates.yml` | PR (optional) | Visual + benchmark gates |
+| Workflow | Trigger **as committed** | Intended trigger | What runs |
+|----------|---------|---------|-----------|
+| `ci.yml` | Every PR | same | lint, tsc, unit tests (not e2e) |
+| `e2e.yml` | `workflow_dispatch` + `workflow_call` | nightly 01:00 UTC | Default Playwright |
+| `e2e-extended.yml` | `workflow_dispatch` | nightly 03:00 UTC + PR label | Cross-domain + future |
+| `e2e-mcp.yml` | `workflow_dispatch` | same, by design | MCP connect recipe — protocol handshake + app env injection (12 tests) |
+| `agent-gates.yml` | `workflow_dispatch`, `continue-on-error: true` | PR (optional) | Visual + benchmark gates |
+| `nightly-release.yml` | `workflow_dispatch` | nightly 00:00 UTC | calls `e2e.yml` |
+
+**No e2e lane currently runs on its own.** `e2e.yml`, `e2e-extended.yml` and `nightly-release.yml` each keep their
+real triggers in a `# >>> ci-local:gated` comment block at the top of the file, restored with `ci-local restore`.
+That gating is deliberate cost control, not rot — but the effect is that a change which breaks the authenticated
+lane produces no signal at all until someone dispatches a run by hand. The `if:` guards inside `e2e-extended.yml`
+still test for `schedule` and `pull_request` events that can no longer arrive.
+
+The same three workflows are also **disabled in the repository's Actions settings** (`gh workflow list --all`
+shows `disabled_manually`), which is a second, independent switch: a disabled workflow refuses
+`workflow_dispatch` with HTTP 422 even though the file declares it. The last run of `e2e.yml` of any kind
+was 2026-07-28. Enabling one is a repository setting, not a commit — do it deliberately, and expect to
+pay the runner minutes the gating exists to save:
+
+```bash
+gh workflow enable e2e.yml
+gh workflow run e2e.yml --ref <branch>
+gh workflow disable e2e.yml   # when you are done, if the cost control still applies
+```
+
+## The fixture contract
+
+`e2e/fixtures/fixtures.ts` seeds an operator straight into Postgres and then drives the real login form. Three
+things about that path are load-bearing, and each one silently killed every authenticated spec when it drifted:
+
+- **`clearDatabase()` deletes children before parents** (`e2e/helpers/db.ts`). The list is hand-maintained, and it
+  runs in the `page` fixture before *every* test — so a new table with a non-cascading FK to `user`, `app`,
+  `app_store` or `device_registration` fails at setup, not in the test body. `federated_identity.user_id` has no
+  `onDelete`, so it must be deleted first; `api_key.created_by_user_id` cascades and needs no entry.
+- **`createTestUser()` must set `localPasswordSetAt`.** `loginWithCachedPassword` rejects a user without it as
+  invalid credentials *before* it verifies the hash, because null means "this account has no offline password".
+- **The mock portal must answer `POST /api/whois`.** Hub login is Portal-backed: `AuthService.login` signs in
+  against Portal first and only falls back to the local password when Portal is *unreachable*. `admitHubPerson`
+  then resolves organisation membership through WhoIs and treats "could not ask" as a three-state `unknown`, which
+  denies with `503 AUTH_ERROR_ORG_CHECK_UNAVAILABLE`. The route's `organizationId` has to match the registration
+  `seedOrganization()` writes, or membership resolves to `not-member` — which *revokes* the seeded operator.
+
+## Known red in the default lane
+
+The fixture repair above took the lane from 1 passing to 15, with 5 left red. The workflow being disabled
+means none of this has been confirmed by a CI run; the first four were found by reading the specs against
+the code and fixed on that basis, the fifth is the PR author's local observation. Dispatch the lane and
+edit this list to what it actually reports.
+
+| Spec › test | Why it was red | Status |
+|---|---|---|
+| `multi-store-context` › loads the app store inside explicit query-param store context | Asserted an "App Store" heading the store no longer has; then asserted `?store=ci-apps` survives, which `app-store-page.tsx` used to drop on a cold load | Both fixed — anchor changed, deep link kept (see `app-store-page.test.tsx` "cold load") |
+| `multi-store-context` › redirects store-specific path routing into explicit query-param context | Same stale heading | Fixed |
+| `navigation` › should navigate to all main pages | `getByRole('link', { name: 'Home' })` resolves to two links since `80cf93aa0` gave the brand mark `aria-label="Home"` — strict-mode violation | Fixed — links scoped to the header `<nav>` |
+| `navigation` › should have working logo link to dashboard | Looked for a link named "Companion Intelligence Logo"; the brand mark's name has been "Home" since `80cf93aa0` | Fixed — selected by the logo `<img>` it wraps |
+| `settings` › should navigate to settings *(probable)* | Reported as tablist timing on a local run; the tablist renders fine live and nothing in the spec is stale by reading | Not changed — needs a run |
+
+`app-store-browsing` › should filter by category clicks the category buttons with `force: true` because "they
+may be transiently covered"; it was not reported red, but it is the next most fragile assertion in the lane.
 
 `e2e-mcp.yml` is dispatch-only on purpose: it boots a backend, so it earns its runner minutes only
 when the MCP surface, its auth, or the connect docs change. Run it with
@@ -39,10 +93,47 @@ including the Docker-heavy install layer.
 ## Visual regression
 
 - Specs: `e2e/visual/`
-- Baselines: `e2e/screenshots/baselines/` (tracked)
+- Baselines: `e2e/screenshots/baselines/` — tracked in git, but **none are committed yet** (the
+  directory holds only `.gitkeep`), so the gate cannot currently fail. `agent-gates.yml` skips
+  `test:visual` when the directory is empty; the spec now skips with the same explanation when a
+  baseline is missing, rather than failing on `compare()`'s `mismatchedPixels: -1`.
+- **Seed baselines on Linux, not on a Mac.** `agent-gates.yml` is `runs-on: ubuntu-latest`, and
+  Chromium's font rasterization differs enough between macOS and Linux to diff well past the 0.02–0.03
+  thresholds on text-heavy screens. A macOS-generated baseline turns a decorative gate into a
+  permanently red one, which is worse than no gate. `e2e.yml` seeds them on its own runner:
+
+  ```bash
+  gh workflow run e2e.yml --ref <branch> -f seed_visual_baselines=true
+  gh run download <run-id> -n visual-baselines -D e2e/screenshots/baselines/
+  git add e2e/screenshots/baselines/*.png
+  ```
+
+  The run writes `e2e/screenshots/baselines/` with `UPDATE_VISUAL_BASELINES=1` after the e2e suite
+  and uploads it as the `visual-baselines` artifact. A Linux box with Docker can do the same with
+  `pnpm run test:visual:update`.
+- **`agent-gates.yml` cannot run `test:visual` as written.** The job installs dependencies and nothing
+  else: no Postgres, no RabbitMQ, no `playwright install`. The spec drives the real login form against
+  the real backend, so once baselines exist that step will fail on the missing stack, not on a diff.
+  Give it the `services:` and Playwright steps from `e2e.yml` — or move the comparison into `e2e.yml`
+  behind a step of its own — before committing baselines.
 - Actual/diff: `e2e/screenshots/actual/`, `diff/` (gitignored)
 - Helper: `e2e/helpers/screenshot.ts` (pixelmatch)
 - Run: `pnpm run test:visual`
+- Coverage if seeded: 2 screens (login, dashboard), one viewport, one theme.
+
+## Documentation screenshots
+
+Separate from visual regression, and for humans rather than diffing:
+
+- Spec: `e2e/screens/capture-screens.spec.ts` (excluded from the default lane — it writes into the repo)
+- Config: `playwright.screens.config.ts`
+- Output: `docs/images/screens/<screen>-<theme>[-mobile].png`
+- Run: `pnpm run docs:screens`
+
+The spec carries a `SKIPPED` map naming every screen no fixture can reach and why, and it fails unless
+the number of PNGs *that run wrote* is exactly what the screen lists imply — it counts its own writes, not
+the directory, which always holds the last committed set. A silent shortfall would otherwise read as full
+coverage. See `docs/system/ui-screens.md`.
 
 ## Performance benchmarks
 

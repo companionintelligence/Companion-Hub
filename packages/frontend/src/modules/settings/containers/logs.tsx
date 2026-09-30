@@ -4,8 +4,10 @@ import { useSSE } from '@/lib/hooks/use-sse';
 import { Download } from 'lucide-react';
 import { Suspense, lazy, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 import { downloadResponseAsFile } from './log-download';
+
+const HUB_RELEASES_URL = 'https://github.com/companionintelligence/CI-Hub/releases';
 
 const LogsTerminal = lazy(() => import('@/components/logs-terminal/logs-terminal').then((module) => ({ default: module.LogsTerminal })));
 
@@ -73,7 +75,17 @@ export const LogsContainer = () => {
           }
         />
       </Suspense>
-      <div className="mt-4 text-center text-muted-foreground">{t('SETTINGS_LOGS_POWERED_BY')}</div>
+      <div className="mt-4 text-center text-muted-foreground">
+        {/* "release notes" is the link, not a bare phrase pointing nowhere. */}
+        <Trans
+          t={t}
+          i18nKey="SETTINGS_LOGS_POWERED_BY"
+          components={{
+            // biome-ignore lint/a11y/useAnchorContent: <Trans> fills the anchor with the translated "release notes" text
+            link: <a href={HUB_RELEASES_URL} target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-foreground" />,
+          }}
+        />
+      </div>
     </div>
   );
 };

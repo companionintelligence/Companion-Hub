@@ -338,6 +338,29 @@ describe('AiSettingsContainer', () => {
     expect(screen.getByText('Models currently active in the inference backend.')).toBeInTheDocument();
   });
 
+  it('prints a downloaded model once when its id and name are the same string', async () => {
+    // Every backend's listModels() sets id and name from the same string for a model it has no
+    // catalog entry for (ollama.backend.ts maps `id: m.name, name: m.name`), so a stock Ollama
+    // host printed the same tag twice on every card — with the useful line truncating first.
+    fetchInferenceRuntimeModels.mockResolvedValue({
+      backend: 'vllm',
+      discoveryUnavailable: false,
+      models: [
+        { id: 'llama3.2:latest', name: 'llama3.2:latest', state: 'loaded' },
+        { id: 'org/catalogued-7b', name: 'Catalogued 7B', state: 'loaded' },
+      ],
+    });
+
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByText('Catalogued 7B')).toBeInTheDocument());
+
+    // Same string: one line.
+    expect(screen.getAllByText('llama3.2:latest')).toHaveLength(1);
+    // Different strings: the id still renders under the name.
+    expect(screen.getByText('org/catalogued-7b')).toBeInTheDocument();
+  });
+
   it('keeps curated model selection independent of runtime model discovery', async () => {
     fetchInferenceTrackedModels.mockResolvedValue([
       { catalogId: 'm1', backend: 'ollama', backendModelId: 'qwen3:8b', state: 'pinned', pinned: true, memoryUsedMb: 1024, requestCount: 0 },

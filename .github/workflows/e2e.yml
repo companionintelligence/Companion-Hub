@@ -3,6 +3,12 @@ name: E2E Tests
 # >>> ci-local:gated original triggers below, restore with `ci-local restore`
 # on:
 #   workflow_dispatch:
+#     inputs:
+#       seed_visual_baselines:
+#         description: "Also write e2e/screenshots/baselines/ on this Linux runner and upload it as an artifact"
+#         required: false
+#         type: boolean
+#         default: false
 #   schedule:
 #     # Nightly at 01:00 UTC so the suite gets routine signal and can't rot unnoticed.
 #     # Not run per-PR: the full suite is serial (~25-30 min), too heavy for every PR.
@@ -16,6 +22,12 @@ name: E2E Tests
 # <<< ci-local:gated
 on:
   workflow_dispatch:
+    inputs:
+      seed_visual_baselines:
+        description: "Also write e2e/screenshots/baselines/ on this Linux runner and upload it as an artifact"
+        required: false
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       version:
@@ -35,9 +47,32 @@ jobs:
   e2e:
     timeout-minutes: 45
     runs-on: ubuntu-latest
+    # One env for every step that drives the stack — the e2e run and the baseline seed
+    # below must see the same backend, or the baselines would not match what the gate sees.
     env:
       E2E_USE_REAL_PORTAL: 'false'
       MOCK_PORTAL_PORT: '4444'
+      SERVER_IP: localhost
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 6543
+      POSTGRES_USERNAME: companion
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DBNAME: companiondb
+      RABBITMQ_HOST: localhost
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USERNAME: companion
+      RABBITMQ_PASSWORD: admin
+      JWT_SECRET: e2e-test-secret
+      CI_CLOUD_URL: http://localhost:4444
+      DOMAIN: ci.computer
+      LOCAL_DOMAIN: ci.lan
+      ROOT_FOLDER_HOST: /tmp/ci-hub-e2e
+      CI_HUB_APP_DATA_PATH: /tmp/ci-hub-e2e
+      CI_HUB_DATA_DIR: /tmp/ci-hub-e2e
+      CI_HUB_APP_DATA_DIR: /tmp/ci-hub-e2e/app-data
+      CI_HUB_APP_DIR: ${{ github.workspace }}
+      CI: true
+      DEVICE_ID: test-device-e2e
     services:
       postgres:
         image: postgres:14
@@ -106,28 +141,6 @@ jobs:
 
       - name: Run E2E tests
         run: pnpm run test:e2e:ci
-        env:
-          SERVER_IP: localhost
-          POSTGRES_HOST: localhost
-          POSTGRES_PORT: 6543
-          POSTGRES_USERNAME: companion
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DBNAME: companiondb
-          RABBITMQ_HOST: localhost
-          RABBITMQ_PORT: 5672
-          RABBITMQ_USERNAME: companion
-          RABBITMQ_PASSWORD: admin
-          JWT_SECRET: e2e-test-secret
-          CI_CLOUD_URL: http://localhost:4444
-          DOMAIN: ci.computer
-          LOCAL_DOMAIN: ci.lan
-          ROOT_FOLDER_HOST: /tmp/ci-hub-e2e
-          CI_HUB_APP_DATA_PATH: /tmp/ci-hub-e2e
-          CI_HUB_DATA_DIR: /tmp/ci-hub-e2e
-          CI_HUB_APP_DATA_DIR: /tmp/ci-hub-e2e/app-data
-          CI_HUB_APP_DIR: ${{ github.workspace }}
-          CI: true
-          DEVICE_ID: test-device-e2e
 
       - uses: actions/upload-artifact@v7
         if: always()
@@ -135,3 +148,20 @@ jobs:
           name: playwright-report
           path: playwright-report/
           retention-days: 7
+
+      # Visual baselines have to come from THIS runner's OS. agent-gates.yml compares on
+      # ubuntu-latest, and Chromium's font rasterization differs enough between macOS and
+      # Linux to fail the 0.02–0.03 thresholds on text-heavy screens — a Mac-made baseline
+      # turns a decorative gate into a permanently red one. Dispatch with the input set,
+      # download the artifact, commit e2e/screenshots/baselines/. See docs/system/e2e.md.
+      - name: Seed visual baselines (Linux)
+        if: ${{ !cancelled() && inputs.seed_visual_baselines }}
+        run: pnpm run test:visual:update
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() && inputs.seed_visual_baselines }}
+        with:
+          name: visual-baselines
+          path: e2e/screenshots/baselines/*.png
+          retention-days: 14
+          if-no-files-found: error

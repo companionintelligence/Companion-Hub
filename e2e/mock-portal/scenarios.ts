@@ -89,12 +89,50 @@ const deviceKeyRejected = () => ({ body: { error: 'Invalid Device Key', code: 'U
  */
 const deviceApplications: RouteHandler = () => ({ body: { applications: [] }, status: 200 });
 
+/**
+ * Organisation membership WhoIs — required for Portal-backed login, not optional.
+ *
+ * `AuthService.admitHubPerson` (packages/backend/src/modules/auth/auth.service.ts:283) resolves
+ * membership through `PortalClientService.whoisApps` and treats "could not ask" as a
+ * THREE-state `unknown`, which denies with 503 `AUTH_ERROR_ORG_CHECK_UNAVAILABLE`. Without
+ * this route the mock 404s, every sign-in by a seeded operator who has no federated-identity
+ * row yet takes that branch, and the login form silently refuses — which is what killed every
+ * authenticated spec in the default lane after the membership check landed.
+ *
+ * `organizationId` must match the device registration `seedOrganization()` writes in
+ * e2e/helpers/db.ts, or `resolvePairedOrgMembershipDetail` finds no matching org and returns
+ * `not-member` — which REVOKES the operator rather than just refusing the request.
+ */
+const MOCK_ORG_ID = 'test-org-id';
+
+const whois: RouteHandler = (_url, body) => {
+  const req = (body ?? {}) as { appIds?: unknown; organizationId?: unknown };
+  const appIds = Array.isArray(req.appIds) ? req.appIds.filter((id): id is string => typeof id === 'string') : [];
+
+  return {
+    body: {
+      organizations: [
+        {
+          organizationId: typeof req.organizationId === 'string' ? req.organizationId : MOCK_ORG_ID,
+          version: 1,
+          source: 'mock-portal',
+          user: { role: 'owner' },
+          // `_membership` is a probe id, not a real app, so it gets no grant.
+          apps: appIds.filter((id) => id !== '_membership').map((id) => ({ appId: id, granted: true })),
+        },
+      ],
+    },
+    status: 200,
+  };
+};
+
 /** Shared routes present in every scenario (health / registry / auth). */
 const baseRoutes: RouteMap = {
   'GET /v2/': () => ({ body: {}, status: 200 }),
   'GET /v2/ci-hub/tags/list': () => ({ body: { name: 'ci-hub', tags: ['1.0.0'] }, status: 200 }),
   'POST /api/auth/sign-in/email': signInWithEmail,
   'POST /api/auth/sign-up/email': signUpWithEmail,
+  'POST /api/whois': whois,
   'POST /api/devices/check-in': deviceCheckIn,
   'GET /api/devices/applications': deviceApplications,
 };

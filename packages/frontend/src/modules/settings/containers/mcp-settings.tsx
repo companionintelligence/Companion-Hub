@@ -10,6 +10,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { Link } from 'react-router';
+import { extractAppUrn } from '@/utils/app-helpers';
+import type { AppUrn } from '@ci-hub/common/types';
 
 // ENH-MCP-4: operator screen for the Hub's MCP server. Talks to the session-authed /api/mcp-admin
 // surface (never the Bearer /api/mcp endpoint), so the browser never holds the agent key and the
@@ -60,6 +62,12 @@ interface InstalledAppsResponse {
 }
 
 type ToolCallResponse = { ok: true; result: unknown } | { ok: false; error: string };
+
+/** `/apps/:storeId/:appId` for an installed app's `appName:appStoreId` URN. */
+const installedAppPath = (urn: string) => {
+  const { appName, appStoreId } = extractAppUrn(urn as AppUrn);
+  return `/apps/${appStoreId}/${appName}`;
+};
 
 export const McpSettingsContainer = () => {
   const { t } = useTranslation();
@@ -289,7 +297,15 @@ export const McpSettingsContainer = () => {
                   {installedMcpApps.map((entry) => (
                     <tr key={entry.urn} className="border-b border-border/40 last:border-0">
                       <td className="py-2 pr-4">
-                        <Link to={`/app-store/${entry.urn.replace(':', '/')}`} className="text-primary underline-offset-2 hover:underline">
+                        {/*
+                          An app URN is `appName:appStoreId`, and the route is
+                          `/apps/:storeId/:appId` — so the segments have to be swapped, not
+                          just joined. This was `/app-store/${urn.replace(':', '/')}`, which
+                          is wrong twice over: there is no `/app-store` route (the store lives
+                          at `/store`) and the order was reversed, so every row here landed on
+                          the 404 page.
+                        */}
+                        <Link to={installedAppPath(entry.urn)} className="text-primary underline-offset-2 hover:underline">
                           {entry.name}
                         </Link>
                       </td>

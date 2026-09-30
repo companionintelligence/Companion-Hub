@@ -41,6 +41,10 @@ jobs:
       - name: Run biome tests
         run: pnpm run lint:ci
 
+      # Raw Tailwind palette classes may only go down. See packages/frontend/scripts/check-palette-classes.mjs.
+      - name: Check palette drift
+        run: pnpm --filter frontend lint:palette
+
       - name: Run knip (unused files/deps)
         run: pnpm run knip:ci
 
