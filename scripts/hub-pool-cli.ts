@@ -407,6 +407,12 @@ export interface PoolRoutingThroughput {
     deadline: boolean;
     slow: boolean;
   }[];
+  /**
+   * Nodes nothing had measured for a prompt this size, moved behind the ones measured to meet the
+   * budget. `cpu-only`: the node advertised no GPU inference can use, so it went behind the other
+   * unmeasured ones too. Absent on a Hub predating it, which left every unmeasured node in place.
+   */
+  unmeasured?: { node: string; backend: string; prior: 'unknown' | 'cpu-only' }[];
   /** Placed on a node predicted to miss the budget anyway: every candidate was, or every faster one failed first. */
   overridden: boolean;
 }
@@ -1831,6 +1837,17 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
         throughput.overridden
           ? `  ↳ ~${throughput.estimatedTokens}-token prompt placed anyway though ${nodes} ${slow.length === 1 ? 'is' : 'are'} expected to miss the ${budget} deadline: nothing faster could serve it`
           : `  ↳ ~${throughput.estimatedTokens}-token prompt moved ${nodes} behind nodes expected to answer within ${budget}`,
+      );
+    }
+    // Its own line, because it is a different reason: nothing was measured on these nodes, and an
+    // operator reading why a fresh node got none of the long turns needs to see that, not a rate.
+    const unmeasured = throughput?.unmeasured ?? [];
+    if (throughput && unmeasured.length > 0) {
+      const nodes = unmeasured
+        .map((entry) => `${sanitizeForBox(entry.node)} (${entry.prior === 'cpu-only' ? 'unmeasured, no GPU advertised' : 'unmeasured'})`)
+        .join(', ');
+      lines.push(
+        `  ↳ ~${throughput.estimatedTokens}-token prompt put ${nodes} behind nodes measured to answer within ${Math.round(throughput.budgetMs / 1000)} s`,
       );
     }
     // Only when a full engine was moved: the record is present, with an empty `demoted`, on every

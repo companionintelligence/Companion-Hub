@@ -314,8 +314,14 @@ export interface PoolRoutingThroughput {
   estimatedTokens: number;
   /** The deadline this request was placed under: the header wait if streamed, the whole completion otherwise. */
   budgetMs: number;
-  /** Every candidate with applicable evidence, in ranked order. Unmeasured candidates are absent: they kept their place. */
+  /** Every candidate with applicable evidence, in ranked order. Unmeasured candidates are absent: the ones that gave way are in `unmeasured`. */
   estimates: PoolRoutingThroughputEstimate[];
+  /**
+   * Every candidate with no applicable evidence that gave way to one measured to meet the budget, in
+   * ranked order — see `applyThroughputPlacement`. Empty when none did, which includes every prompt
+   * small enough to explore an unmeasured node with: one that kept its place is not listed.
+   */
+  unmeasured: PoolRoutingThroughputUnmeasured[];
   /**
    * `true` when the request was placed on a `slow` candidate anyway: every candidate was predicted to
    * miss the budget, or every one that was not failed first.
@@ -340,6 +346,18 @@ export interface PoolRoutingThroughputEstimate {
   deadline: boolean;
   /** Predicted to miss `budgetMs`, so moved behind every candidate that was not. */
   slow: boolean;
+}
+
+/** An unmeasured candidate moved behind the candidates measured to meet the budget. Still ahead of every `slow` one. */
+export interface PoolRoutingThroughputUnmeasured {
+  node: string;
+  backend: InferenceBackendType;
+  /**
+   * What it was judged on, from the hardware tier it advertised. `unknown`: nothing said how fast it
+   * reads a prompt, so it went behind the measured candidates only. `cpu-only`: it said inference has
+   * no GPU to use, so it went behind the other unmeasured candidates too.
+   */
+  prior: 'unknown' | 'cpu-only';
 }
 
 /**

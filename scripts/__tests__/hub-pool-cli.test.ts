@@ -1565,11 +1565,37 @@ describe('hub-pool-cli throughput', () => {
     const fast = { ...slowFzzy, tokensPerSec: 496, predictedMs: 93_000, deadline: false, slow: false };
     const text = logOf([
       routingEntry({ throughput: { estimatedTokens: 46_031, budgetMs: 921_000, estimates: [fast], overridden: false } }),
+      routingEntry({ throughput: { estimatedTokens: 46_031, budgetMs: 921_000, estimates: [fast], unmeasured: [], overridden: false } }),
       routingEntry({ throughput: null }),
       routingEntry(),
     ]);
 
     expect(text).not.toContain('token prompt');
+  });
+
+  it('names the unmeasured nodes a large prompt went past, on their own line, and which advertised no GPU', () => {
+    const CORE_7 = 'core-7.tailxyz.ts.net';
+    const NO_GPU = 'beta-ms-a2.tailxyz.ts.net';
+    const fast = { ...slowFzzy, node: PEER_A, tokensPerSec: 230, fromPromptTokens: 7_000, predictedMs: 33_700, deadline: false, slow: false };
+    const text = logOf([
+      routingEntry({
+        throughput: {
+          estimatedTokens: 7_731,
+          budgetMs: 300_000,
+          estimates: [fast],
+          unmeasured: [
+            { node: CORE_7, backend: 'ollama', prior: 'unknown' },
+            { node: NO_GPU, backend: 'ollama', prior: 'cpu-only' },
+          ],
+          overridden: false,
+        },
+      }),
+    ]);
+
+    expect(text).toContain(
+      `~7731-token prompt put ${CORE_7} (unmeasured), ${NO_GPU} (unmeasured, no GPU advertised) behind nodes measured to answer within 300 s`,
+    );
+    expect(text).not.toContain('moved');
   });
 
   it('lists measured speed per node in status — this node, and each peer as timed here and as reported', () => {

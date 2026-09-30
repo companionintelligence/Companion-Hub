@@ -408,10 +408,21 @@ the two, so a peer cannot advertise its way out of a deadline this node watched 
 predicted to take longer than the request's budget moves behind every candidate that is not. The
 rules are a ceiling's:
 
-- **Unmeasured is neither fast nor slow.** It keeps its place, and a measured-fast node is never
-  promoted past it.
-- **Demoted, never removed.** A slow node stays at the end of the failover order and still serves the
-  request when every faster node fails.
+- **Unmeasured is not known to be fast.** For a prompt under 6144 estimated tokens, a peer with no
+  applicable evidence keeps its place, which is how it gets measured. For a larger prompt, if a
+  candidate in its group is measured to meet the budget, the unmeasured peer moves behind it. A peer
+  that advertises `hardwareTier` `cpu-only` or `insufficient` also moves behind the other unmeasured
+  peers. An unmeasured peer still ranks ahead of a node measured too slow, and when no candidate is
+  measured to meet the budget nothing moves. On the fleet, 2026-09-29, a 7,731-token turn went to
+  core-7, which nothing had timed, and waited 169.8 s for a first byte while measured GPU peers were
+  predicted at ~32–36 s. A GPU tier is not read as fast: core-7 advertised `high` in the fleet
+  capture of 2026-09-27, but its Ollama reads prompts on CPU.
+- **Some candidates keep their place unmeasured.** This node's own engine does, because its evidence
+  is forgotten on every restart while the engine's prefix cache is not. So do the engine
+  [prefix affinity](#prefix-affinity) holds, where the session's prefix is warm, and a
+  [pinned](#manual-routing-pins) peer, because a pin is a statement and unmeasured is only a prior.
+- **Demoted or deferred, never removed.** A slow or unmeasured node stays in the failover order and
+  still serves the request when every node ahead of it fails.
 - **All slow means nothing moves.** When every candidate is predicted to miss, the ranker's order
   stands.
 - **Ceilings stay outside.** A ceiling is an operator's statement and a measurement is an inference,
@@ -424,11 +435,14 @@ this node timed, and the peer's report after the validation and ageing routing a
 lists its prefill bands (`fromTokens`, `promptTokens`, `tokensPerSec`, `deadline`, `ageMs`) and its
 `decode` rate. Each routing-log entry carries `throughput`: `null` when no candidate had applicable
 evidence, otherwise `{ estimatedTokens, budgetMs, estimates: [{ node, backend, tokensPerSec,
-fromPromptTokens, extrapolated, predictedMs, source, deadline, slow }], overridden }`. `tokensPerSec`
-is the rate as measured, at `fromPromptTokens`, so it can be compared with an engine's own log;
-`predictedMs` includes the growth factor when `extrapolated` is true. `overridden` is `true` when the request was
-placed on a `slow` node anyway. `cihub pool status` lists measured speed per node, and `cihub pool log`
-marks the requests a measurement moved.
+fromPromptTokens, extrapolated, predictedMs, source, deadline, slow }], unmeasured: [{ node, backend,
+prior }], overridden }`. `tokensPerSec` is the rate as measured, at `fromPromptTokens`, so it can be
+compared with an engine's own log; `predictedMs` includes the growth factor when `extrapolated` is
+true. `unmeasured` lists the peers that moved behind a node measured to meet the budget, with the
+`prior` each was judged on (`unknown` or `cpu-only`). It is empty when none moved, including every
+prompt small enough to explore with. `overridden` is `true` when the request was placed on a `slow`
+node anyway. `cihub pool status` lists measured speed per node, and `cihub pool log` marks the
+requests that a measurement, or the lack of one, moved.
 
 ## Local engine contention
 
