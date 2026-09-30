@@ -19,7 +19,7 @@ import { kvSequencesFor, probeContextCost } from './context-cost.util';
 import { estimateLoadedFootprintMb, FLOOR_CONTEXT, largestFittingWindow, type ModelMemoryInput } from './context-length.util';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { ModelRegistryService } from './model-registry.service';
-import { type EvictionCandidate, MemoryManagerService, modelMemoryCeilingMb } from './memory-manager.service';
+import { type EvictionCandidate, MemoryManagerService, modelMemoryCeilingMb, modelPoolFor } from './memory-manager.service';
 import { CloudFallbackService, speaksOpenAiCompletions } from './cloud-fallback.service';
 import { ModelPullerService } from './model-puller.service';
 import { InferenceBackendRegistry } from './backends/backend-registry';
@@ -36,6 +36,26 @@ const EVICTION_SETTLE_INTERVAL_MS = 1_000;
 /** One parallel health sweep over every registered backend. */
 type ProbedBackends = ReadonlyArray<readonly [InferenceBackendType, InferenceBackend, BackendHealthStatus]>;
 
+/** The window {@link InferenceRouterService.planLoad} chose for a load, and what the load then occupies. */
+type LoadPlan = {
+  contextLength: number | null;
+  footprintMb: number;
+  /**
+   * Set when the load is to be tried rather than fit-checked (see {@link InferenceRouterService.loadUnmeasured}):
+   * an operator's Ollama load of a model never measured on this node, which only the catalog's figure
+   * says no empty card here could hold. `ceilingMb` is what an empty card here holds.
+   */
+  unmeasured?: { ceilingMb: number };
+};
+
+/**
+ * Why memory put a Lemonade load's window below an installed app's floor: not even an empty card here
+ * holds the floor (`empty`, with the most it holds, or null for not even 4096), or an empty card would
+ * but unloading what may be unloaded would not free enough of what is in use (`held`). `null` where
+ * memory is not the reason: this node's `inferenceMaxNumCtx` caps the window below the floor.
+ */
+type FloorShortfall = { kind: 'empty'; window: number | null } | { kind: 'held'; heldMb: number; freedMb: number };
+
 /**
  * `Authorization` for a backend that authenticates its requests (its `getApiKey()`: VLLM_API_KEY,
  * OMLX_API_KEY, LEMONADE_API_KEY), or no header at all. The chat/completion proxy and the Lemonade
@@ -45,6 +65,24 @@ type ProbedBackends = ReadonlyArray<readonly [InferenceBackendType, InferenceBac
 function backendAuthHeaders(backend: InferenceBackend): Record<string, string> {
   const apiKey = backend.getApiKey?.();
   return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+}
+
+/** Why a Lemonade window is below an app's floor, for `planLoad`'s warning; see {@link FloorShortfall}. */
+function describeFloorShortfall(shortfall: FloorShortfall | null, wanted: number, floor: number, localCap: number | null): string {
+  if (shortfall?.kind === 'empty') {
+    return shortfall.window === null
+      ? 'not even an empty card here holds this model at 4096 tokens, so unloading other models cannot help; choose a smaller model for this node'
+      : `an empty card here holds at most ${shortfall.window} tokens of it, so unloading other models cannot help; choose a smaller model for this node`;
+  }
+  if (shortfall?.kind === 'held') {
+    return (
+      `an empty card here would hold the floor, but of the ${shortfall.heldMb} MB in use, unloading every model that may be ` +
+      `unloaded for it would free ${shortfall.freedMb} MB; unpin or unload what holds the rest, then load this model again`
+    );
+  }
+  return wanted < floor && localCap !== null && localCap === wanted
+    ? `this node's inferenceMaxNumCtx caps it at ${localCap}; raise the cap to serve the floor`
+    : `the model's own window is ${wanted}`;
 }
 
 /**
@@ -628,12 +666,11 @@ export class InferenceRouterService {
     }
 
     const profile = await this.hardwareInspector.getProfile();
-    const { contextLength, footprintMb: footprint } = await this.planLoad(
-      curated,
-      { backend: backendType, backendModelId },
-      profile,
-      options.request,
-    );
+    const plan = await this.planLoad(curated, { backend: backendType, backendModelId }, profile, options.request);
+    const { contextLength, footprintMb: footprint } = plan;
+    if (plan.unmeasured) {
+      return this.loadUnmeasured(catalogId, { backend: backendType, backendModelId }, plan, plan.unmeasured.ceilingMb);
+    }
     const fit = await this.memoryManager.canFitModel(profile, footprint);
     if (!fit.fits) {
       const deficit = footprint - fit.availableMb;
@@ -660,6 +697,104 @@ export class InferenceRouterService {
   }
 
   /**
+   * An operator's load of a model this node has never measured, which only the catalog's figure says
+   * no empty card here could hold: tried, not refused, and measured as it lands.
+   *
+   * The catalog's figure is a guess where the engine has never been seen serving the model, and for
+   * some models a poor one. It puts gemma4:e4b at 10,813 MB and its file is 9,163 MiB, while beta-red's
+   * RTX 3080 serves it in 5,550 MiB (nvidia-smi) and `/api/ps` says 3.2 GiB across the fleet. Refusing
+   * on it turned the fleet's default app model away from every 8 and 10 GB card the first time an
+   * operator asked, and after every Hub restart until sightings were persisted.
+   *
+   * Only Ollama on a discrete card gets here ({@link planLoad} says when): its scheduler places a model
+   * itself, making room among its own idle runners and putting in system RAM what the card cannot take,
+   * so a catalog figure that was right costs speed, not a failed load or an overcommitted card. On
+   * unified memory there is no system RAM to spill to that the OS is not already using, so the catalog
+   * figure still refuses there. Nothing is evicted for it by the Hub: eviction is sized from the
+   * estimate, and this estimate is the one thing not trusted. What the engine then holds is measured at
+   * once, so the next fit check, pin and handout use it.
+   */
+  private async loadUnmeasured(
+    catalogId: string,
+    target: { backend: InferenceBackendType; backendModelId: string },
+    plan: LoadPlan,
+    ceilingMb: number,
+  ): Promise<{ loaded: true } | { loaded: false; reason: string }> {
+    const window = plan.contextLength === null ? 'its default window' : `a ${plan.contextLength}-token window`;
+    this._logger.warn(
+      `[Inference] ${catalogId} has never been measured on this node, and its catalog figure (${plan.footprintMb} MB at ${window}) is more than ` +
+        `an empty card here holds (${ceilingMb} MB); loading it without unloading anything, so ${target.backend} places it itself, and measuring what it takes`,
+    );
+    try {
+      await this.modelPuller.loadModel(catalogId, plan.contextLength === null ? undefined : { contextLength: plan.contextLength });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { loaded: false, reason: `Loading ${catalogId}, which was never measured on this node, failed: ${msg}` };
+    }
+    // Measured now, not from the reading taken before the load.
+    this.memoryManager.invalidateObservation();
+    const profile = await this.hardwareInspector.getProfile();
+    const measured = await this.memoryManager.footprintSighting(profile, target.backend, target.backendModelId).catch(() => null);
+    if (measured) {
+      this._logger.info(
+        `[Inference] ${catalogId} measured on ${target.backend}: ${measured.footprintMb} MB at a ${measured.contextLength}-token window`,
+      );
+    } else {
+      this._logger.warn(
+        `[Inference] ${catalogId} is loaded, but could not be measured wholly on the card: ${target.backend} may have put part of it in system memory, ` +
+          'where it runs slower. Its catalog figure still stands for the next fit check.',
+      );
+    }
+    return { loaded: true };
+  }
+
+  /**
+   * Pin a catalog model: load it through {@link loadTrackedModel} when it is not in memory, then mark
+   * it pinned when the pinned models still fit this node's budget. The REST pin and MCP
+   * `hub_pin_model` both take this path.
+   *
+   * The pinned-sum check reads what the model was measured occupying here, and the catalog's figure
+   * only for a model never measured here. A refusal on a measurement is final and loads nothing. A
+   * refusal on the catalog's figure alone is not: the load measures the model, and the check is asked
+   * again with that. The catalog's 10,813 MB for gemma4:e4b refused the pin outright on the 8 and
+   * 10 GB cards that serve it in 5,550 MiB.
+   */
+  async pinTrackedModel(catalogId: string): Promise<{ pinned: true } | { pinned: false; reason: string }> {
+    const curated = this.modelRegistry.getCuratedModel(catalogId);
+    const served = this.modelRegistry.getTrackedModel(catalogId) ?? curated;
+    const model = served ? { backend: served.backend, backendModelId: served.backendModelId } : undefined;
+    const catalogMb = curated?.runtime.memoryFootprintMb || 0;
+
+    const profile = await this.hardwareInspector.getProfile();
+    const first = await this.memoryManager.canPinModel(profile, catalogMb, model);
+    if (!first.canPin) {
+      const measured = model ? await this.memoryManager.footprintSighting(profile, model.backend, model.backendModelId) : null;
+      if (measured || !model) {
+        return { pinned: false, reason: first.reason ?? `${catalogId} does not fit this node's pinned-model budget` };
+      }
+    }
+
+    const tracked = this.modelRegistry.getTrackedModel(catalogId);
+    if (!tracked || (tracked.state !== 'loaded' && tracked.state !== 'pinned')) {
+      const outcome = await this.loadTrackedModel(catalogId);
+      if (!outcome.loaded) {
+        return { pinned: false, reason: outcome.reason };
+      }
+    }
+
+    if (!first.canPin) {
+      this.memoryManager.invalidateObservation();
+      const again = await this.memoryManager.canPinModel(await this.hardwareInspector.getProfile(), catalogMb, model);
+      if (!again.canPin) {
+        return { pinned: false, reason: `${catalogId} is loaded, but not pinned: ${again.reason}` };
+      }
+    }
+
+    this.modelRegistry.pinModel(catalogId);
+    return { pinned: true };
+  }
+
+  /**
    * The window to load a model at, and what it will then occupy — the figure the fit check and any
    * eviction are sized to. `contextLength` null sends the engine no window.
    *
@@ -678,6 +813,14 @@ export class InferenceRouterService {
    *   Lemonade to the floor of any installed app it could be handed to, then stepped down — 65536,
    *   32768, … 4096 — to the largest that fits what is free now. Only when not even 4096 fits does
    *   it size for the largest window an empty card could hold, which is what eviction then frees.
+   * - **A Lemonade floor** is not stepped under for memory that eviction can free. Lemonade serves
+   *   the one window it loaded at to every app, so a window sized to what was free beside an idle
+   *   Ollama model was saved below Hermes' 64000 on a card that holds 64000 when empty, and Hermes
+   *   then refused to start. When the floor fits an empty card but not what is free now, the load is
+   *   sized at the floor and eviction makes the room. It goes below the floor only when an empty card
+   *   cannot hold it, or when what holds the card now cannot be unloaded for it, and says which.
+   * - **Never measured, and over an empty card by the catalog alone**: an operator's Ollama load onto
+   *   a discrete card is tried instead of refused (`unmeasured`; see {@link loadUnmeasured}).
    * - `null` for anything but a text LLM, or a model the catalog does not describe: an embedding,
    *   TTS or STT model has no context window to size.
    */
@@ -686,7 +829,7 @@ export class InferenceRouterService {
     target: { backend: InferenceBackendType; backendModelId: string },
     profile: HardwareProfile,
     request?: { numCtx: number | null },
-  ): Promise<{ contextLength: number | null; footprintMb: number }> {
+  ): Promise<LoadPlan> {
     const catalogFootprint = curated?.runtime.memoryFootprintMb || 0;
     // Lemonade's kokoro and whisper rows carry a 0 window, fell back to 8192, and were charged a
     // phantom 2 GB of KV cache and sent a llama.cpp ctx_size they have no use for.
@@ -722,7 +865,14 @@ export class InferenceRouterService {
     const modelWindow = curated.runtime.contextWindow > 0 ? Math.floor(curated.runtime.contextWindow) : null;
 
     if (request && target.backend === 'ollama') {
-      const runsAt = request.numCtx ?? this.ollamaDefaultWindow(backend) ?? handout;
+      const stated = request.numCtx ?? this.ollamaDefaultWindow(backend);
+      if (stated === null) {
+        this._logger.debug(
+          `[Inference] ${curated.id} is fit-checked at its ${handout}-token handout: a /v1 request runs at OLLAMA_CONTEXT_LENGTH, which ` +
+            'this node does not state. Set inferenceMaxNumCtx to it so the fit check sizes the window Ollama actually loads.',
+        );
+      }
+      const runsAt = stated ?? handout;
       const window = modelWindow === null ? runsAt : Math.min(runsAt, modelWindow);
       return { contextLength: request.numCtx, footprintMb: estimateLoadedFootprintMb({ ...sizing, numCtx: window }) };
     }
@@ -732,8 +882,31 @@ export class InferenceRouterService {
     if (modelWindow !== null) wanted = Math.min(wanted, modelWindow);
     if (localCap !== null) wanted = Math.min(wanted, localCap);
 
-    let contextLength = largestFittingWindow({ ...sizing, from: wanted, budgetMb: availableMb });
+    const fitsNow = largestFittingWindow({ ...sizing, from: wanted, budgetMb: availableMb });
+    let shortfall: FloorShortfall | null = null;
+    if (floor) {
+      // The floor as far as the caps let it go; below them nothing memory does can help.
+      const floorWindow = Math.min(floor.minContextLength, wanted);
+      if (fitsNow === null || fitsNow < floorWindow) {
+        const emptyFit = largestFittingWindow({ ...sizing, from: floorWindow, budgetMb: ceilingMb });
+        if (emptyFit === floorWindow) {
+          const footprintMb = estimateLoadedFootprintMb({ ...sizing, numCtx: floorWindow });
+          // Asked of the eviction plan the load path then follows, so the floor is kept exactly when
+          // that path can make room for it; what it may unload is its rule, not this one's.
+          const eviction = await this.memoryManager.planEviction(profile, footprintMb - availableMb, target);
+          if (eviction.canFree) {
+            return { contextLength: floorWindow, footprintMb };
+          }
+          shortfall = { kind: 'held', heldMb: Math.max(0, ceilingMb - availableMb), freedMb: eviction.freedMb };
+        } else {
+          shortfall = { kind: 'empty', window: emptyFit };
+        }
+      }
+    }
+
+    let contextLength = fitsNow;
     let footprintMb: number;
+    let unmeasured: LoadPlan['unmeasured'];
     if (contextLength !== null) {
       footprintMb = estimateLoadedFootprintMb({ ...sizing, numCtx: contextLength });
     } else if (!request && sighting && sighting.footprintMb <= availableMb) {
@@ -747,18 +920,38 @@ export class InferenceRouterService {
           `loading it anyway, because ${target.backend} was measured serving it here at ${sighting.contextLength} in ${sighting.footprintMb} MB`,
       );
     } else {
-      contextLength = largestFittingWindow({ ...sizing, from: wanted, budgetMb: ceilingMb }) ?? Math.min(wanted, FLOOR_CONTEXT);
+      const emptyFit = largestFittingWindow({ ...sizing, from: wanted, budgetMb: ceilingMb });
+      contextLength = emptyFit ?? Math.min(wanted, FLOOR_CONTEXT);
       footprintMb = estimateLoadedFootprintMb({ ...sizing, numCtx: contextLength });
+      if (emptyFit === null && !request && !sighting && this.mayTryUnmeasured(target, profile)) {
+        unmeasured = { ceilingMb };
+      }
     }
 
     if (floor && floor.minContextLength > contextLength) {
       this._logger.warn(
         `[Inference] ${target.backend} will serve ${target.backendModelId} at ctx_size ${contextLength}, below the ${floor.minContextLength}-token floor of ` +
-          `${floor.apps.join(', ')}: that is all this node has room for, so apps are handed ${contextLength} for it and may refuse to start. ` +
-          'Free memory or choose a smaller model for this node.',
+          `${floor.apps.join(', ')}: ${describeFloorShortfall(shortfall, wanted, floor.minContextLength, localCap)}. ` +
+          `Apps are handed ${contextLength} for it and may refuse to start.`,
       );
     }
-    return { contextLength, footprintMb };
+    return unmeasured ? { contextLength, footprintMb, unmeasured } : { contextLength, footprintMb };
+  }
+
+  /**
+   * Whether an operator's load of a model never measured here, which the catalog's figure alone says no
+   * empty card here holds, may be tried instead of refused (see {@link loadUnmeasured}).
+   *
+   * - Ollama only: it puts what the card cannot take in system RAM rather than failing. Lemonade loads
+   *   the whole model onto the card.
+   * - A discrete card only: on unified memory the ceiling is what is free now, not an empty machine, and
+   *   a spill would come out of the memory the OS itself runs in.
+   * - Not while the Hub holds a pin on that engine: Ollama makes room among its own runners and knows
+   *   nothing of the Hub's pins, so a guess that was right could unload a model the operator pinned.
+   */
+  private mayTryUnmeasured(target: { backend: InferenceBackendType }, profile: HardwareProfile): boolean {
+    if (target.backend !== 'ollama' || modelPoolFor(profile) !== 'vram') return false;
+    return !this.modelRegistry.getPinnedModels().some((model) => model.backend === target.backend);
   }
 
   /**

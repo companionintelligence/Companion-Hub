@@ -190,7 +190,9 @@ export class InferenceTools implements OnModuleInit {
       category: 'Inference & Models',
       name: 'hub_pin_model',
       access: 'write',
-      description: 'Pin a model in memory (prevent eviction while the backend is running). Pinning is not persisted across backend restarts.',
+      description:
+        'Pin a model in memory (prevent eviction while the backend is running), loading it first if it is not loaded, ' +
+        'the same way hub_load_model does. Pinning is not persisted across backend restarts.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -200,17 +202,13 @@ export class InferenceTools implements OnModuleInit {
       },
       handler: async (params) => {
         const modelId = params.modelId as string;
-        const profile = await this.hardwareInspector.getProfile();
-        const curated = this.modelRegistry.getCuratedModel(modelId);
-        const footprint = curated?.runtime.memoryFootprintMb || 0;
-        // Named, so a measurement of this model on this node stands in for the catalog's figure.
-        const canPin = await this.memoryManager.canPinModel(profile, footprint, curated);
-
-        if (!canPin.canPin) {
-          return { success: false, message: canPin.reason };
+        // The REST pin's path: loaded first when it is not in memory, then checked against the
+        // pinned-model budget with what it was measured occupying here. This tool used to check the
+        // catalog's figure only and mark the model pinned whether or not it was in memory.
+        const outcome = await this.inferenceRouter.pinTrackedModel(modelId);
+        if (!outcome.pinned) {
+          return { success: false, message: outcome.reason };
         }
-
-        this.modelRegistry.pinModel(modelId);
         return { success: true, message: `Model ${modelId} pinned in memory` };
       },
     });

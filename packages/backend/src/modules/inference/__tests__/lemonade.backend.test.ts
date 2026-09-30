@@ -227,6 +227,25 @@ describe('LemonadeBackend', () => {
       (axios.get as never) = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
       await expect(backend.servedContextLength('Gemma-4-E4B-it-GGUF')).resolves.toBeNull();
     });
+
+    // Lemonade loads a model by itself on a request for it, or from its own UI. With nothing saved it
+    // runs at the configured default — 4096 on 10.2.0 — and the health record carries that effective
+    // window, while the saved options alone left Hermes' handout at 64000.
+    it('falls back to the window the model is running at when nothing is saved', async () => {
+      (axios.get as never) = vi.fn().mockImplementation(async (url: string) =>
+        url.endsWith('/v1/health')
+          ? {
+              data: {
+                status: 'ok',
+                all_models_loaded: [{ model_name: 'Gemma-4-E4B-it-GGUF', type: 'llm', recipe: 'llamacpp', recipe_options: { ctx_size: 4096 } }],
+              },
+            }
+          : { data: { id: 'Gemma-4-E4B-it-GGUF', recipe_options: {} } },
+      );
+      await expect(backend.servedContextLength('Gemma-4-E4B-it-GGUF')).resolves.toBe(4096);
+      // Not resident, nothing saved: nothing to say, as before.
+      await expect(backend.servedContextLength('Qwen3-4B-GGUF')).resolves.toBeNull();
+    });
   });
 
   describe('residency', () => {

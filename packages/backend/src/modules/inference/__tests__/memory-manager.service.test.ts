@@ -1,5 +1,6 @@
 import { Test, type TestingModule } from '@nestjs/testing';
 import { MemoryManagerService, modelMemoryCeilingMb } from '../memory-manager.service';
+import { readFootprintSightings } from '../footprint-sighting-record';
 import { ModelRegistryService } from '../model-registry.service';
 import { ModelResidencyService } from '../model-residency.service';
 import { GpuProcessSamplerService } from '../gpu-process-sampler.service';
@@ -732,6 +733,50 @@ describe('MemoryManagerService', () => {
       gpuSampler.sampleVramByProcess.mockResolvedValue([]);
       service.invalidateObservation();
       await expect(service.footprintSighting(betaRed(), 'ollama', 'gemma4:e4b')).resolves.toMatchObject({ footprintMb: 5550 });
+    });
+
+    it('keeps what it measured across a Hub restart, and rewrites the file only when a figure moved', async () => {
+      reportResidency(ollamaHolding(resident('gemma4:e4b', { engineGpuBytes: 3_364_754_553, totalBytes: 3_364_754_553, contextLength: 16_384 })));
+      gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 1, processName: '/usr/local/lib/ollama/llama-server', vramMb: 5550 }]);
+      await service.calculateBudget(betaRed());
+      await service.sightingsPersisted();
+      const written = await readFootprintSightings();
+      expect(written?.sightings.map(({ model, footprintMb }) => [model, footprintMb])).toEqual([['gemma4:e4b', 5550]]);
+
+      // A few MB of drift between samples is the same measurement: the file keeps what it had.
+      gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 1, processName: '/usr/local/lib/ollama/llama-server', vramMb: 5580 }]);
+      service.invalidateObservation();
+      await service.calculateBudget(betaRed());
+      await service.sightingsPersisted();
+      await expect(readFootprintSightings()).resolves.toEqual(written);
+
+      // The next Hub process, with the model expired: the measurement is still there to size it by.
+      reportResidency(nothingResident());
+      gpuSampler.sampleVramByProcess.mockResolvedValue([]);
+      const restarted = new MemoryManagerService(loggerService, modelRegistry, backendRegistry, residency, gpuSampler);
+      await expect(restarted.footprintSighting(betaRed(), 'ollama', 'gemma4:e4b')).resolves.toEqual({
+        footprintMb: 5550,
+        contextLength: 16_384,
+        source: 'process',
+      });
+      // And a pin counts at it, where the registry says the catalog's 10,813.
+      modelRegistry.getLoadedModels.mockReturnValue([
+        tracked({ catalogId: 'gemma4-e4b', backendModelId: 'gemma4:e4b', state: 'pinned', pinned: true, memoryUsedMb: 10_813 }),
+      ]);
+      await expect(restarted.calculateBudget(betaRed())).resolves.toMatchObject({ pinnedVramMb: 5550 });
+    });
+
+    it('does not restore a measurement taken on other hardware', async () => {
+      reportResidency(ollamaHolding(resident('gemma4:e4b', { engineGpuBytes: 3_364_754_553, totalBytes: 3_364_754_553, contextLength: 16_384 })));
+      gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 1, processName: '/usr/local/lib/ollama/llama-server', vramMb: 5550 }]);
+      await service.calculateBudget(betaRed());
+      await service.sightingsPersisted();
+
+      reportResidency(nothingResident());
+      gpuSampler.sampleVramByProcess.mockResolvedValue([]);
+      const swapped = makeProfile({ gpu: { ...makeProfile().gpu, vramMb: 8_192, model: 'RTX 3070' }, effectiveInferenceMemoryMb: 8_192 });
+      const restarted = new MemoryManagerService(loggerService, modelRegistry, backendRegistry, residency, gpuSampler);
+      await expect(restarted.footprintSighting(swapped, 'ollama', 'gemma4:e4b')).resolves.toBeNull();
     });
 
     it("splits one process figure between models in the engine's own proportions (beta-1: gemma4 and the embedder)", async () => {

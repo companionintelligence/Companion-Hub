@@ -49,6 +49,19 @@ export const OLLAMA_SINGLE_SLOT_ARCHITECTURES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Families whose one-slot geometry cost already exceeds what every slot of the fleet's Ollama holds,
+ * so multiplying it by the slot count only compounds an over-estimate.
+ *
+ * `kvBytesPerToken` counts sliding-window layers as global because `/api/show` does not say which
+ * layers slide. For gemma4 that is 0.09375 MiB a token, 6 GiB at 65536 for ONE sequence, while core-2
+ * holds gemma4:e4b at a 65536 window on four slots in 3,437,095,812 bytes in all (`/api/ps`,
+ * 2026-09-29) — weights included. Times four, the same arithmetic cut beta-1's handout for it from
+ * 65536 to 16384. Only families measured that way belong here: gemma3's ratio of sliding to global
+ * layers is smaller and has not been measured on the fleet, so it keeps the multiplication.
+ */
+export const GEOMETRY_COVERS_EVERY_SLOT_ARCHITECTURES: ReadonlySet<string> = new Set(['gemma4']);
+
+/**
  * How many sequences' KV cache a load of a model allocates on `backendType`: the `kvSlots` the
  * context sizing multiplies by.
  *
@@ -56,9 +69,10 @@ export const OLLAMA_SINGLE_SLOT_ARCHITECTURES: ReadonlySet<string> = new Set([
  * four slots on core-2, beta-max and beta-red and two on core-7, so a window charged at one slot's
  * price was a quarter of what those nodes allocate. `statedSlots` is what the Hub knows of the slot
  * count — the engine's own statement, else the operator's `inferenceOllamaSlots` — and one when it
- * knows nothing, as before. One also for a family Ollama forces to a single slot, and for a
- * `calibrated` cost, which was measured across every slot already. Lemonade takes one `ctx_size` for
- * the whole server, so it is never multiplied.
+ * knows nothing, as before. One also for a family Ollama forces to a single slot, for a family whose
+ * one-slot geometry already covers every slot ({@link GEOMETRY_COVERS_EVERY_SLOT_ARCHITECTURES}), and
+ * for a `calibrated` cost, which was measured across every slot already. Lemonade takes one
+ * `ctx_size` for the whole server, so it is never multiplied.
  */
 export function kvSequencesFor(backendType: InferenceBackendType, cost: ContextCost | null, statedSlots: unknown): number {
   if (backendType !== 'ollama') return 1;
@@ -66,6 +80,7 @@ export function kvSequencesFor(backendType: InferenceBackendType, cost: ContextC
   if (slots === null || slots <= 1) return 1;
   if (cost?.source === 'calibrated') return 1;
   if (cost?.architecture && OLLAMA_SINGLE_SLOT_ARCHITECTURES.has(cost.architecture)) return 1;
+  if (cost?.source === 'geometry' && cost.architecture && GEOMETRY_COVERS_EVERY_SLOT_ARCHITECTURES.has(cost.architecture)) return 1;
   return slots;
 }
 

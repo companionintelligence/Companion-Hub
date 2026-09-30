@@ -174,13 +174,21 @@ export class LemonadeBackend implements InferenceBackend {
   }
 
   /**
-   * The window Lemonade serves `modelId` at whatever a request asks — its saved `ctx_size` — or null
-   * when none is saved (Lemonade then sizes it itself) or Lemonade cannot be asked. A handout for a
-   * Lemonade model must not promise more than this; see `capHandoutAtServedWindow`.
+   * The window Lemonade serves `modelId` at whatever a request asks — its saved `ctx_size` — else, when
+   * nothing is saved but the model is resident, the window it is running at; null when neither can be
+   * read. A handout for a Lemonade model must not promise more than this; see `capHandoutAtServedWindow`.
+   *
+   * The resident window matters because Lemonade loads models by itself: on a request for one that is
+   * not resident, or from its own UI. With nothing saved such a load runs at the configured default —
+   * 4096 on the fleet's 10.2.0 — and the health record says so (10.2.0 reports each server's effective
+   * `recipe_options`), while a handout read from the saved options alone still promised Hermes 64000.
    */
   async servedContextLength(modelId: string): Promise<number | null> {
     const info = await this.readModelInfo(modelId);
-    return info ? positiveWindow(recipeOptionsOf(info)?.ctx_size) : null;
+    const saved = info ? positiveWindow(recipeOptionsOf(info)?.ctx_size) : null;
+    if (saved !== null) return saved;
+    const residency = await this.listResident();
+    return residency.models?.find((model) => model.id === modelId)?.contextLength ?? null;
   }
 
   /**

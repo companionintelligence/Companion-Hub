@@ -556,27 +556,12 @@ export class InferenceController {
   @UseGuards(AuthGuard)
   @Post('models/pin')
   async pinModel(@Body() body: { modelId: string }) {
-    const profile = await this.hardwareInspector.getProfile();
-    const curated = this.modelRegistry.getCuratedModel(body.modelId);
-    const footprint = curated?.runtime.memoryFootprintMb || 0;
-    // Named, so a measurement of this model on this node stands in for the catalog's figure.
-    const canPin = await this.memoryManager.canPinModel(profile, footprint, curated);
-
-    if (!canPin.canPin) {
-      return { success: false, message: canPin.reason };
+    // Through the router: it loads the model the way load-on-demand does when it is not in memory, and
+    // checks the pinned-model budget against what the model was measured occupying here.
+    const outcome = await this.router.pinTrackedModel(body.modelId);
+    if (!outcome.pinned) {
+      return { success: false, message: outcome.reason };
     }
-
-    // Ensure model is loaded before pinning — through the router's load path, so the pin fits,
-    // evicts or refuses exactly as load-on-demand does instead of loading on top of the card.
-    const tracked = this.modelRegistry.getTrackedModel(body.modelId);
-    if (!tracked || (tracked.state !== 'loaded' && tracked.state !== 'pinned')) {
-      const outcome = await this.router.loadTrackedModel(body.modelId);
-      if (!outcome.loaded) {
-        return { success: false, message: outcome.reason };
-      }
-    }
-
-    this.modelRegistry.pinModel(body.modelId);
     return { success: true, message: `Model ${body.modelId} pinned` };
   }
 

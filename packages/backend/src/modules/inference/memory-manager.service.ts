@@ -14,6 +14,13 @@ import {
 import { canonicalModelId } from '@/common/helpers/hub-pool';
 import { InferenceBackendRegistry } from './backends/backend-registry';
 import type { FootprintSighting } from './context-length.util';
+import {
+  readFootprintSightings,
+  type RecordedSighting,
+  sightingHardware,
+  sightingMovedMaterially,
+  writeFootprintSightings,
+} from './footprint-sighting-record';
 import { GpuProcessSamplerService, type GpuProcessVramSample } from './gpu-process-sampler.service';
 import { ModelRegistryService } from './model-registry.service';
 import { ModelResidencyService } from './model-residency.service';
@@ -91,12 +98,18 @@ export class MemoryManagerService {
   private observation: { at: number; vendor: string; value: LiveObservation } | null = null;
   private observationInFlight: { vendor: string; promise: Promise<LiveObservation> } | null = null;
   /**
-   * What each model was last measured occupying here, by {@link sightingKey}. Kept for the life of
-   * the process, not just while the model is resident: the fit check that needs it runs exactly when
-   * the model is NOT resident — it was evicted, it expired, the operator unloaded it — and a later
-   * sighting of the same model replaces it.
+   * What each model was last measured occupying here, by {@link sightingKey}. Kept after the model
+   * leaves memory, and across Hub restarts (see `footprint-sighting-record.ts`): the fit check that
+   * needs it runs exactly when the model is NOT resident — it was evicted, it expired, the operator
+   * unloaded it, the Hub restarted since — and a later sighting of the same model replaces it.
    */
-  private readonly sightings = new Map<string, FootprintSighting>();
+  private readonly sightings = new Map<string, RecordedSighting>();
+  /** The sightings file read once, on the first measurement, so what this process measures wins over it. */
+  private sightingsRestored: Promise<void> | null = null;
+  /** What the file holds, to write it only when a sighting moved (see {@link sightingMovedMaterially}). */
+  private readonly persistedSightings = new Map<string, FootprintSighting>();
+  /** Writes in the order they were asked for, so an older snapshot never lands over a newer one. */
+  private sightingsWrite: Promise<void> = Promise.resolve();
 
   constructor(
     readonly _logger: LoggerService,
@@ -148,7 +161,7 @@ export class MemoryManagerService {
       if (!model.pinned) continue;
       // What the pin was measured holding, when it was: the registry's figure is the catalog's,
       // twice what gemma4:e4b holds on a 10 GB card, and it alone used up the budget for pins there.
-      const usedMb = this.sightings.get(sightingKey(model.backend, model.backendModelId))?.footprintMb ?? model.memoryUsedMb;
+      const usedMb = this.sightingOf(model.backend, model.backendModelId)?.footprintMb ?? model.memoryUsedMb;
       if (pool === 'ram') pinnedRamMb += usedMb;
       else pinnedVramMb += usedMb;
     }
@@ -224,7 +237,17 @@ export class MemoryManagerService {
    */
   async footprintSighting(profile: HardwareProfile, backend: InferenceBackendType, backendModelId: string): Promise<FootprintSighting | null> {
     await this.observeUsage(profile);
-    return this.sightings.get(sightingKey(backend, backendModelId)) ?? null;
+    return this.sightingOf(backend, backendModelId);
+  }
+
+  /** Resolves once every sighting recorded so far has been written (or failed to be). */
+  sightingsPersisted(): Promise<void> {
+    return this.sightingsWrite;
+  }
+
+  private sightingOf(backend: InferenceBackendType, backendModelId: string): FootprintSighting | null {
+    const recorded = this.sightings.get(sightingKey(backend, backendModelId));
+    return recorded ? { footprintMb: recorded.footprintMb, contextLength: recorded.contextLength, source: recorded.source } : null;
   }
 
   /** Determine which models to evict to free the required memory */
@@ -368,7 +391,7 @@ export class MemoryManagerService {
     model?: { backend: InferenceBackendType; backendModelId: string },
   ): Promise<{ canPin: boolean; reason?: string }> {
     const budget = await this.calculateBudget(profile);
-    const pinnedMb = (model ? this.sightings.get(sightingKey(model.backend, model.backendModelId))?.footprintMb : undefined) ?? memoryFootprintMb;
+    const pinnedMb = (model ? this.sightingOf(model.backend, model.backendModelId)?.footprintMb : undefined) ?? memoryFootprintMb;
 
     if (modelPoolFor(profile) === 'ram') {
       const totalPinnedAfter = budget.pinnedRamMb + pinnedMb;
@@ -391,17 +414,54 @@ export class MemoryManagerService {
    * exists to remove, so each source degrades on its own (see {@link observe}).
    */
   private async observeUsage(profile: HardwareProfile): Promise<ModelMemoryUsage> {
-    const observation = await this.observe(profile.gpu.vendor);
+    const [observation] = await Promise.all([this.observe(profile.gpu.vendor), this.restoreSightings(profile)]);
     const pool = modelPoolFor(profile);
     const usage = deriveModelMemoryUsage({
       pool,
       observation,
       tracked: this.modelRegistry.getLoadedModels(),
     });
+    let moved = false;
     for (const { backend, backendModelId, sighting } of attributeSightings(pool, observation, usage)) {
-      this.sightings.set(sightingKey(backend, backendModelId), sighting);
+      const key = sightingKey(backend, backendModelId);
+      this.sightings.set(key, { ...sighting, backend, model: backendModelId, seenAt: observation.sampledAt });
+      moved ||= sightingMovedMaterially(this.persistedSightings.get(key), sighting);
     }
+    if (moved) this.persistSightings(profile);
     return usage;
+  }
+
+  /**
+   * Seeds the sightings from the file the last Hub process left, once, when it was measured on this
+   * hardware. Anything this process has measured already stays: it is newer. A file that cannot be
+   * read costs the restored figures, never the measurement.
+   */
+  private restoreSightings(profile: HardwareProfile): Promise<void> {
+    this.sightingsRestored ??= readFootprintSightings()
+      .then((record) => {
+        if (!record || record.hardware !== sightingHardware(profile)) return;
+        for (const entry of record.sightings) {
+          const key = sightingKey(entry.backend, entry.model);
+          this.persistedSightings.set(key, entry);
+          if (!this.sightings.has(key)) this.sightings.set(key, entry);
+        }
+      })
+      .catch((error) => {
+        this._logger.debug(`Could not read the persisted model sightings: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    return this.sightingsRestored;
+  }
+
+  /** Queues a write of every sighting held now. Never throws and never holds up the measurement that asked for it. */
+  private persistSightings(profile: HardwareProfile): void {
+    const snapshot = [...this.sightings.entries()];
+    for (const [key, sighting] of snapshot) this.persistedSightings.set(key, sighting);
+    const record = { hardware: sightingHardware(profile), sightings: snapshot.map(([, sighting]) => sighting) };
+    this.sightingsWrite = this.sightingsWrite
+      .then(() => writeFootprintSightings(record))
+      .catch((error) => {
+        this._logger.debug(`Could not persist the model sightings: ${error instanceof Error ? error.message : String(error)}`);
+      });
   }
 
   /**
@@ -526,7 +586,7 @@ function attributeSightings(
 }
 
 /** Where models live on this node. Mirrors the branch the budget has always taken. */
-function modelPoolFor(profile: HardwareProfile): 'vram' | 'ram' {
+export function modelPoolFor(profile: HardwareProfile): 'vram' | 'ram' {
   return profile.gpu.unifiedMemory || !profile.gpu.available ? 'ram' : 'vram';
 }
 

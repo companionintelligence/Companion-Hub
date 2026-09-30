@@ -410,20 +410,52 @@ the fit check and any eviction are sized to.
   in the estimate and in `canPinModel`. gemma4:e4b's catalog row says 10,813 MB, and beta-red's RTX 3080
   serves it in 5,550 MiB. For an operator's load, a model measured here in what is free now is loaded
   with a warning even when the reserves charged on top of the measurement are over.
+- **Measurements survive a restart.** The measurements are written to
+  `<data dir>/state/inference-footprint-sightings.json`, tagged with the card they were taken on (or
+  the machine, on unified memory and CPU), and read back by the next Hub process on the same hardware.
+  The file is rewritten only when a figure moves by more than 64 MB or 2 %, or its window changes.
+  Held in memory only, every Hub restart and fleet roll put the catalog's figure back, and the 8 and
+  10 GB cards serving gemma4:e4b refused to pin or load it again.
+- **Never measured: try the load.** An operator's load of an Ollama model onto a discrete card, for a
+  model never measured here, whose catalog figure alone says no empty card here holds it even at 4096,
+  is tried at 4096 instead of refused. Nothing is evicted for it: Ollama makes room among its own idle
+  runners and puts what the card cannot take in system RAM. The model is measured as soon as it lands,
+  and a warning is logged when Ollama could not put it wholly on the card. Lemonade and unified memory
+  keep the refusal: Lemonade loads the whole model on the card, and on unified memory the spill would
+  come out of the memory the OS itself runs in. So does an Ollama the Hub holds a pin on, since Ollama
+  could make room by unloading the pinned model. On the request path a refusal is forwarded to the
+  engine as before, which loads the model at the window the request runs at.
+- **Pins.** The REST pin and MCP `hub_pin_model` share `InferenceRouterService.pinTrackedModel`: load
+  the model through `loadTrackedModel` when it is not resident, then check the pinned-model budget
+  with what it was measured occupying. A pin refused on a measurement is final and loads nothing. A
+  pin refused on the catalog figure alone loads first and asks again; a model that then could not be
+  measured on the card stays loaded but unpinned.
 - **Slots.** The KV cache is charged once per Ollama slot. The slot count is the engine's own
   statement, else `inferenceOllamaSlots`, else 1. It is 1 for the families Ollama 0.34 runs on a
   single slot (`qwen35`, which includes qwen3.8:27b, `qwen3vl`, `mllama`, and others; see
-  `OLLAMA_SINGLE_SLOT_ARCHITECTURES`), and for a cost calibrated from a sighting.
+  `OLLAMA_SINGLE_SLOT_ARCHITECTURES`), for a cost calibrated from a sighting, and for gemma4's geometry
+  cost (`GEOMETRY_COVERS_EVERY_SLOT_ARCHITECTURES`). That cost counts gemma4's sliding-window layers as
+  global: one slot is charged 6,144 MB of KV at 65536, while core-2 holds gemma4:e4b at 65536 on four
+  slots in 3.4 GB in all.
 - **The request's window.** A load triggered by an app's request on Ollama uses the window that
   request runs at: its `options.num_ctx` on the native routes, and no `num_ctx` on `/v1`, where
   Ollama's default applies. A load at any other window is reloaded by that request. An operator's
-  pin or load uses the Hub's own window.
+  pin or load uses the Hub's own window. For a `/v1` load the fit check sizes Ollama's default window,
+  which the API does not expose: set `inferenceMaxNumCtx` to the node's `OLLAMA_CONTEXT_LENGTH`.
+  Without it the check sizes the handout instead, and says so at debug level.
 - **Lemonade.** Lemonade has one saved `ctx_size` per model and no window per request. The Hub loads
   at the larger of its own window and the context floor of any installed app the model qualifies for
-  (Hermes: 64000), then steps down to fit and warns when it lands below the floor. The window is saved
-  with `save_options` on `/v1/load`, which Lemonade 10.2.0 and 2026.x both accept. The options already
-  saved are sent back with it, because 10.2.0 replaces them instead of merging. `engineCapabilities`
-  reports the saved window of the model Lemonade holds, for pool placement.
+  (Hermes: 64000). It does not step below that floor for memory that eviction can free: when an empty
+  card holds the floor but what is free now does not, the load is sized at the floor and the eviction
+  path unloads idle models for it. It goes below the floor only when not even an empty card holds it,
+  or when unloading every model that may be unloaded would not free enough, and the warning says which.
+  Before this, beta-1 saved 32768 for Gemma-4-E4B-it-GGUF beside an idle Ollama gemma4:e4b, on a card
+  that holds 64000 empty. The window is saved with `save_options` on `/v1/load`, which Lemonade 10.2.0
+  and 2026.x both accept. The options already saved are sent back with it, because 10.2.0 replaces them
+  instead of merging. `engineCapabilities` reports the saved window of the model Lemonade holds, for
+  pool placement. `servedContextLength` reads the saved `ctx_size`, and, when nothing is saved, the
+  window a resident model is running at: a model Lemonade loaded by itself runs at its configured
+  default (4096 on 10.2.0).
 - **No window for non-LLMs.** Embedding, TTS, and STT models get no window and no KV charge.
 - **Re-measuring.** After an eviction, each re-measure reads the hardware profile with a fresh RAM
   sample (`getProfile({ freshRam: true })`). On unified memory the pre-eviction MemAvailable used to
