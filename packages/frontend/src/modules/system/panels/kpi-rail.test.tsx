@@ -124,6 +124,13 @@ describe('KpiRail routing windows', () => {
     expect(stat(container, 'Failed 30m')).toMatch(/^6/);
     expect(stat(container, 'Failed 30m')).toContain('6 refused');
   });
+
+  it('names answers a node gave with cut-off or placeholder-only output, the node’s to fix', () => {
+    const { container } = renderRail({ buckets: [bucket({ served: 70, failed: 167, badOutput: 167 })] });
+
+    expect(stat(container, 'Failed 30m')).toContain('167 bad answers');
+    expect(stat(container, 'Failed 30m')).not.toContain('refused');
+  });
 });
 
 describe('KpiRail live figures', () => {

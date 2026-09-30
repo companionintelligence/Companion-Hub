@@ -263,8 +263,21 @@ export interface RoutingLogEntry {
    * it: `signature` labels the engine's message, or is `client-error` for a 4xx relayed on its status.
    * Present on outbound rows only; `null`/absent on every other row and on a Hub predating the field.
    * Read through `isRefused`, which also reads the status, so neither gap makes a refusal look served.
+   *
+   * With `basis: 'node'` it is the opposite: the node answered 200 with output that was cut off
+   * (`truncated-upstream`) or only placeholder tokens (`degenerate-output`). The node's fault, never
+   * the app's — read through `outputFault`, and never shown as a refusal.
    */
   requestError?: { signature?: string; basis?: string; confirms?: string | null } | null;
+  /** Why a failed row failed, in a few words: a status, a deadline, an error code or an output fault. Absent on a Hub predating it. */
+  reason?: string | null;
+  /** Each candidate passed over before the one that answered, with what it answered. Absent on a Hub predating it. */
+  attempts?: { node: string; backend?: string; status: number | null; reason: string }[];
+  /**
+   * Time to the end of the response body, where `durationMs` stops at the first headers. `null` until
+   * the body is over and on a row that relayed none; absent on a Hub predating it.
+   */
+  totalMs?: number | null;
   pin?: unknown;
   /**
    * Token counts, attached once the backend's response finished — `null`/absent while pending,
