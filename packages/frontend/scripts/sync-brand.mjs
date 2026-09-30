@@ -1,15 +1,14 @@
 #!/usr/bin/env node
-// sync-brand.mjs — the brand files under public/ are COPIES of @companionintelligence/assets
-// (CI-Common `assets/`, the org's one logo origin). A static export needs them on disk,
-// so they are committed; this script is what makes them a mirror rather than a second
-// hand-maintained original.
+// sync-brand.mjs — the brand files under public/ are copies of packages/frontend/brand.
+// Those origin files are listed in ci-common.vendor.json (search vendored-from).
+// A static export needs them on disk, so they are committed; this script is what
+// makes them a mirror rather than a second hand-maintained original.
 //
-//   node scripts/sync-brand.mjs            # rewrite public/* from the installed package
+//   node scripts/sync-brand.mjs            # rewrite public/* from packages/frontend/brand
 //   node scripts/sync-brand.mjs --check    # exit 1 if any copy differs from the origin
-//   node scripts/sync-brand.mjs --from ../CI-Common/assets   # use a checkout instead of node_modules
+//   node scripts/sync-brand.mjs --from ../CI-Common/assets   # compare against a checkout instead
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -17,10 +16,10 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..'); // packages
 const argv = process.argv.slice(2);
 const CHECK = argv.includes('--check');
 const fromIdx = argv.indexOf('--from');
-const ORIGIN =
-  fromIdx === -1 ? dirname(createRequire(import.meta.url).resolve('@companionintelligence/assets/package.json')) : resolve(argv[fromIdx + 1]);
+const VENDORED = resolve(dirname(fileURLToPath(import.meta.url)), '../brand');
+const ORIGIN = fromIdx === -1 ? VENDORED : resolve(argv[fromIdx + 1]);
 
-/** public path → origin path (relative to the assets package). Ids in brand.config.json. */
+/** public path → origin path (relative to packages/frontend/brand). */
 const MAP = {
   'public/logo.svg': 'logos/mark-tight.svg', // logo.mark-tight
   'public/2024_CI__LogoMark_Color_med.svg': 'logos/mark.svg', // logo.mark
@@ -61,4 +60,4 @@ if (drift.length) {
   console.error(`✖ brand assets:\n  ${drift.join('\n  ')}\n  run \`node scripts/sync-brand.mjs\``);
   process.exit(1);
 }
-console.log(`✔ ${n} brand file(s) under public/ match @companionintelligence/assets (${ORIGIN.includes('node_modules') ? 'installed' : ORIGIN})`);
+console.log(`✔ ${n} brand file(s) under public/ match ${ORIGIN}`);

@@ -67,7 +67,6 @@ jobs:
             VITE_SENTRY_RELEASE=ci-hub-frontend@nightly
           secrets: |
             sentry_auth_token=${{ secrets.SENTRY_AUTH_TOKEN }}
-            npm_auth_token=${{ secrets.GITHUB_TOKEN }}
           platforms: linux/amd64,linux/arm64
           push: true
           # Publish alongside every other Hub stack image, in the public ci-hub package.

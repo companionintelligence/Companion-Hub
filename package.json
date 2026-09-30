@@ -53,7 +53,8 @@
     "test:visual:update": "UPDATE_VISUAL_BASELINES=1 pnpm run test:visual",
     "benchmark:gate": "pnpm exec tsx scripts/agent/benchmark-gate.ts",
     "agent:validate": "bin/agent-validate-shift",
-    "lint:canon": "pnpm --filter frontend lint:canon && pnpm --filter frontend brand:check"
+    "lint:canon": "pnpm --filter frontend lint:canon && pnpm --filter frontend brand:check",
+    "vendor:ci-common": "node scripts/vendor-ci-common.mjs"
   },
   "lint-staged": {
     "*": [

@@ -4,8 +4,9 @@ description: Install dependencies
 
 inputs:
   node-auth-token:
-    description: Token for @companionintelligence GitHub Packages (typically secrets.GITHUB_TOKEN)
-    required: true
+    description: Unused. Kept so existing callers still pass. The Hub no longer installs private @companionintelligence packages.
+    required: false
+    default: ""
 
 runs:
   using: "composite"
@@ -14,8 +15,6 @@ runs:
       name: Install Node.js
       with:
         node-version: "22"
-        registry-url: "https://npm.pkg.github.com"
-        scope: "@companionintelligence"
 
     - uses: pnpm/action-setup@v4
       name: Install pnpm
@@ -23,5 +22,3 @@ runs:
     - name: Install dependencies
       shell: bash
       run: pnpm install --frozen-lockfile
-      env:
-        NODE_AUTH_TOKEN: ${{ inputs.node-auth-token }}
