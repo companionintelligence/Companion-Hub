@@ -132,6 +132,16 @@ const baseProfile: HardwareProfile = {
   tier: 'high',
 };
 
+/**
+ * A discrete card whose model budget is `budgetMb`: the handout is sized against what a load may use,
+ * the card less its 512 MB display reserve (`modelMemoryCeilingMb`), not the card itself.
+ */
+const cardOf = (budgetMb: number): HardwareProfile => ({
+  ...baseProfile,
+  gpu: { ...baseProfile.gpu, vramMb: budgetMb + 512 },
+  effectiveInferenceMemoryMb: budgetMb + 512,
+});
+
 describe('AppCredentialsService', () => {
   let service: AppCredentialsService;
   let logger: MockProxy<LoggerService>;
@@ -299,7 +309,7 @@ describe('AppCredentialsService', () => {
       // ~12 GiB inference budget → memory ladder picks the 32768 tier. Hermes
       // declares a 64000-token minimum (it aborts below that), so its value is
       // floored up; openclaw has no minimum and keeps the ladder value.
-      hardwareInspector.getProfile.mockResolvedValue({ ...baseProfile, effectiveInferenceMemoryMb: 12288 });
+      hardwareInspector.getProfile.mockResolvedValue(cardOf(12288));
       ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['hermes4:70b'] });
       service.invalidateCache();
 
@@ -670,6 +680,30 @@ describe('AppCredentialsService', () => {
       service.invalidateCache();
       const pooled = await service.getCredentials('openclaw');
       expect(pooled.env.OPENAI_API_KEY).toBe('lemonade');
+    });
+
+    // Lemonade serves one saved ctx_size per model to every caller; Hermes was told 64000 while it
+    // had saved 32768 (24 GB) or 16384 (12 GB), and would have failed once a conversation outgrew it.
+    it('hands Hermes the window Lemonade serves its model at when that is below its handout, and warns about the floor', async () => {
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'lemonade',
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      } as never);
+      const gemma = makeLlm('gemma4-e4b-lemonade', 'Gemma-4-E4B-it-GGUF', 0, 0, 'lemonade');
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([gemma]);
+      lemonadeBackend.getBaseUrl.mockReturnValue('http://ci-hub-lemonade:13305');
+      lemonadeBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Gemma-4-E4B-it-GGUF'] });
+      lemonadeBackend.servedContextLength.mockResolvedValue(16_384);
+
+      const hermes = await service.getCredentials('hermes-agent');
+
+      expect(hermes.env.HERMES_DEFAULT_MODEL).toBe('Gemma-4-E4B-it-GGUF');
+      expect(hermes.env.HERMES_NUM_CTX).toBe('16384');
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringMatching(/hermes-agent: lemonade serves Gemma-4-E4B-it-GGUF at ctx_size 16384.*64000-token floor/),
+      );
     });
   });
 

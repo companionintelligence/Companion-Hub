@@ -4,6 +4,7 @@ import { CURATED_MODELS } from '../catalog/curated-models';
 import { VISION_ENCODER_RESERVE_MB } from '../context-length.util';
 import { appInferenceRequirements, checkModelRequirements } from '../app-inference-requirements';
 import {
+  capHandoutAtServedWindow,
   decideModelPrePull,
   describeContextHandout,
   handoutContextLength,
@@ -432,5 +433,28 @@ describe('decideModelPrePull', () => {
     // An engine that cannot say keeps the old behaviour.
     expect(decideModelPrePull({ ...base, backendType: 'lemonade', engineOffers: null })).toMatchObject({ pull: true });
     expect(decideModelPrePull({ ...base, backendType: 'lemonade', engineOffers: true })).toMatchObject({ pull: true });
+  });
+});
+
+describe('capHandoutAtServedWindow', () => {
+  const base = { appSlug: 'hermes-agent', engineId: 'Gemma-4-E4B-it-GGUF', backendType: 'lemonade' as const };
+
+  it('lowers the handout to the one window Lemonade serves the model at, and says the app may refuse under its floor', () => {
+    const { numCtx, notes } = capHandoutAtServedWindow({ ...base, numCtx: 64_000, servedContextLength: 16_384, minContextLength: 64_000 });
+    expect(numCtx).toBe(16_384);
+    expect(notes).toEqual([expect.stringContaining('serves Gemma-4-E4B-it-GGUF at ctx_size 16384, below the 64000 it would be handed')]);
+    expect(notes[0]).toContain('under its 64000-token floor');
+  });
+
+  it('says only that it lowered it when the app has no floor above the served window', () => {
+    const { numCtx, notes } = capHandoutAtServedWindow({ ...base, appSlug: 'openclaw', numCtx: 32_768, servedContextLength: 16_384 });
+    expect(numCtx).toBe(16_384);
+    expect(notes[0]).not.toContain('floor');
+  });
+
+  it('leaves the handout alone when the engine serves at least that much, or states no window', () => {
+    for (const servedContextLength of [65_536, 64_000, null, 0]) {
+      expect(capHandoutAtServedWindow({ ...base, numCtx: 64_000, servedContextLength })).toEqual({ numCtx: 64_000, notes: [] });
+    }
   });
 });

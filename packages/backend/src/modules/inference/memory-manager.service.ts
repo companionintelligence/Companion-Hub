@@ -14,12 +14,43 @@ import {
   type TrackedModel,
 } from '@ci-hub/common/types';
 import { InferenceBackendRegistry } from './backends/backend-registry';
+import type { FootprintSighting } from './context-length.util';
+import {
+  readFootprintSightings,
+  type RecordedSighting,
+  sightingHardware,
+  sightingMovedMaterially,
+  writeFootprintSightings,
+} from './footprint-sighting-record';
 import { GpuProcessSamplerService, type GpuProcessVramSample } from './gpu-process-sampler.service';
 import { ModelRegistryService } from './model-registry.service';
 import { ModelResidencyService } from './model-residency.service';
 
 const SYSTEM_RESERVED_RAM_MB = 2048;
+/** VRAM a discrete card keeps for the display and driver; the budget never lends it to a model. */
+const DISPLAY_RESERVED_VRAM_MB = 512;
 const DOCKER_OVERHEAD_PER_CONTAINER_MB = 500;
+const MIB = 1024 * 1024;
+
+/**
+ * The most memory one model may occupy on this node with nothing else loaded, by the reserves
+ * {@link MemoryManagerService.canFitModel} applies: the card less its display reserve on a discrete
+ * GPU; on unified memory or CPU, live MemAvailable less the system reserve where the host samples
+ * it, else the profile's figure as the context sizing always read it.
+ *
+ * The context window a load and a handout are sized at is chosen against this, not against the
+ * whole card. Sized against `effectiveInferenceMemoryMb` (24,560 MB on beta-1's 7900 XTX) a 27B got
+ * a 32768 window worth 24,371 MB, which the fit check — at 24,048 — then refused on an empty card.
+ */
+export function modelMemoryCeilingMb(profile: HardwareProfile): number {
+  if (modelPoolFor(profile) === 'vram') {
+    return Math.max(0, profile.gpu.vramMb - DISPLAY_RESERVED_VRAM_MB);
+  }
+  if (profile.ram.sampledAt) {
+    return Math.max(0, profile.ram.availableMb - SYSTEM_RESERVED_RAM_MB);
+  }
+  return Math.max(0, profile.effectiveInferenceMemoryMb);
+}
 
 /**
  * How long one live observation of the engines stands in for the next. The router asks for a
@@ -67,6 +98,19 @@ export class MemoryManagerService {
   private runningAppContainerCount = 0;
   private observation: { at: number; vendor: string; value: LiveObservation } | null = null;
   private observationInFlight: { vendor: string; promise: Promise<LiveObservation> } | null = null;
+  /**
+   * What each model was last measured occupying here, by {@link sightingKey}. Kept after the model
+   * leaves memory, and across Hub restarts (see `footprint-sighting-record.ts`): the fit check that
+   * needs it runs exactly when the model is NOT resident — it was evicted, it expired, the operator
+   * unloaded it, the Hub restarted since — and a later sighting of the same model replaces it.
+   */
+  private readonly sightings = new Map<string, RecordedSighting>();
+  /** The sightings file read once, on the first measurement, so what this process measures wins over it. */
+  private sightingsRestored: Promise<void> | null = null;
+  /** What the file holds, to write it only when a sighting moved (see {@link sightingMovedMaterially}). */
+  private readonly persistedSightings = new Map<string, FootprintSighting>();
+  /** Writes in the order they were asked for, so an older snapshot never lands over a newer one. */
+  private sightingsWrite: Promise<void> = Promise.resolve();
 
   constructor(
     readonly _logger: LoggerService,
@@ -98,7 +142,7 @@ export class MemoryManagerService {
     const dockerOverheadMb = this.runningAppContainerCount * DOCKER_OVERHEAD_PER_CONTAINER_MB;
     const appContainerBudgetMb = dockerOverheadMb;
 
-    const modelBudgetVramMb = Math.max(0, totalVramMb - 512); // Reserve 512 MB VRAM for display
+    const modelBudgetVramMb = Math.max(0, totalVramMb - DISPLAY_RESERVED_VRAM_MB);
     const modelBudgetRamMb = Math.max(0, totalRamMb - SYSTEM_RESERVED_RAM_MB - appContainerBudgetMb);
 
     const pool = modelPoolFor(profile);
@@ -116,8 +160,11 @@ export class MemoryManagerService {
     let pinnedRamMb = 0;
     for (const model of this.modelRegistry.getLoadedModels()) {
       if (!model.pinned) continue;
-      if (pool === 'ram') pinnedRamMb += model.memoryUsedMb;
-      else pinnedVramMb += model.memoryUsedMb;
+      // What the pin was measured holding, when it was: the registry's figure is the catalog's,
+      // twice what gemma4:e4b holds on a 10 GB card, and it alone used up the budget for pins there.
+      const usedMb = this.sightingOf(model.backend, model.backendModelId)?.footprintMb ?? model.memoryUsedMb;
+      if (pool === 'ram') pinnedRamMb += usedMb;
+      else pinnedVramMb += usedMb;
     }
 
     return {
@@ -162,20 +209,46 @@ export class MemoryManagerService {
 
   /** Check if a model can fit in the current memory budget */
   async canFitModel(profile: HardwareProfile, memoryFootprintMb: number): Promise<{ fits: boolean; availableMb: number; requiredMb: number }> {
-    const budget = await this.calculateBudget(profile);
-
-    let availableMb: number;
-    if (modelPoolFor(profile) === 'ram') {
-      availableMb = this.ramHeadroomMb(profile, budget);
-    } else {
-      availableMb = budget.modelBudgetVramMb - budget.modelUsedVramMb;
-    }
-
+    const availableMb = await this.loadHeadroomMb(profile);
     return {
       fits: availableMb >= memoryFootprintMb,
       availableMb,
       requiredMb: memoryFootprintMb,
     };
+  }
+
+  /**
+   * MB a new load may take right now — the figure {@link canFitModel} compares against. Separate so
+   * the router can size a load's window to it (stepping the window down until the model fits)
+   * before it asks whether anything must be evicted.
+   */
+  async loadHeadroomMb(profile: HardwareProfile): Promise<number> {
+    const budget = await this.calculateBudget(profile);
+    if (modelPoolFor(profile) === 'ram') {
+      return this.ramHeadroomMb(profile, budget);
+    }
+    return budget.modelBudgetVramMb - budget.modelUsedVramMb;
+  }
+
+  /**
+   * What `backendModelId` was last measured occupying on `backend` here, at what window, or null
+   * when it has never been seen resident in a way that can be attributed to it (see
+   * {@link attributeSightings}). Measures first, through the same cached observation the budget
+   * uses, so a model resident right now is always answered for.
+   */
+  async footprintSighting(profile: HardwareProfile, backend: InferenceBackendType, backendModelId: string): Promise<FootprintSighting | null> {
+    await this.observeUsage(profile);
+    return this.sightingOf(backend, backendModelId);
+  }
+
+  /** Resolves once every sighting recorded so far has been written (or failed to be). */
+  sightingsPersisted(): Promise<void> {
+    return this.sightingsWrite;
+  }
+
+  private sightingOf(backend: InferenceBackendType, backendModelId: string): FootprintSighting | null {
+    const recorded = this.sightings.get(sightingKey(backend, backendModelId));
+    return recorded ? { footprintMb: recorded.footprintMb, contextLength: recorded.contextLength, source: recorded.source } : null;
   }
 
   /** Determine which models to evict to free the required memory */
@@ -347,17 +420,26 @@ export class MemoryManagerService {
     };
   }
 
-  /** Check if pinning a new model would exceed the budget */
-  async canPinModel(profile: HardwareProfile, memoryFootprintMb: number): Promise<{ canPin: boolean; reason?: string }> {
+  /**
+   * Check if pinning a new model would exceed the budget. `model` names the one being pinned: when
+   * it has been measured here, that figure stands in for the catalog's `memoryFootprintMb`, which
+   * refused gemma4:e4b (10,813 MB) on the 10 GB card serving it in 5,550.
+   */
+  async canPinModel(
+    profile: HardwareProfile,
+    memoryFootprintMb: number,
+    model?: { backend: InferenceBackendType; backendModelId: string },
+  ): Promise<{ canPin: boolean; reason?: string }> {
     const budget = await this.calculateBudget(profile);
+    const pinnedMb = (model ? this.sightingOf(model.backend, model.backendModelId)?.footprintMb : undefined) ?? memoryFootprintMb;
 
     if (modelPoolFor(profile) === 'ram') {
-      const totalPinnedAfter = budget.pinnedRamMb + memoryFootprintMb;
+      const totalPinnedAfter = budget.pinnedRamMb + pinnedMb;
       if (totalPinnedAfter > budget.modelBudgetRamMb) {
         return { canPin: false, reason: `Pinning would use ${totalPinnedAfter} MB but only ${budget.modelBudgetRamMb} MB available for models` };
       }
     } else {
-      const totalPinnedAfter = budget.pinnedVramMb + memoryFootprintMb;
+      const totalPinnedAfter = budget.pinnedVramMb + pinnedMb;
       if (totalPinnedAfter > budget.modelBudgetVramMb) {
         return { canPin: false, reason: `Pinning would use ${totalPinnedAfter} MB VRAM but only ${budget.modelBudgetVramMb} MB available` };
       }
@@ -372,12 +454,54 @@ export class MemoryManagerService {
    * exists to remove, so each source degrades on its own (see {@link observe}).
    */
   private async observeUsage(profile: HardwareProfile): Promise<ModelMemoryUsage> {
-    const observation = await this.observe(profile.gpu.vendor);
-    return deriveModelMemoryUsage({
-      pool: modelPoolFor(profile),
+    const [observation] = await Promise.all([this.observe(profile.gpu.vendor), this.restoreSightings(profile)]);
+    const pool = modelPoolFor(profile);
+    const usage = deriveModelMemoryUsage({
+      pool,
       observation,
       tracked: this.modelRegistry.getLoadedModels(),
     });
+    let moved = false;
+    for (const { backend, backendModelId, sighting } of attributeSightings(pool, observation, usage)) {
+      const key = sightingKey(backend, backendModelId);
+      this.sightings.set(key, { ...sighting, backend, model: backendModelId, seenAt: observation.sampledAt });
+      moved ||= sightingMovedMaterially(this.persistedSightings.get(key), sighting);
+    }
+    if (moved) this.persistSightings(profile);
+    return usage;
+  }
+
+  /**
+   * Seeds the sightings from the file the last Hub process left, once, when it was measured on this
+   * hardware. Anything this process has measured already stays: it is newer. A file that cannot be
+   * read costs the restored figures, never the measurement.
+   */
+  private restoreSightings(profile: HardwareProfile): Promise<void> {
+    this.sightingsRestored ??= readFootprintSightings()
+      .then((record) => {
+        if (!record || record.hardware !== sightingHardware(profile)) return;
+        for (const entry of record.sightings) {
+          const key = sightingKey(entry.backend, entry.model);
+          this.persistedSightings.set(key, entry);
+          if (!this.sightings.has(key)) this.sightings.set(key, entry);
+        }
+      })
+      .catch((error) => {
+        this._logger.debug(`Could not read the persisted model sightings: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    return this.sightingsRestored;
+  }
+
+  /** Queues a write of every sighting held now. Never throws and never holds up the measurement that asked for it. */
+  private persistSightings(profile: HardwareProfile): void {
+    const snapshot = [...this.sightings.entries()];
+    for (const [key, sighting] of snapshot) this.persistedSightings.set(key, sighting);
+    const record = { hardware: sightingHardware(profile), sightings: snapshot.map(([, sighting]) => sighting) };
+    this.sightingsWrite = this.sightingsWrite
+      .then(() => writeFootprintSightings(record))
+      .catch((error) => {
+        this._logger.debug(`Could not persist the model sightings: ${error instanceof Error ? error.message : String(error)}`);
+      });
   }
 
   /**
@@ -530,8 +654,61 @@ function sum(values: readonly number[]): number {
   return values.reduce((total, value) => total + value, 0);
 }
 
+/** One spelling per model, so `nomic-embed-text` and the `nomic-embed-text:latest` `/api/ps` names share a sighting. */
+function sightingKey(backend: InferenceBackendType, backendModelId: string): string {
+  return `${backend}\u0000${canonicalModelId(backendModelId)}`;
+}
+
+/**
+ * What each resident model can be said to occupy, in the budget's own units, with the window it was
+ * loaded at: the {@link FootprintSighting}s the context sizing prefers to the catalog.
+ *
+ * Only what the observation can attribute to one model counts. The engine's row must be a
+ * measurement (`process` or `engine`, not the registry's bookkeeping), and the model must report
+ * its window. A process figure shared by several models is split in the proportions the engine
+ * itself reports for them. On a discrete card the model must also have been wholly on the GPU
+ * (`size_vram` equal to `size`): beta-3-glass held a 27B at a 16384 window in 6,104 MiB of an
+ * 8 GB card on 2026-09-29 only because Ollama had put three quarters of it in system RAM, and that
+ * figure says nothing about what the card must hold to serve the model there.
+ */
+function attributeSightings(
+  pool: 'vram' | 'ram',
+  observation: LiveObservation,
+  usage: ModelMemoryUsage,
+): { backend: InferenceBackendType; backendModelId: string; sighting: FootprintSighting }[] {
+  const out: { backend: InferenceBackendType; backendModelId: string; sighting: FootprintSighting }[] = [];
+  for (const entry of usage.backends) {
+    if ((entry.source !== 'process' && entry.source !== 'engine') || entry.usedMb === null) continue;
+    const models = (observation.residency.get(entry.backend)?.models ?? []).filter((model) => entry.models.includes(model.id));
+    if (models.length === 0) continue;
+    const bytesOf = (model: (typeof models)[number]) => (pool === 'vram' ? model.engineGpuBytes : model.totalBytes);
+    const knownBytes = models.map(bytesOf);
+    const totalBytes = knownBytes.every((bytes) => bytes !== null) ? knownBytes.reduce<number>((sum, bytes) => sum + (bytes ?? 0), 0) : null;
+    for (const model of models) {
+      if (model.contextLength === null || model.contextLength <= 0) continue;
+      if (pool === 'vram' && !(model.engineGpuBytes !== null && model.totalBytes !== null && model.engineGpuBytes >= model.totalBytes)) continue;
+      const bytes = bytesOf(model);
+      let footprintMb: number | null = null;
+      if (entry.source === 'engine') {
+        footprintMb = bytes === null ? null : bytes / MIB;
+      } else if (models.length === 1) {
+        footprintMb = entry.usedMb;
+      } else if (bytes !== null && totalBytes !== null && totalBytes > 0) {
+        footprintMb = (entry.usedMb * bytes) / totalBytes;
+      }
+      if (footprintMb === null || !(footprintMb > 0)) continue;
+      out.push({
+        backend: entry.backend,
+        backendModelId: model.id,
+        sighting: { footprintMb: Math.round(footprintMb), contextLength: model.contextLength, source: entry.source },
+      });
+    }
+  }
+  return out;
+}
+
 /** Where models live on this node. Mirrors the branch the budget has always taken. */
-function modelPoolFor(profile: HardwareProfile): 'vram' | 'ram' {
+export function modelPoolFor(profile: HardwareProfile): 'vram' | 'ram' {
   return profile.gpu.unifiedMemory || !profile.gpu.available ? 'ram' : 'vram';
 }
 

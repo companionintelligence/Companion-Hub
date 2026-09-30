@@ -3,6 +3,7 @@ import {
   appMinContextLength,
   estimateLoadedFootprintMb,
   LADDER_KV_MB_PER_TOKEN,
+  largestFittingWindow,
   recommendContextLength,
   VISION_ENCODER_RESERVE_MB,
 } from '../context-length.util';
@@ -246,6 +247,99 @@ describe('the vision encoder reserve', () => {
   it('ignores a reserve that is not a positive number', () => {
     for (const visionReserveMb of [0, -500, Number.NaN]) {
       expect(recommendContextLength({ effectiveInferenceMemoryMb: card, ...qwen, visionReserveMb })).toBe(32_768);
+    }
+  });
+});
+
+/**
+ * Fleet numbers, 2026-09-29. beta-1: RX 7900 XTX, 24,560 MB, of which the fit check lets a model use
+ * 24,048 (the 512 MB display reserve off). qwen3.8:27b: catalog footprint 20,275 MB and 0.0625 MB per
+ * token (smaller than its geometry's 0.0664), 17,741,872,154 bytes on disk, takes images.
+ */
+const QWEN_27B_BETA_1 = { modelFootprintMb: 20_275, weightMb: 16_920, kvMbPerToken: 0.0625, visionReserveMb: VISION_ENCODER_RESERVE_MB };
+
+describe('largestFittingWindow (the step-down before a load refuses or evicts)', () => {
+  it('finds the window a 27B fits at on an empty beta-1, where the window sized to the whole card did not fit', () => {
+    // Sized against the whole card the recommendation was 32768, charged 24,371 MB: refused at 24,048.
+    expect(recommendContextLength({ effectiveInferenceMemoryMb: 24_560, modelContextWindow: 256_000, ...QWEN_27B_BETA_1 })).toBe(32_768);
+    expect(estimateLoadedFootprintMb({ ...QWEN_27B_BETA_1, numCtx: 32_768 })).toBe(24_371);
+    // One rung down fits, and it is what both the step-down and a recommendation against the budget pick.
+    expect(estimateLoadedFootprintMb({ ...QWEN_27B_BETA_1, numCtx: 16_384 })).toBe(23_347);
+    expect(largestFittingWindow({ ...QWEN_27B_BETA_1, from: 65_536, budgetMb: 24_048 })).toBe(16_384);
+    expect(recommendContextLength({ effectiveInferenceMemoryMb: 24_048, modelContextWindow: 256_000, ...QWEN_27B_BETA_1 })).toBe(16_384);
+  });
+
+  it("tries a floor that is not a power of two first, then halves — Hermes' 64000 on a Lemonade model", () => {
+    // gemma4-e4b-lemonade: 6,724 MB, no measured KV cost (the ladder's 0.25 MB/token), takes images.
+    const gemma = { modelFootprintMb: 6_724, visionReserveMb: VISION_ENCODER_RESERVE_MB };
+    expect(largestFittingWindow({ ...gemma, from: 64_000, budgetMb: 24_048 })).toBe(64_000);
+    // A 12 GB card: 64000, 32768 and 16384 (11,844 MB) are over 11,776; 8192 fits.
+    expect(largestFittingWindow({ ...gemma, from: 64_000, budgetMb: 11_776 })).toBe(8_192);
+  });
+
+  it('answers null when not even 4096 fits, and never offers a window above where it started', () => {
+    expect(largestFittingWindow({ ...QWEN_27B_BETA_1, from: 65_536, budgetMb: 9_728 })).toBeNull();
+    expect(largestFittingWindow({ modelFootprintMb: 0, from: 8_192, budgetMb: 1_000_000 })).toBe(8_192);
+    expect(largestFittingWindow({ modelFootprintMb: 0, from: 2_048, budgetMb: 1_000_000 })).toBe(2_048);
+    expect(largestFittingWindow({ modelFootprintMb: 0, from: Number.NaN, budgetMb: 1_000_000 })).toBeNull();
+  });
+});
+
+describe("the KV cache of every slot (Ollama's OLLAMA_NUM_PARALLEL)", () => {
+  // gemma4:e4b's geometry: 24 layers that own a KV cache × 2 heads × 1024 × 2 B = 0.09375 MB per token.
+  const gemma = { modelFootprintMb: 10_813, weightMb: 9_163, kvMbPerToken: 0.09375, visionReserveMb: VISION_ENCODER_RESERVE_MB };
+
+  it('charges the window once per slot', () => {
+    expect(estimateLoadedFootprintMb({ ...gemma, numCtx: 16_384 })).toBe(10_813 + 1_536 + 1_024 + 1_024);
+    expect(estimateLoadedFootprintMb({ ...gemma, numCtx: 16_384, kvSlots: 4 })).toBe(10_813 + 6_144 + 1_024 + 1_024);
+  });
+
+  it('sizes the ladder per slot too', () => {
+    const ladder = { effectiveInferenceMemoryMb: 24_576, modelFootprintMb: 0, modelContextWindow: 262_144 };
+    expect(recommendContextLength(ladder)).toBe(65_536);
+    // 24,576 MB over four slots is 6,144 each: the 16k rung.
+    expect(recommendContextLength({ ...ladder, kvSlots: 4 })).toBe(16_384);
+  });
+
+  it('treats a slot count that is not a positive integer as one', () => {
+    for (const kvSlots of [0, -2, 2.5, Number.NaN, null]) {
+      expect(estimateLoadedFootprintMb({ ...gemma, numCtx: 16_384, kvSlots })).toBe(estimateLoadedFootprintMb({ ...gemma, numCtx: 16_384 }));
+    }
+  });
+});
+
+describe('a sighting of the model on this node', () => {
+  // beta-red, RTX 3080 (10,240 MB, 9,728 for models), 2026-09-29: gemma4:e4b at a 16384 window on four
+  // slots, 5,550 MiB by nvidia-smi (3,209 by /api/ps), where the catalog says 10,813 and the file 9,163.
+  const gemma = { modelFootprintMb: 10_813, weightMb: 9_163, kvMbPerToken: 0.09375, kvSlots: 4, visionReserveMb: VISION_ENCODER_RESERVE_MB };
+  const seen = { footprintMb: 5_550, contextLength: 16_384, source: 'process' as const };
+
+  it('replaces the catalog base, so the model fits the 10 GB card it is running on', () => {
+    expect(estimateLoadedFootprintMb({ ...gemma, numCtx: 16_384 })).toBe(19_005);
+    expect(estimateLoadedFootprintMb({ ...gemma, numCtx: 16_384, sighting: seen })).toBe(5_550 + 1_024);
+    expect(recommendContextLength({ effectiveInferenceMemoryMb: 9_728, modelContextWindow: 128_000, ...gemma })).toBe(4_096);
+    expect(recommendContextLength({ effectiveInferenceMemoryMb: 9_728, modelContextWindow: 128_000, ...gemma, sighting: seen })).toBe(16_384);
+  });
+
+  it('adds only the KV cache above the sighted window, and never charges less than was seen', () => {
+    expect(estimateLoadedFootprintMb({ ...gemma, numCtx: 32_768, sighting: seen })).toBe(5_550 + 16_384 * 0.375 + 1_024);
+    // The per-token cost is an over-estimate for gemma4's sliding-window layers; subtracting it below
+    // the sighting would admit a load on memory the model really holds.
+    expect(estimateLoadedFootprintMb({ ...gemma, numCtx: 4_096, sighting: seen })).toBe(5_550 + 1_024);
+  });
+
+  it("keeps the safety margin over the engine's own figure, which leaves out the runtime's buffers", () => {
+    const engine = { footprintMb: 3_209, contextLength: 16_384, source: 'engine' as const };
+    expect(estimateLoadedFootprintMb({ ...gemma, numCtx: 16_384, sighting: engine })).toBe(3_209 + 1_024 + 1_024);
+  });
+
+  it('ignores a sighting with no size or window', () => {
+    for (const sighting of [
+      { ...seen, footprintMb: 0 },
+      { ...seen, contextLength: 0 },
+      { ...seen, footprintMb: Number.NaN },
+    ]) {
+      expect(estimateLoadedFootprintMb({ ...gemma, numCtx: 16_384, sighting })).toBe(19_005);
     }
   });
 });

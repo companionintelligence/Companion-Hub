@@ -399,7 +399,8 @@ export class OllamaBackend implements InferenceBackend {
       } else {
         // `num_ctx` holds only until a request names a different one — or names none, which reloads
         // at Ollama's own default (measured 2026-09-29: an 8192 load went to 32768 on the next `/v1`
-        // call). It is the window the Hub hands its apps, so their native requests keep it.
+        // call). So the router sends the window of the request the load is for — none at all for a
+        // `/v1` one — and its own handout window only for an operator's pin or load.
         const body = { model: modelId, prompt: '', keep_alive: -1, ...(window ? { options: { num_ctx: window } } : {}) };
         await axios.post(`${url}/api/generate`, body, { timeout: 120000 });
       }

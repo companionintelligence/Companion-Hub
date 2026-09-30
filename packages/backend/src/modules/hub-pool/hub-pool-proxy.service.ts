@@ -4119,7 +4119,10 @@ export class PoolProxyService {
       // The signal goes with it, because arbitration queues: a request that hangs up while it waits
       // behind another model's cold load must not go on to evict and load for nobody.
       if (GENERATION_PATHS.has(path) && this.router && !clientClosed?.aborted) {
-        await this.router.prepareTrackedModel(model, { signal: clientClosed }).catch((error: unknown) => {
+        // With the window this request will run at, so a model loaded for it is loaded at that
+        // window and the request itself does not reload it (none on `/v1`: Ollama's default).
+        const numCtx = requestedWindow(path, body);
+        await this.router.prepareTrackedModel(model, { numCtx, signal: clientClosed }).catch((error: unknown) => {
           this.logger.debug(
             `[PoolProxy] residency arbitration for ${model} failed; forwarding anyway: ${error instanceof Error ? error.message : String(error)}`,
           );

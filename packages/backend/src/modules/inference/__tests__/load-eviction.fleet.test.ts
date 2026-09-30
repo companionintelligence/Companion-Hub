@@ -294,7 +294,7 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
       w.pulled('qwen3-coder-30b');
       w.poolLoad.acquire(LOCAL_CANDIDATE_KEY, HERMES_TURN);
 
-      const outcome = await w.router.loadTrackedModel('qwen3-coder-30b', { scope: 'request' });
+      const outcome = await w.router.loadTrackedModel('qwen3-coder-30b', { origin: 'request', numCtx: null });
 
       expect(outcome).toEqual({ loaded: false, reason: expect.stringContaining('gemma4:e4b is serving a request') });
       expect(ollama.unloads).toEqual([]);
@@ -331,7 +331,7 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
       w.registry.trackModel('gemma4-e4b', 'loaded');
       w.pulled('qwen3-8-27b');
 
-      const outcome = await w.router.loadTrackedModel('qwen3-8-27b', { scope: 'request' });
+      const outcome = await w.router.loadTrackedModel('qwen3-8-27b', { origin: 'request', numCtx: null });
 
       expect(outcome).toEqual({ loaded: false, reason: expect.stringContaining('would free 6640 MB') });
       expect(ollama.unloads).toEqual([]);
@@ -352,7 +352,7 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
       const memoryBatch: LocalModelWork = { backend: 'ollama', model: 'nomic-embed-text:latest' };
       w.poolLoad.acquire(LOCAL_CANDIDATE_KEY, undefined, memoryBatch);
 
-      const outcome = await w.router.loadTrackedModel('qwen3-5-4b', { scope: 'request' });
+      const outcome = await w.router.loadTrackedModel('qwen3-5-4b', { origin: 'request', numCtx: null });
 
       expect(outcome).toEqual({ loaded: false, reason: expect.stringContaining('gemma4:e4b, nomic-embed-text:latest are serving a request') });
       expect(ollama.unloads).toEqual([]);
@@ -403,7 +403,7 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
       w.registry.trackModel('gemma4-e4b', 'loaded');
       w.pulled('llama3-1-8b');
 
-      await expect(w.router.loadTrackedModel('llama3-1-8b', { scope: 'request' })).resolves.toEqual({ loaded: true });
+      await expect(w.router.loadTrackedModel('llama3-1-8b', { origin: 'request', numCtx: null })).resolves.toEqual({ loaded: true });
 
       expect(ollama.unloads).toEqual(['gemma4:e4b']);
       expect(ollama.loads).toEqual(['llama3.1:8b']);
@@ -416,10 +416,32 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
       const w = world(BETA_1, ollama, { 'qwen3-coder-30b': 19_000 });
       w.pulled('qwen3-coder-30b');
 
-      await expect(w.router.loadTrackedModel('qwen3-coder-30b', { scope: 'operator' })).resolves.toEqual({ loaded: true });
+      await expect(w.router.loadTrackedModel('qwen3-coder-30b', { origin: 'operator' })).resolves.toEqual({ loaded: true });
 
       expect(ollama.unloads).toEqual(['gemma4:e4b']);
       expect(ollama.loads).toEqual(['qwen3-coder:30b']);
+    });
+
+    // Merging #1684 with #1686: the pin's load once planned its window as an operator's and evicted as
+    // an app's request, so a REST pin could no longer clear what a REST load could. One origin decides both.
+    it("pins by the same rule: the REST pin evicts an idle model an app loaded, an agent key's pin does not", async () => {
+      ollama.hold('gemma4:e4b', 6_640);
+      const agent = world(BETA_1, ollama, { 'qwen3-coder-30b': 19_000 });
+      agent.pulled('qwen3-coder-30b');
+
+      await expect(agent.router.pinTrackedModel('qwen3-coder-30b', { origin: 'agent' })).resolves.toEqual({
+        pinned: false,
+        reason: expect.stringContaining('unloading every idle model the Hub loaded itself would free 0 MB'),
+      });
+      expect(ollama.unloads).toEqual([]);
+
+      const operator = world(BETA_1, ollama, { 'qwen3-coder-30b': 19_000 });
+      operator.pulled('qwen3-coder-30b');
+
+      await expect(operator.router.pinTrackedModel('qwen3-coder-30b', { origin: 'operator' })).resolves.toEqual({ pinned: true });
+      expect(ollama.unloads).toEqual(['gemma4:e4b']);
+      expect(ollama.loads).toEqual(['qwen3-coder:30b']);
+      expect(operator.registry.getTrackedModel('qwen3-coder-30b')?.pinned).toBe(true);
     });
 
     it('never evicts one that is generating, and says which', async () => {
@@ -428,7 +450,7 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
       w.pulled('qwen3-coder-30b');
       w.poolLoad.acquire(LOCAL_CANDIDATE_KEY, HERMES_TURN);
 
-      const outcome = await w.router.loadTrackedModel('qwen3-coder-30b', { scope: 'operator' });
+      const outcome = await w.router.loadTrackedModel('qwen3-coder-30b', { origin: 'operator' });
 
       expect(outcome).toEqual({
         loaded: false,
@@ -448,7 +470,7 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
       const gemma = ollama.resident.get('gemma4:e4b');
       if (gemma) gemma.refs = 0;
 
-      await expect(w.router.loadTrackedModel('qwen3-coder-30b', { scope: 'operator' })).resolves.toEqual({ loaded: true });
+      await expect(w.router.loadTrackedModel('qwen3-coder-30b', { origin: 'operator' })).resolves.toEqual({ loaded: true });
       expect(ollama.unloads).toEqual(['gemma4:e4b']);
     });
 
@@ -459,7 +481,7 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
       const w = world(BETA_RED, ollama, { 'llama3-1-8b': 8_592 });
       w.pulled('llama3-1-8b');
 
-      await expect(w.router.loadTrackedModel('llama3-1-8b', { scope: 'operator' })).resolves.toEqual({ loaded: true });
+      await expect(w.router.loadTrackedModel('llama3-1-8b', { origin: 'operator' })).resolves.toEqual({ loaded: true });
 
       expect(ollama.unloads).toEqual(['gemma4:e4b']);
       expect(ollama.loads).toEqual(['llama3.1:8b']);
@@ -477,7 +499,7 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
 
       // 24,048 − 6,948 = 17,100 free; 23,900 needs 6,800 more. gemma4 frees 6,640; only the pinned
       // embedder's 308 would close the gap.
-      const outcome = await w.router.loadTrackedModel('qwen3-coder-30b', { scope: 'operator' });
+      const outcome = await w.router.loadTrackedModel('qwen3-coder-30b', { origin: 'operator' });
 
       expect(outcome).toEqual({ loaded: false, reason: expect.stringContaining('would free 6640 MB') });
       expect(ollama.unloads).toEqual([]);
@@ -491,7 +513,7 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
       const w = world(BETA_RED, ollama, { 'qwen3-5-9b': 9_800 });
       w.pulled('qwen3-5-9b');
 
-      const outcome = await w.router.loadTrackedModel('qwen3-5-9b', { scope: 'operator' });
+      const outcome = await w.router.loadTrackedModel('qwen3-5-9b', { origin: 'operator' });
 
       expect(outcome).toEqual({ loaded: false, reason: expect.stringContaining('would free 5550 MB') });
       expect(ollama.unloads).toEqual([]);
@@ -503,7 +525,7 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
       const w = world(BETA_RED, ollama, { 'qwen3-5-9b': 9_000 });
       w.pulled('qwen3-5-9b');
 
-      await expect(w.router.loadTrackedModel('qwen3-5-9b', { scope: 'operator' })).resolves.toEqual({ loaded: true });
+      await expect(w.router.loadTrackedModel('qwen3-5-9b', { origin: 'operator' })).resolves.toEqual({ loaded: true });
       expect(ollama.unloads).toEqual(['gemma4:e4b']);
     });
 
@@ -512,7 +534,7 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
       ollama.hold('gemma4:e4b', 6_640);
       const w = world(BETA_1, ollama, { 'qwen3-coder-30b': 19_000 });
 
-      const outcome = await w.router.loadTrackedModel('qwen3-coder-30b', { scope: 'operator' });
+      const outcome = await w.router.loadTrackedModel('qwen3-coder-30b', { origin: 'operator' });
 
       expect(outcome).toEqual({ loaded: false, reason: 'qwen3-coder-30b is not downloaded on this node; pull it first' });
       expect(ollama.unloads).toEqual([]);
@@ -530,7 +552,7 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
       const w = world(BETA_1, ollama, { 'gpt-oss-20b-lemonade': 14_000 }, { lemonade });
       w.pulled('gpt-oss-20b-lemonade');
 
-      const outcome = await w.router.loadTrackedModel('gpt-oss-20b-lemonade', { scope: 'operator' });
+      const outcome = await w.router.loadTrackedModel('gpt-oss-20b-lemonade', { origin: 'operator' });
 
       expect(outcome).toEqual({ loaded: false, reason: expect.stringContaining('gpt-oss:20b may still be finishing work the Hub cannot see') });
       expect(ollama.unloads).toEqual(['gpt-oss:20b']);
@@ -545,7 +567,7 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
       const w = world(BETA_1, ollama, { 'qwen3-coder-30b': 19_000 });
       w.pulled('qwen3-coder-30b');
 
-      const pending = w.router.loadTrackedModel('qwen3-coder-30b', { scope: 'operator' });
+      const pending = w.router.loadTrackedModel('qwen3-coder-30b', { origin: 'operator' });
       // The Hub has let the load through; Ollama holds it until the direct caller's request ends.
       await vi.waitFor(() => expect(ollama.waitingForRoom).toBe(true));
       expect(ollama.loads).toEqual([]);
@@ -567,7 +589,7 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
       const w = world(await hardware.getProfile(), ollama, { 'qwen3-6-35b-lemonade': 30_000 }, { lemonade, hardware });
       w.pulled('qwen3-6-35b-lemonade');
 
-      await expect(w.router.loadTrackedModel('qwen3-6-35b-lemonade', { scope: 'operator' })).resolves.toEqual({ loaded: true });
+      await expect(w.router.loadTrackedModel('qwen3-6-35b-lemonade', { origin: 'operator' })).resolves.toEqual({ loaded: true });
 
       expect(ollama.unloads).toEqual(['qwen3.8:27b']);
       expect(lemonade.loads).toEqual(['Qwen3.6-35B-A3B-GGUF']);

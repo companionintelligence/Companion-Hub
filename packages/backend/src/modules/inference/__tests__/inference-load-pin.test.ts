@@ -3,7 +3,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { Test } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import type { CuratedModel, HardwareProfile, TrackedModel } from '@ci-hub/common/types';
+import type { CuratedModel, HardwareProfile } from '@ci-hub/common/types';
 
 vi.mock('../../app-lifecycle/app-lifecycle.service', () => ({
   AppLifecycleService: class AppLifecycleService {},
@@ -94,7 +94,7 @@ describe('InferenceController — load and pin', () => {
     router.loadTrackedModel.mockResolvedValue({ loaded: true });
 
     await expect(controller.loadModel({ modelId: 'llama3-1-8b' })).resolves.toEqual({ success: true, message: 'Model llama3-1-8b loaded' });
-    expect(router.loadTrackedModel).toHaveBeenCalledWith('llama3-1-8b', { scope: 'operator' });
+    expect(router.loadTrackedModel).toHaveBeenCalledWith('llama3-1-8b', { origin: 'operator' });
   });
 
   it("answers a refused load with the router's reason", async () => {
@@ -106,17 +106,19 @@ describe('InferenceController — load and pin', () => {
     });
   });
 
-  it('pins through the same load, with the operator rule, and pins only what loaded', async () => {
-    modelRegistry.getTrackedModel.mockReturnValue({ catalogId: 'llama3-1-8b', state: 'pulled' } as TrackedModel);
-    router.loadTrackedModel.mockResolvedValue({ loaded: true });
+  // The router's pin loads first, through the same load path; its origin is what lets a REST pin clear
+  // an idle model an app loaded (the router's and the fleet tests cover what it then does).
+  it("pins through the router's pin, with the operator rule, and answers a refusal with its reason", async () => {
+    router.pinTrackedModel.mockResolvedValue({ pinned: true });
 
-    await expect(controller.pinModel({ modelId: 'llama3-1-8b' })).resolves.toMatchObject({ success: true });
-    expect(router.loadTrackedModel).toHaveBeenCalledWith('llama3-1-8b', { scope: 'operator' });
-    expect(modelRegistry.pinModel).toHaveBeenCalledWith('llama3-1-8b');
+    await expect(controller.pinModel({ modelId: 'llama3-1-8b' })).resolves.toEqual({ success: true, message: 'Model llama3-1-8b pinned' });
+    expect(router.pinTrackedModel).toHaveBeenCalledWith('llama3-1-8b', { origin: 'operator' });
 
-    router.loadTrackedModel.mockResolvedValue({ loaded: false, reason: 'gemma4:e4b is serving a request and will not be unloaded' });
-    modelRegistry.pinModel.mockClear();
-    await expect(controller.pinModel({ modelId: 'llama3-1-8b' })).resolves.toMatchObject({ success: false });
+    router.pinTrackedModel.mockResolvedValue({ pinned: false, reason: 'gemma4:e4b is serving a request and will not be unloaded' });
+    await expect(controller.pinModel({ modelId: 'llama3-1-8b' })).resolves.toEqual({
+      success: false,
+      message: 'gemma4:e4b is serving a request and will not be unloaded',
+    });
     expect(modelRegistry.pinModel).not.toHaveBeenCalled();
   });
 });
