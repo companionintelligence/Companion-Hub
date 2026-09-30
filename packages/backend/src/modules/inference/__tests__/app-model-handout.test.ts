@@ -422,6 +422,18 @@ describe('decideModelPrePull', () => {
       expect(decideModelPrePull({ ...base, backendType })).toMatchObject({ pull: false, reason: `${backendType} has no Hub-managed pull registry` });
     }
   });
+
+  // Lemonade 10.2.0 lacks 13 of the catalog's Lemonade rows and answers a pull of one with a
+  // misleading demand for the `user.` namespace.
+  it('never pulls a model the engine says its server does not list', () => {
+    expect(decideModelPrePull({ ...base, backendType: 'lemonade', engineOffers: false })).toMatchObject({
+      pull: false,
+      reason: 'the local lemonade server does not list qwen3-coder:30b in its model registry',
+    });
+    // An engine that cannot say keeps the old behaviour.
+    expect(decideModelPrePull({ ...base, backendType: 'lemonade', engineOffers: null })).toMatchObject({ pull: true });
+    expect(decideModelPrePull({ ...base, backendType: 'lemonade', engineOffers: true })).toMatchObject({ pull: true });
+  });
 });
 
 describe('capHandoutAtServedWindow', () => {

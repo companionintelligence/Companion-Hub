@@ -17,8 +17,8 @@ describe('curated-models (TOON catalog)', () => {
     expect(llms.filter((m) => m.backend === 'vllm').length).toBe(8);
     expect(llms.filter((m) => m.backend === 'omlx').length).toBe(64);
     expect(llms.length).toBe(218);
-    // 4 Ollama embeddings + 1 Lemonade embedding (nomic-embed-text-v1-5-lemonade).
-    expect(CURATED_MODELS.filter((m) => m.modality === 'embedding').length).toBe(5);
+    // 4 Ollama embeddings + 2 Lemonade embeddings (v1.5, recommended; v1, kept for existing indexes).
+    expect(CURATED_MODELS.filter((m) => m.modality === 'embedding').length).toBe(6);
     expect(CURATED_MODELS.filter((m) => m.modality === 'tts' || m.modality === 'stt').length).toBe(3);
     expect(new Set(CURATED_MODELS.map((m) => m.id)).size).toBe(CURATED_MODELS.length);
   });
@@ -303,10 +303,24 @@ describe('curated-models (TOON catalog)', () => {
   // backend switch. Lemonade's registry ships only v1 (cosine ~0.7 against v1.5: a different space).
   it('recommends nomic v1.5 on Lemonade, and the Hub knows how to install it there', () => {
     const lemonadeEmbedders = CURATED_MODELS.filter((m) => m.backend === 'lemonade' && m.modality === 'embedding');
-    expect(lemonadeEmbedders.map((m) => m.backendModelId)).toEqual(['nomic-embed-text-v1.5-GGUF']);
+    const recommended = lemonadeEmbedders.filter((m) => Object.values(m.tiers).includes('recommended'));
+    expect(recommended.map((m) => m.backendModelId)).toEqual(['nomic-embed-text-v1.5-GGUF']);
     expect(LEMONADE_REGISTRATIONS['nomic-embed-text-v1.5-GGUF']).toMatchObject({ checkpoint: expect.stringContaining('nomic-embed-text-v1.5') });
-    for (const model of lemonadeEmbedders) {
-      expect(model.backendModelId).not.toMatch(/nomic-embed-text-v1-GGUF/);
-    }
+  });
+
+  // The v1 row was the Lemonade default until 2026-09-29. A host that embedded with it keeps it (see
+  // pickEmbeddingModel), so the row must resolve — and must never be recommended to anyone new.
+  it('keeps the v1 Lemonade embedder resolvable but never recommends it', () => {
+    const v1 = byId.get('nomic-embed-text-v1-lemonade');
+    expect(v1?.backendModelId).toBe('nomic-embed-text-v1-GGUF');
+    expect(v1?.modality).toBe('embedding');
+    expect(Object.values(v1?.tiers ?? {})).not.toContain('recommended');
+  });
+
+  // Lemonade looks names up case-sensitively; both 10.2.0 and 2026.39.1 key the Whisper models in
+  // title case, so the lowercase ids these rows used to carry could never be served.
+  it("names the Whisper rows by Lemonade's registry keys", () => {
+    expect(byId.get('whisper-base')?.backendModelId).toBe('Whisper-Base');
+    expect(byId.get('whisper-large-v3-turbo')?.backendModelId).toBe('Whisper-Large-v3-Turbo');
   });
 });

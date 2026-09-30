@@ -8,8 +8,10 @@ import { LemonadeIcon } from './icons';
 
 const LEMONADE_DOCS_URL = 'https://github.com/lemonade-sdk/lemonade';
 const LEMONADE_DEFAULT_PORT = '13305';
+/** Where marketplace apps live (`HUB_APP_POOL_CIDR`); they call Lemonade directly when pool routing is off. */
+const APP_SUBNET_CIDR = '10.128.0.0/9';
 
-/** The port the Hub probes, so the firewall command opens the right one. */
+/** The port the Hub probes, so every command names the right one. */
 function lemonadePort(endpointUrl: string): string {
   try {
     return new URL(endpointUrl).port || LEMONADE_DEFAULT_PORT;
@@ -19,23 +21,96 @@ function lemonadePort(endpointUrl: string): string {
 }
 
 /**
- * Lemonade's Linux package runs `lemond` as a system service listening on localhost, and the Hub
- * probes it from inside Docker, so a running server still reads as "not detected". A refused or
- * timed-out probe looks the same whether Lemonade is stopped or only listening on localhost, so this
- * shows on every not-detected state rather than guessing from the error.
+ * `lemonade` is an HTTP client for the running server and defaults to port 13305, so on any other
+ * port it would talk to nothing unless told.
  */
-const LemonadeDockerAccessHint = ({ endpointUrl }: { endpointUrl: string }) => {
+function lemonadeBindCommand(port: string): string {
+  const prefix = port === LEMONADE_DEFAULT_PORT ? '' : `LEMONADE_PORT=${port} `;
+  return `${prefix}lemonade config set host=0.0.0.0`;
+}
+
+/**
+ * Gives Lemonade an API key through a systemd drop-in and restarts it. The unit is `lemond` on
+ * Lemonade 11 and later and `lemonade-server` on the 10.x packages every fleet node runs, so the
+ * script asks systemd which one this host has instead of naming one that may not exist. With no key
+ * in the Hub yet it makes one and prints the line for the Hub's .env; otherwise it uses the Hub's.
+ *
+ * The key goes in a root-only file that the drop-in names with `EnvironmentFile=`, not in the
+ * drop-in as `Environment=`. There are two reasons. First, a drop-in is world-readable, and so is a
+ * unit's `Environment=` through `systemctl show`. Second, both packages read their own
+ * `EnvironmentFile=` (`/etc/lemonade/conf.d/*.conf` on 10.x, `/etc/default/lemond` on 11+), and
+ * systemd lets any environment file override `Environment=`. A key an operator had already set there
+ * silently won, so Lemonade rejected the key this script printed. A drop-in's environment file is read
+ * after the unit's own, so this key wins.
+ */
+function lemonadeApiKeyScript(apiKeyConfigured: boolean): string {
+  return [
+    apiKeyConfigured ? "KEY='<LEMONADE_API_KEY from the Hub .env>'" : 'KEY=$(openssl rand -hex 32)',
+    'UNIT=$(systemctl cat lemond >/dev/null 2>&1 && echo lemond || echo lemonade-server)',
+    'DIR=/etc/systemd/system/$UNIT.service.d',
+    'sudo mkdir -p $DIR && sudo install -m 600 /dev/null $DIR/api-key.env',
+    `printf 'LEMONADE_API_KEY=%s\\n' "$KEY" | sudo tee $DIR/api-key.env >/dev/null`,
+    `printf '[Service]\\nEnvironmentFile=%s/api-key.env\\n' "$DIR" | sudo tee $DIR/api-key.conf >/dev/null`,
+    'sudo systemctl daemon-reload && sudo systemctl restart $UNIT',
+    ...(apiKeyConfigured ? [] : ['echo "Add to the Hub .env, then recreate the Hub: LEMONADE_API_KEY=$KEY"']),
+  ].join('\n');
+}
+
+/** For a Hub too old to send its own rules: the Hub's networks and the app subnet, on ufw. */
+function fallbackFirewallCommands(port: string): string[] {
+  return [`sudo ufw allow from 172.16.0.0/12 to any port ${port} proto tcp`, `sudo ufw allow from ${APP_SUBNET_CIDR} to any port ${port} proto tcp`];
+}
+
+const codeClass = 'block w-full max-w-full overflow-x-auto whitespace-pre rounded bg-warning/10 px-2 py-1.5 text-xs text-warning';
+
+/**
+ * Lemonade's Linux package runs as a system service listening on localhost, and the Hub probes it
+ * from inside Docker, so a running server still reads as "not detected". The status says how the
+ * probe failed and what the host runs, and the steps follow from that: a refused key needs the key
+ * fixed, not a wider bind; a filtered or unresolved probe gets the server's own explanation (shown
+ * above this); macOS and Windows reach host services through Docker Desktop and get no Linux steps.
+ * Only a refused or unclassified probe on Linux — the same whether Lemonade is stopped or listening
+ * on localhost — gets the rebind, and always with an API key: binding 0.0.0.0 alone opens a server
+ * with no authentication to every device that can reach the host.
+ */
+const LemonadeDockerAccessHint = ({ status }: { status: LemonadeStatus }) => {
   const { t } = useTranslation();
-  const port = lemonadePort(endpointUrl);
-  const codeClass = 'block w-full max-w-full overflow-x-auto whitespace-pre-wrap break-all rounded bg-warning/10 px-2 py-1.5 text-xs text-warning';
+  const port = lemonadePort(status.endpointUrl);
+  const mode = status.failureMode;
+  const linuxHost = status.hostPlatform !== 'darwin' && status.hostPlatform !== 'win32';
+  const firewallCommands = status.firewallCommands ?? fallbackFirewallCommands(port);
+  const firewallStep =
+    linuxHost && firewallCommands.length > 0 ? (
+      <>
+        <div className="text-xs text-warning">{t('ONBOARDING_LEMONADE_FIREWALL_DESC', { port, appSubnet: APP_SUBNET_CIDR })}</div>
+        <code className={codeClass} data-testid="lemonade-firewall-commands">
+          {firewallCommands.join('\n')}
+        </code>
+      </>
+    ) : null;
+
+  if (mode === 'auth' || mode === 'dns') return null;
+  if (mode === 'filtered') {
+    return firewallStep ? (
+      <div className="mb-3 min-w-0 space-y-2" data-testid="lemonade-docker-access-hint">
+        {firewallStep}
+      </div>
+    ) : null;
+  }
+  if (!linuxHost) return null;
 
   return (
     <div className="mb-3 min-w-0 space-y-2" data-testid="lemonade-docker-access-hint">
       <div className="text-xs font-medium text-warning">{t('ONBOARDING_LEMONADE_DOCKER_ACCESS_TITLE')}</div>
       <div className="text-xs text-warning">{t('ONBOARDING_LEMONADE_DOCKER_ACCESS_DESC')}</div>
-      <code className={codeClass}>{'lemonade config set host=0.0.0.0\nsudo systemctl restart lemond'}</code>
-      <div className="text-xs text-warning">{t('ONBOARDING_LEMONADE_FIREWALL_DESC', { port })}</div>
-      <code className={codeClass}>{`sudo ufw allow from 172.16.0.0/12 to any port ${port} proto tcp`}</code>
+      <code className={codeClass}>{lemonadeBindCommand(port)}</code>
+      <div className="text-xs text-warning" data-testid="lemonade-api-key-guidance">
+        {t(status.apiKeyConfigured ? 'ONBOARDING_LEMONADE_API_KEY_EXISTING_DESC' : 'ONBOARDING_LEMONADE_API_KEY_DESC')}
+      </div>
+      <code className={codeClass} data-testid="lemonade-api-key-script">
+        {lemonadeApiKeyScript(Boolean(status.apiKeyConfigured))}
+      </code>
+      {firewallStep}
     </div>
   );
 };
@@ -123,7 +198,7 @@ export const LemonadeSetupCard = ({ status, checking, onRecheck }: LemonadeSetup
                 </div>
               </div>
             )}
-            <LemonadeDockerAccessHint endpointUrl={status.endpointUrl} />
+            <LemonadeDockerAccessHint status={status} />
             <div className="flex flex-wrap gap-2">
               <Button size="sm" variant="ghost" onClick={() => openExternal(LEMONADE_DOCS_URL)}>
                 {t('ONBOARDING_LEMONADE_DOCS')}

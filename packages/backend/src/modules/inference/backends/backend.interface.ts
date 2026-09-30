@@ -82,6 +82,21 @@ export interface InferenceBackend {
   weightsOnDiskMb?(modelId: string): Promise<number | null>;
 
   /**
+   * Whether the engine's server can supply a catalog `backendModelId` — has it, or can download it —
+   * from the registry listing its last health probe read. Optional: only an engine whose server lists
+   * its whole registry implements it (Lemonade's `GET /v1/models?show_all=true`). `null` when it
+   * cannot say, which callers treat as offered: the behaviour before this existed.
+   */
+  offersModel?(modelId: string): boolean | null;
+
+  /**
+   * The name the engine's server knows a catalog `backendModelId` by, when that can differ from the
+   * catalog's spelling (Lemonade 10.x files Hub-registered models as `user.<id>`). Optional; without
+   * it the catalog id is the engine's id.
+   */
+  engineModelId?(modelId: string): string;
+
+  /**
    * The engine's own statement of slots and per-slot context, from the LAST health probe — never a
    * request of its own, because the pool proxy reads it while ranking every request. Optional:
    * only an engine that exposes the figures implements it (llama-server's `/props`, Lemonade's

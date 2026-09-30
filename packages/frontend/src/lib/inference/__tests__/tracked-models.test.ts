@@ -39,4 +39,42 @@ describe('ensurePullStarted', () => {
 
     expect(mockStartInferenceModelPull).toHaveBeenCalledWith('phi-4-mini', true);
   });
+
+  it("returns the Hub's reason for a refused pull", async () => {
+    vi.resetModules();
+    mockStartInferenceModelPull.mockResolvedValue({
+      status: 'error',
+      reason: 'lemonade on this node does not list Qwen3.8-27B-GGUF in its model registry, so it cannot download it.',
+    });
+    const { ensurePullStarted } = await import('@/lib/inference/tracked-models');
+
+    await expect(ensurePullStarted('qwen3-8-27b-lemonade', false)).resolves.toMatch(/does not list Qwen3\.8-27B-GGUF/);
+  });
+});
+
+describe('ensurePullsStarted', () => {
+  // The refusal toast used to read "Failed to pull X: [object Object]" for an HTTP error.
+  it('reports the reason from an HTTP error body, not [object Object]', async () => {
+    vi.resetModules();
+    const { unwrapSdk } = await import('@/lib/sdk-unwrap');
+    mockStartInferenceModelPull.mockImplementation(() =>
+      unwrapSdk(Promise.resolve({ error: { statusCode: 409, message: 'Model requires 20480 MB disk but only 1024 MB is available.' } })),
+    );
+    const { ensurePullsStarted } = await import('@/lib/inference/tracked-models');
+
+    await expect(ensurePullsStarted(['gemma4-31b'])).resolves.toEqual({
+      'gemma4-31b': 'Model requires 20480 MB disk but only 1024 MB is available.',
+    });
+  });
+
+  it('translates an i18n key the response interceptor made of an HTTP error', async () => {
+    vi.resetModules();
+    const { TranslatableError } = await import('@/types/error.types');
+    mockStartInferenceModelPull.mockRejectedValue(
+      new TranslatableError('INTERNAL_SERVER_ERROR', {}, { status: 500, url: '/api/inference/models/pull/start' }),
+    );
+    const { ensurePullsStarted } = await import('@/lib/inference/tracked-models');
+
+    await expect(ensurePullsStarted(['gemma4-31b'])).resolves.toEqual({ 'gemma4-31b': 'Internal server error' });
+  });
 });

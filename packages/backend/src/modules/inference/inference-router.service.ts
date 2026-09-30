@@ -10,8 +10,10 @@ import type {
   InferenceBackendType,
   InferenceModelInfo,
   InferenceStatus,
+  TrackedModel,
 } from '@ci-hub/common/types';
 import { clampContextCap } from '@/common/helpers/inference-context-cap';
+import { sameModelId } from '@/common/helpers/hub-pool';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { appInferenceRequirements, checkModelRequirements } from './app-inference-requirements';
 import { handoutContextLength, visionReserveMbFor } from './app-model-handout';
@@ -19,19 +21,75 @@ import { kvSequencesFor, probeContextCost } from './context-cost.util';
 import { estimateLoadedFootprintMb, FLOOR_CONTEXT, largestFittingWindow, type ModelMemoryInput } from './context-length.util';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { ModelRegistryService } from './model-registry.service';
-import { type EvictionCandidate, MemoryManagerService, modelMemoryCeilingMb, modelPoolFor } from './memory-manager.service';
+import {
+  type EvictionCandidate,
+  type EvictionPlan,
+  type EvictionScope,
+  MemoryManagerService,
+  modelMemoryCeilingMb,
+  modelPoolFor,
+} from './memory-manager.service';
 import { CloudFallbackService, speaksOpenAiCompletions } from './cloud-fallback.service';
 import { ModelPullerService } from './model-puller.service';
 import { InferenceBackendRegistry } from './backends/backend-registry';
 import type { InferenceBackend } from './backends/backend.interface';
-import { resolveInstalledCatalogIds } from './model-availability.util';
+import { isCatalogModelInstalled, isServedModelForCatalog, resolveInstalledCatalogIds } from './model-availability.util';
 import { InferenceRouteError, modelNotFound } from './inference-error-reply';
 import { firstByteBudgetMs, forwardBudgetMs } from '@/modules/hub-pool/hub-pool-budget';
+import { HubPoolLoadService } from '@/modules/hub-pool/hub-pool-load.service';
 import { BUDGET_SETTINGS_HINT, postStreamUnderHeaderDeadline } from './upstream-stream';
 
 /** How long {@link InferenceRouterService.loadTrackedModel} waits for evicted memory to show as free: 10 × 1 s. */
 const EVICTION_SETTLE_ATTEMPTS = 10;
 const EVICTION_SETTLE_INTERVAL_MS = 1_000;
+
+/**
+ * Engines that settle their own memory before a load: asked to load a model that does not fit
+ * beside what they hold, they unload one of their own runners and wait for it to go, and a runner
+ * still busy with a request is waited out, not loaded on top of. Ollama's scheduler does that
+ * (`server/sched.go` `processPending`: `findRunnerToUnload`, then it blocks on `unloadedCh`).
+ *
+ * It is what makes a load safe after an eviction whose memory has not come back yet, and only
+ * when the evicted model and the one being loaded are on the same such engine. Nothing arbitrates
+ * between two engines: an Ollama runner that is finishing a request the Hub cannot see (an app
+ * calling the engine directly) keeps its memory, and a Lemonade load beside it overcommits the
+ * card. That is the freeze #1679 set out to fix. Lemonade is not listed: it evicts by count
+ * (`max_loaded_models`), never for memory, so its own loads never wait for room.
+ */
+const SELF_ARBITRATING_BACKENDS: ReadonlySet<InferenceBackendType> = new Set<InferenceBackendType>(['ollama']);
+
+/** What {@link InferenceRouterService.loadTrackedModel} did: the model is in memory, or why it is not. */
+export type LoadOutcome = { loaded: true } | { loaded: false; reason: string };
+
+/** Who asked for a load, and whether they are still waiting for it. */
+export type LoadOptions = {
+  /** What may be unloaded to make room; see {@link EvictionScope}. `request` when unset. */
+  scope?: EvictionScope;
+  /** The window the app's request that triggered this load runs at; see `prepareTrackedModel`. */
+  request?: { numCtx: number | null };
+  /**
+   * The client's hang-up (the pool proxy's `clientClosed`). Checked once this load's turn in the
+   * per-node queue comes: a request abandoned while it waited behind another model's cold load
+   * must not go on to evict and load for nobody.
+   */
+  signal?: AbortSignal;
+};
+
+/** A refusal that says what the plan could free and why no more: who asked, and what was busy. */
+function describeRefusal(catalogId: string, footprintMb: number, availableMb: number, scope: EvictionScope, plan: EvictionPlan): string {
+  const evictable = scope === 'operator' ? 'every idle unpinned model' : 'every idle model the Hub loaded itself';
+  const busy =
+    plan.busy.length > 0 ? `; ${plan.busy.join(', ')} ${plan.busy.length === 1 ? 'is' : 'are'} serving a request and will not be unloaded` : '';
+  return `${catalogId} needs ${footprintMb} MB but only ${availableMb} MB is free, and unloading ${evictable} would free ${plan.freedMb} MB${busy}`;
+}
+
+/** A model {@link InferenceRouterService.loadTrackedModel} may load: what the registry and catalog know of it, and where it runs. */
+type LoadTarget = {
+  tracked: TrackedModel | undefined;
+  curated: CuratedModel | undefined;
+  backendType: InferenceBackendType;
+  backendModelId: string;
+};
 
 /** One parallel health sweep over every registered backend. */
 type ProbedBackends = ReadonlyArray<readonly [InferenceBackendType, InferenceBackend, BackendHealthStatus]>;
@@ -90,6 +148,9 @@ function describeFloorShortfall(shortfall: FloorShortfall | null, wanted: number
  */
 @Injectable()
 export class InferenceRouterService {
+  /** The tail of {@link loadTrackedModel}'s queue: every load on this node waits for the one before it. */
+  private loadQueue: Promise<void> = Promise.resolve();
+
   constructor(
     readonly _logger: LoggerService,
     private readonly hardwareInspector: HardwareInspectorService,
@@ -102,6 +163,11 @@ export class InferenceRouterService {
     // Optional and last: the router's own tests build it through Nest without configuration, and
     // only the `auto` resolution below reads a preference.
     @Optional() private readonly configuration?: ConfigurationService,
+    // The pool's record of what this node's engines are working on right now (turns and embedding
+    // batches), so a load never evicts a model mid-request. forwardRef: InferenceModule and
+    // HubPoolModule import each other.
+    // Optional for the same reason as `configuration`; without it nothing reads as busy.
+    @Optional() @Inject(forwardRef(() => HubPoolLoadService)) private readonly poolLoad?: HubPoolLoadService,
     // Optional for the same reason: only a Lemonade load reads it, for installed apps' context floors.
     @Optional() private readonly apps?: AppsRepository,
   ) {}
@@ -388,7 +454,7 @@ export class InferenceRouterService {
 
     // 2 + 3. A tracked model: serve it if loaded, else make room and load it. Shared with the pool
     // proxy so an app that calls the engine's native routes gets the same arbitration.
-    const prepared = await this.prepareTrackedModel(resolvedModel);
+    const prepared = await this.prepareTrackedModel(resolvedModel, { signal: clientClosed });
     if (prepared) {
       return this.proxyToBackend(prepared.backend, prepared.backendModelId, body, '/v1/chat/completions', clientClosed);
     }
@@ -432,7 +498,7 @@ export class InferenceRouterService {
       throw new Error('No models available — no local models loaded and no cloud providers configured');
     }
 
-    const prepared = await this.prepareTrackedModel(resolvedModel);
+    const prepared = await this.prepareTrackedModel(resolvedModel, { signal: clientClosed });
     if (prepared) {
       return this.proxyToBackend(prepared.backend, prepared.backendModelId, body, '/v1/completions', clientClosed);
     }
@@ -608,10 +674,12 @@ export class InferenceRouterService {
    */
   async prepareTrackedModel(
     model: string,
-    request: { numCtx: number | null } = { numCtx: null },
+    options: { numCtx?: number | null; signal?: AbortSignal } = {},
   ): Promise<{ backend: InferenceBackendType; backendModelId: string } | null> {
+    // Folded like every other engine-id comparison on this path: an app may send `nomic-embed-text`
+    // or `nomic-embed-text:latest` for the one model.
     const tracked =
-      this.modelRegistry.getTrackedModel(model) ?? this.modelRegistry.getTrackedModels().find((entry) => entry.backendModelId === model);
+      this.modelRegistry.getTrackedModel(model) ?? this.modelRegistry.getTrackedModels().find((entry) => sameModelId(entry.backendModelId, model));
     if (!tracked) {
       return null;
     }
@@ -623,50 +691,107 @@ export class InferenceRouterService {
       return null;
     }
 
-    const outcome = await this.loadTrackedModel(tracked.catalogId, { request });
+    const outcome = await this.loadTrackedModel(tracked.catalogId, {
+      scope: 'request',
+      request: { numCtx: options.numCtx ?? null },
+      signal: options.signal,
+    });
     return outcome.loaded ? served : null;
   }
 
   /**
-   * Put a catalog model into memory, making room first: the one load path both the pool proxy
-   * (through {@link prepareTrackedModel}) and an operator's pin take. The pin used to call the
-   * engine's load straight away, with no fit check at all, and that is how a Lemonade 27B went
-   * onto a card where Ollama already held one.
+   * Put a catalog model into memory, making room first: the one load path the pool proxy (through
+   * {@link prepareTrackedModel}), an operator's pin or load, and MCP `hub_load_model` all take. The
+   * pin used to call the engine's load straight away, with no fit check at all, and that is how a
+   * Lemonade 27B went onto a card where Ollama already held one.
    *
    * Asks the engine first (a model another caller loaded is resident without the registry
-   * knowing), then fits, then evicts whatever unpinned models the engines hold — the Hub's own
-   * loads or not — and re-measures before loading. It never loads on top of a card it could not
-   * clear: a load that does not fit is refused with the reason, not attempted.
+   * knowing), then refuses a model that is not downloaded here, then fits. When the model does not
+   * fit, `scope` decides what may be unloaded for it (see {@link EvictionScope}); a model with a
+   * request in flight through the pool (a turn or an embedding batch) is never unloaded. Then:
+   *
+   * - The plan cannot make room: refused with the reason, and nothing has been unloaded.
+   * - The plan can: its models are unloaded, and this one is loaded once the re-measure shows the
+   *   room. When the re-measure has not caught up by the end of the settle wait, the load still goes
+   *   ahead only where the engine itself will wait for the memory: every evicted model is on the
+   *   target's own engine and that engine arbitrates its own memory ({@link SELF_ARBITRATING_BACKENDS}).
+   *   There, stopping would not undo the unloads — on the request path the pool forwards the request
+   *   anyway and the engine loads the model on its own terms — so a refusal would only add the cold
+   *   reload of what was just evicted. Anywhere else the memory may still be held by work the Hub
+   *   cannot see, and the load is refused rather than landing on top of it, as #1679 itself did.
+   *   An unload the engine refused stops the plan at once: the rest would be lost for nothing.
+   *
+   * Serialized per node: fit, eviction and load run under one lock, so two loads cannot both plan
+   * against the same free memory, and a second load of the same model finds it resident instead of
+   * loading it again. A model that is already resident is answered before the lock: that check is
+   * one engine call, and a request for it must not queue behind another model's cold load, which
+   * takes up to two minutes.
    *
    * `options.request` marks a load an app's request triggered, with the window that request runs at
-   * (see {@link prepareTrackedModel}); without it this is an operator's pin or load, and the Hub
-   * picks the window (see {@link planLoad}).
+   * (see {@link prepareTrackedModel}); without it the Hub picks the window (see {@link planLoad}).
    */
-  async loadTrackedModel(
-    catalogId: string,
-    options: { request?: { numCtx: number | null } } = {},
-  ): Promise<{ loaded: true } | { loaded: false; reason: string }> {
-    const tracked = this.modelRegistry.getTrackedModel(catalogId);
-    const curated = this.modelRegistry.getCuratedModel(catalogId);
-    const target = tracked ?? curated;
+  async loadTrackedModel(catalogId: string, options: LoadOptions = {}): Promise<LoadOutcome> {
+    const target = this.loadTarget(catalogId);
     if (!target) {
       return { loaded: false, reason: `Model ${catalogId} not found in catalog` };
     }
-    const backendType = target.backend;
-    const backendModelId = target.backendModelId;
+    if (await this.adoptIfResident(catalogId, target)) {
+      return { loaded: true };
+    }
+    return this.withLoadLock(async () => {
+      if (options.signal?.aborted) {
+        return { loaded: false, reason: `The request for ${catalogId} was abandoned while it waited for another load to finish` };
+      }
+      return this.loadTrackedModelLocked(catalogId, options.scope ?? 'request', options.request);
+    });
+  }
 
+  /** The registry's view of `catalogId` and where it is served, or `undefined` when neither the registry nor the catalog knows it. */
+  private loadTarget(catalogId: string): LoadTarget | undefined {
+    const tracked = this.modelRegistry.getTrackedModel(catalogId);
+    const curated = this.modelRegistry.getCuratedModel(catalogId);
+    const served = tracked ?? curated;
+    return served ? { tracked, curated, backendType: served.backend, backendModelId: served.backendModelId } : undefined;
+  }
+
+  /**
+   * Whether the engine already holds the model, recording it as loaded when it does: another caller
+   * may have loaded it without the registry knowing. A probe that fails reads as not resident.
+   */
+  private async adoptIfResident(catalogId: string, target: LoadTarget): Promise<boolean> {
     const resident = await this.backends
-      .get(backendType)
-      .isModelLoaded(backendModelId)
+      .get(target.backendType)
+      .isModelLoaded(target.backendModelId)
       .catch(() => false);
-    if (resident) {
-      if (tracked) this.modelRegistry.updateModelState(catalogId, 'loaded');
-      else this.modelRegistry.trackModel(catalogId, 'loaded');
+    if (!resident) {
+      return false;
+    }
+    if (target.tracked) this.modelRegistry.updateModelState(catalogId, 'loaded');
+    else this.modelRegistry.trackModel(catalogId, 'loaded');
+    return true;
+  }
+
+  private async loadTrackedModelLocked(catalogId: string, scope: EvictionScope, request?: { numCtx: number | null }): Promise<LoadOutcome> {
+    // Read again under the lock: the load this one queued behind may have loaded or evicted it.
+    const target = this.loadTarget(catalogId);
+    if (!target) {
+      return { loaded: false, reason: `Model ${catalogId} not found in catalog` };
+    }
+    const { tracked, curated, backendType, backendModelId } = target;
+    const backend = this.backends.get(backendType);
+
+    if (await this.adoptIfResident(catalogId, target)) {
       return { loaded: true };
     }
 
+    // Before anything is unloaded for it: a model that was never downloaded here can only fail to
+    // load, and it used to do so after the eviction, as a 500, with the other apps' models gone.
+    if (!(await this.isDownloaded(tracked, curated, backend))) {
+      return { loaded: false, reason: `${catalogId} is not downloaded on this node; pull it first` };
+    }
+
     const profile = await this.hardwareInspector.getProfile();
-    const plan = await this.planLoad(curated, { backend: backendType, backendModelId }, profile, options.request);
+    const plan = await this.planLoad(curated, { backend: backendType, backendModelId }, profile, request);
     const { contextLength, footprintMb: footprint } = plan;
     if (plan.unmeasured) {
       return this.loadUnmeasured(catalogId, { backend: backendType, backendModelId }, plan, plan.unmeasured.ceilingMb);
@@ -674,26 +799,90 @@ export class InferenceRouterService {
     const fit = await this.memoryManager.canFitModel(profile, footprint);
     if (!fit.fits) {
       const deficit = footprint - fit.availableMb;
-      const plan = await this.memoryManager.planEviction(profile, deficit, { backend: backendType, backendModelId });
+      const plan = await this.memoryManager.planEviction(
+        profile,
+        deficit,
+        { backend: backendType, backendModelId },
+        { scope, inUse: (engine) => this.poolLoad?.localBusyModelsOn(engine) ?? [] },
+      );
       if (!plan.canFree) {
-        return {
-          loaded: false,
-          reason: `${catalogId} needs ${footprint} MB but only ${fit.availableMb} MB is free, and unloading every unpinned model would free ${plan.freedMb} MB`,
-        };
+        return { loaded: false, reason: describeRefusal(catalogId, footprint, fit.availableMb, scope, plan) };
       }
+      const evicted: EvictionCandidate[] = [];
+      let refused: EvictionCandidate | null = null;
       for (const candidate of plan.candidates) {
-        await this.evict(candidate);
+        if (!(await this.evict(candidate))) {
+          refused = candidate;
+          break;
+        }
+        evicted.push(candidate);
+      }
+      if (refused && evicted.length === 0) {
+        // Nothing was freed, so there is nothing to wait for.
+        return { loaded: false, reason: `${catalogId} does not fit: ${refused.backend} refused to unload ${refused.backendModelId}` };
       }
       if (!(await this.waitForFit(footprint))) {
-        return {
-          loaded: false,
-          reason: `${catalogId} still does not fit after unloading ${plan.candidates.map((c) => c.backendModelId).join(', ')}`,
-        };
+        const unloaded = evicted.map((c) => c.backendModelId).join(', ');
+        if (refused) {
+          return {
+            loaded: false,
+            reason: `${catalogId} still does not fit after unloading ${unloaded}: ${refused.backend} refused to unload ${refused.backendModelId}`,
+          };
+        }
+        const arbitrated = SELF_ARBITRATING_BACKENDS.has(backendType) && evicted.every((c) => c.backend === backendType);
+        if (!arbitrated) {
+          return {
+            loaded: false,
+            reason:
+              `${catalogId} still does not fit after unloading ${unloaded}: that memory has not come back, and ${unloaded} ` +
+              `may still be finishing work the Hub cannot see, so loading on ${backendType} now could land on top of it`,
+          };
+        }
+        this._logger.warn(
+          `[Inference] Loading ${catalogId} although the memory freed by unloading ${unloaded} has not shown up yet; ${backendType} waits for it itself`,
+        );
       }
     }
 
-    await this.modelPuller.loadModel(catalogId, contextLength === null ? undefined : { contextLength });
-    return { loaded: true };
+    try {
+      await this.modelPuller.loadModel(catalogId, contextLength === null ? undefined : { contextLength });
+      return { loaded: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { loaded: false, reason: `Loading ${catalogId} failed: ${msg}` };
+    } finally {
+      // The next plan must see this model's memory, not the 5 s-old reading from before it loaded.
+      this.memoryManager.invalidateObservation();
+    }
+  }
+
+  /**
+   * Whether `catalogId`'s weights are on this node. The registry knows what the Hub pulled; the
+   * engine's own inventory knows the rest (a model pulled with `ollama pull`, or before this Hub
+   * process started).
+   */
+  private async isDownloaded(tracked: TrackedModel | undefined, curated: CuratedModel | undefined, backend: InferenceBackend): Promise<boolean> {
+    if (tracked && (tracked.state === 'pulled' || tracked.state === 'loaded' || tracked.state === 'pinned')) {
+      return true;
+    }
+    if (!curated) {
+      return false;
+    }
+    const health = await backend.healthCheck().catch(() => null);
+    const inventory = health?.modelsLoaded ?? [];
+    return curated.backend === 'ollama'
+      ? isCatalogModelInstalled(curated, inventory, false, this.modelRegistry.getCatalogBackendModelIds())
+      : isServedModelForCatalog(curated, inventory);
+  }
+
+  /** Runs `fn` after every load already queued on this node has finished, whatever its outcome. */
+  private withLoadLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.loadQueue.then(fn);
+    this.loadQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   /**
@@ -1021,9 +1210,9 @@ export class InferenceRouterService {
   /**
    * Unload one eviction candidate. A catalog model goes through the puller so the registry's
    * state follows; anything else is unloaded on its engine directly. A failure is logged and
-   * skipped — the re-measure after the whole plan is what decides whether the load goes ahead.
+   * reported, not thrown: the caller stops the plan there and lets the re-measure decide.
    */
-  private async evict(candidate: EvictionCandidate): Promise<void> {
+  private async evict(candidate: EvictionCandidate): Promise<boolean> {
     this._logger.info(`[Inference] Evicting ${candidate.backendModelId} from ${candidate.backend} to make room`);
     try {
       const { catalogId } = candidate;
@@ -1032,9 +1221,11 @@ export class InferenceRouterService {
       } else {
         await this.backends.get(candidate.backend).unloadModel(candidate.backendModelId);
       }
+      return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this._logger.warn(`[Inference] Could not evict ${candidate.backendModelId} from ${candidate.backend}: ${msg}`);
+      return false;
     }
   }
 
@@ -1043,10 +1234,10 @@ export class InferenceRouterService {
    * call returns (Ollama stops its runner asynchronously), so one immediate reading can still show
    * the model just evicted.
    *
-   * Each attempt re-reads the hardware profile with a fresh RAM sample. On unified memory the fit is
-   * capped by live MemAvailable, and the profile read before the unload kept that cap at its
-   * pre-eviction value however much the unload freed: an eviction that worked was reported as "still
-   * does not fit", and the operator's retry then succeeded.
+   * Both halves of the measurement are read again on every attempt: the engines' figures, and the
+   * hardware profile with a MemAvailable sampled now. On a unified-memory node the fit is capped by
+   * MemAvailable, so re-using the profile read before the unload capped it at the pre-eviction
+   * figure, and an eviction that had worked was reported as a refusal (FIT-2 in the #1679 audit).
    */
   private async waitForFit(footprintMb: number): Promise<boolean> {
     for (let attempt = 0; attempt < EVICTION_SETTLE_ATTEMPTS; attempt++) {

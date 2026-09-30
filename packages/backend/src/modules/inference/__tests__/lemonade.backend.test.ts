@@ -1,5 +1,6 @@
 import { Test, type TestingModule } from '@nestjs/testing';
-import { LemonadeBackend } from '../backends/lemonade.backend';
+import { LemonadeBackend, lemonadeErrorDetail } from '../backends/lemonade.backend';
+import { lemonadeShowAllBody } from './lemonade-10.2.0-registry.fixture';
 import type { DeviceGroupProbe } from '../backends/amd-device-groups.util';
 import { LoggerService } from '@/core/logger/logger.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
@@ -360,6 +361,160 @@ describe('LemonadeBackend', () => {
         expect(config).not.toHaveProperty('group_add');
         expect(config).not.toHaveProperty('devices');
       }
+    });
+  });
+
+  // Every fleet Lemonade node runs the 10.2.0 apt package. Its registry lacks 13 of the catalog's
+  // Lemonade rows, and it names a Hub-registered model only as `user.<id>`.
+  describe('what the connected Lemonade offers (10.2.0 registry)', () => {
+    /** A 10.2.0 server: `/v1/health` with its version, `/v1/models` the downloaded ids, `show_all` the registry. */
+    const serve10_2_0 = (downloaded: string[] = [], registered: string[] = []) => {
+      const get = vi.fn().mockImplementation((url: string) => {
+        if (url.endsWith('/v1/health')) return Promise.resolve({ status: 200, data: { status: 'ok', version: '10.2.0' } });
+        if (url.endsWith('/v1/models?show_all=true')) return Promise.resolve({ data: lemonadeShowAllBody(downloaded, registered) });
+        if (url.endsWith('/v1/models')) return Promise.resolve({ data: { object: 'list', data: downloaded.map((id) => ({ id })) } });
+        return Promise.resolve({ data: {} });
+      });
+      (axios.get as any) = get;
+      return get;
+    };
+    const showAllReads = (get: ReturnType<typeof vi.fn>) => get.mock.calls.filter(([url]) => String(url).endsWith('?show_all=true')).length;
+
+    it('cannot say before any probe, so nothing is filtered', () => {
+      expect(backend.offersModel('Qwen3.8-27B-GGUF')).toBeNull();
+    });
+
+    it('offers what the registry lists and what the Hub registers, and nothing else', async () => {
+      serve10_2_0();
+      await backend.healthCheck();
+
+      expect(backend.offersModel('Gemma-4-E4B-it-GGUF')).toBe(true);
+      // Not in 10.2.0: the chat default the Hub picked for a 7900 XTX, and for a 3080.
+      expect(backend.offersModel('Qwen3.8-27B-GGUF')).toBe(false);
+      expect(backend.offersModel('Gemma-4-12B-it-GGUF')).toBe(false);
+      // Not in any Lemonade registry, but the Hub registers it on pull.
+      expect(backend.offersModel('nomic-embed-text-v1.5-GGUF')).toBe(true);
+    });
+
+    it('filters nothing when the server ignores show_all (entries without a downloaded flag)', async () => {
+      (axios.get as any) = vi.fn().mockImplementation((url: string) => {
+        if (url.endsWith('/v1/health')) return Promise.resolve({ status: 200, data: { version: '9.1.0' } });
+        return Promise.resolve({ data: { data: [{ id: 'Qwen3-8B-GGUF' }] } });
+      });
+      await backend.healthCheck();
+
+      expect(backend.offersModel('Qwen3.8-27B-GGUF')).toBeNull();
+    });
+
+    it('reads the registry at most once a minute, and again after a pull', async () => {
+      const get = serve10_2_0();
+      await backend.healthCheck();
+      await backend.healthCheck();
+      expect(showAllReads(get)).toBe(1);
+
+      (axios.post as never) = vi.fn().mockResolvedValue({ data: { status: 'success' } });
+      await backend.pullModel('Gemma-4-E4B-it-GGUF');
+      await backend.healthCheck();
+      expect(showAllReads(get)).toBe(2);
+    });
+
+    // The pool's health loop, the status route and a pull check can all probe as the minute runs out.
+    it('sends one registry read for probes that arrive while it is in flight', async () => {
+      const get = serve10_2_0();
+
+      await Promise.all([backend.healthCheck(), backend.healthCheck(), backend.healthCheck()]);
+
+      expect(showAllReads(get)).toBe(1);
+      expect(backend.offersModel('Gemma-4-E4B-it-GGUF')).toBe(true);
+    });
+
+    it('does not keep a registry read that began before a pull registered a model', async () => {
+      const inner = serve10_2_0();
+      let answerFirstRead: (() => void) | undefined;
+      const get = vi.fn().mockImplementation((url: string) => {
+        if (url.endsWith('?show_all=true') && !answerFirstRead) {
+          // The first read: held open until after the pull, and missing what the pull registered.
+          return new Promise((resolve) => {
+            answerFirstRead = () => resolve({ data: lemonadeShowAllBody() });
+          });
+        }
+        return inner(url);
+      });
+      (axios.get as any) = get;
+      (axios.post as never) = vi.fn().mockResolvedValue({ data: { status: 'success' } });
+
+      const probe = backend.healthCheck();
+      await vi.waitFor(() => expect(answerFirstRead).toBeDefined());
+      await backend.pullModel('nomic-embed-text-v1.5-GGUF');
+      answerFirstRead?.();
+      await probe;
+      await backend.healthCheck();
+
+      expect(showAllReads(get)).toBe(2);
+    });
+
+    it('names a Hub-registered model the way 10.2.0 lists it, and a built-in one by its key', async () => {
+      serve10_2_0(['user.nomic-embed-text-v1.5-GGUF'], ['user.nomic-embed-text-v1.5-GGUF']);
+      await backend.healthCheck();
+
+      expect(backend.engineModelId('nomic-embed-text-v1.5-GGUF')).toBe('user.nomic-embed-text-v1.5-GGUF');
+      expect(backend.engineModelId('Gemma-4-E4B-it-GGUF')).toBe('Gemma-4-E4B-it-GGUF');
+    });
+
+    it('uses the bare id where the server lists it bare (2026.39.1)', async () => {
+      (axios.get as any) = vi.fn().mockImplementation((url: string) => {
+        if (url.endsWith('/v1/health')) return Promise.resolve({ status: 200, data: { version: '2026.39.1' } });
+        return Promise.resolve({ data: { data: [{ id: 'nomic-embed-text-v1.5-GGUF', downloaded: true }] } });
+      });
+      await backend.healthCheck();
+
+      expect(backend.engineModelId('nomic-embed-text-v1.5-GGUF')).toBe('nomic-embed-text-v1.5-GGUF');
+    });
+
+    it('names a not-yet-registered Hub model by its registration name, which every version resolves', () => {
+      expect(backend.engineModelId('nomic-embed-text-v1.5-GGUF')).toBe('user.nomic-embed-text-v1.5-GGUF');
+    });
+
+    it('reports it loaded and reads its files under the listed spelling', async () => {
+      const get = serve10_2_0(['user.nomic-embed-text-v1.5-GGUF'], ['user.nomic-embed-text-v1.5-GGUF']);
+
+      await expect(backend.isModelLoaded('nomic-embed-text-v1.5-GGUF')).resolves.toBe(true);
+      await backend.weightsOnDiskMb('nomic-embed-text-v1.5-GGUF');
+      expect(get).toHaveBeenCalledWith('http://ci-hub-lemonade:13305/v1/models/user.nomic-embed-text-v1.5-GGUF/files', { timeout: 5000 });
+    });
+
+    it('refuses to pull a model the registry does not list, without asking the server', async () => {
+      serve10_2_0();
+      await backend.healthCheck();
+      const post = vi.fn();
+      (axios.post as never) = post;
+
+      await expect(backend.pullModel('Qwen3.8-27B-GGUF')).rejects.toThrow(/Lemonade 10\.2\.0 does not offer Qwen3\.8-27B-GGUF/);
+      expect(post).not.toHaveBeenCalled();
+    });
+
+    it("reports Lemonade's own reason for a failed pull, not axios's status line", async () => {
+      const failure = Object.assign(new Error('Request failed with status code 500'), {
+        response: {
+          status: 500,
+          data: { error: 'When registering a new model, the model name must include the `user` namespace, for example `user.Phi-4-Mini-GGUF`.' },
+        },
+      });
+      (axios.post as never) = vi.fn().mockRejectedValue(failure);
+
+      await expect(backend.pullModel('Qwen3.8-27B-GGUF')).rejects.toThrow(
+        'Lemonade could not pull Qwen3.8-27B-GGUF: When registering a new model, the model name must include the `user` namespace, for example `user.Phi-4-Mini-GGUF`. (HTTP 500)',
+      );
+    });
+  });
+
+  describe('lemonadeErrorDetail', () => {
+    it('reads both error shapes Lemonade answers with, and falls back to the error message', () => {
+      const withBody = (data: unknown) => Object.assign(new Error('Request failed with status code 404'), { response: { status: 404, data } });
+      expect(lemonadeErrorDetail(withBody({ error: 'Model not found: x' }))).toBe('Model not found: x (HTTP 404)');
+      expect(lemonadeErrorDetail(withBody({ error: { message: 'bad model', type: 'not_found' } }))).toBe('bad model (HTTP 404)');
+      expect(lemonadeErrorDetail(withBody({}))).toBe('Request failed with status code 404');
+      expect(lemonadeErrorDetail(new Error('connect ECONNREFUSED'))).toBe('connect ECONNREFUSED');
     });
   });
 

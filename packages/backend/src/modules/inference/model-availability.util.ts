@@ -48,6 +48,8 @@ export function isCuratedModelInstalled(
   catalogBackendModelIds?: Iterable<string>,
 ): boolean {
   if (trackedPulled) return true;
+  // Lemonade names are registry keys, not Ollama tags; a Hub-registered one may be listed as `user.<id>`.
+  if (model.backend === 'lemonade' && servedIdForCatalogModel(model, ollamaTags) !== null) return true;
   if (catalogBackendModelIds === undefined) {
     return ollamaTags.some((name) => isOllamaTagForModel(name, model.backendModelId));
   }
@@ -65,9 +67,37 @@ export function isCatalogModelInstalled(
   return isCuratedModelInstalled(curated, ollamaTags, trackedPulled, catalogBackendModelIds);
 }
 
-/** True when a served model id matches a catalog model's backend id (exact for vLLM/HF ids). */
+/**
+ * The namespace Lemonade files models registered through `/v1/pull` under (`user.<name>`).
+ *
+ * Whether it then LISTS such a model with the prefix depends on the version: lemonade-server
+ * 10.2.0, the apt package every fleet Lemonade node runs, keys and lists it only as `user.<name>`
+ * and answers the bare name with "Model not found"; 10.3.0 lists it bare only when it carries the
+ * `appear-builtin` label; 2026.39.1 lists it bare. The prefixed name resolves on every one of them.
+ */
+export const LEMONADE_USER_NAMESPACE = 'user.';
+
+/**
+ * The spelling under which `servedModelIds` names a catalog model, or null when it does not.
+ *
+ * Exact for every engine. A Lemonade row also answers to `user.<backendModelId>`, the name a
+ * Lemonade older than the bare public aliases lists a Hub-registered model under — without this the
+ * Hub never saw the embedder it had just registered as installed, and handed apps a bare name the
+ * server rejected.
+ */
+export function servedIdForCatalogModel(model: CuratedModel, servedModelIds: Iterable<string>): string | null {
+  const served = new Set(servedModelIds);
+  if (served.has(model.backendModelId)) return model.backendModelId;
+  if (model.backend === 'lemonade') {
+    const namespaced = `${LEMONADE_USER_NAMESPACE}${model.backendModelId}`;
+    if (served.has(namespaced)) return namespaced;
+  }
+  return null;
+}
+
+/** True when a served model id matches a catalog model's backend id (exact for vLLM/HF ids; see {@link servedIdForCatalogModel}). */
 export function isServedModelForCatalog(model: CuratedModel, servedModelIds: string[]): boolean {
-  return servedModelIds.some((id) => id === model.backendModelId);
+  return servedIdForCatalogModel(model, servedModelIds) !== null;
 }
 
 /** Map live served model ids to catalog ids for models on the given backend. */

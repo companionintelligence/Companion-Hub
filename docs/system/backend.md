@@ -99,6 +99,68 @@ deliberate and easy to undo by accident:
 `entries()` yields the type as the string from the source tuple rather than reading `backend.type`
 off the instance, because test doubles are mock proxies whose `type` is undefined.
 
+## Model loading and eviction
+
+`InferenceRouterService.loadTrackedModel` is the one path that puts a catalog model into memory.
+The pool proxy reaches it through `prepareTrackedModel` for every app generation naming a
+Hub-tracked model that the engine does not hold. `POST /api/inference/models/load` and `models/pin`
+reach it, and so do MCP `hub_load_model` and `hub_pin_model`. When the model does not fit,
+`MemoryManagerService.planEviction` decides what may be unloaded. Who asked decides the scope:
+
+| Caller | Scope | May unload |
+|---|---|---|
+| An app's request, through the pool proxy or the router | `request` | Idle models the Hub loaded itself |
+| An MCP tool called with any API key, `full` included | `request` | Idle models the Hub loaded itself |
+| REST load or pin (`AuthGuard`: an operator session or a host-local credential) | `operator` | Any idle, unpinned model on any engine |
+| An MCP tool run from the Hub UI's tool runner (`/api/mcp-admin`) | `operator` | Any idle, unpinned model on any engine |
+
+Hermes' and OpenClaw's managed keys are `write` keys, so without the `request` scope an agent
+could evict the model every other app on the node is serving.
+
+Both scopes share these rules:
+
+- **Busy models stay.** A model with a request in flight is never unloaded, whoever asks.
+  `HubPoolLoadService.localBusyModelsOn` supplies the list: every generation, and every embedding
+  batch (`/v1/embeddings`, `/api/embed`, `/api/embeddings`), which is recorded apart from the
+  generations so the contention and throughput judgements never see it. Ollama only marks a busy
+  runner to expire, so evicting it frees nothing in time and its app reloads it cold on the next
+  request. Only work that passes through the pool proxy is counted. An app calling the engine
+  directly, or `/api/inference/v1` on a Hub with no connected peers, is invisible to this check.
+- **Candidates are sized in the budget's units.** A candidate is sized by its share of the
+  figure the budget counted for its engine. With one model per engine process, that is the process
+  figure. With several, the figure is split in the engine's own proportions. A Hub-tracked model
+  that the engine no longer holds is not a candidate. A model that cannot be sized, or that frees
+  0 MB of the pool (Ollama on CPU reports `size_vram` 0), is never unloaded.
+- **Refuse without unloading where possible.** When the sized candidates cannot cover the
+  shortfall, the load is refused and nothing is unloaded. The reason names any busy model.
+- **After unloading, load only onto memory that is known to be free.** When the candidates can
+  cover it, they are unloaded and the fit is re-measured for up to 10 s. Each attempt re-reads the
+  engines and the hardware profile, with MemAvailable sampled at that moment rather than reused
+  from the last 5 s, because on unified memory MemAvailable is the figure that shows the memory
+  coming back. If the re-measure never catches up, the model is still loaded only when every
+  evicted model was on the target's own engine and that engine arbitrates its own memory. Today
+  only Ollama does: its scheduler will not load beside a runner it has marked to expire, and waits
+  for that runner's request to end. Otherwise the load is refused, because an evicted model may
+  still be serving work the Hub cannot see, and nothing stops a Lemonade load from landing on top
+  of a busy Ollama runner, or the reverse. That was the freeze #1679 fixed. An unload the engine
+  refuses stops the plan at once, so the models after it stay loaded, and the load goes ahead only
+  if what was already freed shows up in the re-measure.
+- **A model that is not downloaded is refused first.** The check runs before any fit check or
+  eviction.
+- **Loads are serialized per node.** Fit, eviction, and load run under one lock. A second load of
+  the same model finds it resident, and the cached memory reading is dropped after every load. A
+  model the engine already holds is answered before the lock, so a request for it never queues
+  behind another model's cold load. The pool proxy passes the client's hang-up signal along, and a
+  load whose client went away while it was queued is dropped before it measures, evicts or loads
+  anything.
+- **Pins match under `:latest`.** Pins and the model being loaded are matched with
+  `sameModelId`, so a pinned `nomic-embed-text` is protected while `/api/ps` lists
+  `nomic-embed-text:latest`.
+
+A load refused on the request path is still forwarded to the engine. The pool proxy does that
+regardless of the answer. A refusal there means the Hub made no room, not that the engine does not
+try.
+
 ## Hub Pool
 
 `modules/hub-pool/` is the largest single module in the backend. It is worth knowing which service
@@ -288,6 +350,10 @@ The install dialog offers the organization's connected domains (`GET /api/cloudf
 Setup offers Ollama, oMLX, vLLM, or Lemonade, and only the ones the detected machine can run. The other path is a decode endpoint and an encode endpoint. Either URL may be set alone. From inside Docker the probe uses `host.docker.internal`, and the card shows that URL.
 
 oMLX is Apple Silicon only. Install it with `brew tap jundot/omlx https://github.com/jundot/omlx`, then `brew install jundot/omlx/omlx`, then `omlx start`. It serves chat and embeddings. vLLM is NVIDIA only. Its serve command is `vllm serve <model> --host 0.0.0.0 --port 8000`. Lemonade is AMD or NPU, operator-managed, and hidden on Mac. Ollama embeds when the chosen decoder cannot. vLLM and oMLX both default to port 8000, and `owned_by` on `/v1/models` is what tells them apart. Ollama answering is only Ollama.
+
+Lemonade's model registry depends on its version, so the Hub reads it: each health probe (at most once a minute) fetches `GET /v1/models?show_all=true`, and a catalog Lemonade row that listing does not name is not offered, recommended, or pre-pulled, and a pull of it is refused with that reason. A Lemonade that ignores `show_all` filters nothing. Lemonade 10.x lists a model the Hub registered (the v1.5 embedder) only as `user.<id>`; the Hub counts that spelling as installed and hands it out. See [`MODEL_REGISTRY.md`](../MODEL_REGISTRY.md#lemonade-rows).
+
+`GET /api/inference/lemonade/status` says how the probe failed (`failureMode`: `refused`, `filtered`, `dns`, `auth` for a 401 or 403, or `none`), the host platform, whether the Hub holds `LEMONADE_API_KEY`, and `firewallCommands` for the host's firewall, which admit both the Hub's network and the app subnet (`10.128.0.0/9`) to Lemonade's port. The setup card shows the rebind to `0.0.0.0` only for a refused or unclassified probe on Linux, and always with an API-key step, because the bind alone leaves Lemonade open to the network with no authentication.
 
 ## Inference cloud providers
 

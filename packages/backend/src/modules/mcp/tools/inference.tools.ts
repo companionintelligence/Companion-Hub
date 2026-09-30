@@ -8,6 +8,8 @@ import { ModelPullerService } from '@/modules/inference/model-puller.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
 import { CloudFallbackService } from '@/modules/inference/cloud-fallback.service';
 import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
+import type { EvictionScope } from '@/modules/inference/memory-manager.service';
+import { mcpCallerIsOperator } from '../mcp-tool-call';
 import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import type { InferenceBackendType, CloudProviderType } from '@ci-hub/common/types';
 
@@ -147,7 +149,9 @@ export class InferenceTools implements OnModuleInit {
       category: 'Inference & Models',
       name: 'hub_load_model',
       access: 'write',
-      description: 'Load a pulled model into memory for inference.',
+      description:
+        'Load a pulled model into memory for inference. To make room it unloads only idle models the Hub itself loaded, ' +
+        'never one serving a request; when that is not enough the load is refused with the reason and nothing is unloaded.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -157,7 +161,7 @@ export class InferenceTools implements OnModuleInit {
       },
       handler: async (params) => {
         const modelId = params.modelId as string;
-        const outcome = await this.inferenceRouter.loadTrackedModel(modelId);
+        const outcome = await this.inferenceRouter.loadTrackedModel(modelId, { scope: this.evictionScope() });
         if (!outcome.loaded) {
           return { success: false, message: outcome.reason };
         }
@@ -312,6 +316,17 @@ export class InferenceTools implements OnModuleInit {
     // tools were removed accordingly.
 
     this.logger.info('[InferenceTools] Registered 14 inference MCP tools');
+  }
+
+  /**
+   * What a load from this tool call may unload to make room. An agent's key — Hermes' and
+   * OpenClaw's managed keys are 'write' — gets the app request path's rule: only idle models the
+   * Hub itself loaded. Otherwise a prompt-injected agent could evict the model every other app on
+   * the node is serving, and apps would keep evicting each other. Only an operator's run from the
+   * Hub UI's tool runner may unload models apps loaded, as the REST pin and load do.
+   */
+  private evictionScope(): EvictionScope {
+    return mcpCallerIsOperator() ? 'operator' : 'request';
   }
 
   /**

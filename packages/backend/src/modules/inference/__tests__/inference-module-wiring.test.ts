@@ -6,6 +6,8 @@ import { LemonadeBackend } from '../backends/lemonade.backend';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { InferenceModule } from '../inference.module';
+import { HubPoolModule } from '@/modules/hub-pool/hub-pool.module';
+import { HubPoolLoadService } from '@/modules/hub-pool/hub-pool-load.service';
 
 /**
  * Every backend class, paired with the type it answers for.
@@ -50,5 +52,13 @@ describe('InferenceModule wiring', () => {
   /* Keeps the list above honest: a new backend type must arrive with its class, not without one. */
   it('has one class for every declared backend type', () => {
     expect(BACKEND_CLASSES.map(([type]) => type)).toEqual([...INFERENCE_BACKEND_TYPES]);
+  });
+
+  /*
+   * The router takes the pool's record of in-flight generations as `@Optional()`, so a HubPoolModule
+   * that stopped exporting it would boot fine and quietly let every load evict models mid-turn.
+   */
+  it("reaches the pool's in-flight record the router's evictions depend on", () => {
+    expect(exportsOf(HubPoolModule)).toContain(HubPoolLoadService);
   });
 });

@@ -568,6 +568,13 @@ const generatedLlms: CuratedModel[] = decodeToonTable(CATALOG_TOON, 'llms').map(
 // `quant` is the quantization named in each entry's `checkpoint` (or `checkpoints.main`) tag, lowercased
 // to this file's `q4_K_M` spelling; unsloth's Dynamic builds keep their `UD-` marker as `ud-`. The one
 // checkpoint with no tag, `ggml-org/gpt-oss-20b-GGUF`, takes `mxfp4` from Lemonade's own registry key.
+//
+// Rows name 2026.39.1's registry, not every Lemonade's: the 10.2.0 apt package on every fleet Lemonade
+// node lacks 13 of them (Gemma-4-12B-it, Gemma-4-26B-A4B-it-MTP, Qwen3.8-27B, Qwen3.6-27B and its MTP
+// build, Qwen3.6-35B-A3B and its MTP build, Qwen3.5-122B-A10B, gpt-oss-120b-mxfp, Nemotron 3.5 Lightning,
+// Muse Glimmer, LFM2.5-8B-A1B, Llama-4-Scout). The registry service drops any row the connected
+// server's `GET /v1/models?show_all=true` does not list (`LemonadeBackend.offersModel`), so these stay
+// in the table for newer servers and never reach a node that cannot pull them.
 const LEMONADE_LLM_TOON = `
 llms[41|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reason,vision,tools,audio,tps,ttft,e2e,quant}:
   llama3-2-3b-lemonade|Llama-3.2-3B-Instruct-GGUF|Llama 3.2 3B (Lemonade)|general|3|2.06|cpu-only||Meta||0|0|0|0||||ud-q4_K_XL
@@ -789,18 +796,32 @@ const omlxLlms: CuratedModel[] = decodeToonTable(VLLM_MLX_LLM_TOON, 'llms').map(
 // strands an index. Measured on the 7900 XTX: Ollama's `nomic-embed-text` and Lemonade serving
 // nomic-ai/nomic-embed-text-v1.5-GGUF (F16) agree at cosine 0.99996–0.99998 on the same text; Lemonade's
 // built-in v1 agrees at 0.69–0.73, i.e. a different vector space. Lemonade does not ship v1.5, so the
-// Hub registers it on pull (`LEMONADE_REGISTRATIONS` in lemonade.backend.ts); its public id drops the
-// `user.` namespace.
+// Hub registers it on pull (`LEMONADE_REGISTRATIONS` in lemonade.backend.ts). lemonade-server 2026.39.1
+// then lists it as `nomic-embed-text-v1.5-GGUF`, but 10.2.0 (the fleet's apt package) lists and serves
+// it only as `user.nomic-embed-text-v1.5-GGUF`; the Hub hands out whichever spelling the server lists.
+//
+// Later on 2026-09-29: the v1 row is back, as `available` and never recommended. Until #1679 it was the
+// Lemonade default, so a Lemonade-only host that installed before then holds an index of v1 vectors; both
+// models are 768-dim, so pgvector would take v1.5 vectors into that index without complaint and search
+// would quietly degrade. The embedder handout keeps such a host on v1 (it has v1 downloaded and not
+// v1.5) until the operator chooses otherwise, and a preference or tracked state naming the v1 row
+// resolves again. Switching needs a re-embed; see docs/MODEL_REGISTRY.md.
+//
+// Also later on 2026-09-29: the two Whisper rows name Lemonade's registry keys, `Whisper-Large-v3-Turbo` and
+// `Whisper-Base` (the same in 10.2.0 and 2026.39.1). Lemonade looks names up case-sensitively, so the
+// lowercase ids these rows carried were never servable, and the registry filter now hides a row the
+// connected Lemonade does not list.
 const EXTRAS_TOON = `
-extras[8|]{id,backendModelId,backend,modality,name,creator,diskMb,footprintMb,minRamMb,recVramMb,minVramMb,ctx,minTier,cpu,pinned,tierHigh,tierMed,tierLow,tierCpu,desc}:
+extras[9|]{id,backendModelId,backend,modality,name,creator,diskMb,footprintMb,minRamMb,recVramMb,minVramMb,ctx,minTier,cpu,pinned,tierHigh,tierMed,tierLow,tierCpu,desc}:
   kokoro-v1|kokoro-v1|lemonade|tts|Kokoro v1 TTS|Hexgrad|300|350|1024|512|0|0|cpu-only|1|1|recommended|recommended|recommended|recommended|High-quality text-to-speech. Low latency, natural sounding.
-  whisper-large-v3-turbo|whisper-large-v3-turbo|lemonade|stt|Whisper Large v3 Turbo|OpenAI|1500|1500|8192|6144|4096|0|medium|0|0|recommended|recommended|not-recommended|not-recommended|OpenAI's speech-to-text model. Fast and accurate transcription.
-  whisper-base|whisper-base|lemonade|stt|Whisper Base|OpenAI|150|200|1024|512|0|0|cpu-only|1|0|available|available|recommended|recommended|Lightweight speech-to-text for resource-constrained environments.
+  whisper-large-v3-turbo|Whisper-Large-v3-Turbo|lemonade|stt|Whisper Large v3 Turbo|OpenAI|1500|1500|8192|6144|4096|0|medium|0|0|recommended|recommended|not-recommended|not-recommended|OpenAI's speech-to-text model. Fast and accurate transcription.
+  whisper-base|Whisper-Base|lemonade|stt|Whisper Base|OpenAI|150|200|1024|512|0|0|cpu-only|1|0|available|available|recommended|recommended|Lightweight speech-to-text for resource-constrained environments.
   nomic-embed-text|nomic-embed-text|ollama|embedding|Nomic Embed Text|Nomic|300|500|1024|512|0|8192|cpu-only|1|1|recommended|recommended|recommended|recommended|Local text-embedding model (768-dim). Default embeddings for CI memory / RAG (pgvector). Runs on any hardware.
   embeddinggemma|embeddinggemma|ollama|embedding|EmbeddingGemma|Google|622|700|1536|1024|0|2048|cpu-only|1|0|available|available|available|available|Google's 300M embedding model (768-dim, Matryoshka-truncatable to 512/256/128). Multilingual (100+ languages), 2K context. Drop-in pgvector replacement for Nomic at the same 768 dimensions, with stronger retrieval. Runs on any hardware.
   nomic-embed-text-v2-moe|nomic-embed-text-v2-moe|ollama|embedding|Nomic Embed Text v2 (MoE)|Nomic|900|900|2048|1024|0|512|cpu-only|1|0|available|available|available|available|Nomic Embed v2, a mixture-of-experts embedding model (~305M active / 475M total params, 768-dim). Multilingual (~100 languages) and pgvector-compatible with the 768-dim Nomic default. Runs on any hardware.
   qwen3-embedding|qwen3-embedding|ollama|embedding|Qwen3 Embedding (0.6B)|Alibaba|640|800|2048|1536|0|32768|cpu-only|1|0|available|available|available|available|Qwen3 Embedding 0.6B (1024-dim, 32K context). Tops the multilingual MTEB leaderboard for its size across 100+ languages. Note: 1024-dim — switching from the 768-dim default requires re-embedding existing memories. Runs on any hardware.
   nomic-embed-text-v1-5-lemonade|nomic-embed-text-v1.5-GGUF|lemonade|embedding|Nomic Embed Text v1.5 (Lemonade)|Nomic|262|300|1024|512|0|8192|cpu-only|1|0|recommended|recommended|recommended|recommended|Local text-embedding model (768-dim) served through Lemonade, for hosts running Lemonade as their only local backend. The same F16 weights as Ollama's nomic-embed-text, so either engine's vectors search the other's index. Runs on any hardware.
+  nomic-embed-text-v1-lemonade|nomic-embed-text-v1-GGUF|lemonade|embedding|Nomic Embed Text v1 (Lemonade)|Nomic|80|150|1024|512|0|8192|cpu-only|1|0|available|available|available|available|Lemonade's built-in embedder (768-dim), the Hub's Lemonade default until 2026-09-29. Kept for hosts whose stored vectors came from it: its vectors do not match v1.5 or Ollama's nomic-embed-text, so switching away needs a re-embed. Runs on any hardware.
 `;
 
 const tierRec = (rec: string | undefined): TierRecommendation => (rec === 'recommended' || rec === 'not-recommended' ? rec : 'available');

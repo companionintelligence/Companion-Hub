@@ -106,6 +106,14 @@ export type OmlxStatus = VllmStatus;
 /** Lemonade's health card uses the same connection shape and also reports cached model ids. */
 export interface LemonadeStatus extends VllmStatus {
   loadedModels?: string[];
+  /** How the probe failed; `auth` means Lemonade answered and refused the Hub's key. */
+  failureMode?: BridgeFailureMode | 'auth';
+  /** The Hub host's OS, from the host probe: the systemd and firewall steps are Linux-only. */
+  hostPlatform?: string;
+  /** The Hub holds a `LEMONADE_API_KEY`. */
+  apiKeyConfigured?: boolean;
+  /** Host firewall rules for the Hub's network and the app subnet; empty when the host has no enabled firewall. */
+  firewallCommands?: string[];
 }
 
 export interface InferencePreferencesResponse {

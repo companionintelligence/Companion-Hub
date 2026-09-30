@@ -6684,7 +6684,7 @@ describe('PoolProxyService', () => {
         await v1;
       });
 
-      it('does not count an embedding placed here', async () => {
+      it('does not count an embedding placed here, though its model is busy for the eviction plan', async () => {
         const upstream = holdUpstream();
         const embedding = service.proxyRequest({
           path: '/v1/embeddings',
@@ -6696,6 +6696,8 @@ describe('PoolProxyService', () => {
         await vi.waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
 
         expect(ids(await hermesTurn())).toEqual([null, 'core-2']);
+        expect(loadService.localGenerationsOn('ollama')).toEqual([]);
+        expect(loadService.localBusyModelsOn('ollama')).toEqual([{ model: OTHER }]);
 
         upstream.release();
         await embedding;
@@ -8146,7 +8148,7 @@ describe('PoolProxyService', () => {
       await withRouter.proxyRequest({ path: '/api/chat', method: 'POST', body: { model: MODEL, messages: [] }, model: MODEL, res });
 
       // No `options.num_ctx` on this request: it runs at the engine's default, and so must the load.
-      expect(router.prepareTrackedModel).toHaveBeenCalledWith(MODEL, { numCtx: null });
+      expect(router.prepareTrackedModel).toHaveBeenCalledWith(MODEL, { numCtx: null, signal: expect.any(AbortSignal) });
       expect(router.prepareTrackedModel.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(global.fetch).mock.invocationCallOrder[0]);
       expect(res.status).toHaveBeenCalledWith(200);
     });
@@ -8161,7 +8163,7 @@ describe('PoolProxyService', () => {
         model: MODEL,
         res: createMockResponse(),
       });
-      expect(router.prepareTrackedModel).toHaveBeenLastCalledWith(MODEL, { numCtx: 65536 });
+      expect(router.prepareTrackedModel).toHaveBeenLastCalledWith(MODEL, { numCtx: 65536, signal: expect.any(AbortSignal) });
 
       // `/v1` drops `options` on Ollama, so a num_ctx there says nothing about the window it runs at.
       await withRouter.proxyRequest({
@@ -8171,7 +8173,64 @@ describe('PoolProxyService', () => {
         model: MODEL,
         res: createMockResponse(),
       });
-      expect(router.prepareTrackedModel).toHaveBeenLastCalledWith(MODEL, { numCtx: null });
+      expect(router.prepareTrackedModel).toHaveBeenLastCalledWith(MODEL, { numCtx: null, signal: expect.any(AbortSignal) });
+    });
+
+    // Arbitration queues behind other loads on this node, so the client's hang-up has to reach it:
+    // a request abandoned while it waited must not go on to evict and load for nobody.
+    it("hands the arbitration the client's hang-up, which fires when the client goes away", async () => {
+      const seen: boolean[] = [];
+      const res = createMockResponse();
+      router.prepareTrackedModel.mockImplementation(async (_model, options) => {
+        seen.push(options?.signal?.aborted ?? true);
+        // The client hangs up while the arbitration is still waiting for its turn.
+        res.destroy();
+        await new Promise((resolve) => setImmediate(resolve));
+        seen.push(options?.signal?.aborted ?? false);
+        return null;
+      });
+
+      await withRouter.proxyRequest({ path: '/api/chat', method: 'POST', body: { model: MODEL, messages: [] }, model: MODEL, res });
+
+      expect(seen).toEqual([false, true]);
+    });
+
+    // S2 in the review of #1684: the eviction plan only saw generations, so the embedder Memory was
+    // batch-embedding with could be evicted mid-batch and reloaded cold for the next one.
+    it("marks an embedding batch's model busy for the eviction plan while it runs, and never as a generation", async () => {
+      let during: { busy: { model: string }[]; generations: unknown[] } | undefined;
+      vi.mocked(global.fetch).mockImplementation(async () => {
+        during = { busy: loadService.localBusyModelsOn('ollama'), generations: loadService.localGenerationsOn('ollama') };
+        return new Response(JSON.stringify({ embeddings: [[0.1]] }), { status: 200 });
+      });
+      const res = createMockResponse();
+
+      await withRouter.proxyRequest({ path: '/api/embed', method: 'POST', body: { model: MODEL, input: ['a'] }, model: MODEL, res });
+
+      expect(during).toEqual({ busy: [{ model: MODEL }], generations: [] });
+      expect(loadService.localBusyModelsOn('ollama')).toEqual([]);
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    it("marks a peer's forwarded embedding batch busy on this node's engine too", async () => {
+      let during: { model: string }[] | undefined;
+      vi.mocked(global.fetch).mockImplementation(async () => {
+        during = loadService.localBusyModelsOn('ollama');
+        return new Response(JSON.stringify({ embeddings: [[0.1]] }), { status: 200 });
+      });
+
+      await withRouter.forwardToLocalBackendAndRespond(
+        'ollama',
+        '/api/embed',
+        'POST',
+        { model: MODEL, input: ['a'] },
+        createMockResponse(),
+        'core-6.tailxyz.ts.net',
+        MODEL,
+      );
+
+      expect(during).toEqual([{ model: MODEL }]);
+      expect(loadService.localBusyModelsOn('ollama')).toEqual([]);
     });
 
     it('still forwards when the arbitration itself fails: it is advice to the engine, not a gate', async () => {

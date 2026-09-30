@@ -55,6 +55,8 @@ import { InferenceBackendRegistry } from './backends/backend-registry';
 import { OllamaBackend } from './backends/ollama.backend';
 import { buildVllmRemediation, resolveVllmProbeUrl, VLLM_PROBE_API_KEY_HEADER, VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
+import { buildLemonadeRemediation, classifyLemonadeFailure } from './backends/lemonade-remediation';
+import { resolveBridgeTopology, resolveHostPlatform } from './backends/ollama-host-bridge';
 import { buildOmlxRemediation, OMLX_PROBE_API_KEY_HEADER, OmlxBackend, resolveOmlxProbeUrl } from './backends/omlx.backend';
 import { OpenAiCompatibleClient } from './backends/openai-compatible.client';
 import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels } from './model-availability.util';
@@ -539,7 +541,9 @@ export class InferenceController {
   async loadModel(@Body() body: { modelId: string }) {
     // Through the router, like a pin: it makes room, sizes the context window and refuses a load
     // that cannot fit, where the engine's own load would go on top of whatever holds the card.
-    const outcome = await this.router.loadTrackedModel(body.modelId);
+    // `operator`: AuthGuard admits only a signed-in operator or a host-local credential acting as
+    // one, never an app's key, so this load may unload any idle model — an app's included.
+    const outcome = await this.router.loadTrackedModel(body.modelId, { scope: 'operator' });
     if (!outcome.loaded) {
       return { success: false, message: outcome.reason };
     }
@@ -612,6 +616,12 @@ export class InferenceController {
     const recommendedBackend = this.getRecommendedBackend(profile);
     const installBackend = query?.backend ?? recommendedBackend;
     const tier = this.getOnboardingTier(profile, recommendedBackend);
+    // Probed before the model lists, not after: the probe reads Lemonade's registry, which decides
+    // which Lemonade rows the lists below may offer (ModelRegistryService.getModelsForTier).
+    const lemonadeHealth =
+      installBackend === 'lemonade'
+        ? await this.lemonadeBackend.healthCheck().catch(() => ({ running: false, healthy: false, modelsLoaded: [] as string[] }))
+        : null;
     const recommendedModels = this.modelRegistry.getRecommendedModelsForHardware(tier, profile);
     // Keep rows for an explicitly selected host-served backend visible even when its server lives
     // on another OS (for example, a Linux Hub pointing at a Mac's Speculative inference endpoint).
@@ -650,12 +660,7 @@ export class InferenceController {
     // the model picker reflects what the selected endpoint can actually serve. Ollama's embedding
     // rows are merged for host-served chat backends because embeddings stay on Ollama there.
     // vLLM and oMLX probes take an optional API key override; the other probes only take a URL.
-    if (installBackend === 'lemonade') {
-      const lemonadeHealth = await this.lemonadeBackend.healthCheck().catch(() => ({
-        running: false,
-        healthy: false,
-        modelsLoaded: [] as string[],
-      }));
+    if (lemonadeHealth) {
       installedCatalogIds = resolveInstalledCatalogIdsFromServedModels(catalog, lemonadeHealth.modelsLoaded ?? [], 'lemonade', getTrackedState);
     } else if (installBackend === 'vllm' || installBackend === 'omlx') {
       const servedHealth =
@@ -721,16 +726,38 @@ export class InferenceController {
       error: err instanceof Error ? err.message : String(err),
     }));
     const ready = !!(health.running && health.healthy);
+    const apiKeyConfigured = Boolean(this.lemonadeBackend.getApiKey());
+    if (ready) {
+      return {
+        ready,
+        running: health.running,
+        endpointUrl,
+        displayEndpoint: `${endpointUrl}/v1`,
+        loadedModels: health.modelsLoaded,
+        apiKeyConfigured,
+      };
+    }
+    // What failed and what the host runs, so the card shows the fix for this host instead of one
+    // Linux recipe for every failure: no `systemctl` on macOS, no rebind for a refused key, and
+    // firewall rules for the firewall the host probe found.
+    const failureMode = classifyLemonadeFailure(health.error, endpointUrl);
+    const hostProbe = await this.hostMetrics.readHostProbe().catch(() => null);
+    const hostPlatform = hostProbe?.platform ?? resolveHostPlatform();
+    const topology = failureMode === 'auth' || failureMode === 'dns' ? undefined : await resolveBridgeTopology(endpointUrl);
+    const remediation = buildLemonadeRemediation({ mode: failureMode, hostPlatform, firewall: hostProbe?.firewall, topology, apiKeyConfigured });
     return {
       ready,
       running: health.running,
       endpointUrl,
-      displayEndpoint: ready ? `${endpointUrl}/v1` : undefined,
       loadedModels: health.modelsLoaded,
-      error: ready ? undefined : health.error,
-      hint: ready
-        ? undefined
-        : 'Start the Lemonade server on the host, then re-check this connection. The Hub will pull and load selected models through Lemonade’s API.',
+      error: health.error,
+      failureMode,
+      hostPlatform,
+      apiKeyConfigured,
+      firewallCommands: remediation.firewallCommands,
+      hint:
+        remediation.hint ??
+        'Start the Lemonade server on the host, then re-check this connection. The Hub will pull and load selected models through Lemonade’s API.',
     };
   }
 

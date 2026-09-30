@@ -375,4 +375,54 @@ describe('InferenceController — onboarding-profile', () => {
     await expect(controller.rescanHardware()).rejects.toBe(err);
     expect(hardwareInspector.rescan).toHaveBeenCalledOnce();
   });
+
+  // The Lemonade card used to print one Linux recipe for every failure. The status now says what
+  // failed and what the host runs, so the card can show the fix for this host.
+  describe('lemonade/status', () => {
+    const probe = (platform: 'linux' | 'darwin', firewall?: { kind: 'ufw' | 'none'; active: boolean }) =>
+      ({ schemaVersion: 1, platform, cpuArch: 'x64', source: 'host', probedAt: '2026-09-29T00:00:00.000Z', host: {}, firewall }) as never;
+
+    it('reports a key Lemonade refused as an auth failure, with no rebind or firewall step', async () => {
+      lemonadeBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:13305');
+      lemonadeBackend.getApiKey.mockReturnValue('stale-key');
+      lemonadeBackend.healthCheck.mockResolvedValue({
+        running: false,
+        healthy: false,
+        modelsLoaded: [],
+        error: 'Request failed with status code 401',
+      });
+      hostMetrics.readHostProbe.mockResolvedValue(probe('linux', { kind: 'ufw', active: true }));
+
+      const status = await controller.getLemonadeStatus();
+
+      expect(status).toMatchObject({ ready: false, failureMode: 'auth', hostPlatform: 'linux', apiKeyConfigured: true, firewallCommands: [] });
+      expect(status.hint).toContain("refused the Hub's API key");
+    });
+
+    it('names the host platform and gives no firewall commands where the host firewall is off', async () => {
+      lemonadeBackend.getBaseUrl.mockReturnValue('http://127.0.0.1:13305');
+      lemonadeBackend.getApiKey.mockReturnValue(undefined);
+      lemonadeBackend.healthCheck.mockResolvedValue({
+        running: false,
+        healthy: false,
+        modelsLoaded: [],
+        error: 'connect ECONNREFUSED 127.0.0.1:13305',
+      });
+      hostMetrics.readHostProbe.mockResolvedValue(probe('darwin', { kind: 'none', active: false }));
+
+      const status = await controller.getLemonadeStatus();
+
+      expect(status).toMatchObject({ ready: false, hostPlatform: 'darwin', apiKeyConfigured: false, firewallCommands: [] });
+    });
+
+    it('says only what is needed once Lemonade answers', async () => {
+      lemonadeBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:13305');
+      lemonadeBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Gemma-4-E4B-it-GGUF'] });
+
+      const status = await controller.getLemonadeStatus();
+
+      expect(status).toMatchObject({ ready: true, displayEndpoint: 'http://host.docker.internal:13305/v1', loadedModels: ['Gemma-4-E4B-it-GGUF'] });
+      expect(hostMetrics.readHostProbe).not.toHaveBeenCalled();
+    });
+  });
 });

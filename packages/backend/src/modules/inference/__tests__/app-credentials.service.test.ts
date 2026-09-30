@@ -707,6 +707,78 @@ describe('AppCredentialsService', () => {
     });
   });
 
+  // The bootstrap credentials used to hand every app Ollama's `nomic-embed-text` even on a node where
+  // only Lemonade runs, while the app.env resolver handed out Lemonade's embedder there: two apps on
+  // one node, two embedders, one of them served by nothing.
+  describe('getCredentials — Lemonade-only node', () => {
+    const lemonadeEmbedder = {
+      ...makeEmbedding('nomic-embed-text-v1-5-lemonade', 'nomic-embed-text-v1.5-GGUF'),
+      backend: 'lemonade',
+    } as CuratedModel;
+    const lemonadeChat = makeLlm('gemma4-e4b-lemonade', 'Gemma-4-E4B-it-GGUF', 0, 0, 'lemonade');
+
+    beforeEach(() => {
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'lemonade',
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      } as never);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      lemonadeBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:13305');
+      lemonadeBackend.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['Gemma-4-E4B-it-GGUF', 'user.nomic-embed-text-v1.5-GGUF'],
+      });
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([lemonadeChat]);
+      modelRegistry.getRecommendedEmbeddingModel.mockImplementation((_tier, backend) =>
+        backend === 'lemonade' ? lemonadeEmbedder : backend === 'ollama' ? makeEmbedding('nomic-embed-text', 'nomic-embed-text') : null,
+      );
+      modelRegistry.getCuratedModel.mockImplementation((id) =>
+        id === lemonadeEmbedder.id ? lemonadeEmbedder : id === lemonadeChat.id ? lemonadeChat : undefined,
+      );
+    });
+
+    it("hands out Lemonade's embedder under the spelling Lemonade lists, the same one the app.env resolver hands out", async () => {
+      const config = await service.getCredentials('hermes-agent');
+
+      expect(config.embeddingsModelId).toBe('user.nomic-embed-text-v1.5-GGUF');
+      expect(config.env.HERMES_EMBEDDINGS_MODEL).toBe('user.nomic-embed-text-v1.5-GGUF');
+      // Already on Lemonade under that name, so nothing re-registers it after a Hub restart.
+      expect(config.prePull.find((d) => d.kind === 'embeddings')).toMatchObject({ catalogId: lemonadeEmbedder.id, pull: false });
+    });
+
+    it('pre-pulls the embedder through Lemonade when it is not there yet', async () => {
+      lemonadeBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Gemma-4-E4B-it-GGUF'] });
+      lemonadeBackend.engineModelId.mockImplementation((id) => `user.${id}`);
+
+      const config = await service.getCredentials('hermes-agent');
+
+      expect(config.embeddingsModelId).toBe('user.nomic-embed-text-v1.5-GGUF');
+      expect(config.prePull.find((d) => d.kind === 'embeddings')).toMatchObject({ catalogId: lemonadeEmbedder.id, pull: true });
+    });
+
+    it("keeps Ollama's embedder when a healthy Ollama runs beside Lemonade", async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['nomic-embed-text:latest'] });
+
+      const config = await service.getCredentials('hermes-agent');
+
+      expect(config.embeddingsModelId).toBe('nomic-embed-text');
+    });
+
+    it('never pre-pulls a chat model the connected Lemonade does not list', async () => {
+      lemonadeBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
+      lemonadeBackend.offersModel.mockReturnValue(false);
+
+      const config = await service.getCredentials('hermes-agent');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(config.prePull.find((d) => d.kind === 'chat')).toMatchObject({ catalogId: lemonadeChat.id, pull: false });
+      expect(modelPuller.startPull).not.toHaveBeenCalledWith(lemonadeChat.id, expect.anything());
+    });
+  });
+
   describe('getCredentials — cloud providers', () => {
     const cloudProvider: CloudProviderConfig = {
       provider: 'openai',

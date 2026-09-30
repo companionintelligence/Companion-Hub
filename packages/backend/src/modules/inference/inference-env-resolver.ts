@@ -18,6 +18,7 @@ import {
 } from './app-model-handout';
 import { MemoryManagerService, modelMemoryCeilingMb } from './memory-manager.service';
 import { appBearerFor } from './engine-credential-scope';
+import { embedderEngineId, embeddingBackendFor, pickEmbeddingModel } from './embedder-handout';
 import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
 
 /**
@@ -210,31 +211,35 @@ export class InferenceEnvResolver {
     // Lemonade and Ollama healthy, this used to emit Ollama's host with Lemonade's
     // embedder id. So a healthy Ollama supplies both; a Lemonade with no Ollama
     // supplies both itself (it serves Ollama's native `/api/embed`); vLLM, which
-    // ships no embedder and speaks no native dialect, still gets neither.
-    const resolveEmbedding = (type: InferenceBackendType): string | undefined => {
-      if (preferences.preferredEmbeddingModel) {
-        const curated = this.modelRegistry.getCuratedModel(preferences.preferredEmbeddingModel);
-        if (curated?.backend === type) return curated.backendModelId;
-      }
-      return this.modelRegistry.getRecommendedEmbeddingModel(profile.tier, type, profile)?.backendModelId;
-    };
-
+    // ships no embedder and speaks no native dialect, still gets neither. The
+    // choice is `embeddingBackendFor`, shared with the bootstrap credentials.
     const encodeOverride = preferences.preferredEncodeEndpoint?.trim();
     const decoderEmbeds = backendType === 'ollama' || backendType === 'omlx';
-    let embeddingModel = resolveEmbedding(backendType);
+    const ollamaHealth = decoderEmbeds
+      ? null
+      : await this.ollamaBackend.healthCheck().catch((err) => {
+          const message = err instanceof Error ? err.message : String(err);
+          this.logger.warn(`[InferenceEnvResolver] ollama (embeddings fallback) health check failed: ${message}`);
+          return { running: false, healthy: false, modelsLoaded: [] as string[] };
+        });
+    const embedBackend = embeddingBackendFor(backendType, Boolean(ollamaHealth?.running && ollamaHealth.healthy));
+    const embedOnOllama = embedBackend === 'ollama' && backendType !== 'ollama';
+    const embedServed = (embedOnOllama ? ollamaHealth?.modelsLoaded : backendHealth.modelsLoaded) ?? [];
+    const embedder = embedBackend
+      ? pickEmbeddingModel(this.modelRegistry, {
+          backend: embedBackend,
+          preferredId: preferences.preferredEmbeddingModel,
+          profile,
+          served: embedServed,
+        })
+      : null;
+    // The id the engine serves it under: Lemonade 10.x lists a Hub-registered embedder as `user.<id>`.
+    const embeddingModel = embedder ? embedderEngineId(embedder, embedServed, embedOnOllama ? this.ollamaBackend : backend) : undefined;
     let embedHost = decoderEmbeds ? backendBaseUrl : undefined;
-    if (!decoderEmbeds) {
-      const ollamaHealth = await this.ollamaBackend.healthCheck().catch((err) => {
-        const message = err instanceof Error ? err.message : String(err);
-        this.logger.warn(`[InferenceEnvResolver] ollama (embeddings fallback) health check failed: ${message}`);
-        return { running: false, healthy: false, modelsLoaded: [] as string[] };
-      });
-      if (ollamaHealth.running && ollamaHealth.healthy) {
-        embedHost = this.ollamaBackend.getBaseUrl();
-        embeddingModel = resolveEmbedding('ollama') ?? embeddingModel;
-      } else if (backendType === 'lemonade' && embeddingModel) {
-        embedHost = backendBaseUrl;
-      }
+    if (embedOnOllama) {
+      embedHost = this.ollamaBackend.getBaseUrl();
+    } else if (embedBackend === 'lemonade' && embeddingModel) {
+      embedHost = backendBaseUrl;
     }
     if (encodeOverride) {
       embedHost = encodeOverride.replace(/\/$/, '').replace(/\/v1$/, '');
