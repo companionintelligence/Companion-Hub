@@ -79,6 +79,7 @@ import {
   PoolOutputQuarantine,
   applyOutputQuarantine,
   describeOutputFault,
+  isStreamedContentType,
   judgeWholeBody,
   outputDialectOf,
   type OutputTarget,
@@ -178,9 +179,9 @@ const PROMPT_CEILING_PATHS: ReadonlySet<string> = new Set(['/v1/chat/completions
  * budget reads the string length, exactly as the forward's timer does; `bodyBytes` is the UTF-8 size
  * on the wire, and the two differ only for non-ASCII text.
  */
-export function describeRequestShape(method: string, body: unknown): { stream: boolean; bodyBytes: number; budgetMs: number } {
+export function describeRequestShape(method: string, body: unknown, path?: string): { stream: boolean; bodyBytes: number; budgetMs: number } {
   const payload = method === 'GET' ? '' : (JSON.stringify(body) ?? '');
-  const stream = isStreamingRequest(body);
+  const stream = isStreamingRequest(body, path);
   return { stream, bodyBytes: Buffer.byteLength(payload, 'utf8'), budgetMs: forwardBudgetMs(stream, payload.length) };
 }
 
@@ -237,9 +238,30 @@ export function resetPoolFetchDispatcherForTests(): void {
   poolDispatcherMemo = undefined;
 }
 
-/** Does this body ask for a streamed response? Decides which of the two budgets applies. */
-export function isStreamingRequest(body: unknown): boolean {
-  return !!(body && typeof body === 'object' && (body as { stream?: unknown }).stream === true);
+/**
+ * Ollama's native generation routes, which stream unless the body says `stream: false`. Every other
+ * pooled route — the OpenAI-compatible ones, and `/api/embed` — answers in one body unless asked to
+ * stream.
+ */
+const STREAMS_BY_DEFAULT_PATHS: ReadonlySet<string> = new Set(['/api/chat', '/api/generate']);
+
+/**
+ * Does this request get a streamed response? Decides which of the two budgets applies, and whether
+ * the pool can hold the answer to judge it before sending any of it.
+ *
+ * `path` because the default is the route's: `/api/chat` with no `stream` streams NDJSON. Read as
+ * non-streamed, such a turn was budgeted as a whole completion rather than a first byte, and held
+ * whole to be judged — the caller got nothing until the generation ended, and the NDJSON held could
+ * not be judged as one body. Without a path, the OpenAI default.
+ */
+export function isStreamingRequest(body: unknown, path?: string): boolean {
+  if (!isRecord(body)) {
+    return false;
+  }
+  if (path !== undefined && STREAMS_BY_DEFAULT_PATHS.has(path)) {
+    return body.stream !== false;
+  }
+  return body.stream === true;
 }
 
 /**
@@ -2105,7 +2127,7 @@ export class PoolProxyService {
     // app that originated this call has no reason to know that, so the proxy adds it here rather
     // than never seeing a usage frame at all. See `response-usage-tap.ts`.
     const body = injectUsageOptIn(aliasedBody);
-    const streaming = isStreamingRequest(body);
+    const streaming = isStreamingRequest(body, path);
     // Throughput is judged, and measured, on exactly the routes the ceiling is: a body that is one
     // context the engine reads before its first token.
     const judged = PROMPT_CEILING_PATHS.has(path);
@@ -2168,7 +2190,7 @@ export class PoolProxyService {
         durationMs: Date.now() - startedAt,
         usage: null,
         reason: 'no candidate',
-        ...describeRequestShape(method, body),
+        ...describeRequestShape(method, body, path),
       });
       res.setHeader(POOL_REQUEST_ID_HEADER, failed.id);
       // `localBackends` is the container's-eye view of every local engine: the operator reading
@@ -2201,7 +2223,7 @@ export class PoolProxyService {
       promptCeiling,
       contextCap,
       slots,
-      ...describeRequestShape(method, body),
+      ...describeRequestShape(method, body, path),
       throughput,
       contention,
       affinity: affinity.decision,
@@ -2360,10 +2382,17 @@ export class PoolProxyService {
         // can still be asked. Reading it costs the caller nothing: the engine sends the body with its
         // headers, the whole completion at once. A stream cannot be held — its first frame is on the
         // wire before its last exists — so it is judged on the way past, below, and only recorded.
+        // A stream is whatever the engine sent as one, not only what the request asked for: holding
+        // one would send the caller nothing until the generation ended.
+        const streamedAnswer = streaming || isStreamedContentType(upstream.headers.get('content-type'));
         let heldBody: WebReadableStream<Uint8Array> | undefined;
         let outputFault: PoolOutputFault | null = null;
-        if (dialect && !streaming && !refusal && upstream.ok && upstream.body) {
-          const held = await holdWholeBody(upstream.body as WebReadableStream<Uint8Array>, MAX_JUDGED_BODY_BYTES);
+        if (dialect && !streamedAnswer && !refusal && upstream.ok && upstream.body) {
+          const held = await holdWholeBody(upstream.body as WebReadableStream<Uint8Array>, MAX_JUDGED_BODY_BYTES).catch((error: unknown) => {
+            // Said as the upstream failing mid-body, like the relay says it, so the catch below
+            // reads it as the engine's failure rather than a transport error before any answer.
+            throw new RelayError('upstream', error);
+          });
           heldBody = held.body;
           const judgedBody = held.text === null ? null : judgeWholeBody(dialect, held.text);
           if (judgedBody?.fault) {
@@ -2417,7 +2446,8 @@ export class PoolProxyService {
         const meter = measurable && upstream.ok ? startResponseTiming() : null;
         // Only a 200 that was relayed as the engine's answer: a refusal is not output, and a held
         // body was judged above.
-        const judge = dialect && streaming && upstream.ok && !refusal ? new OutputJudge(dialect, true) : null;
+        const judge = dialect && streamedAnswer && upstream.ok && !refusal ? new OutputJudge(dialect, true) : null;
+        let relayCut = false;
         try {
           await this.streamResponse(upstream, res, watch, {
             onUsage: (usage) => {
@@ -2428,8 +2458,14 @@ export class PoolProxyService {
             judge,
             body: heldBody,
           });
+        } catch (error) {
+          relayCut = error instanceof RelayError && error.side === 'upstream';
+          throw error;
         } finally {
-          if (meter) {
+          // An answer the row records as the node failing is no measure of the engine serving: an
+          // engine that emits placeholder tokens quickly would otherwise read as a fast one, and
+          // placement would keep favouring it once its withhold ran out.
+          if (meter && !outputFault && !relayCut && !judge?.verdict()?.fault) {
             this.recordServedThroughput(target, streaming, payload()?.length ?? 0, attemptStartedAt, headersAt, meter.timing);
           }
           this.routingLog.update(row, { totalMs: Date.now() - startedAt });
@@ -2471,8 +2507,22 @@ export class PoolProxyService {
             requestError: { signature: 'truncated-upstream', basis: 'node', confirms: null },
             reason: 'truncated-upstream',
           });
+          // Struck like an answer that ended without its final frame, which is what the caller got:
+          // an engine that keeps dying mid-generation must not keep drawing every retry, the local
+          // head start included. Nor should the session follow its prefix back to it.
+          if (dialect && error instanceof RelayError && error.side === 'upstream') {
+            this.strikeOutput(target, 'truncated-upstream', nodeLabel);
+            if (affinity.key) {
+              this.prefixAffinity.forget(affinity.key.key);
+            }
+          }
           res.destroy();
           return;
+        }
+        if (dialect && error instanceof RelayError && error.side === 'upstream') {
+          // A held body the engine stopped sending part-way: cut off exactly as a streamed answer that
+          // dies after the commit is, only caught while the next candidate can still be asked.
+          this.strikeOutput(target, 'truncated-upstream', nodeLabel);
         }
         const reason = describeAttemptError(error);
         passOver(candidate, nodeLabel, null, reason);
@@ -2868,7 +2918,7 @@ export class PoolProxyService {
     // It reads the response for timing frames as the outbound tap does, and never the request body.
     const target: ThroughputTarget | null =
       model && PROMPT_CEILING_PATHS.has(path) && this.loadService.localInFlight() === 0 ? { nodeKey: LOCAL_CANDIDATE_KEY, backend, model } : null;
-    const streaming = isStreamingRequest(body);
+    const streaming = isStreamingRequest(body, path);
     const payload = forwardedPayload(method, body);
     // A peer's turn holds a runner here exactly as a local app's does, so it is named the same way.
     const generation: LocalGeneration | undefined =
@@ -2877,7 +2927,10 @@ export class PoolProxyService {
     // Recorded once per forward, whichever way it ends: a stream that dies after the backend
     // answered is the same routing decision, not a second one.
     let row: PoolRoutingRecord | null = null;
-    const request = { id: requestId, ...describeRequestShape(method, body) };
+    const request = { id: requestId, ...describeRequestShape(method, body, path) };
+    // This node's engine is the one answering, so this node strikes it too — for its own apps'
+    // next requests. The sender judges the same bytes and keeps its own account of this engine.
+    const dialect = outputDialectOf(path);
     try {
       const upstream = await this.callBackend(backend, path, method, body, payload, senderClosed);
       const headersAt = Date.now();
@@ -2907,12 +2960,11 @@ export class PoolProxyService {
       // `x-hub-pool-*` header from a peer's answer, so the caller never sees it.
       const relayed = { [POOL_BACKEND_HEADER]: backend };
       const meter = target && upstream.ok ? startResponseTiming() : null;
-      // This node's engine is the one answering, so this node strikes it too — for its own apps'
-      // next requests. The sender judges the same bytes and keeps its own account of this engine.
-      const dialect = outputDialectOf(path);
-      const judge = dialect && upstream.ok ? new OutputJudge(dialect, streaming) : null;
+      const judge =
+        dialect && upstream.ok ? new OutputJudge(dialect, streaming || isStreamedContentType(upstream.headers.get('content-type'))) : null;
       this.commitResponse(upstream, res, relayed);
       const settledRow = row;
+      let relayCut = false;
       try {
         await this.streamResponse(upstream, res, watch, {
           onUsage: meter
@@ -2923,8 +2975,12 @@ export class PoolProxyService {
           observer: meter?.observer,
           judge,
         });
+      } catch (error) {
+        relayCut = error instanceof RelayError && error.side === 'upstream';
+        throw error;
       } finally {
-        if (meter && target) {
+        // Not from an answer that failed on this engine's account — see the same guard in `routeRequest`.
+        if (meter && target && !relayCut && !judge?.verdict()?.fault) {
           this.recordServedThroughput(target, streaming, payload?.length ?? 0, startedAt, headersAt, meter.timing);
         }
         this.routingLog.update(settledRow, { totalMs: Date.now() - startedAt });
@@ -2955,8 +3011,12 @@ export class PoolProxyService {
           this.recordMissedDeadline(target, payload?.length ?? 0, startedAt, error);
         }
       } else if (!senderClosed.aborted && error instanceof RelayError && error.side === 'upstream') {
-        // The engine died mid-answer: the sender got a cut-off response from this node.
+        // The engine died mid-answer: the sender got a cut-off response from this node, and this
+        // node's own apps would get the same, so it is struck here as a judged cut-off answer is.
         this.routingLog.update(row, { outcome: 'failed', reason: 'truncated-upstream' });
+        if (dialect && rowModel) {
+          this.strikeOutput({ nodeKey: LOCAL_CANDIDATE_KEY, backend, model: rowModel }, 'truncated-upstream', LOCAL_CANDIDATE_KEY);
+        }
       }
       if (senderClosed.aborted) {
         // Nobody to answer: rethrowing would only have Nest log a routine hang-up as a server error
@@ -3482,7 +3542,7 @@ export class PoolProxyService {
         headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
         body: payload,
       },
-      isStreamingRequest(body),
+      isStreamingRequest(body, path),
       payload?.length ?? 0,
       clientClosed,
     );
@@ -3551,7 +3611,7 @@ export class PoolProxyService {
         },
         body: peerPayload,
       },
-      isStreamingRequest(body),
+      isStreamingRequest(body, path),
       peerPayload?.length ?? 0,
       clientClosed,
     );

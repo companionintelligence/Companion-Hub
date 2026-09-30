@@ -34,6 +34,7 @@ import { HubPoolPeerService } from '../hub-pool-peer.service';
 import { HubPoolPressureService } from '../hub-pool-pressure.service';
 import { PoolProxyService, describeAttemptError } from '../hub-pool-proxy.service';
 import { HubPoolRoutingLogService } from '../hub-pool-routing-log.service';
+import { HubPoolThroughputService } from '../hub-pool-throughput.service';
 
 const MODEL = 'gemma4:e4b';
 const PEER_FQDN = 'core-17.tailxyz.ts.net';
@@ -51,8 +52,12 @@ function sseFrame(content: string | null, finishReason: string | null = null): s
   return `data: ${JSON.stringify({ choices: [{ index: 0, delta: content === null ? {} : { content }, finish_reason: finishReason }] })}\n\n`;
 }
 
+const NDJSON = 'application/x-ndjson';
+/** What Ollama and the OpenAI-compatible engines label a non-streamed completion. */
+const JSON_BODY = 'application/json; charset=utf-8';
+
 /** A fresh streamed 200 each call: a `Response` body can only be read once. */
-function streamed(chunks: string[], status = 200): globalThis.Response {
+function streamed(chunks: string[], status = 200, contentType = NDJSON): globalThis.Response {
   const encoder = new TextEncoder();
   return new Response(
     new ReadableStream<Uint8Array>({
@@ -61,7 +66,60 @@ function streamed(chunks: string[], status = 200): globalThis.Response {
         controller.close();
       },
     }),
-    { status, headers: { 'Content-Type': 'application/x-ndjson' } },
+    { status, headers: { 'Content-Type': contentType } },
+  );
+}
+
+/** A non-streamed completion, labelled as the engines label one. */
+function whole(body: string): globalThis.Response {
+  return streamed([body], 200, JSON_BODY);
+}
+
+/**
+ * A 200 that sends `first` and then nothing more until `release()`, which sends `rest` and ends it —
+ * an engine still generating, so a test can look at what the caller had been sent by then.
+ */
+function gated(first: string[], rest: string[], contentType = NDJSON): { response: globalThis.Response; release: () => void } {
+  const encoder = new TextEncoder();
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  const response = new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        stream = controller;
+        for (const chunk of first) controller.enqueue(encoder.encode(chunk));
+      },
+    }),
+    { status: 200, headers: { 'Content-Type': contentType } },
+  );
+  return {
+    response,
+    release: () => {
+      for (const chunk of rest) stream.enqueue(encoder.encode(chunk));
+      stream.close();
+    },
+  };
+}
+
+/**
+ * A 200 that sends `frames` and then fails, as Node's `fetch` reports an engine whose connection
+ * dropped mid-generation. Failing from `pull`, after the frames were read: erroring the stream while
+ * they were still queued would discard them, and the engine would not have sent anything at all.
+ */
+function dying(frames: string[], contentType = NDJSON): globalThis.Response {
+  const encoder = new TextEncoder();
+  let pulls = 0;
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        if (pulls === 1) {
+          for (const frame of frames) controller.enqueue(encoder.encode(frame));
+          return;
+        }
+        controller.error(new TypeError('terminated'));
+      },
+    }),
+    { status: 200, headers: { 'Content-Type': contentType } },
   );
 }
 
@@ -147,17 +205,37 @@ describe('pool proxy: degenerate and cut-off output, and why candidates were pas
     return asked;
   }
 
-  async function chat(options: { stream?: boolean; path?: string } = {}): Promise<Response & { text: () => string }> {
+  /** The body a chat turn sends; `stream: 'omitted'` leaves the field out, as most Ollama-native clients do. */
+  function chatBody(stream: boolean | 'omitted' = true): Record<string, unknown> {
+    return { model: MODEL, ...(stream === 'omitted' ? {} : { stream }), messages: [{ role: 'user', content: 'hi' }] };
+  }
+
+  function startChat(options: { stream?: boolean | 'omitted'; path?: string } = {}): {
+    res: Response & { text: () => string };
+    routed: Promise<void>;
+  } {
     const res = createMockResponse();
-    const path = options.path ?? '/api/chat';
-    await service.proxyRequest({
-      path,
-      method: 'POST',
-      body: { model: MODEL, stream: options.stream ?? true, messages: [{ role: 'user', content: 'hi' }] },
-      model: MODEL,
-      res,
-    });
+    const routed = service.proxyRequest({ path: options.path ?? '/api/chat', method: 'POST', body: chatBody(options.stream), model: MODEL, res });
+    return { res, routed };
+  }
+
+  async function chat(options: { stream?: boolean | 'omitted'; path?: string } = {}): Promise<Response & { text: () => string }> {
+    const { res, routed } = startChat(options);
+    await routed;
     return res;
+  }
+
+  /** A peer forward of one chat turn to this node's own engine, as the peer-facing route makes it. */
+  function forwardFromPeer(stream: boolean | 'omitted' = true): Promise<void> {
+    return service.forwardToLocalBackendAndRespond(
+      'ollama',
+      '/api/chat',
+      'POST',
+      chatBody(stream),
+      createMockResponse(),
+      'core-2.tailxyz.ts.net',
+      MODEL,
+    );
   }
 
   beforeEach(() => {
@@ -270,6 +348,40 @@ describe('pool proxy: degenerate and cut-off output, and why candidates were pas
       expect(routingLog.list()[0]).toMatchObject({ outcome: 'failed', requestError: { signature: 'truncated-upstream', basis: 'node' } });
     });
 
+    it('reads an OpenAI stream that reported an error frame as cut off, though [DONE] followed it', async () => {
+      // How vLLM ends a generation its engine failed part-way through.
+      const errorFrame = `data: ${JSON.stringify({ error: { object: 'error', message: 'engine died', type: 'InternalServerError', code: 500 } })}\n\n`;
+      engines(
+        () => streamed([sseFrame('Hel'), errorFrame, 'data: [DONE]\n\n'], 200, 'text/event-stream'),
+        () => streamed(HEALTHY_STREAM),
+      );
+
+      await chat({ path: '/v1/chat/completions' });
+
+      expect(routingLog.list()[0]).toMatchObject({
+        outcome: 'failed',
+        requestError: { signature: 'truncated-upstream', basis: 'node' },
+        reason: 'truncated-upstream',
+      });
+    });
+
+    it('records a stream the engine dropped mid-generation as the node failing it', async () => {
+      engines(
+        () => dying([ollamaFrame('Hel')]),
+        () => streamed(HEALTHY_STREAM),
+      );
+
+      const res = await chat();
+
+      expect(res.text()).toBe(ollamaFrame('Hel'));
+      expect(routingLog.list()[0]).toMatchObject({
+        node: 'local',
+        outcome: 'failed',
+        requestError: { signature: 'truncated-upstream', basis: 'node' },
+        failedOverFrom: [],
+      });
+    });
+
     it('records the whole response time beside the time to headers', async () => {
       engines(
         () => streamed(HEALTHY_STREAM),
@@ -285,11 +397,62 @@ describe('pool proxy: degenerate and cut-off output, and why candidates were pas
     });
   });
 
+  describe('an Ollama-native turn that leaves `stream` out, which Ollama streams', () => {
+    it('relays each frame as the engine sends it, rather than holding the whole generation', async () => {
+      const { response, release } = gated([ollamaFrame('Hel')], [ollamaFrame('lo'), OLLAMA_DONE]);
+      engines(
+        () => response,
+        () => streamed(HEALTHY_STREAM),
+      );
+
+      const { res, routed } = startChat({ stream: 'omitted' });
+
+      // The engine is still generating, and the caller already has its first frame.
+      await vi.waitFor(() => expect(res.text()).toBe(ollamaFrame('Hel')));
+      expect(res.status).toHaveBeenCalledWith(200);
+      release();
+      await routed;
+      expect(res.text()).toBe([ollamaFrame('Hel'), ollamaFrame('lo'), OLLAMA_DONE].join(''));
+      expect(routingLog.list()[0]).toMatchObject({ outcome: 'served', stream: true, requestError: null });
+    });
+
+    it('judges the stream it relays: placeholder tokens are degenerate, a missing done:true is cut off', async () => {
+      engines(
+        () => streamed(DEGENERATE_STREAM),
+        () => streamed(HEALTHY_STREAM),
+      );
+      await chat({ stream: 'omitted' });
+      expect(routingLog.list()[0]).toMatchObject({ outcome: 'failed', requestError: { signature: 'degenerate-output', basis: 'node' } });
+
+      engines(
+        () => streamed([ollamaFrame('Hel'), ollamaFrame('lo')]),
+        () => streamed(HEALTHY_STREAM),
+      );
+      await chat({ stream: 'omitted' });
+      expect(routingLog.list()[0]).toMatchObject({ outcome: 'failed', requestError: { signature: 'truncated-upstream', basis: 'node' } });
+    });
+
+    it('relays an engine that streams a stream:false request as it streams, by what it answered with', async () => {
+      const { response, release } = gated([ollamaFrame('Hel')], [ollamaFrame('lo'), OLLAMA_DONE]);
+      engines(
+        () => response,
+        () => streamed(HEALTHY_STREAM),
+      );
+
+      const { res, routed } = startChat({ stream: false });
+
+      await vi.waitFor(() => expect(res.text()).toBe(ollamaFrame('Hel')));
+      release();
+      await routed;
+      expect(routingLog.list()[0]).toMatchObject({ outcome: 'served', requestError: null });
+    });
+  });
+
   describe('a non-streamed body the node cut off', () => {
     it('fails over to the next candidate instead of relaying a done:false body', async () => {
       const asked = engines(
-        () => streamed([ollamaFrame('partial', false)]),
-        () => streamed([ollamaFrame('Hello from core-17', true)]),
+        () => whole(ollamaFrame('partial', false)),
+        () => whole(ollamaFrame('Hello from core-17', true)),
       );
 
       const res = await chat({ stream: false });
@@ -314,7 +477,7 @@ describe('pool proxy: degenerate and cut-off output, and why candidates were pas
       peerService.listConnectedPeers.mockResolvedValue([]);
       const body = ollamaFrame('<unused49>'.repeat(30), true);
       engines(
-        () => streamed([body]),
+        () => whole(body),
         () => streamed(HEALTHY_STREAM),
       );
 
@@ -354,6 +517,76 @@ describe('pool proxy: degenerate and cut-off output, and why candidates were pas
       // The retry goes elsewhere, and is served there.
       expect(asked).toEqual(['peer']);
       expect(routingLog.list()[0]).toMatchObject({ node: PEER_FQDN, outcome: 'served', attempt: 1 });
+    });
+
+    it('withholds an engine that keeps dropping its stream mid-generation, overriding local affinity', async () => {
+      setLocalAffinity(5);
+      const asked = engines(
+        () => dying([ollamaFrame('Hel')]),
+        () => streamed(HEALTHY_STREAM),
+      );
+
+      await chat();
+      await chat();
+      expect(asked).toEqual(['local', 'local']);
+      expect(routingLog.list().map((row) => `${row.outcome}/${row.reason}`)).toEqual(['failed/truncated-upstream', 'failed/truncated-upstream']);
+      const withholds = warnings.filter((line) => line.includes('withholding it from routing'));
+      expect(withholds).toHaveLength(1);
+      expect(withholds[0]).toContain('local ollama answered "gemma4:e4b" with a truncated response');
+
+      asked.length = 0;
+      await chat();
+
+      expect(asked).toEqual(['peer']);
+      expect(routingLog.list()[0]).toMatchObject({ node: PEER_FQDN, outcome: 'served', attempt: 1 });
+    });
+
+    it('withholds an engine whose non-streamed bodies keep breaking off before they end', async () => {
+      setLocalAffinity(5);
+      const asked = engines(
+        () => dying(['{"model":"gemma4:e4b","message":{"role":"assistant","content":"Hel'], JSON_BODY),
+        () => whole(ollamaFrame('Hello from core-17', true)),
+      );
+
+      await chat({ stream: false });
+      // Caught before anything was sent, so the next candidate answered instead.
+      expect(asked).toEqual(['local', 'peer']);
+      expect(routingLog.list()[0]).toMatchObject({
+        node: PEER_FQDN,
+        outcome: 'served',
+        failedOverFrom: ['local'],
+        attempts: [{ node: 'local', status: null, reason: expect.stringContaining('failed mid-body') }],
+      });
+      await chat({ stream: false });
+
+      asked.length = 0;
+      await chat({ stream: false });
+
+      expect(asked).toEqual(['peer']);
+    });
+
+    it('records no throughput from an answer the node failed, so a fast degenerate engine does not read as a fast one', async () => {
+      const recordPrefill = vi.spyOn(HubPoolThroughputService.prototype, 'recordPrefill');
+      spies.push(recordPrefill);
+      engines(
+        () => streamed(DEGENERATE_STREAM),
+        () => streamed(HEALTHY_STREAM),
+      );
+      await chat();
+      engines(
+        () => dying([ollamaFrame('Hel')]),
+        () => streamed(HEALTHY_STREAM),
+      );
+      await chat();
+      expect(recordPrefill).not.toHaveBeenCalled();
+
+      // The same engine answering properly is measured as before.
+      engines(
+        () => streamed(HEALTHY_STREAM),
+        () => streamed(HEALTHY_STREAM),
+      );
+      await chat();
+      expect(recordPrefill).toHaveBeenCalledTimes(1);
     });
 
     it('still asks a withheld engine when every other candidate fails — demoted, never removed', async () => {
@@ -518,6 +751,28 @@ describe('pool proxy: degenerate and cut-off output, and why candidates were pas
       );
       await chat();
       expect(asked).toEqual(['peer']);
+    });
+
+    it('strikes this node’s engine when it drops a peer’s stream mid-generation', async () => {
+      vi.mocked(global.fetch).mockImplementation(async () => dying([ollamaFrame('Hel')]));
+      for (let i = 0; i < 2; i += 1) {
+        await expect(forwardFromPeer()).rejects.toThrow('failed mid-body');
+      }
+      expect(routingLog.list()[0]).toMatchObject({ direction: 'inbound', outcome: 'failed', status: 200, reason: 'truncated-upstream' });
+
+      const asked = engines(
+        () => streamed(HEALTHY_STREAM),
+        () => streamed(HEALTHY_STREAM),
+      );
+      await chat();
+      expect(asked).toEqual(['peer']);
+    });
+
+    it('judges a peer’s forward that left `stream` out as the stream Ollama sends', async () => {
+      vi.mocked(global.fetch).mockImplementation(async () => streamed(DEGENERATE_STREAM));
+      await forwardFromPeer('omitted');
+
+      expect(routingLog.list()[0]).toMatchObject({ direction: 'inbound', outcome: 'failed', stream: true, reason: 'degenerate-output' });
     });
 
     it('marks a forward the sender gave up on as the sender leaving, not as this node failing', async () => {

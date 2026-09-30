@@ -16,7 +16,8 @@
  *   that says so: Ollama's native routes with `done: true` (on the last NDJSON line, or on the one
  *   non-streamed body), the OpenAI-compatible routes with `data: [DONE]` or a choice whose
  *   `finish_reason` is set (or, non-streamed, `choices[0].finish_reason`). A response in the dialect
- *   without one was cut off upstream. A body that is not recognisably the dialect at all is not
+ *   without one was cut off upstream, and so was an OpenAI stream that carried an error frame,
+ *   whatever came after it. A body that is not recognisably the dialect at all is not
  *   judged: this checks that an answer finished, not that an engine speaks the schema. Token usage is
  *   deliberately NOT a signal — correct peer streams in the same run carried none.
  * - **Placeholder-only output.** The first {@link DEGENERATE_SCAN_CHARS} characters of generated
@@ -59,11 +60,30 @@ const PLACEHOLDER_TOKENS_ONLY = /^(\s*<unused\d+>)+\s*$/;
 /** `finish_reason` set to a string, on an SSE frame's raw text: a key, not escaped text, since content is a quoted string there. */
 const FINISH_REASON_SET = /"finish_reason"\s*:\s*"/;
 
+/**
+ * An SSE frame whose payload is an error object — `data: {"error": {...}}`, a top-level key, so never
+ * generated text. vLLM reports an engine failure mid-generation this way and then still sends
+ * `data: [DONE]`, so the frame after it must not read as the answer finishing.
+ */
+const ERROR_FRAME = /^\{\s*"error"\s*:/;
+
+/**
+ * The content types an engine streams in: Ollama's native NDJSON and OpenAI-compatible SSE. Read from
+ * the engine's answer rather than the request, because the two can disagree — Ollama's native routes
+ * stream when `stream` is left out, and an engine may ignore the flag either way.
+ */
+const STREAMED_CONTENT_TYPE = /^\s*(application\/x-ndjson|text\/event-stream)\s*(;|$)/i;
+
 /** The completion routes and the dialect each answers in; anything else — embeddings, metadata — is never judged. */
 export function outputDialectOf(path: string): OutputDialect | null {
   if (path === '/api/chat' || path === '/api/generate') return 'ollama-native';
   if (path === '/v1/chat/completions' || path === '/v1/completions') return 'openai';
   return null;
+}
+
+/** Whether an engine's `Content-Type` says its answer is a stream, whatever the request asked for. */
+export function isStreamedContentType(contentType: string | null | undefined): boolean {
+  return !!contentType && STREAMED_CONTENT_TYPE.test(contentType);
 }
 
 /**
@@ -163,6 +183,8 @@ export class OutputJudge {
   private recognised = false;
   /** OpenAI: `[DONE]` or a set `finish_reason` was seen. */
   private finished = false;
+  /** OpenAI: an error frame was seen, which no later `[DONE]` turns into a finished answer. */
+  private errored = false;
   private whole = '';
   private wholeOverflowed = false;
   private ended: OutputVerdict | null = null;
@@ -250,6 +272,10 @@ export class OutputJudge {
         this.finished = true;
         return;
       }
+      if (ERROR_FRAME.test(data)) {
+        this.errored = true;
+        return;
+      }
       if (FINISH_REASON_SET.test(data)) {
         this.finished = true;
       }
@@ -280,7 +306,8 @@ export class OutputJudge {
     }
     const degenerate = isDegenerateText(this.scanned);
     if (this.dialect === 'openai') {
-      if (this.recognised) return verdictOf(this.finished, degenerate);
+      // An error frame is the engine failing mid-answer, whatever followed it: cut off, never complete.
+      if (this.recognised) return verdictOf(this.finished && !this.errored, degenerate);
       // An engine that ignored `stream: true` and answered one JSON body.
       return this.lastLine === null ? UNJUDGED : judgeWholeBody(this.dialect, this.lastLine);
     }

@@ -37,6 +37,19 @@ describe('isStreamingRequest', () => {
     expect(isStreamingRequest({ stream: 1 })).toBe(false);
   });
 
+  it("follows Ollama's native default: /api/chat and /api/generate stream unless told stream:false", () => {
+    // Read as non-streamed, a turn that left `stream` out was held whole before a byte was sent,
+    // and budgeted as a completion rather than a first byte.
+    expect(isStreamingRequest({ model: 'm', messages: [] }, '/api/chat')).toBe(true);
+    expect(isStreamingRequest({ model: 'm', prompt: 'p' }, '/api/generate')).toBe(true);
+    expect(isStreamingRequest({ stream: false }, '/api/chat')).toBe(false);
+    expect(isStreamingRequest({ stream: true }, '/api/chat')).toBe(true);
+    // Every other route keeps the OpenAI default, embeddings included.
+    expect(isStreamingRequest({ model: 'm', messages: [] }, '/v1/chat/completions')).toBe(false);
+    expect(isStreamingRequest({ model: 'm', input: 'x' }, '/api/embed')).toBe(false);
+    expect(isStreamingRequest(null, '/api/chat')).toBe(false);
+  });
+
   it('survives the shapes a proxy actually sees', () => {
     expect(isStreamingRequest(null)).toBe(false);
     expect(isStreamingRequest(undefined)).toBe(false);

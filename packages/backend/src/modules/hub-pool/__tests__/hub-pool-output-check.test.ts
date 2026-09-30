@@ -15,6 +15,7 @@ import {
   PoolOutputQuarantine,
   applyOutputQuarantine,
   isDegenerateText,
+  isStreamedContentType,
   judgeWholeBody,
   outputDialectOf,
   type OutputDialect,
@@ -59,6 +60,17 @@ describe('outputDialectOf', () => {
     expect(outputDialectOf('/v1/embeddings')).toBeNull();
     expect(outputDialectOf('/api/embed')).toBeNull();
     expect(outputDialectOf('/api/show')).toBeNull();
+  });
+});
+
+describe('isStreamedContentType', () => {
+  it('reads NDJSON and SSE as a stream, with or without parameters, and a JSON body as none', () => {
+    expect(isStreamedContentType('application/x-ndjson')).toBe(true);
+    expect(isStreamedContentType('text/event-stream; charset=utf-8')).toBe(true);
+    expect(isStreamedContentType('Text/Event-Stream')).toBe(true);
+    expect(isStreamedContentType('application/json; charset=utf-8')).toBe(false);
+    expect(isStreamedContentType('application/x-ndjsonish')).toBe(false);
+    expect(isStreamedContentType(null)).toBe(false);
   });
 });
 
@@ -178,6 +190,19 @@ describe('OutputJudge on a stream', () => {
     expect((await judge('openai', true, [sseFrame('Hi'), 'data: [DONE]\n\n'])).verdict).toEqual({ fault: null, complete: true });
     expect((await judge('openai', true, [sseFrame('Hi'), sseFrame(null, 'stop')])).verdict).toEqual({ fault: null, complete: true });
     expect((await judge('openai', true, [sseFrame('Hel'), sseFrame('lo')])).verdict).toEqual({ fault: 'truncated-upstream', complete: false });
+  });
+
+  it('reads an error frame as the answer cut off, even when [DONE] follows it — how vLLM ends a failed generation', async () => {
+    const errorFrame = `data: ${JSON.stringify({ error: { object: 'error', message: 'engine died', type: 'InternalServerError', code: 500 } })}\n\n`;
+    expect((await judge('openai', true, [sseFrame('Hel'), errorFrame, 'data: [DONE]\n\n'])).verdict).toEqual({
+      fault: 'truncated-upstream',
+      complete: false,
+    });
+    // Content that merely talks about an error is generated text, not an error frame.
+    expect((await judge('openai', true, [sseFrame('{"error": "is a JSON key"}'), 'data: [DONE]\n\n'])).verdict).toEqual({
+      fault: null,
+      complete: true,
+    });
   });
 
   it('is not fooled by finish_reason inside the generated text', async () => {
