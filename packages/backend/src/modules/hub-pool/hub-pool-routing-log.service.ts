@@ -96,7 +96,11 @@ export interface PoolRoutingRecord {
   backend: InferenceBackendType | null;
   /** How many candidates the ranking produced for this request. 1 for inbound (a peer forward is never re-routed). */
   candidates: number;
-  /** 1-based position of the serving candidate in that ranked list; >1 means earlier candidates were tried and rejected. */
+  /**
+   * 1-based position of the serving candidate in that ranked list; >1 means earlier candidates were
+   * tried and rejected. One past `candidates` when this node's engine, passed over because the Hub
+   * refused to load the model there, was tried again after every other candidate had failed.
+   */
   attempt: number;
   /** Nodes tried before this one, in order. Non-empty exactly when this was a failover. */
   failedOverFrom: string[];
@@ -107,6 +111,18 @@ export interface PoolRoutingRecord {
    * entry Hub, a bare 500 on beta-1, and no log line on either. Empty when nothing was passed over.
    */
   attempts: PoolRoutingAttempt[];
+  /**
+   * Why the Hub refused to load this request's model on this node's engine, on a row whose request
+   * was sent to that engine anyway: no other candidate was left to take it, so the engine loads the
+   * model on its own terms, as every local request did before a refused load failed over. `null`
+   * when the load was not refused or not needed, and when the refusal passed the request on to
+   * another candidate — `attempts` records that one as `local load refused: …`. Always `null` on
+   * `inbound` rows: a peer's forward is never arbitrated here.
+   *
+   * Without it a row served locally reads the same whether the Hub made room for the model or said
+   * it could not, and only the second can overcommit the card or spill the model into system memory.
+   */
+  localLoadRefused: string | null;
   /**
    * The operator pin that shaped this decision's candidate order, or `null`.
    *
@@ -273,9 +289,14 @@ export interface PoolRoutingPin {
  */
 export type PoolRoutingRecordInput = Omit<
   PoolRoutingRecord,
-  'id' | 'updatedAt' | 'stream' | 'bodyBytes' | 'budgetMs' | 'clientClosed' | 'requestError' | 'attempts' | 'reason' | 'totalMs'
+  'id' | 'updatedAt' | 'stream' | 'bodyBytes' | 'budgetMs' | 'clientClosed' | 'requestError' | 'attempts' | 'localLoadRefused' | 'reason' | 'totalMs'
 > &
-  Partial<Pick<PoolRoutingRecord, 'id' | 'stream' | 'bodyBytes' | 'budgetMs' | 'clientClosed' | 'requestError' | 'attempts' | 'reason' | 'totalMs'>>;
+  Partial<
+    Pick<
+      PoolRoutingRecord,
+      'id' | 'stream' | 'bodyBytes' | 'budgetMs' | 'clientClosed' | 'requestError' | 'attempts' | 'localLoadRefused' | 'reason' | 'totalMs'
+    >
+  >;
 
 /** One candidate the walk passed over, and why. Status and a short reason only — never an engine's message. */
 export interface PoolRoutingAttempt {
@@ -678,6 +699,8 @@ export class HubPoolRoutingLogService {
       // Likewise: set only where the proxy settles a row on an engine's verdict about the request.
       requestError: null,
       attempts: [],
+      // Set by the proxy only when it sends a request to this node's engine past a refused load.
+      localLoadRefused: null,
       reason: null,
       totalMs: null,
       ...entry,

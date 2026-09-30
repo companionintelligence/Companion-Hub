@@ -226,6 +226,43 @@ describe('hub-pool-cli formatters', () => {
     expect(text).toContain(PEER_A);
   });
 
+  // A local answer after a refused load is the one that may have overcommitted the card, and it reads
+  // like any other served row without the note.
+  it("says when a request went to this node's engine although the Hub refused to load the model there", () => {
+    const refusal = 'qwen3-coder-30b needs 20951 MB but only 9728 MB is free, and unloading every idle model the Hub loaded itself would free 0 MB';
+    const log: PoolRoutingLogResponse = {
+      entries: [
+        {
+          at: '2026-09-30T10:00:01.000Z',
+          direction: 'outbound',
+          path: '/api/chat',
+          model: 'qwen3-coder:30b',
+          node: 'local',
+          peerId: null,
+          backend: 'ollama',
+          candidates: 2,
+          attempt: 3,
+          failedOverFrom: ['local', PEER_A],
+          attempts: [
+            { node: 'local', backend: 'ollama', status: null, reason: `local load refused: ${refusal}` },
+            { node: PEER_A, backend: 'ollama', status: 503, reason: 'HTTP 503' },
+          ],
+          localLoadRefused: refusal,
+          outcome: 'served',
+          status: 200,
+          durationMs: 1204,
+        },
+      ],
+      summary: { recorded: 1, capacity: 200, served: 1, failed: 0, failovers: 1, lastAt: '2026-09-30T10:00:01.000Z' },
+    };
+    const text = formatPoolRoutingLogLines(log).join('\n');
+    expect(text).toContain(`↳ failed over from local (local load refused: ${refusal}), ${PEER_A} (HTTP 503)`);
+    expect(text).toContain(`↳ sent to this node's engine although the Hub refused to load the model here: ${refusal}`);
+
+    const plain = formatPoolRoutingLogLines({ ...log, entries: [{ ...(log.entries[0] as (typeof log.entries)[number]), localLoadRefused: null }] });
+    expect(plain.join('\n')).not.toContain('refused to load the model here');
+  });
+
   /**
    * The row this whole change exists for. Reproduced from beta-max, 2026-09-21: four rows reading
    * `qwen3-coder:30b  -  1/14  30031  x failed` were reported as "placement returns no candidate and

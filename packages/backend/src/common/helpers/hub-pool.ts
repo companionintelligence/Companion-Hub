@@ -610,7 +610,7 @@ export interface HubPoolPreferences {
    * can see the others: measured 2026-09-17, one app's hourly heartbeat asked for a second model
    * at a 64k window and evicted the 27B every other app was using, three to six reloads per tick.
    * Through the proxy every request crosses one place that knows what is resident, what the card
-   * holds, and what the operator pinned — {@link InferenceRouterService.prepareTrackedModel} — and
+   * holds, and what the operator pinned — {@link InferenceRouterService.loadTrackedModel} — and
    * a single-node Hub degrades to exactly the direct call (`proxyLocalOnlyRequest` tries this
    * node's own engines in order). Off restores the pre-proxy behaviour: direct URL unless a peer
    * is connected. Takes effect the next time an app's environment is generated.

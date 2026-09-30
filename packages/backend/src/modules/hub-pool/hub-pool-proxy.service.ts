@@ -1426,6 +1426,17 @@ export function describeAttemptError(error: unknown): string {
   return text.length > MAX_ATTEMPT_REASON_CHARS ? `${text.slice(0, MAX_ATTEMPT_REASON_CHARS - 1)}…` : text;
 }
 
+/**
+ * An `attempts` reason for a local engine passed over because the Hub refused to load the model there.
+ * The Hub's own sentence: sizes and what it could not unload, or, for a load the engine failed, the
+ * engine's error about that load, which carries no prompt. Kept to the length of every other attempt
+ * reason; the log line written beside it carries it whole.
+ */
+function describeLocalLoadRefusal(refusal: string): string {
+  const text = `local load refused: ${refusal}`;
+  return text.length > MAX_ATTEMPT_REASON_CHARS ? `${text.slice(0, MAX_ATTEMPT_REASON_CHARS - 1)}…` : text;
+}
+
 /** A routing row's reason for an answer that was an error status, with the engine's verdict label when one was read. */
 function describeStatusReason(status: number, signature?: string): string {
   return signature ? `HTTP ${status} (${signature})` : `HTTP ${status}`;
@@ -1638,8 +1649,9 @@ export class PoolProxyService {
     @Optional() localHealth?: HubPoolLocalHealthService,
     // Appended last and optional for the same positional reason. #1483 took the router out of
     // `auto` resolution, which now runs against the whole pool; residency arbitration
-    // (`prepareTrackedModel`) is a separate job and is the only thing left that reads it. Without
-    // it a local generation still forwards, just without the keep-resident/evict step.
+    // (`arbitrateLocalLoad`, through `loadTrackedModel`) is a separate job and is the only thing left
+    // that reads it. Without it, or without the model registry arbitration finds the model in, a
+    // local generation still forwards, just without the keep-resident/evict step.
     @Optional() @Inject(forwardRef(() => InferenceRouterService)) private readonly router?: InferenceRouterService,
   ) {
     this.throughput = throughput ?? new HubPoolThroughputService();
@@ -2743,7 +2755,15 @@ export class PoolProxyService {
     let unconfirmed: UnconfirmedRequestError<PoolCandidate> | null = null;
     // Built only once an engine says the prompt was too long, which is the one verdict that needs it.
     const contextWindows = memoize(() => this.contextWindowOf(path, body, peers));
-    for (const [index, candidate] of candidates.entries()) {
+    // The candidates in the order they are tried: the ranked order, then, once more at the end, each
+    // local engine the Hub refused to load the model on while another candidate could still take the
+    // request (see `arbitrateLocalLoad`). On such a row `attempt` can run one past `candidates`.
+    const walk = [...candidates];
+    // Each local engine passed over for a refused load, with the Hub's reason. Reaching it again at
+    // the end means every other candidate failed; it is then sent the request without arbitration.
+    const refusedLoads = new Map<PoolCandidate, string>();
+    for (let index = 0; index < walk.length; index += 1) {
+      const candidate = walk[index] as PoolCandidate;
       const key = candidate.peerId ?? LOCAL_CANDIDATE_KEY;
       const nodeLabel = candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY;
       if (index > 0) {
@@ -2822,6 +2842,35 @@ export class PoolProxyService {
         this.prefixAffinity.remember(affinity.key.key, candidate);
       }
       try {
+        if (candidate.peerId === null) {
+          const earlier = refusedLoads.get(candidate);
+          const refusal = earlier ?? (await this.arbitrateLocalLoad(candidate, path, body, model, clientClosed));
+          if (refusal !== null && earlier === undefined && walk.slice(index + 1).some((other) => !refusedLoads.has(other))) {
+            // Another candidate can take the request, so this engine is not asked to load a model the
+            // Hub could not make room for: it would load it anyway and overcommit the card, or put part
+            // of it in system memory. Tried again after the rest rather than dropped, so a request
+            // every other candidate fails is still sent here, as it was before a refusal failed over.
+            refusedLoads.set(candidate, refusal);
+            passOver(candidate, nodeLabel, null, describeLocalLoadRefusal(refusal));
+            // At log, not warn: nothing failed, the Hub kept a model off a card that could not hold it.
+            this.logger.log(
+              `[PoolProxy] the Hub refused to load "${model}" on ${candidate.backend} here (${refusal}); ` +
+                `trying the ${walk.length - index - 1} candidate(s) after it first`,
+            );
+            walk.push(candidate);
+            continue;
+          }
+          if (refusal !== null) {
+            // Nothing else can take it: sent to the engine, which loads the model on its own terms.
+            // Recorded on the row, because a local answer after a refused load is the one that may
+            // have overcommitted the card.
+            this.routingLog.update(row, { localLoadRefused: refusal });
+            this.logger.warn(
+              `[PoolProxy] the Hub refused to load "${model}" on ${candidate.backend} here (${refusal}), and no other candidate is left ` +
+                `to take the request; sending it to ${candidate.backend} anyway, which loads the model on its own terms`,
+            );
+          }
+        }
         const upstream = await this.forward(candidate, path, method, body, model, payload(), row.id, clientClosed);
         const headersAt = Date.now();
         // Read before the serving record and the failover decision, because both turn on it: a 500
@@ -2830,7 +2879,7 @@ export class PoolProxyService {
         // Before the failover branch, so both outcomes teach the local engine the same thing: a
         // live request is the only place the pool ever learns whether a model actually serves.
         this.noteLocalServing(candidate, model, upstream.status, verdict);
-        const untried = candidates.slice(index + 1);
+        const untried = walk.slice(index + 1);
         // A peer's engine refusing the key the peer holds for it: another node may well serve the
         // request, so it is tried, but the pairing is fine and the peer keeps its inventory. On the
         // last candidate the engine's own answer goes back, as a local engine's 401 always has,
@@ -3035,7 +3084,7 @@ export class PoolProxyService {
         passOver(candidate, nodeLabel, null, reason);
         this.logger.warn(
           `[PoolProxy] candidate ${candidate.nodeFqdn ?? 'local'} (${candidate.backend}) failed: ${reason}` +
-            (index + 1 < candidates.length ? `; failing over (${candidates.length - index - 1} candidate(s) left)` : '; no candidate left'),
+            (index + 1 < walk.length ? `; failing over (${walk.length - index - 1} candidate(s) left)` : '; no candidate left'),
         );
       } finally {
         this.loadService.release(key, generation, embedding);
@@ -3046,7 +3095,7 @@ export class PoolProxyService {
       node: null,
       peerId: null,
       backend: null,
-      attempt: candidates.length,
+      attempt: walk.length,
       outcome: 'failed',
       status: null,
       durationMs: Date.now() - startedAt,
@@ -3105,6 +3154,72 @@ export class PoolProxyService {
       durationMs: waitedMs,
     });
     this.logger.log(`[PoolProxy] client closed the request after ${waitedMs}ms while ${nodeLabel} had not answered; upstream request aborted`);
+  }
+
+  /**
+   * The Hub's residency arbitration for a generation about to go to this node's own engine: keep a
+   * tracked model resident, or make room for it and load it, before the engine sees the request.
+   * Every app's inference to this node crosses the routed walk, so it is the one place arbitration
+   * can apply to all of them. Read-only natives (`/api/tags`, `/api/ps`, `/api/show`) never get here:
+   * they go through `proxyLocalOnlyRequest`.
+   *
+   * Returns why the Hub refused the load this request needed on `candidate`'s engine, or null when
+   * nothing stands in the way: the model is resident, is not one the Hub tracks, was loaded, or the
+   * arbitration itself failed, which leaves the engine to do what it always did. A refusal for a
+   * model the Hub tracks on another local engine is not this candidate's either.
+   *
+   * The load is `InferenceRouterService.loadTrackedModel` with origin `request`, as
+   * `prepareTrackedModel` makes it, and the model is found as that method finds it: by catalog id or
+   * by engine tag (`sameModelId`, so `:latest` folds), loaded only from `pulled`. It is not called
+   * through `prepareTrackedModel`, because that method answers "not a model the Hub tracks" and "the
+   * Hub refused to load it" with the same null, and the walk sends the first to the engine and moves
+   * the second behind the other candidates. It drops the reason too, which the routing row needs.
+   *
+   * Skipped once the client has hung up: arbitration is what loads or evicts a model, the most
+   * expensive thing on this path (a 27B reload measured ~168 s on core-6), and nobody would use the
+   * room made. The signal goes with it, because arbitration queues: a request that hangs up while it
+   * waits behind another model's cold load must not go on to evict and load for nobody. A refusal
+   * that comes back after the hang-up is not reported, since there is no walk left to reorder.
+   */
+  private async arbitrateLocalLoad(
+    candidate: PoolCandidate,
+    path: string,
+    body: unknown,
+    model: string,
+    clientClosed: AbortSignal,
+  ): Promise<string | null> {
+    const router = this.router;
+    const registry = this.modelRegistry;
+    if (!GENERATION_PATHS.has(path) || !router || !registry || clientClosed.aborted) {
+      return null;
+    }
+    const tracked = registry.getTrackedModel(model) ?? registry.getTrackedModels().find((entry) => sameModelId(entry.backendModelId, model));
+    // Resident as far as the registry knows (`loaded`, `pinned`), not the Hub's, or not on disk yet:
+    // nothing for the Hub to load, and the request goes to the engine as it always did.
+    if (tracked?.state !== 'pulled') {
+      return null;
+    }
+    // With the window this request will run at, so a model loaded for it is loaded at that window and
+    // the request itself does not reload it (none on `/v1`: Ollama's default).
+    const numCtx = requestedWindow(path, body);
+    try {
+      const outcome = await router.loadTrackedModel(tracked.catalogId, { origin: 'request', numCtx, signal: clientClosed });
+      if (outcome.loaded || clientClosed.aborted) {
+        return null;
+      }
+      if (tracked.backend !== candidate.backend) {
+        this.logger.debug(
+          `[PoolProxy] the Hub refused to load "${model}" on ${tracked.backend} (${outcome.reason}); ${candidate.backend} serves it here, so that is not its refusal`,
+        );
+        return null;
+      }
+      return outcome.reason;
+    } catch (error) {
+      this.logger.debug(
+        `[PoolProxy] residency arbitration for ${model} failed; forwarding anyway: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return null;
+    }
   }
 
   /**
@@ -4126,30 +4241,8 @@ export class PoolProxyService {
     clientClosed?: AbortSignal,
   ): Promise<globalThis.Response> {
     if (candidate.peerId === null) {
-      // The one place every app's inference crosses on this node, so the one place the Hub's
-      // residency arbitration can apply to all of them: keep a tracked model resident, or make
-      // room for it, before the engine sees the request. Read-only natives (`/api/tags`, `/api/ps`,
-      // `/api/show`) never reach here — they go through `proxyLocalOnlyRequest`.
-      //
-      // Skipped once the client has already hung up, which is the other half of what #1483 brought
-      // in: arbitration is what loads or evicts a model, the most expensive thing on this path — a
-      // 27B reload measured ~168 s on core-6 — and running it for a request nobody is waiting for
-      // is the opposite of what the client-abort propagation is for. The `fetch` below rejects on
-      // the same signal anyway, so nothing would have used the model we just made room for.
-      //
-      // The signal goes with it, because arbitration queues: a request that hangs up while it waits
-      // behind another model's cold load must not go on to evict and load for nobody.
-      if (GENERATION_PATHS.has(path) && this.router && !clientClosed?.aborted) {
-        // With the window this request will run at, so a model loaded for it is loaded at that
-        // window and the request itself does not reload it (none on `/v1`: Ollama's default).
-        const numCtx = requestedWindow(path, body);
-        await this.router.prepareTrackedModel(model, { numCtx, signal: clientClosed }).catch((error: unknown) => {
-          this.logger.debug(
-            `[PoolProxy] residency arbitration for ${model} failed; forwarding anyway: ${error instanceof Error ? error.message : String(error)}`,
-          );
-          return null;
-        });
-      }
+      // The Hub's residency arbitration has already run for a generation, in the routed walk, which
+      // is the only caller that sends one here: see `arbitrateLocalLoad`.
       return this.callBackend(candidate.backend, path, method, body, payload, clientClosed);
     }
 

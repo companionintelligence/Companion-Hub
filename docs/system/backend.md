@@ -102,12 +102,15 @@ off the instance, because test doubles are mock proxies whose `type` is undefine
 ## Model loading and eviction
 
 `InferenceRouterService.loadTrackedModel` is the one path that puts a catalog model into memory.
-The pool proxy reaches it through `prepareTrackedModel` for every app generation naming a
-Hub-tracked model that the engine does not hold. `POST /api/inference/models/load` and MCP
-`hub_load_model` reach it directly; `models/pin` and MCP `hub_pin_model` reach it through
-`pinTrackedModel`. Every caller states its origin (`LoadOrigin`); there is no default. The origin
-decides both the window the model is loaded at (see [Model loads](#model-loads)) and the scope
-`MemoryManagerService.planEviction` uses when the model does not fit:
+The pool proxy calls it (`PoolProxyService.arbitrateLocalLoad`) for every app generation bound for
+this node's engine that names a Hub-tracked model the registry has as downloaded but not loaded. It
+finds the model the way `prepareTrackedModel` does, but does not go through that method, which
+answers "not tracked" and "refused" with the same `null` and drops the reason.
+`POST /api/inference/models/load` and MCP `hub_load_model` reach it directly; `models/pin` and MCP
+`hub_pin_model` reach it through `pinTrackedModel`. Every caller states its origin (`LoadOrigin`);
+there is no default. The origin decides both the window the model is loaded at (see
+[Model loads](#model-loads)) and the scope `MemoryManagerService.planEviction` uses when the model
+does not fit:
 
 | Caller | Origin | Scope | May unload |
 |---|---|---|---|
@@ -165,9 +168,16 @@ Both scopes share these rules:
   `sameModelId`, so a pinned `nomic-embed-text` is protected while `/api/ps` lists
   `nomic-embed-text:latest`.
 
-A load refused on the request path is still forwarded to the engine. The pool proxy does that
-regardless of the answer. A refusal there means the Hub made no room, not that the engine does not
-try.
+A load refused on the request path fails over. While another candidate can take the request (a
+peer, or another local engine), the pool proxy passes this node's engine over, and the routing row
+records it in `attempts` as `local load refused: <reason>`. The engine is not asked, because it
+would load the model on its own terms, beside what the Hub has just declined to unload, and
+overcommit the card or put part of the model in system memory. When no other candidate is left,
+either from the start or because every other candidate failed, the request goes to the engine
+anyway, as it did before. The row then carries the reason in `localLoadRefused`, and a warning is
+logged. A refusal for a model the Hub tracks on a different local engine does not pass over this
+one. A load is not needed for a model the registry has as loaded or pinned, or one it does not
+track, and nothing changes for those.
 
 ## Hub Pool
 
