@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LemonadeStatus } from '@/modules/onboarding/helpers/ai-setup-types';
 import { LemonadeSetupCard } from '../lemonade-setup-card';
 
@@ -112,5 +112,95 @@ describe('LemonadeSetupCard', () => {
     renderCard({ ready: true, running: true, endpointUrl: 'http://host.docker.internal:13305' });
 
     expect(screen.queryByTestId('lemonade-docker-access-hint')).not.toBeInTheDocument();
+  });
+
+  // Audit NIT-2 of #1679: no block had a copy button, and the key script is seven lines an operator
+  // had to select by hand out of a block that scrolls sideways.
+  describe('copying a command', () => {
+    const LINUX_REFUSED: LemonadeStatus = {
+      ready: false,
+      running: false,
+      endpointUrl: 'http://host.docker.internal:13305',
+      failureMode: 'refused',
+      hostPlatform: 'linux',
+    };
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const execCommandDescriptor = Object.getOwnPropertyDescriptor(document, 'execCommand');
+
+    afterEach(() => {
+      if (clipboardDescriptor) Object.defineProperty(navigator, 'clipboard', clipboardDescriptor);
+      else Reflect.deleteProperty(navigator, 'clipboard');
+      if (execCommandDescriptor) Object.defineProperty(document, 'execCommand', execCommandDescriptor);
+      else Reflect.deleteProperty(document, 'execCommand');
+      window.getSelection()?.removeAllRanges();
+    });
+
+    function setClipboard(value: unknown): void {
+      Object.defineProperty(navigator, 'clipboard', { value, configurable: true });
+    }
+
+    function setExecCommand(value: unknown): void {
+      Object.defineProperty(document, 'execCommand', { value, configurable: true });
+    }
+
+    it('copies each block exactly as shown, line breaks included', async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      setClipboard({ writeText });
+      renderCard(LINUX_REFUSED);
+
+      const script = screen.getByTestId('lemonade-api-key-script').textContent ?? '';
+      expect(script.split('\n').length).toBeGreaterThan(1);
+      fireEvent.click(screen.getByTestId('lemonade-api-key-script-copy'));
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith(script));
+      await waitFor(() => expect(screen.getByTestId('lemonade-api-key-script-copy')).toHaveAttribute('aria-label', 'Copied'));
+
+      fireEvent.click(screen.getByTestId('lemonade-bind-command-copy'));
+      await waitFor(() => expect(writeText).toHaveBeenLastCalledWith('lemonade config set host=0.0.0.0'));
+
+      fireEvent.click(screen.getByTestId('lemonade-firewall-commands-copy'));
+      await waitFor(() =>
+        expect(writeText).toHaveBeenLastCalledWith(
+          'sudo ufw allow from 172.16.0.0/12 to any port 13305 proto tcp\nsudo ufw allow from 10.128.0.0/9 to any port 13305 proto tcp',
+        ),
+      );
+    });
+
+    // Plain http on the LAN, how the Hub is often opened, is not a secure context: there is no
+    // Clipboard API at all, and a button that silently did nothing there is the one it replaced.
+    it('selects the command and says how to copy it where the page has no clipboard access', async () => {
+      setClipboard(undefined);
+      setExecCommand(vi.fn().mockReturnValue(false));
+      renderCard(LINUX_REFUSED);
+
+      fireEvent.click(screen.getByTestId('lemonade-bind-command-copy'));
+
+      expect(await screen.findByText(/press Ctrl\+C/)).toBeInTheDocument();
+      expect(window.getSelection()?.toString()).toBe('lemonade config set host=0.0.0.0');
+    });
+
+    it('copies the selection with the browser copy command where that still works', async () => {
+      setClipboard(undefined);
+      const execCommand = vi.fn().mockReturnValue(true);
+      setExecCommand(execCommand);
+      renderCard(LINUX_REFUSED);
+
+      fireEvent.click(screen.getByTestId('lemonade-api-key-script-copy'));
+
+      await waitFor(() => expect(screen.getByTestId('lemonade-api-key-script-copy')).toHaveAttribute('aria-label', 'Copied'));
+      expect(execCommand).toHaveBeenCalledWith('copy');
+      expect(window.getSelection()?.toString()).toBe(screen.getByTestId('lemonade-api-key-script').textContent);
+      expect(screen.queryByText(/press Ctrl\+C/)).not.toBeInTheDocument();
+    });
+
+    it('falls back to the selection when the browser denies the clipboard write', async () => {
+      setClipboard({ writeText: vi.fn().mockRejectedValue(new DOMException('Write permission denied.', 'NotAllowedError')) });
+      setExecCommand(undefined);
+      renderCard(LINUX_REFUSED);
+
+      fireEvent.click(screen.getByTestId('lemonade-firewall-commands-copy'));
+
+      expect(await screen.findByText(/press Ctrl\+C/)).toBeInTheDocument();
+      expect(window.getSelection()?.toString()).toBe(screen.getByTestId('lemonade-firewall-commands').textContent);
+    });
   });
 });

@@ -1,5 +1,14 @@
-import { describe, expect, it } from 'vitest';
-import { MERGED_LISTING_PATHS, POOL_OWNED_BY, listedModelIds, mergeLocalListings, mergeModelListing, peerOnlyModels } from '../pool-model-listing';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  LOCAL_LISTING_DEADLINE_MS,
+  MERGED_LISTING_PATHS,
+  POOL_OWNED_BY,
+  gatherListings,
+  listedModelIds,
+  mergeLocalListings,
+  mergeModelListing,
+  peerOnlyModels,
+} from '../pool-model-listing';
 
 describe('MERGED_LISTING_PATHS', () => {
   /*
@@ -146,5 +155,108 @@ describe('mergeLocalListings', () => {
         { name: 'b', size: 2 },
       ],
     });
+  });
+});
+
+/*
+ * Audit F5 of #1679: the merged listing waited for the slowest backend the health snapshot still
+ * called healthy, and an engine wedged since the last poll held every app's listing for the whole
+ * forward budget. These pin the deadline: what answers in time is kept, what does not is dropped
+ * and aborted, and a listing never comes back empty because every backend was merely slow.
+ */
+describe('gatherListings', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  type FakeBackend = { fetchOne: (signal: AbortSignal) => Promise<unknown>; seen: { signal?: AbortSignal } };
+
+  /** A backend that answers `body` after `ms`, or never (`null`), and rejects once its signal aborts. */
+  function backendAnswering(body: unknown, ms: number | null): FakeBackend {
+    const seen: { signal?: AbortSignal } = {};
+    const fetchOne = (signal: AbortSignal) => {
+      seen.signal = signal;
+      return new Promise<unknown>((resolve, reject) => {
+        const timer = ms === null ? undefined : setTimeout(() => resolve(body), ms);
+        signal.addEventListener('abort', () => {
+          clearTimeout(timer);
+          reject(signal.reason);
+        });
+      });
+    };
+    return { fetchOne, seen };
+  }
+
+  function gather(backends: Record<string, FakeBackend>) {
+    const dropped: string[] = [];
+    const settled = gatherListings(
+      Object.keys(backends),
+      (name, signal) => (backends[name] as FakeBackend).fetchOne(signal),
+      LOCAL_LISTING_DEADLINE_MS,
+      (name) => dropped.push(name),
+    );
+    return { settled, dropped };
+  }
+
+  it('keeps every answer that arrives within the deadline, in backend order rather than arrival order', async () => {
+    const { settled, dropped } = gather({ ollama: backendAnswering('ollama-body', 900), lemonade: backendAnswering('lemonade-body', 10) });
+
+    await vi.advanceTimersByTimeAsync(900);
+
+    await expect(settled).resolves.toEqual(['ollama-body', 'lemonade-body']);
+    expect(dropped).toEqual([]);
+  });
+
+  it('drops a backend still out at the deadline once another has answered, and aborts its request', async () => {
+    const wedged = backendAnswering('lemonade-body', null);
+    const { settled, dropped } = gather({ ollama: backendAnswering('ollama-body', 5), lemonade: wedged });
+
+    await vi.advanceTimersByTimeAsync(LOCAL_LISTING_DEADLINE_MS - 1);
+    expect(dropped).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+
+    await expect(settled).resolves.toEqual(['ollama-body']);
+    expect(dropped).toEqual(['lemonade']);
+    expect(wedged.seen.signal?.aborted).toBe(true);
+  });
+
+  it('takes the first answer after the deadline when nothing had answered by then, and drops the rest', async () => {
+    const wedged = backendAnswering('ollama-body', null);
+    const { settled, dropped } = gather({ ollama: wedged, lemonade: backendAnswering('lemonade-body', LOCAL_LISTING_DEADLINE_MS + 1_000) });
+
+    await vi.advanceTimersByTimeAsync(LOCAL_LISTING_DEADLINE_MS);
+    expect(dropped).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await expect(settled).resolves.toEqual(['lemonade-body']);
+    expect(dropped).toEqual(['ollama']);
+    expect(wedged.seen.signal?.aborted).toBe(true);
+  });
+
+  // A backend that answered with nothing usable is not an answer: it neither ends the wait for the
+  // others at the deadline nor stands in for them after it.
+  it('does not count an empty or failed answer, and is empty only when no backend answered', async () => {
+    const failing: FakeBackend = { fetchOne: () => Promise.reject(new Error('ECONNREFUSED')), seen: {} };
+    const { settled, dropped } = gather({
+      ollama: backendAnswering(null, 5),
+      vllm: failing,
+      lemonade: backendAnswering('lemonade-body', LOCAL_LISTING_DEADLINE_MS + 500),
+    });
+
+    await vi.advanceTimersByTimeAsync(LOCAL_LISTING_DEADLINE_MS + 500);
+    await expect(settled).resolves.toEqual(['lemonade-body']);
+    expect(dropped).toEqual([]);
+
+    const none = gather({ ollama: backendAnswering(null, 5), lemonade: backendAnswering(null, 10) });
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(none.settled).resolves.toEqual([]);
+  });
+
+  it('answers at once when there is no backend to ask', async () => {
+    await expect(gather({}).settled).resolves.toEqual([]);
   });
 });

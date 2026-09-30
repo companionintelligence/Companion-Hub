@@ -70,6 +70,7 @@ import {
 } from '../hub-pool-proxy.service';
 import { firstByteBudgetMs, forwardBudgetMs } from '../hub-pool-budget';
 import type { PoolOutputQuarantine } from '../hub-pool-output-check';
+import { LOCAL_LISTING_DEADLINE_MS } from '../pool-model-listing';
 import {
   POOL_AFFINITY_HEADER,
   PREFIX_AFFINITY_TTL_MS,
@@ -7275,6 +7276,76 @@ describe('PoolProxyService', () => {
         const urls = vi.mocked(global.fetch).mock.calls.map(([input]) => String(input));
         expect(urls.some((url) => url.includes(':8000'))).toBe(false);
       });
+
+      /*
+       * Audit F5 of #1679: the health snapshot is up to a poll old, and an engine that wedged since
+       * it was taken held every app's listing until the forward budget ran out (five minutes), while
+       * Ollama beside it had answered in milliseconds.
+       */
+      describe('with a backend that has stopped answering', () => {
+        const OLLAMA_MODELS = { object: 'list', data: [{ id: 'qwen3.8:27b-mtp-q4_K_M', object: 'model', created: 1, owned_by: 'library' }] };
+        let lemonadeSignal: AbortSignal | undefined;
+
+        beforeEach(() => {
+          vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+          lemonadeSignal = undefined;
+          vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+            if (String(input).startsWith('http://local-ollama:11434')) {
+              return new Response(JSON.stringify(OLLAMA_MODELS), { status: 200 });
+            }
+            // Lemonade: healthy at the last poll, and silent now until the request is aborted.
+            const signal = init?.signal ?? undefined;
+            lemonadeSignal = signal;
+            return new Promise<globalThis.Response>((_resolve, reject) => signal?.addEventListener('abort', () => reject(signal.reason)));
+          });
+        });
+
+        afterEach(() => {
+          vi.useRealTimers();
+        });
+
+        it('answers with the backends that listed within the deadline, and aborts the one that did not', async () => {
+          const res = createMockResponse();
+
+          const listing = service.proxyLocalOnlyRequest('/v1/models', 'GET', undefined, res);
+          await vi.advanceTimersByTimeAsync(LOCAL_LISTING_DEADLINE_MS - 1);
+          expect(res.status).not.toHaveBeenCalled();
+          await vi.advanceTimersByTimeAsync(1);
+          await listing;
+
+          expect(res.status).toHaveBeenCalledWith(200);
+          const body = vi.mocked(res.json).mock.calls[0]?.[0] as { data: { id: string }[] };
+          expect(body.data.map((row) => row.id)).toEqual(['qwen3.8:27b-mtp-q4_K_M']);
+          expect(lemonadeSignal?.aborted).toBe(true);
+        });
+
+        it('still waits for the stalled backend when it is the only one the snapshot calls healthy', async () => {
+          ollama.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+          vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+            if (String(input).startsWith('http://local-ollama:11434')) {
+              return new Response('connection refused', { status: 502 });
+            }
+            const signal = init?.signal ?? undefined;
+            lemonadeSignal = signal;
+            return new Promise<globalThis.Response>((resolve) =>
+              setTimeout(
+                () => resolve(new Response(JSON.stringify({ object: 'list', data: [{ id: 'Qwen3.8-27B-GGUF' }] }), { status: 200 })),
+                10_000,
+              ),
+            );
+          });
+          const res = createMockResponse();
+
+          // One healthy backend has nothing to be merged with, so leaving it out would leave nothing.
+          const listing = service.proxyLocalOnlyRequest('/v1/models', 'GET', undefined, res);
+          await vi.advanceTimersByTimeAsync(10_000);
+          await listing;
+
+          const body = vi.mocked(res.json).mock.calls[0]?.[0] as { data: { id: string }[] };
+          expect(body.data.map((row) => row.id)).toEqual(['Qwen3.8-27B-GGUF']);
+          expect(lemonadeSignal?.aborted).toBe(false);
+        });
+      });
     });
 
     /*
@@ -8110,16 +8181,24 @@ describe('PoolProxyService', () => {
     });
   });
 
-  // Every app's inference crosses `forward()` on its way to this node's engine, so it is where the
-  // Hub's residency arbitration reaches apps that call the engine's native routes by tag.
+  // Every app's inference to this node crosses the routed walk on its way to the engine, so it is
+  // where the Hub's residency arbitration reaches apps that call the engine's native routes by tag.
   describe('residency arbitration before a local generation request', () => {
     const MODEL = 'llama3.2:3b';
+    // The catalog row the registry tracks MODEL under.
+    const CATALOG_ID = 'llama3-2-3b';
     let router: MockProxy<InferenceRouterService>;
+    // The real registry over the real catalog: arbitration finds the model by catalog id or engine
+    // tag the way the router does, and a mocked lookup would only prove the test's own fixture.
+    let registry: ModelRegistryService;
     let withRouter: PoolProxyService;
 
     beforeEach(() => {
       router = mock<InferenceRouterService>();
-      router.prepareTrackedModel.mockResolvedValue(null);
+      router.loadTrackedModel.mockResolvedValue({ loaded: true });
+      registry = new ModelRegistryService(mock<LoggerService>());
+      // Downloaded and not in memory: the one state a request has the Hub load.
+      registry.trackModel(CATALOG_ID, 'pulled');
       withRouter = new PoolProxyService(
         new InferenceBackendRegistry(ollama, vllm, lemonade, omlx),
         peerService,
@@ -8128,11 +8207,10 @@ describe('PoolProxyService', () => {
         configuration,
         routingLog,
         pressureService,
-        // Three `undefined`s: `router` is appended after `modelRegistry`, `throughput` and the
-        // local-health snapshot, because #1483 dropped the old router slot that used to sit before
-        // them (see the note in `makeService`). Passing it positionally here would land it in the
-        // model-registry slot.
-        undefined,
+        registry,
+        // Two `undefined`s: `router` is appended after `throughput` and the local-health snapshot,
+        // because #1483 dropped the old router slot that used to sit before them (see the note in
+        // `buildService`). Passing it positionally here would land it in the throughput slot.
         undefined,
         undefined,
         router,
@@ -8142,15 +8220,18 @@ describe('PoolProxyService', () => {
       vi.mocked(global.fetch).mockResolvedValue(new Response(JSON.stringify({ done: true }), { status: 200 }));
     });
 
-    it('asks the router to prepare the model before /api/chat reaches the local engine', async () => {
+    it('has the router load a pulled model before /api/chat reaches the local engine, as a request', async () => {
       const res = createMockResponse();
 
       await withRouter.proxyRequest({ path: '/api/chat', method: 'POST', body: { model: MODEL, messages: [] }, model: MODEL, res });
 
       // No `options.num_ctx` on this request: it runs at the engine's default, and so must the load.
-      expect(router.prepareTrackedModel).toHaveBeenCalledWith(MODEL, { numCtx: null, signal: expect.any(AbortSignal) });
-      expect(router.prepareTrackedModel.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(global.fetch).mock.invocationCallOrder[0]);
+      expect(router.loadTrackedModel).toHaveBeenCalledWith(CATALOG_ID, { origin: 'request', numCtx: null, signal: expect.any(AbortSignal) });
+      const [loadedAt] = router.loadTrackedModel.mock.invocationCallOrder;
+      const [forwardedAt] = vi.mocked(global.fetch).mock.invocationCallOrder;
+      expect(loadedAt).toBeLessThan(forwardedAt ?? 0);
       expect(res.status).toHaveBeenCalledWith(200);
+      expect(routingLog.list()[0]).toMatchObject({ outcome: 'served', attempts: [], localLoadRefused: null });
     });
 
     // A load at any other window than the request's is reloaded by that very request (Ollama's
@@ -8163,7 +8244,7 @@ describe('PoolProxyService', () => {
         model: MODEL,
         res: createMockResponse(),
       });
-      expect(router.prepareTrackedModel).toHaveBeenLastCalledWith(MODEL, { numCtx: 65536, signal: expect.any(AbortSignal) });
+      expect(router.loadTrackedModel).toHaveBeenLastCalledWith(CATALOG_ID, { origin: 'request', numCtx: 65536, signal: expect.any(AbortSignal) });
 
       // `/v1` drops `options` on Ollama, so a num_ctx there says nothing about the window it runs at.
       await withRouter.proxyRequest({
@@ -8173,7 +8254,35 @@ describe('PoolProxyService', () => {
         model: MODEL,
         res: createMockResponse(),
       });
-      expect(router.prepareTrackedModel).toHaveBeenLastCalledWith(MODEL, { numCtx: null, signal: expect.any(AbortSignal) });
+      expect(router.loadTrackedModel).toHaveBeenLastCalledWith(CATALOG_ID, { origin: 'request', numCtx: null, signal: expect.any(AbortSignal) });
+    });
+
+    // The lookup `prepareTrackedModel` makes, which this replaced on the request path: by catalog id,
+    // or by engine tag with `:latest` folded, and a load only for a model downloaded but not in memory.
+    it('loads only a pulled model it finds by catalog id or by engine tag, `:latest` folded', async () => {
+      const run = (model: string, path = '/api/chat') =>
+        withRouter.proxyRequest({ path, method: 'POST', body: { model, messages: [], input: ['a'] }, model, res: createMockResponse() });
+      ollama.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: [MODEL, CATALOG_ID, 'nomic-embed-text:latest', 'mystery:7b'],
+      });
+
+      await run(CATALOG_ID);
+      expect(router.loadTrackedModel).toHaveBeenLastCalledWith(CATALOG_ID, expect.objectContaining({ origin: 'request' }));
+
+      registry.trackModel('nomic-embed-text', 'pulled');
+      await run('nomic-embed-text:latest', '/api/embed');
+      expect(router.loadTrackedModel).toHaveBeenLastCalledWith('nomic-embed-text', expect.objectContaining({ origin: 'request' }));
+      expect(router.loadTrackedModel).toHaveBeenCalledTimes(2);
+
+      // Resident as far as the registry knows, or not a model the Hub tracks: nothing to load.
+      registry.updateModelState(CATALOG_ID, 'loaded');
+      await run(MODEL);
+      registry.updateModelState(CATALOG_ID, 'pinned');
+      await run(MODEL);
+      await run('mystery:7b');
+      expect(router.loadTrackedModel).toHaveBeenCalledTimes(2);
     });
 
     // Arbitration queues behind other loads on this node, so the client's hang-up has to reach it:
@@ -8181,18 +8290,177 @@ describe('PoolProxyService', () => {
     it("hands the arbitration the client's hang-up, which fires when the client goes away", async () => {
       const seen: boolean[] = [];
       const res = createMockResponse();
-      router.prepareTrackedModel.mockImplementation(async (_model, options) => {
-        seen.push(options?.signal?.aborted ?? true);
+      router.loadTrackedModel.mockImplementation(async (_catalogId, options) => {
+        seen.push(options.signal?.aborted ?? true);
         // The client hangs up while the arbitration is still waiting for its turn.
         res.destroy();
         await new Promise((resolve) => setImmediate(resolve));
-        seen.push(options?.signal?.aborted ?? false);
-        return null;
+        seen.push(options.signal?.aborted ?? false);
+        return { loaded: false, reason: `The request for ${CATALOG_ID} was abandoned while it waited for another load to finish` };
       });
 
       await withRouter.proxyRequest({ path: '/api/chat', method: 'POST', body: { model: MODEL, messages: [] }, model: MODEL, res });
 
       expect(seen).toEqual([false, true]);
+      // Abandoned, not refused: nobody is left to fail over for, or to warn about.
+      expect(routingLog.list()[0]).toMatchObject({ attempts: [], localLoadRefused: null });
+    });
+
+    /*
+     * Audit R6 of #1679: a refused load was forwarded to the engine regardless, which then loaded the
+     * model on its own terms beside what the Hub had just declined to unload, overcommitting the card
+     * or spilling part of the model into system memory. "Models that can't fit are refused" held for a
+     * pin, a load and MCP, and not for the app traffic that loads most models.
+     */
+    describe('when the Hub refuses the load', () => {
+      const REFUSAL = `${CATALOG_ID} needs 9000 MB but only 2000 MB is free, and unloading every idle model the Hub loaded itself would free 0 MB`;
+      const LOCAL_URL = 'http://local-ollama:11434/api/chat';
+      const PEER_A_URL = 'https://peer-a.tailxyz.ts.net/api/inference/pool/local/api/chat';
+
+      beforeEach(() => {
+        router.loadTrackedModel.mockResolvedValue({ loaded: false, reason: REFUSAL });
+        const peer = peerServing('peer-a', MODEL);
+        peerService.listConnectedPeers.mockResolvedValue([peer]);
+        peerService.getPeerById.mockResolvedValue(peer);
+        peerService.peerAuthHeaders.mockResolvedValue({ Authorization: 'Bearer raw-token' });
+      });
+
+      const urls = () => vi.mocked(global.fetch).mock.calls.map(([input]) => String(input));
+      const chat = (res = createMockResponse()) =>
+        withRouter.proxyRequest({ path: '/api/chat', method: 'POST', body: { model: MODEL, messages: [] }, model: MODEL, res });
+
+      it('fails over to a peer that serves the model, without sending the local engine the request', async () => {
+        const res = createMockResponse();
+
+        await chat(res);
+
+        // Local was ranked first (an idle node's head start), so the refusal is what moved the request on.
+        expect(urls()).toEqual([PEER_A_URL]);
+        expect(res.status).toHaveBeenCalledWith(200);
+        expect(routingLog.list()[0]).toMatchObject({
+          outcome: 'served',
+          node: 'peer-a.tailxyz.ts.net',
+          attempt: 2,
+          candidates: 2,
+          failedOverFrom: [POOL_SERVED_LOCALLY],
+          attempts: [{ node: POOL_SERVED_LOCALLY, backend: 'ollama', status: null, reason: `local load refused: ${REFUSAL}` }],
+          localLoadRefused: null,
+        });
+        // Arbitrated once: a refusal is not asked again.
+        expect(router.loadTrackedModel).toHaveBeenCalledTimes(1);
+      });
+
+      it('sends the request to the local engine anyway when no other candidate exists, and says so on the row', async () => {
+        peerService.listConnectedPeers.mockResolvedValue([]);
+        const res = createMockResponse();
+
+        await chat(res);
+
+        expect(urls()).toEqual([LOCAL_URL]);
+        expect(res.status).toHaveBeenCalledWith(200);
+        expect(routingLog.list()[0]).toMatchObject({
+          outcome: 'served',
+          node: POOL_SERVED_LOCALLY,
+          attempt: 1,
+          attempts: [],
+          localLoadRefused: REFUSAL,
+        });
+      });
+
+      // Before refusals failed over, the local engine answered this request; it still must when the
+      // peer it was passed over for cannot.
+      it('comes back to the local engine, without arbitrating again, when every other candidate fails', async () => {
+        vi.mocked(global.fetch).mockImplementation(async (input) =>
+          String(input) === PEER_A_URL ? new Response('engine down', { status: 503 }) : new Response(JSON.stringify({ done: true }), { status: 200 }),
+        );
+        const res = createMockResponse();
+
+        await chat(res);
+
+        expect(urls()).toEqual([PEER_A_URL, LOCAL_URL]);
+        expect(router.loadTrackedModel).toHaveBeenCalledTimes(1);
+        expect(res.status).toHaveBeenCalledWith(200);
+        expect(routingLog.list()[0]).toMatchObject({
+          outcome: 'served',
+          node: POOL_SERVED_LOCALLY,
+          // One past the two candidates: the local engine was reached twice.
+          attempt: 3,
+          candidates: 2,
+          failedOverFrom: [POOL_SERVED_LOCALLY, 'peer-a.tailxyz.ts.net'],
+          attempts: [
+            { node: POOL_SERVED_LOCALLY, status: null, reason: `local load refused: ${REFUSAL}` },
+            { node: 'peer-a.tailxyz.ts.net', status: 503, reason: 'HTTP 503' },
+          ],
+          localLoadRefused: REFUSAL,
+        });
+      });
+
+      it('answers that every candidate failed only once the local engine has failed too', async () => {
+        vi.mocked(global.fetch).mockResolvedValue(new Response('engine down', { status: 503 }));
+        const res = createMockResponse();
+
+        await chat(res);
+
+        expect(urls()).toEqual([PEER_A_URL, LOCAL_URL]);
+        expect(res.status).toHaveBeenCalledWith(502);
+        expect(routingLog.list()[0]).toMatchObject({ outcome: 'failed', attempt: 3, candidates: 2, localLoadRefused: REFUSAL, reason: 'HTTP 503' });
+      });
+
+      it('passes over a refused local engine ranked between two peers for the peer behind it', async () => {
+        // peer-a is ahead of the local engine and fails; peer-b is behind it and serves.
+        const peerA = peerServing('peer-a', MODEL);
+        const peerB = peerServing('peer-b', MODEL);
+        peerService.listConnectedPeers.mockResolvedValue([peerA, peerB]);
+        peerService.getPeerById.mockImplementation(async (id) => (id === 'peer-a' ? peerA : peerB));
+        setPoolPreferences({ poolPins: [{ scope: 'model', model: MODEL, targetKind: 'peer', peerId: 'peer-a', mode: 'prefer' }] });
+        const peerBUrl = 'https://peer-b.tailxyz.ts.net/api/inference/pool/local/api/chat';
+        vi.mocked(global.fetch).mockImplementation(async (input) =>
+          String(input) === peerBUrl ? new Response(JSON.stringify({ done: true }), { status: 200 }) : new Response('engine down', { status: 503 }),
+        );
+
+        await chat();
+
+        expect(urls()).toEqual([PEER_A_URL, peerBUrl]);
+        expect(routingLog.list()[0]).toMatchObject({
+          outcome: 'served',
+          node: 'peer-b.tailxyz.ts.net',
+          attempt: 3,
+          localLoadRefused: null,
+          attempts: [
+            { node: 'peer-a.tailxyz.ts.net', status: 503 },
+            { node: POOL_SERVED_LOCALLY, status: null, reason: `local load refused: ${REFUSAL}` },
+          ],
+        });
+      });
+
+      // The router loads the model on the engine the registry tracks it on. A refusal there says
+      // nothing about another local engine that serves a model by the same name.
+      it("does not pass over a local engine for another engine's refusal", async () => {
+        ollama.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+        lemonade.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+        lemonade.getBaseUrl.mockReturnValue('http://local-lemonade:13305');
+        peerService.listConnectedPeers.mockResolvedValue([]);
+
+        await chat();
+
+        expect(urls()).toEqual(['http://local-lemonade:13305/api/chat']);
+        expect(routingLog.list()[0]).toMatchObject({ outcome: 'served', backend: 'lemonade', attempts: [], localLoadRefused: null });
+      });
+
+      // What the fix leaves alone: a load that goes through, and one that is not needed.
+      it('changes nothing when the load succeeds or the registry already holds the model', async () => {
+        router.loadTrackedModel.mockResolvedValue({ loaded: true });
+        await chat();
+        router.loadTrackedModel.mockResolvedValue({ loaded: false, reason: REFUSAL });
+        registry.updateModelState(CATALOG_ID, 'loaded');
+        await chat();
+
+        expect(urls()).toEqual([LOCAL_URL, LOCAL_URL]);
+        expect(router.loadTrackedModel).toHaveBeenCalledTimes(1);
+        for (const row of routingLog.list()) {
+          expect(row).toMatchObject({ outcome: 'served', node: POOL_SERVED_LOCALLY, attempt: 1, attempts: [], localLoadRefused: null });
+        }
+      });
     });
 
     // S2 in the review of #1684: the eviction plan only saw generations, so the embedder Memory was
@@ -8234,7 +8502,7 @@ describe('PoolProxyService', () => {
     });
 
     it('still forwards when the arbitration itself fails: it is advice to the engine, not a gate', async () => {
-      router.prepareTrackedModel.mockRejectedValue(new Error('registry unavailable'));
+      router.loadTrackedModel.mockRejectedValue(new Error('registry unavailable'));
       const res = createMockResponse();
 
       await withRouter.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL }, model: MODEL, res });
@@ -8248,7 +8516,7 @@ describe('PoolProxyService', () => {
 
       await withRouter.proxyLocalOnlyRequest('/api/tags', 'GET', undefined, res);
 
-      expect(router.prepareTrackedModel).not.toHaveBeenCalled();
+      expect(router.loadTrackedModel).not.toHaveBeenCalled();
     });
 
     // Both halves of what #1483 brought in, together: a client hanging up aborts the upstream
@@ -8260,7 +8528,7 @@ describe('PoolProxyService', () => {
 
       await withRouter.proxyRequest({ path: '/api/chat', method: 'POST', body: { model: MODEL, messages: [] }, model: MODEL, res });
 
-      expect(router.prepareTrackedModel).not.toHaveBeenCalled();
+      expect(router.loadTrackedModel).not.toHaveBeenCalled();
     });
 
     // Every harness in this file builds the service positionally, and the router has already moved
@@ -8268,8 +8536,9 @@ describe('PoolProxyService', () => {
     // another after it. A positional argument that lands on the wrong parameter is silent here —
     // the arbitration above simply stops happening and every other assertion still passes, because
     // a missing router is a legitimate configuration. `tsc` cannot catch it either: this package's
-    // tsconfig excludes `**/__tests__`. So assert the shape itself.
-    it('takes the router in the last constructor slot, so a new parameter cannot silently displace it', () => {
+    // tsconfig excludes `**/__tests__`. So assert the shape itself. The model registry too, since
+    // arbitration finds the model there and goes as quietly without it.
+    it('takes the router in the last constructor slot and the model registry in the eighth, so a new parameter cannot silently displace them', () => {
       const selfDeclared = (Reflect.getMetadata(SELF_DECLARED_DEPS_METADATA, PoolProxyService) ?? []) as Array<{
         index: number;
         param: { forwardRef?: () => unknown };
@@ -8279,6 +8548,8 @@ describe('PoolProxyService', () => {
 
       expect(selfDeclared.find((dep) => dep.index === lastSlot)?.param.forwardRef?.()).toBe(InferenceRouterService);
       expect(optional).toContain(lastSlot);
+      expect(selfDeclared.find((dep) => dep.index === 7)?.param.forwardRef?.()).toBe(ModelRegistryService);
+      expect(optional).toContain(7);
     });
   });
 });

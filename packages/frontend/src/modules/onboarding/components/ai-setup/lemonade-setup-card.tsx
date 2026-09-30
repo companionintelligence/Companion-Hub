@@ -1,8 +1,10 @@
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
+import { type CopyOrSelectOutcome, copyOrSelect } from '@/lib/copy-to-clipboard';
 import { openExternal } from '@/lib/helpers/open-external';
 import type { LemonadeStatus } from '@/modules/onboarding/helpers/ai-setup-types';
-import { AlertCircle, CheckCircle2, Download, Loader2, RefreshCw } from 'lucide-react';
+import { AlertCircle, Check, CheckCircle2, Copy, Download, Loader2, RefreshCw } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { LemonadeIcon } from './icons';
 
@@ -61,7 +63,60 @@ function fallbackFirewallCommands(port: string): string[] {
   return [`sudo ufw allow from 172.16.0.0/12 to any port ${port} proto tcp`, `sudo ufw allow from ${APP_SUBNET_CIDR} to any port ${port} proto tcp`];
 }
 
-const codeClass = 'block w-full max-w-full overflow-x-auto whitespace-pre rounded bg-warning/10 px-2 py-1.5 text-xs text-warning';
+// `whitespace-pre` with its own scrollbar, not wrapping: each line is one command or one line of the
+// script, and a command wrapped at the card's edge reads as two.
+const codeClass = 'block min-w-0 flex-1 overflow-x-auto whitespace-pre rounded bg-warning/10 px-2 py-1.5 text-xs text-warning';
+
+/** How long the copy button shows its result: long enough to read, and for "selected", to press the keys. */
+const COPIED_FEEDBACK_MS = 2_000;
+const SELECTED_FEEDBACK_MS = 8_000;
+
+/**
+ * One command or script, as the operator runs it on the host, with a button that copies exactly that
+ * text. Through {@link copyOrSelect}, not the toast helper beside it: over plain http there is no
+ * Clipboard API, and a button that silently did nothing there would leave the operator selecting a
+ * seven-line script by hand, as before the button existed.
+ */
+const CommandBlock = ({ command, testId }: { command: string; testId: string }) => {
+  const { t } = useTranslation();
+  const codeRef = useRef<HTMLElement>(null);
+  const [outcome, setOutcome] = useState<CopyOrSelectOutcome | null>(null);
+
+  useEffect(() => {
+    if (!outcome) return;
+    const timer = setTimeout(() => setOutcome(null), outcome === 'copied' ? COPIED_FEEDBACK_MS : SELECTED_FEEDBACK_MS);
+    return () => clearTimeout(timer);
+  }, [outcome]);
+
+  const onCopy = async () => {
+    setOutcome(await copyOrSelect(command, codeRef.current));
+  };
+
+  return (
+    <div className="min-w-0 space-y-1">
+      <div className="flex min-w-0 items-start gap-1.5">
+        <code ref={codeRef} className={codeClass} data-testid={testId}>
+          {command}
+        </code>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          onClick={onCopy}
+          aria-label={t(outcome === 'copied' ? 'ONBOARDING_LEMONADE_COMMAND_COPIED' : 'ONBOARDING_LEMONADE_COPY_COMMAND')}
+          title={t('ONBOARDING_LEMONADE_COPY_COMMAND')}
+          data-testid={`${testId}-copy`}
+          className="size-7 shrink-0 text-warning hover:bg-warning/15 hover:text-warning"
+        >
+          {outcome === 'copied' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+        </Button>
+      </div>
+      <div role="status" aria-live="polite" className={outcome === 'selected' ? 'text-xs text-warning' : 'sr-only'}>
+        {outcome === 'copied' ? t('ONBOARDING_LEMONADE_COMMAND_COPIED') : outcome === 'selected' ? t('ONBOARDING_LEMONADE_COMMAND_SELECTED') : ''}
+      </div>
+    </div>
+  );
+};
 
 /**
  * Lemonade's Linux package runs as a system service listening on localhost, and the Hub probes it
@@ -83,9 +138,7 @@ const LemonadeDockerAccessHint = ({ status }: { status: LemonadeStatus }) => {
     linuxHost && firewallCommands.length > 0 ? (
       <>
         <div className="text-xs text-warning">{t('ONBOARDING_LEMONADE_FIREWALL_DESC', { port, appSubnet: APP_SUBNET_CIDR })}</div>
-        <code className={codeClass} data-testid="lemonade-firewall-commands">
-          {firewallCommands.join('\n')}
-        </code>
+        <CommandBlock command={firewallCommands.join('\n')} testId="lemonade-firewall-commands" />
       </>
     ) : null;
 
@@ -103,13 +156,11 @@ const LemonadeDockerAccessHint = ({ status }: { status: LemonadeStatus }) => {
     <div className="mb-3 min-w-0 space-y-2" data-testid="lemonade-docker-access-hint">
       <div className="text-xs font-medium text-warning">{t('ONBOARDING_LEMONADE_DOCKER_ACCESS_TITLE')}</div>
       <div className="text-xs text-warning">{t('ONBOARDING_LEMONADE_DOCKER_ACCESS_DESC')}</div>
-      <code className={codeClass}>{lemonadeBindCommand(port)}</code>
+      <CommandBlock command={lemonadeBindCommand(port)} testId="lemonade-bind-command" />
       <div className="text-xs text-warning" data-testid="lemonade-api-key-guidance">
         {t(status.apiKeyConfigured ? 'ONBOARDING_LEMONADE_API_KEY_EXISTING_DESC' : 'ONBOARDING_LEMONADE_API_KEY_DESC')}
       </div>
-      <code className={codeClass} data-testid="lemonade-api-key-script">
-        {lemonadeApiKeyScript(Boolean(status.apiKeyConfigured))}
-      </code>
+      <CommandBlock command={lemonadeApiKeyScript(Boolean(status.apiKeyConfigured))} testId="lemonade-api-key-script" />
       {firewallStep}
     </div>
   );

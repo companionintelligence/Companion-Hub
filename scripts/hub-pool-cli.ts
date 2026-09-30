@@ -314,6 +314,11 @@ export interface PoolRoutingRecord {
   reason?: string | null;
   /** Each node passed over before the one that answered, and what it answered. Absent on a Hub predating it. */
   attempts?: PoolRoutingAttempt[];
+  /**
+   * Why the Hub refused to load the model on this node's engine, on a row whose request was sent to
+   * that engine anyway because no other candidate was left. `null` otherwise; absent on a Hub predating it.
+   */
+  localLoadRefused?: string | null;
   /** Time to the end of the response body, where `durationMs` stops at the first headers. `null` until then; absent on a Hub predating it. */
   totalMs?: number | null;
   /** Which operator pin shaped this decision, if any. Absent on a Hub predating pinning. */
@@ -2002,6 +2007,11 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
     // The chain, not a count: which nodes refused, and with what, is the whole point of reading this log.
     if (entry.failedOverFrom.length > 0) {
       lines.push(`  ↳ failed over from ${describeFailoverChain(entry)}`);
+    }
+    // A local answer after the Hub refused the load is the one that may have overcommitted the card
+    // or spilled the model into system memory; the row reads the same as any other without this.
+    if (entry.localLoadRefused) {
+      lines.push(`  ↳ sent to this node's engine although the Hub refused to load the model here: ${sanitizeForBox(entry.localLoadRefused)}`);
     }
     // A failure nothing above explains — a walk that ran out, an inbound 5xx, a node's bad output on
     // an inbound row — says why in the Hub's own few words.

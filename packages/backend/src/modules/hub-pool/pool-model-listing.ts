@@ -102,6 +102,79 @@ export function mergeLocalListings(path: string, bodies: readonly unknown[]): un
   return path === '/v1/models' ? { ...base, object: 'list', data: rows } : { ...base, models: rows };
 }
 
+/**
+ * How long a merged listing waits for each healthy local backend before it answers without the ones
+ * still out. A listing is an inventory read, which a working engine answers at once: measured on
+ * 2026-09-30 from the host, Ollama `/api/tags` and `/v1/models` took at most 2.2 ms on beta-red and
+ * beta-1, and Lemonade 10.2.0 `/v1/models` under 0.5 ms. A client may fetch the listing before every
+ * request (ci-server checks its model against it per call), and it used to wait for the slowest
+ * engine the health snapshot still called healthy: one wedged engine held every app's listing for as
+ * long as the forward budget allows a completion, five minutes by default.
+ */
+export const LOCAL_LISTING_DEADLINE_MS = 2_500;
+
+/**
+ * Every backend's listing body, asked in parallel, in `backends` order (the order the merge keeps),
+ * without waiting past `deadlineMs` for a backend once another has answered:
+ *
+ * - Every answer that arrives within the deadline is kept, however many there are.
+ * - At the deadline, the backends still out are dropped: each is reported to `onDropped` and its
+ *   request aborted through the signal `fetchOne` was given.
+ * - When nothing has answered by the deadline, the first answer to arrive is kept and the rest are
+ *   dropped then. A listing with one backend in it beats a listing that waits for them all, and an
+ *   empty one would read as "no model here" to a client that would otherwise have waited.
+ *
+ * `null` from `fetchOne` (or a rejection) is a backend that answered with nothing usable: it is not
+ * kept and does not count as an answer. The result is empty only when no backend answered at all.
+ */
+export function gatherListings<Backend>(
+  backends: readonly Backend[],
+  fetchOne: (backend: Backend, signal: AbortSignal) => Promise<unknown>,
+  deadlineMs: number,
+  onDropped: (backend: Backend) => void,
+): Promise<unknown[]> {
+  return new Promise((resolve) => {
+    const controllers = backends.map(() => new AbortController());
+    // `undefined` while a backend is still out; `null` once it answered with nothing usable.
+    const answers: unknown[] = backends.map(() => undefined);
+    let outstanding = backends.length;
+    let pastDeadline = false;
+    let settled = false;
+    const usable = (answer: unknown) => answer !== undefined && answer !== null;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      backends.forEach((backend, index) => {
+        if (answers[index] === undefined) {
+          onDropped(backend);
+          controllers[index]?.abort(new Error(`No listing within ${deadlineMs}ms while another backend had answered`));
+        }
+      });
+      resolve(answers.filter(usable));
+    };
+    const timer = setTimeout(() => {
+      pastDeadline = true;
+      if (answers.some(usable)) finish();
+    }, deadlineMs);
+    if (backends.length === 0) {
+      finish();
+      return;
+    }
+    backends.forEach((backend, index) => {
+      const signal = (controllers[index] as AbortController).signal;
+      fetchOne(backend, signal)
+        .catch(() => null)
+        .then((answer) => {
+          if (settled) return;
+          answers[index] = answer ?? null;
+          outstanding -= 1;
+          if (outstanding === 0 || (pastDeadline && usable(answer))) finish();
+        });
+    });
+  });
+}
+
 /** An OpenAI `/v1/models` row for a model only a peer holds. `created` is required by the shape; 0 says "unknown". */
 function openAiRow(model: string): Record<string, unknown> {
   return { id: model, object: 'model', created: 0, owned_by: POOL_OWNED_BY };
