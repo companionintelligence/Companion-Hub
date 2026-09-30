@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -20,6 +20,7 @@ import {
   probeDockerSocketOwnershipInContainer,
   quarantineAndRecreateTunnelDir,
   repairCriticalBindMountFiles,
+  restrictPrivateStateFile,
   repairHostRootOwnedBindMounts,
   resolveHubContainerIdentity,
   resolveTraefikHubRoutePath,
@@ -138,6 +139,111 @@ describe('ensureHubBindMountsWritable', () => {
     expect(identity.uid).toBe(1000);
     expect(existsSync(join(internalRoot, 'state', 'settings.json'))).toBe(true);
     expect(spawnSyncMock).not.toHaveBeenCalled();
+  });
+});
+
+// Owners are real here, so these only mean anything where uids exist; Windows has no POSIX modes
+// and the code under test returns early there.
+describe.skipIf(process.platform === 'win32')('credential files in state/ (settings.json, seed)', () => {
+  const tmpRoot = join(process.cwd(), '.tmp-heal-hub-private-state-test');
+  const ownUid = () => (process.getuid as () => number)();
+  const ownGid = () => (process.getgid as () => number)();
+  const modeOf = (filePath: string) => statSync(filePath).mode & 0o777;
+
+  function stateFile(internalRoot: string, name: string, mode: number, content = '{}'): string {
+    const filePath = join(internalRoot, 'state', name);
+    mkdirSync(path.dirname(filePath), { recursive: true });
+    writeFileSync(filePath, content);
+    // chmod, not writeFile's mode: that one is masked by the umask, and 0666 is the point.
+    chmodSync(filePath, mode);
+    return filePath;
+  }
+
+  beforeEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+    mkdirSync(tmpRoot, { recursive: true });
+    spawnSyncMock.mockReset();
+    execSyncMock.mockReset();
+    // The Hub runs as this user: the ordinary install, where the container drops to the owner.
+    process.env.CI_HUB_CONTAINER_UID = String(ownUid());
+    process.env.CI_HUB_CONTAINER_GID = String(ownGid());
+    execSyncMock.mockImplementation(() => {
+      throw new Error('docker unavailable');
+    });
+  });
+
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+    delete process.env.CI_HUB_CONTAINER_UID;
+    delete process.env.CI_HUB_CONTAINER_GID;
+  });
+
+  it('seeds a missing settings.json owner-only, not 0666', () => {
+    const { internalRoot } = makeHubDataLayout(tmpRoot);
+
+    ensureHubBindMountsWritable(internalRoot, { skipDockerHeal: true });
+
+    expect(modeOf(join(internalRoot, 'state', 'settings.json'))).toBe(0o600);
+  });
+
+  it('restricts a world-writable settings.json and a world-readable seed it owns, on every start', () => {
+    const { internalRoot } = makeHubDataLayout(tmpRoot);
+    const settingsPath = stateFile(internalRoot, 'settings.json', 0o666, '{"hubLocalKey":"k"}');
+    const seedPath = stateFile(internalRoot, 'seed', 0o644, 'a'.repeat(64));
+
+    ensureHubBindMountsWritable(internalRoot, { skipDockerHeal: true });
+
+    expect(modeOf(settingsPath)).toBe(0o600);
+    expect(modeOf(seedPath)).toBe(0o600);
+  });
+
+  it('never loosens a stricter mode', () => {
+    const { internalRoot } = makeHubDataLayout(tmpRoot);
+    const seedPath = stateFile(internalRoot, 'seed', 0o400, 'a'.repeat(64));
+
+    ensureHubBindMountsWritable(internalRoot, { skipDockerHeal: true });
+
+    expect(modeOf(seedPath)).toBe(0o400);
+  });
+
+  it('leaves a file alone when the Hub container will not own it, so it cannot lock the container out', () => {
+    const { internalRoot } = makeHubDataLayout(tmpRoot);
+    const settingsPath = stateFile(internalRoot, 'settings.json', 0o666);
+    const foreign: Parameters<typeof restrictPrivateStateFile>[1] = { uid: ownUid() + 1, gid: ownGid(), dockerGid: 0, source: 'env' };
+
+    expect(restrictPrivateStateFile(settingsPath, foreign)).toBeNull();
+    expect(modeOf(settingsPath)).toBe(0o666);
+  });
+
+  it('takes the credential files back to owner-only after the Docker heal opens the state dir up', () => {
+    const { internalRoot } = makeHubDataLayout(tmpRoot);
+    const settingsPath = stateFile(internalRoot, 'settings.json', 0o600, '{"hubLocalKey":"k"}');
+    const seedPath = stateFile(internalRoot, 'seed', 0o600, 'a'.repeat(64));
+    execSyncMock.mockReturnValue('');
+    let healed = false;
+    let stateHealed = false;
+    spawnSyncMock.mockImplementation((_cmd: string, args: string[] = []) => {
+      const script = args[args.length - 1] ?? '';
+      const mount = args[args.indexOf('-v') + 1] ?? '';
+      if (args.includes('0:0') && script.includes('chown -R')) {
+        // What `chmod -R u+rwX,g+rwX,o+rwX` does to the files in state/, when it is state/ being healed.
+        if (mount.startsWith(`${join(internalRoot, 'state')}:`)) {
+          chmodSync(settingsPath, 0o666);
+          chmodSync(seedPath, 0o666);
+          stateHealed = true;
+        }
+        healed = true;
+        return { status: 0, stdout: '', stderr: '' };
+      }
+      // Every container write probe fails until the heal has run.
+      return { status: healed ? 0 : 1, stdout: '', stderr: healed ? '' : 'denied' };
+    });
+
+    ensureHubBindMountsWritable(internalRoot);
+
+    expect(stateHealed).toBe(true);
+    expect(modeOf(settingsPath)).toBe(0o600);
+    expect(modeOf(seedPath)).toBe(0o600);
   });
 });
 

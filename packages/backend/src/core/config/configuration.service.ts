@@ -569,7 +569,7 @@ export class ConfigurationService {
    *  stops carrying a value nothing can read forward. */
   private async mergeSettingsToDisk(settings: PersistedSettings): Promise<void> {
     const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
-    await ensureSettingsJsonReady(settingsPath);
+    await ensureSettingsJsonReady(settingsPath, this.logger);
     const fileContent = await fs.promises.readFile(settingsPath, 'utf8');
     const raw: unknown = JSON.parse(fileContent);
     const current = parsePersistedSettings(raw);
@@ -586,7 +586,7 @@ export class ConfigurationService {
     } else if (current.invalidKeys.length > 0) {
       this.logger.warn(`Dropping unusable settings.json field(s) while saving: ${current.invalidKeys.join(', ')}.`);
     }
-    await writeSettingsJsonFile(settingsPath, `${JSON.stringify({ ...current.settings, ...settings }, null, 2)}`);
+    await writeSettingsJsonFile(settingsPath, `${JSON.stringify({ ...current.settings, ...settings }, null, 2)}`, this.logger);
   }
 
   public getInferencePreferences() {

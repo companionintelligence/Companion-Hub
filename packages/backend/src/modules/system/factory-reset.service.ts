@@ -154,7 +154,7 @@ export class FactoryResetService {
 
   public async resetSettings(): Promise<void> {
     const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
-    await writeSettingsJsonFile(settingsPath, '{}');
+    await writeSettingsJsonFile(settingsPath, '{}', this.logger);
   }
 
   private async wipeDirectory(dirPath: string): Promise<void> {
