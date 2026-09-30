@@ -3,6 +3,7 @@ import { Injectable } from '@nestjs/common';
 import type { InferenceBackendType } from '@ci-hub/common/types';
 import type { PoolPinMode, PoolPinScope, PoolPinTargetKind } from '@/common/helpers/hub-pool';
 import type { CLIENT_ERROR_SIGNATURE, PoolRequestErrorSignature } from './hub-pool-request-error';
+import { POOL_OUTPUT_FAULTS, type PoolOutputFault } from './hub-pool-output-check';
 
 /**
  * The default ring size, and the default page `GET routing-log` returns when no `limit` is given.
@@ -79,7 +80,11 @@ export interface PoolRoutingRecord {
   direction: 'outbound' | 'inbound';
   /** The upstream path (`/v1/chat/completions`, …), not the pool route the app called. */
   path: string;
-  /** Absent for inbound work: a peer picks the backend and does not tell us which model it wants. */
+  /**
+   * The model routed for. On an `inbound` row, the one the sending peer named in `X-Hub-Pool-Model`,
+   * or else the forwarded body's own `model`; `null` only when neither said. It used to be `null` on
+   * every inbound row, so a leaf could not say which of its models its peers were using.
+   */
   model: string | null;
   /**
    * The other end of the decision: for `outbound`, the node that served it (`'local'` for this one,
@@ -95,6 +100,13 @@ export interface PoolRoutingRecord {
   attempt: number;
   /** Nodes tried before this one, in order. Non-empty exactly when this was a failover. */
   failedOverFrom: string[];
+  /**
+   * Why each of those nodes was passed over, in the same order: the status it answered, or the error
+   * or deadline it failed on. `failedOverFrom` named the nodes and nothing else, so beta-1's 500s that
+   * sent qwen3.8:27b turns on to core-17 on 2026-09-29 left a row reading `requestError: null` on the
+   * entry Hub, a bare 500 on beta-1, and no log line on either. Empty when nothing was passed over.
+   */
+  attempts: PoolRoutingAttempt[];
   /**
    * The operator pin that shaped this decision's candidate order, or `null`.
    *
@@ -183,16 +195,37 @@ export interface PoolRoutingRecord {
    * nodes for 307 s, because each one's `500 no user query found in messages` was taken for the node
    * breaking. This says which it was. Always `null` on `inbound` rows: the walk is the entry node's,
    * and so is the account of it — an inbound row's `node` is the peer that SENT the work, and a label
-   * on it would read, to any reader of this field, as that peer refusing.
+   * on it would read, to any reader of this field, as that peer refusing. An inbound row says why it
+   * failed in `reason`.
+   *
+   * With `basis: 'node'` it is the opposite verdict, carried in the same field so every reader that
+   * already stops at a `requestError` stops here too: the node answered 200 with output that was
+   * cut off or degenerate (see `hub-pool-output-check.ts`), which is the node's fault and not the
+   * request's. Readers that tell the app to fix its request must skip that basis.
    */
   requestError: PoolRoutingRequestError | null;
+  /**
+   * Why a failed row failed, in a few words: the status or error its node answered with, the output
+   * fault, or — for a walk that ran out — the last candidate's. The engine's own message is never
+   * here: some quote the prompt. `null` on a served row, and on a failed row `clientClosed` explains.
+   */
+  reason: string | null;
   /** Upstream status once headers arrived; `null` when no candidate ever answered. */
   status: number | null;
   /**
    * Time from the proxy receiving the request to response headers — including failed attempts — not
-   * the streamed generation, which continues afterwards. `null` while the request is `pending`.
+   * the streamed generation, which continues afterwards. `null` while the request is `pending`. The
+   * dashboard's first-byte figures and the over-budget count read it as exactly that, so its meaning
+   * stays; the whole response's time is `totalMs`.
    */
   durationMs: number | null;
+  /**
+   * Time from the proxy receiving the request to the end of the response body relayed to the caller,
+   * however that ended: finished, cut by the upstream, or abandoned by the caller. `null` until then,
+   * and on a row that relayed no body at all. On a streamed row `durationMs` stops at the first
+   * headers; this is the rest of the generation too.
+   */
+  totalMs: number | null;
   /**
    * Token counts, attached separately from `settle()` — settling happens at response headers, but
    * a token count does not exist until generation finishes. `null` until then, and stays `null`
@@ -240,24 +273,54 @@ export interface PoolRoutingPin {
  */
 export type PoolRoutingRecordInput = Omit<
   PoolRoutingRecord,
-  'id' | 'updatedAt' | 'stream' | 'bodyBytes' | 'budgetMs' | 'clientClosed' | 'requestError'
+  'id' | 'updatedAt' | 'stream' | 'bodyBytes' | 'budgetMs' | 'clientClosed' | 'requestError' | 'attempts' | 'reason' | 'totalMs'
 > &
-  Partial<Pick<PoolRoutingRecord, 'id' | 'stream' | 'bodyBytes' | 'budgetMs' | 'clientClosed' | 'requestError'>>;
+  Partial<Pick<PoolRoutingRecord, 'id' | 'stream' | 'bodyBytes' | 'budgetMs' | 'clientClosed' | 'requestError' | 'attempts' | 'reason' | 'totalMs'>>;
+
+/** One candidate the walk passed over, and why. Status and a short reason only — never an engine's message. */
+export interface PoolRoutingAttempt {
+  /** The node, as `failedOverFrom` names it: `'local'` or the peer's FQDN. */
+  node: string;
+  backend: InferenceBackendType;
+  /** What it answered, or `null` when it never answered: a deadline, a refused connection. */
+  status: number | null;
+  /** `HTTP 503`, `No response headers within 327000ms`, `fetch failed (ECONNREFUSED)`, `degenerate-output`, … */
+  reason: string;
+}
 
 /** The request-error half of a routing decision. A label for the engine's message, never the message: some quote the prompt. */
 export interface PoolRoutingRequestError {
-  /** The engine message matched, or `client-error` for a 4xx, whose body is never read. */
-  signature: PoolRequestErrorSignature | typeof CLIENT_ERROR_SIGNATURE;
+  /**
+   * The engine message matched, or `client-error` for a 4xx, whose body is never read — or, with
+   * basis `node`, what was wrong with a 200's output.
+   */
+  signature: PoolRequestErrorSignature | typeof CLIENT_ERROR_SIGNATURE | PoolOutputFault;
   /**
    * `definitive`: returned from the first candidate that said it, because no node could have
    * answered the request otherwise. `confirmed`: a verdict one candidate could not vouch for,
    * returned once a second candidate answered the same. `last-candidate`: such a verdict, returned
    * unconfirmed because no candidate was left to ask. `status`: a 4xx, passed through on its status
    * as the proxy always has — no claim about the body is made.
+   *
+   * `node`: not a verdict on the request at all. The node answered 200 with output that was cut off
+   * (`truncated-upstream`) or placeholder tokens only (`degenerate-output`); the request was fine.
    */
-  basis: 'definitive' | 'confirmed' | 'last-candidate' | 'status';
+  basis: 'definitive' | 'confirmed' | 'last-candidate' | 'status' | 'node';
   /** For `confirmed`, the node whose answer this one agreed with (`'local'` for this node); `null` for every other basis. */
   confirms: string | null;
+}
+
+/** Whether a row's `requestError` blames the request, as every basis but `node` does. */
+export function blamesRequest(requestError: PoolRoutingRequestError | null): boolean {
+  return requestError !== null && requestError.basis !== 'node';
+}
+
+/**
+ * Whether a row failed on its node's output: `requestError` basis `node` on an outbound row, and on an
+ * inbound row, which never carries a `requestError`, a `reason` naming the fault.
+ */
+export function isOutputFault(entry: Pick<PoolRoutingRecord, 'requestError' | 'reason'>): boolean {
+  return entry.requestError?.basis === 'node' || (entry.reason !== null && (POOL_OUTPUT_FAULTS as ReadonlySet<string>).has(entry.reason));
 }
 
 /** The prompt-ceiling half of a routing decision. Sizes and node names only — never any of the prompt it measured. */
@@ -468,9 +531,16 @@ export interface PoolRoutingSummary {
    * The subset of `failed` an engine refused as a bad request — see `PoolRoutingRecord.requestError`.
    * Inside `failed` and beside it, for `clientClosed`'s reason: "3 failed" reads as a pool that cannot
    * place work, when these are an app sending something no node will run. Outbound rows only, as the
-   * field is; a peer's request this node's engine refused is in `failed` with its 4xx `status`.
+   * field is; a peer's request this node's engine refused is in `failed` with its 4xx `status`. Never
+   * a row whose `requestError` has basis `node`: that is the node's output, counted in `outputFaults`.
    */
   requestErrors: number;
+  /**
+   * The subset of `failed` a node answered 200 for with output that was cut off or degenerate — see
+   * `PoolRoutingRecord.requestError` with basis `node`, and `reason` on an inbound row. Inside
+   * `failed`, like the two above. core-2's summary read `failed=0` over 167 such rows on 2026-09-29.
+   */
+  outputFaults: number;
   /** Placed on a candidate and still waiting for its first byte. */
   pending: number;
   /** Records with a non-empty `failedOverFrom`, i.e. requests that a candidate rejected before one answered. */
@@ -559,6 +629,9 @@ export class HubPoolRoutingLogService {
       clientClosed: false,
       // Likewise: set only where the proxy settles a row on an engine's verdict about the request.
       requestError: null,
+      attempts: [],
+      reason: null,
+      totalMs: null,
       ...entry,
       id: entry.id ?? randomUUID(),
       updatedAt: new Date().toISOString(),
@@ -646,12 +719,14 @@ export class HubPoolRoutingLogService {
     let failovers = 0;
     let clientClosed = 0;
     let requestErrors = 0;
+    let outputFaults = 0;
     for (const entry of this.entries) {
       if (entry.outcome === 'served') served += 1;
       if (entry.outcome === 'pending') pending += 1;
       if (entry.failedOverFrom.length > 0) failovers += 1;
       if (entry.clientClosed) clientClosed += 1;
-      if (entry.requestError) requestErrors += 1;
+      if (blamesRequest(entry.requestError)) requestErrors += 1;
+      if (entry.outcome === 'failed' && isOutputFault(entry)) outputFaults += 1;
     }
     return {
       recorded: this.entries.length,
@@ -660,6 +735,7 @@ export class HubPoolRoutingLogService {
       failed: this.entries.length - served - pending,
       clientClosed,
       requestErrors,
+      outputFaults,
       pending,
       failovers,
       lastAt: this.entries[this.entries.length - 1]?.at ?? null,

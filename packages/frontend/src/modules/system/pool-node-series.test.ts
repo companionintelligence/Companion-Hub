@@ -12,6 +12,7 @@ import {
   localContainerRollup,
   nodeInFlightSeries,
   observedPointCount,
+  outputFault,
   peerReportedInFlight,
   poolNodeCards,
   type PoolSampleWindow,
@@ -629,6 +630,40 @@ describe('isRefused and settledOutcome', () => {
   it('leaves a caller that hung up and a row still waiting to their own counts', () => {
     expect(isRefused(row({ outcome: 'failed', status: null, clientClosed: true }))).toBe(false);
     expect(isRefused(row({ outcome: 'pending', status: null }))).toBe(false);
+  });
+
+  /*
+   * core-2, 2026-09-29: its engine answered 167 gemma4 turns with `<unused49>` tokens and no closing
+   * frame. Those rows now settle `failed` with `requestError.basis: 'node'` — the node's fault — and
+   * telling the app to fix its request would send its operator after the wrong machine.
+   */
+  it('never calls a node’s bad output a refusal, and names it from either direction’s row', () => {
+    const degenerate = row({ outcome: 'failed', status: 200, requestError: { signature: 'degenerate-output', basis: 'node', confirms: null } });
+    expect(isRefused(degenerate)).toBe(false);
+    expect(settledOutcome(degenerate)).toBe('failed');
+    expect(outputFault(degenerate)).toBe('degenerate-output');
+    // An inbound row carries no requestError; its reason says it.
+    expect(outputFault(row({ direction: 'inbound', outcome: 'failed', status: 200, reason: 'truncated-upstream' }))).toBe('truncated-upstream');
+    expect(outputFault(row({ outcome: 'failed', status: 503, reason: 'HTTP 503' }))).toBeNull();
+    expect(outputFault(row({ outcome: 'failed', status: 500, requestError: { signature: 'no-user-query', basis: 'definitive' } }))).toBeNull();
+  });
+
+  it('counts bad output as failed and as bad output, never as refused', () => {
+    const rows = [
+      {
+        at: '2026-01-01T00:10:05Z',
+        direction: 'outbound',
+        node: 'local',
+        outcome: 'failed',
+        status: 200,
+        requestError: { signature: 'degenerate-output', basis: 'node', confirms: null },
+      },
+      { at: '2026-01-01T00:10:06Z', direction: 'inbound', node: 'core-2', outcome: 'failed', status: 200, reason: 'truncated-upstream' },
+      { at: '2026-01-01T00:10:07Z', direction: 'outbound', node: 'core-17', outcome: 'served', status: 200 },
+    ];
+    const [bucket] = routingBuckets(rows as never[], { now: Date.parse('2026-01-01T00:10:30Z'), bucketMs: 60_000, buckets: 1 });
+
+    expect(bucket).toMatchObject({ served: 1, failed: 2, badOutput: 2, refused: 0 });
   });
 
   it('calls a row served only when it was answered with what was asked for', () => {
