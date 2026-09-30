@@ -417,19 +417,34 @@ describe('InferenceRouterService', () => {
       memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 20_000 });
 
       await expect(service.prepareTrackedModel('qwen3-8-27b-mtp')).resolves.toEqual({ backend: 'ollama', backendModelId: 'qwen3.8:27b-mtp-q4_K_M' });
-      expect(modelPuller.loadModel).toHaveBeenCalledWith('qwen3-8-27b-mtp');
+      // No window in the catalog: the 8192 fallback, whose ladder KV (2048 MB) the fit check charges on top.
+      expect(memoryManager.canFitModel).toHaveBeenCalledWith(defaultProfile, 22_048);
+      expect(modelPuller.loadModel).toHaveBeenCalledWith('qwen3-8-27b-mtp', { contextLength: 8192 });
     });
 
-    it('evicts what the memory manager names, then loads, when the model does not fit as is', async () => {
+    it('evicts what the memory manager plans, re-measures, then loads, when the model does not fit as is', async () => {
       modelRegistry.getTrackedModel.mockReturnValue(pulled);
-      modelRegistry.getCuratedModel.mockReturnValue({ runtime: { memoryFootprintMb: 20_000 } } as CuratedModel);
+      modelRegistry.getCuratedModel.mockImplementation((id) =>
+        id === 'gemma4-e4b' ? ({ id } as CuratedModel) : ({ runtime: { memoryFootprintMb: 20_000 } } as CuratedModel),
+      );
       ollamaBackend.isModelLoaded.mockResolvedValue(false);
-      memoryManager.canFitModel.mockResolvedValue({ fits: false, availableMb: 8_000, requiredMb: 20_000 });
-      memoryManager.getModelsToEvict.mockReturnValue({ canFree: true, modelsToEvict: ['gemma4-e4b'], freedMb: 12_000 });
+      memoryManager.canFitModel
+        .mockResolvedValueOnce({ fits: false, availableMb: 8_000, requiredMb: 20_000 })
+        .mockResolvedValueOnce({ fits: true, availableMb: 20_000, requiredMb: 20_000 });
+      memoryManager.planEviction.mockResolvedValue({
+        canFree: true,
+        candidates: [{ backend: 'ollama', backendModelId: 'gemma4:e4b', catalogId: 'gemma4-e4b', estimatedMb: 12_000 }],
+        freedMb: 12_000,
+      });
 
       await expect(service.prepareTrackedModel('qwen3-8-27b-mtp')).resolves.not.toBeNull();
+      expect(memoryManager.planEviction).toHaveBeenCalledWith(defaultProfile, 14_048, {
+        backend: 'ollama',
+        backendModelId: 'qwen3.8:27b-mtp-q4_K_M',
+      });
       expect(modelPuller.unloadModel).toHaveBeenCalledWith('gemma4-e4b');
-      expect(modelPuller.loadModel).toHaveBeenCalledWith('qwen3-8-27b-mtp');
+      expect(memoryManager.invalidateObservation).toHaveBeenCalled();
+      expect(modelPuller.loadModel).toHaveBeenCalledWith('qwen3-8-27b-mtp', { contextLength: 8192 });
     });
 
     it('answers null when nothing can be freed, leaving the engine to decide', async () => {
@@ -437,9 +452,154 @@ describe('InferenceRouterService', () => {
       modelRegistry.getCuratedModel.mockReturnValue({ runtime: { memoryFootprintMb: 20_000 } } as CuratedModel);
       ollamaBackend.isModelLoaded.mockResolvedValue(false);
       memoryManager.canFitModel.mockResolvedValue({ fits: false, availableMb: 8_000, requiredMb: 20_000 });
-      memoryManager.getModelsToEvict.mockReturnValue({ canFree: false, modelsToEvict: [], freedMb: 0 });
+      memoryManager.planEviction.mockResolvedValue({ canFree: false, candidates: [], freedMb: 0 });
 
       await expect(service.prepareTrackedModel('qwen3-8-27b-mtp')).resolves.toBeNull();
+      expect(modelPuller.loadModel).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── loadTrackedModel ──────────────────────────────────
+  // The load path the pin endpoint now shares. The pin used to load with no fit check, which put
+  // a Lemonade 27B onto a 24 GiB card where ci-server's Ollama 27B already sat.
+  describe('loadTrackedModel', () => {
+    const lemonadeModel = {
+      id: 'qwen3-8-27b-lemonade',
+      backend: 'lemonade',
+      backendModelId: 'Qwen3.8-27B-GGUF',
+      runtime: { memoryFootprintMb: 18_000, contextWindow: 262_144 },
+    } as CuratedModel;
+    const ollamaResident = { backend: 'ollama' as const, backendModelId: 'qwen3.8:27b-mtp-q4_K_M', catalogId: null, estimatedMb: 17_000 };
+
+    beforeEach(() => {
+      modelRegistry.getTrackedModel.mockReturnValue({
+        catalogId: lemonadeModel.id,
+        backend: 'lemonade',
+        backendModelId: 'Qwen3.8-27B-GGUF',
+        state: 'pulled',
+      } as TrackedModel);
+      modelRegistry.getCuratedModel.mockImplementation((id) => (id === lemonadeModel.id ? lemonadeModel : undefined));
+      lemonadeBackend.isModelLoaded.mockResolvedValue(false);
+      vi.spyOn(service as unknown as { delay: (ms: number) => Promise<void> }, 'delay').mockResolvedValue(undefined);
+    });
+
+    it('unloads a model the Hub never loaded directly on its engine, then loads', async () => {
+      memoryManager.canFitModel
+        .mockResolvedValueOnce({ fits: false, availableMb: 6_000, requiredMb: 18_000 })
+        .mockResolvedValueOnce({ fits: false, availableMb: 6_000, requiredMb: 18_000 })
+        .mockResolvedValueOnce({ fits: true, availableMb: 23_000, requiredMb: 18_000 });
+      memoryManager.planEviction.mockResolvedValue({ canFree: true, candidates: [ollamaResident], freedMb: 17_000 });
+
+      await expect(service.loadTrackedModel(lemonadeModel.id)).resolves.toEqual({ loaded: true });
+
+      expect(ollamaBackend.unloadModel).toHaveBeenCalledWith('qwen3.8:27b-mtp-q4_K_M');
+      expect(modelPuller.unloadModel).not.toHaveBeenCalled();
+      // The first re-measure still showed the old model; the second, after a settle wait, did not.
+      expect(memoryManager.canFitModel).toHaveBeenCalledTimes(3);
+      expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 16_384 });
+    });
+
+    it('refuses rather than loading on top when eviction never makes room', async () => {
+      memoryManager.canFitModel.mockResolvedValue({ fits: false, availableMb: 6_000, requiredMb: 18_000 });
+      memoryManager.planEviction.mockResolvedValue({ canFree: true, candidates: [ollamaResident], freedMb: 17_000 });
+
+      const outcome = await service.loadTrackedModel(lemonadeModel.id);
+
+      expect(outcome).toEqual({ loaded: false, reason: expect.stringContaining('still does not fit') });
+      expect(modelPuller.loadModel).not.toHaveBeenCalled();
+    });
+
+    it('refuses without unloading anything when the plan cannot free enough', async () => {
+      memoryManager.canFitModel.mockResolvedValue({ fits: false, availableMb: 6_000, requiredMb: 18_000 });
+      memoryManager.planEviction.mockResolvedValue({ canFree: false, candidates: [], freedMb: 2_000 });
+
+      const outcome = await service.loadTrackedModel(lemonadeModel.id);
+
+      expect(outcome).toEqual({ loaded: false, reason: expect.stringContaining('would free 2000 MB') });
+      expect(ollamaBackend.unloadModel).not.toHaveBeenCalled();
+      expect(modelPuller.loadModel).not.toHaveBeenCalled();
+    });
+
+    it('keeps going when one unload fails, and lets the re-measure decide', async () => {
+      memoryManager.canFitModel
+        .mockResolvedValueOnce({ fits: false, availableMb: 6_000, requiredMb: 18_000 })
+        .mockResolvedValueOnce({ fits: true, availableMb: 20_000, requiredMb: 18_000 });
+      memoryManager.planEviction.mockResolvedValue({
+        canFree: true,
+        candidates: [ollamaResident, { backend: 'ollama', backendModelId: 'nomic-embed-text:latest', catalogId: null, estimatedMb: null }],
+        freedMb: 17_000,
+      });
+      ollamaBackend.unloadModel.mockRejectedValueOnce(new Error('boom'));
+
+      await expect(service.loadTrackedModel(lemonadeModel.id)).resolves.toEqual({ loaded: true });
+      expect(ollamaBackend.unloadModel).toHaveBeenCalledTimes(2);
+    });
+
+    // ── the window a load is sized at ──
+    // The same number the Hub hands its apps as CI_LLM_NUM_CTX, so Ollama's first app request does
+    // not reload the model and Lemonade (which takes no window per request) serves the one apps expect.
+
+    it('sizes a Lemonade load by the ladder, and fit-checks what the model will hold at that window', async () => {
+      memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 22_096 });
+
+      await service.loadTrackedModel(lemonadeModel.id);
+
+      // 24576 - 18000 = 6576 MB free for context → the 16k rung, charged at the ladder's 0.25 MB/token.
+      expect(memoryManager.canFitModel).toHaveBeenCalledWith(defaultProfile, 18_000 + 16_384 * 0.25);
+      expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 16_384 });
+    });
+
+    it("uses the engine's measured per-token cost when it has one", async () => {
+      const ollamaModel = {
+        id: 'qwen3-8-27b-mtp',
+        backend: 'ollama',
+        backendModelId: 'qwen3.8:27b-mtp-q4_K_M',
+        runtime: { memoryFootprintMb: 18_000, contextWindow: 262_144 },
+      } as CuratedModel;
+      modelRegistry.getTrackedModel.mockReturnValue({
+        catalogId: ollamaModel.id,
+        backend: 'ollama',
+        backendModelId: ollamaModel.backendModelId,
+        state: 'pulled',
+      } as TrackedModel);
+      modelRegistry.getCuratedModel.mockReturnValue(ollamaModel);
+      ollamaBackend.isModelLoaded.mockResolvedValue(false);
+      ollamaBackend.contextCostForModel.mockResolvedValue({ kvMbPerToken: 0.0625, weightMb: 16_000, source: 'geometry' });
+      memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 23_120 });
+
+      await service.loadTrackedModel(ollamaModel.id);
+
+      // 24576 - 18000 - 1024 margin = 5552 MB; 65536 × 0.0625 = 4096 fits, the top unprompted rung.
+      expect(memoryManager.canFitModel).toHaveBeenCalledWith(defaultProfile, 18_000 + 4_096 + 1_024);
+      expect(modelPuller.loadModel).toHaveBeenCalledWith(ollamaModel.id, { contextLength: 65_536 });
+    });
+
+    it("caps the window at the operator's stated engine context", async () => {
+      configuration.getInferencePreferences.mockReturnValue({ ...configuration.getInferencePreferences(), maxNumCtx: 8192 } as never);
+      memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 20_048 });
+
+      await service.loadTrackedModel(lemonadeModel.id);
+
+      expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, { contextLength: 8192 });
+    });
+
+    it('sends no window for an embedding model', async () => {
+      modelRegistry.getCuratedModel.mockReturnValue({ ...lemonadeModel, modality: 'embedding' } as CuratedModel);
+      memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 18_000 });
+
+      await service.loadTrackedModel(lemonadeModel.id);
+
+      expect(memoryManager.canFitModel).toHaveBeenCalledWith(defaultProfile, 18_000);
+      expect(modelPuller.loadModel).toHaveBeenCalledWith(lemonadeModel.id, undefined);
+    });
+
+    it('tracks a model the engine already holds as loaded without touching memory', async () => {
+      modelRegistry.getTrackedModel.mockReturnValue(undefined);
+      lemonadeBackend.isModelLoaded.mockResolvedValue(true);
+
+      await expect(service.loadTrackedModel(lemonadeModel.id)).resolves.toEqual({ loaded: true });
+      expect(modelRegistry.trackModel).toHaveBeenCalledWith(lemonadeModel.id, 'loaded');
+      expect(memoryManager.canFitModel).not.toHaveBeenCalled();
       expect(modelPuller.loadModel).not.toHaveBeenCalled();
     });
   });

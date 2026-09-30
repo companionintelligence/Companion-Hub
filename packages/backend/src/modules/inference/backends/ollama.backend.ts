@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
-import type { InferenceBackend } from './backend.interface';
+import type { InferenceBackend, LoadModelOptions } from './backend.interface';
 import type { BackendHealthStatus, BackendResidency, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
 import axios from 'axios';
 // Shared with the Lemonade backend: both mount the same AMD device nodes and
@@ -389,14 +389,19 @@ export class OllamaBackend implements InferenceBackend {
     }
   }
 
-  async loadModel(modelId: string, options?: { embedding?: boolean }): Promise<void> {
-    this.logger.info(`[Ollama] Loading model: ${modelId}`);
+  async loadModel(modelId: string, options?: LoadModelOptions): Promise<void> {
+    const window = options?.embedding || !options?.contextLength ? null : options.contextLength;
+    this.logger.info(`[Ollama] Loading model: ${modelId}${window ? ` at num_ctx ${window}` : ''}`);
     try {
       const url = await this.resolveUrl();
       if (options?.embedding) {
         await axios.post(`${url}/api/embed`, { model: modelId, input: '', keep_alive: -1 }, { timeout: 120000 });
       } else {
-        await axios.post(`${url}/api/generate`, { model: modelId, prompt: '', keep_alive: -1 }, { timeout: 120000 });
+        // `num_ctx` holds only until a request names a different one — or names none, which reloads
+        // at Ollama's own default (measured 2026-09-29: an 8192 load went to 32768 on the next `/v1`
+        // call). It is the window the Hub hands its apps, so their native requests keep it.
+        const body = { model: modelId, prompt: '', keep_alive: -1, ...(window ? { options: { num_ctx: window } } : {}) };
+        await axios.post(`${url}/api/generate`, body, { timeout: 120000 });
       }
       this.logger.info(`[Ollama] Model loaded and pinned: ${modelId}`);
       // The strongest proof available that this model serves here — it just did the hard part.

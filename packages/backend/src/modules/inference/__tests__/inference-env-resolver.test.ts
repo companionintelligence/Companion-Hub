@@ -543,6 +543,47 @@ describe('InferenceEnvResolver', () => {
     });
   });
 
+  describe('Lemonade backend embeddings: host and model always name the same engine', () => {
+    const LEMONADE_BASE_URL = 'http://host.docker.internal:13305';
+
+    beforeEach(() => {
+      config.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'lemonade',
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      });
+      lemonadeBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Qwen3.8-27B-GGUF'] });
+      lemonadeBackend.getBaseUrl.mockReturnValue(LEMONADE_BASE_URL);
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([makeLlm('qwen3-8-27b-lemonade', 'Qwen3.8-27B-GGUF', false, 'lemonade')]);
+      modelRegistry.getRecommendedEmbeddingModel.mockImplementation((_tier, backend) =>
+        backend === 'ollama'
+          ? makeEmbedding('nomic-embed-text', 'nomic-embed-text')
+          : backend === 'lemonade'
+            ? makeEmbedding('nomic-embed-text-v1-5-lemonade', 'nomic-embed-text-v1.5-GGUF')
+            : undefined,
+      );
+      modelRegistry.getRecommendedVisionModel.mockReturnValue(undefined);
+    });
+
+    it("hands out Ollama's embedder with Ollama's host when Ollama is healthy, never Lemonade's id on Ollama's host", async () => {
+      const env = await service.resolve();
+
+      expect(env.CI_CHAT_MODEL).toBe('Qwen3.8-27B-GGUF');
+      expect(env.CI_OLLAMA_EMBED_HOST).toBe(OLLAMA_BASE_URL);
+      expect(env.CI_EMBEDDING_MODEL).toBe('nomic-embed-text');
+    });
+
+    it("embeds on Lemonade itself when there is no Ollama (Lemonade serves Ollama's /api/embed)", async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+
+      const env = await service.resolve();
+
+      expect(env.CI_OLLAMA_EMBED_HOST).toBe(LEMONADE_BASE_URL);
+      expect(env.CI_EMBEDDING_MODEL).toBe('nomic-embed-text-v1.5-GGUF');
+    });
+  });
+
   it('honors preferred chat and embedding models and falls back for non-vision preferences', async () => {
     config.getInferencePreferences.mockReturnValue({
       preferredBackend: null,

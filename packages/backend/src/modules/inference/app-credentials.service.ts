@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException, type OnApplicationShutdown } from '@nestjs/common';
+import { probeContextCost } from './context-cost.util';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
@@ -421,7 +422,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
       // model this node serves can be measured, so a pool-served one keeps the heuristic.
       const askOllama = chatServedLocally && backendType === 'ollama';
       const [cost, residentContextLength] = await Promise.all([
-        askOllama ? this.ollamaBackend.contextCostForModel(chatModel.backendModelId) : null,
+        chatServedLocally ? probeContextCost(backend, chatModel) : null,
         askOllama ? this.ollamaBackend.residentContextLength(chatModel.backendModelId) : null,
       ]);
       // Same cap as the resolver: through the pool, the largest cap among the nodes serving the

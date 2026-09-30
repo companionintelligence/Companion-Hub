@@ -50,6 +50,11 @@ export interface ContextLengthInput {
    * footprint that already includes headroom is never undercut by a smaller measured base.
    */
   weightMb?: number | null;
+  /**
+   * MB to keep free for a vision encoder's buffers ({@link VISION_ENCODER_RESERVE_MB} for a model
+   * that takes images, else 0). Charged on both paths, before any context.
+   */
+  visionReserveMb?: number;
 }
 
 const FALLBACK_CONTEXT = 8192;
@@ -64,6 +69,49 @@ const MEASURED_FIXED_OVERHEAD_MB = 768;
  * a 27B at 32k reported 16.2 GiB by `/api/ps` while the card showed 22.5 GiB in use.
  */
 const MEASURED_SAFETY_MARGIN_MB = 1024;
+
+/**
+ * What the ladder assumes one token of context costs: each rung doubles the window for each
+ * doubling of free memory, starting from 8192 tokens in 2048 MB.
+ */
+export const LADDER_KV_MB_PER_TOKEN = 2048 / 8192;
+
+/**
+ * What a model occupies once loaded at `numCtx`, by the same arithmetic
+ * {@link recommendContextLength} used to choose that window: the base it charged, the KV cache at
+ * the chosen window, and — on the measured path — the margin it kept free. The fit check before a
+ * load compares this, not the catalog footprint, against free memory: the catalog figure is the
+ * weights, and a load at a large window can be half as big again.
+ */
+export function estimateLoadedFootprintMb(input: {
+  modelFootprintMb: number;
+  numCtx: number;
+  kvMbPerToken?: number | null;
+  weightMb?: number | null;
+  visionReserveMb?: number;
+}): number {
+  const { modelFootprintMb, numCtx, kvMbPerToken, weightMb } = input;
+  const footprint = Math.max(0, modelFootprintMb || 0);
+  if (typeof kvMbPerToken === 'number' && Number.isFinite(kvMbPerToken) && kvMbPerToken > 0) {
+    const measuredBase = typeof weightMb === 'number' && weightMb > 0 ? weightMb + MEASURED_FIXED_OVERHEAD_MB : 0;
+    return Math.ceil(Math.max(footprint, measuredBase) + numCtx * kvMbPerToken + MEASURED_SAFETY_MARGIN_MB + visionReserve(input));
+  }
+  return Math.ceil(footprint + numCtx * LADDER_KV_MB_PER_TOKEN + visionReserve(input));
+}
+
+/**
+ * Kept free for a vision model's image encoder, whose buffers are allocated on the first image rather
+ * than at load — so a load-time fit check never sees them, and a window sized without them spills
+ * once an app sends a picture. Measured 2026-09-29, Qwen 3.8 27B on Lemonade: 513–560 MiB for a
+ * 1280×960 image (1,256 image tokens, CI-Server's rendition limit), 1,046 MiB for 2560×1920 (4,071
+ * tokens) — about 300 MiB plus 0.18 MiB per image token. This covers the larger of the two.
+ */
+export const VISION_ENCODER_RESERVE_MB = 1024;
+
+function visionReserve(input: { visionReserveMb?: number }): number {
+  const mb = input.visionReserveMb;
+  return typeof mb === 'number' && Number.isFinite(mb) && mb > 0 ? mb : 0;
+}
 
 /** Powers of two from the cap down to the floor: the candidates the measured path walks. */
 function measuredCandidates(cap: number): number[] {
@@ -95,12 +143,12 @@ export function recommendContextLength(input: ContextLengthInput): number {
   if (typeof kvMbPerToken === 'number' && Number.isFinite(kvMbPerToken) && kvMbPerToken > 0) {
     const measuredBase = typeof weightMb === 'number' && weightMb > 0 ? weightMb + MEASURED_FIXED_OVERHEAD_MB : 0;
     const baseMb = Math.max(0, modelFootprintMb || 0, measuredBase);
-    const budgetMb = effectiveInferenceMemoryMb - baseMb - MEASURED_SAFETY_MARGIN_MB;
+    const budgetMb = effectiveInferenceMemoryMb - baseMb - MEASURED_SAFETY_MARGIN_MB - visionReserve(input);
     const fit = measuredCandidates(cap).find((window) => window * kvMbPerToken <= budgetMb) ?? FLOOR_CONTEXT;
     return Math.min(Math.max(fit, floor), cap);
   }
 
-  const freeForContextMb = effectiveInferenceMemoryMb - Math.max(0, modelFootprintMb || 0);
+  const freeForContextMb = effectiveInferenceMemoryMb - Math.max(0, modelFootprintMb || 0) - visionReserve(input);
 
   let ladder: number;
   if (freeForContextMb >= 16384) ladder = 65536;

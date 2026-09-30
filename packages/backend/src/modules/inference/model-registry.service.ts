@@ -202,8 +202,8 @@ export class ModelRegistryService implements OnModuleInit {
 
   /**
    * The default embedding model recommended for the tier, on a given backend (default
-   * 'ollama' — the only backend with embedding models in the catalog until a given
-   * backend gets its own, e.g. `nomic-embed-text-v1-lemonade`). Picked independently of
+   * 'ollama'; Lemonade's is `nomic-embed-text-v1-5-lemonade`, the same v1.5 weights, so
+   * vectors from either engine search the same index). Picked independently of
    * the chat LLM so memory/RAG consumers (e.g. the companion-memory app's pgvector
    * store) always receive a usable embeddings model. Returns null for an insufficient
    * tier, or when no embedding model is recommended for that backend — callers must

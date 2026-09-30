@@ -8,7 +8,7 @@ import {
   type ParsedPullProgress,
 } from '@/lib/inference/tracked-models';
 import type { InferenceBackendType } from '@ci-hub/common/types';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 export interface ModelPullOrchestratorResult {
   progressById: Record<string, number>;
@@ -70,6 +70,8 @@ export function useModelPullOrchestrator({
   const [progressById, setProgressById] = useState<Record<string, number>>({});
   const [errorsById, setErrorsById] = useState<Record<string, string>>({});
   const [backendReady, setBackendReady] = useState(false);
+  // Downloads the Hub refused to start. They are never tracked, so each poll would otherwise drop them.
+  const refusedByIdRef = useRef<Record<string, string>>({});
 
   const installedSet = useMemo(() => new Set(installedCatalogIds), [installedCatalogIds]);
   const pullTargets = pullableModelIds ?? selectedModelIds;
@@ -114,14 +116,20 @@ export function useModelPullOrchestrator({
 
   const applyParsed = useCallback((parsed: ParsedPullProgress) => {
     setProgressById(parsed.progressById);
-    setErrorsById(parsed.errorsById);
+    setErrorsById({ ...refusedByIdRef.current, ...parsed.errorsById });
   }, []);
 
   useEffect(() => {
     if (!orchestratorEnabled) return;
 
     for (const modelId of modelsNeedingDownload) {
-      void ensurePullStarted(modelId, bestEffort);
+      void ensurePullStarted(modelId, bestEffort)
+        .catch((err: unknown) => (err instanceof Error ? err.message : String(err)))
+        .then((reason) => {
+          const { [modelId]: _previous, ...others } = refusedByIdRef.current;
+          refusedByIdRef.current = reason ? { ...others, [modelId]: reason } : others;
+          if (reason) setErrorsById((prev) => ({ ...prev, [modelId]: reason }));
+        });
     }
   }, [orchestratorEnabled, modelsNeedingDownload, bestEffort]);
 
@@ -164,11 +172,12 @@ export async function pullAndPinModels(
   installedCatalogIds: string[],
   options?: { bestEffort?: boolean; timeoutMs?: number },
 ): Promise<{ errors: string[]; pulledIds: Set<string> }> {
-  const modelsToPull = modelIds.filter((id) => !installedCatalogIds.includes(id));
-  await ensurePullsStarted(modelsToPull, options?.bestEffort ?? false);
+  const requested = modelIds.filter((id) => !installedCatalogIds.includes(id));
+  const refusedById = await ensurePullsStarted(requested, options?.bestEffort ?? false);
+  const modelsToPull = requested.filter((id) => !refusedById[id]);
   const result = await waitForModelPulls(modelsToPull, installedCatalogIds, {
     timeoutMs: options?.timeoutMs ?? 600_000,
   });
-  const errors = Object.entries(result.errorsById).map(([id, msg]) => `${id}: ${msg}`);
+  const errors = Object.entries({ ...refusedById, ...result.errorsById }).map(([id, msg]) => `${id}: ${msg}`);
   return { errors, pulledIds: result.pulledIds };
 }

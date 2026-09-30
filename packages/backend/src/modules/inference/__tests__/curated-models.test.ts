@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { LEMONADE_REGISTRATIONS } from '../backends/lemonade.backend';
 import { CURATED_MODELS } from '../catalog/curated-models';
 
 /**
@@ -10,13 +11,13 @@ describe('curated-models (TOON catalog)', () => {
   const byId = new Map(CURATED_MODELS.map((m) => [m.id, m]));
   const llms = CURATED_MODELS.filter((m) => m.modality === 'llm');
 
-  it('decodes the full catalog (104 Ollama LLMs + 4 Lemonade LLMs + 8 vLLM LLMs + 64 oMLX LLMs + voice + embeddings) with unique ids', () => {
-    expect(llms.filter((m) => m.backend === 'ollama').length).toBe(104);
-    expect(llms.filter((m) => m.backend === 'lemonade').length).toBe(4);
+  it('decodes the full catalog (105 Ollama LLMs + 41 Lemonade LLMs + 8 vLLM LLMs + 64 oMLX LLMs + voice + embeddings) with unique ids', () => {
+    expect(llms.filter((m) => m.backend === 'ollama').length).toBe(105);
+    expect(llms.filter((m) => m.backend === 'lemonade').length).toBe(41);
     expect(llms.filter((m) => m.backend === 'vllm').length).toBe(8);
     expect(llms.filter((m) => m.backend === 'omlx').length).toBe(64);
-    expect(llms.length).toBe(180);
-    // 4 Ollama embeddings + 1 Lemonade embedding (nomic-embed-text-v1-lemonade).
+    expect(llms.length).toBe(218);
+    // 4 Ollama embeddings + 1 Lemonade embedding (nomic-embed-text-v1-5-lemonade).
     expect(CURATED_MODELS.filter((m) => m.modality === 'embedding').length).toBe(5);
     expect(CURATED_MODELS.filter((m) => m.modality === 'tts' || m.modality === 'stt').length).toBe(3);
     expect(new Set(CURATED_MODELS.map((m) => m.id)).size).toBe(CURATED_MODELS.length);
@@ -63,6 +64,8 @@ describe('curated-models (TOON catalog)', () => {
     // Lemonade LLM tags are the exact registry key from server_models.json (no colon-tag convention).
     for (const m of llms.filter((m) => m.backend === 'lemonade')) {
       expect(m.backendModelId, `${m.id} tag`).not.toContain(':');
+      // Stated per row from the Lemonade checkpoint tag (see the LEMONADE_LLM_TOON comment).
+      expect(m.runtime.quantization, `${m.id} quantization`).toMatch(/^(ud-)?q4_(0|1|K_M|K_S|K_XL)$|^mxfp4$/);
     }
     for (const m of llms.filter((m) => m.backend === 'vllm')) {
       expect(m.backendModelId, `${m.id} tag`).toMatch(/^[\w.-]+\/[\w.-]+$/);
@@ -120,9 +123,9 @@ describe('curated-models (TOON catalog)', () => {
   it('carries Artificial Analysis metadata for leaderboard models', () => {
     const llama = byId.get('llama3-3-70b');
     expect(llama?.metadata?.creator).toBe('Meta');
-    // Artificial Analysis Intelligence Index v4.3, pulled 2026-09-16 (see the catalog header).
+    // Artificial Analysis, re-pulled 2026-09-29 (see the catalog header).
     expect(llama?.metadata?.intelligenceIndex).toBe(7.7);
-    expect(llama?.metadata?.perf?.tokensPerSec).toBe(86.2);
+    expect(llama?.metadata?.perf?.tokensPerSec).toBe(89);
 
     const gemma = byId.get('gemma4-31b');
     expect(gemma?.metadata?.creator).toBe('Google');
@@ -260,6 +263,50 @@ describe('curated-models (TOON catalog)', () => {
     const ids = new Set(CURATED_MODELS.map((m) => m.id));
     for (const unverified of ['mistral-medium-3-5-128b']) {
       expect(ids.has(unverified), `unverified model ${unverified} must not be re-added without independent confirmation`).toBe(false);
+    }
+  });
+
+  // Lemonade rows are scored like Ollama's: the Intelligence Index describes the model, not the engine
+  // (AA evaluates through hosted APIs, never through either), so each takes its Ollama partner's.
+  describe('Lemonade intelligence scores', () => {
+    const byId = new Map(CURATED_MODELS.map((m) => [m.id, m]));
+    const lemonade = CURATED_MODELS.filter((m) => m.backend === 'lemonade' && m.modality === 'llm');
+
+    it("takes every Lemonade row's score from its Ollama partner", () => {
+      let scored = 0;
+      for (const m of lemonade) {
+        const partner = byId.get(m.id.replace(/-lemonade$/, ''));
+        if (!partner || m.id === 'qwen3-30b-lemonade') continue;
+        expect(m.metadata?.intelligenceIndex, m.id).toBe(partner.metadata?.intelligenceIndex);
+        scored += 1;
+      }
+      expect(scored).toBe(40);
+      expect(byId.get('qwen3-8-27b-lemonade')?.metadata?.intelligenceIndex).toBe(33.7);
+    });
+
+    it('leaves unscored the row whose partner is a different release', () => {
+      // Lemonade serves the original Qwen3-30B-A3B; AA scores it apart from what Ollama's qwen3:30b serves.
+      expect(byId.get('qwen3-30b')?.metadata?.intelligenceIndex).toBeDefined();
+      expect(byId.get('qwen3-30b-lemonade')?.metadata?.intelligenceIndex).toBeUndefined();
+      // gemma4:12b (added 2026-09-29) scores from AA "Gemma 4 12B (Reasoning)"; its Lemonade row inherits it.
+      expect(byId.get('gemma4-12b-lemonade')?.metadata?.intelligenceIndex).toBe(14.2);
+    });
+
+    it('copies only the score: speed figures are cloud measurements and stay blank', () => {
+      for (const m of lemonade) {
+        expect(m.metadata?.perf, m.id).toBeUndefined();
+      }
+    });
+  });
+
+  // Every install embeds with nomic v1.5, whichever engine runs it, so an index never strands on a
+  // backend switch. Lemonade's registry ships only v1 (cosine ~0.7 against v1.5: a different space).
+  it('recommends nomic v1.5 on Lemonade, and the Hub knows how to install it there', () => {
+    const lemonadeEmbedders = CURATED_MODELS.filter((m) => m.backend === 'lemonade' && m.modality === 'embedding');
+    expect(lemonadeEmbedders.map((m) => m.backendModelId)).toEqual(['nomic-embed-text-v1.5-GGUF']);
+    expect(LEMONADE_REGISTRATIONS['nomic-embed-text-v1.5-GGUF']).toMatchObject({ checkpoint: expect.stringContaining('nomic-embed-text-v1.5') });
+    for (const model of lemonadeEmbedders) {
+      expect(model.backendModelId).not.toMatch(/nomic-embed-text-v1-GGUF/);
     }
   });
 });

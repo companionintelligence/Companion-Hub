@@ -39,12 +39,16 @@ export const LEVEL_TAG: Record<LevelColor, string> = {
 export const TIER_TAG_COLOR: Record<string, LevelColor> = { 'cpu-only': 'green', low: 'gold', medium: 'orange', high: 'red' };
 export const TIER_TAG_LABEL: Record<string, string> = { 'cpu-only': 'cpu', low: 'low', medium: 'medium', high: 'high', insufficient: 'n/a' };
 
-// Artificial Analysis Intelligence Index v4.3 (re-pulled 2026-09-16): the best open-weight model scores
-// ~34 and the frontier ~53, about half the pre-v4.3 scale these bands were first tuned for (blue ≥ 50,
-// green ≥ 38, gold ≥ 26, orange ≥ 14). Bands follow the scale; if the catalog is re-pulled onto a new index
-// version, re-derive them from the distribution rather than keeping these numbers.
-export const SCORE_BAR_MAX = 40;
-export const scoreColor = (v: number): LevelColor => (v >= 30 ? 'blue' : v >= 20 ? 'green' : v >= 12 ? 'gold' : v >= 7 ? 'orange' : 'red');
+// Artificial Analysis Intelligence Index, re-pulled 2026-09-29. The bands split THE CATALOG's own scores
+// into five roughly equal groups, so the colors rank the models a user can actually install against each
+// other — not against a leaderboard top (46.3, MiMo-V2.6-Pro) that no model this hardware runs comes near,
+// which left the table 0 blue / 53 red. Over the 77 distinct scored catalog models (MTP twins counted once)
+// the cuts give red 13, orange 21, gold 15, green 13, blue 15; orange is the widest because a crowd of older
+// models sits at 6–7 and no cut can split equal displayed numbers. Each cut is at .5 so every whole number
+// the table shows (it rounds) has exactly one color. The bar is full at the catalog's top (34.3 → 35).
+// Re-derive both after a re-pull or a catalog change rather than keeping these numbers.
+export const SCORE_BAR_MAX = 35;
+export const scoreColor = (v: number): LevelColor => (v >= 13.5 ? 'blue' : v >= 9.5 ? 'green' : v >= 7.5 ? 'gold' : v >= 5.5 ? 'orange' : 'red');
 // Resource size in GB: bigger is heavier → warmer (red).
 export const resourceColor = (gb: number): LevelColor => (gb >= 48 ? 'red' : gb >= 16 ? 'orange' : gb >= 4 ? 'gold' : 'green');
 

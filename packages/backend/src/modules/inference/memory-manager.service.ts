@@ -195,6 +195,88 @@ export class MemoryManagerService {
     };
   }
 
+  /**
+   * What to unload so `requiredMb` more fits, drawn from what the engines hold NOW rather than
+   * from what this Hub loaded. {@link getModelsToEvict} only sees the registry's own loads, and a
+   * model an app loaded by calling the engine directly is `pulled` there while it occupies the
+   * card — so it could never be evicted, and the load went ahead on top of it. Measured on a
+   * 24 GiB 7900 XTX: ci-server's Ollama 27B (17 GiB) stayed put while a pin loaded Lemonade's
+   * copy of the same model, and the driver's eviction thrash froze the desktop until a reboot.
+   *
+   * Order: the Hub's own loads least-recently-used first (the order it always evicted in), then
+   * everything else the engines report, largest first so as few as possible go. Pinned models and
+   * `keep` are never candidates. A model whose size nothing can say counts as 0 towards the
+   * target, and `canFree` is then optimistic — the caller re-measures after unloading anyway.
+   */
+  async planEviction(
+    profile: HardwareProfile,
+    requiredMb: number,
+    keep: { backend: InferenceBackendType; backendModelId: string },
+  ): Promise<{ canFree: boolean; candidates: EvictionCandidate[]; freedMb: number }> {
+    const pool = modelPoolFor(profile);
+    const observation = await this.observe(profile.gpu.vendor);
+    const usage = deriveModelMemoryUsage({ pool, observation, tracked: this.modelRegistry.getLoadedModels() });
+    const tracked = this.modelRegistry.getTrackedModels();
+
+    const ordered: EvictionCandidate[] = [];
+    const seen = new Set<string>([evictionKey(keep.backend, keep.backendModelId)]);
+    const add = (candidate: EvictionCandidate): void => {
+      const key = evictionKey(candidate.backend, candidate.backendModelId);
+      if (seen.has(key)) return;
+      seen.add(key);
+      ordered.push(candidate);
+    };
+
+    for (const model of this.modelRegistry.getEvictionCandidates()) {
+      add({ backend: model.backend, backendModelId: model.backendModelId, catalogId: model.catalogId, estimatedMb: model.memoryUsedMb });
+    }
+
+    const residents: EvictionCandidate[] = [];
+    for (const entry of usage.backends) {
+      // `registry` rows are the engine NOT answering; there is nothing live to unload through it.
+      if (entry.source === 'registry') continue;
+      const reported = observation.residency.get(entry.backend)?.models ?? [];
+      for (const backendModelId of entry.models) {
+        const own = tracked.find((model) => model.backend === entry.backend && model.backendModelId === backendModelId);
+        if (own?.pinned) continue;
+        const catalogId =
+          own?.catalogId ??
+          this.modelRegistry.getCatalog().find((m) => m.backend === entry.backend && m.backendModelId === backendModelId)?.id ??
+          null;
+        const bytes = reported.find((model) => model.id === backendModelId)?.[pool === 'vram' ? 'engineGpuBytes' : 'totalBytes'] ?? null;
+        const estimatedMb =
+          bytes === null
+            ? (own?.memoryUsedMb ??
+              (catalogId ? this.modelRegistry.getCuratedModel(catalogId)?.runtime.memoryFootprintMb : undefined) ??
+              (entry.models.length === 1 ? entry.usedMb : null))
+            : Math.round(bytes / (1024 * 1024));
+        residents.push({ backend: entry.backend, backendModelId, catalogId, estimatedMb: estimatedMb || null });
+      }
+    }
+    residents.sort((a, b) => (b.estimatedMb ?? 0) - (a.estimatedMb ?? 0));
+    for (const candidate of residents) add(candidate);
+
+    const candidates: EvictionCandidate[] = [];
+    let freedMb = 0;
+    let unsized = false;
+    for (const candidate of ordered) {
+      if (freedMb >= requiredMb) break;
+      candidates.push(candidate);
+      if (candidate.estimatedMb === null) unsized = true;
+      else freedMb += candidate.estimatedMb;
+    }
+
+    return { canFree: freedMb >= requiredMb || unsized, candidates, freedMb };
+  }
+
+  /**
+   * Drop the cached observation so the next budget is measured, not remembered. After an unload
+   * the {@link LIVE_USAGE_TTL_MS} window would otherwise keep reporting the memory just freed.
+   */
+  invalidateObservation(): void {
+    this.observation = null;
+  }
+
   /** Check if an app can start given the current memory state */
   async canStartApp(profile: HardwareProfile, appMemoryMb: number): Promise<{ canStart: boolean; modelsToEvict: string[]; warning?: string }> {
     const budget = await this.calculateBudget(profile);
@@ -309,6 +391,20 @@ export class MemoryManagerService {
       samples,
     };
   }
+}
+
+/** One model {@link MemoryManagerService.planEviction} would unload, whether or not the Hub loaded it. */
+export type EvictionCandidate = {
+  backend: InferenceBackendType;
+  backendModelId: string;
+  /** The catalog entry it corresponds to, when there is one; unloads then go through the registry. */
+  catalogId: string | null;
+  /** `null` when neither the engine, the registry nor the catalog can size it. */
+  estimatedMb: number | null;
+};
+
+function evictionKey(backend: InferenceBackendType, backendModelId: string): string {
+  return `${backend}\u0000${backendModelId}`;
 }
 
 /** Where models live on this node. Mirrors the branch the budget has always taken. */
