@@ -411,6 +411,41 @@ describe('ModelRegistryService', () => {
         }
       });
 
+      // Index 0 is what app bootstrap auto-installs, and on the smallest profiles one catalog footprint
+      // decides it. A figure for gemma4-e2b derived from e4b's measurement (2,925 MB, not measured) made
+      // it index 0 on every 4 GB card: a 7.2 GB download in place of nemotron-3-nano-4b's 2.8 GB, which
+      // the load estimate then refused on that card (4,977 MB at 4096 by the catalog alone, against
+      // 3,584). These pin the default so a footprint change that moves it has to say so here.
+      describe('keeps the auto-installed default on the smallest profiles', () => {
+        const TIERS: HardwareTier[] = ['cpu-only', 'low', 'medium', 'high'];
+
+        it.each(
+          TIERS.flatMap((tier) => (['nvidia', 'amd'] as const).map((vendor) => [vendor, tier] as const)),
+        )('a 4 GB %s card at the %s tier installs nemotron-3-nano-4b', (vendor, tier) => {
+          const recs = service.getRecommendedModelsForHardware(tier, profile({ vendor, vramMb: 4 * GB, ramMb: 32 * GB, platform: 'linux', tier }));
+
+          expect(recs[0]?.id).toBe('nemotron-3-nano-4b');
+          expect(recs.map((m) => m.id)).not.toContain('gemma4-e2b');
+        });
+
+        const EIGHT_GB_RAM: Array<[string, Omit<Parameters<typeof profile>[0], 'tier'>]> = [
+          ['a CPU-only machine', { available: false, vendor: 'none', ramMb: 8 * GB, platform: 'linux' }],
+          ['an AMD APU', { vendor: 'amd', unifiedMemory: true, ramMb: 8 * GB, platform: 'linux' }],
+          ['an Apple Silicon Mac', { vendor: 'apple', unifiedMemory: true, arch: 'arm64', ramMb: 8 * GB, platform: 'darwin' }],
+        ];
+
+        // gemma4-e4b's measured 4,362 MB fits the 5,734 MB an 8 GB machine gives a model, so it is now
+        // offered there — second, below the default, which does not move.
+        it.each(
+          TIERS.flatMap((tier) => EIGHT_GB_RAM.map(([name, hw]) => [name, tier, hw] as const)),
+        )('%s with 8 GB of RAM at the %s tier installs qwen3-5-4b and offers gemma4-e4b after it', (_name, tier, hw) => {
+          const ids = service.getRecommendedModelsForHardware(tier, profile({ ...hw, tier })).map((m) => m.id);
+
+          expect(ids.slice(0, 2)).toEqual(['qwen3-5-4b', 'gemma4-e4b']);
+          expect(ids).not.toContain('gemma4-e2b');
+        });
+      });
+
       // ─── Frontier model coverage (installer recommend/include set) ──────
       // Every id here is verified to exist on ollama.com/library (the catalog lists only real,
       // pullable model:size tags). Earlier this list held speculative models (Kimi K2.6, DeepSeek V4,
@@ -558,7 +593,7 @@ describe('ModelRegistryService', () => {
       if (modelB) modelB.lastUsedAt = 200;
 
       const candidates = service.getEvictionCandidates();
-      expect(candidates[0].catalogId).toBe('model-a');
+      expect(candidates[0]?.catalogId).toBe('model-a');
     });
 
     it('should exclude pinned from eviction candidates', () => {

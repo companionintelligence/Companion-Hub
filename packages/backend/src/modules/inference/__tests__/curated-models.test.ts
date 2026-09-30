@@ -43,7 +43,7 @@ describe('curated-models (TOON catalog)', () => {
     // Regression guard for the optional `ramGb` column: only a row that states a measured figure
     // may leave the derived numbers, so adding one must not shift any other row.
     const measured = CURATED_MODELS.filter((m) => m.runtime.footprintMeasured).map((m) => m.id);
-    expect(measured.sort()).toEqual(['gemma4-26b', 'gemma4-31b', 'gemma4-e2b', 'gemma4-e4b', 'qwen3-8-27b-lemonade']);
+    expect(measured.sort()).toEqual(['gemma4-26b', 'gemma4-31b', 'gemma4-e4b', 'qwen3-8-27b-lemonade']);
     for (const m of CURATED_MODELS.filter((m) => m.modality === 'llm' && !m.runtime.footprintMeasured)) {
       expect(m.runtime, `${m.id} runtime`).not.toHaveProperty('footprintMeasured');
       expect(m.runtime.memoryFootprintMb, `${m.id} footprint`).toBe(Math.round(m.requirements.diskMb * 1.1));
@@ -129,7 +129,6 @@ describe('curated-models (TOON catalog)', () => {
   it.each([
     // id, measured footprint MB, download MB
     ['gemma4-e4b', 4_362, 9_830],
-    ['gemma4-e2b', 2_929, 7_373],
     ['gemma4-26b', 18_780, 18_432],
     ['gemma4-31b', 19_651, 20_480],
   ])('carries the measured footprint of %s and keeps its download as the disk size', (id, footprintMb, diskMb) => {
@@ -140,6 +139,16 @@ describe('curated-models (TOON catalog)', () => {
     expect(m?.requirements.minVramMb).toBe(footprintMb);
     expect(m?.requirements.recommendedVramMb).toBe(footprintMb + 1024);
     expect(m?.requirements.minRamMb).toBe(Math.round(footprintMb * 1.05));
+  });
+
+  // Its load logs suggest about 2,925 MB (e4b's reading less the weight difference), but no node has
+  // held it to read, and the column is for readings. A derived 2,925 made it the auto-installed default
+  // on 4 GB cards (a 7.2 GB download the load estimate then refused there); model-registry pins that.
+  it('keeps gemma4 E2B on the footprint derived from its download until a node measures it', () => {
+    const e2b = byId.get('gemma4-e2b');
+    expect(e2b?.runtime.footprintMeasured).toBeUndefined();
+    expect(e2b?.requirements.diskMb).toBe(7_373);
+    expect(e2b?.runtime.memoryFootprintMb).toBe(8_110);
   });
 
   it('puts gemma4 E4B well under half its download, the ratio that refused it on 8 and 10 GB cards', () => {

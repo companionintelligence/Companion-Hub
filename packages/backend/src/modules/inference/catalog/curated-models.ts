@@ -115,8 +115,8 @@ import type {
 // q4_K_M build: 7.6 GB, 256K, text + image per ollama.com/library/gemma4/tags), scored from AA "Gemma 4
 // 12B (Reasoning)" like the rest of the family; `gemma4-12b-lemonade` now inherits it.
 //
-// 2026-09-30: the four gemma4 rows the fleet has downloaded carry a measured `ramGb`, because their
-// download is no measure of what the engine holds. Each figure is what the engine process held, less
+// 2026-09-30: the three gemma4 rows the fleet has run carry a measured `ramGb`, because their download
+// is no measure of what the engine holds. Each figure is what the engine process held, less
 // the KV cache and compute buffers its own load log reports: the Hub charges KV per token of the window
 // it loads, and compute buffers, which grow with the window, fall inside the estimate's fixed safety
 // margin. What is left is weights, encoders and the runtime, and it does not move with the window.
@@ -131,19 +131,27 @@ import type {
 //               compute. Of the 9,163 MiB file, llama.cpp leaves the 5,376 MiB per-layer embedding
 //               table memory-mapped on the host and puts 2,830 MiB of weights on the card, plus the
 //               vision and audio encoders; unified memory also holds the 525 MiB token table.
-//   gemma4:e2b  2,925 MiB, derived: resident on no node. Its load logs (core-6, core-17) put 1,397.5
-//               MiB of weights on the card against e4b's 2,829.7, with the same encoders (`/api/show`),
-//               so this is e4b's figure less the 1,432 MiB difference.
 //   gemma4:26b  18,773 MiB. beta-max: DRM 21,246 less 1,920 of KV and 553 of compute, 4096 x 4. That
 //               includes 1,020 MiB of host-side embedding buffers a discrete card keeps in system RAM.
 //   gemma4:31b  19,646 MiB. beta-1: rocm-smi 28,393 less 7,680 of KV and 1,067 of compute, 4096 x 4,
 //               split over both cards, so a second card's runtime is in it.
-// 26b and 31b were made resident for this with one 1-token generation at num_ctx 4096. The whole
-// process, KV and compute included, stayed inside what the Hub charges for each window (footprint,
-// KV at the geometry's per-token cost, the 1,024 MB margin and the vision reserve) on all four e4b
-// nodes. core-7 runs e4b on the CPU, where RSS also holds llama-server's prompt cache, so it is not a
-// reading of the weights. `gb` stays the download. Still derived from `gb`, because no node has them
-// to measure: gemma4-12b, the MTP and community 26B rows, and every Lemonade and MLX gemma4 row.
+// 26b and 31b were made resident for this with one 1-token generation at num_ctx 4096. What the GPU
+// held for the process, KV and compute included, stayed inside what the Hub charges for each window
+// (footprint, KV at the geometry's per-token cost, the 1,024 MB margin and the vision reserve) on all
+// four e4b nodes. None of these figures holds llama-server's prompt cache, which it keeps in host RAM
+// (up to 8 GiB by default; core-2's e4b process had 8,490 MiB of RssAnon): on unified memory that
+// comes out of the same pool, on top of the footprint (docs/MODEL_REGISTRY.md, "Measured
+// footprints"). core-7 runs e4b on the CPU, where RSS holds that cache too, so it is not a reading of
+// the weights. `gb` stays the download. Still derived from `gb`, because no node has them to measure:
+// gemma4-12b, the MTP and community 26B rows, and every Lemonade and MLX gemma4 row.
+//   gemma4-e2b stays derived too, although it looks like the same case as e4b. It is downloaded on
+// core-6, core-17 and beta-3-glass but resident on none, so there is no process to read. Its load logs
+// (core-6, core-17) put 1,397.5 MiB of weights on the card against e4b's 2,829.7, with the same
+// encoders, which suggests about 2,925 MiB; but that is e4b's reading less a difference, not a
+// reading. The row decides what a small card auto-installs, too: at 2,925 it became index 0 on 4 GB
+// discrete cards in place of nemotron-3-nano-4b, a 7.2 GB download instead of 2.8 GB, which the load
+// estimate then refuses on that card (4,977 MB at 4096 by the catalog alone, against 3,584). Fill it
+// in once a node has held it.
 //
 // 2026-09-16: two changes, both mechanical and both re-derivable.
 //
@@ -222,7 +230,7 @@ import type {
 // the index in between, not with the older numbers being wrong at the time they were entered.
 const CATALOG_TOON = `
 llms[105|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reason,vision,tools,audio,tps,ttft,e2e,ramGb}:
-  gemma4-e2b|gemma4:e2b|Gemma 4 E2B|general|2|7.2|cpu-only|128|Google|7.8|1|1|1|1||||2.86
+  gemma4-e2b|gemma4:e2b|Gemma 4 E2B|general|2|7.2|cpu-only|128|Google|7.8|1|1|1|1|||
   gemma4-e4b|gemma4:e4b|Gemma 4 E4B|general|4|9.6|cpu-only|128|Google|8.9|1|1|1|1|63.2|0.84|40.4|4.26
   gemma4-12b|gemma4:12b|Gemma 4 12B|general|12|7.6|low|256|Google|14.2|1|1|1|0|114.2|2.46|24.4
   gemma4-26b|gemma4:26b|Gemma 4 26B|general|26|18|medium|256|Google|16.7|1|1|1|0||||18.34
@@ -494,7 +502,7 @@ function buildLlmModel(
   // multiple of on-disk size. Every row without the column keeps the
   // historical `diskMb * 1.1` exactly (asserted in curated-models.test.ts). A stated figure is a
   // measurement (see the 2026-09-30 note above CATALOG_TOON), so the row says so: context sizing
-  // then trusts it over the file size, which for gemma4 E2B/E4B is twice what the card holds.
+  // then trusts it over the file size, which for gemma4 E4B is twice what the card holds.
   const ramGb = numOrUndef(row.ramGb);
   // Runtime RAM ≈ weights on disk plus KV-cache / runtime overhead. The tier budget fractions
   // (0.9 VRAM, 0.7 unified/RAM) provide the remaining headroom for the OS, app container, and context.

@@ -78,12 +78,31 @@ builds that value from llama-server's log lines, and for gemma4 it drops a KV ca
 and audio encoder weights. On beta-red it reported 3,209 MiB for gemma4:e4b while nvidia-smi showed
 5,550 MiB for the process.
 
-The gemma4 E2B and E4B downloads are the reason for the column. Most of gemma4:e4b's 9,163 MiB file
-is a per-layer embedding table (5,376 MiB) that llama.cpp leaves memory-mapped on the host. Its
-weights, encoders, and runtime come to 4,046 MiB on an RTX 3080 and 4,357 MiB on Strix Halo, and the
-row carries the larger. Derived from the download, the footprint was 10,813 MB, which refused the
-fleet's default app model on 8 and 10 GB cards. The dated note above `CATALOG_TOON` records every
-measurement and the node it came from.
+Do not derive the figure from another row's measurement either. The footprint decides recommendations
+as well as loads: index 0, the model app bootstrap auto-installs, is the best model whose footprint
+fits the budget. gemma4-e2b's load logs suggest about 2,925 MiB, e4b's reading less the difference in
+their weights, but no node has held it to read. With that figure it became index 0 on every 4 GB card,
+a 7.2 GB download in place of nemotron-3-nano-4b's 2.8 GB, and the load estimate then refused it on
+that card. It stays derived from `gb` until a node measures it, and `model-registry.service.test.ts`
+pins the default on the smallest profiles.
+
+The gemma4 E4B download is the reason for the column. Most of gemma4:e4b's 9,163 MiB file is a
+per-layer embedding table (5,376 MiB) that llama.cpp leaves memory-mapped on the host. Its weights,
+encoders, and runtime come to 4,046 MiB on an RTX 3080 and 4,357 MiB on Strix Halo, and the row
+carries the larger. Derived from the download, the footprint was 10,813 MB, which refused the fleet's
+default app model on 8 and 10 GB cards. The dated note above `CATALOG_TOON` records every measurement
+and the node it came from.
+
+The figure leaves out llama-server's prompt cache. llama-server keeps recent prompts' KV state in host
+RAM, up to 8 GiB by default (`--cache-ram 8192`; Ollama 0.34 does not pass the flag), and that memory
+shows in the process's anonymous RSS, not in what the GPU holds. On core-2 (Strix Halo), the
+gemma4:e4b process held 8,490 MiB of `RssAnon` beside 9,098 MiB of VRAM and GTT by DRM fdinfo. The
+same model on beta-max, whose cache had not filled yet, held 216 MiB. On a discrete card that is system
+RAM, outside what the card gives models. On unified memory it comes out of the same pool the models
+draw on, so the process can take up to about 8 GiB more than the Hub charges. The unified-memory fit
+check reads live `MemAvailable`, which sees the cache once it has grown, and the gap is the same for
+every model, measured or derived. The 10,813 MB derived figure happened to cover most of it for
+gemma4:e4b. Charging the cache is left to a separate change.
 
 ## 3. How to add a new model
 

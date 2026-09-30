@@ -24,6 +24,11 @@
  * - A Lemonade load sized its window to what was free beside an idle Ollama model, so beta-1 saved a
  *   window below Hermes' floor that an empty card holds.
  *
+ * Since #1688 the catalog carries gemma4:e4b's measured footprint (4,362 MB, not the 10,813 derived
+ * from its download), so a fresh 8 or 10 GB card now fits it on the catalog alone and loads it like
+ * any other model. The trial load for a model only the catalog puts over the card is exercised where
+ * the catalog still does: gemma4:e4b on a 6 GB card, and qwen3.8:27b, which no 8 or 10 GB card holds.
+ *
  * Geometry is `/api/show` `model_info` and sizes `/api/tags`, `/api/ps` and nvidia-smi/rocm-smi as
  * read on the fleet 2026-09-29 (Ollama 0.34.0).
  */
@@ -206,6 +211,19 @@ const discrete = (vendor: HardwareProfile['gpu']['vendor'], model: string, vramM
 const BETA_1 = discrete('amd', 'Radeon RX 7900 XTX', 24_560);
 const BETA_RED = discrete('nvidia', 'GeForce RTX 3080', 10_240);
 const BETA_3_GLASS = discrete('nvidia', 'GeForce RTX 3070', 8_192);
+/**
+ * No fleet node has one. It is the card the catalog still puts gemma4:e4b over at the smallest
+ * window: 4,362 MB, 384 of KV at 4096, the 1,024 MB margin and the 1,024 MB vision reserve come to
+ * 6,794 against the 5,632 it gives a model, while the engine holds the model there in about 4,662.
+ */
+const SIX_GB_CARD = discrete('nvidia', '6 GB card', 6_144);
+
+/**
+ * What Ollama holds for gemma4:e4b at `ctx` tokens on four slots, from beta-red's reading at 16384
+ * (nvidia-smi 5,550 MiB: 1,184 of KV, 320 of compute, 4,046 of weights, encoders and runtime), with
+ * the KV scaled to the window. `/api/ps` reported 3,209 there whatever the process held.
+ */
+const gemma4E4bHeld = (_id: string, ctx: number) => ({ psMb: 3209, processMb: 4_046 + Math.round((ctx * 1_184) / 16_384) + 320 });
 
 function world(opts: {
   profile: HardwareProfile;
@@ -298,7 +316,7 @@ describe('the load window on the fleet', () => {
     // beta-red, 2026-09-29: /api/ps 3,364,754,553 bytes at 16384; nvidia-smi 5,550 MiB; four slots.
     const servedOnBetaRed = (ollama: FakeOllama) => ollama.hold('gemma4:e4b', 16_384, 3209, 5550);
 
-    it('loads on beta-red, where it was measured serving in 5,550 MiB, instead of being refused at the catalog 10,813 MB', async () => {
+    it('loads on beta-red from the 5,550 MiB it was measured serving in, whatever the catalog says', async () => {
       const ollama = new FakeOllama(16_384);
       const { router, memoryManager } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
       servedOnBetaRed(ollama);
@@ -306,7 +324,8 @@ describe('the load window on the fleet', () => {
       // Already resident: the load path takes it as it is.
       await expect(router.loadTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toEqual({ loaded: true });
       expect(ollama.loads).toEqual([]);
-      // The operator's pin was refused on the catalog figure before it ever reached the load path.
+      // The sighting outranks the catalog's figure for the pin too: even the 10,813 MB the row carried
+      // before its footprint was measured, which refused the operator's pin before it reached the load path.
       await expect(memoryManager.canPinModel(BETA_RED, 10_813, { backend: 'ollama', backendModelId: 'gemma4:e4b' })).resolves.toEqual({
         canPin: true,
       });
@@ -321,64 +340,101 @@ describe('the load window on the fleet', () => {
     });
 
     // Nothing resident, nothing measured, the Hub just started: the case every fleet roll produced.
-    // The catalog's 10,813 MB is over either card, and only a load can say what the model takes.
+    // The catalog's derived 10,813 MB was over either card, so only a trial load at 4096 could admit
+    // the model. Its measured 4,362 MB fits both, and the load is sized like any other, at the largest
+    // window the estimate fits: 32768 on beta-red (9,482 MB of 9,728), 8192 on beta-3-glass (7,178 of
+    // 7,680; 16384 would be 7,946).
     it.each([
-      ['beta-red', BETA_RED],
-      ['beta-3-glass', BETA_3_GLASS],
-    ])('pins on a fresh %s: the load is tried and measured, not refused on the catalog figure', async (_node, profile) => {
-      const ollama = new FakeOllama(16_384, () => ({ psMb: 3209, processMb: 5550 }));
-      const { router, registry, memoryManager } = world({ profile, ollama, ollamaSlots: 4 });
+      ['beta-red', BETA_RED, 32_768],
+      ['beta-3-glass', BETA_3_GLASS, 8_192],
+    ])('pins on a fresh %s on the catalog alone, at the window its fit check sizes, with no trial load', async (_node, profile, window) => {
+      const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+      const { router, registry, memoryManager, logger } = world({ profile, ollama, ollamaSlots: 4 });
 
       await expect(router.pinTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toEqual({ pinned: true });
 
-      // At the smallest window, since the estimate fits no window at all; nothing was evicted for it.
-      expect(ollama.loads).toEqual([{ id: 'gemma4:e4b', ctx: 4_096 }]);
+      expect(ollama.loads).toEqual([{ id: 'gemma4:e4b', ctx: window }]);
       expect(registry.getTrackedModel('gemma4-e4b')?.state).toBe('pinned');
-      // Measured as it landed, so the next fit check, pin and handout use 5,550 and not 10,813.
+      expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('has never been measured'));
+      // Measured as it landed all the same, so the next fit check, pin and handout use what it holds.
       await expect(memoryManager.footprintSighting(profile, 'ollama', 'gemma4:e4b')).resolves.toEqual({
-        footprintMb: 5550,
-        contextLength: 4_096,
+        footprintMb: gemma4E4bHeld('gemma4:e4b', window).processMb,
+        contextLength: window,
         source: 'process',
       });
     });
 
     it("loads on a fresh beta-3-glass through /models/load and an operator's MCP hub_load_model, which share the load path", async () => {
-      const ollama = new FakeOllama(16_384, () => ({ psMb: 3209, processMb: 5550 }));
+      const ollama = new FakeOllama(16_384, gemma4E4bHeld);
       const { router } = world({ profile: BETA_3_GLASS, ollama, ollamaSlots: 4 });
 
       await expect(router.loadTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toEqual({ loaded: true });
       expect([...ollama.resident.keys()]).toEqual(['gemma4:e4b']);
     });
 
+    // An agent's key may not try a load (see below), but it needs none here: the catalog fits it.
+    it("loads on a fresh beta-3-glass for an agent's MCP key too, which could not before the catalog was measured", async () => {
+      const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+      const { router } = world({ profile: BETA_3_GLASS, ollama, ollamaSlots: 4 });
+
+      await expect(router.loadTrackedModel('gemma4-e4b', { origin: 'agent' })).resolves.toEqual({ loaded: true });
+      expect(ollama.loads).toEqual([{ id: 'gemma4:e4b', ctx: 8_192 }]);
+    });
+  });
+
+  // A model never measured on this node, which the catalog alone says no empty card here holds, is
+  // tried by an operator's Ollama load instead of refused: Ollama places it itself, and what it takes
+  // is measured at once. Neither 8 nor 10 GB is such a card for gemma4:e4b any more (see above).
+  describe('a load only the catalog refuses', () => {
+    it('pins gemma4:e4b on a fresh 6 GB card, which the catalog puts it over even at 4096: the load is tried and measured', async () => {
+      const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+      const { router, registry, memoryManager, logger } = world({ profile: SIX_GB_CARD, ollama, ollamaSlots: 4 });
+
+      await expect(router.pinTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toEqual({ pinned: true });
+
+      // At the smallest window, since the estimate fits no window at all; nothing was evicted for it.
+      expect(ollama.loads).toEqual([{ id: 'gemma4:e4b', ctx: 4_096 }]);
+      expect(registry.getTrackedModel('gemma4-e4b')?.state).toBe('pinned');
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('gemma4-e4b has never been measured on this node'));
+      // Measured as it landed, so the next fit check, pin and handout use 4,662 and not the estimate's 6,794.
+      await expect(memoryManager.footprintSighting(SIX_GB_CARD, 'ollama', 'gemma4:e4b')).resolves.toEqual({
+        footprintMb: 4_662,
+        contextLength: 4_096,
+        source: 'process',
+      });
+    });
+
     // Ollama makes room for a trial load itself, among runners apps loaded too: an operator may have
     // those unloaded, an agent's key may not (#1684), so an agent's load is refused on the catalog as before.
     it("does not try one for an agent's MCP key, whose loads may not unload what apps loaded", async () => {
-      const ollama = new FakeOllama(16_384, () => ({ psMb: 3209, processMb: 5550 }));
-      const { router } = world({ profile: BETA_3_GLASS, ollama, ollamaSlots: 4 });
+      const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+      const { router } = world({ profile: SIX_GB_CARD, ollama, ollamaSlots: 4 });
 
       await expect(router.loadTrackedModel('gemma4-e4b', { origin: 'agent' })).resolves.toMatchObject({ loaded: false });
       await expect(router.pinTrackedModel('gemma4-e4b', { origin: 'agent' })).resolves.toMatchObject({ pinned: false });
       expect(ollama.loads).toEqual([]);
     });
 
+    // beta-3-glass, 2026-09-30: qwen3.8:27b at 16384 on one slot, /api/ps 18,968,320,405 bytes of which
+    // 4,798,839,519 on the card, nvidia-smi 6,104 MiB. The model is 16,920 MiB of weights; no 8 GB card holds it.
     it('keeps a tried model loaded but does not pin it when Ollama could not put it wholly on the card', async () => {
-      // 12.4 GB in all, 7 GB of it on the 8 GB card: nothing says what the card itself must hold.
-      const ollama = new FakeOllama(16_384, () => ({ psMb: 12_400, processMb: 7_100, gpuMb: 7_000 }));
+      const ollama = new FakeOllama(16_384, () => ({ psMb: 18_090, processMb: 6_104, gpuMb: 4_577 }));
       const { router, registry } = world({ profile: BETA_3_GLASS, ollama, ollamaSlots: 4 });
 
-      const outcome = await router.pinTrackedModel('gemma4-e4b', { origin: 'operator' });
+      const outcome = await router.pinTrackedModel('qwen3-8-27b', { origin: 'operator' });
 
-      expect(outcome).toMatchObject({ pinned: false, reason: expect.stringContaining('gemma4-e4b is loaded, but not pinned') });
-      expect(registry.getTrackedModel('gemma4-e4b')?.state).toBe('loaded');
+      expect(ollama.loads).toEqual([{ id: 'qwen3.8:27b', ctx: 4_096 }]);
+      expect(outcome).toMatchObject({ pinned: false, reason: expect.stringContaining('qwen3-8-27b is loaded, but not pinned') });
+      expect(registry.getTrackedModel('qwen3-8-27b')?.state).toBe('loaded');
     });
 
     it('does not try one while the operator has pinned another model on that Ollama, which could make room by unloading it', async () => {
-      const ollama = new FakeOllama(16_384, () => ({ psMb: 3209, processMb: 5550 }));
+      const ollama = new FakeOllama(16_384, () => ({ psMb: 18_090, processMb: 6_104, gpuMb: 4_577 }));
       const { router, registry } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
       registry.trackModel('gemma3-1b', 'loaded');
       registry.pinModel('gemma3-1b');
 
-      await expect(router.loadTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toMatchObject({ loaded: false });
+      await expect(router.loadTrackedModel('qwen3-8-27b', { origin: 'operator' })).resolves.toMatchObject({ loaded: false });
       expect(ollama.loads).toEqual([]);
     });
 
@@ -392,24 +448,28 @@ describe('the load window on the fleet', () => {
     });
 
     it('on the request path, forwards a never-measured model to the engine rather than trying the load itself', async () => {
-      const ollama = new FakeOllama(16_384, () => ({ psMb: 3209, processMb: 5550 }));
-      const { router, registry, memoryManager } = world({ profile: BETA_3_GLASS, ollama, ollamaSlots: 4 });
+      // Ollama's own default window below 24 GiB of VRAM: no OLLAMA_CONTEXT_LENGTH on this node.
+      const ollama = new FakeOllama(4_096, gemma4E4bHeld);
+      const { router, registry, memoryManager, logger } = world({ profile: SIX_GB_CARD, ollama, ollamaSlots: 4 });
       registry.trackModel('gemma4-e4b', 'pulled');
 
-      // Never seen here: only the catalog's 10,813 MB is known, over the 7,680 an 8 GB card has.
-      // Refused on the request path, with nothing unloaded; the app's own request then loads it, at
-      // the window it runs at, which a load by the Hub could only have guessed.
+      // Never seen here: only the catalog is known, and it charges 6,794 MB at 4096, over the 5,632 a
+      // 6 GB card has. Refused on the request path, with nothing unloaded; the app's own request then
+      // loads it, at the window it runs at, which a load by the Hub could only have guessed.
       await expect(router.prepareTrackedModel('gemma4:e4b', { numCtx: null })).resolves.toBeNull();
       expect(ollama.loads).toEqual([]);
       ollama.request('gemma4:e4b', null);
       memoryManager.invalidateObservation();
-      await memoryManager.calculateBudget(BETA_3_GLASS);
+      await memoryManager.calculateBudget(SIX_GB_CARD);
 
-      // Measured now. Expired, and loaded again by the operator: it fits.
+      // Measured now, at 4,662 MB. Expired, and loaded again by the operator: the reserves charged on
+      // top of the measurement are still over the card, but the model was seen serving in what is free,
+      // so it loads at the window it was seen at, with a warning, rather than being refused.
       ollama.resident.clear();
       memoryManager.invalidateObservation();
       await expect(router.loadTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toEqual({ loaded: true });
-      expect(ollama.loads.at(-1)).toEqual({ id: 'gemma4:e4b', ctx: 16_384 });
+      expect(ollama.loads.at(-1)).toEqual({ id: 'gemma4:e4b', ctx: 4_096 });
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('was measured serving it here at 4096 in 4662 MB'));
     });
   });
 
@@ -424,6 +484,7 @@ describe('the load window on the fleet', () => {
       // A fleet roll: a new Hub process, and the model expired from Ollama meanwhile.
       ollama.resident.clear();
       const after = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+      const fit = vi.spyOn(after.memoryManager, 'canFitModel');
 
       await expect(after.memoryManager.footprintSighting(BETA_RED, 'ollama', 'gemma4:e4b')).resolves.toEqual({
         footprintMb: 5550,
@@ -431,8 +492,11 @@ describe('the load window on the fleet', () => {
         source: 'process',
       });
       await expect(after.router.pinTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toEqual({ pinned: true });
-      // The window the measurement allows (see above), where the catalog alone could only try 4096.
+      // The catalog's measured row gives beta-red the same 32768, so the window alone cannot tell the
+      // two apart. What the load is charged can: the measurement plus the KV above its window and the
+      // vision reserve (see above), 8,110 MB, where the catalog would charge 9,482.
       expect(ollama.loads).toEqual([{ id: 'gemma4:e4b', ctx: 32_768 }]);
+      expect(fit.mock.calls.map(([, footprintMb]) => footprintMb)).toEqual([8_110]);
     });
 
     it('does not carry a measurement over to other hardware', async () => {
