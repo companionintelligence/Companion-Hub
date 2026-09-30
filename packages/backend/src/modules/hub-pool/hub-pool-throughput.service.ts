@@ -33,13 +33,15 @@ import type { PromptRead } from './response-usage-tap';
  * - **Missed deadlines count.** A request that ran out of its budget with no first byte carries no
  *   usage frame, and it is exactly the failure placement exists to avoid repeating, so it is recorded
  *   as "at least this slow".
- * - **A cache hit is not a read.** When the engine says how much of the prompt it reused, a turn that
- *   reused most of it is not evidence at all, and the time of one that reused part of it is charged to
- *   the part it read — see {@link coldReadShare}. Keeping the slow evidence apart bounds how long a
+ * - **A cache hit is not a read.** When the engine says how much of the prompt it reused, a turn's time
+ *   is charged to the part it read, and a turn that read fewer than {@link PREFILL_MIN_READ_TOKENS} is
+ *   not evidence at all — see {@link promptReadShare}. Keeping the slow evidence apart bounds how long a
  *   cache hit can hide a slow read, not whether it can: once the slow evidence is forgotten a band reads
- *   as its latest faster sample alone, and a node whose only samples were cache hits reads as fast as
- *   the cache. That is what would put a turn read cold on a CPU node because it answered warm turns in
- *   milliseconds. An engine that does not say keeps being timed as before.
+ *   as its latest faster sample alone, and a node whose only samples were cache hits timed against the
+ *   whole prompt reads as fast as the cache. That is what would put a turn read cold on a CPU node
+ *   because it answered warm turns in milliseconds. The threshold is a count of tokens read, not a share
+ *   of the prompt, so the appends that make up an agent session keep the node that serves it measured.
+ *   An engine that does not say keeps being timed as before.
  *
  * Rates are in estimated tokens (`bytes / 4` of the forwarded body), the unit the budget is sized in.
  * In memory and process-local, like the load counter and the routing log: a restart forgets it.
@@ -145,6 +147,12 @@ export const SLOWER_PLACEMENT_FLOOR_MS = 20_000;
  * already fills, goes ahead only when it is no busier. More than one is a queue, and queue depth stays
  * the ranker's to judge.
  *
+ * A free slot is only as good as the statement it is read from. `ollamaSlots` is what the operator
+ * says the daemon runs, not a probe, and Ollama 0.34 forces a single slot for some model lineages
+ * whatever `OLLAMA_NUM_PARALLEL` says (see `inference-ollama-slots.ts`). On a node stated at four slots
+ * serving such a model, one request in flight reads as a slot free, and the turn can still wait behind
+ * a whole turn. Slot placement reads the same statement and has the same limit.
+ *
  * Counted from the node the ranker put first, not from whichever node the last move put there, so
  * moves cannot add up: after one move put a node one request busier first, a second must not put one
  * two busier there.
@@ -174,38 +182,55 @@ export function unmeasuredPriorOf(hardwareTier: unknown): UnmeasuredPrior {
 }
 
 /**
- * The least share of a prompt an engine must have read, rather than reused from its prompt cache, for
- * the time it took to count as prefill evidence — see {@link coldReadShare}.
+ * The fewest prompt tokens an engine must have read itself, rather than taken from its prompt cache,
+ * for the time a turn took to count as prefill evidence — see {@link promptReadShare}.
  *
- * A cache hit on an agent turn reuses nearly all of it: the probe behind `extractPromptReadFromParsedJson`
- * reused 7,618 of 7,619 tokens, and a turn that appends a tool result to a 30k-token history reads the
- * few thousand new ones. Such a turn times the cache, not the hardware. Half is where the read part stops
- * being most of the turn; above it, dividing the time by the part read still gives a rate for this
- * hardware at this size, if a slightly pessimistic one, since the part read is the end of the prompt,
- * where attention costs the most per token.
+ * A turn that read a handful of tokens times fixed costs, not the hardware: a batch far from full, the
+ * first token, and for a turn timed to its first byte, the hop. The probe behind
+ * `extractPromptReadFromParsedJson` repeated a 7,615-token prompt and read 1 token of it in 19 ms. From
+ * a thousand tokens on, what the engine read is a rate for this hardware at this context: on the same
+ * Ollama 0.34.4, a turn appended to an 11,820-token history read 1,484 tokens in 427 ms. That rate is
+ * pessimistic, because the tokens read are the end of the prompt, where attention costs the most per
+ * token, and some fixed cost is still in it. Pessimistic is the safe side: it reads a CPU node slower,
+ * never faster, than a cold read would.
+ *
+ * A count and not a share of the prompt, because agent traffic is nearly all appends: each turn adds a
+ * few hundred to a few thousand tokens to a history the engine holds, and a new session of the same
+ * agent shares its system and tool prefix. Requiring half the prompt read dropped every one of those
+ * turns, so a GPU node serving a long session recorded nothing. Once its cold read was forgotten
+ * ({@link THROUGHPUT_FORGET_AFTER_MS}) it was unmeasured, and for a new large turn it gave way to a CPU
+ * node whose cold reads were recent: the core-7 placement `applySlowerPlacement` exists to undo, which
+ * that rule cannot undo, since it never moves an unmeasured node forward. A node whose turns all read
+ * fewer than this, a session of one-line messages on a warm cache, still records nothing, and once its
+ * older evidence is forgotten it gives way as any unmeasured node does.
  */
-export const COLD_READ_MIN_SHARE = 0.5;
+export const PREFILL_MIN_READ_TOKENS = THROUGHPUT_MIN_PROMPT_TOKENS / 4;
 
 /**
  * The share of a prompt of `estimatedTokens` that the engine read rather than reused, from what it said
- * about it — see `extractPromptReadFromParsedJson`. `1` when it said nothing, so an engine that does
- * not report its cache is timed exactly as before.
+ * about it (see `extractPromptReadFromParsedJson`): the share of the prompt a turn's time is charged
+ * to. `null` when the engine read fewer than {@link PREFILL_MIN_READ_TOKENS} itself, and the turn is
+ * not evidence. `1` when it said nothing, so an engine that does not report its cache is timed exactly
+ * as before.
  *
  * With both counts the share is the engine's own `evaluated / (evaluated + cached)`, in its own tokens,
  * and the pool's estimate does not enter into it. That matters because the estimate is `bytes / 4` of
  * the forwarded JSON and the engine counts after its template and tokenizer: the same probe was 5,033
  * estimated tokens and 7,615 real ones. With only the part read (a llama-server that predates
- * `cache_n`), it is judged against the estimate, capped at the whole prompt. That is coarser — a
- * densely tokenized prompt that reused just over half can pass for cold — but the cache hits that
- * matter, a long history reused and a few thousand tokens appended, are far below half on any count.
+ * `cache_n`), it is the part read against the estimate, capped at the whole prompt. A prompt the
+ * estimate overcounts, such as base64 images or heavily escaped tool JSON, then comes out partly read
+ * even when it was read cold, which charges its time to fewer tokens: slower, the safe side, and still
+ * evidence.
  */
-export function coldReadShare(read: PromptRead | null | undefined, estimatedTokens: number): number {
+export function promptReadShare(read: PromptRead | null | undefined, estimatedTokens: number): number | null {
   if (!read) {
     return 1;
   }
+  if (read.evaluated < PREFILL_MIN_READ_TOKENS) {
+    return null;
+  }
   if (read.cached !== null) {
-    const total = read.evaluated + read.cached;
-    return total > 0 ? read.evaluated / total : 0;
+    return read.evaluated / (read.evaluated + read.cached);
   }
   return estimatedTokens > 0 ? Math.min(1, read.evaluated / estimatedTokens) : 1;
 }
@@ -503,10 +528,10 @@ export class HubPoolThroughputService {
 
   /**
    * A prompt of `promptTokens` reached its first byte after `ms` — or, with `deadline`, had not after
-   * `ms`. `read` is what the engine said about its prompt cache, if anything: a sample that reused more
-   * than {@link COLD_READ_MIN_SHARE} of the prompt is dropped, and the time of one that reused less is
-   * charged to the part it read — see {@link coldReadShare}. The band stays the whole prompt's, since
-   * the part read was read at that context.
+   * `ms`. `read` is what the engine said about its prompt cache, if anything: a sample whose engine read
+   * fewer than {@link PREFILL_MIN_READ_TOKENS} itself is dropped, and the time of any other is charged
+   * to the part it read — see {@link promptReadShare}. The band stays the whole prompt's, since the
+   * part read was read at that context.
    */
   recordPrefill(
     target: ThroughputTarget,
@@ -518,8 +543,8 @@ export class HubPoolThroughputService {
       return;
     }
     // A missed deadline produced no answer, so no engine said anything about its cache: it stands whole.
-    const share = sample.deadline ? 1 : coldReadShare(sample.read, sample.promptTokens);
-    if (share < COLD_READ_MIN_SHARE) {
+    const share = sample.deadline ? 1 : promptReadShare(sample.read, sample.promptTokens);
+    if (share === null) {
       return;
     }
     const entry = this.touch(target, now);

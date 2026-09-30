@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  COLD_READ_MIN_SHARE,
   HubPoolThroughputService,
   MAX_ADVERTISED_THROUGHPUT,
   THROUGHPUT_FORGET_AFTER_MS,
@@ -8,8 +7,9 @@ import {
   THROUGHPUT_HOLD_MS,
   MAX_PREFILL_GROWTH,
   THROUGHPUT_MIN_PROMPT_TOKENS,
+  PREFILL_MIN_READ_TOKENS,
   UNMEASURED_DEFER_MIN_PROMPT_TOKENS,
-  coldReadShare,
+  promptReadShare,
   evidenceWeight,
   effectivePrefillPoint,
   mergeDecode,
@@ -306,23 +306,35 @@ describe('readAdvertisedThroughput', () => {
   });
 });
 
-describe('coldReadShare', () => {
-  it("is the engine's own read share when it says both, whatever the pool estimated", () => {
+describe('promptReadShare', () => {
+  it("is the engine's own read share when it says both, whatever the pool estimated, however small", () => {
     // Ollama 0.34.4 on a repeated prompt: 7,615 tokens by its count, 5,033 by bytes / 4.
-    expect(coldReadShare({ evaluated: 7_615, cached: 0 }, 5_033)).toBe(1);
-    expect(coldReadShare({ evaluated: 1, cached: 7_614 }, 5_033)).toBeCloseTo(1 / 7_615, 9);
-    expect(coldReadShare({ evaluated: 20_000, cached: 20_000 }, 5_033)).toBe(COLD_READ_MIN_SHARE);
-    expect(coldReadShare({ evaluated: 0, cached: 0 }, 5_033)).toBe(0);
+    expect(promptReadShare({ evaluated: 7_615, cached: 0 }, 5_033)).toBe(1);
+    expect(promptReadShare({ evaluated: 20_000, cached: 20_000 }, 5_033)).toBe(0.5);
+    // The same Ollama's append: 1,484 read of an 11,820-token prompt, a share of 0.126.
+    expect(promptReadShare({ evaluated: 1_484, cached: 10_336 }, 5_033)).toBeCloseTo(1_484 / 11_820, 9);
   });
 
-  it('judges a read count alone against the estimate, never above the whole prompt', () => {
-    expect(coldReadShare({ evaluated: 900, cached: null }, 30_000)).toBeCloseTo(0.03, 9);
-    expect(coldReadShare({ evaluated: 45_000, cached: null }, 30_000)).toBe(1);
+  it('is null, no evidence, when the engine read fewer than PREFILL_MIN_READ_TOKENS itself', () => {
+    expect(PREFILL_MIN_READ_TOKENS).toBe(1_024);
+    // The repeated prompt: 1 token read, in 19 ms.
+    expect(promptReadShare({ evaluated: 1, cached: 7_614 }, 5_033)).toBeNull();
+    expect(promptReadShare({ evaluated: PREFILL_MIN_READ_TOKENS - 1, cached: 30_000 }, 30_000)).toBeNull();
+    expect(promptReadShare({ evaluated: PREFILL_MIN_READ_TOKENS, cached: 30_000 }, 30_000)).toBeCloseTo(1_024 / 31_024, 9);
+    expect(promptReadShare({ evaluated: 0, cached: 0 }, 5_033)).toBeNull();
+    expect(promptReadShare({ evaluated: 900, cached: null }, 30_000)).toBeNull();
+  });
+
+  it('judges a read count alone against the estimate, never above the whole prompt, and keeps it as evidence', () => {
+    expect(promptReadShare({ evaluated: 45_000, cached: null }, 30_000)).toBe(1);
+    // A cold vision turn the estimate overcounts: base64 bytes are not tokens. Charged to fewer
+    // tokens, it reads slower than it was, and it is still a sample.
+    expect(promptReadShare({ evaluated: 3_000, cached: null }, 30_000)).toBeCloseTo(0.1, 9);
   });
 
   it('is whole when the engine said nothing', () => {
-    expect(coldReadShare(null, 30_000)).toBe(1);
-    expect(coldReadShare(undefined, 30_000)).toBe(1);
+    expect(promptReadShare(null, 30_000)).toBe(1);
+    expect(promptReadShare(undefined, 30_000)).toBe(1);
   });
 });
 
@@ -359,30 +371,64 @@ describe('HubPoolThroughputService', () => {
 
   describe('a turn the engine answered partly or wholly from its prompt cache', () => {
     const CORE_7 = { nodeKey: 'core-7', backend: 'ollama', model: MODEL } as const;
+    const BETA_1 = { nodeKey: 'beta-1', backend: 'ollama', model: MODEL } as const;
     const ESTIMATE = 30_000;
 
-    it('is no evidence when it reused more than COLD_READ_MIN_SHARE of the prompt', () => {
+    it('is no evidence when the engine read fewer than PREFILL_MIN_READ_TOKENS itself', () => {
       const service = new HubPoolThroughputService();
-      // A 30k-token history reused and 1,500 new tokens read: 400 ms, which timed against the whole
-      // prompt would be 75,000 tok/s on a node that reads cold at 45.
-      service.recordPrefill(CORE_7, { promptTokens: ESTIMATE, ms: 400, deadline: false, read: { evaluated: 1_500, cached: 38_500 } }, NOW);
-      // Just under half read: still more reused than read.
-      service.recordPrefill(CORE_7, { promptTokens: ESTIMATE, ms: 400, deadline: false, read: { evaluated: 19_999, cached: 20_001 } }, NOW);
-      // A llama-server with no cache_n, judged against the estimate.
+      // A 40k-token history reused and a one-line message read: 150 ms, which timed against the whole
+      // prompt would be 200,000 tok/s on a node that reads cold at 45.
+      service.recordPrefill(CORE_7, { promptTokens: ESTIMATE, ms: 150, deadline: false, read: { evaluated: 20, cached: 39_980 } }, NOW);
+      // One token short: still a batch far from full, timed on fixed costs.
+      service.recordPrefill(CORE_7, { promptTokens: ESTIMATE, ms: 400, deadline: false, read: { evaluated: 1_023, cached: 38_977 } }, NOW);
+      // A llama-server with no cache_n says how much it read, which is enough.
       service.recordPrefill(CORE_7, { promptTokens: ESTIMATE, ms: 400, deadline: false, read: { evaluated: 900, cached: null } }, NOW);
 
       expect(service.prefillPoints(CORE_7, NOW)).toEqual([]);
       expect(service.estimatesFor('core-7', NOW)).toEqual([]);
     });
 
-    it('is timed on the part it read when it reused less', () => {
+    it('is timed on the part it read, however much of the prompt it reused', () => {
       const service = new HubPoolThroughputService();
       // 30% reused: 20 s for the 70% read is 1,050 tok/s of the estimate, not the 1,500 the whole prompt would claim.
       service.recordPrefill(CORE_7, { promptTokens: ESTIMATE, ms: 20_000, deadline: false, read: { evaluated: 28_000, cached: 12_000 } }, NOW);
+      // An append: 1,500 tokens read at the end of a 40k-token history, in 1.2 s. Charged to the 3.75%
+      // of the estimate that was read, 937.5 tok/s, not the 25,000 the whole prompt would claim.
+      service.recordPrefill(BETA_1, { promptTokens: ESTIMATE, ms: 1_200, deadline: false, read: { evaluated: 1_500, cached: 38_500 } }, NOW);
 
       const [point] = service.prefillPoints(CORE_7, NOW);
       expect(point).toMatchObject({ promptTokens: ESTIMATE, deadline: false });
       expect(1000 / (point?.msPerToken ?? 1)).toBeCloseTo(1_050, 6);
+      const [append] = service.prefillPoints(BETA_1, NOW);
+      expect(append).toMatchObject({ promptTokens: ESTIMATE, deadline: false });
+      expect(1000 / (append?.msPerToken ?? 1)).toBeCloseTo(937.5, 6);
+    });
+
+    it('keeps a node serving a session of appends measured past the forget time, at the rate it read them', () => {
+      const service = new HubPoolThroughputService();
+      // Each node reads the session's first turn cold: beta-1 on its GPU at 1,500 tok/s, core-7 on CPU at 45.
+      service.recordPrefill(BETA_1, { promptTokens: ESTIMATE, ms: 20_000, deadline: false, read: { evaluated: 40_000, cached: 0 } }, NOW);
+      service.recordPrefill(
+        CORE_7,
+        { promptTokens: ESTIMATE, ms: (ESTIMATE / 45) * 1000, deadline: false, read: { evaluated: 40_000, cached: 0 } },
+        NOW,
+      );
+      // Then a 1,500-token append every 15 minutes, the tokens read at the end of the context, where
+      // they cost the most: 1.2 s on beta-1, 37.5 s on core-7, each slower per token than its cold read.
+      let at = NOW;
+      while (at - NOW <= THROUGHPUT_FORGET_AFTER_MS) {
+        at += 15 * 60_000;
+        const read = { evaluated: 1_500, cached: 38_500 };
+        service.recordPrefill(BETA_1, { promptTokens: ESTIMATE, ms: 1_200, deadline: false, read }, at);
+        service.recordPrefill(CORE_7, { promptTokens: ESTIMATE, ms: 37_500, deadline: false, read }, at);
+      }
+
+      // Both cold reads are past their forget time; the appends are what each node reads as, and a
+      // CPU node's appends read it slower than its cold read did, never faster.
+      const rate = (target: typeof BETA_1 | typeof CORE_7) => 1000 / (service.prefillPoints(target, at)[0]?.msPerToken ?? 1);
+      expect(rate(BETA_1)).toBeCloseTo(937.5, 6);
+      expect(rate(CORE_7)).toBeCloseTo(30, 6);
+      expect(service.prefillPoints(CORE_7, at)[0]?.at).toBe(at);
     });
 
     it('is timed exactly as before when read cold, or when the engine said nothing about its cache', () => {
@@ -411,7 +457,7 @@ describe('HubPoolThroughputService', () => {
       );
       for (let turn = 1; turn <= 10; turn += 1) {
         const at = NOW + turn * 10 * 60_000;
-        service.recordPrefill(CORE_7, { promptTokens: ESTIMATE, ms: 400, deadline: false, read: { evaluated: 1_500, cached: 38_500 } }, at);
+        service.recordPrefill(CORE_7, { promptTokens: ESTIMATE, ms: 400, deadline: false, read: { evaluated: 200, cached: 39_800 } }, at);
       }
 
       // Past the hold, with no faster sample recorded to decay toward, the band still reads 45 tok/s.
