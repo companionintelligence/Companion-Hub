@@ -474,14 +474,27 @@ describe('ModelPullerService download gate on the fleet', () => {
     return { service: moduleRef.get(ModelPullerService), logger, ollamaBackend };
   }
 
-  it('lets beta-red download gemma4-e4b, the model it serves, with a warning about the catalog estimate', async () => {
+  // gemma4-e4b warned here until its row carried a measured footprint (4,362 MB, not the 10,813
+  // derived from its 9.6 GB download), so it now downloads without one.
+  it('lets beta-red download gemma4-e4b, the model it serves, without a warning', async () => {
     const { service } = await pullerOn(10_240, 31_017, 5_550);
 
     const result = await service.evaluatePull('gemma4-e4b');
 
     expect(result.canPull).toBe(true);
     expect(result.reason).toBeUndefined();
-    expect(result.warning).toMatch(/estimates 10813 MB .* more than the 9728 MB of GPU memory .* at least 1907 MB/);
+    expect(result.warning).toBeUndefined();
+    expect(result.requiredMemoryMb).toBe(4_362);
+  });
+
+  it('lets beta-red download a row that only its derived footprint objects to, with a warning', async () => {
+    const { service } = await pullerOn(10_240, 31_017, 5_550);
+
+    const result = await service.evaluatePull('qwen3-14b');
+
+    expect(result.canPull).toBe(true);
+    expect(result.reason).toBeUndefined();
+    expect(result.warning).toMatch(/estimates 10475 MB .* more than the 9728 MB of GPU memory .* at least 6675 MB/);
   });
 
   it('still refuses beta-red a 22.5 GB row such as gemma4-31b', async () => {
@@ -514,7 +527,7 @@ describe('ModelPullerService download gate on the fleet', () => {
 
   // App pre-pull (decideModelPrePull -> startPull with bestEffort) is how a fresh node gets its app
   // model, so a refusal there left Hermes and OpenClaw with nothing to run.
-  it('queues the app pre-pull of gemma4-e4b on beta-red and logs the warning', async () => {
+  it('queues the app pre-pull of gemma4-e4b on beta-red with nothing to warn about', async () => {
     const { service, logger, ollamaBackend } = await pullerOn(10_240, 31_017, 0);
 
     const result = await service.startPull('gemma4-e4b', { bestEffort: true });
@@ -522,7 +535,18 @@ describe('ModelPullerService download gate on the fleet', () => {
 
     expect(result.status).toBe('queued');
     expect(ollamaBackend.pullModel).toHaveBeenCalledWith('gemma4:e4b', expect.any(Function));
-    expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/^\[ModelPuller\] gemma4-e4b: The catalog estimates 10813 MB/));
+    expect(logger.warn).not.toHaveBeenCalledWith(expect.stringMatching(/The catalog estimates/));
+  });
+
+  it('queues an app pre-pull that only the derived footprint objects to, and logs the warning', async () => {
+    const { service, logger, ollamaBackend } = await pullerOn(10_240, 31_017, 0);
+
+    const result = await service.startPull('qwen3-14b', { bestEffort: true });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(result.status).toBe('queued');
+    expect(ollamaBackend.pullModel).toHaveBeenCalledWith('qwen3:14b', expect.any(Function));
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/^\[ModelPuller\] qwen3-14b: The catalog estimates 10475 MB/));
   });
 
   // The floor may only ever admit more than the catalog footprint did, never refuse a row the
