@@ -242,6 +242,28 @@ describe('ModelPullerService.evaluatePull', () => {
     expect(lemonadeBackend.unloadModel).toHaveBeenCalledWith('user.nomic-embed-text-v1.5-GGUF', { embedding: true });
   });
 
+  // L3: the router marks a window it stepped below an app's floor for memory it could not free; the
+  // engine is the one that decides not to save it, so the mark must reach it.
+  it("hands the engine the router's provisional window mark, and adds nothing when there is none", async () => {
+    const gemma = {
+      ...curated,
+      id: 'gemma4-e4b-lemonade',
+      backend: 'lemonade',
+      backendModelId: 'Gemma-4-E4B-it-GGUF',
+      modality: 'llm',
+    } as CuratedModel;
+    modelRegistry.getCuratedModel.mockReturnValue(gemma);
+    lemonadeBackend.engineModelId.mockImplementation((id) => id);
+
+    await service.loadModel('gemma4-e4b-lemonade', { contextLength: 32_768, provisionalWindow: true });
+    await service.loadModel('gemma4-e4b-lemonade', { contextLength: 64_000 });
+
+    expect(lemonadeBackend.loadModel.mock.calls).toEqual([
+      ['Gemma-4-E4B-it-GGUF', { embedding: false, contextLength: 32_768, provisionalWindow: true }],
+      ['Gemma-4-E4B-it-GGUF', { embedding: false, contextLength: 64_000 }],
+    ]);
+  });
+
   it('logs pull progress so model downloads appear in hub logs', async () => {
     ollamaBackend.pullModel.mockImplementation(async (_modelId, onProgress) => {
       onProgress?.({ status: 'pulling manifest', total: 100, completed: 1, percent: 1 });

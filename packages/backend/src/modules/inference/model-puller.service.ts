@@ -416,7 +416,7 @@ export class ModelPullerService {
    * inference router should go through `InferenceRouterService.loadTrackedModel`, which makes room
    * and sizes the window first; this only talks to the engine.
    */
-  async loadModel(catalogId: string, options?: { contextLength?: number }): Promise<void> {
+  async loadModel(catalogId: string, options?: { contextLength?: number; provisionalWindow?: boolean }): Promise<void> {
     const curated = this.modelRegistry.getCuratedModel(catalogId);
     if (!curated) {
       throw new Error(`Model ${catalogId} not found in catalog`);
@@ -434,7 +434,11 @@ export class ModelPullerService {
     try {
       // The engine's spelling: Lemonade 10.x knows a Hub-registered model only as `user.<id>`.
       const engineId = backend.engineModelId?.(curated.backendModelId) ?? curated.backendModelId;
-      await backend.loadModel(engineId, { embedding: curated.modality === 'embedding', contextLength: options?.contextLength });
+      await backend.loadModel(engineId, {
+        embedding: curated.modality === 'embedding',
+        contextLength: options?.contextLength,
+        ...(options?.provisionalWindow ? { provisionalWindow: true } : {}),
+      });
       this.modelRegistry.updateModelState(catalogId, 'loaded');
       this.logger.info(`[ModelPuller] Loaded ${catalogId}`);
     } catch (err) {

@@ -7,7 +7,7 @@ import axios from 'axios';
 // need the same host GIDs. See that module for the full rationale.
 import { type DeviceGroupProbe, resolveAmdDeviceGroupIds } from './amd-device-groups.util';
 import { OpenAiCompatibleClient } from './openai-compatible.client';
-import { LEMONADE_USER_NAMESPACE } from '../model-availability.util';
+import { LEMONADE_USER_NAMESPACE, withoutLemonadeUserNamespace } from '../model-availability.util';
 
 /** Extra deployment hints beyond the shared `{ rocmReady, unifiedMemory }` pair. */
 export interface LemonadeComposeOptions {
@@ -64,11 +64,6 @@ function recipeOptionsOf(record: { recipe_options?: unknown }): Record<string, u
 /** A `ctx_size` Lemonade will run: a positive integer. `-1` (and absent) is "size it yourself". */
 function positiveWindow(value: unknown): number | null {
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : null;
-}
-
-/** `modelId` without the `user.` namespace, the one spelling both of Lemonade's names for a model share. */
-function withoutUserNamespace(modelId: string): string {
-  return modelId.startsWith(LEMONADE_USER_NAMESPACE) ? modelId.slice(LEMONADE_USER_NAMESPACE.length) : modelId;
 }
 
 /**
@@ -324,6 +319,12 @@ export class LemonadeBackend implements InferenceBackend {
    * rather than merging them, so the options already saved are read first and sent back beside the
    * new `ctx_size` — an operator's `llamacpp_backend` choice survives the Hub's load. When they cannot
    * be read, the load still goes at the window but saves nothing, rather than wiping them.
+   *
+   * A `provisionalWindow` (the Hub went below an installed app's floor because the memory holding the
+   * card could not be unloaded for this load) never lowers a larger saved window: the model is loaded at
+   * it with the saved options, unsaved, so its next load — Lemonade's own, or the Hub's once the memory
+   * is back — goes at the saved one. With nothing saved, or a smaller window saved, it is saved as usual:
+   * Lemonade's own default is 4096 on 10.2.0 and the whole card's worth on 2026.x, both worse.
    */
   async loadModel(modelId: string, options?: LoadModelOptions): Promise<void> {
     // The puller already hands over the engine's spelling; resolving again is a no-op then, and keeps a
@@ -337,7 +338,13 @@ export class LemonadeBackend implements InferenceBackend {
     if (window) {
       const saved = await this.readModelInfo(engineId);
       const savedOptions = saved ? recipeOptionsOf(saved) : null;
-      if (savedOptions) {
+      const savedWindow = positiveWindow(savedOptions?.ctx_size);
+      if (savedOptions && options?.provisionalWindow && savedWindow !== null && savedWindow > window) {
+        this.logger.info(
+          `[Lemonade] Loading ${engineId} at ctx_size ${window} for now, without saving it: its saved ctx_size ${savedWindow} is kept for its next load.`,
+        );
+        body = { ...savedOptions, model_name: engineId, ctx_size: window };
+      } else if (savedOptions) {
         body = { ...savedOptions, model_name: engineId, ctx_size: window, save_options: true };
       } else {
         this.logger.warn(
@@ -351,21 +358,24 @@ export class LemonadeBackend implements InferenceBackend {
   }
 
   /**
-   * The window Lemonade serves `modelId` at whatever a request asks — its saved `ctx_size` — else, when
-   * nothing is saved but the model is resident, the window it is running at; null when neither can be
-   * read. A handout for a Lemonade model must not promise more than this; see `capHandoutAtServedWindow`.
+   * The window Lemonade serves `modelId` at whatever a request asks: the smaller of the window it is
+   * running at, when it is resident, and its saved `ctx_size`, which its next load uses; either alone
+   * when only one can be read, and null when neither can. A handout for a Lemonade model must not
+   * promise more than this, now or after the next load; see `capHandoutAtServedWindow`.
    *
-   * The resident window matters because Lemonade loads models by itself: on a request for one that is
-   * not resident, or from its own UI. With nothing saved such a load runs at the configured default —
-   * 4096 on the fleet's 10.2.0 — and the health record says so (10.2.0 reports each server's effective
-   * `recipe_options`), while a handout read from the saved options alone still promised Hermes 64000.
+   * The resident window matters because it need not be the saved one. Lemonade loads models by itself,
+   * on a request for one that is not resident or from its own UI, and with nothing saved such a load
+   * runs at the configured default — 4096 on the fleet's 10.2.0 — which the health record reports
+   * (10.2.0 gives each server's effective `recipe_options`), while a handout read from the saved options
+   * alone still promised Hermes 64000. And the Hub loads below the saved window without saving
+   * (`LoadModelOptions.provisionalWindow`) when memory it may not free holds the card.
    */
   async servedContextLength(modelId: string): Promise<number | null> {
-    const info = await this.readModelInfo(modelId);
+    const [info, residency] = await Promise.all([this.readModelInfo(modelId), this.listResident()]);
     const saved = info ? positiveWindow(recipeOptionsOf(info)?.ctx_size) : null;
-    if (saved !== null) return saved;
-    const residency = await this.listResident();
-    return this.residentRecordOf(residency.models ?? [], modelId)?.contextLength ?? null;
+    const running = this.residentRecordOf(residency.models ?? [], modelId)?.contextLength ?? null;
+    if (saved !== null && running !== null) return Math.min(saved, running);
+    return saved ?? running;
   }
 
   /**
@@ -529,8 +539,8 @@ export class LemonadeBackend implements InferenceBackend {
    */
   private residentRecordOf<T extends { id: string }>(models: readonly T[], modelId: string): T | undefined {
     const engineId = this.engineModelId(modelId);
-    const bare = withoutUserNamespace(modelId);
-    return models.find((model) => model.id === engineId) ?? models.find((model) => withoutUserNamespace(model.id) === bare);
+    const bare = withoutLemonadeUserNamespace(modelId);
+    return models.find((model) => model.id === engineId) ?? models.find((model) => withoutLemonadeUserNamespace(model.id) === bare);
   }
 
   /** Detect NPU via Lemonade's system-info endpoint */

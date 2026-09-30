@@ -13,6 +13,7 @@ import type {
 import { CURATED_MODELS } from './catalog/curated-models';
 // A value import: Nest reads the constructor's parameter types from emitted decorator metadata.
 import { LemonadeBackend } from './backends/lemonade.backend';
+import { readPinnedModels, writePinnedModels } from './pinned-models-record';
 
 // ─── Hardware-fit selection tuning ──────────────────────────────────────────
 // The curated catalog (CURATED_MODELS) is the single source of truth for model sizing.
@@ -129,8 +130,24 @@ interface InferenceBudget {
 
 @Injectable()
 export class ModelRegistryService implements OnModuleInit {
-  /** Tracked model states (in-memory only; does not survive process restarts) */
+  /**
+   * Tracked model states. In memory only: what is pulled or loaded is re-read from the engines, which
+   * are the authority on it. The one thing here only the operator can say — which models are pinned —
+   * is persisted apart, in {@link pins}.
+   */
   private readonly trackedModels = new Map<string, TrackedModel>();
+
+  /**
+   * The catalog ids the operator pinned, whether or not the model is tracked or in memory right now,
+   * persisted to `inference-pinned-models.json` (see `pinned-models-record.ts`) and read back at boot.
+   * A model tracked while its id is here is tracked pinned, so a pin survives the Hub restarting, the
+   * model being unloaded and loaded again, and the registry forgetting it in between.
+   */
+  private readonly pins = new Set<string>();
+  /** The read of the persisted pins at boot; every write waits for it, so the file is never replaced before it is read. */
+  private pinsRead: Promise<void> = Promise.resolve();
+  /** Writes in the order they were asked for, each of the whole set as it stands when it runs. */
+  private pinsWrite: Promise<void> = Promise.resolve();
 
   /**
    * `@Optional()` so the many tests that build a registry from the logger alone keep working; with no
@@ -141,8 +158,53 @@ export class ModelRegistryService implements OnModuleInit {
     @Optional() private readonly lemonade?: LemonadeBackend,
   ) {}
 
-  onModuleInit() {
+  async onModuleInit(): Promise<void> {
     this.logger.info(`[ModelRegistry] Loaded ${CURATED_MODELS.length} curated models`);
+    await this.restorePins();
+  }
+
+  /**
+   * Reads the pins the last Hub process persisted. Awaited at boot (`onModuleInit`), before
+   * anything tracks a model, so a pinned model is tracked pinned from the first time this process sees
+   * it; `InferenceRouterService.readoptPinnedModels` then finds the ones an engine still holds. A file
+   * that cannot be read costs the restored pins, never the boot.
+   */
+  restorePins(): Promise<void> {
+    this.pinsRead = readPinnedModels()
+      .then((record) => {
+        if (!record || record.pinned.length === 0) return;
+        for (const catalogId of record.pinned) {
+          this.pins.add(catalogId);
+          const tracked = this.trackedModels.get(catalogId);
+          if (tracked) this.markPinned(tracked);
+        }
+        this.logger.info(`[ModelRegistry] Restored ${record.pinned.length} pinned model(s): ${record.pinned.join(', ')}`);
+      })
+      .catch((error) => {
+        this.logger.warn(`[ModelRegistry] Could not read the persisted pins: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    return this.pinsRead;
+  }
+
+  /** Resolves once every pin change made so far has been written (or failed to be). */
+  pinsPersisted(): Promise<void> {
+    return this.pinsWrite;
+  }
+
+  /** Queues a write of the pins as they stand when it runs. Never throws. */
+  private persistPins(): void {
+    this.pinsWrite = this.pinsWrite
+      .then(() => this.pinsRead)
+      .then(() => writePinnedModels({ pinned: [...this.pins] }))
+      .catch((error) => {
+        this.logger.warn(`[ModelRegistry] Could not persist the pinned models: ${error instanceof Error ? error.message : String(error)}`);
+      });
+  }
+
+  /** Pinned, and `pinned` as its state when it is in memory: a pinned model never reads as merely `loaded`. */
+  private markPinned(tracked: TrackedModel): void {
+    tracked.pinned = true;
+    if (tracked.state === 'loaded') tracked.state = 'pinned';
   }
 
   /** Get the curated catalog */
@@ -416,17 +478,21 @@ export class ModelRegistryService implements OnModuleInit {
     return this.trackedModels.get(catalogId);
   }
 
-  /** Track a model (when pulling or loading) */
+  /**
+   * Track a model (when pulling or loading). A model the operator pinned is tracked pinned, and
+   * `loaded` is recorded as `pinned` for it (see {@link updateModelState}).
+   */
   trackModel(catalogId: string, state: ModelState, backendModelId?: string): TrackedModel {
     const curated = this.getCuratedModel(catalogId);
     const existing = this.trackedModels.get(catalogId);
+    const pinned = existing?.pinned === true || this.pins.has(catalogId);
 
     const tracked: TrackedModel = {
       catalogId,
       backend: curated?.backend ?? existing?.backend ?? 'ollama',
       backendModelId: backendModelId ?? curated?.backendModelId ?? catalogId,
-      state,
-      pinned: existing?.pinned ?? false,
+      state: pinned && state === 'loaded' ? 'pinned' : state,
+      pinned,
       memoryUsedMb: existing?.memoryUsedMb ?? curated?.runtime.memoryFootprintMb ?? 0,
       lastUsedAt: existing?.lastUsedAt,
       requestCount: existing?.requestCount ?? 0,
@@ -437,13 +503,19 @@ export class ModelRegistryService implements OnModuleInit {
     return tracked;
   }
 
-  /** Update model state */
+  /**
+   * Update model state. `loaded` on a pinned model records `pinned`: the pin is the operator's, and a
+   * load that finds the model already in memory (`InferenceRouterService.adoptIfResident`, including a
+   * request queued behind the pin of that very model) or loads it again after an unload must not show
+   * it unpinned. The Hub UI reads `state === 'pinned'`; the `pinned` flag alone kept it out of eviction
+   * while the UI said it was not pinned.
+   */
   updateModelState(catalogId: string, state: ModelState, errorMessage?: string): void {
     const tracked = this.trackedModels.get(catalogId);
     if (tracked) {
-      tracked.state = state;
+      tracked.state = tracked.pinned && state === 'loaded' ? 'pinned' : state;
       if (errorMessage) tracked.errorMessage = errorMessage;
-      if (state === 'pinned') tracked.pinned = true;
+      if (state === 'pinned') this.pinModel(catalogId);
       if (state === 'loaded' || state === 'pinned') {
         tracked.lastUsedAt = Date.now();
       }
@@ -458,16 +530,20 @@ export class ModelRegistryService implements OnModuleInit {
     }
   }
 
-  /** Pin a model */
+  /** Pin a tracked model, and persist the pin so it outlives a Hub restart. An untracked id is not pinned. */
   pinModel(catalogId: string): void {
     const tracked = this.trackedModels.get(catalogId);
     if (tracked) {
       tracked.pinned = true;
       tracked.state = 'pinned';
+      if (!this.pins.has(catalogId)) {
+        this.pins.add(catalogId);
+        this.persistPins();
+      }
     }
   }
 
-  /** Unpin a model */
+  /** Unpin a model, persisted pin included, whether or not it is tracked right now. */
   unpinModel(catalogId: string): void {
     const tracked = this.trackedModels.get(catalogId);
     if (tracked) {
@@ -476,6 +552,23 @@ export class ModelRegistryService implements OnModuleInit {
         tracked.state = 'loaded';
       }
     }
+    if (this.pins.delete(catalogId)) {
+      this.persistPins();
+    }
+  }
+
+  /**
+   * Whether the operator pinned `catalogId`: persisted, so true after a Hub restart for a model this
+   * process has not tracked yet. What eviction consults for a resident model the registry has no entry
+   * for (`MemoryManagerService.planEviction`).
+   */
+  isPinned(catalogId: string): boolean {
+    return this.pins.has(catalogId) || this.trackedModels.get(catalogId)?.pinned === true;
+  }
+
+  /** Every catalog id the operator pinned, tracked or not, in the order they were pinned. */
+  getPinnedCatalogIds(): string[] {
+    return [...this.pins];
   }
 
   /** Record a model usage (for LRU eviction) */

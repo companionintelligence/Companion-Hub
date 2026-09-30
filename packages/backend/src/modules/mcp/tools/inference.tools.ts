@@ -194,8 +194,8 @@ export class InferenceTools implements OnModuleInit {
       name: 'hub_pin_model',
       access: 'write',
       description:
-        'Pin a model in memory (prevent eviction while the backend is running), loading it first if it is not loaded, ' +
-        'the same way hub_load_model does. Pinning is not persisted across backend restarts.',
+        'Pin a model in memory (prevent eviction), loading it first if it is not loaded, the same way hub_load_model does. ' +
+        'The pin survives Hub restarts until hub_unpin_model.',
       inputSchema: {
         type: 'object',
         properties: {

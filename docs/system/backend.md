@@ -161,9 +161,27 @@ Both scopes share these rules:
   already holds is answered before the lock, so a request for it never queues behind another model's
   cold load. The pool proxy passes the client's hang-up signal along, and a load whose client went
   away while it was queued is dropped before it measures, evicts or loads anything.
-- **Pins match under `:latest`.** Pins and the model being loaded are matched with
-  `sameModelId`, so a pinned `nomic-embed-text` is protected while `/api/ps` lists
-  `nomic-embed-text:latest`.
+- **Pins match however the engine spells the model.** Residents are matched to the registry, the
+  catalog, pins, busy work and the model being loaded with `engineModelKey`
+  (`model-availability.util.ts`). It folds Ollama's `name` ≡ `name:latest` on every engine, so a
+  pinned `nomic-embed-text` is protected while `/api/ps` lists `nomic-embed-text:latest`. On Lemonade
+  it also folds the `user.` namespace: 10.2.0 lists the embedder the Hub registers as
+  `user.nomic-embed-text-v1.5-GGUF`, and before this an operator's load could unload that embedder
+  while it was pinned. Footprint sightings are keyed the same way.
+- **Pins survive a Hub restart.** The registry writes the pinned catalog ids to
+  `<data dir>/state/inference-pinned-models.json` and reads them back before anything is tracked
+  (`onModuleInit`). A state file rather than `settings.json`, because an older build that saves
+  settings drops keys it does not declare. At boot, `InferenceRouterService.readoptPinnedModels`
+  marks as pinned each pinned model an engine still holds (Ollama keeps it at `keep_alive: -1`),
+  in the background so boot does not wait on an engine probe. Until then, and whenever the probe
+  missed it, `planEviction` still skips a resident model whose catalog row is pinned. A pinned model
+  that no engine holds any more keeps its pin, and is tracked pinned the next time the Hub tracks or
+  loads it. Before this, the first operator load after a restart that needed room could unload the
+  pinned embedder (PIN-2 in the #1679 audit).
+- **A pinned model reads `pinned` whenever it is in memory.** The registry records `loaded` as
+  `pinned` for a pinned model. A request queued behind the pin of the same model, or a REST load of a
+  pinned model that is already resident, used to show it as `loaded` in the Hub UI although it stayed
+  pinned. An unload leaves it `pulled` and still pinned; only an unpin removes the pin.
 
 A load refused on the request path is still forwarded to the engine. The pool proxy does that
 regardless of the answer. A refusal there means the Hub made no room, not that the engine does not
@@ -509,7 +527,8 @@ to. The load's origin decides whose window it is, as below, and what may be unlo
   throughout: load the model the way `loadTrackedModel` does when it is not resident, then check the
   pinned-model budget with what it was measured occupying. A pin refused on a measurement is final
   and loads nothing. A pin refused on the catalog figure alone loads first and asks again; a model
-  that then could not be measured on the card stays loaded but unpinned.
+  that then could not be measured on the card stays loaded but unpinned. Pins are persisted and
+  survive a Hub restart; see [Model loading and eviction](#model-loading-and-eviction).
 - **Slots.** The KV cache is charged once per Ollama slot. The slot count is the engine's own
   statement, else `inferenceOllamaSlots`, else 1. It is 1 for the families Ollama 0.34 runs on a
   single slot (`qwen35`, which includes qwen3.8:27b, `qwen3vl`, `mllama`, and others; see
@@ -536,16 +555,26 @@ to. The load's origin decides whose window it is, as below, and what may be unlo
   load could free more. Before this, beta-1 saved 32768 for Gemma-4-E4B-it-GGUF beside an idle Ollama
   gemma4:e4b, on a card that holds 64000 empty. The window is saved with `save_options` on
   `/v1/load`, which Lemonade 10.2.0 and 2026.x both accept. The options already saved are sent back
-  with it, because 10.2.0 replaces them instead of merging. `engineCapabilities` reports the saved
-  window of the LLM Lemonade holds, for pool placement (the smallest, when it holds more than one; it
-  is not yet per model). `servedContextLength` reads the saved `ctx_size`, and, when nothing is saved,
-  the window a resident model is running at: a model Lemonade loaded by itself runs at its configured
-  default (4096 on 10.2.0).
+  with it, because 10.2.0 replaces them instead of merging. A window below the floor only because
+  this load could not unload what holds the card is marked provisional
+  (`LoadModelOptions.provisionalWindow`), and it never replaces a larger saved window. The model is
+  loaded at it with the saved options but without `save_options`, so its next load, whether
+  Lemonade's own or the Hub's once the memory is back, uses the saved window. Before this, a request's
+  load beside an app's idle Ollama model saved the lower window for every later load and app. With
+  nothing saved, or a smaller window saved, the provisional window is still saved, because Lemonade's
+  own default is worse (4096 on 10.2.0, the whole card on 2026.x). A window below the floor because an
+  empty card cannot hold it, or because of `inferenceMaxNumCtx`, is saved as usual.
+  `engineCapabilities` reports the saved window of the LLM Lemonade holds, for pool placement (the
+  smallest, when it holds more than one; it is not yet per model). `servedContextLength` is the
+  smaller of the window a resident model is running at and its saved `ctx_size`, or whichever of the
+  two can be read. A model Lemonade loaded by itself runs at its configured default (4096 on 10.2.0),
+  and a provisional load runs below the saved window.
 - **Lemonade's names.** 10.2.0 lists, loads and describes a model the Hub registered (the
   `nomic-embed-text-v1.5-GGUF` embedder) only as `user.<id>`. Residency (`isModelLoaded`), saved
   options (`GET /v1/models/{id}`), `servedContextLength` and `loadModel` resolve the catalog id through
   `engineModelId`, and a resident record matches under either spelling, so a resident embedder is
-  adopted rather than loaded and registered again.
+  adopted rather than loaded and registered again. The eviction plan and the footprint sightings match
+  under either spelling too (`engineModelKey`).
 - **No window for non-LLMs.** Embedding, TTS, and STT models get no window and no KV charge.
 
 ## App readiness endpoint

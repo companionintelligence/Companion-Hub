@@ -1,5 +1,7 @@
+import fs from 'node:fs';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { ModelRegistryService } from '../model-registry.service';
+import { PINNED_MODELS_PATH, readPinnedModels, writePinnedModels } from '../pinned-models-record';
 import { LoggerService } from '@/core/logger/logger.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -540,9 +542,117 @@ describe('ModelRegistryService', () => {
       expect(service.getTrackedModel('phi-4-mini')?.state).toBe('loaded');
     });
 
+    // L2 after #1684/#1686: a request queued behind the pin of the same model, and a REST load of a
+    // pinned model already in memory, both record `loaded`; the pin stayed, but the Hub UI (which reads
+    // `state === 'pinned'`) showed the model unpinned.
+    it('keeps a pinned model pinned when a load records it loaded', () => {
+      service.trackModel('phi-4-mini', 'loaded');
+      service.pinModel('phi-4-mini');
+
+      service.updateModelState('phi-4-mini', 'loaded');
+      expect(service.getTrackedModel('phi-4-mini')).toMatchObject({ state: 'pinned', pinned: true });
+
+      // Unloaded and loaded again: out of memory it is `pulled`, still pinned, and pinned once back.
+      service.updateModelState('phi-4-mini', 'pulled');
+      expect(service.getTrackedModel('phi-4-mini')).toMatchObject({ state: 'pulled', pinned: true });
+      service.updateModelState('phi-4-mini', 'loading');
+      service.updateModelState('phi-4-mini', 'loaded');
+      expect(service.getTrackedModel('phi-4-mini')).toMatchObject({ state: 'pinned', pinned: true });
+
+      service.unpinModel('phi-4-mini');
+      service.updateModelState('phi-4-mini', 'loaded');
+      expect(service.getTrackedModel('phi-4-mini')).toMatchObject({ state: 'loaded', pinned: false });
+    });
+
     it('should track default pinned models', () => {
       const defaults = service.getDefaultPinnedModels('medium');
       expect(defaults.every((m) => m.runtime.pinnedByDefault)).toBe(true);
+    });
+  });
+
+  // ─── Pins across a Hub restart (PIN-2) ────────────────────────────
+
+  // PIN-2 in the audit of #1679: pins lived only in this map, so after a Hub restart the model the
+  // operator pinned — still in memory, Ollama holding it at keep_alive -1 — was an eviction candidate.
+  describe('pins across a Hub restart (PIN-2)', () => {
+    /** The next Hub process: a fresh registry that has read the file at boot, as `onModuleInit` does. */
+    const restart = async (): Promise<ModelRegistryService> => {
+      await service.pinsPersisted();
+      const next = new ModelRegistryService(loggerService);
+      await next.onModuleInit();
+      return next;
+    };
+
+    it('persists a pin, and the next process tracks the model pinned — loaded or not yet', async () => {
+      service.trackModel('nomic-embed-text', 'loaded');
+      service.pinModel('nomic-embed-text');
+      await service.pinsPersisted();
+      await expect(readPinnedModels()).resolves.toEqual({ pinned: ['nomic-embed-text'] });
+
+      const next = await restart();
+
+      expect(next.isPinned('nomic-embed-text')).toBe(true);
+      expect(next.getPinnedCatalogIds()).toEqual(['nomic-embed-text']);
+      // Nothing is tracked until something sees the model; then it is tracked pinned.
+      expect(next.getTrackedModel('nomic-embed-text')).toBeUndefined();
+      expect(next.trackModel('nomic-embed-text', 'loaded')).toMatchObject({ state: 'pinned', pinned: true });
+      expect(next.getEvictionCandidates()).toEqual([]);
+      expect(next.getPinnedModels().map((model) => model.catalogId)).toEqual(['nomic-embed-text']);
+    });
+
+    it('tracks a pinned model that is not in memory as pulled, pinned for when it loads', async () => {
+      service.trackModel('nomic-embed-text', 'loaded');
+      service.pinModel('nomic-embed-text');
+      const next = await restart();
+
+      next.trackModel('nomic-embed-text', 'pulled');
+      expect(next.getTrackedModel('nomic-embed-text')).toMatchObject({ state: 'pulled', pinned: true });
+      next.updateModelState('nomic-embed-text', 'loaded');
+      expect(next.getTrackedModel('nomic-embed-text')).toMatchObject({ state: 'pinned', pinned: true });
+    });
+
+    it('forgets an unpinned model, tracked or not', async () => {
+      service.trackModel('nomic-embed-text', 'loaded');
+      service.pinModel('nomic-embed-text');
+      service.trackModel('gemma4-e4b', 'loaded');
+      service.pinModel('gemma4-e4b');
+      const next = await restart();
+
+      // Unpinned before this process tracked it at all.
+      next.unpinModel('gemma4-e4b');
+      await next.pinsPersisted();
+      await expect(readPinnedModels()).resolves.toEqual({ pinned: ['nomic-embed-text'] });
+      expect(next.isPinned('gemma4-e4b')).toBe(false);
+      expect(next.trackModel('gemma4-e4b', 'loaded')).toMatchObject({ state: 'loaded', pinned: false });
+    });
+
+    it('never replaces the file before it has read it, so a pin made during boot keeps the rest', async () => {
+      await writePinnedModels({ pinned: ['nomic-embed-text'] });
+      const next = new ModelRegistryService(loggerService);
+      const booting = next.onModuleInit();
+      next.trackModel('gemma4-e4b', 'loaded');
+      next.pinModel('gemma4-e4b');
+      await booting;
+      await next.pinsPersisted();
+
+      await expect(readPinnedModels()).resolves.toEqual({ pinned: expect.arrayContaining(['nomic-embed-text', 'gemma4-e4b']) });
+    });
+
+    it('boots unpinned from a file that is missing or not its shape, and replaces it on the next pin', async () => {
+      await fs.promises.writeFile(PINNED_MODELS_PATH, '{"pinned": "nomic-embed-text"', 'utf8');
+      const next = new ModelRegistryService(loggerService);
+      await next.onModuleInit();
+      expect(next.getPinnedCatalogIds()).toEqual([]);
+
+      next.trackModel('gemma4-e4b', 'loaded');
+      next.pinModel('gemma4-e4b');
+      await next.pinsPersisted();
+      await expect(readPinnedModels()).resolves.toEqual({ pinned: ['gemma4-e4b'] });
+    });
+
+    it('reads only non-empty string ids, once each', async () => {
+      await fs.promises.writeFile(PINNED_MODELS_PATH, JSON.stringify({ pinned: ['gemma4-e4b', '', 7, null, 'gemma4-e4b'] }), 'utf8');
+      await expect(readPinnedModels()).resolves.toEqual({ pinned: ['gemma4-e4b'] });
     });
   });
 

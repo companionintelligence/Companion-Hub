@@ -1,4 +1,4 @@
-import { Injectable, forwardRef, Inject, Optional } from '@nestjs/common';
+import { Injectable, forwardRef, Inject, type OnApplicationBootstrap, Optional } from '@nestjs/common';
 import axios from 'axios';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -129,6 +129,13 @@ type LoadPlan = {
   contextLength: number | null;
   footprintMb: number;
   /**
+   * Set when the window is below an installed app's floor only because what holds the card now could
+   * not be unloaded for this load (a `held` {@link FloorShortfall}): it is for this residency, and an
+   * engine that saves a model's window (Lemonade) must not replace a larger saved one with it. See
+   * `LoadModelOptions.provisionalWindow`.
+   */
+  provisionalWindow?: true;
+  /**
    * Set when the load is to be tried rather than fit-checked (see {@link InferenceRouterService.loadUnmeasured}):
    * an operator's Ollama load of a model never measured on this node, which only the catalog's figure
    * says no empty card here could hold. `ceilingMb` is what an empty card here holds. Never set for a
@@ -185,7 +192,7 @@ function describeFloorShortfall(shortfall: FloorShortfall | null, wanted: number
  * Inference router — unified routing view over local backends + multi-node pool + cloud fallback.
  */
 @Injectable()
-export class InferenceRouterService {
+export class InferenceRouterService implements OnApplicationBootstrap {
   /** The tail of {@link loadTrackedModel}'s queue: every load on this node waits for the one before it. */
   private loadQueue: Promise<void> = Promise.resolve();
 
@@ -209,6 +216,41 @@ export class InferenceRouterService {
     // Optional for the same reason: only a Lemonade load reads it, for installed apps' context floors.
     @Optional() private readonly apps?: AppsRepository,
   ) {}
+
+  /**
+   * Finds the pinned models the engines still hold, in the background: boot must not wait on an
+   * engine probe, which costs up to 5 s for one that is not up yet.
+   */
+  onApplicationBootstrap(): void {
+    void this.readoptPinnedModels().catch((err) => {
+      this._logger.warn(`[Inference] Could not re-mark the pinned models after a restart: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
+
+  /**
+   * Re-marks as pinned each model the operator pinned (persisted by the registry) that an engine still
+   * holds, and returns the ones it found.
+   *
+   * A Hub restart leaves the engines as they were: Ollama keeps a pinned model at `keep_alive: -1`, so
+   * it is still in memory, but the new Hub process tracks nothing, and until it did the model was an
+   * eviction candidate for the next operator load (PIN-2 in the audit of #1679). Only what is resident
+   * is tracked here; a pinned model an engine no longer holds (the engine restarted too) keeps its pin,
+   * and is tracked pinned whenever this Hub next tracks it: a pull check, or a load through the Hub.
+   */
+  async readoptPinnedModels(): Promise<string[]> {
+    const readopted: string[] = [];
+    for (const catalogId of this.modelRegistry.getPinnedCatalogIds()) {
+      const tracked = this.modelRegistry.getTrackedModel(catalogId);
+      if (tracked?.state === 'pinned') continue;
+      const target = this.loadTarget(catalogId);
+      if (!target) continue;
+      if (await this.adoptIfResident(catalogId, target)) readopted.push(catalogId);
+    }
+    if (readopted.length > 0) {
+      this._logger.info(`[Inference] Still resident after the restart, and pinned again: ${readopted.join(', ')}`);
+    }
+    return readopted;
+  }
 
   /**
    * Health-check every backend once, concurrently.
@@ -796,6 +838,12 @@ export class InferenceRouterService {
   /**
    * Whether the engine already holds the model, recording it as loaded when it does: another caller
    * may have loaded it without the registry knowing. A probe that fails reads as not resident.
+   *
+   * The registry records `loaded` as `pinned` for a model the operator pinned
+   * (`ModelRegistryService.updateModelState`). A request queued behind the pin of this very model
+   * adopts it once the pin has run, and a REST load of a pinned model that is already in memory lands
+   * here too: both used to show the model unpinned while it stayed pinned. The registry is read again
+   * after the probe, which the pin may have finished during.
    */
   private async adoptIfResident(catalogId: string, target: LoadTarget): Promise<boolean> {
     const resident = await this.backends
@@ -805,7 +853,7 @@ export class InferenceRouterService {
     if (!resident) {
       return false;
     }
-    if (target.tracked) this.modelRegistry.updateModelState(catalogId, 'loaded');
+    if (this.modelRegistry.getTrackedModel(catalogId)) this.modelRegistry.updateModelState(catalogId, 'loaded');
     else this.modelRegistry.trackModel(catalogId, 'loaded');
     return true;
   }
@@ -882,7 +930,10 @@ export class InferenceRouterService {
     }
 
     try {
-      await this.modelPuller.loadModel(catalogId, contextLength === null ? undefined : { contextLength });
+      await this.modelPuller.loadModel(
+        catalogId,
+        contextLength === null ? undefined : { contextLength, ...(plan.provisionalWindow ? { provisionalWindow: true } : {}) },
+      );
       return { loaded: true };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1188,14 +1239,25 @@ export class InferenceRouterService {
       }
     }
 
+    // Below the floor for want of memory this load may not free is a state of the card now, not of the
+    // model, so the window is for this residency only. Saved, it outlived the shortfall: every later load
+    // Lemonade made by itself, and every handout capped at the saved window, stayed below Hermes' floor
+    // after the memory came back, until an operator reloaded the model.
+    const provisionalWindow = floor !== null && floor.minContextLength > contextLength && shortfall?.kind === 'held';
     if (floor && floor.minContextLength > contextLength) {
       this._logger.warn(
         `[Inference] ${target.backend} will serve ${target.backendModelId} at ctx_size ${contextLength}, below the ${floor.minContextLength}-token floor of ` +
           `${floor.apps.join(', ')}: ${describeFloorShortfall(shortfall, wanted, floor.minContextLength, localCap)}. ` +
-          `Apps are handed ${contextLength} for it and may refuse to start.`,
+          `Apps are handed ${contextLength} for it and may refuse to start` +
+          (provisionalWindow ? '; a larger window Lemonade already has saved for it is kept for its next load.' : '.'),
       );
     }
-    return unmeasured ? { contextLength, footprintMb, unmeasured } : { contextLength, footprintMb };
+    return {
+      contextLength,
+      footprintMb,
+      ...(unmeasured ? { unmeasured } : {}),
+      ...(provisionalWindow ? { provisionalWindow: true as const } : {}),
+    };
   }
 
   /**
@@ -1208,10 +1270,15 @@ export class InferenceRouterService {
    *   a spill would come out of the memory the OS itself runs in.
    * - Not while the Hub holds a pin on that engine: Ollama makes room among its own runners and knows
    *   nothing of the Hub's pins, so a guess that was right could unload a model the operator pinned.
+   *   Every persisted pin counts, tracked or not: after a Hub restart the engine can still hold a
+   *   pinned model this process has not re-marked yet (see {@link readoptPinnedModels}).
    */
   private mayTryUnmeasured(target: { backend: InferenceBackendType }, profile: HardwareProfile): boolean {
     if (target.backend !== 'ollama' || modelPoolFor(profile) !== 'vram') return false;
-    return !this.modelRegistry.getPinnedModels().some((model) => model.backend === target.backend);
+    const registry = this.modelRegistry;
+    return !registry
+      .getPinnedCatalogIds()
+      .some((catalogId) => (registry.getTrackedModel(catalogId) ?? registry.getCuratedModel(catalogId))?.backend === target.backend);
   }
 
   /**

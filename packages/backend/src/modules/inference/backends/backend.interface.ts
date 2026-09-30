@@ -5,6 +5,13 @@ export interface LoadModelOptions {
   embedding?: boolean;
   /** The context window, in tokens, to load a text model with. Absent leaves it to the engine. */
   contextLength?: number;
+  /**
+   * `contextLength` is for this residency only: the Hub stepped it below an installed app's floor
+   * because what held the card could not be unloaded for this load. An engine that saves a model's
+   * window for its own later loads (Lemonade's `save_options`) keeps a larger saved window rather than
+   * lower it to this one. Ignored by engines that take a window per load only.
+   */
+  provisionalWindow?: boolean;
 }
 
 /**
