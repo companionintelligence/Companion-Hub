@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// vendored-from: @companionintelligence/config@1.1.0 packages/config/bin/lint-canon.mjs
 // CI design-canon lint gate (v6). Usage: npx ci-lint-canon [targetDir] [--tokens <tokens.json>]
 //  FAIL: any `--primary` custom property that is not the canon primary (any notation) — in
 //        CSS/markup AND inside JS/TS template literals (CSS-in-JS, generated stylesheets);

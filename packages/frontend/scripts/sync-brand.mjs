@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// sync-brand.mjs — the brand files under public/ are copies of packages/frontend/brand,
-// the logo and icon files the Hub actually ships. A static export needs them on disk,
-// so they are committed; this script is what makes them a mirror rather than a second
-// hand-maintained original.
+// sync-brand.mjs — the brand files under public/ are copies of packages/frontend/brand.
+// Those origin files are listed in ci-common.vendor.json (search vendored-from).
+// A static export needs them on disk, so they are committed; this script is what
+// makes them a mirror rather than a second hand-maintained original.
 //
 //   node scripts/sync-brand.mjs            # rewrite public/* from packages/frontend/brand
 //   node scripts/sync-brand.mjs --check    # exit 1 if any copy differs from the origin

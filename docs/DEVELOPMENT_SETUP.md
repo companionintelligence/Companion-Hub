@@ -15,11 +15,20 @@ most are an unbuilt `common` package and missing GTK headers, and neither error 
 | Docker | Engine or Desktop | Needed for the stack, integration tests, and e2e |
 | Rust | stable | Desktop app only. Skip unless you build `packages/desktop`. |
 
-## Build `common` before backend tests
+## Design files from CI Common
 
-`pnpm install` does not need a GitHub Packages token. The stylesheet, canon file, and the logo
-files the Hub ships are already in this repo (`packages/frontend/src/styles/ci-tokens.css`,
-`packages/frontend/src/styles/tokens.json`, and `packages/frontend/brand`).
+`pnpm install` does not need a GitHub Packages token. The stylesheet, canon file, and logo files
+the Hub ships are copied into this repo and listed in
+[`packages/frontend/ci-common.vendor.json`](../packages/frontend/ci-common.vendor.json). Text copies
+carry a `vendored-from:` line. Search that string when a CI Common package changes, then refresh
+the copies from a checkout:
+
+```bash
+node scripts/vendor-ci-common.mjs --from ../ci-common --ref <tag>
+node scripts/vendor-ci-common.mjs --check
+```
+
+## Build `common` before backend tests
 
 Build `packages/common` before running backend tests — the backend's vitest config aliases
 `@ci-hub/common/schemas` and `/types` to source, but `/validation` resolves through the package's

@@ -21,6 +21,7 @@
       "!**/packages/frontend/src/styles/transparent-theme.css",
       "!**/packages/frontend/src/styles/globals.css",
       "!**/packages/frontend/src/styles/ci-tokens.css",
+      "!**/packages/frontend/src/styles/tokens.json",
       "!**/packages/frontend/scripts/lint-canon.mjs",
       "!**/videos",
       "!**/e2e/generated",
