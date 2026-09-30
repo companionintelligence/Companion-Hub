@@ -52,11 +52,95 @@ const HUB_STALE_ROOT_OWNED_FILES: &[(&str, &str)] = &[
     ("logs", "error.log"),
 ];
 
-/// Persistent state files the backend must be able to write to at runtime.
-/// These are chmod 0o666 (not deleted) so the container can update them without
-/// losing existing data even when they were previously written by a root-owned container.
+/// Persistent state files the backend must be able to write to at runtime. They are
+/// repaired in place (not deleted) so existing data survives a root-owned container.
+///
+/// Both hold credentials: `settings.json` carries the host-local and Portal device keys,
+/// and `seed` derives JWT_SECRET and every app's generated passwords. They are kept at
+/// [`PRIVATE_STATE_FILE_MODE`], not the 0o666 they used to be chmodded to on every start.
 const HUB_STATE_FILES_NEED_WRITE: &[(&str, &str)] =
     &[("state", "settings.json"), ("state", "seed")];
+
+/// Owner read and write only, the mode the backend creates and keeps the credential files
+/// at (`PRIVATE_STATE_FILE_MODE` in packages/backend/src/common/helpers/env-helpers.ts).
+///
+/// 0o666 was there so a container running as someone else could write them. It also let
+/// every local user read the device key or plant one of their own. The Hub container
+/// runs as this desktop user (or as root under Docker Desktop, which maps its files back
+/// to this user), and where ownership has drifted the Docker chown in
+/// `ensure_host_bind_mounts_writable` is the repair.
+const PRIVATE_STATE_FILE_MODE: u32 = 0o600;
+
+/// Clears group and other bits on a credential-bearing state file, and never adds any: a
+/// file made 0o400 stays 0o400. Returns the mode it replaced, or `None` when it changed
+/// nothing.
+///
+/// Only a file this user owns. The Hub container writes as this user, so taking bits off
+/// anyone else's file could lock it out; those are left for the Docker chown, after which
+/// the Hub restricts them itself on boot.
+#[cfg(unix)]
+pub(crate) fn restrict_private_state_file(path: &Path) -> Option<u32> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.uid() != host_container_uid_gid().0 {
+        return None;
+    }
+    let current = metadata.mode() & 0o777;
+    let restricted = current & PRIVATE_STATE_FILE_MODE;
+    if restricted == current {
+        return None;
+    }
+    match std::fs::set_permissions(path, std::fs::Permissions::from_mode(restricted)) {
+        Ok(()) => Some(current),
+        Err(error) => {
+            // Not fatal: the Hub tries again on boot and logs it if it cannot either.
+            eprintln!(
+                "warning: could not restrict {} to {:o}: {}",
+                path.display(),
+                restricted,
+                error
+            );
+            None
+        }
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn restrict_private_state_file(_path: &Path) -> Option<u32> {
+    // NTFS has no POSIX modes to restrict.
+    None
+}
+
+fn restrict_private_state_files(data_dir: &Path) {
+    for (subdir, file) in HUB_STATE_FILES_NEED_WRITE {
+        let path = data_dir.join(subdir).join(file);
+        if let Some(previous) = restrict_private_state_file(&path) {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hub.start",
+                &format!(
+                    "Restricted {subdir}/{file} from {previous:o} to {PRIVATE_STATE_FILE_MODE:o}: it holds credentials."
+                ),
+            );
+        }
+    }
+}
+
+/// Creates an empty `settings.json` at [`PRIVATE_STATE_FILE_MODE`].
+pub(crate) fn seed_settings_json(settings_path: &Path) -> Result<(), String> {
+    std::fs::write(settings_path, b"{}")
+        .map_err(|error| format!("Failed to create {}: {}", settings_path.display(), error))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(
+            settings_path,
+            std::fs::Permissions::from_mode(PRIVATE_STATE_FILE_MODE),
+        );
+    }
+    Ok(())
+}
 
 /// UID/GID for the Hub container process — matches the desktop/CLI user that owns ROOT_FOLDER_HOST.
 #[cfg(unix)]
@@ -298,23 +382,10 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
 
     let settings_path = data_dir.join("state").join("settings.json");
     if !settings_path.exists() {
-        std::fs::write(&settings_path, b"{}")
-            .map_err(|error| format!("Failed to create {}: {}", settings_path.display(), error))?;
-        #[cfg(unix)]
-        let _ = std::fs::set_permissions(&settings_path, std::fs::Permissions::from_mode(0o666));
+        seed_settings_json(&settings_path)?;
     }
 
-    for (subdir, file) in HUB_STATE_FILES_NEED_WRITE {
-        let path = data_dir.join(subdir).join(file);
-        if path.exists() {
-            #[cfg(unix)]
-            if let Err(error) =
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666))
-            {
-                eprintln!("warning: could not chmod 666 {}: {}", path.display(), error);
-            }
-        }
-    }
+    restrict_private_state_files(data_dir);
 
     let docker_access = check_docker_access();
     if should_defer_docker_bind_mount_probe(&docker_access.state) {
@@ -359,19 +430,16 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
                 container_uid,
                 container_gid,
             )?;
+            // The heal's `chmod -R a+rwX` just made the credential files world-writable.
+            // Where it also left them owned by this user, they come straight back to
+            // owner-only, before the check below confirms the container can still write.
+            restrict_private_state_files(data_dir);
         }
 
         if !verify_container_can_write_file(&settings_path, container_uid, container_gid) {
             remove_host_root_owned_state_files(data_dir);
             if !settings_path.exists() {
-                std::fs::write(&settings_path, b"{}").map_err(|error| {
-                    format!("Failed to recreate {}: {}", settings_path.display(), error)
-                })?;
-                #[cfg(unix)]
-                let _ = std::fs::set_permissions(
-                    &settings_path,
-                    std::fs::Permissions::from_mode(0o666),
-                );
+                seed_settings_json(&settings_path)?;
             }
         }
 

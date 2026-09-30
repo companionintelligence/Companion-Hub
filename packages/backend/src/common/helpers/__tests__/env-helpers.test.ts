@@ -9,6 +9,10 @@ vi.mock('node:fs', () => {
     readFile: vi.fn(),
     chmod: vi.fn().mockResolvedValue(undefined),
     access: vi.fn().mockResolvedValue(undefined),
+    unlink: vi.fn().mockResolvedValue(undefined),
+    // Already private, so restrictStateFileMode has nothing to do here. Its behaviour against real
+    // modes is covered in env-helpers.file-modes.test.ts, on a real filesystem.
+    stat: vi.fn().mockResolvedValue({ mode: 0o100600 }),
   };
   return {
     default: { existsSync, promises, constants: { R_OK: 4, W_OK: 2 } },
@@ -525,6 +529,63 @@ describe('env-helpers — RABBITMQ_PASSWORD fail-closed in production', () => {
   });
 });
 
+describe('generateSystemEnvFile — credential files in state/ are owner-only', () => {
+  // The real-filesystem behaviour of restrictStateFileMode is in env-helpers.file-modes.test.ts.
+  // This pins that boot actually routes the seed and the resolved env through it.
+  const modes = new Map<string, number>();
+  let envSnapshot: NodeJS.ProcessEnv;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    envSnapshot = { ...process.env };
+    process.env.ROOT_FOLDER_HOST = '/home/user/ci-os-hub';
+    process.env.CI_CLOUD_URL = 'https://cloud.example.com';
+    modes.clear();
+
+    (mockedFs.promises.readFile as any).mockImplementation(async (filePath: string) => {
+      const p = String(filePath);
+      if (p.includes('settings.json')) return '{}';
+      if (p.includes('.env')) return '';
+      throw new Error(`Unexpected readFile: ${p}`);
+    });
+    (mockedFs.promises.writeFile as any).mockResolvedValue(undefined);
+    (mockedFs.promises.access as any).mockResolvedValue(undefined);
+    (mockedFs.promises.stat as any).mockImplementation(async (filePath: string) => ({ mode: 0o100000 | (modes.get(String(filePath)) ?? 0o600) }));
+    (mockedFs.promises.chmod as any).mockImplementation(async (filePath: string, mode: number) => {
+      modes.set(String(filePath), mode);
+    });
+  });
+
+  afterEach(() => {
+    process.env = envSnapshot;
+  });
+
+  it('creates a missing seed owner-only', async () => {
+    mockedFs.existsSync.mockImplementation((p) => !String(p).endsWith('/state/seed'));
+
+    await generateSystemEnvFile();
+
+    expect(mockedFs.promises.writeFile).toHaveBeenCalledWith('/data/state/seed', expect.stringMatching(/^[0-9a-f]{64}$/), { mode: 0o600 });
+  });
+
+  it('restricts an existing world-readable seed on boot', async () => {
+    mockedFs.existsSync.mockReturnValue(true);
+    modes.set('/data/state/seed', 0o644);
+
+    await generateSystemEnvFile();
+
+    expect(mockedFs.promises.chmod).toHaveBeenCalledWith('/data/state/seed', 0o600);
+  });
+
+  it('writes .env.resolved owner-only', async () => {
+    mockedFs.existsSync.mockReturnValue(true);
+
+    await generateSystemEnvFile();
+
+    expect(mockedFs.promises.writeFile).toHaveBeenCalledWith('/data/state/.env.resolved', expect.stringContaining('JWT_SECRET='), { mode: 0o600 });
+  });
+});
+
 describe('writeResolvedEnvFile', () => {
   it('returns false when the target path is not writable', async () => {
     (mockedFs.promises.writeFile as any).mockImplementation(async () => {
@@ -549,7 +610,7 @@ describe('ensureSettingsJsonReady', () => {
     await ensureSettingsJsonReady('/data/state/settings.json');
     expect(mockedFs.promises.writeFile).toHaveBeenCalledWith('/data/state/settings.json', '{}', {
       encoding: 'utf8',
-      mode: 0o666,
+      mode: 0o600,
     });
   });
 
@@ -559,8 +620,11 @@ describe('ensureSettingsJsonReady', () => {
 
     await ensureSettingsJsonReady('/data/state/settings.json');
 
-    expect(mockedFs.promises.chmod).toHaveBeenCalledWith('/data/state', 0o777);
-    expect(mockedFs.promises.chmod).toHaveBeenCalledWith('/data/state/settings.json', 0o666);
+    // Owner-only for the file, and never world-writable for the directory: write on the directory
+    // would let any local user rename their own settings.json over this one.
+    expect(mockedFs.promises.chmod).toHaveBeenCalledWith('/data/state', 0o775);
+    expect(mockedFs.promises.chmod).not.toHaveBeenCalledWith('/data/state', 0o777);
+    expect(mockedFs.promises.chmod).toHaveBeenCalledWith('/data/state/settings.json', 0o600);
   });
 });
 
