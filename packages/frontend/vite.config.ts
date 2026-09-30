@@ -102,6 +102,9 @@ export default defineConfig(({ mode }) => {
   return {
     customLogger: createFilteredViteLogger(),
     plugins,
+    // turbo hands `build` and `bundle` only the variables turbo.json declares, plus `VITE_*`. Any other variable
+    // feeding an entry here must be under `env` for frontend#build and frontend#bundle, or release builds bake it
+    // in empty (#1692); scripts/__tests__/turbo-build-env.test.ts fails when one is missing.
     define: {
       'import.meta.env.CI_CLOUD_URL': JSON.stringify(ciCloudUrl),
       'import.meta.env.CI_HUB_VERSION': JSON.stringify(ciHubVersion),
