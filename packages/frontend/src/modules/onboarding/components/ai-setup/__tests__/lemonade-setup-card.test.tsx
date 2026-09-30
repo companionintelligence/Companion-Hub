@@ -22,12 +22,29 @@ describe('LemonadeSetupCard', () => {
     expect(screen.getByTestId('lemonade-api-key-guidance')).toHaveTextContent(/API key/);
     const script = screen.getByTestId('lemonade-api-key-script');
     expect(script).toHaveTextContent('KEY=$(openssl rand -hex 32)');
-    expect(script).toHaveTextContent('Environment=LEMONADE_API_KEY=%s');
     expect(script).toHaveTextContent('Add to the Hub .env, then recreate the Hub: LEMONADE_API_KEY=$KEY');
     // `lemond` from Lemonade 11 on, `lemonade-server` on the 10.x packages the fleet runs.
     expect(script).toHaveTextContent('systemctl cat lemond');
     expect(script).toHaveTextContent('echo lemonade-server');
     expect(screen.getByTestId('lemonade-api-key-guidance')).toHaveTextContent(/lemond on Lemonade 11 and later and lemonade-server on Lemonade 10/);
+  });
+
+  // A drop-in and `systemctl show` are readable by every local user, and both packages read their own
+  // environment file (10.2.0: /etc/lemonade/conf.d/*.conf), which overrides `Environment=`. So a key
+  // already set there won, and Lemonade rejected the key this script printed.
+  it('keeps the key in a root-only environment file the drop-in names, never in the drop-in itself', () => {
+    renderCard({ ready: false, running: false, endpointUrl: 'http://host.docker.internal:13305', failureMode: 'refused', hostPlatform: 'linux' });
+
+    const script = screen.getByTestId('lemonade-api-key-script').textContent ?? '';
+    const lines = script.split('\n');
+    const createIndex = lines.findIndex((line) => line.includes('install -m 600 /dev/null $DIR/api-key.env'));
+    const writeIndex = lines.findIndex((line) => line.includes('printf \'LEMONADE_API_KEY=%s\\n\' "$KEY" | sudo tee $DIR/api-key.env'));
+
+    // Created 0600 before the key goes in; tee keeps an existing file's mode.
+    expect(createIndex).toBeGreaterThanOrEqual(0);
+    expect(writeIndex).toBeGreaterThan(createIndex);
+    expect(script).toContain('printf \'[Service]\\nEnvironmentFile=%s/api-key.env\\n\' "$DIR" | sudo tee $DIR/api-key.conf');
+    expect(script).not.toContain('Environment=LEMONADE_API_KEY');
   });
 
   it("uses the Hub's own key when it already has one", () => {

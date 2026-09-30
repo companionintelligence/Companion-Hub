@@ -19,6 +19,12 @@ export const LEMONADE_V1_EMBEDDER_ID = 'nomic-embed-text-v1-lemonade';
  * has nothing: the catalog ships no vLLM embedder. Both handout paths — the app.env resolver and the
  * bootstrap credentials — decide with this, so an app is never told one embedder by one and another
  * by the other.
+ *
+ * Except where no catalog embedder is found here, and that is deliberate. For vLLM with no healthy
+ * Ollama (null), and for oMLX (the catalog has no oMLX embedder, so `pickEmbeddingModel` finds none),
+ * the resolver hands out no embedder. The bootstrap credentials keep Ollama's `nomic-embed-text`, as
+ * they did before this function existed, because a pool node may serve it. No fleet node runs either
+ * setup. Give oMLX an embedder row before relying on either path there.
  */
 export function embeddingBackendFor(active: InferenceBackendType, ollamaHealthy: boolean): InferenceBackendType | null {
   if (active === 'ollama' || active === 'omlx') return active;

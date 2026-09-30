@@ -46,6 +46,15 @@ there is no separate hand-maintained ID→hardware-bracket table to keep in sync
    `not-recommended`) still gates which models are browsable at all for a given hardware tier
    (`getModelsForTier`) and drives the *non-LLM* recommended defaults (voice/embedding), but for LLMs
    the actual best-fit ranking above is what selects the recommended set — not this field alone.
+4. A download (`ModelPullerService.evaluatePull`) ignores what is loaded right now. It refuses a model
+   only when its weights cannot fit in the node's whole model budget with nothing else loaded: a
+   discrete card's VRAM less 512 MB, otherwise the RAM budget. The weights are measured by a lower
+   bound, 4 bits per parameter (`params`) capped at the download size, not by `memoryFootprintMb`.
+   That footprint is the download plus 10 %, and some downloads hold far more than the engine puts on
+   the card. gemma4:e4b is a 9,163 MiB download, but Ollama holds it at 3,209 MiB on beta-red's
+   RTX 3080; most of the file is per-layer embeddings that stay in system RAM. A model that only its
+   footprint says will not fit still downloads, and the Hub logs a warning that a pin or load may
+   refuse it. So a 10 GB card downloads gemma4-e4b and refuses gemma4-31b (at least 14,781 MB).
 
 The frontend (onboarding `RecommendedModels`/`OtherModels` in
 `packages/frontend/src/modules/onboarding/components/ai-setup/model-selection-card.tsx`, and the
@@ -77,6 +86,9 @@ newmodel-72b|newmodel:72b|NewModel 72B|reasoning|72|43|high|128|SomeLab|38.2|41.
 - `params`/`gb` — parameter count (billions) and the *default* (`q4_K_M`) on-disk size in GB, exactly
   as shown on the Ollama library page. These two columns drive every derived requirement
   (`minVramMb`/`recommendedVramMb`/`minRamMb`/`diskMb`/`memoryFootprintMb`) — don't hand-compute them.
+  For a model named by its *effective* size, use that figure: the Gemma E4B row carries 4, not the
+  8.0B Ollama reports, because the download gate reads `params` as a lower bound on what the engine
+  holds (§2, item 4).
 - `tier` — the lowest hardware tier this size should be offered as a default recommendation for
   (`cpu-only`/`low`/`medium`/`high`), based on the model's footprint relative to existing rows of
   similar size.

@@ -34,13 +34,23 @@ function lemonadeBindCommand(port: string): string {
  * Lemonade 11 and later and `lemonade-server` on the 10.x packages every fleet node runs, so the
  * script asks systemd which one this host has instead of naming one that may not exist. With no key
  * in the Hub yet it makes one and prints the line for the Hub's .env; otherwise it uses the Hub's.
+ *
+ * The key goes in a root-only file that the drop-in names with `EnvironmentFile=`, not in the
+ * drop-in as `Environment=`. There are two reasons. First, a drop-in is world-readable, and so is a
+ * unit's `Environment=` through `systemctl show`. Second, both packages read their own
+ * `EnvironmentFile=` (`/etc/lemonade/conf.d/*.conf` on 10.x, `/etc/default/lemond` on 11+), and
+ * systemd lets any environment file override `Environment=`. A key an operator had already set there
+ * silently won, so Lemonade rejected the key this script printed. A drop-in's environment file is read
+ * after the unit's own, so this key wins.
  */
 function lemonadeApiKeyScript(apiKeyConfigured: boolean): string {
   return [
     apiKeyConfigured ? "KEY='<LEMONADE_API_KEY from the Hub .env>'" : 'KEY=$(openssl rand -hex 32)',
     'UNIT=$(systemctl cat lemond >/dev/null 2>&1 && echo lemond || echo lemonade-server)',
-    'sudo mkdir -p /etc/systemd/system/$UNIT.service.d',
-    `printf '[Service]\\nEnvironment=LEMONADE_API_KEY=%s\\n' "$KEY" | sudo tee /etc/systemd/system/$UNIT.service.d/api-key.conf >/dev/null`,
+    'DIR=/etc/systemd/system/$UNIT.service.d',
+    'sudo mkdir -p $DIR && sudo install -m 600 /dev/null $DIR/api-key.env',
+    `printf 'LEMONADE_API_KEY=%s\\n' "$KEY" | sudo tee $DIR/api-key.env >/dev/null`,
+    `printf '[Service]\\nEnvironmentFile=%s/api-key.env\\n' "$DIR" | sudo tee $DIR/api-key.conf >/dev/null`,
     'sudo systemctl daemon-reload && sudo systemctl restart $UNIT',
     ...(apiKeyConfigured ? [] : ['echo "Add to the Hub .env, then recreate the Hub: LEMONADE_API_KEY=$KEY"']),
   ].join('\n');

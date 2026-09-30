@@ -89,6 +89,10 @@ export class LemonadeBackend implements InferenceBackend {
   private baseUrl: string;
   /** The registry listing the last health probe read; see {@link offersModel}. */
   private offer: LemonadeOffer | null = null;
+  /** The registry read in flight, if any; see {@link refreshOffer}. */
+  private offerRead: { baseUrl: string; promise: Promise<void> } | null = null;
+  /** Bumped by each pull, so a registry read that began before it does not store its older listing. */
+  private offerGeneration = 0;
   /** What the last health probe found downloaded (`/v1/models`), for {@link engineModelId}. */
   private downloaded: { baseUrl: string; ids: ReadonlySet<string> } | null = null;
 
@@ -148,13 +152,28 @@ export class LemonadeBackend implements InferenceBackend {
    * or belongs to another URL. A read that fails keeps the last good listing; a server that ignores
    * `show_all` (it answers the downloaded list, whose entries carry no `downloaded` flag) cannot say
    * what it offers, so the listing is dropped and nothing is filtered — the behaviour before this.
+   *
+   * Probes that arrive while a read is in flight share it. The pool's health loop, the status route
+   * and a pull check can all probe at once when the TTL runs out, and each used to send its own
+   * `show_all` request for the same 70-odd entries.
    */
-  private async refreshOffer(baseUrl: string, version: string | null): Promise<void> {
+  private refreshOffer(baseUrl: string, version: string | null): Promise<void> {
     const cached = this.offer;
-    if (cached && cached.baseUrl === baseUrl && Date.now() - cached.fetchedAt < OFFER_TTL_MS) return;
+    if (cached && cached.baseUrl === baseUrl && Date.now() - cached.fetchedAt < OFFER_TTL_MS) return Promise.resolve();
+    if (this.offerRead?.baseUrl === baseUrl) return this.offerRead.promise;
+    const promise = this.readOffer(baseUrl, version).finally(() => {
+      if (this.offerRead?.promise === promise) this.offerRead = null;
+    });
+    this.offerRead = { baseUrl, promise };
+    return promise;
+  }
+
+  private async readOffer(baseUrl: string, version: string | null): Promise<void> {
     const auth = this.authHeaders();
+    const generation = this.offerGeneration;
     try {
       const response = await axios.get(`${baseUrl}/v1/models?show_all=true`, { timeout: 5000, ...(auth ? { headers: auth } : {}) });
+      if (generation !== this.offerGeneration) return;
       const entries: unknown = response.data?.data;
       const listing = Array.isArray(entries) ? (entries as { id?: unknown; downloaded?: unknown }[]) : [];
       const isRegistryListing = listing.some((entry) => typeof entry?.downloaded === 'boolean');
@@ -254,8 +273,11 @@ export class LemonadeBackend implements InferenceBackend {
       throw new Error(`Lemonade could not pull ${modelId}: ${detail}`);
     } finally {
       // A registration adds a name to the registry (and a failed pull may have registered it anyway),
-      // so the next probe re-reads it. The old listing keeps answering until then.
+      // so the next probe re-reads it. The old listing keeps answering until then. A read already in
+      // flight began before the registration, so the next probe does not join it.
       if (this.offer) this.offer = { ...this.offer, fetchedAt: 0 };
+      this.offerGeneration += 1;
+      this.offerRead = null;
     }
   }
 

@@ -310,6 +310,41 @@ describe('LemonadeBackend', () => {
       expect(showAllReads(get)).toBe(2);
     });
 
+    // The pool's health loop, the status route and a pull check can all probe as the minute runs out.
+    it('sends one registry read for probes that arrive while it is in flight', async () => {
+      const get = serve10_2_0();
+
+      await Promise.all([backend.healthCheck(), backend.healthCheck(), backend.healthCheck()]);
+
+      expect(showAllReads(get)).toBe(1);
+      expect(backend.offersModel('Gemma-4-E4B-it-GGUF')).toBe(true);
+    });
+
+    it('does not keep a registry read that began before a pull registered a model', async () => {
+      const inner = serve10_2_0();
+      let answerFirstRead: (() => void) | undefined;
+      const get = vi.fn().mockImplementation((url: string) => {
+        if (url.endsWith('?show_all=true') && !answerFirstRead) {
+          // The first read: held open until after the pull, and missing what the pull registered.
+          return new Promise((resolve) => {
+            answerFirstRead = () => resolve({ data: lemonadeShowAllBody() });
+          });
+        }
+        return inner(url);
+      });
+      (axios.get as any) = get;
+      (axios.post as never) = vi.fn().mockResolvedValue({ data: { status: 'success' } });
+
+      const probe = backend.healthCheck();
+      await vi.waitFor(() => expect(answerFirstRead).toBeDefined());
+      await backend.pullModel('nomic-embed-text-v1.5-GGUF');
+      answerFirstRead?.();
+      await probe;
+      await backend.healthCheck();
+
+      expect(showAllReads(get)).toBe(2);
+    });
+
     it('names a Hub-registered model the way 10.2.0 lists it, and a built-in one by its key', async () => {
       serve10_2_0(['user.nomic-embed-text-v1.5-GGUF'], ['user.nomic-embed-text-v1.5-GGUF']);
       await backend.healthCheck();

@@ -284,8 +284,9 @@ export class AppCredentialsService implements OnApplicationShutdown {
     const recommendedLlm = this.resolveRecommendedLlm(candidates, preferredModelId, profile.tier, profile, slug, requirements);
     // The same engine the app.env resolver picks (`embeddingBackendFor`), so an app is never handed one
     // embedder here and another there: this path used to hand Ollama's `nomic-embed-text` to a
-    // Lemonade-only node, where nothing serves it. Where nothing local embeds (vLLM or oMLX without
-    // Ollama) it keeps Ollama's id, as before — a pool node may serve it.
+    // Lemonade-only node, where nothing serves it. Where no local engine has a catalog embedder (vLLM
+    // with no Ollama, or oMLX) it keeps Ollama's id, as before — a pool node may serve it. The resolver
+    // hands out none there; see `embeddingBackendFor` for why the two differ.
     const embeddingsBackend: InferenceBackendType = embeddingBackendFor(backendType, ollamaEndpointReady) === 'lemonade' ? 'lemonade' : 'ollama';
     const embeddingsServed = (embeddingsBackend === 'lemonade' ? endpointHealth.modelsLoaded : ollamaHealth.modelsLoaded) ?? [];
     const embeddings = pickEmbeddingModel(this.modelRegistry, {

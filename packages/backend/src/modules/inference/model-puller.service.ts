@@ -1,13 +1,41 @@
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
-import type { HardwareProfile, HardwareTier, PullProgress } from '@ci-hub/common/types';
+import type { CuratedModel, HardwareProfile, HardwareTier, PullProgress } from '@ci-hub/common/types';
 import { ModelRegistryService } from './model-registry.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { MemoryManagerService } from './memory-manager.service';
 import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
 import type { PullEvaluation, PullStartResult } from './pull-evaluation.types';
 import { InferenceBackendRegistry } from './backends/backend-registry';
+
+/**
+ * No quantization the catalog carries stores a weight in fewer bits: q4_0 and the q4_K family keep
+ * about 4.5, mxfp4 4.25, q4_1 5, and everything else more.
+ */
+const MIN_BITS_PER_WEIGHT = 4;
+
+/**
+ * The least memory a model's weights can take once an engine has loaded them, in MB: 4 bits per
+ * parameter, and never more than the download.
+ *
+ * The download gate needs a lower bound, not the catalog footprint. That footprint is the download
+ * plus 10 %, and a download can hold far more than the engine puts on the card. gemma4:e4b downloads
+ * 9,163 MiB, but most of that is per-layer embedding tables that stay in system RAM. On beta-red's
+ * RTX 3080, Ollama holds it at 3,209 MiB (`/api/ps` size equal to size_vram), and nvidia-smi shows
+ * 5,550 MiB for the whole runner at 16384 tokens. The catalog footprint is 10,813 MB, which refused the
+ * fleet's default app model on every 8 and 10 GB card. The row's `params` is the effective 4B, not the
+ * 8B Ollama reports, so this floor (1,907 MB) stays below what the card really holds.
+ *
+ * With no parameter count (speech and embedding rows), the download itself is the only size known.
+ */
+export function weightsFloorMb(model: Pick<CuratedModel, 'parameterScale' | 'requirements'>): number {
+  const diskMb = Math.max(0, model.requirements?.diskMb ?? 0);
+  const params = model.parameterScale;
+  if (typeof params !== 'number' || !Number.isFinite(params) || params <= 0) return diskMb;
+  const floorMb = Math.floor((params * 1e9 * MIN_BITS_PER_WEIGHT) / 8 / 1_048_576);
+  return diskMb > 0 ? Math.min(diskMb, floorMb) : floorMb;
+}
 
 @Injectable()
 export class ModelPullerService {
@@ -34,15 +62,19 @@ export class ModelPullerService {
 
   /**
    * The node's model memory twice over: `availableMb` is what is free right now (reported, never
-   * gated on — see evaluatePull), `capacityMb` is the whole budget with nothing loaded, which a model
-   * must fit to be loadable here at all.
+   * gated on — see evaluatePull), `capacityMb` is the whole budget with nothing loaded, which a model's
+   * weights must fit to be loadable here at all. `onGpu` says the budget is a discrete card's.
    */
-  private async getModelMemoryMb(profile: HardwareProfile): Promise<{ availableMb: number; capacityMb: number }> {
+  private async getModelMemoryMb(profile: HardwareProfile): Promise<{ availableMb: number; capacityMb: number; onGpu: boolean }> {
     const budget = await this.memoryManager.calculateBudget(profile);
     if (profile.gpu.available && !profile.gpu.unifiedMemory) {
-      return { availableMb: Math.max(0, budget.modelBudgetVramMb - budget.modelUsedVramMb), capacityMb: budget.modelBudgetVramMb };
+      return {
+        availableMb: Math.max(0, budget.modelBudgetVramMb - budget.modelUsedVramMb),
+        capacityMb: budget.modelBudgetVramMb,
+        onGpu: true,
+      };
     }
-    return { availableMb: Math.max(0, budget.modelBudgetRamMb - budget.modelUsedRamMb), capacityMb: budget.modelBudgetRamMb };
+    return { availableMb: Math.max(0, budget.modelBudgetRamMb - budget.modelUsedRamMb), capacityMb: budget.modelBudgetRamMb, onGpu: false };
   }
 
   /** Evaluate whether a catalog model can be pulled given hardware, disk, and Ollama state. */
@@ -56,7 +88,7 @@ export class ModelPullerService {
     const effectiveTier = tier ?? profile.tier;
     const tierModels = this.modelRegistry.getModelsForTier(effectiveTier);
     const availableDiskMb = await this.getAvailableDiskMb();
-    const { availableMb: availableMemoryMb, capacityMb: memoryCapacityMb } = await this.getModelMemoryMb(profile);
+    const { availableMb: availableMemoryMb, capacityMb: memoryCapacityMb, onGpu } = await this.getModelMemoryMb(profile);
     const requiredDiskMb = curated.requirements?.diskMb ?? 0;
     const requiredMemoryMb = curated.runtime.memoryFootprintMb;
 
@@ -145,17 +177,28 @@ export class ModelPullerService {
     // large model while another engine held the GPU.
     //
     // The whole budget is a different matter. The tier check above is coarse — an RTX 3080 (10 GB)
-    // reads as tier `medium`, which admits 20+ GB models — and a model bigger than everything this
-    // node can give a model with nothing else loaded is refused by every load and pin, so
-    // downloading it only spends the disk.
-    if (requiredMemoryMb > memoryCapacityMb) {
+    // reads as tier `medium`, which admits 20+ GB models — and a model whose weights alone are bigger
+    // than everything this node can give a model with nothing else loaded is refused by every load
+    // and pin, so downloading it only spends the disk.
+    //
+    // The gate compares a lower bound on the weights (weightsFloorMb), never the catalog footprint.
+    // The footprint is an estimate that is too high for some models, and nothing has been measured
+    // on this node before the download. A download that only the footprint objects to goes ahead
+    // with a warning, because the load path judges it again, against measurements once it has any.
+    //
+    // On a discrete card this is the GPU budget, not GPU plus system RAM. An engine can run a larger
+    // model partly from system RAM, but the Hub's load and pin only place a model wholly on the card.
+    const capacityMb = Math.floor(memoryCapacityMb);
+    const memoryKind = onGpu ? 'GPU memory ' : '';
+    const weightsMb = weightsFloorMb(curated);
+    if (weightsMb > memoryCapacityMb) {
       return {
         catalogId,
         alreadyInstalled: false,
         canPull: false,
         reason:
-          `Model needs ${requiredMemoryMb} MB of inference memory, more than the ${Math.floor(memoryCapacityMb)} MB this node has for models ` +
-          'with nothing else loaded, so it could never be loaded here.',
+          `Model's weights need at least ${weightsMb} MB, more than the ${capacityMb} MB of ${memoryKind}this node has for models ` +
+          `with nothing else loaded, so it could never be loaded ${onGpu ? 'onto the GPU ' : ''}here.`,
         requiredDiskMb,
         requiredMemoryMb,
         availableDiskMb,
@@ -163,10 +206,18 @@ export class ModelPullerService {
       };
     }
 
+    const warning =
+      requiredMemoryMb > memoryCapacityMb
+        ? `The catalog estimates ${requiredMemoryMb} MB for this model once loaded, more than the ${capacityMb} MB of ${memoryKind}this node has ` +
+          `for models, so a pin or load may be refused. It downloads anyway: its weights need at least ${weightsMb} MB, and the estimate ` +
+          'is too high for some models.'
+        : undefined;
+
     return {
       catalogId,
       alreadyInstalled: false,
       canPull: true,
+      ...(warning ? { warning } : {}),
       requiredDiskMb,
       requiredMemoryMb,
       availableDiskMb,
@@ -214,6 +265,9 @@ export class ModelPullerService {
       return { catalogId, status: 'in_progress' };
     }
 
+    if (evaluation.warning) {
+      this.logger.warn(`[ModelPuller] ${catalogId}: ${evaluation.warning}`);
+    }
     this.pullActiveIds.add(catalogId);
     this.pullQueue.push(catalogId);
     void this.drainPullQueue();
