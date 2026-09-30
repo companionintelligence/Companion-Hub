@@ -5,7 +5,7 @@
  * grow its own checks without this file learning about them.
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import path, { join } from 'node:path';
 import { runBridgeDoctorSection } from '../bridge-diagnostics-cli.js';
 import { parseEnvFile } from '../env-file.js';
@@ -23,13 +23,13 @@ import { fetchHubClaimStatus, HubClaimNoDeviceKey, type HubClaimStatus } from '.
 import { fetchRegistrationPhase, RegistrationPhaseRouteMissing, type RegistrationPhaseResponse } from './register-hub.js';
 import { run, runCapture } from './cli-proc.js';
 import { confirmDestructiveAction } from './cli-prompt.js';
-import { checkDockerAvailable, requireRepoRoot } from './cli-repo-context.js';
+import { checkDockerAvailable, isHubRepoRoot, requireRepoRoot } from './cli-repo-context.js';
 import { BASE_COMMAND, type HubEnv } from './cli-types.js';
-import { bold, cliFail, cliOk, cliWarn, colorize, dim, printMessageBox, STEP_ICONS } from './cli-ui.js';
+import { bold, cliFail, cliOk, cliWarn, colorize, dim, printMessageBox, STEP_ICONS, type Tone } from './cli-ui.js';
 import { runDeviceIdDoctorSection } from './device-id-doctor.js';
 import { cliUpdateInstructions, gatherSkew, readStackBuild, type SkewSnapshot } from './cli-version-skew.js';
 import { inspectImagePin, type PinReport } from './cli-image-pin.js';
-import { discoverComposeIdentity } from './compose-discovery.js';
+import { discoverComposeIdentity, HUB_CONTAINER_NAMES } from './compose-discovery.js';
 import { composeArgsForContext, envOverridesForContext, type HubContext, requireRepoOrApplianceContext, resolveHubContext } from './hub-context.js';
 import { resolveRootFolderHost } from './paths.js';
 
@@ -265,12 +265,77 @@ export function runImagePinDoctorSection(fallbackEnvFile: string): { lines: stri
   return describeImagePinSection(pin.report, pin.envFile);
 }
 
+/** Where the running Hub container came from. */
+export interface RunningHubOrigin {
+  /** `com.docker.compose.project.working_dir`; null for a container compose did not create. */
+  workingDir: string | null;
+  /** Whether that folder is a CI-Hub checkout, which decides where doctor has to run to check it. */
+  workingDirIsCheckout: boolean;
+}
+
+/**
+ * The box that names the Hub doctor checks from inside a checkout.
+ *
+ * The file checks read the checkout, while the live checks reach whatever runs under the fixed
+ * container names. When that is a Hub started from another folder, the report described two Hubs as
+ * one and never said so (CI-Hub#1697). `running` is null when no Hub runs or Docker cannot say.
+ */
+export function describeCheckoutTarget(checkoutRoot: string, running: RunningHubOrigin | null): { title: string; lines: string[]; tone: Tone } {
+  const title = 'Targeting checkout';
+  const lines = ['CI-Hub checkout here — operating on this checkout:', dim(checkoutRoot)];
+  const otherFolder = running?.workingDir && path.resolve(running.workingDir) !== path.resolve(checkoutRoot) ? running.workingDir : null;
+  if (!otherFolder) return { title, lines, tone: 'cyan' };
+  return {
+    title,
+    lines: [
+      ...lines,
+      'The running Hub was started from another folder:',
+      dim(otherFolder),
+      'File checks, such as env file and root folder, describe this checkout.',
+      'Live checks, such as operator, registration, and bridge, reach that Hub.',
+      running?.workingDirIsCheckout
+        ? `To check that Hub, run ${BASE_COMMAND} doctor in that checkout.`
+        : `To check that Hub, run ${BASE_COMMAND} doctor from outside this checkout.`,
+    ],
+    tone: 'yellow',
+  };
+}
+
+/** Symlinks resolved, so one folder reached by two paths compares equal; a path that is gone stays as given. */
+function realPathOrSelf(dir: string): string {
+  try {
+    return realpathSync(dir);
+  } catch {
+    return dir;
+  }
+}
+
+/** Impure wrapper: asks Docker for the running Hub container. Null when none runs or Docker cannot be asked. */
+export function readRunningHubOrigin(): RunningHubOrigin | null {
+  const result = runCapture('docker', [
+    'ps',
+    '--filter',
+    'status=running',
+    ...HUB_CONTAINER_NAMES.flatMap((name) => ['--filter', `name=^/${name}$`]),
+    '--format',
+    '{{.Names}}\t{{.Label "com.docker.compose.project.working_dir"}}',
+  ]);
+  if (!result.ok) return null;
+  const [container, label] = (result.stdout.split('\n').find(Boolean) ?? '').split('\t');
+  if (!container?.trim()) return null;
+  const workingDir = label?.trim() ? realPathOrSelf(label.trim()) : null;
+  return { workingDir, workingDirIsCheckout: workingDir ? isHubRepoRoot(workingDir) : false };
+}
+
 export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolean }) {
   const ctx = resolveHubContext(env);
   if (ctx.appliance) {
     requireRepoOrApplianceContext('cihub doctor', 'allow-missing');
   } else {
     requireRepoRoot('cihub doctor');
+    // Outside a checkout, requireRepoOrApplianceContext already names the data dir it targets.
+    const target = describeCheckoutTarget(realPathOrSelf(ctx.cwd), readRunningHubOrigin());
+    printMessageBox(target.title, target.lines, target.tone);
   }
   const resolvePath = (p: string) => (path.isAbsolute(p) ? p : join(process.cwd(), p));
   const envFileName = ctx.envFile;

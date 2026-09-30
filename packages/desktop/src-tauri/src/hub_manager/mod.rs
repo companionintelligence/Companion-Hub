@@ -494,8 +494,47 @@ pub struct StartupProgress {
 
 /// Get the Hub data directory (platform-specific)
 pub fn get_hub_data_dir() -> PathBuf {
-    let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
-    base.join("companion-hub")
+    #[cfg(target_os = "linux")]
+    let base = dirs::home_dir()
+        .map(|home| {
+            linux_data_home(
+                std::env::var_os("XDG_DATA_HOME").as_deref().map(Path::new),
+                std::env::var("SNAP_NAME").ok().as_deref(),
+                &home,
+            )
+        })
+        .or_else(dirs::data_dir);
+    #[cfg(not(target_os = "linux"))]
+    let base = dirs::data_dir();
+    base.unwrap_or_else(|| PathBuf::from("."))
+        .join("companion-hub")
+}
+
+/// `XDG_DATA_HOME` when it is absolute, as `dirs::data_dir()` reads it, else `~/.local/share`,
+/// ignoring a value another snap set: a terminal inside a snap app, such as VS Code from the Snap
+/// Store, points it at the app's own `~/snap/<name>/<rev>/.local/share`. Same rule as
+/// `usableXdgDataHome` in `scripts/lib/paths.ts`, so `cihub` finds the same folder.
+#[cfg(target_os = "linux")]
+fn linux_data_home(xdg_data_home: Option<&Path>, snap_name: Option<&str>, home: &Path) -> PathBuf {
+    const OWN_SNAP_NAME: &str = "companion-hub";
+    let other_snap_running = snap_name
+        .map(str::trim)
+        .is_some_and(|name| !name.is_empty() && name != OWN_SNAP_NAME);
+    // `<name>_<key>` is a parallel install of the snap `<name>`.
+    let other_snaps_folder = |path: &Path| {
+        path.strip_prefix(home.join("snap"))
+            .ok()
+            .and_then(|rest| rest.iter().next())
+            .is_some_and(|folder| {
+                folder.to_str().and_then(|name| name.split('_').next()) != Some(OWN_SNAP_NAME)
+            })
+    };
+    match xdg_data_home {
+        Some(path) if path.is_absolute() && !other_snap_running && !other_snaps_folder(path) => {
+            path.to_path_buf()
+        }
+        _ => home.join(".local/share"),
+    }
 }
 
 /// Whether the WebView2 disk cache should be reconciled for `current_version`.

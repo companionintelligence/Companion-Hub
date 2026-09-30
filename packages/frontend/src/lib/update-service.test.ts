@@ -7,13 +7,13 @@ import {
   isTrustedDownloadUrl,
   performStackUpdate,
   performUpdate,
-  platformManifestKey,
   requiresManualDesktopUpdate,
 } from '@/lib/update-service';
-import { sdkOk } from '@/tests/sdk-mock-helpers';
+import { sdkFail, sdkOk } from '@/tests/sdk-mock-helpers';
 
-const { mockSdkPerformUpdate } = vi.hoisted(() => ({
+const { mockSdkPerformUpdate, mockGetDesktopRelease } = vi.hoisted(() => ({
   mockSdkPerformUpdate: vi.fn(),
+  mockGetDesktopRelease: vi.fn(),
 }));
 
 vi.mock('@/api-client/sdk.gen', async (importOriginal) => {
@@ -21,6 +21,7 @@ vi.mock('@/api-client/sdk.gen', async (importOriginal) => {
   return {
     ...actual,
     performUpdate: (...args: unknown[]) => mockSdkPerformUpdate(...args),
+    getDesktopRelease: (...args: unknown[]) => mockGetDesktopRelease(...args),
   };
 });
 
@@ -42,12 +43,31 @@ vi.mock('@/lib/helpers/open-external', () => ({
   openExternal: (...args: unknown[]) => mockOpenExternal(...args),
 }));
 
+const jsdomUserAgent = navigator.userAgent;
+const MAC_SAFARI_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15';
+const MAC_DMG_URL = 'https://dl.ci.computer/v0.2.77/macos/arm/Companion%20Hub_0.2.77_aarch64.dmg';
+const MAC_CHROME_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
+
+function setBrowser(userAgent: string, maxTouchPoints = 0) {
+  Object.defineProperty(window.navigator, 'userAgent', { value: userAgent, configurable: true });
+  Object.defineProperty(window.navigator, 'maxTouchPoints', { value: maxTouchPoints, configurable: true });
+}
+
+/** Chromium's client hints; `architecture` is what it reports for the CPU, or the error it refuses with. */
+function setClientHints(architecture: string | Error) {
+  const getHighEntropyValues = vi.fn(() => (architecture instanceof Error ? Promise.reject(architecture) : Promise.resolve({ architecture })));
+  Object.defineProperty(window.navigator, 'userAgentData', { value: { getHighEntropyValues }, configurable: true });
+}
+
 describe('update-service', () => {
   afterEach(() => {
     vi.clearAllMocks();
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    Object.defineProperty(window.navigator, 'userAgent', { value: jsdomUserAgent, configurable: true });
+    delete (window.navigator as { maxTouchPoints?: number }).maxTouchPoints;
+    delete (window.navigator as { userAgentData?: unknown }).userAgentData;
   });
 
   beforeEach(() => {
@@ -110,6 +130,7 @@ describe('update-service', () => {
       manualDownload: true,
     });
     expect(mockInvoke).toHaveBeenCalledWith('check_desktop_update_command');
+    expect(mockGetDesktopRelease).not.toHaveBeenCalled();
   });
 
   it('falls back to the fetch path when the native tauri update check fails', async () => {
@@ -150,6 +171,130 @@ describe('update-service', () => {
       manualDownload: true,
     });
     expect(mockInvoke).toHaveBeenCalledWith('check_desktop_update_command');
+    expect(mockGetDesktopRelease).not.toHaveBeenCalled();
+  });
+
+  describe('in a browser', () => {
+    // What a page sees when it reads a download server that sends no CORS headers.
+    const corsBlockedFetch = vi.fn(() => Promise.reject(new TypeError('Failed to fetch')));
+
+    beforeEach(() => {
+      setBrowser(MAC_SAFARI_UA);
+      vi.stubGlobal('fetch', corsBlockedFetch);
+    });
+
+    it('asks the Hub for the release instead of reading the download server', async () => {
+      mockGetDesktopRelease.mockResolvedValue(sdkOk({ latestVersion: 'v0.2.77', downloadUrl: MAC_DMG_URL }));
+
+      await expect(checkForUpdates()).resolves.toEqual({
+        currentVersion: '0.2.77',
+        latestVersion: '0.2.77',
+        downloadUrl: MAC_DMG_URL,
+        updateAvailable: false,
+        platform: 'macos',
+        manualDownload: true,
+      });
+      expect(mockGetDesktopRelease).toHaveBeenCalledWith({ query: { environment: 'production', platform: 'macos', arch: 'aarch64' } });
+      expect(corsBlockedFetch).not.toHaveBeenCalled();
+    });
+
+    it('drops an installer URL this page does not trust', async () => {
+      vi.stubEnv('CI_HUB_ENVIRONMENT', 'dev');
+      mockGetDesktopRelease.mockResolvedValue(sdkOk({ latestVersion: '0.2.77', downloadUrl: MAC_DMG_URL }));
+
+      await expect(checkForUpdates()).resolves.toMatchObject({ latestVersion: '0.2.77', downloadUrl: '' });
+      expect(mockGetDesktopRelease).toHaveBeenCalledWith({ query: { environment: 'dev', platform: 'macos', arch: 'aarch64' } });
+    });
+
+    it.each([
+      ['the Hub found no release', () => sdkOk({ latestVersion: null, downloadUrl: null })],
+      ['the Hub request fails', () => sdkFail(500)],
+    ])('reports no update when %s', async (_case, response) => {
+      mockGetDesktopRelease.mockResolvedValue(response());
+
+      await expect(checkForUpdates()).resolves.toBeNull();
+      expect(mockGetDesktopRelease).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      [
+        'Windows',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+        { platform: 'windows', arch: 'x86_64' },
+        'https://dl.ci.computer/v0.2.77/windows/x64/Companion%20Hub_0.2.77_x64-setup.exe',
+      ],
+      ['macOS', MAC_SAFARI_UA, { platform: 'macos', arch: 'aarch64' }, MAC_DMG_URL],
+      [
+        'Linux',
+        'Mozilla/5.0 (X11; Linux x86_64; rv:143.0) Gecko/20100101 Firefox/143.0',
+        { platform: 'linux', arch: 'x86_64' },
+        'https://dl.ci.computer/v0.2.77/linux/deb/x64/Companion%20Hub_0.2.77_amd64.deb',
+      ],
+    ])('offers the %s installer on a desktop browser', async (_os, userAgent, target, downloadUrl) => {
+      setBrowser(userAgent);
+      mockGetDesktopRelease.mockResolvedValue(sdkOk({ latestVersion: '0.2.77', downloadUrl }));
+
+      await expect(checkForUpdates()).resolves.toMatchObject({ latestVersion: '0.2.77', downloadUrl, platform: target.platform });
+      expect(mockGetDesktopRelease).toHaveBeenCalledWith({ query: { environment: 'production', ...target } });
+    });
+
+    // Chrome's user agent says "Intel Mac" on Apple silicon too; its client hints tell the two apart.
+    it.each([
+      ['an Intel Mac', 'x86', 'x86_64', 'https://dl.ci.computer/v0.2.77/macos/intel/Companion%20Hub_0.2.77_x64.dmg'],
+      ['an Apple silicon Mac', 'arm', 'aarch64', MAC_DMG_URL],
+    ])('asks for the installer that runs on %s when Chrome reports its CPU', async (_mac, architecture, arch, downloadUrl) => {
+      setBrowser(MAC_CHROME_UA);
+      setClientHints(architecture);
+      mockGetDesktopRelease.mockResolvedValue(sdkOk({ latestVersion: '0.2.77', downloadUrl }));
+
+      await expect(checkForUpdates()).resolves.toMatchObject({ latestVersion: '0.2.77', downloadUrl, platform: 'macos' });
+      expect(mockGetDesktopRelease).toHaveBeenCalledWith({ query: { environment: 'production', platform: 'macos', arch } });
+    });
+
+    it('asks for the Windows on Arm installer when Chrome reports an Arm CPU', async () => {
+      setBrowser('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36');
+      setClientHints('arm');
+      mockGetDesktopRelease.mockResolvedValue(sdkOk({ latestVersion: '0.2.77', downloadUrl: null }));
+
+      await checkForUpdates();
+      expect(mockGetDesktopRelease).toHaveBeenCalledWith({ query: { environment: 'production', platform: 'windows', arch: 'aarch64' } });
+    });
+
+    it('goes by the user agent when the browser refuses the client hint', async () => {
+      setBrowser(MAC_CHROME_UA);
+      setClientHints(new Error('NotAllowedError'));
+      mockGetDesktopRelease.mockResolvedValue(sdkOk({ latestVersion: '0.2.77', downloadUrl: MAC_DMG_URL }));
+
+      await checkForUpdates();
+      expect(mockGetDesktopRelease).toHaveBeenCalledWith({ query: { environment: 'production', platform: 'macos', arch: 'aarch64' } });
+    });
+
+    it.each([
+      [
+        'an iPhone',
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+        5,
+      ],
+      [
+        'an Android phone',
+        'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36',
+        5,
+      ],
+      [
+        'an iPad',
+        'Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+        5,
+      ],
+      // iPadOS Safari asks for desktop sites by default, so only the touch points give it away.
+      ['an iPad that reports itself as a Mac', MAC_SAFARI_UA, 5],
+    ])('offers %s no installer and does not ask the Hub', async (_device, userAgent, maxTouchPoints) => {
+      setBrowser(userAgent, maxTouchPoints);
+      mockGetDesktopRelease.mockResolvedValue(sdkOk({ latestVersion: '0.2.77', downloadUrl: MAC_DMG_URL }));
+
+      await expect(checkForUpdates()).resolves.toBeNull();
+      expect(mockGetDesktopRelease).not.toHaveBeenCalled();
+      expect(corsBlockedFetch).not.toHaveBeenCalled();
+    });
   });
 
   it('accepts dl.ci.computer HTTPS URLs for production builds', () => {
@@ -199,21 +344,6 @@ describe('update-service', () => {
 
     it('returns false for invalid semver', () => {
       expect(isStackUpdateAvailable('nightly', '1.1.0')).toBe(false);
-    });
-  });
-
-  describe('platformManifestKey', () => {
-    it('maps all release-matrix platform/arch pairs', () => {
-      expect(platformManifestKey('macos', 'aarch64')).toBe('darwin-aarch64');
-      expect(platformManifestKey('macos', 'x86_64')).toBe('darwin-x86_64');
-      expect(platformManifestKey('windows', 'aarch64')).toBe('windows-aarch64');
-      expect(platformManifestKey('windows', 'x86_64')).toBe('windows-x86_64');
-      expect(platformManifestKey('linux', 'aarch64')).toBe('linux-aarch64');
-      expect(platformManifestKey('linux', 'x86_64')).toBe('linux-x86_64');
-    });
-
-    it('returns null for unknown platforms', () => {
-      expect(platformManifestKey('freebsd', 'x86_64')).toBeNull();
     });
   });
 

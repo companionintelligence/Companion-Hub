@@ -1861,6 +1861,12 @@ cihub uninstall [--yes]                # full machine cleanup of CI-Hub runtime 
 `reset` prints the apps and containers it will remove before it asks; `reset --dry-run` prints
 that list and the host data it would delete, then stops. See [RESET_RUNBOOK.md](RESET_RUNBOOK.md).
 
+`doctor` first names the Hub it checks: the checkout it runs in, or, outside a checkout, the
+installed Hub's data folder. Inside a checkout, the file checks read the checkout, while the live
+checks, such as operator, registration, and Docker bridge, reach whichever Hub runs as `ci-hub`. If
+that Hub was started from another folder, a yellow box names the folder. To check the installed Hub,
+run `cihub doctor` from outside the checkout.
+
 `doctor` also fails on a `DEVICE_ID` copied from another machine: a machine-ID-shaped value in the env
 file that is not this host's `/etc/machine-id`. The Hub refuses to pair with Portal under such an ID,
 and `register` stops before it asks for a pairing code. The fix differs for a Hub that is already
@@ -2021,3 +2027,8 @@ and `status --write-status-file` ignore it.
 
 Run outside a CI-Hub checkout (a packaged install), `up`/`down`/`reset`/`clean` infer `prod` and
 target the canonical desktop data dir, and any `[env]` argument is ignored.
+
+On Linux the canonical data dir is `$XDG_DATA_HOME/companion-hub`, or `~/.local/share/companion-hub`
+when `XDG_DATA_HOME` is unset. `cihub` and the desktop app ignore an `XDG_DATA_HOME` set by another
+snap: a terminal inside a snap app, such as VS Code installed from the Snap Store, points it at the
+app's own folder under `~/snap/`. For `cihub`, `CI_HUB_DATA_DIR` overrides both.

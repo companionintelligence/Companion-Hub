@@ -7,6 +7,12 @@
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
       "outputs": ["dist/"]
     },
+    "frontend#build": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", ".env*", "$TURBO_ROOT$/.env*"],
+      "env": ["CI_CLOUD_URL", "CI_HUB_VERSION", "CI_HUB_IMAGE", "CI_HUB_ENVIRONMENT"],
+      "outputs": ["dist/"]
+    },
     "desktop#build": {
       "dependsOn": ["frontend#build", "^build"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
@@ -25,6 +31,12 @@
     "bundle": {
       "dependsOn": ["^bundle"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
+      "outputs": ["dist/"]
+    },
+    "frontend#bundle": {
+      "dependsOn": ["^bundle"],
+      "inputs": ["$TURBO_DEFAULT$", ".env*", "$TURBO_ROOT$/.env*"],
+      "env": ["CI_CLOUD_URL", "CI_HUB_VERSION", "CI_HUB_IMAGE", "CI_HUB_ENVIRONMENT"],
       "outputs": ["dist/"]
     },
     "@ci-hub/common#bundle": {

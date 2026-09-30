@@ -159,3 +159,27 @@ fn restricting_a_missing_file_is_a_no_op() {
     let dir = tempfile::tempdir().expect("tempdir");
     assert_eq!(restrict_private_state_file(&dir.path().join("seed")), None);
 }
+
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn docker_permission_repair_leaves_the_update_listener_token_alone() {
+    let script = bind_mount_heal_script(1000, 1000, &["update-listener.token"]);
+
+    let walk = "find /mnt ! -path '/mnt/update-listener.token'";
+    assert!(script.contains(&format!("{walk} -exec chown -h 1000:1000 {{}} +")));
+    assert!(script.contains(&format!(
+        "{walk} ! -type l -exec chmod u+rwX,g+rwX,o+rwX {{}} +"
+    )));
+    // Nothing recursive that would reach the token.
+    assert!(!script.contains(" -R "));
+}
+
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn docker_permission_repair_with_nothing_to_keep_is_the_recursive_one() {
+    assert_eq!(
+        bind_mount_heal_script(1000, 1000, &[]),
+        "chown -R 1000:1000 /mnt 2>/dev/null || true; \
+         chmod -R u+rwX,g+rwX,o+rwX /mnt 2>/dev/null || chmod -R a+rwX /mnt 2>/dev/null || true"
+    );
+}

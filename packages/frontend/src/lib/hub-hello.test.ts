@@ -10,7 +10,16 @@ describe('decideHubHello', () => {
   });
 
   it('is quiet when nothing is pending and the bundle matches the Hub', () => {
-    expect(decideHubHello({ helloVersion: 'v0.2.72', bundleVersion: '0.2.72', pending: null, sameOriginBundle: true, now: NOW })).toEqual({
+    expect(
+      decideHubHello({
+        helloVersion: 'v0.2.72',
+        helloBuildVersion: 'v0.2.72',
+        bundleVersion: '0.2.72',
+        pending: null,
+        sameOriginBundle: true,
+        now: NOW,
+      }),
+    ).toEqual({
       kind: 'none',
     });
   });
@@ -56,13 +65,87 @@ describe('decideHubHello', () => {
   });
 
   it('flags a stale same-origin bundle, and never a cross-origin one', () => {
-    expect(decideHubHello({ helloVersion: '0.2.72', bundleVersion: '0.2.71', pending: null, sameOriginBundle: true, now: NOW })).toEqual({
+    expect(
+      decideHubHello({
+        helloVersion: '0.2.72',
+        helloBuildVersion: '0.2.72',
+        bundleVersion: '0.2.71',
+        pending: null,
+        sameOriginBundle: true,
+        now: NOW,
+      }),
+    ).toEqual({
       kind: 'bundle_stale',
       version: '0.2.72',
     });
-    expect(decideHubHello({ helloVersion: '0.2.72', bundleVersion: '0.2.71', pending: null, sameOriginBundle: false, now: NOW })).toEqual({
+    expect(
+      decideHubHello({
+        helloVersion: '0.2.72',
+        helloBuildVersion: '0.2.72',
+        bundleVersion: '0.2.71',
+        pending: null,
+        sameOriginBundle: false,
+        now: NOW,
+      }),
+    ).toEqual({
       kind: 'none',
     });
+  });
+
+  // Image builds give the bundle version and the build stamp the same value; `version` comes from the
+  // install's env file. Comparing the bundle with `version` would reload every new tab on a channel
+  // image and on any install whose env file names another release.
+  it('leaves a channel image alone, whose bundle and stamp both name the channel', () => {
+    expect(
+      decideHubHello({ helloVersion: '0.2.77', helloBuildVersion: 'dev', bundleVersion: 'dev', pending: null, sameOriginBundle: true, now: NOW }),
+    ).toEqual({
+      kind: 'none',
+    });
+  });
+
+  it('leaves a tab alone when only the env file names another version', () => {
+    expect(
+      decideHubHello({
+        helloVersion: '0.2.75',
+        helloBuildVersion: '0.2.77',
+        bundleVersion: '0.2.77',
+        pending: null,
+        sameOriginBundle: true,
+        now: NOW,
+      }),
+    ).toEqual({ kind: 'none' });
+  });
+
+  it('flags a bundle built by another image, whatever the env file says', () => {
+    expect(
+      decideHubHello({
+        helloVersion: '0.2.78',
+        helloBuildVersion: '0.2.78',
+        bundleVersion: '0.2.77',
+        pending: null,
+        sameOriginBundle: true,
+        now: NOW,
+      }),
+    ).toEqual({ kind: 'bundle_stale', version: '0.2.78' });
+    expect(
+      decideHubHello({
+        helloVersion: '0.2.75',
+        helloBuildVersion: '0.2.78',
+        bundleVersion: '0.2.77',
+        pending: null,
+        sameOriginBundle: true,
+        now: NOW,
+      }),
+    ).toEqual({ kind: 'bundle_stale', version: '0.2.78' });
+  });
+
+  it('never flags a stale bundle when the Hub sends no build stamp', () => {
+    expect(decideHubHello({ helloVersion: '0.2.78', bundleVersion: '0.2.77', pending: null, sameOriginBundle: true, now: NOW })).toEqual({
+      kind: 'none',
+    });
+    expect(
+      decideHubHello({ helloVersion: '0.2.78', helloBuildVersion: null, bundleVersion: '0.2.77', pending: null, sameOriginBundle: true, now: NOW }),
+    ).toEqual({ kind: 'none' });
   });
 });
 
@@ -117,5 +200,21 @@ describe('applyHubHello', () => {
     expect(isStackUpdatePending()).toBe(false);
     expect(effects.reload).not.toHaveBeenCalled();
     unsubscribe();
+  });
+
+  it('reloads a stale tab once per image version, even when the env file never changes', () => {
+    const effects = { invalidateVersion: vi.fn(), reload: vi.fn() };
+
+    applyHubHello('0.2.75', { bundleVersion: '0.2.77', helloBuildVersion: '0.2.78', sameOriginBundle: true, now: NOW }, effects);
+    expect(effects.reload).toHaveBeenCalledTimes(1);
+
+    // The reloaded page's own stream greets with the same image: no loop.
+    applyHubHello('0.2.75', { bundleVersion: '0.2.77', helloBuildVersion: '0.2.78', sameOriginBundle: true, now: NOW }, effects);
+    expect(effects.reload).toHaveBeenCalledTimes(1);
+
+    // A later update in the same tab session is a new image, so the tab reloads again.
+    applyHubHello('0.2.75', { bundleVersion: '0.2.78', helloBuildVersion: '0.2.79', sameOriginBundle: true, now: NOW }, effects);
+    expect(effects.reload).toHaveBeenCalledTimes(2);
+    expect(effects.invalidateVersion).not.toHaveBeenCalled();
   });
 });

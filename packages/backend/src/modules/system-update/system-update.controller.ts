@@ -1,11 +1,17 @@
-import { BadRequestException, Controller, Get, Post, UseGuards, Body, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Post, Query, UseGuards, Body } from '@nestjs/common';
+import { ApiResponse } from '@nestjs/swagger';
 import { AuthGuard } from '../auth/auth.guard';
+import { DesktopReleaseService } from './desktop-release.service';
+import { DesktopReleaseDto, DesktopReleaseQueryDto } from './dto/desktop-release.dto';
 import { HUB_VERSION_TAG_MESSAGE, isHubVersionTag } from './hub-deployment';
 import { SystemUpdateService } from './system-update.service';
 
 @Controller('system/update')
 export class SystemUpdateController {
-  constructor(private readonly systemUpdateService: SystemUpdateService) {}
+  constructor(
+    private readonly systemUpdateService: SystemUpdateService,
+    private readonly desktopReleaseService: DesktopReleaseService,
+  ) {}
 
   @Get('check')
   @UseGuards(AuthGuard)
@@ -44,13 +50,11 @@ export class SystemUpdateController {
     return this.systemUpdateService.getHostListenerStatus();
   }
 
-  @Get('host-listener-token')
+  /** The newest desktop app and its installer for one platform, for a browser that cannot read the download servers. */
+  @Get('desktop-release')
   @UseGuards(AuthGuard)
-  getHostListenerToken() {
-    const token = this.systemUpdateService.getHostUpdateListenerToken();
-    if (!token) {
-      throw new NotFoundException('Host update listener not available');
-    }
-    return { token };
+  @ApiResponse({ type: DesktopReleaseDto })
+  async getDesktopRelease(@Query() query: DesktopReleaseQueryDto) {
+    return this.desktopReleaseService.getDesktopRelease(query);
   }
 }

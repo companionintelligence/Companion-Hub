@@ -136,7 +136,15 @@ vi.mock('../lib/cli-image-pin.js', async (importOriginal) => ({
   inspectImagePin: pinMocks.inspectImagePin,
 }));
 
-import { describeImagePinSection, describeRegistrationPhase, describeVersionSkewSection, doctorHub, uninstallHub } from '../lib/cli-doctor.js';
+import {
+  describeCheckoutTarget,
+  describeImagePinSection,
+  describeRegistrationPhase,
+  describeVersionSkewSection,
+  doctorHub,
+  readRunningHubOrigin,
+  uninstallHub,
+} from '../lib/cli-doctor.js';
 import { compareDeclaredToRunning, describePinDrift } from '../lib/cli-image-pin.js';
 import { classifyCliInstall, compareBuilds, describeSkew, type SkewSnapshot } from '../lib/cli-version-skew.js';
 
@@ -572,5 +580,139 @@ describe('Image pin', () => {
     await doctorHub('prod');
     expect(doctorText()).toContain('Image pin');
     expect(process.exitCode).toBe(1);
+  });
+});
+
+/**
+ * Which Hub doctor checks.
+ *
+ * Inside a checkout the file checks read the checkout, while the live checks reach whatever runs as
+ * `ci-hub`. On a machine that also has the desktop Hub installed, that is the installed Hub, and the
+ * report mixed the two without saying so (CI-Hub#1697).
+ */
+describe('doctor target', () => {
+  const doctorText = () => (log.mock.calls as unknown[][]).map((call) => stripAnsi(String(call[0]))).join('\n');
+  const checkout = '/home/ci/src/CI-Hub';
+  const installed = '/home/ci/.local/share/companion-hub';
+  /** `docker ps` answers with this; every other docker call keeps the suite default. */
+  const dockerPs = (answer: { ok: boolean; stdout: string }) =>
+    mocks.runCapture.mockImplementation((...args: unknown[]) =>
+      (args[1] as string[])[0] === 'ps' ? answer : { stdout: 'Docker Compose version v2.0.0', ok: true },
+    );
+
+  describe('describeCheckoutTarget', () => {
+    it('names the checkout when no Hub is running', () => {
+      const target = describeCheckoutTarget(checkout, null);
+      const text = stripAnsi(target.lines.join('\n'));
+      expect(target.title).toBe('Targeting checkout');
+      expect(target.tone).toBe('cyan');
+      expect(text).toContain(checkout);
+      expect(text).not.toContain('another folder');
+    });
+
+    it('does not warn when the running Hub was started from this checkout', () => {
+      const target = describeCheckoutTarget(checkout, { workingDir: `${checkout}/`, workingDirIsCheckout: true });
+      expect(target.tone).toBe('cyan');
+      expect(stripAnsi(target.lines.join('\n'))).not.toContain('another folder');
+    });
+
+    it('does not warn about a running Hub whose folder compose did not record', () => {
+      const target = describeCheckoutTarget(checkout, { workingDir: null, workingDirIsCheckout: false });
+      expect(target.tone).toBe('cyan');
+      expect(stripAnsi(target.lines.join('\n'))).not.toContain('another folder');
+    });
+
+    it('warns that the live checks reach an installed Hub, and says to run doctor outside the checkout', () => {
+      const target = describeCheckoutTarget(checkout, { workingDir: installed, workingDirIsCheckout: false });
+      const text = stripAnsi(target.lines.join('\n'));
+      expect(target.tone).toBe('yellow');
+      expect(text).toContain(checkout);
+      expect(text).toContain(`started from another folder:\n${installed}`);
+      expect(text).toContain('reach that Hub');
+      expect(text).toContain('run cihub doctor from outside this checkout');
+    });
+
+    it('says to run doctor in the other checkout when that is where the running Hub came from', () => {
+      const target = describeCheckoutTarget(checkout, { workingDir: '/home/ci/src/CI-Hub-other', workingDirIsCheckout: true });
+      const text = stripAnsi(target.lines.join('\n'));
+      expect(target.tone).toBe('yellow');
+      expect(text).toContain('/home/ci/src/CI-Hub-other');
+      expect(text).toContain('run cihub doctor in that checkout');
+    });
+  });
+
+  describe('readRunningHubOrigin', () => {
+    it('asks Docker only about a running Hub container, under either name', () => {
+      dockerPs({ ok: true, stdout: '' });
+      readRunningHubOrigin();
+      const args = (mocks.runCapture.mock.calls as unknown[][]).map((call) => call[1] as string[]).find((argv) => argv[0] === 'ps');
+      expect(args).toEqual(expect.arrayContaining(['status=running', 'name=^/ci-hub$', 'name=^/ci-os-hub$']));
+    });
+
+    it('returns nothing when Docker cannot be asked or no Hub is running', () => {
+      dockerPs({ ok: false, stdout: '' });
+      expect(readRunningHubOrigin()).toBeNull();
+      dockerPs({ ok: true, stdout: '' });
+      expect(readRunningHubOrigin()).toBeNull();
+    });
+
+    it('reads the folder compose started the Hub from', () => {
+      dockerPs({ ok: true, stdout: `ci-hub\t${installed}` });
+      expect(readRunningHubOrigin()).toEqual({ workingDir: installed, workingDirIsCheckout: false });
+    });
+
+    it('has no folder for a container compose did not create', () => {
+      dockerPs({ ok: true, stdout: 'ci-hub\t' });
+      expect(readRunningHubOrigin()).toEqual({ workingDir: null, workingDirIsCheckout: false });
+    });
+
+    it('recognises a folder that is a CI-Hub checkout', () => {
+      const other = mkdtempSync(join(tmpdir(), 'cihub-doctor-checkout-'));
+      try {
+        mkdirSync(join(other, 'scripts'));
+        writeFileSync(join(other, 'package.json'), JSON.stringify({ name: 'ci-hub' }));
+        dockerPs({ ok: true, stdout: `ci-hub\t${other}` });
+        expect(readRunningHubOrigin()).toMatchObject({ workingDirIsCheckout: true });
+      } finally {
+        rmSync(other, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('doctorHub', () => {
+    afterEach(() => {
+      mocks.hubContext.appliance = true;
+    });
+
+    it('prints the target before the report in a checkout, with the warning when the running Hub is elsewhere', async () => {
+      Object.assign(mocks.hubContext, { appliance: false, cwd: dataDir });
+      dockerPs({ ok: true, stdout: `ci-hub\t${installed}` });
+
+      await doctorHub('prod');
+
+      const text = doctorText();
+      expect(text).toContain('Targeting checkout');
+      expect(text).toMatch(/started from another folder:\s+\/home\/ci\/\.local\/share\/companion-hub\n/);
+      expect(text.indexOf('Targeting checkout')).toBeLessThan(text.indexOf('Hub doctor'));
+      // A warning, not a failure: the checks themselves are unchanged.
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('still names the checkout when Docker cannot say which Hub is running', async () => {
+      Object.assign(mocks.hubContext, { appliance: false, cwd: dataDir });
+      dockerPs({ ok: false, stdout: '' });
+
+      await doctorHub('prod');
+
+      const text = doctorText();
+      expect(text).toContain('Targeting checkout');
+      expect(text).not.toContain('another folder');
+    });
+
+    it('leaves the target box to the appliance notice outside a checkout', async () => {
+      dockerPs({ ok: true, stdout: `ci-hub\t${installed}` });
+      await doctorHub('prod');
+      expect(doctorText()).not.toContain('Targeting checkout');
+    });
   });
 });

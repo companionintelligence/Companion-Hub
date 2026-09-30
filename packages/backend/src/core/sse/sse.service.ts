@@ -4,12 +4,16 @@ import type { SSE, Topic } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { Observable, Subject, type Subscription, interval, merge } from 'rxjs';
 import { map, startWith } from 'rxjs/operators';
+import { resolveHubBuildInfo } from '../build-info/hub-build-info';
 import { ConfigurationService } from '../config/configuration.service';
 import { LoggerService } from '../logger/logger.service';
 
 @Injectable()
 export class SSEService implements OnApplicationShutdown {
   private cleanupSubscription: Subscription;
+
+  /** The image's build stamp, resolved as `GET /api/hub/build` resolves it; it cannot change while the process runs. */
+  private readonly buildVersion = resolveHubBuildInfo().version;
 
   constructor(
     private readonly logger: LoggerService,
@@ -98,9 +102,16 @@ export class SSEService implements OnApplicationShutdown {
    * that has just started has no subscribers to emit to — the clients are all mid-reconnect.
    */
   getAppEventsObservable(): Observable<MessageEvent> {
+    // `buildVersion` is the image stamp `GET /api/hub/build` serves, which image builds set to the
+    // page bundle's version, so a tab compares like with like. `version` stays the env file's, which
+    // the pending-update flow compares. An unstamped image sends no `buildVersion`.
     const hello: MessageEvent = {
       type: 'message',
-      data: JSON.stringify({ event: 'hub_hello', version: this.config.getConfig().version }),
+      data: JSON.stringify({
+        event: 'hub_hello',
+        version: this.config.getConfig().version,
+        ...(this.buildVersion ? { buildVersion: this.buildVersion } : {}),
+      } satisfies Extract<SSE, { topic: 'app' }>['data']),
     };
     return this.getTopicObservable('app').pipe(startWith(hello));
   }

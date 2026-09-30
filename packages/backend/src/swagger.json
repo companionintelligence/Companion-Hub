@@ -6199,13 +6199,54 @@
         ]
       }
     },
-    "/api/system/update/host-listener-token": {
+    "/api/system/update/desktop-release": {
       "get": {
-        "operationId": "getHostListenerToken",
-        "parameters": [],
+        "operationId": "getDesktopRelease",
+        "parameters": [
+          {
+            "name": "environment",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "platform",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "linux",
+                "macos",
+                "windows"
+              ]
+            }
+          },
+          {
+            "name": "arch",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "x86_64",
+                "aarch64"
+              ]
+            }
+          }
+        ],
         "responses": {
-          "200": {
-            "description": ""
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DesktopReleaseDto"
+                }
+              }
+            }
           }
         },
         "tags": [
@@ -16206,6 +16247,24 @@
         },
         "required": [
           "data"
+        ],
+        "additionalProperties": false
+      },
+      "DesktopReleaseDto": {
+        "type": "object",
+        "properties": {
+          "latestVersion": {
+            "nullable": true,
+            "type": "string"
+          },
+          "downloadUrl": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "latestVersion",
+          "downloadUrl"
         ],
         "additionalProperties": false
       },

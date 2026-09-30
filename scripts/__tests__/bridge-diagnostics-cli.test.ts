@@ -58,16 +58,33 @@ describe('bridge-diagnostics-cli', () => {
   });
 
   describe('resolveBridgeServices', () => {
-    it('falls back to stock ports when the env file has none', () => {
+    it('falls back to stock ports for the services the Hub dials when the env file has none', () => {
       expect(resolveBridgeServices('.env.prod')).toEqual([
         { label: 'Hub API (cloudflared origin)', port: 5002 },
         { label: 'Ollama', port: 11434 },
         { label: 'vLLM', port: 8000 },
-        { label: 'MTPLX', port: 8000 },
-        { label: 'Speculative inference', port: 8080 },
         { label: 'Lemonade', port: 13305 },
-        { label: 'Speculative inference', port: 8000 },
       ]);
+    });
+
+    // Regression (CI-Hub#1695): an unset DSPARK_URL fell back to 8080, which on a desktop Hub is
+    // Traefik's dashboard, and doctor failed a healthy Hub over an engine nobody had set up.
+    it('leaves out engines whose URL is unset or blank', () => {
+      parseEnvFile.mockReturnValue({ DSPARK_URL: '', MTPLX_URL: '   ' });
+      const labels = resolveBridgeServices('.env.prod').map((service) => service.label);
+      expect(labels).not.toContain('MTPLX');
+      expect(labels).not.toContain('Speculative inference');
+    });
+
+    it('checks the optional engines whose URL is set', () => {
+      parseEnvFile.mockReturnValue({
+        MTPLX_URL: 'http://host.docker.internal:8010',
+        SPECULATIVE_INFERENCE_URL: 'http://host.docker.internal:8020',
+      });
+      const services = resolveBridgeServices('.env.prod');
+      expect(services).toContainEqual({ label: 'MTPLX', port: 8010 });
+      expect(services).toContainEqual({ label: 'Speculative inference', port: 8020 });
+      expect(services).toHaveLength(6);
     });
 
     it('reads ports from the env file, including URL-shaped values', () => {
@@ -161,6 +178,29 @@ describe('bridge-diagnostics-cli', () => {
       expect(section.issueCount).toBe(0);
       expect(section.lines[0]).toContain('ok');
       expect(section.remediationCommands).toEqual([]);
+    });
+
+    // The desktop Hub as reported in CI-Hub#1695: Traefik publishes its dashboard on 8080, the host
+    // probe connects through docker-proxy, and the container probe is refused.
+    it("does not fail a healthy Hub over Traefik's dashboard port when no engine URL names it", async () => {
+      listeningHostPorts = new Set([5002, 11434, 8080]);
+      mockDocker({ ps: 'ci-hub', inspect: '172.18.0.7/16', exec: (script) => (script.includes('s.connect(8080,') ? 11 : 0) });
+
+      const section = await runBridgeDoctorSection('.env.prod');
+      expect(section.failureCount).toBe(0);
+      expect(section.issueCount).toBe(0);
+      expect(section.lines[0]).toContain('ok');
+      expect(section.lines.join('\n')).not.toContain('Speculative inference');
+    });
+
+    it('still checks a speculative inference server whose URL is set', async () => {
+      parseEnvFile.mockReturnValue({ DSPARK_URL: 'http://host.docker.internal:8080' });
+      listeningHostPorts = new Set([8080]);
+      mockDocker({ ps: 'ci-hub', inspect: '172.18.0.7/16', exec: () => 11 });
+
+      const section = await runBridgeDoctorSection('.env.prod');
+      expect(section.failureCount).toBe(1);
+      expect(section.lines.join('\n')).toContain('Speculative inference');
     });
 
     // The core case: the service answers on the host but not from the container.

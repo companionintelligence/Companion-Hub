@@ -28,7 +28,9 @@ vi.mock('node:fs', () => ({
     mkdirSync: vi.fn(),
     appendFileSync: vi.fn(),
     openSync: vi.fn(() => 3),
+    fstatSync: vi.fn(),
     closeSync: vi.fn(),
+    constants: { O_RDONLY: 0, O_NOFOLLOW: 0o400000, O_NONBLOCK: 0o4000 },
     promises: { writeFile: vi.fn() },
   },
 }));
@@ -77,6 +79,12 @@ function insideHubContainer(envContent: string) {
   }) as never);
 }
 
+/** The desktop listener token in state/, as the desktop app writes it: a small regular file. */
+function withListenerToken() {
+  vi.mocked(fs.openSync).mockImplementation(((target: unknown) => (String(target) === '/data/state/update-listener.token' ? 7 : 3)) as never);
+  vi.mocked(fs.fstatSync).mockImplementation(((fd: number) => ({ isFile: () => fd === 7, size: 32 })) as never);
+}
+
 describe('SystemUpdateService', () => {
   let service: SystemUpdateService;
   let mockRegistryService: { getTagsSinceWithHubFallback: ReturnType<typeof vi.fn> };
@@ -87,6 +95,8 @@ describe('SystemUpdateService', () => {
     vi.clearAllMocks();
     vi.mocked(fs.existsSync).mockReset().mockReturnValue(false);
     vi.mocked(fs.readFileSync).mockReset();
+    vi.mocked(fs.openSync).mockReset().mockReturnValue(3);
+    vi.mocked(fs.fstatSync).mockReset();
     vi.mocked(axios.get).mockRejectedValue(new Error('listener down'));
     vi.mocked(axios.post).mockRejectedValue(new Error('listener down'));
     mockLogger = { info: vi.fn(), debug: vi.fn(), error: vi.fn(), warn: vi.fn() };
@@ -150,7 +160,7 @@ describe('SystemUpdateService', () => {
 
     it('still offers that update when the desktop host listener will take it instead of compose', async () => {
       insideHubContainer(PINNED_ENV);
-      vi.mocked(fs.existsSync).mockReturnValue(true);
+      withListenerToken();
       vi.mocked(fs.readFileSync).mockImplementation(((target: unknown) =>
         String(target) === '/data/.env' ? PINNED_ENV : 'listener-token\n') as never);
       vi.mocked(axios.get).mockResolvedValue({ status: 200 });
@@ -333,7 +343,7 @@ describe('SystemUpdateService', () => {
 
     it('skips compose recreate when the host listener accepts the update', async () => {
       insideHubContainer(PINNED_ENV);
-      vi.mocked(fs.existsSync).mockReturnValue(true);
+      withListenerToken();
       vi.mocked(fs.readFileSync).mockImplementation(((target: unknown) =>
         String(target) === '/data/.env' ? PINNED_ENV : 'listener-token\n') as never);
       vi.mocked(axios.get).mockResolvedValue({ status: 200 });
@@ -356,7 +366,7 @@ describe('SystemUpdateService', () => {
       const container = core6Appliance(RELEASE_PIN);
       container.Config = { ...container.Config, Labels: { 'org.opencontainers.image.version': 'latest' } };
       insideHubContainer(PINNED_ENV);
-      vi.mocked(fs.existsSync).mockReturnValue(true);
+      withListenerToken();
       vi.mocked(fs.readFileSync).mockImplementation(((target: unknown) =>
         String(target) === '/data/.env' ? PINNED_ENV : 'listener-token\n') as never);
       vi.mocked(axios.get).mockResolvedValue({ status: 200 });
@@ -368,12 +378,13 @@ describe('SystemUpdateService', () => {
     });
 
     it('treats a probe timeout as an unavailable host listener', async () => {
-      vi.mocked(fs.existsSync).mockReturnValue(true);
+      withListenerToken();
       vi.mocked(fs.readFileSync).mockReturnValue('listener-token\n');
       vi.mocked(axios.get).mockRejectedValue(new Error('timeout'));
 
       await expect(service.probeHostListener()).resolves.toBe(false);
       await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+      expect(axios.get).toHaveBeenCalledWith(expect.stringMatching(/\/health$/), expect.anything());
     });
   });
 
@@ -463,18 +474,109 @@ describe('SystemUpdateService', () => {
     });
   });
 
-  describe('getHostUpdateListenerToken', () => {
-    it('should return token when token file exists', () => {
-      vi.mocked(fs.existsSync).mockReturnValue(true);
-      vi.mocked(fs.readFileSync).mockReturnValue('secret-token\n');
+  // The Hub container mounts the desktop data folder's `state/` at /data/state, never its root, so
+  // a token only at the root is invisible to a containerized Hub (#1694).
+  describe('getHostListenerStatus', () => {
+    const STATE_TOKEN = '/data/state/update-listener.token';
+    const ROOT_TOKEN = '/data/update-listener.token';
 
-      expect(service.getHostUpdateListenerToken()).toBe('secret-token');
+    const SYMLINK = '<symlink>';
+    const FOLDER = '<folder>';
+    const FIFO = '<fifo>';
+    /** The flags each path was opened with. */
+    const openFlags = new Map<string, number>();
+
+    /** Only these exist: each is a regular file holding that text, or stands in for a symlink or a folder. */
+    function withFiles(files: Record<string, string>) {
+      const openFiles = new Map<number, string>();
+      openFlags.clear();
+      vi.mocked(fs.openSync).mockImplementation(((target: unknown, flags: unknown) => {
+        openFlags.set(String(target), Number(flags));
+        const entry = files[String(target)];
+        if (entry === undefined) throw Object.assign(new Error(`ENOENT: ${String(target)}`), { code: 'ENOENT' });
+        // What the kernel does when O_NOFOLLOW meets a symlink.
+        if (entry === SYMLINK && Number(flags) & fs.constants.O_NOFOLLOW) throw Object.assign(new Error('ELOOP'), { code: 'ELOOP' });
+        const fd = 100 + openFiles.size;
+        openFiles.set(fd, String(target));
+        return fd;
+      }) as never);
+      vi.mocked(fs.fstatSync).mockImplementation(((fd: number) => {
+        const entry = files[openFiles.get(fd) ?? ''] ?? '';
+        const isFile = entry !== FOLDER && entry !== FIFO;
+        return { isFile: () => isFile, size: isFile ? Buffer.byteLength(entry) : 0 };
+      }) as never);
+      vi.mocked(fs.readFileSync).mockImplementation(((fd: unknown) => {
+        const entry = files[openFiles.get(Number(fd)) ?? ''];
+        if (entry === undefined || entry === FOLDER || entry === FIFO) throw new Error(`unexpected read of ${String(fd)}`);
+        return entry === SYMLINK ? 'a-secret-in-the-file-the-symlink-points-at\n' : entry;
+      }) as never);
+    }
+    const expectSentToken = (token: string) =>
+      expect(axios.get).toHaveBeenCalledWith(
+        expect.stringMatching(/\/health$/),
+        expect.objectContaining({ headers: { Authorization: `Bearer ${token}` } }),
+      );
+
+    beforeEach(() => {
+      vi.mocked(axios.get).mockResolvedValue({ status: 200 });
     });
 
-    it('should return null when token file is missing', () => {
-      vi.mocked(fs.existsSync).mockReturnValue(false);
+    it('reaches the listener with the token the desktop app keeps in state/', async () => {
+      withFiles({ [STATE_TOKEN]: 'state-token\n' });
 
-      expect(service.getHostUpdateListenerToken()).toBeNull();
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: true });
+      expectSentToken('state-token');
+    });
+
+    it('prefers state/ over a token an older desktop build left at the data folder root', async () => {
+      withFiles({ [STATE_TOKEN]: 'state-token\n', [ROOT_TOKEN]: 'legacy-token\n' });
+
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: true });
+      expectSentToken('state-token');
+    });
+
+    it('falls back to the data folder root, where older desktop builds wrote the token', async () => {
+      withFiles({ [ROOT_TOKEN]: 'legacy-token\n' });
+
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: true });
+      expectSentToken('legacy-token');
+    });
+
+    it('reports the listener unreachable, without calling it, when neither file exists', async () => {
+      withFiles({});
+
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+      expect(axios.get).not.toHaveBeenCalled();
+    });
+
+    // state/ is a host folder, and the Hub sends what it reads there to whoever answers on the
+    // listener port, so a symlink put in the token's place must not make it send another file.
+    it('does not follow a symlink in place of the token', async () => {
+      withFiles({ [STATE_TOKEN]: SYMLINK });
+
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+      expect(axios.get).not.toHaveBeenCalled();
+    });
+
+    // Opening a FIFO for reading waits for a writer, and this runs on the Hub's event loop.
+    it('does not wait on a FIFO in place of the token', async () => {
+      withFiles({ [STATE_TOKEN]: FIFO });
+
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+      expect((openFlags.get(STATE_TOKEN) ?? 0) & fs.constants.O_NONBLOCK).not.toBe(0);
+      expect(axios.get).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a folder', FOLDER],
+      ['more than one word', 'two words\n'],
+      ['far more than a token', `${'a'.repeat(2048)}\n`],
+      ['an empty file', '\n'],
+    ])('does not send %s as the token', async (_name, entry) => {
+      withFiles({ [STATE_TOKEN]: entry });
+
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+      expect(axios.get).not.toHaveBeenCalled();
     });
   });
 
