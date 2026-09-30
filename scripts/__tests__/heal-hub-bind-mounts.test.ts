@@ -32,6 +32,7 @@ vi.mock('node:fs', async () => {
 
 import { DATA_BEARING_BIND_MOUNT_DIRS, RECREATABLE_BIND_MOUNT_DIRS } from '../lib/bind-mounts';
 import {
+  bindMountHealScript,
   dockerBindMountPath,
   dockerSocketIsRootOnlyInsideContainers,
   ensureHubBindMountsWritable,
@@ -362,17 +363,22 @@ describe.skipIf(process.platform === 'win32')('credential files in state/ (setti
     const { internalRoot } = makeHubDataLayout(tmpRoot);
     const settingsPath = stateFile(internalRoot, 'settings.json', 0o600, '{"hubLocalKey":"k"}');
     const seedPath = stateFile(internalRoot, 'seed', 0o600, 'a'.repeat(64));
+    // The desktop app's update listener token, which the Hub only reads and the heal must not touch.
+    const tokenPath = stateFile(internalRoot, 'update-listener.token', 0o600, 'listener-token\n');
     execSyncMock.mockReturnValue('');
     let healed = false;
     let stateHealed = false;
     spawnSyncMock.mockImplementation((_cmd: string, args: string[] = []) => {
       const script = args[args.length - 1] ?? '';
       const mount = args[args.indexOf('-v') + 1] ?? '';
-      if (args.includes('0:0') && script.includes('chown -R')) {
-        // What `chmod -R u+rwX,g+rwX,o+rwX` does to the files in state/, when it is state/ being healed.
+      if (args.includes('0:0') && /chown -[Rh] /.test(script)) {
+        // What the heal's chmod does to the files in state/, when it is state/ being healed: every
+        // file the script does not walk around ends up world-writable.
         if (mount.startsWith(`${join(internalRoot, 'state')}:`)) {
-          chmodSync(settingsPath, 0o666);
-          chmodSync(seedPath, 0o666);
+          const kept = [...script.matchAll(/! -path '\/mnt\/([^']+)'/g)].map((match) => match[1]);
+          for (const file of [settingsPath, seedPath, tokenPath]) {
+            if (!kept.includes(path.basename(file))) chmodSync(file, 0o666);
+          }
           stateHealed = true;
         }
         healed = true;
@@ -387,6 +393,24 @@ describe.skipIf(process.platform === 'win32')('credential files in state/ (setti
     expect(stateHealed).toBe(true);
     expect(modeOf(settingsPath)).toBe(0o600);
     expect(modeOf(seedPath)).toBe(0o600);
+    expect(modeOf(tokenPath)).toBe(0o600);
+  });
+});
+
+describe('bindMountHealScript', () => {
+  it('is the recursive chown and chmod when nothing is kept', () => {
+    expect(bindMountHealScript(1000, 1000)).toBe(
+      'chown -R 1000:1000 /mnt 2>/dev/null || true; chmod -R u+rwX,g+rwX,o+rwX /mnt 2>/dev/null || chmod -R a+rwX /mnt 2>/dev/null || true',
+    );
+  });
+
+  it('walks around the files it keeps, and changes symlinks themselves, never their targets', () => {
+    const script = bindMountHealScript(1000, 1000, ['update-listener.token']);
+
+    const walk = "find /mnt ! -path '/mnt/update-listener.token'";
+    expect(script).toContain(`${walk} -exec chown -h 1000:1000 {} +`);
+    expect(script).toContain(`${walk} ! -type l -exec chmod u+rwX,g+rwX,o+rwX {} +`);
+    expect(script).not.toContain(' -R ');
   });
 });
 

@@ -202,6 +202,14 @@ export const STATE_FILES_NEED_WRITE = [
 ] as const;
 
 /**
+ * Files in state/ that the Docker heal leaves exactly as they are: the desktop app's update listener
+ * token (UPDATE_LISTENER_TOKEN_FILENAME in updater.rs). The Hub only reads it, and the listener
+ * trusts it only while it is the desktop user's own file that nobody else can read or write, so the
+ * heal's chown or chmod would shut the listener out.
+ */
+const STATE_FILES_THE_HEAL_KEEPS = ['update-listener.token'] as const;
+
+/**
  * The mode for the state files that hold credentials, which are exactly STATE_FILES_NEED_WRITE:
  * settings.json carries the host-local and Portal device keys, and `seed` derives JWT_SECRET and
  * every app's generated passwords. Owner read and write only, the mode the backend creates and
@@ -464,7 +472,21 @@ export function verifyContainerCanWriteFile(hostFilePath: string, uid: number, g
   return result?.status === 0;
 }
 
-export function healBindMountViaDocker(hostSubdir: string, uid: number, gid: number): void {
+/**
+ * The Docker heal's script: `uid:gid` owns everything on the mount, and everyone can read and write
+ * it. The files in `keep`, named relative to the mount, are left exactly as they are: the tree is
+ * walked with `find` instead, whose `chown -h` and skipped symlinks do what `-R` does for the rest.
+ * Mirrors `bind_mount_heal_script` in the desktop app's runtime_state.rs.
+ */
+export function bindMountHealScript(uid: number, gid: number, keep: readonly string[] = []): string {
+  if (keep.length === 0) {
+    return `chown -R ${uid}:${gid} /mnt 2>/dev/null || true; chmod -R u+rwX,g+rwX,o+rwX /mnt 2>/dev/null || chmod -R a+rwX /mnt 2>/dev/null || true`;
+  }
+  const walk = ['find /mnt', ...keep.map((file) => `! -path '/mnt/${file}'`)].join(' ');
+  return `${walk} -exec chown -h ${uid}:${gid} {} + 2>/dev/null || true; ${walk} ! -type l -exec chmod u+rwX,g+rwX,o+rwX {} + 2>/dev/null || ${walk} ! -type l -exec chmod a+rwX {} + 2>/dev/null || true`;
+}
+
+export function healBindMountViaDocker(hostSubdir: string, uid: number, gid: number, keep: readonly string[] = []): void {
   if (!existsSync(hostSubdir)) {
     throw new Error(`Cannot repair permissions: directory does not exist: ${hostSubdir}`);
   }
@@ -473,7 +495,7 @@ export function healBindMountViaDocker(hostSubdir: string, uid: number, gid: num
   }
 
   const mount = `${dockerBindMountPath(hostSubdir)}:/mnt:rw`;
-  const script = `chown -R ${uid}:${gid} /mnt 2>/dev/null || true; chmod -R u+rwX,g+rwX,o+rwX /mnt 2>/dev/null || chmod -R a+rwX /mnt 2>/dev/null || true`;
+  const script = bindMountHealScript(uid, gid, keep);
 
   const result = spawnSync('docker', ['run', '--rm', '--user', '0:0', '-v', mount, 'alpine:3.20', 'sh', '-c', script], {
     encoding: 'utf8',
@@ -892,7 +914,7 @@ export function ensureHubBindMountsWritable(rootFolderHost: string, options: Ens
       containerCanWriteCache = verifyContainerCanWriteDir(cacheDir, identity.uid, identity.gid);
     }
     if (!containerCanWriteSettings) {
-      healBindMountViaDocker(stateDir, effective.uid, effective.gid);
+      healBindMountViaDocker(stateDir, effective.uid, effective.gid, STATE_FILES_THE_HEAL_KEEPS);
       // The heal's `chmod -R a+rwX` just made the credential files world-writable. Where its chown
       // left them with the owner the Hub reads them as, they come straight back to owner-only,
       // before the check below confirms the container can still write them.
