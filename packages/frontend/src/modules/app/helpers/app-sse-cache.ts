@@ -27,6 +27,8 @@ export type AppSsePayload = {
   event: string;
   /** `hub_hello` only: the running Hub's version. */
   version?: string;
+  /** `hub_hello` only: the running image's build stamp, when the image carries one. */
+  buildVersion?: string;
   appUrn?: string;
   appStatus?: string;
   error?: string;

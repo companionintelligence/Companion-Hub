@@ -70,7 +70,11 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
       if (event === 'hub_hello') {
         applyHubHello(
           payload.version,
-          { bundleVersion: import.meta.env.CI_HUB_VERSION, sameOriginBundle: usesSameOriginHubApi() && !import.meta.env.DEV },
+          {
+            bundleVersion: import.meta.env.CI_HUB_VERSION,
+            helloBuildVersion: payload.buildVersion,
+            sameOriginBundle: usesSameOriginHubApi() && !import.meta.env.DEV,
+          },
           {
             invalidateVersion: () => void queryClient.invalidateQueries({ queryKey: appContextQueryKey() }),
             reload: () => window.location.reload(),

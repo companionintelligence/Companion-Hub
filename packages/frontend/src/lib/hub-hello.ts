@@ -10,8 +10,9 @@ import { type StackUpdatePending, readStackUpdatePending, resolveStackUpdate } f
  *
  * - The reconnect can land on the OLD container if it has not stopped yet. A hello with
  *   the version the update started from means "not yet", not "done".
- * - A same-origin tab is running the bundle the old Hub served. Once the Hub is on a new
- *   version that bundle is stale (new hashed assets), so it reloads — once per version.
+ * - A same-origin tab is running the bundle the old Hub served. Once the Hub runs a
+ *   different image than the one that built that bundle, it is stale (new hashed assets),
+ *   so it reloads — once per image version.
  */
 
 /** A hello from the pre-update version this long after the request means the recreate did not land. */
@@ -24,10 +25,13 @@ export type HubHelloDecision =
   | { kind: 'none' }
   | { kind: 'update_completed'; version: string }
   | { kind: 'update_not_confirmed'; version: string }
+  /** `version` here is the running image's build stamp, which keys the once-per-version reload. */
   | { kind: 'bundle_stale'; version: string };
 
 export interface HubHelloInput {
   helloVersion: string | null | undefined;
+  /** The hello's `buildVersion`: the running image's build stamp. Absent on an unstamped image or an older Hub. */
+  helloBuildVersion?: string | null;
   /** `import.meta.env.CI_HUB_VERSION` — the version this bundle was built as. */
   bundleVersion: string | null | undefined;
   pending: StackUpdatePending | null;
@@ -61,8 +65,12 @@ export function decideHubHello(input: HubHelloInput): HubHelloDecision {
     return { kind: 'none' };
   }
 
-  if (input.sameOriginBundle && bundle && bundle !== hello) {
-    return { kind: 'bundle_stale', version: hello };
+  // Image builds give the bundle version and the build stamp the same value, so they differ only when
+  // the Hub runs another image. `version` is the env file's: on a channel image or a drifted install it
+  // never matches the bundle, so comparing with it would reload every new tab. No stamp, no reload.
+  const build = normalizeVersion(input.helloBuildVersion);
+  if (input.sameOriginBundle && bundle && build && bundle !== build) {
+    return { kind: 'bundle_stale', version: build };
   }
   return { kind: 'none' };
 }
@@ -88,11 +96,12 @@ function claimReloadForVersion(version: string): boolean {
 /** Apply a `hub_hello`: decide, then run the side effects that decision calls for. */
 export function applyHubHello(
   helloVersion: string | null | undefined,
-  context: Pick<HubHelloInput, 'bundleVersion' | 'sameOriginBundle'> & { now?: number },
+  context: Pick<HubHelloInput, 'bundleVersion' | 'helloBuildVersion' | 'sameOriginBundle'> & { now?: number },
   effects: HubHelloEffects,
 ): HubHelloDecision {
   const decision = decideHubHello({
     helloVersion,
+    helloBuildVersion: context.helloBuildVersion,
     bundleVersion: context.bundleVersion,
     sameOriginBundle: context.sameOriginBundle,
     pending: readStackUpdatePending(),

@@ -94,7 +94,14 @@ const appScopedEventSchema = z.object({
  */
 const hubHelloEventSchema = z.object({
   event: z.literal('hub_hello'),
+  /** The install env file's `CI_HUB_VERSION`, which the pending-update flow compares. */
   version: z.string(),
+  /**
+   * The running image's build stamp, as `GET /api/hub/build` reports it. Image builds give it the
+   * same value as the page bundle's version, so the stale-tab check compares this, not `version`,
+   * which can name another release. Absent on an unstamped image.
+   */
+  buildVersion: z.string().optional(),
 });
 
 export const sseSchema = z.union([
