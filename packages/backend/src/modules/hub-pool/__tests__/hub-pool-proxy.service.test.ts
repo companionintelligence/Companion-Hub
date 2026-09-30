@@ -5540,7 +5540,7 @@ describe('PoolProxyService', () => {
         const rateOf = (target: { nodeKey: string; backend: 'ollama'; model: string }) =>
           1000 / (throughput.prefillPoints(target)[0]?.msPerToken ?? Number.POSITIVE_INFINITY);
 
-        it("records no prefill sample for a turn that reused most of its prompt, by Ollama's native count or its /v1 detail", async () => {
+        it("records no prefill sample for a turn whose engine read under a thousand tokens itself, by Ollama's native count or its /v1 detail", async () => {
           vi.useFakeTimers({ toFake: ['Date'] });
           usePeers(fzzyAndCore6);
           // 150 ms of prompt evaluation for 10,600 tokens: 70,000 tok/s timed against the whole prompt.
@@ -5584,34 +5584,41 @@ describe('PoolProxyService', () => {
           expect(rateOf(FZZY)).toBeCloseTo(estimateOf() / 2, 6);
         });
 
-        it('never takes a node whose only samples were cache hits for the much faster one, and does once it reads a turn cold', async () => {
+        it('keeps a node serving an agent session measured, so a large new turn goes to it and not to a CPU node read cold since', async () => {
           vi.useFakeTimers({ toFake: ['Date'] });
           const HERMES_TURN_TOKENS = 14_500;
           const HERMES_TURN_BYTES = HERMES_TURN_TOKENS * 4;
-          let firstByteMs = 400;
-          let cached = 14_300;
+          const BETA_1 = { ...FZZY, nodeKey: 'beta-1' };
+          // The session's first turn, read cold in the 8,959 ms predicted for beta-1 on 2026-09-30.
+          let firstByteMs = 8_959;
+          let cached = 0;
           vi.mocked(global.fetch).mockImplementation(async () => {
             vi.setSystemTime(Date.now() + firstByteMs);
             return v1Stream(HERMES_TURN_TOKENS, cached);
           });
-          // A session's turns on beta-1, each reusing all but its last couple of hundred tokens.
           usePeers(() => [node('beta-1')]);
-          for (const _ of [1, 2, 3]) {
+          await serveV1(HERMES_TURN_BYTES - 400);
+          const coldReadAt = Date.now();
+
+          // Then only the session's later turns, for longer than any evidence is kept: each appends a
+          // tool result of 1,500 tokens to a history the engine holds, as the Ollama 0.34.4 probe's
+          // append read 1,484 of 11,820. Timed to the first byte, hop and first token included.
+          firstByteMs = 1_200;
+          cached = HERMES_TURN_TOKENS - 1_500;
+          while (Date.now() - coldReadAt <= THROUGHPUT_FORGET_AFTER_MS) {
+            vi.setSystemTime(Date.now() + 15 * 60_000);
             await serveV1(HERMES_TURN_BYTES - 400);
           }
-          expect(throughput.prefillPoints({ ...FZZY, nodeKey: 'beta-1' })).toEqual([]);
+          const [point] = throughput.prefillPoints(BETA_1);
+          expect(point?.at).toBeGreaterThan(coldReadAt + THROUGHPUT_FORGET_AFTER_MS - 15 * 60_000);
+          // Charged to the 1,500 read, at the end of a 14.5k context: slower per token than the cold
+          // read, which is the side a CPU node's appends must err on too.
+          expect(rateOf(BETA_1)).toBeCloseTo((estimateOf() * (1_500 / HERMES_TURN_TOKENS)) / 1.2, 6);
+          expect(rateOf(BETA_1)).toBeLessThan(estimateOf() / 8.959);
 
-          // Timed against the whole prompt, each of those read ~36,000 tok/s. Unmeasured, beta-1
-          // instead gives way to core-7, measured to meet the budget on the Hermes turn of 2026-09-30.
-          usePeers(() => [node('core-7'), node('beta-1')]);
+          // core-7 read a turn of this size cold just now, within budget, as it did that day. Were
+          // beta-1 unmeasured it would give way to core-7; measured, it is the much faster node.
           throughput.recordPrefill({ ...FZZY, nodeKey: 'core-7' }, { promptTokens: HERMES_TURN_TOKENS, ms: 54_854, deadline: false });
-          expect(ids(await service.buildCandidateList(MODEL, HERMES_TURN_BYTES))).toEqual(['core-7', 'beta-1']);
-
-          // A turn beta-1 read cold, in the 8,959 ms predicted for it that day, is evidence.
-          usePeers(() => [node('beta-1')]);
-          firstByteMs = 8_959;
-          cached = 0;
-          await serveV1(HERMES_TURN_BYTES - 400);
           usePeers(() => [node('core-7'), node('beta-1')]);
           expect(ids(await service.buildCandidateList(MODEL, HERMES_TURN_BYTES))).toEqual(['beta-1', 'core-7']);
         });

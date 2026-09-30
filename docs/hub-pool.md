@@ -372,14 +372,27 @@ is timed per node, engine, and model, both on the entry node and on the node tha
 - **Cache hits are not reads.** When the engine says how much of the prompt it took from its prompt
   cache (Ollama's native `prompt_eval_cached_count`, llama.cpp's `timings.cache_n`, or
   `usage.prompt_tokens_details.cached_tokens` on an OpenAI-compatible route, Ollama's `/v1` included),
-  a turn that reused more than half of its prompt gives no prefill sample, and one that reused less is
-  timed on the part it read. Timed against the whole prompt, a cache hit reads as hundreds of thousands
-  of tokens a second: Ollama 0.34.4 read a repeated 7,615-token prompt in 2,735 ms and then in 19 ms,
-  reporting the same `prompt_eval_count` both times, so that count alone cannot tell the two apart. A
-  node whose only samples were cache hits would otherwise be taken for one that reads cold prompts that
-  fast. The share is the engine's own count of read against reused tokens; the pool's `bytes / 4`
-  estimate was 5,033 for that same prompt, so it is not what a share is judged against. An engine that
-  does not report its cache is timed as before.
+  a turn is timed on the part of the prompt it read, and a turn that read fewer than 1,024 tokens
+  itself gives no prefill sample. Timed against the whole prompt, a cache hit reads as hundreds of
+  thousands of tokens a second: Ollama 0.34.4 read a repeated 7,615-token prompt in 2,735 ms and then in
+  19 ms, reporting the same `prompt_eval_count` both times, so that count alone cannot tell the two
+  apart. A node whose only samples were cache hits would otherwise be taken for one that reads cold
+  prompts that fast. The part read is the engine's own count of read against reused tokens; the pool's
+  `bytes / 4` estimate was 5,033 for that same prompt, so it is not what the part is judged against.
+  An engine that does not report its cache is timed as before.
+- **Appends are reads.** Most agent turns append a few hundred to a few thousand tokens to a history
+  the engine holds, and a new session of the same agent shares its system and tool prefix. On the same
+  Ollama 0.34.4, a turn appended to an 11,820-token history read 1,484 tokens in 427 ms. That is a rate
+  for the hardware at that context, so it counts. It errs slow, because the tokens read are the end of
+  the prompt, where attention costs the most per token, and a turn timed to its first byte carries the
+  hop and the first token too; slow is the safe side, since it can only make a CPU node look slower.
+  Dropping appends, as a rule that wanted half the prompt read did, left a GPU node serving a long
+  session with nothing recorded. Two hours on it was unmeasured, and a new large turn went to a CPU
+  node whose cold reads were recent: the core-7 placement [the much-faster rule](#much-slower-than-a-node-as-free)
+  is there to undo. Under 1,024 tokens read, a turn times fixed costs rather than the hardware (the
+  repeated prompt above read 1 token), so a node whose turns all read that little, such as a session of
+  one-line messages on a warm cache, still records nothing, and once its older evidence is forgotten it
+  gives way for a large turn as any unmeasured node does.
 - **Missed deadlines.** A streamed request that ran out of its first-byte budget with no answer is
   recorded as "at least this slow". It carries no usage frame, and it is the failure placement exists
   to stop repeating.
@@ -505,7 +518,12 @@ flight, so the turn runs beside that request rather than behind it. This is read
 [slot awareness](#slot-aware-placement) is on. A node that states no slot count, or whose slots are
 full, goes ahead only when it has no more in flight than the node it passes: on a `-np 1` engine a
 request in flight can be a whole turn, and without this two large turns in a row would both go to the
-one fast node, the second queued behind the first, while the slower node sat idle.
+one fast node, the second queued behind the first, while the slower node sat idle. A free slot is only
+as good as the statement: `ollamaSlots` is what the operator says the daemon runs, and Ollama 0.34
+forces a single slot for some model lineages whatever `OLLAMA_NUM_PARALLEL` says. On a node stated at
+four slots serving such a model, one request in flight reads as a slot free, and the turn can still
+wait behind a whole turn. [Slot-aware placement](#slot-aware-placement) reads the same statement and
+has the same limit.
 
 The margin is counted from the node the ranker put first, and from the node being passed when that
 one is idler. It is not counted afresh from each node a move puts first: then one move could put a node
@@ -516,9 +534,10 @@ The limits:
 - **Measured on both sides.** Both nodes need a prediction, measured here or advertised, and the
   faster one's must not be a missed deadline, which is only a lower bound. A group led by a node
   nothing has measured is left alone, and an unmeasured node is never moved ahead: how those give
-  way is the deferral above. A node whose only samples were cache hits is unmeasured, when its engine
-  reports its cache (see **Cache hits are not reads** above), so warm turns never make a node the
-  faster one.
+  way is the deferral above. A node whose only turns read fewer than 1,024 tokens is unmeasured, when
+  its engine reports its cache (see **Cache hits are not reads** above), so cache hits never make a
+  node the faster one. A node serving an agent session's appends stays measured at the rate it read
+  them, which errs slow.
 - **Large prompts only.** Below 6144 estimated tokens nothing moves, so the smaller prompts keep
   reaching a node measured slow. That is how a node whose engine has moved onto its GPU gets measured
   fast again.

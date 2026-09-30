@@ -1020,11 +1020,14 @@ export interface SlowerPlacement {
  *
  * - **Measured to meet the budget, on a reading that is not a lower bound.** A missed deadline says
  *   "at least this slow", which says nothing about how much faster than the first it is.
- * - **Measured on cold reads.** The faster prediction is only as good as the samples under it, and a
- *   turn that reused its prompt from the engine's cache times the cache. Those never become evidence
- *   when the engine says how much it reused (see `HubPoolThroughputService.recordPrefill`), so a node
- *   whose only samples were cache hits is unmeasured here and never goes ahead. An engine that does not
- *   say is timed as it always was, and an advertised rate is the peer's own reading of the same.
+ * - **Measured on what the engine read.** The faster prediction is only as good as the samples under
+ *   it, and a turn that reused its prompt from the engine's cache times the cache. When the engine says
+ *   how much it reused, a turn's time is charged to the part it read, and a turn that read fewer than
+ *   `PREFILL_MIN_READ_TOKENS` is no evidence (see `HubPoolThroughputService.recordPrefill`), so a node
+ *   whose only turns were such cache hits is unmeasured here and never goes ahead. A node serving an
+ *   agent session's appends stays measured, at the rate of the tokens it read at the end of the
+ *   context, which errs slow. An engine that does not say is timed as it always was, and an advertised
+ *   rate is the peer's own reading of the same.
  * - **No busier than the first, or one request busier on a node with a slot free for it.** Queue depth
  *   stays the ranker's first key; this settles a tie, or a single request an engine can serve beside
  *   this one, not a queue — see {@link SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT}. Counted from the node the
@@ -3206,8 +3209,8 @@ export class PoolProxyService {
    * prefill, because its wait was the whole generation. Decode is reported, never ranked on.
    *
    * Either prefill figure goes with what the engine said about its prompt cache, when it said anything:
-   * a turn that reused most of its prompt is not timed at all, and one that reused part of it is timed
-   * on the part it read — see `HubPoolThroughputService.recordPrefill`. Timed against the whole prompt,
+   * a turn is timed on the part it read, and one that read fewer than `PREFILL_MIN_READ_TOKENS` is not
+   * timed at all — see `HubPoolThroughputService.recordPrefill`. Timed against the whole prompt,
    * a cache hit reads as hundreds of thousands of tokens a second (Ollama 0.34.4 read a 7,615-token
    * prompt in 2,735 ms cold and 19 ms warm), and a node that answered warm turns would be placed as if
    * it read cold ones that fast.
