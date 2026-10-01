@@ -180,11 +180,18 @@ function MobileAppMenu({
       </Button>
       {open ? (
         <>
-          <button type="button" aria-label={t('COMMON_CLOSE')} className="fixed inset-0 z-40 bg-black/25" onClick={() => setOpen(false)} />
+          <button
+            type="button"
+            aria-label={t('COMMON_CLOSE')}
+            data-testid="mobile-app-menu-scrim"
+            className="fixed inset-x-0 bottom-0 z-40 bg-black/25"
+            style={{ top: 'var(--header-offset)' }}
+            onClick={() => setOpen(false)}
+          />
           <div
             role="menu"
             data-testid="mobile-app-menu"
-            className="absolute right-0 top-full z-50 mt-2 w-56 rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
+            className="absolute right-0 top-full z-50 mt-2 w-56 origin-top-right animate-in fade-in-0 zoom-in-95 slide-in-from-top-2 rounded-md border bg-popover p-1 text-popover-foreground shadow-md duration-200"
           >
             {isLoggedIn ? (
               <>
