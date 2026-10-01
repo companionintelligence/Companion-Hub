@@ -3,6 +3,7 @@ import { BadRequestException, Injectable, type OnApplicationBootstrap, type OnMo
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 import { buildHubLocalOrigin, buildHubPublicOrigin, buildHubTailnetOrigin, isPrivateHostname, isTailnetHostname } from '@/common/helpers/hub-origin';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { AppStatus } from '@/core/database/drizzle/types';
@@ -43,16 +44,6 @@ const DOWN_APP_STATUSES: readonly AppStatus[] = [
 ];
 
 type ApplyOutcome = 'restarted' | 'restarting' | 'deferred' | 'failed';
-
-/**
- * Postgres returns the zoneless `updated_at` value with a space, which `Date` otherwise reads in local time.
- * Treating the stored UTC value as UTC keeps rotation independent of the container timezone.
- */
-function parseUtcMs(value: string): number {
-  const trimmed = value.trim();
-  const hasZone = /[Zz]$|[+-]\d\d(:?\d\d)?$/.test(trimmed);
-  return new Date(hasZone ? trimmed : `${trimmed.replace(' ', 'T')}Z`).getTime();
-}
 
 /** Machine-readable reasons let the UI explain a disabled Connect button. */
 export type ConnectBlockedReason =
@@ -182,7 +173,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
       for (const row of connected) {
         // updatedAt is when the current key was last stored; skip still-fresh keys.
-        if (parseUtcMs(row.updatedAt) > cutoff) {
+        if (parseDbTimestampMs(row.updatedAt) > cutoff) {
           continue;
         }
 

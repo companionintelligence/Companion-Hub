@@ -608,6 +608,18 @@ export class ServiceBuilder {
   }
 
   /**
+   * Replaces the labels with `transform(labels)`, for a pass that must see their final keys and so
+   * runs after {@link interpolateVariables}.
+   */
+  public transformLabels(transform: (labels: Record<string, string | boolean>) => Record<string, string | boolean>) {
+    if (this.service.labels) {
+      this.service.labels = transform(this.service.labels);
+    }
+
+    return this;
+  }
+
+  /**
    * Builds the service object.
    * @returns The built service object.
    * @example

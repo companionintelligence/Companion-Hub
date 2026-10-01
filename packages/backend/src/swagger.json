@@ -2264,6 +2264,20 @@
         ]
       }
     },
+    "/api/apps/starting": {
+      "get": {
+        "operationId": "getAppStartingPage",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Apps"
+        ]
+      }
+    },
     "/api/apps/random-port": {
       "post": {
         "operationId": "getRandomPort",

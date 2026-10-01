@@ -6,6 +6,7 @@ import { writeHealableTextFile } from '@/common/helpers/bind-mount-helpers';
 import { Injectable, Inject } from '@nestjs/common';
 import Dockerode from 'dockerode';
 import * as yaml from 'yaml';
+import { APP_STARTING_MIDDLEWARE } from './builders/traefik-labels.builder';
 import { DOCKERODE } from './constants';
 
 export interface PortExposeRoute {
@@ -101,6 +102,9 @@ export class TraefikConfigService {
           rule: `Host(\`${route.traefikHost}\`)`,
           service: routerId,
           entryPoints: ['web'],
+          // An app route like any other: when the person's own service behind the port is down,
+          // Traefik answered the same bare 502 (CI-Hub#1764).
+          middlewares: [APP_STARTING_MIDDLEWARE],
         };
         config.http.services[routerId] = {
           loadBalancer: {

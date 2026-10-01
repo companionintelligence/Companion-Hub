@@ -49,6 +49,26 @@ export class AppsRepository {
   }
 
   /**
+   * An app's status and when its row last changed, or `null` when there is no such app.
+   *
+   * For the page Traefik shows when an app does not answer (`AppStartingPageService`), which runs
+   * for every 502, 503 and 504 an app returns. Like `getAppCustomDomain`, deliberately not
+   * `getAppByUrn`, whose joined read ships the whole `config` jsonb and the store row.
+   */
+  public async getAppStatusByUrn(appUrn: AppUrn): Promise<{ status: AppStatus; updatedAt: string } | null> {
+    const { appStoreId, appName } = extractAppUrn(appUrn);
+
+    const [row] = await this.db
+      .select({ status: app.status, updatedAt: app.updatedAt })
+      .from(app)
+      .where(and(eq(app.appName, appName), eq(app.appStoreSlug, appStoreId)))
+      .limit(1)
+      .execute();
+
+    return row ?? null;
+  }
+
+  /**
    * Given an app id, update the app with the given data
    *
    * @param {string} appId - The id of the app to update

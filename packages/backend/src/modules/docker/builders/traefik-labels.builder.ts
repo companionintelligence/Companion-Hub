@@ -18,6 +18,69 @@ interface TraefikLabelsArgs {
 /** The file-provider middleware that strips visitor-set forwarded headers from tunnel requests. */
 export const EDGE_HEADERS_MIDDLEWARE = 'ci-hub-edge-headers@file';
 
+/**
+ * The file-provider `errors` middleware that swaps Traefik's bare 502, 503 and 504 for the Hub's
+ * "<app> is starting…" page. See `ci-hub-app-starting` in assets/traefik/dynamic/dynamic.yml.
+ */
+export const APP_STARTING_MIDDLEWARE = 'ci-hub-app-starting@file';
+
+/** `traefik.http.routers.<router>.<option>`. Traefik reads option names without regard to case. */
+const HTTP_ROUTER_LABEL = /^traefik\.http\.routers\.([^.]+)\.(.+)$/i;
+
+/**
+ * Ends every HTTP router in an app container's labels with {@link APP_STARTING_MIDDLEWARE}.
+ *
+ * Every router, whoever declared it. The ones this builder adds are only some of them: a manifest's
+ * `extraLabels` can replace a router's whole middleware chain (Donetick does), add a host to one
+ * (Kimai's LAN name) or declare routers of its own, and each of those showed the same bare page
+ * while the app started. So this runs on the merged labels, after the app id is interpolated into
+ * their keys: run before, a manifest's `{{CI_HUB_APP_ID}}` router would get a chain of its own that
+ * then overwrote this builder's, forward auth included.
+ *
+ * Last in the chain, so it only ever sees the app's own answer. Forward auth runs before it, and its
+ * 401s, redirects and 5xx reach the visitor untouched: someone who is not signed in gets the login,
+ * never the page. The visitor-set headers the edge middleware strips are also gone by then, and
+ * Traefik copies the request's headers into its request for the page.
+ */
+export function withAppStartingPage(labels: Record<string, string | boolean>): Record<string, string | boolean> {
+  const routers = new Set<string>();
+  // An existing chain under the spelling it was given, so it is extended rather than doubled.
+  const chainKeys = new Map<string, string>();
+  for (const key of Object.keys(labels)) {
+    const match = HTTP_ROUTER_LABEL.exec(key);
+    const [, router, option] = match ?? [];
+    if (!router || !option) {
+      continue;
+    }
+    routers.add(router);
+    if (option.toLowerCase() === 'middlewares') {
+      chainKeys.set(router, key);
+    }
+  }
+
+  if (routers.size === 0) {
+    return labels;
+  }
+
+  const result = { ...labels };
+  for (const router of routers) {
+    const key = chainKeys.get(router) ?? `traefik.http.routers.${router}.middlewares`;
+    const current = result[key];
+    const chain =
+      typeof current === 'string'
+        ? current
+            .split(',')
+            .map((name) => name.trim())
+            .filter(Boolean)
+        : [];
+    if (!chain.includes(APP_STARTING_MIDDLEWARE)) {
+      chain.push(APP_STARTING_MIDDLEWARE);
+    }
+    result[key] = chain.join(',');
+  }
+  return result;
+}
+
 export class TraefikLabelsBuilder {
   private labels: Record<string, string | boolean> = {};
   private effectiveMode: ExposureMode;
