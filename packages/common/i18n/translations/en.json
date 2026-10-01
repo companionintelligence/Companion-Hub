@@ -527,6 +527,7 @@
   "AUTH_ERROR_TOTP_INVALID_CODE": "Invalid 2FA code",
   "AUTH_ERROR_TOTP_NOT_ENABLED": "2FA is not enabled for this user",
   "AUTH_ERROR_TOTP_SESSION_NOT_FOUND": "2FA session not found",
+  "AUTH_ERROR_TOTP_TOO_MANY_ATTEMPTS": "Too many incorrect 2FA codes. Sign in again to get a fresh attempt.",
   "AUTH_ERROR_USER_ALREADY_EXISTS": "User already exists",
   "AUTH_ERROR_USER_NOT_FOUND": "User not found",
   "AUTH_ERROR_NOT_ORG_MEMBER": "This CI Account is not a member of this Hub's organization.",

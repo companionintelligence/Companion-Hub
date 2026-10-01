@@ -32,6 +32,12 @@ import { TotpAuthenticator } from './utils/totp-authenticator';
 import { BearerOrgMembershipCache } from './bearer-org-membership.cache';
 import type { User } from '@/core/database/drizzle/types';
 
+/** How long a password-verified sign-in waits for its 2FA code before it must start over. */
+const TOTP_SESSION_EXPIRATION_SECONDS = 5 * 60;
+
+/** Wrong 2FA codes one pending sign-in may submit before it is discarded. */
+const MAX_TOTP_ATTEMPTS = 5;
+
 /**
  * Portal's answer to "is this subject in the organisation this Hub is paired to?".
  * `unknown` is a failure to ask, not a refusal — see {@link AuthService.resolvePairedOrgMembership}.
@@ -520,7 +526,7 @@ export class AuthService {
 
     if (user.totpEnabled) {
       const totpSessionId = crypto.randomUUID();
-      this.cache.set(totpSessionId, user.id.toString());
+      this.cache.set(totpSessionId, user.id.toString(), TOTP_SESSION_EXPIRATION_SECONDS);
       return { totpSessionId };
     }
 
@@ -728,7 +734,7 @@ export class AuthService {
 
     if (user.totpEnabled) {
       const totpSessionId = crypto.randomUUID();
-      this.cache.set(totpSessionId, user.id.toString());
+      this.cache.set(totpSessionId, user.id.toString(), TOTP_SESSION_EXPIRATION_SECONDS);
       return { totpSessionId };
     }
 
@@ -772,12 +778,25 @@ export class AuthService {
     const isValid = TotpAuthenticator.check(totpCode, totpSecret);
 
     if (!isValid) {
+      // A code is six digits, so a session that never runs out of tries is a lock with a million
+      // combinations. Five wrong codes end the session and the user signs in again.
+      const attemptsKey = `totp-attempts:${totpSessionId}`;
+      const attempts = Number(this.cache.get(attemptsKey) ?? 0) + 1;
+
+      if (attempts >= MAX_TOTP_ATTEMPTS) {
+        this.cache.del(totpSessionId);
+        this.cache.del(attemptsKey);
+        throw new TranslatableError('AUTH_ERROR_TOTP_TOO_MANY_ATTEMPTS', {}, HttpStatus.TOO_MANY_REQUESTS);
+      }
+
+      this.cache.set(attemptsKey, String(attempts), TOTP_SESSION_EXPIRATION_SECONDS);
       throw new TranslatableError('AUTH_ERROR_TOTP_INVALID_CODE');
     }
 
     const sessionId = await this.sessionManager.createSession(user.id);
 
     this.cache.del(totpSessionId);
+    this.cache.del(`totp-attempts:${totpSessionId}`);
 
     return {
       sessionId,
