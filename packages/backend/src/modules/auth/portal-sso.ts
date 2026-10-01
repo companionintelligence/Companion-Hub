@@ -6,6 +6,7 @@ import {
   resolveOutboundPortalBaseUrl,
   withPortalAxiosHeaders,
 } from '@/common/helpers/portal-url';
+import { HUB_FAVICON_LINK_TAG } from './hub-favicon';
 
 export interface PortalSsoState {
   codeVerifier: string;
@@ -317,6 +318,12 @@ export function resolvePortalRootBounce(query: { code?: unknown; state?: unknown
  * gets scheduled at all; a `setTimeout` registered before it survives, because
  * an external-scheme navigation leaves the document loaded.
  *
+ * THE NAVIGATION WAITS ONE TASK. WebKit (Safari's engine) loads the tab icon
+ * only once the page has finished loading, and with a navigation started while
+ * the page was still parsing it never did: the tab stayed iconless even when the
+ * browser handed the app scheme to the OS and kept the page. A zero-delay
+ * timeout runs after the load completes; Chrome and Firefox open the app the same.
+ *
  * `continueHref` is why this page is no longer a dead end. The session cookie is
  * already on this browser before this HTML is written — see the callback — so
  * carrying on here is a plain same-origin link, not a second sign-in, and it
@@ -330,7 +337,8 @@ export function resolvePortalRootBounce(query: { code?: unknown; state?: unknown
  *
  * Self-contained by necessity: this is served by the API before any session
  * exists, and on a Hub with no frontend bundle mounted there is nothing at
- * `/assets` to link to. No external CSS, fonts or images.
+ * `/assets` to link to. No external CSS, fonts or images; the one link is the
+ * tab icon, which the API serves itself (see hub-favicon.ts).
  */
 export function buildPortalDesktopHandoffHtml(input: {
   deepLink: string;
@@ -360,6 +368,7 @@ export function buildPortalDesktopHandoffHtml(input: {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Signing you in — Companion Hub</title>
+${HUB_FAVICON_LINK_TAG}
 <meta name="color-scheme" content="dark light">
 <style>
 :root {
@@ -499,7 +508,8 @@ p { margin: 0 0 20px; color: var(--muted); font-size: 14px; }
   }
 
   setTimeout(poll, 1500);
-  location.replace(${scriptLiteral});
+  // A task later, not mid-parse: see "THE NAVIGATION WAITS ONE TASK" above.
+  setTimeout(function () { location.replace(${scriptLiteral}); }, 0);
 })();
 </script>
 </body>

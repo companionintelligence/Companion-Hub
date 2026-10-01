@@ -5,10 +5,10 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { UserRepository } from '@/modules/user/user.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
-import { HttpStatus } from '@nestjs/common';
+import { HttpStatus, type INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import type { Request, Response } from 'express';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { AuthController } from '../auth.controller';
@@ -16,6 +16,7 @@ import { ForwardAuthIdentityResolver } from '../forward-auth-identity.resolver';
 import { ForwardAuthSecretResolver } from '../forward-auth-secret.resolver';
 import { BearerOrgMembershipCache } from '../bearer-org-membership.cache';
 import { AuthService } from '../auth.service';
+import { HUB_FAVICON_LINK_TAG, HUB_FAVICON_PATH, HUB_FAVICON_PNG } from '../hub-favicon';
 import { exchangePortalAuthorizationCode, fetchPortalSessionEmail } from '../portal-sso';
 import { verifyPortalIdToken } from '../portal-token';
 import { SessionManager } from '../session.manager';
@@ -1617,6 +1618,7 @@ describe('AuthController', () => {
 
       expect(res.status).toHaveBeenCalledWith(409);
       expect(res.redirect).not.toHaveBeenCalled();
+      expect(vi.mocked(res.send).mock.calls[0]?.[0]).toContain(HUB_FAVICON_LINK_TAG);
       expect((cache.set as ReturnType<typeof vi.fn>).mock.calls.every(([key]) => !String(key).startsWith('edge_sso:'))).toBe(true);
     });
   });
@@ -2503,5 +2505,55 @@ describe('AuthController', () => {
       await expect(authController.hubClaimStatus({} as unknown as Request)).rejects.toBeInstanceOf(TranslatableError);
       expect(userRepository.getOperators).not.toHaveBeenCalled();
     });
+  });
+});
+
+/**
+ * Real HTTP dispatch: the handoff and cookie pages link this path, and calling
+ * the handler directly would prove nothing about whether the router reaches it.
+ */
+describe('AuthController — GET /api/auth/favicon.png, real HTTP dispatch', () => {
+  let app: INestApplication;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    const moduleRef = await Test.createTestingModule({
+      controllers: [AuthController],
+      providers: [
+        { provide: AuthService, useValue: mock<AuthService>() },
+        { provide: ForwardAuthSecretResolver, useValue: mock<ForwardAuthSecretResolver>() },
+        { provide: LoggerService, useValue: mock<LoggerService>() },
+        { provide: ConfigurationService, useValue: mock<ConfigurationService>() },
+        { provide: CacheService, useValue: mock<CacheService>() },
+        { provide: UserRepository, useValue: mock<UserRepository>() },
+        { provide: SessionManager, useValue: mock<SessionManager>() },
+        { provide: RegistrationService, useValue: mock<RegistrationService>() },
+        { provide: DeviceRegistrationRepository, useValue: mock<DeviceRegistrationRepository>() },
+        { provide: BearerOrgMembershipCache, useValue: mock<BearerOrgMembershipCache>() },
+        { provide: SessionUserCache, useValue: mock<SessionUserCache>() },
+        { provide: ForwardAuthIdentityResolver, useValue: mock<ForwardAuthIdentityResolver>() },
+      ],
+    }).compile();
+
+    app = moduleRef.createNestApplication();
+    // Mirrors main.ts, so this is the path the pages actually link.
+    app.setGlobalPrefix('/api');
+    await app.init();
+    await app.listen(0);
+    const address = app.getHttpServer().address();
+    baseUrl = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`;
+  });
+
+  afterAll(async () => {
+    await app?.close();
+  });
+
+  it('serves the brand PNG to a browser with no session', async () => {
+    const res = await fetch(`${baseUrl}${HUB_FAVICON_PATH}`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('image/png');
+    expect(res.headers.get('cache-control')).toBe('public, max-age=86400');
+    expect(Buffer.from(await res.arrayBuffer()).equals(HUB_FAVICON_PNG)).toBe(true);
   });
 });
