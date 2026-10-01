@@ -55,7 +55,14 @@ function newestOutput() {
 async function compileOnce() {
   // On Node 22.15+ the tsc shim execs the native compiler in place, so its exit status is tsc's.
   const result = spawnSync(process.execPath, [tscBin, '-p', tsconfig], { stdio: 'inherit' });
+  if (result.error) {
+    throw result.error;
+  }
   if (result.status !== 0) {
+    // A tsc killed by a signal (the OOM killer in a busy builder, say) has no status of its own.
+    if (result.signal) {
+      console.error(`tsc was stopped by ${result.signal}`);
+    }
     process.exit(result.status ?? 1);
   }
   await rewriteAliases();
@@ -65,6 +72,7 @@ async function compileOnce() {
 function compileAndServe() {
   let server: ChildProcess | undefined;
   let restarting = Promise.resolve();
+  let closing = false;
 
   const stopServer = () => {
     const current = server;
@@ -84,8 +92,14 @@ function compileAndServe() {
   };
 
   let servedOutput = 0;
-  const restart = async () => {
+  const settle = async (clean: boolean) => {
+    // tsc emits even when a build has type errors, so the aliases are rewritten after every build:
+    // dist/ never holds a raw `@/…` require that the running server, or anything else, could load.
     await rewriteAliases();
+    // A build with errors leaves the last good server running.
+    if (!clean || closing) {
+      return;
+    }
     // TypeScript 7's watcher rebuilds on any write under the project, `exclude` or not, and the
     // dev server rewrites src/swagger.json each time it boots. Restarting on a build that
     // emitted nothing would boot, rewrite, rebuild and restart forever.
@@ -95,6 +109,10 @@ function compileAndServe() {
     }
     servedOutput = output;
     await stopServer();
+    // Shutdown may have begun while the old server stopped; a server started now would outlive it.
+    if (closing) {
+      return;
+    }
     // The absolute path is what `cihub up local` looks for when it clears a stale dev backend.
     server = spawn(process.execPath, [serverEntry], { stdio: 'inherit' });
   };
@@ -110,14 +128,14 @@ function compileAndServe() {
     const lines = (pending + chunk.toString()).split('\n');
     pending = lines.pop() ?? '';
     for (const line of lines) {
-      // A build with errors leaves the last good server running.
-      if (BUILD_SETTLED.exec(line)?.[1] === '0') {
-        restarting = restarting.then(restart).catch((error: unknown) => console.error('Restart failed:', error));
+      const settled = BUILD_SETTLED.exec(line);
+      if (settled && !closing) {
+        const clean = settled[1] === '0';
+        restarting = restarting.then(() => settle(clean)).catch((error: unknown) => console.error('Restart failed:', error));
       }
     }
   });
 
-  let closing = false;
   const shutdown = async (code: number) => {
     if (closing) {
       return;

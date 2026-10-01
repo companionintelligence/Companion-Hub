@@ -43,9 +43,8 @@ echo "Building @ci-hub/common..."
 echo "Building backend..."
 (cd packages/backend && pnpm run compile)
 
-# Copy the full migration set, journal included
+# Add the journal next to the SQL compile.ts copied
 mkdir -p packages/backend/dist/assets/migrations/meta
-cp packages/backend/src/core/database/drizzle/*.sql packages/backend/dist/assets/migrations/ || true
 cp packages/backend/src/core/database/drizzle/meta/* packages/backend/dist/assets/migrations/meta/ || true
 
 # Write .env file with all required vars (backend reads this on startup)

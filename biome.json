@@ -139,8 +139,7 @@
       "linter": {
         "rules": {
           "suspicious": {
-            "noConsole": "off",
-            "noUndeclaredEnvVars": "off"
+            "noConsole": "off"
           },
           "correctness": {
             "noUndeclaredVariables": "error"
@@ -149,7 +148,7 @@
       }
     },
     {
-      "includes": ["e2e/**", "playwright*.config.ts"],
+      "includes": ["scripts/**", "e2e/**", "playwright*.config.ts", "packages/mobile/scripts/**"],
       "linter": {
         "rules": {
           "suspicious": {

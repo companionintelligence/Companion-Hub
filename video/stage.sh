@@ -520,11 +520,15 @@ _kill_port() {
 # Measured: the next stage_up's build raced a leaked one on packages/backend/dist
 # and died on ENOTEMPTY, after which the stage waited out its whole budget on a
 # backend that would never start.
-# Only a build whose working directory is THIS checkout's backend is ours.
+# Only a build whose working directory is THIS checkout's backend is ours, and
+# never a `--watch` one: that is `pnpm run dev` (compile.ts --watch and its tsc),
+# someone's running dev backend, which stopping the watcher would take down.
 _stage_kill_builds() {
-  local backend pid cwd
+  local backend pid cwd args
   backend="$(cd "$(_stage_root)/packages/backend" 2>/dev/null && pwd -P)" || return 0
   for pid in $(pgrep -f "compile\.ts|/tsc -p " 2>/dev/null); do
+    args="$(ps -o args= -p "$pid" 2>/dev/null)" || args=""
+    case "$args" in *--watch*) continue ;; esac
     cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')" || cwd=""
     [ "$cwd" != "$backend" ] || kill "$pid" 2>/dev/null || true
   done
