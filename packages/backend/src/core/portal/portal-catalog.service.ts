@@ -1,4 +1,5 @@
 import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { describeNetworkError } from '@/common/helpers/network-error';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -221,7 +222,7 @@ export class PortalCatalogService {
         this.alternativesCacheUpdatedAt = Date.now();
         return parsed;
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeNetworkError(error);
         this.logger.warn(`Portal alternatives fetch failed: ${message}`);
         return this.alternativesCache ?? {};
       } finally {
@@ -394,7 +395,7 @@ export class PortalCatalogService {
         this.cacheUpdatedAt = Date.now();
         return result;
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeNetworkError(error);
         this.logger.warn(`Portal catalog fetch failed: ${message}`);
         return { entries: this.cache ?? [], rows: this.rawCache ?? new Map(), bypassedPortalCache: false, error };
       } finally {
@@ -615,7 +616,7 @@ export class PortalCatalogService {
 
       if (!app) {
         if (error) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message = describeNetworkError(error);
           this.logger.warn(`Portal catalog app info fetch failed for ${appUrn}: ${message}`);
         }
         return null;
@@ -625,7 +626,7 @@ export class PortalCatalogService {
       const markdownDescription = slug ? await this.fetchDescriptionMarkdown(slug) : null;
       return this.mapPortalAppToAppInfo(app, appUrn, markdownDescription);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = describeNetworkError(error);
       this.logger.warn(`Portal catalog app info fetch failed for ${appUrn}: ${message}`);
       return null;
     }
@@ -656,7 +657,7 @@ export class PortalCatalogService {
       const etag = `"portal-icon-${createHash('sha1').update(iconUrl).digest('hex')}"`;
       return { image, etag, contentType };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = describeNetworkError(error);
       this.logger.warn(`Portal icon fetch failed for ${appUrn}: ${message}`);
       return null;
     }
@@ -692,7 +693,7 @@ export class PortalCatalogService {
       const etag = `"portal-screenshot-${createHash('sha1').update(screenshotUrl).digest('hex')}"`;
       return { image, etag, contentType };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = describeNetworkError(error);
       this.logger.warn(`Portal screenshot fetch failed for ${appUrn}/${filename}: ${message}`);
       return null;
     }

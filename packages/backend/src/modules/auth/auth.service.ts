@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { hashEmailForLog } from '@/common/helpers/log-privacy';
+import { describeNetworkError } from '@/common/helpers/network-error';
 import { meetsPasswordComplexity } from '@/common/helpers/password-policy';
 import { CacheService } from '@/core/cache/cache.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -381,7 +382,7 @@ export class AuthService {
       // answered every sign-in on such a Hub with "try again" for as long as the tie stood.
       whois = await this.portal.whoisApps({ subject, appIds: ['_membership'], surface: 'hub', organizationId: registration.id });
     } catch (error) {
-      this.logger.warn(`Portal WhoIs membership lookup failed: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.warn(`Portal WhoIs membership lookup failed: ${describeNetworkError(error)}`);
       return { membership: 'unknown', role: null };
     }
 
@@ -1163,7 +1164,8 @@ export class AuthService {
         });
       }
     } catch (error) {
-      this.logger.error('Portal password reset request failed', error);
+      // Every status is an answer here, so this is the request failing below HTTP: say why, not axios's stack.
+      this.logger.error(`Portal password reset request failed: ${describeNetworkError(error)}`);
     }
 
     return { success: true };

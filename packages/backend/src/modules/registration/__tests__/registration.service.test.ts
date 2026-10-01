@@ -16,6 +16,7 @@ import * as si from 'systeminformation';
 import path from 'node:path';
 import { vol } from 'memfs';
 import { TUNNEL_DIR } from '@/common/constants';
+import { EVERY_ADDRESS_FAILED, axiosEveryAddressFailed, connectFailure, everyAddressFailed } from '@/tests/utils/network-failures';
 import { writePairingAppCheck } from '../../app-lifecycle/registration-recovery-state';
 import { probePublicHostname } from '../public-reachability';
 
@@ -1307,6 +1308,36 @@ describe('RegistrationService', () => {
       expect(result.message).not.toContain('new pairing code');
     });
 
+    it('reports a Portal none of whose addresses accepted the connection as one it could not reach, and says why', async () => {
+      // Node's error for this has no syscall of its own and the first attempt's code, ETIMEDOUT, so
+      // it read as "may still be provisioning" and sent the operator for a new code that was never spent.
+      mockedAxios.post.mockRejectedValue(axiosEveryAddressFailed());
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result).toEqual({
+        success: false,
+        message: `Unable to reach CI Portal (${EVERY_ADDRESS_FAILED}). Please check your network connection.`,
+      });
+      expect(loggerService.error).toHaveBeenCalledWith(`Pairing request failed before local registration completed: ${EVERY_ADDRESS_FAILED}`);
+      expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('the pairing code is still unclaimed'));
+      expect(loggerService.error).not.toHaveBeenCalledWith(expect.stringContaining('may have reached CI Portal'));
+    });
+
+    it('says the Portal may hold the request unless every address failed to connect', async () => {
+      // Only a failed connect proves nothing was sent, so one attempt that got further keeps the ambiguity.
+      const attempts = [
+        connectFailure('ETIMEDOUT', '192.0.2.10'),
+        Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET', syscall: 'read' }),
+      ];
+      const cause = Object.assign(new AggregateError(attempts, ''), { code: 'ETIMEDOUT' });
+      mockedAxios.post.mockRejectedValue(Object.assign(new Error(''), { isAxiosError: true, code: 'ETIMEDOUT', cause }));
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result.message).toContain('did not answer in time');
+    });
+
     it('leaves a failure that is not an axios error on the generic branch', async () => {
       // Pins the `isAxiosError` guard: without it a local bug thrown inside the try
       // would be reported as the Portal holding the request, burning a pairing code.
@@ -1316,6 +1347,15 @@ describe('RegistrationService', () => {
 
       expect(result.success).toBe(false);
       expect(result.message).toBe('Pairing failed: boom');
+    });
+
+    it('says why on the generic branch for an error whose message is empty', async () => {
+      // "Pairing failed:" with nothing after it is what an operator saw for this error.
+      mockedAxios.post.mockRejectedValue(everyAddressFailed());
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result.message).toBe(`Pairing failed: ${EVERY_ADDRESS_FAILED}`);
     });
 
     it('returns error when CI Cloud URL is not configured', async () => {
@@ -1479,6 +1519,15 @@ describe('RegistrationService', () => {
       expect(writePairingAppCheck).toHaveBeenCalledTimes(1);
       expect(vi.mocked(writePairingAppCheck).mock.invocationCallOrder[0]).toBeLessThan(setupSpy.mock.invocationCallOrder[0] ?? 0);
       setupSpy.mockRestore();
+    });
+
+    it('says why the registration request failed when no address of the Portal accepted the connection', async () => {
+      mockedAxios.post.mockRejectedValue(axiosEveryAddressFailed());
+
+      const result = await service.initiateRegistration('org-id', 'Org');
+
+      expect(result).toEqual({ success: false, message: `Registration error: ${EVERY_ADDRESS_FAILED}` });
+      expect(loggerService.error).toHaveBeenCalledWith(`Registration error: ${EVERY_ADDRESS_FAILED}`);
     });
 
     it('does not hold app sync when the Portal refuses the registration', async () => {
@@ -2072,6 +2121,36 @@ describe('RegistrationService', () => {
         consecutiveCheckInFailures: 4,
         lastCheckIn: { httpStatus: null, code: null, error: 'timeout of 5000ms exceeded' },
       });
+    });
+
+    it('records and logs why a check-in failed when no address of the Portal accepted the connection', async () => {
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      mockedAxios.post.mockRejectedValue(axiosEveryAddressFailed());
+
+      await (service as any).validateRegistrationWithCloud();
+
+      // That error's message is empty: the record read "request failed", and the log line ended with
+      // nothing but axios's stack.
+      expect(service.getRegistrationPhaseReport().lastCheckIn).toMatchObject({ httpStatus: null, code: null, error: EVERY_ADDRESS_FAILED });
+      expect(loggerService.error).toHaveBeenCalledWith(`Registration validation: failed to reach CI Portal (failure 1/3): ${EVERY_ADDRESS_FAILED}`);
+    });
+
+    it('keeps the stack of a check-in failure that is not a request failing', async () => {
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      const bug = new TypeError("Cannot read properties of undefined (reading 'status')");
+      mockedAxios.post.mockRejectedValue(bug);
+
+      await (service as any).validateRegistrationWithCloud();
+
+      expect(loggerService.error).toHaveBeenCalledWith(`Registration validation: failed to reach CI Portal (failure 1/3): ${bug.message}`, bug);
     });
 
     it('does not rewrite the row or page the agent when a check-in re-asserts the same degraded state', async () => {

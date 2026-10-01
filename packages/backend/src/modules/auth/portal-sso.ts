@@ -1,5 +1,6 @@
 import type { Request } from 'express';
 import axios from 'axios';
+import { describeNetworkError } from '@/common/helpers/network-error';
 import {
   buildPortalAxiosConfig,
   readPortalInternalUrlOverride,
@@ -529,6 +530,8 @@ export interface PortalTokenExchangeFailure {
   ok: false;
   reason: 'token_exchange_failed' | 'missing_access_token' | 'userinfo_failed' | 'missing_email' | 'email_unverified' | 'network_error';
   status?: number;
+  /** For `network_error`: why the request got no answer, such as `getaddrinfo ENOTFOUND <host>`. */
+  detail?: string;
 }
 
 export type PortalOAuthExchangeResult = PortalTokenExchangeResult | PortalTokenExchangeFailure;
@@ -601,8 +604,8 @@ export async function exchangePortalAuthorizationCode(input: {
       validateStatus: () => true,
       timeout: 15_000,
     });
-  } catch {
-    return { ok: false, reason: 'network_error' };
+  } catch (error) {
+    return { ok: false, reason: 'network_error', detail: describeNetworkError(error) };
   }
 
   if (tokenRes.status < 200 || tokenRes.status >= 300) {
@@ -624,8 +627,8 @@ export async function exchangePortalAuthorizationCode(input: {
       validateStatus: () => true,
       timeout: 15_000,
     });
-  } catch {
-    return { ok: false, reason: 'network_error' };
+  } catch (error) {
+    return { ok: false, reason: 'network_error', detail: describeNetworkError(error) };
   }
 
   if (userinfoRes.status < 200 || userinfoRes.status >= 300) {

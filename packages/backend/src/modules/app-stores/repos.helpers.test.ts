@@ -5,6 +5,7 @@ import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { PORTAL_STORE_LISTING_TIMEOUT_MS } from '@/core/portal/portal.constants';
 import { RegistrationService } from '../registration/registration.service';
+import { EVERY_ADDRESS_FAILED, axiosEveryAddressFailed } from '@/tests/utils/network-failures';
 import axios from 'axios';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mock, mockDeep } from 'vitest-mock-extended';
@@ -370,6 +371,16 @@ describe('ReposHelpers', () => {
 
         expect(result.success).toBe(true);
         expect(axiosMock.request).toHaveBeenCalledTimes(2);
+      });
+
+      it('says why the store listing failed when no address of the Portal accepted the connection', async () => {
+        // That error's message is empty, so the sync logged only axios's stack and reported nothing.
+        axiosMock.request.mockRejectedValue(axiosEveryAddressFailed());
+
+        const result = await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
+
+        expect(result).toEqual({ success: false, message: EVERY_ADDRESS_FAILED });
+        expect(logger.error).toHaveBeenCalledWith(`CI Cloud request failed: ${EVERY_ADDRESS_FAILED}`);
       });
     });
   });

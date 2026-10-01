@@ -747,6 +747,7 @@ export class AuthController {
         this.logger.warn('Portal OAuth callback failed', {
           reason: exchange.reason,
           status: exchange.status,
+          detail: exchange.detail,
           hubOrigin,
           portalBaseUrl: publicPortalBaseUrl,
         });
