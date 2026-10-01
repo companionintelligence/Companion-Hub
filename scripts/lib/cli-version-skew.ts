@@ -40,7 +40,9 @@
  * answer for them — at which point the commit is what is left to compare, which is why the CLI
  * carries one too.
  */
+import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { packageRevision, packageVersion } from './cli-compose-env.js';
 import { runCapture } from './cli-proc.js';
 import { HUB_CONTAINER_NAMES } from './compose-discovery.js';
@@ -376,16 +378,36 @@ export function readStackBuild(
 }
 
 /**
+ * The checkout this `cihub` runs from: the folder that holds `scripts/`, when it has a `.git` of
+ * its own. Null otherwise. An npm install has none, even when it sits inside someone's repository.
+ * In a Bun-compiled binary every module's URL is the binary's own `$bunfs` path, so this resolves
+ * to `/`, and those builds stamp their commit anyway.
+ */
+function cliCheckout(): string | null {
+  try {
+    const root = path.resolve(fileURLToPath(new URL('../..', import.meta.url)));
+    return existsSync(path.join(root, '.git')) ? root : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * This `cihub`'s own identity.
  *
  * The commit comes from the compile-time stamp when there is one. A source run has no stamp and
  * every reason to know its commit anyway — it is the checkout — so `git rev-parse HEAD` fills it in.
  * That is one subprocess, on the skew path only, and it is what makes `pnpm cihub doctor` in a
  * working tree comparable against a `:dev` image built from the same commit.
+ *
+ * Git is asked in that checkout, not in the working directory. `cihub` is routinely run from
+ * somewhere else: from `~` the working directory has no commit, and from inside another repository
+ * it names that repository's commit as this CLI's.
  */
-export function readCliBuild(exec: InspectExec = (cmd, args) => runCapture(cmd, args), cwd: string = process.cwd()): CliBuild {
+export function readCliBuild(exec: InspectExec = (cmd, args) => runCapture(cmd, args), cwd: string | null = cliCheckout()): CliBuild {
   const stamped = packageRevision();
   if (stamped) return { version: packageVersion(), revision: stamped };
+  if (!cwd) return { version: packageVersion(), revision: null };
   const head = exec('git', ['-C', cwd, 'rev-parse', 'HEAD']);
   return { version: packageVersion(), revision: head.ok && head.stdout.trim() ? head.stdout.trim() : null };
 }

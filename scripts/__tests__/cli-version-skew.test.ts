@@ -6,7 +6,9 @@
  * a stack running an untagged GHCR index. Doctor was green, and `cihub pool ceiling` — merged,
  * released, documented — answered `Unknown pool subcommand`.
  */
-import { describe, expect, it } from 'vitest';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   type CliBuild,
   classifyCliInstall,
@@ -16,6 +18,7 @@ import {
   isVersionTag,
   parseImageTag,
   parseStackInspect,
+  readCliBuild,
   readStackBuild,
   resolveStackBuild,
   type StackBuild,
@@ -319,5 +322,44 @@ describe('readStackBuild', () => {
       'docker inspect ci-hub --format': { ok: true, stdout: `reference=${REPO}:latest\nlabelVersion=<no value>\nrevision=abc\n` },
     });
     expect(readStackBuild(fn)).toMatchObject({ version: null, revision: 'abc' });
+  });
+});
+
+/**
+ * Which commit a source run calls its own. Git used to be asked in the working directory, so a
+ * `cihub` run from `~` had no commit, and one run from inside another repository claimed that
+ * repository's HEAD.
+ */
+describe('readCliBuild', () => {
+  // `scripts/__tests__` sits as deep in the checkout as `scripts/lib`, so this is the CLI's checkout.
+  const checkout = path.resolve(fileURLToPath(new URL('../..', import.meta.url)));
+  /** Git as it answers in this checkout, and in another repository. */
+  const git = (_cmd: string, args: string[]) => ({ ok: true, stdout: args[1] === checkout ? 'cccccccccccc\n' : 'dddddddddddd\n' });
+
+  beforeEach(() => {
+    vi.stubEnv('CIHUB_BUILD_REVISION', '');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it('reads the commit of the checkout it runs from, not of the folder it is run in', () => {
+    vi.spyOn(process, 'cwd').mockReturnValue('/home/ci/src/CI-Portal');
+    expect(readCliBuild(git).revision).toBe('cccccccccccc');
+  });
+
+  it('takes the stamped commit without asking git, as a compiled binary does', () => {
+    vi.stubEnv('CIHUB_BUILD_REVISION', 'eeeeeeeeeeee');
+    const exec = vi.fn(git);
+    expect(readCliBuild(exec).revision).toBe('eeeeeeeeeeee');
+    expect(exec).not.toHaveBeenCalled();
+  });
+
+  it('has no commit, and asks git nothing, when it does not run from a checkout', () => {
+    const exec = vi.fn(git);
+    expect(readCliBuild(exec, null).revision).toBeNull();
+    expect(exec).not.toHaveBeenCalled();
   });
 });
