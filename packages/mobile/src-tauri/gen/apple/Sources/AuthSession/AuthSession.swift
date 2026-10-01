@@ -120,7 +120,10 @@ public func cihub_start_auth_session(
         }
 
         session.presentationContextProvider = store.anchor
-        session.prefersEphemeralWebBrowserSession = false
+        // A shared cookie jar signs the next attempt in as whoever was here last
+        // and never shows the email field. Ephemeral drops those cookies when
+        // the sheet closes, so the next Log in starts empty. Same as Memory.
+        session.prefersEphemeralWebBrowserSession = true
         store.session = session
 
         if !session.start() {
