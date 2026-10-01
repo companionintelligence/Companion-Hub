@@ -5,6 +5,7 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
 import { AuthGuard } from '../auth/auth.guard';
 import { TailscaleService } from './tailscale.service';
+import { TailscaleStatusDto } from './tailscale.dto';
 import { LoggerService } from '@/core/logger/logger.service';
 
 @UseGuards(AuthGuard)
@@ -30,9 +31,10 @@ export class TailscaleController {
   }
 
   @Get('status')
-  @ApiResponse({ type: Object })
+  @ApiResponse({ type: TailscaleStatusDto })
   async getStatus() {
-    return this.tailscaleService.getStatus();
+    const status = await this.tailscaleService.getStatus();
+    return TailscaleStatusDto.parse({ ...status, servePermission: this.tailscaleService.getServePermission() }, { reportOnly: true });
   }
 
   @Post('sync')

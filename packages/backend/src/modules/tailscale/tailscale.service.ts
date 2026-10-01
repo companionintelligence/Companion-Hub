@@ -94,12 +94,35 @@ export function isServePermissionDenied(error: unknown): boolean {
  * where the command runs, so the command can be pasted as-is. The `&&` matters: where the uid has
  * no host account, a bare `--operator="$(id -nu <uid>)"` still runs with an empty name and clears
  * whichever operator the host already had.
+ *
+ * Where the platform has no uid, the command names a `<user>` placeholder to fill in.
  */
+export function servePermissionCommand(uid: number | null = process.getuid?.() ?? null): string {
+  if (uid === null) {
+    return 'sudo tailscale set --operator=<user>';
+  }
+  return `u="$(id -nu ${uid})" && sudo tailscale set --operator="$u"`;
+}
+
+/** {@link servePermissionCommand} as the Hub's log gives it, saying which account it is for. */
 export function servePermissionRemedy(uid: number | null = process.getuid?.() ?? null): string {
   if (uid === null) {
-    return 'sudo tailscale set --operator=<user>, where <user> is the host account that runs the Hub';
+    return `${servePermissionCommand(uid)}, where <user> is the host account that runs the Hub`;
   }
-  return `u="$(id -nu ${uid})" && sudo tailscale set --operator="$u" (the Hub runs as uid ${uid})`;
+  return `${servePermissionCommand(uid)} (the Hub runs as uid ${uid})`;
+}
+
+/**
+ * Whether tailscaled refuses the Hub's Tailscale Serve changes, as `GET /tailscale/status` reports
+ * it. Only the Private VPN sync writes Serve config, so only the sync records a refusal.
+ */
+export interface TailscaleServePermission {
+  /** True from a refused Serve write until a later write succeeds. */
+  denied: boolean;
+  /** While denied, the command to run once on the host; see {@link servePermissionCommand}. */
+  remedy: string | null;
+  /** While denied, when the refusal began (ISO 8601). */
+  deniedSince: string | null;
 }
 
 interface ExecError extends Error {
@@ -149,6 +172,15 @@ export class TailscaleService {
    */
   private statusCache: { value: TailscaleStatus; expires: number } | null = null;
   private static readonly STATUS_TTL_MS = 30_000;
+
+  /**
+   * When tailscaled began refusing the Hub's Tailscale Serve writes, while it still does.
+   *
+   * Kept here rather than in the sync, so that `GET /tailscale/status` can report it. The sync
+   * only logged it, so on a host without an operator every Private VPN app read "Pending" and
+   * nothing on the Hub's pages said why (CI-Hub#1766).
+   */
+  private servePermissionDeniedSince: Date | null = null;
 
   private execHost(args: string[], timeoutMs = 15000): Promise<{ stdout: string; stderr: string }> {
     return new Promise((resolve, reject) => {
@@ -453,6 +485,33 @@ export class TailscaleService {
 
   private invalidateStatusCache(): void {
     this.statusCache = null;
+  }
+
+  /** Whether tailscaled refuses the Hub's Serve writes right now, and the command that ends it. */
+  getServePermission(): TailscaleServePermission {
+    const since = this.servePermissionDeniedSince;
+    if (!since) {
+      return { denied: false, remedy: null, deniedSince: null };
+    }
+    return { denied: true, remedy: servePermissionCommand(), deniedSince: since.toISOString() };
+  }
+
+  /** Records a refused Serve write. True when this starts a refusal, so the caller can tell open pages. */
+  recordServePermissionDenied(now: Date = new Date()): boolean {
+    if (this.servePermissionDeniedSince) {
+      return false;
+    }
+    this.servePermissionDeniedSince = now;
+    return true;
+  }
+
+  /** Records a Serve write tailscaled accepted. True when this ends a refusal. */
+  recordServePermissionGranted(): boolean {
+    if (!this.servePermissionDeniedSince) {
+      return false;
+    }
+    this.servePermissionDeniedSince = null;
+    return true;
   }
 
   private async getStatusForStrategy(strategy: ExecStrategy, suppressErrors = true): Promise<TailscaleStatus> {

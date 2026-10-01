@@ -14,6 +14,7 @@ import { DEFAULT_MEMBER_ACTIONS, type HubAction, HUB_CAPABILITY, isHubAction, MA
 import { type HubPrincipalFields, hubSessionOperatorUserId, isAppViewObserverPrincipal, isGrantExemptPrincipal } from './hub-session-operator';
 import type { LifecycleActor } from './lifecycle-actor';
 import { PortalClientService, type PortalWhoIsResponse } from './portal-client.service';
+import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 
 export type GrantSurface = 'hub' | 'store';
 
@@ -527,7 +528,7 @@ export class MarketplaceWhoIsService {
 
     for (const slug of slugs) {
       const cached = await this.readCache(subject, slug);
-      const age = cached ? now - Date.parse(cached.cachedAt) : Number.POSITIVE_INFINITY;
+      const age = cached ? now - parseDbTimestampMs(cached.cachedAt) : Number.POSITIVE_INFINITY;
       if (cached && Number.isFinite(age) && age < WHOIS_CACHE_TTL_MS) {
         out.set(slug, cached.can);
       } else {

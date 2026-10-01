@@ -164,4 +164,37 @@ describe('Input', () => {
     expect(overlay.parentElement).not.toContainElement(error);
     expect(overlay.parentElement).toHaveClass('relative');
   });
+  describe('assistive technology', () => {
+    it('marks the field invalid and ties the error message to it', () => {
+      render(<Input name="email" label="Email" error="Enter a valid address" />);
+
+      const input = screen.getByRole('textbox', { name: 'Email' });
+      const message = screen.getByRole('alert');
+
+      expect(input).toHaveAttribute('aria-invalid', 'true');
+      expect(message).toHaveTextContent('Enter a valid address');
+      expect(input.getAttribute('aria-describedby')).toContain(message.id);
+    });
+
+    it('ties the help text to the field', () => {
+      render(<Input name="email" label="Email" helpText="We never share it" />);
+
+      const input = screen.getByRole('textbox', { name: 'Email' });
+
+      expect(input).toHaveAccessibleDescription('We never share it');
+      expect(input).not.toHaveAttribute('aria-invalid');
+    });
+
+    it('keeps a describedby the caller supplied alongside the generated ones', () => {
+      render(<Input name="email" label="Email" error="Enter a valid address" aria-describedby="email-note" />);
+
+      expect(screen.getByRole('textbox', { name: 'Email' }).getAttribute('aria-describedby')).toMatch(/^email-note /);
+    });
+
+    it('describes the field by its help text and its error together', () => {
+      render(<Input name="email" label="Email" helpText="We never share it" error="Enter a valid address" />);
+
+      expect(screen.getByRole('textbox', { name: 'Email' })).toHaveAccessibleDescription('We never share it Enter a valid address');
+    });
+  });
 });

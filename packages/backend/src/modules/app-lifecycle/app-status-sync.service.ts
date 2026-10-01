@@ -18,6 +18,7 @@ import { ErrorReportingService } from '@/core/error-reporting/error-reporting.se
 import { NetworkDiagnosticsService } from '../network/network-diagnostics.service';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
 import { AppOperationRegistry } from './app-operation-registry';
+import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 
 const LONG_RUNNING_TRANSITIONAL_STATES: AppStatus[] = ['installing', 'updating'];
 
@@ -133,7 +134,7 @@ export class AppStatusSyncService {
         const isTransitional = TRANSITIONAL_STATES.includes(app.status);
         const transitionalGraceMs = this.getTransitionalGraceMs(app.status);
         if (isTransitional) {
-          const timeSinceUpdate = Date.now() - new Date(app.updatedAt).getTime();
+          const timeSinceUpdate = Date.now() - parseDbTimestampMs(app.updatedAt);
           if (timeSinceUpdate < transitionalGraceMs) {
             this.logger.debug(`Skipping ${appUrn} - in recent transitional state '${app.status}'`);
             skippedCount++;
@@ -177,7 +178,7 @@ export class AppStatusSyncService {
           }
 
           if (app.status === 'installing') {
-            const timeSinceUpdate = Date.now() - new Date(app.updatedAt).getTime();
+            const timeSinceUpdate = Date.now() - parseDbTimestampMs(app.updatedAt);
             const stillLive = this.installPipelineTracker.getActive() === appUrn || Boolean(this.operationRegistry.get(appUrn));
             if (timeSinceUpdate < transitionalGraceMs || stillLive) {
               skippedCount++;

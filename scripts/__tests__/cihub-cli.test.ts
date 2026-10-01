@@ -177,6 +177,7 @@ describe('renderHelp', () => {
     expect(plain).toContain('app inspect');
     expect(plain).toContain('app stop-managed');
     expect(plain).toContain('app remove-managed');
+    expect(plain).toContain('app start-all|stop-all|restart-all|update-all');
   });
 
   it('lists the Models section with install/rm', () => {

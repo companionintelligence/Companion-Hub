@@ -15,6 +15,8 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getAppQueryKey: ({ path }: { path: { urn: string } }) => ['getApp', path.urn],
   appContextQueryKey: () => ['appContext'],
   getCustomDomainsQueryKey: () => ['getCustomDomains'],
+  getServeStatusQueryKey: () => ['getServeStatus'],
+  getStatus3QueryKey: () => ['getStatus3'],
 }));
 
 /**
@@ -40,6 +42,19 @@ describe('handleAppSseEvent', () => {
       removeQueries: vi.fn(),
       setQueryData: vi.fn(),
     };
+  });
+
+  it('refetches the Tailscale status and the served ports when tailscaled starts or stops refusing the Hub (CI-Hub#1766)', () => {
+    for (const denied of [true, false]) {
+      queryClient.invalidateQueries.mockClear();
+
+      handleAppSseEvent(queryClient as unknown as QueryClient, { event: 'tailscale_serve_permission', denied });
+
+      // Settings → Network and every Private VPN access card read the refusal from the Tailscale status.
+      expect(queryClient.invalidateQueries.mock.calls.map(([filters]) => filters.queryKey)).toEqual([['getStatus3'], ['getServeStatus']]);
+    }
+    expect(queryClient.setQueryData).not.toHaveBeenCalled();
+    expect(updateInstallationProgress).not.toHaveBeenCalled();
   });
 
   it('updates install queue cache without invalidating queries', () => {

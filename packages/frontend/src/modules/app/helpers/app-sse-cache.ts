@@ -1,5 +1,12 @@
 import type { GetAppDto } from '@/api-client';
-import { getAppQueryKey, getInstalledAppsQueryKey, appContextQueryKey, getCustomDomainsQueryKey } from '@/api-client/@tanstack/react-query.gen';
+import {
+  getAppQueryKey,
+  getInstalledAppsQueryKey,
+  appContextQueryKey,
+  getCustomDomainsQueryKey,
+  getServeStatusQueryKey,
+} from '@/api-client/@tanstack/react-query.gen';
+import { tailscaleStatusQueryKey } from '@/lib/api-routes/named-status-routes';
 import { PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY } from '@/lib/cloudflare-api';
 import { getInstalledAppUrnsQueryKey } from '@/lib/installed-app-urns-query';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -37,6 +44,8 @@ export type AppSsePayload = {
   settingsPath?: string;
   /** `public_domain_changed` only: the hostname CI-Cloud serves the app at now. */
   hostname?: string;
+  /** `tailscale_serve_permission` only: whether tailscaled now refuses the Hub's Tailscale Serve changes. */
+  denied?: boolean;
   /** Identifier for a non-fatal caveat on an otherwise-successful op; the client maps it to a warning toast. */
   warningCode?: string;
   /** Optional detail for the caveat (e.g. the host path of an uninstall remnant) used to render an actionable message. */
@@ -211,6 +220,15 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
       active: data.active ?? null,
       queued: data.queued ?? [],
     });
+    return;
+  }
+
+  // tailscaled started or stopped refusing the Hub's Tailscale Serve changes. Settings → Network
+  // and every Private VPN access card read that from the Tailscale status, and once a publish goes
+  // through the served ports change too.
+  if (event === 'tailscale_serve_permission') {
+    void queryClient.invalidateQueries({ queryKey: tailscaleStatusQueryKey() });
+    void queryClient.invalidateQueries({ queryKey: getServeStatusQueryKey() });
     return;
   }
 

@@ -178,6 +178,8 @@ Before it starts the stack, `start_hub` checks the Docker it runs on (`hub_manag
 
 Container identity: `CI_HUB_CONTAINER_UID/GID`, `DOCKER_GID` env vars from `resolve_hub_container_identity()`.
 
+The Hub's own Docker calls (its self-update, every app install and start) read `<data dir>/.docker/config.json`, mounted as `DOCKER_CONFIG=/data/.docker`. On every launch, `generate_container_docker_config` (`hub_manager/compose.rs`) writes it from the host's `~/.docker/config.json`, keeping only what works inside the container: inline registry auths, credential helpers that aren't host-only binaries, and the `proxies` section as it is. Docker Compose sets `HTTPS_PROXY`, `NO_PROXY`, and the rest from `proxies` in each container it creates, so the containers the Hub starts get the same proxy as the ones the desktop starts. `cihub setup` writes the same file (`scripts/init-docker-config.ts`).
+
 ## Host update listener
 
 `companion-hub --update-listener` (`updater.rs`) listens on `0.0.0.0:17400`, so the Hub container can hand a desktop update to the host. Requests need the token in `<data dir>/state/update-listener.token`, which the Hub reads as `/data/state/update-listener.token`. The listener writes a new token each time it starts, and trusts the file only while it is private to the desktop user. Compose mounts `state/` and other subfolders into the Hub, never the data dir itself, so a file the desktop writes for the Hub to read belongs in one of them. See [The listener token](../DESKTOP-AUTO-UPDATE.md#the-listener-token).

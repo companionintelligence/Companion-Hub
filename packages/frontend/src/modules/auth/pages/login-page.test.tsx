@@ -1,3 +1,4 @@
+import { act } from '@testing-library/react';
 import { render, screen } from '@/tests/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import LoginPage from './login-page';
@@ -90,7 +91,7 @@ vi.mock('@/context/user-context', () => ({
 }));
 
 vi.mock('@tanstack/react-query', () => ({
-  useMutation: () => mockUseMutation(),
+  useMutation: (options?: unknown) => mockUseMutation(options),
 }));
 
 vi.mock('sonner', () => ({
@@ -171,6 +172,54 @@ describe('LoginPage', () => {
     render(<LoginPage />);
 
     expect(mockToastSuccess).not.toHaveBeenCalled();
+  });
+
+  describe('two-factor step', () => {
+    type MutationOptions = { onSuccess?: (data: unknown) => void; onError?: (error: { message: string; intlParams?: object }) => void };
+
+    /** The options the page handed to `useMutation` on its latest render: sign-in first, then the code check. */
+    function mutationOptions() {
+      const calls = mockUseMutation.mock.calls.map(([options]) => options as MutationOptions);
+      return { login: calls[calls.length - 2] as MutationOptions, verifyTotp: calls[calls.length - 1] as MutationOptions };
+    }
+
+    function reachCodeForm() {
+      mockUseMutation.mockImplementation(() => ({ mutate: vi.fn(), isPending: false }));
+      render(<LoginPage />);
+      act(() => {
+        void mutationOptions().login.onSuccess?.({ success: true, totpSessionId: 'pending-1' });
+      });
+      expect(screen.getByTestId('totp-form')).toBeInTheDocument();
+    }
+
+    it('shows the code form after a password that needs a second factor', () => {
+      reachCodeForm();
+    });
+
+    it.each(['AUTH_ERROR_TOTP_SESSION_NOT_FOUND', 'AUTH_ERROR_TOTP_TOO_MANY_ATTEMPTS'])(
+      'goes back to the password form when the server says %s, because the pending sign-in is over',
+      (code) => {
+        reachCodeForm();
+
+        act(() => {
+          mutationOptions().verifyTotp.onError?.({ message: code });
+        });
+
+        expect(screen.queryByTestId('totp-form')).not.toBeInTheDocument();
+        expect(screen.getByTestId('login-type')).toBeInTheDocument();
+        expect(mockToastError).toHaveBeenCalledWith(code);
+      },
+    );
+
+    it('stays on the code form after a wrong code, so the user can try again', () => {
+      reachCodeForm();
+
+      act(() => {
+        mutationOptions().verifyTotp.onError?.({ message: 'AUTH_ERROR_TOTP_INVALID_CODE' });
+      });
+
+      expect(screen.getByTestId('totp-form')).toBeInTheDocument();
+    });
   });
 
   it('uses the local backend desktop callback flow in Tauri', () => {

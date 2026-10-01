@@ -281,6 +281,10 @@ services:
       # false: decide from the request the router matched, never from forwarded
       # headers that arrived with it (see assets/traefik/dynamic/dynamic.yml).
       traefik.http.middlewares.ci-hub.forwardauth.trustForwardHeader: "false"
+      # Bound what Traefik will read back from the auth reply. The Hub answers forward auth with a
+      # redirect or a short JSON error, so this is a ceiling on a misbehaving auth server, not a limit
+      # anything legitimate approaches. Needs Traefik 3.6.9 or later.
+      traefik.http.middlewares.ci-hub.forwardauth.maxResponseBodySize: "16384"
       # Every signed identity header must ride through — Traefik copies ONLY the headers
       # listed here onto the forwarded request, and consumers verifying the signature fail
       # closed on a missing timestamp/signature (CI-Engineering#74). Listing a name also strips
@@ -296,7 +300,7 @@ services:
       traefik.http.services.ci-hub.loadbalancer.server.port: "5002"
 
   traefik:
-    image: traefik:v3.6.7
+    image: traefik:v3.6.12
     pull_policy: if_not_present
     container_name: traefik
     logging: *default-logging

@@ -9,18 +9,20 @@ use crate::hub_manager::*;
 fn private_vpn_requires_auth_key_or_state_and_ignores_legacy_enabled_false() {
     use crate::hub_manager::private_vpn_should_run;
     // Legacy PRIVATE_VPN_ENABLED=false must not force the sidecar on without credentials.
-    assert!(!private_vpn_should_run(false, false, false));
-    assert!(private_vpn_should_run(false, true, false));
-    assert!(private_vpn_should_run(false, false, true));
-    assert!(!private_vpn_should_run(true, true, true));
+    assert!(!private_vpn_should_run(false, false));
+    assert!(private_vpn_should_run(true, false));
+    assert!(private_vpn_should_run(false, true));
+    assert!(private_vpn_should_run(true, true));
 }
 
 #[test]
-fn private_vpn_disabled_only_when_user_disabled_sentinel_set() {
+fn private_vpn_ignores_a_user_disabled_sentinel_an_earlier_render_wrote() {
+    // Every desktop install carried this line, written by the render itself whenever the
+    // sidecar had no credentials, so it never meant that anyone switched Private VPN off.
     let mut env = std::collections::HashMap::new();
     env.insert("PRIVATE_VPN_USER_DISABLED".into(), "true".into());
     env.insert("TAILSCALE_AUTHKEY".into(), "tskey-auth-test".into());
-    assert!(!private_vpn_enabled_from_map(&env));
+    assert!(private_vpn_enabled_from_map(&env));
 }
 
 #[test]
@@ -28,11 +30,11 @@ fn private_vpn_enabled_when_auth_key_present() {
     let mut env = std::collections::HashMap::new();
     env.insert("TAILSCALE_AUTHKEY".into(), "tskey-auth-test".into());
     assert!(crate::hub_manager::has_tailscale_auth_key(&env));
-    assert!(crate::hub_manager::private_vpn_should_run(
-        false,
-        crate::hub_manager::has_tailscale_auth_key(&env),
-        false
-    ));
+    assert!(private_vpn_enabled_from_map(&env));
+
+    let mut legacy = std::collections::HashMap::new();
+    legacy.insert("HEADSCALE_PREAUTH_KEY".into(), "tskey-auth-legacy".into());
+    assert!(private_vpn_enabled_from_map(&legacy));
 }
 
 #[test]
@@ -247,7 +249,7 @@ const ENV_FILE_OVERRIDE_KEY: &str = "CI_HUB_CLOUD_URL_OVERRIDE";
 
 /// Stable secrets, so two renders of the same data dir differ only where the Portal decision does.
 fn portal_test_env_lines() -> String {
-    "JWT_SECRET=jwt-test\nPOSTGRES_PASSWORD=postgres-test\nRABBITMQ_PASSWORD=rabbit-test\nPRIVATE_VPN_USER_DISABLED=true\n"
+    "JWT_SECRET=jwt-test\nPOSTGRES_PASSWORD=postgres-test\nRABBITMQ_PASSWORD=rabbit-test\n"
         .to_string()
 }
 
@@ -597,4 +599,127 @@ fn runtime_env_refuses_to_carry_forward_a_value_that_is_not_a_zone() {
             "{value:?} must not be carried forward as a zone: {env}"
         );
     }
+}
+
+// --- Private VPN lines of the runtime env (CI-Hub#1757) ---
+
+/// Launch twice over an env file holding `extra_lines`, the way two app starts would, and return
+/// the primary env file after each launch. Both env files must agree after every launch.
+fn launch_twice_with(extra_lines: &str) -> (tempfile::TempDir, String, String) {
+    let (tempdir, data_dir) = portal_test_data_dir();
+    let [env_path, compat_path] = both_env_paths(&data_dir);
+    std::fs::write(
+        &env_path,
+        format!("{}{extra_lines}", portal_test_env_lines()),
+    )
+    .expect("write env");
+
+    let mut contents = Vec::new();
+    for launch in ["first launch", "relaunch"] {
+        ensure_runtime_env_state_for_portal(&data_dir, &env_path, &resolve_portal_url_at(None))
+            .expect(launch);
+        let content = std::fs::read_to_string(&env_path).expect("read env");
+        assert_eq!(
+            std::fs::read_to_string(&compat_path).expect("read compat env"),
+            content,
+            "{launch}: both env files must carry the same lines"
+        );
+        contents.push(content);
+    }
+    let relaunched = contents.pop().expect("relaunch");
+    let first = contents.pop().expect("first launch");
+    (tempdir, first, relaunched)
+}
+
+#[test]
+fn runtime_env_without_a_tailscale_key_writes_no_private_vpn_opt_out() {
+    // A fresh install has no key and no saved login. The render used to answer that with
+    // PRIVATE_VPN_USER_DISABLED=true, which the backend then read as "leave Tailscale Serve
+    // alone" and so never published a Private VPN app.
+    let (_tempdir, data_dir) = portal_test_data_dir();
+
+    let env = render_runtime_env_content_for_portal(
+        &data_dir,
+        &portal_test_env_map(),
+        &resolve_portal_url_at(None),
+    );
+
+    assert!(!env.contains("PRIVATE_VPN_USER_DISABLED"), "{env}");
+    assert!(!env.contains("TAILSCALE_AUTHKEY"), "{env}");
+    // The profile alone keeps a sidecar without credentials from starting.
+    assert!(!env.contains("private-vpn"), "{env}");
+}
+
+#[test]
+fn runtime_env_drops_the_private_vpn_opt_out_an_earlier_launch_wrote() {
+    let (_tempdir, first, relaunched) = launch_twice_with("PRIVATE_VPN_USER_DISABLED=true\n");
+
+    for content in [&first, &relaunched] {
+        assert!(!content.contains("PRIVATE_VPN_USER_DISABLED"), "{content}");
+    }
+}
+
+#[test]
+fn runtime_env_keeps_the_tailscale_auth_key_and_starts_the_sidecar_with_it() {
+    // What a desktop install looks like once someone adds the documented key by hand: the opt-out
+    // an earlier launch wrote is still there. The key used to be dropped by the next start.
+    let (_tempdir, first, relaunched) =
+        launch_twice_with("PRIVATE_VPN_USER_DISABLED=true\nTAILSCALE_AUTHKEY=tskey-auth-test\n");
+
+    for content in [&first, &relaunched] {
+        assert!(
+            content
+                .lines()
+                .any(|line| line == "TAILSCALE_AUTHKEY=tskey-auth-test"),
+            "{content}"
+        );
+        assert!(
+            content.lines().any(|line| line
+                .strip_prefix("COMPOSE_PROFILES=")
+                .is_some_and(|profiles| profiles.split(',').any(|p| p == "private-vpn"))),
+            "the key must turn the sidecar profile on: {content}"
+        );
+        assert!(!content.contains("PRIVATE_VPN_USER_DISABLED"), "{content}");
+    }
+}
+
+#[test]
+fn runtime_env_keeps_the_legacy_headscale_preauth_key() {
+    let (_tempdir, _first, relaunched) =
+        launch_twice_with("HEADSCALE_PREAUTH_KEY=tskey-auth-legacy\n");
+
+    assert!(
+        relaunched
+            .lines()
+            .any(|line| line == "HEADSCALE_PREAUTH_KEY=tskey-auth-legacy"),
+        "{relaunched}"
+    );
+    assert!(
+        relaunched
+            .lines()
+            .any(|line| line == "COMPOSE_PROFILES=private-vpn"),
+        "{relaunched}"
+    );
+}
+
+#[test]
+fn runtime_env_keeps_an_operators_tailscale_serve_opt_out() {
+    // The backend's only switch for "never write Tailscale Serve config". The render never writes
+    // it, but must not drop one an operator set either.
+    for value in ["true", "\"true\""] {
+        let (_tempdir, _first, relaunched) =
+            launch_twice_with(&format!("TAILSCALE_SERVE_USER_DISABLED={value}\n"));
+        assert!(
+            relaunched
+                .lines()
+                .any(|line| line == "TAILSCALE_SERVE_USER_DISABLED=true"),
+            "{value}: {relaunched}"
+        );
+    }
+
+    let (_tempdir, _first, relaunched) = launch_twice_with("TAILSCALE_SERVE_USER_DISABLED=false\n");
+    assert!(
+        !relaunched.contains("TAILSCALE_SERVE_USER_DISABLED"),
+        "{relaunched}"
+    );
 }

@@ -168,6 +168,7 @@ describe('mobile app metadata: iOS in-app auth session', () => {
     const swift = read('gen/apple/Sources/AuthSession/AuthSession.swift');
     expect(swift).toMatch(/ASWebAuthenticationSession/);
     expect(swift).toMatch(/cihub_start_auth_session/);
+    expect(swift).toMatch(/prefersEphemeralWebBrowserSession = true/);
     expect(read('gen/apple/ci-os-hub-mobile.xcodeproj/project.pbxproj')).toMatch(/AuthSession\.swift/);
     expect(iosProjectYml).toMatch(/AuthenticationServices\.framework/);
   });

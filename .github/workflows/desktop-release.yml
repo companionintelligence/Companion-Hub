@@ -101,7 +101,7 @@ jobs:
     steps:
       - name: Checkout
         if: env.BUILD_ENABLED
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           submodules: false
       - name: Install Rust (stable)
@@ -140,7 +140,7 @@ jobs:
 
       - name: Install Node.js
         if: env.BUILD_ENABLED
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
       - name: Install Bun
@@ -481,7 +481,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Sign Windows artifacts
         if: env.BUILD_ENABLED && runner.os == 'Windows' && env.WINDOWS_SIGNING_CONFIGURED == 'true'
-        uses: azure/artifact-signing-action@v1
+        uses: azure/artifact-signing-action@v2
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
@@ -592,7 +592,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Download all artifacts
@@ -611,7 +611,7 @@ jobs:
           echo "=== All release files ==="
           ls -lh release-files/
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag }}
           target_commitish: ${{ github.sha }}
@@ -643,7 +643,7 @@ jobs:
     environment: ${{ inputs.environment }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Download all artifacts
         uses: actions/download-artifact@v8
@@ -672,7 +672,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Finalize GitHub release page
         env:

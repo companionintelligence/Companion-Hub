@@ -18,7 +18,7 @@ import { InstallPipelineTracker } from '../install-pipeline.tracker';
  * reads 1 on both the installed row and the catalog forever. The actual product release lives in
  * `updateInfo.latestDockerVersion` — a date-shaped string the old code never looked at.
  */
-function buildApp(over: Partial<{ status: string; version: number; appName: string; appStoreSlug: string }> = {}) {
+function buildApp(over: Partial<{ status: string; version: number; ignoredVersion: number | null; appName: string; appStoreSlug: string }> = {}) {
   return {
     id: 'app-1',
     appName: 'ci-openclaw',
@@ -100,6 +100,24 @@ describe('AppsReadService.countUpdatesAvailable', () => {
     appFilesManager.getInstalledAppInfo.mockRejectedValue(new Error('ENOENT'));
 
     await expect(service.countUpdatesAvailable()).resolves.toBe(0);
+  });
+
+  it('does not count a schema-counter bump the operator ignored', async () => {
+    const { service, appsRepository, appFilesManager, marketplaceService } = build();
+    appsRepository.getApps.mockResolvedValue([buildApp({ version: 1, ignoredVersion: 2 })]);
+    marketplaceService.getAppUpdateInfo.mockResolvedValue({ latestVersion: 2, latestDockerVersion: '2026.9.14', minHubVersion: null } as any);
+    appFilesManager.getInstalledAppInfo.mockResolvedValue({ version: '2026.9.14' } as any);
+
+    await expect(service.countUpdatesAvailable()).resolves.toBe(0);
+  });
+
+  it('counts an image bump even when the counter bump was ignored', async () => {
+    const { service, appsRepository, appFilesManager, marketplaceService } = build();
+    appsRepository.getApps.mockResolvedValue([buildApp({ version: 1, ignoredVersion: 2 })]);
+    marketplaceService.getAppUpdateInfo.mockResolvedValue({ latestVersion: 2, latestDockerVersion: '2026.9.21.1', minHubVersion: null } as any);
+    appFilesManager.getInstalledAppInfo.mockResolvedValue({ version: '2026.9.14' } as any);
+
+    await expect(service.countUpdatesAvailable()).resolves.toBe(1);
   });
 
   it('an app mid-update is never counted', async () => {
