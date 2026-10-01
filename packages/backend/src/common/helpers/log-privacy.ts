@@ -9,3 +9,48 @@ export function hashEmailForLog(email: string): string {
 
   return createHash('sha256').update(normalized).digest('hex').slice(0, 12);
 }
+
+const REDACTED = '[redacted]';
+
+/**
+ * Names of fields that hold a credential: in the configuration (`jwtSecret`, `ciHubApiKey`,
+ * `hubLocalKey`), in request bodies (`newPassword`, `token`) and among the variables an app's install
+ * form posts (`ADMIN_PASSWORD`, `ANTHROPIC_API_KEY`, `SAMBA_PASS`). `pass`, `pwd`, `psw` and `pw`
+ * count only as the whole name or its last `_` part, so `bypass` is not one.
+ */
+const SECRET_FIELD_PATTERN = /password|passphrase|secret|token|credential|keys?$|(?:^|_)(?:pass|pwd|psw|pw)$/i;
+
+/**
+ * Credentials the pattern cannot tell apart from the metadata stored beside them. The pending push key
+ * is the raw key, kept until Portal confirms it holds a copy; `portalPushKeyPrefix` is only the
+ * fingerprint the UI shows, so it stays readable.
+ */
+const SECRET_FIELD_NAMES: ReadonlySet<string> = new Set(['portalPushKeyPending']);
+
+/**
+ * A copy of `value`, such as the configuration or a request body, that is safe to log: at any depth,
+ * every credential field holds `[redacted]` instead of its value. The input is left unchanged.
+ *
+ * Only a non-empty string, or an object or list held under a credential's name, is replaced. A flag
+ * or a count named after a credential (`disablePasswordReset`, `hubPoolMaxPromptTokens`) is not one,
+ * and an empty or null credential keeps its value, because whether it is set is what a reader of the
+ * log needs to know.
+ */
+export function redactSecretsForLog(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(redactSecretsForLog);
+  }
+  if (value === null || typeof value !== 'object') {
+    return value;
+  }
+
+  return Object.fromEntries(Object.entries(value).map(([key, field]) => [key, isCredential(key, field) ? REDACTED : redactSecretsForLog(field)]));
+}
+
+function isCredential(name: string, value: unknown): boolean {
+  if (!SECRET_FIELD_PATTERN.test(name) && !SECRET_FIELD_NAMES.has(name)) {
+    return false;
+  }
+
+  return typeof value === 'string' ? value !== '' : typeof value === 'object' && value !== null;
+}
