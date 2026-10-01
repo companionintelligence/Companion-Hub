@@ -136,7 +136,7 @@
   "APP_NOTES_SAVE_SUCCESS": "Notatki aplikacji zapisane pomyślnie",
   "APP_RESET_FORM_SUBMIT": "Resetuj",
   "APP_RESET_FORM_SUBTITLE": "Wszystkie dane tej aplikacji zostaną utracone.",
-  "APP_RESET_FORM_TITLE": "Zresetować {{name}} ?",
+  "APP_RESET_FORM_TITLE": "Zresetować {{name}}?",
   "APP_RESET_FORM_WARNING": "Jesteś pewien? Tej akcji nie można cofnąć.",
   "APP_RESET_SUCCESS": "Aplikacja {{id}} zresetowana pomyślnie",
   "APP_RESTART_FORM_SUBMIT": "Uruchom ponownie",

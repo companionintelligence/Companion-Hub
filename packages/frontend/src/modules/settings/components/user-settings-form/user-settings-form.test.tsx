@@ -40,6 +40,9 @@ async function typeLocalDomain(value: string) {
 
 const submit = () => userEvent.click(screen.getByRole('button', { name: 'Update settings' }));
 
+/** The Timezone box. Its label is not tied to it, so find it by its name. */
+const timezoneField = () => screen.getAllByRole('combobox').find((box) => box.getAttribute('name') === 'timezone');
+
 describe('UserSettingsForm Local domain check', () => {
   it('saves a change on a new Hub, where the read-only Local domain is the localhost the Hub filled in', async () => {
     const onSubmit = vi.fn();
@@ -89,5 +92,23 @@ describe('UserSettingsForm Local domain check', () => {
 
     expect(await screen.findByText('Invalid domain')).toBeInTheDocument();
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+});
+
+describe('UserSettingsForm Timezone', () => {
+  it.each([
+    ['Asia/Karachi', '(GMT+5:00) Islamabad, Karachi, Tashkent (PKT)'],
+    // Not a zone the list knows: it shows the entry that names it, which belongs to Europe/Amsterdam.
+    ['Europe/Berlin', 'Amsterdam, Berlin, Bern, Rome, Stockholm, Vienna'],
+  ])('shows %s and saves it unchanged when the field is left alone', async (timeZone, label) => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={{ ...newHubSettings, timeZone }} onSubmit={onSubmit} />);
+
+    // The field loads lazily, behind a placeholder box.
+    await waitFor(() => expect(timezoneField()).toHaveTextContent(label), { timeout: 5000 });
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ timeZone }));
   });
 });
