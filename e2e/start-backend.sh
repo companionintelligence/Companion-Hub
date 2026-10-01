@@ -39,13 +39,12 @@ echo "e2e-mock-tunnel-token" > "$TUNNEL_DIR/token"
 echo "Building @ci-hub/common..."
 (cd packages/common && pnpm run build)
 
-# Build backend (nest build uses swc, doesn't reliably copy all assets)
+# Build backend (compile.ts copies the migration SQL but not drizzle's meta/ journal)
 echo "Building backend..."
-(cd packages/backend && pnpm exec nest build)
+(cd packages/backend && pnpm run compile)
 
-# Copy migration assets that nest build may not handle
+# Add the journal next to the SQL compile.ts copied
 mkdir -p packages/backend/dist/assets/migrations/meta
-cp packages/backend/src/core/database/drizzle/*.sql packages/backend/dist/assets/migrations/ || true
 cp packages/backend/src/core/database/drizzle/meta/* packages/backend/dist/assets/migrations/meta/ || true
 
 # Write .env file with all required vars (backend reads this on startup)

@@ -1075,7 +1075,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
   /** Operator approves a pending inbound request — issues our half of the handshake and confirms to the peer. */
   async approvePairing(id: string): Promise<HubPoolPeer> {
     const row = await this.repo.findById(id);
-    if (!row || row.direction !== 'inbound' || row.status !== 'pending') {
+    if (row?.direction !== 'inbound' || row.status !== 'pending') {
       throw new NotFoundException('No pending inbound pairing request with that id');
     }
 
@@ -1129,7 +1129,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
 
   async rejectPairing(id: string): Promise<void> {
     const row = await this.repo.findById(id);
-    if (!row || row.direction !== 'inbound' || row.status !== 'pending') {
+    if (row?.direction !== 'inbound' || row.status !== 'pending') {
       throw new NotFoundException('No pending inbound pairing request with that id');
     }
 

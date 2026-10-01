@@ -273,17 +273,15 @@ describe('ApiProxyService', () => {
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it.each([
-      'nextcloud:ci-marketplace-immich#',
-      'nextcloud:evil.example?',
-      'nextcloud:user@evil.example#',
-      'evil.com:x',
-    ])('refuses the URN %s, whose segments would name another host', async (urn) => {
-      const result = await service.proxyRequest(urn as AppUrn, { method: 'GET', path: '/api/x', actor: GRANTED_ACTOR });
+    it.each(['nextcloud:ci-marketplace-immich#', 'nextcloud:evil.example?', 'nextcloud:user@evil.example#', 'evil.com:x'])(
+      'refuses the URN %s, whose segments would name another host',
+      async (urn) => {
+        const result = await service.proxyRequest(urn as AppUrn, { method: 'GET', path: '/api/x', actor: GRANTED_ACTOR });
 
-      expect(result.isError).toBe(true);
-      expect(mockFetch).not.toHaveBeenCalled();
-    });
+        expect(result.isError).toBe(true);
+        expect(mockFetch).not.toHaveBeenCalled();
+      },
+    );
 
     it('sends a path on the app to the app', async () => {
       mockFetch.mockResolvedValue(new Response('ok', { status: 200 }));

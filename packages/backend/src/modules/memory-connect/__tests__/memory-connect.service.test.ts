@@ -463,24 +463,22 @@ describe('MemoryConnectService side effects', () => {
     expect(lifecycle.regenerateAppEnv).toHaveBeenCalledWith('ci-openclaw:local');
   });
 
-  it.each([
-    'backing_up',
-    'restoring',
-    'updating',
-    'resetting',
-  ] as const)('does not restart an app mid-%s (those stop it first, and restore its run-state after)', async (status) => {
-    // Restarting here would race the maintenance op AND leave an app the user had
-    // stopped running once it finished.
-    const { service, resolver, connections, lifecycle, appsRepository } = makeService();
-    resolver.findProvider.mockResolvedValue(PROVIDER);
-    appsRepository.getAppByUrn.mockResolvedValue({ status });
+  it.each(['backing_up', 'restoring', 'updating', 'resetting'] as const)(
+    'does not restart an app mid-%s (those stop it first, and restore its run-state after)',
+    async (status) => {
+      // Restarting here would race the maintenance op AND leave an app the user had
+      // stopped running once it finished.
+      const { service, resolver, connections, lifecycle, appsRepository } = makeService();
+      resolver.findProvider.mockResolvedValue(PROVIDER);
+      appsRepository.getAppByUrn.mockResolvedValue({ status });
 
-    await service.disconnect('ci-openclaw:local');
+      await service.disconnect('ci-openclaw:local');
 
-    expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local', undefined);
-    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
-    expect(lifecycle.regenerateAppEnv).toHaveBeenCalledWith('ci-openclaw:local');
-  });
+      expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local', undefined);
+      expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
+      expect(lifecycle.regenerateAppEnv).toHaveBeenCalledWith('ci-openclaw:local');
+    },
+  );
 
   it('disconnect throws and keeps the connection (no clear/restart) when the revoke fails', async () => {
     const { service, resolver, exchange, connections, lifecycle } = makeService();

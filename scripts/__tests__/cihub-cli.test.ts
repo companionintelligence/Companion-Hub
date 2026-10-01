@@ -1388,19 +1388,12 @@ describe('parsePromptCeilingArg', () => {
     expect(parsePromptCeilingArg('CLEAR')).toBeNull();
   });
 
-  it.each([
-    ['16k'],
-    ['16,000'],
-    ['16000.5'],
-    ['-16000'],
-    ['16'],
-    ['1023'],
-    ['1048577'],
-    [''],
-    [undefined],
-  ])('refuses %s here, before it can become a 400 or a ceiling nobody meant', (raw) => {
-    expect(parsePromptCeilingArg(raw)).toBeUndefined();
-  });
+  it.each([['16k'], ['16,000'], ['16000.5'], ['-16000'], ['16'], ['1023'], ['1048577'], [''], [undefined]])(
+    'refuses %s here, before it can become a 400 or a ceiling nobody meant',
+    (raw) => {
+      expect(parsePromptCeilingArg(raw)).toBeUndefined();
+    },
+  );
 });
 
 describe('parseContextCapArg', () => {
@@ -1414,20 +1407,12 @@ describe('parseContextCapArg', () => {
 
   // The Hub's floor is 2048, not the ceiling's 1024: below it no agent turn fits, and a dropped digit
   // is the likelier explanation. `16k` is refused for the reason the ceiling refuses it.
-  it.each([
-    undefined,
-    '',
-    '16k',
-    '16384.0',
-    '-16384',
-    '1024',
-    '2047',
-    '1048577',
-    '0x4000',
-    'none',
-  ])('refuses %s here, before it can become a 400 or a cap nobody meant', (raw) => {
-    expect(parseContextCapArg(raw)).toBeUndefined();
-  });
+  it.each([undefined, '', '16k', '16384.0', '-16384', '1024', '2047', '1048577', '0x4000', 'none'])(
+    'refuses %s here, before it can become a 400 or a cap nobody meant',
+    (raw) => {
+      expect(parseContextCapArg(raw)).toBeUndefined();
+    },
+  );
 });
 
 describe('parseOllamaSlotsArg', () => {

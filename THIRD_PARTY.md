@@ -5,11 +5,11 @@ Every direct dependency declared in this repository's manifests — both
 each group. Transitive dependencies are not listed; resolve them with your
 package manager's own `licenses` command.
 
-**186 direct dependencies** across 11 licence groups.
+**185 direct dependencies** across 11 licence groups.
 
 | Licence | Count |
 | --- | ---: |
-| MIT | 126 |
+| MIT | 125 |
 | MIT OR Apache-2.0 | 17 |
 | Apache-2.0 | 14 |
 | Apache-2.0 OR MIT | 12 |
@@ -109,46 +109,45 @@ package manager's own `licenses` command.
 84. [`@changesets/cli`](https://changesets.dev) `3.0.3` — dev
 85. [`@faker-js/faker`](https://fakerjs.dev) `10.6.0` — dev
 86. [`@hey-api/openapi-ts`](https://heyapi.dev/docs/openapi/typescript/get-started) `0.99.0` — dev
-87. [`@nestjs/cli`](https://github.com/nestjs/nest-cli#readme) `12.0.3` — dev
-88. [`@nestjs/schematics`](https://github.com/nestjs/schematics#readme) `12.0.4` — dev
-89. [`@nestjs/testing`](https://nestjs.com) `12.0.4` — dev
-90. [`@react-router/dev`](https://reactrouter.com) `8.4.0` — dev
-91. [`@tailwindcss/typography`](https://github.com/tailwindlabs/tailwindcss-typography#readme) `0.5.20` — dev
-92. [`@tailwindcss/vite`](https://tailwindcss.com) `4.3.3` — dev
-93. [`@testing-library/dom`](https://github.com/testing-library/dom-testing-library#readme) `10.4.2` — dev
-94. [`@testing-library/jest-dom`](https://github.com/testing-library/jest-dom#readme) `7.0.1` — dev
-95. [`@testing-library/react`](https://github.com/testing-library/react-testing-library#readme) `16.3.3` — dev
-96. [`@testing-library/user-event`](https://github.com/testing-library/user-event#readme) `14.6.7` — dev
-97. [`@total-typescript/shoehorn`](https://github.com/total-typescript/shoehorn#readme) `0.1.2` — dev
-98. [`@types/cookie-parser`](https://github.com/DefinitelyTyped/DefinitelyTyped) `1.4.10` — dev
-99. [`@types/dockerode`](https://github.com/DefinitelyTyped/DefinitelyTyped) `4.0.1` — dev
-100. [`@types/express`](https://github.com/DefinitelyTyped/DefinitelyTyped) `5.0.6` — dev
-101. [`@types/jsonwebtoken`](https://github.com/DefinitelyTyped/DefinitelyTyped) `9.0.10` — dev
-102. [`@types/node`](https://github.com/DefinitelyTyped/DefinitelyTyped) `26.6.2` — dev
-103. [`@types/pg`](https://github.com/DefinitelyTyped/DefinitelyTyped) `8.23.1` — dev
-104. [`@types/react`](https://github.com/DefinitelyTyped/DefinitelyTyped) `19.3.0` — dev
-105. [`@types/react-dom`](https://github.com/DefinitelyTyped/DefinitelyTyped) `19.3.0` — dev
-106. [`@types/semver`](https://github.com/DefinitelyTyped/DefinitelyTyped) `7.8.0` — dev
-107. [`@types/validator`](https://github.com/DefinitelyTyped/DefinitelyTyped) `13.15.10` — dev
-108. [`@types/web-push`](https://github.com/DefinitelyTyped/DefinitelyTyped) `3.6.4` — dev
-109. [`@vitest/coverage-v8`](https://vitest.dev/guide/coverage) `5.0.1` — dev
-110. [`dotenv-cli`](https://github.com/entropitor/dotenv-cli) `11.0.0` — dev
-111. [`drizzle-kit`](https://orm.drizzle.team) `0.31.11` — dev
-112. [`esbuild`](https://github.com/evanw/esbuild#readme) `0.28.2` — dev
-113. [`husky`](https://github.com/typicode/husky#readme) `9.1.7` — dev
-114. [`jsdom`](https://github.com/jsdom/jsdom#readme) `30.1.0` — dev
-115. [`lint-staged`](https://github.com/lint-staged/lint-staged#readme) `17.5.1` — dev
-116. [`pngjs`](https://github.com/lukeapage/pngjs) `7.0.0` — dev
-117. [`tailwindcss`](https://tailwindcss.com) `4.3.3` — dev
-118. [`tailwindcss-animate`](https://www.npmjs.com/package/tailwindcss-animate) `1.0.7` — dev
-119. [`ts-node`](https://typestrong.org/ts-node) `10.9.2` — dev
-120. [`turbo`](https://turborepo.dev) `2.11.2` — dev
-121. [`unplugin-swc`](https://github.com/unplugin/unplugin-swc) `2.0.0` — dev
-122. [`vite`](https://vite.dev) `8.3.0` — dev
-123. [`vite-tsconfig-paths`](https://github.com/aleclarson/vite-tsconfig-paths#readme) `6.1.1` — dev
-124. [`vitest`](https://vitest.dev) `5.0.1` — dev
-125. [`vitest-mock-extended`](https://github.com/eratio08/vitest-mock-extended) `5.1.1` — dev
-126. [`wait-for-expect`](https://github.com/TheBrainFamily/wait-for-expect#readme) `4.0.0` — dev
+87. [`@nestjs/testing`](https://nestjs.com) `12.0.4` — dev
+88. [`@react-router/dev`](https://reactrouter.com) `8.4.0` — dev
+89. [`@tailwindcss/typography`](https://github.com/tailwindlabs/tailwindcss-typography#readme) `0.5.20` — dev
+90. [`@tailwindcss/vite`](https://tailwindcss.com) `4.3.3` — dev
+91. [`@testing-library/dom`](https://github.com/testing-library/dom-testing-library#readme) `10.4.2` — dev
+92. [`@testing-library/jest-dom`](https://github.com/testing-library/jest-dom#readme) `7.0.1` — dev
+93. [`@testing-library/react`](https://github.com/testing-library/react-testing-library#readme) `16.3.3` — dev
+94. [`@testing-library/user-event`](https://github.com/testing-library/user-event#readme) `14.6.7` — dev
+95. [`@total-typescript/shoehorn`](https://github.com/total-typescript/shoehorn#readme) `0.1.2` — dev
+96. [`@types/cookie-parser`](https://github.com/DefinitelyTyped/DefinitelyTyped) `1.4.10` — dev
+97. [`@types/dockerode`](https://github.com/DefinitelyTyped/DefinitelyTyped) `4.0.1` — dev
+98. [`@types/express`](https://github.com/DefinitelyTyped/DefinitelyTyped) `5.0.6` — dev
+99. [`@types/jsonwebtoken`](https://github.com/DefinitelyTyped/DefinitelyTyped) `9.0.10` — dev
+100. [`@types/node`](https://github.com/DefinitelyTyped/DefinitelyTyped) `26.6.2` — dev
+101. [`@types/pg`](https://github.com/DefinitelyTyped/DefinitelyTyped) `8.23.1` — dev
+102. [`@types/react`](https://github.com/DefinitelyTyped/DefinitelyTyped) `19.3.0` — dev
+103. [`@types/react-dom`](https://github.com/DefinitelyTyped/DefinitelyTyped) `19.3.0` — dev
+104. [`@types/semver`](https://github.com/DefinitelyTyped/DefinitelyTyped) `7.8.0` — dev
+105. [`@types/validator`](https://github.com/DefinitelyTyped/DefinitelyTyped) `13.15.10` — dev
+106. [`@types/web-push`](https://github.com/DefinitelyTyped/DefinitelyTyped) `3.6.4` — dev
+107. [`@vitest/coverage-v8`](https://vitest.dev/guide/coverage) `5.0.1` — dev
+108. [`dotenv-cli`](https://github.com/entropitor/dotenv-cli) `11.0.0` — dev
+109. [`drizzle-kit`](https://orm.drizzle.team) `0.31.11` — dev
+110. [`esbuild`](https://github.com/evanw/esbuild#readme) `0.28.2` — dev
+111. [`husky`](https://github.com/typicode/husky#readme) `9.1.7` — dev
+112. [`jsdom`](https://github.com/jsdom/jsdom#readme) `30.1.0` — dev
+113. [`lint-staged`](https://github.com/lint-staged/lint-staged#readme) `17.5.1` — dev
+114. [`pngjs`](https://github.com/lukeapage/pngjs) `7.0.0` — dev
+115. [`tailwindcss`](https://tailwindcss.com) `4.3.3` — dev
+116. [`tailwindcss-animate`](https://www.npmjs.com/package/tailwindcss-animate) `1.0.7` — dev
+117. [`ts-node`](https://typestrong.org/ts-node) `10.9.2` — dev
+118. [`tsc-alias`](https://github.com/justkey007/tsc-alias#readme) `1.9.5` — dev
+119. [`turbo`](https://turborepo.dev) `2.11.2` — dev
+120. [`unplugin-swc`](https://github.com/unplugin/unplugin-swc) `2.0.0` — dev
+121. [`vite`](https://vite.dev) `8.3.0` — dev
+122. [`vite-tsconfig-paths`](https://github.com/aleclarson/vite-tsconfig-paths#readme) `6.1.1` — dev
+123. [`vitest`](https://vitest.dev) `5.0.1` — dev
+124. [`vitest-mock-extended`](https://github.com/eratio08/vitest-mock-extended) `5.1.1` — dev
+125. [`wait-for-expect`](https://github.com/TheBrainFamily/wait-for-expect#readme) `4.0.0` — dev
 
 ## MIT OR Apache-2.0
 

@@ -116,7 +116,7 @@ describe('OpenApiBridgeService', () => {
       });
       const tools = await service.generateTools(TEST_URN, config);
       const listTool = tools.find((t) => t.name.includes('listUsers'));
-      expect((listTool?.inputSchema as any).properties.limit).toBeDefined();
+      expect((listTool?.inputSchema as any)?.properties.limit).toBeDefined();
     });
 
     it('should include path parameters as required', async () => {
@@ -128,7 +128,7 @@ describe('OpenApiBridgeService', () => {
       });
       const tools = await service.generateTools(TEST_URN, config);
       const getTool = tools.find((t) => t.name.includes('getUser'));
-      expect((getTool?.inputSchema as any).required).toContain('id');
+      expect((getTool?.inputSchema as any)?.required).toContain('id');
     });
 
     it('should include request body as body parameter', async () => {
@@ -140,8 +140,8 @@ describe('OpenApiBridgeService', () => {
       });
       const tools = await service.generateTools(TEST_URN, config);
       const createTool = tools.find((t) => t.name.includes('createUser'));
-      expect((createTool?.inputSchema as any).properties.body).toBeDefined();
-      expect((createTool?.inputSchema as any).required).toContain('body');
+      expect((createTool?.inputSchema as any)?.properties.body).toBeDefined();
+      expect((createTool?.inputSchema as any)?.required).toContain('body');
     });
   });
 

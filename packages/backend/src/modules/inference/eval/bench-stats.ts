@@ -99,7 +99,7 @@ export interface EvalItem {
 export function evalRowsFromItems(items: Record<string, EvalItem | null | undefined> | null | undefined): EvalRow[] {
   const rows: EvalRow[] = [];
   for (const [id, item] of Object.entries(items ?? {})) {
-    if (!item || item.kind !== 'llm' || !item.result) continue;
+    if (item?.kind !== 'llm' || !item.result) continue;
     const r = item.result;
     rows.push({
       id,
