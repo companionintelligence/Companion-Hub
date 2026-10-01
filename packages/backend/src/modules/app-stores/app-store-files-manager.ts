@@ -1,6 +1,5 @@
 import path from 'node:path';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
-import { execAsync } from '@/common/helpers/exec-helpers';
 import type { ConfigurationService } from '@/core/config/configuration.service';
 import type { AppStore } from '@/core/database/drizzle/types';
 import type { FilesystemService } from '@/core/filesystem/filesystem.service';
@@ -65,7 +64,7 @@ export class AppStoreFilesManager {
     for (const baseDir of [appInstalledDir, appRepoDir]) {
       const descriptionPath = path.join(baseDir, 'metadata', 'description.md');
       try {
-        if (await this.filesystem.pathExists(descriptionPath)) {
+        if (await this.filesystem.isWithin(descriptionPath, baseDir)) {
           const content = await this.filesystem.readTextFile(descriptionPath);
           if (content?.trim()) {
             return content;
@@ -86,7 +85,7 @@ export class AppStoreFilesManager {
     try {
       const { appRepoDir } = this.getAppPaths(appUrn);
 
-      if (await this.filesystem.pathExists(path.join(appRepoDir, 'config.json'))) {
+      if (await this.filesystem.isWithin(path.join(appRepoDir, 'config.json'), appRepoDir)) {
         const configFile = await this.filesystem.readTextFile(path.join(appRepoDir, 'config.json'));
 
         const config = normalizeAppConfigCategories(JSON.parse(configFile ?? '{}') as Record<string, unknown>);
@@ -117,7 +116,7 @@ export class AppStoreFilesManager {
     try {
       const { appRepoDir } = this.getAppPaths(appUrn);
 
-      if (await this.filesystem.pathExists(path.join(appRepoDir, 'config.json'))) {
+      if (await this.filesystem.isWithin(path.join(appRepoDir, 'config.json'), appRepoDir)) {
         const configFile = await this.filesystem.readTextFile(path.join(appRepoDir, 'config.json'));
 
         const config = normalizeAppConfigCategories(JSON.parse(configFile ?? '{}') as Record<string, unknown>);
@@ -132,7 +131,7 @@ export class AppStoreFilesManager {
         if (parsedConfig.data.available) {
           const descriptionPath = path.join(appRepoDir, 'metadata', 'description.md');
           let description = '';
-          if (await this.filesystem.pathExists(descriptionPath)) {
+          if (await this.filesystem.isWithin(descriptionPath, appRepoDir)) {
             const fileDesc = await this.filesystem.readTextFile(descriptionPath);
             if (fileDesc) description = fileDesc;
           }
@@ -154,7 +153,7 @@ export class AppStoreFilesManager {
 
     const { appInstalledDir } = this.getAppPaths(appUrn);
 
-    if (await this.filesystem.pathExists(path.join(appInstalledDir, 'config.json'))) {
+    if (await this.filesystem.isWithin(path.join(appInstalledDir, 'config.json'), appInstalledDir)) {
       const configFile = await this.filesystem.readTextFile(path.join(appInstalledDir, 'config.json'));
 
       const config = normalizeAppConfigCategories(JSON.parse(configFile ?? '{}') as Record<string, unknown>);
@@ -168,7 +167,7 @@ export class AppStoreFilesManager {
       if (parsedConfig.success && parsedConfig.data.available) {
         const descriptionPath = path.join(appInstalledDir, 'metadata', 'description.md');
         let description = '';
-        if (await this.filesystem.pathExists(descriptionPath)) {
+        if (await this.filesystem.isWithin(descriptionPath, appInstalledDir)) {
           const fileDesc = await this.filesystem.readTextFile(descriptionPath);
           if (fileDesc) description = fileDesc;
         }
@@ -184,7 +183,7 @@ export class AppStoreFilesManager {
 
     let content = null;
     try {
-      if (await this.filesystem.pathExists(dockerComposePath)) {
+      if (await this.filesystem.isWithin(dockerComposePath, appRepoDir)) {
         content = await this.filesystem.readJsonFile(dockerComposePath);
       }
     } catch (error) {
@@ -232,7 +231,7 @@ export class AppStoreFilesManager {
     if (appName === 'cloudflared') {
       this.logger.info('[Patch] Injecting extra_hosts helper for cloudflared...');
       const composePath = path.join(appInstalledDir, 'docker-compose.yml');
-      if (await this.filesystem.pathExists(composePath)) {
+      if (await this.filesystem.isFile(composePath)) {
         let content = await this.filesystem.readTextFile(composePath);
         if (content && !content.includes('extra_hosts')) {
           content = content.replace(
@@ -312,8 +311,8 @@ export class AppStoreFilesManager {
   public async copyDataDir(appUrn: AppUrn, envMap: Map<string, string>) {
     const { appInstalledDir, appDataDir } = this.getAppPaths(appUrn);
 
-    // return if app does not have a data directory
-    if (!(await this.filesystem.pathExists(path.join(appInstalledDir, 'data')))) {
+    // return if app does not have a data directory (a link out of the app folder is not one)
+    if (!(await this.filesystem.isWithin(path.join(appInstalledDir, 'data'), appInstalledDir, 'directory'))) {
       return;
     }
 
@@ -328,6 +327,13 @@ export class AppStoreFilesManager {
     const dataDir = await this.filesystem.listFiles(path.join(appInstalledDir, 'data'));
 
     const processFile = async (file: string) => {
+      // Regular files only. This tree came from a repo the store's author controls, and `copyFile`
+      // follows a link: `data/x -> /data/state/settings.json` would copy the Hub's settings into the
+      // app's own data folder, where the app can read them.
+      if (!(await this.filesystem.isFile(path.join(appInstalledDir, 'data', file)))) {
+        return;
+      }
+
       if (file.endsWith('.template')) {
         const template = await this.filesystem.readTextFile(path.join(appInstalledDir, 'data', file));
         if (template) {
@@ -371,10 +377,33 @@ export class AppStoreFilesManager {
     );
 
     // Remove any .gitkeep files from the app-data folder at any level
-    if (await this.filesystem.pathExists(path.join(appDataDir, 'data'))) {
-      await execAsync(`find ${appDataDir}/data -name .gitkeep -delete`).catch(() => {
-        this.logger.error(`Error removing .gitkeep files from ${appDataDir}/data`);
-      });
+    await this.removeGitkeepFiles(path.join(appDataDir, 'data'));
+  }
+
+  /**
+   * Delete every `.gitkeep` below `directory`, without following a link into another folder.
+   *
+   * This used to run `find` through a shell with the app's folder name pasted into the command
+   * line, and an app folder name is whatever the store's author called it. A walk
+   * through the filesystem service has no shell to hand a name to.
+   */
+  private async removeGitkeepFiles(directory: string): Promise<void> {
+    if (!(await this.filesystem.isDirectory(directory))) {
+      return;
+    }
+
+    try {
+      for (const entry of await this.filesystem.listFiles(directory)) {
+        const entryPath = path.join(directory, entry);
+
+        if (await this.filesystem.isDirectory(entryPath)) {
+          await this.removeGitkeepFiles(entryPath);
+        } else if (entry === '.gitkeep') {
+          await this.filesystem.removeFile(entryPath);
+        }
+      }
+    } catch (error) {
+      this.logger.error(`Error removing .gitkeep files from ${directory}:`, error);
     }
   }
 
@@ -385,7 +414,7 @@ export class AppStoreFilesManager {
     for (const dir of [appInstalledDir, appRepoDir]) {
       for (const ext of extensions) {
         const logoPath = path.join(dir, 'metadata', `logo.${ext}`);
-        if (await this.filesystem.pathExists(logoPath)) {
+        if (await this.filesystem.isWithin(logoPath, dir)) {
           return logoPath;
         }
       }
@@ -421,7 +450,7 @@ export class AppStoreFilesManager {
     for (const dir of [appInstalledDir, appRepoDir]) {
       const screenshotsDir = path.join(dir, 'metadata', 'screenshots');
       try {
-        if (!(await this.filesystem.pathExists(screenshotsDir))) {
+        if (!(await this.filesystem.isWithin(screenshotsDir, dir, 'directory'))) {
           continue;
         }
 
@@ -448,7 +477,7 @@ export class AppStoreFilesManager {
     for (const dir of [appInstalledDir, appRepoDir]) {
       const filePath = path.join(dir, 'metadata', 'screenshots', filename);
       try {
-        if (await this.filesystem.pathExists(filePath)) {
+        if (await this.filesystem.isWithin(filePath, dir)) {
           const image = await this.filesystem.readBinaryFile(filePath);
           const etag = await this.filesystem.getFileEtag(filePath);
           const ext = path.extname(filePath).toLowerCase().substring(1);
@@ -480,7 +509,7 @@ export class AppStoreFilesManager {
     for (const dir of [appInstalledDir, appRepoDir]) {
       const candidate = path.join(dir, normalized);
       try {
-        if (await this.filesystem.pathExists(candidate)) {
+        if (await this.filesystem.isWithin(candidate, dir)) {
           return candidate;
         }
       } catch {
@@ -489,7 +518,7 @@ export class AppStoreFilesManager {
 
       const metadataCandidate = path.join(dir, 'metadata', path.basename(normalized));
       try {
-        if (await this.filesystem.pathExists(metadataCandidate)) {
+        if (await this.filesystem.isWithin(metadataCandidate, dir)) {
           return metadataCandidate;
         }
       } catch {
@@ -541,7 +570,7 @@ export class AppStoreFilesManager {
 
     let content = null;
     try {
-      if (await this.filesystem.pathExists(configPath)) {
+      if (await this.filesystem.isWithin(configPath, appRepoDir)) {
         content = await this.filesystem.readJsonFile(configPath);
       }
     } catch (error) {

@@ -757,6 +757,8 @@
   "SERVER_ERROR_APP_STORE_ALREADY_EXISTS": "An app store with the same url already exists",
   "SERVER_ERROR_DUPLICATE_APP_STORE_NAME": "An app store with the same name already exists",
   "SERVER_ERROR_APP_STORE_NAME_RESERVED": "This app store name is reserved",
+  "SERVER_ERROR_APP_STORE_NOT_FOUND": "This app store does not exist",
+  "SERVER_ERROR_APP_STORE_INVALID_NAME": "This app store name cannot be turned into a valid identifier. Use letters, numbers, spaces, hyphens or underscores",
   "APP_STORE_CLONE_ERROR": "Error cloning app store at {{url}}. Is it a valid git repository?",
   "APP_STORE_CHOOSE_CATEGORY": "Choose a category",
   "APP_STORE_CHOOSE_STORE": "Choose an appstore",

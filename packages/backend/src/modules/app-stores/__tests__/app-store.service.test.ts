@@ -92,6 +92,50 @@ describe('AppStoreService', () => {
     expect(appStoreRepository.createAppStore).not.toHaveBeenCalled();
   });
 
+  describe('store slugs are never trusted as paths', () => {
+    it.each(['..', '.', '../state', '%2e%2e', 'nope'])('refuses to delete %j when no such store exists', async (slug) => {
+      appStoreRepository.getAllAppStores.mockResolvedValue([{ slug: 'ci-marketplace' } as any, { slug: 'mine' } as any]);
+
+      await expect(service.deleteAppStore(slug)).rejects.toThrow('SERVER_ERROR_APP_STORE_NOT_FOUND');
+
+      expect(appStoreRepository.removeAppStoreEntity).not.toHaveBeenCalled();
+      expect(repoHelpers.deleteRepo).not.toHaveBeenCalled();
+    });
+
+    it('deletes a store that exists', async () => {
+      appStoreRepository.getAllAppStores.mockResolvedValue([{ slug: 'ci-marketplace' } as any, { slug: 'mine' } as any]);
+      appStoreRepository.getAppCountForStore.mockResolvedValue({ count: 0 } as any);
+
+      await expect(service.deleteAppStore('mine')).resolves.toEqual({ success: true });
+
+      expect(appStoreRepository.removeAppStoreEntity).toHaveBeenCalledWith('mine');
+      expect(repoHelpers.deleteRepo).toHaveBeenCalledWith('mine');
+    });
+
+    it.each(['..', '.', '...', '../..', '/', '', '   ', '-', '###'])('refuses to create a store named %j', async (name) => {
+      await expect(service.createAppStore({ url: 'https://example.com/repo.git', name })).rejects.toThrow('SERVER_ERROR_APP_STORE_INVALID_NAME');
+
+      expect(appStoreRepository.createAppStore).not.toHaveBeenCalled();
+      expect(repoHelpers.cloneRepo).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['My Store', 'my-store'],
+      ['store_two', 'store_two'],
+      ['Store (beta) v1.2', 'store-beta-v12'],
+    ])('derives the slug for %j as %j', async (name, slug) => {
+      repoHelpers.getRepoHash.mockReturnValue('hash');
+      appStoreRepository.getAppStoreByHash.mockResolvedValue(undefined as any);
+      appStoreRepository.getAppStoreBySlug.mockResolvedValue(undefined as any);
+      appStoreRepository.createAppStore.mockResolvedValue({ slug } as any);
+      repoHelpers.cloneRepo.mockResolvedValue({ success: true, message: '' });
+
+      await service.createAppStore({ url: 'https://example.com/repo.git', name });
+
+      expect(appStoreRepository.createAppStore).toHaveBeenCalledWith(expect.objectContaining({ slug }));
+    });
+  });
+
   it('should prevent deleting last app store', async () => {
     appStoreRepository.getAllAppStores.mockResolvedValue([{ slug: 'only-one' } as any]);
     await expect(service.deleteAppStore('only-one')).rejects.toThrow('APP_STORE_DELETE_ERROR_LAST_STORE');
