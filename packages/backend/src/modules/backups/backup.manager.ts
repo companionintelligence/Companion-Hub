@@ -1,6 +1,7 @@
 import path from 'node:path';
 
 import { resolveBackupFilePath } from './backup-path';
+import { validateRestoreArchiveEntries, validateRestoreDirectory } from './restore-validation';
 import { isAbsoluteHostPath, joinHostPath } from '@/common/helpers/app-data-path.helper';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { ArchiveService } from '@/core/archive/archive.service';
@@ -93,12 +94,6 @@ export class BackupManager implements OnApplicationShutdown {
 
   public restoreApp = async (appUrn: AppUrn, filename: string) => {
     const { dataDir } = this.config.get('directories');
-    const restoreDir = await this.filesystem.createTempDirectory(appUrn);
-
-    if (!restoreDir) {
-      throw new Error('Failed to create temp directory');
-    }
-
     const { appStoreId, appName } = extractAppUrn(appUrn);
     const backupDir = path.join(dataDir, 'backups', appStoreId, appName);
 
@@ -111,20 +106,49 @@ export class BackupManager implements OnApplicationShutdown {
 
     this.logger.info('Restoring app from backup...');
 
-    // Verify the app has a backup
-    if (!(await this.filesystem.pathExists(archive))) {
+    // Verify the app has a backup. `isFile` is an lstat: a symlink dropped into the backups
+    // folder is not a backup, whatever it points at.
+    if (!(await this.filesystem.isFile(archive))) {
       throw new Error('The backup file does not exist');
     }
 
-    // Unzip the archive
-    await this.filesystem.createDirectory(restoreDir);
+    const restoreDir = await this.filesystem.createTempDirectory(appUrn);
 
-    this.logger.info('Extracting archive...');
-    const { stderr, stdout } = await this.archiveManager.extractTarGz(archive, restoreDir);
-    this.logger.debug('--- archiveManager.extractTarGz ---');
-    this.logger.debug('stderr:', stderr);
-    this.logger.debug('stdout:', stdout);
+    if (!restoreDir) {
+      throw new Error('Failed to create temp directory');
+    }
 
+    try {
+      await this.filesystem.createDirectory(restoreDir);
+
+      // ⚠ EVERYTHING BEFORE THE REPLACEMENT IS A GATE. Restoring deletes the app's live
+      // data before it writes the backup's, so an archive that turns out to be corrupt,
+      // truncated, or hostile must be rejected while the live data is still there.
+      // Each of these throws; none of them is advisory.
+      validateRestoreArchiveEntries(await this.archiveManager.listTarGz(archive));
+
+      this.logger.info('Extracting archive...');
+      const { stderr, stdout } = await this.archiveManager.extractTarGz(archive, restoreDir);
+      this.logger.debug('--- archiveManager.extractTarGz ---');
+      this.logger.debug('stderr:', stderr);
+      this.logger.debug('stdout:', stdout);
+
+      await validateRestoreDirectory(path.join(restoreDir, 'app-data'), { required: true });
+      await validateRestoreDirectory(path.join(restoreDir, 'app'), { required: true });
+      await validateRestoreDirectory(path.join(restoreDir, 'user-config'), { required: false });
+
+      await this.replaceAppFiles(appUrn, restoreDir);
+    } finally {
+      // Always, including when validation or extraction threw: an unsafe upload would
+      // otherwise leave its extracted contents in the temp folder indefinitely.
+      await this.filesystem.removeDirectory(restoreDir);
+    }
+  };
+
+  /** Swap the app's live folders for the (already validated) ones extracted from a backup. */
+  private async replaceAppFiles(appUrn: AppUrn, restoreDir: string) {
+    const { dataDir } = this.config.get('directories');
+    const { appStoreId, appName } = extractAppUrn(appUrn);
     const { appInstalledDir, appDataDir } = this.appFilesManager.getAppPaths(appUrn);
     const userConfigDir = path.join(dataDir, 'user-config', appStoreId, appName);
 
@@ -137,17 +161,21 @@ export class BackupManager implements OnApplicationShutdown {
     await this.filesystem.createDirectory(appInstalledDir);
     await this.filesystem.createDirectory(userConfigDir);
 
-    // Copy data from the backup folder
-    await this.filesystem.copyDirectory(path.join(restoreDir, 'app-data'), appDataDir);
-    await this.filesystem.copyDirectory(path.join(restoreDir, 'app'), appInstalledDir);
+    // Copy data from the backup folder. `copyDirectory` reports failure by returning false
+    // (ENOSPC, EACCES), and a restore that copied nothing must not report success.
+    const copied = [
+      await this.filesystem.copyDirectory(path.join(restoreDir, 'app-data'), appDataDir),
+      await this.filesystem.copyDirectory(path.join(restoreDir, 'app'), appInstalledDir),
+    ];
 
-    if (await this.filesystem.pathExists(path.join(restoreDir, 'user-config'))) {
-      await this.filesystem.copyDirectory(path.join(restoreDir, 'user-config'), userConfigDir);
+    if (await this.filesystem.isDirectory(path.join(restoreDir, 'user-config'))) {
+      copied.push(await this.filesystem.copyDirectory(path.join(restoreDir, 'user-config'), userConfigDir));
     }
 
-    // Delete restore folder
-    await this.filesystem.removeDirectory(restoreDir);
-  };
+    if (copied.includes(false)) {
+      throw new Error('Failed to restore the backup files');
+    }
+  }
 
   /**
    * Delete a backup file
@@ -269,7 +297,7 @@ export class BackupManager implements OnApplicationShutdown {
 
     const backupPath = resolveBackupFilePath(backupDir, filename);
 
-    if (!(await this.filesystem.pathExists(backupPath))) {
+    if (!(await this.filesystem.isFile(backupPath))) {
       throw new Error('The backup file does not exist');
     }
 
