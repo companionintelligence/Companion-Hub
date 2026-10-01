@@ -77,7 +77,7 @@
     "@hey-api/openapi-ts": "^0.97.3",
     "@playwright/test": "^1.63.0",
     "cloudflare": "^7.2.0",
-    "dotenv-cli": "^10.0.0",
+    "dotenv-cli": "^11.0.0",
     "drizzle-orm": "^0.45.2",
     "husky": "^9.1.7",
     "knip": "^6.38.0",
