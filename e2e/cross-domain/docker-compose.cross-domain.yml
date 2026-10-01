@@ -119,7 +119,7 @@ services:
 
   # Traefik reverse proxy for E2E routing verification
   traefik:
-    image: traefik:v3.6.7
+    image: traefik:v3.6.12
     pull_policy: if_not_present
     container_name: ci-hub-e2e-traefik
     restart: "no"

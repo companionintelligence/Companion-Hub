@@ -60,6 +60,26 @@ describe('traefik ci-hub forward-auth middleware config', () => {
     expect(content).not.toMatch(/trustForwardHeader:\s*"?true/);
   });
 
+  /*
+   * `maxResponseBodySize` is what keeps Traefik from buffering an unbounded reply from the auth
+   * server. It only exists from Traefik 3.6.9, so the pin has to be at least that or Traefik refuses
+   * the label and the middleware, and with it every protected app, stops loading.
+   */
+  it.each(COMPOSE_COPIES)('%s bounds the forward-auth reply on a Traefik that supports it', (relativePath) => {
+    const content = readFileSync(path.join(REPO_ROOT, relativePath), 'utf-8');
+    expect(content).toMatch(/forwardauth\.maxResponseBodySize:\s*"16384"/);
+
+    const version = content.match(/image:\s*traefik:v(\d+)\.(\d+)\.(\d+)/);
+    expect(version, `traefik image pin missing in ${relativePath}`).toBeTruthy();
+    const [major, minor, patch] = (version ?? []).slice(1).map(Number) as [number, number, number];
+    expect(major * 1_000_000 + minor * 1_000 + patch).toBeGreaterThanOrEqual(3_006_009);
+  });
+
+  it('backend traefik dynamic.yml bounds the forward-auth reply too', () => {
+    const dynamic = YAML.parse(readFileSync(path.join(REPO_ROOT, 'packages/backend/assets/traefik/dynamic/dynamic.yml'), 'utf-8'));
+    expect(dynamic.http.middlewares['ci-hub'].forwardAuth.maxResponseBodySize).toBe(16384);
+  });
+
   it('backend traefik dynamic.yml decides forward auth from the matched request, and strips visitor-set headers on tunnel routes', () => {
     const dynamic = YAML.parse(readFileSync(path.join(REPO_ROOT, 'packages/backend/assets/traefik/dynamic/dynamic.yml'), 'utf-8'));
     expect(dynamic.http.middlewares['ci-hub'].forwardAuth.trustForwardHeader).toBe(false);

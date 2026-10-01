@@ -515,7 +515,7 @@ The Hub orchestrates its infrastructure and all user-installed apps via Docker C
 | `ci-hub` | Built from `Dockerfile` | Backend API + static frontend | 5002 (prod), 3000 (dev) |
 | `ci-hub-db` | `postgres:14` | Primary data store | 6543 |
 | `ci-hub-queue` | `rabbitmq:4-alpine` | Message broker | 5672 |
-| `traefik` | `traefik:v3.6.7` | Reverse proxy, TLS termination | 80, 443, 8080 (dashboard) |
+| `traefik` | `traefik:v3.6.12` | Reverse proxy, TLS termination | 80, 443, 8080 (dashboard) |
 
 **Optional services** (Docker Compose profiles):
 
