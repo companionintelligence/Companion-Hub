@@ -87,6 +87,7 @@ Settings → System → **Desktop app** offers the newest desktop installer for 
 - A phone or tablet browser gets no installer and does not ask the Hub. `isMobileUserAgent()` catches iPhone, iPod, Android, and an iPad, including an iPad that reports itself as a Mac (it has touch points). Without that check, an iPhone's user agent passes for macOS and an Android one for Linux.
 - The desktop app asks the Rust shell (`check_desktop_update_command`). When that fails it still reads the servers directly, and so does the phone app, which always lands there. Routing that fallback through the Hub would make the phone app offer desktop installers.
 - `desktop-release.ts` in `@ci-hub/common/types` holds the server choice, the installer choice, and the URL trust check for both the Hub and the page, so the page accepts the installer the Hub returns.
+- The install steps under the button never say to remove the app first. Removing the Linux package runs its cleanup (deb `postrm` on `remove`/`purge`, rpm `postun` at `0`), which deletes the Hub's database, every app with its data, and the Hub's folder. The steps install over it: `sudo apt install "./<file>"`, `sudo rpm -U "./<file>"`, or `chmod +x "./<file>"` for an AppImage. `<file>` is the download URL's last segment, decoded (`Companion Hub_0.2.78_amd64.deb`, with a space), and the step shows no command when the name has anything but letters, digits, spaces, `.`, `_`, `+` and `-`.
 
 ## Styling
 

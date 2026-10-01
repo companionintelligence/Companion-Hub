@@ -34,6 +34,7 @@ import {
   isStackUpdateAvailable,
   isTauri,
   manualUpdateArtifactKind,
+  manualUpdateFileName,
   performStackUpdate,
   performUpdate,
   type UpdateActionResult,
@@ -259,28 +260,30 @@ export const GeneralActionsContainer = () => {
 
     const kind = manualUpdateArtifactKind(shellUpdate.downloadUrl);
     const platform = shellUpdate.platform;
+    // Commands name the downloaded file exactly, quoted for the space in "Companion Hub_…": a glob
+    // like `./companion-hub_*.deb` matched no download, so apt refused it. A name that isn't safe to
+    // quote gets the same step without a command.
+    const fileName = manualUpdateFileName(shellUpdate.downloadUrl);
     let steps: { text: string; command?: string }[] | null = null;
 
     if (kind === 'appimage') {
       steps = [
         { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_DOWNLOAD') },
-        {
-          text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_APPIMAGE_STEP_REPLACE'),
-          command: 'chmod +x ~/Downloads/Companion.Hub_*.AppImage',
-        },
+        fileName
+          ? { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_APPIMAGE_STEP_REPLACE'), command: `chmod +x "./${fileName}"` }
+          : { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_APPIMAGE_STEP_REPLACE_NO_COMMAND') },
         { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_RELAUNCH') },
       ];
     } else if (kind === 'deb' || kind === 'rpm') {
+      // Install over the current app, never remove it first. Removing the package runs its cleanup,
+      // which deletes the Hub's database, every app with its data, and the Hub's folder. An install
+      // in place skips that: the old package's deb `postrm` sees `upgrade`, its rpm `postun` sees 1.
+      const install = kind === 'deb' ? 'sudo apt install' : 'sudo rpm -U';
       steps = [
         { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_DOWNLOAD') },
-        {
-          text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_REMOVE'),
-          command: kind === 'deb' ? 'sudo apt purge companion-hub -y' : 'sudo rpm -e companion-hub',
-        },
-        {
-          text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_INSTALL'),
-          command: kind === 'deb' ? 'sudo apt install ./companion-hub_*.deb' : 'sudo rpm -U ./companion-hub-*.rpm',
-        },
+        fileName
+          ? { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_INSTALL'), command: `${install} "./${fileName}"` }
+          : { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_INSTALL_NO_COMMAND') },
         { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_RELAUNCH') },
       ];
     } else if (kind === 'dmg' || platform === 'macos') {

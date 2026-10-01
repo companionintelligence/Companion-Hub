@@ -72,6 +72,11 @@ const mockToastSuccess = vi.mocked(toast.success);
 const mockFactoryReset = vi.mocked(factoryReset);
 const jsdomUserAgent = navigator.userAgent;
 
+/** The terminal commands a set of install steps shows, in order. */
+function commandsIn(instructions: HTMLElement): (string | null)[] {
+  return Array.from(instructions.querySelectorAll('code'), (code) => code.textContent);
+}
+
 describe('GeneralActionsContainer', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -135,9 +140,90 @@ describe('GeneralActionsContainer', () => {
 
     const instructions = await screen.findByTestId('manual-update-instructions');
     expect(instructions).toHaveTextContent('Then install the app');
-    expect(instructions).toHaveTextContent('sudo apt purge companion-hub -y');
-    expect(instructions).toHaveTextContent('sudo apt install ./companion-hub_*.deb');
+    expect(commandsIn(instructions)).toEqual(['sudo apt install "./Companion Hub_0.2.24_amd64.deb"']);
     expect(instructions).not.toHaveTextContent('rpm');
+  });
+
+  describe('Linux install steps', () => {
+    function offerDesktopUpdate(downloadUrl: string) {
+      mockIsTauri.mockReturnValue(true);
+      mockGetInstalledDesktopVersion.mockResolvedValue('0.2.77');
+      mockCheckForUpdates.mockResolvedValue({
+        currentVersion: '0.2.77',
+        latestVersion: '0.2.78',
+        downloadUrl,
+        updateAvailable: true,
+        platform: 'linux',
+        manualDownload: true,
+      });
+    }
+
+    // Removing the package runs its cleanup, which deletes the Hub, its apps and their data.
+    const REMOVAL = /purge|apt remove|apt-get remove|dpkg -r|rpm -e|Remove the current app/i;
+
+    it.each([
+      [
+        '.deb',
+        'https://dl.ci.computer/v0.2.78/linux/deb/x64/Companion%20Hub_0.2.78_amd64.deb',
+        'sudo apt install "./Companion Hub_0.2.78_amd64.deb"',
+      ],
+      [
+        '.rpm',
+        'https://dl.ci.computer/v0.2.78/linux/rpm/x64/Companion%20Hub-0.2.78-1.x86_64.rpm',
+        'sudo rpm -U "./Companion Hub-0.2.78-1.x86_64.rpm"',
+      ],
+    ])('installs the %s over the current app, named as the browser saved it', async (_kind, downloadUrl, command) => {
+      offerDesktopUpdate(downloadUrl);
+
+      render(<GeneralActionsContainer />);
+
+      const instructions = await screen.findByTestId('manual-update-instructions');
+      expect(commandsIn(instructions)).toEqual([command]);
+      expect(instructions).toHaveTextContent('without removing it first. This keeps your Hub, its apps, and their data.');
+      expect(instructions).not.toHaveTextContent(REMOVAL);
+    });
+
+    it('makes the AppImage executable, named as the browser saved it', async () => {
+      offerDesktopUpdate('https://dl.ci.computer/v0.2.78/linux/appimage/x64/Companion%20Hub_0.2.78_amd64.AppImage');
+
+      render(<GeneralActionsContainer />);
+
+      const instructions = await screen.findByTestId('manual-update-instructions');
+      expect(commandsIn(instructions)).toEqual(['chmod +x "./Companion Hub_0.2.78_amd64.AppImage"']);
+      expect(instructions).toHaveTextContent('make the downloaded AppImage executable, then use it in place of your existing one');
+    });
+
+    // Each would break out of the double quotes, reach another folder, or isn't a name at all.
+    it.each([
+      ['a $', 'Companion%20Hub%24(id)_0.2.78_amd64.deb'],
+      ['a backtick', 'Companion%20Hub%60id%60_0.2.78_amd64.deb'],
+      ['a double quote', 'Companion%20Hub%22_0.2.78_amd64.deb'],
+      ['a slash', '..%2F..%2FCompanion%20Hub_0.2.78_amd64.deb'],
+      ['a broken escape', 'Companion%20Hub%E0%A4%A_0.2.78_amd64.deb'],
+    ])('gives the install step without a command when the file name has %s', async (_case, fileName) => {
+      offerDesktopUpdate(`https://dl.ci.computer/v0.2.78/linux/deb/x64/${fileName}`);
+
+      render(<GeneralActionsContainer />);
+
+      const instructions = await screen.findByTestId('manual-update-instructions');
+      expect(commandsIn(instructions)).toEqual([]);
+      expect(instructions).toHaveTextContent(
+        'Open the downloaded package to install the new version over the current one, without removing it first. This keeps your Hub, its apps, and their data.',
+      );
+      expect(instructions).not.toHaveTextContent(REMOVAL);
+    });
+
+    it('gives the AppImage step without a command when the file name is not safe to quote', async () => {
+      offerDesktopUpdate('https://dl.ci.computer/v0.2.78/linux/appimage/x64/Companion%20Hub%24(id)_0.2.78_amd64.AppImage');
+
+      render(<GeneralActionsContainer />);
+
+      const instructions = await screen.findByTestId('manual-update-instructions');
+      expect(commandsIn(instructions)).toEqual([]);
+      expect(instructions).toHaveTextContent(
+        'Close Companion Hub, make the downloaded AppImage executable, then use it in place of your existing one.',
+      );
+    });
   });
 
   it('keeps manual update instructions visible after opening the installer download', async () => {
@@ -162,7 +248,7 @@ describe('GeneralActionsContainer', () => {
     await userEvent.click(await screen.findByTestId('hub-shell-update-btn'));
 
     expect(await screen.findByText('Installer download opened in your browser.')).toBeInTheDocument();
-    expect(screen.getByTestId('manual-update-instructions')).toHaveTextContent('sudo apt purge companion-hub -y');
+    expect(commandsIn(screen.getByTestId('manual-update-instructions'))).toEqual(['sudo apt install "./Companion Hub_0.2.24_amd64.deb"']);
   });
 
   it('surfaces the manual download message after opening the linux installer', async () => {
@@ -299,7 +385,7 @@ describe('GeneralActionsContainer', () => {
 
     const instructions = await screen.findByTestId('manual-update-instructions');
     expect(instructions).toHaveTextContent('Open the downloaded DMG');
-    expect(instructions).not.toHaveTextContent('apt purge');
+    expect(commandsIn(instructions)).toEqual([]);
   });
 
   it('labels the stack button as a stack-only update', async () => {

@@ -5,6 +5,7 @@ import {
   isHubUpdateAvailable,
   isStackUpdateAvailable,
   isTrustedDownloadUrl,
+  manualUpdateFileName,
   performStackUpdate,
   performUpdate,
   requiresManualDesktopUpdate,
@@ -364,6 +365,33 @@ describe('update-service', () => {
       };
       expect(isHubUpdateAvailable(true, desktopUpdate, '1.0.0', '1.0.0')).toBe(true);
       expect(isHubUpdateAvailable(true, null, '1.0.0', '1.2.0')).toBe(false);
+    });
+  });
+
+  describe('manualUpdateFileName', () => {
+    it.each([
+      ['https://dl.ci.computer/v0.2.78/linux/deb/x64/Companion%20Hub_0.2.78_amd64.deb', 'Companion Hub_0.2.78_amd64.deb'],
+      ['https://dl.ci.computer/v0.2.78/linux/rpm/arm/Companion%20Hub-0.2.78-1.aarch64.rpm', 'Companion Hub-0.2.78-1.aarch64.rpm'],
+      ['https://dl.ci.computer/v0.2.78/linux/appimage/x64/Companion%20Hub_0.2.78_amd64.AppImage?x=1#top', 'Companion Hub_0.2.78_amd64.AppImage'],
+      ['https://dl.ci.computer/v0.2.78/linux/deb/x64/companion-hub_0.2.78%2Bgit1_amd64.deb', 'companion-hub_0.2.78+git1_amd64.deb'],
+    ])('reads %s as %s', (downloadUrl, fileName) => {
+      expect(manualUpdateFileName(downloadUrl)).toBe(fileName);
+    });
+
+    it.each([
+      ['a $', 'Companion%20Hub%24(id)_0.2.78_amd64.deb'],
+      ['a backtick', 'Companion%60id%60.deb'],
+      ['a double quote', 'Companion%22.deb'],
+      ['a single quote', "Companion'.deb"],
+      ['a backslash', 'Companion%5C.deb'],
+      ['a !', 'Companion!.deb'],
+      ['an encoded slash', '..%2F..%2Fevil.deb'],
+      ['a non-ASCII letter', 'Compa%C3%B1ion.deb'],
+      ['a broken escape', 'Companion%E0%A4%A.deb'],
+      ['only dots', '..'],
+      ['nothing', ''],
+    ])('refuses a name with %s', (_case, segment) => {
+      expect(manualUpdateFileName(`https://dl.ci.computer/v0.2.78/linux/deb/x64/${segment}`)).toBeNull();
     });
   });
 
