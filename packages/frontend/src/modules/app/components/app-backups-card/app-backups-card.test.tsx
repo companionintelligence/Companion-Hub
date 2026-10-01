@@ -14,6 +14,7 @@ const h = vi.hoisted(() => ({
   download: vi.fn(),
   saveFile: vi.fn(),
   setOptimisticStatus: vi.fn(),
+  invalidateAppQueries: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
 }));
@@ -32,6 +33,7 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
 
 vi.mock('@/api-client/sdk.gen', () => ({ downloadBackup: (...args: unknown[]) => h.download(...args) }));
 vi.mock('@/modules/settings/containers/log-download', () => ({ downloadResponseAsFile: (...args: unknown[]) => h.saveFile(...args) }));
+vi.mock('../../helpers/app-sse-cache', () => ({ invalidateAppQueries: (...args: unknown[]) => h.invalidateAppQueries(...args) }));
 vi.mock('../../helpers/use-app-status', () => ({ useAppStatus: () => ({ setOptimisticStatus: h.setOptimisticStatus }) }));
 vi.mock('sonner', () => ({
   toast: { success: (...args: unknown[]) => h.toastSuccess(...args), error: (...args: unknown[]) => h.toastError(...args) },
@@ -116,6 +118,37 @@ describe('AppBackupsCard', () => {
       expect(h.list).toHaveBeenLastCalledWith(2);
     });
 
+    it('steps back to the last page that exists when the page it is on has emptied', async () => {
+      // Eleven backups, ten a page. The second page holds one; deleting it leaves a list of ten on one page.
+      let deleted = false;
+      h.list.mockImplementation(async (page: number) => {
+        if (deleted) return listOf(page === 1 ? BACKUPS : [], { total: 10, lastPage: 1, currentPage: page });
+        return listOf(page === 1 ? BACKUPS : [BACKUPS[1] as (typeof BACKUPS)[number]], { total: 11, lastPage: 2, currentPage: page });
+      });
+      h.remove.mockImplementation(async () => {
+        deleted = true;
+      });
+      mount(card());
+      await screen.findByText('BACKUPS_LIST_PAGE {"page":1,"total":2}');
+      await userEvent.click(screen.getByRole('button', { name: 'BACKUPS_LIST_NEXT' }));
+      await userEvent.click(await screen.findByRole('button', { name: `COMMON_DELETE ${BACKUPS[1]?.id}` }));
+      await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'COMMON_DELETE' }));
+
+      // Back on page 1, with its rows, rather than an empty page with a pager or a claim that there are no backups.
+      expect(await screen.findByText(BACKUPS[0]?.id as string)).toBeInTheDocument();
+      expect(screen.queryByText('BACKUPS_LIST_EMPTY')).toBeNull();
+      expect(screen.queryByText('BACKUPS_LIST_NEXT')).toBeNull();
+      expect(h.list).toHaveBeenLastCalledWith(1);
+    });
+
+    it('does not claim there are no backups while a page past the end is being replaced', async () => {
+      h.list.mockImplementation(async (page: number) => listOf([], { total: 10, lastPage: 1, currentPage: page }));
+      mount(card());
+
+      await waitFor(() => expect(h.list).toHaveBeenCalled());
+      expect(screen.queryByText('BACKUPS_LIST_EMPTY')).toBeNull();
+    });
+
     it('shows no pager when everything fits on one page', async () => {
       mount(card());
       await screen.findByText(BACKUPS[0]?.id as string);
@@ -148,6 +181,25 @@ describe('AppBackupsCard', () => {
 
       await waitFor(() => expect(h.toastError).toHaveBeenCalledWith('APP_ACTION_GRANT_DENIED {"action":"backup"}'));
     });
+
+    it('asks the server for the real status when the request is refused, so the app is not left showing as backing up', async () => {
+      h.backup.mockRejectedValue({ message: 'APP_ACTION_GRANT_DENIED', intlParams: { action: 'backup' } });
+      mount(card());
+      await userEvent.click(await screen.findByRole('button', { name: 'BACKUPS_LIST_BACKUP_NOW' }));
+      await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'COMMON_BACKUP' }));
+
+      expect(h.setOptimisticStatus).toHaveBeenCalledWith('backing_up', URN);
+      await waitFor(() => expect(h.invalidateAppQueries).toHaveBeenCalledWith(expect.anything(), URN));
+    });
+
+    it('does not ask when the request was accepted', async () => {
+      mount(card());
+      await userEvent.click(await screen.findByRole('button', { name: 'BACKUPS_LIST_BACKUP_NOW' }));
+      await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'COMMON_BACKUP' }));
+
+      await waitFor(() => expect(h.backup).toHaveBeenCalled());
+      expect(h.invalidateAppQueries).not.toHaveBeenCalled();
+    });
   });
 
   describe('restoring', () => {
@@ -164,6 +216,18 @@ describe('AppBackupsCard', () => {
 
       await waitFor(() => expect(h.restore).toHaveBeenCalledWith({ path: { urn: URN }, body: { filename: BACKUPS[0]?.id } }));
       expect(h.setOptimisticStatus).toHaveBeenCalledWith('restoring', URN);
+    });
+  });
+
+  describe('restoring, when refused', () => {
+    it('asks the server for the real status, so the app is not left showing as restoring', async () => {
+      h.restore.mockRejectedValue({ message: 'APP_RESTORE_ERROR_TOAST' });
+      mount(card());
+      await userEvent.click(await screen.findByRole('button', { name: `COMMON_RESTORE ${BACKUPS[0]?.id}` }));
+      await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'COMMON_RESTORE' }));
+
+      expect(h.setOptimisticStatus).toHaveBeenCalledWith('restoring', URN);
+      await waitFor(() => expect(h.invalidateAppQueries).toHaveBeenCalledWith(expect.anything(), URN));
     });
   });
 
@@ -221,6 +285,17 @@ describe('AppBackupsCard', () => {
 
     it('says when a backup of that name is already there, and keeps the dialog open to pick another', async () => {
       h.upload.mockRejectedValue(new Error('A backup with this filename already exists'));
+      const dialog = await open();
+      await userEvent.upload(within(dialog).getByLabelText('APP_BACKUP_UPLOAD_FILE_LABEL'), file('dup.tar.gz'));
+
+      await userEvent.click(within(dialog).getByRole('button', { name: 'APP_BACKUP_UPLOAD_SUBMIT' }));
+
+      await waitFor(() => expect(h.toastError).toHaveBeenCalledWith('APP_BACKUP_UPLOAD_ALREADY_EXISTS'));
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+    });
+
+    it('says so when the Hub reports the name clash as a translation key', async () => {
+      h.upload.mockRejectedValue({ message: 'APP_BACKUP_UPLOAD_ALREADY_EXISTS', status: 409 });
       const dialog = await open();
       await userEvent.upload(within(dialog).getByLabelText('APP_BACKUP_UPLOAD_FILE_LABEL'), file('dup.tar.gz'));
 

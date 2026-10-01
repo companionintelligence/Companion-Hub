@@ -19,6 +19,7 @@ import { Archive, Download, RotateCcw, Trash2, Upload } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
+import { invalidateAppQueries } from '../../helpers/app-sse-cache';
 import { useAppStatus } from '../../helpers/use-app-status';
 
 const PAGE_SIZE = 10;
@@ -93,6 +94,15 @@ export const AppBackupsCard = ({ appUrn, appName, status }: AppBackupsCardProps)
     }
   }, [status, refreshList]);
 
+  // Back up and restore show the app as busy the moment they are asked for. A refusal at the door emits no
+  // lifecycle event and nothing polls the app, so the busy status would stay on screen (and the buttons
+  // disabled) until the page was reloaded: ask the server what the status really is.
+  const onBusyError = (error: TranslatableError) => {
+    toast.error(t(error.message, error.intlParams));
+    setPending(null);
+    invalidateAppQueries(queryClient, appUrn);
+  };
+
   const onError = (error: TranslatableError) => {
     toast.error(t(error.message, error.intlParams));
     setPending(null);
@@ -104,7 +114,7 @@ export const AppBackupsCard = ({ appUrn, appName, status }: AppBackupsCardProps)
       setOptimisticStatus('backing_up', appUrn);
       setPending(null);
     },
-    onError,
+    onError: onBusyError,
   });
 
   const restore = useMutation({
@@ -113,7 +123,7 @@ export const AppBackupsCard = ({ appUrn, appName, status }: AppBackupsCardProps)
       setOptimisticStatus('restoring', appUrn);
       setPending(null);
     },
-    onError,
+    onError: onBusyError,
   });
 
   const remove = useMutation({
@@ -135,10 +145,10 @@ export const AppBackupsCard = ({ appUrn, appName, status }: AppBackupsCardProps)
       void refreshList();
     },
     onError: (error: Error) => {
-      // The server reports a name clash as a plain message; say so in the person's language.
-      toast.error(
-        error.message === 'A backup with this filename already exists' ? t('APP_BACKUP_UPLOAD_ALREADY_EXISTS') : t('APP_BACKUP_UPLOAD_ERROR'),
-      );
+      // A name clash is the one upload failure worth naming. The Hub answers it with a translation key; a
+      // Hub from before that answers with the English sentence, which a phone can still be talking to.
+      const nameTaken = error.message === 'APP_BACKUP_UPLOAD_ALREADY_EXISTS' || error.message === 'A backup with this filename already exists';
+      toast.error(nameTaken ? t('APP_BACKUP_UPLOAD_ALREADY_EXISTS') : t('APP_BACKUP_UPLOAD_ERROR'));
     },
   });
 
@@ -160,6 +170,14 @@ export const AppBackupsCard = ({ appUrn, appName, status }: AppBackupsCardProps)
   const busy = BUSY_STATUSES.has(status);
   const rows = backups.data?.data ?? [];
   const lastPage = Math.max(1, backups.data?.lastPage ?? 1);
+
+  // Deleting the last backup on the last page leaves the page the person is on past the end of the list. Go
+  // back to the last page that exists, instead of showing a page with nothing on it and a pager.
+  useEffect(() => {
+    if (backups.data && page > lastPage) {
+      setPage(lastPage);
+    }
+  }, [backups.data, page, lastPage]);
   const formatDate = (date: number) => new Date(date).toLocaleString();
   const closeDialog = (open: boolean) => {
     if (!open) {
@@ -192,7 +210,7 @@ export const AppBackupsCard = ({ appUrn, appName, status }: AppBackupsCardProps)
           <p className="text-sm text-destructive" role="alert">
             {t('BACKUPS_LIST_LOAD_ERROR')}
           </p>
-        ) : rows.length === 0 && !backups.isLoading ? (
+        ) : rows.length === 0 && !backups.isLoading && (backups.data?.total ?? 0) === 0 ? (
           <p className="py-4 text-sm text-muted-foreground">{t('BACKUPS_LIST_EMPTY')}</p>
         ) : (
           <Table>
