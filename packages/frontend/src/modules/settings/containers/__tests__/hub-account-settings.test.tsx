@@ -49,7 +49,11 @@ const startRemoval = async () => {
   await waitFor(() => expect(button).not.toBeDisabled());
   await userEvent.click(button);
 
-  const { onEnd } = vi.mocked(watchForHubRemoval).mock.calls.at(-1)?.[0] as { onEnd: (end: HubRemovalWatchEnd) => void };
+  const lastWatch = vi.mocked(watchForHubRemoval).mock.calls.at(-1);
+  if (!lastWatch) {
+    throw new Error('Removing the Hub never started watching for its removal');
+  }
+  const { onEnd } = lastWatch[0] as { onEnd: (end: HubRemovalWatchEnd) => void };
   return { onEnd, stop };
 };
 

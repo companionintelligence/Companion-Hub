@@ -128,7 +128,7 @@ export class AppsService {
   public async checkAppAvailability(appUrn: AppUrn): Promise<AppAvailabilityResult> {
     const { app, info } = await this.appsReadService.getApp(appUrn);
 
-    if (!app || app.status !== 'running') {
+    if (app?.status !== 'running') {
       return { available: false, stage: 'error' };
     }
 

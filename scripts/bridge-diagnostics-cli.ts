@@ -174,7 +174,7 @@ export function resolveHubContainerCidr(): string | undefined {
   const [address, prefix] = first.split('/');
   const bits = Number(prefix);
   const octets = address?.split('.').map(Number);
-  if (!octets || octets.length !== 4 || !Number.isInteger(bits) || bits < 0 || bits > 32) return undefined;
+  if (octets?.length !== 4 || !Number.isInteger(bits) || bits < 0 || bits > 32) return undefined;
 
   const maskInt = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
   const addressInt = ((octets[0] << 24) | (octets[1] << 16) | (octets[2] << 8) | octets[3]) >>> 0;

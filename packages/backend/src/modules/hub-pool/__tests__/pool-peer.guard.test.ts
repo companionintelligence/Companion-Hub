@@ -193,16 +193,14 @@ describe('PoolPeerGuard', () => {
       expect(repo.findByNodeFqdn).not.toHaveBeenCalled();
     });
 
-    it.each([
-      'https://hub-b.example-tailnet.ts.net',
-      'hub-b.example-tailnet.ts.net:8443',
-      '100.64.0.1',
-      'nodots',
-    ])('refuses %s as a peer name before it reaches the lookup', async (nodeFqdn) => {
-      await expect(guard.canActivate(createContext(peerHeaders(nodeFqdn, PAIRED_TOKEN)).context)).rejects.toThrow(UnauthorizedException);
+    it.each(['https://hub-b.example-tailnet.ts.net', 'hub-b.example-tailnet.ts.net:8443', '100.64.0.1', 'nodots'])(
+      'refuses %s as a peer name before it reaches the lookup',
+      async (nodeFqdn) => {
+        await expect(guard.canActivate(createContext(peerHeaders(nodeFqdn, PAIRED_TOKEN)).context)).rejects.toThrow(UnauthorizedException);
 
-      expect(repo.findByNodeFqdn).not.toHaveBeenCalled();
-    });
+        expect(repo.findByNodeFqdn).not.toHaveBeenCalled();
+      },
+    );
 
     it('refuses a tailnet device that has never been paired', async () => {
       // The core security property: being on the tailnet does not grant use of a peer-facing route.

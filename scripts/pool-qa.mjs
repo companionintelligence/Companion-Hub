@@ -3101,7 +3101,7 @@ const SECTION_5 = [
       if (status.routingActive !== true) problems.push(`routingActive=false (reason '${status.reason}')`);
       if (status.localNode?.capabilitiesError) problems.push(`core capabilitiesError: ${status.localNode.capabilitiesError}`);
       if (!backendsHold(status.localNode?.backends, ctx.state.models.both)) problems.push('core does not hold <model-both>');
-      if (!peer || peer.status !== 'connected' || !backendsHold(peer.lastCapabilities?.backends, ctx.state.models.both))
+      if (peer?.status !== 'connected' || !backendsHold(peer.lastCapabilities?.backends, ctx.state.models.both))
         problems.push('beta is not a live candidate for <model-both>');
       return problems.length
         ? blocked(`5.3 is about the commit boundary between two live candidates and is meaningless with one: ${problems.join('; ')}`)

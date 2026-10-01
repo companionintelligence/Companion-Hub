@@ -1852,7 +1852,8 @@ describe('HubPoolPeerService', () => {
           peerPublicKey: keys.publicKey,
           bearerGraceUntil: new Date(Date.now() + 600_000).toISOString(),
         });
-      const headersOf = (call: number) => (vi.mocked(global.fetch).mock.calls[call]?.[1] as RequestInit).headers as Record<string, string>;
+      const headersOf = (call: number) =>
+        (vi.mocked(global.fetch).mock.calls[call]?.[1] as RequestInit | undefined)?.headers as Record<string, string>;
 
       beforeEach(() => {
         giveSelfAnIdentity();

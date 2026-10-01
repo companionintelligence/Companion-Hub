@@ -3,7 +3,7 @@
   "compilerOptions": {
     "target": "es2022",
     "module": "commonjs",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "outDir": "./dist",
     "noEmit": false,
@@ -16,5 +16,5 @@
       "@/*": ["./src/*"]
     }
   },
-  "exclude": ["node_modules", "dist", "build.ts", "**/*.test.ts", "**/__tests__", "vitest*", "src/tests"]
+  "exclude": ["node_modules", "dist", "build.ts", "compile.ts", "**/*.test.ts", "**/__tests__", "vitest*", "src/tests"]
 }
