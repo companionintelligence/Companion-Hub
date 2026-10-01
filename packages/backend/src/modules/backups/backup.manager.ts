@@ -9,7 +9,8 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import fs from 'node:fs';
-import { Injectable, type OnApplicationShutdown } from '@nestjs/common';
+import { HttpStatus, Injectable, type OnApplicationShutdown } from '@nestjs/common';
+import { TranslatableError } from '@/common/error/translatable-error';
 import type { AppUrn } from '@ci-hub/common/types';
 import { AppFilesManager } from '../apps/app-files-manager';
 
@@ -322,7 +323,8 @@ export class BackupManager implements OnApplicationShutdown {
 
     // Check if file already exists
     if (await this.filesystem.pathExists(backupPath)) {
-      throw new Error('A backup with this filename already exists');
+      // A TranslatableError, not a bare Error: that one reaches the client as "INTERNAL_SERVER_ERROR".
+      throw new TranslatableError('APP_BACKUP_UPLOAD_ALREADY_EXISTS', {}, HttpStatus.CONFLICT);
     }
 
     // Write the file. `writeBinaryFile` reports failure by returning false rather than
