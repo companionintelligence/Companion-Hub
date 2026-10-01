@@ -153,8 +153,8 @@ importers:
         specifier: ^1.9.1
         version: 1.9.1
       '@otplib/core':
-        specifier: ^12.0.1
-        version: 12.0.1
+        specifier: ^13.5.0
+        version: 13.5.0
       '@otplib/plugin-crypto':
         specifier: ^12.0.1
         version: 12.0.1
@@ -1785,6 +1785,9 @@ packages:
 
   '@otplib/core@12.0.1':
     resolution: {integrity: sha512-4sGntwbA/AC+SbPhbsziRiD+jNDdIzsZ3JUyfZwjtKyc/wufl1pnSIaG4Uqx8ymPagujub0o92kgBnB89cuAMA==}
+
+  '@otplib/core@13.5.0':
+    resolution: {integrity: sha512-2rURdkYkb3BDhMs3j/oCCPTve1ybJ6ruLfLfSe1ZSPV+y6RFTbLfAuT0m0ZCnps88ogkIq9t/+Li/kg5RofQwQ==}
 
   '@otplib/plugin-crypto@12.0.1':
     resolution: {integrity: sha512-qPuhN3QrT7ZZLcLCyKOSNhuijUi9G5guMRVrxq63r9YNOxxQjPm59gVxLM+7xGnHnM6cimY57tuKsjK7y9LM1g==}
@@ -8499,6 +8502,8 @@ snapshots:
   '@opentelemetry/api@1.9.1': {}
 
   '@otplib/core@12.0.1': {}
+
+  '@otplib/core@13.5.0': {}
 
   '@otplib/plugin-crypto@12.0.1':
     dependencies:
