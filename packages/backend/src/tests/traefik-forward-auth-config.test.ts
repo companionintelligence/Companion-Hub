@@ -75,9 +75,14 @@ describe('traefik ci-hub forward-auth middleware config', () => {
     expect(major * 1_000_000 + minor * 1_000 + patch).toBeGreaterThanOrEqual(3_006_009);
   });
 
-  it('backend traefik dynamic.yml bounds the forward-auth reply too', () => {
+  /*
+   * The labels ship in the same compose file as the image pin, so they are never ahead of the Traefik that
+   * reads them. dynamic.yml is written by the Hub and the CLI on their own schedule and can sit beside an
+   * older Traefik, which rejects a field it does not know and discards the whole file.
+   */
+  it('backend traefik dynamic.yml does not use a field only a newer Traefik knows', () => {
     const dynamic = YAML.parse(readFileSync(path.join(REPO_ROOT, 'packages/backend/assets/traefik/dynamic/dynamic.yml'), 'utf-8'));
-    expect(dynamic.http.middlewares['ci-hub'].forwardAuth.maxResponseBodySize).toBe(16384);
+    expect(dynamic.http.middlewares['ci-hub'].forwardAuth).not.toHaveProperty('maxResponseBodySize');
   });
 
   it('backend traefik dynamic.yml decides forward auth from the matched request, and strips visitor-set headers on tunnel routes', () => {
