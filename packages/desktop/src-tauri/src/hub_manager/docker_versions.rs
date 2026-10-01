@@ -1,12 +1,20 @@
-//! The oldest Docker the Hub's stack file runs on, checked before the desktop app starts it.
+//! The Docker versions the Hub's stack file needs, checked before the desktop app starts it.
+//!
+//! `gw_priority` in docker-compose.prod.yml keeps the Hub, Traefik and the Tailscale sidecar on
+//! ci-hub_network for their own traffic. It is new in Compose 2.33 and Engine 28, and the two fail
+//! differently without it:
+//!
+//! - An older Compose refuses the whole file ("Additional property gw_priority is not allowed"),
+//!   and nothing in that error says Docker is too old. The start stops with a message that does.
+//! - An older Engine runs the file and ignores the setting. Measured on Engine 27.5.1 (API 1.47)
+//!   with Compose 5.1.4: `up` succeeded and the default route went to the network that sorts
+//!   first. Every 0.2.77 Hub on Engine 27 starts and works with that routing, so the start goes
+//!   on and the log says what is degraded.
 
 use super::*;
 use regex::Regex;
 use std::sync::OnceLock;
 
-/// `gw_priority` in docker-compose.prod.yml, which keeps the Hub's own traffic on ci-hub_network,
-/// is new in Compose 2.33 and Engine 28. An older Compose refuses the whole file ("Additional
-/// property gw_priority is not allowed"), and nothing in that error says Docker is too old.
 pub(crate) const MIN_DOCKER_COMPOSE_VERSION: DockerVersion = DockerVersion(2, 33, 0);
 pub(crate) const MIN_DOCKER_ENGINE_VERSION: DockerVersion = DockerVersion(28, 0, 0);
 
@@ -39,35 +47,28 @@ pub(crate) fn parse_docker_version(raw: &str) -> Option<DockerVersion> {
     Some(DockerVersion(field(1)?, field(2)?, field(3)?))
 }
 
-/// The message to stop on when Compose or the engine is older than the stack file needs, naming
-/// what this computer has. `None` when both are new enough, and for a version that cannot be read
-/// or parsed: not knowing is no reason to refuse a start that may well work.
-pub(crate) fn docker_too_old_message(versions: &DockerVersions) -> Option<String> {
-    let older_than = |found: &Option<String>, minimum: DockerVersion| {
-        found
-            .as_deref()
-            .and_then(parse_docker_version)
-            .is_some_and(|version| version < minimum)
-    };
-    if !older_than(&versions.compose, MIN_DOCKER_COMPOSE_VERSION)
-        && !older_than(&versions.engine, MIN_DOCKER_ENGINE_VERSION)
-    {
-        return None;
-    }
-    let found: Vec<String> = [("Compose", &versions.compose), ("Engine", &versions.engine)]
-        .into_iter()
-        .filter_map(|(label, version)| {
-            version
-                .as_deref()
-                .map(|version| format!("{label} {}", version.trim_start_matches('v')))
-        })
-        .collect();
+/// `found` as printed, without a leading `v`, when it parses and is older than `minimum`. `None`
+/// for a version that cannot be read or parsed: not knowing is no reason to refuse or to warn.
+fn older_than(found: &Option<String>, minimum: DockerVersion) -> Option<&str> {
+    let found = found.as_deref()?;
+    (parse_docker_version(found)? < minimum).then_some(found.trim_start_matches('v'))
+}
+
+/// The message to stop on when Compose is too old to read the stack file at all.
+pub(crate) fn docker_compose_too_old_message(versions: &DockerVersions) -> Option<String> {
+    let found = older_than(&versions.compose, MIN_DOCKER_COMPOSE_VERSION)?;
     Some(format!(
-        "Companion Hub needs Docker Compose {}.{} or newer and Docker Engine {} or newer. This computer has {}. Update Docker, then start the Hub again.",
-        MIN_DOCKER_COMPOSE_VERSION.0,
-        MIN_DOCKER_COMPOSE_VERSION.1,
-        MIN_DOCKER_ENGINE_VERSION.0,
-        found.join(" and ")
+        "Companion Hub needs Docker Compose {}.{} or newer. This computer has Compose {found}. Update Docker, then start the Hub again.",
+        MIN_DOCKER_COMPOSE_VERSION.0, MIN_DOCKER_COMPOSE_VERSION.1
+    ))
+}
+
+/// What to warn about when the engine runs the stack file but ignores `gw_priority`.
+pub(crate) fn docker_engine_too_old_warning(versions: &DockerVersions) -> Option<String> {
+    let found = older_than(&versions.engine, MIN_DOCKER_ENGINE_VERSION)?;
+    Some(format!(
+        "Docker Engine {found} ignores the network priority the Hub relies on, so the Hub, Traefik, and the Tailscale helper may use the wrong network for internet and host traffic. Update Docker Engine to {} or newer.",
+        MIN_DOCKER_ENGINE_VERSION.0
     ))
 }
 
@@ -85,9 +86,10 @@ fn docker_stdout(args: &[&str]) -> Option<String> {
     (output.status.success() && !stdout.is_empty()).then_some(stdout)
 }
 
-/// Refuse to start on a Docker too old for the stack file, before anything is pulled or created,
-/// with a message the start screen shows as it is. A version that cannot be read is logged and the
-/// start goes on, so compose reports whatever is actually wrong, as it did before this check.
+/// Refuse to start on a Compose too old for the stack file, before anything is pulled or created,
+/// with a message the start screen shows as it is. An engine too old for `gw_priority` is a
+/// warning in desktop.log, which the start screen's View logs shows, and the start goes on. So
+/// does a version that cannot be read: compose then reports whatever is actually wrong.
 pub(crate) fn ensure_docker_supports_hub_stack(data_dir: &Path) -> Result<(), String> {
     check_docker_versions(data_dir, &read_docker_versions())
 }
@@ -118,7 +120,10 @@ pub(crate) fn check_docker_versions(
             );
         }
     }
-    match docker_too_old_message(versions) {
+    if let Some(warning) = docker_engine_too_old_warning(versions) {
+        let _ = append_desktop_log_for(data_dir, "hub.start", &format!("WARNING: {warning}"));
+    }
+    match docker_compose_too_old_message(versions) {
         Some(message) => {
             let _ = append_desktop_log_for(data_dir, "hub.start", &message);
             Err(message)

@@ -197,7 +197,7 @@ fn start_hub_inner(
     }
 
     // Before anything is pulled or created: an older Compose rejects the stack file outright, and
-    // its error does not say that Docker is the problem.
+    // its error does not say that Docker is the problem. An older Engine only gets a warning.
     ensure_docker_supports_hub_stack(data_dir)?;
 
     let traefik_preflight = prepare_traefik_runtime_state(data_dir).map_err(|error| {

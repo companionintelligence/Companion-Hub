@@ -168,7 +168,13 @@ Authorization codes and desktop-exchange tokens are single-use. Restarting the H
 
 Desktop app spawns `docker compose` against bundled `docker-compose.prod.yml`.
 
-Before it starts the stack, `start_hub` checks the Docker it runs on (`hub_manager/docker_versions.rs`). The stack file's `gw_priority` needs Docker Compose 2.33 or newer and Docker Engine 28 or newer, and an older Compose rejects the whole file with an error that doesn't mention Docker's version. On an older Docker the start stops with a message that names the versions found, and the failure sticks until the user tries again. A version that can't be read is logged to `desktop.log` and doesn't block the start. `cihub up` runs the same check (`scripts/lib/docker-versions.ts`).
+Before it starts the stack, `start_hub` checks the Docker it runs on (`hub_manager/docker_versions.rs`). The stack file's `gw_priority` needs Docker Compose 2.33 or newer and Docker Engine 28 or newer:
+
+- An older Compose rejects the whole file with an error that doesn't mention Docker's version. The start stops with a message that names the Compose version found, and the failure sticks until the user tries again.
+- An older Engine runs the file and ignores the setting. Measured on Engine 27.5.1 with Compose 5.1.4: `up` succeeded, and each container's default route went to the network that sorts first. The start goes on, and a `hub.start` line in `desktop.log` (shown by the start screen's View logs) warns that the Hub, Traefik, and the Tailscale helper may use the wrong network for internet and host traffic.
+- A version that can't be read is logged to `desktop.log` and doesn't block the start.
+
+`cihub up` runs the same check (`scripts/lib/docker-versions.ts`).
 
 Container identity: `CI_HUB_CONTAINER_UID/GID`, `DOCKER_GID` env vars from `resolve_hub_container_identity()`.
 

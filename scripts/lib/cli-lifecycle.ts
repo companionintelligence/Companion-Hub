@@ -108,8 +108,8 @@ export async function startHub(mode: StartMode, env: HubEnv) {
   if (mode === 'local-dev' && env !== 'local') {
     usageAndExit('Source-based local development only supports the local environment. Use "cihub up <env>" for appliance environments.');
   }
-  // Every stack but source dev runs docker-compose.prod.yml, which an older Docker cannot run.
-  // Source dev starts only Postgres and RabbitMQ from docker-compose.local.yml, which can.
+  // Every stack but source dev runs docker-compose.prod.yml, which an older Compose refuses.
+  // Source dev starts only Postgres and RabbitMQ from docker-compose.local.yml, which it reads.
   if (mode !== 'local-dev') requireDockerForHubStack();
   const envFileName = getEnvFileOrExit(env);
   await runScript('scripts/init-hub-data-dirs.ts', () => initHubDataDirs(), { ENV_FILE: envFileName });

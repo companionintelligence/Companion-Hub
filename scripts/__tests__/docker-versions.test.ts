@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * The Docker version check `cihub up` runs before it starts a stack from docker-compose.prod.yml,
- * whose `gw_priority` needs Compose 2.33 and Engine 28. No real `docker` runs: the one test of the
- * reader replaces `spawnSync`.
+ * whose `gw_priority` needs Compose 2.33 (an older one refuses the file) and Engine 28 (an older
+ * one ignores the setting). No real `docker` runs: the one test of the reader replaces `spawnSync`.
  */
 const spawned = vi.hoisted(() => ({
   calls: [] as { args: string[]; env: NodeJS.ProcessEnv | undefined }[],
@@ -15,21 +15,24 @@ vi.mock('node:child_process', () => ({
     return { status: 1, stdout: '', stderr: '', ...spawned.replies[args.join(' ')] };
   }),
 }));
-const boxes = vi.hoisted(() => [] as { title: string; lines: string[] }[]);
+const boxes = vi.hoisted(() => [] as { title: string; lines: string[]; tone: string }[]);
 vi.mock('../lib/cli-ui.js', () => ({
   colorize: (text: string) => text,
-  printMessageBox: (title: string, lines: string[]) => boxes.push({ title, lines }),
+  printMessageBox: (title: string, lines: string[], tone: string) => boxes.push({ title, lines, tone }),
 }));
 
-const { compareDockerVersions, dockerTooOldLines, parseDockerVersion, readDockerVersions, requireDockerForHubStack } = await import(
-  '../lib/docker-versions'
-);
+const { compareDockerVersions, dockerComposeTooOldLines, dockerEngineTooOldLines, parseDockerVersion, readDockerVersions, requireDockerForHubStack } =
+  await import('../lib/docker-versions');
 
-// The desktop app's message for the same Docker, word for word (hub_manager/docker_versions.rs).
-const TOO_OLD = [
-  'Companion Hub needs Docker Compose 2.33 or newer and Docker Engine 28 or newer.',
-  'This computer has Compose 2.32.4 and Engine 27.5.1.',
+// The desktop app's messages for the same Docker, word for word (hub_manager/docker_versions.rs).
+const COMPOSE_2_32_REFUSED = [
+  'Companion Hub needs Docker Compose 2.33 or newer.',
+  'This computer has Compose 2.32.4.',
   'Update Docker, then start the Hub again.',
+];
+const ENGINE_27_WARNING = [
+  'Docker Engine 27.5.1 ignores the network priority the Hub relies on, so the Hub, Traefik, and the Tailscale helper may use the wrong network for internet and host traffic.',
+  'Update Docker Engine to 28 or newer.',
 ];
 
 describe('parseDockerVersion', () => {
@@ -64,33 +67,32 @@ describe('compareDockerVersions', () => {
   });
 });
 
-describe('dockerTooOldLines', () => {
-  const foundLine = (compose: string | null, engine: string | null) => dockerTooOldLines({ compose, engine })?.[1];
-
-  it('names both versions when either is too old', () => {
-    expect(dockerTooOldLines({ compose: '2.32.4', engine: '27.5.1' })).toEqual(TOO_OLD);
-    expect(TOO_OLD.join(' ')).toBe(
-      'Companion Hub needs Docker Compose 2.33 or newer and Docker Engine 28 or newer. This computer has Compose 2.32.4 and Engine 27.5.1. Update Docker, then start the Hub again.',
+describe('dockerComposeTooOldLines', () => {
+  it('refuses a Compose older than 2.33, whatever the engine, and names it', () => {
+    for (const engine of ['29.6.0', '27.5.1', null]) {
+      expect(dockerComposeTooOldLines({ compose: '2.32.4', engine })).toEqual(COMPOSE_2_32_REFUSED);
+    }
+    expect(dockerComposeTooOldLines({ compose: 'v2.32.4', engine: null })).toEqual(COMPOSE_2_32_REFUSED);
+    expect(COMPOSE_2_32_REFUSED.join(' ')).toBe(
+      'Companion Hub needs Docker Compose 2.33 or newer. This computer has Compose 2.32.4. Update Docker, then start the Hub again.',
     );
-    // Compose alone: it refuses the file before the engine is ever asked.
-    expect(foundLine('v2.32.4', '29.6.0')).toBe('This computer has Compose 2.32.4 and Engine 29.6.0.');
-    // The engine alone: a new Compose cannot give it `gw_priority`.
-    expect(foundLine('2.40.3-desktop.1', '27.5.1')).toBe('This computer has Compose 2.40.3-desktop.1 and Engine 27.5.1.');
   });
 
-  it.each([
-    ['2.33.0', '28.0.0'],
-    ['2.40.3-desktop.1', '28.5.1'],
-    ['5.1.4', '29.6.0'],
-  ])('says nothing for Compose %s and Engine %s', (compose, engine) => {
-    expect(dockerTooOldLines({ compose, engine })).toBeNull();
+  it.each(['2.33.0', '2.40.3-desktop.1', '5.1.4', 'dev', null])('lets Compose %j through', (compose) => {
+    expect(dockerComposeTooOldLines({ compose, engine: '27.5.1' })).toBeNull();
+  });
+});
+
+describe('dockerEngineTooOldLines', () => {
+  it('says what an engine older than 28 does to the routing', () => {
+    expect(dockerEngineTooOldLines({ compose: '5.1.4', engine: '27.5.1' })).toEqual(ENGINE_27_WARNING);
+    expect(ENGINE_27_WARNING.join(' ')).toBe(
+      'Docker Engine 27.5.1 ignores the network priority the Hub relies on, so the Hub, Traefik, and the Tailscale helper may use the wrong network for internet and host traffic. Update Docker Engine to 28 or newer.',
+    );
   });
 
-  it('does not refuse on a version it could not read, and names only what it found', () => {
-    expect(dockerTooOldLines({ compose: null, engine: null })).toBeNull();
-    expect(dockerTooOldLines({ compose: 'dev', engine: '29.6.0' })).toBeNull();
-    expect(dockerTooOldLines({ compose: '5.1.4', engine: null })).toBeNull();
-    expect(foundLine(null, '27.5.1')).toBe('This computer has Engine 27.5.1.');
+  it.each(['28.0.0', '28.5.1', '29.6.0', 'dev', null])('says nothing about Engine %j', (engine) => {
+    expect(dockerEngineTooOldLines({ compose: '5.1.4', engine })).toBeNull();
   });
 });
 
@@ -126,13 +128,22 @@ describe('requireDockerForHubStack', () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
-  it('stops with the message when Docker is too old', () => {
-    expect(() => requireDockerForHubStack({}, { compose: '2.32.4', engine: '27.5.1' })).toThrow('process.exit');
+  it.each(['29.6.0', '27.5.1'])('stops when Compose is too old to read the stack file (Engine %s)', (engine) => {
+    expect(() => requireDockerForHubStack({}, { compose: '2.32.4', engine })).toThrow('process.exit');
     expect(exit).toHaveBeenCalledWith(1);
-    expect(boxes).toEqual([{ title: 'Docker update needed', lines: TOO_OLD }]);
+    expect(boxes).toEqual([{ title: 'Docker update needed', lines: COMPOSE_2_32_REFUSED, tone: 'red' }]);
   });
 
-  it('goes on when both are new enough', () => {
+  // Measured on Engine 27.5.1 (API 1.47) with Compose 5.1.4: `up` succeeds and the setting is
+  // ignored, so every 0.2.77 Hub on Engine 27 runs. Refusing would stop it starting after an update.
+  it('goes on when only the engine is too old, and says what is degraded', () => {
+    requireDockerForHubStack({}, { compose: '5.1.4', engine: '27.5.1' });
+    expect(exit).not.toHaveBeenCalled();
+    expect(boxes).toEqual([{ title: 'Docker Engine update recommended', lines: ENGINE_27_WARNING, tone: 'yellow' }]);
+    expect(log.mock.calls.flat()).toEqual(['→ Docker Compose 5.1.4, Docker Engine 27.5.1']);
+  });
+
+  it('goes on quietly when both are new enough', () => {
     requireDockerForHubStack({}, { compose: '5.1.4', engine: '29.6.0' });
     expect(exit).not.toHaveBeenCalled();
     expect(boxes).toEqual([]);
@@ -142,6 +153,7 @@ describe('requireDockerForHubStack', () => {
   it('goes on, and says so, when a version cannot be read', () => {
     requireDockerForHubStack({}, { compose: '5.1.4', engine: null });
     expect(exit).not.toHaveBeenCalled();
+    expect(boxes).toEqual([]);
     expect(log.mock.calls.flat()).toEqual([
       '→ Docker Compose 5.1.4, Docker Engine unknown',
       'Could not read the Docker Engine version; starting without checking it.',

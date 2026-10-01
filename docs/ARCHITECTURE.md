@@ -732,7 +732,8 @@ so even a leaked broker password does not confer Hub authority. The Hub's own co
 (the Portal, image registries) still leave through `ci-hub_network`: `ci-hub_internal` sorts first
 by name and would otherwise take the Hub's default route, so the compose file gives
 `ci-hub_network` `gw_priority: 1` on the Hub, as it does on Traefik and the Tailscale sidecar
-(#1763).
+(#1763). Docker Engine older than 28 ignores `gw_priority` and routes all three by name, so the
+desktop app and `cihub up` warn when they start the stack on one.
 
 Images are pushed to **GitHub Container Registry** (ghcr.io). The package must remain
 **public**: the desktop shells out to `docker compose` with no registry credentials, so any
