@@ -170,7 +170,7 @@ export function ensureLocalDevPortsAvailable(): void {
 
   const staleFrontend = frontendPids.filter((pid) => {
     const command = commandLineForPid(pid);
-    return command.includes(repoRoot) && command.includes('@react-router/dev/bin.js dev');
+    return command.includes(repoRoot) && /@react-router\/dev\/bin\.c?js dev/.test(command);
   });
   const staleBackend = backendPids.filter((pid) => {
     const command = commandLineForPid(pid);
