@@ -73,23 +73,23 @@
   "author": "",
   "license": "PolyForm-Noncommercial-1.0.0",
   "devDependencies": {
-    "@biomejs/biome": "^2.0.4",
+    "@biomejs/biome": "~2.4.11",
     "@hey-api/openapi-ts": "^0.97.3",
-    "@playwright/test": "^1.52.0",
-    "cloudflare": "^7.0.0",
+    "@playwright/test": "^1.63.0",
+    "cloudflare": "^7.2.0",
     "dotenv-cli": "^10.0.0",
     "drizzle-orm": "^0.45.2",
     "husky": "^9.1.7",
-    "knip": "^6.29.0",
-    "lint-staged": "^16.2.7",
+    "knip": "^6.38.0",
+    "lint-staged": "^16.4.0",
     "openai": "^6.49.0",
-    "pg": "^8.20.0",
-    "pixelmatch": "^7.1.0",
+    "pg": "^8.23.0",
+    "pixelmatch": "^7.2.0",
     "pngjs": "^7.0.0",
     "systeminformation": "^5.31.11",
     "turbo": "^2.9.14",
     "vitest": "^4.1.11",
-    "zod": "^4.3.6"
+    "zod": "^4.6.5"
   },
   "private": false,
   "peerDependencies": {
@@ -103,6 +103,6 @@
     "access": "public"
   },
   "dependencies": {
-    "tsx": "^4.19.2"
+    "tsx": "^4.23.15"
   }
 }
