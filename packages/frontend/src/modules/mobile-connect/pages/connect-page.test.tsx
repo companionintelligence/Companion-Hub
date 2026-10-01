@@ -34,7 +34,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 const signInToPortal = vi.fn();
 const listHubDevices = vi.fn();
-const establishHubSessionFromPortal = vi.fn(async () => null as { sessionId: string; redirectPath: string } | null);
+const establishHubSessionFromPortal = vi.fn<(...args: unknown[]) => Promise<{ sessionId: string; redirectPath: string } | null>>(async () => null);
 vi.mock('../portal-client', async (orig) => ({
   ...(await orig<typeof import('../portal-client')>()),
   signInToPortal: (...a: unknown[]) => signInToPortal(...a),
