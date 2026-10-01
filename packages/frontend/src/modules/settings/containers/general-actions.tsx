@@ -49,7 +49,12 @@ import {
 /** The one-click desktop app update, in the desktop window. */
 type ShellInstallState =
   | { state: 'idle' }
-  | { state: 'installing'; progress: DesktopUpdateProgress | null; restartingHub: boolean }
+  | {
+      state: 'installing';
+      progress: DesktopUpdateProgress | null;
+      /** Set once the call failed and the page is starting the Hub again: after the install, or instead of it. */
+      restartingHub: 'after-install' | 'after-failure' | null;
+    }
   | DesktopUpdateOutcome;
 
 /** What each step the desktop app reports reads as. A step not listed reads as the update starting. */
@@ -276,11 +281,14 @@ export const GeneralActionsContainer = () => {
   const handleShellInstall = useCallback(async () => {
     if (!shellUpdate?.downloadUrl) return;
     setShellMessage(null);
-    setShellInstall({ state: 'installing', progress: null, restartingHub: false });
+    setShellInstall({ state: 'installing', progress: null, restartingHub: null });
     // On success the app exits into the new version, so this usually never returns.
     const outcome = await installDesktopUpdate(shellUpdate, {
       onProgress: (progress) => setShellInstall((current) => (current.state === 'installing' ? { ...current, progress } : current)),
-      onRestartingHub: () => setShellInstall((current) => (current.state === 'installing' ? { ...current, restartingHub: true } : current)),
+      onRestartingHub: (installed) =>
+        setShellInstall((current) =>
+          current.state === 'installing' ? { ...current, restartingHub: installed ? 'after-install' : 'after-failure' } : current,
+        ),
     });
     setShellInstall(outcome);
   }, [shellUpdate]);
@@ -386,6 +394,25 @@ export const GeneralActionsContainer = () => {
     const kind = manualUpdateArtifactKind(update.downloadUrl);
     // A .deb or .rpm installs through pkexec, which asks for the password; an AppImage is copied in place.
     const asksForPassword = kind === 'deb' || kind === 'rpm';
+    let progressKey = 'SETTINGS_ACTIONS_SHELL_INSTALL_STARTING';
+    if (shellInstall.state === 'installing') {
+      if (shellInstall.restartingHub === 'after-install') {
+        progressKey = 'SETTINGS_ACTIONS_SHELL_INSTALL_RESTART_FAILED_RESTARTING_HUB';
+      } else if (shellInstall.restartingHub === 'after-failure') {
+        progressKey = 'SETTINGS_ACTIONS_SHELL_INSTALL_RESTARTING_HUB';
+      } else {
+        progressKey = SHELL_INSTALL_PHASE_KEYS[shellInstall.progress?.phase ?? ''] ?? progressKey;
+      }
+    }
+    // What the page did about the Hub, which the updater may have stopped, once the call failed.
+    const renderHubAfterUpdate = (outcome: { hub: 'running' | 'restarted' | 'restart-failed'; hubError?: string }) => (
+      <>
+        {outcome.hub === 'restarted' ? <p className="text-muted-foreground">{t('SETTINGS_ACTIONS_SHELL_INSTALL_HUB_RESTARTED')}</p> : null}
+        {outcome.hub === 'restart-failed' ? (
+          <p className="text-muted-foreground">{t('SETTINGS_ACTIONS_SHELL_INSTALL_HUB_RESTART_FAILED', { error: outcome.hubError ?? '' })}</p>
+        ) : null}
+      </>
+    );
 
     return (
       <>
@@ -401,22 +428,26 @@ export const GeneralActionsContainer = () => {
         </Button>
         {shellInstall.state === 'installing' ? (
           <div className="mt-3 space-y-1 text-sm" role="status" data-testid="desktop-update-progress">
-            <p>
-              {shellInstall.restartingHub
-                ? t('SETTINGS_ACTIONS_SHELL_INSTALL_RESTARTING_HUB')
-                : t(SHELL_INSTALL_PHASE_KEYS[shellInstall.progress?.phase ?? ''] ?? 'SETTINGS_ACTIONS_SHELL_INSTALL_STARTING', {
-                    version: update.latestVersion,
-                  })}
-            </p>
+            <p>{t(progressKey, { version: update.latestVersion })}</p>
             {asksForPassword && !shellInstall.restartingHub ? (
               <p className="text-muted-foreground">{t('SETTINGS_ACTIONS_SHELL_INSTALL_PASSWORD_HINT')}</p>
             ) : null}
+            {/* Said up front: the app exits within moments of installing, so a later step rarely shows.
+                Apps up to 0.2.77 on Linux exit without opening the new version. */}
+            {shellInstall.restartingHub ? null : <p className="text-muted-foreground">{t('SETTINGS_ACTIONS_SHELL_INSTALL_RESTART_HINT')}</p>}
           </div>
         ) : null}
-        {shellInstall.state === 'installed' ? (
+        {shellInstall.state === 'installed' && shellInstall.restart === 'restarting' ? (
           <p className="mt-3 text-sm" role="status" data-testid="desktop-update-progress">
             {t('SETTINGS_ACTIONS_SHELL_INSTALL_RESTARTING_APP', { version: update.latestVersion })}
           </p>
+        ) : null}
+        {/* Installed, so nothing to download or install by hand: only the restart is left. */}
+        {shellInstall.state === 'installed' && shellInstall.restart === 'failed' ? (
+          <div className="mt-3 space-y-1 text-sm" role="status" data-testid="desktop-update-restart-failed">
+            <p>{t('SETTINGS_ACTIONS_SHELL_INSTALL_RESTART_FAILED', { version: update.latestVersion })}</p>
+            {renderHubAfterUpdate(shellInstall)}
+          </div>
         ) : null}
         {shellInstall.state === 'failed' && shellInstall.reason === 'busy' ? (
           <p className="mt-3 text-sm" role="status" data-testid="desktop-update-busy">
@@ -431,12 +462,7 @@ export const GeneralActionsContainer = () => {
                   ? t('SETTINGS_ACTIONS_SHELL_INSTALL_UNSUPPORTED')
                   : t('SETTINGS_ACTIONS_SHELL_INSTALL_FAILED', { error: shellInstall.error })}
               </p>
-              {shellInstall.hub === 'restarted' ? <p className="text-muted-foreground">{t('SETTINGS_ACTIONS_SHELL_INSTALL_HUB_RESTARTED')}</p> : null}
-              {shellInstall.hub === 'restart-failed' ? (
-                <p className="text-muted-foreground">
-                  {t('SETTINGS_ACTIONS_SHELL_INSTALL_HUB_RESTART_FAILED', { error: shellInstall.hubError ?? '' })}
-                </p>
-              ) : null}
+              {renderHubAfterUpdate(shellInstall)}
             </div>
             <Button variant="outline" onClick={handleShellUpdate} disabled={updatingShell} data-testid="hub-shell-update-btn">
               {updatingShell ? (

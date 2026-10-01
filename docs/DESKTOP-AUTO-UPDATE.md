@@ -95,10 +95,18 @@ In the desktop window, an available update shows **Update to X** on Settings →
   allowlist lacks it) gets the same offer.
 - A second click while an install runs gets "Host update already in progress" from the app. The
   card says an update is already installing, and the page leaves the Hub to that install.
-- On Linux, desktop apps up to 0.2.77 relaunch the replaced program's old path
-  (`/usr/bin/companion-hub (deleted)`) after a `.deb` or `.rpm` install, so the window closes and
-  doesn't come back by itself. The card says to open Companion Hub again if it doesn't, and the
-  app starts the Hub when it opens. Later apps relaunch the new program (see
+- A call can also fail after the install succeeded, when the app can't start the new version.
+  The app reports `done`, then `relaunch`, only once the install succeeded, so a failure after
+  either step means installed. The step decides this, not the error's words, and the page reads it
+  once more after the failure, since polls are a second apart. The card then says the update is
+  installed and to quit Companion Hub from its tray icon and open it again, with no download or
+  manual steps. It still starts the Hub if its API doesn't answer.
+- The app exits within moments of the install, so the card says up front that it closes and opens
+  the new version, and to open it if it doesn't. On Linux, apps up to 0.2.77 relaunch the replaced
+  program's old path (`/usr/bin/companion-hub (deleted)`) after a `.deb` or `.rpm` install. They
+  start a shell that runs that path a second later, then exit, so the call never fails: the window
+  closes and the new version doesn't open. The Hub, which the updater stopped, starts when the app
+  is opened again. Later apps relaunch the new program (see
   [Updates installed outside the app](#updates-installed-outside-the-app)).
 
 ### The CLI is on this channel, not the stack's

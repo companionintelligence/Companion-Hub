@@ -527,27 +527,100 @@ describe('update-service', () => {
         // Releases so far exit into the new version instead; one that returns has installed.
         perform.resolve();
       }
-      await expect(outcome).resolves.toEqual({ state: 'installed' });
+      await expect(outcome).resolves.toEqual({ state: 'installed', restart: 'restarting' });
       expect(isDesktopUpdateRunning()).toBe(false);
       expect(mockInvoke).not.toHaveBeenCalledWith('start_hub_command');
     });
 
     it('starts the Hub again when the install fails after the updater stopped it', async () => {
       mockProbeHealthyHubApiPort.mockResolvedValue(null);
-      desktopApp({ perform: () => Promise.reject('Package installation failed') });
+      const perform = deferred();
+      desktopApp({ perform: () => perform.promise });
       const onRestartingHub = vi.fn();
 
-      await expect(installDesktopUpdate(update, { onRestartingHub })).resolves.toEqual({
+      const outcome = installDesktopUpdate(update, { onRestartingHub });
+      await vi.waitFor(() => expect(mockInvoke).toHaveBeenCalledWith('perform_desktop_update_command', { downloadUrl: DEB_URL }));
+      // The password prompt was cancelled: the install step is as far as this update got.
+      reported = { phase: 'install', message: 'Installing update (may require elevation)…' };
+      perform.reject('Package installation failed');
+
+      await expect(outcome).resolves.toEqual({
         state: 'failed',
         reason: 'error',
         error: 'Package installation failed',
         hub: 'restarted',
       });
-      expect(onRestartingHub).toHaveBeenCalledTimes(1);
+      expect(onRestartingHub).toHaveBeenCalledExactlyOnceWith(false);
       expect(mockInvoke).toHaveBeenCalledWith('start_hub_command');
       // The desktop gate keeps this page while the Hub starts, then lets go.
       expect(hubRunningFlagDuringStart).toBe(true);
       expect(isDesktopUpdateRunning()).toBe(false);
+    });
+
+    // The app reports `done`, then `relaunch`, only once the install succeeded. Newer apps start the
+    // Hub again when the relaunch fails and say so; the step, not those words, is what counts.
+    it.each([
+      ['done', 'Update installed — relaunching…'],
+      ['relaunch', 'Relaunching Companion Hub…'],
+    ])('counts the update as installed when the call fails at the %s step', async (phase, message) => {
+      const perform = deferred();
+      desktopApp({ perform: () => perform.promise });
+      const onRestartingHub = vi.fn();
+
+      const outcome = installDesktopUpdate(update, { onRestartingHub });
+      await vi.waitFor(() => expect(mockInvoke).toHaveBeenCalledWith('perform_desktop_update_command', { downloadUrl: DEB_URL }));
+      // Between two polls: the step is read once more after the call fails.
+      reported = { phase, message };
+      perform.reject('relaunch failed. The Hub was started again.');
+
+      await expect(outcome).resolves.toEqual({
+        state: 'installed',
+        restart: 'failed',
+        error: 'relaunch failed. The Hub was started again.',
+        hub: 'running',
+      });
+      expect(mockInvoke).not.toHaveBeenCalledWith('start_hub_command');
+      expect(onRestartingHub).not.toHaveBeenCalled();
+    });
+
+    it('starts the Hub again after an install the app could not restart into, when the Hub is down', async () => {
+      vi.useFakeTimers();
+      mockProbeHealthyHubApiPort.mockResolvedValue(null);
+      const perform = deferred();
+      desktopApp({ perform: () => perform.promise });
+      const onRestartingHub = vi.fn();
+
+      const outcome = installDesktopUpdate(update, { onRestartingHub });
+      try {
+        reported = { phase: 'install', message: 'Installing update (may require elevation)…' };
+        await vi.advanceTimersByTimeAsync(1000);
+        reported = { phase: 'done', message: 'Update installed — relaunching…' };
+        await vi.advanceTimersByTimeAsync(1000);
+      } finally {
+        perform.reject('Failed to relaunch: No such file or directory (os error 2)');
+      }
+
+      await expect(outcome).resolves.toEqual({
+        state: 'installed',
+        restart: 'failed',
+        error: 'Failed to relaunch: No such file or directory (os error 2)',
+        hub: 'restarted',
+      });
+      expect(onRestartingHub).toHaveBeenCalledExactlyOnceWith(true);
+      expect(mockInvoke).toHaveBeenCalledWith('start_hub_command');
+    });
+
+    it("doesn't count the last update's leftover step as this one's install", async () => {
+      // An earlier update installed but couldn't restart; this one fails before it reports a step.
+      reported = { phase: 'relaunch', message: 'Relaunching Companion Hub…' };
+      desktopApp({ perform: () => Promise.reject('Failed to fetch latest version: timed out') });
+
+      await expect(installDesktopUpdate(update)).resolves.toEqual({
+        state: 'failed',
+        reason: 'error',
+        error: 'Failed to fetch latest version: timed out',
+        hub: 'running',
+      });
     });
 
     it('says so when the Hub does not start again', async () => {

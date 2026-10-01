@@ -382,7 +382,7 @@ describe('GeneralActionsContainer', () => {
       });
       return {
         progress: (phase: string) => act(() => callbacks.onProgress?.({ phase, message: '' })),
-        restartingHub: () => act(() => callbacks.onRestartingHub?.()),
+        restartingHub: (installed: boolean) => act(() => callbacks.onRestartingHub?.(installed)),
         finish: (outcome: DesktopUpdateOutcome) => act(() => finish(outcome)),
       };
     }
@@ -409,7 +409,7 @@ describe('GeneralActionsContainer', () => {
       expect(screen.getByTestId('desktop-update-progress')).toHaveTextContent('Downloading Companion Hub 0.2.78…');
       await install.progress('install');
       expect(screen.getByTestId('desktop-update-progress')).toHaveTextContent(
-        'Installing Companion Hub 0.2.78…Your computer may ask for your password.',
+        "Installing Companion Hub 0.2.78…Your computer may ask for your password.Once it's installed, Companion Hub closes and opens the new version. If it doesn't open again, open it yourself.",
       );
       await install.progress('relaunch');
       expect(screen.getByTestId('desktop-update-progress')).toHaveTextContent(
@@ -437,7 +437,7 @@ describe('GeneralActionsContainer', () => {
       render(<GeneralActionsContainer />);
       await userEvent.click(await screen.findByTestId('hub-shell-install-btn'));
       await install.progress('install');
-      await install.restartingHub();
+      await install.restartingHub(false);
       expect(screen.getByTestId('desktop-update-progress')).toHaveTextContent("The update didn't install. Starting your Hub again…");
 
       await install.finish({ state: 'failed', reason: 'error', error: 'Package installation failed', hub: 'restarted' });
@@ -491,6 +491,33 @@ describe('GeneralActionsContainer', () => {
       expect(failed).not.toHaveTextContent('ACL');
       expect(within(failed).getByTestId('hub-shell-update-btn')).toHaveTextContent('Download 0.2.78');
       expect(within(failed).getByTestId('manual-update-instructions')).toBeInTheDocument();
+    });
+
+    it('says the update is installed when only the restart failed, with nothing to download', async () => {
+      offerDesktopUpdate();
+      const install = controlInstall();
+
+      render(<GeneralActionsContainer />);
+      await userEvent.click(await screen.findByTestId('hub-shell-install-btn'));
+      await install.progress('relaunch');
+      await install.restartingHub(true);
+      expect(screen.getByTestId('desktop-update-progress')).toHaveTextContent(
+        "Companion Hub 0.2.78 is installed, but the app couldn't restart itself. Starting your Hub again…",
+      );
+      expect(screen.getByTestId('desktop-update-progress')).not.toHaveTextContent(/password|closes and opens/);
+
+      await install.finish({ state: 'installed', restart: 'failed', error: 'Failed to relaunch', hub: 'restarted' });
+
+      const installed = screen.getByTestId('desktop-update-restart-failed');
+      expect(installed).toHaveTextContent(
+        "Companion Hub 0.2.78 is installed, but the app couldn't restart itself. Quit Companion Hub from its tray icon and open it again to finish.",
+      );
+      expect(installed).toHaveTextContent('The update had stopped your Hub, so it was started again.');
+      expect(installed).not.toHaveTextContent("didn't install");
+      expect(screen.queryByTestId('desktop-update-failed')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('hub-shell-update-btn')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('manual-update-instructions')).not.toBeInTheDocument();
+      expect(screen.getByTestId('hub-shell-install-btn')).toBeDisabled();
     });
 
     it('says another install is already running, with nothing to do by hand', async () => {

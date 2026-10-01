@@ -391,37 +391,45 @@ export interface DesktopUpdateProgress {
   message: string;
 }
 
+/** What this page did about the Hub after the call failed; see {@link installDesktopUpdate}. */
+interface HubAfterDesktopUpdate {
+  hub: 'running' | 'restarted' | 'restart-failed';
+  hubError?: string;
+}
+
 /**
  * How a one-click desktop update ended, when it ends here at all: a successful install exits the
  * desktop app and starts the new version, so the call usually never returns.
+ *
+ * - `installed`, `restart: 'restarting'`: the call returned, so the app is starting the new version.
+ * - `installed`, `restart: 'failed'`: the update is installed, but the app couldn't start the new
+ *   version, so this window still runs the old one. `error` is the app's own words.
+ * - `failed`: nothing was installed. `reason` is `unsupported` when the app won't run the install for
+ *   this page (too old to have the command, or not allowed to), `busy` when it is already installing
+ *   an update, which restarts it when done, and `error` when the install itself failed.
  */
 export type DesktopUpdateOutcome =
-  | { state: 'installed' }
-  | {
-      state: 'failed';
-      /**
-       * `unsupported`: the app won't run the install for this page (too old to have the command, or not
-       * allowed to). `busy`: the app is already installing an update, which restarts it when done.
-       * `error`: the install itself failed.
-       */
-      reason: 'unsupported' | 'busy' | 'error';
-      /** The desktop app's own words. */
-      error: string;
-      /** What this page did about the Hub afterwards; see {@link installDesktopUpdate}. */
-      hub: 'running' | 'restarted' | 'restart-failed';
-      hubError?: string;
-    };
-
-type DesktopUpdateFailure = Extract<DesktopUpdateOutcome, { state: 'failed' }>;
+  | { state: 'installed'; restart: 'restarting' }
+  | ({ state: 'installed'; restart: 'failed'; error: string } & HubAfterDesktopUpdate)
+  | ({ state: 'failed'; reason: 'unsupported' | 'busy' | 'error'; error: string } & HubAfterDesktopUpdate);
 
 export interface DesktopUpdateCallbacks {
   /** Each new step the desktop app reports. */
   onProgress?: (progress: DesktopUpdateProgress) => void;
-  /** The install failed with the Hub down, and this page is starting the Hub again. */
-  onRestartingHub?: () => void;
+  /**
+   * The call failed with the Hub down, and this page is starting the Hub again. `installed` says
+   * whether the update was installed first and only the app's restart failed.
+   */
+  onRestartingHub?: (installed: boolean) => void;
 }
 
 const DESKTOP_UPDATE_PROGRESS_POLL_MS = 1000;
+
+/**
+ * Steps the app reports only after the install succeeded: `done`, then `relaunch` while it starts
+ * the new version.
+ */
+const DESKTOP_UPDATE_INSTALLED_PHASES = new Set(['done', 'relaunch']);
 
 /** Installs this page is waiting on. A second click while one runs is refused by the app, quickly. */
 let desktopUpdatesRunning = 0;
@@ -456,11 +464,11 @@ function sameProgress(a: DesktopUpdateProgress | null, b: DesktopUpdateProgress 
   return a?.phase === b?.phase && a?.message === b?.message;
 }
 
-/** Starts the Hub when its API no longer answers, as after an install that failed once the stack was stopped. */
-async function startHubIfDown(invoke: CoreInvoke, onRestartingHub?: () => void): Promise<Pick<DesktopUpdateFailure, 'hub' | 'hubError'>> {
+/** Starts the Hub when its API no longer answers, as after an update that failed once the stack was stopped. */
+async function startHubIfDown(invoke: CoreInvoke, onRestartingHub: () => void): Promise<HubAfterDesktopUpdate> {
   const { probeHealthyHubApiPort } = await import('@/lib/tauri-hub-probe');
   if ((await probeHealthyHubApiPort()) !== null) return { hub: 'running' };
-  onRestartingHub?.();
+  onRestartingHub();
   try {
     await invoke('start_hub_command');
     return { hub: 'restarted' };
@@ -494,10 +502,12 @@ export async function installDesktopUpdate(info: UpdateInfo, callbacks: DesktopU
     // The app keeps the last update's progress, a failed one's too, until the next update reports a
     // step. Skip that leftover until the progress moves.
     let reported = await readDesktopUpdateProgress(invoke);
+    let moved = false;
     polling = setInterval(() => {
       void readDesktopUpdateProgress(invoke).then((progress) => {
         if (polling === null || !progress || sameProgress(progress, reported)) return;
         reported = progress;
+        moved = true;
         callbacks.onProgress?.(progress);
       });
     }, DESKTOP_UPDATE_PROGRESS_POLL_MS);
@@ -505,7 +515,7 @@ export async function installDesktopUpdate(info: UpdateInfo, callbacks: DesktopU
     try {
       await invoke('perform_desktop_update_command', { downloadUrl: info.downloadUrl });
       // Releases so far exit inside the call; one that returns has installed and restarts itself.
-      return { state: 'installed' };
+      return { state: 'installed', restart: 'restarting' };
     } catch (error) {
       stopPolling();
       const text = invokeErrorText(error);
@@ -517,7 +527,17 @@ export async function installDesktopUpdate(info: UpdateInfo, callbacks: DesktopU
       if (/already in progress/i.test(text)) {
         return { state: 'failed', reason: 'busy', error: text, hub: 'running' };
       }
-      return { state: 'failed', reason: 'error', error: text, ...(await startHubIfDown(invoke, callbacks.onRestartingHub)) };
+      // The app also fails after a good install when it can't start the new version. The step it
+      // reached tells the two apart, whatever the error says; polls come a second apart, so read the
+      // step once more.
+      const last = await readDesktopUpdateProgress(invoke);
+      if (last && !sameProgress(last, reported)) {
+        reported = last;
+        moved = true;
+      }
+      const installed = moved && reported !== null && DESKTOP_UPDATE_INSTALLED_PHASES.has(reported.phase);
+      const hub = await startHubIfDown(invoke, () => callbacks.onRestartingHub?.(installed));
+      return installed ? { state: 'installed', restart: 'failed', error: text, ...hub } : { state: 'failed', reason: 'error', error: text, ...hub };
     }
   } catch (error) {
     return { state: 'failed', reason: 'unsupported', error: invokeErrorText(error), hub: 'running' };
