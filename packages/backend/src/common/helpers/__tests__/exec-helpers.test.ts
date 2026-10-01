@@ -28,6 +28,15 @@ describe('spawnAsync', () => {
     expect(JSON.parse(result.stdout)).toEqual(hostile);
   });
 
+  it('puts together a multi-byte character that arrives in two pieces', async () => {
+    const result = await spawnAsync(process.execPath, [
+      '-e',
+      'const b = Buffer.from("caf\\u00e9"); process.stdout.write(b.subarray(0, 4)); setTimeout(() => process.stdout.write(b.subarray(4)), 50)',
+    ]);
+
+    expect(result.stdout).toBe('caf\u00e9');
+  });
+
   it('resolves, rather than rejects, when the program does not exist', async () => {
     const result = await spawnAsync('definitely-not-a-real-binary-ci-hub', []);
 

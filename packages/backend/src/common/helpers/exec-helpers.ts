@@ -51,7 +51,11 @@ export const spawnAsync = (command: string, args: string[], options: SpawnOption
       resolve(result);
     };
 
-    const capture = (stream: 'stdout' | 'stderr') => (chunk: Buffer) => {
+    // Decoded by the stream, so a multi-byte character that arrives in two chunks is not cut in half.
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+
+    const capture = (stream: 'stdout' | 'stderr') => (chunk: string) => {
       if (truncated) return;
 
       if (stdout.length + stderr.length + chunk.length > SPAWN_OUTPUT_LIMIT_BYTES) {
@@ -60,8 +64,8 @@ export const spawnAsync = (command: string, args: string[], options: SpawnOption
         return;
       }
 
-      if (stream === 'stdout') stdout += chunk.toString();
-      else stderr += chunk.toString();
+      if (stream === 'stdout') stdout += chunk;
+      else stderr += chunk;
     };
 
     child.stdout?.on('data', capture('stdout'));
