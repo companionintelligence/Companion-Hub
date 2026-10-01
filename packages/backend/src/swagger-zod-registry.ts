@@ -94,6 +94,7 @@ import { LoadDto, SystemResourcesDto } from './modules/system/dto/system.dto';
 import { DesktopReleaseDto } from './modules/system-update/dto/desktop-release.dto';
 import { GetUserConfigDto, UpdateUserConfigDto } from './modules/user-config/dto/user-config.dto';
 import { PublicWebRepairBody } from './modules/public-web/public-web.dto';
+import { TailscaleStatusDto } from './modules/tailscale/tailscale.dto';
 
 /** Every Zod-backed DTO referenced in OpenAPI `components.schemas`. */
 export const SWAGGER_ZOD_DTOS: ZodDto[] = [
@@ -193,4 +194,5 @@ export const SWAGGER_ZOD_DTOS: ZodDto[] = [
   GetUserConfigDto,
   UpdateUserConfigDto,
   PublicWebRepairBody,
+  TailscaleStatusDto,
 ];

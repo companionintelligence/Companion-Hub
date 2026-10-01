@@ -962,7 +962,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/TailscaleStatusDto"
                 }
               }
             }
@@ -7864,6 +7864,123 @@
         },
         "required": [
           "capability"
+        ],
+        "additionalProperties": false
+      },
+      "TailscaleStatusDto": {
+        "type": "object",
+        "properties": {
+          "installed": {
+            "type": "boolean"
+          },
+          "connected": {
+            "type": "boolean"
+          },
+          "version": {
+            "nullable": true,
+            "type": "string"
+          },
+          "hostname": {
+            "nullable": true,
+            "type": "string"
+          },
+          "nodeFqdn": {
+            "nullable": true,
+            "type": "string"
+          },
+          "tailnet": {
+            "nullable": true,
+            "type": "string"
+          },
+          "ip": {
+            "nullable": true,
+            "type": "string"
+          },
+          "supportsServices": {
+            "type": "boolean"
+          },
+          "httpsAvailable": {
+            "type": "boolean"
+          },
+          "backendState": {
+            "nullable": true,
+            "type": "string"
+          },
+          "authUrl": {
+            "nullable": true,
+            "type": "string"
+          },
+          "peers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "nodeFqdn": {
+                  "type": "string"
+                },
+                "hostname": {
+                  "nullable": true,
+                  "type": "string"
+                },
+                "ip": {
+                  "nullable": true,
+                  "type": "string"
+                },
+                "online": {
+                  "type": "boolean"
+                },
+                "os": {
+                  "nullable": true,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "nodeFqdn",
+                "hostname",
+                "ip"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "servePermission": {
+            "type": "object",
+            "properties": {
+              "denied": {
+                "type": "boolean"
+              },
+              "remedy": {
+                "nullable": true,
+                "type": "string"
+              },
+              "deniedSince": {
+                "nullable": true,
+                "type": "string"
+              }
+            },
+            "required": [
+              "denied",
+              "remedy",
+              "deniedSince"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "installed",
+          "connected",
+          "version",
+          "hostname",
+          "nodeFqdn",
+          "tailnet",
+          "ip",
+          "supportsServices",
+          "httpsAvailable",
+          "backendState",
+          "authUrl",
+          "servePermission"
         ],
         "additionalProperties": false
       },

@@ -51,6 +51,8 @@ vi.mock('../components/memory-status-badge/memory-status-badge', () => ({
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getAppOptions: () => ({ queryKey: ['app'] }),
   getServeStatusOptions: () => ({ queryKey: ['serve-status'], queryFn: vi.fn() }),
+  // The access card reads whether tailscaled refuses the Hub's Serve changes from the Tailscale status.
+  getStatus3Options: () => ({ queryKey: ['tailscale-status'], queryFn: vi.fn() }),
 }));
 
 vi.mock('@/api-client/client.gen', () => ({

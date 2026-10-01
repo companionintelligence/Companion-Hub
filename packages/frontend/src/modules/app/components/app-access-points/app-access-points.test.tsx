@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { MemoryRouter } from 'react-router';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AppAccessPoints, buildAppAccessPoints, isLoopbackAccessUrl, isMalformedAccessUrl, resolveReachableHubHost } from './app-access-points';
 
 vi.mock('react-i18next', () => ({
@@ -8,14 +9,24 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
+/** What the Hub-wide Tailscale status reports about tailscaled refusing the Hub's Serve changes. */
+const NOT_DENIED = { denied: false, remedy: null, deniedSince: null };
+const tailscaleStatus = vi.hoisted(() => ({ servePermission: { denied: false, remedy: null, deniedSince: null } as Record<string, unknown> }));
+
 vi.mock('@tanstack/react-query', () => ({
-  useQuery: () => ({
-    data: { entries: [{ listenPort: 3000 }, { listenPort: 8311 }] },
-  }),
+  // Answers by query key, and applies `select` the way React Query does.
+  useQuery: ({ queryKey, select }: { queryKey: unknown[]; select?: (data: unknown) => unknown }) => {
+    const data =
+      queryKey[0] === 'tailscale-status'
+        ? { installed: true, connected: true, servePermission: tailscaleStatus.servePermission }
+        : { entries: [{ listenPort: 3000 }, { listenPort: 8311 }] };
+    return { data: select ? select(data) : data };
+  },
 }));
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getServeStatusOptions: () => ({ queryKey: ['serve-status'], queryFn: vi.fn() }),
+  getStatus3Options: () => ({ queryKey: ['tailscale-status'], queryFn: vi.fn() }),
 }));
 
 vi.mock('@/context/app-context', () => ({
@@ -414,6 +425,40 @@ describe('buildAppAccessPoints', () => {
       key: 'vpn',
       state: 'available',
       stateLabel: 'APP_DETAILS_ACCESS_PENDING',
+      tailscaleRefused: false,
+    });
+  });
+
+  describe('while tailscaled refuses the Hub its Tailscale Serve changes (CI-Hub#1766)', () => {
+    const privateVpnApp = {
+      status: 'running',
+      port: 8311,
+      localSubdomain: 'bitboard',
+      exposureMode: 'tailscale',
+      exposedLocal: false,
+      openPort: false,
+    } as any;
+    const build = (servedPorts: number[]) =>
+      buildAppAccessPoints({
+        app: privateVpnApp,
+        info,
+        sslPort: 443,
+        internalIp: '0.0.0.0',
+        cloudflareAvailable: true,
+        tailscaleAvailable: true,
+        tailscaleNodeFqdn: 'hub-tailscale-1.example.ts.net',
+        tailscaleHttpsEnabled: true,
+        tailscaleServedPorts: new Set(servedPorts),
+        tailscaleServeDenied: true,
+      });
+
+    it('says so instead of Pending for an app that is not published yet', () => {
+      // "Pending" promised a publish that cannot happen until someone runs the command on the host.
+      expect(build([])[1]).toMatchObject({ key: 'vpn', state: 'available', stateLabel: 'APP_DETAILS_ACCESS_REFUSED', tailscaleRefused: true });
+    });
+
+    it('keeps an app that is already published enabled', () => {
+      expect(build([8311])[1]).toMatchObject({ key: 'vpn', state: 'active', stateLabel: 'APP_DETAILS_ACCESS_ENABLED', tailscaleRefused: false });
     });
   });
 
@@ -446,6 +491,50 @@ describe('buildAppAccessPoints', () => {
 });
 
 describe('AppAccessPoints', () => {
+  afterEach(() => {
+    tailscaleStatus.servePermission = NOT_DENIED;
+  });
+
+  it('names the refusal and links to Network settings, instead of Pending, while tailscaled refuses the Hub', () => {
+    tailscaleStatus.servePermission = {
+      denied: true,
+      remedy: 'u="$(id -nu 1000)" && sudo tailscale set --operator="$u"',
+      deniedSince: '2026-10-01T09:00:00.000Z',
+    };
+
+    render(
+      <MemoryRouter>
+        <AppAccessPoints
+          app={{ status: 'running', port: 8138, localSubdomain: 'bitboard', exposureMode: 'tailscale', exposedLocal: false, openPort: false } as any}
+          info={
+            { urn: 'bitboard:community', name: 'Bitboard', no_gui: false, https: false, port: 8138, dynamic_config: true, exposable: true } as any
+          }
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('APP_DETAILS_ACCESS_REFUSED')).toBeInTheDocument();
+    expect(screen.getByTestId('vpn-access-refused')).toHaveTextContent('APP_DETAILS_ACCESS_TAILSCALE_REFUSED');
+    expect(screen.getByRole('link', { name: 'APP_DETAILS_ACCESS_TAILSCALE_REFUSED_LINK' })).toHaveAttribute('href', '/settings?tab=network');
+    expect(screen.queryByText('APP_DETAILS_ACCESS_PENDING')).not.toBeInTheDocument();
+  });
+
+  it('still says Pending when tailscaled has not refused anything', () => {
+    render(
+      <MemoryRouter>
+        <AppAccessPoints
+          app={{ status: 'running', port: 8138, localSubdomain: 'bitboard', exposureMode: 'tailscale', exposedLocal: false, openPort: false } as any}
+          info={
+            { urn: 'bitboard:community', name: 'Bitboard', no_gui: false, https: false, port: 8138, dynamic_config: true, exposable: true } as any
+          }
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getAllByText('APP_DETAILS_ACCESS_PENDING').length).toBeGreaterThan(0);
+    expect(screen.queryByTestId('vpn-access-refused')).not.toBeInTheDocument();
+  });
+
   it('shows a failure toast when clipboard copy fails', async () => {
     const writeText = vi.fn().mockRejectedValue(new Error('clipboard unavailable'));
     Object.defineProperty(window.navigator, 'clipboard', {
