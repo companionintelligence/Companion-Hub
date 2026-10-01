@@ -3,7 +3,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -154,6 +154,9 @@ pub struct UpdateProgress {
 
 static UPDATE_PROGRESS: OnceLock<Mutex<Option<UpdateProgress>>> = OnceLock::new();
 static HOST_UPDATE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+/// Held while the update listener answers a request, so moving onto a new program never cuts one
+/// off.
+static LISTENER_BUSY: Mutex<()> = Mutex::new(());
 
 /// Ensures only one host update runs at a time (listener retries, double-clicks, CLI + UI).
 struct HostUpdateGuard;
@@ -1104,6 +1107,21 @@ pub fn prepare_self_restart_for_update() -> Result<(), String> {
     spawn_detached_respawn(&exe, &relaunch_args(mode), 2)
 }
 
+/// Restart the open desktop app onto the version an update installed while it ran (its Restart
+/// button, or a second launch). Always as the desktop app: the window asked, so a `--detached`
+/// start recorded meanwhile must not turn the restart into a headless one. Refused while this
+/// process installs an update, which relaunches by itself when done. The caller exits the app once
+/// this returns Ok.
+pub fn prepare_restart_onto_installed_app() -> Result<(), String> {
+    if HOST_UPDATE_IN_PROGRESS.load(Ordering::SeqCst) {
+        return Err(
+            "An update is being installed; Companion Hub restarts when it is done".to_string(),
+        );
+    }
+    let exe = respawn_target()?;
+    spawn_detached_respawn(&exe, &relaunch_args(PersistedLaunchMode::Desktop), 2)
+}
+
 pub fn perform_host_update(
     download_url: &str,
     expected_size: Option<u64>,
@@ -1409,6 +1427,7 @@ pub fn run_update_listener() {
     #[cfg(unix)]
     move_onto_replaced_program_when_idle();
     for stream in listener.incoming().flatten() {
+        let _busy = LISTENER_BUSY.lock().unwrap_or_else(PoisonError::into_inner);
         handle_update_http_request(stream, &data_dir);
     }
 }
@@ -1424,16 +1443,18 @@ fn move_onto_replaced_program_when_idle() {
         let running_version = app_binary::running_version();
         loop {
             std::thread::sleep(LISTENER_PROGRAM_CHECK_INTERVAL);
-            // This listener's own install replaces the program too; it relaunches when done.
-            if HOST_UPDATE_IN_PROGRESS.load(Ordering::SeqCst) {
-                continue;
-            }
             if !app_binary::restart_state(&running_version).restart_required {
                 continue;
             }
             let Some(program) = app_binary::launch_path() else {
                 continue;
             };
+            // Between requests only, and never while this listener's own install runs: that
+            // replaces the program too, and relaunches the app when done.
+            let _busy = LISTENER_BUSY.lock().unwrap_or_else(PoisonError::into_inner);
+            if HOST_UPDATE_IN_PROGRESS.load(Ordering::SeqCst) {
+                continue;
+            }
             // Only returns if the new program could not be started; keep serving meanwhile.
             let _ = Command::new(program).arg("--update-listener").exec();
         }

@@ -521,7 +521,7 @@ async fn restart_desktop_app_command(app: tauri::AppHandle) -> Result<(), String
 
 /// Starts the program now on disk and exits this copy, leaving the Hub stack running.
 fn restart_onto_installed_app(app: &tauri::AppHandle) -> Result<(), String> {
-    updater::prepare_self_restart_for_update()?;
+    updater::prepare_restart_onto_installed_app()?;
     let _ = hub_manager::append_desktop_log(
         "app.restart",
         "Restarting onto the Companion Hub version installed while the app was open.",
@@ -531,8 +531,8 @@ fn restart_onto_installed_app(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// A launch with nothing to hand over (no deep link or other arguments), like opening the app from
-/// the app menu or dock. `args[0]` is the program.
+/// A launch with nothing to hand over (no deep link or other arguments), like starting the app from
+/// a terminal or a launcher that starts a second copy. `args[0]` is the program.
 fn is_plain_launch(args: &[String]) -> bool {
     args.iter().skip(1).all(|arg| arg.trim().is_empty())
 }
@@ -554,14 +554,20 @@ pub fn run() {
         .manage(PendingInstallIntent(Mutex::new(None)))
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // A freshly-updated instance signals us (the old binary, still running)
-            // to restart so the new binary on disk takes over. So does opening the
-            // app again once an update has replaced it, which would otherwise only
-            // bring this old window back. A deep link is handled here as usual.
-            let restart = args.iter().any(|a| a == updater::RELAUNCH_AFTER_UPDATE_FLAG)
-                || (is_plain_launch(&args)
-                    && app_binary::restart_state(&app_binary::running_version())
-                        .restart_required);
-            if restart && restart_onto_installed_app(app).is_ok() {
+            // to restart so the new binary on disk takes over.
+            if args.iter().any(|a| a == updater::RELAUNCH_AFTER_UPDATE_FLAG)
+                && updater::prepare_self_restart_for_update().is_ok()
+            {
+                app.exit(0);
+                return;
+            }
+            // So does starting the app again once an update has replaced it, which
+            // would otherwise only bring this old window back. A deep link is handled
+            // here as usual.
+            if is_plain_launch(&args)
+                && app_binary::restart_state(&app_binary::running_version()).restart_required
+                && restart_onto_installed_app(app).is_ok()
+            {
                 return;
             }
             focus_main_window(app);

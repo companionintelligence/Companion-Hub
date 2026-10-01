@@ -7,6 +7,7 @@
 //! `/usr/bin/companion-hub (deleted)`, which is not a path anything can start, so restarts go
 //! through [`launch_path`].
 
+use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -71,11 +72,26 @@ fn launch_binary() -> Option<&'static LaunchBinary> {
 /// Under AppImage, `current_exe()` is the FUSE-mounted inner binary, never the
 /// `.AppImage` file itself — the runtime exposes the real path via `$APPIMAGE`.
 pub(crate) fn appimage_path_from_env() -> Option<PathBuf> {
-    let value = std::env::var_os("APPIMAGE")?;
-    if value.is_empty() {
-        return None;
-    }
-    Some(PathBuf::from(value))
+    appimage_path_from(
+        std::env::var_os("APPIMAGE"),
+        std::env::var_os("APPDIR"),
+        std::env::current_exe().ok(),
+    )
+}
+
+/// `$APPIMAGE` counts only when this program runs from inside the mounted image (`$APPDIR`).
+/// Both are inherited, so a package-installed app started from another AppImage's terminal (an
+/// AppImage editor, say) sees that other AppImage's path, and must never restart, probe or replace
+/// it.
+fn appimage_path_from(
+    appimage: Option<OsString>,
+    appdir: Option<OsString>,
+    exe: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let appimage = appimage.filter(|value| !value.is_empty())?;
+    let appdir = appdir.filter(|value| !value.is_empty())?;
+    exe?.starts_with(Path::new(&appdir))
+        .then(|| PathBuf::from(appimage))
 }
 
 /// The file to start for a fresh copy of this app: the `.AppImage` when running from one (its
@@ -275,6 +291,37 @@ mod tests {
         assert_eq!(
             strip_deleted_suffix(Path::new("/usr/bin/companion-hub")),
             PathBuf::from("/usr/bin/companion-hub")
+        );
+    }
+
+    #[test]
+    fn appimage_path_counts_only_inside_the_mounted_image() {
+        let os = |value: &str| Some(OsString::from(value));
+        let inner = Some(PathBuf::from("/tmp/.mount_HubAbc/usr/bin/companion-hub"));
+        assert_eq!(
+            appimage_path_from(
+                os("/home/u/Apps/Hub.AppImage"),
+                os("/tmp/.mount_HubAbc"),
+                inner.clone()
+            ),
+            Some(PathBuf::from("/home/u/Apps/Hub.AppImage"))
+        );
+        // Inherited from another AppImage: this program runs from /usr/bin.
+        assert_eq!(
+            appimage_path_from(
+                os("/home/u/Apps/Editor.AppImage"),
+                os("/tmp/.mount_EditXyz"),
+                Some(PathBuf::from("/usr/bin/companion-hub"))
+            ),
+            None
+        );
+        assert_eq!(
+            appimage_path_from(os("/home/u/Apps/Hub.AppImage"), None, inner.clone()),
+            None
+        );
+        assert_eq!(
+            appimage_path_from(os(""), os("/tmp/.mount_HubAbc"), inner),
+            None
         );
     }
 

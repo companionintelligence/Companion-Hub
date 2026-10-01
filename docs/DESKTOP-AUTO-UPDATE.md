@@ -65,8 +65,9 @@ on Linux. The Hub container mounts `state/` at `/data/state` and reads the token
   listener is running.
 - **The listener moves onto a new version.** The listener outlives the app. Every 30 seconds
   it checks whether an update replaced its program. If one did, it starts the new program in
-  its own place: same process, and a new token. Listeners from older builds don't do this. On
-  Linux, the app stops any of them still running a replaced program when it starts.
+  its own place, between requests: same process, and a new token. Listeners from older builds
+  don't do this. On Linux, the app stops any of them still running a replaced program when it
+  starts.
 - **The Hub's fallback.** When `state/` has no token, the Hub reads the file at the root.
   Only a Hub that runs on the host, outside Docker, can see that file.
 - **Both halves.** A Hub in a container finds the token only when the desktop app writes
@@ -114,10 +115,16 @@ version (`--version`, which exits before any window opens). Then:
 - **Settings → System → Desktop app** says "Companion Hub X is installed, but this window is
   still running Y", with a **Restart Companion Hub** button. The window also shows a one-time
   notice with **Restart now**.
-- **Opening the app again** from the app menu or dock restarts it onto the new version. A
-  deep-link launch is handled by the open app as usual.
+- **Starting a second copy** (from a terminal, or a launcher that starts one) restarts the open
+  app onto the new version. A deep-link launch is handled by the open app as usual. GNOME and
+  macOS bring the open window forward instead of starting a copy, so there the notice and the
+  Settings button are the way.
+- **The restart is always back into the desktop app**, never a headless `--detached` start, and
+  it waits while the app itself is installing an update (that relaunches by itself).
 - **Restarts start the program's real path.** Once the file is replaced, Linux reports the
-  running program as `/usr/bin/companion-hub (deleted)`, which can't be started.
+  running program as `/usr/bin/companion-hub (deleted)`, which can't be started. `$APPIMAGE`
+  counts only when the app runs from inside that AppImage (`$APPDIR`), because the variable is
+  inherited by anything started from another AppImage's terminal.
 
 The Hub stack keeps running through the restart. The new app recreates it only if its bundled
 setup changed.
