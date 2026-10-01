@@ -246,6 +246,33 @@ export type UpdateApiKeyBody = {
     capability: 'read' | 'write' | 'full';
 };
 
+export type TailscaleStatusDto = {
+    installed: boolean;
+    connected: boolean;
+    version: string;
+    hostname: string;
+    nodeFqdn: string;
+    tailnet: string;
+    ip: string;
+    supportsServices: boolean;
+    httpsAvailable: boolean;
+    backendState: string;
+    authUrl: string;
+    peers?: Array<{
+        id?: string;
+        nodeFqdn: string;
+        hostname: string;
+        ip: string;
+        online?: boolean;
+        os?: string;
+    }>;
+    servePermission: {
+        denied: boolean;
+        remedy: string;
+        deniedSince: string;
+    };
+};
+
 export type LoadDto = {
     diskUsed: number;
     diskSize: number;
@@ -2933,9 +2960,7 @@ export type GetStatus3Data = {
 };
 
 export type GetStatus3Responses = {
-    default: {
-        [key: string]: unknown;
-    };
+    default: TailscaleStatusDto;
 };
 
 export type GetStatus3Response = GetStatus3Responses[keyof GetStatus3Responses];

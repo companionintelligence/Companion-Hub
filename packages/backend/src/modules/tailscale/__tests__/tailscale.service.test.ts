@@ -14,7 +14,7 @@ vi.mock('node:fs/promises', () => ({
 import { access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { isServePermissionDenied, servePermissionRemedy, TailscaleService } from '../tailscale.service';
+import { isServePermissionDenied, servePermissionCommand, servePermissionRemedy, TailscaleService } from '../tailscale.service';
 import { CORE_6_SERVE_STATUS, CORE_17_SERVE_STATUS_AFTER_MANUAL_REPAIR, HUB_SERVE_COMMAND, SERVE_CONFIG_DENIED_STDERR } from './serve-captures';
 
 const runningStatusJson = JSON.stringify({
@@ -702,8 +702,8 @@ describe('TailscaleService', () => {
   });
 
   describe('servePermissionRemedy', () => {
-    /** The pasteable part of the remedy, without the trailing note about the uid. */
-    const commandFor = (uid: number) => servePermissionRemedy(uid).replace(/ \(the Hub runs as uid \d+\)$/, '');
+    /** The command Settings → Network shows and copies, which the log line names too. */
+    const commandFor = (uid: number) => servePermissionCommand(uid);
 
     /** Runs `command` in a real shell with a `sudo` that records its arguments instead of escalating. */
     async function runWithRecordingSudo(command: string): Promise<{ sudoCalls: string[]; exitedCleanly: boolean }> {
@@ -748,6 +748,30 @@ describe('TailscaleService', () => {
 
     it('falls back to a placeholder where the platform has no uid', () => {
       expect(servePermissionRemedy(null)).toContain('sudo tailscale set --operator=<user>');
+      expect(servePermissionCommand(null)).toBe('sudo tailscale set --operator=<user>');
+    });
+
+    it('logs the same command the Hub page copies, followed only by which uid it is for', () => {
+      expect(servePermissionRemedy(1000)).toBe(`${servePermissionCommand(1000)} (the Hub runs as uid 1000)`);
+    });
+  });
+
+  describe('servePermission', () => {
+    it('reports no refusal until the sync records one', () => {
+      expect(service.getServePermission()).toEqual({ denied: false, remedy: null, deniedSince: null });
+    });
+
+    it('keeps when a refusal began, with the command that ends it, until a write succeeds', () => {
+      const began = new Date('2026-10-01T09:00:00.000Z');
+
+      expect(service.recordServePermissionDenied(began)).toBe(true);
+      // The same refusal on a later pass changes nothing, so open pages are not told again.
+      expect(service.recordServePermissionDenied(new Date('2026-10-01T09:05:00.000Z'))).toBe(false);
+      expect(service.getServePermission()).toEqual({ denied: true, remedy: servePermissionCommand(), deniedSince: '2026-10-01T09:00:00.000Z' });
+
+      expect(service.recordServePermissionGranted()).toBe(true);
+      expect(service.recordServePermissionGranted()).toBe(false);
+      expect(service.getServePermission()).toEqual({ denied: false, remedy: null, deniedSince: null });
     });
   });
 });

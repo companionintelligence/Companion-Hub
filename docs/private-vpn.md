@@ -79,9 +79,13 @@ With a host Tailscale client, the Hub writes Serve config through the host's
 `tailscaled`, which accepts writes only from root or the host's Tailscale
 operator. If the Hub runs as an ordinary account, the Hub logs one warning with
 the command that makes that account the operator, and skips publishing until you
-run it on the host. The account differs between hosts (uid 1000 on most
-appliances, 1001 on some), so use the command from the warning, or find the
-account with `ps -o user= -p "$(docker inspect -f '{{.State.Pid}}' ci-hub)"` and
+run it on the host. **Settings → Network** shows the same reason and command,
+with a copy button, and the access card of each unpublished Private VPN app says
+that Tailscale refused the change instead of **Pending**. Both clear once
+`tailscaled` accepts the Hub's next change. The account differs between hosts
+(uid 1000 on most appliances, 1001 on some), so use the command from the
+warning, or find the account with
+`ps -o user= -p "$(docker inspect -f '{{.State.Pid}}' ci-hub)"` and
 run `sudo tailscale set --operator=<account>`.
 
 The Hub checks that the entry answers for the device's current name. If you
