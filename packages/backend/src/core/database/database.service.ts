@@ -44,6 +44,10 @@ export class DatabaseService {
       password,
       database,
       max: 10,
+      // The timestamp columns are written as UTC and read back without a zone (see db-timestamp.ts), so
+      // the session's zone decides what `now()` means. A server configured for another zone would stamp
+      // its own wall clock beside the UTC the app writes.
+      options: '-c TimeZone=UTC',
       keepAlive: true,
       idleTimeoutMillis: 60_000,
       connectionTimeoutMillis: 10_000,

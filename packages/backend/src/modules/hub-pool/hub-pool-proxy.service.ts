@@ -111,6 +111,7 @@ import {
 } from './pool-model-listing';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import type { PoolCandidate, PoolPeerCapabilities } from './hub-pool.types';
+import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -2166,7 +2167,7 @@ export class PoolProxyService {
         readAdvertisedThroughput(
           (peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.throughput,
           // Our clock, like snapshot freshness: the advert's ages are relative to when the peer answered.
-          peer.lastSeenAt ? now - Date.parse(peer.lastSeenAt) : Number.NaN,
+          peer.lastSeenAt ? now - parseDbTimestampMs(peer.lastSeenAt) : Number.NaN,
         ),
       ]),
     );

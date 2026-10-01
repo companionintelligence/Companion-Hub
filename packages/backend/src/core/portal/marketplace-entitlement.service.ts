@@ -8,6 +8,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { eq } from 'drizzle-orm';
 
 import { PortalClientService } from './portal-client.service';
+import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 
 export const ENTITLEMENT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 export const ENTITLEMENT_START_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -111,7 +112,7 @@ export class MarketplaceEntitlementService {
   }
 
   private applyUnreachable(cache: CachedEntitlement | null, now: number, mode: EntitlementMode): void {
-    const age = cache ? now - Date.parse(cache.cachedAt) : Number.POSITIVE_INFINITY;
+    const age = cache ? now - parseDbTimestampMs(cache.cachedAt) : Number.POSITIVE_INFINITY;
 
     if (mode === 'start') {
       if (cache && !cache.entitled && Number.isFinite(age) && age < ENTITLEMENT_CACHE_TTL_MS) {
