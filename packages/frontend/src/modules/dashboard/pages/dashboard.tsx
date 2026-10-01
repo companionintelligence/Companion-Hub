@@ -12,6 +12,8 @@ import { useEffect, useMemo } from 'react';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate, useSearchParams } from 'react-router';
+import { useAppContext } from '@/context/app-context';
+import { BatchActionsMenu } from '../components/batch-actions-menu';
 import { CompactSystemStat } from '../components/compact-system-stat';
 import { HorizontalAppList } from '../components/horizontal-app-list';
 import { QueuedInstallsIndicator } from '../components/queued-installs-indicator';
@@ -67,6 +69,12 @@ export default () => {
   });
 
   const { data: installQueue, isLoading: installQueueLoading } = useInstallQueue();
+  const { updatesAvailable } = useAppContext();
+
+  // What each batch action would act on, so the menu can say "nothing to stop" instead of running an empty sweep.
+  const installedApps = appsData?.installed ?? [];
+  const runningCount = installedApps.filter(({ app }) => app.status === 'running').length;
+  const stoppedCount = installedApps.filter(({ app }) => app.status === 'stopped').length;
 
   /*
    * The installed-apps payload carries `pendingRestart`, which is enough for the
@@ -152,6 +160,11 @@ export default () => {
         <div className="rounded-lg border border-border bg-linear-to-b from-card to-card/60 p-4 shadow-sm">
           <QueuedInstallsIndicator queue={installQueue} isLoading={installQueueLoading} />
           <CustomDomainRestartBanner apps={diagnosticsApps} namesByUrn={appNamesByUrn} />
+          {installedApps.length > 0 && (
+            <div className="mb-1 flex justify-end">
+              <BatchActionsMenu runningCount={runningCount} stoppedCount={stoppedCount} updatesAvailable={updatesAvailable} />
+            </div>
+          )}
           <HorizontalAppList apps={appsData?.installed ?? []} isLoading={!appsData} customDomainsAwaitingRestart={customDomainsAwaitingRestart} />
         </div>
       </div>

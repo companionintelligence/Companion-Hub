@@ -1412,6 +1412,7 @@
   "APP_STORES_UPDATE_ERROR": "Failed to update app stores",
   "APP_INSTALL_FORM_PUBLISH_TO_INTERNET": "Publish to internet",
   "MY_APPS_START_ALL_FORM_SUBMIT": "Start all",
+  "MY_APPS_START_ALL_FORM_TITLE": "Start all apps",
   "MY_APPS_START_ALL_FORM_SUBTITLE": "This will start all stopped apps.",
   "MY_APPS_START_ALL_IN_PROGRESS": "Starting all apps",
   "MY_APPS_STOP_ALL_FORM_SUBMIT": "Stop all",
