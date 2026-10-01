@@ -44,10 +44,6 @@ export class DatabaseService {
       password,
       database,
       max: 10,
-      // The timestamp columns are written as UTC and read back without a zone (see db-timestamp.ts), so
-      // the session's zone decides what `now()` means. A server configured for another zone would stamp
-      // its own wall clock beside the UTC the app writes.
-      options: '-c TimeZone=UTC',
       keepAlive: true,
       idleTimeoutMillis: 60_000,
       connectionTimeoutMillis: 10_000,
@@ -59,6 +55,17 @@ export class DatabaseService {
     // the client on next checkout.
     this.pool.on('error', (err) => {
       this.logger.error('Postgres pool: idle client error (connection will be re-established)', err.message);
+    });
+
+    // The timestamp columns are written as UTC and read back without a zone (see db-timestamp.ts), so
+    // the session's zone decides what `now()` means. A server configured for another zone would stamp
+    // its own wall clock beside the UTC the app writes. Set per connection, with a statement and not
+    // the `options` startup parameter: a connection pooler in front of Postgres rejects an unknown
+    // startup parameter outright, and then no connection would be made at all.
+    this.pool.on('connect', (client) => {
+      client.query("SET TIME ZONE 'UTC'").catch((error: unknown) => {
+        this.logger.error('Postgres pool: could not set the session time zone to UTC', error instanceof Error ? error.message : String(error));
+      });
     });
 
     this.db = drizzle(this.pool, { schema });

@@ -1,5 +1,15 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { compactTokens, DASH, humanBytes, humanCount, humanDuration, parseHubTimestamp, relativeAge, relativeUntil } from './dense';
+import {
+  compactTokens,
+  DASH,
+  formatHubDateTime,
+  humanBytes,
+  humanCount,
+  humanDuration,
+  parseHubTimestamp,
+  relativeAge,
+  relativeUntil,
+} from './dense';
 
 /*
  * The formatting helpers, which carry the dashboard's absence-vs-zero contract.
@@ -110,6 +120,30 @@ describe('parseHubTimestamp', () => {
   it('is NaN for nothing at all, so callers fall through to their dash', () => {
     expect(parseHubTimestamp(null)).toBeNaN();
     expect(parseHubTimestamp('')).toBeNaN();
+  });
+});
+
+describe('formatHubDateTime', () => {
+  // Pinned west of UTC: where CI runs, UTC, reading a zoneless value as local gives the same answer.
+  beforeAll(() => {
+    vi.stubEnv('TZ', 'America/Los_Angeles');
+  });
+  afterAll(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('shows a zoneless Postgres timestamp as the local time of the UTC instant it names', () => {
+    expect(formatHubDateTime('2026-09-27 10:22:22.896')).toBe(new Date('2026-09-27T10:22:22.896Z').toLocaleString());
+    expect(formatHubDateTime('2026-09-27 10:22:22.896')).toContain('3:22');
+  });
+
+  it('shows a timestamp that names its zone as the instant it names', () => {
+    expect(formatHubDateTime('2026-09-27T10:22:22Z')).toBe(formatHubDateTime('2026-09-27 10:22:22'));
+  });
+
+  it('is a dash for nothing and for text that is not a date', () => {
+    expect(formatHubDateTime(null)).toBe(DASH);
+    expect(formatHubDateTime('yesterday')).toBe(DASH);
   });
 });
 

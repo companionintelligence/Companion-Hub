@@ -1,6 +1,7 @@
 import { type ApiKeyCapability, CapabilityBadge, isCapabilityPromotion } from '@/components/capability-badge/capability-badge';
 import { CapabilityPicker } from '@/components/capability-badge/capability-picker';
 import { ScopeBadge } from '@/components/scope-badge/scope-badge';
+import { formatHubDateTime } from '@/components/ui/dense/dense';
 import { OPERATOR_MINTABLE_SCOPES, type OperatorMintableScope } from '@ci-hub/common/types';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
@@ -347,7 +348,7 @@ export const ApiKeysContainer = () => {
                         )}
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        {key.lastUsedAt ? t('API_KEYS_LAST_USED', { when: new Date(key.lastUsedAt).toLocaleString() }) : t('API_KEYS_NEVER_USED')}
+                        {key.lastUsedAt ? t('API_KEYS_LAST_USED', { when: formatHubDateTime(key.lastUsedAt) }) : t('API_KEYS_NEVER_USED')}
                       </p>
                       {/* An operator key acts as whoever created it; a managed key acts for its app, so it has no creator to name. */}
                       {!key.managed && (
