@@ -1,13 +1,17 @@
-import { render, screen, userEvent, waitFor } from '@/tests/test-utils';
+import { act, render, screen, userEvent, waitFor, within } from '@/tests/test-utils';
 import { useAppContext } from '@/context/app-context';
 import {
   checkForUpdates,
+  type DesktopUpdateCallbacks,
+  type DesktopUpdateOutcome,
   fetchHostListenerStatus,
   getDesktopRestartState,
   getInstalledDesktopVersion,
+  installDesktopUpdate,
   isTauri,
   performUpdate,
   restartDesktopApp,
+  type UpdateInfo,
 } from '@/lib/update-service';
 import { factoryReset } from '@/api-client/sdk.gen';
 import { sdkOk } from '@/tests/sdk-mock-helpers';
@@ -53,6 +57,7 @@ vi.mock('@/lib/update-service', async () => {
     isTauri: vi.fn(),
     performUpdate: vi.fn(),
     restartDesktopApp: vi.fn(),
+    installDesktopUpdate: vi.fn(),
   };
 });
 
@@ -81,6 +86,7 @@ const mockFetchHostListenerStatus = vi.mocked(fetchHostListenerStatus);
 const mockGetDesktopRestartState = vi.mocked(getDesktopRestartState);
 const mockRestartDesktopApp = vi.mocked(restartDesktopApp);
 const mockToastError = vi.mocked(toast.error);
+const mockInstallDesktopUpdate = vi.mocked(installDesktopUpdate);
 const mockToastSuccess = vi.mocked(toast.success);
 const mockFactoryReset = vi.mocked(factoryReset);
 const jsdomUserAgent = navigator.userAgent;
@@ -182,13 +188,12 @@ describe('GeneralActionsContainer', () => {
     render(<GeneralActionsContainer />);
 
     expect(await screen.findByText('Current version: 4.7.0')).toBeInTheDocument();
-    expect(screen.getByTestId('hub-shell-update-btn')).toHaveTextContent('Download 0.2.24');
+    expect(await screen.findByTestId('hub-shell-install-btn')).toHaveTextContent('Update to 0.2.24');
+    expect(screen.queryByTestId('hub-shell-update-btn')).not.toBeInTheDocument();
     expect(screen.queryByTestId('hub-update-btn')).not.toBeInTheDocument();
   });
 
   it('shows manual update instructions matching the installer format on linux', async () => {
-    mockIsTauri.mockReturnValue(true);
-    mockGetInstalledDesktopVersion.mockResolvedValue('0.2.23');
     mockCheckForUpdates.mockResolvedValue({
       currentVersion: '0.2.23',
       latestVersion: '0.2.24',
@@ -208,8 +213,6 @@ describe('GeneralActionsContainer', () => {
   });
 
   it('keeps manual update instructions visible after opening the installer download', async () => {
-    mockIsTauri.mockReturnValue(true);
-    mockGetInstalledDesktopVersion.mockResolvedValue('0.2.23');
     mockCheckForUpdates.mockResolvedValue({
       currentVersion: '0.2.23',
       latestVersion: '0.2.24',
@@ -233,8 +236,6 @@ describe('GeneralActionsContainer', () => {
   });
 
   it('surfaces the manual download message after opening the linux installer', async () => {
-    mockIsTauri.mockReturnValue(true);
-    mockGetInstalledDesktopVersion.mockResolvedValue('0.2.23');
     mockCheckForUpdates.mockResolvedValue({
       currentVersion: '0.2.23',
       latestVersion: '0.2.24',
@@ -274,7 +275,10 @@ describe('GeneralActionsContainer', () => {
     });
     expect(screen.getByText('Current version: 4.7.0')).toBeInTheDocument();
     expect(screen.getByTestId('desktop-shell-update-card')).toBeInTheDocument();
-    expect(screen.getByTestId('host-listener-unavailable')).toHaveTextContent('Start Companion Hub');
+    // The Hub can't reach the listener of a desktop app up to 0.2.77 even while the app runs.
+    expect(mockFetchHostListenerStatus).toHaveBeenCalled();
+    expect(screen.queryByTestId('host-listener-unavailable')).not.toBeInTheDocument();
+    expect(screen.getByTestId('desktop-shell-update-card')).not.toHaveTextContent(/not running/i);
   });
 
   it('offers the desktop installer the Hub looked up when opened in a browser', async () => {
@@ -336,15 +340,192 @@ describe('GeneralActionsContainer', () => {
     expect(toggle).toHaveClass('shrink-0');
   });
 
-  it('tells the operator to start the desktop app when the host listener is down', async () => {
+  it('tells a browser where to update the desktop app when the Hub cannot reach it', async () => {
     mockFetchHostListenerStatus.mockResolvedValue(false);
 
     render(<GeneralActionsContainer />);
 
-    expect(await screen.findByTestId('host-listener-unavailable')).toHaveTextContent(
-      'The desktop app is not running, so the app shell cannot update right now',
+    const where = await screen.findByTestId('host-listener-unavailable');
+    expect(where).toHaveTextContent(
+      'Open Companion Hub on the computer that runs this Hub and update it there, or run companion-hub update in a terminal on that computer.',
     );
+    expect(where.querySelector('code')).toHaveTextContent('companion-hub update');
+    expect(where).not.toHaveTextContent(/not running/i);
     expect(screen.queryByTestId('host-listener-ready')).not.toBeInTheDocument();
+  });
+
+  describe('in the desktop window', () => {
+    function offerDesktopUpdate(downloadUrl = 'https://dl.ci.computer/v0.2.78/linux/deb/x64/Companion%20Hub_0.2.78_amd64.deb') {
+      const update: UpdateInfo = {
+        currentVersion: '0.2.77',
+        latestVersion: '0.2.78',
+        downloadUrl,
+        updateAvailable: true,
+        platform: 'linux',
+        manualDownload: true,
+      };
+      mockIsTauri.mockReturnValue(true);
+      mockGetInstalledDesktopVersion.mockResolvedValue('0.2.77');
+      mockCheckForUpdates.mockResolvedValue(update);
+      return update;
+    }
+
+    /** Lets a test drive the install: report steps, start the Hub again, then end it. */
+    function controlInstall() {
+      let callbacks: DesktopUpdateCallbacks = {};
+      let finish: (outcome: DesktopUpdateOutcome) => void = () => {};
+      mockInstallDesktopUpdate.mockImplementation((_info, given) => {
+        callbacks = given ?? {};
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      });
+      return {
+        progress: (phase: string) => act(() => callbacks.onProgress?.({ phase, message: '' })),
+        restartingHub: () => act(() => callbacks.onRestartingHub?.()),
+        finish: (outcome: DesktopUpdateOutcome) => act(() => finish(outcome)),
+      };
+    }
+
+    it('installs the update in one click and shows its steps, with the password hint for a package', async () => {
+      const update = offerDesktopUpdate();
+      const install = controlInstall();
+
+      render(<GeneralActionsContainer />);
+
+      const button = await screen.findByTestId('hub-shell-install-btn');
+      expect(button).toHaveTextContent('Update to 0.2.78');
+      // Nothing to do by hand while the app can install the update itself.
+      expect(screen.queryByTestId('manual-update-instructions')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('hub-shell-update-btn')).not.toBeInTheDocument();
+
+      await userEvent.click(button);
+      expect(mockInstallDesktopUpdate).toHaveBeenCalledWith(update, expect.any(Object));
+      expect(mockPerformUpdate).not.toHaveBeenCalled();
+      expect(screen.getByTestId('hub-shell-install-btn')).toBeDisabled();
+      expect(screen.getByTestId('desktop-update-progress')).toHaveTextContent('Starting the update…');
+
+      await install.progress('download');
+      expect(screen.getByTestId('desktop-update-progress')).toHaveTextContent('Downloading Companion Hub 0.2.78…');
+      await install.progress('install');
+      expect(screen.getByTestId('desktop-update-progress')).toHaveTextContent(
+        'Installing Companion Hub 0.2.78…Your computer may ask for your password.',
+      );
+      await install.progress('relaunch');
+      expect(screen.getByTestId('desktop-update-progress')).toHaveTextContent(
+        "Companion Hub 0.2.78 is installed. The app restarts now; if it doesn't come back, open Companion Hub again.",
+      );
+    });
+
+    it('gives no password hint for an AppImage, which the app replaces itself', async () => {
+      offerDesktopUpdate('https://dl.ci.computer/v0.2.78/linux/appimage/x64/Companion%20Hub_0.2.78_amd64.AppImage');
+      const install = controlInstall();
+
+      render(<GeneralActionsContainer />);
+      await userEvent.click(await screen.findByTestId('hub-shell-install-btn'));
+      await install.progress('install');
+
+      expect(screen.getByTestId('desktop-update-progress')).toHaveTextContent('Installing Companion Hub 0.2.78…');
+      expect(screen.getByTestId('desktop-update-progress')).not.toHaveTextContent('password');
+    });
+
+    it('starts the Hub again after a failed install, then offers the download and the steps', async () => {
+      const update = offerDesktopUpdate();
+      const install = controlInstall();
+      mockPerformUpdate.mockResolvedValue({ ok: true, messageKey: 'SETTINGS_ACTIONS_DOWNLOAD_INSTALLER_OPENED' });
+
+      render(<GeneralActionsContainer />);
+      await userEvent.click(await screen.findByTestId('hub-shell-install-btn'));
+      await install.progress('install');
+      await install.restartingHub();
+      expect(screen.getByTestId('desktop-update-progress')).toHaveTextContent("The update didn't install. Starting your Hub again…");
+
+      await install.finish({ state: 'failed', reason: 'error', error: 'Package installation failed', hub: 'restarted' });
+
+      const failed = screen.getByTestId('desktop-update-failed');
+      expect(failed).toHaveTextContent("The update didn't install: Package installation failed");
+      expect(failed).toHaveTextContent('The update had stopped your Hub, so it was started again.');
+      expect(within(failed).getByTestId('manual-update-instructions')).toHaveTextContent('Then install the app');
+      // Another try is one click away too.
+      expect(screen.getByTestId('hub-shell-install-btn')).toBeEnabled();
+
+      await userEvent.click(within(failed).getByTestId('hub-shell-update-btn'));
+      await waitFor(() => expect(mockPerformUpdate).toHaveBeenCalledWith(update));
+      expect(await within(failed).findByText('Installer download opened in your browser.')).toBeInTheDocument();
+    });
+
+    it('says when the Hub did not start again', async () => {
+      offerDesktopUpdate();
+      const install = controlInstall();
+
+      render(<GeneralActionsContainer />);
+      await userEvent.click(await screen.findByTestId('hub-shell-install-btn'));
+      await install.finish({
+        state: 'failed',
+        reason: 'error',
+        error: 'Package installation failed',
+        hub: 'restart-failed',
+        hubError: 'Docker is not running',
+      });
+
+      expect(screen.getByTestId('desktop-update-failed')).toHaveTextContent(
+        "The update stopped your Hub, and it didn't start again: Docker is not running",
+      );
+    });
+
+    it('offers the download when the desktop app is too old to install from here', async () => {
+      offerDesktopUpdate();
+      const install = controlInstall();
+
+      render(<GeneralActionsContainer />);
+      await userEvent.click(await screen.findByTestId('hub-shell-install-btn'));
+      await install.finish({
+        state: 'failed',
+        reason: 'unsupported',
+        error: 'Command perform_desktop_update_command not allowed by ACL',
+        hub: 'running',
+      });
+
+      const failed = screen.getByTestId('desktop-update-failed');
+      expect(failed).toHaveTextContent("This desktop app can't install updates from here. Download the installer instead.");
+      expect(failed).not.toHaveTextContent('ACL');
+      expect(within(failed).getByTestId('hub-shell-update-btn')).toHaveTextContent('Download 0.2.78');
+      expect(within(failed).getByTestId('manual-update-instructions')).toBeInTheDocument();
+    });
+
+    it('says another install is already running, with nothing to do by hand', async () => {
+      offerDesktopUpdate();
+      const install = controlInstall();
+
+      render(<GeneralActionsContainer />);
+      await userEvent.click(await screen.findByTestId('hub-shell-install-btn'));
+      await install.finish({ state: 'failed', reason: 'busy', error: 'Host update already in progress', hub: 'running' });
+
+      expect(screen.getByTestId('desktop-update-busy')).toHaveTextContent(
+        'The desktop app is already installing an update. It restarts when the update is done.',
+      );
+      expect(screen.queryByTestId('desktop-update-failed')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('manual-update-instructions')).not.toBeInTheDocument();
+    });
+
+    it('keeps the download when there is no newer version to install', async () => {
+      mockIsTauri.mockReturnValue(true);
+      mockGetInstalledDesktopVersion.mockResolvedValue('0.2.78');
+      mockCheckForUpdates.mockResolvedValue({
+        currentVersion: '0.2.78',
+        latestVersion: '0.2.78',
+        downloadUrl: 'https://dl.ci.computer/v0.2.78/linux/deb/x64/Companion%20Hub_0.2.78_amd64.deb',
+        updateAvailable: false,
+        platform: 'linux',
+        manualDownload: true,
+      });
+
+      render(<GeneralActionsContainer />);
+
+      expect(await screen.findByTestId('hub-shell-update-btn')).toHaveTextContent('Download 0.2.78');
+      expect(screen.getByText('This computer is already on the latest desktop app. You can still download the installer.')).toBeInTheDocument();
+      expect(screen.queryByTestId('hub-shell-install-btn')).not.toBeInTheDocument();
+    });
   });
 
   it('does not POST the host listener from the browser tab', async () => {
@@ -360,8 +541,6 @@ describe('GeneralActionsContainer', () => {
   });
 
   it('shows macos install steps for a dmg download', async () => {
-    mockIsTauri.mockReturnValue(true);
-    mockGetInstalledDesktopVersion.mockResolvedValue('0.2.23');
     mockCheckForUpdates.mockResolvedValue({
       currentVersion: '0.2.23',
       latestVersion: '0.2.24',

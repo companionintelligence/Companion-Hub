@@ -1,7 +1,7 @@
 import semver from 'semver';
 import { type DesktopReleaseManifest, desktopInstallerUrl, desktopReleaseCdn, isTrustedDownloadUrlForHost } from '@ci-hub/common/types';
 import { openExternal } from '@/lib/helpers/open-external';
-import { isMobileUserAgent } from '@/lib/mobile-connection';
+import { isMobileUserAgent, isTauriMobileSync } from '@/lib/mobile-connection';
 
 function updateCdnConfig() {
   return desktopReleaseCdn(import.meta.env.CI_HUB_ENVIRONMENT);
@@ -165,7 +165,10 @@ export async function getDesktopArch(): Promise<string> {
   return (await browserArchFromClientHints()) ?? detectBrowserArch();
 }
 
-/** Every platform downloads an installer; none replace the running binary in-place. */
+/**
+ * A page outside the desktop app downloads an installer on every platform. Only the desktop window
+ * installs one itself, through {@link installDesktopUpdate}.
+ */
 export function requiresManualDesktopUpdate(_platform?: DesktopPlatform | null): boolean {
   return true;
 }
@@ -381,6 +384,149 @@ export async function performUpdate(info: UpdateInfo): Promise<UpdateActionResul
   }
 }
 
+/** A step the desktop app reports while it installs an update (`get_update_progress_command`). */
+export interface DesktopUpdateProgress {
+  /** `prepare`, `stop`, `download`, `verify`, `install`, `done` or `relaunch`; `error` from an update the Hub started. */
+  phase: string;
+  message: string;
+}
+
+/**
+ * How a one-click desktop update ended, when it ends here at all: a successful install exits the
+ * desktop app and starts the new version, so the call usually never returns.
+ */
+export type DesktopUpdateOutcome =
+  | { state: 'installed' }
+  | {
+      state: 'failed';
+      /**
+       * `unsupported`: the app won't run the install for this page (too old to have the command, or not
+       * allowed to). `busy`: the app is already installing an update, which restarts it when done.
+       * `error`: the install itself failed.
+       */
+      reason: 'unsupported' | 'busy' | 'error';
+      /** The desktop app's own words. */
+      error: string;
+      /** What this page did about the Hub afterwards; see {@link installDesktopUpdate}. */
+      hub: 'running' | 'restarted' | 'restart-failed';
+      hubError?: string;
+    };
+
+type DesktopUpdateFailure = Extract<DesktopUpdateOutcome, { state: 'failed' }>;
+
+export interface DesktopUpdateCallbacks {
+  /** Each new step the desktop app reports. */
+  onProgress?: (progress: DesktopUpdateProgress) => void;
+  /** The install failed with the Hub down, and this page is starting the Hub again. */
+  onRestartingHub?: () => void;
+}
+
+const DESKTOP_UPDATE_PROGRESS_POLL_MS = 1000;
+
+/** Installs this page is waiting on. A second click while one runs is refused by the app, quickly. */
+let desktopUpdatesRunning = 0;
+
+/**
+ * True while this page waits on the desktop app to install an update. The desktop gate keeps the page
+ * on screen meanwhile: the updater stops the Hub before it installs, and the gate would otherwise
+ * swap the page for its "isn't running" screen, along with the update's progress.
+ */
+export function isDesktopUpdateRunning(): boolean {
+  return desktopUpdatesRunning > 0;
+}
+
+function invokeErrorText(error: unknown): string {
+  if (typeof error === 'string') return error;
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+type CoreInvoke = typeof import('@tauri-apps/api/core').invoke;
+
+async function readDesktopUpdateProgress(invoke: CoreInvoke): Promise<DesktopUpdateProgress | null> {
+  try {
+    const progress = await invoke<DesktopUpdateProgress | null>('get_update_progress_command');
+    return progress && typeof progress.phase === 'string' ? { phase: progress.phase, message: progress.message ?? '' } : null;
+  } catch {
+    return null;
+  }
+}
+
+function sameProgress(a: DesktopUpdateProgress | null, b: DesktopUpdateProgress | null): boolean {
+  return a?.phase === b?.phase && a?.message === b?.message;
+}
+
+/** Starts the Hub when its API no longer answers, as after an install that failed once the stack was stopped. */
+async function startHubIfDown(invoke: CoreInvoke, onRestartingHub?: () => void): Promise<Pick<DesktopUpdateFailure, 'hub' | 'hubError'>> {
+  const { probeHealthyHubApiPort } = await import('@/lib/tauri-hub-probe');
+  if ((await probeHealthyHubApiPort()) !== null) return { hub: 'running' };
+  onRestartingHub?.();
+  try {
+    await invoke('start_hub_command');
+    return { hub: 'restarted' };
+  } catch (error) {
+    return { hub: 'restart-failed', hubError: invokeErrorText(error) };
+  }
+}
+
+/**
+ * Installs a desktop app update from the desktop window in one click. The desktop app downloads the
+ * installer, checks it against the release manifest (size and SHA-256), installs it (`pkexec` on
+ * Linux, which asks for the password), and exits into the new version.
+ *
+ * Every desktop app so far stops the Hub before it downloads, and leaves it stopped when the install
+ * fails, for example when the password prompt is cancelled. So after a failure, a Hub whose API no
+ * longer answers is started again. The outcome says what happened; the caller offers the download.
+ */
+export async function installDesktopUpdate(info: UpdateInfo, callbacks: DesktopUpdateCallbacks = {}): Promise<DesktopUpdateOutcome> {
+  if (!isTauri() || !info.downloadUrl || !isTrustedDownloadUrl(info.downloadUrl)) {
+    return { state: 'failed', reason: 'unsupported', error: 'No trusted download URL for this desktop app', hub: 'running' };
+  }
+
+  desktopUpdatesRunning += 1;
+  let polling: ReturnType<typeof setInterval> | null = null;
+  const stopPolling = () => {
+    if (polling !== null) clearInterval(polling);
+    polling = null;
+  };
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    // The app keeps the last update's progress, a failed one's too, until the next update reports a
+    // step. Skip that leftover until the progress moves.
+    let reported = await readDesktopUpdateProgress(invoke);
+    polling = setInterval(() => {
+      void readDesktopUpdateProgress(invoke).then((progress) => {
+        if (polling === null || !progress || sameProgress(progress, reported)) return;
+        reported = progress;
+        callbacks.onProgress?.(progress);
+      });
+    }, DESKTOP_UPDATE_PROGRESS_POLL_MS);
+
+    try {
+      await invoke('perform_desktop_update_command', { downloadUrl: info.downloadUrl });
+      // Releases so far exit inside the call; one that returns has installed and restarts itself.
+      return { state: 'installed' };
+    } catch (error) {
+      stopPolling();
+      const text = invokeErrorText(error);
+      if (/not allowed by ACL|command \S+ not found/i.test(text)) {
+        return { state: 'failed', reason: 'unsupported', error: text, hub: 'running' };
+      }
+      // Another install holds the app's update lock and restarts the app when it's done: leave the
+      // Hub to it.
+      if (/already in progress/i.test(text)) {
+        return { state: 'failed', reason: 'busy', error: text, hub: 'running' };
+      }
+      return { state: 'failed', reason: 'error', error: text, ...(await startHubIfDown(invoke, callbacks.onRestartingHub)) };
+    }
+  } catch (error) {
+    return { state: 'failed', reason: 'unsupported', error: invokeErrorText(error), hub: 'running' };
+  } finally {
+    stopPolling();
+    desktopUpdatesRunning -= 1;
+  }
+}
+
 /** Hub-driven update: stack pull, and host listener when the desktop app is running. */
 export async function performStackUpdate(targetVersion?: string): Promise<UpdateActionResult> {
   try {
@@ -395,7 +541,11 @@ export async function performStackUpdate(targetVersion?: string): Promise<Update
       if (host === 'started') {
         messageKey = 'SETTINGS_ACTIONS_UPDATE_HOST_STARTED';
       } else if (host === 'unavailable' || host === 'failed') {
-        messageKey = 'SETTINGS_ACTIONS_UPDATE_STACK_HOST_UNAVAILABLE';
+        // The Hub could not hand the update to the desktop app, which is no sign that the app isn't
+        // running: desktop apps up to 0.2.77 keep their listener token where the Hub can't read it.
+        // In the desktop window, the Desktop app card updates the app itself.
+        messageKey =
+          isTauri() && !isTauriMobileSync() ? 'SETTINGS_ACTIONS_UPDATE_STACK_DESKTOP_SEPARATE' : 'SETTINGS_ACTIONS_UPDATE_STACK_HOST_UNAVAILABLE';
       }
       return { ok: true, messageKey, stack, host };
     }

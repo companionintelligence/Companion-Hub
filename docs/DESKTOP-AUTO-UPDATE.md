@@ -31,8 +31,8 @@ separate dev feed so dev desktop builds can update without touching production.
 
 | Trigger | Path |
 |---|---|
-| Settings UI (desktop) | `perform_desktop_update_command` Tauri command |
-| Settings UI (any browser) | backend `POST /api/system/update` — Hub probes `host.docker.internal:17400/health`, then `POST /update` with the listener token. The tab never talks to `127.0.0.1:17400`. If the listener is down, Hub updates the stack only and Settings tells the operator to start Companion Hub on the host. |
+| Settings UI (desktop) | **Update to X** on the Desktop app card calls the `perform_desktop_update_command` Tauri command and shows the steps from `get_update_progress_command`. See [The one-click update in the desktop window](#the-one-click-update-in-the-desktop-window). |
+| Settings UI (any browser) | backend `POST /api/system/update` — Hub probes `host.docker.internal:17400/health`, then `POST /update` with the listener token. The tab never talks to `127.0.0.1:17400`. If the listener can't be reached, Hub updates the stack only, and Settings says to update from Companion Hub on the computer that runs the Hub, or with `companion-hub update` in a terminal there. |
 | CLI | `companion-hub update` (`--check` for exit-code-only: 1 = update available) |
 | Hub Docker stack (separate from app binary) | backend `SystemUpdateService` daily timer, gated by the Settings auto-update toggle; only a release-pinned node moves (see [`hub-stack-self-update.md`](hub-stack-self-update.md)) |
 
@@ -71,8 +71,35 @@ on Linux. The Hub container mounts `state/` at `/data/state` and reads the token
 - **The Hub's fallback.** When `state/` has no token, the Hub reads the file at the root.
   Only a Hub that runs on the host, outside Docker, can see that file.
 - **Both halves.** A Hub in a container finds the token only when the desktop app writes
-  it to `state/` and the Hub image reads it there. With either one older, Settings still
-  says the desktop app isn't running.
+  it to `state/` and the Hub image reads it there. With either one older, the Hub can't reach
+  the listener. Settings no longer reads that as the app being down: the desktop window
+  installs the update itself, and a browser says where to update.
+
+### The one-click update in the desktop window
+
+In the desktop window, an available update shows **Update to X** on Settings → System →
+**Desktop app**. The button needs no listener and no token:
+
+- The page calls `perform_desktop_update_command` with the installer URL it trusts. The app
+  checks it against the release manifest, then downloads, verifies, and installs it, and exits
+  into the new version. On Linux, a `.deb` or `.rpm` installs through `pkexec`, so the card says
+  the computer may ask for a password.
+- The page polls `get_update_progress_command` once a second and shows each step. The app keeps
+  the last update's step, a failed one's too, so the page skips that until the step changes.
+- Every release so far stops the Hub before it downloads and leaves it stopped when the install
+  fails, for example when the password prompt is cancelled. While the page waits, the desktop
+  gate keeps it on screen instead of its "isn't running" screen. After a failure, if the Hub's
+  API doesn't answer, the page calls `start_hub_command`.
+- After a failure, the card shows the app's error, then offers the installer download and the
+  steps to install it by hand. An app that refuses the command (an older build, or one whose IPC
+  allowlist lacks it) gets the same offer.
+- A second click while an install runs gets "Host update already in progress" from the app. The
+  card says an update is already installing, and the page leaves the Hub to that install.
+- On Linux, desktop apps up to 0.2.77 relaunch the replaced program's old path
+  (`/usr/bin/companion-hub (deleted)`) after a `.deb` or `.rpm` install, so the window closes and
+  doesn't come back by itself. The card says to open Companion Hub again if it doesn't, and the
+  app starts the Hub when it opens. Later apps relaunch the new program (see
+  [Updates installed outside the app](#updates-installed-outside-the-app)).
 
 ### The CLI is on this channel, not the stack's
 
