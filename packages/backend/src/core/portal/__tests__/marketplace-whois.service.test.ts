@@ -304,6 +304,27 @@ describe('MarketplaceWhoIsService', () => {
     expect(visible).toEqual(items);
   });
 
+  it('allows a view of a named app when Portal is unreachable and there is no fresh cache', async () => {
+    // The store card opens GET /api/apps/:urn, which asserts `view`. The list
+    // already keeps the row through this miss; the page has to as well, or the
+    // outage reads as "app not found". A mutation on the same miss still refuses.
+    portal.whoisApps.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    await expect(service.assertSessionAction(sessionReq(), APP_URN, 'view')).resolves.toBeUndefined();
+    await expect(service.assertSessionAction(sessionReq(), APP_URN, 'install')).rejects.toMatchObject({ status: HttpStatus.FORBIDDEN });
+  });
+
+  it('still refuses a view when WhoIs answered that the operator cannot view the app', async () => {
+    portal.whoisApps.mockResolvedValue({
+      status: 200,
+      body: {
+        organizations: [{ organizationId: 'org-hub', version: 1, apps: [{ appId: 'immich', can: [] }] }],
+      },
+    });
+
+    await expect(service.assertSessionAction(sessionReq(), APP_URN, 'view')).rejects.toMatchObject({ status: HttpStatus.FORBIDDEN });
+  });
+
   /*
    * A 409 `ORGANIZATION_REQUIRED` is Portal declining to guess between tied organizations, not a
    * refusal. Read as one, it would overwrite a fresh grant with nothing for the whole TTL.

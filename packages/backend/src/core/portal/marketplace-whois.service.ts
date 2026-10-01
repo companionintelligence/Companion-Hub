@@ -90,8 +90,18 @@ export class MarketplaceWhoIsService {
 
     const map = await this.canMap(userId, appUrns, surface);
     for (const appUrn of appUrns) {
-      // `null` (WhoIs missed, no fresh cache) is a refusal: these callers mutate.
-      if (map.get(appUrn)?.includes(action) !== true) {
+      const can = map.get(appUrn);
+      /*
+       * `null` is a WhoIs miss with no fresh cache. A mutation refuses it. A
+       * read does not: `filterSessionByView` keeps the row for the same miss,
+       * and the store page asks this function for `view`. Refusing the read
+       * paints every app as "not found" for the whole outage. A known empty
+       * `can` is still a refusal.
+       */
+      if (action === 'view' && can == null) {
+        continue;
+      }
+      if (can?.includes(action) !== true) {
         throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action, app: extractAppUrn(appUrn).appName }, HttpStatus.FORBIDDEN);
       }
     }
