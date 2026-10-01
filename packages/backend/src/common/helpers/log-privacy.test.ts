@@ -125,4 +125,32 @@ describe('redactSecretsForLog', () => {
     expect(redactSecretsForLog('text')).toBe('text');
     expect(redactSecretsForLog(42)).toBe(42);
   });
+
+  it('copies everything a real body or configuration holds', () => {
+    let nested: Record<string, unknown> = { name: 'kept', password: 'pg-password' };
+    for (let level = 0; level < 20; level++) nested = { level: nested };
+
+    expect(JSON.stringify(redactSecretsForLog(nested))).toBe(JSON.stringify(nested).replace('"password":"pg-password"', '"password":"[redacted]"'));
+  });
+
+  it('cuts off a body nested deeper than any real one instead of overflowing the stack', () => {
+    // The auth guard copies a body before it checks who sent it: thousands of levels used to turn a 401 into a 500.
+    let nested: Record<string, unknown> = { password: 'deep-password' };
+    for (let level = 0; level < 5000; level++) nested = { level: nested };
+
+    const logged = JSON.stringify(redactSecretsForLog(nested));
+
+    expect(logged).toContain('"[nested too deep]"');
+    expect(logged).not.toContain('deep-password');
+  });
+
+  it('ends a circular object instead of following it forever', () => {
+    const circular: Record<string, unknown> = { name: 'loop', token: 'circular-token' };
+    circular.self = circular;
+
+    const logged = JSON.stringify(redactSecretsForLog(circular));
+
+    expect(logged).toContain('"[nested too deep]"');
+    expect(logged).not.toContain('circular-token');
+  });
 });

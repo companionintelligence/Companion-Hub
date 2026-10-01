@@ -11,6 +11,7 @@ export function hashEmailForLog(email: string): string {
 }
 
 const REDACTED = '[redacted]';
+const TOO_DEEP = '[nested too deep]';
 
 /**
  * Names of fields that hold a credential: in the configuration (`jwtSecret`, `ciHubApiKey`,
@@ -41,14 +42,29 @@ const TOKEN_COUNT_PATTERN = /tokens$/i;
  * keep their value, because whether a credential is set is what a reader of the log needs to know.
  */
 export function redactSecretsForLog(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(redactSecretsForLog);
-  }
+  return redact(value, 0);
+}
+
+/**
+ * How deep the copy goes. The configuration and the Hub's request bodies are a few levels deep, but the
+ * auth guard copies a body before it checks who sent it, so a body nested thousands of levels deep would
+ * overflow the stack and turn a 401 into a 500. Past this depth the rest is replaced whole, which also
+ * ends a circular object.
+ */
+const MAX_DEPTH = 32;
+
+function redact(value: unknown, depth: number): unknown {
   if (value === null || typeof value !== 'object') {
     return value;
   }
+  if (depth >= MAX_DEPTH) {
+    return TOO_DEEP;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redact(item, depth + 1));
+  }
 
-  return Object.fromEntries(Object.entries(value).map(([key, field]) => [key, isCredential(key, field) ? REDACTED : redactSecretsForLog(field)]));
+  return Object.fromEntries(Object.entries(value).map(([key, field]) => [key, isCredential(key, field) ? REDACTED : redact(field, depth + 1)]));
 }
 
 function isCredential(name: string, value: unknown): boolean {
