@@ -26,6 +26,7 @@ Local full stack: `pnpm run test:e2e` (docker-compose + Playwright via `scripts/
 | Workflow | Trigger | What runs |
 |----------|---------|-----------|
 | `ci.yml` | Every PR | lint, tsc, unit tests (not e2e) |
+| `image-boot.yml` | Every PR | Builds the Dockerfile `runner` stage and boots it against Postgres + RabbitMQ (`scripts/smoke-boot-image.sh`) |
 | `e2e.yml` | Release / manual | Default Playwright |
 | `e2e-extended.yml` | Nightly / label | Cross-domain + future |
 | `e2e-mcp.yml` | Manual dispatch only | MCP connect recipe — protocol handshake + app env injection (12 tests) |
