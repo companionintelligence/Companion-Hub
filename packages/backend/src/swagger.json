@@ -9834,10 +9834,6 @@
                     "isVisibleOnGuestDashboard": {
                       "type": "boolean"
                     },
-                    "config": {
-                      "type": "object",
-                      "additionalProperties": {}
-                    },
                     "enableAuth": {
                       "type": "boolean"
                     },

@@ -78,11 +78,36 @@ const myAppsSchema = z.object({
  * rather than about an address anyone can already resolve.
  * `reportOnly` parsing strips whatever the schema omits, so leaving it out here
  * is what keeps it out of the response.
+ *
+ * `config` is the form the operator filled in at install — admin passwords, provider API
+ * keys, whatever a manifest asked for — and this route is unauthenticated, so it is the
+ * first thing omitted. The guest dashboard renders tiles and links; it has no use for it.
  */
+const GUEST_HIDDEN_APP_FIELDS = ['config', 'customDomainIntent', 'customDomainTakeover'] as const;
+
+/**
+ * Remove what an anonymous caller must not see from one app row.
+ *
+ * ⚠ THIS IS THE ENFORCEMENT; THE SCHEMA BELOW ONLY DESCRIBES IT. `Dto.parse(data, { reportOnly })`
+ * returns the PARSED data when validation passes but the RAW INPUT when it fails, so a
+ * field "stripped by omission" is only stripped while every other field of every row happens to
+ * validate. One drifted column and the response goes out with `config` in it. The guest route
+ * therefore strips explicitly, before the parse, and the parse is left to shape the rest.
+ */
+export function stripGuestHiddenFields<T extends object>(app: T): Omit<T, (typeof GUEST_HIDDEN_APP_FIELDS)[number]> {
+  const visible = { ...app } as Record<string, unknown>;
+
+  for (const field of GUEST_HIDDEN_APP_FIELDS) {
+    delete visible[field];
+  }
+
+  return visible as Omit<T, (typeof GUEST_HIDDEN_APP_FIELDS)[number]>;
+}
+
 const guestAppsSchema = z.object({
   installed: z.array(
     z.object({
-      app: appSchema.omit({ customDomainIntent: true, customDomainTakeover: true }),
+      app: appSchema.omit({ config: true, customDomainIntent: true, customDomainTakeover: true }),
       info: appInfoSchemaRef,
       metadata: metadataSchema,
     }),

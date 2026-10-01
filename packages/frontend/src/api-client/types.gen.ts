@@ -721,9 +721,6 @@ export type GuestAppsDto = {
             exposedLocal: boolean;
             domain: string;
             isVisibleOnGuestDashboard: boolean;
-            config?: {
-                [key: string]: unknown;
-            };
             enableAuth?: boolean;
             autoRestartOnDomainChange?: boolean;
             localSubdomain?: string;
