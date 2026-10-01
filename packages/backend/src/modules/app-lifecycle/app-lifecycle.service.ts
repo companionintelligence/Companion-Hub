@@ -792,7 +792,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     result: z.output<typeof appEventResultSchema>,
     { emitQueueUpdate }: { emitQueueUpdate: boolean },
   ) {
-    if (!app || app.status !== 'installing') {
+    if (app?.status !== 'installing') {
       return;
     }
     this.logger.error(`Failed to install app ${appUrn}: ${result.message}`);

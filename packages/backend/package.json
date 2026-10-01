@@ -6,10 +6,11 @@
   "private": true,
   "license": "PolyForm-Noncommercial-1.0.0",
   "scripts": {
-    "dev": "nest start --watch --preserveWatchOutput",
+    "dev": "tsx compile.ts --watch",
     "local": "pnpm run dev",
-    "build": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true})\" && nest build && tsx build.ts",
-    "bundle": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true})\" && nest build && tsx build.ts",
+    "compile": "tsx compile.ts",
+    "build": "tsx compile.ts && tsx build.ts",
+    "bundle": "tsx compile.ts && tsx build.ts",
     "tsc": "tsc --noEmit",
     "test": "vitest run",
     "test:coverage": "vitest --coverage --watch=false run",
@@ -18,7 +19,7 @@
     "test:db": "docker compose -f ./src/tests/db.compose.yml up -d",
     "studio": "drizzle-kit studio",
     "gen:migrations": "drizzle-kit generate",
-    "gen:swagger": "nest build && node -r ./scripts/register-swagger-env.cjs dist/scripts/generate-swagger.js"
+    "gen:swagger": "tsx compile.ts && node -r ./scripts/register-swagger-env.cjs dist/scripts/generate-swagger.js"
   },
   "dependencies": {
     "@ci-hub/common": "workspace:*",
@@ -72,8 +73,6 @@
   },
   "devDependencies": {
     "@faker-js/faker": "10.6.0",
-    "@nestjs/cli": "^12.0.8",
-    "@nestjs/schematics": "^12.0.6",
     "@nestjs/testing": "^12.1.1",
     "@swc/core": "^1.16.12",
     "@total-typescript/shoehorn": "^0.1.2",
@@ -90,6 +89,7 @@
     "drizzle-kit": "^0.31.11",
     "esbuild": "^0.28.2",
     "memfs": "^4.80.0",
+    "tsc-alias": "^1.9.5",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "unplugin-swc": "^1.6.0",

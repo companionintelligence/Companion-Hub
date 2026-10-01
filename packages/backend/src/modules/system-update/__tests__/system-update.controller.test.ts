@@ -59,15 +59,13 @@ describe('SystemUpdateController', () => {
       expect(updateService.performUpdate).toHaveBeenCalledWith('1.1.0');
     });
 
-    it.each([
-      '1.1.0\nCI_HUB_CLOUD_URL_OVERRIDE=https://attacker.example',
-      'latest',
-      '',
-      42,
-    ])('refuses target version %j without starting an update', async (targetVersion) => {
-      await expect(controller.performUpdate({ targetVersion: targetVersion as string })).rejects.toThrow(BadRequestException);
-      expect(updateService.performUpdate).not.toHaveBeenCalled();
-    });
+    it.each(['1.1.0\nCI_HUB_CLOUD_URL_OVERRIDE=https://attacker.example', 'latest', '', 42])(
+      'refuses target version %j without starting an update',
+      async (targetVersion) => {
+        await expect(controller.performUpdate({ targetVersion: targetVersion as string })).rejects.toThrow(BadRequestException);
+        expect(updateService.performUpdate).not.toHaveBeenCalled();
+      },
+    );
   });
 
   describe('auto-updates', () => {
