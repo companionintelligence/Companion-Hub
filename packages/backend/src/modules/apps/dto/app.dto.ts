@@ -82,32 +82,41 @@ const myAppsSchema = z.object({
  * `config` is the form the operator filled in at install — admin passwords, provider API
  * keys, whatever a manifest asked for — and this route is unauthenticated, so it is the
  * first thing omitted. The guest dashboard renders tiles and links; it has no use for it.
+ *
+ * What this schema keeps is exactly what a guest tile is built from.
  */
-const GUEST_HIDDEN_APP_FIELDS = ['config', 'customDomainIntent', 'customDomainTakeover'] as const;
+const guestAppSchema = appSchema.omit({ config: true, customDomainIntent: true, customDomainTakeover: true });
+
+const GUEST_APP_FIELDS = Object.keys(guestAppSchema.shape) as ReadonlyArray<keyof typeof guestAppSchema.shape>;
 
 /**
- * Remove what an anonymous caller must not see from one app row.
+ * Keep of one app row only the fields a guest tile uses.
  *
  * ⚠ THIS IS THE ENFORCEMENT; THE SCHEMA BELOW ONLY DESCRIBES IT. `Dto.parse(data, { reportOnly })`
- * returns the PARSED data when validation passes but the RAW INPUT when it fails, so a
- * field "stripped by omission" is only stripped while every other field of every row happens to
- * validate. One drifted column and the response goes out with `config` in it. The guest route
- * therefore strips explicitly, before the parse, and the parse is left to shape the rest.
+ * returns the PARSED data when validation passes but the RAW INPUT when it fails, so a field
+ * "stripped by omission" is only stripped while every other field of every row happens to validate.
+ * One drifted column and the response goes out with whatever the row holds. The row holds more than
+ * the schema lists: the repository loads it `with: { appStore: true }`, and a store's `url` can carry
+ * a token (`https://ghp_…@github.com/…`). So the route allows by name, from the schema's own shape,
+ * before the parse; a new column is private until it is added to the schema on purpose.
  */
-export function stripGuestHiddenFields<T extends object>(app: T): Omit<T, (typeof GUEST_HIDDEN_APP_FIELDS)[number]> {
-  const visible = { ...app } as Record<string, unknown>;
+export function pickGuestAppFields<T extends object>(app: T): Pick<T, Extract<keyof T, (typeof GUEST_APP_FIELDS)[number]>> {
+  const row = app as Record<string, unknown>;
+  const visible: Record<string, unknown> = {};
 
-  for (const field of GUEST_HIDDEN_APP_FIELDS) {
-    delete visible[field];
+  for (const field of GUEST_APP_FIELDS) {
+    if (field in row) {
+      visible[field] = row[field];
+    }
   }
 
-  return visible as Omit<T, (typeof GUEST_HIDDEN_APP_FIELDS)[number]>;
+  return visible as Pick<T, Extract<keyof T, (typeof GUEST_APP_FIELDS)[number]>>;
 }
 
 const guestAppsSchema = z.object({
   installed: z.array(
     z.object({
-      app: appSchema.omit({ config: true, customDomainIntent: true, customDomainTakeover: true }),
+      app: guestAppSchema,
       info: appInfoSchemaRef,
       metadata: metadataSchema,
     }),

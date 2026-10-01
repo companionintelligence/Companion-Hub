@@ -14,11 +14,15 @@ import { AppsController } from '../apps.controller';
 
 const secrets = { WEBUI_ADMIN_PASSWORD: 'hunter2', OPENAI_API_KEY: 'sk-live-abc' };
 
-function controllerServingGuestApps() {
+function controllerServingGuestApps(overrides: Record<string, unknown> = {}) {
   const read = mock<AppsReadService>();
   read.getGuestDashboardApps.mockResolvedValue([
     {
       app: {
+        // The repository loads the row `with: { appStore: true }`; a store URL can carry a token.
+        appStore: { id: 1, slug: 'private-store', url: 'https://ghp_privatetoken@github.com/org/private-store.git' },
+        subnet: '172.20.0.0/24',
+        appName: 'open-webui',
         id: 3,
         status: 'running',
         version: 1,
@@ -30,6 +34,7 @@ function controllerServingGuestApps() {
         isVisibleOnGuestDashboard: true,
         config: secrets,
         customDomainIntent: 'not-yet-published.example.test',
+        ...overrides,
       },
       info: { id: 'open-webui', urn: 'open-webui:ci-marketplace', name: 'Open WebUI' },
       metadata: {},
@@ -59,5 +64,25 @@ describe('AppsController.getGuestApps', () => {
     const result = await controllerServingGuestApps().getGuestApps();
 
     expect(JSON.stringify(result)).not.toContain('not-yet-published');
+  });
+
+  it('does not include the store the row was loaded with, nor columns the schema does not list', async () => {
+    const result = await controllerServingGuestApps().getGuestApps();
+
+    expect(result.installed[0]?.app).not.toHaveProperty('appStore');
+    expect(result.installed[0]?.app).not.toHaveProperty('subnet');
+    expect(JSON.stringify(result)).not.toContain('ghp_privatetoken');
+  });
+
+  it('still withholds all of it when one row no longer validates and the parse would fall back to its raw input', async () => {
+    const result = await controllerServingGuestApps({ status: 'a-status-that-does-not-exist', pendingRestart: 'not-a-boolean' }).getGuestApps();
+
+    const body = JSON.stringify(result);
+    expect(result.installed).toHaveLength(1);
+    expect(body).not.toContain('ghp_privatetoken');
+    expect(body).not.toContain('hunter2');
+    expect(body).not.toContain('sk-live-abc');
+    expect(body).not.toContain('not-yet-published');
+    expect(body).not.toContain('172.20.0.0');
   });
 });
