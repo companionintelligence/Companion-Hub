@@ -619,7 +619,7 @@ pub fn compute_config_hash(compose_path: &Path, env_path: &Path) -> String {
     if let Ok(content) = std::fs::read(env_path) {
         hasher.update(&content);
     }
-    format!("{:x}", hasher.finalize())
+    crate::digest_hex::lower_hex(&hasher.finalize())
 }
 
 /// Pull all stack images before compose up when configuration changed.
