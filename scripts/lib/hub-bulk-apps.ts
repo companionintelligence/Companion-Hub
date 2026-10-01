@@ -22,6 +22,23 @@ export const BULK_APP_ACTIONS = {
 
 export type BulkAppAction = keyof typeof BULK_APP_ACTIONS;
 
+/** How long the Hub gets to accept a sweep before the command stops waiting. */
+const REQUEST_TIMEOUT_MS = 60_000;
+
+/**
+ * The Hub did not answer in time. Not the same as unreachable: it was listening, and a sweep over many
+ * apps may be running right now, so the operator is told to look before asking again.
+ */
+export class HubBulkRequestTimedOut extends Error {
+  constructor(
+    readonly base: string,
+    readonly seconds: number,
+  ) {
+    super(`The Hub at ${base} did not answer within ${seconds} seconds.`);
+    this.name = 'HubBulkRequestTimedOut';
+  }
+}
+
 export function isBulkAppAction(value: string): value is BulkAppAction {
   return Object.hasOwn(BULK_APP_ACTIONS, value);
 }
@@ -31,8 +48,8 @@ export function isBulkAppAction(value: string): value is BulkAppAction {
  * the apps themselves change state afterwards, and a sweep over many of them takes a while.
  *
  * Throws {@link HubClaimNoDeviceKey} when this machine holds no key, {@link HubUnreachableError} when
- * nothing is listening, and a `HubClaimRefused` (the Hub's refusal, with its translation key) when the
- * Hub answered no.
+ * nothing is listening, {@link HubBulkRequestTimedOut} when the Hub took too long to answer, and a
+ * `HubClaimRefused` (the Hub's refusal, with its translation key) when the Hub answered no.
  */
 export async function requestBulkAppAction(envFileName: string, action: BulkAppAction): Promise<void> {
   const { method, route } = BULK_APP_ACTIONS[action];
@@ -50,9 +67,14 @@ export async function requestBulkAppAction(envFileName: string, action: BulkAppA
     response = await fetch(`${base}${route}`, {
       method,
       headers: { Authorization: `Bearer ${source.key}` },
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
   } catch (error) {
+    // `AbortSignal.timeout` aborts with a TimeoutError: the Hub was there and was slow, not absent.
+    if (error instanceof Error && error.name === 'TimeoutError') {
+      throw new HubBulkRequestTimedOut(base, REQUEST_TIMEOUT_MS / 1000);
+    }
+
     const detail = error instanceof Error ? error.message : String(error);
     throw new HubUnreachableError(`Cannot reach the Hub at ${base} — ${detail}`);
   }

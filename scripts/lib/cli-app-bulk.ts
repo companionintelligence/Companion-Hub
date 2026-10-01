@@ -13,7 +13,7 @@ import { BASE_COMMAND } from './cli-types.js';
 import { printMessageBox } from './cli-ui.js';
 import { requireRepoOrApplianceContext, resolveHubContext } from './hub-context.js';
 import { HubClaimNoDeviceKey, HubClaimRefused } from './hub-claim.js';
-import { BULK_APP_ACTIONS, type BulkAppAction, requestBulkAppAction } from './hub-bulk-apps.js';
+import { BULK_APP_ACTIONS, type BulkAppAction, HubBulkRequestTimedOut, requestBulkAppAction } from './hub-bulk-apps.js';
 
 export async function runBulkAppCommand(action: BulkAppAction, args: string[]) {
   const env = resolveEnvFromArgs(args);
@@ -44,6 +44,12 @@ export async function runBulkAppCommand(action: BulkAppAction, args: string[]) {
       );
     } else if (error instanceof HubUnreachableError) {
       printMessageBox('Hub not reachable', [error.message, `Start it first: ${BASE_COMMAND} up ${env}`], 'red');
+    } else if (error instanceof HubBulkRequestTimedOut) {
+      printMessageBox(
+        'Hub did not answer in time',
+        [error.message, 'It may still be working through the apps.', `Look before asking again: ${BASE_COMMAND} app status`],
+        'yellow',
+      );
     } else if (error instanceof HubClaimRefused) {
       printMessageBox(`${command} refused`, [error.message, `Status ${error.status}.`], 'red');
     } else {

@@ -9,7 +9,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HubClaimNoDeviceKey, HubClaimRefused } from '../lib/hub-claim.js';
-import { BULK_APP_ACTIONS, type BulkAppAction, isBulkAppAction, requestBulkAppAction } from '../lib/hub-bulk-apps.js';
+import { BULK_APP_ACTIONS, type BulkAppAction, HubBulkRequestTimedOut, isBulkAppAction, requestBulkAppAction } from '../lib/hub-bulk-apps.js';
 import { HubUnreachableError } from '../public-web-cli.js';
 
 const mocks = vi.hoisted(() => ({
@@ -95,6 +95,23 @@ describe('requestBulkAppAction', () => {
     expect(failure).toBeInstanceOf(HubUnreachableError);
     expect((failure as Error).message).toContain('http://127.0.0.1:5002');
     expect((failure as Error).message).toContain('fetch failed');
+  });
+
+  it('says the Hub was slow, not absent, when it does not answer in time', async () => {
+    fetchMock.mockRejectedValue(Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' }));
+
+    const failure = await requestBulkAppAction('/data/.env.dev', 'update-all').catch((error) => error);
+
+    expect(failure).toBeInstanceOf(HubBulkRequestTimedOut);
+    expect(failure).not.toBeInstanceOf(HubUnreachableError);
+    expect(failure).toMatchObject({ base: 'http://127.0.0.1:5002', seconds: 60 });
+  });
+
+  it('gives the request a signal that times out', async () => {
+    await requestBulkAppAction('/data/.env.dev', 'update-all');
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 
   it('hands back the Hub’s refusal with its translation key', async () => {

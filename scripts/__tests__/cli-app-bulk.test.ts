@@ -8,6 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HubClaimNoDeviceKey, HubClaimRefused } from '../lib/hub-claim.js';
 import { HubUnreachableError } from '../public-web-cli.js';
+import { HubBulkRequestTimedOut } from '../lib/hub-bulk-apps.js';
 
 const mocks = vi.hoisted(() => ({
   requestBulkAppAction: vi.fn(),
@@ -75,6 +76,17 @@ describe('runBulkAppCommand', () => {
 
     expect(output()).toContain('Hub not reachable');
     expect(output()).toContain('cihub up');
+  });
+
+  it('exits 1 and does not call a slow Hub unreachable, because the sweep may be running', async () => {
+    mocks.requestBulkAppAction.mockRejectedValue(new HubBulkRequestTimedOut('http://127.0.0.1:5002', 60));
+
+    await expect(runBulkAppCommand('update-all', [])).rejects.toThrow('exit:1');
+
+    expect(output()).toContain('did not answer');
+    expect(output()).toContain('app status');
+    expect(output()).not.toContain('Hub not reachable');
+    expect(output()).not.toContain('cihub up');
   });
 
   it('exits 1 and shows the Hub’s refusal', async () => {
