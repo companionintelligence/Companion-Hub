@@ -276,4 +276,47 @@ describe('BackupsService', () => {
       expect(appEventsQueue.publish).not.toHaveBeenCalled();
     });
   });
+  describe('getAppBackups paging', () => {
+    const appUrn = 'immich:ci-marketplace' as AppUrn;
+    const makeBackups = (count: number) =>
+      Array.from({ length: count }, (_, index) => ({ id: `backup-${index}.tar.gz`, size: 100 + index, date: 1_000 + index }));
+    const list = (page: number, pageSize = 10) => service.getAppBackups({ appUrn, page, pageSize, actor: GRANTED_ACTOR });
+
+    beforeEach(() => {
+      appLifecycle.assertActorMay.mockResolvedValue(undefined);
+      backupManager.listBackupsByAppId.mockResolvedValue(makeBackups(25));
+    });
+
+    it('serves the newest backups first, a page at a time, counting pages from 1', async () => {
+      const first = await list(1);
+      const third = await list(3);
+
+      expect(first.data.map((backup) => backup.id)[0]).toBe('backup-24.tar.gz');
+      expect(first.data).toHaveLength(10);
+      expect(first).toMatchObject({ total: 25, currentPage: 1, lastPage: 3 });
+      expect(third.data).toHaveLength(5);
+      expect(third.currentPage).toBe(3);
+    });
+
+    it('reads page 0, which the route used to default to, as the first page rather than an empty one', async () => {
+      const result = await list(0);
+
+      expect(result.data).toHaveLength(10);
+      expect(result.currentPage).toBe(1);
+    });
+
+    it.each([-3, Number.NaN])('reads page %s as the first page', async (page) => {
+      const result = await list(page);
+
+      expect(result.data).toHaveLength(10);
+      expect(result.currentPage).toBe(1);
+    });
+
+    it('returns an empty list past the last page', async () => {
+      const result = await list(9);
+
+      expect(result.data).toEqual([]);
+      expect(result.total).toBe(25);
+    });
+  });
 });

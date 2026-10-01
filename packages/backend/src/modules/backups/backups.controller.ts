@@ -57,7 +57,7 @@ export class BackupsController {
     await this.whois.assertSessionAction(req, appUrn, 'view');
     const backups = await this.backupsService.getAppBackups({
       appUrn,
-      page: query.page ?? 0,
+      page: query.page ?? 1,
       pageSize: query.pageSize ?? 10,
       actor: this.whois.lifecycleActor(req, 'view'),
     });

@@ -162,7 +162,9 @@ export class BackupsService {
 
     backups.sort((a, b) => b.date - a.date);
 
-    const start = (page - 1) * pageSize;
+    // Pages count from 1. A page below that (the route used to default to 0) turned `start` negative,
+    // and `slice(-10, 0)` is an empty list however many backups there are.
+    const start = (Math.max(1, Math.trunc(page) || 1) - 1) * pageSize;
     const end = start + pageSize;
     const data = backups.slice(start, end);
 

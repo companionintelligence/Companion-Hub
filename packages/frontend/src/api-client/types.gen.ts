@@ -5363,7 +5363,9 @@ export type DeleteAppBackupResponses = {
 
 export type GetAppBackupsData = {
     body?: never;
-    path?: never;
+    path: {
+        urn: string;
+    };
     query?: {
         page?: number | unknown;
         pageSize?: number | unknown;
