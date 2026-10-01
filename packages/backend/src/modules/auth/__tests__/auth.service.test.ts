@@ -426,12 +426,12 @@ describe('AuthService', () => {
       userRepository.getUserByUsername.mockResolvedValue(undefined as never);
       userRepository.getOperators.mockResolvedValue([] as never);
       passwordService.hash.mockResolvedValue('hashed' as never);
-      userRepository.createUser.mockResolvedValue({ id: 3, username: 'owner@example.com' } as never);
+      userRepository.createFirstOperator.mockResolvedValue({ id: 3, username: 'owner@example.com' } as never);
 
       await authService.bootstrapOperatorFromPortalEmail('  Owner@Example.com  ');
 
       expect(userRepository.getUserByUsername).toHaveBeenCalledWith('owner@example.com');
-      expect(userRepository.createUser).toHaveBeenCalledWith(expect.objectContaining({ username: 'owner@example.com', operator: true }));
+      expect(userRepository.createFirstOperator).toHaveBeenCalledWith(expect.objectContaining({ username: 'owner@example.com', operator: true }));
     });
 
     it('refuses to claim an appliance that already has an operator', async () => {
@@ -442,6 +442,54 @@ describe('AuthService', () => {
         message: 'AUTH_ERROR_USER_NOT_FOUND',
       });
       expect(userRepository.createUser).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('claiming an empty Hub', () => {
+    // Two people signing in at the same moment both read "no operators". The claim itself is one
+    // atomic step in the repository; these cover what the service does with its answer.
+    beforeEach(() => {
+      userRepository.getOperators.mockResolvedValue([] as never);
+      passwordService.hash.mockResolvedValue('hashed' as never);
+    });
+
+    it('hands back the operator the claim created', async () => {
+      userRepository.getUserByUsername.mockResolvedValue(undefined as never);
+      userRepository.createFirstOperator.mockResolvedValue({ id: 3, username: 'owner@example.com' } as never);
+
+      await expect(authService.bootstrapOperatorFromPortalEmail('owner@example.com')).resolves.toMatchObject({ id: 3 });
+      expect(userRepository.createUser).not.toHaveBeenCalled();
+    });
+
+    it('refuses the person who lost the race', async () => {
+      userRepository.getUserByUsername.mockResolvedValue(undefined as never);
+      userRepository.createFirstOperator.mockResolvedValue(null as never);
+
+      await expect(authService.bootstrapOperatorFromPortalEmail('late@example.com')).rejects.toMatchObject({
+        message: 'AUTH_ERROR_HUB_ALREADY_CLAIMED',
+        status: 409,
+      });
+      // The loser is not made an operator by the ordinary path either.
+      expect(userRepository.createUser).not.toHaveBeenCalled();
+    });
+
+    it('treats the winner arriving a second time (two tabs, a double submit) as themselves', async () => {
+      const winner = { id: 3, username: 'owner@example.com' };
+      userRepository.getUserByUsername.mockResolvedValueOnce(undefined as never).mockResolvedValueOnce(winner as never);
+      userRepository.createFirstOperator.mockResolvedValue(null as never);
+
+      await expect(authService.bootstrapOperatorFromPortalEmail('owner@example.com')).resolves.toBe(winner);
+      expect(userRepository.createUser).not.toHaveBeenCalled();
+    });
+
+    it('does not take the claim path once the Hub has an operator', async () => {
+      userRepository.getUserByUsername.mockResolvedValue(undefined as never);
+      userRepository.getOperators.mockResolvedValue([{ id: 1, username: 'owner@example.com' }] as never);
+
+      await expect(authService.bootstrapOperatorFromPortalEmail('stranger@example.com')).rejects.toMatchObject({
+        message: 'AUTH_ERROR_USER_NOT_FOUND',
+      });
+      expect(userRepository.createFirstOperator).not.toHaveBeenCalled();
     });
   });
 
@@ -989,7 +1037,7 @@ describe('AuthService', () => {
         status: 200,
         data: { token: 'portal-session', user: { id: 'portal-subject-1', email: 'owner@example.com' } },
       });
-      userRepository.createUser.mockResolvedValue({ id: 9, username: 'owner@example.com' } as never);
+      userRepository.createFirstOperator.mockResolvedValue({ id: 9, username: 'owner@example.com' } as never);
 
       const result = await authService.register({ username: 'owner@example.com', password: 'Password1!' } as never);
 
@@ -1014,7 +1062,7 @@ describe('AuthService', () => {
     it('still provisions the operator when Portal signs in but names no subject', async () => {
       // Degrades to the old unlinked behaviour rather than refusing to register.
       vi.mocked(axios.post).mockResolvedValue({ status: 200, data: { token: 'portal-session' } });
-      userRepository.createUser.mockResolvedValue({ id: 11, username: 'owner@example.com' } as never);
+      userRepository.createFirstOperator.mockResolvedValue({ id: 11, username: 'owner@example.com' } as never);
 
       await expect(authService.register({ username: 'owner@example.com', password: 'Password1!' } as never)).resolves.toEqual({
         sessionId: 'session-id',

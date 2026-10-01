@@ -553,14 +553,34 @@ export class AuthService {
     }
 
     const hash = await this.passwordService.hash(crypto.randomUUID());
-    const created = await this.userRepository.createUser({
+    const newOperator = {
       username: email,
       password: hash,
       operator: true,
       // Second (and later) family operators skip the device wizard — it already
       // ran when this Hub was first set up.
       hasCompletedOnboarding: operators.some((operator) => operator.hasCompletedOnboarding),
-    });
+    };
+
+    // Claiming an empty Hub skips the Portal membership check (see `admitHubPerson`), so it is done
+    // atomically: two people arriving together must not both be admitted as the first operator.
+    if (operators.length === 0) {
+      const claimed = await this.userRepository.createFirstOperator(newOperator);
+      if (claimed) {
+        return claimed;
+      }
+
+      // Somebody was admitted between the read above and the insert. The same person arriving twice
+      // (a double submit, two tabs) is simply them; anyone else is not the first operator.
+      const sameUser = await this.userRepository.getUserByUsername(email);
+      if (sameUser) {
+        return sameUser;
+      }
+
+      throw new TranslatableError('AUTH_ERROR_HUB_ALREADY_CLAIMED', {}, HttpStatus.CONFLICT);
+    }
+
+    const created = await this.userRepository.createUser(newOperator);
 
     if (!created) {
       throw new TranslatableError('AUTH_ERROR_ERROR_CREATING_USER', {}, HttpStatus.INTERNAL_SERVER_ERROR);
