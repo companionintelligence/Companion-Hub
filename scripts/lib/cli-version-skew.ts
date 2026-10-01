@@ -21,7 +21,9 @@
  * ## How each side is identified
  *
  * The CLI knows its own build: the version stamped at compile time (`CIHUB_BUILD_VERSION`) and, for
- * builds that predate or skip a release tag, the commit (`CIHUB_BUILD_REVISION`).
+ * builds that predate or skip a release tag, the commit (`CIHUB_BUILD_REVISION`). A source run has
+ * neither stamp. Its version is the `0.0.0-dev` placeholder from `package.json`, which names no
+ * release, and its commit is the checkout's `HEAD` (see {@link readCliBuild}).
  *
  * The stack is read off the running container, never from `CI_HUB_VERSION` — that value comes from
  * the install's env file, no build stamps it, and it was wrong on 10 of 16 fleet Hubs on 2026-09-17
@@ -38,7 +40,9 @@
  * answer for them — at which point the commit is what is left to compare, which is why the CLI
  * carries one too.
  */
+import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { packageRevision, packageVersion } from './cli-compose-env.js';
 import { runCapture } from './cli-proc.js';
 import { HUB_CONTAINER_NAMES } from './compose-discovery.js';
@@ -95,6 +99,7 @@ export interface StackBuild {
 
 /** Which build this `cihub` is. */
 export interface CliBuild {
+  /** The stamped release, or `0.0.0-dev` from `package.json` on a source run, which names none. */
   version: string;
   revision: string | null;
 }
@@ -129,11 +134,25 @@ export type SkewVerdict =
 
 const shortRevision = (revision: string): string => revision.slice(0, 9);
 
+/**
+ * Whether a CLI version names a release.
+ *
+ * Release-shaped is not enough. A source run reports the `0.0.0-dev` placeholder from `package.json`
+ * (see `packageVersion`), and so does a Bun build made without `CI_HUB_BUILD_VERSION`. Ranked as a
+ * release, it sat below every real one, so `cihub doctor` failed every source checkout as a CLI behind
+ * its stack (CI-Hub#1727). Bare `0.0.0` is the fallback when even the placeholder cannot be read.
+ */
+function namesRelease(version: string): boolean {
+  return isVersionTag(version) && !/^0\.0\.0(-|$)/.test(normalizeVersion(version));
+}
+
 export function compareBuilds(cli: CliBuild, stack: StackBuild | null): SkewVerdict {
   const cliVersion = normalizeVersion(cli.version || '0.0.0');
   if (!stack) return { kind: 'no-stack', cli: cliVersion };
 
-  if (stack.version) {
+  // Versions decide only between two releases. A CLI that names none has no place in that order,
+  // so it goes to the commit, as an untagged stack does.
+  if (stack.version && namesRelease(cliVersion)) {
     if (normalizeVersion(stack.version) === cliVersion) return { kind: 'match', how: 'version', cli: cliVersion, stack: stack.version };
     const ordered = compareCihubVersions(cliVersion, stack.version);
     return {
@@ -147,8 +166,9 @@ export function compareBuilds(cli: CliBuild, stack: StackBuild | null): SkewVerd
     };
   }
 
-  // No release on the stack side: the commit is the only identity left. Two dev builds from the same
-  // commit ARE the same code, which is the common, healthy state on a `:dev` node.
+  // One side names no release: the commit is the only identity left. Two builds from the same commit
+  // ARE the same code, whether that is two dev builds on a `:dev` node, the common healthy state
+  // there, or a checkout at the commit its Hub's release image was built from.
   if (cli.revision && stack.revision) {
     return cli.revision === stack.revision
       ? { kind: 'match', how: 'revision', cli: shortRevision(cli.revision), stack: shortRevision(stack.revision) }
@@ -159,6 +179,17 @@ export function compareBuilds(cli: CliBuild, stack: StackBuild | null): SkewVerd
           stack: shortRevision(stack.revision),
           direction: 'unordered',
         };
+  }
+
+  // A stack that names a release only gets here because this CLI names none. The reasons below
+  // blame the image for naming no release, which here would send the operator to the wrong side.
+  if (stack.version) {
+    return {
+      kind: 'incomparable',
+      cli: cliVersion,
+      stack: stack.revision ? `${stack.version}@${shortRevision(stack.revision)}` : stack.version,
+      why: cli.revision ? 'this cihub names no release, and the running image stamps no commit' : 'this cihub names no release and carries no commit',
+    };
   }
 
   const stackLabel = stack.revision
@@ -347,16 +378,36 @@ export function readStackBuild(
 }
 
 /**
+ * The checkout this `cihub` runs from: the folder that holds `scripts/`, when it has a `.git` of
+ * its own. Null otherwise. An npm install has none, even when it sits inside someone's repository.
+ * In a Bun-compiled binary every module's URL is the binary's own `$bunfs` path, so this resolves
+ * to `/`, and those builds stamp their commit anyway.
+ */
+function cliCheckout(): string | null {
+  try {
+    const root = path.resolve(fileURLToPath(new URL('../..', import.meta.url)));
+    return existsSync(path.join(root, '.git')) ? root : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * This `cihub`'s own identity.
  *
  * The commit comes from the compile-time stamp when there is one. A source run has no stamp and
  * every reason to know its commit anyway — it is the checkout — so `git rev-parse HEAD` fills it in.
  * That is one subprocess, on the skew path only, and it is what makes `pnpm cihub doctor` in a
  * working tree comparable against a `:dev` image built from the same commit.
+ *
+ * Git is asked in that checkout, not in the working directory. `cihub` is routinely run from
+ * somewhere else: from `~` the working directory has no commit, and from inside another repository
+ * it names that repository's commit as this CLI's.
  */
-export function readCliBuild(exec: InspectExec = (cmd, args) => runCapture(cmd, args), cwd: string = process.cwd()): CliBuild {
+export function readCliBuild(exec: InspectExec = (cmd, args) => runCapture(cmd, args), cwd: string | null = cliCheckout()): CliBuild {
   const stamped = packageRevision();
   if (stamped) return { version: packageVersion(), revision: stamped };
+  if (!cwd) return { version: packageVersion(), revision: null };
   const head = exec('git', ['-C', cwd, 'rev-parse', 'HEAD']);
   return { version: packageVersion(), revision: head.ok && head.stdout.trim() ? head.stdout.trim() : null };
 }

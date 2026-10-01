@@ -378,6 +378,29 @@ fn rotates_desktop_log_when_it_exceeds_max_size() {
     );
 }
 
+#[test]
+fn tests_get_a_hub_data_dir_of_their_own_in_the_temp_dir() {
+    // The real one belongs to the Hub installed on a developer's machine, and code that tests
+    // reach writes there without being handed a data dir: the Docker engine choice, for one.
+    let data_dir = get_hub_data_dir();
+    assert_eq!(
+        data_dir.parent().and_then(Path::parent),
+        Some(std::env::temp_dir().as_path()),
+        "{}",
+        data_dir.display()
+    );
+    assert!(
+        data_dir.ends_with("companion-hub"),
+        "{}",
+        data_dir.display()
+    );
+    assert_eq!(
+        get_hub_data_dir(),
+        data_dir,
+        "one folder for the whole test process"
+    );
+}
+
 // The same cases as `XDG_DATA_HOME set by a snap` in `scripts/__tests__/paths.test.ts`.
 #[cfg(target_os = "linux")]
 fn linux_data_home_for(xdg_data_home: Option<&str>, snap_name: Option<&str>) -> PathBuf {

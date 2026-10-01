@@ -1,6 +1,7 @@
 import { Titlebar } from './components/titlebar/titlebar';
 import { HubStatus } from './components/hub-status/hub-status';
 import { useUpdateChecker } from './hooks/use-update-checker';
+import { useDesktopRestartNotice } from './hooks/use-desktop-restart-notice';
 import { Suspense, useEffect, useRef, useState } from 'react';
 import { Toaster } from '@/components/ui/Toaster/Toaster';
 import { Links, Meta, Navigate, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse, redirect, useLocation, useRevalidator } from 'react-router';
@@ -478,6 +479,7 @@ export function HydrateFallback() {
 
 export function Layout({ children }: { children: React.ReactNode }) {
   useUpdateChecker();
+  useDesktopRestartNotice();
   // The document is PRERENDERED with this false, so the emitted <body> holds a
   // bare startup gate. Initialising it from `typeof document` made the first
   // client render disagree with that HTML (#418) on every browser load; React

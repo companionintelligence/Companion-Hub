@@ -136,7 +136,7 @@
   "APP_NOTES_SAVE_SUCCESS": "Appanteckningar har sparats",
   "APP_RESET_FORM_SUBMIT": "Återställ",
   "APP_RESET_FORM_SUBTITLE": "Alla data för denna app kommer att försvinna.",
-  "APP_RESET_FORM_TITLE": "Återställ {{name}} ?",
+  "APP_RESET_FORM_TITLE": "Återställ {{name}}?",
   "APP_RESET_FORM_WARNING": "Är du säker? Den här åtgärden kan inte ångras.",
   "APP_RESET_SUCCESS": "Appen {{id}} har återställts",
   "APP_RESTART_FORM_SUBMIT": "Starta om",

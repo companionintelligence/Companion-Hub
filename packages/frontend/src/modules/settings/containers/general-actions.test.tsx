@@ -1,6 +1,14 @@
 import { render, screen, userEvent, waitFor } from '@/tests/test-utils';
 import { useAppContext } from '@/context/app-context';
-import { checkForUpdates, fetchHostListenerStatus, getInstalledDesktopVersion, isTauri, performUpdate } from '@/lib/update-service';
+import {
+  checkForUpdates,
+  fetchHostListenerStatus,
+  getDesktopRestartState,
+  getInstalledDesktopVersion,
+  isTauri,
+  performUpdate,
+  restartDesktopApp,
+} from '@/lib/update-service';
 import { factoryReset } from '@/api-client/sdk.gen';
 import { sdkOk } from '@/tests/sdk-mock-helpers';
 import { toast } from 'sonner';
@@ -40,9 +48,11 @@ vi.mock('@/lib/update-service', async () => {
     ...actual,
     checkForUpdates: vi.fn(),
     fetchHostListenerStatus: vi.fn(),
+    getDesktopRestartState: vi.fn(),
     getInstalledDesktopVersion: vi.fn(),
     isTauri: vi.fn(),
     performUpdate: vi.fn(),
+    restartDesktopApp: vi.fn(),
   };
 });
 
@@ -68,6 +78,9 @@ const mockGetInstalledDesktopVersion = vi.mocked(getInstalledDesktopVersion);
 const mockIsTauri = vi.mocked(isTauri);
 const mockPerformUpdate = vi.mocked(performUpdate);
 const mockFetchHostListenerStatus = vi.mocked(fetchHostListenerStatus);
+const mockGetDesktopRestartState = vi.mocked(getDesktopRestartState);
+const mockRestartDesktopApp = vi.mocked(restartDesktopApp);
+const mockToastError = vi.mocked(toast.error);
 const mockToastSuccess = vi.mocked(toast.success);
 const mockFactoryReset = vi.mocked(factoryReset);
 const jsdomUserAgent = navigator.userAgent;
@@ -98,6 +111,60 @@ describe('GeneralActionsContainer', () => {
     mockGetInstalledDesktopVersion.mockResolvedValue(null);
     mockCheckForUpdates.mockResolvedValue(null);
     mockFetchHostListenerStatus.mockResolvedValue(false);
+    mockGetDesktopRestartState.mockResolvedValue(null);
+  });
+
+  describe('after an update installed another desktop app version while this one was open', () => {
+    beforeEach(() => {
+      mockIsTauri.mockReturnValue(true);
+      mockGetInstalledDesktopVersion.mockResolvedValue('0.2.77');
+      mockCheckForUpdates.mockResolvedValue({
+        currentVersion: '0.2.77',
+        latestVersion: '0.2.78',
+        downloadUrl: 'https://dl.ci.computer/v0.2.78/linux/deb/x64/Companion%20Hub_0.2.78_amd64.deb',
+        updateAvailable: true,
+        platform: 'linux',
+        manualDownload: true,
+      });
+      mockGetDesktopRestartState.mockResolvedValue({ runningVersion: '0.2.77', installedVersion: '0.2.78', restartRequired: true });
+    });
+
+    it('asks for a restart instead of offering the download again', async () => {
+      render(<GeneralActionsContainer />);
+
+      const notice = await screen.findByTestId('desktop-restart-required');
+      expect(notice).toHaveTextContent(
+        'Companion Hub 0.2.78 is installed, but this window is still running 0.2.77. Restart the app to start using it.',
+      );
+      expect(screen.getByText(/This computer has Companion Hub 0.2.78 installed/)).toBeInTheDocument();
+      expect(screen.queryByTestId('hub-shell-update-btn')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('manual-update-instructions')).not.toBeInTheDocument();
+
+      await userEvent.click(screen.getByTestId('desktop-restart-btn'));
+      expect(mockRestartDesktopApp).toHaveBeenCalledTimes(1);
+    });
+
+    it('still asks when the new program did not say its version', async () => {
+      mockGetDesktopRestartState.mockResolvedValue({ runningVersion: '0.2.77', installedVersion: null, restartRequired: true });
+      render(<GeneralActionsContainer />);
+
+      expect(await screen.findByTestId('desktop-restart-required')).toHaveTextContent(
+        'A new version of Companion Hub is installed, but this window is still running 0.2.77.',
+      );
+      expect(screen.getByText(/This computer has Companion Hub 0.2.77 installed/)).toBeInTheDocument();
+    });
+
+    it('says how to restart by hand when the app refuses', async () => {
+      mockRestartDesktopApp.mockResolvedValue(false);
+      render(<GeneralActionsContainer />);
+
+      await userEvent.click(await screen.findByTestId('desktop-restart-btn'));
+
+      await waitFor(() =>
+        expect(mockToastError).toHaveBeenCalledWith("Companion Hub couldn't restart itself. Quit it from the tray icon, then open it again."),
+      );
+      expect(screen.getByTestId('desktop-restart-btn')).toBeEnabled();
+    });
   });
 
   it('shows the stack version in the primary card and shell update in the shell card on desktop', async () => {
@@ -258,6 +325,15 @@ describe('GeneralActionsContainer', () => {
     await waitFor(() => expect(screen.getByTestId('desktop-shell-update-card')).toHaveTextContent('No download URL available for this platform.'));
     expect(screen.queryByTestId('hub-shell-update-btn')).not.toBeInTheDocument();
     expect(getDesktopRelease).not.toHaveBeenCalled();
+  });
+
+  it('names the Auto-update stack switch after its title and keeps it from shrinking', async () => {
+    render(<GeneralActionsContainer />);
+
+    const toggle = await screen.findByRole('switch', { name: 'Auto-update stack' });
+    expect(toggle).toHaveAccessibleDescription('Automatically pull and restart Docker stack images when updates are available');
+    // jsdom does no layout. Without shrink-0, the description beside it squeezes the switch to a dot on a phone.
+    expect(toggle).toHaveClass('shrink-0');
   });
 
   it('tells the operator to start the desktop app when the host listener is down', async () => {
