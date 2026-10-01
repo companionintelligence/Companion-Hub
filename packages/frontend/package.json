@@ -71,7 +71,7 @@
     "tailwind-merge": "^3.7.0",
     "validator": "^13.15.35",
     "zod": "^4.6.5",
-    "zustand": "5.0.8"
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@faker-js/faker": "^10.6.0",
@@ -90,7 +90,7 @@
     "jsdom": "^27.4.0",
     "tailwindcss": "^4.3.3",
     "tailwindcss-animate": "^1.0.7",
-    "typescript": "^5.9.3",
+    "typescript": "^7.0.2",
     "vite": "^8.3.1",
     "vite-tsconfig-paths": "^5.1.4",
     "vitest": "^5.0.2"
