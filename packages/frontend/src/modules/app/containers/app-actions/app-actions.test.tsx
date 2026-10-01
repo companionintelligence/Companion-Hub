@@ -338,7 +338,7 @@ describe('AppActions', () => {
     it('claims nothing for an app that holds no domain', () => {
       render(<AppActions app={runningApp} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
 
-      expect((hoisted.updateSettingsProps?.config as Record<string, unknown>).customDomainExpected).toBe('');
+      expect((hoisted.updateSettingsProps?.config as Record<string, unknown> | undefined)?.customDomainExpected).toBe('');
       expect(hoisted.installDialogProps?.boundCustomDomain).toBeNull();
     });
   });
@@ -361,13 +361,13 @@ describe('AppActions', () => {
         />,
       );
 
-      expect((hoisted.updateSettingsProps?.config as Record<string, unknown>).autoRestartOnDomainChange).toBe(true);
+      expect((hoisted.updateSettingsProps?.config as Record<string, unknown> | undefined)?.autoRestartOnDomainChange).toBe(true);
     });
 
     it('seeds it off for an app that never set it', () => {
       render(<AppActions app={runningApp} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
 
-      expect((hoisted.updateSettingsProps?.config as Record<string, unknown>).autoRestartOnDomainChange).toBe(false);
+      expect((hoisted.updateSettingsProps?.config as Record<string, unknown> | undefined)?.autoRestartOnDomainChange).toBe(false);
     });
   });
 

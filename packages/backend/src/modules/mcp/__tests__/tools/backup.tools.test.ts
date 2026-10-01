@@ -102,15 +102,16 @@ describe('BackupTools', () => {
       backupsService.deleteAppBackup.mockResolvedValue(undefined);
     });
 
-    it.each(
-      calls,
-    )('%s hands over the calling key — a managed one with its owning app and level, so the gate can tell this app from its own and how far it reaches', async (_tool, _action, call, service) => {
-      await asKey({ ownerAppUrn: OTHER_APP, createdByUserId: null, capability: 'write' }, call);
+    it.each(calls)(
+      '%s hands over the calling key — a managed one with its owning app and level, so the gate can tell this app from its own and how far it reaches',
+      async (_tool, _action, call, service) => {
+        await asKey({ ownerAppUrn: OTHER_APP, createdByUserId: null, capability: 'write' }, call);
 
-      expect(service()).toHaveBeenCalledWith(
-        expect.objectContaining({ appUrn, actor: { kind: 'mcp', ownerAppUrn: OTHER_APP, createdByUserId: null, capability: 'write' } }),
-      );
-    });
+        expect(service()).toHaveBeenCalledWith(
+          expect.objectContaining({ appUrn, actor: { kind: 'mcp', ownerAppUrn: OTHER_APP, createdByUserId: null, capability: 'write' } }),
+        );
+      },
+    );
 
     it.each(calls)('%s hands over the person an admin-runner call names, for %s', async (_tool, action, call, service) => {
       const actorFor = vi.fn<LifecycleActorFor>(() => GRANTED_ACTOR);

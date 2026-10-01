@@ -233,18 +233,16 @@ describe('VllmBackend', () => {
       }
     });
 
-    it.each([
-      SAVED_URL,
-      `${SAVED_URL}/`,
-      `${SAVED_URL}/v1`,
-      'HTTP://192.168.1.50:8000/v1/',
-    ])('sends the saved key when re-checking the saved server, spelled %s', async (url) => {
-      saved('saved-key');
+    it.each([SAVED_URL, `${SAVED_URL}/`, `${SAVED_URL}/v1`, 'HTTP://192.168.1.50:8000/v1/'])(
+      'sends the saved key when re-checking the saved server, spelled %s',
+      async (url) => {
+        saved('saved-key');
 
-      await backend.healthCheck(url);
+        await backend.healthCheck(url);
 
-      expect(sentAuthorization()).toEqual({ Authorization: 'Bearer saved-key' });
-    });
+        expect(sentAuthorization()).toEqual({ Authorization: 'Bearer saved-key' });
+      },
+    );
 
     it('sends the key typed for the probe to any URL, as before', async () => {
       saved('saved-key');

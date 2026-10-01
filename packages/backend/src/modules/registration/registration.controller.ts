@@ -441,7 +441,7 @@ export class RegistrationController {
 
     this.logger.info(`Received local pairing request: codeLength=${pairingCode?.length ?? 0} validShape=${pairingCode?.length === 6}`);
 
-    if (!pairingCode || pairingCode.length !== 6) {
+    if (pairingCode?.length !== 6) {
       return { success: false, message: 'A valid 6-character pairing code is required.' };
     }
 
