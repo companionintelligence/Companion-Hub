@@ -9,7 +9,7 @@
  *   - `httpContextIntegration` (a @sentry/browser default) sets
  *     `event.request.url` to the full `window.location.href` — query and hash
  *     included — and `headers.Referer` to `document.referrer`. It does this
- *     unconditionally, with no `sendDefaultPii` check.
+ *     unconditionally, with no `dataCollection` gate.
  *   - `breadcrumbsIntegration` records fetch/xhr crumbs carrying `data.url`
  *     with the full query string, and console crumbs carrying the joined
  *     `message` plus raw `data.arguments`.

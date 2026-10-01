@@ -334,7 +334,28 @@ describe('frontend sentry', () => {
   it('never sends PII', async () => {
     await import('./sentry');
 
-    expect(init).toHaveBeenCalledWith(expect.objectContaining({ sendDefaultPii: false }));
+    expect(init).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dataCollection: expect.objectContaining({ userInfo: false, cookies: false, httpHeaders: false, httpBodies: [] }),
+      }),
+    );
+  });
+
+  it('keeps the metrics and logs opt-outs working through the before-send hooks', async () => {
+    vi.stubEnv('VITE_SENTRY_ENABLE_METRICS', 'false');
+    vi.stubEnv('VITE_SENTRY_ENABLE_LOGS', 'false');
+    await import('./sentry');
+
+    const options = init.mock.calls[0]?.[0] as {
+      beforeSendMetric: (m: object) => object | null;
+      beforeSendLog: (l: object) => object | null;
+    };
+    expect(options.beforeSendMetric({})).toBeNull();
+    expect(options.beforeSendLog({})).toBeNull();
+
+    vi.unstubAllEnvs();
+    const metric = {};
+    expect(options.beforeSendMetric(metric)).toBe(metric);
   });
 
   it('drops every event in beforeSend once the user withdraws consent', async () => {
