@@ -23,6 +23,13 @@ import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service
 import { BackupsService } from './backups.service';
 import { BackupRequestDto, DeleteAppBackupBodyDto, GetAppBackupsDto, GetAppBackupsQueryDto, RestoreAppBackupDto } from './dto/backups.dto';
 
+/**
+ * The largest backup the upload route accepts. The file is held in memory while it is received, so
+ * with no limit a single request could take the whole Hub process down; anything bigger is copied into
+ * the app's `backups` folder directly instead.
+ */
+export const MAX_BACKUP_UPLOAD_BYTES = 1024 * 1024 * 1024;
+
 @Injectable()
 @UseGuards(AuthGuard)
 @Controller('backups')
@@ -57,7 +64,7 @@ export class BackupsController {
     await this.whois.assertSessionAction(req, appUrn, 'view');
     const backups = await this.backupsService.getAppBackups({
       appUrn,
-      page: query.page ?? 0,
+      page: query.page ?? 1,
       pageSize: query.pageSize ?? 10,
       actor: this.whois.lifecycleActor(req, 'view'),
     });
@@ -94,7 +101,7 @@ export class BackupsController {
   }
 
   @Post(':urn/upload')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_BACKUP_UPLOAD_BYTES } }))
   @ApiConsumes('multipart/form-data')
   @ApiBody({
     schema: {

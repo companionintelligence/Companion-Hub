@@ -112,3 +112,36 @@ describe('BackupManager.getAppBackupsHostDir', () => {
     expect(build(undefined).getAppBackupsHostDir('plane:ci-marketplace')).toBeUndefined();
   });
 });
+
+describe('BackupManager.uploadBackup', () => {
+  const dataDir = '/data';
+  let manager: BackupManager;
+  let filesystem: MockProxy<FilesystemService>;
+
+  beforeEach(() => {
+    const config = mock<ConfigurationService>();
+    config.get.mockImplementation((key: string) => (key === 'directories' ? ({ dataDir } as never) : (undefined as never)));
+    filesystem = mock<FilesystemService>();
+    filesystem.createDirectory.mockResolvedValue(true);
+    filesystem.writeBinaryFile.mockResolvedValue(true);
+    manager = new BackupManager(mock<ArchiveService>(), mock<LoggerService>(), config, filesystem, mock<AppFilesManager>());
+    manager.onApplicationShutdown();
+  });
+
+  it('refuses a name that is already taken with a translatable 409, not a bare 500', async () => {
+    filesystem.pathExists.mockResolvedValue(true);
+
+    const failure = await manager.uploadBackup('app:store' as never, 'taken.tar.gz', Buffer.from('x')).catch((error) => error);
+
+    expect(failure).toMatchObject({ message: 'APP_BACKUP_UPLOAD_ALREADY_EXISTS', status: 409 });
+    expect(filesystem.writeBinaryFile).not.toHaveBeenCalled();
+  });
+
+  it('writes a new backup', async () => {
+    filesystem.pathExists.mockResolvedValue(false);
+
+    await expect(manager.uploadBackup('app:store' as never, 'fresh.tar.gz', Buffer.from('x'))).resolves.toBeUndefined();
+
+    expect(filesystem.writeBinaryFile).toHaveBeenCalledWith('/data/backups/store/app/fresh.tar.gz', expect.any(Buffer));
+  });
+});

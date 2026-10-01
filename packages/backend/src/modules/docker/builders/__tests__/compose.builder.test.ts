@@ -324,6 +324,21 @@ describe('DockerComposeBuilder', () => {
       await expect(composeBuilder.getDockerCompose([main, sidecar], {}, urn, subnet)).resolves.toContain('network_mode: service:svc');
     });
 
+    it('declares a named volume as an empty mapping, never as null', async () => {
+      // `volumes:\n  pgdata:` with nothing after it parses as null, which an app/template comparison
+      // reads as "different", and which a later edit-and-save round trip turns into `pgdata: null`.
+      const service: ServiceInput = {
+        name: 'svc',
+        image: 'image',
+        volumes: [{ volumeName: 'pgdata', containerPath: '/var/lib/postgresql' }],
+      };
+
+      const compose = await composeBuilder.getDockerCompose([service], {}, urn, subnet);
+
+      expect(yaml.parse(compose).volumes.pgdata).toEqual({});
+      expect(compose).not.toMatch(/pgdata:\s*(null|~)?\s*$/m);
+    });
+
     it('still allows a legitimate named volume', async () => {
       const service: ServiceInput = {
         name: 'svc',

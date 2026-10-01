@@ -21,6 +21,7 @@ import {
   InstalledAppUrnsDto,
   MyAppsDto,
   UpdatesAvailableDto,
+  pickGuestAppFields,
 } from './dto/app.dto';
 import { InstallQueueDto } from './dto/install-queue.dto';
 import { AppRuntimeHealthDto, AppRuntimeMonitorDto } from './dto/runtime-health.dto';
@@ -93,7 +94,9 @@ export class AppsController {
   @ApiResponse({ type: GuestAppsDto })
   async getGuestApps() {
     const guest = await this.appsReadService.getGuestDashboardApps();
-    return GuestAppsDto.parse({ installed: guest }, { reportOnly: true });
+    const installed = guest.map(({ app, info, metadata }) => ({ app: pickGuestAppFields(app), info, metadata }));
+
+    return GuestAppsDto.parse({ installed }, { reportOnly: true });
   }
 
   /**

@@ -32,6 +32,11 @@ http:
         # with true a visitor could name a public path while requesting another,
         # or name another app's host. The Hub still sees the peer Traefik saw.
         trustForwardHeader: false
+        # No `maxResponseBodySize` here, though the compose labels set it. This file is rewritten by
+        # whichever Hub or CLI version is newest, and it can land beside a Traefik that was not rolled
+        # with it; a Traefik older than 3.6.9 rejects the unknown field and, with it, the whole file,
+        # which takes this middleware, the TLS floor and every route that uses them down. The labels
+        # travel with the image pin in the same compose file, so they cannot be ahead of it.
         # Every signed identity header must ride through — Traefik copies ONLY the
         # headers listed here, and consumers verifying the signature fail closed on a
         # missing timestamp/signature (CI-Engineering#74). Listing a name also strips a

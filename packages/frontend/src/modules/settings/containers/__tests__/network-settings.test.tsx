@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { toast } from 'sonner';
@@ -168,5 +168,39 @@ describe('NetworkSettingsContainer', () => {
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('SETTINGS_NETWORK_TAILSCALE_BROWSER_FAILED'));
     expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  describe('when tailscaled refuses the Hub its Tailscale Serve changes (CI-Hub#1766)', () => {
+    const remedy = 'u="$(id -nu 1000)" && sudo tailscale set --operator="$u"';
+    const connected = { installed: true, connected: true, ip: '100.64.0.17', hostname: 'laptop', backendState: 'Running', httpsAvailable: true };
+
+    it('says why, since when, and copies the command that ends it', async () => {
+      // Until now only the Hub's log said this; the page showed nothing and every Private VPN app read "Pending".
+      fixtures.tailscaleStatus = { ...connected, servePermission: { denied: true, remedy, deniedSince: '2026-10-01T09:00:00.000Z' } };
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(window.navigator, 'clipboard', { value: { writeText }, configurable: true });
+
+      renderContainer();
+
+      const refusal = await screen.findByTestId('tailscale-serve-refused');
+      expect(within(screen.getByTestId('private-vpn-card')).getByTestId('tailscale-serve-refused')).toBe(refusal);
+      expect(refusal).toHaveTextContent('SETTINGS_NETWORK_TAILSCALE_SERVE_REFUSED_DESC');
+      expect(refusal).toHaveTextContent('SETTINGS_NETWORK_TAILSCALE_SERVE_REFUSED_SINCE');
+      expect(screen.getByTestId('tailscale-serve-remedy').textContent).toBe(remedy);
+
+      fireEvent.click(screen.getByTestId('tailscale-serve-remedy-copy'));
+
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith(remedy));
+      await waitFor(() => expect(within(refusal).getByRole('status')).toHaveTextContent('SETTINGS_NETWORK_TAILSCALE_SERVE_COMMAND_COPIED'));
+    });
+
+    it('says nothing about it while tailscaled accepts them', async () => {
+      fixtures.tailscaleStatus = { ...connected, servePermission: { denied: false, remedy: null, deniedSince: null } };
+
+      renderContainer();
+
+      await screen.findByTestId('private-vpn-card');
+      expect(screen.queryByTestId('tailscale-serve-refused')).toBeNull();
+    });
   });
 });

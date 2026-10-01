@@ -4,6 +4,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { QrCode } from '@/components/ui/qr-code';
 import { useAppContext } from '@/context/app-context';
 import { getServeStatusOptions } from '@/api-client/@tanstack/react-query.gen';
+import { tailscaleStatusOptions } from '@/lib/api-routes/named-status-routes';
 import { openExternal } from '@/lib/helpers/open-external';
 import { cn } from '@/lib/utils';
 import type { AppDetails, AppInfo } from '@/types/app.types';
@@ -14,6 +15,7 @@ import { useQuery } from '@tanstack/react-query';
 import { CheckCircle2, Copy, ExternalLink, Globe, Lock, MonitorSmartphone, QrCode as QrCodeIcon } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Link } from 'react-router';
 import { toast } from 'sonner';
 
 type AccessPointState = 'active' | 'available' | 'unavailable';
@@ -26,6 +28,11 @@ export interface AppAccessPoint {
   host: string | null;
   state: AccessPointState;
   stateLabel: string;
+  /**
+   * Private VPN only: tailscaled refused the Hub's Tailscale Serve change, so the app is not
+   * published and will not be until someone on the host runs the command Settings → Network shows.
+   */
+  tailscaleRefused?: boolean;
 }
 
 function resolveBrowserHost(internalIp?: string | null): string {
@@ -187,6 +194,8 @@ export function buildAppAccessPoints(input: {
   tailscaleNodeFqdn?: string | null;
   tailscaleHttpsEnabled?: boolean;
   tailscaleServedPorts?: ReadonlySet<number>;
+  /** Whether tailscaled refuses the Hub's Tailscale Serve changes; see `servePermission` in the Tailscale status. */
+  tailscaleServeDenied?: boolean;
   organizationSlug?: string;
   deviceSlug?: string;
   hubSubdomain?: string | null;
@@ -203,6 +212,7 @@ export function buildAppAccessPoints(input: {
     tailscaleNodeFqdn,
     tailscaleHttpsEnabled = false,
     tailscaleServedPorts = new Set<number>(),
+    tailscaleServeDenied = false,
     organizationSlug,
     deviceSlug,
     hubSubdomain,
@@ -279,6 +289,10 @@ export function buildAppAccessPoints(input: {
         ? 'available'
         : 'unavailable'
     : 'unavailable';
+  // Waiting on a publish the Hub has not made yet. While tailscaled refuses its changes, that
+  // publish cannot happen, and "Pending" would only promise one that never comes.
+  const vpnPublishPending = vpnState === 'available' && expectsTailscalePublish && !vpnPortPublished;
+  const vpnRefused = vpnPublishPending && tailscaleServeDenied;
   // Judged by the stored install form, as Portal sync and compose judge it. The row's
   // `exposedLocal` defaults to true for an exposable app installed without exposure settings,
   // and reading it showed "Enabled" for a route nothing served.
@@ -310,15 +324,18 @@ export function buildAppAccessPoints(input: {
       stateLabel:
         vpnState === 'active'
           ? 'APP_DETAILS_ACCESS_ENABLED'
-          : vpnState === 'available' && expectsTailscalePublish && !vpnPortPublished
-            ? 'APP_DETAILS_ACCESS_PENDING'
-            : vpnState === 'available' && expectsTailscalePublish
-              ? 'APP_DETAILS_ACCESS_NOT_CONFIGURED'
-              : vpnState === 'available'
+          : vpnRefused
+            ? 'APP_DETAILS_ACCESS_REFUSED'
+            : vpnPublishPending
+              ? 'APP_DETAILS_ACCESS_PENDING'
+              : vpnState === 'available' && expectsTailscalePublish
                 ? 'APP_DETAILS_ACCESS_NOT_CONFIGURED'
-                : tailscaleAvailable
+                : vpnState === 'available'
                   ? 'APP_DETAILS_ACCESS_NOT_CONFIGURED'
-                  : 'APP_DETAILS_ACCESS_NOT_AVAILABLE',
+                  : tailscaleAvailable
+                    ? 'APP_DETAILS_ACCESS_NOT_CONFIGURED'
+                    : 'APP_DETAILS_ACCESS_NOT_AVAILABLE',
+      tailscaleRefused: vpnRefused,
     },
     {
       key: 'local',
@@ -360,6 +377,14 @@ export const AppAccessPoints = ({ app, info }: Props) => {
 
   const tailscaleServedPorts = useMemo(() => buildTailscaleServedPortSet(serveStatus?.entries ?? []), [serveStatus?.entries]);
 
+  // One refusal holds back every Private VPN app, so it comes from the Hub-wide Tailscale status.
+  // Not polled: the Hub announces each change over SSE, which refetches this query.
+  const { data: tailscaleServeDenied = false } = useQuery({
+    ...tailscaleStatusOptions(),
+    select: (status) => status.servePermission?.denied === true,
+    enabled: tailscaleAvailable,
+  });
+
   const accessPoints = buildAppAccessPoints({
     app,
     info,
@@ -371,6 +396,7 @@ export const AppAccessPoints = ({ app, info }: Props) => {
     tailscaleNodeFqdn,
     tailscaleHttpsEnabled,
     tailscaleServedPorts,
+    tailscaleServeDenied,
     organizationSlug: userSettings.ciHubOrganizationSlug,
     deviceSlug: userSettings.ciHubDeviceSlug,
     hubSubdomain: userSettings.ciHubHubSubdomain,
@@ -448,9 +474,19 @@ export const AppAccessPoints = ({ app, info }: Props) => {
                 <div className="mt-4 space-y-2">
                   <div className="min-w-0 rounded-lg border border-border/50 bg-background/60 px-2.5 py-2 sm:px-3">
                     <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t('APP_DETAILS_LINK')}</div>
-                    <div className={cn('min-w-0 break-all text-sm leading-5', !isActive && 'text-muted-foreground')}>
-                      {isActive && entry.url ? entry.url : t(entry.stateLabel)}
-                    </div>
+                    {entry.tailscaleRefused ? (
+                      // The reason and the command that ends it are on the Network settings card.
+                      <div className="min-w-0 text-sm leading-5 text-warning" data-testid="vpn-access-refused">
+                        {t('APP_DETAILS_ACCESS_TAILSCALE_REFUSED')}{' '}
+                        <Link to="/settings?tab=network" className="font-medium underline underline-offset-2">
+                          {t('APP_DETAILS_ACCESS_TAILSCALE_REFUSED_LINK')}
+                        </Link>
+                      </div>
+                    ) : (
+                      <div className={cn('min-w-0 break-all text-sm leading-5', !isActive && 'text-muted-foreground')}>
+                        {isActive && entry.url ? entry.url : t(entry.stateLabel)}
+                      </div>
+                    )}
                   </div>
                 </div>
 

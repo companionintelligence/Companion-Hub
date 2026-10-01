@@ -1312,9 +1312,10 @@ fn write_token_file(path: &Path, token: &str) -> Result<(), String> {
 /// 17400, so a token that was read, planted, or caught while no listener ran stops working at the
 /// next start.
 fn issue_update_listener_token(data_dir: &Path) -> Result<String, String> {
-    use rand::Rng;
-    let token: String = rand::thread_rng()
-        .sample_iter(rand::distributions::Alphanumeric)
+    // rand 0.10: `thread_rng()` is `rng()`, the same OS-seeded CSPRNG, and `distributions` is `distr`.
+    use rand::RngExt;
+    let token: String = rand::rng()
+        .sample_iter(rand::distr::Alphanumeric)
         .take(48)
         .map(char::from)
         .collect();

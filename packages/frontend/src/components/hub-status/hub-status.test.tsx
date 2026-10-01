@@ -15,6 +15,18 @@ const probeMocks = vi.hoisted(() => {
   };
 });
 
+const updateMocks = vi.hoisted(() => ({
+  isDesktopUpdateRunning: vi.fn<() => boolean>(),
+}));
+
+vi.mock('@/lib/update-service', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/update-service')>();
+  return {
+    ...actual,
+    isDesktopUpdateRunning: updateMocks.isDesktopUpdateRunning,
+  };
+});
+
 vi.mock('@/lib/tauri-hub-probe', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/tauri-hub-probe')>();
   probeMocks.defaultProbe = actual.probeHealthyHubApiPort;
@@ -42,6 +54,7 @@ vi.mock('@/lib/theme/theme', () => ({
 
 beforeEach(() => {
   revalidateMock.mockClear();
+  updateMocks.isDesktopUpdateRunning.mockReturnValue(false);
   sessionStorage.clear();
   probeMocks.probeHealthyHubApiPort.mockReset();
   probeMocks.probeHealthyHubApiPort.mockImplementation(probeMocks.defaultProbe);
@@ -565,6 +578,33 @@ describe('HubStatus steady running and recovery', () => {
     expect(screen.getByText('Hub child')).toBeInTheDocument();
     expect(screen.queryByText('Starting CI Hub')).not.toBeInTheDocument();
     expect(reloadSpy).not.toHaveBeenCalled();
+  });
+
+  it('keeps the app mounted while the desktop app installs an update that stopped the Hub', async () => {
+    vi.useFakeTimers();
+    mockMacTauriWithStatus(['Running', 'Stopped']);
+
+    await flushAsyncWork();
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
+
+    // The updater stops the Hub before it installs; the Settings page shows the update's progress.
+    updateMocks.isDesktopUpdateRunning.mockReturnValue(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000);
+    });
+    await flushAsyncWork();
+
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: "CI Hub isn't running" })).not.toBeInTheDocument();
+
+    // The install failed and the page let go: a Hub that is still down gets the usual screen.
+    updateMocks.isDesktopUpdateRunning.mockReturnValue(false);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    await flushAsyncWork();
+
+    expect(screen.getByRole('heading', { name: "CI Hub isn't running" })).toBeInTheDocument();
   });
 
   it('revalidates routes after the hub becomes healthy without a full window reload', async () => {

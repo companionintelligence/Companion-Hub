@@ -19,6 +19,10 @@ export type PortalIdTokenClaims = {
   sub: string;
   email: string | null;
   name: string | null;
+  /** True only when the verified token says `email_verified`. Absent is not verified. */
+  emailVerified?: boolean;
+  /** `iss` from the verified token, else the Portal origin we checked against. */
+  issuer?: string;
 };
 
 export type PortalTokenVerifyOptions = {
@@ -115,8 +119,9 @@ export async function verifyPortalIdToken(token: string, options: PortalTokenVer
 
     const email = typeof payload.email === 'string' && payload.email.trim() ? payload.email.trim() : null;
     const name = typeof payload.name === 'string' && payload.name.trim() ? payload.name.trim() : null;
+    const tokenIssuer = typeof payload.iss === 'string' && payload.iss.trim() ? payload.iss.trim() : issuer;
 
-    return { sub, email, name };
+    return { sub, email, name, emailVerified: payload.email_verified === true, issuer: tokenIssuer };
   } catch {
     return null;
   }

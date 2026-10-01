@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   checkForUpdates,
+  type DesktopUpdateProgress,
   getDesktopRestartState,
   getInstalledDesktopVersion,
+  installDesktopUpdate,
+  isDesktopUpdateRunning,
   isHubUpdateAvailable,
   isStackUpdateAvailable,
   isTrustedDownloadUrl,
@@ -10,12 +13,18 @@ import {
   performUpdate,
   requiresManualDesktopUpdate,
   restartDesktopApp,
+  type UpdateInfo,
 } from '@/lib/update-service';
 import { sdkFail, sdkOk } from '@/tests/sdk-mock-helpers';
 
-const { mockSdkPerformUpdate, mockGetDesktopRelease } = vi.hoisted(() => ({
+const { mockSdkPerformUpdate, mockGetDesktopRelease, mockProbeHealthyHubApiPort } = vi.hoisted(() => ({
   mockSdkPerformUpdate: vi.fn(),
   mockGetDesktopRelease: vi.fn(),
+  mockProbeHealthyHubApiPort: vi.fn(),
+}));
+
+vi.mock('@/lib/tauri-hub-probe', () => ({
+  probeHealthyHubApiPort: (...args: unknown[]) => mockProbeHealthyHubApiPort(...args),
 }));
 
 vi.mock('@/api-client/sdk.gen', async (importOriginal) => {
@@ -435,6 +444,271 @@ describe('update-service', () => {
     expect(mockInvoke).not.toHaveBeenCalled();
   });
 
+  describe('installDesktopUpdate', () => {
+    const DEB_URL = 'https://dl.ci.computer/v0.2.78/linux/deb/x64/Companion%20Hub_0.2.78_amd64.deb';
+    const update: UpdateInfo = {
+      currentVersion: '0.2.77',
+      latestVersion: '0.2.78',
+      downloadUrl: DEB_URL,
+      updateAvailable: true,
+      platform: 'linux',
+      manualDownload: true,
+    };
+
+    /** What `get_update_progress_command` answers; the desktop app keeps the last update's step. */
+    let reported: DesktopUpdateProgress | null;
+    let hubRunningFlagDuringStart: boolean | null;
+
+    /** The desktop app's commands. `perform` is how the install goes; `startHub` is how a Hub start goes. */
+    function desktopApp({
+      perform,
+      startHub = () => Promise.resolve('Hub started'),
+    }: {
+      perform: () => Promise<unknown>;
+      startHub?: () => Promise<unknown>;
+    }) {
+      Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+      mockInvoke.mockImplementation((command: string) => {
+        if (command === 'get_update_progress_command') return Promise.resolve(reported);
+        if (command === 'perform_desktop_update_command') return perform();
+        if (command === 'start_hub_command') {
+          hubRunningFlagDuringStart = isDesktopUpdateRunning();
+          return startHub();
+        }
+        return Promise.reject(new Error(`unexpected command ${command}`));
+      });
+    }
+
+    function deferred() {
+      let resolve: (value?: unknown) => void = () => {};
+      let reject: (error: unknown) => void = () => {};
+      const promise = new Promise((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    }
+
+    beforeEach(() => {
+      reported = null;
+      hubRunningFlagDuringStart = null;
+      mockProbeHealthyHubApiPort.mockResolvedValue(5002);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      mockInvoke.mockReset();
+    });
+
+    it('installs through the desktop app and reports each new step, after the last update left its own', async () => {
+      vi.useFakeTimers();
+      // A cancelled password prompt leaves the last attempt's step behind.
+      reported = { phase: 'install', message: 'Installing update (may require elevation)…' };
+      const perform = deferred();
+      desktopApp({ perform: () => perform.promise });
+      const onProgress = vi.fn();
+
+      const outcome = installDesktopUpdate(update, { onProgress });
+      try {
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(onProgress).not.toHaveBeenCalled();
+        expect(isDesktopUpdateRunning()).toBe(true);
+
+        reported = { phase: 'download', message: 'Downloading update…' };
+        await vi.advanceTimersByTimeAsync(1000);
+        reported = { phase: 'install', message: 'Installing update (may require elevation)…' };
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(onProgress.mock.calls.map(([progress]) => progress)).toEqual([
+          { phase: 'download', message: 'Downloading update…' },
+          { phase: 'install', message: 'Installing update (may require elevation)…' },
+        ]);
+        expect(mockInvoke).toHaveBeenCalledWith('perform_desktop_update_command', { downloadUrl: DEB_URL });
+      } finally {
+        // Releases so far exit into the new version instead; one that returns has installed.
+        perform.resolve();
+      }
+      await expect(outcome).resolves.toEqual({ state: 'installed', restart: 'restarting' });
+      expect(isDesktopUpdateRunning()).toBe(false);
+      expect(mockInvoke).not.toHaveBeenCalledWith('start_hub_command');
+    });
+
+    it('starts the Hub again when the install fails after the updater stopped it', async () => {
+      mockProbeHealthyHubApiPort.mockResolvedValue(null);
+      const perform = deferred();
+      desktopApp({ perform: () => perform.promise });
+      const onRestartingHub = vi.fn();
+
+      const outcome = installDesktopUpdate(update, { onRestartingHub });
+      await vi.waitFor(() => expect(mockInvoke).toHaveBeenCalledWith('perform_desktop_update_command', { downloadUrl: DEB_URL }));
+      // The password prompt was cancelled: the install step is as far as this update got.
+      reported = { phase: 'install', message: 'Installing update (may require elevation)…' };
+      perform.reject('Package installation failed');
+
+      await expect(outcome).resolves.toEqual({
+        state: 'failed',
+        reason: 'error',
+        error: 'Package installation failed',
+        hub: 'restarted',
+      });
+      expect(onRestartingHub).toHaveBeenCalledExactlyOnceWith(false);
+      expect(mockInvoke).toHaveBeenCalledWith('start_hub_command');
+      // The desktop gate keeps this page while the Hub starts, then lets go.
+      expect(hubRunningFlagDuringStart).toBe(true);
+      expect(isDesktopUpdateRunning()).toBe(false);
+    });
+
+    // The app reports `done`, then `relaunch`, only once the install succeeded. Newer apps start the
+    // Hub again when the relaunch fails and say so; the step, not those words, is what counts.
+    it.each([
+      ['done', 'Update installed — relaunching…'],
+      ['relaunch', 'Relaunching Companion Hub…'],
+    ])('counts the update as installed when the call fails at the %s step', async (phase, message) => {
+      const perform = deferred();
+      desktopApp({ perform: () => perform.promise });
+      const onRestartingHub = vi.fn();
+
+      const outcome = installDesktopUpdate(update, { onRestartingHub });
+      await vi.waitFor(() => expect(mockInvoke).toHaveBeenCalledWith('perform_desktop_update_command', { downloadUrl: DEB_URL }));
+      // Between two polls: the step is read once more after the call fails.
+      reported = { phase, message };
+      perform.reject('relaunch failed. The Hub was started again.');
+
+      await expect(outcome).resolves.toEqual({
+        state: 'installed',
+        restart: 'failed',
+        error: 'relaunch failed. The Hub was started again.',
+        hub: 'running',
+      });
+      expect(mockInvoke).not.toHaveBeenCalledWith('start_hub_command');
+      expect(onRestartingHub).not.toHaveBeenCalled();
+    });
+
+    it('starts the Hub again after an install the app could not restart into, when the Hub is down', async () => {
+      vi.useFakeTimers();
+      mockProbeHealthyHubApiPort.mockResolvedValue(null);
+      const perform = deferred();
+      desktopApp({ perform: () => perform.promise });
+      const onRestartingHub = vi.fn();
+
+      const outcome = installDesktopUpdate(update, { onRestartingHub });
+      try {
+        reported = { phase: 'install', message: 'Installing update (may require elevation)…' };
+        await vi.advanceTimersByTimeAsync(1000);
+        reported = { phase: 'done', message: 'Update installed — relaunching…' };
+        await vi.advanceTimersByTimeAsync(1000);
+      } finally {
+        perform.reject('Failed to relaunch: No such file or directory (os error 2)');
+      }
+
+      await expect(outcome).resolves.toEqual({
+        state: 'installed',
+        restart: 'failed',
+        error: 'Failed to relaunch: No such file or directory (os error 2)',
+        hub: 'restarted',
+      });
+      expect(onRestartingHub).toHaveBeenCalledExactlyOnceWith(true);
+      expect(mockInvoke).toHaveBeenCalledWith('start_hub_command');
+    });
+
+    it("doesn't count the last update's leftover step as this one's install", async () => {
+      // An earlier update installed but couldn't restart; this one fails before it reports a step.
+      reported = { phase: 'relaunch', message: 'Relaunching Companion Hub…' };
+      desktopApp({ perform: () => Promise.reject('Failed to fetch latest version: timed out') });
+
+      await expect(installDesktopUpdate(update)).resolves.toEqual({
+        state: 'failed',
+        reason: 'error',
+        error: 'Failed to fetch latest version: timed out',
+        hub: 'running',
+      });
+    });
+
+    it('says so when the Hub does not start again', async () => {
+      mockProbeHealthyHubApiPort.mockResolvedValue(null);
+      desktopApp({
+        perform: () => Promise.reject('Download SHA-256 checksum mismatch — refusing to install'),
+        startHub: () => Promise.reject('Docker is not running — please start Docker Desktop and try again.'),
+      });
+
+      await expect(installDesktopUpdate(update)).resolves.toEqual({
+        state: 'failed',
+        reason: 'error',
+        error: 'Download SHA-256 checksum mismatch — refusing to install',
+        hub: 'restart-failed',
+        hubError: 'Docker is not running — please start Docker Desktop and try again.',
+      });
+    });
+
+    it('leaves a Hub that still answers alone', async () => {
+      desktopApp({ perform: () => Promise.reject(new Error('Failed to fetch manifest: timed out')) });
+
+      await expect(installDesktopUpdate(update)).resolves.toEqual({
+        state: 'failed',
+        reason: 'error',
+        error: 'Failed to fetch manifest: timed out',
+        hub: 'running',
+      });
+      expect(mockProbeHealthyHubApiPort).toHaveBeenCalled();
+      expect(mockInvoke).not.toHaveBeenCalledWith('start_hub_command');
+    });
+
+    it.each([
+      ['not allowed to', 'Command perform_desktop_update_command not allowed by ACL'],
+      ['too old to have the command', 'Command perform_desktop_update_command not found'],
+    ])('reports a desktop app that is %s run the install as unsupported', async (_case, error) => {
+      // It never got as far as stopping the Hub.
+      mockProbeHealthyHubApiPort.mockResolvedValue(null);
+      desktopApp({ perform: () => Promise.reject(error) });
+
+      await expect(installDesktopUpdate(update)).resolves.toEqual({ state: 'failed', reason: 'unsupported', error, hub: 'running' });
+      expect(mockInvoke).not.toHaveBeenCalledWith('start_hub_command');
+    });
+
+    it('leaves the Hub to an install that is already running, and keeps the gate for it', async () => {
+      mockProbeHealthyHubApiPort.mockResolvedValue(null);
+      const first = deferred();
+      let performs = 0;
+      desktopApp({
+        perform: () => {
+          performs += 1;
+          return performs === 1 ? first.promise : Promise.reject('Host update already in progress');
+        },
+      });
+
+      const running = installDesktopUpdate(update);
+      try {
+        await vi.waitFor(() => expect(performs).toBe(1));
+        await expect(installDesktopUpdate(update)).resolves.toEqual({
+          state: 'failed',
+          reason: 'busy',
+          error: 'Host update already in progress',
+          hub: 'running',
+        });
+        expect(mockInvoke).not.toHaveBeenCalledWith('start_hub_command');
+        // The first install still runs, and still holds the desktop gate.
+        expect(isDesktopUpdateRunning()).toBe(true);
+      } finally {
+        first.resolve();
+        await running;
+      }
+      expect(isDesktopUpdateRunning()).toBe(false);
+    });
+
+    it('asks nothing of a browser, or of the desktop app for an untrusted URL', async () => {
+      await expect(installDesktopUpdate(update)).resolves.toMatchObject({ state: 'failed', reason: 'unsupported' });
+
+      desktopApp({ perform: () => Promise.resolve() });
+      await expect(
+        installDesktopUpdate({ ...update, downloadUrl: 'https://evil.example.com/Companion%20Hub_0.2.78_amd64.deb' }),
+      ).resolves.toMatchObject({
+        state: 'failed',
+        reason: 'unsupported',
+      });
+      expect(mockInvoke).not.toHaveBeenCalled();
+      expect(isDesktopUpdateRunning()).toBe(false);
+    });
+  });
+
   describe('performStackUpdate', () => {
     it('uses host-started copy when the desktop listener accepts the update', async () => {
       mockSdkPerformUpdate.mockResolvedValue(sdkOk({ success: true, stack: 'skipped', host: 'started' }));
@@ -456,6 +730,15 @@ describe('update-service', () => {
         stack: 'updating',
         host: 'unavailable',
       });
+    });
+
+    // Desktop apps up to 0.2.77 keep their listener token where the Hub can't read it, so the Hub
+    // can't reach a desktop app that is running: the desktop window points at its own card instead.
+    it.each(['unavailable', 'failed'])('points the desktop window at the Desktop app card when the listener is %s', async (host) => {
+      Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+      mockSdkPerformUpdate.mockResolvedValue(sdkOk({ success: true, stack: 'updating', host }));
+
+      await expect(performStackUpdate('1.1.0')).resolves.toMatchObject({ ok: true, messageKey: 'SETTINGS_ACTIONS_UPDATE_STACK_DESKTOP_SEPARATE' });
     });
   });
 });

@@ -32,6 +32,12 @@ import { TotpAuthenticator } from './utils/totp-authenticator';
 import { BearerOrgMembershipCache } from './bearer-org-membership.cache';
 import type { User } from '@/core/database/drizzle/types';
 
+/** How long a password-verified sign-in waits for its 2FA code before it must start over. */
+const TOTP_SESSION_EXPIRATION_SECONDS = 5 * 60;
+
+/** Wrong 2FA codes one pending sign-in may submit before it is discarded. */
+const MAX_TOTP_ATTEMPTS = 5;
+
 /**
  * Portal's answer to "is this subject in the organisation this Hub is paired to?".
  * `unknown` is a failure to ask, not a refusal — see {@link AuthService.resolvePairedOrgMembership}.
@@ -520,7 +526,7 @@ export class AuthService {
 
     if (user.totpEnabled) {
       const totpSessionId = crypto.randomUUID();
-      this.cache.set(totpSessionId, user.id.toString());
+      this.cache.set(totpSessionId, user.id.toString(), TOTP_SESSION_EXPIRATION_SECONDS);
       return { totpSessionId };
     }
 
@@ -547,14 +553,34 @@ export class AuthService {
     }
 
     const hash = await this.passwordService.hash(crypto.randomUUID());
-    const created = await this.userRepository.createUser({
+    const newOperator = {
       username: email,
       password: hash,
       operator: true,
       // Second (and later) family operators skip the device wizard — it already
       // ran when this Hub was first set up.
       hasCompletedOnboarding: operators.some((operator) => operator.hasCompletedOnboarding),
-    });
+    };
+
+    // Claiming an empty Hub skips the Portal membership check (see `admitHubPerson`), so it is done
+    // atomically: two people arriving together must not both be admitted as the first operator.
+    if (operators.length === 0) {
+      const claimed = await this.userRepository.createFirstOperator(newOperator);
+      if (claimed) {
+        return claimed;
+      }
+
+      // Somebody was admitted between the read above and the insert. The same person arriving twice
+      // (a double submit, two tabs) is simply them; anyone else is not the first operator.
+      const sameUser = await this.userRepository.getUserByUsername(email);
+      if (sameUser) {
+        return sameUser;
+      }
+
+      throw new TranslatableError('AUTH_ERROR_HUB_ALREADY_CLAIMED', {}, HttpStatus.CONFLICT);
+    }
+
+    const created = await this.userRepository.createUser(newOperator);
 
     if (!created) {
       throw new TranslatableError('AUTH_ERROR_ERROR_CREATING_USER', {}, HttpStatus.INTERNAL_SERVER_ERROR);
@@ -728,7 +754,7 @@ export class AuthService {
 
     if (user.totpEnabled) {
       const totpSessionId = crypto.randomUUID();
-      this.cache.set(totpSessionId, user.id.toString());
+      this.cache.set(totpSessionId, user.id.toString(), TOTP_SESSION_EXPIRATION_SECONDS);
       return { totpSessionId };
     }
 
@@ -756,6 +782,14 @@ export class AuthService {
 
     const user = await this.userRepository.getUserById(Number(userId));
 
+    // The session can end while the user is being read: the fifth wrong code deletes it. A request
+    // that was already past the first check would otherwise go on testing codes against a session
+    // that no longer exists, so a burst of parallel guesses got far more than five tries. Everything
+    // below this line runs without waiting, so the count and the check cannot be separated again.
+    if (!this.cache.get(totpSessionId)) {
+      throw new TranslatableError('AUTH_ERROR_TOTP_SESSION_NOT_FOUND');
+    }
+
     if (!user) {
       throw new TranslatableError('AUTH_ERROR_USER_NOT_FOUND');
     }
@@ -772,12 +806,27 @@ export class AuthService {
     const isValid = TotpAuthenticator.check(totpCode, totpSecret);
 
     if (!isValid) {
+      // A code is six digits, so a session that never runs out of tries is a lock with a million
+      // combinations. Five wrong codes end the session and the user signs in again.
+      const attemptsKey = `totp-attempts:${totpSessionId}`;
+      const attempts = Number(this.cache.get(attemptsKey) ?? 0) + 1;
+
+      if (attempts >= MAX_TOTP_ATTEMPTS) {
+        this.cache.del(totpSessionId);
+        this.cache.del(attemptsKey);
+        throw new TranslatableError('AUTH_ERROR_TOTP_TOO_MANY_ATTEMPTS', {}, HttpStatus.TOO_MANY_REQUESTS);
+      }
+
+      this.cache.set(attemptsKey, String(attempts), TOTP_SESSION_EXPIRATION_SECONDS);
       throw new TranslatableError('AUTH_ERROR_TOTP_INVALID_CODE');
     }
 
-    const sessionId = await this.sessionManager.createSession(user.id);
-
+    // Spent before the session is created, not after: two parallel requests carrying the same correct
+    // code would otherwise both get past the check above and both be given a session.
     this.cache.del(totpSessionId);
+    this.cache.del(`totp-attempts:${totpSessionId}`);
+
+    const sessionId = await this.sessionManager.createSession(user.id);
 
     return {
       sessionId,

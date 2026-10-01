@@ -1,13 +1,16 @@
 import { appContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
 import { cloudflareStatusOptions, tailscaleStatusOptions, tailscaleStatusQueryKey } from '@/lib/api-routes/named-status-routes';
 import { disconnect, startAuth } from '@/api-client/sdk.gen';
+import type { TailscaleStatusDto } from '@/api-client/types.gen';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Globe, Shield } from 'lucide-react';
+import { Check, Copy, Globe, Shield } from 'lucide-react';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
 import { toast } from 'sonner';
+import { type CopyOrSelectOutcome, copyOrSelect } from '@/lib/copy-to-clipboard';
 import { openExternal } from '@/lib/helpers/open-external';
 import { useTailscaleReadinessSync } from '@/lib/hooks/use-tailscale-readiness-sync';
 import { Detail, DetailGrid, LoadingCard, SectionHeader, StatusBadge } from '../components/network-section/network-section';
@@ -27,6 +30,7 @@ interface TailscaleApiStatus {
   hostname: string | null;
   backendState: string | null;
   httpsAvailable?: boolean;
+  servePermission?: TailscaleStatusDto['servePermission'];
 }
 
 interface AuthStartResponse {
@@ -35,6 +39,71 @@ interface AuthStartResponse {
   alreadyAuthenticated?: boolean;
   error?: string;
 }
+
+/** How long the copy button shows its result: long enough to read, and for "selected", to press the keys. */
+const COPIED_FEEDBACK_MS = 2_000;
+const SELECTED_FEEDBACK_MS = 8_000;
+
+/**
+ * tailscaled refuses the Hub's Tailscale Serve changes, so no Private VPN app gets published. The
+ * reason and the one command that ends it were only in the Hub's log, and every Private VPN app just
+ * read "Pending" (CI-Hub#1766). The command is copied through {@link copyOrSelect}: the Hub is often
+ * opened over plain http on the LAN, where there is no Clipboard API to copy with.
+ */
+const ServePermissionRefusal = ({ remedy, deniedSince }: { remedy: string; deniedSince: string | null }) => {
+  const { t } = useTranslation();
+  const codeRef = useRef<HTMLElement>(null);
+  const [outcome, setOutcome] = useState<CopyOrSelectOutcome | null>(null);
+
+  useEffect(() => {
+    if (!outcome) return;
+    const timer = setTimeout(() => setOutcome(null), outcome === 'copied' ? COPIED_FEEDBACK_MS : SELECTED_FEEDBACK_MS);
+    return () => clearTimeout(timer);
+  }, [outcome]);
+
+  const since = deniedSince ? new Date(deniedSince) : null;
+
+  return (
+    <div
+      className="space-y-2 rounded-md border border-warning/30 bg-warning/10 px-2.5 py-2 text-xs text-warning"
+      data-testid="tailscale-serve-refused"
+    >
+      <p className="font-medium">{t('SETTINGS_NETWORK_TAILSCALE_SERVE_REFUSED')}</p>
+      <p>{t('SETTINGS_NETWORK_TAILSCALE_SERVE_REFUSED_DESC')}</p>
+      <div className="flex min-w-0 items-start gap-1.5">
+        <code
+          ref={codeRef}
+          className="block min-w-0 flex-1 overflow-x-auto whitespace-pre rounded bg-warning/10 px-2 py-1.5 font-mono"
+          data-testid="tailscale-serve-remedy"
+        >
+          {remedy}
+        </code>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          onClick={async () => setOutcome(await copyOrSelect(remedy, codeRef.current))}
+          aria-label={t(outcome === 'copied' ? 'SETTINGS_NETWORK_TAILSCALE_SERVE_COMMAND_COPIED' : 'SETTINGS_NETWORK_TAILSCALE_SERVE_COPY_COMMAND')}
+          title={t('SETTINGS_NETWORK_TAILSCALE_SERVE_COPY_COMMAND')}
+          data-testid="tailscale-serve-remedy-copy"
+          className="size-7 shrink-0 text-warning hover:bg-warning/15 hover:text-warning"
+        >
+          {outcome === 'copied' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+        </Button>
+      </div>
+      <div role="status" aria-live="polite" className={outcome === 'selected' ? '' : 'sr-only'}>
+        {outcome === 'copied'
+          ? t('SETTINGS_NETWORK_TAILSCALE_SERVE_COMMAND_COPIED')
+          : outcome === 'selected'
+            ? t('SETTINGS_NETWORK_TAILSCALE_SERVE_COMMAND_SELECTED')
+            : ''}
+      </div>
+      {since && !Number.isNaN(since.getTime()) && (
+        <p className="opacity-80">{t('SETTINGS_NETWORK_TAILSCALE_SERVE_REFUSED_SINCE', { time: since.toLocaleString() })}</p>
+      )}
+    </div>
+  );
+};
 
 const TailscaleSidecarSection = () => {
   const { t } = useTranslation();
@@ -159,6 +228,10 @@ const TailscaleSidecarSection = () => {
           <p className="rounded-md border border-warning/30 bg-warning/10 px-2.5 py-2 text-xs text-warning">
             {t('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED_DESC')}
           </p>
+        )}
+
+        {data?.servePermission?.denied && data.servePermission.remedy && (
+          <ServePermissionRefusal remedy={data.servePermission.remedy} deniedSince={data.servePermission.deniedSince} />
         )}
       </CardContent>
     </Card>

@@ -26,7 +26,12 @@
  * {ROOT_FOLDER_HOST}/.docker at /data/.docker (DOCKER_CONFIG=/data/.docker).
  *
  * Registry auths that carry inline credentials (`auth` field) are preserved so
- * private image pulls keep working.
+ * private image pulls keep working, and so is the `proxies` section, so the
+ * containers the Hub starts get the same proxy as the ones the host starts.
+ *
+ * The desktop app writes the same file the same way
+ * (packages/desktop/src-tauri/src/hub_manager/compose.rs,
+ * `generate_container_docker_config`).
  */
 
 import { existsSync } from 'node:fs';
@@ -85,6 +90,34 @@ function sanitizeCredHelpers(helpers: unknown): Record<string, string> {
   return result;
 }
 
+/**
+ * The host config with only what works inside the Hub container: inline auths, the `proxies`
+ * section as it is, and credential helpers that are not host-only binaries.
+ *
+ * Docker Compose sets HTTPS_PROXY, NO_PROXY and the rest from `proxies` in every container it
+ * creates. The Hub's own compose calls (its self-update recreating `ci-hub`, every app install and
+ * start) read this copy, so dropping it left those containers without the proxy. A `proxies` that is
+ * not an object is left out: the Docker CLI ignores a whole config file it cannot parse, auths included.
+ */
+export function containerSafeDockerConfig(hostConfig: Record<string, unknown>): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = {};
+
+  const auths = sanitizeAuths(hostConfig.auths);
+  if (Object.keys(auths).length > 0) sanitized.auths = auths;
+
+  if (typeof hostConfig.credsStore === 'string' && !isHostOnlyCredHelper(hostConfig.credsStore)) {
+    sanitized.credsStore = hostConfig.credsStore;
+  }
+
+  const credHelpers = sanitizeCredHelpers(hostConfig.credHelpers);
+  if (Object.keys(credHelpers).length > 0) sanitized.credHelpers = credHelpers;
+
+  const { proxies } = hostConfig;
+  if (proxies && typeof proxies === 'object' && !Array.isArray(proxies)) sanitized.proxies = proxies;
+
+  return sanitized;
+}
+
 async function migrateLegacyConfig(root: string, outputPath: string): Promise<void> {
   const legacyPaths = [path.join(root, 'docker-config.json'), path.join(root, '.internal', 'docker-config.json')];
   if (existsSync(outputPath)) return;
@@ -106,18 +139,7 @@ export async function initDockerConfig(): Promise<void> {
   const cliPluginsDir = path.join(dockerDir, 'cli-plugins');
   const outputPath = path.join(dockerDir, 'config.json');
 
-  const hostConfig = await readHostConfig();
-  const sanitized: Record<string, unknown> = {};
-
-  const auths = sanitizeAuths(hostConfig.auths);
-  if (Object.keys(auths).length > 0) sanitized.auths = auths;
-
-  if (typeof hostConfig.credsStore === 'string' && !isHostOnlyCredHelper(hostConfig.credsStore)) {
-    sanitized.credsStore = hostConfig.credsStore;
-  }
-
-  const credHelpers = sanitizeCredHelpers(hostConfig.credHelpers);
-  if (Object.keys(credHelpers).length > 0) sanitized.credHelpers = credHelpers;
+  const sanitized = containerSafeDockerConfig(await readHostConfig());
 
   await mkdir(root, { recursive: true });
   await mkdir(cliPluginsDir, { recursive: true });
@@ -132,6 +154,7 @@ export async function initDockerConfig(): Promise<void> {
   if (sanitized.auths) summary.push(`${Object.keys(sanitized.auths as object).length} registry auth(s)`);
   if (sanitized.credsStore) summary.push(`credsStore=${sanitized.credsStore as string}`);
   if (sanitized.credHelpers) summary.push(`${Object.keys(sanitized.credHelpers as object).length} credHelper(s)`);
+  if (sanitized.proxies) summary.push('proxies');
   console.log(`init-docker-config: ready ${outputPath}${summary.length > 0 ? ` (${summary.join(', ')})` : ''}`);
 }
 

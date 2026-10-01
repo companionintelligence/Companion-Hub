@@ -777,6 +777,16 @@ export function parseHubTimestamp(value: string | null | undefined): number {
   return Date.parse(zoneless ? `${trimmed.replace(' ', 'T')}Z` : trimmed);
 }
 
+/**
+ * A timestamp as the Hub serves it, as the viewer's local date and time, or {@link DASH} when it is not a date.
+ * Reads a zoneless value as the UTC it is (see {@link parseHubTimestamp}); `new Date(value)` read it as local.
+ */
+export function formatHubDateTime(value: string | null | undefined): string {
+  const parsed = parseHubTimestamp(value);
+
+  return Number.isFinite(parsed) ? new Date(parsed).toLocaleString() : DASH;
+}
+
 /** Short countdown to a future timestamp, for "expires in" columns. */
 export function relativeUntil(iso: string | null | undefined, now: number): string {
   if (!iso) return DASH;

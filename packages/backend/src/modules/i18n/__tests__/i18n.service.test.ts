@@ -90,6 +90,41 @@ describe('I18nService', () => {
       expect(result).toEqual({ hello: 'normalized' });
     });
 
+    describe('language tag validation', () => {
+      // `language` is a URL route parameter and Express decodes %2F in it, so these arrive as-is.
+      it.each([
+        '../../data/state/settings',
+        '..',
+        '../en',
+        'en/../../etc/passwd',
+        '/etc/passwd',
+        '..\\..\\settings',
+        'en.json/../../x',
+        'en\0',
+        'en%2F..%2Fsettings',
+        '',
+        ' en',
+        'e',
+        'toolonglanguage',
+      ])('refuses %j without touching the file system', async (language) => {
+        (i18n.getResourceBundle as any).mockReturnValue(undefined);
+
+        const result = await service.getTranslation(language, 'anything');
+
+        expect(result).toEqual({});
+        expect(fs.existsSync).not.toHaveBeenCalledWith(expect.stringContaining('settings'));
+        expect(fs.readFileSync).not.toHaveBeenCalled();
+      });
+
+      it.each(['en', 'fr', 'en-US', 'pt_BR', 'zh-Hans-CN', 'fil'])('still serves the real tag %j', async (language) => {
+        (i18n.getResourceBundle as any).mockReturnValue(undefined);
+        (fs.existsSync as any).mockImplementation((p: string) => p.endsWith('en.json'));
+        (fs.readFileSync as any).mockReturnValue('{"hello": "ok"}');
+
+        await expect(service.getTranslation(language, 'anything')).resolves.toEqual({ hello: 'ok' });
+      });
+    });
+
     it('should return empty object if nothing found', async () => {
       (i18n.getResourceBundle as any).mockReturnValue(undefined);
       (fs.existsSync as any).mockReturnValue(false);

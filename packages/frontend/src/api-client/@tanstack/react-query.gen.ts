@@ -3556,9 +3556,9 @@ export const deleteAppBackupMutation = (options?: Partial<Options<DeleteAppBacku
     return mutationOptions;
 };
 
-export const getAppBackupsQueryKey = (options?: Options<GetAppBackupsData>) => createQueryKey('getAppBackups', options);
+export const getAppBackupsQueryKey = (options: Options<GetAppBackupsData>) => createQueryKey('getAppBackups', options);
 
-export const getAppBackupsOptions = (options?: Options<GetAppBackupsData>) => queryOptions<GetAppBackupsResponse, DefaultError, GetAppBackupsResponse, ReturnType<typeof getAppBackupsQueryKey>>({
+export const getAppBackupsOptions = (options: Options<GetAppBackupsData>) => queryOptions<GetAppBackupsResponse, DefaultError, GetAppBackupsResponse, ReturnType<typeof getAppBackupsQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {
         const { data } = await getAppBackups({
             ...options,
@@ -3571,9 +3571,9 @@ export const getAppBackupsOptions = (options?: Options<GetAppBackupsData>) => qu
     queryKey: getAppBackupsQueryKey(options)
 });
 
-export const getAppBackupsInfiniteQueryKey = (options?: Options<GetAppBackupsData>): QueryKey<Options<GetAppBackupsData>> => createQueryKey('getAppBackups', options, true);
+export const getAppBackupsInfiniteQueryKey = (options: Options<GetAppBackupsData>): QueryKey<Options<GetAppBackupsData>> => createQueryKey('getAppBackups', options, true);
 
-export const getAppBackupsInfiniteOptions = (options?: Options<GetAppBackupsData>) => infiniteQueryOptions<GetAppBackupsResponse, DefaultError, InfiniteData<GetAppBackupsResponse>, QueryKey<Options<GetAppBackupsData>>, number | unknown | Pick<QueryKey<Options<GetAppBackupsData>>[0], 'body' | 'headers' | 'path' | 'query'>>(
+export const getAppBackupsInfiniteOptions = (options: Options<GetAppBackupsData>) => infiniteQueryOptions<GetAppBackupsResponse, DefaultError, InfiniteData<GetAppBackupsResponse>, QueryKey<Options<GetAppBackupsData>>, number | unknown | Pick<QueryKey<Options<GetAppBackupsData>>[0], 'body' | 'headers' | 'path' | 'query'>>(
 // @ts-ignore
 {
     queryFn: async ({ pageParam, queryKey, signal }) => {

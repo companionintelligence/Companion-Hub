@@ -1,21 +1,33 @@
 import { execFileSync } from 'node:child_process';
+import os from 'node:os';
+import path from 'node:path';
 import { mock } from 'vitest-mock-extended';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LoggerService } from '@/core/logger/logger.service';
 
-const { execAsyncMock } = vi.hoisted(() => ({ execAsyncMock: vi.fn() }));
+vi.unmock('node:fs');
+vi.unmock('fs');
 
-vi.mock('@/common/helpers/exec-helpers', () => ({ execAsync: execAsyncMock }));
+const realFs = await import('node:fs');
 
-const { ArchiveService, shellQuote } = await import('../archive.service');
+const { spawnAsyncMock, spawnLinesMock } = vi.hoisted(() => ({ spawnAsyncMock: vi.fn(), spawnLinesMock: vi.fn() }));
+
+vi.mock('@/common/helpers/exec-helpers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/common/helpers/exec-helpers')>()),
+  spawnAsync: spawnAsyncMock,
+  spawnLines: spawnLinesMock,
+}));
+
+const { ArchiveService, MAX_ARCHIVE_ENTRIES } = await import('../archive.service');
+
+const ok = (stdout = '') => ({ stdout, stderr: '', exitCode: 0 });
 
 /*
  * ⚠ THESE ARE ALL LEGAL SINGLE PATH SEGMENTS. That is the point: a backup
  * filename is caller-supplied (`file.originalname` on upload, echoed back into
  * `restoreApp`), and `resolveBackupFilePath` fences it to one segment inside the
  * app's own directory — which every name here satisfies. Nothing upstream has a
- * reason to reject them, so the quoting here is the only thing standing between
- * a filename and `/bin/sh`.
+ * reason to reject them, so the only defence is that no shell ever sees them.
  */
 const HOSTILE_NAMES = [
   'a`id`.tar.gz',
@@ -23,109 +35,242 @@ const HOSTILE_NAMES = [
   'a;rm -rf /.tar.gz',
   'a b && whoami.tar.gz',
   "o'brien.tar.gz",
-  "a'$(id)'.tar.gz",
   'a|tee /tmp/pwned.tar.gz',
   'a>out<in.tar.gz',
-  'a\\b.tar.gz',
   'a"b.tar.gz',
-  'a\nnewline.tar.gz',
-  'a~$HOME.tar.gz',
   'ordinary-backup.tar.gz',
 ];
 
-describe('shellQuote', () => {
-  /*
-   * The assertion that matters is not the shape of the quoted string but what a
-   * real shell does with it: the argument must come back out byte-for-byte, and
-   * nothing inside it may execute. `printf %s` is the smallest program that can
-   * report exactly one argument without adding anything of its own.
-   */
-  it.each(HOSTILE_NAMES)('passes %j through /bin/sh as one literal argument', (name) => {
-    const stdout = execFileSync('/bin/sh', ['-c', `printf %s ${shellQuote(name)}`]).toString();
-
-    expect(stdout).toBe(name);
-  });
-
-  it('does not execute a substitution that would otherwise run', () => {
-    // Unquoted, `$(echo pwned)` is replaced by the shell before printf ever sees it.
-    const stdout = execFileSync('/bin/sh', ['-c', `printf %s ${shellQuote('$(echo pwned)')}`]).toString();
-
-    expect(stdout).toBe('$(echo pwned)');
-    expect(stdout).not.toContain('pwned\n');
-  });
-
-  /*
-   * A glob only proves anything where it MATCHES: `printf %s a*.tar.gz` in a
-   * directory with no such file leaves the pattern alone, so that assertion would
-   * pass with or without quoting. Run it at `/`, where `*` always matches — the
-   * spawned shell reads the real filesystem, not this suite's `fs` mock.
-   */
-  it('does not let a glob expand against real files on disk', () => {
-    const stdout = execFileSync('/bin/sh', ['-c', `printf '%s\\n' ${shellQuote('*')}`], { cwd: '/' }).toString();
-
-    expect(stdout).toBe('*\n');
-    expect(stdout).not.toContain('etc');
-  });
-
-  it('quotes an empty string into something the shell still counts as an argument', () => {
-    // Unquoted, an empty path vanishes from argv entirely and the next word slides
-    // into its place — `tar -czpf  -C /src .` reads `-C` as the archive name.
-    const argv = execFileSync('/bin/sh', ['-c', `count() { printf '%s' "$#"; }; count ${shellQuote('')} after`]).toString();
-
-    expect(argv).toBe('2');
-  });
-});
-
-describe('ArchiveService', () => {
+describe('ArchiveService (argument vectors)', () => {
   let service: InstanceType<typeof ArchiveService>;
+  let scratch: string;
+  let gzipFile: string;
+  let tarFile: string;
+
+  beforeAll(async () => {
+    scratch = await realFs.promises.mkdtemp(path.join(os.tmpdir(), 'archive-service-'));
+    gzipFile = path.join(scratch, 'gzip.tar.gz');
+    tarFile = path.join(scratch, 'plain.tar');
+    await realFs.promises.writeFile(gzipFile, Buffer.from([0x1f, 0x8b, 0x08, 0x00]));
+    await realFs.promises.writeFile(tarFile, Buffer.concat([Buffer.alloc(257), Buffer.from('ustar')]));
+  });
+
+  afterAll(async () => {
+    await realFs.promises.rm(scratch, { recursive: true, force: true });
+  });
 
   beforeEach(() => {
-    execAsyncMock.mockReset();
-    execAsyncMock.mockResolvedValue({ stdout: '', stderr: '' });
+    spawnAsyncMock.mockReset();
+    spawnLinesMock.mockReset();
+    spawnAsyncMock.mockResolvedValue(ok());
     service = new ArchiveService(mock<LoggerService>());
   });
 
-  it('quotes both paths handed to tar when creating an archive', async () => {
-    await service.createTarGz('/tmp/src dir', "/tmp/a'b.tar.gz");
+  it.each(HOSTILE_NAMES)('creates an archive named %j as one literal argument', async (name) => {
+    await service.createTarGz('/tmp/src dir', name);
 
-    expect(execAsyncMock).toHaveBeenCalledWith(`tar -czpf '/tmp/a'\\''b.tar.gz' -C '/tmp/src dir' .`);
+    expect(spawnAsyncMock).toHaveBeenCalledWith('tar', ['-czpf', name, '-C', '/tmp/src dir', '.']);
   });
 
-  it('quotes the source path handed to `file` before probing the mime type', async () => {
-    await service.extractTarGz('/tmp/a`id`.tar.gz', '/tmp/dest');
+  it('extracts a gzip archive with the gzip flag', async () => {
+    await service.extractTarGz(gzipFile, '/tmp/dest dir');
 
-    expect(execAsyncMock).toHaveBeenNthCalledWith(1, "file --brief --mime-type '/tmp/a`id`.tar.gz'");
+    expect(spawnAsyncMock).toHaveBeenCalledWith('tar', ['-xzpf', gzipFile, '-C', '/tmp/dest dir']);
   });
 
-  it('quotes both paths handed to tar when extracting a gzipped archive', async () => {
-    await service.extractTarGz('/tmp/a;rm -rf /.tar.gz', '/tmp/dest dir');
+  it('extracts a plain tar without the gzip flag', async () => {
+    await service.extractTarGz(tarFile, '/tmp/dest');
 
-    expect(execAsyncMock).toHaveBeenNthCalledWith(2, `tar -xzpf '/tmp/a;rm -rf /.tar.gz' -C '/tmp/dest dir'`);
+    expect(spawnAsyncMock).toHaveBeenCalledWith('tar', ['-xpf', tarFile, '-C', '/tmp/dest']);
   });
 
-  it('quotes both paths on the uncompressed-tar branch too', async () => {
-    // The branch `file` selects must be fenced identically; it was the same sink.
-    execAsyncMock.mockResolvedValueOnce({ stdout: 'application/x-tar\n', stderr: '' });
+  it('throws when tar does not exit cleanly, so a caller never proceeds on a failed extraction', async () => {
+    spawnAsyncMock.mockResolvedValue({ stdout: '', stderr: 'tar: Unexpected EOF in archive', exitCode: 2 });
 
-    await service.extractTarGz('/tmp/a$(id).tar', '/tmp/dest');
-
-    expect(execAsyncMock).toHaveBeenNthCalledWith(2, `tar -xpf '/tmp/a$(id).tar' -C '/tmp/dest'`);
+    await expect(service.extractTarGz(gzipFile, '/tmp/dest')).rejects.toThrow('Invalid backup archive');
   });
 
-  /*
-   * The end-to-end property, without a real tar: take the command the service
-   * actually built and let a shell parse it, with `tar` replaced by a stub that
-   * reports its argv. A traversal or an injection shows up as extra words.
-   */
-  it('builds a command a shell parses into exactly the intended argv', async () => {
-    await service.createTarGz('/tmp/src', 'a`id`.tar.gz');
+  it('throws when tar could not be started at all', async () => {
+    spawnAsyncMock.mockResolvedValue({ stdout: '', stderr: 'spawn tar ENOENT', exitCode: null });
 
-    const command = execAsyncMock.mock.calls[0]?.[0] as string;
-    const argv = execFileSync('/bin/sh', ['-c', `tar() { printf '%s\\n' "$@"; }; ${command}`])
-      .toString()
-      .trimEnd()
-      .split('\n');
-
-    expect(argv).toEqual(['-czpf', 'a`id`.tar.gz', '-C', '/tmp/src', '.']);
+    await expect(service.extractTarGz(gzipFile, '/tmp/dest')).rejects.toThrow('Invalid backup archive');
   });
+
+  describe('listTarGz', () => {
+    // busybox `tar -tv`: seconds in the timestamp, a `->` suffix on links. Splitting this on
+    // whitespace to recover the path is what the two-listing approach exists to avoid.
+    const BUSYBOX_VERBOSE = [
+      'drwxr-xr-x 0/0               0 2026-09-01 10:00:00 ./',
+      'drwxr-xr-x 0/0               0 2026-09-01 10:00:00 app-data/',
+      '-rw-r--r-- 0/0              12 2026-09-01 10:00:00 app-data/my file.txt',
+      'lrwxrwxrwx 0/0               0 2026-09-01 10:00:00 app-data/link -> /etc/passwd',
+    ].join('\n');
+    const BUSYBOX_PATHS = ['./', 'app-data/', 'app-data/my file.txt', 'app-data/link'].join('\n');
+
+    /** Feed each canned listing to the callback the way `spawnLines` would, line by line. */
+    const mockListings = (verbose: string, paths: string, result: { exitCode: number | null; stderr: string } = { exitCode: 0, stderr: '' }) =>
+      spawnLinesMock.mockImplementation(async (_cmd: string, args: string[], onLine: (line: string) => void) => {
+        try {
+          for (const line of (args[0]?.includes('v') ? verbose : paths).split('\n')) onLine(line);
+        } catch (error) {
+          return { exitCode: null, stderr: '', error: error as Error };
+        }
+
+        return result;
+      });
+
+    it('pairs each path with its entry type from the verbose listing', async () => {
+      mockListings(BUSYBOX_VERBOSE, BUSYBOX_PATHS);
+
+      await expect(service.listTarGz(gzipFile)).resolves.toEqual([
+        { path: './', type: 'd' },
+        { path: 'app-data/', type: 'd' },
+        { path: 'app-data/my file.txt', type: '-' },
+        { path: 'app-data/link', type: 'l' },
+      ]);
+    });
+
+    it('lists a gzip archive with the gzip flags and a plain one without', async () => {
+      mockListings('', '');
+
+      await service.listTarGz(gzipFile);
+      expect(spawnLinesMock).toHaveBeenCalledWith('tar', ['-tzvf', gzipFile], expect.any(Function));
+      expect(spawnLinesMock).toHaveBeenCalledWith('tar', ['-tzf', gzipFile], expect.any(Function));
+
+      spawnLinesMock.mockClear();
+      mockListings('', '');
+
+      await service.listTarGz(tarFile);
+      expect(spawnLinesMock).toHaveBeenCalledWith('tar', ['-tvf', tarFile], expect.any(Function));
+      expect(spawnLinesMock).toHaveBeenCalledWith('tar', ['-tf', tarFile], expect.any(Function));
+    });
+
+    it('rejects a listing tar failed to produce', async () => {
+      mockListings('', '', { exitCode: 2, stderr: 'tar: not in gzip format' });
+
+      await expect(service.listTarGz(gzipFile)).rejects.toThrow('Invalid backup archive');
+    });
+
+    it('rejects an archive with more entries than it will hold in memory', async () => {
+      const many = Array.from({ length: MAX_ARCHIVE_ENTRIES + 1 }, (_, i) => `app-data/${i}`).join('\n');
+      mockListings(many.replace(/^/gm, '-'), many);
+
+      await expect(service.listTarGz(gzipFile)).rejects.toThrow('Invalid backup archive');
+    });
+
+    it('skips the blank lines a trailing newline leaves', async () => {
+      mockListings('-rw-r--r-- 0/0 1 2026-09-01 10:00:00 a.txt\n', 'a.txt\n');
+
+      await expect(service.listTarGz(gzipFile)).resolves.toEqual([{ path: 'a.txt', type: '-' }]);
+    });
+
+    it('rejects listings whose lengths disagree rather than guess which line is which', async () => {
+      mockListings(BUSYBOX_VERBOSE, './\napp-data/');
+
+      await expect(service.listTarGz(gzipFile)).rejects.toThrow('Invalid backup archive');
+    });
+  });
+});
+
+const hasTar = (() => {
+  try {
+    execFileSync('tar', ['--version'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+// The real thing: an actual tar binary over an actual archive, so what is asserted is what
+// the host's tar prints and what it extracts, not what a fixture says it prints.
+describe.skipIf(!hasTar)('ArchiveService (real tar)', () => {
+  vi.doUnmock('@/common/helpers/exec-helpers');
+
+  let scratch: string;
+
+  beforeAll(async () => {
+    scratch = await realFs.promises.mkdtemp(path.join(os.tmpdir(), 'archive-service-real-'));
+  });
+
+  afterAll(async () => {
+    await realFs.promises.rm(scratch, { recursive: true, force: true });
+  });
+
+  const realService = async () => {
+    const actual = await vi.importActual<typeof import('@/common/helpers/exec-helpers')>('@/common/helpers/exec-helpers');
+    spawnAsyncMock.mockImplementation(actual.spawnAsync);
+    spawnLinesMock.mockImplementation(actual.spawnLines);
+
+    return new ArchiveService(mock<LoggerService>());
+  };
+
+  it('round-trips a directory, listing files and directories as - and d', async () => {
+    const service = await realService();
+    const source = path.join(scratch, 'source');
+    await realFs.promises.mkdir(path.join(source, 'app-data'), { recursive: true });
+    await realFs.promises.writeFile(path.join(source, 'app-data', 'note with spaces.txt'), 'hello');
+    const archive = path.join(scratch, 'out.tar.gz');
+
+    const created = await service.createTarGz(source, archive);
+    expect(created.exitCode).toBe(0);
+
+    const entries = await service.listTarGz(archive);
+    expect(entries.find((e) => e.path.endsWith('note with spaces.txt'))?.type).toBe('-');
+    expect(entries.find((e) => e.path.replace(/\/$/, '').endsWith('app-data'))?.type).toBe('d');
+
+    const dest = path.join(scratch, 'dest');
+    await realFs.promises.mkdir(dest);
+    await service.extractTarGz(archive, dest);
+    await expect(realFs.promises.readFile(path.join(dest, 'app-data', 'note with spaces.txt'), 'utf8')).resolves.toBe('hello');
+  });
+
+  it('reports a symlink entry as l without extracting it', async () => {
+    const service = await realService();
+    const source = path.join(scratch, 'with-link');
+    await realFs.promises.mkdir(source, { recursive: true });
+    await realFs.promises.symlink('/etc/passwd', path.join(source, 'evil'));
+    const archive = path.join(scratch, 'link.tar.gz');
+    await service.createTarGz(source, archive);
+
+    const entries = await service.listTarGz(archive);
+
+    expect(entries.find((e) => e.path.endsWith('evil'))?.type).toBe('l');
+  });
+
+  it('refuses a file that is not a tar archive', async () => {
+    const service = await realService();
+    const bogus = path.join(scratch, 'bogus.tar.gz');
+    await realFs.promises.writeFile(bogus, 'this is not an archive');
+
+    await expect(service.listTarGz(bogus)).rejects.toThrow('Invalid backup archive');
+    await expect(service.extractTarGz(bogus, scratch)).rejects.toThrow('Invalid backup archive');
+  });
+
+  it('refuses a truncated gzip stream', async () => {
+    const service = await realService();
+    const source = path.join(scratch, 'trunc-src');
+    await realFs.promises.mkdir(source, { recursive: true });
+    await realFs.promises.writeFile(path.join(source, 'big.bin'), Buffer.alloc(256 * 1024, 7));
+    const archive = path.join(scratch, 'trunc.tar.gz');
+    await service.createTarGz(source, archive);
+    const bytes = await realFs.promises.readFile(archive);
+    await realFs.promises.writeFile(archive, bytes.subarray(0, Math.floor(bytes.length / 2)));
+
+    await expect(service.listTarGz(archive)).rejects.toThrow('Invalid backup archive');
+  });
+
+  it('lists an archive of over a thousand long-named files end to end', async () => {
+    const service = await realService();
+    const source = path.join(scratch, 'many');
+    await realFs.promises.mkdir(path.join(source, 'app-data'), { recursive: true });
+    // The size property itself (more output than spawnAsync's cap) is covered against spawnLines directly.
+    const long = 'n'.repeat(120);
+    await Promise.all(Array.from({ length: 1500 }, (_, i) => realFs.promises.writeFile(path.join(source, 'app-data', `${long}-${i}`), '')));
+    const archive = path.join(scratch, 'many.tar.gz');
+    await service.createTarGz(source, archive);
+
+    const entries = await service.listTarGz(archive);
+
+    expect(entries.filter((entry) => entry.type === '-')).toHaveLength(1500);
+  }, 30_000);
 });

@@ -25,6 +25,13 @@ export const RESERVED_APP_STORE_SLUGS = ['_user'];
 // ci_cloud_api store is never fabricated as a placeholder git store.
 const RESERVED_USER_STORE_SLUGS = [...RESERVED_APP_STORE_SLUGS, CI_MARKETPLACE_STORE_SLUG];
 
+/**
+ * What a NEW store's slug may contain. The slug is a folder name under `repos/` and half of
+ * every app URN, so it is held to a single plain segment: no dots (`..` is a slug that
+ * `slugify` happily returns), no separators, nothing a shell or a path would read specially.
+ */
+const APP_STORE_SLUG_PATTERN = /^[a-z0-9_-]+$/;
+
 @Injectable()
 export class AppStoreService implements OnApplicationBootstrap, OnApplicationShutdown {
   private pullInterval: NodeJS.Timeout | null = null;
@@ -203,6 +210,13 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
   public async deleteAppStore(slug: string) {
     const stores = await this.appStoreRepository.getAllAppStores();
 
+    // ⚠ THE SLUG IS A URL PARAMETER, AND IT BECOMES A PATH. `DELETE /api/marketplace/..` (or its
+    // %2e%2e spelling) reached `repos/..`, which is the data directory itself, and removed it.
+    // Only a store that exists can be deleted, so nothing the caller types is ever joined to a path.
+    if (!stores.some((store) => store.slug === slug)) {
+      throw new TranslatableError('SERVER_ERROR_APP_STORE_NOT_FOUND', {}, HttpStatus.NOT_FOUND);
+    }
+
     if (stores.length === 1) {
       throw new TranslatableError('APP_STORE_DELETE_ERROR_LAST_STORE', {}, HttpStatus.BAD_REQUEST);
     }
@@ -224,7 +238,13 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
       throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
     }
 
-    const slug = slugify(body.name, { lower: true, trim: true });
+    // Characters outside word/space/hyphen are dropped rather than kept: the default
+    // allow-list keeps `.`, so a name of `..` slugified to `..`.
+    const slug = slugify(body.name, { lower: true, trim: true, remove: /[^\w\s-]+/g });
+
+    if (!APP_STORE_SLUG_PATTERN.test(slug)) {
+      throw new TranslatableError('SERVER_ERROR_APP_STORE_INVALID_NAME', { name: body.name }, HttpStatus.BAD_REQUEST);
+    }
 
     // Check the DERIVED slug (not just the raw name) against the reserved list:
     // slugify('CI Marketplace') === 'ci-marketplace', which a user-added store must

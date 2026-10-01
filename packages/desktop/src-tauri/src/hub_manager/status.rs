@@ -30,7 +30,7 @@ fn required_startup_images() -> Vec<String> {
         hub_image,
         "postgres:14".to_string(),
         "rabbitmq:4-alpine".to_string(),
-        "traefik:v3.6.7".to_string(),
+        "traefik:v3.6.12".to_string(),
     ];
     // The cached check: the uncached one starts a throwaway container to look for saved
     // Tailscale state, and this runs on every startup-progress poll.
