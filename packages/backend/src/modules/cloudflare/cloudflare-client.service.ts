@@ -15,6 +15,7 @@ import { writeHealableTextFile } from '@/common/helpers/bind-mount-helpers';
 import { buildPortalAxiosConfig, readPortalInternalUrlOverride, withPortalAxiosHeaders } from '@/common/helpers/portal-url';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { type DnsAvailability, readDnsAvailability } from './dns-availability';
+import { CLOUDFLARED_GID, TUNNEL_TOKEN_MODE, shareTunnelTokenWithCloudflared } from './tunnel-token-file';
 
 /** How long `getDeviceApplications` waits for the Portal before it counts as no answer. */
 const DEVICE_APPLICATIONS_TIMEOUT_MS = 15_000;
@@ -246,8 +247,17 @@ export class CloudflareClientService {
       await fs.mkdir(tunnelDir, { recursive: true });
       await fs.mkdir(certsDir, { recursive: true });
 
-      // `cloudflared` reads this token through its Docker Compose configuration.
-      await writeHealableTextFile(path.join(tunnelDir, 'token'), token, 0o644);
+      // `cloudflared` reads this token through its Docker Compose configuration, as a user of its
+      // own, so the token goes to its group. The mode passed here only applies to a new file.
+      const tokenPath = path.join(tunnelDir, 'token');
+      await writeHealableTextFile(tokenPath, token, TUNNEL_TOKEN_MODE);
+      if (!(await shareTunnelTokenWithCloudflared(tokenPath))) {
+        this.logger.warn(
+          `Left the tunnel token at ${tokenPath} readable by every local user (0644) so cloudflared can read it: ` +
+            `it could not be given to cloudflared's group (${CLOUDFLARED_GID}). Either this process is not in that group, ` +
+            'or the folder is on a mount that keeps no groups.',
+        );
+      }
       try {
         await fs.unlink(tunnelUserClearedMarkerPath());
       } catch {

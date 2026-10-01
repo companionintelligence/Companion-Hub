@@ -12,16 +12,21 @@ import path from 'node:path';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { shareTunnelTokenWithCloudflared } from '../tunnel-token-file';
 
 vi.mock('axios');
 vi.mock('node:fs/promises');
 vi.mock('@/common/helpers/bind-mount-helpers', () => ({
-  writeHealableTextFile: vi.fn(async (filePath: string, content: string) => {
+  writeHealableTextFile: vi.fn(async (filePath: string, content: string, fileMode?: number) => {
     const fs = await import('node:fs/promises');
-    await fs.writeFile(filePath, content, { mode: 0o644 });
+    await fs.writeFile(filePath, content, { mode: fileMode });
   }),
   ensureWritableFile: vi.fn(async () => undefined),
   readTextFileIfExists: vi.fn(() => null),
+}));
+vi.mock('../tunnel-token-file', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../tunnel-token-file')>()),
+  shareTunnelTokenWithCloudflared: vi.fn(async () => true),
 }));
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
@@ -98,7 +103,13 @@ describe('CloudflareClientService', () => {
 
       const result = await service.initializeTunnel('org-id', { tunnelId: 'tun-id', token: 'tok' });
 
-      expect(fs.writeFile).toHaveBeenCalledWith(expect.stringContaining(path.join('tunnel', 'token')), 'tok', { mode: 0o644 });
+      // Never readable by every local user: cloudflared reads it through its group.
+      expect(fs.writeFile).toHaveBeenCalledWith(expect.stringContaining(path.join('tunnel', 'token')), 'tok', { mode: 0o640 });
+      expect(shareTunnelTokenWithCloudflared).toHaveBeenCalledWith(expect.stringContaining(path.join('tunnel', 'token')));
+      // Shared once written, which is also what brings an existing token, whose mode writeFile keeps, to 0640.
+      expect(vi.mocked(shareTunnelTokenWithCloudflared).mock.invocationCallOrder[0]).toBeGreaterThan(
+        vi.mocked(fs.writeFile).mock.invocationCallOrder[0] as number,
+      );
       expect(fsSync.existsSync).toHaveBeenCalledWith(path.join(DATA_DIR, 'docker-compose.yml'));
       expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', {
         composeFile: path.join(DATA_DIR, 'docker-compose.yml'),
@@ -144,6 +155,19 @@ describe('CloudflareClientService', () => {
       expect(result).toBeNull();
     });
 
+    it("keeps the tunnel working, and says so, when the token cannot be given to cloudflared's group", async () => {
+      vi.mocked(fsSync.existsSync).mockReturnValue(true);
+      vi.mocked(shareTunnelTokenWithCloudflared).mockResolvedValueOnce(false);
+      const loggerRef = (service as unknown as { logger: { warn: (message: string) => void } }).logger;
+      const warn = vi.spyOn(loggerRef, 'warn');
+
+      const result = await service.initializeTunnel('org-id', { tunnelId: 'tun-id', token: 'tok' });
+
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('readable by every local user (0644)'));
+      expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', expect.objectContaining({ forceRecreate: true }));
+      expect(result).toEqual({ tunnelId: 'tun-id', token: 'tok' });
+    });
+
     it('should skip cloudflared container start in local/E2E mode (ci.localhost)', async () => {
       configService.get.mockImplementation((key) => {
         if (key === 'ciCloudUrl') return 'http://api.cloud';
@@ -155,7 +179,7 @@ describe('CloudflareClientService', () => {
       const result = await service.initializeTunnel('org-id', { tunnelId: 'tun-id', token: 'tok' });
 
       // Token file should still be written
-      expect(fs.writeFile).toHaveBeenCalledWith(expect.stringContaining(path.join('tunnel', 'token')), 'tok', { mode: 0o644 });
+      expect(fs.writeFile).toHaveBeenCalledWith(expect.stringContaining(path.join('tunnel', 'token')), 'tok', { mode: 0o640 });
       // Docker container should NOT be started
       expect(dockerService.ensureContainerRunning).not.toHaveBeenCalled();
       // Should still return credentials

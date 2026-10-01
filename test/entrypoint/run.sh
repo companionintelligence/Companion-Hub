@@ -134,5 +134,93 @@ else
   FAIL=$((FAIL+1)); echo "  FAIL a compose file reinstated a numeric default:"; printf '%s\n' "$BAD" | sed 's/^/       /'
 fi
 
+echo "entrypoint tunnel-token sharing"
+
+# The tunnel token is shared with cloudflared's group (65532) at 0640 instead of with every
+# local account at 0644. Only root may chgrp to a group it is not in, so a group this shell IS
+# in stands in for it: a supplementary one where there is one, so the group really changes.
+pass() { PASS=$((PASS+1)); echo "  ok   $1"; }
+fail() { FAIL=$((FAIL+1)); echo "  FAIL $1"; [ -z "${2:-}" ] || printf '%s\n' "$2" | sed 's/^/       /'; }
+tok() { f="$WORK/token.$1.$2"; printf 'tunnel-token' > "$f"; chmod "$1" "$f"; printf '%s' "$f"; }
+ALT_GID=$(id -G | tr ' ' '\n' | grep -vx "$ME_GID" | head -n 1)
+[ -n "$ALT_GID" ] || ALT_GID=$ME_GID
+
+T=$(tok 644 shared)
+share_tunnel_token "$T" "$ALT_GID"; rc=$?
+if [ "$rc" = 0 ] && [ "$(stat -c %a "$T")" = 640 ] && [ "$(stat -c %g "$T")" = "$ALT_GID" ]; then
+  pass "a 0644 token goes to the group, and from everyone else, at 0640"
+else
+  fail "a 0644 token should end 0640 in group $ALT_GID" "rc=$rc, got $(stat -c '%a %u:%g' "$T")"
+fi
+
+# THE SAFETY RULE: 0640 in a group cloudflared is not in is a token it cannot read, and a
+# tunnel that stops at its next start. So when the group does not take, the mode stays.
+if [ "$ME_UID" != 0 ] && ! id -G | tr ' ' '\n' | grep -qx 65532; then
+  T=$(tok 644 notmember)
+  share_tunnel_token "$T" 65532; rc=$?
+  if [ "$rc" = 0 ] && [ "$(stat -c '%a %g' "$T")" = "644 $ME_GID" ]; then
+    pass "a group that does not take leaves the token readable, and boot goes on"
+  else
+    fail "a group that does not take must leave 0644 alone" "rc=$rc, got $(stat -c '%a %u:%g' "$T")"
+  fi
+else
+  echo "  skip a group that does not take (this shell may chgrp to 65532)"
+fi
+
+share_tunnel_token "$WORK/no-token" "$ALT_GID"; rc=$?
+if [ "$rc" = 0 ] && [ ! -e "$WORK/no-token" ]; then
+  pass "no token yet: nothing to do, and boot goes on"
+else
+  fail "a missing token must not block boot or be created" "rc=$rc"
+fi
+
+# chgrp and chmod follow a symlink, so one planted in the tunnel folder would let root's
+# entrypoint change whatever it points at.
+T=$(tok 644 target); ln -s "$T" "$WORK/token-link"
+share_tunnel_token "$WORK/token-link" "$ALT_GID"; rc=$?
+if [ "$rc" = 0 ] && [ "$(stat -c '%a %g' "$T")" = "644 $ME_GID" ]; then
+  pass "a symlinked token is left alone, and so is what it points at"
+else
+  fail "a symlinked token must not be followed" "rc=$rc, target now $(stat -c '%a %u:%g' "$T")"
+fi
+
+# The group the Hub sets on the tokens it writes (packages/backend/src/modules/cloudflare/
+# tunnel-token-file.ts) must be the one the entrypoint gives back on every start.
+BACKEND_GID=$(sed -n 's/^export const CLOUDFLARED_GID = \([0-9]*\);$/\1/p' "$REPO/packages/backend/src/modules/cloudflare/tunnel-token-file.ts")
+if [ "$CLOUDFLARED_GID" = 65532 ] && [ "$BACKEND_GID" = "$CLOUDFLARED_GID" ]; then
+  pass "the entrypoint and the backend share the token with the same group, 65532"
+else
+  fail "CLOUDFLARED_GID must be 65532 in both" "entrypoint=$CLOUDFLARED_GID backend=${BACKEND_GID:-<not found>}"
+fi
+
+# Both paths that start as root give the token back: root mode before it execs, the drop
+# right after the chown that takes the token's group away.
+ROOT_MODE=$(awk '/^if \[ "\$HUB_UID" = "0" \]; then/{p=1; next} p && /^fi/{exit} p' "$ENTRY" | tr '\n' ' ')
+DROP=$(awk '/^if \[ -d \/app\/tunnel \]; then/{p=1; next} p && /^fi/{exit} p' "$ENTRY" | tr '\n' ' ')
+if printf '%s' "$ROOT_MODE" | grep -q 'share_tunnel_token .*exec "\$@"' && printf '%s' "$DROP" | grep -q 'chown -R .*share_tunnel_token'; then
+  pass "root mode and the privilege drop both give the token to cloudflared's group"
+else
+  fail "share_tunnel_token must run in root mode before exec and after the tunnel chown"
+fi
+
+# setpriv REPLACES the supplementary groups, so the group the Hub needs to share a token it
+# writes must be named on every drop, or the backend falls back to 0644 every time.
+if [ "$(grep -c '^[[:space:]]*exec setpriv .*--groups="[^"]*\$CLOUDFLARED_GID"' "$ENTRY")" = 2 ] && ! grep -q -- '--clear-groups' "$ENTRY"; then
+  pass "the privilege drop keeps the Hub in cloudflared's group, with or without DOCKER_GID"
+else
+  fail "both setpriv drops must pass --groups including \$CLOUDFLARED_GID"
+fi
+
+# 65532 is the user the pinned cloudflared image runs as, checked with
+# `docker image inspect --format '{{.Config.User}}' cloudflare/cloudflared:2026.2.0` (65532:65532).
+# Another image may run as someone else, and then the token is 0640 in a group it is not in:
+# check its user, and CLOUDFLARED_GID, before moving this pin.
+IMAGES=$(grep -h 'image: *cloudflare/cloudflared' "$REPO"/docker-compose*.yml "$REPO"/packages/desktop/src-tauri/resources/docker-compose*.yml 2>/dev/null | sed 's/^[[:space:]]*image:[[:space:]]*//' | sort -u)
+if [ "$IMAGES" = "cloudflare/cloudflared:2026.2.0" ]; then
+  pass "every compose file runs the cloudflared image whose user CLOUDFLARED_GID was checked against"
+else
+  fail "the cloudflared image changed: check that it still runs as 65532:65532" "$IMAGES"
+fi
+
 echo "  ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" = "0" ]

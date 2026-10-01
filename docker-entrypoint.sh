@@ -55,6 +55,14 @@ HUB_UID="${CI_HUB_CONTAINER_UID:-${DATA_UID:-1000}}"
 HUB_GID="${CI_HUB_CONTAINER_GID:-${DATA_GID:-1000}}"
 DOCKER_GID="${DOCKER_GID:-}"
 
+# The group cloudflared reads the tunnel token through: `nonroot`, 65532, which the
+# cloudflare/cloudflared image runs as (its `User` is 65532:65532). The token is the whole
+# credential for this Hub's tunnel, so it is shared with that group rather than with every local
+# account, which is what the 0644 it was written with did. The Hub joins the group below to set
+# it on the tokens it writes (CLOUDFLARED_GID in packages/backend/src/modules/cloudflare/
+# tunnel-token-file.ts, which must match).
+CLOUDFLARED_GID=65532
+
 # Refuse to run as a uid that cannot read the config, and SAY SO.
 #
 # Without this the failure surfaces as a bare EACCES on /data/.env from deep inside the
@@ -106,9 +114,26 @@ assert_config_readable() { # uid gid [path]
   exit 1
 }
 
+# Gives the tunnel token to cloudflared's group and takes it from everyone else: group
+# CLOUDFLARED_GID, mode 0640. A token from before this, or one the chown below just handed to
+# the Hub's own group, is put right on every start.
+#
+# The group goes first and the mode only once the group has taken, so a token cloudflared can
+# read stays readable to it at every step, and a mount that keeps no groups (a Windows folder
+# through Docker Desktop) leaves the token as readable as it was. A symlink is left alone: chgrp
+# and chmod would change whatever it points at. Best effort, like the chown: never blocks boot.
+share_tunnel_token() { # [token] [gid]
+  _token="${1:-/app/tunnel/token}"; _tgid="${2:-$CLOUDFLARED_GID}"
+  [ -f "$_token" ] && [ ! -L "$_token" ] || return 0
+  chgrp "$_tgid" "$_token" 2>/dev/null || return 0
+  [ "$(stat -c %g "$_token" 2>/dev/null)" = "$_tgid" ] || return 0
+  chmod 0640 "$_token" 2>/dev/null || true
+}
+
 # Sourced by test/entrypoint/run.sh to exercise assert_config_readable with controlled
-# uid/gid pairs. The drop path only executes as root, so without this hook the one rule
-# worth testing is the one that cannot be reached in CI.
+# uid/gid pairs, and share_tunnel_token with a group the test runner is in. The drop path
+# only executes as root, so without this hook the one rule worth testing is the one that
+# cannot be reached in CI.
 if [ "${CI_HUB_ENTRYPOINT_LIB:-}" = "1" ]; then
   return 0
 fi
@@ -116,6 +141,7 @@ fi
 # Root mode (e.g. Windows / Docker Desktop, where NTFS bind mounts require root):
 # run the command as-is without dropping privileges.
 if [ "$HUB_UID" = "0" ]; then
+  share_tunnel_token
   exec "$@"
 fi
 
@@ -127,10 +153,12 @@ if [ "$(id -u)" != "0" ]; then
   exec "$@"
 fi
 
-# Heal the tunnel bind mount so the Hub uid can write the tunnel token.
+# Heal the tunnel bind mount so the Hub uid can write the tunnel token, then give the
+# token back to cloudflared's group, which the chown just took it from.
 # Best-effort — never block boot on a chown failure.
 if [ -d /app/tunnel ]; then
   chown -R "$HUB_UID:$HUB_GID" /app/tunnel 2>/dev/null || true
+  share_tunnel_token
 fi
 
 assert_config_readable "$HUB_UID" "$HUB_GID"
@@ -139,9 +167,11 @@ assert_config_readable "$HUB_UID" "$HUB_GID"
 # comes solely from adding DOCKER_GID as a supplementary group here: setpriv REPLACES
 # the supplementary set (so the compose `group_add` does NOT survive the drop, and
 # su-exec would clear the groups for a numeric uid). DOCKER_GID is supplied via the
-# container env (compose defaults it to 973); if it is somehow unset we clear groups
-# rather than leak root's, which means the Hub would lack socket access until it is set.
+# container env (compose defaults it to 973); if it is somehow unset the Hub gets no
+# group of root's, which means it would lack socket access until it is set.
+# CLOUDFLARED_GID is the other supplementary group: membership is what lets the Hub give
+# a token it writes to cloudflared's group, as only root may chgrp to a group it is not in.
 if [ -n "$DOCKER_GID" ]; then
-  exec setpriv --reuid="$HUB_UID" --regid="$HUB_GID" --groups="$DOCKER_GID" -- "$@"
+  exec setpriv --reuid="$HUB_UID" --regid="$HUB_GID" --groups="$DOCKER_GID,$CLOUDFLARED_GID" -- "$@"
 fi
-exec setpriv --reuid="$HUB_UID" --regid="$HUB_GID" --clear-groups -- "$@"
+exec setpriv --reuid="$HUB_UID" --regid="$HUB_GID" --groups="$CLOUDFLARED_GID" -- "$@"
