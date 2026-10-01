@@ -73,4 +73,21 @@ describe('LoggerService', () => {
     expect(text).not.toContain('abc123');
     expect(text).not.toContain('eyJ.abc.def');
   });
+
+  it('does not redact a body for a level that is not written, so a hostile request body costs nothing at info', async () => {
+    const quiet = new LoggerService('quiet', folder, 'info');
+    const started = performance.now();
+
+    quiet.debug('HTTP request', { note: 'a-'.repeat(64 * 1024) });
+
+    expect(performance.now() - started).toBeLessThan(50);
+  });
+
+  it('does not write the request body an HTTP client error carries as a string', async () => {
+    logger.error('portal call failed', { config: { data: JSON.stringify({ password: 'hunter2', deviceKey: 'dk-123' }) } });
+
+    const text = await readLog();
+    expect(text).toContain('portal call failed');
+    expect(text).not.toMatch(/hunter2|dk-123/);
+  });
 });

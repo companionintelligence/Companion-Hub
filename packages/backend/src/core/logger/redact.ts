@@ -22,7 +22,18 @@ export const REDACTED = '[REDACTED]';
  * `tokenCount` — keep their numbers.
  */
 const SENSITIVE_KEY =
-  /authorization|cookie|passw(?:or)?d|secret|api[-_ ]?key|(?:device|move|private|signing)[-_ ]?key|totp|bearer|ticket|dsn|pepper|signature|session[-_ ]?id|(?:^|[-_.])token$|[a-z]token$/i;
+  /authorization|cookie|passw(?:or)?d|passphrase|secret|credential|api[-_ ]?key|(?:device|move|private|signing|access|auth|encryption|master|hub[-_ ]?local|push)[-_ ]?key|totp|bearer|ticket|dsn|pepper|signature|session[-_ ]?id|jwt|(?:^|[-_.])(?:token|pin|pass|pwd|psw|pw)$|[a-z]token$/i;
+
+/**
+ * Credential names inside a quoted JSON fragment of free text, such as a message that embeds the
+ * request body that failed. The bounds keep the pattern linear on adversarial input.
+ */
+const JSON_FRAGMENT_SECRET =
+  /("[^"\\\n]{0,64}(?:(?:passw(?:or)?d|passphrase|secret|credential|api[-_ ]?key|private[-_ ]?key|device[-_ ]?key|access[-_ ]?key|authorization|cookie|totp)[^"\\\n]{0,64}|token)"\s{0,8}:\s{0,8})"(?:[^"\\]|\\.){0,2048}"/gi;
+
+/** `NAME=value` as an environment listing prints it (a container's `Env` array, a `.env` dump). */
+const ENV_ASSIGNMENT =
+  /\b((?:[A-Z][A-Z0-9_]{0,64})?(?:PASSWORD|PASSWD|PASS|PWD|SECRET|TOKEN|API_?KEY|PRIVATE_?KEY|ACCESS_?KEY|CREDENTIALS?)(?:_[A-Z0-9_]{0,64})?=)[^\s"']{1,2048}/g;
 
 /** Query parameters whose value is a credential. */
 const SENSITIVE_QUERY_PARAM =
@@ -32,20 +43,58 @@ const STRING_PATTERNS: Array<[RegExp, string | ((match: string, ...groups: strin
   [/Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi, `Bearer ${REDACTED}`],
   [/tskey-[A-Za-z0-9-]+/gi, REDACTED],
   // Postgres, AMQP and Redis URLs carry the password in the authority section: keep the scheme and host.
-  [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s:@/]+:[^\s@/]+@/gi, (_match, scheme) => `${scheme}${REDACTED}@`],
+  // ⚠ Every quantifier is bounded. The log call runs on request bodies before anything authenticates
+  // the caller, and an unbounded scheme (`[a-z0-9+.-]*`) made a body of `a-a-a-…` cost quadratic time:
+  // 64 KB of it stalled the event loop for five seconds.
+  [/\b([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s:@/]{1,256}:[^\s@/]{1,256}@/gi, (_match, scheme) => `${scheme}${REDACTED}@`],
   [SENSITIVE_QUERY_PARAM, (_match, prefix) => `${prefix}${REDACTED}`],
+  [JSON_FRAGMENT_SECRET, (_match, prefix) => `${prefix}"${REDACTED}"`],
+  [ENV_ASSIGNMENT, (_match, prefix) => `${prefix}${REDACTED}`],
 ];
 
-const MAX_DEPTH = 8;
+/**
+ * How deep the copy goes. Deep enough for a compose tree with device reservations; the bound is only
+ * there so a body nested thousands of levels deep cannot overflow the stack before the caller is
+ * authenticated, and `seen` ends a circular object on its own.
+ */
+const MAX_DEPTH = 32;
+
+/** Longest string parsed as JSON to look inside it. A larger one is only pattern-masked. */
+const MAX_JSON_STRING_LENGTH = 256 * 1024;
 
 export function redactString(value: string): string {
-  let redacted = value;
+  const structured = redactSerialisedJson(value);
+  let redacted = structured ?? value;
 
   for (const [pattern, replacement] of STRING_PATTERNS) {
     redacted = redacted.replace(pattern, replacement as never);
   }
 
   return redacted;
+}
+
+/**
+ * A string that is itself a JSON document, redacted by key. An Axios error carries the request body
+ * as such a string (`config.data`), which the patterns cannot tell apart from prose.
+ *
+ * @returns the redacted document, or `undefined` when `value` is not one
+ */
+function redactSerialisedJson(value: string): string | undefined {
+  if (value.length > MAX_JSON_STRING_LENGTH) {
+    return undefined;
+  }
+
+  const first = value.trimStart()[0];
+
+  if (first !== '{' && first !== '[') {
+    return undefined;
+  }
+
+  try {
+    return JSON.stringify(redactForLog(JSON.parse(value)));
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -90,11 +139,26 @@ function redactObject(value: object, depth: number, seen: WeakSet<object>): unkn
     return value.map((item) => redactForLog(item, depth + 1, seen));
   }
 
-  const redacted: Record<string, unknown> = {};
+  // `fromEntries`, not assignment: a parsed body can have an own `__proto__` key, which assignment
+  // would turn into a prototype change and drop from the output.
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [
+      key,
+      SENSITIVE_KEY.test(key) && isCredentialValue(entry) ? REDACTED : redactForLog(entry, depth + 1, seen),
+    ]),
+  );
+}
 
-  for (const [key, entry] of Object.entries(value)) {
-    redacted[key] = SENSITIVE_KEY.test(key) ? REDACTED : redactForLog(entry, depth + 1, seen);
+/**
+ * Whether what is held under a credential's name is worth hiding. A flag (`totpEnabled: false`), a
+ * missing value and an empty string say whether a credential is set, which is what a reader of the
+ * log needs to know; a string, a number (a PIN sent as a JSON number), an object or a list could be
+ * the credential itself.
+ */
+function isCredentialValue(entry: unknown): boolean {
+  if (entry === null || entry === undefined || typeof entry === 'boolean') {
+    return false;
   }
 
-  return redacted;
+  return entry !== '';
 }

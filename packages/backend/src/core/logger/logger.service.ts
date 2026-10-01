@@ -163,6 +163,12 @@ export class LoggerService {
   }
 
   private log = (level: string, messages: unknown[]) => {
+    // Redacting is the expensive part of a log call, and the auth guard logs every request body at debug
+    // level before it checks who sent it: do not do that work for a line that will not be written.
+    if (!this.winstonLogger.isLevelEnabled(level)) {
+      return;
+    }
+
     // ⚠ EVERYTHING LOGGED PASSES THROUGH `redact.ts`. The log file is also what the Hub's log
     // download serves, and request bodies, headers and HTTP client errors all arrive here as objects.
     const stringMessages = messages.flatMap((m) => {
