@@ -473,10 +473,10 @@ describe('Homebrew cask zap removes the tunnel files', () => {
     expect(generated).not.toContain('"~/Library/Application Support/tunnel",');
   });
 
-  it.each([
-    'distribution/homebrew/companion-hub.rb',
-    'distribution/publish/homebrew-tap/Casks/companion-hub.rb',
-  ])('%s matches the generated zap stanza', (file) => {
-    expect(zapBlock(read(file), file)).toBe(generated);
-  });
+  it.each(['distribution/homebrew/companion-hub.rb', 'distribution/publish/homebrew-tap/Casks/companion-hub.rb'])(
+    '%s matches the generated zap stanza',
+    (file) => {
+      expect(zapBlock(read(file), file)).toBe(generated);
+    },
+  );
 });

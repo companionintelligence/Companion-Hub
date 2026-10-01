@@ -629,7 +629,7 @@ describe('hub-pool-cli probe', () => {
     await probePoolAddress('.env.local', '192.168.1.42:5010');
 
     expect(hubApiFetch.mock.calls[0]?.[1]).toBe('/inference/pool/peers/probe');
-    expect(JSON.parse((hubApiFetch.mock.calls[0]?.[2] as RequestInit).body as string)).toEqual({ address: '192.168.1.42:5010' });
+    expect(JSON.parse((hubApiFetch.mock.calls[0]?.[2] as RequestInit | undefined)?.body as string)).toEqual({ address: '192.168.1.42:5010' });
   });
 
   it('says the node was found but NOT named, and routes the operator through the PIN', () => {
@@ -686,10 +686,10 @@ describe('hub-pool-cli requests', () => {
     await setPoolEnabledSetting('.env.local', false);
 
     expect(hubApiFetch.mock.calls[0]?.[1]).toBe('/inference/pool/peers/peer-1');
-    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).method).toBe('DELETE');
-    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit | undefined)?.method).toBe('DELETE');
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit | undefined)?.signal).toBeInstanceOf(AbortSignal);
     expect(hubApiFetch.mock.calls[1]?.[1]).toBe('/inference/pool/settings');
-    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).body).toBe('{"poolEnabled":false}');
+    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit | undefined)?.body).toBe('{"poolEnabled":false}');
   });
 
   it('encodes the peer id into the path', async () => {
@@ -803,10 +803,10 @@ describe('hub-pool-cli pins', () => {
     await deletePoolPin('.env.local', 'default');
 
     expect(hubApiFetch.mock.calls[0]?.[1]).toBe('/inference/pool/pins');
-    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).body).toContain('hf.co/org/repo:Q4_K_M');
-    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit | undefined)?.body).toContain('hf.co/org/repo:Q4_K_M');
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit | undefined)?.signal).toBeInstanceOf(AbortSignal);
     expect(hubApiFetch.mock.calls[1]?.[1]).toBe('/inference/pool/pins?scope=model&model=hf.co%2Forg%2Frepo%3AQ4_K_M');
-    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).method).toBe('DELETE');
+    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit | undefined)?.method).toBe('DELETE');
     expect(hubApiFetch.mock.calls[2]?.[1]).toBe('/inference/pool/pins?scope=default');
   });
 });
@@ -849,11 +849,11 @@ describe('hub-pool-cli prompt ceiling', () => {
     await setPoolMaxPromptTokens('.env.local', null);
 
     expect(hubApiFetch.mock.calls[0]?.[1]).toBe('/inference/pool/settings');
-    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).method).toBe('PATCH');
-    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).body).toBe('{"poolMaxPromptTokens":16000}');
-    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit | undefined)?.method).toBe('PATCH');
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit | undefined)?.body).toBe('{"poolMaxPromptTokens":16000}');
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit | undefined)?.signal).toBeInstanceOf(AbortSignal);
     // Omitting the field would leave the old ceiling in place: null is the "clear".
-    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).body).toBe('{"poolMaxPromptTokens":null}');
+    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit | undefined)?.body).toBe('{"poolMaxPromptTokens":null}');
   });
 
   it('shows this node’s ceiling in status, naming the .env when that is what sets it', () => {
@@ -1142,15 +1142,15 @@ describe('hub-pool-cli context cap', () => {
     await setInferenceContextCap('.env.local', 'vllm', null);
 
     expect(hubApiFetch.mock.calls[0]?.[1]).toBe('/inference/preferences');
-    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).method).toBeUndefined();
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit | undefined)?.method).toBeUndefined();
     // The preferences route, not /api/user-settings: it is the one that can remove the key, and it
     // requires `backend`, so the stored one is sent back.
     expect(hubApiFetch.mock.calls[1]?.[1]).toBe('/inference/preferences');
-    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).method).toBe('PATCH');
-    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).body).toBe('{"backend":"ollama","maxNumCtx":16384}');
-    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit | undefined)?.method).toBe('PATCH');
+    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit | undefined)?.body).toBe('{"backend":"ollama","maxNumCtx":16384}');
+    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit | undefined)?.signal).toBeInstanceOf(AbortSignal);
     // Omitting the field would leave the old cap in place: null is the "clear".
-    expect((hubApiFetch.mock.calls[2]?.[2] as RequestInit).body).toBe('{"backend":"vllm","maxNumCtx":null}');
+    expect((hubApiFetch.mock.calls[2]?.[2] as RequestInit | undefined)?.body).toBe('{"backend":"vllm","maxNumCtx":null}');
   });
 
   describe('per-peer caps: the column, the comparison, and the three readings', () => {
@@ -1322,9 +1322,9 @@ describe('hub-pool-cli Ollama slots', () => {
     await setInferenceOllamaSlots('.env.local', 'vllm', null);
 
     expect(hubApiFetch.mock.calls[0]?.[1]).toBe('/inference/preferences');
-    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).method).toBe('PATCH');
-    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).body).toBe('{"backend":"ollama","ollamaSlots":4}');
-    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).body).toBe('{"backend":"vllm","ollamaSlots":null}');
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit | undefined)?.method).toBe('PATCH');
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit | undefined)?.body).toBe('{"backend":"ollama","ollamaSlots":4}');
+    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit | undefined)?.body).toBe('{"backend":"vllm","ollamaSlots":null}');
   });
 
   it('shows this node’s slot count in status with the knob’s state, and nothing when none is stated or the Hub predates slots', () => {
@@ -1792,10 +1792,10 @@ describe('hub-pool-cli pairing PIN', () => {
     await cancelPairingPin('.env.local');
 
     expect(hubApiFetch.mock.calls[0]?.[1]).toBe('/inference/pool/pairing-pin');
-    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).method).toBe('POST');
-    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit | undefined)?.method).toBe('POST');
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit | undefined)?.signal).toBeInstanceOf(AbortSignal);
     expect(hubApiFetch.mock.calls[1]?.[1]).toBe('/inference/pool/pairing-pin');
-    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).method).toBe('DELETE');
+    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit | undefined)?.method).toBe('DELETE');
   });
 
   it('names the OTHER Hub as where the digits are typed, and that approval is still required', () => {

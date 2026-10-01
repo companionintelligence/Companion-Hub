@@ -16,7 +16,7 @@
     "desktop#build": {
       "dependsOn": ["frontend#build", "^build"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
-      "env": ["SKIP_DESKTOP_BUILD"],
+      "env": ["SKIP_DESKTOP_BUILD", "TAURI_BUNDLE_TARGETS"],
       "outputs": [
         "src-tauri/target/release/bundle/**",
         "src-tauri/target/release/ci-os-hub-desktop",
@@ -47,6 +47,7 @@
     "@ci-hub/openclaw-plugin#bundle": {
       "dependsOn": [],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
+      "env": ["OPENCLAW_PLUGIN_OUT_DIR"],
       "outputs": ["dist/hub-plugin.mjs"]
     },
     "desktop#bundle": {
