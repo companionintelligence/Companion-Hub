@@ -53,7 +53,7 @@ jobs:
 
       - name: Dependency Review
         if: steps.ghas.outputs.available == 'true'
-        uses: actions/dependency-review-action@v4
+        uses: actions/dependency-review-action@v5
         with:
           fail-on-severity: high
 
