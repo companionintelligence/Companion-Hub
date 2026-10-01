@@ -10,6 +10,12 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # 7.76 changed how isDirty follows dirtyFields (react-hook-form#13370). The install form
+      # re-seeds on !isDirty and prefills app_base_url from dirtyFields, and two of its tests fail
+      # on 7.76+. Lift this once the form is adapted.
+      - dependency-name: 'react-hook-form'
+        versions: ['>=7.76.0']
 
   - package-ecosystem: 'github-actions'
     directory: '/'

@@ -96,21 +96,18 @@ describe('DesktopReleaseService', () => {
     ]);
   });
 
-  it.each([
-    'dev',
-    undefined,
-    '',
-    'https://evil.example.com',
-    'dl.ci.computer',
-  ])('reads only dl-dev.ci.computer for environment %j', async (environment) => {
-    serve({ [DEV]: { version: '0.2.61' } });
+  it.each(['dev', undefined, '', 'https://evil.example.com', 'dl.ci.computer'])(
+    'reads only dl-dev.ci.computer for environment %j',
+    async (environment) => {
+      serve({ [DEV]: { version: '0.2.61' } });
 
-    await expect(service.getDesktopRelease({ environment, platform: 'linux', arch: 'aarch64' })).resolves.toEqual({
-      latestVersion: '0.2.61',
-      downloadUrl: `${DEV}/v0.2.61/linux/deb/arm/Companion%20Hub_0.2.61_arm64.deb`,
-    });
-    expect(readUrls()).toEqual([`${DEV}/latest.json`, `${DEV}/v0.2.61/manifest.json`]);
-  });
+      await expect(service.getDesktopRelease({ environment, platform: 'linux', arch: 'aarch64' })).resolves.toEqual({
+        latestVersion: '0.2.61',
+        downloadUrl: `${DEV}/v0.2.61/linux/deb/arm/Companion%20Hub_0.2.61_arm64.deb`,
+      });
+      expect(readUrls()).toEqual([`${DEV}/latest.json`, `${DEV}/v0.2.61/manifest.json`]);
+    },
+  );
 
   it('picks the installer for the platform and architecture', async () => {
     serve({ [PROD]: { version: '0.2.77' } });

@@ -72,14 +72,12 @@ describe('InternalOriginGuard', () => {
    * Behind the tunnel the resolved address is the proxy's own private one, so only the marker the
    * edge adds says the caller is not inside. A caller cannot strip it.
    */
-  it.each([
-    'cf-ray',
-    'cf-connecting-ip',
-    'cf-visitor',
-    'true-client-ip',
-  ])('refuses tunnel traffic marked by %s even from a private proxy address', (header) => {
-    expect(() => guard.canActivate(createContext({ ip: '172.18.0.2', headers: { [header]: 'set' } }))).toThrow(ForbiddenException);
-  });
+  it.each(['cf-ray', 'cf-connecting-ip', 'cf-visitor', 'true-client-ip'])(
+    'refuses tunnel traffic marked by %s even from a private proxy address',
+    (header) => {
+      expect(() => guard.canActivate(createContext({ ip: '172.18.0.2', headers: { [header]: 'set' } }))).toThrow(ForbiddenException);
+    },
+  );
 
   it('refuses a forwarded chain whose client hop is public', () => {
     expect(() => guard.canActivate(createContext({ ip: '172.18.0.2', headers: { 'x-forwarded-for': '203.0.113.10, 172.18.0.2' } }))).toThrow(
