@@ -1,4 +1,5 @@
 import { client } from '@/api-client/client.gen';
+import { formatHubDateTime } from '@/components/ui/dense/dense';
 import { ScopeBadge } from '@/components/scope-badge/scope-badge';
 import { Button } from '@/components/ui/Button';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -97,9 +98,7 @@ export const HubAccess = ({ appUrn, hasUnsavedChanges = false }: HubAccessProps)
                 ))}
               </div>
               <p className="text-xs text-muted-foreground">
-                {status.appKey.lastUsedAt
-                  ? t('API_KEYS_LAST_USED', { when: new Date(status.appKey.lastUsedAt).toLocaleString() })
-                  : t('API_KEYS_NEVER_USED')}
+                {status.appKey.lastUsedAt ? t('API_KEYS_LAST_USED', { when: formatHubDateTime(status.appKey.lastUsedAt) }) : t('API_KEYS_NEVER_USED')}
               </p>
             </div>
           )}

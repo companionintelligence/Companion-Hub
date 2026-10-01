@@ -1,6 +1,6 @@
 import clsx from 'clsx';
 import type React from 'react';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import './OtpInput.css';
 
 type Props = {
@@ -8,11 +8,23 @@ type Props = {
   valueLength: number;
   onChange: (value: string) => void;
   className?: string;
+  /** Focus the first digit when the input mounts, so a code can be typed straight away. */
+  autoFocus?: boolean;
 };
 
 const RE_DIGIT = /^\d+$/;
 
-export const OtpInput = ({ value, valueLength, onChange, className }: Props) => {
+export const OtpInput = ({ value, valueLength, onChange, className, autoFocus }: Props) => {
+  const groupRef = useRef<HTMLDivElement>(null);
+
+  // Done in an effect rather than with the `autoFocus` attribute, which would put it on every digit
+  // and only does anything on the first render of the page.
+  useEffect(() => {
+    if (autoFocus) {
+      groupRef.current?.querySelector('input')?.focus();
+    }
+  }, [autoFocus]);
+
   const valueItems = useMemo(() => {
     const valueArray = value.split('');
     const items: string[] = [];
@@ -135,7 +147,7 @@ export const OtpInput = ({ value, valueLength, onChange, className }: Props) => 
   };
 
   return (
-    <div className="otp-group">
+    <div className="otp-group" ref={groupRef}>
       {valueItems.map((digit, idx) => (
         <input
           aria-label={`digit-${idx}`}

@@ -4,10 +4,11 @@ import { FederatedIdentityRepository } from '@/modules/user/federated-identity.r
 import { UserRepository } from '@/modules/user/user.repository';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { EncryptionService } from '@/core/encryption/encryption.service';
+import { TotpAuthenticator } from '../utils/totp-authenticator';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Test } from '@nestjs/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { AuthService } from '../auth.service';
 import { SessionManager } from '../session.manager';
@@ -36,6 +37,7 @@ describe('AuthService', () => {
   let portal: MockProxy<PortalClientService>;
   let deviceRegistration: MockProxy<DeviceRegistrationRepository>;
   let bearerOrgMembership: MockProxy<BearerOrgMembershipCache>;
+  let encryptionService: MockProxy<EncryptionService>;
 
   beforeEach(async () => {
     vi.mocked(axios.post).mockReset();
@@ -70,12 +72,128 @@ describe('AuthService', () => {
     portal = moduleRef.get(PortalClientService);
     deviceRegistration = moduleRef.get(DeviceRegistrationRepository);
     bearerOrgMembership = moduleRef.get(BearerOrgMembershipCache);
+    encryptionService = moduleRef.get(EncryptionService);
     userRepository.getOperators.mockResolvedValue([]);
     federatedIdentityRepository.findByIssuerSubject.mockResolvedValue(undefined as never);
     federatedIdentityRepository.findByUserId.mockResolvedValue([] as never);
     deviceRegistration.getFirstDeviceRegistration.mockResolvedValue(null as never);
     userRepository.updateUser.mockImplementation(async (_id, data) => ({ id: _id, ...data }) as never);
     passwordService.hash.mockResolvedValue('hashed-local' as never);
+  });
+
+  describe('TOTP sign-in', () => {
+    const SESSION = 'totp-session-1';
+    const user = { id: 7, totpEnabled: true, totpSecret: 'enc', salt: 'salt', accessStatus: 'active' };
+    let store: Map<string, { value: string; ttl: number | undefined }>;
+
+    afterEach(() => {
+      vi.mocked(TotpAuthenticator.check).mockRestore?.();
+    });
+
+    beforeEach(() => {
+      // A cache that behaves like one: the cap is state kept across calls.
+      store = new Map();
+      cacheService.set.mockImplementation(((key: string, value: string, ttl?: number) => {
+        store.set(key, { value, ttl });
+      }) as never);
+      cacheService.get.mockImplementation(((key: string) => store.get(key)?.value) as never);
+      cacheService.del.mockImplementation(((key: string) => {
+        store.delete(key);
+      }) as never);
+
+      userRepository.getUserById.mockResolvedValue(user as never);
+      encryptionService.decrypt.mockReturnValue('secret' as never);
+      sessionManager.createSession.mockResolvedValue('session-id' as never);
+    });
+
+    it('gives a password-verified sign-in five minutes to produce its code, not a day', async () => {
+      configurationService.getConfig.mockReturnValue({ ciCloudUrl: 'https://hub.example.com' } as never);
+      vi.mocked(axios.post).mockResolvedValue({ status: 200, data: {} });
+      userRepository.getUserByUsername.mockResolvedValue({ id: 2, password: 'hashedPassword', totpEnabled: 1 } as never);
+
+      const { totpSessionId } = (await authService.login({ username: 'totp@example.com', password: 'Password1!' })) as { totpSessionId: string };
+
+      expect(store.get(totpSessionId)?.ttl).toBe(300);
+    });
+
+    it('accepts a right code and clears the session and its attempt counter', async () => {
+      store.set(SESSION, { value: '7', ttl: 300 });
+      store.set(`totp-attempts:${SESSION}`, { value: '3', ttl: 300 });
+      vi.spyOn(TotpAuthenticator, 'check').mockReturnValue(true);
+
+      await expect(authService.verifyTotp({ totpSessionId: SESSION, totpCode: '123456' })).resolves.toEqual({ sessionId: 'session-id' });
+
+      expect(store.has(SESSION)).toBe(false);
+      expect(store.has(`totp-attempts:${SESSION}`)).toBe(false);
+    });
+
+    it('answers a wrong code with "invalid" and keeps the session open for another try', async () => {
+      store.set(SESSION, { value: '7', ttl: 300 });
+      vi.spyOn(TotpAuthenticator, 'check').mockReturnValue(false);
+
+      await expect(authService.verifyTotp({ totpSessionId: SESSION, totpCode: '000000' })).rejects.toThrow('AUTH_ERROR_TOTP_INVALID_CODE');
+
+      expect(store.has(SESSION)).toBe(true);
+      expect(store.get(`totp-attempts:${SESSION}`)?.value).toBe('1');
+    });
+
+    it('ends the session on the fifth wrong code, so six digits cannot be guessed at without limit', async () => {
+      store.set(SESSION, { value: '7', ttl: 300 });
+      vi.spyOn(TotpAuthenticator, 'check').mockReturnValue(false);
+
+      for (let i = 0; i < 4; i++) {
+        await expect(authService.verifyTotp({ totpSessionId: SESSION, totpCode: '000000' })).rejects.toThrow('AUTH_ERROR_TOTP_INVALID_CODE');
+      }
+      await expect(authService.verifyTotp({ totpSessionId: SESSION, totpCode: '000000' })).rejects.toMatchObject({
+        message: 'AUTH_ERROR_TOTP_TOO_MANY_ATTEMPTS',
+        status: 429,
+      });
+
+      expect(store.has(SESSION)).toBe(false);
+      expect(store.has(`totp-attempts:${SESSION}`)).toBe(false);
+      // And the session being gone is what stops the sixth guess, even a correct one.
+      vi.spyOn(TotpAuthenticator, 'check').mockReturnValue(true);
+      await expect(authService.verifyTotp({ totpSessionId: SESSION, totpCode: '123456' })).rejects.toThrow('AUTH_ERROR_TOTP_SESSION_NOT_FOUND');
+      expect(sessionManager.createSession).not.toHaveBeenCalled();
+    });
+
+    it('tests at most five codes out of a burst sent in parallel, even though every request is past the first check', async () => {
+      store.set(SESSION, { value: '7', ttl: 300 });
+      const check = vi.spyOn(TotpAuthenticator, 'check').mockReturnValue(false);
+
+      const outcomes = await Promise.allSettled(
+        Array.from({ length: 300 }, (_, i) => authService.verifyTotp({ totpSessionId: SESSION, totpCode: String(i).padStart(6, '0') })),
+      );
+
+      expect(check).toHaveBeenCalledTimes(5);
+      expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(0);
+      expect(store.has(SESSION)).toBe(false);
+    });
+
+    it('gives one session to two parallel requests that carry the same right code', async () => {
+      store.set(SESSION, { value: '7', ttl: 300 });
+      vi.spyOn(TotpAuthenticator, 'check').mockReturnValue(true);
+
+      const outcomes = await Promise.allSettled([
+        authService.verifyTotp({ totpSessionId: SESSION, totpCode: '123456' }),
+        authService.verifyTotp({ totpSessionId: SESSION, totpCode: '123456' }),
+      ]);
+
+      expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+      expect(sessionManager.createSession).toHaveBeenCalledTimes(1);
+    });
+
+    it('counts each pending sign-in on its own', async () => {
+      store.set('other-session', { value: '7', ttl: 300 });
+      store.set(SESSION, { value: '7', ttl: 300 });
+      vi.spyOn(TotpAuthenticator, 'check').mockReturnValue(false);
+
+      for (let i = 0; i < 4; i++) {
+        await expect(authService.verifyTotp({ totpSessionId: 'other-session', totpCode: '000000' })).rejects.toThrow('AUTH_ERROR_TOTP_INVALID_CODE');
+      }
+
+      await expect(authService.verifyTotp({ totpSessionId: SESSION, totpCode: '000000' })).rejects.toThrow('AUTH_ERROR_TOTP_INVALID_CODE');
+    });
   });
 
   it('should be defined', () => {
@@ -334,12 +452,12 @@ describe('AuthService', () => {
       userRepository.getUserByUsername.mockResolvedValue(undefined as never);
       userRepository.getOperators.mockResolvedValue([] as never);
       passwordService.hash.mockResolvedValue('hashed' as never);
-      userRepository.createUser.mockResolvedValue({ id: 3, username: 'owner@example.com' } as never);
+      userRepository.createFirstOperator.mockResolvedValue({ id: 3, username: 'owner@example.com' } as never);
 
       await authService.bootstrapOperatorFromPortalEmail('  Owner@Example.com  ');
 
       expect(userRepository.getUserByUsername).toHaveBeenCalledWith('owner@example.com');
-      expect(userRepository.createUser).toHaveBeenCalledWith(expect.objectContaining({ username: 'owner@example.com', operator: true }));
+      expect(userRepository.createFirstOperator).toHaveBeenCalledWith(expect.objectContaining({ username: 'owner@example.com', operator: true }));
     });
 
     it('refuses to claim an appliance that already has an operator', async () => {
@@ -350,6 +468,54 @@ describe('AuthService', () => {
         message: 'AUTH_ERROR_USER_NOT_FOUND',
       });
       expect(userRepository.createUser).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('claiming an empty Hub', () => {
+    // Two people signing in at the same moment both read "no operators". The claim itself is one
+    // atomic step in the repository; these cover what the service does with its answer.
+    beforeEach(() => {
+      userRepository.getOperators.mockResolvedValue([] as never);
+      passwordService.hash.mockResolvedValue('hashed' as never);
+    });
+
+    it('hands back the operator the claim created', async () => {
+      userRepository.getUserByUsername.mockResolvedValue(undefined as never);
+      userRepository.createFirstOperator.mockResolvedValue({ id: 3, username: 'owner@example.com' } as never);
+
+      await expect(authService.bootstrapOperatorFromPortalEmail('owner@example.com')).resolves.toMatchObject({ id: 3 });
+      expect(userRepository.createUser).not.toHaveBeenCalled();
+    });
+
+    it('refuses the person who lost the race', async () => {
+      userRepository.getUserByUsername.mockResolvedValue(undefined as never);
+      userRepository.createFirstOperator.mockResolvedValue(null as never);
+
+      await expect(authService.bootstrapOperatorFromPortalEmail('late@example.com')).rejects.toMatchObject({
+        message: 'AUTH_ERROR_HUB_ALREADY_CLAIMED',
+        status: 409,
+      });
+      // The loser is not made an operator by the ordinary path either.
+      expect(userRepository.createUser).not.toHaveBeenCalled();
+    });
+
+    it('treats the winner arriving a second time (two tabs, a double submit) as themselves', async () => {
+      const winner = { id: 3, username: 'owner@example.com' };
+      userRepository.getUserByUsername.mockResolvedValueOnce(undefined as never).mockResolvedValueOnce(winner as never);
+      userRepository.createFirstOperator.mockResolvedValue(null as never);
+
+      await expect(authService.bootstrapOperatorFromPortalEmail('owner@example.com')).resolves.toBe(winner);
+      expect(userRepository.createUser).not.toHaveBeenCalled();
+    });
+
+    it('does not take the claim path once the Hub has an operator', async () => {
+      userRepository.getUserByUsername.mockResolvedValue(undefined as never);
+      userRepository.getOperators.mockResolvedValue([{ id: 1, username: 'owner@example.com' }] as never);
+
+      await expect(authService.bootstrapOperatorFromPortalEmail('stranger@example.com')).rejects.toMatchObject({
+        message: 'AUTH_ERROR_USER_NOT_FOUND',
+      });
+      expect(userRepository.createFirstOperator).not.toHaveBeenCalled();
     });
   });
 
@@ -897,7 +1063,7 @@ describe('AuthService', () => {
         status: 200,
         data: { token: 'portal-session', user: { id: 'portal-subject-1', email: 'owner@example.com' } },
       });
-      userRepository.createUser.mockResolvedValue({ id: 9, username: 'owner@example.com' } as never);
+      userRepository.createFirstOperator.mockResolvedValue({ id: 9, username: 'owner@example.com' } as never);
 
       const result = await authService.register({ username: 'owner@example.com', password: 'Password1!' } as never);
 
@@ -922,7 +1088,7 @@ describe('AuthService', () => {
     it('still provisions the operator when Portal signs in but names no subject', async () => {
       // Degrades to the old unlinked behaviour rather than refusing to register.
       vi.mocked(axios.post).mockResolvedValue({ status: 200, data: { token: 'portal-session' } });
-      userRepository.createUser.mockResolvedValue({ id: 11, username: 'owner@example.com' } as never);
+      userRepository.createFirstOperator.mockResolvedValue({ id: 11, username: 'owner@example.com' } as never);
 
       await expect(authService.register({ username: 'owner@example.com', password: 'Password1!' } as never)).resolves.toEqual({
         sessionId: 'session-id',

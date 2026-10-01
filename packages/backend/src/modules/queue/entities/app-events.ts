@@ -69,6 +69,9 @@ const updateAppCommandSchema = z.object({
   appUrn: zodAppUrn,
   form: queueAppFormSchema,
   performBackup: z.boolean().optional().default(true),
+  // Whether the app was running when the update was requested; a stopped one is updated and left stopped.
+  // Defaults to true, the behaviour before the flag existed, for a message queued by an older Hub.
+  wasRunning: z.boolean().optional().default(true),
   requestId: z.uuid(),
 });
 
@@ -100,6 +103,8 @@ export const appEventResultSchema = z.object({
   // Resting status a before-PONR cancel reverted to (e.g. 'stopped'). Unused by install (which removes
   // the record); reserved so Phase 2-4 ops can report where they landed.
   cancelledStatus: z.string().optional(),
+  // Set by a failed update: the previous version is back in place (and running again, if it was running).
+  rolledBack: z.boolean().optional(),
 });
 
 export type AppEventFormInput = z.input<typeof commonAppCommandSchema>['form'];

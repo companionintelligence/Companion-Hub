@@ -17,6 +17,8 @@ import {
 } from './cli-args.js';
 import { runApiKeyCommand } from './cli-api-key.js';
 import { runAppCommand } from './cli-app.js';
+import { runBulkAppCommand } from './cli-app-bulk.js';
+import { isBulkAppAction } from './hub-bulk-apps.js';
 import { claimHub } from './cli-claim.js';
 import { doctorHub, logsHub, showStatus, uninstallHub } from './cli-doctor.js';
 import { printConfig, setupHub, startHub } from './cli-lifecycle.js';
@@ -221,7 +223,16 @@ export async function runCli(rawArgs: string[]) {
   }
 
   if (first === 'app') {
-    runAppCommand(args.slice(1));
+    const appArgs = args.slice(1);
+    const sub = appArgs[0] ?? '';
+
+    // The sweeps go through the running Hub; every other `app` subcommand drives Docker directly.
+    if (isBulkAppAction(sub)) {
+      await runBulkAppCommand(sub, appArgs.slice(1));
+      return;
+    }
+
+    runAppCommand(appArgs);
     return;
   }
 

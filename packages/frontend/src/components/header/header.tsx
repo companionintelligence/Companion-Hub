@@ -79,7 +79,7 @@ export const Header = (props: HeaderProps) => {
 
       {/* Navigation (Center) — aligned with CI Portal (absolute center, lg+ only) */}
       {isLoggedIn && (
-        <nav className="absolute left-1/2 -translate-x-1/2 hidden lg:flex items-center justify-center gap-2">
+        <nav aria-label={t('HEADER_MAIN_NAVIGATION')} className="absolute left-1/2 -translate-x-1/2 hidden lg:flex items-center justify-center gap-2">
           <NavLink to="/home" className={getNavLinkClass}>
             <Home className="mr-2 size-4" />
             {t('COMMON_HOME')}

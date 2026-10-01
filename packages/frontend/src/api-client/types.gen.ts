@@ -721,9 +721,6 @@ export type GuestAppsDto = {
             exposedLocal: boolean;
             domain: string;
             isVisibleOnGuestDashboard: boolean;
-            config?: {
-                [key: string]: unknown;
-            };
             enableAuth?: boolean;
             autoRestartOnDomainChange?: boolean;
             localSubdomain?: string;
@@ -5366,7 +5363,9 @@ export type DeleteAppBackupResponses = {
 
 export type GetAppBackupsData = {
     body?: never;
-    path?: never;
+    path: {
+        urn: string;
+    };
     query?: {
         page?: number | unknown;
         pageSize?: number | unknown;

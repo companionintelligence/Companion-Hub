@@ -5198,6 +5198,14 @@
         "operationId": "getAppBackups",
         "parameters": [
           {
+            "name": "urn",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "page",
             "in": "query",
             "required": false,
@@ -9833,10 +9841,6 @@
                     },
                     "isVisibleOnGuestDashboard": {
                       "type": "boolean"
-                    },
-                    "config": {
-                      "type": "object",
-                      "additionalProperties": {}
                     },
                     "enableAuth": {
                       "type": "boolean"

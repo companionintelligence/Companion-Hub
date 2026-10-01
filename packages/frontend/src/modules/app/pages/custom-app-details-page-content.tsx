@@ -13,6 +13,7 @@ import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import type { TranslatableError } from '@/types/error.types';
 import { useState } from 'react';
+import { AppBackupsCard } from '../components/app-backups-card/app-backups-card';
 import { AppRuntimeDegradedBanner } from '../components/app-runtime-degraded-banner';
 import type { AppDetails, AppInfo, AppMetadata } from '@/types/app.types';
 import { useAppUrlAvailability } from '../helpers/use-app-url-availability';
@@ -117,6 +118,11 @@ export const CustomAppDetailsPageContent = ({ appId, info, app, metadata }: Prop
         </CardHeader>
         <AppDetailsTabs info={info} app={app} metadata={metadata} />
       </Card>
+      {app ? (
+        <div className="mt-4">
+          <AppBackupsCard appUrn={`${appId}:_user`} appName={info?.name ?? appId} status={app.status} />
+        </div>
+      ) : null}
     </div>
   );
 };

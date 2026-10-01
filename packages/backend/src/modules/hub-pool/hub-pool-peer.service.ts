@@ -71,6 +71,7 @@ import {
   type PoolStatusPeerThroughput,
   type PoolStatusReason,
 } from './hub-pool.types';
+import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 
 /**
  * The reason a peer gave for declining a pairing request, when it gave one.
@@ -577,7 +578,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       observed: this.throughput?.estimatesFor(peer.id, now) ?? [],
       advertised: readAdvertisedThroughput(
         (peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.throughput,
-        peer.lastSeenAt ? now - Date.parse(peer.lastSeenAt) : Number.NaN,
+        peer.lastSeenAt ? now - parseDbTimestampMs(peer.lastSeenAt) : Number.NaN,
       ),
     };
   }
@@ -1064,7 +1065,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
   private async sweepExpiredPendingRequests(): Promise<void> {
     const cutoff = Date.now() - PENDING_REQUEST_TTL_MS;
     const pending = await this.repo.listByStatus('pending');
-    const expired = pending.filter((row) => Date.parse(row.createdAt) < cutoff);
+    const expired = pending.filter((row) => parseDbTimestampMs(row.createdAt) < cutoff);
 
     for (const row of expired) {
       this.logger.info(`[HubPool] expiring unanswered ${row.direction} pairing request for ${row.nodeFqdn} (created ${row.createdAt})`);

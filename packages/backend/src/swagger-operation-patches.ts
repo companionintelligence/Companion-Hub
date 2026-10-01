@@ -130,6 +130,8 @@ export const OPERATION_REQUEST_BODIES: Record<string, { schemaName: string; sche
 /** Adds path parameters missing from Nest Zod DTO reflection. */
 export const OPERATION_PATH_PARAMS: Record<string, Array<Record<string, unknown>>> = {
   verifyPasswordResetToken: [{ name: 'token', in: 'path', required: true, schema: { type: 'string' } }],
+  // The route has a query DTO, and the query patch replaces the parameter list it reflected, `urn` included.
+  getAppBackups: [{ name: 'urn', in: 'path', required: true, schema: { type: 'string' } }],
 };
 
 /** Replaces `@ApiResponse({ type: Object })` placeholders with concrete schemas. */

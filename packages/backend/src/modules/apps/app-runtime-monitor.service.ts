@@ -16,6 +16,7 @@ import { HostTelemetryService } from '../system/host-telemetry.service';
 import type { PoolContainerRollup, PoolContainerSampler } from '@/common/helpers/hub-pool';
 import { HardwareInspectorService } from '@/modules/inference/hardware-inspector.service';
 import { type GpuProcessSampleSource, GpuProcessSamplerService } from '@/modules/inference/gpu-process-sampler.service';
+import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 
 const HIGH_CPU_THRESHOLD_PERCENT = 90;
 const HIGH_CPU_SAMPLE_COUNT = 3;
@@ -595,7 +596,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
       responsive = availability.responsive;
       reason = availability.reason;
     } else if (app.status === 'stopping' && containers.some((container) => container.state === 'running')) {
-      const updatedAtMs = app.updatedAt ? Date.parse(app.updatedAt) : 0;
+      const updatedAtMs = app.updatedAt ? parseDbTimestampMs(app.updatedAt) : 0;
       const stopTimedOut = updatedAtMs > 0 && Date.now() - updatedAtMs >= STOPPING_GRACE_MS;
       responsive = !stopTimedOut;
       reason = stopTimedOut ? 'App stop exceeded the graceful timeout window' : null;

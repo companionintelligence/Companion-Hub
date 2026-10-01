@@ -12,6 +12,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { AuthController } from '../auth.controller';
+import { AuthRateLimiter } from '../auth-rate-limiter';
 import { ForwardAuthIdentityResolver } from '../forward-auth-identity.resolver';
 import { ForwardAuthSecretResolver } from '../forward-auth-secret.resolver';
 import { BearerOrgMembershipCache } from '../bearer-org-membership.cache';
@@ -73,6 +74,8 @@ describe('AuthController', () => {
         // Real instance, not a mock: its TTL/coalescing behaviour is what the caching tests assert.
         BearerOrgMembershipCache,
         SessionUserCache,
+        // Real instance: the limits are what the rate-limit tests assert.
+        AuthRateLimiter,
       ],
     }).compile();
 
@@ -2532,6 +2535,7 @@ describe('AuthController — GET /api/auth/favicon.png, real HTTP dispatch', () 
         { provide: BearerOrgMembershipCache, useValue: mock<BearerOrgMembershipCache>() },
         { provide: SessionUserCache, useValue: mock<SessionUserCache>() },
         { provide: ForwardAuthIdentityResolver, useValue: mock<ForwardAuthIdentityResolver>() },
+        AuthRateLimiter,
       ],
     }).compile();
 

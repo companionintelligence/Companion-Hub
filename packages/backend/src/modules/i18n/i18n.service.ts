@@ -5,6 +5,20 @@ import i18n from 'i18next';
 import Backend, { type FsBackendOptions } from 'i18next-fs-backend';
 import { resolveTranslationsDirectory } from './translations-dir';
 
+/**
+ * A language tag as a locale file is named: letters, digits, `-` and `_`, starting with a
+ * 2-3 letter language. No `.` and no path separator, so a tag can never name anything but a
+ * file directly inside the translations folder.
+ *
+ * ⚠ `language` COMES STRAIGHT FROM THE URL (`GET /api/i18n/locales/:ns/:lng.json`, which has
+ * no auth guard), and Express decodes `%2F` in a route parameter. Joined unchecked into a
+ * path, `..%2F..%2Fdata%2Fstate%2Fsettings` read the Hub's own settings file back to any
+ * caller who could reach the port.
+ */
+const LANGUAGE_TAG = /^[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{1,8})*$/;
+
+export const isSafeLanguageTag = (language: string): boolean => LANGUAGE_TAG.test(language);
+
 @Injectable()
 export class I18nService {
   constructor() {
@@ -55,6 +69,10 @@ export class I18nService {
   }
 
   async getTranslation(language: string, namespace: string) {
+    if (!isSafeLanguageTag(language)) {
+      return {};
+    }
+
     try {
       // Normalize language code (e.g., 'en-US' -> 'en')
       const normalizedLang = language.split('-')[0] ?? language;
@@ -81,6 +99,12 @@ export class I18nService {
       ];
 
       for (const filePath of possibleFiles) {
+        // Belt and braces behind the tag check: whatever the name, it must resolve to a file
+        // directly inside the translations folder.
+        if (path.dirname(path.resolve(filePath)) !== path.resolve(directory)) {
+          continue;
+        }
+
         if (fs.existsSync(filePath)) {
           const content = fs.readFileSync(filePath, 'utf-8');
           return JSON.parse(content);
