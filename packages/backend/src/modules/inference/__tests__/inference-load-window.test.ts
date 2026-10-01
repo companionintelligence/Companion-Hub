@@ -433,6 +433,17 @@ describe('the load window on the fleet', () => {
       expect(registry.getTrackedModel('qwen3-8-27b')?.state).toBe('loaded');
     });
 
+    // The control for the two pin cases below: with nothing pinned, the same load on the same card is tried,
+    // at 4096 because the catalog fits no window. If the catalog comes to fit this model on beta-red, as
+    // #1688's measurement did for gemma4:e4b, this fails and the pin cases below no longer reach the trial.
+    it('tries one on beta-red when the operator has pinned nothing, which the two cases below withhold', async () => {
+      const ollama = new FakeOllama(16_384, () => ({ psMb: 18_090, processMb: 6_104, gpuMb: 4_577 }));
+      const { router } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+
+      await expect(router.loadTrackedModel('qwen3-8-27b', { origin: 'operator' })).resolves.toEqual({ loaded: true });
+      expect(ollama.loads).toEqual([{ id: 'qwen3.8:27b', ctx: 4_096 }]);
+    });
+
     it('does not try one while the operator has pinned another model on that Ollama, which could make room by unloading it', async () => {
       const ollama = new FakeOllama(16_384, () => ({ psMb: 18_090, processMb: 6_104, gpuMb: 4_577 }));
       const { router, registry } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
@@ -445,18 +456,20 @@ describe('the load window on the fleet', () => {
 
     // PIN-2: after a Hub restart the pin is read back before this process has tracked the model, and
     // Ollama may still hold it; a trial load could have Ollama unload it to make room.
+    // qwen3.8:27b, because only a model the catalog puts over beta-red reaches the trial: gemma4:e4b,
+    // which this case used, has fit there since #1688, so it loaded whether or not the pin was honoured.
     it('does not try one after a Hub restart either, while the pin is persisted but the model not yet re-marked', async () => {
       const before = world({ profile: BETA_RED, ollama: new FakeOllama(16_384), ollamaSlots: 4 });
       before.registry.trackModel('gemma3-1b', 'loaded');
       before.registry.pinModel('gemma3-1b');
       await before.registry.pinsPersisted();
 
-      const ollama = new FakeOllama(16_384, () => ({ psMb: 3209, processMb: 5550 }));
+      const ollama = new FakeOllama(16_384, () => ({ psMb: 18_090, processMb: 6_104, gpuMb: 4_577 }));
       const { router, registry } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
       await registry.onModuleInit();
       expect(registry.getTrackedModel('gemma3-1b')).toBeUndefined();
 
-      await expect(router.loadTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toMatchObject({ loaded: false });
+      await expect(router.loadTrackedModel('qwen3-8-27b', { origin: 'operator' })).resolves.toMatchObject({ loaded: false });
       expect(ollama.loads).toEqual([]);
     });
 
