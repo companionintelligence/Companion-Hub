@@ -1820,6 +1820,27 @@
         ]
       }
     },
+    "/api/auth/portal/mobile-session": {
+      "post": {
+        "operationId": "establishPortalMobileSession",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalDesktopExchangeDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
     "/api/auth/portal/desktop-handoff-status": {
       "get": {
         "operationId": "portalDesktopHandoffStatus",
