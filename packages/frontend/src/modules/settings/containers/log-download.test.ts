@@ -37,8 +37,9 @@ describe('downloadResponseAsFile', () => {
     const revokeObjectUrlSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
     const appendChildSpy = vi.spyOn(document.body, 'appendChild');
 
-    const response = new Response(new Blob(['hub logs'], { type: 'text/plain' }), {
+    const response = new Response('hub logs', {
       headers: {
+        'Content-Type': 'text/plain',
         'Content-Disposition': 'attachment; filename="ci-hub-logs-2026-04-17.log"',
       },
     });

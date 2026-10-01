@@ -39,7 +39,7 @@ vi.mock('react-i18next', () => ({
 // lottie-web reaches for a canvas 2D context at import time, which jsdom doesn't provide;
 // the app's own logic under test here doesn't depend on the animation actually playing.
 vi.mock('lottie-react', () => ({
-  default: () => null,
+  Lottie: () => null,
 }));
 
 function Harness({

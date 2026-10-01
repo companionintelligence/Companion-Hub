@@ -200,7 +200,7 @@ jobs:
             sentry_auth_token=${{ secrets.SENTRY_AUTH_TOKEN }}
 
       - name: Install crane
-        uses: imjasonh/setup-crane@v0.4
+        uses: imjasonh/setup-crane@v0.7
 
       - name: Push to Portal registry
         id: portal
@@ -300,7 +300,7 @@ jobs:
     steps:
       # Fresh runner: nothing is inherited from the deploy job, including crane or binfmt.
       - name: Install crane
-        uses: imjasonh/setup-crane@v0.4
+        uses: imjasonh/setup-crane@v0.7
 
       # linux/arm64 `docker run` on ubuntu-latest needs binfmt; without it the gate reports
       # exec format error even when the pushed arm64 manifest slot is correct.
