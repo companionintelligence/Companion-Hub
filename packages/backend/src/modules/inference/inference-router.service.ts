@@ -1163,7 +1163,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     const catalogFootprint = curated?.runtime.memoryFootprintMb || 0;
     // Lemonade's kokoro and whisper rows carry a 0 window, fell back to 8192, and were charged a
     // phantom 2 GB of KV cache and sent a llama.cpp ctx_size they have no use for.
-    if (!curated || curated.modality !== 'llm') {
+    if (curated?.modality !== 'llm') {
       return { contextLength: null, footprintMb: catalogFootprint };
     }
     const backend = this.backends.get(target.backend);

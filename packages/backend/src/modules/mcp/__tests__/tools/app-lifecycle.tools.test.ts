@@ -221,21 +221,22 @@ describe('AppLifecycleTools', () => {
       );
     });
 
-    it.each(
-      SINGLE_APP_TOOLS,
-    )('hands %s the calling key — a managed one keeps its owning app and level, so the gate can tell its own app from a neighbour and how far it reaches', async (method) => {
-      lifecycleService[method].mockResolvedValue({ requestId: 'r' });
-      const managedKey = { id: 3, name: 'importer', capability: 'full', ownerAppUrn: 'importer:ci-store', createdByUserId: null } as const;
+    it.each(SINGLE_APP_TOOLS)(
+      'hands %s the calling key — a managed one keeps its owning app and level, so the gate can tell its own app from a neighbour and how far it reaches',
+      async (method) => {
+        lifecycleService[method].mockResolvedValue({ requestId: 'r' });
+        const managedKey = { id: 3, name: 'importer', capability: 'full', ownerAppUrn: 'importer:ci-store', createdByUserId: null } as const;
 
-      await asKey(() => tools[method]({ appUrn: 'ci-store:test' }), managedKey);
+        await asKey(() => tools[method]({ appUrn: 'ci-store:test' }), managedKey);
 
-      expect(lifecycleService[method]).toHaveBeenCalledWith(
-        expect.objectContaining({
-          appUrn: 'ci-store:test',
-          actor: { kind: 'mcp', ownerAppUrn: 'importer:ci-store', createdByUserId: null, capability: 'full' },
-        }),
-      );
-    });
+        expect(lifecycleService[method]).toHaveBeenCalledWith(
+          expect.objectContaining({
+            appUrn: 'ci-store:test',
+            actor: { kind: 'mcp', ownerAppUrn: 'importer:ci-store', createdByUserId: null, capability: 'full' },
+          }),
+        );
+      },
+    );
 
     it("reads the key's level on every call, so a change made in Settings applies from the next one", async () => {
       lifecycleService.stopApp.mockResolvedValue({ requestId: 'r' });

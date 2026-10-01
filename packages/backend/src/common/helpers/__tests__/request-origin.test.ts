@@ -44,14 +44,12 @@ describe('internalOriginRefusal', () => {
    * Behind the tunnel `req.ip` is the proxy's own private address, so the address check passes; the
    * marker the edge adds is what says the caller is not inside. A caller cannot strip it.
    */
-  it.each([
-    'cf-ray',
-    'cf-connecting-ip',
-    'cf-visitor',
-    'true-client-ip',
-  ])('refuses tunnel traffic marked by %s even from a private proxy address', (header) => {
-    expect(internalOriginRefusal({ ip: '172.18.0.2', headers: { [header]: 'set' } })).toBe('tunnel-marker');
-  });
+  it.each(['cf-ray', 'cf-connecting-ip', 'cf-visitor', 'true-client-ip'])(
+    'refuses tunnel traffic marked by %s even from a private proxy address',
+    (header) => {
+      expect(internalOriginRefusal({ ip: '172.18.0.2', headers: { [header]: 'set' } })).toBe('tunnel-marker');
+    },
+  );
 
   it('refuses a forwarded chain whose client hop is public', () => {
     expect(internalOriginRefusal({ ip: '172.18.0.2', headers: { 'x-forwarded-for': '203.0.113.10, 172.18.0.2' } })).toBe('forwarded-hop');

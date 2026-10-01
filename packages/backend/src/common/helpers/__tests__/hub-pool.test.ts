@@ -68,16 +68,12 @@ describe('isMdnsPeerName', () => {
   });
 
   // A tailnet name that merely contains the word, and the loopback domain, are not mDNS names.
-  it.each([
-    'core-9.tailxyz.ts.net',
-    'local.tailxyz.ts.net',
-    'core-9.localhost',
-    'core-9.locals',
-    'my-local',
-    '192.168.1.42',
-  ])('leaves %j alone', (name) => {
-    expect(isMdnsPeerName(name)).toBe(false);
-  });
+  it.each(['core-9.tailxyz.ts.net', 'local.tailxyz.ts.net', 'core-9.localhost', 'core-9.locals', 'my-local', '192.168.1.42'])(
+    'leaves %j alone',
+    (name) => {
+      expect(isMdnsPeerName(name)).toBe(false);
+    },
+  );
 });
 
 describe('resolveHubPoolEnabled', () => {
@@ -174,20 +170,21 @@ describe('resolveHubPoolDirections', () => {
     [false, true, false, true, ON],
   ];
 
-  it.each(
-    TRUTH_TABLE,
-  )('master env=%s setting=%s, direction env=%s setting=%s', (masterEnv, masterSetting, directionEnv, directionSetting, expected) => {
-    if (masterEnv) vi.stubEnv('HUB_POOL_USER_DISABLED', 'true');
-    if (directionEnv) vi.stubEnv('HUB_POOL_OUTBOUND_DISABLED', 'true');
+  it.each(TRUTH_TABLE)(
+    'master env=%s setting=%s, direction env=%s setting=%s',
+    (masterEnv, masterSetting, directionEnv, directionSetting, expected) => {
+      if (masterEnv) vi.stubEnv('HUB_POOL_USER_DISABLED', 'true');
+      if (directionEnv) vi.stubEnv('HUB_POOL_OUTBOUND_DISABLED', 'true');
 
-    const directions = resolveHubPoolDirections({
-      poolEnabled: masterSetting as boolean,
-      poolOutboundEnabled: directionSetting as boolean,
-      poolInboundEnabled: true,
-    });
+      const directions = resolveHubPoolDirections({
+        poolEnabled: masterSetting as boolean,
+        poolOutboundEnabled: directionSetting as boolean,
+        poolInboundEnabled: true,
+      });
 
-    expect(directions.outbound).toEqual(expected);
-  });
+      expect(directions.outbound).toEqual(expected);
+    },
+  );
 
   it('is on in both directions when nothing says otherwise — the untouched-appliance case', () => {
     // The regression fence for "a single-node Hub is completely unaffected": absent settings and an
@@ -510,16 +507,13 @@ describe('prompt ceiling helpers', () => {
       expect(resolvePoolMaxPromptTokens(null, '8000')).toEqual({ maxPromptTokens: 8_000, setBy: 'env' });
     });
 
-    it.each([
-      ['sixteen thousand'],
-      ['16k'],
-      ['0'],
-      ['-1'],
-      ['99999999'],
-    ])('ignores an unusable env value %s rather than excluding this node on a .env typo', (envValue) => {
-      expect(resolvePoolMaxPromptTokens(16_000, envValue)).toEqual({ maxPromptTokens: 16_000, setBy: 'setting' });
-      expect(resolvePoolMaxPromptTokens(null, envValue)).toEqual({ maxPromptTokens: null, setBy: null });
-    });
+    it.each([['sixteen thousand'], ['16k'], ['0'], ['-1'], ['99999999']])(
+      'ignores an unusable env value %s rather than excluding this node on a .env typo',
+      (envValue) => {
+        expect(resolvePoolMaxPromptTokens(16_000, envValue)).toEqual({ maxPromptTokens: 16_000, setBy: 'setting' });
+        expect(resolvePoolMaxPromptTokens(null, envValue)).toEqual({ maxPromptTokens: null, setBy: null });
+      },
+    );
 
     it('reads the real environment variable when no value is passed', () => {
       vi.stubEnv(HUB_POOL_MAX_PROMPT_TOKENS_ENV_VAR, '12000');

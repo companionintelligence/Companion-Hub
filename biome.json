@@ -27,6 +27,7 @@
       "!**/e2e/generated",
       "!**/src-tauri/gen",
       "!**/*.generated.ts",
+      "!**/*.lottie.json",
       "!**/packages/frontend/index.html"
     ]
   },
@@ -44,7 +45,7 @@
   "linter": {
     "enabled": true,
     "rules": {
-      "recommended": true,
+      "preset": "recommended",
       "correctness": {
         "noUnusedImports": {
           "level": "warn"
@@ -138,10 +139,31 @@
       "linter": {
         "rules": {
           "suspicious": {
-            "noConsole": "off"
+            "noConsole": "off",
+            "noUndeclaredEnvVars": "off"
           },
           "correctness": {
             "noUndeclaredVariables": "error"
+          }
+        }
+      }
+    },
+    {
+      "includes": ["e2e/**", "playwright*.config.ts"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noUndeclaredEnvVars": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": ["**/*.svg"],
+      "linter": {
+        "rules": {
+          "a11y": {
+            "noSvgWithoutTitle": "off"
           }
         }
       }

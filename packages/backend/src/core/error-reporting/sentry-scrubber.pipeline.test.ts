@@ -70,7 +70,7 @@ describe('scrubEvent in the live client pipeline', () => {
     // Guard against a vacuous pass: with the request section missing (e.g. the
     // integration stopped populating it) every `not.toContain` below is free.
     expect(request).toBeDefined();
-    expect((request?.headers as Record<string, string>)['user-agent']).toBe('curl/8');
+    expect((request?.headers as Record<string, string> | undefined)?.['user-agent']).toBe('curl/8');
 
     const payload = JSON.stringify(sent);
     for (const secret of ['SESSIONVALUE', 'SECRETBEARER', 'CLEARTEXTPASSWORD', 'liam@example.com', 'bennett', 'redirect_url']) {

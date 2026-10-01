@@ -210,7 +210,7 @@ describe('abortWhenClientCloses', () => {
     client.hangUp();
     await within(done, TEARDOWN_MS, 'the handler seeing the close');
     expect(signals[0]?.aborted).toBe(true);
-    expect((signals[0]?.reason as Error).message).toBe(CLIENT_CLOSED_MESSAGE);
+    expect((signals[0]?.reason as Error | undefined)?.message).toBe(CLIENT_CLOSED_MESSAGE);
   });
 });
 
@@ -259,21 +259,24 @@ describe('CloudFallbackService — a client that leaves releases the provider', 
   it.each([
     ['an OpenAI-compatible provider', 'openai', OPENAI_FRAME, '"content":"hi"'],
     ['Anthropic, through its SSE translation', 'anthropic', ANTHROPIC_FRAME, '"content":"hi"'],
-  ] as const)('closes the connection to %s when the client hangs up mid-stream, as the controller wires it', async (_label, kind, frame, expected) => {
-    const provider = await startUpstream('one-frame', frame);
-    const cloud = service();
-    const hub = await startHub(async (res) => {
-      const result = await cloud.proxyChatCompletion(providerAt(kind, provider.url), streamedTurn, abortWhenClientCloses(res));
-      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-      relayStream(result.stream as NodeJS.ReadableStream, res);
-    });
+  ] as const)(
+    'closes the connection to %s when the client hangs up mid-stream, as the controller wires it',
+    async (_label, kind, frame, expected) => {
+      const provider = await startUpstream('one-frame', frame);
+      const cloud = service();
+      const hub = await startHub(async (res) => {
+        const result = await cloud.proxyChatCompletion(providerAt(kind, provider.url), streamedTurn, abortWhenClientCloses(res));
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        relayStream(result.stream as NodeJS.ReadableStream, res);
+      });
 
-    const client = connect(hub);
-    await expect(within(client.firstChunk, TEARDOWN_MS, 'the first frame')).resolves.toContain(expected);
-    client.hangUp();
+      const client = connect(hub);
+      await expect(within(client.firstChunk, TEARDOWN_MS, 'the first frame')).resolves.toContain(expected);
+      client.hangUp();
 
-    await within(provider.closed[0], TEARDOWN_MS, "the provider's connection closing");
-  });
+      await within(provider.closed[0], TEARDOWN_MS, "the provider's connection closing");
+    },
+  );
 
   it('stops waiting on a provider that has not answered yet when the client leaves', async () => {
     const provider = await startUpstream('silent');
