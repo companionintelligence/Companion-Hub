@@ -221,8 +221,64 @@ export class FilesystemService {
     }
   }
 
+  /**
+   * True only for a real directory. `lstat`, so a symlink to a directory is NOT one, and a
+   * missing path is `false` rather than a thrown ENOENT.
+   */
   async isDirectory(dirPath: string): Promise<boolean> {
-    return (await fs.promises.lstat(this.getSafeFilePath(dirPath))).isDirectory();
+    try {
+      return (await fs.promises.lstat(this.getSafeFilePath(dirPath))).isDirectory();
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * True only for a regular file. `lstat`, so a symlink is never one, whatever it points at.
+   *
+   * ⚠ PREFER THIS TO `pathExists` WHENEVER THE NEXT STEP READS THE FILE. `pathExists` is
+   * `access`, which follows links, so it answers "does the target exist" — and a link planted
+   * inside a user-supplied archive points wherever its author likes.
+   */
+  async isFile(filePath: string): Promise<boolean> {
+    try {
+      return (await fs.promises.lstat(this.getSafeFilePath(filePath))).isFile();
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Is `targetPath` a regular file (or directory) that really lives inside `rootDir`?
+   *
+   * ⚠ THIS ANSWERS A QUESTION `pathExists` AND `isFile` CANNOT. Both look only at the LAST
+   * component of the path, so `metadata -> /data` followed by `metadata/logo.png` passes either:
+   * the link is in the middle, and the file at the end is perfectly real. A cloned third-party
+   * repo controls every link in its tree. This resolves all of them (`realpath`) and requires the
+   * result to stay under the resolved root, so no link anywhere on the way can lead out.
+   *
+   * Returns a boolean and never the resolved path: the caller keeps using the path it already has,
+   * which `getSafeFilePath` has fenced lexically, instead of a real path that a symlinked data
+   * directory (a mount, `/var` on macOS) could place outside that fence.
+   */
+  async isWithin(targetPath: string, rootDir: string, kind: 'file' | 'directory' = 'file'): Promise<boolean> {
+    try {
+      const [realTarget, realRoot] = await Promise.all([
+        fs.promises.realpath(this.getSafeFilePath(targetPath)),
+        fs.promises.realpath(this.getSafeFilePath(rootDir)),
+      ]);
+      const relative = path.relative(realRoot, realTarget);
+
+      if (!relative || path.isAbsolute(relative) || relative === '..' || relative.startsWith(`..${path.sep}`)) {
+        return false;
+      }
+
+      const stats = await fs.promises.stat(realTarget);
+
+      return kind === 'file' ? stats.isFile() : stats.isDirectory();
+    } catch {
+      return false;
+    }
   }
 
   /**

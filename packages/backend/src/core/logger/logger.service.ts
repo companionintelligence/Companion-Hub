@@ -3,6 +3,7 @@ import path from 'node:path';
 import * as readline from 'node:readline';
 import { Injectable } from '@nestjs/common';
 import { type Logger, createLogger, format, transports } from 'winston';
+import { redactForLog, redactString } from './redact';
 
 export const LOG_LEVEL_ENUM = {
   debug: 'debug',
@@ -162,13 +163,25 @@ export class LoggerService {
   }
 
   private log = (level: string, messages: unknown[]) => {
+    // Redacting is the expensive part of a log call, and the auth guard logs every request body at debug
+    // level before it checks who sent it: do not do that work for a line that will not be written.
+    if (!this.winstonLogger.isLevelEnabled(level)) {
+      return;
+    }
+
+    // ⚠ EVERYTHING LOGGED PASSES THROUGH `redact.ts`. The log file is also what the Hub's log
+    // download serves, and request bodies, headers and HTTP client errors all arrive here as objects.
     const stringMessages = messages.flatMap((m) => {
       if (m instanceof Error) {
-        return [m.message, m.stack];
+        return [redactString(m.message), m.stack === undefined ? m.stack : redactString(m.stack)];
       }
 
       if (typeof m === 'object') {
-        return JSON.stringify(m, null, 2);
+        return JSON.stringify(redactForLog(m), null, 2);
+      }
+
+      if (typeof m === 'string') {
+        return redactString(m);
       }
 
       return m;

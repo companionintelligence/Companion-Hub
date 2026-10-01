@@ -7,6 +7,7 @@ import { RegistrationModule } from '@/modules/registration/registration.module';
 import { UserModule } from '@/modules/user/user.module';
 import { Module, forwardRef } from '@nestjs/common';
 import { AuthController } from './auth.controller';
+import { AuthRateLimiter } from './auth-rate-limiter';
 import { AuthService } from './auth.service';
 import { ForwardAuthIdentityResolver } from './forward-auth-identity.resolver';
 import { ForwardAuthSecretResolver } from './forward-auth-secret.resolver';
@@ -20,7 +21,7 @@ import { SessionManager } from './session.manager';
   // second instance, so writes invalidated on one would still be served stale by the other.
   imports: [UserModule, EncryptionModule, PasswordModule, RegistrationModule, forwardRef(() => PortalModule), AppsModule, EnvModule],
   controllers: [AuthController],
-  providers: [AuthService, SessionManager, ForwardAuthSecretResolver, ForwardAuthIdentityResolver, BearerOrgMembershipCache],
+  providers: [AuthService, AuthRateLimiter, SessionManager, ForwardAuthSecretResolver, ForwardAuthIdentityResolver, BearerOrgMembershipCache],
   exports: [AuthService, SessionManager, BearerOrgMembershipCache],
 })
 export class AuthModule {}

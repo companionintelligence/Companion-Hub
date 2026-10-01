@@ -49,7 +49,7 @@ describe('UserSettingsForm Local domain check', () => {
     render(<UserSettingsForm initialValues={newHubSettings} onSubmit={onSubmit} />);
 
     expect(localDomainField()).toHaveAttribute('readonly');
-    await userEvent.click(screen.getByRole('switch', { name: 'guestDashboard' }));
+    await userEvent.click(screen.getByRole('switch', { name: 'Enable guest dashboard?' }));
     await submit();
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
@@ -76,7 +76,7 @@ describe('UserSettingsForm Local domain check', () => {
     const onSubmit = vi.fn();
     render(<UserSettingsForm initialValues={{ ...newHubSettings, localDomain: 'lan' }} onSubmit={onSubmit} />);
 
-    await userEvent.click(screen.getByRole('switch', { name: 'guestDashboard' }));
+    await userEvent.click(screen.getByRole('switch', { name: 'Enable guest dashboard?' }));
     await submit();
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));

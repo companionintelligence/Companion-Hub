@@ -38,8 +38,15 @@ const Tile = ({ data, sslPort }: { data: GuestAppsDto['installed'][number]; sslP
 
   return (
     <DropdownMenu modal={false}>
+      {/* A bare <div> cannot be reached with the keyboard, so a guest without a mouse could not open a tile.
+          Radix supplies Enter, Space and the arrow keys to whatever it is given as the trigger. */}
       <DropdownMenuTrigger asChild>
-        <div className="relative group cursor-pointer rounded-lg transition-all duration-300 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2">
+        {/* biome-ignore lint/a11y/useSemanticElements: the tile can hold the install-retry <button>, and a button may not contain one */}
+        <div
+          role="button"
+          tabIndex={0}
+          className="relative group cursor-pointer rounded-lg transition-all duration-300 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+        >
           <AppTile key={info.urn} info={info} status={app.status} updateAvailable={false} />
         </div>
       </DropdownMenuTrigger>

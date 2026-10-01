@@ -78,6 +78,9 @@ export class BackupsService {
         this.logger.error(`Failed to backup app ${appUrn}: ${message}`);
         if (this.operationRegistry.claimCompletion(appUrn, requestId)) {
           await this.appsRepository.updateAppById(app.id, { status: 'stopped' });
+          // The DB row moves to 'stopped'; without this the page keeps showing "backing up" and the person is
+          // never told it failed (the client already has a toast for this event, but nothing sent it).
+          this.sseService.emit('app', { event: 'backup_error', appUrn, appStatus: 'stopped' });
           this.agentNotifyService?.notify('backup_error', { appUrn }, 'high');
         }
       }
@@ -129,6 +132,7 @@ export class BackupsService {
         this.logger.error(`Failed to restore app ${appUrn}: ${message}`);
         if (this.operationRegistry.claimCompletion(appUrn, requestId)) {
           await this.appsRepository.updateAppById(app.id, { status: 'stopped' });
+          this.sseService.emit('app', { event: 'restore_error', appUrn, appStatus: 'stopped' });
           this.agentNotifyService?.notify('restore_error', { appUrn }, 'high');
         }
       }
@@ -162,7 +166,9 @@ export class BackupsService {
 
     backups.sort((a, b) => b.date - a.date);
 
-    const start = (page - 1) * pageSize;
+    // Pages count from 1. A page below that (the route used to default to 0) turned `start` negative,
+    // and `slice(-10, 0)` is an empty list however many backups there are.
+    const start = (Math.max(1, Math.trunc(page) || 1) - 1) * pageSize;
     const end = start + pageSize;
     const data = backups.slice(start, end);
 

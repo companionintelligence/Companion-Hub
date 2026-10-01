@@ -46,7 +46,8 @@ export const LogsTerminal = (props: Props) => {
       return;
     }
 
-    const linesToKeep = Math.max(1, lines);
+    // Whole lines only: a typed "2.5" would otherwise be stored and later used as a slice offset.
+    const linesToKeep = Math.max(1, Math.trunc(lines));
     onMaxLinesChange(linesToKeep);
   };
 
@@ -63,7 +64,9 @@ export const LogsTerminal = (props: Props) => {
               size="sm"
               groupPrefix={t('APP_LOGS_TAB_MAX_LINES')}
               type="number"
+              inputMode="numeric"
               min={1}
+              step={1}
               value={maxLines}
               onChange={(e) => updateMaxLines(e.currentTarget.valueAsNumber)}
             />

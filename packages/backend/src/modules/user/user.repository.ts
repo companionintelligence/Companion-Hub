@@ -4,7 +4,7 @@ import { user } from '@/core/database/drizzle/schema';
 import type { NewUser } from '@/core/database/drizzle/types';
 import type { UserDto } from '@/modules/user/dto/user.dto';
 import { Inject, Injectable } from '@nestjs/common';
-import { eq } from 'drizzle-orm/sql';
+import { eq, sql } from 'drizzle-orm/sql';
 
 /**
  * The Hub's canonical form for a username, which is always an email address.
@@ -17,6 +17,12 @@ import { eq } from 'drizzle-orm/sql';
 export function normalizeUsername(username: string): string {
   return username.trim().toLowerCase();
 }
+
+/**
+ * Postgres advisory-lock key serialising "who becomes the first operator". Arbitrary, but fixed:
+ * every writer that can claim an unclaimed Hub must take this same one.
+ */
+const FIRST_OPERATOR_LOCK_KEY = 7_301_001;
 
 function toSessionUserDto(row: {
   id: number;
@@ -186,6 +192,45 @@ export class UserRepository {
       .values({ ...data, username: normalizeUsername(data.username) })
       .returning();
     const created = newUsers[0];
+
+    if (created) {
+      this.sessionUserCache.invalidate(created.id);
+    }
+
+    return created;
+  }
+
+  /**
+   * Create `data` as an operator only if the Hub has none yet, and say whether it did.
+   *
+   * ⚠ "NO OPERATOR YET" AND "INSERT ONE" MUST BE ONE STEP. The first operator is the one admission
+   * that skips the Portal membership check, so it has to happen once. Done as a read followed by a
+   * write, two people signing in at the same moment both saw an empty Hub and both became operators —
+   * and the `user` table has nothing to stop it (only `username` is unique, and the second person has
+   * a different one). A transaction under an advisory lock makes the second wait for the first, find
+   * its row, and get `null` back.
+   *
+   * Operators are not made unique by an index, deliberately: a Hub is allowed many of them once it is
+   * claimed. This guards the claim only.
+   *
+   * @returns the new operator, or `null` when one already existed
+   */
+  public async createFirstOperator(data: NewUser) {
+    const created = await this.db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(${FIRST_OPERATOR_LOCK_KEY})`);
+
+      const existing = await tx.query.user.findFirst({ where: eq(user.operator, true), columns: { id: true } });
+      if (existing) {
+        return null;
+      }
+
+      const [row] = await tx
+        .insert(user)
+        .values({ ...data, operator: true, username: normalizeUsername(data.username) })
+        .returning();
+
+      return row ?? null;
+    });
 
     if (created) {
       this.sessionUserCache.invalidate(created.id);

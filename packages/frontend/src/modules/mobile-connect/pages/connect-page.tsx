@@ -8,9 +8,18 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { redirect, useNavigate } from 'react-router';
+import { markHubSessionIssuedAt, setTauriSessionId } from '@/lib/api-fetch';
 import { rememberPortalAccountEmail } from '@/lib/portal-session-hint';
 import { emailFromIdToken, loginWithPortalOidc, OidcCancelledError, resumePendingOidcLogin } from '../oidc';
-import { type HubDevice, listHubDevices, type PortalAuth, readPersistedPortalUrl, readStoredPortalAuth, writePortalAuth } from '../portal-client';
+import {
+  establishHubSessionFromPortal,
+  type HubDevice,
+  listHubDevices,
+  type PortalAuth,
+  readPersistedPortalUrl,
+  readStoredPortalAuth,
+  writePortalAuth,
+} from '../portal-client';
 
 /**
  * Mobile-only entry screen. Portal OIDC in an in-app browser, then pick a Hub.
@@ -71,7 +80,12 @@ export default function ConnectPage() {
         setSignInError(null);
         let portalAuth: PortalAuth;
         if (tokens) {
-          portalAuth = { token: tokens.accessToken, cookie: null, kind: 'oauth' };
+          portalAuth = {
+            token: tokens.accessToken,
+            cookie: null,
+            kind: 'oauth',
+            ...(tokens.idToken ? { idToken: tokens.idToken } : {}),
+          };
         } else if (stored) {
           portalAuth = stored;
         } else {
@@ -139,7 +153,12 @@ export default function ConnectPage() {
       const tokens = await loginWithPortalOidc(portalUrl, { signal: controller.signal });
       const portalEmail = emailFromIdToken(tokens.idToken);
       if (portalEmail) rememberPortalAccountEmail(portalEmail);
-      await loadDevices({ token: tokens.accessToken, cookie: null, kind: 'oauth' });
+      await loadDevices({
+        token: tokens.accessToken,
+        cookie: null,
+        kind: 'oauth',
+        ...(tokens.idToken ? { idToken: tokens.idToken } : {}),
+      });
     } catch (err) {
       if (!(err instanceof OidcCancelledError)) {
         const message = err instanceof Error ? err.message : t('MOBILE_CONNECT_SIGNIN_FAILED');
@@ -169,15 +188,26 @@ export default function ConnectPage() {
     setConnectingId(device.id);
     try {
       const lanCandidate = device.lanUrl || device.lanIp;
-      if (lanCandidate) {
-        const resolved = await resolveHubConnection({
-          lanAddress: lanCandidate,
-          remoteTunnelUrl: device.hubUrl,
-          timeoutMs: 1200,
-        });
-        await setHubConnection(resolved.baseUrl);
-      } else {
-        await setHubConnection(device.hubUrl);
+      const hubUrl = lanCandidate
+        ? (
+            await resolveHubConnection({
+              lanAddress: lanCandidate,
+              remoteTunnelUrl: device.hubUrl,
+              timeoutMs: 1200,
+            })
+          ).baseUrl
+        : device.hubUrl;
+      await setHubConnection(hubUrl);
+      // Cloud connect already signed this person in. The Hub session is that
+      // same account. A Hub that cannot take the token still has its own sheet.
+      if (auth?.idToken) {
+        const session = await establishHubSessionFromPortal(hubUrl, auth.idToken);
+        if (session) {
+          setTauriSessionId(session.sessionId);
+          markHubSessionIssuedAt();
+          window.location.assign(session.redirectPath || '/home');
+          return;
+        }
       }
       navigate('/login', { replace: true });
     } catch (err) {

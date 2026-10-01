@@ -94,4 +94,12 @@ describe('Button component', () => {
       expect(link).toHaveClass('custom-class');
     });
   });
+  it('announces itself as busy while loading, and only then', () => {
+    const { rerender } = render(<Button loading>Save</Button>);
+    expect(screen.getByRole('button')).toHaveAttribute('aria-busy', 'true');
+    expect(screen.getByRole('button')).toBeDisabled();
+
+    rerender(<Button>Save</Button>);
+    expect(screen.getByRole('button')).not.toHaveAttribute('aria-busy');
+  });
 });

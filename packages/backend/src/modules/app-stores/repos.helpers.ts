@@ -24,6 +24,26 @@ export class ReposHelpers {
   ) {}
 
   /**
+   * The folder a store's repo lives in, `<dataDir>/repos/<id>`.
+   *
+   * ⚠ `id` IS A STORE SLUG, WHICH HAS BEEN USER-SUPPLIED, AND THE FILESYSTEM FENCE DOES NOT
+   * HELP HERE: `FilesystemService.getSafeFilePath` accepts anything under `DATA_DIR`, so
+   * `repos/..` — the data directory itself — passes it and `removeDirectory` then deletes
+   * everything. The id must therefore be exactly one segment below `repos/`.
+   */
+  private getRepoPath(id: string): string {
+    const { dataDir } = this.configuration.get('directories');
+    const reposDir = path.resolve(dataDir, 'repos');
+    const repoPath = path.resolve(reposDir, id);
+
+    if (!id || path.dirname(repoPath) !== reposDir) {
+      throw new Error(`Invalid repo id: ${id}`);
+    }
+
+    return repoPath;
+  }
+
+  /**
    * Given a repo url, return a hash of it to be used as a folder name
    *
    * @param {string} repoUrl
@@ -185,8 +205,7 @@ export class ReposHelpers {
    */
   public async cloneRepo(url: string, id: string, type = 'git') {
     try {
-      const { dataDir } = this.configuration.get('directories');
-      const repoPath = path.join(dataDir, 'repos', id);
+      const repoPath = this.getRepoPath(id);
 
       if (await this.filesystem.pathExists(repoPath)) {
         await this.ensureDirectoryWithPermissions(path.dirname(repoPath));
@@ -505,8 +524,7 @@ export class ReposHelpers {
 
   public async downloadAppFiles(repoUrl: string, repoSlug: string, appSlug: string) {
     try {
-      const { dataDir } = this.configuration.get('directories');
-      const repoPath = path.join(dataDir, 'repos', repoSlug);
+      const repoPath = this.getRepoPath(repoSlug);
       const appPath = path.join(repoPath, 'apps', appSlug);
 
       this.logger.debug(`Downloading app files for ${appSlug} from ${repoUrl}`);
@@ -569,8 +587,7 @@ export class ReposHelpers {
   public async pullRepo(repoUrl: string, slug: string, type = 'git') {
     try {
       if (type === 'ci_cloud_api') {
-        const { dataDir } = this.configuration.get('directories');
-        const repoPath = path.join(dataDir, 'repos', slug);
+        const repoPath = this.getRepoPath(slug);
         return this.fetchCiCloudRepo(repoUrl, slug, repoPath);
       }
 
@@ -578,8 +595,7 @@ export class ReposHelpers {
 
       const [remoteUrl] = this.getRepoBaseUrlAndBranch(repoUrl);
 
-      const { dataDir } = this.configuration.get('directories');
-      const repoPath = path.join(dataDir, 'repos', slug);
+      const repoPath = this.getRepoPath(slug);
 
       if (!(await this.filesystem.pathExists(repoPath))) {
         this.logger.info(`Repo ${repoUrl} does not exist`);
@@ -646,8 +662,7 @@ export class ReposHelpers {
    */
   public async deleteRepo(id: string) {
     try {
-      const { dataDir } = this.configuration.get('directories');
-      const repoPath = path.join(dataDir, 'repos', id);
+      const repoPath = this.getRepoPath(id);
 
       if (!(await this.filesystem.pathExists(repoPath))) {
         this.logger.info(`Repo ${id} does not exist`);

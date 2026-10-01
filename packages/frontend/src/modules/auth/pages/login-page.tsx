@@ -24,6 +24,15 @@ import { TotpForm } from '../components/totp-form/totp-form';
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
+/** What the server answers when the pending sign-in no longer exists, whatever a new code would be. */
+const TOTP_SESSION_ENDED_ERRORS: ReadonlySet<string> = new Set([
+  'AUTH_ERROR_TOTP_SESSION_NOT_FOUND',
+  'AUTH_ERROR_TOTP_TOO_MANY_ATTEMPTS',
+  'AUTH_ERROR_USER_NOT_FOUND',
+  'AUTH_ERROR_NOT_ORG_MEMBER',
+  'AUTH_ERROR_TOTP_NOT_ENABLED',
+]);
+
 export async function clientLoader({ request }: { request: Request }) {
   try {
     // A phone talking to a remote Hub must not wait forever on user-context.
@@ -165,6 +174,11 @@ export default () => {
     ...verifyTotpMutation(),
     onError: (e: TranslatableError) => {
       toast.error(t(e.message, e.intlParams));
+
+      // The sign-in is over, so the code form has nothing left to submit to: go back to the password.
+      if (TOTP_SESSION_ENDED_ERRORS.has(e.message)) {
+        setTotpSessionId(null);
+      }
     },
     onSuccess: (data) => {
       if ((data as Record<string, unknown>)?.sessionId) {
@@ -214,6 +228,7 @@ export default () => {
         portalAccountEmail={portalAccountEmail}
         portalReachable={portalReachable}
         openPortalSsoExternally={authPolicy.openHubSsoInSystemBrowser}
+        allowPasswordLogin={!isMobile}
         onSwitchAccount={() => {
           forgetPortalAccountEmail();
           setPortalAccountEmail(null);

@@ -48,6 +48,7 @@ const backendEnv: Record<string, string> = {
   ALLOW_ERROR_MONITORING: 'false',
   PERSIST_TRAEFIK_CONFIG: 'false',
   PRIVATE_VPN_USER_DISABLED: 'true',
+  TAILSCALE_SERVE_USER_DISABLED: 'true',
   DEVICE_ID: process.env.DEVICE_ID || 'test-device-e2e',
   ADVANCED_SETTINGS: 'false',
   DISABLE_PASSWORD_RESET: 'true',

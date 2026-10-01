@@ -36,6 +36,8 @@ export interface PreUpdateVolumeSnapshotResult {
   appUrn: AppUrn;
   snapshotId: string;
   timestamp: string;
+  /** The folder holding everything this snapshot wrote, so it can be removed as one. */
+  snapshotBaseDir?: string;
   snapshotPath?: string;
   /** Snapshot of the app's installed dir (docker-compose.yml, config.json, etc.) as it stood before the update overwrote it. */
   appFilesSnapshotPath?: string;
@@ -1895,27 +1897,35 @@ export class DockerService {
    * @param appUrn App URN to snapshot.
    * @returns Snapshot result including snapshotted paths and volumes.
    */
-  public async createPreUpdateVolumeSnapshot(appUrn: AppUrn): Promise<PreUpdateVolumeSnapshotResult> {
+  public async createPreUpdateVolumeSnapshot(appUrn: AppUrn, options: { includeData?: boolean } = {}): Promise<PreUpdateVolumeSnapshotResult> {
+    const includeData = options.includeData ?? true;
     const projectName = this.getComposeProjectName(appUrn);
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const timestamp = new Date().toISOString();
     const snapshotId = `pre-update-${appName}-${Date.now()}`;
+    let snapshotBaseDir: string | undefined;
 
     try {
       const { appDataDir, appInstalledDir } = this.appFilesManager.getAppPaths(appUrn);
       const { dataDir } = this.config.get('directories');
-      const snapshotBaseDir = path.join(dataDir, 'snapshots', appStoreId, appName, snapshotId);
+      snapshotBaseDir = path.join(dataDir, 'snapshots', appStoreId, appName, snapshotId);
 
       const snapshottedVolumes: PreUpdateVolumeSnapshotResult['volumes'] = [];
 
-      const appDataExists = await this.filesystem.pathExists(appDataDir);
+      // The data folder is by far the largest part. A caller that has just taken a backup already has
+      // it in a restorable form and asks for the installed files only.
+      const appDataExists = includeData && (await this.filesystem.pathExists(appDataDir));
       let snapshotPath: string | undefined;
 
       if (appDataExists) {
         snapshotPath = path.join(snapshotBaseDir, 'app-data');
         this.logger.info(`[pre-update-snapshot] Snapshotting ${appDataDir} to ${snapshotPath}`);
         await this.filesystem.createDirectory(snapshotPath);
-        await this.filesystem.copyDirectory(appDataDir, snapshotPath);
+        // `copyDirectory` reports a full disk or a permission error by returning false. A snapshot
+        // that is only part of the data and says it is whole would later be restored over the real thing.
+        if ((await this.filesystem.copyDirectory(appDataDir, snapshotPath)) === false) {
+          throw new Error(`Could not copy ${appDataDir} into the snapshot`);
+        }
         snapshottedVolumes.push({
           type: 'bind',
           source: appDataDir,
@@ -1933,7 +1943,9 @@ export class DockerService {
         appFilesSnapshotPath = path.join(snapshotBaseDir, 'app-files');
         this.logger.info(`[pre-update-snapshot] Snapshotting ${appInstalledDir} to ${appFilesSnapshotPath}`);
         await this.filesystem.createDirectory(appFilesSnapshotPath);
-        await this.filesystem.copyDirectory(appInstalledDir, appFilesSnapshotPath);
+        if ((await this.filesystem.copyDirectory(appInstalledDir, appFilesSnapshotPath)) === false) {
+          throw new Error(`Could not copy ${appInstalledDir} into the snapshot`);
+        }
       }
 
       const containers = await this.docker
@@ -1984,6 +1996,7 @@ export class DockerService {
         appUrn,
         snapshotId,
         timestamp,
+        snapshotBaseDir,
         snapshotPath,
         appFilesSnapshotPath,
         volumes: snapshottedVolumes,
@@ -1992,6 +2005,12 @@ export class DockerService {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`[pre-update-snapshot] Failed to create volume snapshot for ${appUrn}: ${message}`);
+
+      // Whatever was written is not a snapshot, only disk space.
+      if (snapshotBaseDir) {
+        await this.filesystem.removeDirectory(snapshotBaseDir).catch(() => undefined);
+      }
+
       return {
         appUrn,
         snapshotId,

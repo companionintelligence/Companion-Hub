@@ -14,6 +14,7 @@ const mockDb = {
   update: vi.fn(),
   insert: vi.fn(),
   select: vi.fn(),
+  transaction: vi.fn(),
 };
 
 describe('UserRepository', () => {
@@ -275,6 +276,87 @@ describe('UserRepository', () => {
       await repository.getUserByUsername('  Owner@Example.COM  ');
 
       expect(mockDb.query.user.findFirst).toHaveBeenCalled();
+    });
+  });
+  describe('createFirstOperator', () => {
+    const newOperator = { username: '  Owner@Example.COM ', password: 'hash', hasCompletedOnboarding: false } as never;
+    let steps: string[];
+    let insertedValues: Record<string, unknown> | undefined;
+
+    const withTransaction = (existingOperator: { id: number } | undefined, inserted: Array<{ id: number }> = [{ id: 7 }]) => {
+      steps = [];
+      insertedValues = undefined;
+      const tx = {
+        execute: vi.fn(async () => {
+          steps.push('lock');
+        }),
+        query: {
+          user: {
+            findFirst: vi.fn(async () => {
+              steps.push('look');
+              return existingOperator;
+            }),
+          },
+        },
+        insert: vi.fn(() => ({
+          values: vi.fn((values: Record<string, unknown>) => {
+            steps.push('insert');
+            insertedValues = values;
+            return { returning: vi.fn().mockResolvedValue(inserted) };
+          }),
+        })),
+      };
+      mockDb.transaction.mockImplementation(async (callback: (tx: unknown) => unknown) => callback(tx));
+      return tx;
+    };
+
+    it('takes the advisory lock before it looks for an operator, so a second claim waits for the first', async () => {
+      withTransaction(undefined);
+
+      await repository.createFirstOperator(newOperator);
+
+      expect(steps).toEqual(['lock', 'look', 'insert']);
+    });
+
+    it('creates the operator, with the username folded and the operator flag set, when there is none', async () => {
+      withTransaction(undefined);
+
+      const created = await repository.createFirstOperator(newOperator);
+
+      expect(created).toMatchObject({ id: 7 });
+      expect(insertedValues).toMatchObject({ username: 'owner@example.com', operator: true });
+    });
+
+    it('creates nothing and returns null when an operator already exists', async () => {
+      withTransaction({ id: 1 });
+
+      await expect(repository.createFirstOperator(newOperator)).resolves.toBeNull();
+
+      expect(steps).toEqual(['lock', 'look']);
+    });
+
+    it('forgets any cached user under the new id, as createUser does', async () => {
+      withTransaction(undefined);
+      const invalidate = vi.spyOn(sessionUserCache, 'invalidate');
+
+      await repository.createFirstOperator(newOperator);
+
+      expect(invalidate).toHaveBeenCalledWith(7);
+    });
+
+    it('does not invalidate anything when it created nothing', async () => {
+      withTransaction({ id: 1 });
+      const invalidate = vi.spyOn(sessionUserCache, 'invalidate');
+
+      await repository.createFirstOperator(newOperator);
+
+      expect(invalidate).not.toHaveBeenCalled();
+    });
+
+    it('lets a failure inside the transaction propagate, so it rolls back', async () => {
+      mockDb.transaction.mockRejectedValue(new Error('deadlock detected'));
+
+      await expect(repository.createFirstOperator(newOperator)).rejects.toThrow('deadlock detected');
     });
   });
 });

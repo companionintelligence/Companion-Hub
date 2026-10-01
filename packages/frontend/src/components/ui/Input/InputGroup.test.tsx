@@ -34,4 +34,49 @@ describe('InputGroup', () => {
 
     expect(screen.getByText('https://')).toHaveClass('h-9');
   });
+  describe('accessible names', () => {
+    it('names a field by its prefix when it has no label of its own', () => {
+      render(<InputGroup name="maxLines" groupPrefix="Max lines" type="number" />);
+
+      expect(screen.getByRole('spinbutton', { name: 'Max lines' })).toBeInTheDocument();
+    });
+
+    it('does not name a labelled field by its prefix as well', () => {
+      render(<InputGroup name="localSubdomain" label="Subdomain" groupPrefix="https://" />);
+
+      expect(screen.getByRole('textbox', { name: 'Subdomain' })).toBeInTheDocument();
+    });
+  });
+
+  describe('errors', () => {
+    it('marks the field invalid and ties the message to it', () => {
+      render(<InputGroup name="port" label="Port" error="Port is taken" />);
+
+      const input = screen.getByRole('textbox', { name: 'Port' });
+      const message = screen.getByRole('alert');
+
+      expect(input).toHaveAttribute('aria-invalid', 'true');
+      expect(message).toHaveTextContent('Port is taken');
+      expect(input.getAttribute('aria-describedby')).toContain(message.id);
+    });
+
+    it('keeps a describedby the caller supplied alongside the error', () => {
+      render(<InputGroup name="port" label="Port" error="Port is taken" aria-describedby="port-hint" />);
+
+      expect(screen.getByRole('textbox', { name: 'Port' }).getAttribute('aria-describedby')).toMatch(/^port-hint /);
+    });
+
+    it('is not invalid and has no alert when there is no error', () => {
+      render(<InputGroup name="port" label="Port" />);
+
+      expect(screen.getByRole('textbox', { name: 'Port' })).not.toHaveAttribute('aria-invalid');
+      expect(screen.queryByRole('alert')).toBeNull();
+    });
+
+    it('treats isInvalid as invalid without a message', () => {
+      render(<InputGroup name="port" label="Port" isInvalid />);
+
+      expect(screen.getByRole('textbox', { name: 'Port' })).toHaveAttribute('aria-invalid', 'true');
+    });
+  });
 });

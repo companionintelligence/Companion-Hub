@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compareAppVersions, parseAppVersion } from './app-version';
+import { compareAppVersions, hasUpdateAvailable, parseAppVersion } from './app-version';
 
 describe('parseAppVersion', () => {
   it('parses date-shaped release tags, dot-separated integers', () => {
@@ -53,5 +53,43 @@ describe('compareAppVersions', () => {
     expect(compareAppVersions('latest', '2026.9.14')).toBeNull();
     expect(compareAppVersions('2026.9.14', null)).toBeNull();
     expect(compareAppVersions(undefined, undefined)).toBeNull();
+  });
+});
+
+describe('hasUpdateAvailable', () => {
+  const same = { installedCounter: 1, latestCounter: 1, installedVersion: '2026.9.14', latestVersion: '2026.9.14' };
+
+  it('is false when neither the counter nor the image version moved', () => {
+    expect(hasUpdateAvailable(same)).toBe(false);
+  });
+
+  it('is true when only the schema counter went up', () => {
+    expect(hasUpdateAvailable({ ...same, latestCounter: 2 })).toBe(true);
+  });
+
+  it('is true when only the image version went up — the counter sits at 1 for apps that never set it', () => {
+    expect(hasUpdateAvailable({ ...same, latestVersion: '2026.9.21.1' })).toBe(true);
+  });
+
+  it('is false when the installed image is newer than the catalog', () => {
+    expect(hasUpdateAvailable({ ...same, installedVersion: '2026.9.21.1', latestVersion: '2026.9.14' })).toBe(false);
+  });
+
+  it('is false for a counter bump the operator ignored', () => {
+    expect(hasUpdateAvailable({ ...same, latestCounter: 2, ignoredCounter: 2 })).toBe(false);
+  });
+
+  it('still reports a counter bump newer than the one that was ignored', () => {
+    expect(hasUpdateAvailable({ ...same, latestCounter: 3, ignoredCounter: 2 })).toBe(true);
+  });
+
+  it('does not let an ignored counter silence an image bump', () => {
+    expect(hasUpdateAvailable({ ...same, latestCounter: 2, ignoredCounter: 2, latestVersion: '2026.9.21.1' })).toBe(true);
+  });
+
+  it('reads an unparseable or missing version as no update rather than guessing', () => {
+    expect(hasUpdateAvailable({ ...same, latestVersion: 'latest' })).toBe(false);
+    expect(hasUpdateAvailable({ ...same, installedVersion: undefined })).toBe(false);
+    expect(hasUpdateAvailable({ ...same, latestVersion: null, latestCounter: undefined })).toBe(false);
   });
 });

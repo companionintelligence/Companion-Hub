@@ -30,6 +30,12 @@ interface IProps {
   onSwitchAccount?: () => void;
   /** False when this Hub cannot reach CI Portal. OIDC needs WAN; the password form does not. */
   portalReachable?: boolean;
+  /**
+   * Phone sign-in is the in-app sheet only. Memory does not offer email and
+   * password there, and a Hub that cannot reach Portal must not either: the
+   * sheet talks to Portal from the phone.
+   */
+  allowPasswordLogin?: boolean;
 }
 
 export const LoginForm: React.FC<IProps> = ({
@@ -41,6 +47,7 @@ export const LoginForm: React.FC<IProps> = ({
   openPortalSsoExternally = false,
   onSwitchAccount,
   portalReachable = true,
+  allowPasswordLogin = true,
 }) => {
   const { t } = useTranslation();
   const {
@@ -74,9 +81,10 @@ export const LoginForm: React.FC<IProps> = ({
           {openPortalSsoExternally ? (
             <Button
               type="button"
-              variant="outline"
+              variant={allowPasswordLogin ? 'outline' : undefined}
+              intent={allowPasswordLogin ? undefined : 'primary'}
               className="h-10 w-full text-sm font-semibold"
-              disabled={!portalReachable}
+              disabled={allowPasswordLogin && !portalReachable}
               onClick={() => {
                 // Do not discard the rejection. openAuthSession THROWS on
                 // an opener ACL/plugin failure rather than swallowing it, so a
@@ -97,7 +105,12 @@ export const LoginForm: React.FC<IProps> = ({
                 : t('AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON')}
             </Button>
           ) : (
-            <Button asChild={portalReachable} variant="outline" className="h-10 w-full text-sm font-semibold" disabled={!portalReachable}>
+            <Button
+              asChild={portalReachable || !allowPasswordLogin}
+              variant="outline"
+              className="h-10 w-full text-sm font-semibold"
+              disabled={allowPasswordLogin && !portalReachable}
+            >
               {portalReachable ? (
                 <a href={portalSsoHref}>
                   {portalAccountEmail
@@ -117,11 +130,13 @@ export const LoginForm: React.FC<IProps> = ({
               Phones present an in-app browser sheet. Desktop opens the system browser. */}
           <div className="text-xs text-muted-foreground text-center mt-2">
             {t(
-              portalReachable
-                ? openPortalSsoExternally
-                  ? 'AUTH_LOGIN_COMPANION_ACCOUNT_HINT'
-                  : 'AUTH_LOGIN_COMPANION_ACCOUNT_HINT_IN_APP'
-                : 'AUTH_LOGIN_COMPANION_ACCOUNT_NEEDS_INTERNET',
+              allowPasswordLogin
+                ? portalReachable
+                  ? openPortalSsoExternally
+                    ? 'AUTH_LOGIN_COMPANION_ACCOUNT_HINT'
+                    : 'AUTH_LOGIN_COMPANION_ACCOUNT_HINT_IN_APP'
+                  : 'AUTH_LOGIN_COMPANION_ACCOUNT_NEEDS_INTERNET'
+                : 'AUTH_LOGIN_COMPANION_ACCOUNT_HINT_IN_APP',
             )}
           </div>
           {portalAccountEmail && onSwitchAccount ? (
@@ -134,41 +149,45 @@ export const LoginForm: React.FC<IProps> = ({
               {t('AUTH_LOGIN_NOT_THIS_ACCOUNT', { email: portalAccountEmail })}
             </button>
           ) : null}
-          <div className="my-4 h-px bg-border" />
+          {allowPasswordLogin ? <div className="my-4 h-px bg-border" /> : null}
         </div>
       ) : null}
 
-      <p className="text-sm text-muted-foreground text-center mb-4">{t('AUTH_LOGIN_COMPANION_ACCOUNT_EMAIL_HINT')}</p>
+      {allowPasswordLogin ? (
+        <>
+          <p className="text-sm text-muted-foreground text-center mb-4">{t('AUTH_LOGIN_COMPANION_ACCOUNT_EMAIL_HINT')}</p>
 
-      <form onSubmit={handleSubmit(onSubmit)}>
-        <Input
-          {...register('email')}
-          name="email"
-          label={t('AUTH_FORM_EMAIL')}
-          error={errors.email?.message}
-          disabled={loading}
-          type="email"
-          className="mb-3"
-          placeholder={t('AUTH_FORM_EMAIL_PLACEHOLDER')}
-        />
-        <PasswordInput
-          {...register('password')}
-          name="password"
-          label={t('COMMON_PASSWORD')}
-          error={errors.password?.message}
-          disabled={loading}
-          className="mb-3 password-input"
-          placeholder={t('AUTH_FORM_PASSWORD_PLACEHOLDER')}
-        />
-        <div className="mt-4">
-          <Button disabled={isDisabled} loading={loading} type="submit" intent="primary" className="w-full">
-            {t('COMMON_LOGIN')}
-          </Button>
-        </div>
-        <div className="text-sm text-muted-foreground text-center mt-3">
-          <Link to="/reset-password">{t('AUTH_FORM_FORGOT')}</Link>
-        </div>
-      </form>
+          <form onSubmit={handleSubmit(onSubmit)}>
+            <Input
+              {...register('email')}
+              name="email"
+              label={t('AUTH_FORM_EMAIL')}
+              error={errors.email?.message}
+              disabled={loading}
+              type="email"
+              className="mb-3"
+              placeholder={t('AUTH_FORM_EMAIL_PLACEHOLDER')}
+            />
+            <PasswordInput
+              {...register('password')}
+              name="password"
+              label={t('COMMON_PASSWORD')}
+              error={errors.password?.message}
+              disabled={loading}
+              className="mb-3 password-input"
+              placeholder={t('AUTH_FORM_PASSWORD_PLACEHOLDER')}
+            />
+            <div className="mt-4">
+              <Button disabled={isDisabled} loading={loading} type="submit" intent="primary" className="w-full">
+                {t('COMMON_LOGIN')}
+              </Button>
+            </div>
+            <div className="text-sm text-muted-foreground text-center mt-3">
+              <Link to="/reset-password">{t('AUTH_FORM_FORGOT')}</Link>
+            </div>
+          </form>
+        </>
+      ) : null}
     </>
   );
 };

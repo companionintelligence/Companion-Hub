@@ -1,4 +1,5 @@
 import { client } from '@/api-client/client.gen';
+import { formatHubDateTime } from '@/components/ui/dense/dense';
 import { useQuery } from '@tanstack/react-query';
 import { Users } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -62,7 +63,7 @@ export const OperatorsList = () => {
                           : 'SETTINGS_SECURITY_OPERATORS_STATUS_ACTIVE',
                       )}
                     </td>
-                    <td className="py-2 pr-3">{operator.membershipCheckedAt ? new Date(operator.membershipCheckedAt).toLocaleString() : '—'}</td>
+                    <td className="py-2 pr-3">{operator.membershipCheckedAt ? formatHubDateTime(operator.membershipCheckedAt) : '—'}</td>
                     <td className="py-2">
                       {t(operator.localPasswordSet ? 'SETTINGS_SECURITY_OPERATORS_OFFLINE_YES' : 'SETTINGS_SECURITY_OPERATORS_OFFLINE_NO')}
                     </td>

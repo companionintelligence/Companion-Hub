@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import { ExposureSyncService } from '../exposure-sync.service';
 import { TailscaleServeOwnership } from '../tailscale-serve-ownership';
-import { TailscaleService } from '../../tailscale/tailscale.service';
+import { servePermissionCommand, TailscaleService } from '../../tailscale/tailscale.service';
 import {
   CORE_6_SERVE_STATUS,
   CORE_17_SERVE_STATUS_AFTER_MANUAL_REPAIR,
@@ -116,13 +116,18 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
   const HUB_PUBLISH = ['serve', '--bg', '--yes', '--https=443', 'http://localhost:5002'];
 
   let logger: { info: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn>; debug: ReturnType<typeof vi.fn> };
-  const savedEnv = { API_PORT: process.env.API_PORT, PRIVATE_VPN_USER_DISABLED: process.env.PRIVATE_VPN_USER_DISABLED };
+  const savedEnv = {
+    API_PORT: process.env.API_PORT,
+    PRIVATE_VPN_USER_DISABLED: process.env.PRIVATE_VPN_USER_DISABLED,
+    TAILSCALE_SERVE_USER_DISABLED: process.env.TAILSCALE_SERVE_USER_DISABLED,
+  };
 
   beforeEach(() => {
     // The fleet appliances run the Hub in host mode on API_PORT=5002, which is where the captured
     // `Proxy: http://localhost:5002` comes from.
     process.env.API_PORT = '5002';
     delete process.env.PRIVATE_VPN_USER_DISABLED;
+    delete process.env.TAILSCALE_SERVE_USER_DISABLED;
     logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
   });
 
@@ -133,9 +138,14 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
     }
   });
 
+  /** The `TailscaleService` and SSE stand-in of the Hub process the last `buildSync` made. */
+  let tailscale: TailscaleService;
+  let sse: { emit: ReturnType<typeof vi.fn> };
+
   /** A fresh Hub process over `tailscaled`; `apps` is read on every pass, so tests can stop an app between passes. */
   function buildSync(tailscaled: FakeHostTailscaled, apps: PrivateVpnApp[] = []): ExposureSyncService {
-    const tailscale = new TailscaleService();
+    tailscale = new TailscaleService();
+    sse = { emit: vi.fn() };
     vi.spyOn(tailscale, 'isInstalled').mockResolvedValue(true);
     vi.spyOn(tailscale, 'isSocketAvailable').mockResolvedValue(true);
     vi.spyOn(tailscale as unknown as { execHost: (args: string[]) => Promise<{ stdout: string; stderr: string }> }, 'execHost').mockImplementation(
@@ -155,7 +165,7 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
       logger as never,
       appRepository as never,
       {} as never,
-      { emit: vi.fn() } as never,
+      sse as never,
       {} as never,
       {} as never,
       dockerReadFacade as never,
@@ -194,8 +204,8 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
     expect(tailscaled.writes).toEqual([HUB_PUBLISH]);
   });
 
-  it('leaves Tailscale Serve alone when PRIVATE_VPN_USER_DISABLED=true and the Hub is already published (beta-max, core-6, beta-ms-a2)', async () => {
-    process.env.PRIVATE_VPN_USER_DISABLED = 'true';
+  it('leaves Tailscale Serve alone when TAILSCALE_SERVE_USER_DISABLED=true and the Hub is already published', async () => {
+    process.env.TAILSCALE_SERVE_USER_DISABLED = 'true';
     const tailscaled = new FakeHostTailscaled('core-6.tailxyz.ts.net', CORE_6_SERVE_STATUS);
     const sync = buildSync(tailscaled);
 
@@ -205,14 +215,14 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
     expect(tailscaled.writes).toEqual([]);
     expect(tailscaled.serveConfig()).toEqual(JSON.parse(CORE_6_SERVE_STATUS));
     expect(logger.info).toHaveBeenCalledTimes(1);
-    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('PRIVATE_VPN_USER_DISABLED=true'));
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('TAILSCALE_SERVE_USER_DISABLED=true'));
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
-  it('does not republish a renamed node that opted out, but says once why its peers fail TLS (core-17, core-14)', async () => {
-    process.env.PRIVATE_VPN_USER_DISABLED = 'true';
-    // Without the opt-out this state gets a publish, as the rename test shows. core-17 and core-14
-    // were both renamed and both opted out, so the Hub cannot repair either; it can only say so.
+  it('does not republish a renamed node that opted out, but says once why its peers fail TLS', async () => {
+    process.env.TAILSCALE_SERVE_USER_DISABLED = 'true';
+    // Without the opt-out this state gets a publish, as the rename test shows. An opted-out Hub
+    // cannot repair it; it can only say so.
     const tailscaled = new FakeHostTailscaled('core-17.tailxyz.ts.net', CORE_17_SERVE_STATUS_BEFORE_REPAIR);
     const sync = buildSync(tailscaled);
 
@@ -225,6 +235,7 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
     expect(logger.warn).toHaveBeenCalledTimes(1);
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('only bench-1.tailxyz.ts.net'));
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('sudo tailscale serve --bg --yes --https=443 http://localhost:5002'));
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('remove TAILSCALE_SERVE_USER_DISABLED'));
 
     // The operator publishes by hand, as on core-17; a later loss of the entry must warn again.
     tailscaled.run(HUB_PUBLISH);
@@ -233,6 +244,42 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
     tailscaled.reset();
     await sync.syncTailscaleExposurePublic();
     expect(logger.warn).toHaveBeenCalledTimes(2);
+  });
+
+  it('publishes the Hub and its Private VPN apps when PRIVATE_VPN_USER_DISABLED=true, which only keeps the sidecar off (CI-Hub#1757)', async () => {
+    // Desktop installs wrote this on every start without a Tailscale key, and fleet nodes set it to
+    // stop the sidecar's crash loop. Neither means "leave Tailscale Serve alone".
+    process.env.PRIVATE_VPN_USER_DISABLED = 'true';
+    const tailscaled = new FakeHostTailscaled('laptop.tailxyz.ts.net', '{}');
+    const sync = buildSync(tailscaled, [privateVpnApp('anything-llm', 3001, 'http://172.18.0.10:3001')]);
+
+    await sync.syncTailscaleExposurePublic();
+
+    expect(tailscaled.writes).toEqual([['serve', '--bg', '--yes', '--https=3001', 'http://172.18.0.10:3001'], HUB_PUBLISH]);
+    expect(tailscaled.serveConfig().Web?.['laptop.tailxyz.ts.net:3001']).toEqual({ Handlers: { '/': { Proxy: 'http://172.18.0.10:3001' } } });
+    expect(logger.info).not.toHaveBeenCalledWith(expect.stringContaining('turned off'));
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('publishes and removes nothing, apps included, when TAILSCALE_SERVE_USER_DISABLED=true', async () => {
+    const apps = [privateVpnApp('anything-llm', 3001, 'http://172.18.0.10:3001')];
+    const tailscaled = new FakeHostTailscaled('laptop.tailxyz.ts.net', '{}');
+    const sync = buildSync(tailscaled, apps);
+    await sync.syncTailscaleExposurePublic();
+    const published = tailscaled.serveConfig();
+    const writesBefore = tailscaled.writes.length;
+
+    // Once the operator opts out, a stopped app keeps the listener the Hub gave it, and a new
+    // Private VPN app gets none.
+    process.env.TAILSCALE_SERVE_USER_DISABLED = 'true';
+    apps[0].status = 'stopped';
+    apps.push(privateVpnApp('open-webui', 3002, 'http://172.18.0.11:8080'));
+    await sync.syncTailscaleExposurePublic();
+    await sync.syncTailscaleExposurePublic();
+
+    expect(tailscaled.writes.slice(writesBefore)).toEqual([]);
+    expect(tailscaled.serveConfig()).toEqual(published);
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('TAILSCALE_SERVE_USER_DISABLED=true'));
   });
 
   it('logs the operator refusal once with the command that fixes it, instead of the CLI error every five minutes', async () => {
@@ -275,6 +322,77 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
     await sync.syncTailscaleExposurePublic();
 
     expect(logger.warn).toHaveBeenCalledTimes(2);
+  });
+
+  describe("tells the Hub's pages when tailscaled refuses its changes (CI-Hub#1766)", () => {
+    const servePermissionEvents = () => sse.emit.mock.calls.filter(([, data]) => data.event === 'tailscale_serve_permission').map(([, data]) => data);
+
+    it('records the refusal with the command that ends it and when it began, and tells open pages once', async () => {
+      const tailscaled = new FakeHostTailscaled('beta-nas.tailxyz.ts.net', '{}');
+      tailscaled.deniesServeWrites = true;
+      const sync = buildSync(tailscaled, [privateVpnApp('anything-llm', 3001, 'http://172.18.0.10:3001')]);
+
+      await sync.syncTailscaleExposurePublic();
+      const first = tailscale.getServePermission();
+      await sync.syncTailscaleExposurePublic();
+      await sync.syncTailscaleExposurePublic();
+
+      expect(first).toEqual({ denied: true, remedy: servePermissionCommand(), deniedSince: expect.any(String) });
+      expect(Number.isNaN(Date.parse(first.deniedSince ?? ''))).toBe(false);
+      // Later refusals are the same refusal: it still began on the first pass.
+      expect(tailscale.getServePermission()).toEqual(first);
+      expect(servePermissionEvents()).toEqual([{ event: 'tailscale_serve_permission', denied: true }]);
+    });
+
+    it('clears it once a publish goes through, and tells open pages', async () => {
+      const tailscaled = new FakeHostTailscaled('beta-nas.tailxyz.ts.net', '{}');
+      tailscaled.deniesServeWrites = true;
+      const sync = buildSync(tailscaled);
+      await sync.syncTailscaleExposurePublic();
+
+      // Someone runs the command on the host.
+      tailscaled.deniesServeWrites = false;
+      await sync.syncTailscaleExposurePublic();
+      await sync.syncTailscaleExposurePublic();
+
+      expect(tailscale.getServePermission()).toEqual({ denied: false, remedy: null, deniedSince: null });
+      expect(servePermissionEvents()).toEqual([
+        { event: 'tailscale_serve_permission', denied: true },
+        { event: 'tailscale_serve_permission', denied: false },
+      ]);
+    });
+
+    it('clears it when the only write a pass makes is a removal', async () => {
+      // The Hub is published already, so removing the stopped app's listener is the pass's only write.
+      const config = JSON.parse(CORE_6_SERVE_STATUS) as ServeConfig;
+      config.Web = { ...config.Web, 'core-6.tailxyz.ts.net:3001': { Handlers: { '/': { Proxy: 'http://172.18.0.10:3001' } } } };
+      const tailscaled = new FakeHostTailscaled('core-6.tailxyz.ts.net', JSON.stringify(config));
+      tailscaled.deniesServeWrites = true;
+      const ownership = await new TailscaleServeOwnership().load();
+      ownership.record(3001, 'http://172.18.0.10:3001');
+      await ownership.save();
+      const sync = buildSync(tailscaled);
+      await sync.syncTailscaleExposurePublic();
+      expect(tailscale.getServePermission().denied).toBe(true);
+
+      tailscaled.deniesServeWrites = false;
+      await sync.syncTailscaleExposurePublic();
+
+      expect(tailscaled.writes.at(-1)).toEqual(['serve', '--https=3001', 'off']);
+      expect(tailscale.getServePermission().denied).toBe(false);
+      expect(servePermissionEvents().map(({ denied }) => denied)).toEqual([true, false]);
+    });
+
+    it('records nothing while tailscaled accepts every write', async () => {
+      const tailscaled = new FakeHostTailscaled('beta-nas.tailxyz.ts.net', '{}');
+      const sync = buildSync(tailscaled, [privateVpnApp('anything-llm', 3001, 'http://172.18.0.10:3001')]);
+
+      await sync.syncTailscaleExposurePublic();
+
+      expect(tailscaled.writes).toHaveLength(2);
+      expect(tailscale.getServePermission().denied).toBe(false);
+      expect(servePermissionEvents()).toEqual([]);
+    });
   });
 
   it('reports a refused leftover-listener removal once when the Hub itself is already published', async () => {

@@ -144,6 +144,34 @@ describe('ApiKeyService', () => {
       await expect(service.resolve('raw', 'mcp')).resolves.toBeNull();
     });
 
+    // `expires_at` is a `timestamp` without a zone, written as UTC and read back as "2026-10-01 10:00:00".
+    describe.each(['Asia/Karachi', 'America/New_York'])('an expiry as Postgres returns it, in a process running in %s', (zone) => {
+      const originalTz = process.env.TZ;
+      const asPostgres = (offsetMs: number) => new Date(Date.now() + offsetMs).toISOString().replace('T', ' ').replace('Z', '');
+
+      beforeEach(() => {
+        process.env.TZ = zone;
+      });
+
+      afterEach(() => {
+        if (originalTz === undefined) {
+          delete process.env.TZ;
+        } else {
+          process.env.TZ = originalTz;
+        }
+      });
+
+      it('still accepts a key that expires in an hour', async () => {
+        repo.findByHash.mockResolvedValue(storedRow({ expiresAt: asPostgres(60 * 60 * 1000) }));
+        await expect(service.resolve('raw', 'mcp')).resolves.not.toBeNull();
+      });
+
+      it('already refuses a key that expired an hour ago', async () => {
+        repo.findByHash.mockResolvedValue(storedRow({ expiresAt: asPostgres(-60 * 60 * 1000) }));
+        await expect(service.resolve('raw', 'mcp')).resolves.toBeNull();
+      });
+    });
+
     it('reads an unrecognised stored capability as read-only, not as the default', async () => {
       // The column is a plain varchar, so a row could hold anything a future or rolled-back writer
       // put there. A value we cannot read is an authority level we do not understand, and the safe

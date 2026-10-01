@@ -68,4 +68,36 @@ describe('Switch', () => {
     // assert
     expect(checkbox).toBeChecked();
   });
+  describe('accessible name', () => {
+    it('is the visible label, not the name attribute', () => {
+      render(<Switch name="follow-logs" label="Follow logs" />);
+
+      expect(screen.getByRole('switch', { name: 'Follow logs' })).toBeInTheDocument();
+      expect(screen.queryByRole('switch', { name: 'follow-logs' })).toBeNull();
+    });
+
+    it('falls back to the name for a switch with no label', () => {
+      render(<Switch name="follow-logs" />);
+
+      expect(screen.getByRole('switch', { name: 'follow-logs' })).toBeInTheDocument();
+    });
+
+    it('is the label when the switch has no name either', () => {
+      render(<Switch label="Anonymous switch" />);
+
+      expect(screen.getByRole('switch', { name: 'Anonymous switch' })).toBeInTheDocument();
+    });
+
+    it('gives two switches without names two distinct labels', () => {
+      render(
+        <>
+          <Switch label="First" />
+          <Switch label="Second" />
+        </>,
+      );
+
+      expect(screen.getByRole('switch', { name: 'First' })).toBeInTheDocument();
+      expect(screen.getByRole('switch', { name: 'Second' })).toBeInTheDocument();
+    });
+  });
 });

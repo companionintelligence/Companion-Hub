@@ -1198,6 +1198,51 @@ describe('DockerService', () => {
       expect(filesystemService.copyDirectory).toHaveBeenCalledWith('/data/apps/test-store/test-app', expect.stringContaining('snapshots'));
     });
 
+    it('skips the data folder when asked, since a backup already holds it', async () => {
+      filesystemService.pathExists.mockResolvedValue(true);
+      filesystemService.createDirectory.mockResolvedValue(true);
+      filesystemService.copyDirectory.mockResolvedValue(true);
+
+      const result = await service.createPreUpdateVolumeSnapshot(testUrn, { includeData: false });
+
+      expect(result.success).toBe(true);
+      expect(result.snapshotPath).toBeUndefined();
+      expect(result.appFilesSnapshotPath).toContain('snapshots');
+      expect(filesystemService.copyDirectory).toHaveBeenCalledTimes(1);
+      expect(filesystemService.copyDirectory).toHaveBeenCalledWith('/data/apps/test-store/test-app', expect.stringContaining('snapshots'));
+    });
+
+    it('names the folder holding everything it wrote, so the whole snapshot can be removed at once', async () => {
+      filesystemService.pathExists.mockResolvedValue(true);
+      filesystemService.createDirectory.mockResolvedValue(true);
+      filesystemService.copyDirectory.mockResolvedValue(true);
+
+      const result = await service.createPreUpdateVolumeSnapshot(testUrn);
+
+      expect(result.snapshotBaseDir).toBeDefined();
+      expect(result.snapshotPath?.startsWith(result.snapshotBaseDir as string)).toBe(true);
+      expect(result.appFilesSnapshotPath?.startsWith(result.snapshotBaseDir as string)).toBe(true);
+    });
+
+    // `copyDirectory` reports ENOSPC and EACCES by returning false. Reading that as success handed a
+    // half-copied folder to a rollback, which then restored it over the app.
+    it.each([
+      ['the data folder', '/data/app-data/test-store/test-app'],
+      ['the installed files', '/data/apps/test-store/test-app'],
+    ])('is not a success when copying %s fails, and removes what it wrote', async (_name, failingSource) => {
+      filesystemService.pathExists.mockResolvedValue(true);
+      filesystemService.createDirectory.mockResolvedValue(true);
+      filesystemService.removeDirectory.mockResolvedValue(true);
+      filesystemService.copyDirectory.mockImplementation(async (source: string) => source !== failingSource);
+
+      const result = await service.createPreUpdateVolumeSnapshot(testUrn);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Could not copy');
+      expect(result.appFilesSnapshotPath).toBeUndefined();
+      expect(filesystemService.removeDirectory).toHaveBeenCalledWith(expect.stringContaining('snapshots'));
+    });
+
     it('handles container listing errors without throwing', async () => {
       filesystemService.pathExists.mockResolvedValue(false);
       dockerode.listContainers.mockRejectedValue(new Error('Docker daemon unavailable'));

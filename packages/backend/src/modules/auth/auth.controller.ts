@@ -23,10 +23,12 @@ import {
   Req,
   Res,
   ServiceUnavailableException,
+  UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { AuthGuard } from './auth.guard';
+import { AuthRateLimiter, authClientKey, type AuthRateScope } from './auth-rate-limiter';
 import { AuthService, type PairedOrgMembership } from './auth.service';
 import { buildSignedForwardAuthHeaders } from './utils/forward-auth-signing';
 import { normalizeForwardedHost, rawForwardedHost } from './utils/forward-auth-host';
@@ -178,7 +180,22 @@ export class AuthController {
     private readonly bearerOrgMembership: BearerOrgMembershipCache,
     private readonly sessionUserCache: SessionUserCache,
     private readonly forwardAuthIdentities: ForwardAuthIdentityResolver,
+    private readonly rateLimiter: AuthRateLimiter,
   ) {}
+
+  /**
+   * Run an unauthenticated auth step under {@link AuthRateLimiter}: refuse if this client has
+   * already used up `scope`, otherwise take a slot before the step starts (so parallel requests are
+   * counted as they arrive, not as they finish) and give it back if the step succeeds. A step that
+   * throws keeps its slot.
+   */
+  private async rateLimited<T>(scope: AuthRateScope, req: Request, step: () => Promise<T>): Promise<T> {
+    const refund = this.rateLimiter.admit(scope, authClientKey(req));
+    const result = await step();
+    refund();
+
+    return result;
+  }
 
   private sessionCookieOptions(req: Request) {
     // Normalize ports and repeated headers before `getCookieDomain` applies its FQDN check.
@@ -304,7 +321,7 @@ export class AuthController {
   @Post('/login')
   @ApiResponse({ type: LoginDto })
   async login(@Body() body: LoginBody, @Res({ passthrough: true }) res: Response, @Req() req: Request) {
-    const { sessionId, totpSessionId } = await this.authService.login(body);
+    const { sessionId, totpSessionId } = await this.rateLimited('login', req, () => this.authService.login(body));
 
     if (totpSessionId) {
       return { success: true, totpSessionId };
@@ -320,7 +337,7 @@ export class AuthController {
   @Post('/verify-totp')
   @ApiResponse({ type: LoginDto })
   async verifyTotp(@Body() body: VerifyTotpBody, @Res({ passthrough: true }) res: Response, @Req() req: Request) {
-    const { sessionId } = await this.authService.verifyTotp(body);
+    const { sessionId } = await this.rateLimited('totp', req, () => this.authService.verifyTotp(body));
 
     await this.replacePresentedSessions(req, sessionId);
     await this.setSessionCookie(res, sessionId, req);
@@ -331,6 +348,7 @@ export class AuthController {
   @Post('/register')
   @ApiResponse({ type: RegisterDto })
   async register(@Body() body: RegisterBody, @Res({ passthrough: true }) res: Response, @Req() req: Request) {
+    this.rateLimiter.admit('register', authClientKey(req));
     const result = await this.authService.register(body);
 
     if (result.requiresEmailVerification) {
@@ -953,6 +971,38 @@ export class AuthController {
   }
 
   /**
+   * Phone cloud-connect already signed this person in at Portal. The Hub they
+   * then pick is the same account, so the second in-app sheet is not a new
+   * login: it is this id_token becoming a Hub session.
+   *
+   * The token is the one `ci-hub` PKCE minted (`aud` includes `ci-hub`). An
+   * unverified email is refused the same way the browser callback refuses it.
+   */
+  @Post('/portal/mobile-session')
+  @ApiResponse({ type: PortalDesktopExchangeDto })
+  async establishPortalMobileSession(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const bearer = extractBearerToken(typeof req.headers.authorization === 'string' ? req.headers.authorization : undefined);
+    const portalBase = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '');
+    const claims = bearer && portalBase ? await verifyPortalIdToken(bearer, { publicCiCloudUrl: portalBase }) : null;
+    if (!claims?.email || claims.emailVerified !== true) {
+      throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
+    }
+
+    const operator = await this.authService.admitHubPerson({
+      issuer: claims.issuer || portalBase,
+      subject: claims.sub,
+      email: claims.email,
+      emailVerified: true,
+    });
+    const sessionId = await this.sessionManager.createSession(operator.id);
+    await this.setSessionCookie(res, sessionId, req);
+    this.logger.info('Portal mobile session planted from the cloud-connect id_token', {
+      portalEmailHash: hashEmailForLog(claims.email),
+    });
+    return PortalDesktopExchangeDto.parse({ sessionId, redirectPath: '/home' }, { reportOnly: true });
+  }
+
+  /**
    * Has the desktop app taken this login yet?
    *
    * Read-only, and the one thing it must never do is consume the token — the
@@ -1059,22 +1109,43 @@ export class AuthController {
     await this.authService.disableTotp({ userId, ...body });
   }
 
+  /**
+   * The request-file password reset: whoever can write `state/password-change-request` opens a
+   * 15-minute window in which this route sets the first operator's password.
+   *
+   * ⚠ THE WINDOW MUST NOT BE OPEN TO THE NETWORK. These routes used to carry no guard at all, so
+   * anyone who could reach the Hub during the window could choose the new password before the
+   * person who asked for the reset. They now admit only the CLI and the host-local key, the two
+   * callers that are on the box.
+   */
+  private requireOnTheBox(req: Request) {
+    if (req.hubPrincipal !== 'cli' && req.hubPrincipal !== 'host-local') {
+      throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN', {}, HttpStatus.FORBIDDEN);
+    }
+  }
+
   @Post('/reset-password')
+  @UseGuards(AuthGuard)
   @ApiResponse({ type: ResetPasswordDto })
-  async resetPassword(@Body() body: ResetPasswordBody) {
+  async resetPassword(@Body() body: ResetPasswordBody, @Req() req: Request) {
+    this.requireOnTheBox(req);
     const { email } = await this.authService.changeOperatorPassword(body);
 
     return ResetPasswordDto.parse({ success: true, email }, { reportOnly: true });
   }
 
   @Delete('/reset-password')
-  async cancelResetPassword() {
+  @UseGuards(AuthGuard)
+  async cancelResetPassword(@Req() req: Request) {
+    this.requireOnTheBox(req);
     await this.authService.cancelPasswordChangeRequest();
   }
 
   @Get('/reset-password')
+  @UseGuards(AuthGuard)
   @ApiResponse({ type: CheckResetPasswordRequestDto })
-  async checkResetPasswordRequest() {
+  async checkResetPasswordRequest(@Req() req: Request) {
+    this.requireOnTheBox(req);
     const isPending = await this.authService.checkPasswordChangeRequest();
 
     return CheckResetPasswordRequestDto.parse({ isRequestPending: isPending }, { reportOnly: true });
@@ -1083,6 +1154,8 @@ export class AuthController {
   @Post('/password-reset/request')
   @ApiResponse({ type: PasswordResetRequestDto })
   async requestPasswordReset(@Body() body: PasswordResetRequestBody, @Req() req: Request) {
+    this.rateLimiter.admit('passwordResetRequest', authClientKey(req));
+
     const { domain, localDomain } = this.config.getConfig();
     const hubOrigin = resolveTrustedReturnOrigin(req, { domain, localDomain });
 
@@ -1112,14 +1185,16 @@ export class AuthController {
   @ApiResponse({ type: PasswordResetVerifyResponseDto })
   async verifyPasswordResetToken(@Req() req: Request) {
     const token = String(req.params.token ?? '');
-    const result = await this.authService.verifyPasswordResetToken(token);
+    const result = await this.rateLimited('passwordResetVerify', req, () => this.authService.verifyPasswordResetToken(token));
     return PasswordResetVerifyResponseDto.parse(result, { reportOnly: true });
   }
 
   @Post('/password-reset/complete')
   @ApiResponse({ type: PasswordResetCompleteDto })
   async completePasswordReset(@Body() body: PasswordResetCompleteBody, @Req() req: Request) {
-    await this.authService.completePasswordReset({ token: body.token, newPassword: body.newPassword, ipAddress: req.ip });
+    await this.rateLimited('passwordResetVerify', req, () =>
+      this.authService.completePasswordReset({ token: body.token, newPassword: body.newPassword, ipAddress: req.ip }),
+    );
 
     return PasswordResetCompleteDto.parse(
       { success: true, message: 'Password updated. You can now log in with your new password.' },

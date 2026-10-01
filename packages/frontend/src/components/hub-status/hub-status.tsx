@@ -24,6 +24,7 @@ import {
   readHubSteadySession,
 } from '@/lib/desktop-stack-session';
 import { openLogsFolder } from '@/lib/helpers/open-folder';
+import { isDesktopUpdateRunning } from '@/lib/update-service';
 import { DOCKER_MAC_ARCH_HINT, DOCKER_REQUIRED_HINT, STARTUP_SERVICE_HINTS } from './hub-status-tooltips';
 import { Container, Download, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
 import i18next from 'i18next';
@@ -1292,6 +1293,13 @@ export function HubStatus({ children }: HubStatusProps) {
           }
 
           let result = (await invoke('get_hub_status_command')) as HubStatusResponse;
+
+          // The desktop app's updater stops the Hub before it installs, then restarts the app, or this
+          // page starts the Hub again when the install fails. Meanwhile keep the page that shows the
+          // update's progress, rather than the "isn't running" screen.
+          if (isDesktopUpdateRunning() && (result === 'Stopped' || isErrorStatus(result))) {
+            return;
+          }
 
           // This page's own start or restart is still running. A restart takes the stack down
           // first, so the shell reports Stopped for a while: keep the starting screen.
