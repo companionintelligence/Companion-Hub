@@ -69,7 +69,7 @@ vi.mock('sonner', () => ({
 // at import time, which jsdom doesn't provide. The failed import is cached, so once the first render
 // hits it every later render in this file throws and comes up empty.
 vi.mock('lottie-react', () => ({
-  default: () => null,
+  Lottie: () => null,
 }));
 
 // Onboarding pins inference to Ollama, so catalog fixtures use the Ollama backend.
