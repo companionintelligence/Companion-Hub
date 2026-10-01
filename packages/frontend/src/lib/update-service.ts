@@ -58,6 +58,46 @@ export async function getInstalledDesktopVersion(): Promise<string | null> {
   return getCurrentVersion();
 }
 
+/** Whether an update installed another desktop app version while this one was open. */
+export interface DesktopRestartState {
+  runningVersion: string;
+  /** The version on disk, when the new program said which. */
+  installedVersion: string | null;
+  restartRequired: boolean;
+}
+
+/** `null` outside the desktop app, and from desktop apps too old to tell. */
+export async function getDesktopRestartState(): Promise<DesktopRestartState | null> {
+  if (!isTauri()) return null;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const state = await invoke<DesktopRestartState>('get_desktop_restart_state_command');
+    return {
+      runningVersion: state.runningVersion,
+      installedVersion: state.installedVersion ?? null,
+      restartRequired: Boolean(state.restartRequired),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Restarts the desktop app onto the version an update installed. The app exits while this is in
+ * flight, so a resolved call only means the app took the request; `false` means it refused or
+ * could not restart.
+ */
+export async function restartDesktopApp(): Promise<boolean> {
+  if (!isTauri()) return false;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('restart_desktop_app_command');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function detectBrowserPlatform(): DesktopPlatform {
   const ua = typeof navigator === 'undefined' ? '' : navigator.userAgent.toLowerCase();
   if (ua.includes('win')) return 'windows';
