@@ -128,10 +128,20 @@ describe('requireDockerForHubStack', () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
-  it.each(['29.6.0', '27.5.1'])('stops when Compose is too old to read the stack file (Engine %s)', (engine) => {
-    expect(() => requireDockerForHubStack({}, { compose: '2.32.4', engine })).toThrow('process.exit');
+  it('stops when Compose is too old to read the stack file', () => {
+    expect(() => requireDockerForHubStack({}, { compose: '2.32.4', engine: '29.6.0' })).toThrow('process.exit');
     expect(exit).toHaveBeenCalledWith(1);
     expect(boxes).toEqual([{ title: 'Docker update needed', lines: COMPOSE_2_32_REFUSED, tone: 'red' }]);
+    expect(log.mock.calls.flat()).toEqual(['\u2192 Docker Compose 2.32.4, Docker Engine 29.6.0']);
+  });
+
+  it('warns about an old engine too before it stops on an old Compose', () => {
+    expect(() => requireDockerForHubStack({}, { compose: '2.32.4', engine: '27.5.1' })).toThrow('process.exit');
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(boxes).toEqual([
+      { title: 'Docker Engine update recommended', lines: ENGINE_27_WARNING, tone: 'yellow' },
+      { title: 'Docker update needed', lines: COMPOSE_2_32_REFUSED, tone: 'red' },
+    ]);
   });
 
   // Measured on Engine 27.5.1 (API 1.47) with Compose 5.1.4: `up` succeeds and the setting is

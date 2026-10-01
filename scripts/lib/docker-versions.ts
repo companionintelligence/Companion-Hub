@@ -92,13 +92,10 @@ export function readDockerVersions(env: Record<string, string | undefined> = {})
  * Stop before the stack starts when Compose is too old for the stack file, with a message that says
  * so. An engine too old for `gw_priority` gets a warning and the start goes on, as does a version
  * that cannot be read, so compose says whatever is actually wrong, as it did before this check.
+ * Everything is printed in the order the desktop app logs it: the versions, what could not be
+ * read, the engine warning, and last the refusal.
  */
 export function requireDockerForHubStack(env: Record<string, string | undefined> = {}, versions: DockerVersions = readDockerVersions(env)): void {
-  const composeTooOld = dockerComposeTooOldLines(versions);
-  if (composeTooOld) {
-    printMessageBox('Docker update needed', composeTooOld, 'red');
-    process.exit(1);
-  }
   const shown = (version: string | null) => (parseDockerVersion(version) ? (version as string) : 'unknown');
   console.log(colorize(`→ Docker Compose ${shown(versions.compose)}, Docker Engine ${shown(versions.engine)}`, 'dim'));
   for (const [label, version] of [
@@ -112,5 +109,10 @@ export function requireDockerForHubStack(env: Record<string, string | undefined>
   const engineTooOld = dockerEngineTooOldLines(versions);
   if (engineTooOld) {
     printMessageBox('Docker Engine update recommended', engineTooOld, 'yellow');
+  }
+  const composeTooOld = dockerComposeTooOldLines(versions);
+  if (composeTooOld) {
+    printMessageBox('Docker update needed', composeTooOld, 'red');
+    process.exit(1);
   }
 }
