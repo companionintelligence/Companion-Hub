@@ -535,7 +535,7 @@ export class HardwareInspectorService {
   private async hostGpuProcessesFileNamesNvidia(): Promise<boolean> {
     try {
       const file = await this.filesystem.readJsonFile(HOST_GPU_PROCESSES_FILE_PATH, hostGpuProcessesFileSchema);
-      if (!file || file.vendor !== 'nvidia') return false;
+      if (file?.vendor !== 'nvidia') return false;
       return samplesFromHostGpuProcessesFile(file) !== null;
     } catch {
       return false;

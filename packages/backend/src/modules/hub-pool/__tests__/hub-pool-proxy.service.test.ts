@@ -1530,7 +1530,7 @@ describe('PoolProxyService', () => {
         res: createMockResponse(),
       });
 
-      const forwarded = String((vi.mocked(global.fetch).mock.calls[0]?.[1] as RequestInit).body);
+      const forwarded = String((vi.mocked(global.fetch).mock.calls[0]?.[1] as RequestInit | undefined)?.body);
       expect(routingLog.list()[0]).toMatchObject({
         stream: true,
         bodyBytes: Buffer.byteLength(forwarded),
@@ -3619,22 +3619,21 @@ describe('PoolProxyService', () => {
         expect(entry?.promptCeiling).toMatchObject({ overridden: false });
       });
 
-      it.each([
-        ['/v1/embeddings'],
-        ['/api/embed'],
-        ['/api/embeddings'],
-      ])('leaves %s alone: an embeddings batch is many short inputs, not one long context', async (path) => {
-        const peers = fzzyAndCore6();
-        peerService.listConnectedPeers.mockResolvedValue(peers);
-        peerService.getPeerById.mockImplementation(async (id: string) => peers.find((peer) => peer.id === id));
-        answerWith200();
-        const batch = { model: MODEL, input: Array.from({ length: 400 }, () => 'x'.repeat(LONG_PROMPT_BYTES / 400)) };
+      it.each([['/v1/embeddings'], ['/api/embed'], ['/api/embeddings']])(
+        'leaves %s alone: an embeddings batch is many short inputs, not one long context',
+        async (path) => {
+          const peers = fzzyAndCore6();
+          peerService.listConnectedPeers.mockResolvedValue(peers);
+          peerService.getPeerById.mockImplementation(async (id: string) => peers.find((peer) => peer.id === id));
+          answerWith200();
+          const batch = { model: MODEL, input: Array.from({ length: 400 }, () => 'x'.repeat(LONG_PROMPT_BYTES / 400)) };
 
-        await service.proxyRequest({ path, method: 'POST', body: batch, model: MODEL, res: createMockResponse() });
+          await service.proxyRequest({ path, method: 'POST', body: batch, model: MODEL, res: createMockResponse() });
 
-        expect(routingLog.list()[0]).toMatchObject({ node: 'fzzy.tailxyz.ts.net', candidates: 2 });
-        expect(routingLog.list()[0]?.promptCeiling).toBeNull();
-      });
+          expect(routingLog.list()[0]).toMatchObject({ node: 'fzzy.tailxyz.ts.net', candidates: 2 });
+          expect(routingLog.list()[0]?.promptCeiling).toBeNull();
+        },
+      );
 
       it('marks the decision overridden when every candidate was over its ceiling, and still serves it', async () => {
         const fzzy = node('fzzy', { maxPromptTokens: FZZY_CEILING });
@@ -7442,19 +7441,19 @@ describe('PoolProxyService', () => {
       });
     });
 
-    it.each([
-      '/api/version',
-      '/api/tags',
-    ])('warns that a native-probe path (%s) is unservable, since a silent fallback here loses num_ctx control for callers like ci-hermes', async (path) => {
-      const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
-      vi.mocked(global.fetch).mockResolvedValue(new Response('not found', { status: 404 }));
+    it.each(['/api/version', '/api/tags'])(
+      'warns that a native-probe path (%s) is unservable, since a silent fallback here loses num_ctx control for callers like ci-hermes',
+      async (path) => {
+        const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+        vi.mocked(global.fetch).mockResolvedValue(new Response('not found', { status: 404 }));
 
-      const res = createMockResponse();
-      await service.proxyLocalOnlyRequest(path, 'GET', undefined, res);
+        const res = createMockResponse();
+        await service.proxyLocalOnlyRequest(path, 'GET', undefined, res);
 
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(path));
-      warnSpy.mockRestore();
-    });
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(path));
+        warnSpy.mockRestore();
+      },
+    );
 
     // /api/ps and /api/show carry no such native-vs-fallback significance, so exhausting local
     // backends for them stays at the existing quiet 502 — no warn log.

@@ -109,7 +109,7 @@ export class MemoryConnectionService {
    * connected key or the ciphertext fails to decrypt.
    */
   credsFromRow(row: MemoryConnectionRow | undefined): InjectableMemoryCreds | null {
-    if (!row || row.state !== 'connected' || !row.encryptedKey || !row.serverUrl) {
+    if (row?.state !== 'connected' || !row.encryptedKey || !row.serverUrl) {
       return null;
     }
 

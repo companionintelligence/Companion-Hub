@@ -174,12 +174,7 @@ export function ensureLocalDevPortsAvailable(): void {
   });
   const staleBackend = backendPids.filter((pid) => {
     const command = commandLineForPid(pid);
-    return (
-      command.includes(repoRoot) &&
-      (command.includes('nest start --watch --preserveWatchOutput') ||
-        command.includes('/packages/backend/') ||
-        command.includes('packages/backend/dist/src/main.js'))
-    );
+    return command.includes(repoRoot) && (command.includes('/packages/backend/') || command.includes('packages/backend/dist/src/main.js'));
   });
 
   for (const pid of [...staleFrontend, ...staleBackend]) {

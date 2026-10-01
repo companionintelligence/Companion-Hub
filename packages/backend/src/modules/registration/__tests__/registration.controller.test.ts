@@ -466,16 +466,13 @@ describe('RegistrationController', () => {
       expect(['104.21.48.168', '2606:4700:3031::ac43:9a62'].map((address) => isAllowedAddress?.(address))).toEqual([true, true]);
     });
 
-    it.each([
-      'http://hub-core-2-demopool1.ci.computer',
-      'not a url',
-      'https://localhost',
-      'https://10.0.0.5',
-      'https://[::1]',
-    ])('answers %s without probing', async (url) => {
-      await expect(controller.probeDomain(url)).resolves.toEqual({ ready: false });
-      expect(mockedProbe).not.toHaveBeenCalled();
-    });
+    it.each(['http://hub-core-2-demopool1.ci.computer', 'not a url', 'https://localhost', 'https://10.0.0.5', 'https://[::1]'])(
+      'answers %s without probing',
+      async (url) => {
+        await expect(controller.probeDomain(url)).resolves.toEqual({ ready: false });
+        expect(mockedProbe).not.toHaveBeenCalled();
+      },
+    );
   });
 
   describe('pairDevice', () => {
