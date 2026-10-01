@@ -98,8 +98,10 @@ const imports: (DynamicModule | typeof I18nModule)[] = [
 ];
 
 // Gate on the built frontend bundle's presence, not NODE_ENV: the bundled
-// Docker image ships index.html at /app/assets/frontend but runs with
-// NODE_ENV=development (from .env.dev), which would otherwise 404 the UI.
+// Docker image ships index.html at /app/assets/frontend, and its NODE_ENV is
+// whatever the env file passes through (docker-compose.prod.yml defaults it to
+// production; .env.example also lists development and staging), so it says
+// nothing about whether the UI is on disk.
 // Local `pnpm dev` has no bundle, so Vite serves the frontend instead.
 const frontendBundlePath = path.join(APP_DIR, 'assets', 'frontend');
 const hasFrontendBundle = fs.existsSync(path.join(frontendBundlePath, 'index.html'));

@@ -26,21 +26,38 @@ const LOCAL_CREATE_REQUIRE =
   /^([ \t]*)(?:const|let|var)[ \t]+require[ \t]*=[ \t]*(?:[\w$]+\.)?createRequire\([ \t]*import\.meta\.url[ \t]*\)[ \t]*;?[ \t]*$/gm;
 
 /**
- * Removes a module's own `require` binding so its `require('x')` calls fall through to the free
- * `require`, which esbuild resolves and bundles exactly as it does in a CommonJS file. Returns
- * undefined when the source declares no such binding, so esbuild loads the file untouched.
+ * `createRequire(import.meta.url)('pkg')`, called in place with a literal specifier. @nestjs/common
+ * 12's JSDoc for loadPackageSync recommends `() => createRequire(import.meta.url)('pkg')` as the
+ * loader, so the next @nestjs/* release can ship it. A non-literal specifier (@nestjs/common's own
+ * `createRequire(import.meta.url)(packageName)` fallback) is left alone: esbuild could not bundle it
+ * either way, and rewriting it would only change the text.
+ */
+const INLINE_CREATE_REQUIRE = /(?<![\w$.])(?:[\w$]+\.)?createRequire\([ \t]*import\.meta\.url[ \t]*\)(?=[ \t]*\([ \t]*["'])/g;
+
+/**
+ * Makes a module's createRequire lookups visible to esbuild: its own `require` binding is removed so
+ * its `require('x')` calls fall through to the free `require`, and an in-place
+ * `createRequire(import.meta.url)('x')` becomes `require('x')`. esbuild then resolves and bundles
+ * them exactly as it does in a CommonJS file. Returns undefined when the source has neither shape,
+ * so esbuild loads the file untouched.
  *
- * The line is replaced by a comment, not deleted, so the source map's line numbers still match.
+ * The binding's line is replaced by a comment, not deleted, and the in-place rewrite stays on its
+ * line, so the source map's line numbers still match.
  */
 export function stripLocalCreateRequire(source: string): string | undefined {
   if (!source.includes('createRequire')) {
     return undefined;
   }
   let changed = false;
-  const contents = source.replace(LOCAL_CREATE_REQUIRE, (_line, indent: string) => {
-    changed = true;
-    return `${indent}/* local createRequire removed by packages/backend/scripts/bundle-requires.ts so esbuild bundles these requires */`;
-  });
+  const contents = source
+    .replace(LOCAL_CREATE_REQUIRE, (_line, indent: string) => {
+      changed = true;
+      return `${indent}/* local createRequire removed by packages/backend/scripts/bundle-requires.ts so esbuild bundles these requires */`;
+    })
+    .replace(INLINE_CREATE_REQUIRE, () => {
+      changed = true;
+      return 'require';
+    });
   return changed ? contents : undefined;
 }
 
@@ -58,52 +75,104 @@ export const bundleLocalRequires: Plugin = {
 /** One module the bundle will try to load from disk when the code around it runs. */
 export interface RuntimeLookup {
   specifier: string;
-  /** The function doing the lookup: `__require` (esbuild's shim), `require` (the banner's), `require5`, `import`. */
+  /**
+   * What does the lookup: `__require` (esbuild's shim), `require` (the banner's), `require5`, any
+   * other name bound to a createRequire result, `import`, or an in-place call such as
+   * `node_module.createRequire(parent)`.
+   */
   via: string;
   /** 1-based line in the bundle. */
   line: number;
 }
 
 const IDENTIFIER = String.raw`[A-Za-z_$][\w$]*`;
-/** `require5 = createRequire5(import.meta.url)`, `const req = module.createRequire(...)`, the banner's `__createRequire`. */
-const CREATE_REQUIRE_BINDING = new RegExp(String.raw`(?<![\w$.])(${IDENTIFIER})\s*=\s*(?:[\w$]+\.)?[\w$]*createRequire\d*\(`, 'g');
+/**
+ * A function that makes a require, by its own name: `createRequire`, esbuild's `createRequire5`, the
+ * banner's `__createRequire`, Node's old `createRequireFromPath`. It may sit behind one property
+ * access (`module.createRequire`, a namespace import's `nodeModule.createRequire`), which the
+ * patterns using this allow for.
+ */
+const CREATE_REQUIRE_NAME = String.raw`[\w$]*createRequire[\w$]*`;
+/**
+ * A local name for createRequire that does not contain the word, which esbuild prints as the package
+ * wrote it: `import { createRequire as cr } from "module"`, or a destructuring
+ * `const { createRequire: cr } = __require("module")` (the `} =` rules out an object literal's key).
+ */
+const CREATE_REQUIRE_ALIAS = new RegExp(
+  String.raw`\bimport\s*\{[^}]*?\bcreateRequire\s+as\s+(${IDENTIFIER})|\{[^{}]*?\bcreateRequire\s*:\s*(${IDENTIFIER})[^{}]*\}\s*=(?![=>])`,
+  'g',
+);
+/** The argument list of a call on one line, allowing one level of nested parentheses: `(import.meta.url)`, `(join(dir, "x"))`. */
+const ONE_LINE_ARGUMENTS = String.raw`\((?:[^()\n]|\([^()\n]*\))*\)`;
 /** A call through esbuild's renamed copy of a local `require`, whether or not its binding was found. */
 const RENAMED_REQUIRE_CALL = /(?<![\w$.])(require\d+)(?:\.resolve)?\(/g;
+/** A string literal on one line, escapes included. */
+const STRING_LITERAL = /(["'\x60])(?:\\.|(?!\1)[^\\\n])*\1/g;
 
-/** The text before a match on its line puts it inside a comment: a JSDoc line, an open block comment, or after `//`. */
+const escapeName = (name: string) => name.replace(/\$/g, '\\$');
+
+/**
+ * The text before a match on its line puts it inside a comment: a JSDoc line, an open block comment,
+ * or after `//`. String literals are emptied first, so `" // "` or `"lib/*.js"` earlier on the line
+ * does not hide a real call after it.
+ */
 function isInComment(linePrefix: string): boolean {
-  return /^\s*\*/.test(linePrefix) || linePrefix.lastIndexOf('/*') > linePrefix.lastIndexOf('*/') || /(^|\s)\/\//.test(linePrefix);
+  const code = linePrefix.replace(STRING_LITERAL, '$1$1');
+  return /^\s*\*/.test(code) || code.lastIndexOf('/*') > code.lastIndexOf('*/') || /(^|\s)\/\//.test(code);
 }
 
 /**
- * Lists every literal module specifier the bundle loads at runtime instead of carrying it inline:
- * calls through esbuild's `__require` shim, the banner's `require`, any other function bound to a
- * `createRequire(...)` result (esbuild's `requireN` renames among them), and dynamic `import()`.
+ * Lists the literal module specifiers the bundle loads at runtime instead of carrying them inline,
+ * in these shapes:
+ *  - a call through esbuild's `__require` shim or the banner's `require`;
+ *  - a call through any name bound to a createRequire result: esbuild's `requireN` renames, and a
+ *    binding made through an alias, as in `import { createRequire as cr }` then `r = cr(...)`;
+ *  - createRequire called in place, as in `createRequire(import.meta.url)("x")` or
+ *    `node_module.createRequire(parent)("x")`, under its own name or an alias;
+ *  - each of the above as `.resolve("x")`, and dynamic `import("x")`.
+ * Specifiers may be quoted with ', " or a backtick.
+ *
+ * It sees only these shapes. A lookup written another way (a non-literal specifier such as
+ * `__require(mod)`, which has nothing to check against, or a require function passed through a
+ * variable whose binding does not name createRequire or an alias of it) is not reported, so a new
+ * shape found in a bundle belongs here, with a test.
  *
  * Text, not a parse: a 470k-line bundle is too slow to parse on every build. Three shapes that look
  * like calls but are not are skipped: a match directly after a quote or backtick (ajv's standalone
  * code templates hold `'require("ajv/dist/runtime/equal")'`), a specifier containing `${`, and a
  * match in a comment (JSDoc types such as `{import('estree').Program}`). esbuild prints one
  * statement per line, which is what makes the line-based comment test hold.
- * Non-literal lookups such as `__require(mod)` are not reported; there is nothing to check them against.
  */
 export function findRuntimeLookups(bundle: string): RuntimeLookup[] {
+  const factories = new Set<string>();
+  for (const [, imported, destructured] of bundle.matchAll(CREATE_REQUIRE_ALIAS)) {
+    factories.add(imported ?? destructured ?? '');
+  }
+  factories.delete('');
+  const factory = [CREATE_REQUIRE_NAME, ...[...factories].map(escapeName)].join('|');
+
   const callers = new Set(['__require', 'require']);
-  for (const [, name = ''] of bundle.matchAll(CREATE_REQUIRE_BINDING)) {
+  const binding = new RegExp(String.raw`(?<![\w$.])(${IDENTIFIER})\s*=\s*(?:[\w$]+\.)?(?:${factory})\(`, 'g');
+  for (const [, name = ''] of bundle.matchAll(binding)) {
     callers.add(name);
   }
   for (const [, name = ''] of bundle.matchAll(RENAMED_REQUIRE_CALL)) {
     callers.add(name);
   }
 
-  const names = [...callers].map((name) => name.replace(/\$/g, '\\$')).join('|');
-  const call = new RegExp(String.raw`(?<![\w$.'"\x60])(${names}|import)(?:\.resolve)?\(\s*(["'])([^"'\x60\n]+)\2\s*\)`, 'g');
+  const names = [...callers].map(escapeName).join('|');
+  // Group 1 is a named caller, group 2 an in-place createRequire call. The in-place form may follow a
+  // `.` (`__require("module").createRequire(x)("y")`); a named caller may not, or `foo.require("x")`,
+  // a method of some object, would count.
+  const callee = String.raw`(?<![\w$.'"\x60])(${names}|import)|(?<![\w$'"\x60])((?:[\w$]+\.)?(?:${factory})\s*${ONE_LINE_ARGUMENTS})`;
+  const call = new RegExp(String.raw`(?:${callee})(?:\.resolve)?\(\s*(["'\x60])([^"'\x60\n]+)\3\s*\)`, 'g');
 
   const lookups: RuntimeLookup[] = [];
   let line = 1;
   let lineStart = 0;
   for (const match of bundle.matchAll(call)) {
-    const [, via = '', , specifier = ''] = match;
+    const [, named, inPlace, , specifier = ''] = match;
+    const via = named ?? inPlace ?? '';
     const offset = match.index ?? 0;
     // Matches arrive in order, so the line count only ever moves forward.
     for (let next = bundle.indexOf('\n', lineStart); next !== -1 && next < offset; next = bundle.indexOf('\n', lineStart)) {

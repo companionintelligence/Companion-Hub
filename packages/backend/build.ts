@@ -17,15 +17,16 @@ const packageExternals = [
   // Installed by the runner stage's `npm install` in the Dockerfile (argon2 is a native addon).
   'argon2',
   'class-transformer',
-  'class-transformer/storage',
   'drizzle-orm',
   '@opentelemetry/api',
   'ssh2',
   'pg',
   'i18next-fs-backend',
-  // Optional and absent at runtime. Nest's loaders for adapters and ORMs the Hub does not use
-  // (FastifyLoader is only chosen on the Fastify adapter; the Hub runs Express), and ssh2's
-  // optional native speed-up.
+  // Optional and absent at runtime. class-transformer 0.5.1 has no root `storage` entry (only
+  // `cjs/storage`); @nestjs/mapped-types asks for it only in the catch after `cjs/storage` fails.
+  'class-transformer/storage',
+  // Nest's loaders for adapters and ORMs the Hub does not use (FastifyLoader is only chosen on the
+  // Fastify adapter; the Hub runs Express), and ssh2's optional native speed-up.
   '@nestjs/typeorm',
   '@nestjs/mongoose',
   '@nestjs/sequelize',
@@ -39,14 +40,16 @@ const packageExternals = [
   // NODE_ENV=production, which the runtime image sets, so production never makes this lookup.
   // Bundled, `absolute-path.js` would answer with the bundle's own directory, and a non-production
   // run of the image would serve /app (main.js, package.json, assets) under /api/docs instead of
-  // the UI. Left external, that run stops at the lookup with "Cannot find module" instead.
+  // the UI. Left external, the lookup fails with "Cannot find module", which main.ts catches and
+  // logs, so that run boots without the Swagger UI.
   'swagger-ui-dist',
 ];
 
 /*
  * Runtime lookups that are neither builtins nor externals, and that the image cannot satisfy. Each
- * was in the last bundle that booted on the fleet before NestJS 12, and each sits behind a guard or
- * on a path the Hub does not take. Add to this only with the same kind of reason.
+ * sits behind a guard or on a path the Hub does not take; all but @mastra/observability were also in
+ * the last bundle that booted on the fleet before NestJS 12. Add to this only with the same kind of
+ * reason.
  */
 const knownMissingAtRuntime: Record<string, string> = {
   'osx-temperature-sensor': "systeminformation's optional macOS sensor, required inside try/catch on darwin only",
@@ -58,6 +61,11 @@ const knownMissingAtRuntime: Record<string, string> = {
   // and ref listing all send arrays, which it buffers instead.
   'process/': "readable-stream@4, reached only by a streaming isomorphic-git request body, which isomorphic-git's own commands never send",
   'string_decoder/': 'readable-stream@3 for an `encoding` stream only; readable-stream@4 as for process/',
+  // Arrived with Sentry 11 (#1714). Its Mastra integration looks for @mastra/observability through
+  // `createRequire(<cwd or @mastra/core's file>)` only when a Mastra instance is constructed, which
+  // the Hub never does, and catches the miss with a warning.
+  '@mastra/observability':
+    "@sentry/server-utils' Mastra integration, reached only when a Mastra instance is constructed (the Hub has none), inside try/catch",
 };
 
 // Copy non-TypeScript asset files
@@ -91,10 +99,10 @@ function verifyBundle() {
       ...unexpected.map(({ specifier, via, line }) => `  ${via}("${specifier}")  at ${outfile}:${line}`),
       '',
       'Each one would crash the Hub (or the feature using it) with "Cannot find module" / "package is missing".',
-      'A `requireN(...)` caller is a package-local `createRequire` that esbuild could not see through:',
-      'check bundleLocalRequires in scripts/bundle-requires.ts. Otherwise make the module bundleable,',
-      'or, if it is genuinely optional, add it to packageExternals or knownMissingAtRuntime in build.ts',
-      'with the reason it is safe.',
+      'A `requireN(...)` caller, or a `createRequire(...)` called in place, is a package-local createRequire',
+      'that esbuild could not see through: check bundleLocalRequires in scripts/bundle-requires.ts.',
+      'Otherwise make the module bundleable, or, if it is genuinely optional, add it to packageExternals',
+      'or knownMissingAtRuntime in build.ts with the reason it is safe.',
     ].join('\n'),
   );
   process.exit(1);

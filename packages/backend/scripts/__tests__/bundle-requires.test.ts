@@ -52,6 +52,45 @@ describe('checkBundle', () => {
     expect(checkBundle(bundle, externals, {}).unexpected).toEqual([{ specifier: 'swagger-ui-dist/absolute-path.js', via: 'req', line: 2 }]);
   });
 
+  it('reports createRequire called in place, the loader shape @nestjs/common 12 recommends', () => {
+    const bundle = [
+      // What esbuild leaves of `() => createRequire(import.meta.url)('pkg')` without the plugin.
+      'var a = () => createRequire(import.meta.url)("express");',
+      // Sentry 11's Mastra integration, as it sits in the Hub bundle.
+      '        return node_module.createRequire(parent)("@mastra/observability");',
+      'var c = __require("module").createRequire(__filename).resolve("class-validator/package.json");',
+    ].join('\n');
+
+    expect(checkBundle(bundle, externals, {}).unexpected).toEqual([
+      { specifier: 'express', via: 'createRequire(import.meta.url)', line: 1 },
+      { specifier: '@mastra/observability', via: 'node_module.createRequire(parent)', line: 2 },
+      { specifier: 'class-validator/package.json', via: 'createRequire(__filename)', line: 3 },
+    ]);
+  });
+
+  it('follows createRequire through an import alias or a destructuring rename', () => {
+    const bundle = [
+      'import { createRequire as cr } from "module";',
+      'var r = cr(import.meta.url);',
+      'var b = () => r("express");',
+      'var d = () => cr(import.meta.url)("class-validator");',
+      'var { createRequire: make } = __require("node:module");',
+      'var e = make(__filename)("@nestjs/swagger");',
+    ].join('\n');
+
+    expect(checkBundle(bundle, externals, {}).unexpected).toEqual([
+      { specifier: 'express', via: 'r', line: 3 },
+      { specifier: 'class-validator', via: 'cr(import.meta.url)', line: 4 },
+      { specifier: '@nestjs/swagger', via: 'make(__filename)', line: 6 },
+    ]);
+  });
+
+  it('does not take an object literal key named createRequire for an alias', () => {
+    const bundle = ['var api = { createRequire: helper, other: 1 };', 'var x = helper(a)("not-a-module");'].join('\n');
+
+    expect(findRuntimeLookups(bundle)).toEqual([]);
+  });
+
   it('accepts builtins, declared externals and their subpaths, and allowlisted specifiers', () => {
     const bundle = [
       'var a = __require("node:fs");',
@@ -108,6 +147,19 @@ describe('findRuntimeLookups', () => {
     expect(findRuntimeLookups('var x = /* @__PURE__ */ __require("express");')).toEqual([{ specifier: 'express', via: '__require', line: 1 }]);
   });
 
+  it('still reports a real call after a string that holds comment markers', () => {
+    const bundle = ['var sep = " // "; var x = __require("express");', 'var glob = "lib/*.js"; var y = __require("class-validator");'].join('\n');
+
+    expect(findRuntimeLookups(bundle)).toEqual([
+      { specifier: 'express', via: '__require', line: 1 },
+      { specifier: 'class-validator', via: '__require', line: 2 },
+    ]);
+  });
+
+  it('reads a specifier quoted with backticks', () => {
+    expect(findRuntimeLookups('var x = __require(`express`);')).toEqual([{ specifier: 'express', via: '__require', line: 1 }]);
+  });
+
   it('does not mistake esbuild helpers that end in "require" for the renamed ones', () => {
     const bundle = ['var __commonJS = (cb, mod) => function __require2() {', '  var _require2 = __require("util");', '};'].join('\n');
 
@@ -136,6 +188,24 @@ describe('stripLocalCreateRequire', () => {
     expect(stripLocalCreateRequire('const require = module.createRequire(import.meta.url);\nrequire("x");')).not.toMatch(/createRequire\(/);
   });
 
+  it('turns createRequire called in place with a literal specifier into a plain require', () => {
+    const source = [
+      "import { createRequire } from 'node:module';",
+      "import * as nodeModule from 'node:module';",
+      "export const a = () => loadPackageSync('express', 'ServeStaticModule', () => createRequire(import.meta.url)('express'));",
+      'export const b = () => nodeModule.createRequire( import.meta.url ) ("class-validator");',
+    ].join('\n');
+
+    const stripped = stripLocalCreateRequire(source);
+
+    expect(stripped?.split('\n')).toEqual([
+      "import { createRequire } from 'node:module';",
+      "import * as nodeModule from 'node:module';",
+      "export const a = () => loadPackageSync('express', 'ServeStaticModule', () => require('express'));",
+      'export const b = () => require ("class-validator");',
+    ]);
+  });
+
   it('leaves files without a module-level require binding alone', () => {
     expect(stripLocalCreateRequire("export const x = require('y');")).toBeUndefined();
     // @nestjs/common's dynamic fallback: no binding, and nothing esbuild could bundle anyway.
@@ -147,34 +217,40 @@ describe('stripLocalCreateRequire', () => {
 describe('bundleLocalRequires with esbuild', () => {
   let root: string;
 
+  // Each package is ESM and loads the CommonJS `dep` through createRequire, one shape per package.
+  const packages: Record<string, string[]> = {
+    // @nestjs/serve-static 12: a module-level `require` of its own.
+    'esm-pkg': [
+      "import { createRequire } from 'node:module';",
+      'const require = createRequire(import.meta.url);',
+      "export const load = () => require('dep');",
+    ],
+    // The loader @nestjs/common 12's loadPackageSync JSDoc recommends: createRequire called in place.
+    'inline-pkg': ["import { createRequire } from 'node:module';", "export const load = () => createRequire(import.meta.url)('dep');"],
+    // An aliased createRequire bound to another name, which the plugin does not rewrite.
+    'alias-pkg': ["import { createRequire as cr } from 'module';", 'const r = cr(import.meta.url);', "export const load = () => r('dep');"],
+  };
+
   beforeAll(async () => {
-    // node_modules/esm-pkg is laid out like @nestjs/serve-static 12: ESM, loading a CommonJS
-    // dependency through its own createRequire.
     root = await mkdtemp(join(tmpdir(), 'bundle-requires-'));
     await mkdir(join(root, 'node_modules/dep'), { recursive: true });
-    await mkdir(join(root, 'node_modules/esm-pkg'), { recursive: true });
     await writeFile(join(root, 'node_modules/dep/package.json'), JSON.stringify({ name: 'dep', main: 'index.js' }));
     await writeFile(join(root, 'node_modules/dep/index.js'), "module.exports = 'dep-was-bundled';\n");
-    await writeFile(join(root, 'node_modules/esm-pkg/package.json'), JSON.stringify({ name: 'esm-pkg', type: 'module', main: 'index.js' }));
-    await writeFile(
-      join(root, 'node_modules/esm-pkg/index.js'),
-      [
-        "import { createRequire } from 'node:module';",
-        'const require = createRequire(import.meta.url);',
-        "export const load = () => require('dep');",
-        '',
-      ].join('\n'),
-    );
-    await writeFile(join(root, 'entry.js'), "import { load } from 'esm-pkg';\nconsole.log(load());\n");
+    for (const [name, lines] of Object.entries(packages)) {
+      await mkdir(join(root, 'node_modules', name), { recursive: true });
+      await writeFile(join(root, 'node_modules', name, 'package.json'), JSON.stringify({ name, type: 'module', main: 'index.js' }));
+      await writeFile(join(root, 'node_modules', name, 'index.js'), `${lines.join('\n')}\n`);
+      await writeFile(join(root, `${name}.entry.js`), `import { load } from '${name}';\nconsole.log(load());\n`);
+    }
   });
 
   afterAll(async () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  const bundle = async (plugins: Parameters<typeof build>[0]['plugins']) => {
+  const bundle = async (pkg: string, plugins: Parameters<typeof build>[0]['plugins']) => {
     const result = await build({
-      entryPoints: [join(root, 'entry.js')],
+      entryPoints: [join(root, `${pkg}.entry.js`)],
       bundle: true,
       format: 'esm',
       platform: 'node',
@@ -185,17 +261,24 @@ describe('bundleLocalRequires with esbuild', () => {
     return result.outputFiles[0]?.text ?? '';
   };
 
-  it('without the plugin, esbuild leaves the dependency as a runtime lookup', async () => {
-    const output = await bundle([]);
+  it.each(Object.keys(packages))('without the plugin, esbuild leaves the dependency of %s as a runtime lookup the check reports', async (pkg) => {
+    const output = await bundle(pkg, []);
 
     expect(output).not.toContain('dep-was-bundled');
-    expect(findRuntimeLookups(output).map(({ specifier }) => specifier)).toContain('dep');
+    expect(checkBundle(output, [], {}).unexpected.map(({ specifier }) => specifier)).toEqual(['dep']);
   });
 
-  it('with the plugin, the dependency is compiled into the bundle', async () => {
-    const output = await bundle([bundleLocalRequires]);
+  it.each(['esm-pkg', 'inline-pkg'])('with the plugin, the dependency of %s is compiled into the bundle', async (pkg) => {
+    const output = await bundle(pkg, [bundleLocalRequires]);
 
     expect(output).toContain('dep-was-bundled');
     expect(findRuntimeLookups(output)).toEqual([]);
+  });
+
+  it('with the plugin, an aliased createRequire still fails the check rather than shipping', async () => {
+    const output = await bundle('alias-pkg', [bundleLocalRequires]);
+
+    expect(output).not.toContain('dep-was-bundled');
+    expect(checkBundle(output, [], {}).unexpected).toEqual([{ specifier: 'dep', via: 'r', line: expect.any(Number) }]);
   });
 });

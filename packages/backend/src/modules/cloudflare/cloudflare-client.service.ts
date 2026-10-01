@@ -942,15 +942,6 @@ export class CloudflareClientService {
   }
 
   /**
-   * Resolves the Docker Compose file used to start `cloudflared`.
-   *
-   * The bundled Hub mounts the active file at `${DATA_DIR}/docker-compose.yml`,
-   * matching `DockerService.getBaseComposeArgsHub`. Local `pnpm dev` and tests
-   * fall back to the repository source file. Do not gate the mounted path on
-   * `NODE_ENV`: `.env.dev` sets `NODE_ENV=development` inside the bundled image,
-   * which would select the nonexistent `/app/docker-compose.local.yml`.
-   */
-  /**
    * Whether the `cloudflared` container on this Docker engine is this Hub's to remove.
    *
    * Inside the Hub container it is: that engine runs this one Hub. A backend run from a source
@@ -994,6 +985,16 @@ export class CloudflareClientService {
     return detectContainerDataRoot();
   }
 
+  /**
+   * Resolves the Docker Compose file used to start `cloudflared`.
+   *
+   * The bundled Hub mounts the active file at `${DATA_DIR}/docker-compose.yml`,
+   * matching `DockerService.getBaseComposeArgsHub`. Local `pnpm dev` and tests
+   * fall back to the repository source file. Do not gate the mounted path on
+   * `NODE_ENV`: inside the bundled image it is whatever the env file passes
+   * through (docker-compose.prod.yml defaults it to production), and
+   * `development` there would select the nonexistent `/app/docker-compose.local.yml`.
+   */
   private getComposeFile(): string {
     const mounted = path.join(DATA_DIR, 'docker-compose.yml');
     if (fsSync.existsSync(mounted)) {

@@ -53,7 +53,17 @@ async function setupSwagger(app: INestApplication) {
   }
 
   const document = buildSwaggerDocument(app);
-  SwaggerModule.setup('api/docs', app, document);
+  try {
+    SwaggerModule.setup('api/docs', app, document);
+  } catch (error) {
+    // The production image leaves swagger-ui-dist out of its bundle (packages/backend/build.ts
+    // says why), so running that image with NODE_ENV set to anything but production lands here
+    // with "Cannot find module 'swagger-ui-dist/absolute-path.js'". API docs are a development aid;
+    // losing the UI must not stop the Hub from booting. setup() registers /api/docs-json before it
+    // looks for the UI's files, so the JSON document still serves.
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`Could not serve the Swagger UI at /api/docs — skipping (non-fatal): ${message}`);
+  }
 
   try {
     await writeSwaggerJsonFile(document);
