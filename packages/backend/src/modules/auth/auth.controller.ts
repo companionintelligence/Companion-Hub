@@ -68,7 +68,8 @@ import {
   SetupTotpBody,
   VerifyTotpBody,
 } from './dto/auth.dto';
-import { ApiResponse } from '@nestjs/swagger';
+import { HUB_FAVICON_LINK_TAG, HUB_FAVICON_PNG } from './hub-favicon';
+import { ApiExcludeEndpoint, ApiResponse } from '@nestjs/swagger';
 import {
   buildPortalDesktopDeepLink,
   buildPortalDesktopHandoffHtml,
@@ -978,6 +979,18 @@ export class AuthController {
     return PortalDesktopHandoffStatusDto.parse({ state }, { reportOnly: true });
   }
 
+  /**
+   * The tab icon for the pages this controller writes itself — the desktop
+   * handoff and the edge-SSO cookie notice. Unauthenticated for the same reason
+   * as the status poll above: those pages exist before any session does. See
+   * hub-favicon.ts for why it is a URL and not a data URI.
+   */
+  @Get('/favicon.png')
+  @ApiExcludeEndpoint()
+  favicon(@Res() res: Response) {
+    res.set('Cache-Control', 'public, max-age=86400').type('png').send(HUB_FAVICON_PNG);
+  }
+
   @Patch('/username')
   @UseGuards(AuthGuard)
   async changeUsername(@Body() body: ChangeUsernameBody, @Req() req: Request, @Res() res: Response) {
@@ -1623,7 +1636,9 @@ export class AuthController {
         .status(409)
         .type('html')
         .send(
-          '<!doctype html><html><body style="font-family:sans-serif;max-width:32rem;margin:4rem auto">' +
+          '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Cookies required — Companion Hub</title>' +
+            HUB_FAVICON_LINK_TAG +
+            '</head><body style="font-family:sans-serif;max-width:32rem;margin:4rem auto">' +
             '<h1>Cookies required</h1><p>Signing in to this app requires cookies, and your browser ' +
             'does not appear to be accepting them. Enable cookies for this site and try again.</p>' +
             '</body></html>',
