@@ -41,7 +41,7 @@
     "@sentry/nestjs": "^11.1.0",
     "@sentry/node": "^11.1.0",
     "argon2": "^0.44.0",
-    "axios": "^1.18.0",
+    "axios": "^1.20.0",
     "cookie-parser": "^1.4.7",
     "deepmerge": "^4.3.1",
     "dockerode": "^4.0.12",
