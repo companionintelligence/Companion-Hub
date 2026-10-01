@@ -42,7 +42,7 @@ describe('LogsContainer', () => {
   });
 
   it('downloads full hub logs from the backend endpoint', async () => {
-    const response = new Response(new Blob(['hub logs'], { type: 'text/plain' }), { status: 200 });
+    const response = new Response('hub logs', { status: 200 });
     mockDownloadHubLogsSdk.mockResolvedValue({ response });
     mockDownloadResponseAsFile.mockResolvedValue(undefined);
 
