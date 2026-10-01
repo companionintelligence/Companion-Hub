@@ -34,10 +34,12 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 const signInToPortal = vi.fn();
 const listHubDevices = vi.fn();
+const establishHubSessionFromPortal = vi.fn(async () => null as { sessionId: string; redirectPath: string } | null);
 vi.mock('../portal-client', async (orig) => ({
   ...(await orig<typeof import('../portal-client')>()),
   signInToPortal: (...a: unknown[]) => signInToPortal(...a),
   listHubDevices: (...a: unknown[]) => listHubDevices(...a),
+  establishHubSessionFromPortal: (...a: unknown[]) => establishHubSessionFromPortal(...a),
 }));
 
 const loginWithPortalOidc = vi.fn();
@@ -65,6 +67,8 @@ beforeEach(() => {
   navigate.mockClear();
   signInToPortal.mockReset();
   listHubDevices.mockReset();
+  establishHubSessionFromPortal.mockReset();
+  establishHubSessionFromPortal.mockResolvedValue(null);
   loginWithPortalOidc.mockReset();
   resumePendingOidcLogin.mockReset();
   resumePendingOidcLogin.mockResolvedValue(null);
@@ -185,6 +189,23 @@ describe('ConnectPage', () => {
 
     expect(setHubConnection).toHaveBeenCalledWith('https://hub-apple.ci.computer');
     expect(navigate).toHaveBeenCalledWith('/login', { replace: true });
+  });
+
+  it('spends the cloud-connect id_token on the chosen Hub instead of asking for a second login', async () => {
+    loginWithPortalOidc.mockResolvedValue({ accessToken: 'AT', idToken: 'id.tok', tokenType: 'Bearer', expiresIn: 3600 });
+    establishHubSessionFromPortal.mockResolvedValue({ sessionId: 'sid-1', redirectPath: '/home' });
+    const assign = vi.fn();
+    const originalLocation = window.location;
+    Object.defineProperty(window, 'location', { value: { ...originalLocation, assign }, writable: true, configurable: true });
+    listHubDevices.mockResolvedValue(devices);
+    renderPage();
+    await user.click(screen.getByTestId('oidc-login-btn'));
+    await user.click(await screen.findByTestId('hub-row-reg-1'));
+
+    expect(establishHubSessionFromPortal).toHaveBeenCalledWith('https://hub-apple.ci.computer', 'id.tok');
+    expect(assign).toHaveBeenCalledWith('/home');
+    expect(navigate).not.toHaveBeenCalled();
+    Object.defineProperty(window, 'location', { value: originalLocation, writable: true, configurable: true });
   });
 
   it('OIDC failure (not a cancel) surfaces an error toast', async () => {
