@@ -17,7 +17,7 @@ import { ArrowUpCircle, Loader2, Smartphone, Star, TriangleAlert, Wand2 } from '
 import { clearHubConnection, getHubBaseUrlSync, usesCloudConnect } from '@/lib/mobile-connection';
 import { useTranslation } from 'react-i18next';
 import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-modal';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useId } from 'react';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import {
   clearHubSteadySession,
@@ -56,6 +56,9 @@ export const GeneralActionsContainer = () => {
   const [shellMessage, setShellMessage] = useState<string | null>(null);
   const [autoUpdates, setAutoUpdates] = useState(true);
   const [autoUpdatesLoading, setAutoUpdatesLoading] = useState(false);
+  const autoUpdatesId = useId();
+  const autoUpdatesTitleId = `${autoUpdatesId}-title`;
+  const autoUpdatesDescriptionId = `${autoUpdatesId}-description`;
   const [restartingWizard, setRestartingWizard] = useState(false);
   const [factoryResetOpen, setFactoryResetOpen] = useState(false);
   const [factoryResetPhrase, setFactoryResetPhrase] = useState('');
@@ -405,10 +408,10 @@ export const GeneralActionsContainer = () => {
           <div className="mt-6 pt-6 border-t">
             <div className="flex items-center justify-between gap-4">
               <div>
-                <h3 id="auto-update-stack-title" className="text-sm font-medium">
+                <h3 id={autoUpdatesTitleId} className="text-sm font-medium">
                   {t('SETTINGS_ACTIONS_AUTO_UPDATE_STACK_TITLE')}
                 </h3>
-                <p id="auto-update-stack-description" className="text-sm text-muted-foreground">
+                <p id={autoUpdatesDescriptionId} className="text-sm text-muted-foreground">
                   {t('SETTINGS_ACTIONS_AUTO_UPDATE_STACK_DESCRIPTION')}
                 </p>
               </div>
@@ -416,8 +419,8 @@ export const GeneralActionsContainer = () => {
                 type="button"
                 role="switch"
                 aria-checked={autoUpdates}
-                aria-labelledby="auto-update-stack-title"
-                aria-describedby="auto-update-stack-description"
+                aria-labelledby={autoUpdatesTitleId}
+                aria-describedby={autoUpdatesDescriptionId}
                 onClick={handleAutoUpdatesToggle}
                 disabled={autoUpdatesLoading}
                 className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${autoUpdates ? 'bg-primary' : 'bg-input'} ${autoUpdatesLoading ? 'opacity-50' : ''}`}
