@@ -16,6 +16,11 @@ updates:
       # on 7.76+. Lift this once the form is adapted.
       - dependency-name: 'react-hook-form'
         versions: ['>=7.76.0']
+      # otplib 13 is a rewrite: @otplib/core no longer exports Authenticator, and the
+      # plugin-crypto / plugin-thirty-two plugins the TOTP setup uses stop at 12. Bumping core
+      # alone breaks the backend build. Lift this when 2FA moves to the otplib 13 API.
+      - dependency-name: '@otplib/*'
+        update-types: ['version-update:semver-major']
 
   - package-ecosystem: 'github-actions'
     directory: '/'
