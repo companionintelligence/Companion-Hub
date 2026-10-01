@@ -133,6 +133,77 @@ describe('compareBuilds', () => {
   it('has nothing to compare when no Hub container is running', () => {
     expect(compareBuilds(cli('0.2.73'), null)).toEqual({ kind: 'no-stack', cli: '0.2.73' });
   });
+
+  it('holds a released CLI to its release even when both sides stamp a commit', () => {
+    const release = (version: string, revision: string) => stack(version, revision, `${REPO}:${version}`);
+    expect(compareBuilds(cli('0.2.72', 'aaaaaaaaaaaa'), release('0.2.73', 'bbbbbbbbbbbb'))).toEqual({
+      kind: 'skew',
+      how: 'version',
+      cli: '0.2.72',
+      stack: '0.2.73',
+      direction: 'cli-behind',
+    });
+    expect(compareBuilds(cli('0.2.73', 'aaaaaaaaaaaa'), release('0.2.73', 'bbbbbbbbbbbb'))).toMatchObject({ kind: 'match', how: 'version' });
+  });
+
+  it('compares a CLI whose version is not release-shaped by commit, as it does an untagged stack', () => {
+    expect(compareBuilds(cli('nightly', 'aaaaaaaaaaaa'), stack('0.2.72', 'aaaaaaaaaaaa', `${REPO}:0.2.72`))).toMatchObject({
+      kind: 'match',
+      how: 'revision',
+    });
+  });
+
+  /**
+   * A source checkout reports `package.json`'s placeholder, pulled or not. Ranked as a release it sat
+   * below every real one, so `cihub doctor` in any checkout failed as a CLI behind its stack
+   * (CI-Hub#1727). What it does have is its commit, and release images stamp theirs.
+   */
+  describe('from a source checkout, whose 0.0.0-dev names no release', () => {
+    const release = (revision: string | null) => stack('0.2.72', revision, `${REPO}:0.2.72`);
+
+    it("matches a release image built from the checkout's own commit", () => {
+      expect(compareBuilds(cli('0.0.0-dev', 'aaaaaaaaaaaa'), release('aaaaaaaaaaaa'))).toEqual({
+        kind: 'match',
+        how: 'revision',
+        cli: 'aaaaaaaaa',
+        stack: 'aaaaaaaaa',
+      });
+    });
+
+    it('calls another commit a revision skew, not a CLI behind its stack', () => {
+      expect(compareBuilds(cli('0.0.0-dev', 'aaaaaaaaaaaa'), release('bbbbbbbbbbbb'))).toEqual({
+        kind: 'skew',
+        how: 'revision',
+        cli: 'aaaaaaaaa',
+        stack: 'bbbbbbbbb',
+        direction: 'unordered',
+      });
+    });
+
+    it('cannot compare against a release image that stamps no commit, and says which side lacks what', () => {
+      expect(compareBuilds(cli('0.0.0-dev', 'aaaaaaaaaaaa'), release(null))).toEqual({
+        kind: 'incomparable',
+        cli: '0.0.0-dev',
+        stack: '0.2.72',
+        why: 'this cihub names no release, and the running image stamps no commit',
+      });
+    });
+
+    it('cannot compare when the checkout commit could not be read', () => {
+      // Run outside any git checkout, `git rev-parse HEAD` has nothing to give.
+      expect(compareBuilds(cli('0.0.0-dev'), release('bbbbbbbbbbbb'))).toEqual({
+        kind: 'incomparable',
+        cli: '0.0.0-dev',
+        stack: '0.2.72@bbbbbbbbb',
+        why: 'this cihub names no release and carries no commit',
+      });
+    });
+
+    it('reads the bare 0.0.0 fallback, and no version at all, the same way', () => {
+      expect(compareBuilds(cli('0.0.0', 'aaaaaaaaaaaa'), release('aaaaaaaaaaaa'))).toMatchObject({ kind: 'match', how: 'revision' });
+      expect(compareBuilds(cli('', 'aaaaaaaaaaaa'), release('bbbbbbbbbbbb'))).toMatchObject({ kind: 'skew', how: 'revision' });
+    });
+  });
 });
 
 describe('classifyCliInstall', () => {
@@ -189,6 +260,16 @@ describe('describeSkew', () => {
   it('is clean when the versions agree, and when there is no stack at all', () => {
     expect(describeSkew(compareBuilds(cli('0.2.73'), stack('0.2.73')), standalone).severity).toBe('ok');
     expect(describeSkew(compareBuilds(cli('0.2.73'), null), standalone).severity).toBe('ok');
+  });
+
+  it('warns, never fails, on a source checkout whose commit is not the release image commit', () => {
+    const source = { kind: 'source', path: '/usr/bin/node' } as const;
+    const release = stack('0.2.72', 'bbbbbbbbbbbb', `${REPO}:0.2.72`);
+    const report = describeSkew(compareBuilds(cli('0.0.0-dev', 'aaaaaaaaaaaa'), release), source);
+    expect(report.severity).toBe('warn');
+    expect(report.headline).toBe('cihub commit aaaaaaaaa vs stack commit bbbbbbbbb — builds differ');
+    expect(report.lines.join('\n')).not.toContain('older than the stack');
+    expect(describeSkew(compareBuilds(cli('0.0.0-dev', 'bbbbbbbbbbbb'), release), source).severity).toBe('ok');
   });
 });
 

@@ -331,7 +331,10 @@ Three commands now report it, and they all give the same answer:
 ### How the two sides are identified
 
 The CLI reports the version stamped into it at build time, plus the commit when the build stamped
-one (`cihub version` shows `cihub 0.2.73 (abc123def)` on a `dev` or pre-tag build).
+one (`cihub version` shows `cihub 0.2.73 (abc123def)` on a `dev` or pre-tag build). Run from a
+source checkout, it has no stamp. Its version is then the `0.0.0-dev` placeholder from
+`package.json`, which names no release, and its commit is the checkout's `HEAD`. A standalone build
+made without `CI_HUB_BUILD_VERSION` reports the same placeholder.
 
 The stack is read off the running container and **never** from `CI_HUB_VERSION` — that value comes
 from the install's env file, no build writes it, and it was wrong on 10 of 16 fleet Hubs on
@@ -339,12 +342,13 @@ from the install's env file, no build writes it, and it was wrong on 10 of 16 fl
 when it is version-shaped, then the highest version tag Docker holds locally for the same image.
 
 A `:dev` image, a digest pin and a local build match none of those, so the commit
-(`org.opencontainers.image.revision`) is compared instead. When neither a version nor a commit is
-available on both sides, that is reported as **cannot be compared** rather than as a match.
+(`org.opencontainers.image.revision`) is compared instead. A CLI that names no release is compared
+by commit too, whatever the image. When neither a version nor a commit is available on both sides,
+that is reported as **cannot be compared** rather than as a match.
 
 **Only a proven mismatch fails `cihub doctor`** — two builds that each name a release and name
 different ones. A `:dev` node whose image carries no release tag is a yellow note, because that state
-is normal there.
+is normal there. So is a source checkout on a different commit from the running image.
 
 ### `cihub self-update`
 
