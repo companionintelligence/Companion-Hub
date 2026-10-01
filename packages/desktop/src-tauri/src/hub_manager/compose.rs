@@ -265,8 +265,9 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
 /// Reads the host's `~/.docker/config.json`, strips host-only fields that
 /// break the Docker CLI inside Linux containers (currentContext, credsStore
 /// set to desktop/osxkeychain/wincred/secretservice/pass, plugins, features,
-/// hooks), preserves inline `auth` entries, and also preserves `credsStore`
-/// and `credHelpers` entries when they are not in the host-only list.
+/// hooks), preserves inline `auth` entries and the `proxies` section, and also
+/// preserves `credsStore` and `credHelpers` entries when they are not in the
+/// host-only list.
 ///
 /// If the destination path is a directory (stale Docker placeholder from a
 /// previous failed mount), it is removed first.
@@ -410,8 +411,17 @@ pub(crate) fn generate_container_docker_config(
         }
     }
 
-    // Only auths (inline), credsStore (non-host-only), and credHelpers
-    // (non-host-only) are preserved.  Everything else is dropped:
+    // Keep `proxies` as it is: Docker Compose sets HTTP_PROXY, HTTPS_PROXY and
+    // NO_PROXY (and the lower-case forms) from it in every container it
+    // creates. The Hub's own compose calls read this copy (its stack updater
+    // recreating `ci-hub`, every app install and start), so without it those
+    // containers lacked the proxy that the desktop's containers get.
+    if let Some(proxies) = host_config.get("proxies").filter(|v| v.is_object()) {
+        sanitized.insert("proxies".to_string(), proxies.clone());
+    }
+
+    // Only auths (inline), credsStore (non-host-only), credHelpers
+    // (non-host-only) and proxies are preserved.  Everything else is dropped:
     // currentContext, plugins, features, hooks, aliases, experimental, etc.
     // — all host-specific and either unused or harmful in-container.
 

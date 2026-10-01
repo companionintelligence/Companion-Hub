@@ -115,3 +115,90 @@ fn preserves_non_host_only_cred_helpers() {
         "non-host-only credHelper should be preserved"
     );
 }
+
+#[test]
+fn keeps_proxy_settings_for_the_containers_the_hub_starts() {
+    // Docker Compose sets HTTPS_PROXY, NO_PROXY and the rest from `proxies` in every container it
+    // creates. The Hub's own compose calls (its self-update, every app install and start) read this
+    // copy, so dropping it left them without the proxy the desktop's containers get (#1765).
+    let fixture = r#"{
+            "auths": {
+                "https://index.docker.io/v1/": { "auth": "dXNlcjpwYXNz" }
+            },
+            "proxies": {
+                "default": {
+                    "httpProxy": "http://proxy.example:3128",
+                    "httpsProxy": "http://proxy.example:3128",
+                    "noProxy": "localhost,127.0.0.1,.example.internal"
+                },
+                "tcp://docker.example:2376": { "httpsProxy": "http://other-proxy.example:3128" }
+            },
+            "credsStore": "desktop",
+            "credHelpers": { "ghcr.io": "desktop" },
+            "currentContext": "desktop-linux",
+            "plugins": { "debug": { "enabled": true } },
+            "features": { "hooks": "true" },
+            "hooks": { "x": {} },
+            "aliases": { "builder": "buildx" },
+            "experimental": "enabled"
+        }"#;
+
+    let (_tmp_home, docker_dir) = write_docker_config_fixture(fixture);
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let data_dir = tmp.path().to_path_buf();
+    generate_container_docker_config(&data_dir, Some(&docker_dir)).expect("generate config");
+
+    let config_path = data_dir.join(".docker").join("config.json");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+
+    assert_eq!(
+        parsed.get("proxies"),
+        Some(&serde_json::json!({
+            "default": {
+                "httpProxy": "http://proxy.example:3128",
+                "httpsProxy": "http://proxy.example:3128",
+                "noProxy": "localhost,127.0.0.1,.example.internal"
+            },
+            "tcp://docker.example:2376": { "httpsProxy": "http://other-proxy.example:3128" }
+        })),
+        "proxies should be copied as they are"
+    );
+    let mut kept: Vec<&str> = parsed
+        .as_object()
+        .expect("config is an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    kept.sort_unstable();
+    assert_eq!(
+        kept,
+        ["auths", "proxies"],
+        "host-only keys are still dropped"
+    );
+}
+
+#[test]
+fn drops_a_proxies_entry_the_docker_cli_cannot_read() {
+    // The Docker CLI ignores a whole config file it cannot parse ("Error parsing config file"), so a
+    // `proxies` that is not an object would also cost the Hub the registry logins kept beside it.
+    let fixture = r#"{
+            "auths": { "registry.example": { "auth": "dXNlcjpwYXNz" } },
+            "proxies": "http://proxy.example:3128"
+        }"#;
+
+    let (_tmp_home, docker_dir) = write_docker_config_fixture(fixture);
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let data_dir = tmp.path().to_path_buf();
+    generate_container_docker_config(&data_dir, Some(&docker_dir)).expect("generate config");
+
+    let parsed: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(data_dir.join(".docker").join("config.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(parsed.get("proxies").is_none());
+    assert_eq!(
+        parsed.get("auths"),
+        Some(&serde_json::json!({ "registry.example": { "auth": "dXNlcjpwYXNz" } }))
+    );
+}
