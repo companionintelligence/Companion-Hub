@@ -1,11 +1,17 @@
 import fs from 'node:fs';
-import { spawnAsync, type SpawnResult } from '@/common/helpers/exec-helpers';
+import { spawnAsync, spawnLines, type SpawnResult } from '@/common/helpers/exec-helpers';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
 
 export type ArchiveEntry = { path: string; type: string };
 
 const INVALID_ARCHIVE = 'Invalid backup archive';
+
+/**
+ * Most entries a listing is trusted to hold. Past this the archive is refused rather than read into
+ * memory: a small compressed file can expand to an arbitrary number of entries.
+ */
+export const MAX_ARCHIVE_ENTRIES = 1_000_000;
 
 /**
  * Every tar invocation here is an argument vector handed straight to the program,
@@ -54,6 +60,10 @@ export class ArchiveService {
    * path, and the verbose one the only source of the type. Splitting the verbose line
    * on whitespace to recover the path breaks on busybox (the timestamp carries seconds,
    * links carry a `->` suffix), which is the tar this image ships.
+   *
+   * Both are read line by line as tar prints them, keeping a path or one character per entry, so
+   * the size of the listing is not limited by a buffer: a photo library of several hundred
+   * thousand files lists as readily as a small app.
    */
   listTarGz = async (sourceFile: string): Promise<ArchiveEntry[]> => {
     const gzip = await this.isGzip(sourceFile);
@@ -61,21 +71,43 @@ export class ArchiveService {
     const pathArgs = [gzip ? '-tzf' : '-tf', sourceFile];
 
     this.logger.debug(`Listing archive with args: tar ${verboseArgs.join(' ')}`);
-    const [verboseList, pathList] = await Promise.all([spawnAsync('tar', verboseArgs), spawnAsync('tar', pathArgs)]);
+
+    const types: string[] = [];
+    const paths: string[] = [];
+
+    const collect = (into: string[], pick: (line: string) => string) => (line: string) => {
+      if (!line) return;
+
+      if (into.length >= MAX_ARCHIVE_ENTRIES) {
+        throw new Error(`Archive holds more than ${MAX_ARCHIVE_ENTRIES} entries`);
+      }
+
+      into.push(pick(line));
+    };
+
+    const [verboseList, pathList] = await Promise.all([
+      spawnLines(
+        'tar',
+        verboseArgs,
+        collect(types, (line) => line.charAt(0)),
+      ),
+      spawnLines(
+        'tar',
+        pathArgs,
+        collect(paths, (line) => line),
+      ),
+    ]);
 
     if (verboseList.exitCode !== 0 || pathList.exitCode !== 0) {
       this.logger.error(`Archive listing failed: ${(verboseList.stderr || pathList.stderr).trim()}`);
       throw new Error(INVALID_ARCHIVE);
     }
 
-    const verboseLines = verboseList.stdout.split('\n').filter(Boolean);
-    const paths = pathList.stdout.split('\n').filter(Boolean);
-
-    if (verboseLines.length !== paths.length) {
+    if (types.length !== paths.length) {
       throw new Error(INVALID_ARCHIVE);
     }
 
-    return paths.map((entryPath, index) => ({ path: entryPath, type: verboseLines[index]?.[0] ?? '' }));
+    return paths.map((entryPath, index) => ({ path: entryPath, type: types[index] ?? '' }));
   };
 
   /**

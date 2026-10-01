@@ -10,14 +10,15 @@ vi.unmock('fs');
 
 const realFs = await import('node:fs');
 
-const { spawnAsyncMock } = vi.hoisted(() => ({ spawnAsyncMock: vi.fn() }));
+const { spawnAsyncMock, spawnLinesMock } = vi.hoisted(() => ({ spawnAsyncMock: vi.fn(), spawnLinesMock: vi.fn() }));
 
 vi.mock('@/common/helpers/exec-helpers', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/common/helpers/exec-helpers')>()),
   spawnAsync: spawnAsyncMock,
+  spawnLines: spawnLinesMock,
 }));
 
-const { ArchiveService } = await import('../archive.service');
+const { ArchiveService, MAX_ARCHIVE_ENTRIES } = await import('../archive.service');
 
 const ok = (stdout = '') => ({ stdout, stderr: '', exitCode: 0 });
 
@@ -60,6 +61,7 @@ describe('ArchiveService (argument vectors)', () => {
 
   beforeEach(() => {
     spawnAsyncMock.mockReset();
+    spawnLinesMock.mockReset();
     spawnAsyncMock.mockResolvedValue(ok());
     service = new ArchiveService(mock<LoggerService>());
   });
@@ -105,8 +107,17 @@ describe('ArchiveService (argument vectors)', () => {
     ].join('\n');
     const BUSYBOX_PATHS = ['./', 'app-data/', 'app-data/my file.txt', 'app-data/link'].join('\n');
 
-    const mockListings = (verbose: string, paths: string) =>
-      spawnAsyncMock.mockImplementation(async (_cmd: string, args: string[]) => (args[0]?.includes('v') ? ok(verbose) : ok(paths)));
+    /** Feed each canned listing to the callback the way `spawnLines` would, line by line. */
+    const mockListings = (verbose: string, paths: string, result: { exitCode: number | null; stderr: string } = { exitCode: 0, stderr: '' }) =>
+      spawnLinesMock.mockImplementation(async (_cmd: string, args: string[], onLine: (line: string) => void) => {
+        try {
+          for (const line of (args[0]?.includes('v') ? verbose : paths).split('\n')) onLine(line);
+        } catch (error) {
+          return { exitCode: null, stderr: '', error: error as Error };
+        }
+
+        return result;
+      });
 
     it('pairs each path with its entry type from the verbose listing', async () => {
       mockListings(BUSYBOX_VERBOSE, BUSYBOX_PATHS);
@@ -123,21 +134,34 @@ describe('ArchiveService (argument vectors)', () => {
       mockListings('', '');
 
       await service.listTarGz(gzipFile);
-      expect(spawnAsyncMock).toHaveBeenCalledWith('tar', ['-tzvf', gzipFile]);
-      expect(spawnAsyncMock).toHaveBeenCalledWith('tar', ['-tzf', gzipFile]);
+      expect(spawnLinesMock).toHaveBeenCalledWith('tar', ['-tzvf', gzipFile], expect.any(Function));
+      expect(spawnLinesMock).toHaveBeenCalledWith('tar', ['-tzf', gzipFile], expect.any(Function));
 
-      spawnAsyncMock.mockClear();
+      spawnLinesMock.mockClear();
       mockListings('', '');
 
       await service.listTarGz(tarFile);
-      expect(spawnAsyncMock).toHaveBeenCalledWith('tar', ['-tvf', tarFile]);
-      expect(spawnAsyncMock).toHaveBeenCalledWith('tar', ['-tf', tarFile]);
+      expect(spawnLinesMock).toHaveBeenCalledWith('tar', ['-tvf', tarFile], expect.any(Function));
+      expect(spawnLinesMock).toHaveBeenCalledWith('tar', ['-tf', tarFile], expect.any(Function));
     });
 
     it('rejects a listing tar failed to produce', async () => {
-      spawnAsyncMock.mockResolvedValue({ stdout: '', stderr: 'tar: not in gzip format', exitCode: 2 });
+      mockListings('', '', { exitCode: 2, stderr: 'tar: not in gzip format' });
 
       await expect(service.listTarGz(gzipFile)).rejects.toThrow('Invalid backup archive');
+    });
+
+    it('rejects an archive with more entries than it will hold in memory', async () => {
+      const many = Array.from({ length: MAX_ARCHIVE_ENTRIES + 1 }, (_, i) => `app-data/${i}`).join('\n');
+      mockListings(many.replace(/^/gm, '-'), many);
+
+      await expect(service.listTarGz(gzipFile)).rejects.toThrow('Invalid backup archive');
+    });
+
+    it('skips the blank lines a trailing newline leaves', async () => {
+      mockListings('-rw-r--r-- 0/0 1 2026-09-01 10:00:00 a.txt\n', 'a.txt\n');
+
+      await expect(service.listTarGz(gzipFile)).resolves.toEqual([{ path: 'a.txt', type: '-' }]);
     });
 
     it('rejects listings whose lengths disagree rather than guess which line is which', async () => {
@@ -175,6 +199,7 @@ describe.skipIf(!hasTar)('ArchiveService (real tar)', () => {
   const realService = async () => {
     const actual = await vi.importActual<typeof import('@/common/helpers/exec-helpers')>('@/common/helpers/exec-helpers');
     spawnAsyncMock.mockImplementation(actual.spawnAsync);
+    spawnLinesMock.mockImplementation(actual.spawnLines);
 
     return new ArchiveService(mock<LoggerService>());
   };
@@ -233,4 +258,19 @@ describe.skipIf(!hasTar)('ArchiveService (real tar)', () => {
 
     await expect(service.listTarGz(archive)).rejects.toThrow('Invalid backup archive');
   });
+
+  it('lists an archive of over a thousand long-named files end to end', async () => {
+    const service = await realService();
+    const source = path.join(scratch, 'many');
+    await realFs.promises.mkdir(path.join(source, 'app-data'), { recursive: true });
+    // The size property itself (more output than spawnAsync's cap) is covered against spawnLines directly.
+    const long = 'n'.repeat(120);
+    await Promise.all(Array.from({ length: 1500 }, (_, i) => realFs.promises.writeFile(path.join(source, 'app-data', `${long}-${i}`), '')));
+    const archive = path.join(scratch, 'many.tar.gz');
+    await service.createTarGz(source, archive);
+
+    const entries = await service.listTarGz(archive);
+
+    expect(entries.filter((entry) => entry.type === '-')).toHaveLength(1500);
+  }, 30_000);
 });

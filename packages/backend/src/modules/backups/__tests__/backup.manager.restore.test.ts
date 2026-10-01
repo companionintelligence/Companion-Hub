@@ -78,7 +78,7 @@ const VALID_ENTRIES: TarEntry[] = [
   { name: './user-config/app.env', content: 'RESTORED=true\n' },
 ];
 
-describe.skipIf(!hasTar)('BackupManager.restoreApp', () => {
+describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
   const appUrn = 'test-app:test-store' as AppUrn;
 
   let scratch: string;
@@ -89,6 +89,9 @@ describe.skipIf(!hasTar)('BackupManager.restoreApp', () => {
   let backupDir: string;
   let tempDirs: string[];
   let filesystem: InstanceType<typeof FilesystemService>;
+  let archive: InstanceType<typeof ArchiveService>;
+  let logger: ReturnType<typeof mock<LoggerService>>;
+  let appFilesManager: ReturnType<typeof mock<AppFilesManager>>;
   let manager: InstanceType<typeof BackupManager>;
 
   const putArchive = async (name: string, bytes: Buffer | string) => {
@@ -124,10 +127,10 @@ describe.skipIf(!hasTar)('BackupManager.restoreApp', () => {
       await fs.promises.writeFile(path.join(dir, file), content);
     }
 
-    const logger = mock<LoggerService>();
+    logger = mock<LoggerService>();
     const config = mock<ConfigurationService>();
     config.get.mockImplementation(((key: string) => (key === 'directories' ? { dataDir } : { maxBackups: 0 })) as never);
-    const appFilesManager = mock<AppFilesManager>();
+    appFilesManager = mock<AppFilesManager>();
     appFilesManager.getAppPaths.mockReturnValue({ appDataDir, appInstalledDir } as never);
 
     filesystem = new FilesystemService(logger);
@@ -139,7 +142,8 @@ describe.skipIf(!hasTar)('BackupManager.restoreApp', () => {
       return dir;
     });
 
-    manager = new BackupManager(new ArchiveService(logger), logger, config, filesystem, appFilesManager);
+    archive = new ArchiveService(logger);
+    manager = new BackupManager(archive, logger, config, filesystem, appFilesManager);
     manager.onApplicationShutdown(); // stop the constructor's weekly interval
   });
 
@@ -187,6 +191,11 @@ describe.skipIf(!hasTar)('BackupManager.restoreApp', () => {
     ['a symlink in user-config', [...VALID_ENTRIES, { name: './user-config/leak', type: '2', linkname: '/etc/passwd' }], 'unsupported file types'],
     ['a symlink in app-data', [...VALID_ENTRIES, { name: './app-data/leak', type: '2', linkname: '/' }], 'unsupported file types'],
     ['a symlink in app', [...VALID_ENTRIES, { name: './app/leak', type: '2', linkname: 'docker-compose.json' }], 'unsupported file types'],
+    [
+      'a symlink at the top of app-data, where the Hub writes app.env',
+      [...VALID_ENTRIES, { name: './app-data/app.env', type: '2', linkname: '/etc/passwd' }],
+      'unsupported file types',
+    ],
     ['a hard link', [...VALID_ENTRIES, { name: './app-data/twin', type: '1', linkname: './app-data/data.txt' }], 'unsupported file types'],
     ['a parent-directory path', [...VALID_ENTRIES, { name: '../escaped.txt', content: 'x' }], 'unsupported file types'],
     ['a ./-prefixed parent-directory path', [...VALID_ENTRIES, { name: './../escaped.txt', content: 'x' }], 'unsupported file types'],
@@ -220,6 +229,131 @@ describe.skipIf(!hasTar)('BackupManager.restoreApp', () => {
 
     expect(tempDirs).toHaveLength(1);
     await expect(fs.promises.access(tempDirs[0] as string)).rejects.toThrow();
+  });
+
+  describe('symbolic links inside the app data folder', () => {
+    const WITH_LINKS: TarEntry[] = [
+      ...VALID_ENTRIES,
+      { name: './app-data/data/', type: '5' },
+      { name: './app-data/data/real.txt', content: 'target-content' },
+      { name: './app-data/data/alias', type: '2', linkname: 'real.txt' },
+      { name: './app-data/data/python', type: '2', linkname: '/usr/bin/python3' },
+    ];
+
+    it('restores them as links, with their targets as written', async () => {
+      const name = await putArchive('links.tar.gz', makeTarGz(WITH_LINKS));
+
+      await manager.restoreApp(appUrn, name);
+
+      await expect(fs.promises.readlink(path.join(appDataDir, 'data', 'alias'))).resolves.toBe('real.txt');
+      await expect(fs.promises.readlink(path.join(appDataDir, 'data', 'python'))).resolves.toBe('/usr/bin/python3');
+      await expect(fs.promises.readFile(path.join(appDataDir, 'data', 'alias'), 'utf8')).resolves.toBe('target-content');
+    });
+
+    it('refuses an entry written through a link, whichever comes first in the archive', async () => {
+      const outside = path.join(scratch, 'outside');
+      await fs.promises.mkdir(outside);
+      const link: TarEntry = { name: './app-data/data/hole', type: '2', linkname: outside };
+      const through: TarEntry = { name: './app-data/data/hole/pwned.txt', content: 'x' };
+
+      for (const order of [
+        [link, through],
+        [through, link],
+      ]) {
+        const name = await putArchive('through.tar.gz', makeTarGz([...VALID_ENTRIES, { name: './app-data/data/', type: '5' }, ...order]));
+
+        await expect(manager.restoreApp(appUrn, name)).rejects.toThrow('unsupported file types');
+
+        await expect(fs.promises.access(path.join(outside, 'pwned.txt'))).rejects.toThrow();
+        await expectLiveUntouched();
+      }
+    });
+
+    it('says which entry it refused, in the log', async () => {
+      const name = await putArchive(
+        'named.tar.gz',
+        makeTarGz([...VALID_ENTRIES, { name: './user-config/leak', type: '2', linkname: '/etc/passwd' }]),
+      );
+
+      await expect(manager.restoreApp(appUrn, name)).rejects.toThrow('unsupported file types');
+
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('user-config/leak'));
+    });
+  });
+
+  describe('backupApp', () => {
+    it('writes a backup that restores, links included, with a relative target kept relative', async () => {
+      await fs.promises.mkdir(path.join(appDataDir, 'data'), { recursive: true });
+      await fs.promises.writeFile(path.join(appDataDir, 'data', 'real.txt'), 'before-backup');
+      await fs.promises.symlink('real.txt', path.join(appDataDir, 'data', 'alias'));
+
+      const { filename } = await manager.backupApp(appUrn);
+      await fs.promises.rm(appDataDir, { recursive: true, force: true });
+      await manager.restoreApp(appUrn, filename);
+
+      await expect(fs.promises.readlink(path.join(appDataDir, 'data', 'alias'))).resolves.toBe('real.txt');
+      await expect(fs.promises.readFile(path.join(appDataDir, 'data', 'alias'), 'utf8')).resolves.toBe('before-backup');
+    });
+
+    it('leaves no temporary folder or stray archive behind', async () => {
+      const { filename } = await manager.backupApp(appUrn);
+
+      expect(tempDirs).toHaveLength(1);
+      await expect(fs.promises.access(tempDirs[0] as string)).rejects.toThrow();
+      await expect(fs.promises.access(`${tempDirs[0]}.tar.gz`)).rejects.toThrow();
+      await expect(fs.promises.readdir(backupDir)).resolves.toContain(filename);
+    });
+
+    it('does not report a backup when tar failed, and cleans up', async () => {
+      vi.spyOn(archive, 'createTarGz').mockResolvedValue({ stdout: '', stderr: 'tar: No space left on device', exitCode: 2 });
+
+      await expect(manager.backupApp(appUrn)).rejects.toThrow('Failed to create the backup archive: tar: No space left on device');
+
+      // Nothing was moved into the backups folder, so there is no file for the name to refer to.
+      await expect(fs.promises.access(backupDir)).rejects.toThrow();
+      await expect(fs.promises.access(tempDirs[0] as string)).rejects.toThrow();
+    });
+
+    it('does not report a backup when the app files could not be copied', async () => {
+      vi.spyOn(filesystem, 'copyDirectory').mockResolvedValue(false);
+
+      await expect(manager.backupApp(appUrn)).rejects.toThrow('Failed to copy the app files for the backup');
+      await expect(fs.promises.access(tempDirs[0] as string)).rejects.toThrow();
+    });
+
+    it('backs up an app whose data folder sits under a path containing "backups"', async () => {
+      const mounted = path.join(scratch, 'mnt', 'backups', 'data');
+      await fs.promises.mkdir(mounted, { recursive: true });
+      await fs.promises.writeFile(path.join(mounted, 'file.txt'), 'on-the-backups-volume');
+      appFilesManager.getAppPaths.mockReturnValue({ appDataDir: mounted, appInstalledDir } as never);
+
+      const { filename } = await manager.backupApp(appUrn);
+      await fs.promises.rm(mounted, { recursive: true, force: true });
+      await manager.restoreApp(appUrn, filename);
+
+      await expect(fs.promises.readFile(path.join(mounted, 'file.txt'), 'utf8')).resolves.toBe('on-the-backups-volume');
+    });
+
+    it('still leaves out a backups folder inside the data folder', async () => {
+      await fs.promises.mkdir(path.join(appDataDir, 'backups'), { recursive: true });
+      await fs.promises.writeFile(path.join(appDataDir, 'backups', 'old.tar.gz'), 'x');
+
+      const { filename } = await manager.backupApp(appUrn);
+      await fs.promises.rm(appDataDir, { recursive: true, force: true });
+      await manager.restoreApp(appUrn, filename);
+
+      await expect(fs.promises.access(path.join(appDataDir, 'backups', 'old.tar.gz'))).rejects.toThrow();
+      await expect(fs.promises.readFile(path.join(appDataDir, 'data.txt'), 'utf8')).resolves.toBe('live-data');
+    });
+
+    it('gives an app with no data folder an empty one in the archive, so the backup can be restored', async () => {
+      await fs.promises.rm(appDataDir, { recursive: true, force: true });
+
+      const { filename } = await manager.backupApp(appUrn);
+      await manager.restoreApp(appUrn, filename);
+
+      await expect(fs.promises.readdir(appDataDir)).resolves.toEqual([]);
+    });
   });
 
   it('rejects a file that is not an archive, rather than "extracting" nothing and wiping the app', async () => {

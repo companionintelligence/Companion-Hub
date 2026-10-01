@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 import { resolveBackupFilePath } from './backup-path';
-import { validateRestoreArchiveEntries, validateRestoreDirectory } from './restore-validation';
+import { UnsafeBackupError, validateRestoreArchiveEntries, validateRestoreDirectory } from './restore-validation';
 import { isAbsoluteHostPath, joinHostPath } from '@/common/helpers/app-data-path.helper';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { ArchiveService } from '@/core/archive/archive.service';
@@ -55,42 +55,78 @@ export class BackupManager implements OnApplicationShutdown {
 
     this.logger.info('Copying files to backup location...');
 
-    await this.filesystem.createDirectory(tempDir);
+    try {
+      await this.filesystem.createDirectory(tempDir);
 
-    const { appDataDir, appInstalledDir } = this.appFilesManager.getAppPaths(appUrn);
-    const userConfigDir = path.join(dataDir, 'user-config', appStoreId, appName);
+      const { appDataDir, appInstalledDir } = this.appFilesManager.getAppPaths(appUrn);
+      const userConfigDir = path.join(dataDir, 'user-config', appStoreId, appName);
 
-    await this.filesystem.copyDirectory(appDataDir, path.join(tempDir, 'app-data'), {
-      recursive: true,
-      filter: (src) => !src.includes('backups'),
-    });
+      // Links are copied as links with their targets as written: by default `fs.cp` rewrites a relative
+      // target to an absolute one under the SOURCE folder, which no longer points anywhere once the
+      // data is restored somewhere else.
+      // An app that has not written anything yet may have no data folder. The archive still gets one,
+      // because a restore refuses a backup without it.
+      const dataCopied = (await this.filesystem.pathExists(appDataDir))
+        ? await this.filesystem.copyDirectory(appDataDir, path.join(tempDir, 'app-data'), {
+            recursive: true,
+            verbatimSymlinks: true,
+            // Judged on the path inside the app's data folder: the folder itself may live under a path that
+            // contains "backups" (a volume mounted at /mnt/backups), and excluding it excluded everything.
+            filter: (src) => !path.relative(appDataDir, src).includes('backups'),
+          })
+        : await this.filesystem.createDirectory(path.join(tempDir, 'app-data'));
+      const filesCopied = await this.filesystem.copyDirectory(appInstalledDir, path.join(tempDir, 'app'));
 
-    await this.filesystem.copyDirectory(appInstalledDir, path.join(tempDir, 'app'));
+      if (!dataCopied || !filesCopied) {
+        throw new Error('Failed to copy the app files for the backup');
+      }
 
-    if (await this.filesystem.pathExists(userConfigDir)) {
-      this.logger.info('Including user configuration in backup...');
-      await this.filesystem.copyDirectory(userConfigDir, path.join(tempDir, 'user-config'));
+      if (await this.filesystem.pathExists(userConfigDir)) {
+        this.logger.info('Including user configuration in backup...');
+
+        if (!(await this.filesystem.copyDirectory(userConfigDir, path.join(tempDir, 'user-config')))) {
+          throw new Error('Failed to copy the app configuration for the backup');
+        }
+      }
+
+      this.logger.info('Creating archive...');
+
+      // Beside the folder being archived, not inside it: an archive written into its own source is
+      // read as it grows, and a tar that skips it is a tar that may exit non-zero.
+      const archivePath = `${tempDir}.tar.gz`;
+      const { stdout, stderr, exitCode } = await this.archiveManager.createTarGz(tempDir, archivePath);
+      this.logger.debug('--- archiveManager.createTarGz ---');
+      this.logger.debug('stderr:', stderr);
+      this.logger.debug('stdout:', stdout);
+
+      // ⚠ A backup that was not written must not be reported as one. The update flow stops the app,
+      // takes this backup and treats the file as the way back; a tar that failed (disk full) used to
+      // leave a name for a file that does not exist.
+      if (exitCode !== 0) {
+        throw new Error(`Failed to create the backup archive${stderr ? `: ${stderr.trim()}` : ''}`);
+      }
+
+      this.logger.info('Moving archive to backup directory...', backupDir);
+
+      await this.filesystem.createDirectory(backupDir);
+      const finalPath = path.join(backupDir, `${backupName}.tar.gz`);
+
+      try {
+        const moved = await this.filesystem.copyFile(archivePath, finalPath);
+
+        if (moved === false || !(await this.filesystem.isFile(finalPath))) {
+          throw new Error('Failed to move the backup archive into the backups folder');
+        }
+      } finally {
+        await this.filesystem.removeFile(archivePath);
+      }
+
+      this.logger.info('Backup completed!');
+      return { filename: `${backupName}.tar.gz` };
+    } finally {
+      // The temp folder goes whether the backup worked or not: a failed one used to leave a full copy of the app in /tmp.
+      await this.filesystem.removeDirectory(tempDir);
     }
-
-    this.logger.info('Creating archive...');
-
-    // Create the archive
-    const { stdout, stderr } = await this.archiveManager.createTarGz(tempDir, `${path.join(tempDir, backupName)}.tar.gz`);
-    this.logger.debug('--- archiveManager.createTarGz ---');
-    this.logger.debug('stderr:', stderr);
-    this.logger.debug('stdout:', stdout);
-
-    this.logger.info('Moving archive to backup directory...', backupDir);
-
-    // Move the archive to the backup directory
-    await this.filesystem.createDirectory(backupDir);
-    await this.filesystem.copyFile(`${path.join(tempDir, backupName)}.tar.gz`, path.join(backupDir, `${backupName}.tar.gz`));
-
-    // Remove the temp backup folder
-    await this.filesystem.removeDirectory(tempDir);
-
-    this.logger.info('Backup completed!');
-    return { filename: `${backupName}.tar.gz` };
   };
 
   public restoreApp = async (appUrn: AppUrn, filename: string) => {
@@ -126,7 +162,12 @@ export class BackupManager implements OnApplicationShutdown {
       // data before it writes the backup's, so an archive that turns out to be corrupt,
       // truncated, or hostile must be rejected while the live data is still there.
       // Each of these throws; none of them is advisory.
-      validateRestoreArchiveEntries(await this.archiveManager.listTarGz(archive));
+      try {
+        validateRestoreArchiveEntries(await this.archiveManager.listTarGz(archive));
+      } catch (error) {
+        this.logRejectedBackup(filename, error);
+        throw error;
+      }
 
       this.logger.info('Extracting archive...');
       const { stderr, stdout } = await this.archiveManager.extractTarGz(archive, restoreDir);
@@ -134,9 +175,14 @@ export class BackupManager implements OnApplicationShutdown {
       this.logger.debug('stderr:', stderr);
       this.logger.debug('stdout:', stdout);
 
-      await validateRestoreDirectory(path.join(restoreDir, 'app-data'), { required: true });
-      await validateRestoreDirectory(path.join(restoreDir, 'app'), { required: true });
-      await validateRestoreDirectory(path.join(restoreDir, 'user-config'), { required: false });
+      try {
+        await validateRestoreDirectory(path.join(restoreDir, 'app-data'), { required: true, symlinks: true });
+        await validateRestoreDirectory(path.join(restoreDir, 'app'), { required: true });
+        await validateRestoreDirectory(path.join(restoreDir, 'user-config'), { required: false });
+      } catch (error) {
+        this.logRejectedBackup(filename, error);
+        throw error;
+      }
 
       await this.replaceAppFiles(appUrn, restoreDir);
     } finally {
@@ -145,6 +191,12 @@ export class BackupManager implements OnApplicationShutdown {
       await this.filesystem.removeDirectory(restoreDir);
     }
   };
+
+  /** Say in the log which entry made a backup unusable; the error the caller sees cannot name it. */
+  private logRejectedBackup(filename: string, error: unknown) {
+    const detail = error instanceof UnsafeBackupError ? error.detail : error instanceof Error ? error.message : String(error);
+    this.logger.error(`Backup ${filename} was refused: ${detail}`);
+  }
 
   /** Swap the app's live folders for the (already validated) ones extracted from a backup. */
   private async replaceAppFiles(appUrn: AppUrn, restoreDir: string) {
@@ -165,7 +217,7 @@ export class BackupManager implements OnApplicationShutdown {
     // Copy data from the backup folder. `copyDirectory` reports failure by returning false
     // (ENOSPC, EACCES), and a restore that copied nothing must not report success.
     const copied = [
-      await this.filesystem.copyDirectory(path.join(restoreDir, 'app-data'), appDataDir),
+      await this.filesystem.copyDirectory(path.join(restoreDir, 'app-data'), appDataDir, { verbatimSymlinks: true }),
       await this.filesystem.copyDirectory(path.join(restoreDir, 'app'), appInstalledDir),
     ];
 
