@@ -118,4 +118,35 @@ describe('CustomAppService', () => {
       await expect(service.uploadAppImage('app:store' as any as any, Buffer.from('test'))).rejects.toThrow('CUSTOM_APP_ERROR_NOT_CUSTOM');
     });
   });
+  // These write `docker-compose.json` / `config.json` / `description.md` into `apps/<store>/<app>/`,
+  // a layout every installed store app shares. The URN is whatever the caller sent.
+  describe('provenance: only apps created here can be rewritten here', () => {
+    const OFFICIAL = 'open-webui:ci-marketplace' as any;
+    const CUSTOM = 'myapp:_user' as any;
+
+    it('refuses to rewrite the compose file of a store app', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
+
+      await expect(service.updateCustomApp(OFFICIAL, { services: [] } as any)).rejects.toThrow('CUSTOM_APP_ERROR_NOT_CUSTOM');
+
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+    });
+
+    it('refuses to rewrite the metadata of a store app', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
+
+      await expect(service.updateAppMetadata(OFFICIAL, '# changed')).rejects.toThrow('CUSTOM_APP_ERROR_NOT_CUSTOM');
+
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+      expect(filesystem.writeJsonFile).not.toHaveBeenCalled();
+    });
+
+    it('still rewrites the compose file of a custom app', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
+
+      await service.updateCustomApp(CUSTOM, { services: [] } as any);
+
+      expect(filesystem.writeTextFile).toHaveBeenCalledWith('/data/apps/_user/myapp/docker-compose.json', expect.any(String));
+    });
+  });
 });

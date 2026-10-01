@@ -80,10 +80,27 @@ export class CustomAppService {
     }
   }
 
+  /**
+   * Refuse an app that did not come from "Add custom app".
+   *
+   * ⚠ THE URN IS CALLER-SUPPLIED AND THESE METHODS WRITE TO WHATEVER IT NAMES. An installed
+   * store app lives at the same `apps/<store>/<app>/` layout, so without this a custom-app route
+   * rewrites an official app's `docker-compose.json` or `config.json` — and that app keeps the
+   * extra container privileges granted to its store, which the sandbox that custom content is
+   * validated against never gave it.
+   */
+  private assertCustomApp(appUrn: AppUrn): void {
+    if (extractAppUrn(appUrn).appStoreId !== APPS_FOLDER) {
+      throw new TranslatableError('CUSTOM_APP_ERROR_NOT_CUSTOM', { urn: appUrn }, HttpStatus.BAD_REQUEST);
+    }
+  }
+
   async updateCustomApp(appUrn: AppUrn, config: UpdateCustomAppDto['config']) {
     if (this.configService.get('demoMode')) {
       throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
     }
+
+    this.assertCustomApp(appUrn);
 
     const existingApp = await this.appsRepository.getAppByUrn(appUrn);
     if (!existingApp) {
@@ -190,11 +207,9 @@ export class CustomAppService {
       throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
     }
 
-    const { appName, appStoreId } = extractAppUrn(appUrn);
+    this.assertCustomApp(appUrn);
 
-    if (appStoreId !== APPS_FOLDER) {
-      throw new TranslatableError('CUSTOM_APP_ERROR_NOT_CUSTOM', { urn: appUrn }, HttpStatus.BAD_REQUEST);
-    }
+    const { appName, appStoreId } = extractAppUrn(appUrn);
 
     const existingApp = await this.appsRepository.getAppByUrn(appUrn);
     if (!existingApp) {
@@ -234,6 +249,8 @@ export class CustomAppService {
     if (this.configService.get('demoMode')) {
       throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
     }
+
+    this.assertCustomApp(appUrn);
 
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const { dataDir } = this.configService.get('directories');
