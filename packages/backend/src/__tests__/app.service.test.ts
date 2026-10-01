@@ -315,5 +315,117 @@ describe('AppService', () => {
 
       expect(cacheService.clear).toHaveBeenCalledWith(expect.arrayContaining([SESSION_KEY_PREFIX, APP_SESSION_KEY_PREFIX]));
     });
+
+    /*
+     * At log level Debug, bootstrap writes the configuration into the log, and Settings → Logs hands
+     * that log to whoever asks for it (#1724). The configuration below is shaped like the one
+     * `ConfigurationService.configure()` builds, and every credential in it has a value of its own,
+     * so a leak names the field it came from.
+     */
+    it('logs the configuration at startup without any of its credentials', async () => {
+      const credentials = {
+        postgresPassword: 'leaked-postgres-password',
+        rabbitmqPassword: 'leaked-rabbitmq-password',
+        jwtSecret: 'leaked-jwt-secret',
+        forwardAuthSecret: 'leaked-forward-auth-secret',
+        ciHubApiKey: 'leaked-portal-device-key',
+        ciHubMoveKey: 'leaked-portal-move-key',
+        hubLocalKey: 'leaked-host-local-key',
+        portalPushKeyPending: 'leaked-portal-push-key',
+        inferenceVllmApiKey: 'leaked-vllm-api-key',
+        cloudProviderApiKey: 'leaked-openai-api-key',
+      };
+      configurationService.getConfig.mockReturnValue(
+        fromPartial({
+          database: { host: 'ci-hub-db', port: 5432, username: 'tipi', password: credentials.postgresPassword, database: 'tipi' },
+          queue: { host: 'ci-hub-queue', username: 'tipi', password: credentials.rabbitmqPassword, port: 5672 },
+          directories: { dataDir: DATA_DIR, appDataDir: APP_DATA_DIR, appDir: APP_DIR },
+          logLevel: 'debug',
+          version: '1.2.3',
+          isProduction: false,
+          userSettings: {
+            demoMode: false,
+            disablePasswordReset: true,
+            domain: 'example.com',
+            port: 8080,
+            sslPort: 8443,
+            postgresPort: 5432,
+            forwardAuthUrl: 'http://ci-hub:5002/api/auth/traefik',
+            persistTraefikConfig: false,
+            logLevel: 'debug',
+            inferenceBackend: 'vllm',
+            inferenceVllmApiKey: credentials.inferenceVllmApiKey,
+            inferenceVllmUrl: 'http://vllm:8000',
+            inferenceCloudProviders: [
+              {
+                provider: 'openai',
+                apiKey: credentials.cloudProviderApiKey,
+                baseUrl: 'https://api.openai.com/v1',
+                defaultModel: 'gpt-4o',
+                enabled: true,
+              },
+            ],
+            hubPoolMaxPromptTokens: 16000,
+            experimental: { insecureCookie: false },
+          },
+          domain: 'example.com',
+          ciCloudUrl: 'https://portal.example.com',
+          ciHubOrganizationId: 'org-1',
+          ciHubApiKey: credentials.ciHubApiKey,
+          ciHubMoveKey: credentials.ciHubMoveKey,
+          hubLocalKey: credentials.hubLocalKey,
+          portalPushKeyPrefix: 'abcdef01',
+          portalPushKeyPending: credentials.portalPushKeyPending,
+          portalPushKeyDeliveredAt: '2026-09-25T12:00:00.000Z',
+          architecture: 'amd64',
+          rootFolderHost: '/opt/ci-hub',
+          jwtSecret: credentials.jwtSecret,
+          forwardAuthSecret: credentials.forwardAuthSecret,
+          __prod__: false,
+        }),
+      );
+
+      await appService.bootstrap();
+
+      // Each call rendered the way LoggerService writes it: an Error as its message and stack, any
+      // other object as JSON.
+      const written = (['debug', 'info', 'warn', 'error'] as const)
+        .flatMap((level) => loggerService[level].mock.calls)
+        .map((args) =>
+          args
+            .map((arg) => (arg instanceof Error ? `${arg.message} ${arg.stack}` : typeof arg === 'object' ? JSON.stringify(arg) : String(arg)))
+            .join(' '),
+        )
+        .join('\n');
+      expect(Object.values(credentials).filter((credential) => written.includes(credential))).toEqual([]);
+
+      // Still the line someone debugging a Hub needs: version, folders, ports and switches.
+      const startup = loggerService.debug.mock.calls.find(([message]) => message === 'Starting with configuration');
+      expect(startup?.[1]).toMatchObject({
+        version: '1.2.3',
+        directories: { dataDir: DATA_DIR, appDataDir: APP_DATA_DIR, appDir: APP_DIR },
+        database: { host: 'ci-hub-db', port: 5432, username: 'tipi', password: '[redacted]' },
+        queue: { host: 'ci-hub-queue', port: 5672, password: '[redacted]' },
+        userSettings: {
+          port: 8080,
+          sslPort: 8443,
+          disablePasswordReset: true,
+          hubPoolMaxPromptTokens: 16000,
+          inferenceVllmApiKey: '[redacted]',
+          inferenceVllmUrl: 'http://vllm:8000',
+          inferenceCloudProviders: [{ provider: 'openai', apiKey: '[redacted]', defaultModel: 'gpt-4o' }],
+          experimental: { insecureCookie: false },
+        },
+        ciHubApiKey: '[redacted]',
+        ciHubMoveKey: '[redacted]',
+        hubLocalKey: '[redacted]',
+        portalPushKeyPrefix: 'abcdef01',
+        portalPushKeyPending: '[redacted]',
+        portalPushKeyDeliveredAt: '2026-09-25T12:00:00.000Z',
+        jwtSecret: '[redacted]',
+        forwardAuthSecret: '[redacted]',
+        __prod__: false,
+      });
+    });
   });
 });

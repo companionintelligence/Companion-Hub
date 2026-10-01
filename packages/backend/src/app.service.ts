@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Inject, Injectable, type OnApplicationShutdown } from '@nestjs/common';
 import { APP_DATA_DIR, DATA_DIR, HUB_MANAGED_LABEL, HUB_STACK_REGISTRY_REPO, hubContainerName } from './common/constants';
+import { redactSecretsForLog } from './common/helpers/log-privacy';
 import { withTimeout } from './common/helpers/with-timeout';
 import { CacheService, ONE_DAY_IN_SECONDS } from './core/cache/cache.service';
 import { resolveHubBuildInfo } from './core/build-info/hub-build-info';
@@ -133,7 +134,9 @@ export class AppService implements OnApplicationShutdown {
       const { version, __prod__ } = this.configuration.getConfig();
       const config = this.configuration.getConfig();
       this.logger.info('Log level', config.userSettings.logLevel);
-      this.logger.debug('Starting with configuration', config);
+      // Never the raw object: it holds the database and queue passwords, both signing secrets and the
+      // Portal keys, and Settings → Logs hands this log to whoever asks for it (#1724).
+      this.logger.debug('Starting with configuration', redactSecretsForLog(config));
 
       await this.logger.flush();
       this.logger.startPeriodicFlush();

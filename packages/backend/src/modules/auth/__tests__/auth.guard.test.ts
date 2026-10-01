@@ -72,4 +72,24 @@ describe('AuthGuard', () => {
     // alongside one, and a request that has a principal must not be refused because of a flag.
     await expect(guard.canActivate(contextFor({ user: { id: 1 } as never, hubUnclaimed: true }))).resolves.toBe(true);
   });
+
+  it('logs the request body with its credentials redacted, nested ones included', async () => {
+    // A settings save carries the vLLM key at the top level and each cloud provider's key inside a
+    // list. The guard used to redact only a few exact top-level names, so both reached the debug log.
+    const debug = vi.fn();
+    guard = new AuthGuard({ debug } as never);
+    const body = {
+      themeColor: 'red',
+      inferenceVllmApiKey: 'vllm-key',
+      inferenceCloudProviders: [{ provider: 'openai', apiKey: 'sk-test', defaultModel: 'gpt-4o', enabled: true }],
+    };
+
+    await guard.canActivate(contextFor({ method: 'PATCH', url: '/api/user-settings', body, user: { id: 1 } as never }));
+
+    expect(debug).toHaveBeenCalledWith('HTTP request', 'PATCH', '/api/user-settings', {
+      themeColor: 'red',
+      inferenceVllmApiKey: '[redacted]',
+      inferenceCloudProviders: [{ provider: 'openai', apiKey: '[redacted]', defaultModel: 'gpt-4o', enabled: true }],
+    });
+  });
 });
