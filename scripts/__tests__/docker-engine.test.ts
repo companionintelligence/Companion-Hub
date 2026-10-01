@@ -7,6 +7,7 @@ import {
   dockerEngineStatePath,
   loadPersistedDockerEngine,
   persistDockerEngine,
+  securityOptionsSayRootless,
   selectDockerEngine,
   splitBrainConflict,
   type PinnedDockerEngine,
@@ -117,5 +118,18 @@ describe('splitBrainConflict', () => {
         reachable('system', 'unix:///var/run/docker.sock', 'system', true),
       ]),
     ).toBeNull();
+  });
+});
+
+describe('securityOptionsSayRootless', () => {
+  it('reads `docker info --format {{json .SecurityOptions}}`', () => {
+    expect(securityOptionsSayRootless('["name=apparmor","name=seccomp,profile=builtin","name=rootless","name=cgroupns"]')).toBe(true);
+    expect(securityOptionsSayRootless('["name=apparmor","name=seccomp,profile=builtin","name=cgroupns"]')).toBe(false);
+  });
+
+  it('says no to output it cannot read', () => {
+    expect(securityOptionsSayRootless('')).toBe(false);
+    expect(securityOptionsSayRootless('null')).toBe(false);
+    expect(securityOptionsSayRootless('name=rootless')).toBe(false);
   });
 });
