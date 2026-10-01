@@ -81,7 +81,12 @@ describe('Header', () => {
     renderHeader(true);
     expect(screen.queryByTestId('mobile-app-menu')).not.toBeInTheDocument();
     await userEvent.click(screen.getByTestId('mobile-app-menu-btn'));
-    expect(screen.getByTestId('mobile-app-menu')).toBeInTheDocument();
+    const menu = screen.getByTestId('mobile-app-menu');
+    expect(menu).toBeInTheDocument();
+    expect(menu).toHaveClass('animate-in', 'fade-in-0', 'zoom-in-95', 'slide-in-from-top-2');
+    const scrim = screen.getByTestId('mobile-app-menu-scrim');
+    expect(scrim.style.top).toBe('var(--header-offset)');
+    expect(scrim.className).not.toContain('inset-0');
     expect(screen.getByRole('menuitem', { name: /COMMON_SETTINGS|Settings/i })).toBeInTheDocument();
   });
 
