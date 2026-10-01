@@ -5539,22 +5539,34 @@ export type CheckErrors = {
      * The Health Check is not successful
      */
     503: {
-        status?: string;
+        status?: 'error' | 'shutting_down';
         info?: {
             [key: string]: {
-                status: string;
+                status: 'up' | 'degraded' | 'down';
+                /**
+                 * Time the health indicator took to respond, in ms
+                 */
+                responseTime?: number;
                 [key: string]: unknown;
             };
-        };
+        } | null;
         error?: {
             [key: string]: {
-                status: string;
+                status: 'up' | 'degraded' | 'down';
+                /**
+                 * Time the health indicator took to respond, in ms
+                 */
+                responseTime?: number;
                 [key: string]: unknown;
             };
-        };
+        } | null;
         details?: {
             [key: string]: {
-                status: string;
+                status: 'up' | 'degraded' | 'down';
+                /**
+                 * Time the health indicator took to respond, in ms
+                 */
+                responseTime?: number;
                 [key: string]: unknown;
             };
         };
@@ -5568,22 +5580,34 @@ export type CheckResponses = {
      * The Health Check is successful
      */
     200: {
-        status?: string;
+        status?: 'ok' | 'degraded';
         info?: {
             [key: string]: {
-                status: string;
+                status: 'up' | 'degraded' | 'down';
+                /**
+                 * Time the health indicator took to respond, in ms
+                 */
+                responseTime?: number;
                 [key: string]: unknown;
             };
-        };
+        } | null;
         error?: {
             [key: string]: {
-                status: string;
+                status: 'up' | 'degraded' | 'down';
+                /**
+                 * Time the health indicator took to respond, in ms
+                 */
+                responseTime?: number;
                 [key: string]: unknown;
             };
-        };
+        } | null;
         details?: {
             [key: string]: {
-                status: string;
+                status: 'up' | 'degraded' | 'down';
+                /**
+                 * Time the health indicator took to respond, in ms
+                 */
+                responseTime?: number;
                 [key: string]: unknown;
             };
         };
