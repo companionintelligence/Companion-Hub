@@ -45,15 +45,40 @@ describe('backend instrument', () => {
         dsn: 'https://examplePublicKey@o0.ingest.sentry.io/0',
         environment: 'production',
         release: 'v0.2.27',
-        // No PII. This flag governs `user.ip_address` and the IP-bearing request
-        // headers, and the Sentry org does not scrub IPs server-side.
-        sendDefaultPii: false,
+        // No PII. Sentry 11's defaults collect everything, so each category is
+        // off explicitly; the Sentry org does not scrub IPs server-side.
+        dataCollection: expect.objectContaining({
+          userInfo: false,
+          cookies: false,
+          httpHeaders: false,
+          httpBodies: [],
+        }),
       }),
     );
     expect(setTag).toHaveBeenCalledWith('ci_portal_url', 'https://hub.ci.computer');
     expect(setTag).toHaveBeenCalledWith('ci_portal_environment', 'prod');
     expect(setTag).toHaveBeenCalledWith('deployment_version', 'v0.2.27');
     expect(setUser).not.toHaveBeenCalled();
+  });
+
+  it('keeps the metrics and logs opt-outs working through the before-send hooks', async () => {
+    process.env.SENTRY_DSN = 'https://examplePublicKey@o0.ingest.sentry.io/0';
+    process.env.SENTRY_ENABLE_METRICS = 'false';
+    process.env.SENTRY_ENABLE_LOGS = 'false';
+
+    await import('../instrument');
+
+    const options = init.mock.calls[0]?.[0] as {
+      beforeSendMetric: (m: object) => object | null;
+      beforeSendLog: (l: object) => object | null;
+    };
+    expect(options.beforeSendMetric({})).toBeNull();
+    expect(options.beforeSendLog({})).toBeNull();
+
+    delete process.env.SENTRY_ENABLE_METRICS;
+    delete process.env.SENTRY_ENABLE_LOGS;
+    const metric = {};
+    expect(options.beforeSendMetric(metric)).toBe(metric);
   });
 
   it('does not initialize sentry without a DSN', async () => {
@@ -74,7 +99,7 @@ describe('backend instrument', () => {
 
     // Otherwise the runtime resolves serverName to os.hostname() and stamps it on
     // every event inside _prepareEvent — before beforeSend, and regardless of
-    // sendDefaultPii.
+    // dataCollection.
     expect(options.includeServerName).toBe(false);
 
     // ContextLines attaches seven lines of real source per frame. Scrubbing that

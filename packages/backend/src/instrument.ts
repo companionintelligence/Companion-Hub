@@ -88,19 +88,31 @@ if (dsn && !envTelemetryBlock(process.env)) {
     release: process.env.SENTRY_RELEASE ?? process.env.CI_HUB_VERSION,
     enabled: true,
     tracesSampleRate: sampleRate('SENTRY_TRACES_SAMPLE_RATE', 0.1),
-    profilesSampleRate: sampleRate('SENTRY_PROFILES_SAMPLE_RATE', 0.1),
-    enableMetrics: process.env.SENTRY_ENABLE_METRICS !== 'false',
-    enableLogs: process.env.SENTRY_ENABLE_LOGS !== 'false',
+    // Sentry 11 removed the `enableMetrics` option; dropping every metric here
+    // keeps the `SENTRY_ENABLE_METRICS=false` opt-out working.
+    beforeSendMetric: (metric) => (process.env.SENTRY_ENABLE_METRICS === 'false' ? null : metric),
+    // Likewise `enableLogs` is gone in Sentry 11; keep `SENTRY_ENABLE_LOGS=false` working.
+    beforeSendLog: (log) => (process.env.SENTRY_ENABLE_LOGS === 'false' ? null : log),
     // The rest of the fleet sends no PII, and the Sentry org has
-    // `scrubIPAddresses` disabled — leaving this on made the Hub the one
-    // component storing users' real IP addresses. In @sentry/core 10.x this
-    // flag governs exactly `user.ip_address` and the IP-bearing request headers
-    // (`x-forwarded-for` and friends); `user.id` — our `device_id` — is set
-    // explicitly below and is unaffected, so triage loses nothing.
-    sendDefaultPii: false,
+    // `scrubIPAddresses` disabled — leaving the SDK defaults on made the Hub the
+    // one component storing users' real IP addresses. Sentry 11 replaced
+    // `sendDefaultPii` with `dataCollection`, whose defaults collect
+    // *everything*, so every category is switched off explicitly to keep the old
+    // `sendDefaultPii: false` posture. `user.id` — our `device_id` — is set
+    // explicitly below and is unaffected by `userInfo`, so triage loses nothing.
+    dataCollection: {
+      userInfo: false,
+      cookies: false,
+      httpHeaders: false,
+      httpBodies: [],
+      urlQueryParams: false,
+      databaseQueryData: false,
+      queues: false,
+      stackFrameVariables: false,
+    },
     // Without this, @sentry/node-core resolves `serverName` to `os.hostname()`
     // and the runtime stamps it on every event inside `_prepareEvent` — i.e.
-    // before `beforeSend` — regardless of `sendDefaultPii`. Personal machines
+    // before `beforeSend` — regardless of `dataCollection`. Personal machines
     // are routinely named after their owner, which is precisely the identifier
     // the `device_id` tag exists to replace. `scrubEvent` deletes the field too;
     // this stops it ever being computed.

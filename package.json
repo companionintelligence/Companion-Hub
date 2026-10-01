@@ -73,7 +73,7 @@
   "author": "",
   "license": "PolyForm-Noncommercial-1.0.0",
   "devDependencies": {
-    "@biomejs/biome": "~2.4.11",
+    "@biomejs/biome": "2.4.11",
     "@hey-api/openapi-ts": "^0.97.3",
     "@playwright/test": "^1.63.0",
     "cloudflare": "^7.2.0",
