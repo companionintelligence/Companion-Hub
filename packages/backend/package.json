@@ -91,7 +91,7 @@
     "esbuild": "^0.25.0",
     "memfs": "^4.80.0",
     "tsx": "^4.23.15",
-    "typescript": "^5.9.3",
+    "typescript": "^7.0.2",
     "unplugin-swc": "^1.6.0",
     "vite-tsconfig-paths": "5.1.4",
     "vitest": "^5.0.2",
