@@ -88,6 +88,16 @@ describe('redactSecretsForLog', () => {
     expect(redactSecretsForLog(fields)).toEqual(fields);
   });
 
+  it('replaces a number held under a credential name', () => {
+    // The auth guard logs a body before validation rejects it, so a password or PIN sent as a JSON
+    // number would reach the log as sent. The guard's old list hid every type under its names.
+    expect(redactSecretsForLog({ currentPassword: 12345678, token: 123456, hubPoolMaxPromptTokens: 16000 })).toEqual({
+      currentPassword: '[redacted]',
+      token: '[redacted]',
+      hubPoolMaxPromptTokens: 16000,
+    });
+  });
+
   it('shows whether a credential is set: an empty or null one keeps its value', () => {
     const fields = { forwardAuthSecret: '', ciHubApiKey: null, ciHubMoveKey: undefined };
 

@@ -27,14 +27,18 @@ const SECRET_FIELD_PATTERN = /password|passphrase|secret|token|credential|keys?$
  */
 const SECRET_FIELD_NAMES: ReadonlySet<string> = new Set(['portalPushKeyPending']);
 
+/** A plural `tokens` names a count (`hubPoolMaxPromptTokens`), never a credential. */
+const TOKEN_COUNT_PATTERN = /tokens$/i;
+
 /**
  * A copy of `value`, such as the configuration or a request body, that is safe to log: at any depth,
  * every credential field holds `[redacted]` instead of its value. The input is left unchanged.
  *
- * Only a non-empty string, or an object or list held under a credential's name, is replaced. A flag
- * or a count named after a credential (`disablePasswordReset`, `hubPoolMaxPromptTokens`) is not one,
- * and an empty or null credential keeps its value, because whether it is set is what a reader of the
- * log needs to know.
+ * Only a non-empty string, a number, or an object or list held under a credential's name, is
+ * replaced. A number counts because the auth guard logs a body before validation rejects it, so a
+ * password or PIN sent as a JSON number would reach the log as sent. A flag named after a credential
+ * (`disablePasswordReset`), a token count (`hubPoolMaxPromptTokens`), and an empty or null credential
+ * keep their value, because whether a credential is set is what a reader of the log needs to know.
  */
 export function redactSecretsForLog(value: unknown): unknown {
   if (Array.isArray(value)) {
@@ -50,6 +54,9 @@ export function redactSecretsForLog(value: unknown): unknown {
 function isCredential(name: string, value: unknown): boolean {
   if (!SECRET_FIELD_PATTERN.test(name) && !SECRET_FIELD_NAMES.has(name)) {
     return false;
+  }
+  if (typeof value === 'number') {
+    return !TOKEN_COUNT_PATTERN.test(name);
   }
 
   return typeof value === 'string' ? value !== '' : typeof value === 'object' && value !== null;
