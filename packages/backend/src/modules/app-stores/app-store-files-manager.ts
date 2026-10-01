@@ -210,21 +210,28 @@ export class AppStoreFilesManager {
       throw new Error(`App ${appUrn} not found in repo ${this.storeConfig.slug}`);
     }
 
+    // Each step below reports failure by returning false (ENOSPC, EACCES), never by throwing. They
+    // used to be ignored, so a full disk produced a half-copied app folder and an update that went
+    // on to run it; the first thing to notice was a container failing to start.
     // delete eventual app folder if exists
     this.logger.info(`Deleting app ${appUrn} folder if exists`);
-    await this.filesystem.removeDirectory(appInstalledDir);
+    const removed = await this.filesystem.removeDirectory(appInstalledDir);
 
     // Create app folder
     this.logger.info(`Creating app ${appUrn} folder`);
-    await this.filesystem.createDirectory(appInstalledDir);
+    const createdApp = await this.filesystem.createDirectory(appInstalledDir);
 
     // Create app data folder
     this.logger.info(`Creating app ${appUrn} data folder`);
-    await this.filesystem.createDirectory(appDataDir);
+    const createdData = await this.filesystem.createDirectory(appDataDir);
 
     // Copy app folder from repo
     this.logger.info(`Copying app ${appUrn} from repo ${this.storeConfig.slug}`);
-    await this.filesystem.copyDirectory(appRepoDir, appInstalledDir);
+    const copied = await this.filesystem.copyDirectory(appRepoDir, appInstalledDir);
+
+    if (removed === false || createdApp === false || createdData === false || copied === false) {
+      throw new Error(`Could not copy ${appUrn} from repo ${this.storeConfig.slug} into the installed apps folder`);
+    }
 
     // Patch cloudflared for Linux/Docker environment (add host.docker.internal)
     const { appName } = extractAppUrn(appUrn);

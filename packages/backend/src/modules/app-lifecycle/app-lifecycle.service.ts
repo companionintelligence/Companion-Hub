@@ -2547,9 +2547,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'update');
     this.appEventsQueue
-      .publish({ command: 'update', appUrn, requestId, form: app.config, performBackup })
+      .publish({ command: 'update', appUrn, requestId, form: app.config, performBackup, wasRunning: appStatusBeforeUpdate === 'running' })
       .then(async (raw) => {
-        const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
+        const { success, message, errorCode, errorDetail, settingsPath, rolledBack } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
           if (!this.operationRegistry.claimCompletion(appUrn, requestId)) {
             return;
@@ -2565,11 +2565,15 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           this.agentNotifyService?.notify('update_success', { appUrn }, 'info');
 
           if (appStatusBeforeUpdate === 'running') {
-            await this.startAppAndWait({ appUrn });
+            // The update command pulled the images before it stopped anything; pulling them again
+            // here repeats the slowest step of the update for nothing.
+            await this.startAppAndWait({ appUrn, skipPull: true });
           }
         } else {
           this.logger.error(`Failed to update app ${appUrn}: ${message}`);
-          const restoredStatus = appStatusBeforeUpdate === 'running' ? 'stopped' : appStatusBeforeUpdate;
+          // A failed update that put the previous version back left it running if it was running.
+          // Anything else is only known to be stopped.
+          const restoredStatus = rolledBack ? appStatusBeforeUpdate : appStatusBeforeUpdate === 'running' ? 'stopped' : appStatusBeforeUpdate;
           await this.settleCommandOutcome({
             appId: app.id,
             appUrn,

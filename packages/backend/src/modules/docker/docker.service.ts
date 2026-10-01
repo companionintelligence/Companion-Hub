@@ -36,6 +36,8 @@ export interface PreUpdateVolumeSnapshotResult {
   appUrn: AppUrn;
   snapshotId: string;
   timestamp: string;
+  /** The folder holding everything this snapshot wrote, so it can be removed as one. */
+  snapshotBaseDir?: string;
   snapshotPath?: string;
   /** Snapshot of the app's installed dir (docker-compose.yml, config.json, etc.) as it stood before the update overwrote it. */
   appFilesSnapshotPath?: string;
@@ -1895,7 +1897,8 @@ export class DockerService {
    * @param appUrn App URN to snapshot.
    * @returns Snapshot result including snapshotted paths and volumes.
    */
-  public async createPreUpdateVolumeSnapshot(appUrn: AppUrn): Promise<PreUpdateVolumeSnapshotResult> {
+  public async createPreUpdateVolumeSnapshot(appUrn: AppUrn, options: { includeData?: boolean } = {}): Promise<PreUpdateVolumeSnapshotResult> {
+    const includeData = options.includeData ?? true;
     const projectName = this.getComposeProjectName(appUrn);
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const timestamp = new Date().toISOString();
@@ -1908,7 +1911,9 @@ export class DockerService {
 
       const snapshottedVolumes: PreUpdateVolumeSnapshotResult['volumes'] = [];
 
-      const appDataExists = await this.filesystem.pathExists(appDataDir);
+      // The data folder is by far the largest part. A caller that has just taken a backup already has
+      // it in a restorable form and asks for the installed files only.
+      const appDataExists = includeData && (await this.filesystem.pathExists(appDataDir));
       let snapshotPath: string | undefined;
 
       if (appDataExists) {
@@ -1984,6 +1989,7 @@ export class DockerService {
         appUrn,
         snapshotId,
         timestamp,
+        snapshotBaseDir,
         snapshotPath,
         appFilesSnapshotPath,
         volumes: snapshottedVolumes,
