@@ -385,7 +385,7 @@ export const InstallStep = ({
 
       for (let i = 0; i < finalStates.length; i++) {
         const state = finalStates[i];
-        if (!state || state.status !== 'installing') {
+        if (state?.status !== 'installing') {
           continue;
         }
 

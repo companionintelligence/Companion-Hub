@@ -81,7 +81,7 @@ describe('mobile login integration', () => {
     await setHubConnection('https://hub-a.ci.computer');
     setTauriSessionId('sess-a');
     await client.get({ url: '/api/user-context' });
-    expect((httpFetch.mock.calls[0]?.[0] as Request).url).toBe('https://hub-a.ci.computer/api/user-context');
+    expect((httpFetch.mock.calls[0]?.[0] as Request | undefined)?.url).toBe('https://hub-a.ci.computer/api/user-context');
 
     await clearHubConnection();
     httpFetch.mockClear();

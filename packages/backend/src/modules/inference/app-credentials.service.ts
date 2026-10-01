@@ -627,7 +627,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
   ): LocalChatSelection {
     const rejected: LocalChatSelection['rejected'] = [];
     const pickIfAvailable = (model: CuratedModel | null | undefined): CuratedModel | null => {
-      if (!model || model.modality !== 'llm') return null;
+      if (model?.modality !== 'llm') return null;
       if (!this.isCuratedModelAvailable(model, modelsLoaded, backendType)) return null;
       const check = checkModelRequirements(model, requirements);
       if (check.verdict === 'fails') {

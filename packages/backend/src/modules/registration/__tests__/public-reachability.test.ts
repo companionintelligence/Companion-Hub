@@ -559,8 +559,11 @@ describe.skipIf(!canTrustAtRunTime)('probePublicHostname as wired for production
   beforeEach(async () => {
     const certificate = selfSignedCertificate(NAME);
     tls.setDefaultCACertificates([...bundledTrust, certificate.cert]);
-    server = https.createServer(certificate, (_request, response) => response.writeHead(200).end('{"status":"ok"}'));
-    const port = await new Promise<number>((resolve) => server?.listen(0, '127.0.0.1', () => resolve((server?.address() as net.AddressInfo).port)));
+    const listening = https.createServer(certificate, (_request, response) => response.writeHead(200).end('{"status":"ok"}'));
+    server = listening;
+    const port = await new Promise<number>((resolve) =>
+      listening.listen(0, '127.0.0.1', () => resolve((listening.address() as net.AddressInfo).port)),
+    );
     // The edge listens on 443; a port in the "hostname" is how a test reaches a local stand-in.
     origin = `${NAME}:${port}`;
     zoneA = ['127.0.0.1'];

@@ -609,23 +609,19 @@ describe('AppAccessPoints', () => {
 });
 
 describe('isLoopbackAccessUrl', () => {
-  it.each([
-    'http://127.0.0.1:3000/login',
-    'http://127.1.2.3:3000',
-    'http://localhost:8080',
-    'http://[::1]:3000',
-    'http://0.0.0.0:3000',
-  ])('treats %s as loopback', (url) => {
-    expect(isLoopbackAccessUrl(url)).toBe(true);
-  });
+  it.each(['http://127.0.0.1:3000/login', 'http://127.1.2.3:3000', 'http://localhost:8080', 'http://[::1]:3000', 'http://0.0.0.0:3000'])(
+    'treats %s as loopback',
+    (url) => {
+      expect(isLoopbackAccessUrl(url)).toBe(true);
+    },
+  );
 
-  it.each([
-    'https://openwebui.example.com/login',
-    'http://192.168.1.5:3000',
-    'https://hub-tailscale-1.example.ts.net:3000',
-  ])('treats %s as routable', (url) => {
-    expect(isLoopbackAccessUrl(url)).toBe(false);
-  });
+  it.each(['https://openwebui.example.com/login', 'http://192.168.1.5:3000', 'https://hub-tailscale-1.example.ts.net:3000'])(
+    'treats %s as routable',
+    (url) => {
+      expect(isLoopbackAccessUrl(url)).toBe(false);
+    },
+  );
 
   it('does not claim a missing URL is loopback', () => {
     // A null URL means "no route", which the card already handles by disabling
