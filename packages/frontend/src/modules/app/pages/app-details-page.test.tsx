@@ -100,6 +100,10 @@ vi.mock('../containers/app-details-tabs/app-details-tabs', () => ({
   AppDetailsTabs: () => <div data-testid="app-details-tabs" />,
 }));
 
+vi.mock('../components/app-access-points/app-access-points', () => ({
+  AppAccessPoints: () => <div data-testid="app-access-points" />,
+}));
+
 vi.mock('@/lib/marketplace-image-url', () => ({
   getMarketplaceAppImageUrl,
 }));
@@ -200,24 +204,95 @@ describe('AppDetailsPage', () => {
     expect(screen.getByTestId('app-details-tabs')).toBeInTheDocument();
   });
 
-  it('shows a not-found message when app details fail to load', () => {
+  it('shows a not-found message when the catalog has no such app', () => {
     useQuery.mockImplementation((options: { queryKey?: readonly unknown[] }) => {
       if (options.queryKey?.[0] === 'app-image-size') {
         return { data: null, isLoading: false };
       }
 
-      return {
-        data: undefined,
-        isLoading: false,
-        isError: true,
-      };
+      if (options.queryKey?.[0] === 'app-listing') {
+        return {
+          data: undefined,
+          isLoading: false,
+          isError: true,
+          error: { message: 'APP_ERROR_APP_NOT_FOUND' },
+        };
+      }
+
+      return { data: undefined, isLoading: false, isError: false };
     });
 
     render(<AppDetailsPage />);
 
     expect(screen.getByText('APP_ERROR_APP_NOT_FOUND')).toBeInTheDocument();
     expect(screen.getByText('APP_DETAILS_LOAD_FAILED')).toBeInTheDocument();
-    expect(screen.queryByTestId('loading')).not.toBeInTheDocument();
+    expect(screen.queryByText('APP_ACTION_GRANT_DENIED')).not.toBeInTheDocument();
+  });
+
+  it('says the app was refused when Portal denies view, and does not call it missing', () => {
+    useQuery.mockImplementation((options: { queryKey?: readonly unknown[] }) => {
+      if (options.queryKey?.[0] === 'app-listing') {
+        return {
+          data: undefined,
+          isLoading: false,
+          isError: true,
+          error: { message: 'APP_ACTION_GRANT_DENIED', intlParams: { action: 'view', app: 'Test App' } },
+        };
+      }
+
+      return { data: undefined, isLoading: false, isError: false };
+    });
+
+    render(<AppDetailsPage />);
+
+    expect(screen.getByRole('heading', { name: 'Test App' })).toBeInTheDocument();
+    expect(screen.getByText('APP_ACTION_GRANT_DENIED')).toBeInTheDocument();
+    expect(screen.queryByText('APP_ERROR_APP_NOT_FOUND')).not.toBeInTheDocument();
+    expect(screen.queryByText('APP_DETAILS_LOAD_FAILED')).not.toBeInTheDocument();
+    expect(screen.queryByText('A clean desktop summary for installs.')).not.toBeInTheDocument();
+  });
+
+  it('keeps the listing when the private record is refused', () => {
+    useQuery.mockImplementation((options: { queryKey?: readonly unknown[] }) => {
+      if (options.queryKey?.[0] === 'app-listing') {
+        return {
+          data: {
+            info: {
+              urn: 'test-app:community',
+              name: 'Test App',
+              author: 'CI',
+              short_desc: 'A clean desktop summary for installs.',
+              categories: ['utilities'],
+            },
+          },
+          isLoading: false,
+          isError: false,
+        };
+      }
+
+      if (options.queryKey?.[0] === 'app-image-size') {
+        return { data: { totalBytes: 1234, formatted: '1.2 KB' }, isLoading: false };
+      }
+
+      if (options.queryKey?.[0] === 'app') {
+        return {
+          data: undefined,
+          isLoading: false,
+          isError: true,
+          error: { message: 'APP_ACTION_GRANT_DENIED', intlParams: { action: 'view', app: 'Test App' } },
+        };
+      }
+
+      return { data: undefined, isLoading: false, isError: false };
+    });
+
+    render(<AppDetailsPage />);
+
+    expect(screen.getByText('A clean desktop summary for installs.')).toBeInTheDocument();
+    expect(screen.queryByText('APP_ERROR_APP_NOT_FOUND')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('app-status')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('app-backups-card')).not.toBeInTheDocument();
+    expect(screen.getByTestId('app-actions')).toBeInTheDocument();
   });
 
   it('keeps the status and action bar in the shared header row layout', () => {
@@ -267,8 +342,12 @@ describe('AppDetailsPage', () => {
 
     render(<AppDetailsPage />);
 
-    expect(useQuery).toHaveBeenNthCalledWith(
-      3,
+    const runtimeCall = useQuery.mock.calls.find((call) => {
+      const options = call[0] as { queryKey?: readonly unknown[] };
+      return options.queryKey?.[0] === 'app-runtime-health';
+    });
+
+    expect(runtimeCall?.[0]).toEqual(
       expect.objectContaining({
         queryKey: ['app-runtime-health', 'test-app:community'],
         enabled: false,

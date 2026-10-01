@@ -304,6 +304,34 @@ describe('MarketplaceWhoIsService', () => {
     expect(visible).toEqual(items);
   });
 
+  it('keeps one app listing visible when WhoIs has no answer', async () => {
+    portal.whoisApps.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    await expect(service.catalogVisibility(sessionReq(), APP_URN, 'store')).resolves.toBe('visible');
+  });
+
+  it('refuses one app listing when WhoIs answers with an empty grant', async () => {
+    portal.whoisApps.mockResolvedValue({
+      status: 200,
+      body: {
+        organizations: [{ organizationId: 'org-hub', version: 1, apps: [{ appId: 'immich', can: [] }] }],
+      },
+    });
+
+    await expect(service.catalogVisibility(sessionReq(), APP_URN, 'store')).resolves.toBe('refused');
+  });
+
+  it('shows one app listing when WhoIs grants view', async () => {
+    portal.whoisApps.mockResolvedValue({
+      status: 200,
+      body: {
+        organizations: [{ organizationId: 'org-hub', version: 1, apps: [{ appId: 'immich', can: ['view'] }] }],
+      },
+    });
+
+    await expect(service.catalogVisibility(sessionReq(), APP_URN, 'store')).resolves.toBe('visible');
+  });
+
   /*
    * A 409 `ORGANIZATION_REQUIRED` is Portal declining to guess between tied organizations, not a
    * refusal. Read as one, it would overwrite a fresh grant with nothing for the whole TTL.

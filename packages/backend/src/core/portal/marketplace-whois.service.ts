@@ -161,6 +161,29 @@ export class MarketplaceWhoIsService {
   }
 
   /**
+   * Whether the store listing for one app is shown.
+   *
+   * Same rule as `filterSessionByView`: an unknown grant stays visible, and a
+   * known grant that omits `view` is refused. Callers still decide "not found"
+   * from the catalog before asking, and they still refuse the private install
+   * record on an unknown grant.
+   */
+  async catalogVisibility(req: Request, appUrn: AppUrn, surface: GrantSurface = 'store'): Promise<'visible' | 'refused'> {
+    const userId = hubSessionOperatorUserId(req);
+
+    if (userId == null) {
+      return 'visible';
+    }
+
+    const can = (await this.canMap(userId, [appUrn], surface)).get(appUrn);
+    if (can == null || can.includes('view')) {
+      return 'visible';
+    }
+
+    return 'refused';
+  }
+
+  /**
    * Whether this operator is an owner or admin of this device's organization —
    * what changing which custom domain an app serves takes (R2-HUBDOMAINS-1).
    *
