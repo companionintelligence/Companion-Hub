@@ -110,7 +110,11 @@ describe('fleet install and the cihub binary source', () => {
       // --cihub-version then says what the file is, and the node compares against it.
       mocks.installNode.mockClear();
       await runFleetCommand(['install', '--execute', '--cihub-binary', file, '--cihub-version', '0.2.72']);
-      expect((mocks.installNode.mock.calls[0]?.[1] as InstallOpts).cihubBinary).toMatchObject({ kind: 'local', path: file, version: '0.2.72' });
+      expect((mocks.installNode.mock.calls[0]?.[1] as InstallOpts | undefined)?.cihubBinary).toMatchObject({
+        kind: 'local',
+        path: file,
+        version: '0.2.72',
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

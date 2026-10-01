@@ -190,7 +190,7 @@ describe('probeMemory identifies itself as the plugin being installed', () => {
       res.end('{}');
     });
     return new Promise((resolve) =>
-      server?.listen(0, '127.0.0.1', () => resolve({ url: `http://127.0.0.1:${(server?.address() as AddressInfo).port}`, seen })),
+      server?.listen(0, '127.0.0.1', () => resolve({ url: `http://127.0.0.1:${(server?.address() as AddressInfo | undefined)?.port}`, seen })),
     );
   }
 
@@ -313,7 +313,9 @@ describe('probeHubMcp against a server enforcing the Hub session contract', () =
     });
 
     (server as Server & { deleted: string[] }).deleted = deleted;
-    return new Promise((resolve) => server?.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${(server?.address() as AddressInfo).port}`)));
+    return new Promise((resolve) =>
+      server?.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${(server?.address() as AddressInfo | undefined)?.port}`)),
+    );
   }
 
   it('carries the session id from initialize into tools/list', async () => {
@@ -889,7 +891,9 @@ describe('downloadFile', () => {
 
   function serve(handler: (req: unknown, res: { writeHead: (c: number) => void; end: (b?: Buffer | string) => void }) => void): Promise<string> {
     server = createServer(handler as never);
-    return new Promise((resolve) => server?.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${(server?.address() as AddressInfo).port}`)));
+    return new Promise((resolve) =>
+      server?.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${(server?.address() as AddressInfo | undefined)?.port}`)),
+    );
   }
 
   it('writes the body to disk byte for byte', async () => {

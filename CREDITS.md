@@ -163,8 +163,6 @@ The frameworks and libraries that define how this repository is built.
 |  | [`@companionintelligence/video-kit`](https://github.com/companionintelligence/CI-Hub) | first-party (internal) |  |
 | <img src="https://github.com/faker-js.png?size=40" width="20" height="20" alt=""> | [`@faker-js/faker`](https://fakerjs.dev) | MIT | Generate massive amounts of fake contextual data |
 | <img src="https://github.com/hey-api.png?size=40" width="20" height="20" alt=""> | [`@hey-api/openapi-ts`](https://heyapi.dev/docs/openapi/typescript/get-started) | MIT | 🌀 OpenAPI to TypeScript code generator. Production-grade SDKs, Zod schemas, TanStack Query  |
-| <img src="https://github.com/nestjs.png?size=40" width="20" height="20" alt=""> | [`@nestjs/cli`](https://github.com/nestjs/nest-cli#readme) | MIT | Nest - modern, fast, powerful node.js web framework (@cli) |
-| <img src="https://github.com/nestjs.png?size=40" width="20" height="20" alt=""> | [`@nestjs/schematics`](https://github.com/nestjs/schematics#readme) | MIT | Nest - modern, fast, powerful node.js web framework (@schematics) |
 | <img src="https://github.com/nestjs.png?size=40" width="20" height="20" alt=""> | [`@nestjs/testing`](https://nestjs.com) | MIT | Nest - modern, fast, powerful node.js web framework (@testing) |
 | <img src="https://github.com/microsoft.png?size=40" width="20" height="20" alt=""> | [`@playwright/test`](https://playwright.dev) | Apache-2.0 | A high-level API to automate web browsers |
 | <img src="https://github.com/remix-run.png?size=40" width="20" height="20" alt=""> | [`@react-router/dev`](https://reactrouter.com) | MIT | Dev tools and CLI for React Router |
@@ -202,6 +200,7 @@ The frameworks and libraries that define how this repository is built.
 | <img src="https://github.com/pngjs.png?size=40" width="20" height="20" alt=""> | [`pngjs`](https://github.com/lukeapage/pngjs) | MIT | PNG encoder/decoder in pure JS, supporting any bit size & interlace, async & sync with full  |
 |  | [`tailwindcss-animate`](https://www.npmjs.com/package/tailwindcss-animate) | MIT | A Tailwind CSS plugin for creating beautiful animations. |
 | <img src="https://github.com/TypeStrong.png?size=40" width="20" height="20" alt=""> | [`ts-node`](https://typestrong.org/ts-node) | MIT | TypeScript execution environment and REPL for node.js, with source map support |
+| <img src="https://github.com/justkey007.png?size=40" width="20" height="20" alt=""> | [`tsc-alias`](https://github.com/justkey007/tsc-alias#readme) | MIT | Replace alias paths with relative paths after typescript compilation. |
 | <img src="https://github.com/vercel.png?size=40" width="20" height="20" alt=""> | [`turbo`](https://turborepo.dev) | MIT | Turborepo is the build system for coding agents. |
 | <img src="https://github.com/unplugin.png?size=40" width="20" height="20" alt=""> | [`unplugin-swc`](https://github.com/unplugin/unplugin-swc) | MIT | SWC plugin for Vite and Rollup |
 | <img src="https://github.com/aleclarson.png?size=40" width="20" height="20" alt=""> | [`vite-tsconfig-paths`](https://github.com/aleclarson/vite-tsconfig-paths#readme) | MIT | Vite resolver for TypeScript compilerOptions.paths |
