@@ -5,7 +5,7 @@
 > **Key paths:** `packages/desktop/src-tauri/src/hub_manager.rs`, `packages/desktop/src-tauri/resources/`
 > **Commands:** `pnpm run local:desktop` (Vite :5005), `pnpm run dev:desktop` (appliance :5002), `cd packages/desktop/src-tauri && cargo test`
 > **Owner persona:** maintainability + security
-> **Last updated:** 2026-09-30
+> **Last updated:** 2026-10-01
 > **Related:** docs/system/frontend.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/AUTO_HEALING.md
 
 ---
@@ -167,6 +167,8 @@ Authorization codes and desktop-exchange tokens are single-use. Restarting the H
 ## Compose lifecycle
 
 Desktop app spawns `docker compose` against bundled `docker-compose.prod.yml`.
+
+Before it starts the stack, `start_hub` checks the Docker it runs on (`hub_manager/docker_versions.rs`). The stack file's `gw_priority` needs Docker Compose 2.33 or newer and Docker Engine 28 or newer, and an older Compose rejects the whole file with an error that doesn't mention Docker's version. On an older Docker the start stops with a message that names the versions found, and the failure sticks until the user tries again. A version that can't be read is logged to `desktop.log` and doesn't block the start. `cihub up` runs the same check (`scripts/lib/docker-versions.ts`).
 
 Container identity: `CI_HUB_CONTAINER_UID/GID`, `DOCKER_GID` env vars from `resolve_hub_container_identity()`.
 

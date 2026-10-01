@@ -290,6 +290,7 @@ cihub config [env]           # show resolved config values only
 ```
 
 - `--detached` runs the stack in the background (equivalent to `docker compose up -d`).
+- Before it starts the stack, `cihub up` checks that Docker Compose is 2.33 or newer and Docker Engine is 28 or newer, which the stack file needs. On an older Docker it stops and names the versions it found. If it can't read a version, it says so and starts anyway. `restart` and `recreate` run the same check when they start the stack again. `cihub up local` (source dev) isn't checked.
 - After a reset (no `~/.local/share/companion-hub` seed), `cihub up prod` prompts interactively for a database password and writes a fresh install. Set `POSTGRES_PASSWORD` (or `CIHUB_POSTGRES_PASSWORD`) to skip the prompt.
 - The fresh install pins `CI_HUB_IMAGE` from exactly one of these, in order, and prints which:
   1. `CI_HUB_IMAGE` in the environment.

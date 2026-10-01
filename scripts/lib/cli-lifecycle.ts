@@ -24,6 +24,7 @@ import { parseEnvFile } from '../env-file.js';
 import { isApplianceMode, requireRepoRoot } from './cli-repo-context.js';
 import { BASE_COMMAND, type HubEnv, type StartMode } from './cli-types.js';
 import { printMessageBox } from './cli-ui.js';
+import { requireDockerForHubStack } from './docker-versions.js';
 import { buildComposeBaseArgs, ensureApplianceInstall, envOverridesForContext, type HubContext, resolveHubContext } from './hub-context.js';
 
 const POSTGRES_INFRA_SERVICES = ['ci-hub-queue', 'ci-hub-db'] as const;
@@ -107,6 +108,9 @@ export async function startHub(mode: StartMode, env: HubEnv) {
   if (mode === 'local-dev' && env !== 'local') {
     usageAndExit('Source-based local development only supports the local environment. Use "cihub up <env>" for appliance environments.');
   }
+  // Every stack but source dev runs docker-compose.prod.yml, which an older Docker cannot run.
+  // Source dev starts only Postgres and RabbitMQ from docker-compose.local.yml, which can.
+  if (mode !== 'local-dev') requireDockerForHubStack();
   const envFileName = getEnvFileOrExit(env);
   await runScript('scripts/init-hub-data-dirs.ts', () => initHubDataDirs(), { ENV_FILE: envFileName });
   const envOverrides = buildEnvOverrides(envFileName);
@@ -161,6 +165,8 @@ export async function startHub(mode: StartMode, env: HubEnv) {
 async function startApplianceHub(ctx: HubContext, detachedMode: 'attached' | 'detached') {
   const dataDir = ctx.dataDir as string;
   const envOverrides = envOverridesForContext(ctx);
+  // On the engine the Hub is pinned to, which envOverrides names, before anything is set up.
+  requireDockerForHubStack(envOverrides);
 
   await runScript(
     'scripts/init-hub-data-dirs.ts',

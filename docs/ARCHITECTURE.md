@@ -728,7 +728,11 @@ RabbitMQ live only there and only the `ci-hub` service joins it, so a marketplac
 cannot reach the Hub's database or its lifecycle queue at all — by topology, not by password.
 Both also publish a host port bound to `127.0.0.1` for local tooling, never to the LAN. The
 queue additionally authenticates every message it carries (`modules/queue/message-signing.ts`),
-so even a leaked broker password does not confer Hub authority.
+so even a leaked broker password does not confer Hub authority. The Hub's own connections out
+(the Portal, image registries) still leave through `ci-hub_network`: `ci-hub_internal` sorts first
+by name and would otherwise take the Hub's default route, so the compose file gives
+`ci-hub_network` `gw_priority: 1` on the Hub, as it does on Traefik and the Tailscale sidecar
+(#1763).
 
 Images are pushed to **GitHub Container Registry** (ghcr.io). The package must remain
 **public**: the desktop shells out to `docker compose` with no registry credentials, so any
