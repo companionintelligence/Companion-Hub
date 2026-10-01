@@ -45,7 +45,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Rust (stable) + Android targets
         uses: dtolnay/rust-toolchain@stable
@@ -144,7 +144,7 @@ jobs:
 
       - name: Checkout
         if: steps.secrets.outputs.present == 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Rust (stable) + Android targets
         if: steps.secrets.outputs.present == 'true'
@@ -246,7 +246,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Rust (stable) + iOS targets
         uses: dtolnay/rust-toolchain@stable
@@ -342,7 +342,7 @@ jobs:
 
       - name: Checkout
         if: steps.secrets.outputs.present == 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Rust (stable) + iOS device target
         if: steps.secrets.outputs.present == 'true'
