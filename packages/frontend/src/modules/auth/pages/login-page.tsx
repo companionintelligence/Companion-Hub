@@ -214,6 +214,7 @@ export default () => {
         portalAccountEmail={portalAccountEmail}
         portalReachable={portalReachable}
         openPortalSsoExternally={authPolicy.openHubSsoInSystemBrowser}
+        allowPasswordLogin={!isMobile}
         onSwitchAccount={() => {
           forgetPortalAccountEmail();
           setPortalAccountEmail(null);
