@@ -3,7 +3,14 @@ import { describe, expect, it, vi } from 'vitest';
 
 // The shared test setup mocks `fs`; these assertions are ABOUT the real files on disk.
 const { readFileSync } = await vi.importActual<typeof import('node:fs')>('node:fs');
-import { FORWARD_AUTH_SIGNATURE_HEADER, FORWARD_AUTH_TIMESTAMP_HEADER, FORWARD_AUTH_USER_HEADER } from '@/modules/auth/utils/forward-auth-signing';
+import {
+  FORWARD_AUTH_SIGNATURE_HEADER,
+  FORWARD_AUTH_TIMESTAMP_HEADER,
+  FORWARD_AUTH_USER_HEADER,
+  FORWARD_AUTH_USER_ID_HEADER,
+  FORWARD_AUTH_USER_ID_SIGNATURE_HEADER,
+  FORWARD_AUTH_USER_ISSUER_HEADER,
+} from '@/modules/auth/utils/forward-auth-signing';
 import { EDGE_HEADERS_MIDDLEWARE } from '@/modules/docker/builders/traefik-labels.builder';
 import YAML from 'yaml';
 
@@ -18,13 +25,22 @@ import YAML from 'yaml';
  */
 const REPO_ROOT = path.join(__dirname, '../../../..');
 
-const EXPECTED_HEADERS = [FORWARD_AUTH_USER_HEADER, FORWARD_AUTH_TIMESTAMP_HEADER, FORWARD_AUTH_SIGNATURE_HEADER];
+// The stable-id trio too: a copy that drops it silently turns every app's rename-proof link back
+// into a username lookup, and lets a visitor's own unsigned copy through to the app.
+const EXPECTED_HEADERS = [
+  FORWARD_AUTH_USER_HEADER,
+  FORWARD_AUTH_TIMESTAMP_HEADER,
+  FORWARD_AUTH_SIGNATURE_HEADER,
+  FORWARD_AUTH_USER_ISSUER_HEADER,
+  FORWARD_AUTH_USER_ID_HEADER,
+  FORWARD_AUTH_USER_ID_SIGNATURE_HEADER,
+];
 
 /** The compose label form: a single comma-separated string. */
 const COMPOSE_COPIES = ['docker-compose.prod.yml', 'packages/desktop/src-tauri/resources/docker-compose.prod.yml'];
 
 describe('traefik ci-hub forward-auth middleware config', () => {
-  it.each(COMPOSE_COPIES)('%s forwards all three signed identity headers', (relativePath) => {
+  it.each(COMPOSE_COPIES)('%s forwards every signed identity header', (relativePath) => {
     const content = readFileSync(path.join(REPO_ROOT, relativePath), 'utf-8');
     const match = content.match(/forwardauth\.authResponseHeaders:\s*"([^"]+)"/);
     expect(match, `authResponseHeaders label missing in ${relativePath}`).toBeTruthy();
@@ -61,7 +77,7 @@ describe('traefik ci-hub forward-auth middleware config', () => {
     expect(stripped).not.toHaveProperty('X-Forwarded-Proto');
   });
 
-  it('backend traefik dynamic.yml forwards all three signed identity headers', () => {
+  it('backend traefik dynamic.yml forwards every signed identity header', () => {
     const content = readFileSync(path.join(REPO_ROOT, 'packages/backend/assets/traefik/dynamic/dynamic.yml'), 'utf-8');
     const section = content.match(/authResponseHeaders:\n((?:\s+-\s+"[^"]+"\n)+)/);
     expect(section, 'authResponseHeaders list missing in dynamic.yml').toBeTruthy();

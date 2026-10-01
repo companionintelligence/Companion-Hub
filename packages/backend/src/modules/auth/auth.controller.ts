@@ -30,6 +30,7 @@ import { AuthGuard } from './auth.guard';
 import { AuthService, type PairedOrgMembership } from './auth.service';
 import { buildSignedForwardAuthHeaders } from './utils/forward-auth-signing';
 import { normalizeForwardedHost, rawForwardedHost } from './utils/forward-auth-host';
+import { ForwardAuthIdentityResolver } from './forward-auth-identity.resolver';
 import { ForwardAuthSecretResolver } from './forward-auth-secret.resolver';
 import { BearerOrgMembershipCache } from './bearer-org-membership.cache';
 import { UserRepository } from '@/modules/user/user.repository';
@@ -175,6 +176,7 @@ export class AuthController {
     private readonly deviceRegistration: DeviceRegistrationRepository,
     private readonly bearerOrgMembership: BearerOrgMembershipCache,
     private readonly sessionUserCache: SessionUserCache,
+    private readonly forwardAuthIdentities: ForwardAuthIdentityResolver,
   ) {}
 
   private sessionCookieOptions(req: Request) {
@@ -1408,14 +1410,19 @@ export class AuthController {
         if (!isMember) {
           return res.status(403).send();
         }
-        const username = portalClaimsIdentity(claims);
+        // The Hub person this subject is, when there is one: their username and stable id, so a
+        // machine client arrives at every app as the same person its owner's browser does. A
+        // Portal email change never reaches the Hub username, so the claims alone drift from it.
+        const person = await this.forwardAuthIdentities.personForPortalSubject(portalBase.trim(), claims.sub.trim());
+        const username = person?.username ?? portalClaimsIdentity(claims);
         const resolved = await this.forwardAuthSecrets.resolveForHost(forwardedHost);
         this.logger.debug('Portal Bearer accepted for Traefik forward auth', {
           username,
+          hubPerson: Boolean(person),
           secretSource: resolved.source,
           targetApp: resolved.appUrn,
         });
-        const signed = buildSignedForwardAuthHeaders(resolved.secret, username);
+        const signed = buildSignedForwardAuthHeaders(resolved.secret, username, Date.now(), person?.stableId);
         for (const [header, value] of Object.entries(signed)) {
           res.setHeader(header, value);
         }
@@ -1448,7 +1455,9 @@ export class AuthController {
         secretSource: resolved.source,
         targetApp: resolved.appUrn,
       });
-      const signed = buildSignedForwardAuthHeaders(resolved.secret, forwardAuthUser.username);
+      // The username can change at any time; the stable id beside it cannot (ForwardAuthIdentityResolver).
+      const stableId = await this.forwardAuthIdentities.stableIdFor(forwardAuthUser.id);
+      const signed = buildSignedForwardAuthHeaders(resolved.secret, forwardAuthUser.username, Date.now(), stableId);
       for (const [header, value] of Object.entries(signed)) {
         res.setHeader(header, value);
       }

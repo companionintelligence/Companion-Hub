@@ -25,13 +25,18 @@ http:
         # with true a visitor could name a public path while requesting another,
         # or name another app's host. The Hub still sees the peer Traefik saw.
         trustForwardHeader: false
-        # All three signed identity headers must ride through — Traefik copies ONLY the
+        # Every signed identity header must ride through — Traefik copies ONLY the
         # headers listed here, and consumers verifying the signature fail closed on a
-        # missing timestamp/signature (CI-Engineering#74).
+        # missing timestamp/signature (CI-Engineering#74). Listing a name also strips a
+        # visitor's own copy of it before the copy, which is what keeps the stable-id
+        # trio (issuer, id, id signature) from ever arriving unsigned.
         authResponseHeaders:
           - "X-CI-Hub-User"
           - "X-CI-Hub-User-Timestamp"
           - "X-CI-Hub-User-Signature"
+          - "X-CI-Hub-User-Issuer"
+          - "X-CI-Hub-User-Id"
+          - "X-CI-Hub-User-Id-Signature"
 
     # First on every tunnel route (TraefikLabelsBuilder.addCloudflareLabels).
     # Traefik keeps a trusted peer's forwarded headers and fills in only those

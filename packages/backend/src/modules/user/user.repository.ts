@@ -93,6 +93,17 @@ export class UserRepository {
   }
 
   /**
+   * The person's stable id (`public_id`), signed beside their username by Traefik forward auth.
+   * Never changes for a row, so callers may keep it.
+   *
+   * @param {number} id - The id of the user
+   */
+  public async getPublicId(id: number): Promise<string | undefined> {
+    const row = await this.db.query.user.findFirst({ where: eq(user.id, Number(id)), columns: { publicId: true } });
+    return row?.publicId;
+  }
+
+  /**
    * Given a userId, update the user with the given data
    *
    * Drops the cached session DTO for this user: `getUserDtoById` feeds a 10s cache that

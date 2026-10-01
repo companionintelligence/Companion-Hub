@@ -157,27 +157,56 @@ export const appRelations = relations(app, ({ one }) => ({
   }),
 }));
 
-export const user = pgTable('user', {
-  id: serial().primaryKey().notNull(),
-  username: varchar().notNull(),
-  password: varchar().notNull(),
-  createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
-  updatedAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
-  operator: boolean().default(false).notNull(),
-  totpSecret: text('totp_secret'),
-  totpEnabled: boolean('totp_enabled').default(false).notNull(),
-  salt: text(),
-  locale: varchar().default('en').notNull(),
-  hasCompletedOnboarding: boolean('has_completed_onboarding').default(false).notNull(),
-  advancedMode: boolean('advanced_mode').default(false).notNull(),
-  /** `active` may use this Hub. `revoked` stays on the row after Portal org removal. */
-  accessStatus: varchar('access_status').default('active').notNull(),
-  /** Last Portal WhoIs role on this Hub's org: owner, admin, or member. */
-  orgRole: varchar('org_role'),
-  membershipCheckedAt: timestamp('membership_checked_at', { mode: 'string' }),
-  /** Set when a real Companion password hash is stored; the bootstrap UUID hash does not count. */
-  localPasswordSetAt: timestamp('local_password_set_at', { mode: 'string' }),
-});
+export const user = pgTable(
+  'user',
+  {
+    id: serial().primaryKey().notNull(),
+    username: varchar().notNull(),
+    password: varchar().notNull(),
+    createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
+    updatedAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
+    operator: boolean().default(false).notNull(),
+    totpSecret: text('totp_secret'),
+    totpEnabled: boolean('totp_enabled').default(false).notNull(),
+    salt: text(),
+    locale: varchar().default('en').notNull(),
+    hasCompletedOnboarding: boolean('has_completed_onboarding').default(false).notNull(),
+    advancedMode: boolean('advanced_mode').default(false).notNull(),
+    /** `active` may use this Hub. `revoked` stays on the row after Portal org removal. */
+    accessStatus: varchar('access_status').default('active').notNull(),
+    /** Last Portal WhoIs role on this Hub's org: owner, admin, or member. */
+    orgRole: varchar('org_role'),
+    membershipCheckedAt: timestamp('membership_checked_at', { mode: 'string' }),
+    /** Set when a real Companion password hash is stored; the bootstrap UUID hash does not count. */
+    localPasswordSetAt: timestamp('local_password_set_at', { mode: 'string' }),
+    /**
+     * This person's stable identity to every app behind Traefik: minted with the row, unchanged by
+     * any rename, never issued again. `id` cannot be that — a factory reset restarts the sequence and
+     * a restored backup re-issues every id minted after it — and `username` is theirs to change.
+     * Signed beside the username as `X-CI-Hub-User-Id` (see `ForwardAuthIdentityResolver`).
+     */
+    publicId: uuid('public_id').defaultRandom().notNull(),
+  },
+  (table) => [uniqueIndex('user_public_id_idx').on(table.publicId)],
+);
+
+/**
+ * This Hub's directory of people: one row, id `'self'`, created by the migration that added
+ * `user.public_id`. Its `directoryId` is the issuer of every public id (`urn:ci-hub:<directoryId>`,
+ * signed as `X-CI-Hub-User-Issuer`), and it lives and dies with this database. An app keeping
+ * links to Hub people can therefore tell "another person of this Hub" — a username handed on after
+ * a rename, which must not inherit the account — from "a person of a Hub that no longer exists": a
+ * backup restored onto a fresh Hub, whose people must be able to claim their accounts again.
+ */
+export const userDirectory = pgTable(
+  'user_directory',
+  {
+    id: varchar('id').primaryKey().default('self').notNull(),
+    directoryId: uuid('directory_id').defaultRandom().notNull(),
+    createdAt: timestamp('created_at', { mode: 'string' }).defaultNow().notNull(),
+  },
+  (table) => [check('user_directory_singleton', sql`${table.id} = 'self'`)],
+);
 
 /**
  * Binds a verified external OIDC identity — the (issuer, subject) pair from a
