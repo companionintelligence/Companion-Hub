@@ -400,6 +400,20 @@ cihub app restart <name>
 cihub app delete <name>                               # docker rm -f
 ```
 
+Those drive Docker directly. To run one action over **every** app through the running Hub, so it goes through
+the same state machine, grants and status events as the dashboard's *Batch actions* menu:
+
+```bash
+cihub app start-all [env]      # start every stopped app
+cihub app stop-all [env]       # stop every running app
+cihub app restart-all [env]    # restart every running app
+cihub app update-all [env]     # update every app with a newer version
+```
+
+These need the Hub running and the device key this machine holds, so run them on the Hub host. They report that
+the Hub accepted the request; the apps change state in the background (`cihub app status` shows them move).
+Unlike `app stop-managed`, which stops containers behind the Hub's back, the Hub knows what it asked for.
+
 `app status` shows each container with a color-coded status and the bound ports:
 
 ```
