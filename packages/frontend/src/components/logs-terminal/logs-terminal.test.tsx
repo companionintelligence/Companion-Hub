@@ -54,4 +54,32 @@ describe('LogsTerminal', () => {
 
     expect(container.querySelector('#log-terminal')).toHaveClass('log-terminal');
   });
+  it('names the max-lines field and both switches by their visible text', () => {
+    render(<LogsTerminal logs={[]} maxLines={300} onMaxLinesChange={vi.fn()} />);
+
+    expect(screen.getByRole('spinbutton', { name: 'APP_LOGS_TAB_MAX_LINES' })).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'APP_LOGS_TAB_FOLLOW' })).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'APP_LOGS_TAB_WRAP_LINES' })).toBeInTheDocument();
+  });
+
+  it('only counts whole lines', () => {
+    const onMaxLinesChange = vi.fn();
+    render(<LogsTerminal logs={[]} maxLines={300} onMaxLinesChange={onMaxLinesChange} />);
+
+    const input = screen.getByRole('spinbutton');
+    expect(input).toHaveAttribute('step', '1');
+
+    fireEvent.change(input, { target: { value: '25.7' } });
+
+    expect(onMaxLinesChange).toHaveBeenLastCalledWith(25);
+  });
+
+  it('floors anything below one at one', () => {
+    const onMaxLinesChange = vi.fn();
+    render(<LogsTerminal logs={[]} maxLines={300} onMaxLinesChange={onMaxLinesChange} />);
+
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '0.4' } });
+
+    expect(onMaxLinesChange).toHaveBeenLastCalledWith(1);
+  });
 });

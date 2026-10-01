@@ -259,4 +259,19 @@ describe('<OtpInput />', () => {
 
     expect(firstInputEl).toHaveFocus();
   });
+  describe('autoFocus', () => {
+    it('puts the cursor in the first digit when asked', () => {
+      render(<OtpInput valueLength={6} value="" onChange={() => {}} autoFocus />);
+
+      expect(screen.getAllByRole('textbox')[0]).toHaveFocus();
+    });
+
+    it('leaves focus alone otherwise', () => {
+      render(<OtpInput valueLength={6} value="" onChange={() => {}} />);
+
+      for (const digit of screen.getAllByRole('textbox')) {
+        expect(digit).not.toHaveFocus();
+      }
+    });
+  });
 });

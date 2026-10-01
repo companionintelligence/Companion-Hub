@@ -710,6 +710,7 @@
   "GUEST_DASHBOARD_NO_APPS": "No apps to display",
   "GUEST_DASHBOARD_NO_APPS_SUBTITLE": "Ask your administrator to add apps to the guest dashboard or login to see your apps.",
   "HEADER_DARK_MODE": "Dark Mode",
+  "HEADER_MAIN_NAVIGATION": "Main navigation",
   "HEADER_ENTER_FULLSCREEN": "Enter fullscreen",
   "HEADER_EXIT_FULLSCREEN": "Exit fullscreen",
   "HEADER_LIGHT_MODE": "Light Mode",
