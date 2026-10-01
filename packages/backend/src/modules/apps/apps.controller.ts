@@ -97,7 +97,7 @@ export class AppsController {
   }
 
   /**
-   * The page Traefik shows instead of its bare 502, 503 or 504 when an app does not answer
+   * The page Traefik shows instead of its bare 502 or 504 when an app does not answer
    * (CI-Hub#1764): "<app> is starting…", stopped, or not responding.
    *
    * No guard: Traefik's `ci-hub-app-starting` errors middleware fetches it with the visitor's own

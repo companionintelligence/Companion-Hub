@@ -16,17 +16,43 @@ const REPO_ROOT = path.join(__dirname, '../../../..');
 const DYNAMIC_YML = 'packages/backend/assets/traefik/dynamic/dynamic.yml';
 const read = (relativePath: string) => readFileSync(path.join(REPO_ROOT, relativePath), 'utf-8');
 
+/** Whether an errors middleware's `status` list catches `code`, read as Traefik reads it: codes, comma lists, inclusive ranges. */
+const catches = (statuses: string[], code: number) =>
+  statuses
+    .flatMap((entry) => entry.split(','))
+    .some((part) => {
+      const [from = Number.NaN, to = from] = part.trim().split('-').map(Number);
+      return code >= from && code <= to;
+    });
+
 describe('traefik ci-hub-app-starting middleware config', () => {
   const dynamic = YAML.parse(read(DYNAMIC_YML));
   const [name, provider] = APP_STARTING_MIDDLEWARE.split('@');
 
-  it('is the file-provider middleware the routers name, catching exactly the gateway errors', () => {
+  it('is the file-provider middleware the routers name, catching 502 and 504', () => {
     expect(provider).toBe('file');
     const errors = dynamic.http.middlewares[name as string].errors;
 
-    expect(errors.status).toEqual(['502-504']);
+    expect(errors.status).toEqual(['502', '504']);
     // No statusRewrites: the visitor, an API client or a health check must still see the failure.
     expect(errors).not.toHaveProperty('statusRewrites');
+  });
+
+  /*
+   * An app's own 503 reaches its client untouched, body and headers: apps send it on purpose.
+   * Companion Memory's PowerSync token endpoint answers 503 by design, and model servers answer
+   * 503 while a model loads; an HTML page in place of those bodies would break their clients.
+   */
+  it('lets a 503 from the app through untouched', () => {
+    const { status } = dynamic.http.middlewares[name as string].errors;
+
+    expect(catches(status, 502)).toBe(true);
+    expect(catches(status, 504)).toBe(true);
+    expect(catches(status, 503)).toBe(false);
+    // Nor any other error the app answers with itself.
+    for (const code of [400, 401, 404, 429, 500, 501, 505, 599]) {
+      expect(catches(status, code), String(code)).toBe(false);
+    }
   });
 
   it('asks the Hub for the page at the path its controller serves, without the visitor’s URL', () => {

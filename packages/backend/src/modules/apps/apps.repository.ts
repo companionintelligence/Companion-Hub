@@ -52,7 +52,7 @@ export class AppsRepository {
    * An app's status and when its row last changed, or `null` when there is no such app.
    *
    * For the page Traefik shows when an app does not answer (`AppStartingPageService`), which runs
-   * for every 502, 503 and 504 an app returns. Like `getAppCustomDomain`, deliberately not
+   * for every 502 and 504 an app's route returns. Like `getAppCustomDomain`, deliberately not
    * `getAppByUrn`, whose joined read ships the whole `config` jsonb and the store row.
    */
   public async getAppStatusByUrn(appUrn: AppUrn): Promise<{ status: AppStatus; updatedAt: string } | null> {

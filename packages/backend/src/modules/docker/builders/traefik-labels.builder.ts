@@ -19,7 +19,7 @@ interface TraefikLabelsArgs {
 export const EDGE_HEADERS_MIDDLEWARE = 'ci-hub-edge-headers@file';
 
 /**
- * The file-provider `errors` middleware that swaps Traefik's bare 502, 503 and 504 for the Hub's
+ * The file-provider `errors` middleware that swaps Traefik's bare 502 and 504 for the Hub's
  * "<app> is starting…" page. See `ci-hub-app-starting` in assets/traefik/dynamic/dynamic.yml.
  */
 export const APP_STARTING_MIDDLEWARE = 'ci-hub-app-starting@file';

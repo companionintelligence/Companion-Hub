@@ -67,16 +67,23 @@ http:
 
     # Last on every app router (withAppStartingPage in traefik-labels.builder.ts, and the
     # port-expose routes) and on nothing else: not the Hub's own routers, not forward auth. When the
-    # app answers 502, 503 or 504 (502 while its container is up but nothing listens yet), Traefik
-    # asks the Hub for "<app> is starting…" or why it is not, and sends that page under the app's
-    # own status code, so API clients and health checks still see the failure. Traefik makes that
-    # request with the visitor's own headers (cookies and Authorization too; it has no option to
-    # drop them before v3.6.15) and `Host`, which is how the Hub knows which app it is. An app's
-    # OWN 502/503/504 body is replaced as well; there is no telling the two apart from here.
+    # app's route answers 502 (its container is up but nothing listens yet) or 504 (the app, or a
+    # proxy inside it, timed out), Traefik asks the Hub for "<app> is starting…" or why it is not,
+    # and sends that page under the app's own status code, so API clients and health checks still
+    # see the failure. Traefik makes that request with the visitor's own headers (cookies and Authorization
+    # too; it has no option to drop them before v3.6.15) and `Host`, which is how the Hub knows
+    # which app it is. An app's OWN 502 or 504 body is replaced as well; there is no telling the two
+    # apart from here.
+    #
+    # Not 503. Apps send it on purpose, with a body their own clients read: Companion Memory's
+    # PowerSync token endpoint answers 503 by design, and model servers answer 503 while a model
+    # loads. Traefik itself seldom answers 503 on these routes, since the Hub drops a stopped app's
+    # router and these services have no health checks.
     ci-hub-app-starting:
       errors:
         status:
-          - "502-504"
+          - "502"
+          - "504"
         service: ci-hub-app-starting
         query: "/api/apps/starting?status={status}"
 

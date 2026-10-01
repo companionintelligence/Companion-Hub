@@ -1,8 +1,9 @@
 import type { AppStatus } from '@/core/database/drizzle/types';
 
 /**
- * The page Traefik shows in place of its bare 502, 503 or 504 when an app does not answer, most
- * often because it is still starting (CI-Hub#1764).
+ * The page Traefik shows in place of its bare 502 or 504 when an app does not answer, most often a
+ * 502 because it is still starting (CI-Hub#1764). Never for a 503, which apps send on purpose; see
+ * `ci-hub-app-starting` in dynamic.yml.
  *
  * Traefik fetches it through the `ci-hub-app-starting` errors middleware in
  * assets/traefik/dynamic/dynamic.yml, which every app router ends with. It sends the visitor's own
@@ -28,8 +29,9 @@ export const APP_STARTING_RELOAD_SECONDS = 5;
 export const RECENTLY_STARTED_MS = 2 * 60_000;
 
 /** The status codes this page stands in for. Anything else asked for gets {@link DEFAULT_PAGE_STATUS}. */
-const GATEWAY_ERROR_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
-const DEFAULT_PAGE_STATUS = 503;
+const GATEWAY_ERROR_STATUSES: ReadonlySet<number> = new Set([502, 504]);
+/** What Traefik answers while an app starts. Traefik sends the app's own code to the visitor anyway. */
+const DEFAULT_PAGE_STATUS = 502;
 
 /** States the app comes back from by itself, without anyone pressing Start. */
 const COMING_BACK_STATUSES: ReadonlySet<AppStatus> = new Set([
@@ -85,7 +87,7 @@ export function classifyApp(input: {
   return 'not_responding';
 }
 
-/** The status code Traefik asked about (`?status={status}`), or 503 for anything else. */
+/** The status code Traefik asked about (`?status={status}`), or 502 for anything else. */
 export function appStartingPageStatus(requested: unknown): number {
   const raw = Array.isArray(requested) ? requested[0] : requested;
   const status = typeof raw === 'string' && /^\d{3}$/.test(raw) ? Number(raw) : Number.NaN;

@@ -33,7 +33,7 @@ function hubAppPath(appUrn: AppUrn): string {
 /**
  * Works out what the "app is starting" page says (CI-Hub#1764).
  *
- * Traefik fetches the page for every 502, 503 and 504 an app returns, without a Hub sign-in to rely
+ * Traefik fetches the page for every 502 and 504 an app's route returns, without a Hub sign-in to rely
  * on, so this reads only what the page shows: the app's display name and lifecycle status. One small
  * query per page; the host map, the name and the Hub's address come from caches, and nothing here
  * calls Docker.

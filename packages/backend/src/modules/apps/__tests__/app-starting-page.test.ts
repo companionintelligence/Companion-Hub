@@ -61,12 +61,13 @@ describe('classifyApp', () => {
 });
 
 describe('appStartingPageStatus', () => {
-  it.each(['502', '503', '504'])('keeps %s, the status Traefik caught', (status) => {
+  it.each(['502', '504'])('keeps %s, the status Traefik caught', (status) => {
     expect(appStartingPageStatus(status)).toBe(Number(status));
   });
 
-  it.each([undefined, '', '200', '500', '404', '5020', '502abc', ' 502', 502, {}])('answers 503 for %j', (status) => {
-    expect(appStartingPageStatus(status)).toBe(503);
+  // 503 among them: the middleware never asks about it, since apps send it on purpose.
+  it.each([undefined, '', '503', '200', '500', '404', '5020', '502abc', ' 504', 504, {}])('answers 502 for %j', (status) => {
+    expect(appStartingPageStatus(status)).toBe(502);
   });
 
   it('takes the first of a repeated parameter', () => {

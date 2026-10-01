@@ -88,11 +88,12 @@ describe('AppsController — GET /api/apps/starting, real HTTP dispatch', () => 
     expect(read.getApp).not.toHaveBeenCalled();
   });
 
-  it('answers with the status Traefik caught, and 503 for anything else', async () => {
+  it('answers with the status Traefik caught, and 502 for anything else', async () => {
     expect((await get(`${APP_STARTING_PAGE_PATH}?status=504`)).status).toBe(504);
-    expect((await get(`${APP_STARTING_PAGE_PATH}?status=503`)).status).toBe(503);
-    expect((await get(`${APP_STARTING_PAGE_PATH}?status=200`)).status).toBe(503);
-    expect((await get(APP_STARTING_PAGE_PATH)).status).toBe(503);
+    expect((await get(`${APP_STARTING_PAGE_PATH}?status=502`)).status).toBe(502);
+    expect((await get(`${APP_STARTING_PAGE_PATH}?status=503`)).status).toBe(502);
+    expect((await get(`${APP_STARTING_PAGE_PATH}?status=200`)).status).toBe(502);
+    expect((await get(APP_STARTING_PAGE_PATH)).status).toBe(502);
   });
 
   it('sends the page’s headers, which Traefik copies onto the visitor’s response', async () => {
@@ -112,8 +113,8 @@ describe('AppsController — GET /api/apps/starting, real HTTP dispatch', () => 
     expect(stopped.headers['retry-after']).toBeUndefined();
 
     page.describe.mockResolvedValue({ state: 'unknown', hubUrl: null });
-    const unknown = await get(`${APP_STARTING_PAGE_PATH}?status=503`);
-    expect(unknown.status).toBe(503);
+    const unknown = await get(`${APP_STARTING_PAGE_PATH}?status=504`);
+    expect(unknown.status).toBe(504);
     expect(unknown.body).toContain('<h1>This app isn&#39;t responding</h1>');
   });
 
