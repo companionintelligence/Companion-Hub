@@ -4,6 +4,9 @@
     "target": "es2022",
     "module": "commonjs",
     "moduleResolution": "node",
+    // node10 resolution is deprecated in TS 6 and removed in 7; the Nest CLI needs
+    // the TS 6 compiler API until TS 7.1, so the backend stays on 6.
+    "ignoreDeprecations": "6.0",
     "resolveJsonModule": true,
     "outDir": "./dist",
     "noEmit": false,
