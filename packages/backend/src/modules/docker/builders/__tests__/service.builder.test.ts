@@ -351,4 +351,44 @@ describe('ServiceBuilder', () => {
       });
     });
   });
+  describe('Port protocols', () => {
+    // A regression upstream broke exactly this: a UDP-only port was written out as TCP, so a
+    // DNS or game server was published on the wrong protocol and nothing reached it.
+    let service: ServiceBuilder;
+
+    beforeEach(() => {
+      service = new ServiceBuilder().setName('svc').setImage('image');
+    });
+
+    it('publishes a port with no protocol flag as a plain mapping, which Docker reads as TCP', () => {
+      service.setPort({ containerPort: 80, hostPort: 8080 });
+      expect(service.build().ports).toEqual(['8080:80']);
+    });
+
+    it('publishes a TCP-only port with an explicit /tcp', () => {
+      service.setPort({ containerPort: 80, hostPort: 8080, tcp: true });
+      expect(service.build().ports).toEqual(['8080:80/tcp']);
+    });
+
+    it('publishes a UDP-only port as /udp and not as TCP', () => {
+      service.setPort({ containerPort: 53, hostPort: 53, udp: true });
+      expect(service.build().ports).toEqual(['53:53/udp']);
+    });
+
+    it('publishes a port that needs both protocols once for each', () => {
+      service.setPort({ containerPort: 53, hostPort: 53, tcp: true, udp: true });
+      expect(service.build().ports).toEqual(['53:53/tcp', '53:53/udp']);
+    });
+
+    it('keeps the bind interface in front of the mapping for each protocol', () => {
+      service.setPort({ containerPort: 53, hostPort: 53, tcp: true, udp: true, interface: '127.0.0.1' });
+      expect(service.build().ports).toEqual(['127.0.0.1:53:53/tcp', '127.0.0.1:53:53/udp']);
+    });
+
+    it('passes a port written as an environment reference or a range through untouched', () => {
+      service.setPort({ containerPort: '${APP_PORT}' as never, hostPort: '${APP_PORT}' as never, udp: true });
+      service.setPort({ containerPort: '8000-8010' as never, hostPort: '8000-8010' as never });
+      expect(service.build().ports).toEqual(['${APP_PORT}:${APP_PORT}/udp', '8000-8010:8000-8010']);
+    });
+  });
 });

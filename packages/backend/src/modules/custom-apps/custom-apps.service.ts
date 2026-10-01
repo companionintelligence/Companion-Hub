@@ -151,7 +151,12 @@ export class CustomAppService {
     const infoPath = path.join(dataDir, 'apps', appStoreId, appName, 'config.json');
 
     const main = config.services.find((s: ServiceInput) => s.isMain) ?? config.services[0];
-    const inferredPort = typeof main?.internalPort === 'number' ? main.internalPort : undefined;
+    // The create form submits the port as typed, a string; a number only comes from a hand-written
+    // config. A value that is not a plain port (an env reference, a range) cannot become the app's
+    // single access port and leaves it unset, as before.
+    const rawPort = main?.internalPort;
+    const typedPort = typeof rawPort === 'string' && /^\d{1,5}$/.test(rawPort.trim()) ? Number(rawPort.trim()) : rawPort;
+    const inferredPort = typeof typedPort === 'number' && typedPort >= 1 && typedPort <= 65535 ? typedPort : undefined;
 
     // Create a minimal app.info file for custom apps
     const appInfo = {
