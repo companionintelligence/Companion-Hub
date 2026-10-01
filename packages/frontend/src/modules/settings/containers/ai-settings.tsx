@@ -12,6 +12,7 @@ import {
   rescanInferenceHardware,
   saveCloudProviderConfig,
   saveInferencePreferences,
+  unloadInferenceModel,
   unpinInferenceModel,
 } from '@/lib/inference/inference-api';
 import { POLLING } from '@/lib/polling-budget';
@@ -29,6 +30,7 @@ import { SystemOverview } from '@/modules/onboarding/components/ai-setup/system-
 import { BackendSelectionCard } from '@/modules/onboarding/components/ai-setup/backend-selection-card';
 import { CloudProviderCard } from '@/modules/onboarding/components/ai-setup/cloud-provider-card';
 import { ResourceSummaryBar } from '@/modules/onboarding/components/ai-setup/resource-summary-bar';
+import { inferenceMemoryMb } from '@/modules/onboarding/helpers/onboarding-model-selection';
 import { ModelCard } from '@/modules/onboarding/components/ai-setup/primitives';
 import { ModelIcon } from '@/modules/onboarding/components/ai-setup/icons';
 import { modelTags, modelMeta, modelScores } from '@/modules/onboarding/components/ai-setup/model-selection-card';
@@ -141,6 +143,21 @@ export const AiSettingsContainer = () => {
   // Share one catalog index between Save and confirmation so they cannot disagree or
   // rebuild it independently.
   const availableModelById = useMemo<ModelIndex>(() => (profile ? indexAvailableModels(profile) : new Map()), [profile]);
+
+  /**
+   * The catalog id of an engine-listed model that the Hub currently tracks as resident, else null.
+   * The Downloaded Models list is the engine's own inventory, so this is how a model outside the
+   * recommended set — one the person picked from the full catalog — gets its Unload button too.
+   */
+  const residentCatalogIdFor = (engineId: string): string | null => {
+    for (const model of availableModelById.values()) {
+      if (model.backendModelId === engineId || `user.${model.backendModelId}` === engineId) {
+        const state = trackedModels[model.id]?.state;
+        return state === 'loaded' || state === 'pinned' ? model.id : null;
+      }
+    }
+    return null;
+  };
 
   const applyTrackedModels = useCallback((tracked: TrackedModel[]) => {
     const trackedById = Object.fromEntries(tracked.map((model) => [model.catalogId, model]));
@@ -375,6 +392,48 @@ export const AiSettingsContainer = () => {
     setSelectedModelIds((prev) => (prev.includes(modelId) ? prev.filter((id) => id !== modelId) : [...prev, modelId]));
   };
 
+  // Unload is the one memory action the page offers directly, because nothing else reaches it:
+  // deselect + Save only unpins (bookkeeping), and select + Save pins through a load that skips a
+  // model already resident. So an engine running a model with stale load options — the Lemonade
+  // embedder without its batch flags, 2026-09-30 — could not be made to pick up new ones from here.
+  // After an unload the model is tracked as `pulled`, so the next Save pins (loads) it again.
+  const [unloadingModelId, setUnloadingModelId] = useState<string | null>(null);
+  // One button for both places a resident model appears. It lives inside a `<label>` on the
+  // recommended cards, so the click must not reach the label — that would toggle the selection.
+  // `outline`, not `ghost`: ghost's hover is the accent fill, which on the dark card background is
+  // almost invisible, so the button read as inert text. A border at rest and a clear fill on hover
+  // says it can be clicked.
+  const unloadButton = (modelId: string) => (
+    <Button
+      variant="outline"
+      size="sm"
+      className="hover:border-primary/60 hover:bg-primary/10 hover:text-primary"
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void handleUnloadModel(modelId);
+      }}
+      loading={unloadingModelId === modelId}
+      disabled={unloadingModelId !== null || saving}
+      data-testid={`unload-model-${modelId}`}
+    >
+      {t('AI_SETTINGS_UNLOAD')}
+    </Button>
+  );
+
+  const handleUnloadModel = async (modelId: string) => {
+    setUnloadingModelId(modelId);
+    try {
+      await unloadInferenceModel(modelId);
+      await fetchTrackedModels();
+      toast.success(t('AI_SETTINGS_UNLOADED', { model: availableModelById.get(modelId)?.displayName ?? modelId }));
+    } catch (e) {
+      toast.error(t('AI_SETTINGS_UNLOAD_FAILED', { error: (e as Error).message }));
+    } finally {
+      setUnloadingModelId(null);
+    }
+  };
+
   // Keep `profile` out of the dependency list because the effect replaces it with a fresh
   // object; adding it causes an unbounded refetch loop (#1109).
   const hasProfileRef = useRef(false);
@@ -568,7 +627,7 @@ export const AiSettingsContainer = () => {
   const backendAvailableModels = profile.availableModels.filter((model) => isCompatibleWithBackend(model, selectedBackend));
   const selectedModels = backendAvailableModels.filter((model) => selectedModelIds.includes(model.id));
   const availableStorageMb = profile.resourceEstimate.availableDiskMb ?? 0;
-  const availableMemoryMb = profile.resourceEstimate.availableMemoryMb ?? 0;
+  const inferenceMemory = inferenceMemoryMb(profile);
   const installedCatalogIds = profile.installedCatalogIds ?? [];
 
   // The warning applies only when Save will unpin every managed model. A null
@@ -629,27 +688,32 @@ export const AiSettingsContainer = () => {
                       cls: 'border-border bg-foreground/5 text-muted-foreground',
                     };
                   })();
+                  const resident = tracked?.state === 'loaded' || tracked?.state === 'pinned';
                   return (
-                    <div key={model.id} className="relative">
-                      <ModelCard
-                        testId={`model-row-${model.id}`}
-                        checkboxTestId={`recommended-model-checkbox-${model.id}`}
-                        title={model.displayName}
-                        icon={<ModelIcon model={model} />}
-                        tags={modelTags(model, t)}
-                        selected={isSelected}
-                        onToggle={() => handleToggleModel(model.id)}
-                        meta={modelMeta(model)}
-                        scores={modelScores(model)}
-                      />
-                      {statusBadge && (
-                        <span
-                          className={`absolute top-3 right-9 text-[10px] px-1.5 py-0.5 rounded-md border font-medium pointer-events-none ${statusBadge.cls}`}
-                        >
-                          {statusBadge.text}
-                        </span>
-                      )}
-                    </div>
+                    <ModelCard
+                      key={model.id}
+                      testId={`model-row-${model.id}`}
+                      checkboxTestId={`recommended-model-checkbox-${model.id}`}
+                      title={model.displayName}
+                      icon={<ModelIcon model={model} />}
+                      tags={modelTags(model, t)}
+                      selected={isSelected}
+                      onToggle={() => handleToggleModel(model.id)}
+                      meta={modelMeta(model)}
+                      scores={modelScores(model)}
+                      footer={
+                        statusBadge || resident ? (
+                          <>
+                            {statusBadge ? (
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded-md border font-medium ${statusBadge.cls}`}>{statusBadge.text}</span>
+                            ) : (
+                              <span />
+                            )}
+                            {resident && unloadButton(model.id)}
+                          </>
+                        ) : undefined
+                      }
+                    />
                   );
                 })}
               </div>
@@ -688,20 +752,29 @@ export const AiSettingsContainer = () => {
 
             {!runtimeModelsLoading && runtimeModels.length > 0 && (
               <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 [&>*]:min-w-0">
-                {runtimeModels.map((model) => (
-                  <div key={model.id} className="flex min-w-0 items-center gap-3 rounded-md border border-border bg-foreground/[0.015] p-4">
-                    <span className="flex-shrink-0 text-foreground/60 [&>*]:size-8">
-                      <ModelIcon model={{ id: model.id, displayName: model.name, modality: 'llm', metadata: undefined }} />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-medium truncate">{model.name}</div>
-                      <div className="text-[11px] text-muted-foreground uppercase tracking-wide truncate">{model.id}</div>
+                {runtimeModels.map((model) => {
+                  // A model the engine lists is a catalog model when its id is the catalog's engine
+                  // id (or Lemonade's `user.` spelling of it); that is what the Hub can unload.
+                  const catalogId = residentCatalogIdFor(model.id);
+                  return (
+                    <div key={model.id} className="flex min-w-0 items-center gap-3 rounded-md border border-border bg-foreground/[0.015] p-4">
+                      <span className="flex-shrink-0 text-foreground/60 [&>*]:size-8">
+                        <ModelIcon model={{ id: model.id, displayName: model.name, modality: 'llm', metadata: undefined }} />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium truncate">{model.name}</div>
+                        <div className="text-[11px] text-muted-foreground uppercase tracking-wide truncate">{model.id}</div>
+                      </div>
+                      {catalogId ? (
+                        unloadButton(catalogId)
+                      ) : (
+                        <span className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-md border border-success/30 bg-success/10 text-success font-medium">
+                          {t('AI_SETTINGS_DOWNLOADED_BADGE')}
+                        </span>
+                      )}
                     </div>
-                    <span className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-md border border-success/30 bg-success/10 text-success font-medium">
-                      {t('AI_SETTINGS_DOWNLOADED_BADGE')}
-                    </span>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </section>
@@ -779,8 +852,10 @@ export const AiSettingsContainer = () => {
           <ResourceSummaryBar
             selectedModels={selectedModels}
             installedCatalogIds={installedCatalogIds}
+            backend={selectedBackend}
             availableStorageMb={availableStorageMb}
-            availableMemoryMb={availableMemoryMb}
+            totalMemoryMb={inferenceMemory.totalMb}
+            availableMemoryMb={inferenceMemory.freeMb}
           />
         </>
       )}

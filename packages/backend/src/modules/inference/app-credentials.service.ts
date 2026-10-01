@@ -26,7 +26,7 @@ import {
   type PrePullDecision,
 } from './app-model-handout';
 import { handoutRecord, readHandoutRecords, writeHandoutRecords, type RecordedHandout } from './app-handout-record';
-import { embedderEngineId, embeddingBackendFor, pickEmbeddingModel } from './embedder-handout';
+import { catalogEmbedsOn, embedderEngineId, embeddingBackendFor, pickEmbeddingModel } from './embedder-handout';
 
 // Only Hub-managed sibling apps use the bootstrap credentials endpoints.
 // Standalone services (for example companion-memory / CI-Server) receive
@@ -272,11 +272,13 @@ export class AppCredentialsService implements OnApplicationShutdown {
     const backendBaseUrl = backend.getBaseUrl();
     const backendOpenAiUrl = `${backendBaseUrl}/v1`;
 
-    // Embeddings stay on Ollama even when chat is vLLM/Lemonade. Probe Ollama
-    // separately so a vLLM-only health check cannot look like "embeddings ready"
-    // and so we do not fire an Ollama pull against a vLLM served-id list.
+    // The active engine embeds for itself when the catalog gives it an embedder; one with none
+    // (vLLM, oMLX) borrows Ollama. Ollama is probed separately in that case, so a vLLM-only health
+    // check cannot look like "embeddings ready" and an Ollama pull is never fired against a vLLM
+    // served-id list.
+    const activeEmbeds = catalogEmbedsOn(this.modelRegistry, { backend: backendType, preferredId: preferences.preferredEmbeddingModel, profile });
     const ollamaHealth =
-      backendType === 'ollama'
+      backendType === 'ollama' || activeEmbeds
         ? endpointHealth
         : await this.ollamaBackend.healthCheck().catch((err) => {
             this.logger.error(`[AppCredentials] ollama health check threw: ${err instanceof Error ? err.message : String(err)}`);
@@ -292,8 +294,10 @@ export class AppCredentialsService implements OnApplicationShutdown {
     // Lemonade-only node, where nothing serves it. Where no local engine has a catalog embedder (vLLM
     // with no Ollama, or oMLX) it keeps Ollama's id, as before — a pool node may serve it. The resolver
     // hands out none there; see `embeddingBackendFor` for why the two differ.
-    const embeddingsBackend: InferenceBackendType = embeddingBackendFor(backendType, ollamaEndpointReady) === 'lemonade' ? 'lemonade' : 'ollama';
-    const embeddingsServed = (embeddingsBackend === 'lemonade' ? endpointHealth.modelsLoaded : ollamaHealth.modelsLoaded) ?? [];
+    const embeddingsBackend: InferenceBackendType =
+      embeddingBackendFor(backendType, { activeEmbeds, ollamaHealthy: ollamaEndpointReady }) ?? 'ollama';
+    const embedsOnActive = embeddingsBackend === backendType;
+    const embeddingsServed = (embedsOnActive ? endpointHealth.modelsLoaded : ollamaHealth.modelsLoaded) ?? [];
     const embeddings = pickEmbeddingModel(this.modelRegistry, {
       backend: embeddingsBackend,
       preferredId: preferences.preferredEmbeddingModel,
@@ -379,9 +383,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
         chatModelError = describeNoSuitableChatModel({ appSlug: slug, requirements, rejected: localChat.rejected, scope: 'local' });
       }
     }
-    const embeddingsModelId = embeddings
-      ? embedderEngineId(embeddings, embeddingsServed, embeddingsBackend === 'lemonade' ? backend : this.ollamaBackend)
-      : null;
+    const embeddingsModelId = embeddings ? embedderEngineId(embeddings, embeddingsServed, embedsOnActive ? backend : this.ollamaBackend) : null;
 
     // ─── Cloud override: app → cloud provider API directly ───────────────
     if (cloudProvider) {
@@ -535,12 +537,12 @@ export class AppCredentialsService implements OnApplicationShutdown {
         kind: 'embeddings',
         model: embeddings ?? null,
         backendType: embeddingsBackend,
-        endpointReady: embeddingsBackend === 'lemonade' ? endpointReady : ollamaEndpointReady,
+        endpointReady: embedsOnActive ? endpointReady : ollamaEndpointReady,
         cloudPrimary: false,
         installedLocally: embeddingsReady,
         poolServedBy:
           poolRouting && embeddings && embeddingsModelId ? nodesServing(poolRouting.inventory, embeddingsModelId, embeddings.backend) : [],
-        engineOffers: embeddings && embeddingsBackend === 'lemonade' ? (backend.offersModel?.(embeddings.backendModelId) ?? null) : null,
+        engineOffers: embeddings && embedsOnActive ? (backend.offersModel?.(embeddings.backendModelId) ?? null) : null,
       }),
     ].filter((decision): decision is PrePullDecision => decision !== null);
 

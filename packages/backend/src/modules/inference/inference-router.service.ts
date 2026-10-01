@@ -13,7 +13,7 @@ import type {
   TrackedModel,
 } from '@ci-hub/common/types';
 import { clampContextCap } from '@/common/helpers/inference-context-cap';
-import { sameModelId } from '@/common/helpers/hub-pool';
+import { inventoryListsModel, sameModelId } from '@/common/helpers/hub-pool';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { appInferenceRequirements, checkModelRequirements } from './app-inference-requirements';
 import { handoutContextLength, visionReserveMbFor } from './app-model-handout';
@@ -691,8 +691,29 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     throw new Error('No STT backend available');
   }
 
-  /** Route embeddings request */
-  async routeEmbeddings(body: Record<string, unknown>): Promise<{ data: unknown; backend: string }> {
+  /**
+   * Route an embeddings request to the engine that serves its model: a tracked model's own engine
+   * (loaded if needed, through the same arbitration as a chat turn), else any healthy engine that
+   * lists it. A request naming no model, or one nothing local lists, goes to a healthy Ollama as it
+   * always did, then to cloud. Until 2026-09-30 every embeddings request went to Ollama whenever
+   * Ollama was healthy, whatever its model: an app handed Lemonade's `nomic-embed-text-v1.5-GGUF`
+   * (see `embeddingBackendFor`) on a host that also ran Ollama was told "model not found" by the
+   * one engine that never had it.
+   */
+  async routeEmbeddings(body: Record<string, unknown>, clientClosed?: AbortSignal): Promise<{ data: unknown; backend: string }> {
+    const requestedModel = typeof body.model === 'string' ? body.model : '';
+    if (requestedModel) {
+      const prepared = await this.prepareTrackedModel(requestedModel, { signal: clientClosed });
+      if (prepared) {
+        return this.proxyToBackend(prepared.backend, prepared.backendModelId, body, '/v1/embeddings', clientClosed);
+      }
+      for (const [backendType, , health] of await this.probeBackends()) {
+        if (health.running && health.healthy && inventoryListsModel(health.modelsLoaded, requestedModel)) {
+          return this.proxyToBackend(backendType, requestedModel, body, '/v1/embeddings', clientClosed);
+        }
+      }
+    }
+
     const ollamaBackend = this.backends.tryGet('ollama');
     if (ollamaBackend) {
       const ollamaHealth = await ollamaBackend.healthCheck().catch(() => ({ running: false, healthy: false }));

@@ -759,12 +759,13 @@ describe('AppCredentialsService', () => {
       expect(config.prePull.find((d) => d.kind === 'embeddings')).toMatchObject({ catalogId: lemonadeEmbedder.id, pull: true });
     });
 
-    it("keeps Ollama's embedder when a healthy Ollama runs beside Lemonade", async () => {
+    it("keeps Lemonade's embedder when a healthy Ollama runs beside Lemonade: one engine, one card", async () => {
       ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['nomic-embed-text:latest'] });
 
       const config = await service.getCredentials('hermes-agent');
 
-      expect(config.embeddingsModelId).toBe('nomic-embed-text');
+      expect(config.embeddingsModelId).toBe('user.nomic-embed-text-v1.5-GGUF');
+      expect(ollamaBackend.healthCheck).not.toHaveBeenCalled();
     });
 
     it('never pre-pulls a chat model the connected Lemonade does not list', async () => {

@@ -14,11 +14,16 @@ export const INFERENCE_VARIABLES = [
   'chat_model',
   'embedding_model',
   'vision_model',
+  // The model for background calls (extraction, classification): a smaller installed model that
+  // fits beside the chat model, else the chat model. Companion Memory maps it to LLM_UTILITY_MODEL.
+  'utility_model',
   'ollama_host',
-  // Native Ollama URL dedicated to embeddings. Unlike `ollama_host` (only set
-  // when Ollama is the active chat backend), this is emitted whenever a healthy
-  // Ollama is reachable — so an app can run chat on vLLM/Lemonade while keeping
-  // its embedding pipeline (and existing pgvector index) on Ollama.
+  // The embedding endpoint as an OpenAI-style base, the sibling of `llm_base_url`: whichever
+  // engine embeds for the app (or the pool proxy). Companion Memory maps it to
+  // LLM_EMBEDDING_API_BASE.
+  'embedding_base_url',
+  // The same server as `embedding_base_url`, as a root without `/v1`. Named when only Ollama
+  // embedded; kept for manifests that still map it. New manifests should use `embedding_base_url`.
   'ollama_embed_host',
   'num_ctx',
 ] as const;

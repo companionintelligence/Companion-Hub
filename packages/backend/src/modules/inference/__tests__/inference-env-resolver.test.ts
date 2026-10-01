@@ -208,10 +208,13 @@ describe('InferenceEnvResolver', () => {
       CI_LLM_BASE_URL: `${OLLAMA_BASE_URL}/v1`,
       CI_LLM_API_KEY: 'ollama',
       CI_CHAT_MODEL: 'hermes4:70b',
+      // Nothing smaller is installed beside it, so background calls go to the chat model too.
+      CI_UTILITY_MODEL: 'hermes4:70b',
       CI_EMBEDDING_MODEL: 'nomic-embed-text',
       CI_VISION_MODEL: 'gemma4:27b',
       OLLAMA_HOST: OLLAMA_BASE_URL,
       CI_OLLAMA_EMBED_HOST: OLLAMA_BASE_URL,
+      CI_EMBEDDING_BASE_URL: `${OLLAMA_BASE_URL}/v1`,
       // 24576 MB inference budget, zero-footprint test model, 131072 window → top tier.
       CI_LLM_NUM_CTX: '65536',
       CI_INFERENCE_BACKEND: 'ollama',
@@ -411,7 +414,7 @@ describe('InferenceEnvResolver', () => {
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("'tensorrt-llm'"));
   });
 
-  describe('vLLM backend with split-backend embeddings', () => {
+  describe('vLLM backend with split-backend embeddings (the catalog ships no vLLM embedder)', () => {
     const VLLM_BASE_URL = 'http://ci-hub-vllm:8000';
 
     beforeEach(() => {
@@ -439,7 +442,7 @@ describe('InferenceEnvResolver', () => {
       expect(env.CI_CHAT_MODEL).toBe('Qwen/Qwen3-8B');
       // Chat runs on vLLM, so the native-Ollama chat host stays unset…
       expect(env.OLLAMA_HOST).toBeUndefined();
-      // …but embeddings split to the healthy Ollama: dedicated host + its embedder.
+      // …but vLLM has no embedder to hand out, so embeddings borrow the healthy Ollama: its host + its embedder.
       expect(env.CI_OLLAMA_EMBED_HOST).toBe(OLLAMA_BASE_URL);
       expect(env.CI_EMBEDDING_MODEL).toBe('nomic-embed-text');
     });
@@ -549,6 +552,7 @@ describe('InferenceEnvResolver', () => {
 
       expect(env.CI_CHAT_MODEL).toBe('Qwen/Qwen3-8B');
       expect(env.CI_OLLAMA_EMBED_HOST).toBeUndefined();
+      expect(env.CI_EMBEDDING_BASE_URL).toBeUndefined();
       expect(env.CI_EMBEDDING_MODEL).toBeUndefined();
     });
   });
@@ -576,12 +580,43 @@ describe('InferenceEnvResolver', () => {
       modelRegistry.getRecommendedVisionModel.mockReturnValue(undefined);
     });
 
-    it("hands out Ollama's embedder with Ollama's host when Ollama is healthy, never Lemonade's id on Ollama's host", async () => {
+    // Lemonade's embedder is the same nomic v1.5 weights as Ollama's, so the chat engine embeds for
+    // itself and the two engines never split one card. Until 2026-09-30 a healthy Ollama took the
+    // embedder instead, and a Lemonade 27B pinned at boot pushed it — and Ollama's chat model — onto
+    // the CPU.
+    it("embeds on Lemonade itself, with Lemonade's host and embedder, even when a healthy Ollama runs beside it", async () => {
       const env = await service.resolve();
 
       expect(env.CI_CHAT_MODEL).toBe('Qwen3.8-27B-GGUF');
-      expect(env.CI_OLLAMA_EMBED_HOST).toBe(OLLAMA_BASE_URL);
-      expect(env.CI_EMBEDDING_MODEL).toBe('nomic-embed-text');
+      expect(env.CI_OLLAMA_EMBED_HOST).toBe(LEMONADE_BASE_URL);
+      // The generic name for the same server, as the OpenAI-style base Memory reads.
+      expect(env.CI_EMBEDDING_BASE_URL).toBe(`${LEMONADE_BASE_URL}/v1`);
+      expect(env.CI_EMBEDDING_MODEL).toBe('nomic-embed-text-v1.5-GGUF');
+      // Ollama is not even asked: nothing about it changes the answer.
+      expect(ollamaBackend.healthCheck).not.toHaveBeenCalled();
+    });
+
+    it('hands out a smaller installed model for background calls when it fits beside the chat model, else the chat model', async () => {
+      const chat = {
+        ...makeLlm('qwen3-8-27b-lemonade', 'Qwen3.8-27B-GGUF', false, 'lemonade'),
+        requirements: { minVramMb: 18000, recommendedVramMb: 18000, minRamMb: 0, diskMb: 0 },
+      } as CuratedModel;
+      const small = {
+        ...makeLlm('gemma-4-e4b-lemonade', 'Gemma-4-E4B-it-GGUF', false, 'lemonade'),
+        requirements: { minVramMb: 3500, recommendedVramMb: 3500, minRamMb: 0, diskMb: 0 },
+      } as CuratedModel;
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([chat, small]);
+      modelRegistry.getCatalog.mockReturnValue([chat, small]);
+      lemonadeBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Qwen3.8-27B-GGUF', 'Gemma-4-E4B-it-GGUF'] });
+
+      const env = await service.resolve();
+
+      expect(env.CI_CHAT_MODEL).toBe('Qwen3.8-27B-GGUF');
+      expect(env.CI_UTILITY_MODEL).toBe('Gemma-4-E4B-it-GGUF');
+
+      // The small model is in the catalog but not on this Lemonade: the chat model does the work.
+      lemonadeBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Qwen3.8-27B-GGUF'] });
+      await expect(service.resolve()).resolves.toMatchObject({ CI_UTILITY_MODEL: 'Qwen3.8-27B-GGUF' });
     });
 
     it("embeds on Lemonade itself when there is no Ollama (Lemonade serves Ollama's /api/embed)", async () => {
@@ -764,6 +799,7 @@ describe('InferenceEnvResolver', () => {
       expect(env.CI_LLM_BASE_URL).toMatch(/\/api\/inference\/pool\/v1$/);
       expect(env.OLLAMA_HOST).toMatch(/\/api\/inference\/pool$/);
       expect(env.CI_OLLAMA_EMBED_HOST).toMatch(/\/api\/inference\/pool$/);
+      expect(env.CI_EMBEDDING_BASE_URL).toMatch(/\/api\/inference\/pool\/v1$/);
       expect(env.CI_CHAT_MODEL).toBe('hermes4:70b');
     });
 
@@ -834,6 +870,7 @@ describe('InferenceEnvResolver', () => {
       expect(env.CI_LLM_BASE_URL).toMatch(/\/api\/inference\/pool\/v1$/);
       expect(env.OLLAMA_HOST).toMatch(/\/api\/inference\/pool$/);
       expect(env.CI_OLLAMA_EMBED_HOST).toMatch(/\/api\/inference\/pool$/);
+      expect(env.CI_EMBEDDING_BASE_URL).toMatch(/\/api\/inference\/pool\/v1$/);
       // Transport only: the model and window are what the direct path would have said.
       expect(env.CI_CHAT_MODEL).toBe('hermes4:70b');
       // The peer state is still read: it is what decides whether the pool inventory reaches past

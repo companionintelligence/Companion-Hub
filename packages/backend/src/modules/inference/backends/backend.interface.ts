@@ -12,6 +12,12 @@ export interface LoadModelOptions {
    * lower it to this one. Ignored by engines that take a window per load only.
    */
   provisionalWindow?: boolean;
+  /**
+   * Load on the CPU rather than the GPU. Set for an embedder on an AMD ROCm host (see
+   * `embedderRunsOnCpu`); only Lemonade honours it, as the one engine the Hub tells where to run a
+   * model. Absent leaves the engine's own choice.
+   */
+  device?: 'cpu';
 }
 
 /**

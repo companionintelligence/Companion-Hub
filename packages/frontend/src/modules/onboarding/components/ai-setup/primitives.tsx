@@ -258,6 +258,13 @@ interface ModelCardProps {
   metaInline?: boolean;
   /** Artificial Analysis benchmark scores (omitted fields are hidden). */
   scores?: { intelligence?: number };
+  /**
+   * A bottom row inside the card: a status chip on the left, an action on the right. Inside the
+   * card's own box, so it neither covers the title (where a chip floated before) nor spills under
+   * the next card in the grid (where a button rendered after the card did). A control here must
+   * `preventDefault` its click: the card is a `<label>`, and a click inside one toggles the model.
+   */
+  footer?: ReactNode;
   testId?: string;
   checkboxTestId?: string;
 }
@@ -290,6 +297,7 @@ export function ModelCard({
   meta,
   metaInline = false,
   scores,
+  footer,
   testId,
   checkboxTestId,
 }: ModelCardProps) {
@@ -354,6 +362,11 @@ export function ModelCard({
         </span>
       )}
       {meta && !metaInline && <span className="block text-xs text-muted-foreground">{meta}</span>}
+      {footer && (
+        <span className="mt-auto flex min-h-8 items-center justify-between gap-2 pt-1" data-testid="model-card-footer">
+          {footer}
+        </span>
+      )}
     </label>
   );
 }

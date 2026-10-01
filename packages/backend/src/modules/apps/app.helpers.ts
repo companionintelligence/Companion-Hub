@@ -135,7 +135,9 @@ const HUB_INFERENCE_RESOLVED: Record<string, keyof StandardizedAiEnv> = {
   chat_model: 'CI_CHAT_MODEL',
   embedding_model: 'CI_EMBEDDING_MODEL',
   vision_model: 'CI_VISION_MODEL',
+  utility_model: 'CI_UTILITY_MODEL',
   ollama_host: 'OLLAMA_HOST',
+  embedding_base_url: 'CI_EMBEDDING_BASE_URL',
   ollama_embed_host: 'CI_OLLAMA_EMBED_HOST',
   num_ctx: 'CI_LLM_NUM_CTX',
 };

@@ -30,6 +30,7 @@ import { HardwareInspectorService } from './hardware-inspector.service';
 import { MemoryManagerService } from './memory-manager.service';
 import { ModelRegistryService } from './model-registry.service';
 import { ModelResidencyService } from './model-residency.service';
+import { reconcileTrackedWithResidency } from './tracked-residency';
 import { ModelPullerService } from './model-puller.service';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaInstallerService } from './ollama-installer.service';
@@ -252,8 +253,9 @@ export class InferenceController {
     if (await this.poolPeers.hasConnectedPeers()) {
       return this.poolProxy.proxyRequest({ path: '/v1/embeddings', method: 'POST', body, model, res });
     }
+    const clientClosed = abortWhenClientCloses(res);
     try {
-      const result = await this.router.routeEmbeddings(body);
+      const result = await this.router.routeEmbeddings(body, clientClosed);
       res.json(result.data);
     } catch (err) {
       await sendRouteError(res, err);
@@ -496,6 +498,17 @@ export class InferenceController {
   @UseGuards(AuthGuard)
   @Get('models/tracked')
   async getTrackedModels() {
+    // Agree with the engines first: a model Lemonade or Ollama loaded on its own (at boot, or for a
+    // request) is resident whether or not this process ever tracked it. See tracked-residency.ts.
+    const residency = await this.residency.getReport(new Date().toISOString());
+    for (const change of reconcileTrackedWithResidency({
+      catalog: this.modelRegistry.getCatalog() ?? [],
+      tracked: this.modelRegistry.getTrackedModels(),
+      residency,
+    })) {
+      if (this.modelRegistry.getTrackedModel(change.catalogId)) this.modelRegistry.updateModelState(change.catalogId, change.state);
+      else this.modelRegistry.trackModel(change.catalogId, change.state);
+    }
     return this.modelRegistry.getTrackedModels();
   }
 

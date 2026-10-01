@@ -1,5 +1,5 @@
 import { Test, type TestingModule } from '@nestjs/testing';
-import { LemonadeBackend, lemonadeErrorDetail } from '../backends/lemonade.backend';
+import { EMBEDDER_LLAMACPP_ARGS, LemonadeBackend, lemonadeErrorDetail } from '../backends/lemonade.backend';
 import { lemonadeShowAllBody } from './lemonade-10.2.0-registry.fixture';
 import type { DeviceGroupProbe } from '../backends/amd-device-groups.util';
 import { InferenceBackendRegistry } from '../backends/backend-registry';
@@ -255,16 +255,49 @@ describe('LemonadeBackend', () => {
       });
     });
 
-    it('sends no window, and reads nothing first, for an embedding model', async () => {
-      const get = vi.fn();
+    it('sends the batch flags instead of a window for an embedding model, saved beside its options', async () => {
+      const get = vi.fn().mockResolvedValue({ data: { recipe_options: { llamacpp_backend: 'rocm' } } });
       const post = vi.fn().mockResolvedValue({ data: { status: 'success' } });
       (axios.get as never) = get;
       (axios.post as never) = post;
 
       await backend.loadModel('nomic-embed-text-v1-GGUF', { embedding: true, contextLength: 8192 });
 
-      expect(get).not.toHaveBeenCalled();
-      expect(post).toHaveBeenCalledWith('http://ci-hub-lemonade:13305/v1/load', { model_name: 'nomic-embed-text-v1-GGUF' }, { timeout: 120000 });
+      expect(post).toHaveBeenCalledWith(
+        'http://ci-hub-lemonade:13305/v1/load',
+        { llamacpp_backend: 'rocm', model_name: 'nomic-embed-text-v1-GGUF', llamacpp_args: EMBEDDER_LLAMACPP_ARGS, save_options: true },
+        { timeout: 120000 },
+      );
+    });
+
+    it('puts an embedder on the CPU backend when asked, beside the batch flags, and saves that too', async () => {
+      const get = vi.fn().mockResolvedValue({ data: { recipe_options: {} } });
+      const post = vi.fn().mockResolvedValue({ data: { status: 'success' } });
+      (axios.get as never) = get;
+      (axios.post as never) = post;
+
+      await backend.loadModel('nomic-embed-text-v1-GGUF', { embedding: true, device: 'cpu' });
+
+      expect(post).toHaveBeenCalledWith(
+        'http://ci-hub-lemonade:13305/v1/load',
+        { model_name: 'nomic-embed-text-v1-GGUF', llamacpp_args: EMBEDDER_LLAMACPP_ARGS, llamacpp_backend: 'cpu', save_options: true },
+        { timeout: 120000 },
+      );
+    });
+
+    it('still loads an embedder with the batch flags, unsaved, when its options cannot be read', async () => {
+      const get = vi.fn().mockRejectedValue(new Error('404'));
+      const post = vi.fn().mockResolvedValue({ data: { status: 'success' } });
+      (axios.get as never) = get;
+      (axios.post as never) = post;
+
+      await backend.loadModel('nomic-embed-text-v1-GGUF', { embedding: true });
+
+      expect(post).toHaveBeenCalledWith(
+        'http://ci-hub-lemonade:13305/v1/load',
+        { model_name: 'nomic-embed-text-v1-GGUF', llamacpp_args: EMBEDDER_LLAMACPP_ARGS },
+        { timeout: 120000 },
+      );
     });
 
     it('unloads through Lemonade’s documented /v1/unload endpoint', async () => {
@@ -481,7 +514,7 @@ describe('LemonadeBackend', () => {
 
       expect(post).toHaveBeenCalledWith(
         'http://ci-hub-lemonade:13305/v1/load',
-        { model_name: 'user.nomic-embed-text-v1.5-GGUF' },
+        expect.objectContaining({ model_name: 'user.nomic-embed-text-v1.5-GGUF', llamacpp_args: EMBEDDER_LLAMACPP_ARGS }),
         { timeout: 120000 },
       );
     });
