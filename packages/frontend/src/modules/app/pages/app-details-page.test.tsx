@@ -44,6 +44,11 @@ vi.mock('../components/app-media-gallery/app-media-gallery', () => ({
   AppMediaGallery: () => <div data-testid="app-media-gallery" />,
 }));
 
+// The card has its own tests (queries, mutations, dialogs); this page test is about the page around it.
+vi.mock('../components/app-backups-card/app-backups-card', () => ({
+  AppBackupsCard: ({ appUrn, status }: { appUrn: string; status: string }) => <div data-testid="app-backups-card">{`${appUrn}:${status}`}</div>,
+}));
+
 vi.mock('../components/memory-status-badge/memory-status-badge', () => ({
   MemoryStatusBadge: () => null,
 }));
