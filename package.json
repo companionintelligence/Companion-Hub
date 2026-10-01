@@ -88,7 +88,7 @@
     "pngjs": "^7.0.0",
     "systeminformation": "^5.31.11",
     "turbo": "^2.9.14",
-    "vitest": "^4.1.11",
+    "vitest": "^5.0.2",
     "zod": "^4.6.5"
   },
   "private": false,
