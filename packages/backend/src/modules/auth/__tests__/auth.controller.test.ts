@@ -12,13 +12,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { AuthController } from '../auth.controller';
+import { ForwardAuthIdentityResolver } from '../forward-auth-identity.resolver';
 import { ForwardAuthSecretResolver } from '../forward-auth-secret.resolver';
 import { BearerOrgMembershipCache } from '../bearer-org-membership.cache';
 import { AuthService } from '../auth.service';
 import { exchangePortalAuthorizationCode, fetchPortalSessionEmail } from '../portal-sso';
 import { verifyPortalIdToken } from '../portal-token';
 import { SessionManager } from '../session.manager';
-import { signForwardAuthUser } from '../utils/forward-auth-signing';
+import { signForwardAuthUser, signForwardAuthUserId } from '../utils/forward-auth-signing';
 
 vi.mock('../portal-sso', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../portal-sso')>();
@@ -38,6 +39,9 @@ vi.mock('../portal-token', async (importOriginal) => {
   };
 });
 
+const STABLE_ISSUER = 'urn:ci-hub:6f1c2a4e-2f3b-4c5d-8e9f-0a1b2c3d4e5f';
+const PUBLIC_ID = '0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a6b';
+
 describe('AuthController', () => {
   let authController: AuthController;
   let authService: MockProxy<AuthService>;
@@ -48,6 +52,7 @@ describe('AuthController', () => {
   let userRepository: MockProxy<UserRepository>;
   let sessionManager: MockProxy<SessionManager>;
   let deviceRegistration: MockProxy<DeviceRegistrationRepository>;
+  let forwardAuthIdentities: MockProxy<ForwardAuthIdentityResolver>;
 
   beforeEach(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -62,6 +67,8 @@ describe('AuthController', () => {
         { provide: SessionManager, useValue: mock<SessionManager>() },
         { provide: RegistrationService, useValue: mock<RegistrationService>() },
         { provide: DeviceRegistrationRepository, useValue: mock<DeviceRegistrationRepository>() },
+        // Unset by default: forward auth then signs the username alone, as before stable ids.
+        { provide: ForwardAuthIdentityResolver, useValue: mock<ForwardAuthIdentityResolver>() },
         // Real instance, not a mock: its TTL/coalescing behaviour is what the caching tests assert.
         BearerOrgMembershipCache,
         SessionUserCache,
@@ -77,6 +84,7 @@ describe('AuthController', () => {
     userRepository = moduleRef.get(UserRepository);
     sessionManager = moduleRef.get(SessionManager);
     deviceRegistration = moduleRef.get(DeviceRegistrationRepository);
+    forwardAuthIdentities = moduleRef.get(ForwardAuthIdentityResolver);
     cache.getByPrefix.mockReturnValue([]);
   });
 
@@ -229,6 +237,68 @@ describe('AuthController', () => {
       expect(headers['X-CI-Hub-User']).toBe('support@example.com');
       const timestamp = Number(headers['X-CI-Hub-User-Timestamp']);
       expect(headers['X-CI-Hub-User-Signature']).toBe(signForwardAuthUser('per-app-secret', 'support@example.com', timestamp));
+    });
+
+    it('names a Portal Bearer caller as the Hub person their subject is bound to, with their stable id', async () => {
+      // The Portal email changed after this person was admitted; the Hub username did not. The
+      // browser path signs the username, so the Bearer path must too, or one person is two.
+      config.get.mockImplementation((key: string) => (key === 'ciCloudUrl' ? 'https://hub.ci.computer/' : (undefined as never)));
+      vi.mocked(verifyPortalIdToken).mockResolvedValue({ sub: 'portal-sub', email: 'new-portal@example.com', name: 'Owner' });
+      authService.resolvePairedOrgMembership.mockResolvedValue('member');
+      forwardAuthSecrets.resolveForHost.mockResolvedValue({
+        secret: 'per-app-secret',
+        appUrn: 'ci-memory:ci-marketplace' as never,
+        source: 'app-env',
+      });
+      forwardAuthIdentities.personForPortalSubject.mockResolvedValue({
+        username: 'owner@example.com',
+        stableId: { issuer: STABLE_ISSUER, userId: PUBLIC_ID },
+      });
+      const req = {
+        user: undefined,
+        headers: { authorization: 'Bearer portal.id.token', 'x-forwarded-host': 'ci-memory.ci.lan' },
+      } as unknown as Request;
+      const setHeader = vi.fn();
+      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader, redirect: vi.fn() } as unknown as Response;
+
+      await authController.traefik(req, res);
+
+      // The same issuer string the Hub binds Portal identities under: no trailing slash.
+      expect(forwardAuthIdentities.personForPortalSubject).toHaveBeenCalledWith('https://hub.ci.computer', 'portal-sub');
+      const headers = Object.fromEntries(setHeader.mock.calls);
+      const timestamp = Number(headers['X-CI-Hub-User-Timestamp']);
+      expect(headers['X-CI-Hub-User']).toBe('owner@example.com');
+      expect(headers['X-CI-Hub-User-Signature']).toBe(signForwardAuthUser('per-app-secret', 'owner@example.com', timestamp));
+      expect(headers['X-CI-Hub-User-Id']).toBe(PUBLIC_ID);
+      expect(headers['X-CI-Hub-User-Id-Signature']).toBe(
+        signForwardAuthUserId('per-app-secret', STABLE_ISSUER, PUBLIC_ID, 'owner@example.com', timestamp),
+      );
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    it('names a Portal Bearer caller no Hub person is bound to by their claims, with no stable id', async () => {
+      config.get.mockImplementation((key: string) => (key === 'ciCloudUrl' ? 'https://hub.ci.computer' : (undefined as never)));
+      vi.mocked(verifyPortalIdToken).mockResolvedValue({ sub: 'portal-sub', email: 'Member@Example.com', name: null });
+      authService.resolvePairedOrgMembership.mockResolvedValue('member');
+      forwardAuthSecrets.resolveForHost.mockResolvedValue({
+        secret: 'per-app-secret',
+        appUrn: 'ci-memory:ci-marketplace' as never,
+        source: 'app-env',
+      });
+      forwardAuthIdentities.personForPortalSubject.mockResolvedValue(null);
+      const req = {
+        user: undefined,
+        headers: { authorization: 'Bearer portal.id.token', 'x-forwarded-host': 'ci-memory.ci.lan' },
+      } as unknown as Request;
+      const setHeader = vi.fn();
+      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader, redirect: vi.fn() } as unknown as Response;
+
+      await authController.traefik(req, res);
+
+      const headers = Object.fromEntries(setHeader.mock.calls);
+      expect(headers['X-CI-Hub-User']).toBe('member@example.com');
+      expect(headers).not.toHaveProperty('X-CI-Hub-User-Id');
+      expect(res.status).toHaveBeenCalledWith(200);
     });
 
     it("CI-Hub#1333: rejects a valid Portal Bearer whose subject is not a member of this Hub's paired org", async () => {
@@ -565,6 +635,51 @@ describe('AuthController', () => {
         'User authenticated for Traefik forward auth',
         expect.objectContaining({ username: 'testuser', secretSource: 'app-env', targetApp: 'importer:ci-marketplace' }),
       );
+    });
+
+    it("signs a session user's stable id beside their username, under the same per-app secret", async () => {
+      forwardAuthSecrets.resolveForHost.mockResolvedValue({
+        secret: 'per-app-secret',
+        appUrn: 'ci-memory:ci-marketplace' as never,
+        source: 'app-env',
+      });
+      forwardAuthIdentities.stableIdFor.mockResolvedValue({ issuer: STABLE_ISSUER, userId: PUBLIC_ID });
+      const req = { user: { id: 7, username: 'renamed@example.com' }, headers: { 'x-forwarded-host': 'ci-memory.ci.lan' } } as unknown as Request;
+      const setHeader = vi.fn();
+      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader } as unknown as Response;
+
+      await authController.traefik(req, res);
+
+      expect(forwardAuthIdentities.stableIdFor).toHaveBeenCalledWith(7);
+      const headers = Object.fromEntries(setHeader.mock.calls);
+      const timestamp = Number(headers['X-CI-Hub-User-Timestamp']);
+      expect(headers['X-CI-Hub-User']).toBe('renamed@example.com');
+      expect(headers['X-CI-Hub-User-Issuer']).toBe(STABLE_ISSUER);
+      expect(headers['X-CI-Hub-User-Id']).toBe(PUBLIC_ID);
+      expect(headers['X-CI-Hub-User-Id-Signature']).toBe(
+        signForwardAuthUserId('per-app-secret', STABLE_ISSUER, PUBLIC_ID, 'renamed@example.com', timestamp),
+      );
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    it('signs the username alone when the stable id cannot be read', async () => {
+      forwardAuthSecrets.resolveForHost.mockResolvedValue({
+        secret: 'per-app-secret',
+        appUrn: 'ci-memory:ci-marketplace' as never,
+        source: 'app-env',
+      });
+      forwardAuthIdentities.stableIdFor.mockResolvedValue(null);
+      const req = { user: { id: 7, username: 'someone@example.com' }, headers: { 'x-forwarded-host': 'ci-memory.ci.lan' } } as unknown as Request;
+      const setHeader = vi.fn();
+      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader } as unknown as Response;
+
+      await authController.traefik(req, res);
+
+      const headers = Object.fromEntries(setHeader.mock.calls);
+      expect(headers['X-CI-Hub-User']).toBe('someone@example.com');
+      expect(headers).not.toHaveProperty('X-CI-Hub-User-Id');
+      expect(headers).not.toHaveProperty('X-CI-Hub-User-Id-Signature');
+      expect(res.status).toHaveBeenCalledWith(200);
     });
 
     it('falls back to the global secret for a host that maps to no app', async () => {

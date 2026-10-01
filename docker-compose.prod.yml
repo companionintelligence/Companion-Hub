@@ -296,10 +296,11 @@ services:
       # false: decide from the request the router matched, never from forwarded
       # headers that arrived with it (see assets/traefik/dynamic/dynamic.yml).
       traefik.http.middlewares.ci-hub.forwardauth.trustForwardHeader: "false"
-      # All three signed identity headers must ride through — Traefik copies ONLY the headers
+      # Every signed identity header must ride through — Traefik copies ONLY the headers
       # listed here onto the forwarded request, and consumers verifying the signature fail
-      # closed on a missing timestamp/signature (CI-Engineering#74).
-      traefik.http.middlewares.ci-hub.forwardauth.authResponseHeaders: "X-CI-Hub-User,X-CI-Hub-User-Timestamp,X-CI-Hub-User-Signature"
+      # closed on a missing timestamp/signature (CI-Engineering#74). Listing a name also strips
+      # a visitor's own copy, which keeps the stable-id trio from ever arriving unsigned.
+      traefik.http.middlewares.ci-hub.forwardauth.authResponseHeaders: "X-CI-Hub-User,X-CI-Hub-User-Timestamp,X-CI-Hub-User-Signature,X-CI-Hub-User-Issuer,X-CI-Hub-User-Id,X-CI-Hub-User-Id-Signature"
       # Prevent Traefik from creating a default router on websecure (which triggers ACME)
       traefik.http.routers.ci-hub.entrypoints: "web"
       traefik.http.routers.ci-hub.rule: "Host(`ci-hub.local`)"
