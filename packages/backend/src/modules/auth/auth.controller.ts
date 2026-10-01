@@ -23,6 +23,7 @@ import {
   Req,
   Res,
   ServiceUnavailableException,
+  UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
@@ -967,6 +968,38 @@ export class AuthController {
     await this.setSessionCookie(res, sessionId, req);
     this.logger.info('Portal desktop exchange planted a session cookie', { redirectPath: parsed.redirectPath });
     return PortalDesktopExchangeDto.parse({ sessionId, redirectPath: parsed.redirectPath }, { reportOnly: true });
+  }
+
+  /**
+   * Phone cloud-connect already signed this person in at Portal. The Hub they
+   * then pick is the same account, so the second in-app sheet is not a new
+   * login: it is this id_token becoming a Hub session.
+   *
+   * The token is the one `ci-hub` PKCE minted (`aud` includes `ci-hub`). An
+   * unverified email is refused the same way the browser callback refuses it.
+   */
+  @Post('/portal/mobile-session')
+  @ApiResponse({ type: PortalDesktopExchangeDto })
+  async establishPortalMobileSession(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const bearer = extractBearerToken(typeof req.headers.authorization === 'string' ? req.headers.authorization : undefined);
+    const portalBase = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '');
+    const claims = bearer && portalBase ? await verifyPortalIdToken(bearer, { publicCiCloudUrl: portalBase }) : null;
+    if (!claims?.email || claims.emailVerified !== true) {
+      throw new UnauthorizedException('Portal sign-in could not be used on this Hub');
+    }
+
+    const operator = await this.authService.admitHubPerson({
+      issuer: claims.issuer || portalBase,
+      subject: claims.sub,
+      email: claims.email,
+      emailVerified: true,
+    });
+    const sessionId = await this.sessionManager.createSession(operator.id);
+    await this.setSessionCookie(res, sessionId, req);
+    this.logger.info('Portal mobile session planted from the cloud-connect id_token', {
+      portalEmailHash: hashEmailForLog(claims.email),
+    });
+    return PortalDesktopExchangeDto.parse({ sessionId, redirectPath: '/home' }, { reportOnly: true });
   }
 
   /**

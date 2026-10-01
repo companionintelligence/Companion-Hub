@@ -113,6 +113,32 @@ describe('LoginForm', () => {
     expect(onSwitchAccount).toHaveBeenCalled();
   });
 
+  it('on the phone keeps the in-app sheet and drops the password form even when Portal looks down', async () => {
+    openAuthSession.mockClear();
+    render(
+      <MemoryRouter>
+        <LoginForm
+          loading={false}
+          loginType="your local admin account"
+          onSubmit={vi.fn()}
+          portalSsoHref="https://hub.example.com/api/auth/portal/start?desktop=1"
+          openPortalSsoExternally
+          portalReachable={false}
+          portalAccountEmail="demo-1@lifescope.io"
+          allowPasswordLogin={false}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByLabelText('AUTH_FORM_EMAIL')).not.toBeInTheDocument();
+    expect(screen.queryByText('AUTH_LOGIN_COMPANION_ACCOUNT_NEEDS_INTERNET')).not.toBeInTheDocument();
+    expect(screen.getByText('AUTH_LOGIN_COMPANION_ACCOUNT_HINT_IN_APP')).toBeInTheDocument();
+    const button = screen.getByRole('button', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON_AS' });
+    expect(button).toBeEnabled();
+    await userEvent.click(button);
+    expect(openAuthSession).toHaveBeenCalledWith('https://hub.example.com/api/auth/portal/start?desktop=1');
+  });
+
   it('opens Companion Account SSO through openAuthSession so the native webview stays mounted', async () => {
     openAuthSession.mockClear();
     render(
