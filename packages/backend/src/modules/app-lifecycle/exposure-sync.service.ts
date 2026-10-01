@@ -37,7 +37,7 @@ import { RegistrationService } from '../registration/registration.service';
 import { isServePermissionDenied, servePermissionRemedy, TailscaleService, type TailscaleServeEntry } from '../tailscale/tailscale.service';
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import { resolveHubLocalDomainRoot, resolveHubPublicDomainRoot } from '@/common/helpers/hub-origin';
-import { isPrivateVpnEnabled } from '@/common/helpers/private-vpn';
+import { isTailscaleServeEnabled, TAILSCALE_SERVE_DISABLED_ENV_VAR } from '@/common/helpers/private-vpn';
 import { hasPairingAppCheck, hasRestoreIntent, readRehydrationState } from './registration-recovery-state';
 import { customDomainAuditLine } from './custom-domain-audit';
 import { moveStoredPublicDomain, readServedHostname, resolveMovedPublicDomainRoot } from './public-domain-move';
@@ -241,7 +241,7 @@ export class ExposureSyncService {
   private static readonly TAILSCALE_SERVE_FAILURE_COOLDOWN_MS = 5 * 60_000;
   /** Set once the operator refusal has been logged; cleared by the next publish that succeeds. */
   private servePermissionDeniedReported = false;
-  private privateVpnDisabledReported = false;
+  private tailscaleServeDisabledReported = false;
   /** `<port> <old name> <new name>` of each rename already logged at info. */
   private readonly reportedRenames = new Set<string>();
   /** The node name last warned about as unpublished while opted out; cleared once it is served. */
@@ -377,16 +377,22 @@ export class ExposureSyncService {
    */
   private async triggerTailscaleSync() {
     /*
-     * `PRIVATE_VPN_USER_DISABLED=true` is the operator's opt-out, and core-17, beta-ms-a2, and
-     * beta-nas set it, yet this pass still ran `tailscale serve` on each of them every five
-     * minutes. Opting out leaves Serve exactly as it is rather than tearing it down: all three
-     * still hold a 443 listener that pool peers reach through `https://<node>/`, and Serve
-     * config does not record whether the Hub or an operator created a listener.
+     * `TAILSCALE_SERVE_USER_DISABLED=true` is the operator's opt-out. Opting out leaves Serve
+     * exactly as it is rather than tearing it down: pool peers may still reach this Hub through a
+     * 443 listener on `https://<node>/`, and Serve config does not record whether the Hub or an
+     * operator created a listener.
+     *
+     * `PRIVATE_VPN_USER_DISABLED` is deliberately not read here. It only keeps the `hub-tailscale`
+     * sidecar from starting, which says nothing about the host's Tailscale client, and desktop
+     * installs wrote it on their own; honouring it left their Private VPN apps unpublished
+     * (CI-Hub#1757). See `private-vpn.ts`.
      */
-    const privateVpnEnabled = isPrivateVpnEnabled();
-    if (!privateVpnEnabled && !this.privateVpnDisabledReported) {
-      this.privateVpnDisabledReported = true;
-      this.logger.info('[Tailscale] Private VPN is turned off for this Hub (PRIVATE_VPN_USER_DISABLED=true); leaving Tailscale Serve unchanged');
+    const serveEnabled = isTailscaleServeEnabled();
+    if (!serveEnabled && !this.tailscaleServeDisabledReported) {
+      this.tailscaleServeDisabledReported = true;
+      this.logger.info(
+        `[Tailscale] Tailscale Serve is turned off for this Hub (${TAILSCALE_SERVE_DISABLED_ENV_VAR}=true); leaving Tailscale Serve unchanged`,
+      );
     }
 
     try {
@@ -396,7 +402,7 @@ export class ExposureSyncService {
       const status = await tailscaleService.getStatus().catch(() => null);
       if (!status?.connected) return;
 
-      if (!privateVpnEnabled) {
+      if (!serveEnabled) {
         await this.reportHubUnpublishedWhileOptedOut(tailscaleService, status.nodeFqdn?.toLowerCase() ?? null);
         return;
       }
@@ -633,13 +639,10 @@ export class ExposureSyncService {
    * Warns once, without writing anything, when an opted-out Hub is not published under this node's
    * current name.
    *
-   * The opt-out stops the Hub repairing its own `https://<node>/` entry, and on the fleet the Hubs
-   * that set it are the ones that needed the repair: core-14 (formerly bench-2) and core-17
-   * (formerly bench-1) both carry `PRIVATE_VPN_USER_DISABLED=true`, as do beta-max, core-6 and
-   * beta-red, whose Hubs had been keeping their own entry alive. Pool peers, pairing and the
-   * Private VPN sign-in flow all dial `https://<node>/`, so after a rename or a `tailscale serve
-   * reset` on such a node they fail TLS with nothing in this Hub's log to say why. Reading the
-   * Serve config needs no operator role, so this check costs no refusal.
+   * The opt-out stops the Hub repairing its own `https://<node>/` entry. Pool peers, pairing and
+   * the Private VPN sign-in flow all dial `https://<node>/`, so after a device rename or a
+   * `tailscale serve reset` on such a node they fail TLS with nothing in this Hub's log to say why.
+   * Reading the Serve config needs no operator role, so this check costs no refusal.
    */
   private async reportHubUnpublishedWhileOptedOut(tailscaleService: TailscaleService, selfHost: string | null): Promise<void> {
     if (!selfHost) return;
@@ -658,8 +661,8 @@ export class ExposureSyncService {
       `[Tailscale] Tailscale Serve has no :${port} entry for ${selfHost} → ${upstreamUrl}` +
         (staleHost ? ` (only ${staleHost}, a name this node no longer has)` : '') +
         `, so pool peers and Private VPN sign-in cannot reach this Hub at https://${selfHost}/. ` +
-        'PRIVATE_VPN_USER_DISABLED=true stops the Hub publishing itself; ' +
-        `run sudo tailscale serve --bg --yes --https=${port} ${upstreamUrl} once on the host, or remove PRIVATE_VPN_USER_DISABLED and restart the Hub.`,
+        `${TAILSCALE_SERVE_DISABLED_ENV_VAR}=true stops the Hub publishing itself; ` +
+        `run sudo tailscale serve --bg --yes --https=${port} ${upstreamUrl} once on the host, or remove ${TAILSCALE_SERVE_DISABLED_ENV_VAR} and restart the Hub.`,
     );
   }
 

@@ -879,7 +879,8 @@ See [`e2e/README.md`](../e2e/README.md) for full lane documentation.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PRIVATE_VPN_USER_DISABLED` | unset (sidecar on) | Set `true` to opt out of `hub-tailscale`; default includes `private-vpn` in `COMPOSE_PROFILES` |
+| `PRIVATE_VPN_USER_DISABLED` | unset (sidecar on) | Set `true` to keep the CLI from starting `hub-tailscale`; the desktop app ignores it. The Hub still publishes to Tailscale Serve. See [`private-vpn.md`](private-vpn.md#turn-private-vpn-off) |
+| `TAILSCALE_SERVE_USER_DISABLED` | unset (Serve on) | Set `true` to stop the Hub writing Tailscale Serve config: no Hub or app entries, and the UI stops offering Private VPN |
 | `DEMO_MODE` | `false` | Read-only demo mode |
 | `GUEST_DASHBOARD` | `false` | Allow unauthenticated dashboard access |
 | `ADVANCED_SETTINGS` | `false` | Show advanced settings in UI |
