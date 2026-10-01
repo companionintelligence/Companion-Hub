@@ -2222,6 +2222,10 @@ export type UnpinModelBody = {
     modelId: string;
 };
 
+export type UnloadModelBody = {
+    modelId: string;
+};
+
 export type SetCloudProviderBody = {
     provider: 'openai' | 'anthropic' | 'google' | 'github-copilot';
     apiKey: string;
@@ -4286,7 +4290,7 @@ export type LoadModelResponses = {
 };
 
 export type UnloadModelData = {
-    body?: never;
+    body: UnloadModelBody;
     path?: never;
     query?: never;
     url: '/api/inference/models/unload';

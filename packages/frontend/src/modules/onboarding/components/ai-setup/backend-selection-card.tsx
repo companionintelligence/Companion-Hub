@@ -1,4 +1,5 @@
 import { Card, CardContent } from '@/components/ui/Card';
+import { BACKEND_DISPLAY_NAMES } from '@/lib/inference/backend-names';
 import type { InferenceBackendType } from '@ci-hub/common/types';
 import { LabelWithHint } from '@/components/ui/field-hint/field-hint';
 import {
@@ -19,10 +20,10 @@ const BACKEND_HINT_KEYS: Record<InferenceBackendType, string> = {
 };
 
 const BACKEND_INFO: Record<InferenceBackendType, { label: string; descriptionKey?: string }> = {
-  ollama: { label: 'Ollama', descriptionKey: 'ONBOARDING_BACKEND_OLLAMA_DESC' },
-  vllm: { label: 'vLLM', descriptionKey: 'ONBOARDING_BACKEND_VLLM_DESC' },
-  lemonade: { label: 'Lemonade', descriptionKey: 'ONBOARDING_BACKEND_LEMONADE_DESC' },
-  omlx: { label: 'oMLX', descriptionKey: 'ONBOARDING_BACKEND_OMLX_DESC' },
+  ollama: { label: BACKEND_DISPLAY_NAMES.ollama, descriptionKey: 'ONBOARDING_BACKEND_OLLAMA_DESC' },
+  vllm: { label: BACKEND_DISPLAY_NAMES.vllm, descriptionKey: 'ONBOARDING_BACKEND_VLLM_DESC' },
+  lemonade: { label: BACKEND_DISPLAY_NAMES.lemonade, descriptionKey: 'ONBOARDING_BACKEND_LEMONADE_DESC' },
+  omlx: { label: BACKEND_DISPLAY_NAMES.omlx, descriptionKey: 'ONBOARDING_BACKEND_OMLX_DESC' },
 };
 
 const BACKEND_ORDER: InferenceBackendType[] = ['ollama', 'omlx', 'vllm', 'lemonade'];

@@ -18,7 +18,8 @@ import {
 } from './app-model-handout';
 import { MemoryManagerService, modelMemoryCeilingMb } from './memory-manager.service';
 import { appBearerFor } from './engine-credential-scope';
-import { embedderEngineId, embeddingBackendFor, pickEmbeddingModel } from './embedder-handout';
+import { catalogEmbedsOn, embedderEngineId, embeddingBackendFor, pickEmbeddingModel } from './embedder-handout';
+import { pickUtilityModel } from './utility-handout';
 import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
 
 /**
@@ -44,13 +45,25 @@ export interface StandardizedAiEnv {
   CI_EMBEDDING_MODEL?: string;
   /** Default vision-capable LLM backend model ID, if available. */
   CI_VISION_MODEL?: string;
+  /**
+   * The model for an app's background calls (extraction, classification, titling): a smaller
+   * installed model that fits beside the chat model, else the chat model itself. See
+   * `pickUtilityModel`. Always set when a chat model is.
+   */
+  CI_UTILITY_MODEL?: string;
   /** Native Ollama URL (not OpenAI-compatible — for direct Ollama API calls). */
   OLLAMA_HOST?: string;
   /**
-   * Native Ollama URL dedicated to embeddings. Unlike OLLAMA_HOST (only set when
-   * Ollama is the active chat backend), this is emitted whenever a healthy Ollama
-   * is reachable — so apps can run chat on vLLM/Lemonade while keeping their
-   * embedding pipeline (and any existing pgvector index) on Ollama.
+   * The embedding endpoint as an OpenAI-style base (`…/v1`), the sibling of CI_LLM_BASE_URL: the
+   * engine that embeds for the app (see `embeddingBackendFor`), or the pool proxy. Emitted
+   * whenever an embedder is. Companion Memory reads it as LLM_EMBEDDING_API_BASE.
+   */
+  CI_EMBEDDING_BASE_URL?: string;
+  /**
+   * The same server as CI_EMBEDDING_BASE_URL, as its root without `/v1` — the shape the native
+   * Ollama `/api/embed` route hangs off. The name is from when only Ollama embedded; the value has
+   * named Lemonade and the pool since. Kept for manifests that still map `ollama_embed_host`;
+   * new manifests should map `embedding_base_url`.
    */
   CI_OLLAMA_EMBED_HOST?: string;
   /**
@@ -204,25 +217,28 @@ export class InferenceEnvResolver {
     }
 
     // ── Embedding model + dedicated embed host ────────────────────────────
-    // Embeddings are split-backend capable: chat can run on vLLM/Lemonade while
-    // embeddings stay on Ollama (e.g. CI-Server's pgvector index is built on
-    // Ollama's 768-dim nomic-embed-text; moving embedders would force a full
-    // reindex). The host and the model must name the same engine: with chat on
-    // Lemonade and Ollama healthy, this used to emit Ollama's host with Lemonade's
-    // embedder id. So a healthy Ollama supplies both; a Lemonade with no Ollama
-    // supplies both itself (it serves Ollama's native `/api/embed`); vLLM, which
-    // ships no embedder and speaks no native dialect, still gets neither. The
-    // choice is `embeddingBackendFor`, shared with the bootstrap credentials.
+    // The chat engine embeds for itself when the catalog gives it an embedder, so
+    // the app's chat host and embed host name one engine and one card budget. Only
+    // an engine with no embedder (vLLM, oMLX) borrows a healthy Ollama — probed
+    // here only in that case. The host and the model must name the same engine:
+    // with chat on Lemonade and Ollama healthy, this used to emit Ollama's host
+    // with Lemonade's embedder id. The choice is `embeddingBackendFor`, shared
+    // with the bootstrap credentials.
     const encodeOverride = preferences.preferredEncodeEndpoint?.trim();
-    const decoderEmbeds = backendType === 'ollama' || backendType === 'omlx';
-    const ollamaHealth = decoderEmbeds
-      ? null
-      : await this.ollamaBackend.healthCheck().catch((err) => {
-          const message = err instanceof Error ? err.message : String(err);
-          this.logger.warn(`[InferenceEnvResolver] ollama (embeddings fallback) health check failed: ${message}`);
-          return { running: false, healthy: false, modelsLoaded: [] as string[] };
-        });
-    const embedBackend = embeddingBackendFor(backendType, Boolean(ollamaHealth?.running && ollamaHealth.healthy));
+    const activeEmbeds = catalogEmbedsOn(this.modelRegistry, { backend: backendType, preferredId: preferences.preferredEmbeddingModel, profile });
+    const ollamaHealth =
+      activeEmbeds || backendType === 'ollama'
+        ? null
+        : await this.ollamaBackend.healthCheck().catch((err) => {
+            const message = err instanceof Error ? err.message : String(err);
+            this.logger.warn(`[InferenceEnvResolver] ollama (embeddings fallback) health check failed: ${message}`);
+            return { running: false, healthy: false, modelsLoaded: [] as string[] };
+          });
+    const embedBackend = embeddingBackendFor(backendType, {
+      activeEmbeds,
+      ollamaHealthy:
+        backendType === 'ollama' ? backendHealth.running && backendHealth.healthy : Boolean(ollamaHealth?.running && ollamaHealth.healthy),
+    });
     const embedOnOllama = embedBackend === 'ollama' && backendType !== 'ollama';
     const embedServed = (embedOnOllama ? ollamaHealth?.modelsLoaded : backendHealth.modelsLoaded) ?? [];
     const embedder = embedBackend
@@ -235,10 +251,10 @@ export class InferenceEnvResolver {
       : null;
     // The id the engine serves it under: Lemonade 10.x lists a Hub-registered embedder as `user.<id>`.
     const embeddingModel = embedder ? embedderEngineId(embedder, embedServed, embedOnOllama ? this.ollamaBackend : backend) : undefined;
-    let embedHost = decoderEmbeds ? backendBaseUrl : undefined;
+    let embedHost: string | undefined;
     if (embedOnOllama) {
       embedHost = this.ollamaBackend.getBaseUrl();
-    } else if (embedBackend === 'lemonade' && embeddingModel) {
+    } else if (embedBackend) {
       embedHost = backendBaseUrl;
     }
     if (encodeOverride) {
@@ -265,11 +281,32 @@ export class InferenceEnvResolver {
     // OLLAMA_HOST is Ollama's native (non-OpenAI-compatible) protocol URL — only meaningful,
     // and only ever populated, when Ollama is the active backend.
     if (backendType === 'ollama') env.OLLAMA_HOST = backendBaseUrl;
-    // The embeddings host, by contrast, points at Ollama whenever one is healthy —
-    // even when chat runs on another backend (split-backend embeddings).
-    if (embedHost) env.CI_OLLAMA_EMBED_HOST = embedHost;
+    // The embeddings host names the engine that embeds: the chat engine itself when
+    // the catalog gives it an embedder, else the Ollama it borrows one from.
+    if (embedHost) {
+      env.CI_OLLAMA_EMBED_HOST = embedHost;
+      env.CI_EMBEDDING_BASE_URL = `${embedHost.replace(/\/$/, '')}/v1`;
+    }
     if (chatModel) env.CI_CHAT_MODEL = chatModel;
     else if (chatError) env.CI_INFERENCE_ERROR = chatError;
+    // Only a model this node serves can be judged to fit beside the chat model; a pool-served chat
+    // model runs on a peer whose memory this node cannot see, so the app gets the chat model.
+    if (chatModel) {
+      const utility =
+        chatCurated && chatServedLocally
+          ? pickUtilityModel({
+              chat: chatCurated,
+              installed: (this.modelRegistry.getCatalog() ?? []).filter(
+                (m) => m.modality === 'llm' && m.backend === backendType && this.isInstalled(m, backendHealth.modelsLoaded ?? []),
+              ),
+              profile,
+            })
+          : undefined;
+      env.CI_UTILITY_MODEL = utility && utility.id !== chatCurated?.id ? utility.backendModelId : chatModel;
+      if (env.CI_UTILITY_MODEL !== chatModel) {
+        this.logger.info(`[InferenceEnvResolver] ${appLabel}: utility=${env.CI_UTILITY_MODEL} beside chat=${chatModel}`);
+      }
+    }
     if (embeddingModel) env.CI_EMBEDDING_MODEL = embeddingModel;
     if (visionModel) env.CI_VISION_MODEL = visionModel;
 
@@ -353,7 +390,10 @@ export class InferenceEnvResolver {
     );
     env.CI_LLM_BASE_URL = routed.openAiBaseUrl;
     if (env.OLLAMA_HOST) env.OLLAMA_HOST = routed.ollamaHost;
-    if (env.CI_OLLAMA_EMBED_HOST) env.CI_OLLAMA_EMBED_HOST = routed.ollamaEmbedHost;
+    if (env.CI_OLLAMA_EMBED_HOST && routed.ollamaEmbedHost) {
+      env.CI_OLLAMA_EMBED_HOST = routed.ollamaEmbedHost;
+      env.CI_EMBEDDING_BASE_URL = `${routed.ollamaEmbedHost.replace(/\/$/, '')}/v1`;
+    }
     // Against the URL the app is actually handed: through the pool proxy, or to a decode override
     // on another server, the engine key would reach a server it does not belong to.
     env.CI_LLM_API_KEY = appBearerFor({ endpointUrl: env.CI_LLM_BASE_URL, backendType, engineUrl: backendBaseUrl, engineKey });

@@ -575,7 +575,14 @@ export const pullModel = <ThrowOnError extends boolean = false>(options?: Option
 
 export const loadModel = <ThrowOnError extends boolean = false>(options?: Options<LoadModelData, ThrowOnError>) => (options?.client ?? client).post<LoadModelResponses, unknown, ThrowOnError>({ url: '/api/inference/models/load', ...options });
 
-export const unloadModel = <ThrowOnError extends boolean = false>(options?: Options<UnloadModelData, ThrowOnError>) => (options?.client ?? client).post<UnloadModelResponses, unknown, ThrowOnError>({ url: '/api/inference/models/unload', ...options });
+export const unloadModel = <ThrowOnError extends boolean = false>(options: Options<UnloadModelData, ThrowOnError>) => (options.client ?? client).post<UnloadModelResponses, unknown, ThrowOnError>({
+    url: '/api/inference/models/unload',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
 
 export const pinModel = <ThrowOnError extends boolean = false>(options: Options<PinModelData, ThrowOnError>) => (options.client ?? client).post<PinModelResponses, unknown, ThrowOnError>({
     url: '/api/inference/models/pin',

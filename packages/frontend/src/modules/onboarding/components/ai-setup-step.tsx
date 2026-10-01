@@ -34,13 +34,14 @@ import { OtherModelsSection, RecommendedModels } from './ai-setup/model-selectio
 import { AdvancedDrawers } from './ai-setup/advanced-drawers';
 import { SystemOverview } from './ai-setup/system-overview';
 import { ResourceSummaryBar } from './ai-setup/resource-summary-bar';
+import { backendDisplayName } from '@/lib/inference/backend-names';
 import { OllamaSetupCard } from './ai-setup/ollama-setup-card';
 import { VllmSetupCard } from './ai-setup/vllm-setup-card';
 import { OmlxSetupCard } from './ai-setup/omlx-setup-card';
 import { ManualEndpointsCard } from './ai-setup/manual-endpoints-card';
 import { LemonadeSetupCard } from './ai-setup/lemonade-setup-card';
 import { TailscaleSetupStep } from './tailscale-setup-step';
-import { computeSelectionBudget } from '../helpers/onboarding-model-selection';
+import { computeSelectionBudget, inferenceMemoryMb } from '../helpers/onboarding-model-selection';
 import {
   EMBEDDING_INFERENCE_BACKEND,
   hubLoadableSelection,
@@ -481,7 +482,7 @@ export const AiSetupStep = ({
       profile.availableModels.filter((m) => selectedModels.includes(m.id)),
       installedCatalogIds,
       profile.resourceEstimate.availableDiskMb,
-      profile.resourceEstimate.availableMemoryMb,
+      backendDisplayName(selectedBackend),
     );
     if (budget.overDisk) {
       installBlocked = true;
@@ -623,7 +624,7 @@ export const AiSetupStep = ({
   const installedCatalogIds = profile.installedCatalogIds ?? [];
   const availableDiskMb = profile.resourceEstimate.availableDiskMb;
   const diskTotalMb = profile.resourceEstimate.diskTotalMb;
-  const availableMemoryMb = profile.resourceEstimate.availableMemoryMb;
+  const inferenceMemory = inferenceMemoryMb(profile);
   const needsOllamaForContinue = selectedBackend === 'ollama' && (ollamaStatus === null || !ollamaStatus.ready);
   const needsVllmForContinue = selectedBackend === 'vllm' && (vllmStatus === null || !vllmStatus.ready);
   const needsOmlxForContinue = selectedBackend === 'omlx' && (omlxStatus === null || !omlxStatus.ready);
@@ -743,8 +744,10 @@ export const AiSetupStep = ({
           <ResourceSummaryBar
             selectedModels={selectedModels}
             installedCatalogIds={installedCatalogIds}
+            backend={selectedBackend}
             availableStorageMb={availableDiskMb}
-            availableMemoryMb={availableMemoryMb}
+            totalMemoryMb={inferenceMemory.totalMb}
+            availableMemoryMb={inferenceMemory.freeMb}
           />
 
           <RecommendedModels

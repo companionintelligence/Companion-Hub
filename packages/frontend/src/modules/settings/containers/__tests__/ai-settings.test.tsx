@@ -20,6 +20,7 @@ const {
   saveCloudProviderConfig,
   ensurePullsStarted,
   unpinInferenceModel,
+  unloadInferenceModel,
 } = vi.hoisted(() => ({
   fetchInferenceOnboardingProfile: vi.fn(),
   fetchInferencePreferences: vi.fn(),
@@ -35,6 +36,7 @@ const {
   saveCloudProviderConfig: vi.fn(),
   ensurePullsStarted: vi.fn(),
   unpinInferenceModel: vi.fn(),
+  unloadInferenceModel: vi.fn(),
 }));
 
 vi.mock('@/lib/inference/inference-api', () => ({
@@ -53,6 +55,7 @@ vi.mock('@/lib/inference/inference-api', () => ({
   // ai-settings imports and calls this on the deselection path; without it here that path throws
   // `unpinInferenceModel is not a function` into handleSave's catch and reports a failed save.
   unpinInferenceModel,
+  unloadInferenceModel,
 }));
 
 vi.mock('@/lib/inference/tracked-models', async (importOriginal) => {
@@ -111,10 +114,12 @@ vi.mock('@/modules/onboarding/components/ai-setup/model-selection-card', () => (
 }));
 
 vi.mock('@/modules/onboarding/components/ai-setup/primitives', () => ({
-  ModelCard: ({ title, checkboxTestId, selected, onToggle }: any) => (
+  // The status chip and the Unload button ride in the card's footer slot, so the double renders it.
+  ModelCard: ({ title, checkboxTestId, selected, onToggle, footer }: any) => (
     <div data-testid={`model-card-${title}`}>
       <input type="checkbox" data-testid={checkboxTestId} checked={selected} onChange={onToggle} readOnly />
       {title}
+      {footer}
     </div>
   ),
 }));
@@ -184,6 +189,7 @@ const profile = {
 const llm = (id: string, backend = 'vllm') => ({
   id,
   backend,
+  backendModelId: id,
   modality: 'llm',
   displayName: `Model ${id}`,
   runtime: { memoryFootprintMb: 1024 },
@@ -503,6 +509,59 @@ describe('AiSettingsContainer', () => {
     // fails whenever the suite is slow enough for one more tick to land before the assertion.
     await waitFor(() => expect(fetchInferenceTrackedModels.mock.calls.length).toBeGreaterThanOrEqual(2));
     expect(screen.getByTestId('recommended-model-checkbox-m2')).toBeChecked();
+  });
+
+  it('offers Unload on a resident model, and shows the model as merely downloaded once it is out of memory', async () => {
+    // Deselect + Save only unpins and select + Save skips a resident model, so without this button
+    // an engine running a model with stale load options could never be made to reload it from here.
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['o1'], [llm('o1', 'ollama')]));
+    fetchInferenceTrackedModels
+      .mockResolvedValueOnce([pinnedTracked('o1')] as never)
+      .mockResolvedValue([{ ...pinnedTracked('o1'), state: 'pulled', pinned: false }] as never);
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama' });
+    unloadInferenceModel.mockResolvedValue(undefined);
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('unload-model-o1')).toBeInTheDocument());
+    await user.click(screen.getByTestId('unload-model-o1'));
+
+    await waitFor(() => expect(unloadInferenceModel).toHaveBeenCalledWith('o1'));
+    // The registry is re-read, and a model that is only on disk has nothing to unload.
+    await waitFor(() => expect(screen.queryByTestId('unload-model-o1')).not.toBeInTheDocument());
+    // Still selected, so the next Save pins — loads — it again.
+    expect(screen.getByTestId('recommended-model-checkbox-o1')).toBeChecked();
+  });
+
+  it('offers Unload in the Downloaded Models list for a resident catalog model outside the recommended set', async () => {
+    // The engine lists what it has; a model the person picked from the full catalog rather than
+    // the recommendations shows up only here, and must be unloadable from here.
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['o1'], [llm('o1', 'ollama')]));
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama' });
+    fetchInferenceRuntimeModels.mockResolvedValue({
+      backend: 'ollama',
+      discoveryUnavailable: false,
+      models: [
+        { id: 'o1', name: 'o1', state: 'available' },
+        { id: 'somebody-elses:latest', name: 'somebody-elses', state: 'available' },
+      ],
+    });
+    fetchInferenceTrackedModels.mockResolvedValue([{ ...pinnedTracked('o1'), state: 'loaded', pinned: false }] as never);
+    unloadInferenceModel.mockResolvedValue(undefined);
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    // One per place the model appears: its recommended card and its Downloaded Models row.
+    await waitFor(() => expect(screen.getAllByTestId('unload-model-o1')).toHaveLength(2));
+    // A model the catalog does not know cannot be unloaded from here and keeps its badge.
+    expect(screen.queryByTestId('unload-model-somebody-elses:latest')).not.toBeInTheDocument();
+
+    const inDownloadedList = screen.getAllByTestId('unload-model-o1')[1];
+    if (!inDownloadedList) throw new Error('expected a second Unload button');
+    await user.click(inDownloadedList);
+    await waitFor(() => expect(unloadInferenceModel).toHaveBeenCalledWith('o1'));
   });
 
   it('warns that an emptying save unpins every pinned model', async () => {
