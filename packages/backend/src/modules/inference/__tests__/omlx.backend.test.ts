@@ -290,29 +290,28 @@ describe('OmlxBackend', () => {
         await backend.healthCheck('http://attacker.example:9999');
 
         expect(modelsCall()?.[0]).toBe('http://attacker.example:9999/v1/models');
-        expect((modelsCall()?.[1] as { headers?: unknown }).headers).toBeUndefined();
+        expect((modelsCall()?.[1] as { headers?: unknown } | undefined)?.headers).toBeUndefined();
       });
 
-      it.each([
-        CONFIGURED,
-        `${CONFIGURED}/v1/`,
-        'HTTP://MAC-STUDIO.LAN:8000',
-      ])('sends OMLX_API_KEY when re-checking the configured server, spelled %s', async (url) => {
-        await backend.healthCheck(url);
+      it.each([CONFIGURED, `${CONFIGURED}/v1/`, 'HTTP://MAC-STUDIO.LAN:8000'])(
+        'sends OMLX_API_KEY when re-checking the configured server, spelled %s',
+        async (url) => {
+          await backend.healthCheck(url);
 
-        expect((modelsCall()?.[1] as { headers?: unknown }).headers).toEqual({ Authorization: 'Bearer omlx-secret' });
-      });
+          expect((modelsCall()?.[1] as { headers?: unknown } | undefined)?.headers).toEqual({ Authorization: 'Bearer omlx-secret' });
+        },
+      );
 
       it('sends OMLX_API_KEY on the plain health probe of the configured server', async () => {
         await backend.healthCheck();
 
-        expect((modelsCall()?.[1] as { headers?: unknown }).headers).toEqual({ Authorization: 'Bearer omlx-secret' });
+        expect((modelsCall()?.[1] as { headers?: unknown } | undefined)?.headers).toEqual({ Authorization: 'Bearer omlx-secret' });
       });
 
       it('sends the key typed for the probe to any URL, as before', async () => {
         await backend.healthCheck('http://other-mac.lan:8000', 'typed-key');
 
-        expect((modelsCall()?.[1] as { headers?: unknown }).headers).toEqual({ Authorization: 'Bearer typed-key' });
+        expect((modelsCall()?.[1] as { headers?: unknown } | undefined)?.headers).toEqual({ Authorization: 'Bearer typed-key' });
       });
 
       it('says why no key went out when the other server refuses it', async () => {

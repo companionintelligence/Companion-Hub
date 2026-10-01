@@ -241,19 +241,16 @@ describe('InferenceAccessGuard', () => {
      * public hostname, say. It cannot be a key this Hub minted, so it is refused as one that is not,
      * and it costs neither a SELECT nor, during a database blip, the retries.
      */
-    it.each([
-      'ollama',
-      'sk-local',
-      'A'.repeat(64),
-      'g'.repeat(64),
-      'a'.repeat(63),
-    ])('refuses a token not shaped like a Hub key (%s) as invalid_api_key without asking the store', async (token) => {
-      const { error, res } = await refusalOf(request('172.18.0.2', { 'cf-ray': '8f1a-LHR', ...bearer(token) }));
+    it.each(['ollama', 'sk-local', 'A'.repeat(64), 'g'.repeat(64), 'a'.repeat(63)])(
+      'refuses a token not shaped like a Hub key (%s) as invalid_api_key without asking the store',
+      async (token) => {
+        const { error, res } = await refusalOf(request('172.18.0.2', { 'cf-ray': '8f1a-LHR', ...bearer(token) }));
 
-      expect(error).toBeInstanceOf(UnauthorizedException);
-      expect((res.body as { error: { code: string } }).error.code).toBe('invalid_api_key');
-      expect(repo.findByHash).not.toHaveBeenCalled();
-    });
+        expect(error).toBeInstanceOf(UnauthorizedException);
+        expect((res.body as { error: { code: string } }).error.code).toBe('invalid_api_key');
+        expect(repo.findByHash).not.toHaveBeenCalled();
+      },
+    );
   });
 
   /**

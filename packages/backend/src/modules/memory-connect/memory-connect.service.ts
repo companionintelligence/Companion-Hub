@@ -473,7 +473,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    */
   private async ensureCurrentUserOwnsRunningToken(appUrn: AppUrn, hubUserId: string): Promise<void> {
     const latest = await this.connections.getRow(appUrn);
-    if (!latest || latest.state !== 'connected' || !latest.hubUserId) {
+    if (latest?.state !== 'connected' || !latest.hubUserId) {
       return;
     }
 

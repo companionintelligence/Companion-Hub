@@ -143,7 +143,7 @@ describe('fleet install and the pairing code', () => {
         orgId: 'org-env',
         portalOrigin: 'https://hub.ci.computer',
       });
-      expect((mocks.installNode.mock.calls[0]?.[1] as InstallOpts).portalOrigin).toBe('https://hub.ci.computer');
+      expect((mocks.installNode.mock.calls[0]?.[1] as InstallOpts | undefined)?.portalOrigin).toBe('https://hub.ci.computer');
     } finally {
       for (const name of Object.keys(env)) delete process.env[name];
     }

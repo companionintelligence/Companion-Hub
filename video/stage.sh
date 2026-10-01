@@ -117,7 +117,7 @@ STAGE_IMMICH_URN="immich:ci-marketplace"
 STAGE_IMMICH_PROJECT="immich_ci-marketplace"
 STAGE_IMMICH_TIMEOUT="${STAGE_IMMICH_TIMEOUT:-1200}"
 # How long each server gets to answer. The backend's clock includes
-# start-backend.sh's own `nest build`, which fits in 180s on a quiet machine and
+# start-backend.sh's own backend build, which fits in 180s on a quiet machine and
 # did not, twice, at a load average of ~200 from other agents' work.
 STAGE_WAIT_SECONDS="${STAGE_WAIT_SECONDS:-180}"
 
@@ -515,15 +515,20 @@ _kill_port() {
   return 0
 }
 
-# A killed start-backend.sh leaves its `nest build` running, and a build holds
-# no port, so the sweep below cannot see it. Measured: the next stage_up's build
-# raced a leaked one on packages/backend/dist and died on ENOTEMPTY, after which
-# the stage waited out its whole budget on a backend that would never start.
-# Only a build whose working directory is THIS checkout's backend is ours.
+# A killed start-backend.sh leaves its backend build (compile.ts and the tsc it
+# runs) going, and a build holds no port, so the sweep below cannot see it.
+# Measured: the next stage_up's build raced a leaked one on packages/backend/dist
+# and died on ENOTEMPTY, after which the stage waited out its whole budget on a
+# backend that would never start.
+# Only a build whose working directory is THIS checkout's backend is ours, and
+# never a `--watch` one: that is `pnpm run dev` (compile.ts --watch and its tsc),
+# someone's running dev backend, which stopping the watcher would take down.
 _stage_kill_builds() {
-  local backend pid cwd
+  local backend pid cwd args
   backend="$(cd "$(_stage_root)/packages/backend" 2>/dev/null && pwd -P)" || return 0
-  for pid in $(pgrep -f "nest build|nest.js build" 2>/dev/null); do
+  for pid in $(pgrep -f "compile\.ts|/tsc -p " 2>/dev/null); do
+    args="$(ps -o args= -p "$pid" 2>/dev/null)" || args=""
+    case "$args" in *--watch*) continue ;; esac
     cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')" || cwd=""
     [ "$cwd" != "$backend" ] || kill "$pid" 2>/dev/null || true
   done
