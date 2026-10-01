@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pLimit } from '@/common/helpers/file-helpers';
+import { describeNetworkError } from '@/common/helpers/network-error';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -56,6 +57,14 @@ export class ReposHelpers {
    * @param {unknown} err
    */
   private handleRepoError(err: unknown) {
+    // A Portal request that failed below HTTP is told by why it failed: its message is empty when no
+    // address of the Portal answered, and its stack is only axios's own frames.
+    if (axios.isAxiosError(err)) {
+      const message = describeNetworkError(err);
+      this.logger.error(`CI Cloud request failed: ${message}`);
+      return { success: false, message };
+    }
+
     if (err instanceof Error) {
       this.logger.error(err);
       return { success: false, message: err.message };
@@ -142,7 +151,7 @@ export class ReposHelpers {
           throw error;
         }
         this.logger.warn(
-          `Retrying CI Cloud request (${attempt + 1}/${retries + 1}): ${config.method ?? 'GET'} ${config.url} — ${error instanceof Error ? error.message : String(error)}`,
+          `Retrying CI Cloud request (${attempt + 1}/${retries + 1}): ${config.method ?? 'GET'} ${config.url} — ${describeNetworkError(error)}`,
         );
       }
       attempt++;

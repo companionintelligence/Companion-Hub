@@ -8,6 +8,7 @@ import { scrubString } from '@/core/error-reporting/sentry-scrubber';
 import { LoggerService } from '@/core/logger/logger.service';
 import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR, tunnelUserClearedMarkerPath } from '@/common/constants';
 import { buildPortalAxiosConfig, readPortalInternalUrlOverride, withPortalAxiosHeaders } from '@/common/helpers/portal-url';
+import { describeNetworkError } from '@/common/helpers/network-error';
 import { rateLimitedWaitCopy } from '@/common/helpers/retry-after';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
 import { type TunnelHealth, TunnelHealthService } from '../cloudflare/tunnel-health.service';
@@ -193,9 +194,21 @@ function classifyPortalTransportFailure(error: unknown): 'never_reached' | 'no_a
     return null;
   }
 
-  const candidate = error as { isAxiosError?: boolean; code?: unknown; cause?: { syscall?: unknown } };
+  const candidate = error as { isAxiosError?: boolean; code?: unknown; cause?: { syscall?: unknown; errors?: unknown } };
   if (candidate.isAxiosError !== true) {
     return null;
+  }
+
+  // Node tried every address the name resolved to, and none accepted the connection. Its
+  // `AggregateError` has no syscall, and its code is the first attempt's: `ETIMEDOUT` when that
+  // attempt ran out of time, which alone would read as `no_answer` and send the operator for a new
+  // pairing code although nothing was sent. Each attempt names the syscall that failed.
+  const attempts = candidate.cause?.errors;
+  if (Array.isArray(attempts) && attempts.length > 0) {
+    const neverConnected = attempts.every(
+      (attempt: { syscall?: unknown } | null) => typeof attempt?.syscall === 'string' && PORTAL_CONNECT_SYSCALLS.has(attempt.syscall),
+    );
+    return neverConnected ? 'never_reached' : 'no_answer';
   }
 
   const syscall = candidate.cause?.syscall;
@@ -1142,7 +1155,15 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // Count network and timeout errors toward the transient-failure threshold.
       this.consecutiveValidationFailures++;
       this.recordCheckIn(null, { code: null, error: describeCheckInTransportError(e) });
-      this.logger.error(`Registration validation: failed to reach CI Portal (failure ${this.consecutiveValidationFailures}/3)`, e);
+      const failure = `Registration validation: failed to reach CI Portal (failure ${this.consecutiveValidationFailures}/3): ${describeNetworkError(e)}`;
+      // Every status is an answer here, so an axios error is a request that failed below HTTP. The
+      // line says why, and its stack would be axios's own frames. Anything else failed on this side
+      // and keeps its stack.
+      if (classifyPortalTransportFailure(e)) {
+        this.logger.error(failure);
+      } else {
+        this.logger.error(failure, e);
+      }
       await this.degradeAfterRepeatedFailures();
       return 'failed';
     }
@@ -1720,7 +1741,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       this.logger.debug(`Portal device probe returned ${response.status} for ${deviceId}`);
       return null;
     } catch (e) {
-      this.logger.debug('Portal device probe failed', e);
+      this.logger.debug(`Portal device probe failed: ${describeNetworkError(e)}`);
       return null;
     }
   }
@@ -2341,7 +2362,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       });
     } catch (error) {
       const transportFailure = classifyPortalTransportFailure(error);
-      this.logger.error(`Pairing request failed before local registration completed: ${describeRegistrationError(error)}`);
+      // A request that failed below HTTP is described by why it failed: its message is empty when
+      // no address of the Portal answered, and its stack is axios's own frames.
+      this.logger.error(
+        `Pairing request failed before local registration completed: ${transportFailure ? describeNetworkError(error) : describeRegistrationError(error)}`,
+      );
 
       if (transportFailure === 'no_answer') {
         // CI-Hub#1578: the log is half the complaint, so the durable artifact has to
@@ -2358,11 +2383,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
       if (transportFailure === 'never_reached') {
         this.logger.error('The connection to CI Portal never completed, so it never saw the request and the pairing code is still unclaimed.');
-        return { success: false, message: 'Unable to reach CI Portal. Please check your network connection.' };
+        return { success: false, message: `Unable to reach CI Portal (${describeNetworkError(error)}). Please check your network connection.` };
       }
       return {
         success: false,
-        message: `Pairing failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        message: `Pairing failed: ${describeNetworkError(error)}`,
       };
     }
   }
@@ -2503,10 +2528,14 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         message: 'Device registered and activated successfully',
       };
     } catch (error) {
-      this.logger.error('Registration error:', error);
+      // As for pairing: a request that failed below HTTP has an empty message when no address of the
+      // Portal answered, so it is described by why it failed.
+      this.logger.error(
+        `Registration error: ${classifyPortalTransportFailure(error) ? describeNetworkError(error) : describeRegistrationError(error)}`,
+      );
       return {
         success: false,
-        message: `Registration error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        message: `Registration error: ${describeNetworkError(error)}`,
       };
     }
   }

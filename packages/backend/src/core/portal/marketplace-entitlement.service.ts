@@ -1,5 +1,6 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { describeNetworkError } from '@/common/helpers/network-error';
 import { DatabaseService } from '@/core/database/database.service';
 import { entitlementCache } from '@/core/database/drizzle/schema';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -62,7 +63,7 @@ export class MarketplaceEntitlementService {
     try {
       result = await this.portal.checkAppEntitlement(appName);
     } catch (error) {
-      this.logger.warn(`Portal entitlement check failed for ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.warn(`Portal entitlement check failed for ${appUrn}: ${describeNetworkError(error)}`);
       this.applyUnreachable(cache, now, mode);
       return;
     }

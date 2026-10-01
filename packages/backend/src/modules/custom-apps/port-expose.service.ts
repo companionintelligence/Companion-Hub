@@ -1,5 +1,6 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
+import { describeNetworkError } from '@/common/helpers/network-error';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -317,7 +318,7 @@ export class PortExposeService {
         ],
       });
     } catch (error) {
-      this.logger.warn(`[Portal] Failed to ${action} workload registry entry for ${appUrn}: ${error}`);
+      this.logger.warn(`[Portal] Failed to ${action} workload registry entry for ${appUrn}: ${describeNetworkError(error)}`);
     }
   }
 

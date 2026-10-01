@@ -9,12 +9,17 @@ import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
 import { AppService } from './app.service';
 import { DEFAULT_BODY_LIMIT, INFERENCE_BODY_LIMIT, LARGE_BODY_PATHS, payloadTooLargeHandler } from './common/helpers/body-limits';
+import { raiseConnectAttemptTimeout } from './common/helpers/connect-attempt-timeout';
 import { resolveAllowedCorsOrigin } from './common/helpers/cors-origin';
 import { generateSystemEnvFile } from './common/helpers/env-helpers';
 import { buildSwaggerDocument, writeSwaggerJsonFile } from './swagger-setup';
 import { resolvePortalRootBounce } from './modules/auth/portal-sso';
 import { ProxyTrustService } from './modules/network/proxy-trust.service';
 import { configureTrustProxy } from './modules/network/trust-proxy';
+
+// Before the app, and every HTTP client in it, is created: Node's 250 ms per address fails a
+// connection that is only slow. See CONNECT_ATTEMPT_TIMEOUT_MS.
+raiseConnectAttemptTimeout();
 
 // Process-level safety nets for failures that escape local try/catch handlers.
 // - unhandledRejection: log and keep running — detached async work (e.g. a DB

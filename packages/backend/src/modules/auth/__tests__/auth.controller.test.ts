@@ -1726,6 +1726,29 @@ describe('AuthController', () => {
       expect(res.redirect).toHaveBeenCalledWith('cihub://auth?error=callback_error');
     });
 
+    it('logs why the code exchange got no answer from the Portal', async () => {
+      cache.get.mockReturnValue(JSON.stringify({ codeVerifier: 'verifier', redirectUrl: null, hubOrigin: 'http://localhost:5002' }));
+      config.get.mockReturnValue('https://hub.ci.computer');
+      vi.mocked(exchangePortalAuthorizationCode).mockResolvedValue({
+        ok: false,
+        reason: 'network_error',
+        detail: 'ETIMEDOUT 192.0.2.10:443, ENETUNREACH [2001:db8::10]:443',
+      });
+      const req = {
+        protocol: 'http',
+        get: vi.fn((header: string) => (header === 'host' ? 'localhost:5002' : undefined)),
+        headers: {},
+      } as unknown as Request;
+      const res = { redirect: vi.fn() } as unknown as Response;
+
+      await authController.portalCallback(req, res, 'auth-code', 'state-123');
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        'Portal OAuth callback failed',
+        expect.objectContaining({ reason: 'network_error', detail: 'ETIMEDOUT 192.0.2.10:443, ENETUNREACH [2001:db8::10]:443' }),
+      );
+    });
+
     it('redirects browser flows to the login page with a portal_error query param', async () => {
       cache.get.mockReturnValue(null);
       config.get.mockReturnValue('https://hub.ci.computer');

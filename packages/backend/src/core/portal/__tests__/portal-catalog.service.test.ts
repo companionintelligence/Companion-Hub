@@ -1,4 +1,5 @@
 import { LoggerService } from '@/core/logger/logger.service';
+import { EVERY_ADDRESS_FAILED, axiosEveryAddressFailed } from '@/tests/utils/network-failures';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { PortalCatalogService } from '../portal-catalog.service';
@@ -338,6 +339,15 @@ describe('PortalCatalogService', () => {
 
     service.invalidateCache();
     expect(service.hasCatalog()).toBe(false);
+  });
+
+  it('says why the catalog fetch failed when no address of the Portal accepted the connection', async () => {
+    // The error's own message is empty here, so the line used to end at "failed:".
+    portalClient.fetchStoreCatalog.mockRejectedValueOnce(axiosEveryAddressFailed());
+
+    await service.getCatalogEntries(true);
+
+    expect(logger.warn).toHaveBeenCalledWith(`Portal catalog fetch failed: ${EVERY_ADDRESS_FAILED}`);
   });
 
   it('mapCatalogRows applies the live catalog filters to rows from any source', () => {

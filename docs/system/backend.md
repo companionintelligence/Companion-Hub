@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-09-24 (diagnostics name the dark custom domain; the Hub applies a requested binding)
+> **Last updated:** 2026-10-01 (failed outbound requests name their cause; 2 s per-address connect time)
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -669,3 +669,9 @@ empty object, and only registered DTOs get their schema patched in. An unregiste
 - Do not add secrets to committed `.env` files.
 - New endpoints need Swagger decorators for OpenAPI drift CI.
 - Hub health probe used by desktop/frontend: `/api/health/live` only (not full readiness).
+- Describe a failed outbound request with `describeNetworkError` (`common/helpers/network-error.ts`), not
+  `error.message`. When no address of a host accepts the connection, Node's `AggregateError` and the axios
+  error around it have an empty message; the helper names each address and why it failed.
+- `main.ts` raises Node's per-address connect time from 250 ms to 2 s before the app is created
+  (`common/helpers/connect-attempt-timeout.ts`). Node abandons an attempt that runs out of time, so 250 ms
+  failed connections that were only slow.

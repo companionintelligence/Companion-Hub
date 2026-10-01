@@ -1,5 +1,6 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { describeNetworkError } from '@/common/helpers/network-error';
 import { DatabaseService } from '@/core/database/database.service';
 import { whoisCache } from '@/core/database/drizzle/schema';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -232,7 +233,7 @@ export class MarketplaceWhoIsService {
 
       return role === 'owner' || role === 'admin';
     } catch (error) {
-      this.logger.warn(`Could not read the organization role (${purpose}): ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.warn(`Could not read the organization role (${purpose}): ${describeNetworkError(error)}`);
       return false;
     }
   }
@@ -422,7 +423,7 @@ export class MarketplaceWhoIsService {
 
       return bySlug;
     } catch (error) {
-      this.logger.warn(`Portal WhoIs failed: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.warn(`Portal WhoIs failed: ${describeNetworkError(error)}`);
       return this.cacheFallback(subject, slugs);
     }
   }
