@@ -260,6 +260,15 @@ describe('GeneralActionsContainer', () => {
     expect(getDesktopRelease).not.toHaveBeenCalled();
   });
 
+  it('names the Auto-update stack switch after its title and keeps it from shrinking', async () => {
+    render(<GeneralActionsContainer />);
+
+    const toggle = await screen.findByRole('switch', { name: 'Auto-update stack' });
+    expect(toggle).toHaveAccessibleDescription('Automatically pull and restart Docker stack images when updates are available');
+    // jsdom does no layout. Without shrink-0, the description beside it squeezes the switch to a dot on a phone.
+    expect(toggle).toHaveClass('shrink-0');
+  });
+
   it('tells the operator to start the desktop app when the host listener is down', async () => {
     mockFetchHostListenerStatus.mockResolvedValue(false);
 

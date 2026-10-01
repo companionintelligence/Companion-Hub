@@ -201,7 +201,7 @@
   "APP_UNINSTALL_FORM_REMOVE_BACKUPS": "백업 삭제",
   "APP_UNINSTALL_FORM_SUBMIT": "제거",
   "APP_UNINSTALL_FORM_SUBTITLE": "이 앱의 모든 데이터가 삭제됩니다.",
-  "APP_UNINSTALL_FORM_TITLE": "Uninstall {{name}} ?",
+  "APP_UNINSTALL_FORM_TITLE": "Uninstall {{name}}?",
   "APP_UNINSTALL_FORM_WARNING": "확실하신가요? 이 작업은 되돌릴 수 없습니다.",
   "APP_UNINSTALL_SUCCESS": "App {{id}} uninstalled successfully",
   "APP_UPDATE_BACKUP_SUBTITLE": "It is highly recommended to backup the app before updating. By backing up, you can easily restore the previous configuration if something goes wrong.",

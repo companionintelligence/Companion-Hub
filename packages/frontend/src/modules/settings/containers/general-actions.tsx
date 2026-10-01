@@ -403,18 +403,24 @@ export const GeneralActionsContainer = () => {
           {renderUpdateButton()}
 
           <div className="mt-6 pt-6 border-t">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-4">
               <div>
-                <h3 className="text-sm font-medium">{t('SETTINGS_ACTIONS_AUTO_UPDATE_STACK_TITLE')}</h3>
-                <p className="text-sm text-muted-foreground">{t('SETTINGS_ACTIONS_AUTO_UPDATE_STACK_DESCRIPTION')}</p>
+                <h3 id="auto-update-stack-title" className="text-sm font-medium">
+                  {t('SETTINGS_ACTIONS_AUTO_UPDATE_STACK_TITLE')}
+                </h3>
+                <p id="auto-update-stack-description" className="text-sm text-muted-foreground">
+                  {t('SETTINGS_ACTIONS_AUTO_UPDATE_STACK_DESCRIPTION')}
+                </p>
               </div>
               <button
                 type="button"
                 role="switch"
                 aria-checked={autoUpdates}
+                aria-labelledby="auto-update-stack-title"
+                aria-describedby="auto-update-stack-description"
                 onClick={handleAutoUpdatesToggle}
                 disabled={autoUpdatesLoading}
-                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${autoUpdates ? 'bg-primary' : 'bg-input'} ${autoUpdatesLoading ? 'opacity-50' : ''}`}
+                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${autoUpdates ? 'bg-primary' : 'bg-input'} ${autoUpdatesLoading ? 'opacity-50' : ''}`}
               >
                 <span
                   className={`inline-block h-4 w-4 transform rounded-full bg-background transition-transform ${autoUpdates ? 'translate-x-6' : 'translate-x-1'}`}
