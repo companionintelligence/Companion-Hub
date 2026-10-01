@@ -231,7 +231,7 @@ WORKDIR /app
 # Install native modules and docker-compose on the TARGET platform so the arm64
 # image slot cannot contain amd64 Node/native deps (Rosetta/QEMU footgun).
 RUN --mount=type=cache,target=/root/.npm \
-    npm install --no-save --omit=dev argon2 class-transformer @nestjs/mapped-types @opentelemetry/api drizzle-orm pg ssh2 i18next-fs-backend
+    npm install --no-save --omit=dev argon2 class-transformer @nestjs/mapped-types @opentelemetry/api drizzle-orm pg ssh2 i18next-fs-backend express
 
 # docker-compose is also registered as a docker CLI plugin under /usr/local/libexec, a system
 # directory the CLI always searches (one of the four compiled into Alpine's docker-cli 27.3.1).
