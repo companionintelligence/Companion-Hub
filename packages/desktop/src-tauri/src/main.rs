@@ -1,6 +1,7 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod app_binary;
 mod commands;
 mod discovery;
 pub mod docker_engine;
@@ -495,6 +496,47 @@ async fn trigger_host_update_command() -> Result<String, String> {
         .map_err(|e| format!("Update trigger failed: {}", e))?
 }
 
+/// Whether an update installed another version while this app was open, so only a restart
+/// starts using it.
+#[tauri::command]
+async fn get_desktop_restart_state_command() -> Result<app_binary::RestartState, String> {
+    tokio::task::spawn_blocking(|| app_binary::restart_state(&app_binary::running_version()))
+        .await
+        .map_err(|e| format!("Restart check failed: {}", e))
+}
+
+/// Restarts onto the version an update installed while this app was open. Refused when there is
+/// none, so a page cannot restart the app at will.
+#[tauri::command]
+async fn restart_desktop_app_command(app: tauri::AppHandle) -> Result<(), String> {
+    let state =
+        tokio::task::spawn_blocking(|| app_binary::restart_state(&app_binary::running_version()))
+            .await
+            .map_err(|e| format!("Restart check failed: {}", e))?;
+    if !state.restart_required {
+        return Err("Companion Hub is already running the installed version".to_string());
+    }
+    restart_onto_installed_app(&app)
+}
+
+/// Starts the program now on disk and exits this copy, leaving the Hub stack running.
+fn restart_onto_installed_app(app: &tauri::AppHandle) -> Result<(), String> {
+    updater::prepare_self_restart_for_update()?;
+    let _ = hub_manager::append_desktop_log(
+        "app.restart",
+        "Restarting onto the Companion Hub version installed while the app was open.",
+    );
+    tray::save_window_geometry(app);
+    app.exit(0);
+    Ok(())
+}
+
+/// A launch with nothing to hand over (no deep link or other arguments), like opening the app from
+/// the app menu or dock. `args[0]` is the program.
+fn is_plain_launch(args: &[String]) -> bool {
+    args.iter().skip(1).all(|arg| arg.trim().is_empty())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Before WebView2 is created, drop a disk cache left corrupt by the previous
@@ -512,11 +554,14 @@ pub fn run() {
         .manage(PendingInstallIntent(Mutex::new(None)))
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // A freshly-updated instance signals us (the old binary, still running)
-            // to restart so the new binary on disk takes over.
-            if args.iter().any(|a| a == updater::RELAUNCH_AFTER_UPDATE_FLAG)
-                && updater::prepare_self_restart_for_update().is_ok()
-            {
-                app.exit(0);
+            // to restart so the new binary on disk takes over. So does opening the
+            // app again once an update has replaced it, which would otherwise only
+            // bring this old window back. A deep link is handled here as usual.
+            let restart = args.iter().any(|a| a == updater::RELAUNCH_AFTER_UPDATE_FLAG)
+                || (is_plain_launch(&args)
+                    && app_binary::restart_state(&app_binary::running_version())
+                        .restart_required);
+            if restart && restart_onto_installed_app(app).is_ok() {
                 return;
             }
             focus_main_window(app);
@@ -559,6 +604,8 @@ pub fn run() {
             perform_desktop_update_command,
             get_update_progress_command,
             trigger_host_update_command,
+            get_desktop_restart_state_command,
+            restart_desktop_app_command,
             commands::dns::flush_dns_cache,
         ])
         .setup(|app| {
@@ -1261,7 +1308,7 @@ fn extract_install_intent(url: &str) -> Option<DesktopInstallIntentPayload> {
 mod tests {
     use super::{
         deep_link_urls_from_payload, extract_install_intent, extract_pairing_code,
-        extract_portal_auth, launch_mode_from_args, sanitize_download_filename,
+        extract_portal_auth, is_plain_launch, launch_mode_from_args, sanitize_download_filename,
         stack_dev_mode_enabled, stack_dev_override_paths, validate_open_path, LaunchMode,
         STACK_DEV_COMPOSE_PATH_ENV, STACK_DEV_ENV, STACK_DEV_ENV_PATH_ENV,
     };
@@ -1414,6 +1461,22 @@ mod tests {
     }
 
     #[test]
+    fn plain_launch_has_nothing_to_hand_over() {
+        let launch = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        assert!(is_plain_launch(&launch(&["/usr/bin/companion-hub"])));
+        assert!(is_plain_launch(&launch(&["/usr/bin/companion-hub", ""])));
+        assert!(is_plain_launch(&[]));
+        assert!(!is_plain_launch(&launch(&[
+            "/usr/bin/companion-hub",
+            "cihub://pair?code=ABC123"
+        ])));
+        assert!(!is_plain_launch(&launch(&[
+            "/usr/bin/companion-hub",
+            "--version"
+        ])));
+    }
+
+    #[test]
     fn launch_mode_defaults_to_desktop() {
         assert_eq!(launch_mode_from_args(&[]), LaunchMode::Desktop);
     }
@@ -1556,6 +1619,8 @@ fn graphical_session_available() -> bool {
 }
 
 fn main() {
+    // Before anything can replace it: see app_binary.
+    app_binary::remember_launch_binary();
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     if args.iter().any(|a| a == "--help" || a == "-h") {

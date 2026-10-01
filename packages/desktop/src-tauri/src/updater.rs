@@ -10,6 +10,7 @@ use serde::Deserialize;
 
 use sha2::{Digest, Sha256};
 
+use crate::app_binary;
 use crate::hub_env::{default_update_cdn_base, default_update_cdn_host};
 use crate::hub_manager::{self, PersistedLaunchMode};
 
@@ -18,6 +19,9 @@ use crate::hub_manager::{self, PersistedLaunchMode};
 /// host gateway. `POST /update` (and `/health`) still require the bearer token.
 const UPDATE_LISTENER_BIND_ADDR: &str = "0.0.0.0:17400";
 const UPDATE_LISTENER_LOCAL_URL: &str = "http://127.0.0.1:17400";
+/// How often the update listener checks whether an update replaced its program.
+#[cfg(unix)]
+const LISTENER_PROGRAM_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 pub(crate) const UPDATE_LISTENER_TOKEN_FILENAME: &str = "update-listener.token";
 #[cfg(debug_assertions)]
 const UPDATE_BASE_URL_ENV: &str = "CI_HUB_UPDATE_BASE_URL";
@@ -952,16 +956,6 @@ fn install_linux_package(package: &Path) -> Result<InstallOutcome, String> {
     Err("Package installation failed".to_string())
 }
 
-/// Under AppImage, `current_exe()` is the FUSE-mounted inner binary, never the
-/// `.AppImage` file itself — the runtime exposes the real path via `$APPIMAGE`.
-fn appimage_path_from_env() -> Option<PathBuf> {
-    let value = std::env::var_os("APPIMAGE")?;
-    if value.is_empty() {
-        return None;
-    }
-    Some(PathBuf::from(value))
-}
-
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn linux_appimage_target_from(
     appimage_env: Option<PathBuf>,
@@ -984,7 +978,7 @@ fn linux_appimage_target_from(
 #[cfg(target_os = "linux")]
 fn resolve_linux_appimage_target() -> Result<PathBuf, String> {
     Ok(linux_appimage_target_from(
-        appimage_path_from_env(),
+        app_binary::appimage_path_from_env(),
         std::env::current_exe().ok(),
         dirs::home_dir(),
     ))
@@ -1033,13 +1027,10 @@ fn relaunch_args(mode: PersistedLaunchMode) -> Vec<String> {
     args
 }
 
-/// Binary to respawn after an update: the `.AppImage` file when running from one
-/// (the mounted inner path vanishes once this process exits), `current_exe` otherwise.
+/// Binary to respawn after an update. Not `current_exe` as is: once an update has replaced the
+/// file, Linux reports it as "… (deleted)", and starting that path fails.
 fn respawn_target() -> Result<PathBuf, String> {
-    if let Some(appimage) = appimage_path_from_env() {
-        return Ok(appimage);
-    }
-    std::env::current_exe().map_err(|e| format!("current_exe: {}", e))
+    app_binary::launch_path().ok_or_else(|| "Could not find the Companion Hub program".to_string())
 }
 
 #[cfg(unix)]
@@ -1415,8 +1406,72 @@ pub fn run_update_listener() {
         Ok(l) => l,
         Err(_) => return,
     };
+    #[cfg(unix)]
+    move_onto_replaced_program_when_idle();
     for stream in listener.incoming().flatten() {
         handle_update_http_request(stream, &data_dir);
+    }
+}
+
+/// The listener outlives the app, so an update installed while it runs would leave it answering
+/// the Hub with the old version's code, and judging updates against the old version, until
+/// logout. Once an update replaces its program it starts the new one in its place: same process,
+/// still detached, and the listening socket closes on exec so the new program can bind the port.
+#[cfg(unix)]
+fn move_onto_replaced_program_when_idle() {
+    use std::os::unix::process::CommandExt;
+    std::thread::spawn(|| {
+        let running_version = app_binary::running_version();
+        loop {
+            std::thread::sleep(LISTENER_PROGRAM_CHECK_INTERVAL);
+            // This listener's own install replaces the program too; it relaunches when done.
+            if HOST_UPDATE_IN_PROGRESS.load(Ordering::SeqCst) {
+                continue;
+            }
+            if !app_binary::restart_state(&running_version).restart_required {
+                continue;
+            }
+            let Some(program) = app_binary::launch_path() else {
+                continue;
+            };
+            // Only returns if the new program could not be started; keep serving meanwhile.
+            let _ = Command::new(program).arg("--update-listener").exec();
+        }
+    });
+}
+
+/// Stops this user's update listeners still running a program an update replaced, so the one
+/// started next can take the port. Listeners from before [`move_onto_replaced_program_when_idle`]
+/// never move on by themselves.
+#[cfg(target_os = "linux")]
+fn stop_stale_update_listeners() {
+    let Some(program) = app_binary::launch_path() else {
+        return;
+    };
+    let own_uid = unsafe { libc::geteuid() };
+    let pids = app_binary::stale_update_listener_pids(
+        Path::new("/proc"),
+        &program,
+        own_uid,
+        std::process::id(),
+    );
+    for &pid in &pids {
+        let _ = hub_manager::append_desktop_log(
+            "updater.listener",
+            &format!("Stopping update listener {pid}: an update replaced its program."),
+        );
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGTERM);
+        }
+    }
+    // Give them a moment to exit and free the port.
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while pids
+        .iter()
+        .any(|pid| Path::new(&format!("/proc/{pid}")).exists())
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -1425,6 +1480,8 @@ pub fn spawn_update_listener_daemon() {
         Ok(exe) => exe,
         Err(_) => return,
     };
+    #[cfg(target_os = "linux")]
+    stop_stale_update_listeners();
 
     let mut cmd = Command::new(exe);
     cmd.arg("--update-listener")
