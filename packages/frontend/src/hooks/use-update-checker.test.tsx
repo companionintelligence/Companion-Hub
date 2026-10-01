@@ -28,6 +28,7 @@ vi.mock('sonner', () => ({ toast: toastMock }));
 const svc = vi.hoisted(() => ({
   checkForUpdates: vi.fn(),
   dismissVersion: vi.fn(),
+  getDesktopRestartState: vi.fn(),
   getPollIntervalMs: vi.fn(() => 60_000),
   isTauri: vi.fn(() => true),
   isVersionDismissed: vi.fn(() => false),
@@ -56,6 +57,7 @@ beforeEach(() => {
   toastMock.info.mockClear();
   toastMock.dismiss.mockClear();
   svc.checkForUpdates.mockReset().mockResolvedValue(info());
+  svc.getDesktopRestartState.mockReset().mockResolvedValue(null);
   svc.dismissVersion.mockClear();
   svc.markToastShown.mockClear();
   svc.getPollIntervalMs.mockReset().mockReturnValue(60_000);
@@ -127,6 +129,17 @@ describe('useUpdateChecker — desktop behaviour', () => {
     await waitFor(() => expect(result.current.update).toEqual(info()));
     expect(toastMock.info).toHaveBeenCalledTimes(1);
     expect(svc.markToastShown).toHaveBeenCalledWith('1.1.0');
+  });
+
+  it('leaves a version installed under the open app to the restart notice', async () => {
+    svc.getDesktopRestartState.mockResolvedValue({ runningVersion: '1.0.0', installedVersion: '1.1.0', restartRequired: true });
+
+    const { result } = renderHook(() => useUpdateChecker());
+
+    await waitFor(() => expect(svc.getDesktopRestartState).toHaveBeenCalled());
+    expect(result.current.update).toBeNull();
+    expect(toastMock.info).not.toHaveBeenCalled();
+    expect(svc.markToastShown).not.toHaveBeenCalled();
   });
 
   it('stays quiet when already on the latest version', async () => {
