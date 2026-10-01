@@ -9,14 +9,39 @@ vi.mock('node:child_process', () => ({
 
 vi.mock('../port-availability', () => ({
   isPortAvailable: vi.fn(),
+  hostPortState: vi.fn(),
 }));
 
 import { spawnSync } from 'node:child_process';
 import { configuredPort, healHubPortsBeforeStartup, parseBindConflictPort, resolveHubPorts } from '../heal-hub-ports';
-import { isPortAvailable } from '../port-availability';
+import { hostPortState, isPortAvailable } from '../port-availability';
 
 const mockedSpawnSync = vi.mocked(spawnSync);
 const mockedIsPortAvailable = vi.mocked(isPortAvailable);
+const mockedHostPortState = vi.mocked(hostPortState);
+
+const ALL_PORTS_ENV = [
+  'HTTP_PORT=8880',
+  'HTTPS_PORT=8443',
+  'API_PORT=5002',
+  'POSTGRES_PORT=6543',
+  'RABBITMQ_PORT=5001',
+  'TRAEFIK_DASHBOARD_PORT=8080',
+  '',
+].join('\n');
+
+/** Resolve ports for an env file holding `content` (none when undefined), and clean up after. */
+function resolveFor(content: string | undefined): { result: ReturnType<typeof resolveHubPorts>; before: string | undefined; after: string } {
+  const tempDir = mkdtempSync(path.join(tmpdir(), 'ci-hub-ports-'));
+  const envFile = path.join(tempDir, '.env.prod');
+  if (content !== undefined) writeFileSync(envFile, content);
+  try {
+    const result = resolveHubPorts(envFile);
+    return { result, before: content, after: readFileSync(envFile, 'utf-8') };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
 
 describe('heal-hub-ports', () => {
   beforeEach(() => {
@@ -31,6 +56,8 @@ describe('heal-hub-ports', () => {
     } as ReturnType<typeof spawnSync>);
     mockedIsPortAvailable.mockReset();
     mockedIsPortAvailable.mockReturnValue(true);
+    mockedHostPortState.mockReset();
+    mockedHostPortState.mockReturnValue('in-use');
   });
 
   it('parses port 80 bind conflict from docker daemon output', () => {
@@ -130,6 +157,47 @@ describe('heal-hub-ports', () => {
     expect(readFileSync(envFile, 'utf-8')).toContain('HTTP_PORT=80');
 
     rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('keeps an install on 8880 and 8443 there once ports 80 and 443 are free', () => {
+    // Every port reads as free, 80 and 443 included: the configured port is tried first.
+    const { result, before, after } = resolveFor(ALL_PORTS_ENV);
+
+    expect(result.assignments).toMatchObject({ HTTP_PORT: 8880, HTTPS_PORT: 8443 });
+    expect(result.info).toEqual([]);
+    expect(after).toBe(before);
+  });
+
+  it('says rootless Docker cannot publish 80 and 443, rather than that they are occupied', () => {
+    mockedIsPortAvailable.mockImplementation((port: number) => port >= 1024);
+    mockedHostPortState.mockImplementation((port: number) => (port < 1024 ? 'rootless-privileged' : 'free'));
+
+    const { result } = resolveFor(undefined);
+
+    expect(result.assignments).toMatchObject({ HTTP_PORT: 8880, HTTPS_PORT: 8443 });
+    expect(result.info).toEqual([
+      'Rootless Docker cannot publish privileged port 80 (HTTP_PORT) — using host port 8880 (Public Web via Cloudflare is unaffected).',
+      'Rootless Docker cannot publish privileged port 443 (HTTPS_PORT) — using host port 8443 (Public Web via Cloudflare is unaffected).',
+    ]);
+  });
+
+  it('calls a port occupied when something holds it', () => {
+    mockedIsPortAvailable.mockImplementation((port: number) => port !== 443);
+
+    const { result } = resolveFor(undefined);
+
+    expect(result.assignments).toMatchObject({ HTTP_PORT: 80, HTTPS_PORT: 8443 });
+    expect(result.info).toEqual(['Port 443 (HTTPS_PORT) occupied — using host port 8443 (Public Web via Cloudflare is unaffected).']);
+  });
+
+  it('moves an install whose 8880 is taken back to 80, and names 8880 as the occupied port', () => {
+    mockedIsPortAvailable.mockImplementation((port: number) => port !== 8880);
+
+    const { result, after } = resolveFor(ALL_PORTS_ENV);
+
+    expect(result.assignments).toMatchObject({ HTTP_PORT: 80, HTTPS_PORT: 8443 });
+    expect(result.info).toEqual(['Port 8880 (HTTP_PORT) occupied — restored default host port 80.']);
+    expect(after).toContain('HTTP_PORT=80\n');
   });
 
   it('stops running Hub stack containers before resolving dev ports', () => {

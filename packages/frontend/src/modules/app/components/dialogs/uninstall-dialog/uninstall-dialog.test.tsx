@@ -84,6 +84,12 @@ describe('UninstallDialog', () => {
     expect(h.mutate).toHaveBeenCalledWith({ path: { urn: 'plane:ci-marketplace' }, body: { deleteAllData: true, force: false } });
   });
 
+  it('asks "Uninstall <name>?" with no space before the question mark', () => {
+    render(<UninstallDialog info={normalApp} isOpen onClose={vi.fn()} />);
+
+    expect(screen.getByRole('dialog', { name: 'Uninstall Plane?' })).toBeInTheDocument();
+  });
+
   it('says the data will be lost while Delete all data is on', () => {
     render(<UninstallDialog info={normalApp} isOpen onClose={vi.fn()} />);
 

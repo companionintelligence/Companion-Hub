@@ -1538,6 +1538,27 @@ describe('RegistrationService', () => {
       expect(result.success).toBe(false);
       expect(writePairingAppCheck).not.toHaveBeenCalled();
     });
+
+    it('logs the Portal answer without its tunnel token', async () => {
+      // Logged at info, the default level, and whoever holds the token can run a connector for this
+      // Hub's tunnel.
+      mockedAxios.post.mockResolvedValue({
+        status: 200,
+        data: { tunnel_id: 'tunnel-1', tunnel_token: 'leaked-tunnel-token', subdomain: 'hub-org' },
+      } as any);
+      const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+
+      await service.initiateRegistration('org-id', 'Org');
+
+      const everyCall = JSON.stringify(
+        [loggerService.debug, loggerService.info, loggerService.warn, loggerService.error].map((level) => level.mock.calls),
+      );
+      expect(everyCall).not.toContain('leaked-tunnel-token');
+      expect(loggerService.info).toHaveBeenCalledWith(
+        'Device registered successfully: {"tunnel_id":"tunnel-1","tunnel_token":"[redacted]","subdomain":"hub-org"}',
+      );
+      setupSpy.mockRestore();
+    });
   });
 
   describe('completeRegistrationFromCallback', () => {

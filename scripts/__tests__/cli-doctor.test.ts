@@ -506,6 +506,10 @@ describe('CLI vs stack', () => {
     return { cli, stack, channel, verdict, report: describeSkew(verdict, channel) };
   };
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('says nothing but the good news when both name the same release', () => {
     const section = describeVersionSkewSection(snapshot('0.2.73', '0.2.73', 'ghcr.io/companionintelligence/ci-hub:0.2.73'));
     expect(section).toMatchObject({ failureCount: 0, issueCount: 0 });
@@ -534,6 +538,29 @@ describe('CLI vs stack', () => {
     await doctorHub('prod');
     expect(doctorText()).toContain('CLI vs stack');
     expect(process.exitCode).toBe(1);
+  });
+
+  it('does not fail a source checkout driving a release stack built from another commit (CI-Hub#1727)', async () => {
+    // A checkout of dev beside an installed Hub, read the way a source run really reads itself: no
+    // stamp, so package.json's `0.0.0-dev` and `git rev-parse HEAD`. That failed every checkout as a
+    // CLI behind its stack, pulled or not.
+    vi.stubEnv('CIHUB_BUILD_VERSION', '');
+    vi.stubEnv('CIHUB_BUILD_REVISION', '');
+    const { gatherSkew } = await vi.importActual<typeof import('../lib/cli-version-skew.js')>('../lib/cli-version-skew.js');
+    const release = 'ghcr.io/companionintelligence/ci-hub:0.2.77';
+    const container = `reference=${release}\nlabelVersion=0.2.77\nrevision=5d1c0a7b2e9f4c3a8b6d0e1f2a3b4c5d6e7f8a9b\n`;
+    const exec = (cmd: string, args: string[]) => {
+      if (cmd === 'git') return { ok: true, stdout: 'e3be894bcf2122aaaf7b08454aec59d01ced6fac\n' };
+      // `docker inspect` on the container, then `docker image inspect` for its tags.
+      return { ok: true, stdout: args[0] === 'inspect' ? container : release };
+    };
+    skewMocks.gatherSkew.mockImplementationOnce(() => gatherSkew(exec) as unknown as ReturnType<typeof skewMocks.gatherSkew>);
+    await doctorHub('prod');
+    const text = doctorText();
+    expect(text).toContain('CLI vs stack');
+    expect(text).toContain('cihub commit e3be894bc vs stack commit 5d1c0a7b2');
+    expect(text).not.toContain('older than the stack');
+    expect(process.exitCode).toBeUndefined();
   });
 });
 
