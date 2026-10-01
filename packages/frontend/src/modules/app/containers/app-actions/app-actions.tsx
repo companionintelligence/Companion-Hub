@@ -123,7 +123,7 @@ function currentPageCanReachLan(): boolean {
 interface IProps {
   app?: AppDetails | null;
   info: AppInfo;
-  metadata: AppMetadata;
+  metadata?: AppMetadata;
   /** Absolute host path of the app's data folder (desktop "Open data folder" button). */
   appDataHostPath?: string | null;
   localDomain?: string;
@@ -327,7 +327,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     })();
   }, [app?.status, appSlug, storeId, installDisclosure.open, archSupported, showWrongArchitectureToast]);
 
-  const versionIsIgnored = app?.ignoredVersion === metadata.latestVersion;
+  const versionIsIgnored = app?.ignoredVersion === metadata?.latestVersion;
   const updateAvailable = Number(app?.version ?? 0) < Number(metadata?.latestVersion || 0);
 
   const startMutation = useMutation({
