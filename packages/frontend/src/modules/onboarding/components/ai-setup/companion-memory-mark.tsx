@@ -12,10 +12,10 @@ import brainMarkSvg from '@/assets/companion-memory-brain.svg';
  * eagerly as a real one would.
  */
 const LottieMark = lazy(async () => {
-  const [{ default: Lottie }, animation] = await Promise.all([import('lottie-react'), import('@/assets/companion-memory-brain.lottie.json')]);
+  const [{ Lottie }, animation] = await Promise.all([import('lottie-react'), import('@/assets/companion-memory-brain.lottie.json')]);
 
   const Mark: ComponentType<{ style?: CSSProperties; className?: string }> = ({ style, className }) => (
-    <Lottie animationData={animation.default} loop autoplay style={style} className={className} />
+    <Lottie src={animation.default} loop autoplay style={style} className={className} />
   );
 
   return { default: Mark };
