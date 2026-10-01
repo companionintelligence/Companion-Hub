@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import {
   checkForUpdates,
   dismissVersion,
+  getDesktopRestartState,
   getPollIntervalMs,
   isTauri,
   isVersionDismissed,
@@ -79,6 +80,15 @@ export function useUpdateChecker(): UseUpdateCheckerResult {
         if (!result) {
           setUpdate(null);
           return null;
+        }
+
+        // A version installed while the app was open still compares as newer than the running
+        // one until the app restarts. The restart notice covers that, so don't also call it
+        // available.
+        const restart = await getDesktopRestartState();
+        if (restart?.restartRequired) {
+          setUpdate(null);
+          return result;
         }
 
         if (result.updateAvailable && isVersionDismissed(result.latestVersion)) {
