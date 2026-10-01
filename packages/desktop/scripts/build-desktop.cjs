@@ -17,11 +17,19 @@ const path = require('node:path');
  *   SKIP_DESKTOP_BUILD=1 pnpm build     # explicit, prints a warning, exits 0
  *   pnpm build                          # no toolchain -> exits 1 and says why
  *
+ * The skip is checked before the toolchain, so it holds with cargo and cargo-tauri
+ * installed too. It used to apply only when one of them was missing, and a machine
+ * with both ran the full `cargo tauri build` anyway.
+ *
  * Note the desktop CI workflow (.github/workflows/desktop-build.yml) does NOT go
  * through this script — it calls `npx @tauri-apps/cli@2 build` directly — so this
  * guard is for local and root-build use, not for that pipeline.
  */
-const SKIP = process.env.SKIP_DESKTOP_BUILD === '1';
+if (process.env.SKIP_DESKTOP_BUILD === '1') {
+  console.warn('\n[!] SKIPPING the desktop build - SKIP_DESKTOP_BUILD=1 is set.');
+  console.warn('    No desktop app was produced. Do not ship this build.\n');
+  process.exit(0);
+}
 
 function refuse(what, howToInstall) {
   console.error(`\nDesktop build FAILED: ${what}\n`);
@@ -30,12 +38,6 @@ function refuse(what, howToInstall) {
   console.error('\nOr skip the desktop package explicitly:');
   console.error('  SKIP_DESKTOP_BUILD=1 pnpm build\n');
   process.exit(1);
-}
-
-function skipped(what) {
-  console.warn(`\n[!] SKIPPING the desktop build - SKIP_DESKTOP_BUILD=1 and ${what}.`);
-  console.warn('    No desktop app was produced. Do not ship this build.\n');
-  process.exit(0);
 }
 
 function loadCliPathHelper() {
@@ -57,7 +59,6 @@ function commandExists(cmd) {
 }
 
 if (!commandExists('cargo')) {
-  if (SKIP) skipped('cargo is not installed');
   refuse('cargo (the Rust toolchain) is not installed.', [
     'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh',
     'https://www.rust-lang.org/tools/install',
@@ -76,7 +77,6 @@ try {
     shell: true,
   });
 } catch {
-  if (SKIP) skipped('cargo-tauri is not installed');
   // Named separately from cargo: "Rust is missing" and "Rust is here but the Tauri
   // CLI is not" need different fixes, and the old message claimed both at once.
   refuse('cargo is installed, but the Tauri CLI (cargo-tauri) is not.', [

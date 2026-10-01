@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   checkForUpdates,
+  getDesktopRestartState,
   getInstalledDesktopVersion,
   isHubUpdateAvailable,
   isStackUpdateAvailable,
@@ -9,6 +10,7 @@ import {
   performStackUpdate,
   performUpdate,
   requiresManualDesktopUpdate,
+  restartDesktopApp,
 } from '@/lib/update-service';
 import { sdkFail, sdkOk } from '@/tests/sdk-mock-helpers';
 
@@ -106,6 +108,39 @@ describe('update-service', () => {
 
     await expect(getInstalledDesktopVersion()).resolves.toBe('0.2.24');
     expect(mockInvoke).toHaveBeenCalledWith('get_desktop_release_version_command');
+  });
+
+  it('asks the desktop app whether an update replaced it', async () => {
+    await expect(getDesktopRestartState()).resolves.toBeNull();
+    expect(mockInvoke).not.toHaveBeenCalled();
+
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: {},
+      configurable: true,
+    });
+    mockInvoke.mockResolvedValueOnce({ runningVersion: '0.2.77', installedVersion: '0.2.78', restartRequired: true });
+    await expect(getDesktopRestartState()).resolves.toEqual({ runningVersion: '0.2.77', installedVersion: '0.2.78', restartRequired: true });
+    expect(mockInvoke).toHaveBeenCalledWith('get_desktop_restart_state_command');
+
+    // Desktop apps from before the command reject it.
+    mockInvoke.mockRejectedValueOnce(new Error('Command get_desktop_restart_state_command not found'));
+    await expect(getDesktopRestartState()).resolves.toBeNull();
+  });
+
+  it('reports whether the desktop app took the restart', async () => {
+    await expect(restartDesktopApp()).resolves.toBe(false);
+    expect(mockInvoke).not.toHaveBeenCalled();
+
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: {},
+      configurable: true,
+    });
+    mockInvoke.mockResolvedValueOnce(undefined);
+    await expect(restartDesktopApp()).resolves.toBe(true);
+    expect(mockInvoke).toHaveBeenCalledWith('restart_desktop_app_command');
+
+    mockInvoke.mockRejectedValueOnce('Companion Hub is already running the installed version');
+    await expect(restartDesktopApp()).resolves.toBe(false);
   });
 
   it('uses the native tauri updater command for desktop update checks', async () => {

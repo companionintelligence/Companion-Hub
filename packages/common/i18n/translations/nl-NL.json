@@ -141,7 +141,7 @@
   "APP_RESET_SUCCESS": "App {{id}} met succes gereset",
   "APP_RESTART_FORM_SUBMIT": "Restart",
   "APP_RESTART_FORM_SUBTITLE": "All data will be retained",
-  "APP_RESTART_FORM_TITLE": "Restart {{name}} ?",
+  "APP_RESTART_FORM_TITLE": "Restart {{name}}?",
   "APP_RESTART_SUCCESS": "App {{id}} restarted successfully",
   "APP_RESTORE_ERROR": "Failed to restore {{id}}, see logs for more details",
   "APP_RESTORE_SUBMIT": "Restore",

@@ -29,9 +29,14 @@
  * Hermetic by construction: a stub `docker` and a stub `git` sit first on PATH, HOME points at a
  * throwaway directory, and the stub fails every docker verb except the read-only `inspect` it
  * answers from a string. No real container, image, or socket is touched, and nothing leaves the box.
+ * A stub `companion-hub` (and `Companion Hub`) sits there too, recording its arguments: `cihub
+ * update` hands off to the desktop app found on PATH, and on a machine with the app installed the
+ * real one downloads the newest release and installs it with pkexec or sudo (#1739). And the
+ * developer's own XDG folders and Hub folder are dropped from the environment the binary gets, so
+ * it can only find the throwaway ones under HOME.
  */
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -53,6 +58,9 @@ const CRASH_PATTERNS = [/ReferenceError/, /is not defined/, /is not a function/,
  */
 const SCRIPT_ENTRY_OUTPUT = /sync-(?:rabbitmq|postgres)-password:/;
 
+/** The names `resolveCompanionHubBinary` (cli-update.ts) looks up on PATH for the desktop app. */
+const DESKTOP_APP_NAMES = ['companion-hub', 'Companion Hub'];
+
 const hasBun = spawnSync('bun', ['--version'], { encoding: 'utf-8' }).status === 0;
 
 /**
@@ -69,20 +77,58 @@ let fakeHome = '';
 let fakeDataDir = '';
 let queueStubBin = '';
 let queueDockerLog = '';
+let desktopAppLog = '';
+let noDesktopBin = '';
+
+/**
+ * The stub directory goes FIRST so `docker`, `git` and the desktop app resolve to the stubs even on
+ * a machine that has the real ones. The rest of PATH stays so the CLI's read-only probes (`which`,
+ * `ps`) behave as they do in the field.
+ */
+function cliPath(stubDir: string): string {
+  return `${stubDir}:${process.env.PATH ?? ''}`;
+}
+
+/** Stand-ins for the desktop app in `dir`: each records how it was called, then exits 0. */
+function writeDesktopAppStubs(dir: string): void {
+  for (const name of DESKTOP_APP_NAMES) {
+    writeFileSync(join(dir, name), ['#!/bin/sh', `echo "$0 $*" >> '${desktopAppLog}'`, 'exit 0', ''].join('\n'));
+    chmodSync(join(dir, name), 0o755);
+  }
+}
+
+/** Where `PATH` finds `name`, by the shell's own lookup, which needs no `which`; '' if nowhere. */
+function pathTo(name: string, path: string): string {
+  return spawnSync('sh', ['-c', 'command -v "$1"', 'sh', name], { encoding: 'utf-8', env: { ...process.env, PATH: path } }).stdout?.trim() ?? '';
+}
+
+function desktopAppCalls(): string[] {
+  return existsSync(desktopAppLog) ? readFileSync(desktopAppLog, 'utf-8').split('\n').filter(Boolean) : [];
+}
+
+/**
+ * Variables in the developer's shell that point at their real state, which the CLI reads before
+ * HOME: their config folder (the stored Portal login, which `cihub logout` revokes with Portal, and
+ * systemd user units), their data, state and cache folders, and their Hub's folder.
+ */
+const DEVELOPER_STATE_ENV = ['XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME', 'ROOT_FOLDER_HOST'];
+
+function inheritedEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const name of DEVELOPER_STATE_ENV) delete env[name];
+  return env;
+}
 
 function runCli(
   args: string[],
-  options: { stubDir?: string; env?: NodeJS.ProcessEnv } = {},
+  options: { stubDir?: string; path?: string; inheritEnv?: boolean; env?: NodeJS.ProcessEnv } = {},
 ): { stdout: string; stderr: string; output: string; status: number | null } {
   const result = spawnSync(binary, args, {
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'pipe'],
-    // The stub directory goes FIRST so `docker` and `git` resolve to the stubs even on a machine
-    // that has the real ones. The rest of PATH stays so the CLI's read-only probes (`which`, `ps`)
-    // behave as they do in the field.
     env: {
-      ...process.env,
-      PATH: `${options.stubDir ?? stubBin}:${process.env.PATH ?? ''}`,
+      ...(options.inheritEnv === false ? {} : inheritedEnv()),
+      PATH: options.path ?? cliPath(options.stubDir ?? stubBin),
       HOME: fakeHome,
       CI_HUB_DATA_DIR: fakeDataDir,
       CI: '1',
@@ -149,6 +195,8 @@ describe('compiled cihub binary', () => {
     writeFileSync(join(stubBin, 'git'), ['#!/bin/sh', 'echo "[stub git] $*" >&2', 'exit 1', ''].join('\n'));
     chmodSync(join(stubBin, 'docker'), 0o755);
     chmodSync(join(stubBin, 'git'), 0o755);
+    desktopAppLog = join(workspace, 'desktop-app-calls.log');
+    writeDesktopAppStubs(stubBin);
 
     // A second docker for the entry-block test: it reports a running, healthy queue — the state a
     // live node is in — and records every call, so a script that reaches for the broker gets far
@@ -172,6 +220,17 @@ describe('compiled cihub binary', () => {
     writeFileSync(join(queueStubBin, 'git'), ['#!/bin/sh', 'exit 1', ''].join('\n'));
     chmodSync(join(queueStubBin, 'docker'), 0o755);
     chmodSync(join(queueStubBin, 'git'), 0o755);
+    writeDesktopAppStubs(queueStubBin);
+
+    // The whole PATH for `cihub update` on a machine without the desktop app, so no `companion-hub`
+    // is anywhere on it: the docker and git stubs, plus `which`, which the CLI looks the app up with.
+    // Without a `which` the lookup fails the same way, so a machine that has none skips the link.
+    noDesktopBin = join(workspace, 'no-desktop-bin');
+    mkdirSync(noDesktopBin);
+    symlinkSync(join(stubBin, 'docker'), join(noDesktopBin, 'docker'));
+    symlinkSync(join(stubBin, 'git'), join(noDesktopBin, 'git'));
+    const which = pathTo('which', process.env.PATH ?? '');
+    if (which) symlinkSync(which, join(noDesktopBin, 'which'));
 
     binary = buildStandaloneCli({ outdir: join(workspace, 'dist') }).outfile;
   }, 180_000);
@@ -216,6 +275,40 @@ describe('compiled cihub binary', () => {
     expect(status).toBe(0);
     expect(existsSync(queueDockerLog) ? readFileSync(queueDockerLog, 'utf-8') : '').toBe('');
     expect(readdirSync(fakeHome, { recursive: true, encoding: 'utf-8' }).sort()).toEqual(before);
+  });
+
+  /**
+   * `cihub update` runs `companion-hub update` from PATH. On a machine with the desktop app
+   * installed, the real one would replace the app, so the stub has to be what PATH finds, and the
+   * hand-off has to reach it and nothing else.
+   */
+  it.skipIf(skipSuite)('hands `cihub update` to the stub desktop app, not an installed one', () => {
+    for (const name of DESKTOP_APP_NAMES) {
+      expect(pathTo(name, cliPath(stubBin)), `${name} on PATH`).toBe(join(stubBin, name));
+    }
+
+    const before = desktopAppCalls();
+    const { output } = runCli(['update']);
+
+    expectNoCrash(['update'], output);
+    expect(desktopAppCalls().slice(before.length)).toEqual([`${join(stubBin, 'companion-hub')} update`]);
+  });
+
+  /**
+   * Without the desktop app, as on CI, `cihub update` updates the standalone binary itself instead.
+   * Nothing is inherited from the environment: a GH_TOKEN there would let the self-update download
+   * a release over this binary, and without one it stops at its refusal. The desktop app stubs sit
+   * in folders this PATH leaves out, so none of them may run.
+   */
+  it.skipIf(skipSuite)('runs `cihub update` as a self-update on a machine without the desktop app', () => {
+    const before = desktopAppCalls();
+    const { output, status } = runCli(['update'], { path: noDesktopBin, inheritEnv: false });
+
+    expectNoCrash(['update'], output);
+    expect(output).toContain('No desktop app on this machine');
+    expect(output).toContain('Cannot self-update');
+    expect(status).toBe(1);
+    expect(desktopAppCalls()).toEqual(before);
   });
 
   /**

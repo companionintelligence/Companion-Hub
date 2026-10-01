@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { parseEnvFile, upsertEnvVar } from './cihub-cli';
-import { isPortAvailable } from './port-availability';
+import { hostPortState, isPortAvailable } from './port-availability';
 
 const HUB_STACK_CONTAINERS = new Set([
   'ci-hub',
@@ -78,7 +78,7 @@ function getOurRunningContainerPorts(): Set<number> {
 }
 
 function isPortAvailableOrOurs(port: number, ourPorts: Set<number>): boolean {
-  return isPortAvailable(port) || ourPorts.has(port);
+  return ourPorts.has(port) || isPortAvailable(port);
 }
 
 function canAssignPort(port: number, ourPorts: Set<number>, assignedPorts: Set<number>): boolean {
@@ -190,6 +190,13 @@ function noteInvalidPort(parsed: Record<string, string>, varName: string, resolv
   }
 }
 
+/** A rootless engine cannot publish a privileged port even when nothing holds it, so say which it was. */
+function whyPortMoved(port: number, varName: string): string {
+  return hostPortState(port) === 'rootless-privileged'
+    ? `Rootless Docker cannot publish privileged port ${port} (${varName})`
+    : `Port ${port} (${varName}) occupied`;
+}
+
 export interface PortHealResult {
   assignments: Record<string, number>;
   info: string[];
@@ -216,7 +223,7 @@ export function resolveHubPorts(envFilePath: string): PortHealResult {
     }
     if (canAssignPort(defaultPort, ourPorts, assignedPorts)) {
       if (current !== defaultPort) {
-        info.push(`Port ${current} (${varName}) now free — restored default host port ${defaultPort}.`);
+        info.push(`Port ${current} (${varName}) occupied — restored default host port ${defaultPort}.`);
       }
       assignments[varName] = defaultPort;
       assignedPorts.add(defaultPort);
@@ -224,11 +231,9 @@ export function resolveHubPorts(envFilePath: string): PortHealResult {
     }
     const reassigned = findAvailablePort(fallbackStart, ourPorts, assignedPorts);
     if (reassigned === undefined) {
-      throw new Error(`Cannot find available host port near ${fallbackStart} for ${varName} (${defaultPort} is occupied).`);
+      throw new Error(`Cannot find available host port near ${fallbackStart} for ${varName} (${defaultPort} is unavailable).`);
     }
-    info.push(
-      `Port ${current === defaultPort ? defaultPort : current} (${varName}) occupied — using host port ${reassigned} (Public Web via Cloudflare is unaffected).`,
-    );
+    info.push(`${whyPortMoved(current, varName)} — using host port ${reassigned} (Public Web via Cloudflare is unaffected).`);
     assignments[varName] = reassigned;
     assignedPorts.add(reassigned);
   }

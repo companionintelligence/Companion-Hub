@@ -494,7 +494,9 @@ pub struct StartupProgress {
 
 /// Get the Hub data directory (platform-specific)
 pub fn get_hub_data_dir() -> PathBuf {
-    #[cfg(target_os = "linux")]
+    #[cfg(test)]
+    let base = test_data_home();
+    #[cfg(all(not(test), target_os = "linux"))]
     let base = dirs::home_dir()
         .map(|home| {
             linux_data_home(
@@ -504,10 +506,28 @@ pub fn get_hub_data_dir() -> PathBuf {
             )
         })
         .or_else(dirs::data_dir);
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(not(test), not(target_os = "linux")))]
     let base = dirs::data_dir();
     base.unwrap_or_else(|| PathBuf::from("."))
         .join("companion-hub")
+}
+
+/// Under `cargo test`, a temporary folder of the test process's own stands in for the platform
+/// data dir, so no test touches the data folder of a Hub installed on the same machine.
+/// Some code finds that folder itself instead of taking a test's, such as the Docker engine
+/// choice that every Docker command records in `state/docker-engine.json`. Always `Some`, like
+/// the lookups it replaces, and left behind after the run because statics are never dropped.
+#[cfg(test)]
+fn test_data_home() -> Option<PathBuf> {
+    static DATA_HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    let home = DATA_HOME.get_or_init(|| {
+        tempfile::Builder::new()
+            .prefix("companion-hub-desktop-tests-")
+            .tempdir()
+            .expect("create the test data home")
+            .keep()
+    });
+    Some(home.clone())
 }
 
 /// `XDG_DATA_HOME` when it is absolute, as `dirs::data_dir()` reads it, else `~/.local/share`,

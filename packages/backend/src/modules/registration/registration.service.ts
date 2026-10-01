@@ -7,6 +7,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { scrubString } from '@/core/error-reporting/sentry-scrubber';
 import { LoggerService } from '@/core/logger/logger.service';
 import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR, tunnelUserClearedMarkerPath } from '@/common/constants';
+import { redactSecretsForLog } from '@/common/helpers/log-privacy';
 import { buildPortalAxiosConfig, readPortalInternalUrlOverride, withPortalAxiosHeaders } from '@/common/helpers/portal-url';
 import { rateLimitedWaitCopy } from '@/common/helpers/retry-after';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
@@ -2459,13 +2460,15 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       }
 
       const registerResult = registerResponse.data ?? {};
-      this.logger.info(`Device registered successfully: ${JSON.stringify(registerResult)}`);
+      // Redacted: the answer carries the tunnel token, and whoever holds it can run a connector for
+      // this Hub's tunnel.
+      this.logger.info(`Device registered successfully: ${JSON.stringify(redactSecretsForLog(registerResult))}`);
 
       // The registration endpoint now returns the organization details that the
       // former activation step provided.
 
       const activateResult = registerResult; // Retain the activation-shaped input expected below.
-      this.logger.info(`Device activated successfully (merged): ${JSON.stringify(activateResult)}`);
+      this.logger.info(`Device activated successfully (merged): ${JSON.stringify(redactSecretsForLog(activateResult))}`);
 
       // Keep the normalized name available for compatibility with the existing
       // registration flow.

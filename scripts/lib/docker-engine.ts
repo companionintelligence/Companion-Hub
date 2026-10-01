@@ -127,6 +127,27 @@ export function probeDockerHostReachable(dockerHost: string, env?: NodeJS.Proces
   return result.status === 0;
 }
 
+/** `docker info --format '{{json .SecurityOptions}}'` of a rootless engine lists `name=rootless`. */
+export function securityOptionsSayRootless(securityOptionsJson: string): boolean {
+  try {
+    const options: unknown = JSON.parse(securityOptionsJson);
+    return Array.isArray(options) && options.some((option) => typeof option === 'string' && option.split(',').includes('name=rootless'));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Does the Hub's Docker engine run rootless? Then it publishes host ports as the login user, who may
+ * not bind below `net.ipv4.ip_unprivileged_port_start`. The engine says so itself, however it was
+ * reached; a pin only knows when it found the engine by its per-user socket.
+ */
+export function hubDockerEngineIsRootless(): boolean {
+  if (processPin?.kind === 'rootless') return true;
+  const info = runDocker(['info', '--format', '{{json .SecurityOptions}}'], processPin?.dockerHost);
+  return info.status === 0 && securityOptionsSayRootless(info.stdout.trim());
+}
+
 export function engineHasHubIdentity(dockerHost: string, env?: NodeJS.ProcessEnv): boolean {
   for (const name of HUB_IDENTITY_CONTAINERS) {
     const result = runDocker(['ps', '-aq', '--filter', `name=^${name}$`], dockerHost, env);

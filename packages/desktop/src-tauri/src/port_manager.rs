@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::io;
 use std::net::TcpListener;
 use std::path::Path;
 
@@ -40,26 +41,53 @@ const OUR_CONTAINERS: &[&str] = &[
 /// ports from containers in these states.
 const RUNNING_STATUSES: &[&str] = &["running", "restarting"];
 
-/// Check if a port is available by attempting a TCP bind.
-pub fn is_port_available(port: u16) -> bool {
-    TcpListener::bind(("127.0.0.1", port)).is_ok()
+/// The host's ports as one resolution pass sees them.
+struct HostPorts {
+    /// Host ports our own running containers publish. A port held by our own
+    /// stack is not a conflict — docker compose up will reuse those containers.
+    ours: HashSet<u16>,
+    /// Bind the port on 127.0.0.1 and let it go.
+    bind: fn(u16) -> io::Result<()>,
 }
 
-/// Check if a port is available OR held by our own containers.
-/// A port held by our own stack is not a conflict — docker compose up
-/// will reuse those containers.
-fn is_port_available_or_ours(port: u16, our_ports: &HashSet<u16>) -> bool {
-    is_port_available(port) || our_ports.contains(&port)
+impl HostPorts {
+    fn new(ours: HashSet<u16>) -> Self {
+        Self {
+            ours,
+            bind: bind_loopback,
+        }
+    }
+
+    /// Check if a port is available by attempting a TCP bind, OR held by our own containers.
+    ///
+    /// Any failed bind makes the port unavailable, including Linux refusing a normal
+    /// user a port below 1024 whether or not anything listens there. The app picks its
+    /// ports again on every launch, so taking a free 80/443 would move every existing
+    /// Linux desktop Hub off 8880/8443.
+    fn is_available_or_ours(&self, port: u16) -> bool {
+        self.ours.contains(&port) || (self.bind)(port).is_ok()
+    }
+
+    /// Did Linux refuse the bind because the port is below 1024 and this user is not root?
+    fn refused_by_linux(&self, port: u16) -> bool {
+        cfg!(target_os = "linux")
+            && port < 1024
+            && (self.bind)(port).is_err_and(|error| error.kind() == io::ErrorKind::PermissionDenied)
+    }
 }
 
-fn can_assign_port(port: u16, our_ports: &HashSet<u16>, assigned_ports: &HashSet<u16>) -> bool {
-    !assigned_ports.contains(&port) && is_port_available_or_ours(port, our_ports)
+fn bind_loopback(port: u16) -> io::Result<()> {
+    TcpListener::bind(("127.0.0.1", port)).map(drop)
+}
+
+fn can_assign_port(port: u16, host: &HostPorts, assigned_ports: &HashSet<u16>) -> bool {
+    !assigned_ports.contains(&port) && host.is_available_or_ours(port)
 }
 
 /// Query Docker for host ports currently bound by our *running* managed
 /// containers.  Only running/restarting containers are genuinely holding
 /// their ports; stopped containers may leave ghost port registrations on
-/// Docker Desktop for Windows that confuse `is_port_available_or_ours`.
+/// Docker Desktop for Windows that confuse `HostPorts::is_available_or_ours`.
 fn get_our_container_ports() -> HashSet<u16> {
     let mut ports = HashSet::new();
 
@@ -129,12 +157,8 @@ fn get_our_container_ports() -> HashSet<u16> {
 
 /// Find the next available port starting from `start`, treating our own ports as
 /// available but never reusing a host port already assigned in this resolution pass.
-fn find_available_port(
-    start: u16,
-    our_ports: &HashSet<u16>,
-    assigned_ports: &HashSet<u16>,
-) -> Option<u16> {
-    (start..=start.saturating_add(100)).find(|&p| can_assign_port(p, our_ports, assigned_ports))
+fn find_available_port(start: u16, host: &HostPorts, assigned_ports: &HashSet<u16>) -> Option<u16> {
+    (start..=start.saturating_add(100)).find(|&p| can_assign_port(p, host, assigned_ports))
 }
 
 /// Result of port resolution.
@@ -149,8 +173,7 @@ pub struct PortResolution {
 
 /// Resolve all required ports: check availability, reassign dynamic ports if needed.
 /// Ports held by our own containers are treated as available (not conflicts).
-pub fn resolve_ports() -> Result<PortResolution, String> {
-    let our_ports = get_our_container_ports();
+fn resolve_ports(host: &HostPorts) -> Result<PortResolution, String> {
     let mut env_vars: HashMap<String, u16> = HashMap::new();
     let mut assigned_ports: HashSet<u16> = HashSet::new();
     let warnings = Vec::new();
@@ -158,22 +181,19 @@ pub fn resolve_ports() -> Result<PortResolution, String> {
 
     // Fixed ports — reassign to a free host port when blocked by a non-Hub process.
     for &(port, var) in FIXED_PORTS {
-        if can_assign_port(port, &our_ports, &assigned_ports) {
+        if can_assign_port(port, host, &assigned_ports) {
             env_vars.insert(var.to_string(), port);
             assigned_ports.insert(port);
         } else {
             let fallback_start = fixed_port_fallback_start(port);
-            let new_port = find_available_port(fallback_start, &our_ports, &assigned_ports)
+            let new_port = find_available_port(fallback_start, host, &assigned_ports)
                 .ok_or_else(|| {
                     format!(
-                        "Cannot find available host port near {} for {} (default {} is occupied)",
+                        "Cannot find available host port near {} for {} (default {} is unavailable)",
                         fallback_start, var, port
                     )
                 })?;
-            info.push(format!(
-                "Port {} ({}) occupied by another process — using host port {} (Public Web via Cloudflare is unaffected)",
-                port, var, new_port
-            ));
+            info.push(fixed_port_moved(port, var, new_port, host));
             env_vars.insert(var.to_string(), new_port);
             assigned_ports.insert(new_port);
         }
@@ -181,11 +201,11 @@ pub fn resolve_ports() -> Result<PortResolution, String> {
 
     // Dynamic ports — auto-resolve
     for &(default_port, var) in DYNAMIC_PORTS {
-        if can_assign_port(default_port, &our_ports, &assigned_ports) {
+        if can_assign_port(default_port, host, &assigned_ports) {
             env_vars.insert(var.to_string(), default_port);
             assigned_ports.insert(default_port);
         } else {
-            let new_port = find_available_port(default_port + 1, &our_ports, &assigned_ports)
+            let new_port = find_available_port(default_port + 1, host, &assigned_ports)
                 .ok_or_else(|| {
                     format!(
                         "Cannot find available port near {} for {}",
@@ -252,7 +272,20 @@ pub fn read_api_port(env_path: &Path) -> u16 {
 /// so stopped/zombie containers no longer mask real port conflicts.
 pub fn refresh_ports_if_needed(env_path: &Path) -> Result<PortResolution, String> {
     let existing = std::fs::read_to_string(env_path).unwrap_or_default();
+    let (resolution, changed) =
+        refresh_ports(&existing, &HostPorts::new(get_our_container_ports()))?;
 
+    // Write when any port assignment changed so compose sees the updated bindings.
+    if changed {
+        write_ports_to_env(env_path, &resolution)?;
+    }
+
+    Ok(resolution)
+}
+
+/// [`refresh_ports_if_needed`] for the env file's content: the resolution, and
+/// whether it changed any assignment.
+fn refresh_ports(existing: &str, host: &HostPorts) -> Result<(PortResolution, bool), String> {
     // Check if any dynamic port vars already exist in .env
     let has_port_vars = DYNAMIC_PORTS.iter().any(|(_, var)| {
         existing
@@ -262,16 +295,13 @@ pub fn refresh_ports_if_needed(env_path: &Path) -> Result<PortResolution, String
 
     if !has_port_vars {
         // First run — full resolution
-        let res = resolve_ports()?;
-        write_ports_to_env(env_path, &res)?;
-        return Ok(res);
+        return Ok((resolve_ports(host)?, true));
     }
 
     // Subsequent run — only re-resolve ports that are now occupied.
-    // `our_ports` only contains ports from running containers, so stopped
+    // `host.ours` only contains ports from running containers, so stopped
     // zombie containers left by Docker Desktop on Windows won't mask
     // real conflicts.
-    let our_ports = get_our_container_ports();
     let mut env_vars: HashMap<String, u16> = HashMap::new();
     let mut assigned_ports: HashSet<u16> = HashSet::new();
     let warnings = Vec::new();
@@ -286,13 +316,13 @@ pub fn refresh_ports_if_needed(env_path: &Path) -> Result<PortResolution, String
             .and_then(|v| v.trim().parse().ok())
             .unwrap_or(default_port);
 
-        if can_assign_port(current, &our_ports, &assigned_ports) {
+        if can_assign_port(current, host, &assigned_ports) {
             env_vars.insert(var.to_string(), current);
             assigned_ports.insert(current);
-        } else if can_assign_port(default_port, &our_ports, &assigned_ports) {
+        } else if can_assign_port(default_port, host, &assigned_ports) {
             if current != default_port {
                 info.push(format!(
-                    "Port {} ({}) now free — restored default host port {}",
+                    "Port {} ({}) occupied — restored default host port {}",
                     current, var, default_port
                 ));
                 changed = true;
@@ -301,23 +331,14 @@ pub fn refresh_ports_if_needed(env_path: &Path) -> Result<PortResolution, String
             assigned_ports.insert(default_port);
         } else {
             let fallback_start = fixed_port_fallback_start(default_port);
-            let new_port = find_available_port(fallback_start, &our_ports, &assigned_ports)
-                .ok_or_else(|| {
+            let new_port =
+                find_available_port(fallback_start, host, &assigned_ports).ok_or_else(|| {
                     format!(
-                        "Cannot find available host port near {} for {} ({} is occupied)",
+                        "Cannot find available host port near {} for {} ({} is unavailable)",
                         fallback_start, var, default_port
                     )
                 })?;
-            info.push(format!(
-                "Port {} ({}) occupied — using host port {} instead",
-                if current == default_port {
-                    default_port
-                } else {
-                    current
-                },
-                var,
-                new_port
-            ));
+            info.push(fixed_port_moved(current, var, new_port, host));
             env_vars.insert(var.to_string(), new_port);
             assigned_ports.insert(new_port);
             changed = true;
@@ -333,13 +354,13 @@ pub fn refresh_ports_if_needed(env_path: &Path) -> Result<PortResolution, String
             .and_then(|v| v.trim().parse().ok())
             .unwrap_or(default_port);
 
-        if can_assign_port(current, &our_ports, &assigned_ports) {
+        if can_assign_port(current, host, &assigned_ports) {
             env_vars.insert(var.to_string(), current);
             assigned_ports.insert(current);
         } else {
             // Need to find a new port
-            let new_port = find_available_port(default_port, &our_ports, &assigned_ports)
-                .ok_or_else(|| {
+            let new_port =
+                find_available_port(default_port, host, &assigned_ports).ok_or_else(|| {
                     format!(
                         "Cannot find available port near {} for {}",
                         default_port, var
@@ -361,12 +382,17 @@ pub fn refresh_ports_if_needed(env_path: &Path) -> Result<PortResolution, String
         info,
     };
 
-    // Write when any port assignment changed so compose sees the updated bindings.
-    if changed {
-        write_ports_to_env(env_path, &resolution)?;
-    }
+    Ok((resolution, changed))
+}
 
-    Ok(resolution)
+/// Why a fixed port's host binding moved.
+fn fixed_port_moved(port: u16, var: &str, new_port: u16, host: &HostPorts) -> String {
+    let why = if host.refused_by_linux(port) {
+        format!("Port {port} ({var}) is below 1024, which only root can open on Linux")
+    } else {
+        format!("Port {port} ({var}) occupied by another process")
+    };
+    format!("{why} — using host port {new_port} (Public Web via Cloudflare is unaffected)")
 }
 
 fn fixed_port_fallback_start(default_port: u16) -> u16 {
@@ -434,15 +460,160 @@ mod tests {
 
     #[test]
     fn avoids_reusing_ports_already_assigned_in_same_resolution_pass() {
-        let our_ports = HashSet::new();
+        let host = HostPorts::new(HashSet::new());
         let mut assigned_ports = HashSet::from([5002]);
 
-        let port = find_available_port(5002, &our_ports, &assigned_ports);
+        let port = find_available_port(5002, &host, &assigned_ports);
 
         let next_port = port.expect("port");
         assert_ne!(next_port, 5002);
         assigned_ports.insert(next_port);
-        assert!(!can_assign_port(5002, &our_ports, &assigned_ports));
-        assert!(!can_assign_port(next_port, &our_ports, &assigned_ports));
+        assert!(!can_assign_port(5002, &host, &assigned_ports));
+        assert!(!can_assign_port(next_port, &host, &assigned_ports));
+    }
+
+    /// A normal user's bind on Linux: refused below 1024 (`ip_unprivileged_port_start`).
+    #[cfg(target_os = "linux")]
+    fn refused_below_1024(port: u16) -> io::Result<()> {
+        if port < 1024 {
+            Err(io::ErrorKind::PermissionDenied.into())
+        } else {
+            Ok(())
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    const REFUSED_80_AND_443: [&str; 2] = [
+        "Port 80 (HTTP_PORT) is below 1024, which only root can open on Linux — using host port 8880 (Public Web via Cloudflare is unaffected)",
+        "Port 443 (HTTPS_PORT) is below 1024, which only root can open on Linux — using host port 8443 (Public Web via Cloudflare is unaffected)",
+    ];
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_new_install_takes_8880_and_8443_when_linux_refuses_80_and_443() {
+        let host = HostPorts {
+            bind: refused_below_1024,
+            ..HostPorts::new(HashSet::new())
+        };
+
+        let resolution = resolve_ports(&host).expect("resolution");
+
+        assert_eq!(resolution.env_vars["HTTP_PORT"], 8880);
+        assert_eq!(resolution.env_vars["HTTPS_PORT"], 8443);
+        assert_eq!(resolution.info, REFUSED_80_AND_443);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_install_on_80_and_443_moves_to_8880_and_8443_when_linux_refuses_them() {
+        let host = HostPorts {
+            bind: refused_below_1024,
+            ..HostPorts::new(HashSet::new())
+        };
+
+        let (resolution, changed) =
+            refresh_ports("HTTP_PORT=80\nHTTPS_PORT=443\nAPI_PORT=5002\n", &host)
+                .expect("resolution");
+
+        assert_eq!(resolution.env_vars["HTTP_PORT"], 8880);
+        assert_eq!(resolution.env_vars["HTTPS_PORT"], 8443);
+        assert_eq!(resolution.info, REFUSED_80_AND_443);
+        assert!(changed);
+    }
+
+    /// The desktop app picks its ports again on every launch (`initialize_hub`
+    /// rewrites the env file without them), so a port Linux refuses must never
+    /// read as free here, or every Linux desktop Hub moves off 8880/8443 to
+    /// 80/443 at its next start. Checked against the real kernel.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_port_linux_refuses_is_never_free_to_the_desktop_app() {
+        let refused = |port: u16| {
+            TcpListener::bind(("127.0.0.1", port))
+                .is_err_and(|error| error.kind() == io::ErrorKind::PermissionDenied)
+        };
+        if !(refused(80) && refused(443)) {
+            eprintln!("skipped: this user may bind ports 80 and 443 here");
+            return;
+        }
+        // The Hub's own containers hold its other ports, so only 80 and 443 are bound.
+        let host = HostPorts::new(HashSet::from([8880, 8443, 5002, 6543, 5001, 8080]));
+
+        assert!(!host.is_available_or_ours(80));
+        assert!(!host.is_available_or_ours(443));
+        let resolution = resolve_ports(&host).expect("resolution");
+        assert_eq!(resolution.env_vars["HTTP_PORT"], 8880);
+        assert_eq!(resolution.env_vars["HTTPS_PORT"], 8443);
+    }
+
+    #[test]
+    fn a_port_in_use_falls_back_and_says_another_process_holds_it() {
+        let host = HostPorts {
+            bind: |port| match port {
+                80 | 8880 => Err(io::ErrorKind::AddrInUse.into()),
+                _ => Ok(()),
+            },
+            ..HostPorts::new(HashSet::new())
+        };
+
+        let resolution = resolve_ports(&host).expect("new install");
+        assert_eq!(resolution.env_vars["HTTP_PORT"], 8881);
+        assert_eq!(resolution.env_vars["HTTPS_PORT"], 443);
+        assert_eq!(
+            resolution.info,
+            ["Port 80 (HTTP_PORT) occupied by another process — using host port 8881 (Public Web via Cloudflare is unaffected)"]
+        );
+
+        let (resolution, changed) =
+            refresh_ports("HTTP_PORT=8880\nHTTPS_PORT=443\nAPI_PORT=5002\n", &host)
+                .expect("existing install");
+        assert_eq!(resolution.env_vars["HTTP_PORT"], 8881);
+        assert_eq!(
+            resolution.info,
+            ["Port 8880 (HTTP_PORT) occupied by another process — using host port 8881 (Public Web via Cloudflare is unaffected)"]
+        );
+        assert!(changed);
+    }
+
+    #[test]
+    fn an_install_whose_8880_is_taken_returns_to_a_free_80_and_says_8880_is_occupied() {
+        let host = HostPorts {
+            bind: |port| match port {
+                8880 => Err(io::ErrorKind::AddrInUse.into()),
+                _ => Ok(()),
+            },
+            ..HostPorts::new(HashSet::new())
+        };
+
+        let (resolution, changed) =
+            refresh_ports("HTTP_PORT=8880\nHTTPS_PORT=8443\nAPI_PORT=5002\n", &host)
+                .expect("resolution");
+
+        assert_eq!(resolution.env_vars["HTTP_PORT"], 80);
+        assert_eq!(resolution.env_vars["HTTPS_PORT"], 8443);
+        assert_eq!(
+            resolution.info,
+            ["Port 8880 (HTTP_PORT) occupied — restored default host port 80"]
+        );
+        assert!(changed);
+    }
+
+    #[test]
+    fn with_no_free_fallback_port_the_error_calls_the_default_unavailable() {
+        let host = HostPorts {
+            bind: |_| Err(io::ErrorKind::AddrInUse.into()),
+            ..HostPorts::new(HashSet::new())
+        };
+
+        assert_eq!(
+            resolve_ports(&host).err().as_deref(),
+            Some("Cannot find available host port near 8880 for HTTP_PORT (default 80 is unavailable)")
+        );
+        assert_eq!(
+            refresh_ports("HTTP_PORT=8880\nAPI_PORT=5002\n", &host)
+                .err()
+                .as_deref(),
+            Some("Cannot find available host port near 8880 for HTTP_PORT (80 is unavailable)")
+        );
     }
 }

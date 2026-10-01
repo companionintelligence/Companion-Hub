@@ -10,7 +10,7 @@ use tauri::{
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_store::StoreExt;
 
-fn save_window_geometry(app_handle: &tauri::AppHandle) {
+pub(crate) fn save_window_geometry(app_handle: &tauri::AppHandle) {
     if let Some(win) = app_handle.get_webview_window("main") {
         // A maximized window would bake the full screen size into the store;
         // keep the last normal geometry instead.

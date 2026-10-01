@@ -17,7 +17,7 @@ import { ArrowUpCircle, Loader2, Smartphone, Star, TriangleAlert, Wand2 } from '
 import { clearHubConnection, getHubBaseUrlSync, usesCloudConnect } from '@/lib/mobile-connection';
 import { useTranslation } from 'react-i18next';
 import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-modal';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useId } from 'react';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import {
   clearHubSteadySession,
@@ -29,7 +29,9 @@ import {
 import { toast } from 'sonner';
 import {
   checkForUpdates,
+  type DesktopRestartState,
   fetchHostListenerStatus,
+  getDesktopRestartState,
   getInstalledDesktopVersion,
   isStackUpdateAvailable,
   isTauri,
@@ -37,6 +39,7 @@ import {
   manualUpdateFileName,
   performStackUpdate,
   performUpdate,
+  restartDesktopApp,
   type UpdateActionResult,
   type UpdateInfo,
 } from '@/lib/update-service';
@@ -57,6 +60,9 @@ export const GeneralActionsContainer = () => {
   const [shellMessage, setShellMessage] = useState<string | null>(null);
   const [autoUpdates, setAutoUpdates] = useState(true);
   const [autoUpdatesLoading, setAutoUpdatesLoading] = useState(false);
+  const autoUpdatesId = useId();
+  const autoUpdatesTitleId = `${autoUpdatesId}-title`;
+  const autoUpdatesDescriptionId = `${autoUpdatesId}-description`;
   const [restartingWizard, setRestartingWizard] = useState(false);
   const [factoryResetOpen, setFactoryResetOpen] = useState(false);
   const [factoryResetPhrase, setFactoryResetPhrase] = useState('');
@@ -64,6 +70,8 @@ export const GeneralActionsContainer = () => {
   const [shellUpdate, setShellUpdate] = useState<UpdateInfo | null>(null);
   const [shellVersion, setShellVersion] = useState<string | null>(null);
   const [updatingShell, setUpdatingShell] = useState(false);
+  const [shellRestart, setShellRestart] = useState<DesktopRestartState | null>(null);
+  const [restartingShell, setRestartingShell] = useState(false);
   const [hostListenerReachable, setHostListenerReachable] = useState<boolean | null>(null);
   const [switchHubOpen, setSwitchHubOpen] = useState(false);
 
@@ -118,6 +126,7 @@ export const GeneralActionsContainer = () => {
   const refreshShellUpdateState = useCallback(async () => {
     const installedVersion = desktop ? await getInstalledDesktopVersion() : null;
     setShellVersion(installedVersion);
+    setShellRestart(desktop ? await getDesktopRestartState() : null);
     const info = await checkForUpdates(installedVersion ?? undefined);
     setShellUpdate(info);
     return info;
@@ -232,6 +241,15 @@ export const GeneralActionsContainer = () => {
     }
   }, [getUpdateMessage, refreshShellUpdateState, shellUpdate, t]);
 
+  const handleShellRestart = useCallback(async () => {
+    setRestartingShell(true);
+    // On success the app exits; it only comes back here when the restart was refused.
+    if (!(await restartDesktopApp())) {
+      setRestartingShell(false);
+      toast.error(t('DESKTOP_RESTART_FAILED'));
+    }
+  }, [t]);
+
   const handleAutoUpdatesToggle = useCallback(async () => {
     setAutoUpdatesLoading(true);
     const newValue = !autoUpdates;
@@ -246,6 +264,9 @@ export const GeneralActionsContainer = () => {
   }, [autoUpdates]);
 
   const stackUpdateAvailable = isStackUpdateAvailable(version.current, version.latest);
+  // After an update installed while the app was open, the running version is no longer what this
+  // computer has installed.
+  const installedShellVersion = (shellRestart?.restartRequired && shellRestart.installedVersion) || shellVersion;
   const displayVersion = version.current || t('COMMON_UNKNOWN');
   const latestVersion = version.latest;
 
@@ -406,18 +427,24 @@ export const GeneralActionsContainer = () => {
           {renderUpdateButton()}
 
           <div className="mt-6 pt-6 border-t">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-4">
               <div>
-                <h3 className="text-sm font-medium">{t('SETTINGS_ACTIONS_AUTO_UPDATE_STACK_TITLE')}</h3>
-                <p className="text-sm text-muted-foreground">{t('SETTINGS_ACTIONS_AUTO_UPDATE_STACK_DESCRIPTION')}</p>
+                <h3 id={autoUpdatesTitleId} className="text-sm font-medium">
+                  {t('SETTINGS_ACTIONS_AUTO_UPDATE_STACK_TITLE')}
+                </h3>
+                <p id={autoUpdatesDescriptionId} className="text-sm text-muted-foreground">
+                  {t('SETTINGS_ACTIONS_AUTO_UPDATE_STACK_DESCRIPTION')}
+                </p>
               </div>
               <button
                 type="button"
                 role="switch"
                 aria-checked={autoUpdates}
+                aria-labelledby={autoUpdatesTitleId}
+                aria-describedby={autoUpdatesDescriptionId}
                 onClick={handleAutoUpdatesToggle}
                 disabled={autoUpdatesLoading}
-                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${autoUpdates ? 'bg-primary' : 'bg-input'} ${autoUpdatesLoading ? 'opacity-50' : ''}`}
+                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${autoUpdates ? 'bg-primary' : 'bg-input'} ${autoUpdatesLoading ? 'opacity-50' : ''}`}
               >
                 <span
                   className={`inline-block h-4 w-4 transform rounded-full bg-background transition-transform ${autoUpdates ? 'translate-x-6' : 'translate-x-1'}`}
@@ -432,8 +459,8 @@ export const GeneralActionsContainer = () => {
         <CardHeader>
           <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_SHELL_UPDATE_TITLE')}</CardTitle>
           <CardDescription>
-            {shellVersion
-              ? t('SETTINGS_ACTIONS_SHELL_UPDATE_SUBTITLE_WITH_VERSION', { version: shellVersion })
+            {installedShellVersion
+              ? t('SETTINGS_ACTIONS_SHELL_UPDATE_SUBTITLE_WITH_VERSION', { version: installedShellVersion })
               : t('SETTINGS_ACTIONS_SHELL_UPDATE_SUBTITLE')}
           </CardDescription>
         </CardHeader>
@@ -448,7 +475,26 @@ export const GeneralActionsContainer = () => {
               {t('SETTINGS_ACTIONS_HOST_LISTENER_READY')}
             </p>
           ) : null}
-          {shellUpdate?.downloadUrl ? (
+          {shellRestart?.restartRequired ? (
+            <div data-testid="desktop-restart-required">
+              <p className="text-sm mb-2">
+                {shellRestart.installedVersion
+                  ? t('SETTINGS_ACTIONS_SHELL_RESTART_REQUIRED', { installed: shellRestart.installedVersion, running: shellRestart.runningVersion })
+                  : t('SETTINGS_ACTIONS_SHELL_RESTART_REQUIRED_UNKNOWN_VERSION', { running: shellRestart.runningVersion })}
+              </p>
+              <p className="text-sm text-muted-foreground mb-3">{t('SETTINGS_ACTIONS_SHELL_RESTART_HUB_NOTE')}</p>
+              <Button onClick={handleShellRestart} disabled={restartingShell} data-testid="desktop-restart-btn">
+                {restartingShell ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                    {t('SETTINGS_ACTIONS_SHELL_RESTARTING')}
+                  </>
+                ) : (
+                  t('SETTINGS_ACTIONS_SHELL_RESTART_BUTTON')
+                )}
+              </Button>
+            </div>
+          ) : shellUpdate?.downloadUrl ? (
             <>
               {shellVersion && !shellUpdate.updateAvailable ? (
                 <p className="text-sm text-muted-foreground mb-3">{t('SETTINGS_ACTIONS_SHELL_UP_TO_DATE')}</p>

@@ -85,7 +85,7 @@ jobs:
           timeout 60 bash -c 'until echo > /dev/tcp/localhost/5672; do sleep 2; done' && echo "RabbitMQ AMQP port open"
 
       - name: Cache Playwright
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ hashFiles('pnpm-lock.yaml') }}
