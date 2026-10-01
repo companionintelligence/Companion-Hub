@@ -145,9 +145,9 @@ describe('GeneralActionsContainer', () => {
   });
 
   describe('Linux install steps', () => {
-    function offerDesktopUpdate(downloadUrl: string) {
-      mockIsTauri.mockReturnValue(true);
-      mockGetInstalledDesktopVersion.mockResolvedValue('0.2.77');
+    // In a browser tab, where the steps always sit under the download button. The desktop window
+    // shows the same steps, and may install the update itself instead (#1759).
+    function offerInstaller(downloadUrl: string) {
       mockCheckForUpdates.mockResolvedValue({
         currentVersion: '0.2.77',
         latestVersion: '0.2.78',
@@ -173,7 +173,7 @@ describe('GeneralActionsContainer', () => {
         'sudo rpm -U "./Companion Hub-0.2.78-1.x86_64.rpm"',
       ],
     ])('installs the %s over the current app, named as the browser saved it', async (_kind, downloadUrl, command) => {
-      offerDesktopUpdate(downloadUrl);
+      offerInstaller(downloadUrl);
 
       render(<GeneralActionsContainer />);
 
@@ -184,7 +184,7 @@ describe('GeneralActionsContainer', () => {
     });
 
     it('makes the AppImage executable, named as the browser saved it', async () => {
-      offerDesktopUpdate('https://dl.ci.computer/v0.2.78/linux/appimage/x64/Companion%20Hub_0.2.78_amd64.AppImage');
+      offerInstaller('https://dl.ci.computer/v0.2.78/linux/appimage/x64/Companion%20Hub_0.2.78_amd64.AppImage');
 
       render(<GeneralActionsContainer />);
 
@@ -201,7 +201,7 @@ describe('GeneralActionsContainer', () => {
       ['a slash', '..%2F..%2FCompanion%20Hub_0.2.78_amd64.deb'],
       ['a broken escape', 'Companion%20Hub%E0%A4%A_0.2.78_amd64.deb'],
     ])('gives the install step without a command when the file name has %s', async (_case, fileName) => {
-      offerDesktopUpdate(`https://dl.ci.computer/v0.2.78/linux/deb/x64/${fileName}`);
+      offerInstaller(`https://dl.ci.computer/v0.2.78/linux/deb/x64/${fileName}`);
 
       render(<GeneralActionsContainer />);
 
@@ -214,7 +214,7 @@ describe('GeneralActionsContainer', () => {
     });
 
     it('gives the AppImage step without a command when the file name is not safe to quote', async () => {
-      offerDesktopUpdate('https://dl.ci.computer/v0.2.78/linux/appimage/x64/Companion%20Hub%24(id)_0.2.78_amd64.AppImage');
+      offerInstaller('https://dl.ci.computer/v0.2.78/linux/appimage/x64/Companion%20Hub%24(id)_0.2.78_amd64.AppImage');
 
       render(<GeneralActionsContainer />);
 
