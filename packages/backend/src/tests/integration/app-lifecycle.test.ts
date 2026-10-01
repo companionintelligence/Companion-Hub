@@ -37,7 +37,7 @@ import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { MarketplaceCacheBus } from '@/modules/marketplace/marketplace-cache.bus';
 import { ImageSizeService } from '@/modules/marketplace/image-size.service';
 import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
-import { AppEventsQueue, appEventSchema } from '@/modules/queue/entities/app-events';
+import { AppEventsQueue, appEventResultSchema, appEventSchema } from '@/modules/queue/entities/app-events';
 import { RepoEventsQueue } from '@/modules/queue/entities/repo-events';
 import { QueueFactory } from '@/modules/queue/queue.factory';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
@@ -151,6 +151,16 @@ describe('App lifecycle', () => {
     containers: [],
     message: 'All containers for the app passed health probes',
   });
+  // Same story for the pre-update snapshot: UpdateAppCommand refuses to start an update it could
+  // not undo, and reads an unmocked call's `undefined` as a failed snapshot. Every "update app"
+  // test then ended with the update refused and the app 'stopped', never at the new version.
+  dockerService.createPreUpdateVolumeSnapshot.mockImplementation(async (appUrn) => ({
+    appUrn,
+    snapshotId: 'pre-update-test',
+    timestamp: new Date(0).toISOString(),
+    volumes: [],
+    success: true,
+  }));
   dockerReadFacade.diagnoseAppContainers.mockResolvedValue({ unhealthy: [], healthy: [] });
 
   const queueFactory = new QueueFactory(loggerService, configurationService);
@@ -186,6 +196,9 @@ describe('App lifecycle', () => {
       queueName: `app-events-queue-${++queueSerial}`,
       workers: 1,
       eventSchema: appEventSchema,
+      // As QueueModule does. Without it the reply is read with the bare {success, message} default,
+      // which drops every other result field (rolledBack, errorCode, …) before the service sees it.
+      resultSchema: appEventResultSchema,
     });
     portalCatalogService.warmCacheInBackground.mockReturnValue(undefined);
     portalCatalogService.invalidateCache.mockReturnValue(undefined);
@@ -466,6 +479,46 @@ describe('App lifecycle', () => {
         .then(() => true)
         .catch(() => false);
       expect(dataFileExists).toBe(true);
+    });
+
+    it('leaves a running app running on its current version when the update is refused before anything changed', async () => {
+      // arrange
+      const appInfo = await createAppInStore('test', { cihub_app_version: 1 });
+
+      await appLifecycleService.installApp({ actor: TEST_ACTOR, appUrn: appInfo.urn, form: {} });
+
+      await waitFor(async () => {
+        const app = await appsRepository.getAppByUrn(appInfo.urn);
+        expect(app?.status).toBe('running');
+      });
+
+      await createAppInStore('test', { id: appInfo.id, cihub_app_version: 2 });
+      dockerService.createPreUpdateVolumeSnapshot.mockResolvedValueOnce({
+        appUrn: appInfo.urn,
+        snapshotId: 'pre-update-test',
+        timestamp: new Date(0).toISOString(),
+        volumes: [],
+        success: false,
+        error: 'No space left on device',
+      });
+      const composeCallsBefore = dockerService.composeApp.mock.calls.length;
+      const sseCallsBefore = sseService.emit.mock.calls.length;
+
+      // act
+      await appLifecycleService.updateApp({ actor: TEST_ACTOR, appUrn: appInfo.urn, performBackup: false });
+
+      // assert: the refusal reaches the service as a rollback, so the app keeps the status it had
+      // instead of being reported stopped while its containers are still up
+      await waitFor(async () => {
+        const app = await appsRepository.getAppByUrn(appInfo.urn);
+        expect(app?.status).toBe('running');
+        expect(app?.version).toBe(1);
+      });
+      expect(sseService.emit.mock.calls.slice(sseCallsBefore)).toContainEqual([
+        'app',
+        expect.objectContaining({ event: 'update_error', appUrn: appInfo.urn, appStatus: 'running' }),
+      ]);
+      expect(dockerService.composeApp.mock.calls.slice(composeCallsBefore).filter(([urn]) => urn === appInfo.urn)).toEqual([]);
     });
   });
 
