@@ -80,10 +80,27 @@ export class CustomAppService {
     }
   }
 
+  /**
+   * Refuse an app that did not come from "Add custom app".
+   *
+   * ⚠ THE URN IS CALLER-SUPPLIED AND THESE METHODS WRITE TO WHATEVER IT NAMES. An installed
+   * store app lives at the same `apps/<store>/<app>/` layout, so without this a custom-app route
+   * rewrites an official app's `docker-compose.json` or `config.json` — and that app keeps the
+   * extra container privileges granted to its store, which the sandbox that custom content is
+   * validated against never gave it.
+   */
+  private assertCustomApp(appUrn: AppUrn): void {
+    if (extractAppUrn(appUrn).appStoreId !== APPS_FOLDER) {
+      throw new TranslatableError('CUSTOM_APP_ERROR_NOT_CUSTOM', { urn: appUrn }, HttpStatus.BAD_REQUEST);
+    }
+  }
+
   async updateCustomApp(appUrn: AppUrn, config: UpdateCustomAppDto['config']) {
     if (this.configService.get('demoMode')) {
       throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
     }
+
+    this.assertCustomApp(appUrn);
 
     const existingApp = await this.appsRepository.getAppByUrn(appUrn);
     if (!existingApp) {
@@ -134,7 +151,12 @@ export class CustomAppService {
     const infoPath = path.join(dataDir, 'apps', appStoreId, appName, 'config.json');
 
     const main = config.services.find((s: ServiceInput) => s.isMain) ?? config.services[0];
-    const inferredPort = typeof main?.internalPort === 'number' ? main.internalPort : undefined;
+    // The create form submits the port as typed, a string; a number only comes from a hand-written
+    // config. A value that is not a plain port (an env reference, a range) cannot become the app's
+    // single access port and leaves it unset, as before.
+    const rawPort = main?.internalPort;
+    const typedPort = typeof rawPort === 'string' && /^\d{1,5}$/.test(rawPort.trim()) ? Number(rawPort.trim()) : rawPort;
+    const inferredPort = typeof typedPort === 'number' && typedPort >= 1 && typedPort <= 65535 ? typedPort : undefined;
 
     // Create a minimal app.info file for custom apps
     const appInfo = {
@@ -190,11 +212,9 @@ export class CustomAppService {
       throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
     }
 
-    const { appName, appStoreId } = extractAppUrn(appUrn);
+    this.assertCustomApp(appUrn);
 
-    if (appStoreId !== APPS_FOLDER) {
-      throw new TranslatableError('CUSTOM_APP_ERROR_NOT_CUSTOM', { urn: appUrn }, HttpStatus.BAD_REQUEST);
-    }
+    const { appName, appStoreId } = extractAppUrn(appUrn);
 
     const existingApp = await this.appsRepository.getAppByUrn(appUrn);
     if (!existingApp) {
@@ -234,6 +254,8 @@ export class CustomAppService {
     if (this.configService.get('demoMode')) {
       throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
     }
+
+    this.assertCustomApp(appUrn);
 
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const { dataDir } = this.configService.get('directories');

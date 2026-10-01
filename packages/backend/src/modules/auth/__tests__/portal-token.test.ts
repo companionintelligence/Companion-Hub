@@ -43,7 +43,7 @@ describe('portalClaimsIdentity', () => {
 describe('verifyPortalIdToken', () => {
   it('returns claims when jose verifies the token', async () => {
     const verify = vi.fn().mockResolvedValue({
-      payload: { sub: 'user-1', email: 'op@example.com', name: 'Op' },
+      payload: { sub: 'user-1', iss: 'https://hub.ci.computer', email: 'op@example.com', email_verified: true, name: 'Op' },
     });
     const createJwks = vi.fn().mockReturnValue({});
 
@@ -53,7 +53,13 @@ describe('verifyPortalIdToken', () => {
       createJwks: createJwks as never,
     });
 
-    expect(claims).toEqual({ sub: 'user-1', email: 'op@example.com', name: 'Op' });
+    expect(claims).toEqual({
+      sub: 'user-1',
+      email: 'op@example.com',
+      name: 'Op',
+      emailVerified: true,
+      issuer: 'https://hub.ci.computer',
+    });
     expect(verify).toHaveBeenCalledWith(
       'tok',
       {},

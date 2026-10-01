@@ -46,7 +46,7 @@ export class AppLifecycleCommandFactory {
       case 'generate_env':
         return new GenerateAppEnvCommand(this.moduleRef, this.docker);
       case 'update':
-        return new UpdateAppCommand(this.moduleRef, this.docker, eventData.performBackup);
+        return new UpdateAppCommand(this.moduleRef, this.docker, eventData.performBackup, eventData.wasRunning);
       default:
         throw new Error(`Unknown command: ${command}`);
     }

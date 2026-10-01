@@ -42,4 +42,9 @@ describe('BackupsController — names the actor for every backup call', () => {
     expect(whois.lifecycleActor).toHaveBeenCalledWith(req, action);
     expect(backups[method]).toHaveBeenCalledWith(expect.objectContaining({ appUrn, actor }));
   });
+  it('asks for the first page when the caller names none', async () => {
+    await controller.getAppBackups(appUrn, {} as never, req);
+
+    expect(backups.getAppBackups).toHaveBeenCalledWith(expect.objectContaining({ page: 1, pageSize: 10 }));
+  });
 });

@@ -78,11 +78,45 @@ const myAppsSchema = z.object({
  * rather than about an address anyone can already resolve.
  * `reportOnly` parsing strips whatever the schema omits, so leaving it out here
  * is what keeps it out of the response.
+ *
+ * `config` is the form the operator filled in at install — admin passwords, provider API
+ * keys, whatever a manifest asked for — and this route is unauthenticated, so it is the
+ * first thing omitted. The guest dashboard renders tiles and links; it has no use for it.
+ *
+ * What this schema keeps is exactly what a guest tile is built from.
  */
+const guestAppSchema = appSchema.omit({ config: true, customDomainIntent: true, customDomainTakeover: true });
+
+const GUEST_APP_FIELDS = Object.keys(guestAppSchema.shape) as ReadonlyArray<keyof typeof guestAppSchema.shape>;
+
+/**
+ * Keep of one app row only the fields a guest tile uses.
+ *
+ * ⚠ THIS IS THE ENFORCEMENT; THE SCHEMA BELOW ONLY DESCRIBES IT. `Dto.parse(data, { reportOnly })`
+ * returns the PARSED data when validation passes but the RAW INPUT when it fails, so a field
+ * "stripped by omission" is only stripped while every other field of every row happens to validate.
+ * One drifted column and the response goes out with whatever the row holds. The row holds more than
+ * the schema lists: the repository loads it `with: { appStore: true }`, and a store's `url` can carry
+ * a token (`https://ghp_…@github.com/…`). So the route allows by name, from the schema's own shape,
+ * before the parse; a new column is private until it is added to the schema on purpose.
+ */
+export function pickGuestAppFields<T extends object>(app: T): Pick<T, Extract<keyof T, (typeof GUEST_APP_FIELDS)[number]>> {
+  const row = app as Record<string, unknown>;
+  const visible: Record<string, unknown> = {};
+
+  for (const field of GUEST_APP_FIELDS) {
+    if (field in row) {
+      visible[field] = row[field];
+    }
+  }
+
+  return visible as Pick<T, Extract<keyof T, (typeof GUEST_APP_FIELDS)[number]>>;
+}
+
 const guestAppsSchema = z.object({
   installed: z.array(
     z.object({
-      app: appSchema.omit({ customDomainIntent: true, customDomainTakeover: true }),
+      app: guestAppSchema,
       info: appInfoSchemaRef,
       metadata: metadataSchema,
     }),

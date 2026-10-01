@@ -45,3 +45,36 @@ export function compareAppVersions(a: string | null | undefined, b: string | nul
   }
   return 0;
 }
+
+/**
+ * Whether the catalog has an update for an installed app.
+ *
+ * ONE definition, because three things used to answer this question separately and disagreed: the
+ * "updates available" badge, the per-app Update button, and the update-all sweep. The badge counted an
+ * image bump (the CI-OpenClaw and CI-Hermes case) that the sweep never looked at, so a dashboard that
+ * offered "Update all" for it updated nothing.
+ *
+ * Two signals, either of which is an update:
+ *   - the schema counter (`cihub_app_version`) went up, unless the operator ignored that version;
+ *   - the image version string (`version` in config.json) is newer than the installed one.
+ *
+ * Ignoring is recorded against the counter only, so it cannot silence an image bump.
+ */
+export function hasUpdateAvailable(input: {
+  installedCounter: number | string | null | undefined;
+  latestCounter: number | string | null | undefined;
+  ignoredCounter?: number | string | null;
+  installedVersion: string | null | undefined;
+  latestVersion: string | null | undefined;
+}): boolean {
+  const counterBumped =
+    Number(input.installedCounter) < Number(input.latestCounter ?? 0) && (input.ignoredCounter ?? null) !== (input.latestCounter ?? null);
+
+  if (counterBumped) {
+    return true;
+  }
+
+  const versionComparison = compareAppVersions(input.installedVersion, input.latestVersion);
+
+  return versionComparison !== null && versionComparison < 0;
+}

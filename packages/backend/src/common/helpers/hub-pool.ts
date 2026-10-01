@@ -1,3 +1,5 @@
+import { parseDbTimestampMs } from './db-timestamp';
+
 /** Which of the two kill switches turned Hub pooling off. `null` when it is on. */
 export type HubPoolDisabledBy = 'env' | 'setting';
 
@@ -208,7 +210,7 @@ export function clampPressureBand(raw: unknown): number | null {
  * reader cannot drift apart on what "stale" means; they are two fields of one snapshot.
  */
 export function isCapabilitiesSnapshotFresh(lastSeenAt: string | null, freshnessMs: number, now: number = Date.now()): boolean {
-  const observedAt = lastSeenAt ? Date.parse(lastSeenAt) : Number.NaN;
+  const observedAt = lastSeenAt ? parseDbTimestampMs(lastSeenAt) : Number.NaN;
   return Number.isFinite(observedAt) && now - observedAt <= freshnessMs;
 }
 

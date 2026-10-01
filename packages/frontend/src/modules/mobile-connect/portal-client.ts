@@ -25,6 +25,11 @@ export interface PortalAuth {
   cookie: string | null;
   /** `oauth` = OIDC access token; `session` = email/password cookie/token. */
   kind?: 'session' | 'oauth';
+  /**
+   * Portal id_token from cloud connect. The Hub the person picks can turn this
+   * into a local session, so they are not asked to sign in a second time.
+   */
+  idToken?: string | null;
 }
 
 export interface HubDevice {
@@ -99,10 +104,12 @@ export function readStoredPortalAuth(): PortalAuth | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as PortalAuth;
     if (!(parsed.token || parsed.cookie)) return null;
+    const idToken = typeof parsed.idToken === 'string' && parsed.idToken.trim() ? parsed.idToken : null;
     return {
       token: parsed.token ?? null,
       cookie: parsed.cookie ?? null,
       kind: parsed.kind === 'oauth' ? 'oauth' : 'session',
+      ...(idToken ? { idToken } : {}),
     };
   } catch {
     return null;
@@ -242,4 +249,35 @@ export async function listHubDevices(auth: PortalAuth, portalUrl = DEFAULT_PORTA
     hubUrl: hubUrlForDevice(d),
     organizationId: d.organizationId,
   }));
+}
+
+/**
+ * Spend the cloud-connect id_token on the Hub the person just picked.
+ * Null means this Hub cannot take it (older build, unverified email, network),
+ * and the caller should fall back to the Hub's own sign-in sheet.
+ */
+export async function establishHubSessionFromPortal(
+  hubBaseUrl: string,
+  idToken: string,
+): Promise<{ sessionId: string; redirectPath: string } | null> {
+  const base = hubBaseUrl.trim().replace(/\/+$/, '');
+  if (!base || !idToken) return null;
+  const doFetch = await nativeFetch();
+  let res: Response;
+  try {
+    res = await doFetch(`${base}/api/auth/portal/mobile-session`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${idToken}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    return null;
+  }
+  if (!res.ok) return null;
+  const data = (await res.json()) as { sessionId?: unknown; redirectPath?: unknown };
+  if (typeof data.sessionId !== 'string' || !data.sessionId) return null;
+  return {
+    sessionId: data.sessionId,
+    redirectPath: typeof data.redirectPath === 'string' && data.redirectPath.startsWith('/') ? data.redirectPath : '/home',
+  };
 }

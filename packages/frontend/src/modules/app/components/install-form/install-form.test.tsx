@@ -613,7 +613,7 @@ describe('InstallForm', () => {
     };
 
     // The Switch carries aria-label={name}, so its accessible name is the field name.
-    const setting = () => screen.queryByRole('switch', { name: 'autoRestartOnDomainChange' });
+    const setting = () => screen.queryByRole('switch', { name: /APP_INSTALL_FORM_AUTO_RESTART_ON_DOMAIN_CHANGE/ });
 
     const connected = {
       id: 'cd_1',
@@ -1649,9 +1649,8 @@ describe('InstallForm', () => {
     expect(toast.error).toHaveBeenCalledWith(dnsMessage);
   });
 
-  // The enable-auth switch carries aria-label={name} (see Switch), so its accessible name is the
-  // field name, not the translated label text.
-  const getEnableAuthSwitch = () => screen.getByRole('switch', { name: 'enableAuth' });
+  // A switch is named by its visible label (see Switch): the label text, then the hint beneath it.
+  const getEnableAuthSwitch = () => screen.getByRole('switch', { name: /APP_INSTALL_FORM_ENABLE_AUTH/ });
 
   it('defaults the enable-auth switch ON for a fresh install', async () => {
     vi.mocked(useAppContext).mockReturnValue(exposableContext());

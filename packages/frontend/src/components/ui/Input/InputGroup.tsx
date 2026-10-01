@@ -28,24 +28,34 @@ export const InputGroup = React.forwardRef<HTMLInputElement, InputGroupProps>(
       groupSuffixClassName,
       size = 'default',
       id,
+      'aria-describedby': describedByProp,
       ...rest
     },
     ref,
   ) => {
     const isSm = size === 'sm';
+    const errorId = React.useId();
+    const inputId = id || name;
+    const describedBy = [describedByProp, error ? errorId : undefined].filter(Boolean).join(' ') || undefined;
 
     const renderPrefix = () => {
       if (!groupPrefix) return null;
       if (typeof groupPrefix === 'string') {
-        return (
-          <div
-            className={cn(
-              'flex shrink-0 items-center whitespace-nowrap rounded-l-md border border-r-0 border-input bg-muted text-muted-foreground',
-              isSm ? 'h-8 px-2 text-xs' : 'h-9 px-3 text-sm',
-            )}
-          >
+        const prefixClassName = cn(
+          'flex shrink-0 items-center whitespace-nowrap rounded-l-md border border-r-0 border-input bg-muted text-muted-foreground',
+          isSm ? 'h-8 px-2 text-xs' : 'h-9 px-3 text-sm',
+        );
+
+        // With no `label` of its own, the text in front of the field is what names it: a field whose
+        // only words sit in a <div> beside it is announced as "edit text, blank". When there IS a
+        // label the prefix is added context ("https://"), and naming the field by both would read
+        // "Subdomain https://".
+        return label ? (
+          <div className={prefixClassName}>{groupPrefix}</div>
+        ) : (
+          <label htmlFor={inputId} className={prefixClassName}>
             {groupPrefix}
-          </div>
+          </label>
         );
       }
       return <div className="flex shrink-0 items-center whitespace-nowrap">{groupPrefix}</div>;
@@ -77,7 +87,7 @@ export const InputGroup = React.forwardRef<HTMLInputElement, InputGroupProps>(
     return (
       <div className={cn('space-y-2', className)}>
         {label && (
-          <label htmlFor={id || name} className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
+          <label htmlFor={inputId} className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
             {label}
           </label>
         )}
@@ -87,7 +97,9 @@ export const InputGroup = React.forwardRef<HTMLInputElement, InputGroupProps>(
             ref={ref}
             type={type}
             name={name}
-            id={id || name}
+            id={inputId}
+            aria-invalid={error || isInvalid ? true : undefined}
+            aria-describedby={describedBy}
             className={cn(
               'min-w-0 flex-1 border border-input bg-transparent text-base transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm',
               isSm ? 'h-8 px-2 py-0 text-xs' : 'h-9 px-3 py-1',
@@ -99,7 +111,11 @@ export const InputGroup = React.forwardRef<HTMLInputElement, InputGroupProps>(
           />
           {renderSuffix()}
         </div>
-        {error && <p className="text-[0.8rem] font-medium text-destructive">{error}</p>}
+        {error && (
+          <p id={errorId} role="alert" className="text-[0.8rem] font-medium text-destructive">
+            {error}
+          </p>
+        )}
       </div>
     );
   },

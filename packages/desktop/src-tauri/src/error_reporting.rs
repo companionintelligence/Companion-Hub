@@ -285,38 +285,39 @@ pub fn init_from_env(env_path: &Path, data_dir: &Path, release: &str) {
         return;
     };
 
-    let guard = sentry::init(sentry::ClientOptions {
-        dsn: Some(parsed_dsn),
-        release: Some(format!("ci-hub-desktop-rust@{release}").into()),
-        environment: Some(environment.into()),
-        // No PII, matching the rest of the fleet. The Sentry org has
-        // `scrubIPAddresses` disabled, so leaving this on meant the Hub was the
-        // one component storing users' real IP addresses. Device attribution
-        // comes from the explicit `device_id` tag/user set below.
-        send_default_pii: false,
-        // The `contexts` integration fills this from `hostname::get()` when it is
-        // left None, and sentry-core stamps it on every event in `prepare_event`
-        // — which runs immediately before `before_send`. Pre-setting it stops the
-        // hostname ever being read; `scrub_event` clears the field as well, so
-        // neither this literal nor a real hostname is transmitted.
-        server_name: Some("[redacted]".into()),
-        // Consent gate + payload scrubber. Evaluated per event so turning
-        // "Allow error monitoring" off in Settings stops the very next capture,
-        // with no app restart.
-        before_send: Some(Arc::new(|event| {
-            if reporting_allowed() {
-                Some(crate::sentry_scrubber::scrub_event(event))
-            } else {
-                None
-            }
-        })),
-        // Redact each breadcrumb as it is recorded, so raw operator log text
-        // never sits in the ring buffer waiting for a later event to carry it.
-        before_breadcrumb: Some(Arc::new(|breadcrumb| {
-            Some(crate::sentry_scrubber::scrub_breadcrumb(breadcrumb))
-        })),
-        ..Default::default()
-    });
+    // sentry 0.49 marks `ClientOptions` non-exhaustive, so it can no longer be built with a struct
+    // expression from this crate; start from the defaults and set the fields instead.
+    let mut options = sentry::ClientOptions::default();
+    options.dsn = Some(parsed_dsn);
+    options.release = Some(format!("ci-hub-desktop-rust@{release}").into());
+    options.environment = Some(environment.into());
+    // No PII, matching the rest of the fleet. The Sentry org has
+    // `scrubIPAddresses` disabled, so leaving this on meant the Hub was the
+    // one component storing users' real IP addresses. Device attribution
+    // comes from the explicit `device_id` tag/user set below.
+    options.send_default_pii = false;
+    // The `contexts` integration fills this from `hostname::get()` when it is
+    // left None, and sentry-core stamps it on every event in `prepare_event`
+    // — which runs immediately before `before_send`. Pre-setting it stops the
+    // hostname ever being read; `scrub_event` clears the field as well, so
+    // neither this literal nor a real hostname is transmitted.
+    options.server_name = Some("[redacted]".into());
+    // Consent gate + payload scrubber. Evaluated per event so turning
+    // "Allow error monitoring" off in Settings stops the very next capture,
+    // with no app restart.
+    options.before_send = Some(Arc::new(|event| {
+        if reporting_allowed() {
+            Some(crate::sentry_scrubber::scrub_event(event))
+        } else {
+            None
+        }
+    }));
+    // Redact each breadcrumb as it is recorded, so raw operator log text
+    // never sits in the ring buffer waiting for a later event to carry it.
+    options.before_breadcrumb = Some(Arc::new(|breadcrumb| {
+        Some(crate::sentry_scrubber::scrub_breadcrumb(breadcrumb))
+    }));
+    let guard = sentry::init(options);
 
     if guard.is_enabled() {
         sentry::configure_scope(|scope| {

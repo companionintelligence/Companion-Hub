@@ -108,7 +108,14 @@ function patchOperationParameters(document: SwaggerDocument) {
     if (!match) {
       continue;
     }
-    (match.operation as { parameters?: unknown[] }).parameters = parameters;
+    // Added to what is there, not in place of it: an operation with a query DTO already has its
+    // query parameters by now, and replacing the list dropped them.
+    const operation = match.operation as { parameters?: Array<{ name?: string; in?: string }> };
+    const existing = operation.parameters ?? [];
+    const missing = (parameters as Array<{ name?: string; in?: string }>).filter(
+      (parameter) => !existing.some((current) => current.name === parameter.name && current.in === parameter.in),
+    );
+    operation.parameters = [...missing, ...existing];
   }
 }
 

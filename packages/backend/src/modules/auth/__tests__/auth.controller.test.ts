@@ -5,13 +5,14 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { UserRepository } from '@/modules/user/user.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
-import { HttpStatus, type INestApplication } from '@nestjs/common';
+import { HttpStatus, UnauthorizedException, type INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import type { Request, Response } from 'express';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { AuthController } from '../auth.controller';
+import { AuthRateLimiter } from '../auth-rate-limiter';
 import { ForwardAuthIdentityResolver } from '../forward-auth-identity.resolver';
 import { ForwardAuthSecretResolver } from '../forward-auth-secret.resolver';
 import { BearerOrgMembershipCache } from '../bearer-org-membership.cache';
@@ -73,6 +74,8 @@ describe('AuthController', () => {
         // Real instance, not a mock: its TTL/coalescing behaviour is what the caching tests assert.
         BearerOrgMembershipCache,
         SessionUserCache,
+        // Real instance: the limits are what the rate-limit tests assert.
+        AuthRateLimiter,
       ],
     }).compile();
 
@@ -1623,6 +1626,65 @@ describe('AuthController', () => {
     });
   });
 
+  describe('establishPortalMobileSession', () => {
+    const req = {
+      protocol: 'https',
+      get: vi.fn((header: string) => (header === 'host' ? 'hub.example.com' : undefined)),
+      headers: { authorization: 'Bearer portal.id.token', 'x-forwarded-proto': 'https', 'x-forwarded-host': 'hub.example.com' },
+      cookies: {},
+    } as unknown as Request;
+
+    beforeEach(() => {
+      config.get.mockImplementation((key: string) => {
+        if (key === 'ciCloudUrl') return 'https://hub.ci.computer';
+        if (key === 'userSettings') return { experimental: { insecureCookie: true } };
+        return undefined as never;
+      });
+    });
+
+    afterEach(() => {
+      config.get.mockReset();
+    });
+
+    it('turns the cloud-connect id_token into a Hub session', async () => {
+      vi.mocked(verifyPortalIdToken).mockResolvedValue({
+        sub: 'portal-sub',
+        email: 'demo-1@lifescope.io',
+        name: 'Demo',
+        emailVerified: true,
+        issuer: 'https://hub.ci.computer',
+      });
+      authService.admitHubPerson.mockResolvedValue({ id: 7 } as never);
+      sessionManager.createSession.mockResolvedValue('sid-mobile' as never);
+      const res = { cookie: vi.fn() } as unknown as Response;
+
+      await expect(authController.establishPortalMobileSession(req, res)).resolves.toEqual({
+        sessionId: 'sid-mobile',
+        redirectPath: '/home',
+      });
+      expect(authService.admitHubPerson).toHaveBeenCalledWith({
+        issuer: 'https://hub.ci.computer',
+        subject: 'portal-sub',
+        email: 'demo-1@lifescope.io',
+        emailVerified: true,
+      });
+      expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'sid-mobile', expect.objectContaining({ httpOnly: true }));
+    });
+
+    it('refuses an id_token whose email is not verified', async () => {
+      vi.mocked(verifyPortalIdToken).mockResolvedValue({
+        sub: 'portal-sub',
+        email: 'demo-1@lifescope.io',
+        name: null,
+        emailVerified: false,
+      });
+      const res = { cookie: vi.fn() } as unknown as Response;
+
+      await expect(authController.establishPortalMobileSession(req, res)).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(authService.admitHubPerson).not.toHaveBeenCalled();
+    });
+  });
+
   describe('exchangePortalDesktopLogin', () => {
     it('returns the cached desktop handoff once and plants the session cookie on the webview', async () => {
       cache.get.mockReturnValue(JSON.stringify({ sessionId: 'session-123', redirectPath: '/settings?tab=auth', userId: 1 }));
@@ -2555,6 +2617,7 @@ describe('AuthController — GET /api/auth/favicon.png, real HTTP dispatch', () 
         { provide: BearerOrgMembershipCache, useValue: mock<BearerOrgMembershipCache>() },
         { provide: SessionUserCache, useValue: mock<SessionUserCache>() },
         { provide: ForwardAuthIdentityResolver, useValue: mock<ForwardAuthIdentityResolver>() },
+        AuthRateLimiter,
       ],
     }).compile();
 

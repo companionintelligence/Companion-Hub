@@ -903,7 +903,7 @@ export const deleteAppBackup = <ThrowOnError extends boolean = false>(options: O
     }
 });
 
-export const getAppBackups = <ThrowOnError extends boolean = false>(options?: Options<GetAppBackupsData, ThrowOnError>) => (options?.client ?? client).get<GetAppBackupsResponses, unknown, ThrowOnError>({ url: '/api/backups/{urn}', ...options });
+export const getAppBackups = <ThrowOnError extends boolean = false>(options: Options<GetAppBackupsData, ThrowOnError>) => (options.client ?? client).get<GetAppBackupsResponses, unknown, ThrowOnError>({ url: '/api/backups/{urn}', ...options });
 
 export const downloadBackup = <ThrowOnError extends boolean = false>(options: Options<DownloadBackupData, ThrowOnError>) => (options.client ?? client).get<DownloadBackupResponses, unknown, ThrowOnError>({ url: '/api/backups/{urn}/{filename}/download', ...options });
 

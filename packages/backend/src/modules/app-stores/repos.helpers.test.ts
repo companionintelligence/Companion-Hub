@@ -701,4 +701,37 @@ describe('ReposHelpers', () => {
       expect(result.message).toBe('APP_INSTALL_PORTAL_DOWNLOAD_FORBIDDEN');
     });
   });
+  describe('repo id containment', () => {
+    // A store slug has been user-supplied, and `repos/..` is the data directory itself: the
+    // filesystem fence allows anything under DATA_DIR, so it is this check that stands between
+    // a slug and a recursive delete of everything the Hub keeps.
+    const ESCAPING_IDS = ['..', '.', '', '../state', '../../etc', 'a/b', 'a/../..', '/etc'];
+
+    it.each(ESCAPING_IDS)('deleteRepo(%j) removes nothing', async (id) => {
+      filesystemService.pathExists.mockResolvedValue(true);
+
+      await service.deleteRepo(id);
+
+      expect(filesystemService.removeDirectory).not.toHaveBeenCalled();
+    });
+
+    it.each(ESCAPING_IDS)('cloneRepo(%j) touches nothing outside repos/', async (id) => {
+      filesystemService.pathExists.mockResolvedValue(false);
+
+      const result = await service.cloneRepo('https://example.com/repo.git', id);
+
+      expect(result.success).toBe(false);
+      expect(filesystemService.createDirectory).not.toHaveBeenCalled();
+      expect(fs.promises.mkdir).not.toHaveBeenCalled();
+    });
+
+    it('deleteRepo removes an ordinary store folder', async () => {
+      filesystemService.pathExists.mockResolvedValue(true);
+
+      const result = await service.deleteRepo('my-store');
+
+      expect(result.success).toBe(true);
+      expect(filesystemService.removeDirectory).toHaveBeenCalledWith(path.resolve('/tmp/data', 'repos', 'my-store'));
+    });
+  });
 });

@@ -157,10 +157,8 @@ const ActionButton: React.FC<BtnProps> = (props) => {
   return (
     <Button data-testid={testId} loading={loading} {...rest} className={clsx('action-button', className)}>
       {title}
-      {IconComponent && (
-        // Provide accessible name for icons (assistive tech will read the button label as well)
-        <IconComponent className="ml-1" size={14} role="img" aria-label={title?.toString() ?? undefined} />
-      )}
+      {/* Decorative: the title beside it already names the button, and an icon that repeats it is read out as "Stop Stop". */}
+      {IconComponent && <IconComponent className="ml-1" size={14} aria-hidden="true" />}
     </Button>
   );
 };
