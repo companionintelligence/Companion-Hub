@@ -36,6 +36,7 @@ jobs:
       # binary (scripts/__tests__/cli-binary-smoke.test.ts). That suite refuses to skip when CI is
       # set, so bun has to be installed here or the job fails — which is the intent.
       - name: Install bun
+        id: bun
         uses: oven-sh/setup-bun@v2
 
       - name: Run biome tests
@@ -47,10 +48,16 @@ jobs:
       - name: Run tsc
         run: pnpm run tsc
 
+      # Stays gated on the steps before it: `gen:swagger` compiles the backend, so after a tsc failure
+      # it would only fail on the same type errors.
       - name: Check OpenAPI drift
         run: pnpm run check:openapi
 
+      # Runs after a lint, knip, or tsc failure too, so a failing check cannot hide the test results.
+      # `!cancelled()` rather than `always()` stops a run that a newer push cancels. The `Install bun`
+      # outcome also stands for setup: that step is skipped unless checkout, Node, and dependencies succeeded.
       - name: Run tests
+        if: ${{ !cancelled() && steps.bun.outcome == 'success' }}
         run: pnpm run test
 
   build:
