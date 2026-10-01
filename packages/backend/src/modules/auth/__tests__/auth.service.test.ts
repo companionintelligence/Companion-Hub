@@ -157,6 +157,32 @@ describe('AuthService', () => {
       expect(sessionManager.createSession).not.toHaveBeenCalled();
     });
 
+    it('tests at most five codes out of a burst sent in parallel, even though every request is past the first check', async () => {
+      store.set(SESSION, { value: '7', ttl: 300 });
+      const check = vi.spyOn(TotpAuthenticator, 'check').mockReturnValue(false);
+
+      const outcomes = await Promise.allSettled(
+        Array.from({ length: 300 }, (_, i) => authService.verifyTotp({ totpSessionId: SESSION, totpCode: String(i).padStart(6, '0') })),
+      );
+
+      expect(check).toHaveBeenCalledTimes(5);
+      expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(0);
+      expect(store.has(SESSION)).toBe(false);
+    });
+
+    it('gives one session to two parallel requests that carry the same right code', async () => {
+      store.set(SESSION, { value: '7', ttl: 300 });
+      vi.spyOn(TotpAuthenticator, 'check').mockReturnValue(true);
+
+      const outcomes = await Promise.allSettled([
+        authService.verifyTotp({ totpSessionId: SESSION, totpCode: '123456' }),
+        authService.verifyTotp({ totpSessionId: SESSION, totpCode: '123456' }),
+      ]);
+
+      expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+      expect(sessionManager.createSession).toHaveBeenCalledTimes(1);
+    });
+
     it('counts each pending sign-in on its own', async () => {
       store.set('other-session', { value: '7', ttl: 300 });
       store.set(SESSION, { value: '7', ttl: 300 });

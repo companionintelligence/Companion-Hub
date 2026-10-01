@@ -27,7 +27,7 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { AuthGuard } from './auth.guard';
-import { AuthRateLimiter, type AuthRateScope } from './auth-rate-limiter';
+import { AuthRateLimiter, authClientKey, type AuthRateScope } from './auth-rate-limiter';
 import { AuthService, type PairedOrgMembership } from './auth.service';
 import { buildSignedForwardAuthHeaders } from './utils/forward-auth-signing';
 import { normalizeForwardedHost, rawForwardedHost } from './utils/forward-auth-host';
@@ -184,21 +184,16 @@ export class AuthController {
 
   /**
    * Run an unauthenticated auth step under {@link AuthRateLimiter}: refuse if this client has
-   * already used up `scope`, count a thrown error as a failed attempt, and forget the failures once
-   * the step succeeds.
+   * already used up `scope`, otherwise take a slot before the step starts (so parallel requests are
+   * counted as they arrive, not as they finish) and give it back if the step succeeds. A step that
+   * throws keeps its slot.
    */
   private async rateLimited<T>(scope: AuthRateScope, req: Request, step: () => Promise<T>): Promise<T> {
-    const client = req.ip ?? req.socket?.remoteAddress ?? 'unknown';
-    this.rateLimiter.assertAllowed(scope, client);
+    const refund = this.rateLimiter.admit(scope, authClientKey(req));
+    const result = await step();
+    refund();
 
-    try {
-      const result = await step();
-      this.rateLimiter.recordSuccess(scope, client);
-      return result;
-    } catch (error) {
-      this.rateLimiter.recordFailure(scope, client);
-      throw error;
-    }
+    return result;
   }
 
   private sessionCookieOptions(req: Request) {
@@ -352,7 +347,7 @@ export class AuthController {
   @Post('/register')
   @ApiResponse({ type: RegisterDto })
   async register(@Body() body: RegisterBody, @Res({ passthrough: true }) res: Response, @Req() req: Request) {
-    this.rateLimiter.assertAllowed('register', req.ip ?? req.socket?.remoteAddress ?? 'unknown');
+    this.rateLimiter.admit('register', authClientKey(req));
     const result = await this.authService.register(body);
 
     if (result.requiresEmailVerification) {
@@ -1126,7 +1121,7 @@ export class AuthController {
   @Post('/password-reset/request')
   @ApiResponse({ type: PasswordResetRequestDto })
   async requestPasswordReset(@Body() body: PasswordResetRequestBody, @Req() req: Request) {
-    this.rateLimiter.assertAllowed('passwordResetRequest', req.ip ?? req.socket?.remoteAddress ?? 'unknown');
+    this.rateLimiter.admit('passwordResetRequest', authClientKey(req));
 
     const { domain, localDomain } = this.config.getConfig();
     const hubOrigin = resolveTrustedReturnOrigin(req, { domain, localDomain });

@@ -86,7 +86,7 @@ describe('AuthController rate limiting', () => {
       expect(authService.login).toHaveBeenCalledTimes(40);
     });
 
-    it('lets a client who failed a few times in and clears their failures', async () => {
+    it('lets a client who failed a few times in, and does not let a success reset the count', async () => {
       authService.getCookieDomain.mockReturnValue(undefined as never);
       authService.login.mockRejectedValue(wrongCredentials());
       for (let i = 0; i < 9; i++) {
@@ -96,11 +96,44 @@ describe('AuthController rate limiting', () => {
       await controller.login({ username: 'op', password: 'right' } as never, res(), req('203.0.113.9'));
 
       authService.login.mockRejectedValue(wrongCredentials());
-      for (let i = 0; i < 9; i++) {
-        await expect(controller.login({ username: 'op', password: 'x' } as never, res(), req('203.0.113.9'))).rejects.toThrow(
+      await expect(controller.login({ username: 'op', password: 'x' } as never, res(), req('203.0.113.9'))).rejects.toThrow(
+        'AUTH_ERROR_INVALID_CREDENTIALS',
+      );
+      await expect(controller.login({ username: 'op', password: 'x' } as never, res(), req('203.0.113.9'))).rejects.toThrow(
+        'AUTH_ERROR_RATE_LIMITED',
+      );
+    });
+
+    it('counts parallel guesses as they arrive, not as they finish', async () => {
+      let release: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      authService.login.mockImplementation(async () => {
+        await gate;
+        throw wrongCredentials();
+      });
+
+      const burst = Array.from({ length: 300 }, () => controller.login({ username: 'op', password: 'x' } as never, res(), req('203.0.113.9')));
+      release();
+      const outcomes = await Promise.allSettled(burst);
+
+      expect(authService.login).toHaveBeenCalledTimes(10);
+      expect(outcomes.filter((outcome) => outcome.status === 'rejected' && /RATE_LIMITED/.test(String(outcome.reason?.message)))).toHaveLength(290);
+    });
+
+    it('limits every address of one IPv6 /64 together', async () => {
+      authService.login.mockRejectedValue(wrongCredentials());
+
+      for (let i = 0; i < 10; i++) {
+        await expect(controller.login({ username: 'op', password: 'x' } as never, res(), req(`2001:db8:1:2::${i + 1}`))).rejects.toThrow(
           'AUTH_ERROR_INVALID_CREDENTIALS',
         );
       }
+
+      await expect(controller.login({ username: 'op', password: 'x' } as never, res(), req('2001:db8:1:2:ffff::9'))).rejects.toThrow(
+        'AUTH_ERROR_RATE_LIMITED',
+      );
     });
 
     it("never lets one client's failures lock out another", async () => {

@@ -782,6 +782,14 @@ export class AuthService {
 
     const user = await this.userRepository.getUserById(Number(userId));
 
+    // The session can end while the user is being read: the fifth wrong code deletes it. A request
+    // that was already past the first check would otherwise go on testing codes against a session
+    // that no longer exists, so a burst of parallel guesses got far more than five tries. Everything
+    // below this line runs without waiting, so the count and the check cannot be separated again.
+    if (!this.cache.get(totpSessionId)) {
+      throw new TranslatableError('AUTH_ERROR_TOTP_SESSION_NOT_FOUND');
+    }
+
     if (!user) {
       throw new TranslatableError('AUTH_ERROR_USER_NOT_FOUND');
     }
@@ -813,10 +821,12 @@ export class AuthService {
       throw new TranslatableError('AUTH_ERROR_TOTP_INVALID_CODE');
     }
 
-    const sessionId = await this.sessionManager.createSession(user.id);
-
+    // Spent before the session is created, not after: two parallel requests carrying the same correct
+    // code would otherwise both get past the check above and both be given a session.
     this.cache.del(totpSessionId);
     this.cache.del(`totp-attempts:${totpSessionId}`);
+
+    const sessionId = await this.sessionManager.createSession(user.id);
 
     return {
       sessionId,
