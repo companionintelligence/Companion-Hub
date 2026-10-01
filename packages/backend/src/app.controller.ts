@@ -1,5 +1,6 @@
 import { resolveAppDataHostRoot } from '@/common/helpers/app-data-path.helper';
 import { resolveHubLocalDomainRoot, resolveHubPublicDomainRoot } from '@/common/helpers/hub-origin';
+import { isTailscaleServeEnabled } from '@/common/helpers/private-vpn';
 import { SESSION_COOKIE_NAME } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { UserRepository } from '@/modules/user/user.repository';
@@ -279,7 +280,9 @@ export class AppController {
 
     // Check service availability
     const cloudflareAvailable = Boolean(this.cloudflareClientService.getTunnelToken());
-    const tailscaleAvailable = tailscaleStatus.installed && tailscaleStatus.connected;
+    // A Hub whose operator turned Tailscale Serve off publishes no app on the tailnet, so offering
+    // Private VPN there would install apps that stay "Pending" for good.
+    const tailscaleAvailable = tailscaleStatus.installed && tailscaleStatus.connected && isTailscaleServeEnabled();
     const tailscaleNodeFqdn = tailscaleAvailable
       ? tailscaleStatus.nodeFqdn || buildTailscaleNodeFqdn(tailscaleStatus.hostname, tailscaleStatus.tailnet)
       : null;

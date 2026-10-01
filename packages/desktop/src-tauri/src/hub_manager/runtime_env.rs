@@ -31,6 +31,12 @@ pub(crate) fn has_tailscale_auth_key(env: &std::collections::HashMap<String, Str
 
 /// True when the Tailscale state volume already has a login (browser/auth-key connect).
 fn has_tailscale_persisted_state() -> bool {
+    // Unit tests run on developer machines, often beside an installed Hub. Probing its real volume
+    // would make every rendered env file depend on that machine, and would mount the volume from a
+    // test run, so under test the host has no saved login.
+    if cfg!(test) {
+        return false;
+    }
     docker_command()
         .args([
             "run",
@@ -50,31 +56,29 @@ fn has_tailscale_persisted_state() -> bool {
 }
 
 /// Pure decision for whether the Private VPN compose profile should be enabled.
-pub(crate) fn private_vpn_should_run(
-    user_disabled: bool,
-    has_auth_key: bool,
-    has_state: bool,
-) -> bool {
-    !user_disabled && (has_auth_key || has_state)
+pub(crate) fn private_vpn_should_run(has_auth_key: bool, has_state: bool) -> bool {
+    has_auth_key || has_state
 }
 
 /// Returns `true` when the Tailscale sidecar (`hub-tailscale`) should run.
 ///
-/// Enabled when the user has not opted out **and** there is either a non-empty
-/// auth key or persisted Tailscale state. Starting without credentials causes
-/// `containerboot` to NeedsLogin → kill → restart loop. Legacy `PRIVATE_VPN_ENABLED`
-/// in old `.env` files is ignored.
+/// Enabled when there is either a non-empty auth key or persisted Tailscale state. Starting
+/// without credentials causes `containerboot` to NeedsLogin → kill → restart loop. Legacy
+/// `PRIVATE_VPN_ENABLED` in old `.env` files is ignored.
+///
+/// `PRIVATE_VPN_USER_DISABLED` is ignored too. The desktop has no setting that writes it: every
+/// value on a desktop install is one an earlier render wrote by itself whenever this returned
+/// false, and the next launch read it back as the user's opt-out, so it never cleared. From 0.2.73
+/// the backend also took it as "leave Tailscale Serve alone", so those installs never published a
+/// Private VPN app (CI-Hub#1757). The render drops it.
 pub(crate) fn private_vpn_enabled_from_map(
     env: &std::collections::HashMap<String, String>,
 ) -> bool {
-    let user_disabled = matches!(
-        env.get("PRIVATE_VPN_USER_DISABLED").map(|v| v.as_str()),
-        Some("true")
-    );
+    let has_auth_key = has_tailscale_auth_key(env);
+    // The state probe starts a container, so it only runs when there is no key to decide.
     private_vpn_should_run(
-        user_disabled,
-        has_tailscale_auth_key(env),
-        has_tailscale_persisted_state(),
+        has_auth_key,
+        !has_auth_key && has_tailscale_persisted_state(),
     )
 }
 
@@ -389,12 +393,26 @@ pub(crate) fn render_runtime_env_content_for_portal(
         .filter(|value| value != "admin")
         .unwrap_or_else(|| generate_hex(32));
     // Tailscale sidecar: enable only with auth key or persisted state (see private_vpn_should_run).
+    // No `PRIVATE_VPN_USER_DISABLED` line is written, and one an earlier launch wrote is dropped:
+    // the profile below already keeps a sidecar without credentials from starting.
     let vpn_on = private_vpn_enabled_from_map(existing);
-    // When opted out, persist the sentinel; when enabled, omit it so the default applies.
-    let private_vpn_user_disabled_line = if vpn_on {
-        String::new()
+    // Preserved like the secrets above: `hub-tailscale` reads its key from this file, and dropping
+    // it on every start undid the documented auth-key setup before it could take effect.
+    let tailscale_auth_key_lines: String = ["TAILSCALE_AUTHKEY", "HEADSCALE_PREAUTH_KEY"]
+        .iter()
+        .filter_map(|key| {
+            get_non_empty_env_value(existing, key).map(|value| format!("{key}={value}\n"))
+        })
+        .collect();
+    // The operator's "never write Tailscale Serve config" switch (see `private-vpn.ts` in the
+    // backend). Nothing here writes it, so it is only ever carried forward.
+    let tailscale_serve_user_disabled_line = if existing
+        .get("TAILSCALE_SERVE_USER_DISABLED")
+        .is_some_and(|value| unquote_env_value(value) == "true")
+    {
+        "TAILSCALE_SERVE_USER_DISABLED=true\n"
     } else {
-        "PRIVATE_VPN_USER_DISABLED=true\n".to_string()
+        ""
     };
     let compose_profiles = merge_compose_profiles(existing, vpn_on);
     // Omit when empty: Compose treats unset COMPOSE_PROFILES like "", but a bare `COMPOSE_PROFILES=`
@@ -489,6 +507,8 @@ pub(crate) fn render_runtime_env_content_for_portal(
          POSTGRES_PASSWORD={postgres_password}\n\
          RABBITMQ_PASSWORD={rabbitmq_password}\n\
          DOMAIN={domain}\n\
+         {tailscale_auth_key_lines}\
+         {tailscale_serve_user_disabled_line}\
          \n\
          # Derived (recomputed every launch from the current binary)\n\
          INTERNAL_IP=0.0.0.0\n\
@@ -502,7 +522,6 @@ pub(crate) fn render_runtime_env_content_for_portal(
          {docker_gid_line}\
          CI_HUB_CONTAINER_UID={container_uid}\n\
          CI_HUB_CONTAINER_GID={container_gid}\n\
-         {private_vpn_user_disabled_line}\
          {compose_profiles_line}\
          {device_id_line}\
          {sentry_desktop_dsn_line}\
@@ -511,6 +530,8 @@ pub(crate) fn render_runtime_env_content_for_portal(
         jwt_secret = jwt_secret,
         postgres_password = postgres_password,
         domain = domain,
+        tailscale_auth_key_lines = tailscale_auth_key_lines,
+        tailscale_serve_user_disabled_line = tailscale_serve_user_disabled_line,
         cloud_url = cloud_url,
         hub_version = hub_version,
         hub_image = hub_image,
@@ -520,7 +541,6 @@ pub(crate) fn render_runtime_env_content_for_portal(
         docker_gid_line = docker_gid_line,
         container_uid = container_uid,
         container_gid = container_gid,
-        private_vpn_user_disabled_line = private_vpn_user_disabled_line,
         compose_profiles_line = compose_profiles_line,
         device_id_line = device_id_line,
         sentry_desktop_dsn_line = sentry_desktop_dsn_line,

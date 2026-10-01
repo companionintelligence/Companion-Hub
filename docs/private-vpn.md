@@ -2,7 +2,7 @@
 
 Tailscale gives CI-Hub a private, encrypted way to reach the Hub and installed apps from anywhere without opening inbound ports to the public internet. It is the recommended option when you want simple remote access for operators, support staff, or a small trusted team.
 
-The **`hub-tailscale`** sidecar is **on by default** on every stack (dev, prod, Tauri desktop, docker-only). Compose starts it when **`COMPOSE_PROFILES`** includes **`private-vpn`** (the desktop app and CLI add this automatically). Disable only with an explicit opt-out: **`PRIVATE_VPN_USER_DISABLED=true`** in the hub `.env`, then restart the stack. Legacy **`PRIVATE_VPN_ENABLED`** is not used for gating.
+The **`hub-tailscale`** sidecar is **on by default** on every stack (dev, prod, Tauri desktop, docker-only). Compose starts it when **`COMPOSE_PROFILES`** includes **`private-vpn`** (the desktop app and CLI add this automatically once the sidecar has an auth key or a saved login). To turn the sidecar or the Hub's Tailscale Serve entries off, see [Turn Private VPN off](#turn-private-vpn-off). Legacy **`PRIVATE_VPN_ENABLED`** is not used for gating.
 
 If the host already has Tailscale installed and the Hub can reach `tailscaled.sock`, CI-Hub can use the host client instead of the sidecar.
 
@@ -40,7 +40,7 @@ This is useful for pre-provisioned devices or admin-managed deployments.
 
 ## Required configuration
 
-- **Disable (explicit opt-out):** set **`PRIVATE_VPN_USER_DISABLED=true`** in the hub `.env` and restart. When enabled (default), omit that variable and ensure **`COMPOSE_PROFILES`** includes **`private-vpn`**.
+- **Disable:** two switches in the hub `.env` turn off the sidecar and the Hub's Tailscale Serve entries separately. See [Turn Private VPN off](#turn-private-vpn-off).
 - **Auth:** set **`TAILSCALE_AUTHKEY`** for unattended setup, or use browser sign-in from the Hub UI.
 - **Routes:** by default **`HUB_TAILSCALE_EXTRA_ARGS`** targets the public Tailscale control plane and advertises `172.18.0.0/16` so tailnet clients can reach the Hub's Docker bridge. Change this if your Docker network uses a different CIDR.
 - **Sidecar name:** CI-Hub uses **`TAILSCALE_SIDECAR_CONTAINER`** when it needs to run `docker exec ... tailscale ...` against a non-default container name.
@@ -88,7 +88,7 @@ The Hub checks that the entry answers for the device's current name. If you
 rename the device in the Tailscale admin console, the next exposure sync (every
 five minutes) publishes the Hub under the new name. The old name's entry stays in
 the Serve config, but nothing resolves that name any more. If
-`PRIVATE_VPN_USER_DISABLED=true` is set, the Hub does not republish itself; it
+`TAILSCALE_SERVE_USER_DISABLED=true` is set, the Hub does not republish itself; it
 logs one warning with the `tailscale serve` command to run instead.
 
 > **Subnet routes caveat:** the sidecar advertises `172.18.0.0/16` (the Hub's
@@ -118,8 +118,22 @@ removes only entries it published, which it records in
 `state/tailscale-serve-ownership.json` under its data directory. If you run your
 own `tailscale serve` on the same host, CI-Hub leaves that entry in place unless
 it uses port 443, which the Hub keeps for its dashboard, or the port of a running
-app with **Tailscale** exposure. If `PRIVATE_VPN_USER_DISABLED=true` is set,
+app with **Tailscale** exposure. If `TAILSCALE_SERVE_USER_DISABLED=true` is set,
 CI-Hub neither publishes nor removes any Serve entry.
+
+## Turn Private VPN off
+
+Two switches in the hub `.env` turn off different parts of Private VPN. Set either
+one to `true` and restart the stack.
+
+| Variable | What it turns off | Read by |
+| --- | --- | --- |
+| `PRIVATE_VPN_USER_DISABLED` | The `hub-tailscale` sidecar: the CLI leaves the `private-vpn` profile out of `COMPOSE_PROFILES`. The Hub still publishes itself and its Private VPN apps through the host's Tailscale client, if the host has one. | The CLI. The desktop app ignores it and removes the line on its next start, because earlier versions of the desktop app wrote it on their own. |
+| `TAILSCALE_SERVE_USER_DISABLED` | Tailscale Serve: the Hub never writes Serve config. It publishes neither its dashboard nor any app, removes nothing it published before, and stops offering **Private VPN** as an app's access option. | The Hub. The desktop app keeps it across restarts. |
+
+Use `PRIVATE_VPN_USER_DISABLED` on a host that runs its own Tailscale client and
+does not need the sidecar. Use `TAILSCALE_SERVE_USER_DISABLED` when you manage
+the host's Serve config yourself.
 
 ## Remote administration workflow
 
@@ -154,8 +168,9 @@ This workflow is ideal for remote maintenance, operator access, and private demo
 | **Logs still mention `headscale:8080` after upgrading** | Reconnect Tailscale once so the device state is rewritten against `controlplane.tailscale.com`. If you override `HUB_TAILSCALE_EXTRA_ARGS`, keep an explicit `--login-server=https://controlplane.tailscale.com` unless you intentionally run your own control plane. |
 | **App URL works locally but not via Tailscale** | Confirm the Hub and client are on the same tailnet, approve the HTTPS/Serve consent link shown by Hub if needed, then re-save the app with **Tailscale** exposure mode. |
 | **Logs say `serve config denied`** | The Hub uses the host Tailscale client and is neither root nor the host's Tailscale operator. Run the `sudo tailscale set --operator=…` command from the warning once on the host; the next sync publishes the Hub. |
-| **Peers fail TLS to the Hub after a device rename** | Wait for the next exposure sync, which runs every five minutes. If peers still fail after that, check the Hub logs for `serve config denied`, or, if `PRIVATE_VPN_USER_DISABLED=true` is set, for `Tailscale Serve has no :443 entry` and run the command it names. |
-| **Need to turn Tailscale off temporarily** | Set `PRIVATE_VPN_USER_DISABLED=true` in the hub `.env` and restart the stack. The Hub then stops publishing to Tailscale Serve but leaves existing entries in place, because other Hubs may reach it through them. It also stops repairing its own entry after a device rename or a `tailscale serve reset`, and only logs a warning, so pool peers lose this Hub until someone publishes it by hand. To remove the Hub's entry, run `sudo tailscale serve --https=443 off` on the host. |
+| **Peers fail TLS to the Hub after a device rename** | Wait for the next exposure sync, which runs every five minutes. If peers still fail after that, check the Hub logs for `serve config denied`, or, if `TAILSCALE_SERVE_USER_DISABLED=true` is set, for `Tailscale Serve has no :443 entry` and run the command it names. |
+| **Need to turn Tailscale off temporarily** | Set `TAILSCALE_SERVE_USER_DISABLED=true` in the hub `.env` and restart the stack. The Hub then stops publishing to Tailscale Serve but leaves existing entries in place, because other Hubs may reach it through them. It also stops repairing its own entry after a device rename or a `tailscale serve reset`, and only logs a warning, so pool peers lose this Hub until someone publishes it by hand. To remove the Hub's entry, run `sudo tailscale serve --https=443 off` on the host. To stop the sidecar as well, also set `PRIVATE_VPN_USER_DISABLED=true`. |
+| **Private VPN app stays Pending, and the log says `Private VPN is turned off for this Hub (PRIVATE_VPN_USER_DISABLED=true)`** | Hub versions starting with 0.2.73 read the sidecar switch as "never write Tailscale Serve config", and the desktop app set that switch on its own. Update the Hub. A Hub that should stay off Tailscale Serve needs `TAILSCALE_SERVE_USER_DISABLED=true` instead. |
 
 ## Example operator checklist
 
