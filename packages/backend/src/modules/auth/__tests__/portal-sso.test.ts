@@ -17,6 +17,7 @@ import {
   resolveTrustedReturnOrigin,
   toDesktopRedirectPath,
 } from '../portal-sso';
+import { HUB_FAVICON_LINK_TAG, HUB_FAVICON_PATH } from '../hub-favicon';
 import type { Request } from 'express';
 
 function fakeRequest(headers: Record<string, string>, host?: string, protocol = 'http'): Request {
@@ -153,12 +154,31 @@ describe('portal-sso helpers', () => {
 
   it('is a self-contained page: a title, and no external assets to 404', () => {
     // Served by the API before any session exists, and on a Hub with no frontend
-    // bundle there is nothing under /assets to reference.
+    // bundle there is nothing under /assets to reference. The tab icon is the API's own.
     const html = handoffHtml('cihub://auth?token=tok-4');
 
     expect(html).toContain('<title>Signing you in — Companion Hub</title>');
-    expect(html).not.toMatch(/<link[^>]+href=/i);
+    expect(html.match(/<link[^>]+href="[^"]*"/gi)).toEqual([`<link rel="icon" type="image/png" sizes="96x96" href="${HUB_FAVICON_PATH}"`]);
     expect(html).not.toMatch(/<(img|script)[^>]+src=/i);
+  });
+
+  it('carries its own tab icon in the head', () => {
+    // With no icon link the browser asks for /favicon.ico, which the bundle's SPA
+    // fallback answers with index.html, so the tab had no icon.
+    const html = handoffHtml('cihub://auth?token=tok-11');
+    const head = html.slice(0, html.indexOf('</head>'));
+
+    expect(head).toContain(HUB_FAVICON_LINK_TAG);
+  });
+
+  it('navigates a task after parsing, so WebKit still loads the tab icon', () => {
+    // WebKit starts icon loads only once the page finishes loading. A
+    // location.replace run mid-parse left Safari's tab with no icon at all.
+    const html = handoffHtml('cihub://auth?token=tok-12');
+    const script = html.slice(html.indexOf('<script>'), html.indexOf('</script>'));
+
+    expect(script).toContain('setTimeout(function () { location.replace("cihub://auth?token=tok-12"); }, 0);');
+    expect(script).not.toMatch(/^\s*location\.replace\(/m);
   });
 
   it('escapes the deep link in both the href and the inline script', () => {

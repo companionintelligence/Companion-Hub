@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
-import ts from 'typescript';
+// TypeScript 7 ships no JS compiler API, so this reads source through a TS 5 alias.
+import ts from 'typescript-compiler-api';
 import { describe, expect, it } from 'vitest';
 
 /**
