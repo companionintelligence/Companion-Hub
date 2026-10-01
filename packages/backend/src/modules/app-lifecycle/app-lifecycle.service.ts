@@ -21,6 +21,7 @@ import { InstallPipelineTracker } from '../apps/install-pipeline.tracker';
 import { BackupManager } from '../backups/backup.manager';
 import { TailscaleService } from '../tailscale/tailscale.service';
 import { ExposureSyncService, type ExposureSyncOptions } from './exposure-sync.service';
+import { hasUpdateAvailable } from '../marketplace/app-version';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { ImageSizeService } from '../marketplace/image-size.service';
 import { ReposHelpers } from '../app-stores/repos.helpers';
@@ -71,6 +72,32 @@ import { validateAppFormFields } from '@ci-hub/common/validation';
 type AppFormForSubdomain = Pick<z.infer<typeof appFormSchema>, 'exposedLocal' | 'exposureMode' | 'localSubdomain'>;
 type ParsedAppForm = z.infer<typeof appFormSchema>;
 type AppOutcomeSseEvent = Extract<Extract<SSE, { topic: 'app' }>['data'], { appUrn: string }>['event'];
+
+/**
+ * App statuses that mean the app is not meant to be running. An update leaves such an app stopped
+ * and starts any other one, "starting" and "restarting" included: those are going to be running, and
+ * treating them as stopped would take them down and leave them there.
+ */
+const STATUSES_MEANING_NOT_RUNNING: ReadonlySet<string> = new Set(['stopped', 'stopping', 'missing', 'install_failed', 'uninstalling']);
+
+function hasUpdateAvailableForInstalledApp(item: {
+  app: { version: number | string; ignoredVersion?: number | string | null; status: string };
+  info?: { version?: string | null } | null;
+  metadata: { latestVersion?: number | string | null; latestDockerVersion?: string | null };
+}): boolean {
+  // A second update of an app that is already updating would race the first.
+  if (item.app.status === 'updating') {
+    return false;
+  }
+
+  return hasUpdateAvailable({
+    installedCounter: item.app.version,
+    latestCounter: item.metadata.latestVersion,
+    ignoredCounter: item.app.ignoredVersion,
+    installedVersion: item.info?.version,
+    latestVersion: item.metadata.latestDockerVersion,
+  });
+}
 
 /**
  * The subdomain to check for conflicts when Cloudflare routing requires it to be
@@ -2547,7 +2574,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'update');
     this.appEventsQueue
-      .publish({ command: 'update', appUrn, requestId, form: app.config, performBackup, wasRunning: appStatusBeforeUpdate === 'running' })
+      .publish({
+        command: 'update',
+        appUrn,
+        requestId,
+        form: app.config,
+        performBackup,
+        wasRunning: !STATUSES_MEANING_NOT_RUNNING.has(appStatusBeforeUpdate),
+      })
       .then(async (raw) => {
         const { success, message, errorCode, errorDetail, settingsPath, rolledBack } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
@@ -2565,8 +2599,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           this.agentNotifyService?.notify('update_success', { appUrn }, 'info');
 
           if (appStatusBeforeUpdate === 'running') {
-            // The update command pulled the images before it stopped anything; pulling them again
-            // here repeats the slowest step of the update for nothing.
+            // The update command pulled the images before it stopped anything, so the start does not
+            // need to ask for them again (it only matters for an app that always force-pulls).
             await this.startAppAndWait({ appUrn, skipPull: true });
           }
         } else {
@@ -2606,10 +2640,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   async updateAllApps(actor: LifecycleActor): Promise<void> {
     const installedApps = await this.appsService.getInstalledApps();
     type InstalledApp = Awaited<ReturnType<typeof this.appsService.getInstalledApps>>[number];
-    const availableUpdates: InstalledApp[] = installedApps.filter((item: InstalledApp) => {
-      const { app, metadata } = item;
-      return Number(app.version) < Number(metadata.latestVersion) && app.ignoredVersion !== metadata.latestVersion;
-    });
+    const availableUpdates: InstalledApp[] = installedApps.filter((item: InstalledApp) => hasUpdateAvailableForInstalledApp(item));
 
     for (const { app } of availableUpdates) {
       try {

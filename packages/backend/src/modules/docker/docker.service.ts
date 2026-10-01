@@ -1903,11 +1903,12 @@ export class DockerService {
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const timestamp = new Date().toISOString();
     const snapshotId = `pre-update-${appName}-${Date.now()}`;
+    let snapshotBaseDir: string | undefined;
 
     try {
       const { appDataDir, appInstalledDir } = this.appFilesManager.getAppPaths(appUrn);
       const { dataDir } = this.config.get('directories');
-      const snapshotBaseDir = path.join(dataDir, 'snapshots', appStoreId, appName, snapshotId);
+      snapshotBaseDir = path.join(dataDir, 'snapshots', appStoreId, appName, snapshotId);
 
       const snapshottedVolumes: PreUpdateVolumeSnapshotResult['volumes'] = [];
 
@@ -1920,7 +1921,11 @@ export class DockerService {
         snapshotPath = path.join(snapshotBaseDir, 'app-data');
         this.logger.info(`[pre-update-snapshot] Snapshotting ${appDataDir} to ${snapshotPath}`);
         await this.filesystem.createDirectory(snapshotPath);
-        await this.filesystem.copyDirectory(appDataDir, snapshotPath);
+        // `copyDirectory` reports a full disk or a permission error by returning false. A snapshot
+        // that is only part of the data and says it is whole would later be restored over the real thing.
+        if ((await this.filesystem.copyDirectory(appDataDir, snapshotPath)) === false) {
+          throw new Error(`Could not copy ${appDataDir} into the snapshot`);
+        }
         snapshottedVolumes.push({
           type: 'bind',
           source: appDataDir,
@@ -1938,7 +1943,9 @@ export class DockerService {
         appFilesSnapshotPath = path.join(snapshotBaseDir, 'app-files');
         this.logger.info(`[pre-update-snapshot] Snapshotting ${appInstalledDir} to ${appFilesSnapshotPath}`);
         await this.filesystem.createDirectory(appFilesSnapshotPath);
-        await this.filesystem.copyDirectory(appInstalledDir, appFilesSnapshotPath);
+        if ((await this.filesystem.copyDirectory(appInstalledDir, appFilesSnapshotPath)) === false) {
+          throw new Error(`Could not copy ${appInstalledDir} into the snapshot`);
+        }
       }
 
       const containers = await this.docker
@@ -1998,6 +2005,12 @@ export class DockerService {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`[pre-update-snapshot] Failed to create volume snapshot for ${appUrn}: ${message}`);
+
+      // Whatever was written is not a snapshot, only disk space.
+      if (snapshotBaseDir) {
+        await this.filesystem.removeDirectory(snapshotBaseDir).catch(() => undefined);
+      }
+
       return {
         appUrn,
         snapshotId,

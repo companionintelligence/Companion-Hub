@@ -360,7 +360,25 @@ describe('UpdateAppCommand', () => {
       expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('/data/snapshots/test-app/snap-1'));
     });
 
-    it('keeps the snapshot when there is none of the previous files to restore', async () => {
+    it('keeps the snapshot when it holds none of the previous files to restore', async () => {
+      dockerService.createPreUpdateVolumeSnapshot.mockResolvedValue({
+        appUrn,
+        snapshotId: 'snap-1',
+        timestamp: new Date().toISOString(),
+        snapshotBaseDir: '/data/snapshots/test-app/snap-1',
+        volumes: [],
+        success: true,
+      } as any);
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: false, rolledBack: false });
+      expect(filesystem.removeDirectory).not.toHaveBeenCalledWith('/data/snapshots/test-app/snap-1');
+    });
+  });
+
+  describe('a snapshot that could not be taken', () => {
+    beforeEach(() => {
       dockerService.createPreUpdateVolumeSnapshot.mockResolvedValue({
         appUrn,
         snapshotId: 'snap-1',
@@ -370,12 +388,119 @@ describe('UpdateAppCommand', () => {
         success: false,
         error: 'disk full',
       } as any);
+    });
+
+    it('stops the update before anything is replaced, and starts the app the backup stopped', async () => {
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: false, rolledBack: true });
+      expect(result.message).toContain('disk full');
+      expect(appFilesManager.deleteAppFolder).not.toHaveBeenCalled();
+      expect(marketplaceService.copyAppFromRepoToInstalled).not.toHaveBeenCalled();
+      expect(dockerService.composeApp).not.toHaveBeenCalledWith(appUrn, 'down --rmi local --remove-orphans');
+      expect(dockerService.composeApp).toHaveBeenLastCalledWith(appUrn, 'up --detach --remove-orphans');
+    });
+
+    it('leaves a running app alone when no backup stopped it', async () => {
+      command = new UpdateAppCommand(moduleRef, docker, false);
+      (command as any).assertMarketplaceEntitlement = vi.fn().mockResolvedValue(undefined);
+      (command as any).ensureAppDir = vi.fn().mockResolvedValue(undefined);
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: false, rolledBack: true });
+      expect(dockerService.composeApp).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('a failure while the old version is still running', () => {
+    beforeEach(() => {
+      command = new UpdateAppCommand(moduleRef, docker, false);
+      (command as any).assertMarketplaceEntitlement = vi.fn().mockResolvedValue(undefined);
+      (command as any).ensureAppDir = vi.fn().mockResolvedValue(undefined);
+      filesystem.pathExists.mockResolvedValue(true);
+      appHelpers.generateEnvFile.mockRejectedValue(new Error('app.env is read-only'));
+    });
+
+    it('puts the files back without stopping or restarting the app', async () => {
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: false, rolledBack: true });
+      expect(filesystem.copyDirectory).toHaveBeenCalledWith('/data/snapshots/test-app/snap-1/app-files', '/data/installed/test-app');
+      // Not one container was touched, so none is taken down for the restore or started afterwards.
+      expect(dockerService.composeApp).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('a failure when stopping the app for the backup', () => {
+    it('starts the app again, because stopping may have got part of the way', async () => {
+      dockerService.composeApp.mockImplementation(async (_urn, cmd) => {
+        if (cmd === 'stop') throw new Error('timed out stopping a container');
+      });
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: false, rolledBack: true });
+      expect(backupManager.backupApp).not.toHaveBeenCalled();
+      expect(dockerService.composeApp).toHaveBeenLastCalledWith(appUrn, 'up --detach --remove-orphans');
+    });
+  });
+
+  describe('a failure after the new version was started', () => {
+    it('restores the data as well as the files when starting it throws', async () => {
+      dockerService.composeApp.mockImplementation(async (_urn, cmd) => {
+        if (
+          cmd === 'up --detach --force-recreate --remove-orphans' &&
+          dockerService.composeApp.mock.calls.filter(([, c]) => c === cmd).length === 1
+        ) {
+          throw new Error('port is already allocated');
+        }
+      });
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: false, rolledBack: true });
+      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz');
+    });
+
+    it('keeps the snapshot, and says it could not roll back, when the backup cannot be restored', async () => {
+      backupManager.restoreApp.mockRejectedValue(new Error('backup archive is corrupt'));
+      dockerService.verifyContainerHealthProbe.mockResolvedValue({ ok: false, healthy: false, containers: [], message: 'exited' });
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: false, rolledBack: false });
+      expect(filesystem.removeDirectory).not.toHaveBeenCalledWith('/data/snapshots/test-app/snap-1');
+      // The previous version is still started: the app must not stay torn down.
+      expect(dockerService.composeApp).toHaveBeenLastCalledWith(appUrn, 'up --detach --force-recreate --remove-orphans');
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('The backup file has been kept'));
+    });
+
+    it('keeps the snapshot when the data cannot be copied back from it', async () => {
+      command = new UpdateAppCommand(moduleRef, docker, false);
+      (command as any).assertMarketplaceEntitlement = vi.fn().mockResolvedValue(undefined);
+      (command as any).ensureAppDir = vi.fn().mockResolvedValue(undefined);
+      filesystem.pathExists.mockResolvedValue(true);
+      filesystem.copyDirectory.mockResolvedValue(false);
+      dockerService.verifyContainerHealthProbe.mockResolvedValue({ ok: false, healthy: false, containers: [], message: 'exited' });
 
       const result = await command.execute(appUrn, {});
 
       expect(result).toMatchObject({ success: false, rolledBack: false });
       expect(filesystem.removeDirectory).not.toHaveBeenCalledWith('/data/snapshots/test-app/snap-1');
     });
+  });
+
+  it('reports a compose file that does not parse as rolled back, since nothing was touched', async () => {
+    vi.mocked(parseComposeJson).mockImplementation(() => {
+      throw new Error('unsupported schema');
+    });
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result).toMatchObject({ success: false, rolledBack: true });
+    expect(dockerService.pullImages).not.toHaveBeenCalled();
+    expect(dockerService.composeApp).not.toHaveBeenCalled();
   });
 
   it('treats a previous folder that cannot be removed as a failure rather than copying over a mix of old and new', async () => {
