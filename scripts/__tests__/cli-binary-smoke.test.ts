@@ -31,7 +31,9 @@
  * answers from a string. No real container, image, or socket is touched, and nothing leaves the box.
  * A stub `companion-hub` (and `Companion Hub`) sits there too, recording its arguments: `cihub
  * update` hands off to the desktop app found on PATH, and on a machine with the app installed the
- * real one downloads the newest release and installs it with pkexec or sudo (#1739).
+ * real one downloads the newest release and installs it with pkexec or sudo (#1739). And the
+ * developer's own XDG folders and Hub folder are dropped from the environment the binary gets, so
+ * it can only find the throwaway ones under HOME.
  */
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -95,8 +97,26 @@ function writeDesktopAppStubs(dir: string): void {
   }
 }
 
+/** Where `PATH` finds `name`, by the shell's own lookup, which needs no `which`; '' if nowhere. */
+function pathTo(name: string, path: string): string {
+  return spawnSync('sh', ['-c', 'command -v "$1"', 'sh', name], { encoding: 'utf-8', env: { ...process.env, PATH: path } }).stdout?.trim() ?? '';
+}
+
 function desktopAppCalls(): string[] {
   return existsSync(desktopAppLog) ? readFileSync(desktopAppLog, 'utf-8').split('\n').filter(Boolean) : [];
+}
+
+/**
+ * Variables in the developer's shell that point at their real state, which the CLI reads before
+ * HOME: their config folder (the stored Portal login, which `cihub logout` revokes with Portal, and
+ * systemd user units), their data, state and cache folders, and their Hub's folder.
+ */
+const DEVELOPER_STATE_ENV = ['XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME', 'ROOT_FOLDER_HOST'];
+
+function inheritedEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const name of DEVELOPER_STATE_ENV) delete env[name];
+  return env;
 }
 
 function runCli(
@@ -107,7 +127,7 @@ function runCli(
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'pipe'],
     env: {
-      ...(options.inheritEnv === false ? {} : process.env),
+      ...(options.inheritEnv === false ? {} : inheritedEnv()),
       PATH: options.path ?? cliPath(options.stubDir ?? stubBin),
       HOME: fakeHome,
       CI_HUB_DATA_DIR: fakeDataDir,
@@ -204,11 +224,13 @@ describe('compiled cihub binary', () => {
 
     // The whole PATH for `cihub update` on a machine without the desktop app, so no `companion-hub`
     // is anywhere on it: the docker and git stubs, plus `which`, which the CLI looks the app up with.
+    // Without a `which` the lookup fails the same way, so a machine that has none skips the link.
     noDesktopBin = join(workspace, 'no-desktop-bin');
     mkdirSync(noDesktopBin);
     symlinkSync(join(stubBin, 'docker'), join(noDesktopBin, 'docker'));
     symlinkSync(join(stubBin, 'git'), join(noDesktopBin, 'git'));
-    symlinkSync(spawnSync('sh', ['-c', 'command -v which'], { encoding: 'utf-8' }).stdout.trim(), join(noDesktopBin, 'which'));
+    const which = pathTo('which', process.env.PATH ?? '');
+    if (which) symlinkSync(which, join(noDesktopBin, 'which'));
 
     binary = buildStandaloneCli({ outdir: join(workspace, 'dist') }).outfile;
   }, 180_000);
@@ -262,8 +284,7 @@ describe('compiled cihub binary', () => {
    */
   it.skipIf(skipSuite)('hands `cihub update` to the stub desktop app, not an installed one', () => {
     for (const name of DESKTOP_APP_NAMES) {
-      const found = spawnSync('which', [name], { encoding: 'utf-8', env: { ...process.env, PATH: cliPath(stubBin) } });
-      expect(found.stdout.trim(), `which ${name}`).toBe(join(stubBin, name));
+      expect(pathTo(name, cliPath(stubBin)), `${name} on PATH`).toBe(join(stubBin, name));
     }
 
     const before = desktopAppCalls();
