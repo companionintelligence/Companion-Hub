@@ -230,8 +230,13 @@ WORKDIR /app
 
 # Install native modules and docker-compose on the TARGET platform so the arm64
 # image slot cannot contain amd64 Node/native deps (Rosetta/QEMU footgun).
+# Everything else, express included, is compiled into main.js. This install is
+# unpinned, so a package added here runs at whatever version npm has that day
+# rather than the lockfile's. packages/backend/build.ts keeps the matching list
+# (packageExternals) and fails the build when the bundle would load anything
+# else at runtime, so a missing package shows up there, not as a crash-looping Hub.
 RUN --mount=type=cache,target=/root/.npm \
-    npm install --no-save --omit=dev argon2 class-transformer @nestjs/mapped-types @opentelemetry/api drizzle-orm pg ssh2 i18next-fs-backend express
+    npm install --no-save --omit=dev argon2 class-transformer @nestjs/mapped-types @opentelemetry/api drizzle-orm pg ssh2 i18next-fs-backend
 
 # docker-compose is also registered as a docker CLI plugin under /usr/local/libexec, a system
 # directory the CLI always searches (one of the four compiled into Alpine's docker-cli 27.3.1).
