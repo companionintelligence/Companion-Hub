@@ -78,11 +78,13 @@ The updater refuses with HTTP 409, and leaves the env file as it was, when it ca
 - Compose read a different env file than the one mounted at `/data/.env`. For example, compose ran without `--env-file` and read the project's `.env`, while `ENV_FILE` mounted `.env.dev`, as on core-3 and beta-3-glass.
 - A compose path is not an absolute POSIX path, contains a comma, or overlaps a directory the updater container needs.
 
-`GET /api/system/update/check` reports these refusals in `updateBlockedReason` too, unless the desktop host listener is reachable, and the daily check skips such a node instead of failing on it.
+`GET /api/system/update/check` reports these refusals in `updateBlockedReason` too, unless the desktop host listener is reachable. The daily check skips such a node instead of failing on it, even when the listener is reachable, because it never hands an update to the desktop app.
 
 If the updater container cannot start at all, the Hub restores the env file and returns HTTP 500.
 
-When the desktop host listener accepts the update, the Hub writes the new pin and the desktop app stops the stack and pulls on its next start; steps 2, 4, and 5 do not run. The channel check still applies first.
+When you start the update from Settings or with `hub_perform_update`, and the desktop host listener accepts it, the Hub writes the new pin. The desktop app then installs its own new version, stops the stack, and pulls on its next start; steps 2, 4, and 5 do not run. The channel check still applies first.
+
+The daily check never hands the update to the desktop app. The desktop installer can ask for the computer's password, and nobody may be there to type it. The daily check runs the steps above and updates the Hub image only, and Settings offers the desktop app update.
 
 ## Turn off auto-update on a node
 
@@ -102,4 +104,4 @@ The Hub reads the file at every check, so the change applies without a restart. 
 ## Where to look when an update fails
 
 - `<ROOT_FOLDER_HOST>/logs/hub-stack-update.log` has one block per attempt. Lines from the updater container start with `stack-updater:` and the block ends with `result=ok` or `result=failed`.
-- The Hub log records every refusal as `Hub stack update refused:` and every skipped daily check as `Auto-update skipped:`.
+- The Hub log records every refusal as `Hub stack update refused:`, every skipped daily check as `Auto-update skipped:`, and every update the daily check starts as `Auto-update: updating the Hub image only`.

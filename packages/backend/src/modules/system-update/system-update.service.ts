@@ -38,13 +38,24 @@ const HOST_LISTENER_PROBE_TIMEOUT_MS = 1500;
 const HOST_LISTENER_TRIGGER_TIMEOUT_MS = 10_000;
 
 export type StackUpdateState = 'updating' | 'skipped' | 'failed';
-export type HostUpdateState = 'started' | 'unavailable' | 'failed';
+/** `skipped`: the desktop app was not asked, because the caller updates the Hub image only. */
+export type HostUpdateState = 'started' | 'unavailable' | 'failed' | 'skipped';
 
 export type PerformUpdateResult = {
   success: boolean;
   message: string;
   stack: StackUpdateState;
   host: HostUpdateState;
+};
+
+export type UpdateOptions = {
+  /**
+   * Whether the desktop app may take the update when its listener answers. It then installs its own
+   * new version, which can ask for the computer's password, before it restarts the Hub. Defaults to
+   * true, for an update started from Settings or the MCP tool. The daily check passes false: nobody
+   * may be there to answer.
+   */
+  includeDesktopApp?: boolean;
 };
 
 /** Hub container probe — `/.dockerenv` plus Podman's containerenv. Not the `/data` heuristic. */
@@ -159,7 +170,7 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
    * What this Hub runs and whether the self-updater may move it. `current` comes from the running
    * image, never from `CI_HUB_VERSION` — see hub-deployment.ts for how wrong that value was.
    */
-  async checkForUpdates(): Promise<UpdateCheckResult> {
+  async checkForUpdates({ includeDesktopApp = true }: UpdateOptions = {}): Promise<UpdateCheckResult> {
     let running: RunningHub;
     try {
       running = await this.inspectRunningHub();
@@ -171,12 +182,13 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     const { build } = running;
     const current = describeRunningBuild(build);
     let updateBlockedReason = channelUpdateRefusal(build, this.readDeclaredHubImage());
-    // performUpdate refuses a stack it cannot reproduce unless the desktop listener takes the update.
-    // Without this the daily timer and Settings would offer it on core-3 and beta-3-glass (compose read
-    // `.env`, the Hub mounts `.env.dev`) and every attempt would end in a 409.
+    // performUpdate refuses a stack it cannot reproduce unless the desktop listener takes the update,
+    // which the daily check never lets it do. Without this the daily timer and Settings would offer it
+    // on core-3 and beta-3-glass (compose read `.env`, the Hub mounts `.env.dev`) and every attempt
+    // would end in a 409.
     if (updateBlockedReason === null) {
       const plan = resolveComposeUpdatePlan(running.container, this.composeMountTargets());
-      if (!plan.ok && !(await this.probeHostListener())) {
+      if (!plan.ok && !(includeDesktopApp && (await this.probeHostListener()))) {
         updateBlockedReason = plan.reason;
       }
     }
@@ -300,7 +312,7 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     }
   }
 
-  async triggerHostListener(): Promise<Exclude<HostUpdateState, 'unavailable'>> {
+  async triggerHostListener(): Promise<Extract<HostUpdateState, 'started' | 'failed'>> {
     const token = this.getHostUpdateListenerToken();
     if (!token) {
       return 'failed';
@@ -324,8 +336,11 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
    * Every refusal happens before the env file is written or an image is pulled: a node that is not on
    * a release pin (ConflictException), a stack this container cannot reproduce (ConflictException),
    * and a malformed target (BadRequestException). A helper that cannot start puts the old pin back.
+   *
+   * When `includeDesktopApp` allows it and the desktop app's listener answers, the desktop app takes the
+   * update instead: it installs its own new version, then recreates the stack on the new pin.
    */
-  async performUpdate(targetVersion?: string): Promise<PerformUpdateResult> {
+  async performUpdate(targetVersion?: string, { includeDesktopApp = true }: UpdateOptions = {}): Promise<PerformUpdateResult> {
     const requested = targetVersion === undefined ? undefined : normalizeHubVersionTag(targetVersion);
 
     const running = await this.inspectRunningHub();
@@ -344,7 +359,7 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     const envFile = mountTargets.envFile;
     const planResult = resolveComposeUpdatePlan(running.container, mountTargets);
 
-    const listenerReachable = await this.probeHostListener();
+    const listenerReachable = includeDesktopApp && (await this.probeHostListener());
     if (listenerReachable) {
       const previous = this.pinHubStackVersionInEnv(envFile, pinned);
       const host = await this.triggerHostListener();
@@ -368,11 +383,15 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     }
 
     await this.pullAndRecreateHubStack(planResult.plan, imageRef, pinned, envFile, dataDir);
+    let host: HostUpdateState = 'skipped';
+    if (includeDesktopApp) {
+      host = listenerReachable ? 'failed' : 'unavailable';
+    }
     return {
       success: true,
       message: 'Update initiated, hub will restart shortly',
       stack: 'updating',
-      host: listenerReachable ? 'failed' : 'unavailable',
+      host,
     };
   }
 
@@ -565,8 +584,11 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
 
   private async autoUpdateCheck() {
     this.logger.info('Running scheduled auto-update check...');
+    // Never handed to the desktop app: its installer can ask for the computer's password, and with
+    // nobody there to type it the install fails. Settings offers the desktop app update to a person.
+    const hubImageOnly: UpdateOptions = { includeDesktopApp: false };
     try {
-      const { updateAvailable, latest, current, updateBlockedReason } = await this.checkForUpdates();
+      const { updateAvailable, latest, current, updateBlockedReason } = await this.checkForUpdates(hubImageOnly);
       this.logger.info(`Auto-update check: current=${current}, latest=${latest}, updateAvailable=${updateAvailable}`);
 
       if (updateBlockedReason) {
@@ -580,8 +602,8 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
         this.logger.info(`Auto-update skipped: autoUpdates is off for this node (${latest} is available)`);
         return;
       }
-      this.logger.info(`Auto-updating hub from ${current} to ${latest}`);
-      await this.performUpdate(latest);
+      this.logger.info(`Auto-update: updating the Hub image only, from ${current} to ${latest}; the desktop app update is offered in Settings`);
+      await this.performUpdate(latest, hubImageOnly);
     } catch (error) {
       this.logger.error('Auto-update check failed', error);
     }

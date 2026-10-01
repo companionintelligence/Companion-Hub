@@ -5,7 +5,7 @@
 > **Key paths:** `packages/desktop/src-tauri/src/hub_manager.rs`, `packages/desktop/src-tauri/resources/`
 > **Commands:** `pnpm run local:desktop` (Vite :5005), `pnpm run dev:desktop` (appliance :5002), `cd packages/desktop/src-tauri && cargo test`
 > **Owner persona:** maintainability + security
-> **Last updated:** 2026-09-30
+> **Last updated:** 2026-10-01
 > **Related:** docs/system/frontend.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/AUTO_HEALING.md
 
 ---
@@ -172,7 +172,7 @@ Container identity: `CI_HUB_CONTAINER_UID/GID`, `DOCKER_GID` env vars from `reso
 
 ## Host update listener
 
-`companion-hub --update-listener` (`updater.rs`) listens on `0.0.0.0:17400`, so the Hub container can hand a desktop update to the host. Requests need the token in `<data dir>/state/update-listener.token`, which the Hub reads as `/data/state/update-listener.token`. The listener writes a new token each time it starts, and trusts the file only while it is private to the desktop user. Compose mounts `state/` and other subfolders into the Hub, never the data dir itself, so a file the desktop writes for the Hub to read belongs in one of them. See [The listener token](../DESKTOP-AUTO-UPDATE.md#the-listener-token).
+`companion-hub --update-listener` (`updater.rs`) listens on `0.0.0.0:17400`, so the Hub container can hand a desktop update to the host. The Hub hands over updates started from Settings or the MCP tool `hub_perform_update`, never its daily auto-update, which updates the stack image only. The updater keeps the Hub running until the new version is installed (on Windows, until it hands over to the installer), and starts the Hub again if the update fails after the stop. See [Install flow](../DESKTOP-AUTO-UPDATE.md#install-flow-per-platform). Requests need the token in `<data dir>/state/update-listener.token`, which the Hub reads as `/data/state/update-listener.token`. The listener writes a new token each time it starts, and trusts the file only while it is private to the desktop user. Compose mounts `state/` and other subfolders into the Hub, never the data dir itself, so a file the desktop writes for the Hub to read belongs in one of them. See [The listener token](../DESKTOP-AUTO-UPDATE.md#the-listener-token).
 
 ## Testing
 

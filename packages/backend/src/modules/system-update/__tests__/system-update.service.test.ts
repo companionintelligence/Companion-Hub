@@ -341,6 +341,8 @@ describe('SystemUpdateService', () => {
       expect(calls).toHaveLength(0);
     });
 
+    // What Settings → Update gets, with nothing passed: a person is there to answer the desktop app's
+    // installer. Only the daily check opts out (see "scheduled auto-update").
     it('skips compose recreate when the host listener accepts the update', async () => {
       insideHubContainer(PINNED_ENV);
       withListenerToken();
@@ -436,11 +438,65 @@ describe('SystemUpdateService', () => {
       insideHubContainer(PINNED_ENV);
       await installDocker(core6Appliance(RELEASE_PIN));
       mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
-      const perform = vi.spyOn(service, 'performUpdate').mockResolvedValue({ success: true, message: '', stack: 'updating', host: 'unavailable' });
+      const perform = vi.spyOn(service, 'performUpdate').mockResolvedValue({ success: true, message: '', stack: 'updating', host: 'skipped' });
 
       await runCheck(service);
 
-      expect(perform).toHaveBeenCalledWith('0.2.71');
+      expect(perform).toHaveBeenCalledWith('0.2.71', { includeDesktopApp: false });
+    });
+
+    // The desktop app's installer can ask for the computer's password. Handed the update overnight, it
+    // stopped the Hub, waited for a password nobody typed, and left the Hub down (#1760).
+    it('updates only the Hub image, never through the desktop app, even when its listener answers', async () => {
+      insideHubContainer(PINNED_ENV);
+      withListenerToken();
+      vi.mocked(fs.readFileSync).mockImplementation(((target: unknown) =>
+        String(target) === '/data/.env' ? PINNED_ENV : 'listener-token\n') as never);
+      vi.mocked(axios.get).mockResolvedValue({ status: 200 });
+      vi.mocked(axios.post).mockResolvedValue({ status: 200 });
+      const calls = await installDocker(core6Appliance(RELEASE_PIN));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+      const trigger = vi.spyOn(service, 'triggerHostListener');
+      const perform = vi.spyOn(service, 'performUpdate');
+
+      await runCheck(service);
+
+      expect(trigger).not.toHaveBeenCalled();
+      expect(axios.post).not.toHaveBeenCalled();
+      await expect(perform.mock.results[0]?.value).resolves.toEqual({
+        success: true,
+        message: 'Update initiated, hub will restart shortly',
+        stack: 'updating',
+        host: 'skipped',
+      });
+      // The stack update ran: pull, then the helper that recreates the Hub.
+      expect(calls.map((call) => call[1][0])).toEqual(['inspect', 'image', 'inspect', 'image', 'pull', 'rm', 'run']);
+      expect(calls[4]?.[1]).toEqual(['pull', `${HUB_STACK_IMAGE_REPO}:0.2.71`]);
+      expect(vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1]).toContain(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:0.2.71`);
+      expect(mockLogger.info).toHaveBeenCalledWith(expect.stringMatching(/^Auto-update: updating the Hub image only, .*offered in Settings$/));
+      expect(mockLogger.error).not.toHaveBeenCalled();
+    });
+
+    // core-3 with the desktop app running: Settings may still hand this update to the desktop app, but
+    // the daily check may not, so it is the refusal it was before the listener became reachable.
+    it('skips a stack it cannot reproduce even when the desktop listener could take the update', async () => {
+      insideHubContainer(PINNED_ENV);
+      withListenerToken();
+      vi.mocked(fs.readFileSync).mockImplementation(((target: unknown) =>
+        String(target) === '/data/.env' ? PINNED_ENV : 'listener-token\n') as never);
+      vi.mocked(axios.get).mockResolvedValue({ status: 200 });
+      vi.mocked(axios.post).mockResolvedValue({ status: 200 });
+      await installDocker(core3EnvLabelDiffersFromMount(RELEASE_PIN));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+      const perform = vi.spyOn(service, 'performUpdate');
+
+      await runCheck(service);
+
+      expect(perform).not.toHaveBeenCalled();
+      expect(axios.post).not.toHaveBeenCalled();
+      expect(fs.writeFileSync).not.toHaveBeenCalled();
+      expect(mockLogger.info).toHaveBeenCalledWith(expect.stringMatching(/^Auto-update skipped: .*\.env\.dev/));
+      expect(mockLogger.error).not.toHaveBeenCalled();
     });
   });
 

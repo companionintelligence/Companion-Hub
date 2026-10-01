@@ -690,16 +690,25 @@ fn download_file(url: &str, dest: &Path, source: &UpdateSource) -> Result<(), St
     Ok(())
 }
 
-/// What `install_artifact` left for the caller to do.
+/// What `install_artifact` leaves for the caller to do. It depends only on the platform, and is
+/// known before anything runs because it decides when the Hub stops (see [`run_host_update`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallOutcome {
     /// Artifact installed in place — the caller must relaunch the app.
-    #[cfg_attr(target_os = "windows", allow(dead_code))]
     Completed,
     /// A detached helper process finishes the install and relaunches after the
     /// current process exits (Windows: installers cannot replace running binaries).
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     DetachedInstallerWillRelaunch,
+}
+
+impl InstallOutcome {
+    fn on_this_platform() -> Self {
+        if cfg!(target_os = "windows") {
+            Self::DetachedInstallerWillRelaunch
+        } else {
+            Self::Completed
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -848,18 +857,14 @@ fn windows_update_script(installer: &Path, app_exe: &Path, relaunch_args: &[Stri
 }
 
 #[cfg(target_os = "windows")]
-fn install_windows_exe(
-    installer: &Path,
-    launch_mode: PersistedLaunchMode,
-) -> Result<InstallOutcome, String> {
+fn install_windows_exe(installer: &Path, launch_mode: PersistedLaunchMode) -> Result<(), String> {
     set_progress("install", "Handing off to installer — app will restart…");
     let app_exe = std::env::current_exe().map_err(|e| format!("current_exe: {}", e))?;
     let script = windows_update_script(installer, &app_exe, &relaunch_args(launch_mode));
     let script_path = installer.with_file_name("companion-hub-update.cmd");
     std::fs::write(&script_path, script)
         .map_err(|e| format!("Failed to write update script: {}", e))?;
-    spawn_detached_cmd(&script_path)?;
-    Ok(InstallOutcome::DetachedInstallerWillRelaunch)
+    spawn_detached_cmd(&script_path)
 }
 
 #[cfg(target_os = "windows")]
@@ -880,7 +885,7 @@ fn spawn_detached_cmd(script: &Path) -> Result<(), String> {
 }
 
 #[cfg(target_os = "linux")]
-fn install_linux_package(package: &Path) -> Result<InstallOutcome, String> {
+fn install_linux_package(package: &Path) -> Result<(), String> {
     set_progress("install", "Installing update (may require elevation)…");
     let ext = package
         .extension()
@@ -936,7 +941,7 @@ fn install_linux_package(package: &Path) -> Result<InstallOutcome, String> {
             perms.set_mode(0o755);
             std::fs::set_permissions(&target, perms).map_err(|e| format!("chmod failed: {}", e))?;
         }
-        return Ok(InstallOutcome::Completed);
+        return Ok(());
     }
 
     for args in try_commands {
@@ -946,7 +951,7 @@ fn install_linux_package(package: &Path) -> Result<InstallOutcome, String> {
             .status()
             .map_err(|e| format!("Failed to run {}: {}", bin, e))?;
         if status.success() {
-            return Ok(InstallOutcome::Completed);
+            return Ok(());
         }
     }
     Err("Package installation failed".to_string())
@@ -990,10 +995,8 @@ fn resolve_linux_appimage_target() -> Result<PathBuf, String> {
     ))
 }
 
-fn install_artifact(
-    path: &Path,
-    launch_mode: PersistedLaunchMode,
-) -> Result<InstallOutcome, String> {
+/// Installs in place, or on Windows starts the detached helper: see [`InstallOutcome`].
+fn install_artifact(path: &Path, launch_mode: PersistedLaunchMode) -> Result<(), String> {
     let name = path
         .file_name()
         .and_then(|s| s.to_str())
@@ -1005,8 +1008,7 @@ fn install_artifact(
     #[cfg(target_os = "macos")]
     {
         if name.ends_with(".dmg") {
-            install_macos_dmg(path)?;
-            return Ok(InstallOutcome::Completed);
+            return install_macos_dmg(path);
         }
     }
     #[cfg(target_os = "windows")]
@@ -1122,6 +1124,126 @@ pub fn perform_host_update(
     perform_host_update_inner(download_url, expected_size, expected_sha256)
 }
 
+/// The parts of a desktop app update that act on this computer. [`run_host_update`] decides their
+/// order, and tests stand in for them to check it.
+trait HostUpdateSteps {
+    /// Downloads the installer and checks it against the release manifest's size and SHA-256.
+    fn download_and_verify(&mut self) -> Result<(), String>;
+    /// Installs in place, or starts the detached installer: see [`InstallOutcome`].
+    fn install(&mut self) -> Result<(), String>;
+    /// Stops the Hub for the app that starts next. Clears the user-stopped marker and the saved
+    /// config hash first, so that app starts the Hub and recreates it from its own files.
+    fn stop_hub(&mut self) -> Result<(), String>;
+    fn start_hub(&mut self) -> Result<(), String>;
+    /// Starts the installed app, which takes over from this process.
+    fn relaunch(&mut self) -> Result<(), String>;
+    fn log(&mut self, message: &str);
+}
+
+/// Runs a desktop app update without leaving the Hub stopped.
+///
+/// Replacing the app on disk leaves the Hub's containers running, so on Linux and macOS the Hub
+/// keeps running through the download and the install. An install that fails, or that waits for a
+/// password nobody types, leaves it as it was (#1760). Only an installed update stops the Hub, right
+/// before the new version starts and recreates it. On Windows the installer runs once this process
+/// exits, so the Hub stops right before that hand-off, and starts again if the hand-off fails.
+fn run_host_update(
+    steps: &mut impl HostUpdateSteps,
+    outcome: InstallOutcome,
+) -> Result<(), String> {
+    match outcome {
+        InstallOutcome::Completed => {
+            steps
+                .download_and_verify()
+                .and_then(|()| steps.install())
+                .map_err(|err| hub_kept_running(steps, err))?;
+            // Installed, and the new version recreates the stack when it starts, so a stop that
+            // fails doesn't hold the update back.
+            if let Err(err) = steps.stop_hub() {
+                steps.log(&format!(
+                    "The Hub did not stop cleanly for the update; the new version recreates it: {err}"
+                ));
+            }
+            steps.relaunch().map_err(|err| start_hub_again(steps, err))
+        }
+        InstallOutcome::DetachedInstallerWillRelaunch => {
+            steps
+                .download_and_verify()
+                .map_err(|err| hub_kept_running(steps, err))?;
+            steps
+                .stop_hub()
+                .and_then(|()| steps.install())
+                .map_err(|err| start_hub_again(steps, err))
+        }
+    }
+}
+
+fn hub_kept_running(steps: &mut impl HostUpdateSteps, err: String) -> String {
+    steps.log(&format!(
+        "Desktop app update failed; the Hub keeps running: {err}"
+    ));
+    err
+}
+
+/// After the update failed with the Hub stopped: starts it again, and says so in the error.
+fn start_hub_again(steps: &mut impl HostUpdateSteps, err: String) -> String {
+    steps.log(&format!(
+        "Desktop app update failed after the Hub was stopped; starting the Hub again: {err}"
+    ));
+    let err = err.trim_end_matches('.');
+    match steps.start_hub() {
+        Ok(()) => format!("{err}. The Hub was started again."),
+        Err(start_err) => format!("{err}. Starting the Hub again failed too: {start_err}"),
+    }
+}
+
+/// The update as it runs for real.
+struct LiveHostUpdate<'a> {
+    source: &'a UpdateSource,
+    download_url: &'a str,
+    expected_size: Option<u64>,
+    expected_sha256: Option<&'a str>,
+    installer: PathBuf,
+    launch_mode: PersistedLaunchMode,
+    compose_path: PathBuf,
+    env_path: PathBuf,
+    data_dir: PathBuf,
+}
+
+impl HostUpdateSteps for LiveHostUpdate<'_> {
+    fn download_and_verify(&mut self) -> Result<(), String> {
+        download_file(self.download_url, &self.installer, self.source)?;
+        set_progress("verify", "Verifying download integrity…");
+        verify_downloaded_artifact(&self.installer, self.expected_size, self.expected_sha256)
+    }
+
+    fn install(&mut self) -> Result<(), String> {
+        install_artifact(&self.installer, self.launch_mode)
+    }
+
+    fn stop_hub(&mut self) -> Result<(), String> {
+        hub_manager::clear_user_stopped(&self.data_dir);
+        // Ensure the post-install startup pulls images and recreates containers even if
+        // compose/env filenames are unchanged (e.g. CI_HUB_IMAGE still uses :latest).
+        hub_manager::invalidate_config_hash(&self.data_dir);
+        set_progress("stop", "Stopping Hub stack…");
+        hub_manager::stop_hub_for_update(&self.compose_path, &self.env_path).map(|_| ())
+    }
+
+    fn start_hub(&mut self) -> Result<(), String> {
+        hub_manager::start_hub(&self.compose_path, &self.env_path, &self.data_dir).map(|_| ())
+    }
+
+    fn relaunch(&mut self) -> Result<(), String> {
+        set_progress("done", "Update installed — relaunching…");
+        relaunch_hub(self.launch_mode)
+    }
+
+    fn log(&mut self, message: &str) {
+        let _ = hub_manager::append_desktop_log_for(&self.data_dir, "hub.update", message);
+    }
+}
+
 fn perform_host_update_inner(
     download_url: &str,
     expected_size: Option<u64>,
@@ -1134,18 +1256,6 @@ fn perform_host_update_inner(
 
     set_progress("prepare", "Preparing update…");
     let data_dir = hub_manager::get_hub_data_dir();
-    let compose_path = data_dir.join(hub_manager::HUB_COMPOSE_FILENAME);
-    let env_path = hub_manager::hub_env_path_for(&data_dir);
-    let launch_mode = hub_manager::read_launch_mode(&data_dir);
-
-    hub_manager::clear_user_stopped(&data_dir);
-    // Ensure the post-install startup pulls images and recreates containers even if
-    // compose/env filenames are unchanged (e.g. CI_HUB_IMAGE still uses :latest).
-    hub_manager::invalidate_config_hash(&data_dir);
-
-    set_progress("stop", "Stopping Hub stack…");
-    hub_manager::stop_hub_for_update(&compose_path, &env_path)?;
-
     let suffix = download_url.rsplit('/').next().unwrap_or("update.bin");
     // Private, unpredictable staging dir (0700): a fixed world-visible /tmp path
     // would let another local user pre-own it and swap the installer between
@@ -1154,18 +1264,22 @@ fn perform_host_update_inner(
         .prefix("companion-hub-update-")
         .tempdir()
         .map_err(|e| format!("temp dir: {}", e))?;
-    let dest = staging.path().join(suffix);
+    let outcome = InstallOutcome::on_this_platform();
+    let mut steps = LiveHostUpdate {
+        source: &source,
+        download_url,
+        expected_size,
+        expected_sha256,
+        installer: staging.path().join(suffix),
+        launch_mode: hub_manager::read_launch_mode(&data_dir),
+        compose_path: data_dir.join(hub_manager::HUB_COMPOSE_FILENAME),
+        env_path: hub_manager::hub_env_path_for(&data_dir),
+        data_dir,
+    };
+    run_host_update(&mut steps, outcome)?;
 
-    download_file(download_url, &dest, &source)?;
-    set_progress("verify", "Verifying download integrity…");
-    verify_downloaded_artifact(&dest, expected_size, expected_sha256)?;
-
-    match install_artifact(&dest, launch_mode)? {
-        InstallOutcome::Completed => {
-            set_progress("done", "Update installed — relaunching…");
-            relaunch_hub(launch_mode)?;
-            drop(staging); // exit() below skips destructors
-        }
+    match outcome {
+        InstallOutcome::Completed => drop(staging), // exit() below skips destructors
         InstallOutcome::DetachedInstallerWillRelaunch => {
             // The detached helper needs the installer to outlive this process; it
             // deletes the file itself when done.
@@ -1762,6 +1876,138 @@ mod tests {
         assert!(HostUpdateGuard::acquire().is_err());
         drop(first);
         assert!(HostUpdateGuard::acquire().is_ok());
+    }
+
+    /// Stands in for a host update: records the steps that ran, and fails the ones in `failing`.
+    #[derive(Default)]
+    struct RecordedUpdate {
+        failing: Vec<&'static str>,
+        ran: Vec<&'static str>,
+        logged: Vec<String>,
+    }
+
+    impl RecordedUpdate {
+        fn failing(steps: &[&'static str]) -> Self {
+            Self {
+                failing: steps.to_vec(),
+                ..Self::default()
+            }
+        }
+
+        fn run(&mut self, step: &'static str) -> Result<(), String> {
+            self.ran.push(step);
+            if self.failing.contains(&step) {
+                Err(format!("{step} failed"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl HostUpdateSteps for RecordedUpdate {
+        fn download_and_verify(&mut self) -> Result<(), String> {
+            self.run("download")
+        }
+        fn install(&mut self) -> Result<(), String> {
+            self.run("install")
+        }
+        fn stop_hub(&mut self) -> Result<(), String> {
+            self.run("stop")
+        }
+        fn start_hub(&mut self) -> Result<(), String> {
+            self.run("start")
+        }
+        fn relaunch(&mut self) -> Result<(), String> {
+            self.run("relaunch")
+        }
+        fn log(&mut self, message: &str) {
+            self.logged.push(message.to_string());
+        }
+    }
+
+    #[test]
+    fn in_place_update_stops_the_hub_only_once_the_new_version_is_installed() {
+        let mut update = RecordedUpdate::default();
+        run_host_update(&mut update, InstallOutcome::Completed).expect("update");
+        assert_eq!(update.ran, ["download", "install", "stop", "relaunch"]);
+    }
+
+    // #1760: handed an update overnight, the install waited for a password nobody typed, or failed
+    // at once without a polkit agent, after the Hub had already been stopped.
+    #[test]
+    fn in_place_update_that_fails_to_install_leaves_the_hub_running() {
+        for (failing, ran) in [
+            ("download", &["download"][..]),
+            ("install", &["download", "install"][..]),
+        ] {
+            let mut update = RecordedUpdate::failing(&[failing]);
+            let err = run_host_update(&mut update, InstallOutcome::Completed).expect_err(failing);
+            assert_eq!(err, format!("{failing} failed"));
+            assert_eq!(update.ran, ran, "{failing}");
+            assert_eq!(
+                update.logged,
+                [format!(
+                    "Desktop app update failed; the Hub keeps running: {failing} failed"
+                )]
+            );
+        }
+    }
+
+    #[test]
+    fn in_place_update_relaunches_even_when_the_hub_does_not_stop_cleanly() {
+        let mut update = RecordedUpdate::failing(&["stop"]);
+        run_host_update(&mut update, InstallOutcome::Completed).expect("update");
+        assert_eq!(update.ran, ["download", "install", "stop", "relaunch"]);
+        assert_eq!(update.logged.len(), 1);
+    }
+
+    #[test]
+    fn in_place_update_starts_the_hub_again_when_the_relaunch_fails() {
+        let mut update = RecordedUpdate::failing(&["relaunch"]);
+        let err = run_host_update(&mut update, InstallOutcome::Completed).expect_err("relaunch");
+        assert_eq!(
+            update.ran,
+            ["download", "install", "stop", "relaunch", "start"]
+        );
+        assert_eq!(err, "relaunch failed. The Hub was started again.");
+    }
+
+    #[test]
+    fn detached_installer_stops_the_hub_right_before_the_hand_off() {
+        let mut update = RecordedUpdate::default();
+        run_host_update(&mut update, InstallOutcome::DetachedInstallerWillRelaunch)
+            .expect("update");
+        assert_eq!(update.ran, ["download", "stop", "install"]);
+    }
+
+    #[test]
+    fn detached_installer_download_that_fails_leaves_the_hub_running() {
+        let mut update = RecordedUpdate::failing(&["download"]);
+        run_host_update(&mut update, InstallOutcome::DetachedInstallerWillRelaunch)
+            .expect_err("download");
+        assert_eq!(update.ran, ["download"]);
+    }
+
+    #[test]
+    fn detached_installer_starts_the_hub_again_when_anything_fails_after_the_stop() {
+        for (failing, ran) in [
+            ("stop", &["download", "stop", "start"][..]),
+            ("install", &["download", "stop", "install", "start"][..]),
+        ] {
+            let mut update = RecordedUpdate::failing(&[failing]);
+            let err = run_host_update(&mut update, InstallOutcome::DetachedInstallerWillRelaunch)
+                .expect_err(failing);
+            assert_eq!(update.ran, ran, "{failing}");
+            assert_eq!(err, format!("{failing} failed. The Hub was started again."));
+        }
+
+        let mut update = RecordedUpdate::failing(&["install", "start"]);
+        let err = run_host_update(&mut update, InstallOutcome::DetachedInstallerWillRelaunch)
+            .expect_err("install");
+        assert_eq!(
+            err,
+            "install failed. Starting the Hub again failed too: start failed"
+        );
     }
 
     #[test]
