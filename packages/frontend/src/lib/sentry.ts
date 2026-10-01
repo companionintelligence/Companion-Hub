@@ -341,13 +341,24 @@ export function initHubSentry(): void {
     tracesSampleRate: Number(import.meta.env.VITE_SENTRY_TRACES_SAMPLE_RATE ?? 0.1),
     replaysSessionSampleRate: Number(import.meta.env.VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE ?? 0.1),
     replaysOnErrorSampleRate: Number(import.meta.env.VITE_SENTRY_REPLAYS_ON_ERROR_SAMPLE_RATE ?? 1),
-    enableMetrics: import.meta.env.VITE_SENTRY_ENABLE_METRICS !== 'false',
-    enableLogs: import.meta.env.VITE_SENTRY_ENABLE_LOGS !== 'false',
+    // Sentry 11 removed `enableMetrics` / `enableLogs`; dropping them in the
+    // before-send hooks keeps the `VITE_SENTRY_ENABLE_*=false` opt-outs working.
+    beforeSendMetric: (metric) => (import.meta.env.VITE_SENTRY_ENABLE_METRICS === 'false' ? null : metric),
+    beforeSendLog: (log) => (import.meta.env.VITE_SENTRY_ENABLE_LOGS === 'false' ? null : log),
     // No PII, matching the rest of the fleet. The Sentry org has
     // `scrubIPAddresses` disabled, so leaving this on meant the Hub was the one
     // component storing users' real IP addresses. Device attribution comes from
     // the explicit `device_id` tag/user id set below, not from the SDK.
-    sendDefaultPii: false,
+    // Sentry 11 replaced `sendDefaultPii` with `dataCollection`, whose defaults
+    // collect everything, so each category is switched off explicitly.
+    dataCollection: {
+      userInfo: false,
+      cookies: false,
+      httpHeaders: false,
+      httpBodies: [],
+      urlQueryParams: false,
+      stackFrameVariables: false,
+    },
     beforeSend(event, hint) {
       if (!isTelemetryAllowed()) {
         // Keep the cached answer fresh for subsequent events; an in-app settings
