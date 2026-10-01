@@ -6,8 +6,8 @@
   "scripts": {
     "dev": "react-router dev",
     "local": "pnpm run dev",
-    "build": "node node_modules/@react-router/dev/bin.js build",
-    "bundle": "node node_modules/@react-router/dev/bin.js build",
+    "build": "node node_modules/@react-router/dev/bin.cjs build",
+    "bundle": "node node_modules/@react-router/dev/bin.cjs build",
     "preview": "vite preview",
     "test": "vitest run",
     "tsc": "react-router typegen && tsc --noEmit",
