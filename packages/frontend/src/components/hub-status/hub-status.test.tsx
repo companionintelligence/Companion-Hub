@@ -587,7 +587,7 @@ describe('HubStatus steady running and recovery', () => {
     await flushAsyncWork();
     expect(screen.getByText('Hub child')).toBeInTheDocument();
 
-    // The updater stops the Hub before it installs; the Settings page shows the update's progress.
+    // The updater stops the Hub during the update; the Settings page shows the update's progress.
     updateMocks.isDesktopUpdateRunning.mockReturnValue(true);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(10000);

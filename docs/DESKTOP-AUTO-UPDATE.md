@@ -90,8 +90,9 @@ In the desktop window, an available update shows **Update to X** on Settings →
   the computer may ask for a password.
 - The page polls `get_update_progress_command` once a second and shows each step. The app keeps
   the last update's step, a failed one's too, so the page skips that until the step changes.
-- Every release so far stops the Hub before it downloads and leaves it stopped when the install
-  fails, for example when the password prompt is cancelled. While the page waits, the desktop
+- Older releases stop the Hub before they download and leave it stopped when the install fails,
+  for example when the password prompt is cancelled. Current ones stop it only once the update is
+  installed (see [Install flow](#install-flow-per-platform)). While the page waits, the desktop
   gate keeps it on screen instead of its "isn't running" screen. After a failure, if the Hub's
   API doesn't answer, the page calls `start_hub_command`.
 - After a failure, the card shows the app's error, then offers the installer download and the
