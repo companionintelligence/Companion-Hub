@@ -17,7 +17,7 @@ if (!i18next.isInitialized) {
     interpolation: {
       escapeValue: false,
     },
-    initImmediate: false,
+    initAsync: false,
   });
 }
 
