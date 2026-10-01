@@ -8,6 +8,7 @@ import {
   updatePoolSettingsMutation,
 } from '@/api-client/@tanstack/react-query.gen';
 import { client } from '@/api-client/client.gen';
+import { formatHubDateTime } from '@/components/ui/dense/dense';
 import { approvePeer, deletePoolPin, pairPeer, rejectPeer, removePeer, upsertPoolPin } from '@/api-client/sdk.gen';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
@@ -1128,7 +1129,7 @@ export const HubPoolSection = () => {
                     {peer.lastCapabilities?.backends.length ? backendSummary(peer.lastCapabilities.backends, t) : t('COMMON_UNKNOWN')}
                   </Td>
                   <Td align="right" className="whitespace-nowrap text-muted-foreground">
-                    {peer.lastSeenAt ? new Date(peer.lastSeenAt).toLocaleString() : t('HUB_POOL_NEVER_SEEN')}
+                    {peer.lastSeenAt ? formatHubDateTime(peer.lastSeenAt) : t('HUB_POOL_NEVER_SEEN')}
                   </Td>
                   <Td align="right">
                     <span className="flex items-center justify-end gap-2">

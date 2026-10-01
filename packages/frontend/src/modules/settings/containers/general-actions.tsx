@@ -14,8 +14,8 @@ import { useAppContext } from '@/context/app-context';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
 import { ArrowUpCircle, Loader2, Smartphone, Star, TriangleAlert, Wand2 } from 'lucide-react';
-import { clearHubConnection, getHubBaseUrlSync, usesCloudConnect } from '@/lib/mobile-connection';
-import { useTranslation } from 'react-i18next';
+import { clearHubConnection, getHubBaseUrlSync, isTauriMobileSync, usesCloudConnect } from '@/lib/mobile-connection';
+import { Trans, useTranslation } from 'react-i18next';
 import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-modal';
 import { useState, useEffect, useCallback, useId } from 'react';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
@@ -30,9 +30,12 @@ import { toast } from 'sonner';
 import {
   checkForUpdates,
   type DesktopRestartState,
+  type DesktopUpdateOutcome,
+  type DesktopUpdateProgress,
   fetchHostListenerStatus,
   getDesktopRestartState,
   getInstalledDesktopVersion,
+  installDesktopUpdate,
   isStackUpdateAvailable,
   isTauri,
   manualUpdateArtifactKind,
@@ -43,6 +46,28 @@ import {
   type UpdateActionResult,
   type UpdateInfo,
 } from '@/lib/update-service';
+
+/** The one-click desktop app update, in the desktop window. */
+type ShellInstallState =
+  | { state: 'idle' }
+  | {
+      state: 'installing';
+      progress: DesktopUpdateProgress | null;
+      /** Set once the call failed and the page is starting the Hub again: after the install, or instead of it. */
+      restartingHub: 'after-install' | 'after-failure' | null;
+    }
+  | DesktopUpdateOutcome;
+
+/** What each step the desktop app reports reads as. A step not listed reads as the update starting. */
+const SHELL_INSTALL_PHASE_KEYS: Record<string, string> = {
+  prepare: 'SETTINGS_ACTIONS_SHELL_INSTALL_PREPARING',
+  stop: 'SETTINGS_ACTIONS_SHELL_INSTALL_STOPPING_HUB',
+  download: 'SETTINGS_ACTIONS_SHELL_INSTALL_DOWNLOADING',
+  verify: 'SETTINGS_ACTIONS_SHELL_INSTALL_VERIFYING',
+  install: 'SETTINGS_ACTIONS_SHELL_INSTALL_INSTALLING',
+  done: 'SETTINGS_ACTIONS_SHELL_INSTALL_RESTARTING_APP',
+  relaunch: 'SETTINGS_ACTIONS_SHELL_INSTALL_RESTARTING_APP',
+};
 
 export const GeneralActionsContainer = () => {
   const { t } = useTranslation();
@@ -72,10 +97,14 @@ export const GeneralActionsContainer = () => {
   const [updatingShell, setUpdatingShell] = useState(false);
   const [shellRestart, setShellRestart] = useState<DesktopRestartState | null>(null);
   const [restartingShell, setRestartingShell] = useState(false);
+  const [shellInstall, setShellInstall] = useState<ShellInstallState>({ state: 'idle' });
   const [hostListenerReachable, setHostListenerReachable] = useState<boolean | null>(null);
   const [switchHubOpen, setSwitchHubOpen] = useState(false);
 
   const desktop = isTauri();
+  // The desktop app's own window, where this page can ask the app to install its update. `isTauri()`
+  // is true in the phone app too, which only reaches a Hub over the network, like a browser.
+  const desktopWindow = desktop && !isTauriMobileSync();
 
   const getUpdateMessage = useCallback(
     (result: UpdateActionResult) =>
@@ -250,6 +279,21 @@ export const GeneralActionsContainer = () => {
     }
   }, [t]);
 
+  const handleShellInstall = useCallback(async () => {
+    if (!shellUpdate?.downloadUrl) return;
+    setShellMessage(null);
+    setShellInstall({ state: 'installing', progress: null, restartingHub: null });
+    // On success the app exits into the new version, so this usually never returns.
+    const outcome = await installDesktopUpdate(shellUpdate, {
+      onProgress: (progress) => setShellInstall((current) => (current.state === 'installing' ? { ...current, progress } : current)),
+      onRestartingHub: (installed) =>
+        setShellInstall((current) =>
+          current.state === 'installing' ? { ...current, restartingHub: installed ? 'after-install' : 'after-failure' } : current,
+        ),
+    });
+    setShellInstall(outcome);
+  }, [shellUpdate]);
+
   const handleAutoUpdatesToggle = useCallback(async () => {
     setAutoUpdatesLoading(true);
     const newValue = !autoUpdates;
@@ -341,6 +385,103 @@ export const GeneralActionsContainer = () => {
           </ol>
         </CardContent>
       </Card>
+    );
+  };
+
+  /**
+   * The desktop window installs the update itself. When that fails, the card offers the installer
+   * download and the steps to install it by hand, as it does in a browser.
+   */
+  const renderShellInstall = (update: UpdateInfo) => {
+    const installing = shellInstall.state === 'installing';
+    const kind = manualUpdateArtifactKind(update.downloadUrl);
+    // A .deb or .rpm installs through pkexec, which asks for the password; an AppImage is copied in place.
+    const asksForPassword = kind === 'deb' || kind === 'rpm';
+    let progressKey = 'SETTINGS_ACTIONS_SHELL_INSTALL_STARTING';
+    if (shellInstall.state === 'installing') {
+      if (shellInstall.restartingHub === 'after-install') {
+        progressKey = 'SETTINGS_ACTIONS_SHELL_INSTALL_RESTART_FAILED_RESTARTING_HUB';
+      } else if (shellInstall.restartingHub === 'after-failure') {
+        progressKey = 'SETTINGS_ACTIONS_SHELL_INSTALL_RESTARTING_HUB';
+      } else {
+        progressKey = SHELL_INSTALL_PHASE_KEYS[shellInstall.progress?.phase ?? ''] ?? progressKey;
+      }
+    }
+    // What the page did about the Hub, which the updater may have stopped, once the call failed.
+    const renderHubAfterUpdate = (outcome: { hub: 'running' | 'restarted' | 'restart-failed'; hubError?: string }) => (
+      <>
+        {outcome.hub === 'restarted' ? <p className="text-muted-foreground">{t('SETTINGS_ACTIONS_SHELL_INSTALL_HUB_RESTARTED')}</p> : null}
+        {outcome.hub === 'restart-failed' ? (
+          <p className="text-muted-foreground">{t('SETTINGS_ACTIONS_SHELL_INSTALL_HUB_RESTART_FAILED', { error: outcome.hubError ?? '' })}</p>
+        ) : null}
+      </>
+    );
+
+    return (
+      <>
+        <Button onClick={handleShellInstall} disabled={installing || shellInstall.state === 'installed'} data-testid="hub-shell-install-btn">
+          {installing ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin mr-2" />
+              {t('SETTINGS_ACTIONS_SHELL_INSTALLING')}
+            </>
+          ) : (
+            t('SETTINGS_ACTIONS_SHELL_INSTALL_VERSION', { version: update.latestVersion })
+          )}
+        </Button>
+        {shellInstall.state === 'installing' ? (
+          <div className="mt-3 space-y-1 text-sm" role="status" data-testid="desktop-update-progress">
+            <p>{t(progressKey, { version: update.latestVersion })}</p>
+            {asksForPassword && !shellInstall.restartingHub ? (
+              <p className="text-muted-foreground">{t('SETTINGS_ACTIONS_SHELL_INSTALL_PASSWORD_HINT')}</p>
+            ) : null}
+            {/* Said up front: the app exits within moments of installing, so a later step rarely shows.
+                Apps up to 0.2.77 on Linux exit without opening the new version. */}
+            {shellInstall.restartingHub ? null : <p className="text-muted-foreground">{t('SETTINGS_ACTIONS_SHELL_INSTALL_RESTART_HINT')}</p>}
+          </div>
+        ) : null}
+        {shellInstall.state === 'installed' && shellInstall.restart === 'restarting' ? (
+          <p className="mt-3 text-sm" role="status" data-testid="desktop-update-progress">
+            {t('SETTINGS_ACTIONS_SHELL_INSTALL_RESTARTING_APP', { version: update.latestVersion })}
+          </p>
+        ) : null}
+        {/* Installed, so nothing to download or install by hand: only the restart is left. */}
+        {shellInstall.state === 'installed' && shellInstall.restart === 'failed' ? (
+          <div className="mt-3 space-y-1 text-sm" role="status" data-testid="desktop-update-restart-failed">
+            <p>{t('SETTINGS_ACTIONS_SHELL_INSTALL_RESTART_FAILED', { version: update.latestVersion })}</p>
+            {renderHubAfterUpdate(shellInstall)}
+          </div>
+        ) : null}
+        {shellInstall.state === 'failed' && shellInstall.reason === 'busy' ? (
+          <p className="mt-3 text-sm" role="status" data-testid="desktop-update-busy">
+            {t('SETTINGS_ACTIONS_SHELL_INSTALL_BUSY')}
+          </p>
+        ) : null}
+        {shellInstall.state === 'failed' && shellInstall.reason !== 'busy' ? (
+          <div className="mt-3" data-testid="desktop-update-failed">
+            <div className="mb-3 space-y-1 text-sm">
+              <p className="text-destructive">
+                {shellInstall.reason === 'unsupported'
+                  ? t('SETTINGS_ACTIONS_SHELL_INSTALL_UNSUPPORTED')
+                  : t('SETTINGS_ACTIONS_SHELL_INSTALL_FAILED', { error: shellInstall.error })}
+              </p>
+              {renderHubAfterUpdate(shellInstall)}
+            </div>
+            <Button variant="outline" onClick={handleShellUpdate} disabled={updatingShell} data-testid="hub-shell-update-btn">
+              {updatingShell ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  {t('SETTINGS_ACTIONS_CHECKING')}
+                </>
+              ) : (
+                t('SETTINGS_ACTIONS_DOWNLOAD_INSTALLER_VERSION', { version: update.latestVersion })
+              )}
+            </Button>
+            {shellMessage ? <p className="mt-3 text-sm text-muted-foreground">{shellMessage}</p> : null}
+            {renderManualUpdateInstructions()}
+          </div>
+        ) : null}
+      </>
     );
   };
 
@@ -465,9 +606,14 @@ export const GeneralActionsContainer = () => {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {hostListenerReachable === false ? (
+          {/* The Hub can't reach the listener of any desktop app up to 0.2.77, running or not, so in the
+              desktop window it is no sign the app is down. A browser can say where to update instead. */}
+          {!desktopWindow && hostListenerReachable === false ? (
             <p className="text-sm text-muted-foreground mb-4" data-testid="host-listener-unavailable">
-              {t('SETTINGS_ACTIONS_HOST_LISTENER_UNAVAILABLE')}
+              <Trans
+                i18nKey="SETTINGS_ACTIONS_HOST_LISTENER_UNAVAILABLE"
+                components={{ code: <code className="rounded bg-muted px-1 font-mono text-xs" /> }}
+              />
             </p>
           ) : null}
           {hostListenerReachable === true ? (
@@ -494,6 +640,8 @@ export const GeneralActionsContainer = () => {
                 )}
               </Button>
             </div>
+          ) : shellUpdate?.downloadUrl && desktopWindow && shellUpdate.updateAvailable ? (
+            renderShellInstall(shellUpdate)
           ) : shellUpdate?.downloadUrl ? (
             <>
               {shellVersion && !shellUpdate.updateAvailable ? (

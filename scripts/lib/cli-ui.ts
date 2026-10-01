@@ -225,6 +225,10 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
       { command: `${BASE_COMMAND} app add <name> <image>`, description: 'Launch a new Docker container app' },
       { command: `${BASE_COMMAND} app edit <name> <image>`, description: 'Recreate a Docker container app' },
       { command: `${BASE_COMMAND} app start|stop|restart|delete <name>`, description: 'Container lifecycle controls' },
+      {
+        command: `${BASE_COMMAND} app start-all|stop-all|restart-all|update-all [env]`,
+        description: 'Run one action over every app, through the running Hub',
+      },
       { command: `${BASE_COMMAND} app inspect <name>`, description: 'Show container ports, env, and mounts' },
     ],
   },

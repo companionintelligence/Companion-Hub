@@ -44,6 +44,11 @@ vi.mock('../components/app-media-gallery/app-media-gallery', () => ({
   AppMediaGallery: () => <div data-testid="app-media-gallery" />,
 }));
 
+// The card has its own tests (queries, mutations, dialogs); this page test is about the page around it.
+vi.mock('../components/app-backups-card/app-backups-card', () => ({
+  AppBackupsCard: ({ appUrn, status }: { appUrn: string; status: string }) => <div data-testid="app-backups-card">{`${appUrn}:${status}`}</div>,
+}));
+
 vi.mock('../components/memory-status-badge/memory-status-badge', () => ({
   MemoryStatusBadge: () => null,
 }));
@@ -51,6 +56,8 @@ vi.mock('../components/memory-status-badge/memory-status-badge', () => ({
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getAppOptions: () => ({ queryKey: ['app'] }),
   getServeStatusOptions: () => ({ queryKey: ['serve-status'], queryFn: vi.fn() }),
+  // The access card reads whether tailscaled refuses the Hub's Serve changes from the Tailscale status.
+  getStatus3Options: () => ({ queryKey: ['tailscale-status'], queryFn: vi.fn() }),
 }));
 
 vi.mock('@/api-client/client.gen', () => ({

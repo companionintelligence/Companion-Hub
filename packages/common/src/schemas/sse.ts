@@ -104,10 +104,20 @@ const hubHelloEventSchema = z.object({
   buildVersion: z.string().optional(),
 });
 
+/**
+ * tailscaled started or stopped refusing the Hub's Tailscale Serve changes. It concerns every
+ * Private VPN app at once, so it names none: open pages read `GET /tailscale/status` again, which
+ * says why and gives the command that ends it.
+ */
+const tailscaleServePermissionEventSchema = z.object({
+  event: z.literal('tailscale_serve_permission'),
+  denied: z.boolean(),
+});
+
 export const sseSchema = z.union([
   z.object({
     topic: z.literal('app'),
-    data: z.union([hubHelloEventSchema, installQueueEventSchema, appScopedEventSchema]),
+    data: z.union([hubHelloEventSchema, installQueueEventSchema, tailscaleServePermissionEventSchema, appScopedEventSchema]),
   }),
   z.object({
     topic: z.literal('app-logs'),

@@ -9,7 +9,11 @@ export interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> 
 }
 
 const Input = React.forwardRef<HTMLInputElement, InputProps>(
-  ({ className, type = 'text', error, label, helpText, isInvalid, children, id, name, ...props }, ref) => {
+  ({ className, type = 'text', error, label, helpText, isInvalid, children, id, name, 'aria-describedby': describedByProp, ...props }, ref) => {
+    const errorId = React.useId();
+    const helpId = React.useId();
+    const describedBy = [describedByProp, helpText ? helpId : undefined, error ? errorId : undefined].filter(Boolean).join(' ') || undefined;
+
     return (
       <div className={cn('space-y-2', className)}>
         {label && (
@@ -23,6 +27,8 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
             type={type}
             name={name}
             id={id || name}
+            aria-invalid={error || isInvalid ? true : undefined}
+            aria-describedby={describedBy}
             // shadcn input styles
             className={cn(
               'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm',
@@ -32,8 +38,16 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
           />
           {children}
         </div>
-        {helpText && <p className="text-[0.8rem] text-muted-foreground">{helpText}</p>}
-        {error && <p className="text-[0.8rem] font-medium text-destructive">{error}</p>}
+        {helpText && (
+          <p id={helpId} className="text-[0.8rem] text-muted-foreground">
+            {helpText}
+          </p>
+        )}
+        {error && (
+          <p id={errorId} role="alert" className="text-[0.8rem] font-medium text-destructive">
+            {error}
+          </p>
+        )}
       </div>
     );
   },

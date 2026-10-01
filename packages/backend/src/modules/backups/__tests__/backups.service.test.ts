@@ -96,6 +96,18 @@ describe('BackupsService', () => {
       expect(appLifecycle.startApp).toHaveBeenCalledWith({ appUrn, actor: { kind: 'system', reason: 'resume-after-backup' } });
     });
 
+    it('tells the UI when the backup failed, instead of leaving it on "backing up"', async () => {
+      const appUrn = 'test-app' as any;
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, name: 'test-app', status: 'running', config: {} } as any);
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'tar failed' } as any);
+      configService.get.mockReturnValue(false);
+
+      await service.backupApp({ appUrn, actor: GRANTED_ACTOR });
+      await vi.waitFor(() => expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'backup_error', appUrn, appStatus: 'stopped' }));
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ status: 'stopped' }));
+    });
+
     it('should throw if demo mode', async () => {
       configService.get.mockReturnValue(true);
       await expect(service.backupApp({ appUrn: 'test' as any, actor: GRANTED_ACTOR })).rejects.toThrow('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
@@ -116,6 +128,15 @@ describe('BackupsService', () => {
       await new Promise(process.nextTick);
 
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ status: 'stopped' }));
+    });
+
+    it('tells the UI when the restore failed, instead of leaving it on "restoring"', async () => {
+      const appUrn = 'test-app' as any;
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, name: 'test-app', status: 'running', config: {} } as any);
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'Backup contains unsupported file types' } as any);
+
+      await service.restoreApp({ appUrn, filename: 'backup.tar.gz', actor: GRANTED_ACTOR });
+      await vi.waitFor(() => expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'restore_error', appUrn, appStatus: 'stopped' }));
     });
 
     it('starts an app that was running again as the Hub, not as whoever asked', async () => {
@@ -274,6 +295,49 @@ describe('BackupsService', () => {
       await vi.waitFor(() => expect(logger.error).toHaveBeenCalledTimes(2));
       expect(gateChecks(appLifecycle.assertActorMay).map(([, urn]) => urn)).toEqual(['immich:ci-marketplace', 'nextcloud:ci-marketplace']);
       expect(appEventsQueue.publish).not.toHaveBeenCalled();
+    });
+  });
+  describe('getAppBackups paging', () => {
+    const appUrn = 'immich:ci-marketplace' as AppUrn;
+    const makeBackups = (count: number) =>
+      Array.from({ length: count }, (_, index) => ({ id: `backup-${index}.tar.gz`, size: 100 + index, date: 1_000 + index }));
+    const list = (page: number, pageSize = 10) => service.getAppBackups({ appUrn, page, pageSize, actor: GRANTED_ACTOR });
+
+    beforeEach(() => {
+      appLifecycle.assertActorMay.mockResolvedValue(undefined);
+      backupManager.listBackupsByAppId.mockResolvedValue(makeBackups(25));
+    });
+
+    it('serves the newest backups first, a page at a time, counting pages from 1', async () => {
+      const first = await list(1);
+      const third = await list(3);
+
+      expect(first.data.map((backup) => backup.id)[0]).toBe('backup-24.tar.gz');
+      expect(first.data).toHaveLength(10);
+      expect(first).toMatchObject({ total: 25, currentPage: 1, lastPage: 3 });
+      expect(third.data).toHaveLength(5);
+      expect(third.currentPage).toBe(3);
+    });
+
+    it('reads page 0, which the route used to default to, as the first page rather than an empty one', async () => {
+      const result = await list(0);
+
+      expect(result.data).toHaveLength(10);
+      expect(result.currentPage).toBe(1);
+    });
+
+    it.each([-3, Number.NaN])('reads page %s as the first page', async (page) => {
+      const result = await list(page);
+
+      expect(result.data).toHaveLength(10);
+      expect(result.currentPage).toBe(1);
+    });
+
+    it('returns an empty list past the last page', async () => {
+      const result = await list(9);
+
+      expect(result.data).toEqual([]);
+      expect(result.total).toBe(25);
     });
   });
 });

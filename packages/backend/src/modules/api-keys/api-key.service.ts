@@ -6,6 +6,7 @@ import { ApiKeyStoreUnavailableError, isTransientDbError } from './api-key.error
 import { type ApiKeyListRow, type ApiKeyRow, ApiKeyRepository } from './api-key.repository';
 import { API_KEY_SCOPES, type ApiKeyScope } from './api-key.scopes';
 import { type ApiKeyCapability, DEFAULT_API_KEY_CAPABILITY, coerceApiKeyCapability } from './api-key.capabilities';
+import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 
 const KEY_BYTES = 32; // 64 hex chars — 256 bits of entropy
 export const PREFIX_LEN = 8; // leading chars shown in the UI to identify a key without revealing it
@@ -168,7 +169,7 @@ export class ApiKeyService {
     if (key.expiresAt === null) {
       return false;
     }
-    const expiresAtMs = new Date(key.expiresAt).getTime();
+    const expiresAtMs = parseDbTimestampMs(key.expiresAt);
     return Number.isNaN(expiresAtMs) || expiresAtMs < Date.now();
   }
 

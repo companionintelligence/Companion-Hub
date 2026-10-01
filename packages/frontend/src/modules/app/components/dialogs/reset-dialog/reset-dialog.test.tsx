@@ -84,7 +84,7 @@ describe('ResetDialog', () => {
     const submit = screen.getByRole('button', { name: 'Reset' });
     expect(submit).toBeDisabled();
 
-    await user.click(screen.getByRole('switch', { name: 'reset-force-confirm' }));
+    await user.click(screen.getByRole('switch', { name: 'I understand — disconnect these apps and proceed' }));
     await user.click(submit);
     expect(h.mutate).toHaveBeenCalledWith({ path: { urn: 'ci-memory:ci-marketplace' }, body: { force: true } });
   });

@@ -17,6 +17,7 @@ import { getCategoryLabel } from '../helpers/category-label';
 import { AppMediaGallery } from '../components/app-media-gallery/app-media-gallery';
 import { useAppMedia } from '../hooks/use-app-media';
 import { AppAccessPoints } from '../components/app-access-points/app-access-points';
+import { AppBackupsCard } from '../components/app-backups-card/app-backups-card';
 import { AppReadinessBadge, AppReadinessChecksCard } from '../components/app-readiness/app-readiness';
 import { AppRuntimeDegradedBanner } from '../components/app-runtime-degraded-banner';
 import { CustomDomainRestartBanner } from '../components/custom-domain-restart-banner';
@@ -306,6 +307,8 @@ export default () => {
       <AppReadinessChecksCard readiness={runtimeHealth.data?.readiness} />
 
       <McpAccessCard app={app} info={info} mcpRuntime={getApp.data.mcpRuntime ?? null} />
+
+      {app ? <AppBackupsCard appUrn={appUrn} appName={info.name} status={app.status} /> : null}
 
       {/* Main Content - two-column portal layout */}
       <AppDetailsTabs

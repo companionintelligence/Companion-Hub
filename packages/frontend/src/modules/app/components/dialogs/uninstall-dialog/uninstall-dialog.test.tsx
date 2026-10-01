@@ -93,7 +93,7 @@ describe('UninstallDialog', () => {
   it('says the data will be lost while Delete all data is on', () => {
     render(<UninstallDialog info={normalApp} isOpen onClose={vi.fn()} />);
 
-    expect(screen.getByRole('switch', { name: 'uninstall-delete-all-data' })).toBeChecked();
+    expect(screen.getByRole('switch', { name: 'Delete all data' })).toBeChecked();
     expect(screen.getByText(DATA_LOST)).toBeInTheDocument();
     expect(screen.queryByText(DATA_KEPT)).not.toBeInTheDocument();
   });
@@ -102,7 +102,7 @@ describe('UninstallDialog', () => {
     const user = userEvent.setup();
     render(<UninstallDialog info={normalApp} isOpen onClose={vi.fn()} />);
 
-    await user.click(screen.getByRole('switch', { name: 'uninstall-delete-all-data' }));
+    await user.click(screen.getByRole('switch', { name: 'Delete all data' }));
 
     expect(screen.getByText(DATA_KEPT)).toBeInTheDocument();
     expect(screen.queryByText(DATA_LOST)).not.toBeInTheDocument();
@@ -127,7 +127,7 @@ describe('UninstallDialog', () => {
     const submit = screen.getByRole('button', { name: 'Uninstall' });
     expect(submit).toBeDisabled();
 
-    await user.click(screen.getByRole('switch', { name: 'uninstall-force-confirm' }));
+    await user.click(screen.getByRole('switch', { name: 'I understand — disconnect these apps and proceed' }));
     expect(submit).toBeEnabled();
 
     await user.click(submit);
@@ -143,7 +143,7 @@ describe('UninstallDialog', () => {
     const submit = screen.getByRole('button', { name: 'Uninstall' });
     expect(submit).toBeDisabled();
 
-    await user.click(screen.getByRole('switch', { name: 'uninstall-force-confirm' }));
+    await user.click(screen.getByRole('switch', { name: 'I understand — disconnect these apps and proceed' }));
     await user.click(submit);
     expect(h.mutate).toHaveBeenCalledWith({ path: { urn: 'ci-memory:ci-marketplace' }, body: { deleteAllData: true, force: true } });
   });

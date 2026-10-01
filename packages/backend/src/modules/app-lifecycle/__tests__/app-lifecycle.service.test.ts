@@ -1156,6 +1156,31 @@ describe('AppLifecycleService', () => {
           expect(update).toHaveBeenCalledWith(expect.objectContaining({ appUrn: IMPORTER }));
         });
 
+        it('updates an app whose image moved while its schema counter did not — the case the badge counts', async () => {
+          appsService.getInstalledApps.mockResolvedValue([
+            { app: row('importer'), info: { version: '2026.9.14' }, metadata: { latestVersion: 1, latestDockerVersion: '2026.9.21.1' } },
+            { app: row('neighbour'), info: { version: '2026.9.21.1' }, metadata: { latestVersion: 1, latestDockerVersion: '2026.9.21.1' } },
+          ] as any);
+          const update = vi.spyOn(service, 'updateApp').mockResolvedValue({ requestId: 'u' } as any);
+
+          await service.updateAllApps(importerKeyAt('full'));
+
+          expect(update).toHaveBeenCalledTimes(1);
+          expect(update).toHaveBeenCalledWith(expect.objectContaining({ appUrn: IMPORTER }));
+        });
+
+        it('leaves an app that is already updating, and one whose counter bump was ignored', async () => {
+          appsService.getInstalledApps.mockResolvedValue([
+            { app: { ...row('importer'), status: 'updating' }, metadata: { latestVersion: 2 } },
+            { app: { ...row('neighbour'), ignoredVersion: 2 }, metadata: { latestVersion: 2 } },
+          ] as any);
+          const update = vi.spyOn(service, 'updateApp').mockResolvedValue({ requestId: 'u' } as any);
+
+          await service.updateAllApps(importerKeyAt('full'));
+
+          expect(update).not.toHaveBeenCalled();
+        });
+
         it('updates nothing for an operator when WhoIs cannot be resolved', async () => {
           vi.mocked((service as any).moduleRef.get).mockReturnValue(undefined);
           appsService.getInstalledApps.mockResolvedValue([{ app: row('importer'), metadata: { latestVersion: 2 } }] as any);
@@ -5650,6 +5675,82 @@ describe('AppLifecycleService', () => {
 
       expectEventAfterNthUpdate('update_success', 1);
       expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_success', appStatus: 'stopped' }));
+    });
+
+    it('updateApp tells the command whether the app was running, so a stopped app is not started by its own update', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, status: 'stopped' } as any);
+
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'update', wasRunning: false }));
+    });
+
+    it.each(['starting', 'restarting', 'running'])('updateApp treats an app that is %s as one to start again afterwards', async (status) => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, status } as any);
+
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'update', wasRunning: true }));
+    });
+
+    it.each(['stopped', 'stopping', 'missing', 'install_failed'])('updateApp leaves an app that is %s stopped', async (status) => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, status } as any);
+
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'update', wasRunning: false }));
+    });
+
+    it('updateApp reports a running app as running', async () => {
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'update', wasRunning: true }));
+    });
+
+    it('updateApp success starts a running app without pulling its images a second time', async () => {
+      vi.spyOn(service, 'updateAppConfig').mockResolvedValue({ requestId: crypto.randomUUID() });
+      const start = vi.spyOn(service, 'startAppAndWait').mockResolvedValue(true);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ cihub_app_version: 2 } as any);
+
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      expect(start).toHaveBeenCalledWith({ appUrn, skipPull: true });
+    });
+
+    it('updateApp success leaves a stopped app stopped and does not start it', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, status: 'stopped' } as any);
+      vi.spyOn(service, 'updateAppConfig').mockResolvedValue({ requestId: crypto.randomUUID() });
+      const start = vi.spyOn(service, 'startAppAndWait').mockResolvedValue(true);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ cihub_app_version: 2 } as any);
+
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      expect(start).not.toHaveBeenCalled();
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_success', appStatus: 'stopped' }));
+    });
+
+    it('updateApp failure after the previous version was put back leaves a running app running', async () => {
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail', rolledBack: true } as any);
+
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_error', appStatus: 'running' }));
+    });
+
+    it('updateApp failure with no rollback still reports a previously running app as stopped', async () => {
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
+
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_error', appStatus: 'stopped' }));
     });
 
     it('updateApp downloads fresh app files for ci_cloud_api stores before queueing (#915)', async () => {

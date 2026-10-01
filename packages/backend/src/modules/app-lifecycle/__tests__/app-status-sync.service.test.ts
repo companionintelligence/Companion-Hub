@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { AppStatusSyncService } from '../app-status-sync.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -231,6 +231,53 @@ describe('AppStatusSyncService', () => {
       expect.objectContaining({ debounceKey: 'app-status-sync:stuck:demo:ci-marketplace:restarting' }),
     );
   });
+
+  /*
+   * Postgres hands a `timestamp` back without a zone ("2026-10-01 10:00:00.123456"), and the Hub writes
+   * them as UTC. Every fixture above is an ISO string ending in Z, which names its zone and so hid that
+   * the sync read the other kind in the PROCESS's zone: the Hub container runs in the host's.
+   */
+  describe.each(['Asia/Karachi', 'America/New_York', 'Pacific/Auckland'])(
+    'timestamps as Postgres returns them, in a process running in %s',
+    (zone) => {
+      const originalTz = process.env.TZ;
+      const asPostgres = (msAgo: number) => new Date(Date.now() - msAgo).toISOString().replace('T', ' ').replace('Z', '');
+
+      beforeEach(() => {
+        process.env.TZ = zone;
+      });
+
+      afterEach(() => {
+        if (originalTz === undefined) {
+          delete process.env.TZ;
+        } else {
+          process.env.TZ = originalTz;
+        }
+      });
+
+      it('leaves an app that began updating a minute ago alone', async () => {
+        appRepository.getApps.mockResolvedValue([
+          { id: 4, appName: 'demo', appStoreSlug: 'ci-marketplace', status: 'updating', updatedAt: asPostgres(60 * 1000) },
+        ] as never);
+
+        const result = await service.syncAllAppStatuses();
+
+        expect(result.skippedCount).toBe(1);
+        expect(appRepository.updateAppById).not.toHaveBeenCalled();
+        expect(appRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+      });
+
+      it('still reports an app stuck in a transitional state for three hours', async () => {
+        appRepository.getApps.mockResolvedValue([
+          { id: 4, appName: 'demo', appStoreSlug: 'ci-marketplace', status: 'restarting', updatedAt: asPostgres(3 * 60 * 60 * 1000) },
+        ] as never);
+
+        const result = await service.syncAllAppStatuses();
+
+        expect(result.skippedCount).toBe(0);
+      });
+    },
+  );
 
   it('does not overwrite status when the app moved into a lifecycle transition since the snapshot', async () => {
     appRepository.getApps.mockResolvedValue([

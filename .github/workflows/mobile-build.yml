@@ -45,7 +45,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Rust (stable) + Android targets
         uses: dtolnay/rust-toolchain@stable
@@ -80,7 +80,7 @@ jobs:
         uses: pnpm/action-setup@v6
 
       - name: Install Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
 
@@ -144,7 +144,7 @@ jobs:
 
       - name: Checkout
         if: steps.secrets.outputs.present == 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Rust (stable) + Android targets
         if: steps.secrets.outputs.present == 'true'
@@ -183,7 +183,7 @@ jobs:
 
       - name: Install Node.js
         if: steps.secrets.outputs.present == 'true'
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
 
@@ -246,7 +246,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Rust (stable) + iOS targets
         uses: dtolnay/rust-toolchain@stable
@@ -262,7 +262,7 @@ jobs:
         uses: pnpm/action-setup@v6
 
       - name: Install Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
 
@@ -342,7 +342,7 @@ jobs:
 
       - name: Checkout
         if: steps.secrets.outputs.present == 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Rust (stable) + iOS device target
         if: steps.secrets.outputs.present == 'true'
@@ -362,7 +362,7 @@ jobs:
 
       - name: Install Node.js
         if: steps.secrets.outputs.present == 'true'
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
 

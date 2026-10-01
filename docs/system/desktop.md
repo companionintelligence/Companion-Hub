@@ -5,7 +5,7 @@
 > **Key paths:** `packages/desktop/src-tauri/src/hub_manager.rs`, `packages/desktop/src-tauri/resources/`
 > **Commands:** `pnpm run local:desktop` (Vite :5005), `pnpm run dev:desktop` (appliance :5002), `cd packages/desktop/src-tauri && cargo test`
 > **Owner persona:** maintainability + security
-> **Last updated:** 2026-09-30
+> **Last updated:** 2026-10-01
 > **Related:** docs/system/frontend.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/AUTO_HEALING.md
 
 ---
@@ -169,6 +169,8 @@ Authorization codes and desktop-exchange tokens are single-use. Restarting the H
 Desktop app spawns `docker compose` against bundled `docker-compose.prod.yml`.
 
 Container identity: `CI_HUB_CONTAINER_UID/GID`, `DOCKER_GID` env vars from `resolve_hub_container_identity()`.
+
+The Hub's own Docker calls (its self-update, every app install and start) read `<data dir>/.docker/config.json`, mounted as `DOCKER_CONFIG=/data/.docker`. On every launch, `generate_container_docker_config` (`hub_manager/compose.rs`) writes it from the host's `~/.docker/config.json`, keeping only what works inside the container: inline registry auths, credential helpers that aren't host-only binaries, and the `proxies` section as it is. Docker Compose sets `HTTPS_PROXY`, `NO_PROXY`, and the rest from `proxies` in each container it creates, so the containers the Hub starts get the same proxy as the ones the desktop starts. `cihub setup` writes the same file (`scripts/init-docker-config.ts`).
 
 ## Host update listener
 

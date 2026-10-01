@@ -9,7 +9,7 @@ import { Injectable, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { CURRENT_SCHEMA_VERSION, parseComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
-import { compareAppVersions } from '../marketplace/app-version';
+import { hasUpdateAvailable } from '../marketplace/app-version';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { PortAllocationRepository } from '../network/port-allocation.repository';
 import { LifecycleJobService } from '../app-lifecycle/lifecycle-job.service';
@@ -115,17 +115,19 @@ export class AppsReadService {
           // schema-revision counter (z.number().default(1)) that almost no app config sets, so it sits
           // at 1 on both the installed row and the catalog forever. It is not the product release: for
           // CI-OpenClaw and CI-Hermes that is `updateInfo.latestDockerVersion`, the string from the
-          // app's own config.json (`2026.9.14`, `2026.9.21.1`, `v2026.8.9`) — and this function never
-          // looked at it. Measured live: beta-max ran ci-openclaw 2026.9.14 while the catalog was
-          // already at 2026.9.21.1, both `cihub_app_version`s read 1, and `updatesAvailable` was 0.
-          //
-          // `Number(app.version) < Number(updateInfo.latestVersion ?? 0)` also used to sit here as the
-          // schema-counter comparison; kept, since a schema bump with no new image is still real.
-          const schemaBumped = Number(app.version) < Number(updateInfo.latestVersion ?? 0);
-          if (schemaBumped) return true;
+          // app's own config.json (`2026.9.14`, `2026.9.21.1`, `v2026.8.9`). Measured live: beta-max ran
+          // ci-openclaw 2026.9.14 while the catalog was already at 2026.9.21.1, both `cihub_app_version`s
+          // read 1, and `updatesAvailable` was 0. See `hasUpdateAvailable`, which the update-all sweep
+          // shares so the two cannot disagree again.
           const installedInfo = await this.appFilesManager.getInstalledAppInfo(appUrn).catch(() => null);
-          const dockerCmp = compareAppVersions(installedInfo?.version, updateInfo.latestDockerVersion);
-          return dockerCmp !== null && dockerCmp < 0;
+
+          return hasUpdateAvailable({
+            installedCounter: app.version,
+            latestCounter: updateInfo.latestVersion,
+            ignoredCounter: app.ignoredVersion,
+            installedVersion: installedInfo?.version,
+            latestVersion: updateInfo.latestDockerVersion,
+          });
         }),
       ),
     );
