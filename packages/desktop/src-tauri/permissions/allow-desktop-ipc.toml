@@ -37,5 +37,7 @@ commands.allow = [
   "perform_desktop_update_command",
   "get_update_progress_command",
   "trigger_host_update_command",
+  "get_desktop_restart_state_command",
+  "restart_desktop_app_command",
   "flush_dns_cache"
 ]
