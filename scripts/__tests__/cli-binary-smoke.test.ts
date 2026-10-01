@@ -34,7 +34,7 @@
  * real one downloads the newest release and installs it with pkexec or sudo (#1739).
  */
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -76,6 +76,7 @@ let fakeDataDir = '';
 let queueStubBin = '';
 let queueDockerLog = '';
 let desktopAppLog = '';
+let noDesktopBin = '';
 
 /**
  * The stub directory goes FIRST so `docker`, `git` and the desktop app resolve to the stubs even on
@@ -100,14 +101,14 @@ function desktopAppCalls(): string[] {
 
 function runCli(
   args: string[],
-  options: { stubDir?: string; env?: NodeJS.ProcessEnv } = {},
+  options: { stubDir?: string; path?: string; inheritEnv?: boolean; env?: NodeJS.ProcessEnv } = {},
 ): { stdout: string; stderr: string; output: string; status: number | null } {
   const result = spawnSync(binary, args, {
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'pipe'],
     env: {
-      ...process.env,
-      PATH: cliPath(options.stubDir ?? stubBin),
+      ...(options.inheritEnv === false ? {} : process.env),
+      PATH: options.path ?? cliPath(options.stubDir ?? stubBin),
       HOME: fakeHome,
       CI_HUB_DATA_DIR: fakeDataDir,
       CI: '1',
@@ -201,6 +202,14 @@ describe('compiled cihub binary', () => {
     chmodSync(join(queueStubBin, 'git'), 0o755);
     writeDesktopAppStubs(queueStubBin);
 
+    // The whole PATH for `cihub update` on a machine without the desktop app, so no `companion-hub`
+    // is anywhere on it: the docker and git stubs, plus `which`, which the CLI looks the app up with.
+    noDesktopBin = join(workspace, 'no-desktop-bin');
+    mkdirSync(noDesktopBin);
+    symlinkSync(join(stubBin, 'docker'), join(noDesktopBin, 'docker'));
+    symlinkSync(join(stubBin, 'git'), join(noDesktopBin, 'git'));
+    symlinkSync(spawnSync('sh', ['-c', 'command -v which'], { encoding: 'utf-8' }).stdout.trim(), join(noDesktopBin, 'which'));
+
     binary = buildStandaloneCli({ outdir: join(workspace, 'dist') }).outfile;
   }, 180_000);
 
@@ -262,6 +271,23 @@ describe('compiled cihub binary', () => {
 
     expectNoCrash(['update'], output);
     expect(desktopAppCalls().slice(before.length)).toEqual([`${join(stubBin, 'companion-hub')} update`]);
+  });
+
+  /**
+   * Without the desktop app, as on CI, `cihub update` updates the standalone binary itself instead.
+   * Nothing is inherited from the environment: a GH_TOKEN there would let the self-update download
+   * a release over this binary, and without one it stops at its refusal. The desktop app stubs sit
+   * in folders this PATH leaves out, so none of them may run.
+   */
+  it.skipIf(skipSuite)('runs `cihub update` as a self-update on a machine without the desktop app', () => {
+    const before = desktopAppCalls();
+    const { output, status } = runCli(['update'], { path: noDesktopBin, inheritEnv: false });
+
+    expectNoCrash(['update'], output);
+    expect(output).toContain('No desktop app on this machine');
+    expect(output).toContain('Cannot self-update');
+    expect(status).toBe(1);
+    expect(desktopAppCalls()).toEqual(before);
   });
 
   /**
