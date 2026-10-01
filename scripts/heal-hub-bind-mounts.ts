@@ -473,17 +473,22 @@ export function verifyContainerCanWriteFile(hostFilePath: string, uid: number, g
 }
 
 /**
- * The Docker heal's script: `uid:gid` owns everything on the mount, and everyone can read and write
- * it. The files in `keep`, named relative to the mount, are left exactly as they are: the tree is
- * walked with `find` instead, whose `chown -h` and skipped symlinks do what `-R` does for the rest.
- * Mirrors `bind_mount_heal_script` in the desktop app's runtime_state.rs.
+ * The Docker heal's script: `uid:gid` owns everything on the mount, and owner and group can read and
+ * write it. Everyone else loses write and keeps the read and traverse they had, which cloudflared
+ * needs on the tunnel folder. Write for everyone let any local user delete state/settings.json and
+ * put a file of their own in its place. Only where the chown did not take, on a mount that keeps no
+ * owners, does everyone get read and write, the last resort that lets the Hub write there at all.
+ * The files in `keep`, named relative to the mount, are left exactly as they are: the tree is walked
+ * with `find` instead, whose `chown -h` and skipped symlinks do what `-R` does for the rest.
+ * Mirrors `bind_mount_heal_script` in the desktop app's runtime_state.rs, byte for byte.
  */
 export function bindMountHealScript(uid: number, gid: number, keep: readonly string[] = []): string {
+  const chowned = `[ "$(stat -c %u /mnt 2>/dev/null)" = "${uid}" ]`;
   if (keep.length === 0) {
-    return `chown -R ${uid}:${gid} /mnt 2>/dev/null || true; chmod -R u+rwX,g+rwX,o+rwX /mnt 2>/dev/null || chmod -R a+rwX /mnt 2>/dev/null || true`;
+    return `chown -R ${uid}:${gid} /mnt 2>/dev/null || true; if ${chowned}; then chmod -R u+rwX,g+rwX,o-w /mnt 2>/dev/null || true; else chmod -R u+rwX,g+rwX,o+rwX /mnt 2>/dev/null || chmod -R a+rwX /mnt 2>/dev/null || true; fi`;
   }
   const walk = ['find /mnt', ...keep.map((file) => `! -path '/mnt/${file}'`)].join(' ');
-  return `${walk} -exec chown -h ${uid}:${gid} {} + 2>/dev/null || true; ${walk} ! -type l -exec chmod u+rwX,g+rwX,o+rwX {} + 2>/dev/null || ${walk} ! -type l -exec chmod a+rwX {} + 2>/dev/null || true`;
+  return `${walk} -exec chown -h ${uid}:${gid} {} + 2>/dev/null || true; if ${chowned}; then ${walk} ! -type l -exec chmod u+rwX,g+rwX,o-w {} + 2>/dev/null || true; else ${walk} ! -type l -exec chmod u+rwX,g+rwX,o+rwX {} + 2>/dev/null || ${walk} ! -type l -exec chmod a+rwX {} + 2>/dev/null || true; fi`;
 }
 
 export function healBindMountViaDocker(hostSubdir: string, uid: number, gid: number, keep: readonly string[] = []): void {
@@ -915,9 +920,9 @@ export function ensureHubBindMountsWritable(rootFolderHost: string, options: Ens
     }
     if (!containerCanWriteSettings) {
       healBindMountViaDocker(stateDir, effective.uid, effective.gid, STATE_FILES_THE_HEAL_KEEPS);
-      // The heal's `chmod -R a+rwX` just made the credential files world-writable. Where its chown
-      // left them with the owner the Hub reads them as, they come straight back to owner-only,
-      // before the check below confirms the container can still write them.
+      // The heal's chmod just made the credential files group-writable, or world-writable where its
+      // chown did not take. Where the chown left them with the owner the Hub reads them as, they come
+      // straight back to owner-only, before the check below confirms the container can still write them.
       restrictPrivateStateFiles(root, privateFileOwnerUid);
       containerCanWriteSettings = verifyContainerCanWriteFile(settingsPath, identity.uid, identity.gid);
     }

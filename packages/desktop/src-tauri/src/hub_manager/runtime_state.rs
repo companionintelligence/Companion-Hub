@@ -433,9 +433,10 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
                 container_gid,
                 &[crate::updater::UPDATE_LISTENER_TOKEN_FILENAME],
             )?;
-            // The heal's `chmod -R a+rwX` just made the credential files world-writable.
-            // Where it also left them owned by this user, they come straight back to
-            // owner-only, before the check below confirms the container can still write.
+            // The heal's chmod just made the credential files group-writable, or
+            // world-writable where its chown did not take. Where it also left them owned by
+            // this user, they come straight back to owner-only, before the check below
+            // confirms the container can still write.
             restrict_private_state_files(data_dir);
         }
 
@@ -579,16 +580,22 @@ fn verify_container_can_write_dir(host_dir: &Path, uid: u32, gid: u32) -> bool {
     }
 }
 
-/// The Docker permission repair's script: `uid:gid` owns everything on the mount, and everyone
-/// can read and write it. The files in `keep`, named relative to the mount, are left exactly as
-/// they are: the tree is walked with `find` instead, whose `chown -h` and skipped symlinks do what
-/// `-R` does for the rest.
+/// The Docker permission repair's script: `uid:gid` owns everything on the mount, and owner and
+/// group can read and write it. Everyone else loses write and keeps the read and traverse they
+/// had. Write for everyone let any local user delete `state/settings.json` and put a file of their
+/// own in its place. Only where the chown did not take, on a mount that keeps no owners, does
+/// everyone get read and write, the last resort that lets the Hub write there at all. The files in
+/// `keep`, named relative to the mount, are left exactly as they are: the tree is walked with
+/// `find` instead, whose `chown -h` and skipped symlinks do what `-R` does for the rest.
+/// Mirrors `bindMountHealScript` in scripts/heal-hub-bind-mounts.ts, byte for byte.
 #[cfg(not(target_os = "windows"))]
 pub(crate) fn bind_mount_heal_script(uid: u32, gid: u32, keep: &[&str]) -> String {
+    let chowned = format!("[ \"$(stat -c %u /mnt 2>/dev/null)\" = \"{uid}\" ]");
     if keep.is_empty() {
         return format!(
             "chown -R {uid}:{gid} /mnt 2>/dev/null || true; \
-             chmod -R u+rwX,g+rwX,o+rwX /mnt 2>/dev/null || chmod -R a+rwX /mnt 2>/dev/null || true"
+             if {chowned}; then chmod -R u+rwX,g+rwX,o-w /mnt 2>/dev/null || true; \
+             else chmod -R u+rwX,g+rwX,o+rwX /mnt 2>/dev/null || chmod -R a+rwX /mnt 2>/dev/null || true; fi"
         );
     }
     let walk = std::iter::once("find /mnt".to_string())
@@ -597,8 +604,9 @@ pub(crate) fn bind_mount_heal_script(uid: u32, gid: u32, keep: &[&str]) -> Strin
         .join(" ");
     format!(
         "{walk} -exec chown -h {uid}:{gid} {{}} + 2>/dev/null || true; \
-         {walk} ! -type l -exec chmod u+rwX,g+rwX,o+rwX {{}} + 2>/dev/null || \
-         {walk} ! -type l -exec chmod a+rwX {{}} + 2>/dev/null || true"
+         if {chowned}; then {walk} ! -type l -exec chmod u+rwX,g+rwX,o-w {{}} + 2>/dev/null || true; \
+         else {walk} ! -type l -exec chmod u+rwX,g+rwX,o+rwX {{}} + 2>/dev/null || \
+         {walk} ! -type l -exec chmod a+rwX {{}} + 2>/dev/null || true; fi"
     )
 }
 

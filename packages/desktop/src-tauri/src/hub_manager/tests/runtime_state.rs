@@ -160,16 +160,22 @@ fn restricting_a_missing_file_is_a_no_op() {
     assert_eq!(restrict_private_state_file(&dir.path().join("seed")), None);
 }
 
+// The exact strings, which `bindMountHealScript`'s tests in
+// scripts/__tests__/heal-hub-bind-mounts.test.ts pin too: the two heals must stay the same script.
 #[cfg(not(target_os = "windows"))]
 #[test]
 fn docker_permission_repair_leaves_the_update_listener_token_alone() {
     let script = bind_mount_heal_script(1000, 1000, &["update-listener.token"]);
 
     let walk = "find /mnt ! -path '/mnt/update-listener.token'";
-    assert!(script.contains(&format!("{walk} -exec chown -h 1000:1000 {{}} +")));
-    assert!(script.contains(&format!(
-        "{walk} ! -type l -exec chmod u+rwX,g+rwX,o+rwX {{}} +"
-    )));
+    assert_eq!(
+        script,
+        format!(
+            "{walk} -exec chown -h 1000:1000 {{}} + 2>/dev/null || true; \
+             if [ \"$(stat -c %u /mnt 2>/dev/null)\" = \"1000\" ]; then {walk} ! -type l -exec chmod u+rwX,g+rwX,o-w {{}} + 2>/dev/null || true; \
+             else {walk} ! -type l -exec chmod u+rwX,g+rwX,o+rwX {{}} + 2>/dev/null || {walk} ! -type l -exec chmod a+rwX {{}} + 2>/dev/null || true; fi"
+        )
+    );
     // Nothing recursive that would reach the token.
     assert!(!script.contains(" -R "));
 }
@@ -180,6 +186,7 @@ fn docker_permission_repair_with_nothing_to_keep_is_the_recursive_one() {
     assert_eq!(
         bind_mount_heal_script(1000, 1000, &[]),
         "chown -R 1000:1000 /mnt 2>/dev/null || true; \
-         chmod -R u+rwX,g+rwX,o+rwX /mnt 2>/dev/null || chmod -R a+rwX /mnt 2>/dev/null || true"
+         if [ \"$(stat -c %u /mnt 2>/dev/null)\" = \"1000\" ]; then chmod -R u+rwX,g+rwX,o-w /mnt 2>/dev/null || true; \
+         else chmod -R u+rwX,g+rwX,o+rwX /mnt 2>/dev/null || chmod -R a+rwX /mnt 2>/dev/null || true; fi"
     );
 }

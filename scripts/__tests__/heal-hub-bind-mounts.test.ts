@@ -397,20 +397,25 @@ describe.skipIf(process.platform === 'win32')('credential files in state/ (setti
   });
 });
 
+// The exact strings, which docker_permission_repair_* in the desktop app's tests/runtime_state.rs
+// pin too: the two heals must stay the same script.
 describe('bindMountHealScript', () => {
-  it('is the recursive chown and chmod when nothing is kept', () => {
+  it('is the recursive chown and chmod when nothing is kept, taking write from everyone else once the chown took', () => {
     expect(bindMountHealScript(1000, 1000)).toBe(
-      'chown -R 1000:1000 /mnt 2>/dev/null || true; chmod -R u+rwX,g+rwX,o+rwX /mnt 2>/dev/null || chmod -R a+rwX /mnt 2>/dev/null || true',
+      'chown -R 1000:1000 /mnt 2>/dev/null || true; ' +
+        'if [ "$(stat -c %u /mnt 2>/dev/null)" = "1000" ]; then chmod -R u+rwX,g+rwX,o-w /mnt 2>/dev/null || true; ' +
+        'else chmod -R u+rwX,g+rwX,o+rwX /mnt 2>/dev/null || chmod -R a+rwX /mnt 2>/dev/null || true; fi',
     );
   });
 
   it('walks around the files it keeps, and changes symlinks themselves, never their targets', () => {
-    const script = bindMountHealScript(1000, 1000, ['update-listener.token']);
-
     const walk = "find /mnt ! -path '/mnt/update-listener.token'";
-    expect(script).toContain(`${walk} -exec chown -h 1000:1000 {} +`);
-    expect(script).toContain(`${walk} ! -type l -exec chmod u+rwX,g+rwX,o+rwX {} +`);
-    expect(script).not.toContain(' -R ');
+
+    expect(bindMountHealScript(1000, 1000, ['update-listener.token'])).toBe(
+      `${walk} -exec chown -h 1000:1000 {} + 2>/dev/null || true; ` +
+        `if [ "$(stat -c %u /mnt 2>/dev/null)" = "1000" ]; then ${walk} ! -type l -exec chmod u+rwX,g+rwX,o-w {} + 2>/dev/null || true; ` +
+        `else ${walk} ! -type l -exec chmod u+rwX,g+rwX,o+rwX {} + 2>/dev/null || ${walk} ! -type l -exec chmod a+rwX {} + 2>/dev/null || true; fi`,
+    );
   });
 });
 
