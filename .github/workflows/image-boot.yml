@@ -18,6 +18,7 @@ on:
   push:
     branches:
       - dev
+      - 'liam/probe-image-boot-*'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
