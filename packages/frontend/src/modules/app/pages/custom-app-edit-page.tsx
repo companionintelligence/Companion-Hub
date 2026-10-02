@@ -6,6 +6,7 @@ import { dynamicComposeFormSchema, type dynamicComposeSchema } from '@ci-hub/com
 import type { z } from 'zod';
 import { MultiServiceForm } from '@/components/multi-service-form/multi-service-form';
 import { Input } from '@/components/ui/Input/Input';
+import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
 import type { TranslatableError } from '@/types/error.types';
 import { useEffect, useId, useState } from 'react';
@@ -32,6 +33,7 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [ready, setReady] = useState(false);
+  const [configError, setConfigError] = useState<string | null>(null);
   const params = useParams<{ appId: string }>();
 
   const [appName] = useState(params.appId);
@@ -46,12 +48,14 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
   const id = useId();
 
   useEffect(() => {
-    if (currentConfig?.current) {
-      const parsed = dynamicComposeFormSchema.safeParse(JSON.parse(currentConfig.current));
+    if (!currentConfig?.current) {
+      return;
+    }
 
+    try {
+      const parsed = dynamicComposeFormSchema.safeParse(JSON.parse(currentConfig.current));
       if (!parsed.success) {
-        console.error('Failed to parse current config:', parsed.error.message);
-        toast.error(t('CUSTOM_APP_INVALID_CONFIG'));
+        setConfigError(t('CUSTOM_APP_INVALID_CONFIG'));
         return;
       }
 
@@ -60,8 +64,11 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
         ...service,
       }));
 
+      setConfigError(null);
       setServices(servicesWithId);
       setReady(true);
+    } catch {
+      setConfigError(t('CUSTOM_APP_INVALID_CONFIG'));
     }
   }, [currentConfig, setServices, t, id]);
 
@@ -80,8 +87,19 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
     updateCustomApp.mutate({ body: { config: { ...data, schemaVersion: 2 } }, path: { urn: `${params.appId}:_user` } });
   };
 
+  if (configError) {
+    return (
+      <div className="flex flex-col items-start gap-3 p-4">
+        <p className="text-sm text-muted-foreground">{configError}</p>
+        <Button type="button" variant="outline" onClick={() => navigate(`/apps/${appName}`)}>
+          {t('COMMON_BACK')}
+        </Button>
+      </div>
+    );
+  }
+
   if (!ready) {
-    return <div>{t('LOADING')}</div>;
+    return <div>{t('COMMON_LOADING')}</div>;
   }
 
   return (
