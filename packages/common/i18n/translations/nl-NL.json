@@ -264,7 +264,6 @@
   "AUTH_REGISTER_SUBMIT": "Registreer",
   "AUTH_REGISTER_TITLE": "Registreer je account",
   "AUTH_RESET_PASSWORD_BACK_TO_LOGIN": "Terug naar het inlogscherm",
-  "AUTH_RESET_PASSWORD_CANCEL": "Stop het wachtwoord herstel proces",
   "AUTH_RESET_PASSWORD_COMPLETE_FAILED": "Wachtwoord kon niet worden gereset. De resetlink is mogelijk ongeldig of verlopen.",
   "AUTH_RESET_PASSWORD_COMPLETE_SUCCESS": "Wachtwoord bijgewerkt. Je kunt nu inloggen met je nieuwe wachtwoord.",
   "AUTH_RESET_PASSWORD_INSTRUCTIONS": "Om te starten, geef dit commando in op je server en ververs de pagina. Als je dit onlangs gedaan hebt, is het mogelijk dat het wachtwoord herstel verlopen is. In dit geval gelieve te herstarten",

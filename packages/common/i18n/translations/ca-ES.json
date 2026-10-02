@@ -264,7 +264,6 @@
   "AUTH_REGISTER_SUBMIT": "Registra't",
   "AUTH_REGISTER_TITLE": "Inicia sessió al teu compte",
   "AUTH_RESET_PASSWORD_BACK_TO_LOGIN": "Torna a l'inici de sessió",
-  "AUTH_RESET_PASSWORD_CANCEL": "Cancel·la la sol·licitud de canvi de contrasenya",
   "AUTH_RESET_PASSWORD_COMPLETE_FAILED": "No s'ha pogut restablir la contrasenya. L'enllaç de restabliment pot ser invàlid o haver caducat.",
   "AUTH_RESET_PASSWORD_COMPLETE_SUCCESS": "Contrasenya actualitzada. Ara pots iniciar sessió amb la teva nova contrasenya.",
   "AUTH_RESET_PASSWORD_INSTRUCTIONS": "To get started, run this command on your server and then refresh this page. If you have previously done so, the password reset request may have expired. In that case please retry",

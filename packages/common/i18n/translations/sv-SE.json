@@ -264,7 +264,6 @@
   "AUTH_REGISTER_SUBMIT": "Registrera",
   "AUTH_REGISTER_TITLE": "Registrera ditt konto",
   "AUTH_RESET_PASSWORD_BACK_TO_LOGIN": "Tillbaka till inloggningen",
-  "AUTH_RESET_PASSWORD_CANCEL": "Avbryta begäran om ändring av lösenord",
   "AUTH_RESET_PASSWORD_COMPLETE_FAILED": "Det gick inte att återställa lösenordet. Återställningslänken kan vara ogiltig eller ha gått ut.",
   "AUTH_RESET_PASSWORD_COMPLETE_SUCCESS": "Lösenord uppdaterat. Du kan nu logga in med ditt nya lösenord.",
   "AUTH_RESET_PASSWORD_INSTRUCTIONS": "För att komma igång, kör detta kommando på din server och uppdatera sedan den här sidan. Om du tidigare har gjort det, kan lösenordsåterställningsbegäran ha gått ut. I så fall, försök igen",

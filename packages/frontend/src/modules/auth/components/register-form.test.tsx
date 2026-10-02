@@ -36,4 +36,35 @@ describe('RegisterForm', () => {
     expect(passwordInput.type).toBe('text');
     expect(confirmationInput.type).toBe('text');
   });
+
+  it('shows the server password rule and refuses a password the server would reject', async () => {
+    const onSubmit = vi.fn();
+    render(<RegisterForm loading={false} onSubmit={onSubmit} />);
+
+    expect(screen.getByText('AUTH_ERROR_INVALID_PASSWORD_COMPLEXITY')).toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText('AUTH_FORM_EMAIL'), 'owner@example.test');
+    await userEvent.type(screen.getByLabelText('COMMON_PASSWORD'), 'password1');
+    await userEvent.type(screen.getByLabelText('AUTH_FORM_PASSWORD_CONFIRMATION'), 'password1');
+    await userEvent.click(screen.getByRole('button', { name: 'AUTH_REGISTER_SUBMIT' }));
+
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.getAllByText('AUTH_ERROR_INVALID_PASSWORD_COMPLEXITY').length).toBeGreaterThan(1);
+  });
+
+  it('submits a password that meets the server rule', async () => {
+    const onSubmit = vi.fn();
+    render(<RegisterForm loading={false} onSubmit={onSubmit} />);
+
+    await userEvent.type(screen.getByLabelText('AUTH_FORM_EMAIL'), 'owner@example.test');
+    await userEvent.type(screen.getByLabelText('COMMON_PASSWORD'), 'Password1!');
+    await userEvent.type(screen.getByLabelText('AUTH_FORM_PASSWORD_CONFIRMATION'), 'Password1!');
+    await userEvent.click(screen.getByRole('button', { name: 'AUTH_REGISTER_SUBMIT' }));
+
+    expect(onSubmit).toHaveBeenCalledWith({
+      email: 'owner@example.test',
+      password: 'Password1!',
+      passwordConfirm: 'Password1!',
+    });
+  });
 });

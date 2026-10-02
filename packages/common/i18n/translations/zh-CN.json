@@ -261,7 +261,6 @@
   "AUTH_REGISTER_SUBMIT": "注册",
   "AUTH_REGISTER_TITLE": "注册您的账户",
   "AUTH_RESET_PASSWORD_BACK_TO_LOGIN": "返回登录界面",
-  "AUTH_RESET_PASSWORD_CANCEL": "取消密码更改请求",
   "AUTH_RESET_PASSWORD_COMPLETE_FAILED": "无法重置密码。重置链接可能无效或已过期。",
   "AUTH_RESET_PASSWORD_COMPLETE_SUCCESS": "密码已更新。你现在可以使用新密码登录。",
   "AUTH_RESET_PASSWORD_INSTRUCTIONS": "请在您的服务器上运行此命令，然后刷新此页面。如果您之前已经这样做过，密码重置请求可能已过期。在这种情况下，请重试",

@@ -30,7 +30,7 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('react-router', () => ({
-  Link: ({ children }: { children: React.ReactNode }) => <a href="/mock-link">{children}</a>,
+  Link: ({ children, to }: { children: React.ReactNode; to: string }) => <a href={to}>{children}</a>,
   useNavigate: () => mockNavigate,
   useSearchParams: () => [mockSearchParams(), vi.fn()],
 }));
@@ -84,6 +84,20 @@ describe('ResetPasswordPage', () => {
     });
 
     expect(screen.queryByText('AUTH_RESET_PASSWORD_REQUEST_SUCCESS')).not.toBeInTheDocument();
+  });
+
+  it('returns to login from an emailed reset without cancelling the request', async () => {
+    mockSearchParams.mockReturnValue(new URLSearchParams('token=live-token'));
+    mockVerifyResetPasswordToken.mockResolvedValue(true);
+
+    await act(async () => {
+      render(<ResetPasswordPage />);
+    });
+
+    const backToLogin = await screen.findByRole('link', { name: 'AUTH_RESET_PASSWORD_BACK_TO_LOGIN' });
+    expect(backToLogin).toHaveAttribute('href', '/login');
+    expect(screen.queryByText('AUTH_RESET_PASSWORD_CANCEL')).not.toBeInTheDocument();
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 
   it('shows invalid-link state when verify returns valid:false', async () => {

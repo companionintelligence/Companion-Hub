@@ -21,3 +21,4 @@ export {
 
 export { resolveMcpCommandParts, resolveMcpTemplateString } from './mcp-command-resolver.js';
 export { inferMcpLaunchMode, MCP_LAUNCH_MODES, type McpLaunchMode } from './mcp-launch.js';
+export { meetsPasswordComplexity, PASSWORD_COMPLEXITY_REGEX } from './password-policy.js';

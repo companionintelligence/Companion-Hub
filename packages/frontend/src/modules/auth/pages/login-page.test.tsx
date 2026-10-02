@@ -1,5 +1,5 @@
 import { act } from '@testing-library/react';
-import { render, screen } from '@/tests/test-utils';
+import { render, screen, userEvent } from '@/tests/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import LoginPage from './login-page';
 
@@ -122,7 +122,13 @@ vi.mock('../components/login-form', () => ({
 }));
 
 vi.mock('../components/totp-form/totp-form', () => ({
-  TotpForm: () => <div data-testid="totp-form" />,
+  TotpForm: ({ onBack }: { onBack?: () => void }) => (
+    <div data-testid="totp-form">
+      <button type="button" onClick={onBack}>
+        COMMON_BACK
+      </button>
+    </div>
+  ),
 }));
 
 describe('LoginPage', () => {
@@ -210,6 +216,15 @@ describe('LoginPage', () => {
         expect(mockToastError).toHaveBeenCalledWith(code);
       },
     );
+
+    it('returns to the password form when the person leaves the code step', async () => {
+      reachCodeForm();
+
+      await userEvent.click(screen.getByRole('button', { name: 'COMMON_BACK' }));
+
+      expect(screen.queryByTestId('totp-form')).not.toBeInTheDocument();
+      expect(screen.getByTestId('login-type')).toBeInTheDocument();
+    });
 
     it('stays on the code form after a wrong code, so the user can try again', () => {
       reachCodeForm();

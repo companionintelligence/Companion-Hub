@@ -204,7 +204,13 @@ export default () => {
   }
 
   if (totpSessionId) {
-    return <TotpForm loading={verifyTotp.isPending} onSubmit={(totpCode) => verifyTotp.mutate({ body: { totpCode, totpSessionId } })} />;
+    return (
+      <TotpForm
+        loading={verifyTotp.isPending}
+        onBack={() => setTotpSessionId(null)}
+        onSubmit={(totpCode) => verifyTotp.mutate({ body: { totpCode, totpSessionId } })}
+      />
+    );
   }
 
   const portalSsoHref = authPolicy.usesHubPortalSso

@@ -264,7 +264,6 @@
   "AUTH_REGISTER_SUBMIT": "Registar",
   "AUTH_REGISTER_TITLE": "Registre a sua conta",
   "AUTH_RESET_PASSWORD_BACK_TO_LOGIN": "Voltar ao início de sessão",
-  "AUTH_RESET_PASSWORD_CANCEL": "Cancelar solicitação de alteração de senha",
   "AUTH_RESET_PASSWORD_COMPLETE_FAILED": "Não foi possível repor a palavra-passe. A ligação de reposição pode ser inválida ou ter expirado.",
   "AUTH_RESET_PASSWORD_COMPLETE_SUCCESS": "Palavra-passe atualizada. Agora pode iniciar sessão com a sua nova palavra-passe.",
   "AUTH_RESET_PASSWORD_INSTRUCTIONS": "To get started, run this command on your server and then refresh this page. If you have previously done so, the password reset request may have expired. In that case please retry",
