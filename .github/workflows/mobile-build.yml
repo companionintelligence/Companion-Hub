@@ -64,7 +64,7 @@ jobs:
           java-version: '17'
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       # The Android Rust build (multi-ABI) + gradle + the Rust cache save can
       # exceed the ~14 GB free on the ubuntu runner. Reclaim ~15-20 GB of
@@ -167,7 +167,7 @@ jobs:
 
       - name: Set up Android SDK
         if: steps.secrets.outputs.present == 'true'
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       - name: Free up disk space
         if: steps.secrets.outputs.present == 'true'
