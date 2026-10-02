@@ -44,6 +44,105 @@ pub fn read_launch_mode(data_dir: &Path) -> PersistedLaunchMode {
         .unwrap_or(PersistedLaunchMode::Desktop)
 }
 
+const DESKTOP_WINDOW_LOCK_FILENAME: &str = ".desktop-window.lock";
+
+/// Held for the life of the desktop process. Closing the file releases the lock,
+/// which is how a crashed window stops counting as open.
+pub struct DesktopWindowGuard {
+    _file: std::fs::File,
+}
+
+/// Exclusive lock while this process is the open window. `None` when another
+/// window already holds it, or the lock file cannot be created.
+pub fn try_acquire_desktop_window(data_dir: &Path) -> Option<DesktopWindowGuard> {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(data_dir.join(DESKTOP_WINDOW_LOCK_FILENAME))
+        .ok()?;
+    if lock_desktop_window(&file) {
+        Some(DesktopWindowGuard { _file: file })
+    } else {
+        None
+    }
+}
+
+/// Keeps the window lock until this process exits. Dropping it at the end of
+/// setup would let a later `--detached` start record headless while the window
+/// is still open.
+pub fn hold_desktop_window(data_dir: &Path) {
+    static HELD: Mutex<Option<DesktopWindowGuard>> = Mutex::new(None);
+    let Some(guard) = try_acquire_desktop_window(data_dir) else {
+        return;
+    };
+    if let Ok(mut held) = HELD.lock() {
+        *held = Some(guard);
+    }
+}
+
+pub fn desktop_window_is_open(data_dir: &Path) -> bool {
+    try_acquire_desktop_window(data_dir).is_none()
+}
+
+/// Records a headless start. Leaves the file alone when a window is already
+/// open, so a later update does not relaunch that window headless (#1780).
+pub fn persist_detached_launch_mode(data_dir: &Path) {
+    if desktop_window_is_open(data_dir) {
+        return;
+    }
+    persist_launch_mode(data_dir, PersistedLaunchMode::Detached);
+}
+
+#[cfg(unix)]
+fn lock_desktop_window(file: &std::fs::File) -> bool {
+    use std::os::unix::io::AsRawFd;
+    unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
+}
+
+#[cfg(windows)]
+fn lock_desktop_window(file: &std::fs::File) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    #[repr(C)]
+    struct Overlapped {
+        internal: usize,
+        internal_high: usize,
+        offset: u32,
+        offset_high: u32,
+        h_event: *mut std::ffi::c_void,
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn LockFileEx(
+            file: *mut std::ffi::c_void,
+            flags: u32,
+            reserved: u32,
+            bytes_low: u32,
+            bytes_high: u32,
+            overlapped: *mut Overlapped,
+        ) -> i32;
+    }
+    const LOCKFILE_FAIL_IMMEDIATELY: u32 = 0x0000_0001;
+    const LOCKFILE_EXCLUSIVE_LOCK: u32 = 0x0000_0002;
+    let mut overlapped = Overlapped {
+        internal: 0,
+        internal_high: 0,
+        offset: 0,
+        offset_high: 0,
+        h_event: std::ptr::null_mut(),
+    };
+    unsafe {
+        LockFileEx(
+            file.as_raw_handle() as *mut std::ffi::c_void,
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            1,
+            0,
+            &mut overlapped,
+        ) != 0
+    }
+}
+
 fn user_stopped_marker_path(data_dir: &Path) -> PathBuf {
     data_dir.join(USER_STOPPED_MARKER_FILENAME)
 }

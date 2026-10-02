@@ -479,7 +479,11 @@ async fn perform_desktop_update_command(download_url: String) -> Result<(), Stri
         }
         let (expected_size, expected_sha256) =
             updater::artifact_expectations_for_url(&info.latest_version, &info, &url)?;
-        updater::perform_host_update(&url, expected_size, expected_sha256.as_deref())
+        updater::perform_host_update_from_open_window(
+            &url,
+            expected_size,
+            expected_sha256.as_deref(),
+        )
     })
     .await
     .map_err(|e| format!("Update task failed: {}", e))?
@@ -710,6 +714,7 @@ pub fn run() {
                 error
             })?;
             let data_dir = initialization.data_dir.clone();
+            hub_manager::hold_desktop_window(&data_dir);
             hub_manager::persist_launch_mode(
                 &data_dir,
                 hub_manager::PersistedLaunchMode::Desktop,
@@ -1019,7 +1024,9 @@ fn run_detached_mode() -> Result<String, String> {
         error
     })?;
     let data_dir = initialization.data_dir.clone();
-    hub_manager::persist_launch_mode(&data_dir, hub_manager::PersistedLaunchMode::Detached);
+    // A window that is already open keeps its recorded mode. Overwriting it here
+    // made the next Settings update relaunch that window headless (#1780).
+    hub_manager::persist_detached_launch_mode(&data_dir);
     let compose_path = initialization.compose_path.clone();
     let env_path = initialization.env_path.clone();
     // Headless mode skips run(), so initialize crash reporting here too —

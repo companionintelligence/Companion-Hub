@@ -109,6 +109,31 @@ fn compose_missing_race_is_not_sticky() {
 }
 
 #[test]
+fn detached_start_keeps_desktop_launch_mode_while_the_window_is_open() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    crate::hub_manager::persist_launch_mode(
+        dir.path(),
+        crate::hub_manager::PersistedLaunchMode::Desktop,
+    );
+
+    let window = crate::hub_manager::try_acquire_desktop_window(dir.path()).expect("window lock");
+    assert!(crate::hub_manager::desktop_window_is_open(dir.path()));
+    crate::hub_manager::persist_detached_launch_mode(dir.path());
+    assert_eq!(
+        crate::hub_manager::read_launch_mode(dir.path()),
+        crate::hub_manager::PersistedLaunchMode::Desktop
+    );
+
+    drop(window);
+    assert!(!crate::hub_manager::desktop_window_is_open(dir.path()));
+    crate::hub_manager::persist_detached_launch_mode(dir.path());
+    assert_eq!(
+        crate::hub_manager::read_launch_mode(dir.path()),
+        crate::hub_manager::PersistedLaunchMode::Detached
+    );
+}
+
+#[test]
 fn start_failed_marker_roundtrip() {
     let dir = tempfile::tempdir().expect("tempdir");
     assert!(!crate::hub_manager::is_start_failed(dir.path()));
