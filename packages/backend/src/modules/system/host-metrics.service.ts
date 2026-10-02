@@ -199,10 +199,10 @@ export class HostMetricsService {
       },
     };
     const wrote = await this.filesystem.writeJsonFile(HOST_METRICS_PATH, next);
-    if (!wrote) {
-      this.logger.warn('Could not store the refreshed Linux disk sample; this process will keep it until the next check');
-    } else {
+    if (wrote) {
       this.logger.info(`Refreshed Linux disk sample: ${live.diskUsedGb}/${live.diskTotalGb} GB on ${next.host.diskMount}`);
+    } else {
+      this.logger.warn('Could not store the refreshed Linux disk sample; this process will keep it until the next check');
     }
     this.linuxDiskMemo = { at: now, probe: next };
     return next;
