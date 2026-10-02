@@ -11,7 +11,21 @@ vi.mock('axios', () => ({
   },
 }));
 
+// The real lookup asks the public zone. Tests that do not care about it get a failure, which is the
+// probe's "use this host's resolver" path. Tests that care set the answer themselves.
+vi.mock('../../registration/public-reachability', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../registration/public-reachability')>();
+  return {
+    ...actual,
+    resolveAtZoneNameservers: vi.fn(async () => {
+      throw new Error('zone lookup is stubbed');
+    }),
+    httpsGetExcerpt: vi.fn(),
+  };
+});
+
 import axios from 'axios';
+import { httpsGetExcerpt, resolveAtZoneNameservers } from '../../registration/public-reachability';
 const mockedAxiosGet = vi.mocked(axios.get);
 
 // Helpers to build mock dependencies
@@ -90,6 +104,9 @@ describe('AppsService.checkAppAvailability', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(resolveAtZoneNameservers).mockReset();
+    vi.mocked(resolveAtZoneNameservers).mockRejectedValue(new Error('zone lookup is stubbed'));
+    vi.mocked(httpsGetExcerpt).mockReset();
     ctx = createMockService();
   });
 
@@ -313,6 +330,62 @@ describe('AppsService.checkAppAvailability', () => {
   });
 
   // Test 9: DNS ENOTFOUND = DNS_NOT_FOUND
+  it('cloudflare mode → an unpublished name is not looked up here, so the miss is not cached for half an hour', async () => {
+    ctx.mockApp.exposureMode = 'cloudflare';
+    vi.mocked(resolveAtZoneNameservers).mockResolvedValue({ kind: 'nxdomain' });
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result.errorCode).toBe('DNS_NOT_FOUND');
+    expect(result.stage).toBe('propagating');
+    expect(mockedAxiosGet).not.toHaveBeenCalled();
+    expect(httpsGetExcerpt).not.toHaveBeenCalled();
+  });
+
+  it('cloudflare mode → a cached miss still opens the app when the zone publishes it and that address answers', async () => {
+    ctx.mockApp.exposureMode = 'cloudflare';
+    vi.mocked(resolveAtZoneNameservers).mockResolvedValue({ kind: 'addresses', addresses: ['104.21.48.168'] });
+    mockedAxiosGet.mockRejectedValue(new Error('getaddrinfo ENOTFOUND myapp.example.com'));
+    vi.mocked(httpsGetExcerpt).mockResolvedValue({ status: 200, text: '<html>sign in</html>' });
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result.available).toBe(true);
+    expect(result.stage).toBe('ready');
+    expect(httpsGetExcerpt).toHaveBeenCalledWith(result.appUrl, {
+      addresses: ['104.21.48.168'],
+      timeoutMs: 5_000,
+      isAllowedAddress: expect.any(Function),
+    });
+  });
+
+  it('cloudflare mode → a published name that still returns a Cloudflare error page stays propagating', async () => {
+    ctx.mockApp.exposureMode = 'cloudflare';
+    vi.mocked(resolveAtZoneNameservers).mockResolvedValue({ kind: 'addresses', addresses: ['104.21.48.168'] });
+    mockedAxiosGet.mockRejectedValue(new Error('getaddrinfo ENOTFOUND myapp.example.com'));
+    vi.mocked(httpsGetExcerpt).mockResolvedValue({
+      status: 530,
+      text: '<html>Cloudflare Ray ID abc123 <span class="cf-error-details">Error 1033</span></html>',
+    });
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result.available).toBe(false);
+    expect(result.errorCode).toBe('CF_TUNNEL_NOT_FOUND');
+    expect(result.stage).toBe('propagating');
+  });
+
+  it('cloudflare mode → does not connect to a private address the zone publishes', async () => {
+    ctx.mockApp.exposureMode = 'cloudflare';
+    vi.mocked(resolveAtZoneNameservers).mockResolvedValue({ kind: 'addresses', addresses: ['10.0.0.5'] });
+    mockedAxiosGet.mockRejectedValue(new Error('getaddrinfo ENOTFOUND myapp.example.com'));
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result.errorCode).toBe('DNS_NOT_FOUND');
+    expect(httpsGetExcerpt).not.toHaveBeenCalled();
+  });
+
   it('cloudflare mode → DNS ENOTFOUND = DNS_NOT_FOUND, resolvable, includes appUrl', async () => {
     ctx.mockApp.exposureMode = 'cloudflare';
     mockedAxiosGet.mockRejectedValue(new Error('getaddrinfo ENOTFOUND myapp.example.com'));

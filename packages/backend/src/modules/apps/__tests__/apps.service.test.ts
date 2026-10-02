@@ -13,6 +13,17 @@ vi.mock('axios', () => ({
   default: { get: (...args: any[]) => mockAxiosGet(...args) },
 }));
 
+vi.mock('../../registration/public-reachability', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../registration/public-reachability')>();
+  return {
+    ...actual,
+    resolveAtZoneNameservers: vi.fn(async () => {
+      throw new Error('zone lookup is stubbed');
+    }),
+    httpsGetExcerpt: vi.fn(),
+  };
+});
+
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { Test, TestingModule } from '@nestjs/testing';
