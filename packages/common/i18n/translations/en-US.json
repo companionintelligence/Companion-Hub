@@ -356,6 +356,7 @@
   "APP_INSTALL_FORM_EXPOSE_LOCAL_HINT": "Expose the app on the local network? This app will be accessible at {{appId}}.{{domain}}. (Visit settings page to setup your local domain)",
   "APP_INSTALL_FORM_RESET": "Reset app",
   "APP_INSTALL_FORM_TITLE": "Install {{name}}",
+  "APP_INSTALL_FORM_COMPLETE_REQUIRED": "Fill every required field before installing. Fields with defaults can stay as-is.",
   "APP_INSTALL_FORM_REVERSE_PROXY": "Reverse proxy",
   "APP_INSTALL_FORM_PORT_HINT": "Port on which the app will be accessible",
   "APP_INSTALL_SUCCESS": "App {{id}} installed successfully",
