@@ -317,6 +317,65 @@ describe('the load window on the fleet', () => {
     expect(ollama.loads).toEqual([{ id: 'qwen3.8:27b', ctx: 16_384 }]);
   });
 
+  describe('a measurement taken at a larger window than the one being loaded (retest 2026-10-01)', () => {
+    it('steps gemma4:e4b down from its 65536 sighting on beta-red instead of charging it at every smaller window', async () => {
+      const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+      const { router, memoryManager } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+      // Seen at 65536 in 9,102 MiB (4,046 + 4,736 of KV + 320), then unloaded: the sighting is all that is left.
+      ollama.hold('gemma4:e4b', 65_536, 3209, 9_102);
+      await memoryManager.footprintSighting(BETA_RED, 'ollama', 'gemma4:e4b');
+      ollama.resident.clear();
+      memoryManager.invalidateObservation();
+
+      await expect(router.loadTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toEqual({ loaded: true });
+
+      // 65536 is 10,126 MB with the vision reserve against the 9,728 the card gives models; charged unscaled
+      // that was every window's price, and the load fell through to 4096. 32768 is 7,054.
+      expect(ollama.loads).toEqual([{ id: 'gemma4:e4b', ctx: 32_768 }]);
+    });
+
+    it('loads qwen3.8:27b on beta-1 beside a resident gemma4 without unloading it, because both cards are budgeted', async () => {
+      const twoCards: HardwareProfile = {
+        ...BETA_1,
+        gpu: { ...BETA_1.gpu, deviceCount: 2, poolVramMb: 49_120 },
+        effectiveInferenceMemoryMb: 49_120,
+      };
+      const ollama = new FakeOllama(65_536);
+      const { router } = world({ profile: twoCards, ollama });
+      ollama.hold('gemma4:e4b', 65_536, 4_897, 4_897);
+
+      await expect(router.loadTrackedModel('qwen3-8-27b', { origin: 'operator' })).resolves.toEqual({ loaded: true });
+
+      expect(ollama.loads).toEqual([{ id: 'qwen3.8:27b', ctx: 65_536 }]);
+      expect(ollama.resident.has('gemma4:e4b')).toBe(true);
+    });
+  });
+
+  describe('a node whose Ollama slot count nothing states (beta-red ran four, 2026-10-01)', () => {
+    const slotsWarnings = (logger: ReturnType<typeof world>['logger']) =>
+      logger.warn.mock.calls.filter(([message]) => String(message).includes('OLLAMA_NUM_PARALLEL'));
+
+    it('says so once, with the command that states it, instead of sizing for one slot in silence', async () => {
+      const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+      const { router, logger } = world({ profile: BETA_RED, ollama });
+
+      await router.loadTrackedModel('gemma4-e4b', { origin: 'operator' });
+      await router.loadTrackedModel('gemma4-e4b', { origin: 'operator' });
+
+      expect(slotsWarnings(logger)).toHaveLength(1);
+      expect(String(slotsWarnings(logger)[0]?.[0])).toContain('cihub pool slots');
+    });
+
+    it('is quiet once the slots are stated', async () => {
+      const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+      const { router, logger } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+
+      await router.loadTrackedModel('gemma4-e4b', { origin: 'operator' });
+
+      expect(slotsWarnings(logger)).toHaveLength(0);
+    });
+  });
+
   describe('gemma4:e4b, the fleet default app model, on 8 and 10 GB cards', () => {
     // beta-red, 2026-09-29: /api/ps 3,364,754,553 bytes at 16384; nvidia-smi 5,550 MiB; four slots.
     const servedOnBetaRed = (ollama: FakeOllama) => ollama.hold('gemma4:e4b', 16_384, 3209, 5550);

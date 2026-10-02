@@ -44,12 +44,25 @@ const MIB = 1024 * 1024;
  */
 export function modelMemoryCeilingMb(profile: HardwareProfile): number {
   if (modelPoolFor(profile) === 'vram') {
-    return Math.max(0, profile.gpu.vramMb - DISPLAY_RESERVED_VRAM_MB);
+    return modelBudgetVramMbFor(profile);
   }
   if (profile.ram.sampledAt) {
     return Math.max(0, profile.ram.availableMb - SYSTEM_RESERVED_RAM_MB);
   }
   return Math.max(0, profile.effectiveInferenceMemoryMb);
+}
+
+/**
+ * What models may take of a discrete GPU node's VRAM: every card's, less each one's display reserve.
+ *
+ * The usage side of the budget is the engines' processes as the vendor tool measures them, summed over
+ * all the cards a process holds memory on. beta-1 has two RX 7900 XTX, and Ollama puts a 27B at a 65536
+ * window across both (26.1 GB, one `llama-server`); read against one card's 24,048 MB the Hub saw
+ * 36,642 MB used and a model 24,913 MB large over budget, when it was using half of what the node has.
+ */
+function modelBudgetVramMbFor(profile: HardwareProfile): number {
+  const cards = Math.max(1, profile.gpu.deviceCount ?? 1);
+  return Math.max(0, (profile.gpu.poolVramMb ?? profile.gpu.vramMb) - DISPLAY_RESERVED_VRAM_MB * cards);
 }
 
 /**
@@ -136,13 +149,13 @@ export class MemoryManagerService {
    * registry's: only the router pins, so only it knows.
    */
   async calculateBudget(profile: HardwareProfile): Promise<MemoryBudget> {
-    const totalVramMb = profile.gpu.unifiedMemory ? 0 : profile.gpu.available ? profile.gpu.vramMb : 0;
+    const totalVramMb = profile.gpu.unifiedMemory ? 0 : profile.gpu.available ? (profile.gpu.poolVramMb ?? profile.gpu.vramMb) : 0;
     const totalRamMb = profile.ram.totalMb;
 
     const dockerOverheadMb = this.runningAppContainerCount * DOCKER_OVERHEAD_PER_CONTAINER_MB;
     const appContainerBudgetMb = dockerOverheadMb;
 
-    const modelBudgetVramMb = Math.max(0, totalVramMb - DISPLAY_RESERVED_VRAM_MB);
+    const modelBudgetVramMb = totalVramMb > 0 ? modelBudgetVramMbFor(profile) : 0;
     const modelBudgetRamMb = Math.max(0, totalRamMb - SYSTEM_RESERVED_RAM_MB - appContainerBudgetMb);
 
     const pool = modelPoolFor(profile);

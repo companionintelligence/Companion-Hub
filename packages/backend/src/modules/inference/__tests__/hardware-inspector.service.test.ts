@@ -770,6 +770,58 @@ describe('HardwareInspectorService', () => {
       expect(profile.tier).toBe('high');
     });
 
+    it('SHALL report every discrete AMD card for the memory pool, and none of an iGPU carve-out', async () => {
+      // beta-1: two RX 7900 XTX (card1, card2) and a Raphael iGPU (card0, 512 MB). vramMb stays the larger single card.
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [
+          { vendor: 'Advanced Micro Devices, Inc. [AMD/ATI]', model: 'Navi 31 [Radeon RX 7900 XTX]', vram: 32768, driverVersion: '' },
+          { vendor: 'Advanced Micro Devices, Inc. [AMD/ATI]', model: 'Navi 31 [Radeon RX 7900 XTX]', vram: 32768, driverVersion: '' },
+          { vendor: 'Advanced Micro Devices, Inc. [AMD/ATI]', model: 'Raphael', vram: 256, driverVersion: '' },
+        ],
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 24, brand: 'AMD Ryzen 9 7900X 12-Core Processor' });
+      filesystemService.listFiles.mockImplementation(async (dirPath: string) =>
+        dirPath === '/sys/class/drm' ? ['card0', 'card0-DP-4', 'card1', 'card1-DP-1', 'card2', 'renderD128', 'renderD129'] : [],
+      );
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/data/state/hardware/rocm.json') return '{"available":true,"source":"host-dev-kfd"}';
+        if (filePath === '/sys/class/drm/card0/device/mem_info_vram_total') return '536870912\n';
+        if (filePath === '/sys/class/drm/card1/device/mem_info_vram_total') return '25753026560\n';
+        if (filePath === '/sys/class/drm/card2/device/mem_info_vram_total') return '25753026560\n';
+        return 'MemTotal: 64947200\nMemAvailable: 34543616';
+      });
+      filesystemService.pathExists.mockResolvedValue(false);
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vramMb).toBe(24560);
+      expect(profile.gpu.deviceCount).toBe(2);
+      expect(profile.gpu.poolVramMb).toBe(49120);
+      expect(profile.effectiveInferenceMemoryMb).toBe(49120);
+    });
+
+    it('SHALL leave deviceCount and poolVramMb off a single discrete card', async () => {
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'Advanced Micro Devices, Inc. [AMD/ATI]', model: 'Navi 31 [Radeon RX 7900 XTX]', vram: 32768, driverVersion: '' }],
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 24, brand: 'AMD Ryzen 9 7900X 12-Core Processor' });
+      filesystemService.listFiles.mockImplementation(async (dirPath: string) => (dirPath === '/sys/class/drm' ? ['card0', 'card1'] : []));
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/data/state/hardware/rocm.json') return '{"available":true,"source":"host-dev-kfd"}';
+        if (filePath === '/sys/class/drm/card0/device/mem_info_vram_total') return '536870912\n';
+        if (filePath === '/sys/class/drm/card1/device/mem_info_vram_total') return '25753026560\n';
+        return 'MemTotal: 64947200\nMemAvailable: 34543616';
+      });
+      filesystemService.pathExists.mockResolvedValue(false);
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vramMb).toBe(24560);
+      expect(profile.gpu).not.toHaveProperty('deviceCount');
+      expect(profile.gpu).not.toHaveProperty('poolVramMb');
+      expect(profile.effectiveInferenceMemoryMb).toBe(24560);
+    });
+
     it('SHALL keep an AMD box on cpu-only when neither the container nor the host has ROCm device nodes', async () => {
       (si.graphics as any) = vi.fn().mockResolvedValue({
         controllers: [{ vendor: 'Advanced Micro Devices', model: 'Radeon RX 7900 XTX', vram: 24576, driverVersion: '6.2.0' }],

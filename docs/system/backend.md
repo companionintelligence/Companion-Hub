@@ -466,8 +466,15 @@ keys `LLM_API_BASE`, `LLM_API_KEY`, `LLM_DEFAULT_CHAT_MODEL`, `LLM_DEFAULT_EMBED
 - **Memory sizing.** The memory-sized recommendation uses the same inputs and budget as a
   [model load](#model-loads): the model budget with nothing loaded (`modelMemoryCeilingMb`: the card
   less its 512 MB display reserve, or live MemAvailable less 2048 MB on unified memory), not the whole
-  card. The KV cache is charged per Ollama slot, and a model this node has measured replaces the
-  catalog footprint. A handout for a Lemonade model is never above the `ctx_size` Lemonade serves it
+  card. On a node with several AMD cards (counted from sysfs; a card under half the largest is an iGPU
+  carve-out and not counted) that is every card's memory less a reserve each, since Ollama spreads a
+  model over them and the per-process VRAM the budget measures is summed over them: beta-1's two 7900 XTX
+  are 48,096 MB for models, not 24,048. The sum assumes the engine may use every card. Nothing detects an
+  engine pinned to one (`ROCR_VISIBLE_DEVICES`, `HIP_VISIBLE_DEVICES`) or one that cannot split (vLLM
+  without tensor parallel); on such a node a model larger than one card is admitted and handed windows
+  sized for the pool. The catalog tiers and filters still count one card, so the dashboard and the router
+  disagree on a multi-card node. The KV cache is charged per Ollama slot, and a model this node has
+  measured replaces the catalog footprint. A handout for a Lemonade model is never above the `ctx_size` Lemonade serves it
   at (`servedContextLength`). When that window is below the handout, the Hub hands out the saved
   window and logs a warning, naming the app's floor when it is under it.
 - **Pre-pull.** `decideModelPrePull` returns a logged decision for every handout. A credentials GET
@@ -512,8 +519,16 @@ to. The load's origin decides whose window it is, as below, and what may be unlo
   between models in the engine's own proportions, or else the engine's own figure. On a discrete card
   it records only a model that was wholly on the GPU. That measurement replaces the catalog footprint
   in the estimate and in `canPinModel`. gemma4:e4b's catalog row says 10,813 MB, and beta-red's RTX 3080
-  serves it in 5,550 MiB. For an operator's or an agent's load, a model measured here in what is free
-  now is loaded with a warning even when the reserves charged on top of the measurement are over.
+  serves it in 5,550 MiB. A measurement is evidence for its own window and larger ones. Above it the
+  KV cache for the difference is added. Below it, when the weights are known and under the measurement,
+  the weights and runner overhead stay and the rest scales with the window; otherwise the per-token KV
+  cost is taken off, down to no less than half the measurement (gemma4's cost is several times high).
+  Charged unscaled at a smaller window, a 27B seen at 65536 was refused at 16384 on an empty card. The
+  per-token cost alone does not cure that on one 24 GB card (its geometry gives 0.066 MB where the engine
+  held 0.207), which is why the weights matter. For an operator's or an agent's load, the step-down
+  comes first: a measured model whose reserves put its sighted window over is loaded at the largest
+  smaller window that fits. Only when not even 4096 fits, and the measurement itself is in what is free
+  now, is it loaded at that window with a warning.
   Nothing is unloaded for it.
 - **Measurements survive a restart.** The measurements are written to
   `<data dir>/state/inference-footprint-sightings.json`, tagged with the card they were taken on (or
@@ -546,6 +561,11 @@ to. The load's origin decides whose window it is, as below, and what may be unlo
   cost (`GEOMETRY_COVERS_EVERY_SLOT_ARCHITECTURES`). That cost counts gemma4's sliding-window layers as
   global: one slot is charged 6,144 MB of KV at 65536, while core-2 holds gemma4:e4b at 65536 on four
   slots in 3.4 GB in all.
+  The Hub cannot read `OLLAMA_NUM_PARALLEL` (the API does not expose it, and the daemon's environment is
+  outside the container), so a node whose `inferenceOllamaSlots` is unset is sized for one slot and logs a
+  warning saying so, once per process. The setting lives in the Hub's data directory, which a Hub reset
+  discards while the daemon's systemd drop-in survives: restate it after a reset with `cihub pool slots <n>`.
+  beta-red ran four slots unstated and spilled 6.3 GB of qwen3:8b to the CPU at a 16384 window.
 - **The request's window.** A load triggered by an app's request on Ollama uses the window that
   request runs at: its `options.num_ctx` on the native routes, and no `num_ctx` on `/v1`, where
   Ollama's default applies. A load at any other window is reloaded by that request. An operator's or
