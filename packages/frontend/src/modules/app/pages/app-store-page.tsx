@@ -2,7 +2,7 @@ import { getEnabledAppStoresOptions } from '@/api-client/@tanstack/react-query.g
 import { CATALOG_PAGE_SIZE } from '@/lib/catalog-page-size';
 import { searchAppsInfiniteOptions } from '@/lib/marketplace-search-query';
 import { getInstalledAppUrnsOptions } from '@/lib/installed-app-urns-query';
-import { applyStoreBrowseParams, parseStoreBrowseParams } from '@/lib/store-browse-params';
+import { applyStoreBrowseParams, parseStoreBrowseParams, storeParamToWrite } from '@/lib/store-browse-params';
 import { invalidateStoreCatalogQueries } from '@/lib/invalidate-store-catalog-queries';
 import { pullAppStores } from '@/api-client/sdk.gen';
 import { EmptyPage } from '@/components/empty-page/empty-page';
@@ -82,13 +82,19 @@ export default () => {
     }
   }, [searchParams, setCategory, setSearchImmediate]);
 
+  const { data: appStores } = useQuery({
+    ...getEnabledAppStoresOptions(),
+    staleTime: 30_000,
+  });
+  const knownStoreSlugs = useMemo(() => appStores?.appStores?.map((store) => store.slug), [appStores]);
+
   useEffect(() => {
     setSearchParams(
       (prev) => {
         const next = applyStoreBrowseParams(prev, {
           q: search.trim() ? search : undefined,
           category,
-          store: storeId,
+          store: storeParamToWrite(prev.get('store')?.trim() || undefined, storeId, knownStoreSlugs),
         });
 
         if (next.toString() === prev.toString()) {
@@ -100,7 +106,7 @@ export default () => {
       },
       { replace: true },
     );
-  }, [search, category, storeId, setSearchParams]);
+  }, [search, category, storeId, knownStoreSlugs, setSearchParams]);
 
   const queryClient = useQueryClient();
 
@@ -152,11 +158,6 @@ export default () => {
       window.location.href = '/device-registration';
     }
   }, [registrationStatus, isCheckingRegistration]);
-
-  const { data: appStores } = useQuery({
-    ...getEnabledAppStoresOptions(),
-    staleTime: 30_000,
-  });
 
   const { data: installedUrnsData } = useQuery({
     ...getInstalledAppUrnsOptions(),

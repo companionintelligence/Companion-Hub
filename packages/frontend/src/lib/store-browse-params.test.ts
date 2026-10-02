@@ -7,6 +7,7 @@ import {
   categoryToUrlParam,
   parseStoreBrowseParams,
   shouldLeaveFeaturedForSearch,
+  storeParamToWrite,
 } from './store-browse-params';
 
 describe('store-browse-params', () => {
@@ -43,6 +44,13 @@ describe('store-browse-params', () => {
   it('detects featured search handoff', () => {
     expect(shouldLeaveFeaturedForSearch('featured', 'ollama')).toBe(true);
     expect(shouldLeaveFeaturedForSearch('ai', 'ollama')).toBe(false);
+  });
+
+  it('keeps a linked store until the store list can confirm it', () => {
+    expect(storeParamToWrite('community', undefined, undefined)).toBe('community');
+    expect(storeParamToWrite('community', 'ci-marketplace', ['ci-marketplace', 'community'])).toBe('community');
+    expect(storeParamToWrite('missing', 'ci-marketplace', ['ci-marketplace'])).toBe('ci-marketplace');
+    expect(storeParamToWrite(undefined, 'ci-marketplace', ['ci-marketplace'])).toBe('ci-marketplace');
   });
 
   it('builds detail query strings without empty params', () => {

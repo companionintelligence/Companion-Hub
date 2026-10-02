@@ -67,6 +67,22 @@ export function storeBrowseQueryString(params: StoreBrowseParams): string {
   return applyStoreBrowseParams(new URLSearchParams(), params).toString();
 }
 
+/**
+ * A cold link names its store before Zustand does. Keep that name until the
+ * store list can confirm it. An unknown name falls back to the store already
+ * selected, which is what clears a bad `?store=`.
+ */
+export function storeParamToWrite(
+  urlStore: string | undefined,
+  storeId: string | undefined,
+  knownSlugs: readonly string[] | undefined,
+): string | undefined {
+  if (urlStore && (knownSlugs === undefined || knownSlugs.includes(urlStore))) {
+    return urlStore;
+  }
+  return storeId;
+}
+
 /** Featured is curated; non-empty search should browse the full catalog. */
 export function shouldLeaveFeaturedForSearch(category: StoreCategoryFilter | undefined, query: string): boolean {
   return category === 'featured' && query.trim().length > 0;

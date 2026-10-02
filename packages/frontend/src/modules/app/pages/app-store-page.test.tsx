@@ -453,4 +453,26 @@ describe('AppStorePage — multi-store UX', () => {
     expect(next.get('category')).toBe('development');
     expect(next.get('store')).toBe('ci-apps');
   });
+
+  it('does not replace a linked store with the store id still in memory', () => {
+    capturedSearchParams = new URLSearchParams('store=community');
+    setupQueries();
+    mockStoreState.storeId = undefined;
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    const updater = mockSetSearchParams.mock.calls.find((call) => typeof call[0] === 'function')?.[0] as
+      | ((prev: URLSearchParams) => URLSearchParams)
+      | undefined;
+
+    expect(updater).toBeTypeOf('function');
+    if (typeof updater !== 'function') {
+      throw new Error('expected setSearchParams updater');
+    }
+    expect(updater(new URLSearchParams('store=community')).get('store')).toBe('community');
+  });
 });
