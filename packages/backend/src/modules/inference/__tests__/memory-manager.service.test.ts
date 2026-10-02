@@ -717,7 +717,7 @@ describe('MemoryManagerService', () => {
       // sysfs lists 25,753,026,560 bytes = 24,560 MB on each card; vramMb is the larger single one.
       const beta1TwoCards = (): HardwareProfile =>
         makeProfile({
-          gpu: { ...makeProfile().gpu, vendor: 'amd', model: 'Navi 31', vramMb: 24_560, deviceCount: 2, totalVramMb: 49_120 },
+          gpu: { ...makeProfile().gpu, vendor: 'amd', model: 'Navi 31', vramMb: 24_560, deviceCount: 2, poolVramMb: 49_120 },
           effectiveInferenceMemoryMb: 49_120,
         });
 

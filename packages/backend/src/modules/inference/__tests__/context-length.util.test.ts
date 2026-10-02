@@ -373,13 +373,47 @@ describe('a sighting taken at a larger window than the one being sized (fleet re
     expect(largestFittingWindow({ ...nine, sighting: nineAt16k, from: 16_384, budgetMb: 5_000 })).toBeNull();
   });
 
-  it('steps a 27B sighted at 65536 down to the window that fits an empty 24 GB card', () => {
-    // beta-1, RX 7900 XTX (24,048 MB for models): the Hub charged 30,139 MB at 16384 and refused, then the engine
-    // served it at 16384 in 16.5 GB. 0.207 MB a token is the slope between its 16384 and 65536 sightings.
-    const big = { modelFootprintMb: 17_000, kvMbPerToken: 0.207, kvSlots: 1, visionReserveMb: VISION_ENCODER_RESERVE_MB };
+  describe('qwen3.8:27b sighted at 65536 on a single 24 GB card', () => {
+    // beta-1 on one RX 7900 XTX (24,048 MB for models): 29,115 MB at 65536 by rocm-smi, 18,949 at 16384, and the
+    // engine served it at 16384. The file is 16,920 MiB. The geometry says 0.066 MB a token, the retest's
+    // estimate 0.103; between its two sightings the engine held 0.207.
     const seenAt64k = { footprintMb: 29_115, contextLength: 65_536, source: 'process' as const };
-    expect(estimateLoadedFootprintMb({ ...big, numCtx: 65_536, sighting: seenAt64k })).toBe(30_139);
-    expect(largestFittingWindow({ ...big, sighting: seenAt64k, from: 65_536, budgetMb: 24_048 })).toBe(32_768);
+    const big = { modelFootprintMb: 20_275, kvSlots: 1, visionReserveMb: VISION_ENCODER_RESERVE_MB, sighting: seenAt64k };
+    const budgetMb = 24_048;
+
+    it('keeps the weights and scales the rest by window, whatever per-token cost the Hub computed', () => {
+      for (const kvMbPerToken of [0.066, 0.103, 0.121, 0.207]) {
+        const input = { ...big, weightMb: 16_920, kvMbPerToken };
+        expect(estimateLoadedFootprintMb({ ...input, numCtx: 65_536 })).toBe(29_115 + 1_024);
+        // 16,920 + 768 kept, then 11,427 MB of the sighting over 65536 tokens: 20,545 MB at 16384, 23,402 at 32768.
+        expect(estimateLoadedFootprintMb({ ...input, numCtx: 16_384 })).toBe(Math.ceil(17_688 + (11_427 * 16_384) / 65_536 + 1_024));
+        expect(largestFittingWindow({ ...input, from: 65_536, budgetMb })).toBe(16_384);
+      }
+    });
+
+    it('is charged above what the engine held at that window, so it is still safe to plan with', () => {
+      expect(estimateLoadedFootprintMb({ ...big, weightMb: 16_920, kvMbPerToken: 0.066, numCtx: 16_384 })).toBeGreaterThan(18_949 + 1_024);
+    });
+
+    it('cannot step down on the per-token cost alone: without the weights the geometry still refuses it', () => {
+      // 26,895 MB at 16384 by the geometry's 0.066 and 25,077 by the retest's 0.103 (which reaches only 4096): the cost
+      // is the KV cache and the engine held three times that. The weights are what lets the sighting say how much scales.
+      expect(largestFittingWindow({ ...big, kvMbPerToken: 0.066, from: 65_536, budgetMb })).toBeNull();
+      expect(largestFittingWindow({ ...big, kvMbPerToken: 0.103, from: 65_536, budgetMb })).toBe(4_096);
+      expect(largestFittingWindow({ ...big, kvMbPerToken: 0.207, from: 65_536, budgetMb })).toBe(32_768);
+    });
+
+    it('ignores a file larger than what the sighting held, which says nothing about the split', () => {
+      const input = { ...big, weightMb: 30_000, kvMbPerToken: 0.207 };
+      expect(estimateLoadedFootprintMb({ ...input, numCtx: 16_384 })).toBe(Math.ceil(29_115 - 49_152 * 0.207 + 1_024));
+    });
+  });
+
+  it('keeps qwen3.5:9b on the per-token cost, because its 6,289 MiB file is more than the 4,872 MB the engine held at 4096', () => {
+    // The glass retest's weights (api/tags) put a floor of 7,057 MB under a footprint measured at 6,836: not usable.
+    const input = { ...nine, weightMb: 6_289, sighting: nineAt16k };
+    expect(estimateLoadedFootprintMb({ ...input, numCtx: 4_096 })).toBe(Math.ceil(6_836 - 12_288 * 0.16 + 1_024));
+    expect(largestFittingWindow({ ...input, from: 16_384, budgetMb: glassCeilingMb })).toBe(8_192);
   });
 
   it('sizes the recommendation from the sighting, so the handout and the load agree', () => {

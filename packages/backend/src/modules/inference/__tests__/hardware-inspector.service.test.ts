@@ -796,11 +796,11 @@ describe('HardwareInspectorService', () => {
 
       expect(profile.gpu.vramMb).toBe(24560);
       expect(profile.gpu.deviceCount).toBe(2);
-      expect(profile.gpu.totalVramMb).toBe(49120);
+      expect(profile.gpu.poolVramMb).toBe(49120);
       expect(profile.effectiveInferenceMemoryMb).toBe(49120);
     });
 
-    it('SHALL leave deviceCount and totalVramMb off a single discrete card', async () => {
+    it('SHALL leave deviceCount and poolVramMb off a single discrete card', async () => {
       (si.graphics as any) = vi.fn().mockResolvedValue({
         controllers: [{ vendor: 'Advanced Micro Devices, Inc. [AMD/ATI]', model: 'Navi 31 [Radeon RX 7900 XTX]', vram: 32768, driverVersion: '' }],
       });
@@ -818,7 +818,7 @@ describe('HardwareInspectorService', () => {
 
       expect(profile.gpu.vramMb).toBe(24560);
       expect(profile.gpu).not.toHaveProperty('deviceCount');
-      expect(profile.gpu).not.toHaveProperty('totalVramMb');
+      expect(profile.gpu).not.toHaveProperty('poolVramMb');
       expect(profile.effectiveInferenceMemoryMb).toBe(24560);
     });
 

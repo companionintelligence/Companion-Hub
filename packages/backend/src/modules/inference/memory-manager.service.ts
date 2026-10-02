@@ -62,7 +62,7 @@ export function modelMemoryCeilingMb(profile: HardwareProfile): number {
  */
 function modelBudgetVramMbFor(profile: HardwareProfile): number {
   const cards = Math.max(1, profile.gpu.deviceCount ?? 1);
-  return Math.max(0, (profile.gpu.totalVramMb ?? profile.gpu.vramMb) - DISPLAY_RESERVED_VRAM_MB * cards);
+  return Math.max(0, (profile.gpu.poolVramMb ?? profile.gpu.vramMb) - DISPLAY_RESERVED_VRAM_MB * cards);
 }
 
 /**
@@ -149,7 +149,7 @@ export class MemoryManagerService {
    * registry's: only the router pins, so only it knows.
    */
   async calculateBudget(profile: HardwareProfile): Promise<MemoryBudget> {
-    const totalVramMb = profile.gpu.unifiedMemory ? 0 : profile.gpu.available ? (profile.gpu.totalVramMb ?? profile.gpu.vramMb) : 0;
+    const totalVramMb = profile.gpu.unifiedMemory ? 0 : profile.gpu.available ? (profile.gpu.poolVramMb ?? profile.gpu.vramMb) : 0;
     const totalRamMb = profile.ram.totalMb;
 
     const dockerOverheadMb = this.runningAppContainerCount * DOCKER_OVERHEAD_PER_CONTAINER_MB;

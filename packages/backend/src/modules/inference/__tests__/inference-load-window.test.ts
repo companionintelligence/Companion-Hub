@@ -337,7 +337,7 @@ describe('the load window on the fleet', () => {
     it('loads qwen3.8:27b on beta-1 beside a resident gemma4 without unloading it, because both cards are budgeted', async () => {
       const twoCards: HardwareProfile = {
         ...BETA_1,
-        gpu: { ...BETA_1.gpu, deviceCount: 2, totalVramMb: 49_120 },
+        gpu: { ...BETA_1.gpu, deviceCount: 2, poolVramMb: 49_120 },
         effectiveInferenceMemoryMb: 49_120,
       };
       const ollama = new FakeOllama(65_536);

@@ -332,8 +332,8 @@ export class HardwareInspectorService {
       driverVersion: effectiveGpuInfo.driverVersion,
       runtimeAvailable: isAppleSilicon || (effectiveGpuInfo.vendor === 'nvidia' ? nvidiaRuntime : rocmSupport),
       containerHostKind,
-      ...(!isAppleSilicon && effectiveGpuInfo.deviceCount && effectiveGpuInfo.totalVramMb
-        ? { deviceCount: effectiveGpuInfo.deviceCount, totalVramMb: effectiveGpuInfo.totalVramMb }
+      ...(!isAppleSilicon && effectiveGpuInfo.deviceCount && effectiveGpuInfo.poolVramMb
+        ? { deviceCount: effectiveGpuInfo.deviceCount, poolVramMb: effectiveGpuInfo.poolVramMb }
         : {}),
     };
 
@@ -379,11 +379,7 @@ export class HardwareInspectorService {
       }
     }
 
-    const effectiveInferenceMemoryMb = gpu.unifiedMemory
-      ? ramInfo.availableMb
-      : gpu.available
-        ? (gpu.totalVramMb ?? gpu.vramMb)
-        : ramInfo.availableMb;
+    const effectiveInferenceMemoryMb = gpu.unifiedMemory ? ramInfo.availableMb : gpu.available ? (gpu.poolVramMb ?? gpu.vramMb) : ramInfo.availableMb;
 
     const tier = this.computeTier(gpu, ramInfo);
     const os = await this.detectOs(platform, hostPlatform === 'darwin' || hostPlatform === 'win32');
@@ -579,7 +575,7 @@ export class HardwareInspectorService {
     vramMb: number;
     driverVersion: string;
     deviceCount?: number;
-    totalVramMb?: number;
+    poolVramMb?: number;
   }> {
     try {
       const platform = this.getHostPlatform();
@@ -644,7 +640,7 @@ export class HardwareInspectorService {
       let vramMb = best.vramMb;
       let model = best.model;
       let driverVersion = best.driverVersion;
-      let multiGpu: { deviceCount: number; totalVramMb: number } | null = null;
+      let multiGpu: { deviceCount: number; poolVramMb: number } | null = null;
       // Only cross-check NVIDIA VRAM against nvidia-smi when the systeminformation reading looks
       // unreliable: a sub-512 MB PCIe BAR/framebuffer (any platform), or a value in the Windows WMI
       // 32-bit AdapterRAM cap band (~4095 MB). Such a capped >4 GB card also lands below the 4096 MB
@@ -698,8 +694,8 @@ export class HardwareInspectorService {
           // display controller or an iGPU's carve-out, not one a model is split onto.
           const cards = sysfsCards.filter((cardMb) => cardMb >= sysfsVramMb / 2);
           if (cards.length > 1) {
-            multiGpu = { deviceCount: cards.length, totalVramMb: cards.reduce((total, cardMb) => total + cardMb, 0) };
-            this.logger.info(`[HardwareInspector] ${cards.length} AMD cards found in sysfs; models can spread over ${multiGpu.totalVramMb} MB.`);
+            multiGpu = { deviceCount: cards.length, poolVramMb: cards.reduce((total, cardMb) => total + cardMb, 0) };
+            this.logger.info(`[HardwareInspector] ${cards.length} AMD cards found in sysfs; models can spread over ${multiGpu.poolVramMb} MB.`);
           }
         } else if (vramMb <= 0) {
           vramMb = await this.detectAmdVram();
