@@ -5,40 +5,28 @@ use super::*;
 #[allow(unused_imports)]
 use crate::hub_manager::*;
 
+/// Through the path, not the process: the Docker host `host_docker_socket_path` reads is process-wide
+/// (the engine pin, then the environment), and a test that set `DOCKER_HOST` and cleared the pin lost
+/// to any test pinning the machine's own engine in between (Companion-Hub#1833). The environment
+/// lookup has its own test in `docker_engine`.
 #[test]
 fn prefers_docker_host_unix_socket_path() {
-    crate::docker_engine::clear_process_pin();
-    let original = std::env::var_os("DOCKER_HOST");
-    let original_ci = std::env::var_os("CI_HUB_DOCKER_HOST");
-    unsafe {
-        std::env::remove_var("CI_HUB_DOCKER_HOST");
-        std::env::set_var("DOCKER_HOST", "unix:///tmp/ci-hub-docker.sock");
-    }
-
     assert_eq!(
-        host_docker_socket_path(),
+        host_docker_socket_path_for(Some("unix:///tmp/ci-hub-docker.sock")),
         PathBuf::from("/tmp/ci-hub-docker.sock")
     );
+}
 
-    if let Some(value) = original {
-        unsafe {
-            std::env::set_var("DOCKER_HOST", value);
-        }
-    } else {
-        unsafe {
-            std::env::remove_var("DOCKER_HOST");
-        }
+#[test]
+fn falls_back_to_a_local_socket_for_a_docker_host_that_is_not_one() {
+    for docker_host in [None, Some("tcp://10.0.0.5:2376"), Some("unix://")] {
+        let path = host_docker_socket_path_for(docker_host);
+        assert!(
+            path.to_string_lossy().ends_with("docker.sock"),
+            "{docker_host:?} gave {}",
+            path.display()
+        );
     }
-    if let Some(value) = original_ci {
-        unsafe {
-            std::env::set_var("CI_HUB_DOCKER_HOST", value);
-        }
-    } else {
-        unsafe {
-            std::env::remove_var("CI_HUB_DOCKER_HOST");
-        }
-    }
-    crate::docker_engine::clear_process_pin();
 }
 
 #[cfg(target_os = "linux")]

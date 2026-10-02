@@ -214,10 +214,14 @@ fn linux_docker_socket_candidates() -> Vec<PathBuf> {
 }
 
 pub(crate) fn host_docker_socket_path() -> PathBuf {
-    if let Some(socket_path) = preferred_docker_host()
-        .as_deref()
-        .and_then(docker_socket_path_from_docker_host)
-    {
+    host_docker_socket_path_for(preferred_docker_host().as_deref())
+}
+
+/// [`host_docker_socket_path`] for a given Docker host. Which host that is comes from process-wide
+/// state (the engine pin, then `CI_HUB_DOCKER_HOST` / `DOCKER_HOST`) that every test in the binary
+/// shares and some of them set, so tests check the path here instead.
+pub(crate) fn host_docker_socket_path_for(docker_host: Option<&str>) -> PathBuf {
+    if let Some(socket_path) = docker_host.and_then(docker_socket_path_from_docker_host) {
         return socket_path;
     }
 
