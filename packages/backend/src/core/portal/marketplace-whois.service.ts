@@ -588,6 +588,16 @@ export class MarketplaceWhoIsService {
     return { can, version: row.version, cachedAt: row.cachedAt };
   }
 
+  /**
+   * Drop every cached grant. The cache key is only `(subject, app)`, so a row
+   * written for one organization still authorizes that person after this Hub
+   * is reset or paired into another. Callers that can no longer ask Portal
+   * would otherwise keep serving it until the 24 hour TTL.
+   */
+  async clearCache(): Promise<void> {
+    await this.database.db.delete(whoisCache);
+  }
+
   private async writeCache(subject: string, appId: string, can: HubAction[], version: number): Promise<void> {
     const cachedAt = new Date().toISOString();
     const canJson = JSON.stringify(can);

@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { PORTAL_REJECTION_CONFIRM_MS, PUBLIC_UNREACHABLE_CONFIRM_MS, RegistrationService } from '../registration.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { DatabaseService } from '@/core/database/database.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { CloudflareClientService } from '../../cloudflare/cloudflare-client.service';
 import { TunnelHealthService } from '../../cloudflare/tunnel-health.service';
@@ -2975,6 +2976,20 @@ describe('RegistrationService', () => {
       expect(deviceRegistrationRepository.deleteAll).toHaveBeenCalled();
       expect(mockedAxios.post).not.toHaveBeenCalled();
       expect(service.getRegistrationStatus().phase).toBe('unregistered');
+    });
+
+    it('drops cached app grants so a reset cannot keep authorizing them', async () => {
+      const deleteGrants = vi.fn().mockResolvedValue(undefined);
+      const moduleRef = (service as unknown as { moduleRef: { get: (token: unknown, options?: unknown) => unknown } }).moduleRef;
+      const get = moduleRef.get.bind(moduleRef);
+      moduleRef.get = (token, options) => (token === DatabaseService ? { db: { delete: deleteGrants } } : get(token, options));
+      deviceRegistrationRepository.deleteAll.mockResolvedValue(undefined);
+      vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
+
+      await service.resetRegistration();
+
+      expect(deleteGrants).toHaveBeenCalled();
+      expect(loggerService.info).toHaveBeenCalledWith('Cleared cached app grants');
     });
   });
 
