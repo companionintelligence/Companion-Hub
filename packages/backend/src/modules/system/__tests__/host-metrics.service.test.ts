@@ -335,6 +335,66 @@ describe('HostMetricsService', () => {
       expect(load.diskUsed).toBe(477);
       expect(filesystemService.writeJsonFile).not.toHaveBeenCalled();
     });
+
+    it('keeps a stale Linux disk sample when the live stat is missing', async () => {
+      filesystemService.readTextFile.mockImplementation(async (path: string) => {
+        if (path === '/data/state/hardware/host_metrics.json') {
+          return hostProbeJson({
+            platform: 'linux',
+            cpuArch: 'x86_64',
+            probedAt: '2026-01-01T00:00:00.000Z',
+            host: {
+              totalRamMb: 16384,
+              availableRamMb: 8192,
+              cpuCores: 8,
+              cpuModel: 'Test CPU',
+              diskTotalGb: 494,
+              diskUsedGb: 477,
+              diskMount: '/',
+            },
+          });
+        }
+        if (path === '/host/proc/meminfo') return 'MemTotal: 16777216\nMemAvailable: 8388608';
+        return null;
+      });
+      (si.fsSize as any) = vi.fn().mockResolvedValue(undefined);
+
+      const load = await service.getDisplayLoad(5, 8);
+
+      expect(load.diskSize).toBe(494);
+      expect(load.diskUsed).toBe(477);
+      expect(filesystemService.writeJsonFile).not.toHaveBeenCalled();
+    });
+
+    it('keeps a stale Linux disk sample when the live stat throws', async () => {
+      filesystemService.readTextFile.mockImplementation(async (path: string) => {
+        if (path === '/data/state/hardware/host_metrics.json') {
+          return hostProbeJson({
+            platform: 'linux',
+            cpuArch: 'x86_64',
+            probedAt: '2026-01-01T00:00:00.000Z',
+            host: {
+              totalRamMb: 16384,
+              availableRamMb: 8192,
+              cpuCores: 8,
+              cpuModel: 'Test CPU',
+              diskTotalGb: 494,
+              diskUsedGb: 100,
+              diskMount: '/',
+            },
+          });
+        }
+        if (path === '/host/proc/meminfo') return 'MemTotal: 16777216\nMemAvailable: 8388608';
+        return null;
+      });
+      (si.fsSize as any) = vi.fn().mockRejectedValue(new Error('stat failed'));
+
+      const load = await service.getDisplayLoad(5, 8);
+
+      expect(load.diskSize).toBe(494);
+      expect(load.diskUsed).toBe(100);
+      expect(filesystemService.writeJsonFile).not.toHaveBeenCalled();
+    });
   });
 
   describe('init-host-probe script', () => {

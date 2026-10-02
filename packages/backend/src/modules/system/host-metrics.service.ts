@@ -209,7 +209,7 @@ export class HostMetricsService {
   }
 
   private async readLiveDisk(mount: string): Promise<{ diskTotalGb: number; diskUsedGb: number; diskMount: string } | null> {
-    const entries = await si.fsSize().catch(() => []);
+    const entries = await this.listFilesystems();
     const wanted = mount || '/';
     const match = entries.find((entry) => entry.mount === wanted) ?? entries.find((entry) => entry.mount === '/') ?? entries[0];
     if (!match?.size) {
@@ -225,6 +225,22 @@ export class HostMetricsService {
       diskUsedGb: Math.max(0, diskTotalGb - diskFreeGb),
       diskMount: match.mount || wanted,
     };
+  }
+
+  /**
+   * Callers that mock systeminformation leave `fsSize` returning undefined. That is not a
+   * reading, and neither is a thrown stat. An empty list keeps the stored sample.
+   */
+  private async listFilesystems(): Promise<Awaited<ReturnType<typeof si.fsSize>>> {
+    try {
+      const result = await si.fsSize();
+      if (Array.isArray(result)) {
+        return result;
+      }
+    } catch {
+      return [];
+    }
+    return [];
   }
 
   private async readProbeFile(filePath: string): Promise<HostMetricsProbeFile | null> {
@@ -358,7 +374,7 @@ export class HostMetricsService {
       }
     }
 
-    const [disk0] = await si.fsSize().catch(() => [null]);
+    const [disk0] = await this.listFilesystems();
     const diskTotalGb = disk0 ? Math.round(disk0.size / 1024 / 1024 / 1024) : 0;
     const diskFreeGb = disk0 ? Math.round(disk0.available / 1024 / 1024 / 1024) : 0;
     const diskUsedGb = Math.max(0, diskTotalGb - diskFreeGb);
