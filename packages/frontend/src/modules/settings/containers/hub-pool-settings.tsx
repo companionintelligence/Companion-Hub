@@ -1275,7 +1275,7 @@ export const HubPoolSection = () => {
                         checked={peer.enabled}
                         disabled={demoMode || peerEnabledMutation.isPending}
                         onCheckedChange={(checked: boolean) => peerEnabledMutation.mutate({ id: peer.id, enabled: checked })}
-                        aria-label={t('HUB_POOL_PEER_TOGGLE_LABEL')}
+                        aria-label={t('HUB_POOL_PEER_TOGGLE_NAMED', { name: peerLabel(peer) })}
                       />
                       <Button
                         type="button"
@@ -1283,6 +1283,7 @@ export const HubPoolSection = () => {
                         variant="outline"
                         intent="danger"
                         data-testid="hub-pool-unpair-btn"
+                        aria-label={t('HUB_POOL_UNPAIR_NAMED', { name: peerLabel(peer) })}
                         disabled={demoMode}
                         loading={removeMutation.isPending && removeMutation.variables === peer.id}
                         onClick={() => setUnpairTarget(peer)}

@@ -7,6 +7,8 @@ import { HubPoolSection } from '../hub-pool-settings';
 
 type Json = Record<string, unknown>;
 
+const i18nCalls = vi.hoisted(() => [] as { key: string; params?: unknown }[]);
+
 const fixtures = vi.hoisted(() => ({
   status: {} as Json,
   statusFails: false,
@@ -22,7 +24,10 @@ const fixtures = vi.hoisted(() => ({
 }));
 
 vi.mock('react-i18next', () => {
-  const t = (key: string) => key;
+  const t = (key: string, params?: unknown) => {
+    i18nCalls.push({ key, params });
+    return key;
+  };
   return { useTranslation: () => ({ t }) };
 });
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -142,6 +147,7 @@ describe('HubPoolSection', () => {
     fixtures.pinCancel.mockClear();
     fixtures.upsertPin.mockClear();
     fixtures.deletePin.mockClear();
+    i18nCalls.length = 0;
     vi.mocked(pairPeer).mockReset();
     vi.mocked(removePeer).mockClear();
   });
@@ -748,6 +754,24 @@ describe('HubPoolSection', () => {
 
     await waitFor(() => expect(vi.mocked(removePeer)).toHaveBeenCalledTimes(1));
     expect(vi.mocked(removePeer).mock.calls[0]?.[0]).toMatchObject({ path: { id: 'outbound-1' } });
+  });
+
+  it('names the peer on its pool switch and its Unpair button', async () => {
+    fixtures.status = baseStatus({
+      peers: [connectedPeer()],
+      peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0, disabled: 0 },
+    });
+
+    renderSection();
+
+    expect(await screen.findByTestId('hub-pool-peer-toggle')).toHaveAttribute('aria-label', 'HUB_POOL_PEER_TOGGLE_NAMED');
+    expect(screen.getByTestId('hub-pool-unpair-btn')).toHaveAttribute('aria-label', 'HUB_POOL_UNPAIR_NAMED');
+    expect(i18nCalls).toEqual(
+      expect.arrayContaining([
+        { key: 'HUB_POOL_PEER_TOGGLE_NAMED', params: { name: 'Studio Hub' } },
+        { key: 'HUB_POOL_UNPAIR_NAMED', params: { name: 'Studio Hub' } },
+      ]),
+    );
   });
 
   it('shows a peer address once when that peer has no display name', async () => {
