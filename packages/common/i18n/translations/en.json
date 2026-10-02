@@ -2599,6 +2599,7 @@
   "HUB_POOL_PIN_CANCEL_BUTTON": "Cancel PIN",
   "HUB_POOL_PIN_NONE": "No pairing PIN outstanding.",
   "HUB_POOL_PIN_ACTIVE_ELSEWHERE": "A pairing PIN is outstanding. The digits are shown only once, when it is generated — generate a new one to see a code.",
+  "HUB_POOL_PIN_EXPIRES": "Expires {{time}}",
   "HUB_POOL_PIN_INPUT_LABEL": "PIN from the other Hub",
   "HUB_POOL_PIN_INPUT_PLACEHOLDER": "PIN from the other Hub (optional)",
   "HUB_POOL_PIN_INPUT_INVALID": "Enter all six digits, or leave the PIN blank.",

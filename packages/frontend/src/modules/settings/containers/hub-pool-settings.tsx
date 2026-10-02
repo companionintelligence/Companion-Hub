@@ -22,7 +22,7 @@ import { cn } from '@/lib/utils';
 import { isRefused, outputFault, settledOutcome } from '@/modules/system/pool-node-series';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowRightLeft, ChevronRight, Network } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
@@ -603,13 +603,19 @@ export const HubPoolSection = () => {
      swagger.json after this lands. The mint RESPONSE is the only place the digits ever appear —
      `GET status` reports `pairingPin: { active, expiresAt }` and never the value, so polling can
      render the countdown without the PIN becoming re-servable. */
-  const [mintedPin, setMintedPin] = useState<string | null>(null);
+  const [mintedPin, setMintedPin] = useState<{ pin: string; expiresAt: string } | null>(null);
+  // Status lags the mint response. Only treat `active: false` as "this PIN was used" after a poll
+  // has already reported it live, so the digits are not cleared by the status that was on screen
+  // before Generate PIN returned.
+  const mintedPinSeenLive = useRef(false);
   const mintPinMutation = useMutation({
     mutationFn: () => client.post({ url: '/api/inference/pool/pairing-pin' }),
     onSuccess: (response) => {
       // Cast rather than a generic: the low-level client types every response as `unknown` until
       // swagger.json and the api-client are regenerated. `hub-pool.controller.ts` is the contract.
-      setMintedPin((response.data as { pin?: string } | undefined)?.pin ?? null);
+      const minted = response.data as { pin?: string; expiresAt?: string } | undefined;
+      mintedPinSeenLive.current = false;
+      setMintedPin(minted?.pin ? { pin: minted.pin, expiresAt: minted.expiresAt ?? '' } : null);
       invalidatePool();
     },
     onError: () => toast.error(t('HUB_POOL_PIN_MINT_ERROR')),
@@ -622,6 +628,38 @@ export const HubPoolSection = () => {
     },
     onError: () => toast.error(t('HUB_POOL_PIN_CANCEL_ERROR')),
   });
+
+  useEffect(() => {
+    if (!mintedPin) {
+      mintedPinSeenLive.current = false;
+      return;
+    }
+    const expiresAt = new Date(mintedPin.expiresAt).getTime();
+    if (mintedPin.expiresAt && Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
+      setMintedPin(null);
+      return;
+    }
+    if (status?.pairingPin?.active) {
+      mintedPinSeenLive.current = true;
+    } else if (mintedPinSeenLive.current && status?.pairingPin?.active === false) {
+      setMintedPin(null);
+      return;
+    }
+    if (!Number.isFinite(expiresAt)) return;
+    // setTimeout takes a 32-bit delay. A longer one overflows and fires immediately, which would
+    // wipe a PIN that is still good. Re-arm when the cap hits before the real expiry.
+    let timer = 0;
+    const arm = () => {
+      const remaining = expiresAt - Date.now();
+      if (remaining <= 0) {
+        setMintedPin(null);
+        return;
+      }
+      timer = window.setTimeout(arm, Math.min(remaining, 2_147_483_647));
+    };
+    arm();
+    return () => window.clearTimeout(timer);
+  }, [mintedPin, status?.pairingPin?.active]);
 
   /* Same DELETE as Unpair, split out only so the toasts match what the operator did: cancelling
      an unanswered outbound request is not the same event as tearing down a live pairing. */
@@ -1393,8 +1431,15 @@ export const HubPoolSection = () => {
                 {/* The only place the digits are ever rendered: they came back from the mint call and
                     are held in this component's state, never re-fetched. A reload loses them, which
                     is correct — the operator mints a new one. */}
-                <span className="font-mono text-2xl tracking-[0.3em]" data-testid="hub-pool-minted-pin">
-                  {mintedPin}
+                <span>
+                  <span className="block font-mono text-2xl tracking-[0.3em]" data-testid="hub-pool-minted-pin">
+                    {mintedPin.pin}
+                  </span>
+                  {mintedPin.expiresAt ? (
+                    <time dateTime={mintedPin.expiresAt} className="text-xs text-muted-foreground" data-testid="hub-pool-minted-pin-expiry">
+                      {t('HUB_POOL_PIN_EXPIRES', { time: formatHubDateTime(mintedPin.expiresAt) })}
+                    </time>
+                  ) : null}
                 </span>
                 <Button type="button" size="sm" variant="outline" disabled={demoMode} onClick={() => cancelPinMutation.mutate()}>
                   {t('HUB_POOL_PIN_CANCEL_BUTTON')}
@@ -1403,7 +1448,16 @@ export const HubPoolSection = () => {
             ) : (
               <div className="flex items-center justify-between gap-3">
                 <span className="text-xs text-muted-foreground" data-testid="hub-pool-pin-state">
-                  {status.pairingPin?.active ? t('HUB_POOL_PIN_ACTIVE_ELSEWHERE') : t('HUB_POOL_PIN_NONE')}
+                  {status.pairingPin?.active && status.pairingPin.expiresAt && new Date(status.pairingPin.expiresAt).getTime() > Date.now() ? (
+                    <>
+                      {t('HUB_POOL_PIN_ACTIVE_ELSEWHERE')}{' '}
+                      <time dateTime={status.pairingPin.expiresAt} data-testid="hub-pool-pin-expiry">
+                        {t('HUB_POOL_PIN_EXPIRES', { time: formatHubDateTime(status.pairingPin.expiresAt) })}
+                      </time>
+                    </>
+                  ) : (
+                    t('HUB_POOL_PIN_NONE')
+                  )}
                 </span>
                 <Button
                   type="button"

@@ -823,24 +823,47 @@ describe('HubPoolSection', () => {
 
     it('renders the digits once, straight from the mint response and never from status', async () => {
       fixtures.status = baseStatus();
-      fixtures.pinMint.mockResolvedValueOnce({ data: { pin: '481502', expiresAt: '2026-01-01T00:10:00.000Z' } });
+      fixtures.pinMint.mockResolvedValueOnce({ data: { pin: '481502', expiresAt: '2099-01-01T00:10:00.000Z' } });
       renderSection();
       await screen.findByTestId('hub-pool-mint-pin-btn');
 
       await userEvent.click(screen.getByTestId('hub-pool-mint-pin-btn'));
 
       expect(await screen.findByTestId('hub-pool-minted-pin')).toHaveTextContent('481502');
+      expect(screen.getByTestId('hub-pool-minted-pin-expiry')).toHaveAttribute('datetime', '2099-01-01T00:10:00.000Z');
       expect(fixtures.pinMint).toHaveBeenCalledWith(expect.objectContaining({ url: '/api/inference/pool/pairing-pin' }));
+    });
+
+    it('takes the digits off the screen once the PIN has expired', async () => {
+      fixtures.status = baseStatus();
+      fixtures.pinMint.mockImplementation(async () => ({
+        data: { pin: '481502', expiresAt: new Date(Date.now() + 150).toISOString() },
+      }));
+      renderSection();
+
+      await userEvent.click(await screen.findByTestId('hub-pool-mint-pin-btn'));
+
+      expect(await screen.findByTestId('hub-pool-minted-pin')).toHaveTextContent('481502');
+      await waitFor(() => expect(screen.queryByTestId('hub-pool-minted-pin')).not.toBeInTheDocument(), { timeout: 2000 });
     });
 
     it('says a PIN is outstanding without ever re-showing it, which is what status reports', async () => {
       // `GET status` carries `{ active, expiresAt }` and never the value, so a page reload — or any
       // other operator polling the same endpoint — cannot recover a PIN it did not mint.
-      fixtures.status = baseStatus({ pairingPin: { active: true, expiresAt: '2026-01-01T00:10:00.000Z' } });
+      fixtures.status = baseStatus({ pairingPin: { active: true, expiresAt: '2099-01-01T00:10:00.000Z' } });
       renderSection();
 
       expect(await screen.findByTestId('hub-pool-pin-state')).toHaveTextContent('HUB_POOL_PIN_ACTIVE_ELSEWHERE');
+      expect(screen.getByTestId('hub-pool-pin-expiry')).toHaveAttribute('datetime', '2099-01-01T00:10:00.000Z');
       expect(screen.queryByTestId('hub-pool-minted-pin')).not.toBeInTheDocument();
+    });
+
+    it('does not keep a dead PIN on screen after its expiry', async () => {
+      fixtures.status = baseStatus({ pairingPin: { active: true, expiresAt: '2020-01-01T00:10:00.000Z' } });
+      renderSection();
+
+      expect(await screen.findByTestId('hub-pool-pin-state')).toHaveTextContent('HUB_POOL_PIN_NONE');
+      expect(screen.queryByTestId('hub-pool-pin-expiry')).not.toBeInTheDocument();
     });
 
     it('shows the requester’s key fingerprint on the confirm row, next to its FQDN', async () => {
