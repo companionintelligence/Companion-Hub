@@ -24,6 +24,9 @@ describe('bundled hub assets', () => {
     expect(BUNDLED_HUB_COMPOSE).not.toMatch(/^\s+build:$/m);
     expect(BUNDLED_TRAEFIK_YML).toContain('{{ACME_EMAIL}}');
     expect(BUNDLED_TRAEFIK_DYNAMIC_YML.length).toBeGreaterThan(0);
+    // init-traefik writes it as is, before the Hub runs, and Traefik reads it as a Go template: a
+    // placeholder in it made Traefik drop the whole file until the Hub booted (Companion-Hub#1832).
+    expect(BUNDLED_TRAEFIK_DYNAMIC_YML).not.toContain('{{');
   });
 });
 

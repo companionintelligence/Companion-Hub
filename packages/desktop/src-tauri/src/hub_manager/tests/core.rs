@@ -251,6 +251,27 @@ fn prepares_fresh_traefik_runtime_state_for_desktop_runtime() {
     }
 }
 
+/// Traefik reads the dynamic file as a Go template, so a `{{` anywhere in what this app writes made it
+/// drop the whole file (forward auth, the tunnel apps' edge headers) until the Hub booted and filled
+/// the placeholder in. And because the Hub's copy then differed from this one, every launch wrote the
+/// placeholder back and had Traefik recreated (Companion-Hub#1832). The asset now ships the Hub's
+/// default container name, which is the one this app's compose gives it, and the Hub leaves the file
+/// as shipped on that name: the two copies are the same file.
+#[test]
+fn seeds_a_dynamic_config_traefik_can_read_and_the_hub_leaves_alone() {
+    let hub = crate::hub_names::HUB_CONTAINER;
+
+    assert!(
+        !TRAEFIK_DYNAMIC_CONFIG_SEED.contains("{{"),
+        "dynamic.yml must not hold a template placeholder"
+    );
+    assert!(TRAEFIK_DYNAMIC_CONFIG_SEED.contains(&format!(
+        "\"http://{hub}:5002/api/auth/traefik\" # hub container"
+    )));
+    assert!(TRAEFIK_DYNAMIC_CONFIG_SEED.contains(&format!("\"http://{hub}:5002\" # hub container")));
+    assert!(crate::hub_manager::HUB_COMPOSE_SEED.contains(&format!("HUB_CONTAINER_NAME: {hub}")));
+}
+
 #[test]
 fn heals_poisoned_traefik_mount_paths_back_to_files() {
     let tempdir = tempfile::tempdir().expect("tempdir");

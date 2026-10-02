@@ -3,6 +3,15 @@
 # this and has no SSLv2/SSLv3 at all, but the floor is pinned here so it is a
 # stated configuration rather than an inherited default, and so an upgrade of
 # Traefik or Go can never lower it silently.
+#
+# The Hub's address below is the default container name, `ci-hub`, rather than a
+# placeholder. The desktop app and the CLI write this file before the Hub ever
+# runs, and Traefik reads it as a Go template, comments included: a template
+# placeholder left anywhere in it makes Traefik drop the whole file, forward
+# auth, the edge-header strip and the starting page with it. The Hub rewrites
+# each line tagged `# hub container` when it copies this file
+# (AppService.copyAssets), and only an install on the legacy `ci-os-hub` name
+# changes. Keep the tags, and never put a double opening brace in this file.
 tls:
   options:
     default:
@@ -23,7 +32,7 @@ http:
   middlewares:
     ci-hub:
       forwardAuth:
-        address: "http://{{HUB_CONTAINER_NAME}}:5002/api/auth/traefik"
+        address: "http://ci-hub:5002/api/auth/traefik" # hub container
         # false: the Hub decides from the request the router matched — its Host
         # (the tunnel's rewritten origin host), URI and method — never from
         # X-Forwarded-* headers that arrived with it. The entry points trust
@@ -93,12 +102,12 @@ http:
         query: "/api/apps/starting?status={status}"
 
   services:
-    # The Hub, for the page above, by the same container-name placeholder as forward auth's address,
-    # which the Hub fills in when it copies this file (AppService.copyAssets). Keeps the visitor's
-    # `Host` (Traefik's default, written out because the page depends on it) rather than the Hub's.
+    # The Hub, for the page above, at the same tagged address as forward auth (see the top of this
+    # file). Keeps the visitor's `Host` (Traefik's default, written out because the page depends on
+    # it) rather than the Hub's.
     ci-hub-app-starting:
       loadBalancer:
         passHostHeader: true
         serversTransport: ci-hub-app-starting
         servers:
-          - url: "http://{{HUB_CONTAINER_NAME}}:5002"
+          - url: "http://ci-hub:5002" # hub container
