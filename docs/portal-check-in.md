@@ -37,7 +37,7 @@ After each accepted check-in, the Hub probes its own public URL with `GET https:
 }
 ```
 
-`lastCheckIn` is `null` until the process sends its first check-in, so it is empty for a few seconds after a restart. `httpStatus` is `null` when no response arrived.
+`lastCheckIn` is `null` until the process sends its first check-in, so it is empty for a few seconds after a restart. `httpStatus` is `null` when no response arrived, and then `error` says why: for example `getaddrinfo ENOTFOUND <portal-host>`, or, when none of Portal's addresses accepted the connection, each address and its reason, such as `ETIMEDOUT 192.0.2.10:443, ENETUNREACH [2001:db8::10]:443`.
 
 `cihub doctor` reads this route and prints two lines:
 

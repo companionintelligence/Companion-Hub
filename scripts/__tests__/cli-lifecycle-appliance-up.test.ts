@@ -29,6 +29,7 @@ vi.mock('../init-traefik.js', () => ({ initTraefik: vi.fn() }));
 vi.mock('../sync-postgres-password.js', () => ({ syncPostgresPasswordFromEnv: vi.fn() }));
 vi.mock('../sync-rabbitmq-password.js', () => ({ syncRabbitmqPasswordFromEnv: vi.fn() }));
 vi.mock('../lib/cli-repo-context.js', () => ({ isApplianceMode: () => true, requireRepoRoot: vi.fn() }));
+vi.mock('../lib/docker-versions.js', () => ({ requireDockerForHubStack: vi.fn() }));
 vi.mock('../lib/cli-ui.js', () => ({ printMessageBox: vi.fn(), colorize: (s: string) => s, dim: (s: string) => s }));
 vi.mock('../lib/cli-proc.js', () => ({
   ensureLocalDevPortsAvailable: vi.fn(),
@@ -50,6 +51,7 @@ vi.mock('../lib/hub-context.js', () => ({
   envOverridesForContext: () => ({
     ENV_FILE: ctxState.envFile,
     ROOT_FOLDER_HOST: '/data/companion-hub',
+    DOCKER_HOST: 'unix:///pinned/docker.sock',
     ...(ctxState.image ? { CI_HUB_IMAGE: ctxState.image } : {}),
   }),
   resolveHubContext: () => ({
@@ -65,6 +67,7 @@ vi.mock('../lib/hub-context.js', () => ({
 const { startHub } = await import('../lib/cli-lifecycle');
 const { initTraefik } = await import('../init-traefik.js');
 const { runScript } = await import('../lib/cli-proc.js');
+const { requireDockerForHubStack } = await import('../lib/docker-versions.js');
 
 describe('cihub up on an appliance', () => {
   beforeEach(() => {
@@ -113,6 +116,29 @@ describe('cihub up on an appliance', () => {
     ]);
     // …and before compose up, which is the point.
     expect(calls.compose.length).toBe(1);
+  });
+
+  // The stack file's `gw_priority` needs Compose 2.33 and Engine 28; an older Compose refuses the
+  // file with an error that does not say Docker is the problem (#1763).
+  it('checks the Docker versions on the pinned engine before anything is set up', async () => {
+    await startHub('detached', 'prod');
+
+    expect(requireDockerForHubStack).toHaveBeenCalledTimes(1);
+    expect(requireDockerForHubStack).toHaveBeenCalledWith(expect.objectContaining({ DOCKER_HOST: 'unix:///pinned/docker.sock' }));
+    const [checkedAt = Number.POSITIVE_INFINITY] = vi.mocked(requireDockerForHubStack).mock.invocationCallOrder;
+    const [firstScriptAt = 0] = vi.mocked(runScript).mock.invocationCallOrder;
+    expect(checkedAt).toBeLessThan(firstScriptAt);
+  });
+
+  it('sets up and starts nothing when Docker is too old', async () => {
+    vi.mocked(requireDockerForHubStack).mockImplementationOnce(() => {
+      throw new Error('process.exit');
+    });
+
+    await expect(startHub('detached', 'prod')).rejects.toThrow('process.exit');
+    expect(calls.scripts).toEqual([]);
+    expect(calls.runs).toEqual([]);
+    expect(calls.compose).toEqual([]);
   });
 
   it('does not pull a digest-pinned image: a digest cannot move', async () => {

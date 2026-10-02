@@ -12,6 +12,7 @@ import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 import { writeHealableTextFile } from '@/common/helpers/bind-mount-helpers';
+import { describeNetworkError } from '@/common/helpers/network-error';
 import { buildPortalAxiosConfig, readPortalInternalUrlOverride, withPortalAxiosHeaders } from '@/common/helpers/portal-url';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { type DnsAvailability, readDnsAvailability } from './dns-availability';
@@ -472,13 +473,9 @@ export class CloudflareClientService {
         errorMessage: 'Portal returned success=false for tunnel state sync',
       };
     } catch (error) {
-      if (error instanceof Error) {
-        this.logger.error(`Failed to sync state: ${error.message}`);
-      } else {
-        this.logger.error(`Failed to sync state: ${String(error)}`);
-      }
+      this.logger.error(`Failed to sync state: ${describeNetworkError(error)}`);
       let errorStatus: number | undefined;
-      let errorMessage = error instanceof Error ? error.message : String(error);
+      let errorMessage = describeNetworkError(error);
       if (axios.isAxiosError(error) && error.response) {
         errorStatus = error.response.status;
         this.logger.error(`Error Response: ${JSON.stringify(error.response.data)}`);
@@ -516,7 +513,7 @@ export class CloudflareClientService {
       });
       applications = response.data?.applications;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = describeNetworkError(error);
       this.logger.error(`Failed to fetch Portal device applications: ${message}`);
       throw new Error(`Could not read this device's apps from CI Portal: ${message}`);
     }
@@ -575,7 +572,7 @@ export class CloudflareClientService {
 
       return domains;
     } catch (error) {
-      this.logger.warn(`[Cloudflare] Could not list custom domains: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.warn(`[Cloudflare] Could not list custom domains: ${describeNetworkError(error)}`);
 
       return undefined;
     }
@@ -636,7 +633,7 @@ export class CloudflareClientService {
         message: typeof data?.error === 'string' ? data.error : `CI-Cloud answered ${status}`,
       };
     } catch (error) {
-      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+      return { ok: false, message: describeNetworkError(error) };
     }
   }
 
@@ -682,7 +679,7 @@ export class CloudflareClientService {
         message: typeof data?.error === 'string' ? data.error : `CI-Cloud answered ${status}`,
       };
     } catch (error) {
-      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+      return { ok: false, message: describeNetworkError(error) };
     }
   }
 
@@ -730,11 +727,7 @@ export class CloudflareClientService {
 
       return { supported: true, domains };
     } catch (error) {
-      if (error instanceof Error) {
-        this.logger.error(`Failed to fetch available domains: ${error.message}`);
-      } else {
-        this.logger.error(`Failed to fetch available domains: ${String(error)}`);
-      }
+      this.logger.error(`Failed to fetch available domains: ${describeNetworkError(error)}`);
       if (axios.isAxiosError(error) && error.response) {
         this.logger.error(`Domain fetch error response: ${JSON.stringify(error.response.data)}`);
       }
@@ -765,14 +758,7 @@ export class CloudflareClientService {
         message: 'Unable to verify DNS availability (unexpected CI-Cloud response)',
       };
     } catch (error) {
-      const errorMessage =
-        error instanceof Error && error.message
-          ? error.message
-          : axios.isAxiosError(error)
-            ? [error.code, error.response?.status, error.response?.statusText].filter(Boolean).join(' ') || 'CI-Cloud request failed'
-            : String(error);
-
-      this.logger.error(`Failed to check DNS availability: ${errorMessage}`);
+      this.logger.error(`Failed to check DNS availability: ${describeNetworkError(error)}`);
 
       if (axios.isAxiosError(error) && error.response) {
         this.logger.error(`DNS availability error response: ${JSON.stringify(error.response.data)}`);
@@ -956,15 +942,6 @@ export class CloudflareClientService {
   }
 
   /**
-   * Resolves the Docker Compose file used to start `cloudflared`.
-   *
-   * The bundled Hub mounts the active file at `${DATA_DIR}/docker-compose.yml`,
-   * matching `DockerService.getBaseComposeArgsHub`. Local `pnpm dev` and tests
-   * fall back to the repository source file. Do not gate the mounted path on
-   * `NODE_ENV`: `.env.dev` sets `NODE_ENV=development` inside the bundled image,
-   * which would select the nonexistent `/app/docker-compose.local.yml`.
-   */
-  /**
    * Whether the `cloudflared` container on this Docker engine is this Hub's to remove.
    *
    * Inside the Hub container it is: that engine runs this one Hub. A backend run from a source
@@ -1008,6 +985,16 @@ export class CloudflareClientService {
     return detectContainerDataRoot();
   }
 
+  /**
+   * Resolves the Docker Compose file used to start `cloudflared`.
+   *
+   * The bundled Hub mounts the active file at `${DATA_DIR}/docker-compose.yml`,
+   * matching `DockerService.getBaseComposeArgsHub`. Local `pnpm dev` and tests
+   * fall back to the repository source file. Do not gate the mounted path on
+   * `NODE_ENV`: inside the bundled image it is whatever the env file passes
+   * through (docker-compose.prod.yml defaults it to production), and
+   * `development` there would select the nonexistent `/app/docker-compose.local.yml`.
+   */
   private getComposeFile(): string {
     const mounted = path.join(DATA_DIR, 'docker-compose.yml');
     if (fsSync.existsSync(mounted)) {

@@ -205,7 +205,14 @@ services:
       - attempts:5
       - timeout:2
     networks:
+      # The gateway network, as for traefik below: ci_hub_internal sorts first
+      # by name and would otherwise take the default route. The Hub's own
+      # connections (the Portal, image registries) would then leave from that
+      # bridge, whose range Docker picked when it was created and which a VPN
+      # or an accepted Tailscale route may also claim. Postgres and RabbitMQ
+      # are still reached over ci_hub_internal.
       ci_hub_network:
+        gw_priority: 1
         aliases:
           - ci-os-hub
           - host.docker.internal
@@ -355,6 +362,9 @@ services:
       # host.docker.internal upstream) would leave from 10.128.0.2 — outside
       # the 172.16.0.0/12 that fleet ufw rules admit from Docker bridges.
       # `gw_priority` needs Compose 2.33+ and Engine 28+; Docker 29 ships both.
+      # An older Compose refuses this file, so the desktop app and `cihub up`
+      # stop and say so. An older Engine ignores the setting and routes by name
+      # as above (measured: Engine 27.5.1 with Compose 5.1.4), so they warn.
       ci_hub_network:
         gw_priority: 1
       ci_os_hub_network:

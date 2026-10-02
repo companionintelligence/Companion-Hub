@@ -25,7 +25,7 @@ import {
 } from '@/common/helpers/hub-pool';
 import { HubPoolPressureService } from '../hub-pool-pressure.service';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
-import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from '../hub-pool-load.service';
+import { HubPoolLoadService, LOCAL_CANDIDATE_KEY, type LocalGeneration } from '../hub-pool-load.service';
 import { PLACEMENT_PROBE_BUDGET_MS } from '../hub-pool-local-health.service';
 import { HubPoolRoutingLogService } from '../hub-pool-routing-log.service';
 import {
@@ -4994,6 +4994,106 @@ describe('PoolProxyService', () => {
           ]);
         });
 
+        /**
+         * Fleet retest, 2026-10-01, core-2 with 15 leaves. A 37,571-token OpenClaw turn went to core-7
+         * at a predicted 187,197 ms (168.6 s to its first byte) with `slowerDemoted` empty, while
+         * beta-1 was predicted at 6,402 ms and beta-red at 7,488. Nothing was in flight on either: the
+         * requests this node had forwarded to them ended seconds before, but their last health poll had
+         * counted those, and read as a queue of one until the next poll. core-7, polled idle, looked
+         * the freest node, and a queue is the one thing the rule will not pass.
+         */
+        describe('a peer whose last poll counted a request this node forwarded to it that has since finished', () => {
+          const RETEST_TOKENS = 37_571;
+
+          function measureTheRetestTurn(): void {
+            measure('core-7', RETEST_TOKENS, 187_197);
+            measure('beta-1', RETEST_TOKENS, 6_402);
+            measure('beta-max', RETEST_TOKENS, 29_013);
+            measure('beta-red', RETEST_TOKENS, 7_488);
+          }
+
+          it('is not busy: the turn goes to the node predicted at 6 s, not the idle one predicted at 187 s', async () => {
+            generatingAnotherModelHere();
+            usePeers(() => [
+              node('core-7'),
+              node('beta-1', { inFlightRequests: 1 }),
+              node('beta-max', { inFlightRequests: 0 }),
+              node('beta-red', { inFlightRequests: 1 }),
+            ]);
+            measureTheRetestTurn();
+            // Their polls counted one request of ours each; both ended before this turn arrived.
+            loadService.noteReport('beta-1', 1);
+            loadService.noteReport('beta-red', 1);
+            // beta-max really is serving one of ours now, which its earlier poll could not know.
+            loadService.acquire('beta-max');
+
+            const ranked = ids(await service.buildCandidateList(MODEL, bytesOf(RETEST_TOKENS)));
+
+            expect(ranked.slice(0, 2)).toEqual(['beta-1', 'beta-red']);
+            // beta-max is a request busier than core-7 with no slot stated: the margin still holds it behind.
+            expect(ranked).toEqual(['beta-1', 'beta-red', 'core-7', 'beta-max', null]);
+          });
+
+          it('still counts what the peer reported beyond our own forwards: its apps, and other nodes', async () => {
+            generatingAnotherModelHere();
+            usePeers(() => [node('core-7'), node('beta-1', { inFlightRequests: 2 }), node('beta-red')]);
+            measureTheRetestTurn();
+            // Of its two, one was ours and has ended; the other is not ours, and may still be running.
+            loadService.noteReport('beta-1', 1);
+
+            expect(ids(await service.buildCandidateList(MODEL, bytesOf(RETEST_TOKENS)))).toEqual(['beta-red', 'core-7', 'beta-1', null]);
+          });
+
+          it('counts our live forwards on top of what it reported, as it always did', async () => {
+            generatingAnotherModelHere();
+            usePeers(() => [node('core-7'), node('beta-1', { inFlightRequests: 1 }), node('beta-red')]);
+            measureTheRetestTurn();
+            // One in flight at the poll and still running, one sent since: two queued, not one.
+            loadService.noteReport('beta-1', 1);
+            loadService.acquire('beta-1');
+            loadService.acquire('beta-1');
+
+            // Two queued is more than this node's own engine, which gives way to the idle peers but not to this one.
+            expect(ids(await service.buildCandidateList(MODEL, bytesOf(RETEST_TOKENS)))).toEqual(['beta-red', 'core-7', null, 'beta-1']);
+          });
+
+          it('reads a snapshot too old to trust as one request in flight, whatever was forwarded', async () => {
+            generatingAnotherModelHere();
+            usePeers(() => [node('core-7'), { ...node('beta-1'), lastSeenAt: new Date(Date.now() - 5 * 60_000).toISOString() }]);
+            measureTheRetestTurn();
+            loadService.noteReport('beta-1', 1);
+
+            // Unknown is not idle: beta-1 stays a request busier than core-7 and is not passed to.
+            expect(ids(await service.buildCandidateList(MODEL, bytesOf(RETEST_TOKENS)))).toEqual(['core-7', 'beta-1', null]);
+          });
+        });
+
+        /**
+         * The same list is the failover walk. The first candidate failing sent a turn to the node the
+         * head had displaced — core-7, predicted at 160 s — while a measured node predicted at 33 s
+         * stood behind it.
+         */
+        it('orders the failover walk by the same prediction: a node much slower than a later one goes behind it', async () => {
+          usePeers(() => [node('beta-1'), node('core-7'), node('beta-max')]);
+          measure('beta-1', HERMES_TURN_TOKENS, 15_700);
+          measure('core-7', HERMES_TURN_TOKENS, 159_000);
+          measure('beta-max', HERMES_TURN_TOKENS, 33_000);
+
+          // beta-1 is first and not much beaten by anyone; core-7 is 4.8 times beta-max.
+          expect(ids(await service.buildCandidateList(MODEL, bytesOf(HERMES_TURN_TOKENS)))).toEqual(['beta-1', 'beta-max', 'core-7']);
+        });
+
+        it('leaves the failover walk to the ranker when the first is the pinned node', async () => {
+          usePeers(() => [node('core-7'), node('beta-1'), node('beta-max')]);
+          measure('beta-1', HERMES_TURN_TOKENS, 15_700);
+          measure('core-7', HERMES_TURN_TOKENS, 159_000);
+          measure('beta-max', HERMES_TURN_TOKENS, 33_000);
+          setPoolPreferences({ poolPins: [{ scope: 'model', model: MODEL, targetKind: 'peer', peerId: 'beta-1', mode: 'prefer' }] });
+
+          // A pin leaves the rest of the walk in the order the ranker produced, so it costs one position.
+          expect(ids(await service.buildCandidateList(MODEL, bytesOf(HERMES_TURN_TOKENS)))).toEqual(['beta-1', 'core-7', 'beta-max']);
+        });
+
         it('names both nodes and both predictions in the routing log, and serves the turn from the faster', async () => {
           usePeers(() => [node('core-7'), node('beta-max'), node('beta-red'), node('beta-1')]);
           measureTheOpenClawTurn();
@@ -6320,6 +6420,97 @@ describe('PoolProxyService', () => {
         expect(applySlowerPlacement(ledByUnmeasured, placement(measuredPair)).ordered).toBe(ledByUnmeasured);
 
         expect(applySlowerPlacement([core7, core5, beta1], placement(measuredPair)).ordered).toEqual([beta1, core7, core5]);
+      });
+
+      describe('the failover walk behind the first', () => {
+        it('judges the rest by the same rule, so a node predicted much slower than a later one goes behind it without being logged', () => {
+          // beta-1 is first and nothing beats it by enough; core-7 is 5.3 times as slow as beta-max.
+          const result = applySlowerPlacement(
+            [beta1, core7, betaMax],
+            placement([
+              [beta1, predicted(20_000)],
+              [core7, predicted(160_000)],
+              [betaMax, predicted(30_000)],
+            ]),
+          );
+
+          expect(result.ordered).toEqual([beta1, betaMax, core7]);
+          expect(result.demoted).toEqual([]);
+        });
+
+        it('orders the retest turn of 2026-10-01 by what each node was predicted to take', () => {
+          const result = applySlowerPlacement(
+            [core7, beta1, betaMax, betaRed],
+            placement([
+              [core7, predicted(187_197)],
+              [beta1, predicted(6_402)],
+              [betaMax, predicted(29_013)],
+              [betaRed, predicted(7_488)],
+            ]),
+          );
+
+          // Everything but core-7 goes ahead of it, in the ranker's order; then beta-red, 3.9 times as fast as beta-max, passes it.
+          expect(result.ordered).toEqual([beta1, betaRed, betaMax, core7]);
+          expect(result.demoted.map((entry) => [entry.node, entry.fasterNode])).toEqual([['core-7.tailxyz.ts.net', 'beta-1.tailxyz.ts.net']]);
+        });
+
+        it("holds the walk to the first's margin: a node that is busier is not passed to", () => {
+          const group = [beta1, core7, betaMax];
+          const result = applySlowerPlacement(
+            group,
+            placement(
+              [
+                [beta1, predicted(20_000)],
+                [core7, predicted(160_000)],
+                [betaMax, predicted(30_000)],
+              ],
+              { inFlight: [[betaMax, 2]], slots: [[betaMax, 4]] },
+            ),
+          );
+
+          expect(result.ordered).toBe(group);
+        });
+
+        it('leaves the walk alone behind a first that holds the front, or that nothing measured', () => {
+          const measuredRest: [PoolCandidate, MeasuredPrefill][] = [
+            [core7, predicted(160_000)],
+            [betaMax, predicted(30_000)],
+          ];
+          const held = [beta1, core7, betaMax];
+          expect(
+            applySlowerPlacement(held, placement([[beta1, predicted(20_000)], ...measuredRest], { holdsFront: (candidate) => candidate === beta1 }))
+              .ordered,
+          ).toBe(held);
+
+          const unmeasured = [core5, core7, betaMax];
+          expect(applySlowerPlacement(unmeasured, placement(measuredRest)).ordered).toBe(unmeasured);
+        });
+
+        it('does not judge an unmeasured node in the walk, and does not read a missed deadline as faster', () => {
+          const withUnmeasured = [beta1, core5, core7, betaMax];
+          expect(
+            applySlowerPlacement(
+              withUnmeasured,
+              placement([
+                [beta1, predicted(20_000)],
+                [core7, predicted(160_000)],
+                [betaMax, predicted(30_000)],
+              ]),
+            ).ordered,
+          ).toBe(withUnmeasured);
+
+          const lowerBound = [beta1, core7, betaMax];
+          expect(
+            applySlowerPlacement(
+              lowerBound,
+              placement([
+                [beta1, predicted(20_000)],
+                [core7, predicted(160_000)],
+                [betaMax, predicted(30_000, { deadline: true })],
+              ]),
+            ).ordered,
+          ).toBe(lowerBound);
+        });
       });
 
       it('moves nothing for a prompt under UNMEASURED_DEFER_MIN_PROMPT_TOKENS', () => {
@@ -8444,6 +8635,77 @@ describe('PoolProxyService', () => {
 
         expect(urls()).toEqual(['http://local-lemonade:13305/api/chat']);
         expect(routingLog.list()[0]).toMatchObject({ outcome: 'served', backend: 'lemonade', attempts: [], localLoadRefused: null });
+      });
+
+      // beta-3-glass, 2026-10-01: qwen3.5:4b was streaming when a request for qwen3.5:9b arrived. Sent on at
+      // once, Ollama marked the 4b runner to expire and made the request wait for it; the Hub waits itself.
+      describe('because only generations in progress stand in the way', () => {
+        const BUSY: LocalGeneration = { backend: 'ollama', model: 'qwen3.5:4b', numCtx: null };
+        const BUSY_REFUSAL = `${REFUSAL}; qwen3.5:4b is serving a request and will not be unloaded`;
+
+        beforeEach(() => {
+          peerService.listConnectedPeers.mockResolvedValue([]);
+          loadService.acquire(LOCAL_CANDIDATE_KEY, BUSY);
+        });
+
+        it('holds the request until they end, then loads the model itself and sends it', async () => {
+          router.loadTrackedModel.mockResolvedValueOnce({ loaded: false, reason: BUSY_REFUSAL, idleWouldFree: true });
+          router.loadTrackedModel.mockResolvedValue({ loaded: true });
+          const res = createMockResponse();
+
+          const served = chat(res);
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          expect(urls()).toEqual([]);
+
+          loadService.release(LOCAL_CANDIDATE_KEY, BUSY);
+          await served;
+
+          expect(router.loadTrackedModel).toHaveBeenCalledTimes(2);
+          expect(urls()).toEqual([LOCAL_URL]);
+          expect(res.status).toHaveBeenCalledWith(200);
+          expect(routingLog.list()[0]).toMatchObject({ outcome: 'served', node: POOL_SERVED_LOCALLY, attempts: [], localLoadRefused: null });
+        });
+
+        it('sends it on, saying so, when the load is refused again for a reason waiting does not change', async () => {
+          router.loadTrackedModel.mockResolvedValueOnce({ loaded: false, reason: BUSY_REFUSAL, idleWouldFree: true });
+          router.loadTrackedModel.mockResolvedValue({ loaded: false, reason: REFUSAL });
+
+          const served = chat();
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          loadService.release(LOCAL_CANDIDATE_KEY, BUSY);
+          await served;
+
+          expect(router.loadTrackedModel).toHaveBeenCalledTimes(2);
+          expect(urls()).toEqual([LOCAL_URL]);
+          expect(routingLog.list()[0]).toMatchObject({ outcome: 'served', localLoadRefused: REFUSAL });
+        });
+
+        it('stops waiting when the client leaves, and neither loads nor sends for nobody', async () => {
+          router.loadTrackedModel.mockResolvedValueOnce({ loaded: false, reason: BUSY_REFUSAL, idleWouldFree: true });
+          const res = createMockResponse();
+
+          const served = chat(res);
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          res.destroy();
+          await served;
+          loadService.release(LOCAL_CANDIDATE_KEY, BUSY);
+
+          expect(router.loadTrackedModel).toHaveBeenCalledTimes(1);
+          expect(routingLog.list()[0]).toMatchObject({ localLoadRefused: null });
+        });
+
+        it('does not wait when another candidate can take the request, which is passed over for it as before', async () => {
+          const peer = peerServing('peer-a', MODEL);
+          peerService.listConnectedPeers.mockResolvedValue([peer]);
+          // Busy locally, the engine would rank behind the peer and never be asked; the refusal is the point here.
+          loadService.release(LOCAL_CANDIDATE_KEY, BUSY);
+          router.loadTrackedModel.mockResolvedValue({ loaded: false, reason: BUSY_REFUSAL, idleWouldFree: true });
+
+          await chat();
+
+          expect(urls()).toEqual([PEER_A_URL]);
+          expect(router.loadTrackedModel).toHaveBeenCalledTimes(1);
+        });
       });
 
       // What the fix leaves alone: a load that goes through, and one that is not needed.

@@ -3,6 +3,7 @@
 
 mod app_binary;
 mod commands;
+mod digest_hex;
 mod discovery;
 pub mod docker_engine;
 mod error_reporting;

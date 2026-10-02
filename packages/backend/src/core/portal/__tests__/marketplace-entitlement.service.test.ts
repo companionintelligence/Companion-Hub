@@ -5,6 +5,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { DatabaseService } from '@/core/database/database.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { EVERY_ADDRESS_FAILED, axiosEveryAddressFailed } from '@/tests/utils/network-failures';
 import { PortalClientService } from '../portal-client.service';
 import { MarketplaceEntitlementService } from '../marketplace-entitlement.service';
 
@@ -116,6 +117,13 @@ describe('MarketplaceEntitlementService', () => {
     portal.checkAppEntitlement.mockRejectedValue(new Error('ECONNREFUSED'));
 
     await expect(service.assertForStart(APP_URN)).resolves.toBeUndefined();
+  });
+
+  it('says why the check got no answer when no address of the Portal accepted the connection', async () => {
+    portal.checkAppEntitlement.mockRejectedValue(axiosEveryAddressFailed());
+
+    await expect(service.assertForStart(APP_URN)).resolves.toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(`Portal entitlement check failed for ${APP_URN}: ${EVERY_ADDRESS_FAILED}`);
   });
 
   it('does not start an app whose last check was a fresh 402 when Portal is unreachable', async () => {

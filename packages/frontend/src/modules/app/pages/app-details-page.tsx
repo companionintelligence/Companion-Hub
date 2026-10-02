@@ -1,5 +1,7 @@
 import { getAppOptions } from '@/api-client/@tanstack/react-query.gen';
 import { client } from '@/api-client/client.gen';
+import type { TranslatableError } from '@/types/error.types';
+import type { AppInfo } from '@/types/app.types';
 import { Card, CardContent } from '@/components/ui/Card/Card';
 import { useAppContext } from '@/context/app-context';
 import { useQuery } from '@tanstack/react-query';
@@ -37,6 +39,10 @@ export async function clientLoader({ params }: Route.ClientLoaderArgs) {
 }
 
 const INFORMATION_ROWS = ['provider', 'categories', 'updated', 'version', 'source', 'size'];
+
+function isGrantDenied(error: unknown): error is TranslatableError {
+  return typeof error === 'object' && error !== null && 'message' in error && error.message === 'APP_ACTION_GRANT_DENIED';
+}
 
 // Laid out like the loaded page (hero card, then About and Information) so
 // nothing jumps when the app arrives.
@@ -105,11 +111,26 @@ export default () => {
   const appUrn = `${appId}:${storeId}`;
   const { t } = useTranslation();
 
+  const listing = useQuery({
+    queryKey: ['app-listing', appUrn],
+    queryFn: async () => {
+      const { data } = await client.get({ url: `/api/marketplace/apps/${encodeURIComponent(appUrn)}/listing` });
+      return data as { info: AppInfo; iconUrl?: string | null };
+    },
+    staleTime: 30_000,
+    retry: false,
+  });
+  const listingInfo = listing.data?.info;
+  const listingVisible = Boolean(listingInfo) && !listing.isError;
+
   const getApp = useQuery({
     ...getAppOptions({ path: { urn: appUrn } }),
     staleTime: 30_000,
+    enabled: listingVisible,
+    retry: false,
   });
-  const runtimeHealthEnabled = Boolean(getApp.data?.app && getApp.data.app.status !== 'uninstalling');
+  const privateRecord = getApp.isError ? undefined : getApp.data;
+  const runtimeHealthEnabled = Boolean(privateRecord?.app && privateRecord.app.status !== 'uninstalling');
 
   const imageSize = useQuery({
     queryKey: ['app-image-size', appUrn],
@@ -117,6 +138,7 @@ export default () => {
       const { data } = await client.get({ url: `/api/marketplace/apps/${encodeURIComponent(appUrn)}/image-size` });
       return data as { totalBytes: number | null; formatted: string | null };
     },
+    enabled: listingVisible,
     staleTime: 1000 * 60 * 60, // 1 hour
     retry: false,
   });
@@ -146,20 +168,30 @@ export default () => {
   // the loading/error early-returns below — hooks can't be conditional.
   const urlAvailability = useAppUrlAvailability({
     appUrn,
-    status: getApp.data?.app?.status,
-    noGui: getApp.data?.info?.no_gui,
-    exposureMode: getApp.data?.app?.exposureMode,
+    status: privateRecord?.app?.status,
+    noGui: (privateRecord?.info ?? listingInfo)?.no_gui,
+    exposureMode: privateRecord?.app?.exposureMode,
   });
 
-  const appMedia = useAppMedia(appUrn, getApp.isSuccess);
+  const appMedia = useAppMedia(appUrn, listingVisible);
 
   const { userSettings } = useAppContext();
 
-  if (getApp.isLoading) {
+  if (listing.isLoading) {
     return <AppDetailsSkeleton />;
   }
 
-  if (getApp.isError || !getApp.data) {
+  if (isGrantDenied(listing.error)) {
+    const refusedName = listing.error.intlParams?.app;
+    return (
+      <div className="mx-auto max-w-2xl px-4 py-16 text-center">
+        <h1 className="text-2xl font-semibold">{refusedName || t('APP_ACTION_GRANT_DENIED', { action: 'view' })}</h1>
+        {refusedName ? <p className="mt-2 text-muted-foreground">{t('APP_ACTION_GRANT_DENIED', { action: 'view', app: refusedName })}</p> : null}
+      </div>
+    );
+  }
+
+  if (listing.isError || !listingInfo) {
     return (
       <div className="mx-auto max-w-2xl px-4 py-16 text-center">
         <h1 className="text-2xl font-semibold">{t('APP_ERROR_APP_NOT_FOUND', { id: appUrn })}</h1>
@@ -168,9 +200,12 @@ export default () => {
     );
   }
 
-  const { info, app, metadata, appDataHostPath } = getApp.data;
+  const info = privateRecord?.info ?? listingInfo;
+  const app = privateRecord?.app;
+  const metadata = privateRecord?.metadata;
+  const appDataHostPath = privateRecord?.appDataHostPath;
   const logoUrn = info?.urn ?? appUrn;
-  const logoUrl = metadata?.iconUrl ?? getMarketplaceAppImageUrl(logoUrn);
+  const logoUrl = metadata?.iconUrl ?? listing.data?.iconUrl ?? getMarketplaceAppImageUrl(logoUrn);
   const primaryCategory = info?.categories?.[0];
   const headerStats = [
     {
@@ -306,7 +341,7 @@ export default () => {
 
       <AppReadinessChecksCard readiness={runtimeHealth.data?.readiness} />
 
-      <McpAccessCard app={app} info={info} mcpRuntime={getApp.data.mcpRuntime ?? null} />
+      <McpAccessCard app={app} info={info} mcpRuntime={privateRecord?.mcpRuntime ?? null} />
 
       {app ? <AppBackupsCard appUrn={appUrn} appName={info.name} status={app.status} /> : null}
 

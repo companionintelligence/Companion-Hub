@@ -699,6 +699,8 @@ describe('ModelRegistryService', () => {
     it('should sort by LRU (oldest first)', () => {
       service.trackModel('model-a', 'loaded');
       service.trackModel('model-b', 'loaded');
+      service.markHubLoaded('model-a');
+      service.markHubLoaded('model-b');
       const modelA = service.getTrackedModel('model-a');
       const modelB = service.getTrackedModel('model-b');
       if (modelA) modelA.lastUsedAt = 100;
@@ -708,11 +710,48 @@ describe('ModelRegistryService', () => {
       expect(candidates[0]?.catalogId).toBe('model-a');
     });
 
+    it('offers only models this Hub loaded: one the registry merely found resident is not a candidate', () => {
+      // What `GET /models/tracked` does for a model an engine loaded on an app's request.
+      service.trackModel('model-a', 'loaded');
+      expect(service.getTrackedModel('model-a')?.state).toBe('loaded');
+      expect(service.getEvictionCandidates()).toEqual([]);
+
+      service.markHubLoaded('model-a');
+      expect(service.getEvictionCandidates().map((c) => c.catalogId)).toEqual(['model-a']);
+    });
+
+    it('forgets whose load it was once the model leaves memory: the next residency is a new question', () => {
+      service.trackModel('model-a', 'loaded');
+      service.markHubLoaded('model-a');
+      service.updateModelState('model-a', 'pulled');
+      // Back in memory because an engine loaded it again, which the registry can only adopt.
+      service.updateModelState('model-a', 'loaded');
+      expect(service.getEvictionCandidates()).toEqual([]);
+
+      service.removeTrackedModel('model-a');
+      service.trackModel('model-a', 'loaded');
+      expect(service.getEvictionCandidates()).toEqual([]);
+    });
+
+    it('keeps it through a pin and an unpin, and marks nothing it does not track', () => {
+      service.markHubLoaded('model-ghost');
+      service.trackModel('model-ghost', 'loaded');
+      expect(service.getEvictionCandidates()).toEqual([]);
+
+      service.trackModel('model-a', 'loaded');
+      service.markHubLoaded('model-a');
+      service.pinModel('model-a');
+      service.unpinModel('model-a');
+      expect(service.getEvictionCandidates().map((c) => c.catalogId)).toEqual(['model-a']);
+    });
+
     it('should exclude pinned from eviction candidates', () => {
       service.trackModel('model-a', 'loaded');
+      service.markHubLoaded('model-a');
       service.pinModel('model-a');
 
       service.trackModel('model-b', 'loaded');
+      service.markHubLoaded('model-b');
 
       const candidates = service.getEvictionCandidates();
       expect(candidates.find((c) => c.catalogId === 'model-a')).toBeUndefined();

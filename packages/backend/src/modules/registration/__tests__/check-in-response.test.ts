@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildRoutes } from '../../../../../../e2e/mock-portal/scenarios';
+import { EVERY_ADDRESS_FAILED, axiosEveryAddressFailed } from '@/tests/utils/network-failures';
 import { classifyCheckInResponse, describeCheckInTransportError } from '../check-in-response';
 
 /**
@@ -65,6 +66,11 @@ describe('classifyCheckInResponse', () => {
 
   it('describes a request that got no response', () => {
     expect(describeCheckInTransportError(new Error('connect ECONNREFUSED 127.0.0.1:443'))).toBe('connect ECONNREFUSED 127.0.0.1:443');
+  });
+
+  it('names each address when none of the Portal accepted the connection', () => {
+    // That error's message is empty, and the check-in record used to read "request failed".
+    expect(describeCheckInTransportError(axiosEveryAddressFailed())).toBe(EVERY_ADDRESS_FAILED);
   });
 });
 

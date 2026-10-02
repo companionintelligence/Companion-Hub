@@ -1,0 +1,62 @@
+name: Image boot
+
+# Builds the production image's `runner` stage and boots it against Postgres and RabbitMQ.
+#
+# Nothing else in CI runs the production bundle: `ci.yml` and `integration-tests.yml` run the
+# TypeScript sources, and `build-container.yml` only publishes. So when NestJS 12 made esbuild leave
+# `require("express")` unbundled, every check stayed green and the image crash-looped on a fleet
+# canary (`The "express" package is missing`). `packages/backend/build.ts` now fails the build on
+# that specific mistake, but only a boot can catch the rest: a missing asset, a native module that
+# does not load on Alpine, a migration that fails, an entrypoint that cannot start the process.
+#
+# The check itself is scripts/smoke-boot-image.sh, so it runs the same way on a laptop:
+#   docker build --target runner -t hub-smoke . && scripts/smoke-boot-image.sh hub-smoke
+on:
+  workflow_call:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - dev
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  boot:
+    name: Boot the runner image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # linux/amd64 only: it is the platform ubuntu-latest runs natively, and the arm64 slot would
+      # build and boot under QEMU. Every layer up to `COPY ./packages` (base images, apk, corepack,
+      # `pnpm install`, the runner's `npm install`) comes from the cache; the backend and frontend
+      # builds rerun whenever a source file changes, which is the point.
+      #
+      # The cache is read by every run and written only by `dev`: a pull request can read its base
+      # branch's cache but would otherwise add a gigabyte-scale export per branch to the repo's
+      # shared 10 GB, evicting the caches the other workflows depend on.
+      - name: Build the runner image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: runner
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ci-hub-boot-check:${{ github.sha }}
+          cache-from: type=gha,scope=image-boot
+          cache-to: ${{ github.ref == 'refs/heads/dev' && 'type=gha,scope=image-boot,mode=max' || '' }}
+
+      - name: Boot the image against Postgres and RabbitMQ
+        run: scripts/smoke-boot-image.sh ci-hub-boot-check:${{ github.sha }}

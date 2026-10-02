@@ -5,7 +5,7 @@
 > **Inventory:** [TEST_INVENTORY.md](TEST_INVENTORY.md) — regenerate with `pnpm run agent:test-inventory`
 > **Commands:** `pnpm test`, `pnpm run test:e2e:ci`, `pnpm run test:visual`
 > **Router:** [AGENTS.md](../../AGENTS.md)
-> **Last updated:** 2026-07-12
+> **Last updated:** 2026-10-01
 > **Related:** docs/system/e2e.md, .cursor/rules/ci-checks.mdc
 
 ---
@@ -17,6 +17,7 @@
 | Unit | Vitest | `packages/*/**/*.test.ts(x)`, `scripts/__tests__/` | `ci.yml` |
 | CLI binary smoke | Vitest + bun | `scripts/__tests__/cli-binary-smoke.test.ts` | `cli-binary-tests.yml`, `ci.yml` |
 | Integration | Vitest + Docker | `packages/backend/test/integration/` | `integration-tests.yml` |
+| Image boot | Docker + `curl` | `scripts/smoke-boot-image.sh` | `image-boot.yml` |
 | E2E | Playwright | `e2e/**/*.spec.ts` | Release / manual / labels |
 | Visual | Playwright + pixelmatch | `e2e/visual/` | `agent-gates.yml` |
 | Benchmark | `benchmark-app.ts` | `e2e/results/benchmarks/` | `agent-gates.yml` |
@@ -28,6 +29,18 @@ suite compiles the binary with the release's own `scripts/build-standalone-cli.c
 commands against stub `docker`/`git` binaries and a throwaway `HOME` — no real Docker state, no
 network. Add a case there whenever you add a CLI subcommand. It skips locally without bun and
 **fails** without bun when `CI` is set, so it can never pass by not running.
+
+**Why the image has its own layer:** every other layer runs the TypeScript sources, so none of them
+runs the esbuild bundle the image actually ships. NestJS 12 made esbuild leave `require("express")`
+unbundled, the image crash-looped on a fleet canary (`The "express" package is missing`), and Hub CI
+and the integration tests stayed green because nothing booted it. `image-boot.yml` builds the
+Dockerfile's `runner` stage for `linux/amd64`, runs it through its real entrypoint against throwaway
+Postgres and RabbitMQ containers, and fails on an exit, a `/api/health/live` or `/` that never
+answers 200, or a log line matching `PackageLoader` / `Cannot find module`. Run the same check
+locally with `docker build --target runner -t hub-smoke . && scripts/smoke-boot-image.sh hub-smoke`
+(on Apple Silicon add `--platform linux/arm64` to the build and `DOCKER_DEFAULT_PLATFORM=linux/arm64`
+to the script). It mounts no Docker socket and points the Portal URL at a closed port, so it cannot
+touch the host's Docker or the real Portal.
 
 ---
 

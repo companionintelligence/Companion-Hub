@@ -6,6 +6,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { DatabaseService } from '@/core/database/database.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { EVERY_ADDRESS_FAILED, axiosEveryAddressFailed } from '@/tests/utils/network-failures';
 import { FederatedIdentityRepository } from '@/modules/user/federated-identity.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { PortalClientService } from '../portal-client.service';
@@ -287,6 +288,13 @@ describe('MarketplaceWhoIsService', () => {
     await expect(service.has(USER_ID, APP_URN, 'start')).resolves.toBe(false);
   });
 
+  it('says why WhoIs got no answer when no address of the Portal accepted the connection', async () => {
+    portal.whoisApps.mockRejectedValue(axiosEveryAddressFailed());
+
+    await expect(service.has(USER_ID, APP_URN, 'start')).resolves.toBe(false);
+    expect(logger.warn).toHaveBeenCalledWith(`Portal WhoIs failed: ${EVERY_ADDRESS_FAILED}`);
+  });
+
   it('fails open on list when Portal is unreachable and there is no fresh cache', async () => {
     portal.whoisApps.mockRejectedValue(new Error('ECONNREFUSED'));
     const items = [{ urn: APP_URN }, { urn: 'plex:ci-marketplace' as AppUrn }];
@@ -294,6 +302,34 @@ describe('MarketplaceWhoIsService', () => {
     const visible = await service.filterSessionByView(sessionReq(), items, (item) => item.urn, 'hub');
 
     expect(visible).toEqual(items);
+  });
+
+  it('keeps one app listing visible when WhoIs has no answer', async () => {
+    portal.whoisApps.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    await expect(service.catalogVisibility(sessionReq(), APP_URN, 'store')).resolves.toBe('visible');
+  });
+
+  it('refuses one app listing when WhoIs answers with an empty grant', async () => {
+    portal.whoisApps.mockResolvedValue({
+      status: 200,
+      body: {
+        organizations: [{ organizationId: 'org-hub', version: 1, apps: [{ appId: 'immich', can: [] }] }],
+      },
+    });
+
+    await expect(service.catalogVisibility(sessionReq(), APP_URN, 'store')).resolves.toBe('refused');
+  });
+
+  it('shows one app listing when WhoIs grants view', async () => {
+    portal.whoisApps.mockResolvedValue({
+      status: 200,
+      body: {
+        organizations: [{ organizationId: 'org-hub', version: 1, apps: [{ appId: 'immich', can: ['view'] }] }],
+      },
+    });
+
+    await expect(service.catalogVisibility(sessionReq(), APP_URN, 'store')).resolves.toBe('visible');
   });
 
   /*

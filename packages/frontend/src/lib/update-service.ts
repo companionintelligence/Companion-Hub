@@ -187,6 +187,24 @@ export function manualUpdateArtifactKind(downloadUrl: string): ManualUpdateArtif
   return null;
 }
 
+/**
+ * The name a browser saves a manual-download installer under: the URL's last path segment, decoded,
+ * so `Companion%20Hub_0.2.78_amd64.deb` is `Companion Hub_0.2.78_amd64.deb`. `null` unless the name is
+ * plain enough to paste between double quotes in a shell command: letters, digits, spaces, dots,
+ * underscores, plus signs and hyphens only, so never a slash, a quote, `$` or a backtick.
+ */
+export function manualUpdateFileName(downloadUrl: string): string | null {
+  const path = downloadUrl.split(/[?#]/)[0] ?? '';
+  let name: string;
+  try {
+    name = decodeURIComponent(path.slice(path.lastIndexOf('/') + 1));
+  } catch {
+    return null;
+  }
+  // A name of dots alone is the folder itself or its parent, never a file.
+  return /^[A-Za-z0-9 ._+-]+$/.test(name) && !/^\.+$/.test(name) ? name : null;
+}
+
 async function resolveInstallerFromCdn(
   platform: DesktopPlatform | null,
   osArch: string,

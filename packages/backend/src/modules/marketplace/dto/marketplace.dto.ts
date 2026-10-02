@@ -1,4 +1,4 @@
-import { APP_CATEGORIES, appInfoObjectSchema } from '@ci-hub/common/schemas';
+import { APP_CATEGORIES, appInfoObjectSchema, appInfoSchema } from '@ci-hub/common/schemas';
 import { z } from 'zod';
 import { createZodDto } from '@/common/zod-dto';
 
@@ -71,6 +71,11 @@ const appMediaSchema = z.object({
   demoVideoUrl: z.string().nullable(),
 });
 
+const appListingSchema = z.object({
+  info: appInfoSchema,
+  iconUrl: z.string().url().nullable().optional(),
+});
+
 // App info
 export class MetadataDto extends createZodDto(metadataSchema) {}
 
@@ -88,3 +93,4 @@ export class UpdateAppStoreBodyDto extends createZodDto(updateAppStoreBodySchema
 export class CreateAppStoreBodyDto extends createZodDto(createAppStoreBodySchema) {}
 export class UpdateAppStoreDto extends createZodDto(successResponseSchema) {}
 export class AppMediaDto extends createZodDto(appMediaSchema) {}
+export class AppListingDto extends createZodDto(appListingSchema) {}

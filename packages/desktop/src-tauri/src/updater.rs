@@ -520,7 +520,7 @@ fn sha256_hex_file(path: &Path) -> Result<String, String> {
         }
         hasher.update(&buffer[..read]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(crate::digest_hex::lower_hex(&hasher.finalize()))
 }
 
 /// Verify a downloaded installer against manifest expectations before execution.
@@ -2123,7 +2123,7 @@ mod tests {
         let sha = {
             let mut hasher = Sha256::new();
             hasher.update(&artifact);
-            format!("{:x}", hasher.finalize())
+            crate::digest_hex::lower_hex(&hasher.finalize())
         };
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
         let port = listener.local_addr().expect("addr").port();

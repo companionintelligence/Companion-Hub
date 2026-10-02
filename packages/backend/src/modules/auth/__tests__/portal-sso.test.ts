@@ -18,6 +18,7 @@ import {
   toDesktopRedirectPath,
 } from '../portal-sso';
 import { HUB_FAVICON_LINK_TAG, HUB_FAVICON_PATH } from '../hub-favicon';
+import { EVERY_ADDRESS_FAILED, axiosEveryAddressFailed } from '@/tests/utils/network-failures';
 import type { Request } from 'express';
 
 function fakeRequest(headers: Record<string, string>, host?: string, protocol = 'http'): Request {
@@ -347,6 +348,23 @@ describe('portal-sso helpers', () => {
       reason: 'email_unverified',
       status: 200,
     });
+  });
+
+  it.each([
+    ['token', 'post'],
+    ['userinfo', 'get'],
+  ] as const)('says why the %s request got no answer when no address of the Portal accepted it', async (_label, method) => {
+    vi.mocked(axios.post).mockResolvedValue({ status: 200, data: { access_token: 'access-token' } });
+    vi.mocked(axios[method]).mockRejectedValue(axiosEveryAddressFailed());
+
+    await expect(
+      exchangePortalAuthorizationCode({
+        publicPortalBaseUrl: 'https://hub.ci.computer',
+        callbackUrl: 'http://localhost:5002/api/auth/portal/callback',
+        code: 'auth-code',
+        codeVerifier: 'verifier',
+      }),
+    ).resolves.toEqual({ ok: false, reason: 'network_error', detail: EVERY_ADDRESS_FAILED });
   });
 
   it('returns a structured failure when token exchange fails', async () => {
