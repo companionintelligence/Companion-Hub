@@ -5,7 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
-  '@types/node': 26.6.3
+  '@types/node@26.6.4': 26.6.3
   '@babel/core': 7.29.6
   '@grpc/grpc-js': 1.14.4
   '@hono/node-server': 1.19.15
