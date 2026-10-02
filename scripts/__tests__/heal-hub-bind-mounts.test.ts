@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -33,6 +33,7 @@ vi.mock('node:fs', async () => {
 import { DATA_BEARING_BIND_MOUNT_DIRS, RECREATABLE_BIND_MOUNT_DIRS } from '../lib/bind-mounts';
 import {
   bindMountHealScript,
+  bindMountRepairIdentity,
   dockerBindMountPath,
   dockerSocketIsRootOnlyInsideContainers,
   ensureHubBindMountsWritable,
@@ -108,14 +109,17 @@ function makeHubDataLayout(baseDir: string): { internalRoot: string; hubRoot: st
 
 describe('ensureHubBindMountsWritable', () => {
   const tmpRoot = join(process.cwd(), '.tmp-heal-hub-bind-mounts-test');
+  // The account running the test, so a pin of 1000 is not mistaken for a Hub owned by someone else.
+  const cliUid = typeof process.getuid === 'function' ? process.getuid() : 1000;
+  const cliGid = typeof process.getgid === 'function' ? process.getgid() : 1000;
 
   beforeEach(() => {
     rmSync(tmpRoot, { recursive: true, force: true });
     mkdirSync(tmpRoot, { recursive: true });
     spawnSyncMock.mockReset();
     execSyncMock.mockReset();
-    process.env.CI_HUB_CONTAINER_UID = '1000';
-    process.env.CI_HUB_CONTAINER_GID = '1000';
+    process.env.CI_HUB_CONTAINER_UID = String(cliUid);
+    process.env.CI_HUB_CONTAINER_GID = String(cliGid);
     execSyncMock.mockImplementation((cmd: string) => {
       if (String(cmd).includes('docker info')) return '';
       throw new Error('docker unavailable');
@@ -132,7 +136,7 @@ describe('ensureHubBindMountsWritable', () => {
 
     const identity = ensureHubBindMountsWritable(internalRoot, { skipDockerHeal: false });
 
-    expect(identity.uid).toBe(1000);
+    expect(identity.uid).toBe(cliUid);
     expect(existsSync(join(internalRoot, 'state', 'settings.json'))).toBe(true);
     expect(spawnSyncMock).toHaveBeenCalled();
   });
@@ -157,7 +161,7 @@ describe('ensureHubBindMountsWritable', () => {
 
     const identity = ensureHubBindMountsWritable(internalRoot, { skipDockerHeal: true });
 
-    expect(identity.uid).toBe(1000);
+    expect(identity.uid).toBe(cliUid);
     expect(existsSync(join(internalRoot, 'state', 'settings.json'))).toBe(true);
     expect(spawnSyncMock).not.toHaveBeenCalled();
   });
@@ -397,6 +401,97 @@ describe.skipIf(process.platform === 'win32')('credential files in state/ (setti
   });
 });
 
+// A Hub owned by someone other than whoever ran cihub. Desktop installs never get here.
+describe.skipIf(process.platform === 'win32')('a Hub owned by another account', () => {
+  const tmpRoot = join(process.cwd(), '.tmp-heal-hub-other-account-test');
+  const ownUid = (process.getuid as () => number)();
+  const ownGid = (process.getgid as () => number)();
+  const hubUser = { uid: 1234, gid: 2345 };
+  const ownedBy = (filePath: string, owner: { uid: number; gid: number }) => fakeOwners.set(path.resolve(filePath), owner);
+
+  function layOut(pin?: { uid: number; gid: number }): { internalRoot: string; envFile: string; tokenPath: string } {
+    const { internalRoot, hubRoot } = makeHubDataLayout(tmpRoot);
+    const envFile = join(hubRoot, '.env.dev');
+    const pinLines = pin ? `CI_HUB_CONTAINER_UID=${pin.uid}\nCI_HUB_CONTAINER_GID=${pin.gid}\n` : '';
+    writeFileSync(envFile, `${pinLines}ROOT_FOLDER_HOST=${internalRoot}\n`);
+    ownedBy(envFile, hubUser);
+    mkdirSync(join(internalRoot, 'state'), { recursive: true });
+    ownedBy(join(internalRoot, 'state'), hubUser);
+    const tokenPath = resolveTunnelTokenPath(internalRoot);
+    mkdirSync(join(tokenPath, '..'), { recursive: true });
+    writeFileSync(tokenPath, 'tunnel-token');
+    chmodSync(tokenPath, 0o600);
+    ownedBy(tokenPath, hubUser);
+    ownedBy(join(tokenPath, '..'), hubUser);
+    return { internalRoot, envFile, tokenPath };
+  }
+
+  beforeEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+    mkdirSync(tmpRoot, { recursive: true });
+    fakeOwners.clear();
+    chownSyncMock.mockReset();
+    spawnSyncMock.mockReset();
+    execSyncMock.mockReset();
+    delete process.env.CI_HUB_CONTAINER_UID;
+    delete process.env.CI_HUB_CONTAINER_GID;
+    execSyncMock.mockImplementation(() => {
+      throw new Error('docker unavailable');
+    });
+    spawnSyncMock.mockImplementation((cmd: string, args: string[] = []) => {
+      if (cmd === 'docker' && args.includes('%u:%g')) return { status: 0, stdout: `${ownUid}:${ownGid}\n`, stderr: '' };
+      return { status: 1, stdout: '', stderr: 'denied' };
+    });
+  });
+
+  afterEach(() => {
+    fakeOwners.clear();
+    rmSync(tmpRoot, { recursive: true, force: true });
+    delete process.env.CI_HUB_CONTAINER_UID;
+    delete process.env.CI_HUB_CONTAINER_GID;
+  });
+
+  it('chowns toward the env file owner, not the account running cihub', () => {
+    const { internalRoot, envFile } = layOut();
+
+    expect(bindMountRepairIdentity(internalRoot, envFile, { uid: ownUid, gid: ownGid, dockerGid: 999, source: 'host-user' })).toEqual(hubUser);
+  });
+
+  it('keeps a root Hub on the host user Docker Desktop maps container root to', () => {
+    const { internalRoot, envFile } = layOut();
+    ownedBy(envFile, { uid: 0, gid: 0 });
+    ownedBy(join(internalRoot, 'state'), { uid: 0, gid: 0 });
+
+    expect(bindMountRepairIdentity(internalRoot, envFile, { uid: 0, gid: 0, dockerGid: 999, source: 'docker-desktop-root' }).uid).toBe(ownUid);
+  });
+
+  it('leaves a tunnel the Hub account owns where it is', () => {
+    const { internalRoot, envFile, tokenPath } = layOut();
+    const cacheDir = join(internalRoot, 'cache');
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(join(cacheDir, 'keep'), 'cached');
+    chmodSync(cacheDir, 0o750);
+    ownedBy(cacheDir, hubUser);
+
+    ensureHubBindMountsWritable(internalRoot, { envFile, skipDockerHeal: true });
+
+    expect(readFileSync(tokenPath, 'utf8')).toBe('tunnel-token');
+    expect(existsSync(join(cacheDir, 'keep'))).toBe(true);
+    expect(readdirSync(join(tokenPath, '..', '..')).some((name) => name.startsWith('tunnel.stale'))).toBe(false);
+  });
+
+  it('leaves a pinned Hub account its token, and stops instead of moving the tunnel when chown fails', () => {
+    const { internalRoot, envFile, tokenPath } = layOut(hubUser);
+    chmodSync(tokenPath, 0o000);
+    ownedBy(tokenPath, { uid: 0, gid: 0 });
+    ownedBy(join(tokenPath, '..'), { uid: 0, gid: 0 });
+
+    expect(() => ensureHubBindMountsWritable(internalRoot, { envFile, skipDockerHeal: true })).toThrow(/Leaving it in place/);
+    expect(existsSync(tokenPath)).toBe(true);
+    expect(readdirSync(join(tokenPath, '..', '..')).some((name) => name.startsWith('tunnel.stale'))).toBe(false);
+  });
+});
+
 // The exact strings, which docker_permission_repair_* in the desktop app's tests/runtime_state.rs
 // pin too: the two heals must stay the same script.
 describe('bindMountHealScript', () => {
@@ -513,8 +608,8 @@ describe('repairCriticalBindMountFiles', () => {
     chmodSync(tokenPath, 0o400);
 
     const repaired = repairCriticalBindMountFiles(internalRoot, {
-      uid: 1000,
-      gid: 1000,
+      uid: typeof process.getuid === 'function' ? process.getuid() : 1000,
+      gid: typeof process.getgid === 'function' ? process.getgid() : 1000,
       dockerGid: 999,
       source: 'env',
     });
