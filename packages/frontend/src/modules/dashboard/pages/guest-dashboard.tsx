@@ -7,6 +7,8 @@ import { AppTile } from '@/modules/app/components/app-tile/app-tile';
 import { Lock, LockOpen } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
+import { Button } from '@/components/ui/Button';
 import '@/styles/app-grid.css';
 import { EmptyPage } from '@/components/empty-page/empty-page';
 import { useUserContext } from '@/context/user-context';
@@ -72,14 +74,25 @@ const Tile = ({ data, sslPort }: { data: GuestAppsDto['installed'][number]; sslP
 };
 
 export const GuestDashboard = () => {
+  const { t } = useTranslation();
   const { sslPort } = useUserContext();
 
-  const { data: appsData, isLoading: appsLoading } = useQuery({
+  const {
+    data: appsData,
+    isPending: appsPending,
+    isError: appsError,
+    refetch: refetchApps,
+  } = useQuery({
     ...getGuestAppsOptions(),
     staleTime: 30_000,
   });
 
-  const { data: linksData, isLoading: linksLoading } = useQuery({
+  const {
+    data: linksData,
+    isPending: linksPending,
+    isError: linksError,
+    refetch: refetchLinks,
+  } = useQuery({
     ...getGuestLinksOptions(),
     staleTime: 30_000,
   });
@@ -89,7 +102,7 @@ export const GuestDashboard = () => {
 
   useEffect(() => {
     const list = appsData?.installed;
-    if (appsLoading || !list) {
+    if (appsPending || !list) {
       setPaintedCount(0);
       return;
     }
@@ -103,17 +116,35 @@ export const GuestDashboard = () => {
       setPaintedCount(list.length);
     });
     return () => cancelAnimationFrame(frame);
-  }, [appsLoading, appsData?.installed]);
+  }, [appsPending, appsData?.installed]);
 
   const hasContent = installed.length > 0 || (linksData?.links?.length ?? 0) > 0;
+  const loading = appsPending || linksPending;
+  const loadFailed = (appsError || linksError) && !hasContent;
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
       <Header isLoggedIn={false} />
       <div className="flex flex-1 flex-col pt-24 px-4 container mx-auto pb-8">
-        {!hasContent && !appsLoading && !linksLoading && <EmptyPage title="GUEST_DASHBOARD_NO_APPS" subtitle="GUEST_DASHBOARD_NO_APPS_SUBTITLE" />}
+        {loadFailed && (
+          <div className="flex flex-col items-start gap-2 py-8">
+            <p className="text-sm text-muted-foreground">{t('GUEST_DASHBOARD_LOAD_FAILED')}</p>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                void refetchApps();
+                void refetchLinks();
+              }}
+            >
+              {t('COMMON_RETRY')}
+            </Button>
+          </div>
+        )}
+        {!hasContent && !loading && !loadFailed && <EmptyPage title="GUEST_DASHBOARD_NO_APPS" subtitle="GUEST_DASHBOARD_NO_APPS_SUBTITLE" />}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {appsLoading &&
+          {appsPending &&
+            !appsError &&
             SKELETON_KEYS.map((key) => <div key={key} data-testid="app-tile-skeleton" className="h-24 animate-pulse rounded-lg bg-muted/40" />)}
           {installed.slice(0, paintedCount).map((appData) => {
             return <Tile key={appData.app.id} data={appData} sslPort={sslPort} />;

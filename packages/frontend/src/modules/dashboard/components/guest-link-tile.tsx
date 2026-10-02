@@ -28,8 +28,8 @@ export const GuestLinkTile: React.FC<GuestLinkTileProps> = ({ link }) => {
               <AppLogo url={link.iconUrl || ''} size={60} />
             </span>
             <div>
-              <div className="flex h-3 items-center">
-                <span className="text-xl font-bold me-2 mb-1">{link.title}</span>
+              <div className="flex items-center">
+                <span className="text-xl font-bold me-2">{link.title}</span>
               </div>
               {link.description?.length !== 0 && <div className="text-muted-foreground break-words">{link.description}</div>}
             </div>

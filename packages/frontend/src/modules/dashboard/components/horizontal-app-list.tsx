@@ -78,7 +78,7 @@ export const HorizontalAppList = ({ apps, isLoading = false, customDomainsAwaiti
   if (visibleApps.length === 0) {
     return (
       <Link to="/store" className="flex justify-center items-center no-underline py-16 sm:py-0 w-full" style={{ minHeight: 0 }}>
-        <h1 className="text-center text-xl sm:text-3xl text-muted-foreground/30 font-medium px-4">
+        <h1 className="text-center text-xl sm:text-3xl text-muted-foreground font-medium px-4">
           {t('DASHBOARD_NO_APPS_MESSAGE', 'Click here to install your first app')}
         </h1>
       </Link>
