@@ -1,5 +1,6 @@
 import { getAppComposeDiffOptions, getAppConfigDiffOptions, getAppOptions, updateAppMutation } from '@/api-client/@tanstack/react-query.gen';
 import { AppLogo } from '@/components/app-logo/app-logo';
+import { VersionChip } from '@/modules/app/components/version-chip';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardFooter, CardHeader } from '@/components/ui/Card';
 import { Switch } from '@/components/ui/Switch';
@@ -82,9 +83,9 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
           <div className="mt-3 lg:mt-0 lg:ml-3">
             <h2 className="mb-1 text-2xl font-bold">{t('APP_UPDATE_FORM_TITLE', { name: info.name })}</h2>
             <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
-              <span className="badge bg-muted text-white">{info.version}</span>
+              <VersionChip>{info.version}</VersionChip>
               <ArrowRight size={16} />
-              <span className="badge bg-success text-success-foreground">{metadata.latestDockerVersion}</span>
+              <VersionChip tone="next">{metadata.latestDockerVersion}</VersionChip>
             </div>
           </div>
         </div>
