@@ -1,5 +1,6 @@
 import { Button } from '@/components/ui/Button';
 import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
+import { meetsPasswordComplexity } from '@ci-hub/common/validation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import type React from 'react';
 import { useForm } from 'react-hook-form';
@@ -18,8 +19,8 @@ export const ResetPasswordForm: React.FC<IProps> = ({ onSubmit, loading }) => {
   const { t } = useTranslation();
   const schema = z
     .object({
-      password: z.string().min(8, t('COMMON_PASSWORD_MIN_LENGTH')),
-      passwordConfirm: z.string().min(8, t('AUTH_FORM_ERROR_PASSWORD_CONFIRMATION_LENGTH')),
+      password: z.string().refine((value) => meetsPasswordComplexity(value), { message: t('AUTH_ERROR_INVALID_PASSWORD_COMPLEXITY') }),
+      passwordConfirm: z.string().min(1, t('AUTH_FORM_PASSWORD_CONFIRMATION')),
     })
     .superRefine((data, ctx) => {
       if (data.password !== data.passwordConfirm) {
@@ -42,10 +43,11 @@ export const ResetPasswordForm: React.FC<IProps> = ({ onSubmit, loading }) => {
   return (
     <>
       <h2 className="text-xl font-semibold text-center mb-4">{t('AUTH_RESET_PASSWORD_TITLE')}</h2>
-      <form onSubmit={handleSubmit(onSubmit)}>
+      <form onSubmit={handleSubmit((values) => onSubmit(values))}>
         <PasswordInput
           {...register('password')}
           label={t('COMMON_PASSWORD')}
+          helpText={t('AUTH_ERROR_INVALID_PASSWORD_COMPLEXITY')}
           error={errors.password?.message}
           disabled={loading}
           autoComplete="new-password"

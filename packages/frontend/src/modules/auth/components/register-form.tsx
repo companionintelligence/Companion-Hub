@@ -1,6 +1,7 @@
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
+import { meetsPasswordComplexity } from '@ci-hub/common/validation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import type React from 'react';
 import { useForm } from 'react-hook-form';
@@ -19,8 +20,8 @@ export const RegisterForm: React.FC<IProps> = ({ onSubmit, loading }) => {
   const schema = z
     .object({
       email: z.string().email(),
-      password: z.string().min(8, t('AUTH_ERROR_INVALID_PASSWORD_LENGTH')),
-      passwordConfirm: z.string().min(8, t('AUTH_ERROR_INVALID_PASSWORD_LENGTH')),
+      password: z.string().refine((value) => meetsPasswordComplexity(value), { message: t('AUTH_ERROR_INVALID_PASSWORD_COMPLEXITY') }),
+      passwordConfirm: z.string().min(1, t('AUTH_FORM_PASSWORD_CONFIRMATION')),
     })
     .superRefine((data, ctx) => {
       if (data.password !== data.passwordConfirm) {
@@ -46,7 +47,7 @@ export const RegisterForm: React.FC<IProps> = ({ onSubmit, loading }) => {
         <p className="mt-2 text-sm text-muted-foreground">{t('AUTH_REGISTER_NOTE')}</p>
         <p className="mt-2 text-sm text-muted-foreground font-bold">{t('AUTH_REGISTER_NOTE_2')}</p>
       </div>
-      <form onSubmit={handleSubmit(onSubmit)}>
+      <form onSubmit={handleSubmit((values) => onSubmit(values))}>
         <Input
           {...register('email')}
           label={t('AUTH_FORM_EMAIL')}
@@ -59,6 +60,7 @@ export const RegisterForm: React.FC<IProps> = ({ onSubmit, loading }) => {
         <PasswordInput
           {...register('password')}
           label={t('COMMON_PASSWORD')}
+          helpText={t('AUTH_ERROR_INVALID_PASSWORD_COMPLEXITY')}
           error={errors.password?.message}
           disabled={loading}
           className="mb-3"

@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils';
 interface InputGroupProps extends Omit<React.InputHTMLAttributes<HTMLInputElement>, 'size'> {
   error?: string;
   label?: string | React.ReactNode;
+  helpText?: string | React.ReactNode;
   isInvalid?: boolean;
   groupPrefix?: string | React.ReactNode;
   groupSuffix?: string | React.ReactNode;
@@ -19,6 +20,7 @@ export const InputGroup = React.forwardRef<HTMLInputElement, InputGroupProps>(
       name,
       label,
       error,
+      helpText,
       type = 'text',
       className,
       isInvalid,
@@ -35,8 +37,9 @@ export const InputGroup = React.forwardRef<HTMLInputElement, InputGroupProps>(
   ) => {
     const isSm = size === 'sm';
     const errorId = React.useId();
+    const helpId = React.useId();
     const inputId = id || name;
-    const describedBy = [describedByProp, error ? errorId : undefined].filter(Boolean).join(' ') || undefined;
+    const describedBy = [describedByProp, helpText ? helpId : undefined, error ? errorId : undefined].filter(Boolean).join(' ') || undefined;
 
     const renderPrefix = () => {
       if (!groupPrefix) return null;
@@ -111,6 +114,11 @@ export const InputGroup = React.forwardRef<HTMLInputElement, InputGroupProps>(
           />
           {renderSuffix()}
         </div>
+        {helpText && (
+          <p id={helpId} className="text-[0.8rem] text-muted-foreground">
+            {helpText}
+          </p>
+        )}
         {error && (
           <p id={errorId} role="alert" className="text-[0.8rem] font-medium text-destructive">
             {error}
