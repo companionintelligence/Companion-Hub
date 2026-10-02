@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { claimOnboardingInstallUrn } from '../../helpers/install-session';
 import { InstallStep } from '../install-step';
 import type { OnboardingApp } from '../../helpers/types';
 import { sdkOk, sdkFail } from '@/tests/sdk-mock-helpers';
@@ -65,6 +66,7 @@ describe('InstallStep', () => {
   const onComplete = vi.fn();
 
   beforeEach(() => {
+    sessionStorage.clear();
     vi.clearAllMocks();
     delete (window as TauriWindow).__TAURI_INTERNALS__;
     installApp.mockResolvedValue(sdkOk({}));
@@ -406,6 +408,56 @@ describe('InstallStep', () => {
     expect(pinInferenceModel).not.toHaveBeenCalledWith('still-pulling');
   });
 
+  it('keeps the chosen model when its pull is still running after the wait', async () => {
+    vi.useFakeTimers();
+    fetchTrackedModels.mockResolvedValue([{ catalogId: 'llama3-3-70b', state: 'pulling', pullProgress: 40 }] as never);
+
+    render(
+      <InstallStep
+        apps={[]}
+        onComplete={onComplete}
+        aiSetupConfig={{
+          agentFrameworks: ['openclaw'],
+          remoteAccess: [],
+          selectedModels: ['llama3-3-70b'],
+          installedCatalogIds: [],
+          backend: 'ollama',
+          cloudProviders: [],
+          preferredModelId: 'llama3-3-70b',
+          skipped: false,
+        }}
+      />,
+    );
+
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    vi.useRealTimers();
+
+    await waitFor(() => {
+      expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ model: 'llama3-3-70b' }));
+    });
+  });
+
+  it('does not ask again for an install this tab already started', async () => {
+    claimOnboardingInstallUrn('plane:store1');
+    getInstalledApps.mockResolvedValue(
+      sdkOk({
+        installed: [
+          {
+            info: { urn: 'plane:store1', name: 'Plane' },
+            app: { status: 'installing' },
+          },
+        ],
+      }),
+    );
+
+    render(<InstallStep apps={[makeApp('plane', 'Plane', 'plane:store1')]} onComplete={onComplete} />);
+
+    expect(await screen.findByTestId('status-installing')).toBeInTheDocument();
+    expect(installApp).not.toHaveBeenCalled();
+  });
+
   it('invalidates installed apps on HTTP install failure (server truth)', async () => {
     installApp.mockResolvedValue(sdkFail(500, { message: 'Server error' }));
 
@@ -439,7 +491,7 @@ describe('InstallStep', () => {
 
   it('defaults Hermes allowed users to the operator username during onboarding installs', async () => {
     installApp.mockResolvedValue(sdkOk({ requestId: '1' }));
-    getInstalledApps.mockResolvedValue(
+    getInstalledApps.mockResolvedValueOnce(sdkOk({ installed: [] })).mockResolvedValue(
       sdkOk({
         installed: [
           {
@@ -472,7 +524,7 @@ describe('InstallStep', () => {
 
   it('uses per-app exposureMode override when set on the app', async () => {
     installApp.mockResolvedValue(sdkOk({ requestId: '1' }));
-    getInstalledApps.mockResolvedValue(
+    getInstalledApps.mockResolvedValueOnce(sdkOk({ installed: [] })).mockResolvedValue(
       sdkOk({
         installed: [
           {
@@ -507,7 +559,7 @@ describe('InstallStep', () => {
 
   it('does not inject Hermes defaults for other apps', async () => {
     installApp.mockResolvedValue(sdkOk({ requestId: '1' }));
-    getInstalledApps.mockResolvedValue(
+    getInstalledApps.mockResolvedValueOnce(sdkOk({ installed: [] })).mockResolvedValue(
       sdkOk({
         installed: [
           {

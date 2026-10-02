@@ -7,7 +7,9 @@ import {
 } from '@/lib/inference/auto-inference-runners';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import { sdkResult } from '@/lib/sdk-unwrap';
-import { fetchTrackedModels, parsePullProgress } from '@/lib/inference/tracked-models';
+import { fetchTrackedModels, parsePullProgress, preferenceModelId } from '@/lib/inference/tracked-models';
+import { claimOnboardingInstallUrn, onboardingInstallUrnClaimed, releaseOnboardingInstallUrn } from '../helpers/install-session';
+import type { TrackedModel } from '@ci-hub/common/types';
 import { Button } from '@/components/ui/Button';
 import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
@@ -34,6 +36,11 @@ interface InstallStepProps {
    * to `true` so existing callers auto-run on mount.
    */
   start?: boolean;
+  /**
+   * A reload of an install already underway. Cloud keys and runner setup already ran; asking
+   * again would blank a saved key or start a second runner install.
+   */
+  resume?: boolean;
 }
 
 interface AppInstallState {
@@ -72,6 +79,7 @@ export const InstallStep = ({
   aiSetupConfig,
   onComplete,
   start = true,
+  resume = false,
 }: InstallStepProps) => {
   const { t } = useTranslation();
   const [states, setStates] = useState<AppInstallState[]>(apps.map((app) => ({ app, status: 'queued' })));
@@ -119,56 +127,72 @@ export const InstallStep = ({
     if (!start) return;
     started.current = true;
 
+    const preexistingClaims = new Set(apps.flatMap((app) => (app.urn && onboardingInstallUrnClaimed(app.urn) ? [app.urn] : [])));
+    const ownedClaims: string[] = [];
+    for (const app of apps) {
+      if (!app.urn || preexistingClaims.has(app.urn)) continue;
+      claimOnboardingInstallUrn(app.urn);
+      ownedClaims.push(app.urn);
+    }
+
+    let cancelled = false;
+    let installsCommitted = false;
+
     const installAll = async () => {
       const minDelay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      let latestTracked: TrackedModel[] = [];
 
       // ─── AI Setup Phase ───────────────────────────────────────────────
       if (aiSetupConfig && !aiSetupConfig.skipped) {
         let automaticRunnerUrls = new Map<string, string>();
         const automaticRunners = automaticRunnersForBackend(aiSetupConfig.backend);
 
-        // Native runner setup belongs in the desktop shell. It is deliberately
-        // best-effort: unsupported hardware or one failed install must not
-        // prevent cloud configuration, model pulls, or app installation. The
-        // Apple Silicon default is a deliberate two-runner pair: mlx-dspark
-        // serves chat and Ollama supplies embeddings.
-        if (canAutoInstallRunners) {
-          setAiPhase((prev) => ({ ...prev, status: 'installing-runners' }));
-          try {
-            const runnerResults = await installAndStartInferenceRunners(automaticRunners);
-            setAiPhase((prev) => ({ ...prev, runnerResults }));
-            automaticRunnerUrls = new Map(
-              runnerResults.filter((result) => result.endpointUrl).map((result) => [result.runner, result.endpointUrl as string]),
-            );
-            const unavailableCount = runnerResults.filter((result) => result.state === 'failed' || result.state === 'skipped').length;
-            if (unavailableCount > 0) {
-              setAiPhase((prev) => ({
-                ...prev,
-                error: t('ONBOARDING_INFERENCE_RUNNERS_UNAVAILABLE', { count: unavailableCount }),
-              }));
-            }
-          } catch {
-            setAiPhase((prev) => ({
-              ...prev,
-              error: t('ONBOARDING_INFERENCE_RUNNERS_FAILED'),
-            }));
-          }
-        }
-
-        // Configure cloud providers
-        if (aiSetupConfig.cloudProviders.length > 0) {
-          setAiPhase((prev) => ({ ...prev, status: 'configuring-cloud' }));
-          for (const cp of aiSetupConfig.cloudProviders) {
+        // A reload already ran runner setup and cloud keys. Doing either again would install
+        // the runners twice, or overwrite a saved key with the blank this session stores.
+        if (!resume) {
+          // Native runner setup belongs in the desktop shell. It is deliberately
+          // best-effort: unsupported hardware or one failed install must not
+          // prevent cloud configuration, model pulls, or app installation. The
+          // Apple Silicon default is a deliberate two-runner pair: mlx-dspark
+          // serves chat and Ollama supplies embeddings.
+          if (canAutoInstallRunners) {
+            setAiPhase((prev) => ({ ...prev, status: 'installing-runners' }));
             try {
-              await saveCloudProviderConfig({ provider: cp.provider, apiKey: cp.apiKey, enabled: cp.enabled });
+              const runnerResults = await installAndStartInferenceRunners(automaticRunners);
+              setAiPhase((prev) => ({ ...prev, runnerResults }));
+              automaticRunnerUrls = new Map(
+                runnerResults.filter((result) => result.endpointUrl).map((result) => [result.runner, result.endpointUrl as string]),
+              );
+              const unavailableCount = runnerResults.filter((result) => result.state === 'failed' || result.state === 'skipped').length;
+              if (unavailableCount > 0) {
+                setAiPhase((prev) => ({
+                  ...prev,
+                  error: t('ONBOARDING_INFERENCE_RUNNERS_UNAVAILABLE', { count: unavailableCount }),
+                }));
+              }
             } catch {
               setAiPhase((prev) => ({
                 ...prev,
-                error: t('ONBOARDING_INSTALL_FAILED_CONFIGURE_PROVIDER', { provider: cp.provider, status: 0 }),
+                error: t('ONBOARDING_INFERENCE_RUNNERS_FAILED'),
               }));
             }
           }
-          setAiPhase((prev) => ({ ...prev, cloudConfigured: true }));
+
+          // Configure cloud providers
+          if (aiSetupConfig.cloudProviders.length > 0) {
+            setAiPhase((prev) => ({ ...prev, status: 'configuring-cloud' }));
+            for (const cp of aiSetupConfig.cloudProviders) {
+              try {
+                await saveCloudProviderConfig({ provider: cp.provider, apiKey: cp.apiKey, enabled: cp.enabled });
+              } catch {
+                setAiPhase((prev) => ({
+                  ...prev,
+                  error: t('ONBOARDING_INSTALL_FAILED_CONFIGURE_PROVIDER', { provider: cp.provider, status: 0 }),
+                }));
+              }
+            }
+            setAiPhase((prev) => ({ ...prev, cloudConfigured: true }));
+          }
         }
 
         const installedSet = new Set(aiSetupConfig.installedCatalogIds ?? []);
@@ -185,8 +209,10 @@ export const InstallStep = ({
 
             const pullWaitMs = 60_000;
             const pullWaitStart = Date.now();
-            while (Date.now() - pullWaitStart < pullWaitMs) {
+            while (!cancelled && Date.now() - pullWaitStart < pullWaitMs) {
               const tracked = await fetchTrackedModels();
+              if (cancelled) return;
+              latestTracked = tracked;
               const parsed = parsePullProgress(modelsToPull, aiSetupConfig.installedCatalogIds ?? [], tracked);
               Object.assign(modelProgress, parsed.progressById);
               for (const [id, msg] of Object.entries(parsed.errorsById)) {
@@ -201,6 +227,8 @@ export const InstallStep = ({
             }
 
             const finalTracked = await fetchTrackedModels();
+            if (cancelled) return;
+            latestTracked = finalTracked;
             const finalParsed = parsePullProgress(modelsToPull, aiSetupConfig.installedCatalogIds ?? [], finalTracked);
             Object.assign(modelProgress, finalParsed.progressById);
             for (const [id, msg] of Object.entries(finalParsed.errorsById)) {
@@ -222,6 +250,8 @@ export const InstallStep = ({
 
           setAiPhase((prev) => ({ ...prev, status: 'pinning-models', modelErrors }));
           const pinTracked = await fetchTrackedModels();
+          if (cancelled) return;
+          latestTracked = pinTracked;
           const pinableIds = new Set(
             pinTracked.filter((m) => m.state === 'pulled' || m.state === 'loaded' || m.state === 'pinned').map((m) => m.catalogId),
           );
@@ -242,18 +272,20 @@ export const InstallStep = ({
         const configuredOrAutomaticUrl = (configured: string | undefined, runner: string) =>
           configured?.trim() || automaticRunnerUrls.get(runner) || null;
 
+        if (cancelled) return;
         try {
           await saveInferencePreferences({
             backend: aiSetupConfig.backend,
-            model: resolvedModelPreference && availablePreferenceModelIds.has(resolvedModelPreference) ? resolvedModelPreference : null,
-            embeddingModel:
-              resolvedEmbeddingPreference && availablePreferenceModelIds.has(resolvedEmbeddingPreference) ? resolvedEmbeddingPreference : null,
-            visionModel: resolvedVisionPreference && availablePreferenceModelIds.has(resolvedVisionPreference) ? resolvedVisionPreference : null,
-            vllmApiKey: aiSetupConfig.vllmApiKey ?? null,
-            vllmUrl: configuredOrAutomaticUrl(aiSetupConfig.vllmUrl, 'vllm'),
-            omlxUrl: configuredOrAutomaticUrl(aiSetupConfig.omlxUrl, 'omlx'),
-            decodeEndpoint: aiSetupConfig.decodeEndpoint ?? null,
-            encodeEndpoint: aiSetupConfig.encodeEndpoint ?? null,
+            model: preferenceModelId(resolvedModelPreference, availablePreferenceModelIds, latestTracked),
+            embeddingModel: preferenceModelId(resolvedEmbeddingPreference, availablePreferenceModelIds, latestTracked),
+            visionModel: preferenceModelId(resolvedVisionPreference, availablePreferenceModelIds, latestTracked),
+            // A resumed session stored these blank. Passing null would clear the key the first
+            // pass already saved. Leaving them out keeps what is on disk.
+            vllmApiKey: resume ? undefined : (aiSetupConfig.vllmApiKey ?? null),
+            vllmUrl: resume ? undefined : configuredOrAutomaticUrl(aiSetupConfig.vllmUrl, 'vllm'),
+            omlxUrl: resume ? undefined : configuredOrAutomaticUrl(aiSetupConfig.omlxUrl, 'omlx'),
+            decodeEndpoint: resume ? undefined : (aiSetupConfig.decodeEndpoint ?? null),
+            encodeEndpoint: resume ? undefined : (aiSetupConfig.encodeEndpoint ?? null),
           });
         } catch {
           setAiPhase((prev) => ({ ...prev, error: t('ONBOARDING_INSTALL_FAILED_SAVE_PREFERRED_BACKEND', { status: 0 }) }));
@@ -291,9 +323,27 @@ export const InstallStep = ({
         }
       };
 
+      const alreadyInstalled = await fetchInstalledStatusMap();
+      if (cancelled) return;
+      installsCommitted = true;
+
       const enqueueApp = async (index: number, app: OnboardingApp) => {
         if (!app.urn) {
           finalStates[index] = { ...stateAt(index, app), status: 'failed', error: t('ONBOARDING_APP_NOT_AVAILABLE_IN_STORE') };
+          setStates([...finalStates]);
+          return;
+        }
+
+        const known = alreadyInstalled.get(app.urn);
+        // Claimed on an earlier load, or already on the Hub. Asking again starts a second install,
+        // or a start, of the one that is already underway.
+        if (known || preexistingClaims.has(app.urn)) {
+          const status = known === 'running' ? 'running' : known === 'install_failed' ? 'failed' : 'installing';
+          finalStates[index] = {
+            ...stateAt(index, app),
+            status,
+            error: status === 'failed' ? t('ONBOARDING_INSTALL_FAILED_RETRY_MY_APPS') : undefined,
+          };
           setStates([...finalStates]);
           return;
         }
@@ -328,6 +378,7 @@ export const InstallStep = ({
             throw new Error(data.message || `HTTP ${installResult.status}`);
           }
         } catch (e) {
+          releaseOnboardingInstallUrn(app.urn);
           finalStates[index] = { ...stateAt(index, app), status: 'failed', error: (e as Error).message };
           setStates([...finalStates]);
           // The app never made it into the database, so retract the row we invented for it. Left in
@@ -349,7 +400,7 @@ export const InstallStep = ({
       const timeoutMs = 120_000;
       const monitorStart = Date.now();
 
-      while (Date.now() - monitorStart < timeoutMs) {
+      while (!cancelled && Date.now() - monitorStart < timeoutMs) {
         const pending = finalStates.map((state, index) => ({ state, index })).filter(({ state }) => state.status === 'installing' && state.app.urn);
 
         if (pending.length === 0) {
@@ -396,6 +447,7 @@ export const InstallStep = ({
         };
       }
 
+      if (cancelled) return;
       setStates([...finalStates]);
 
       try {
@@ -405,11 +457,19 @@ export const InstallStep = ({
         // ignore
       }
 
+      if (cancelled) return;
       setDone(true);
     };
 
-    installAll();
-  }, [apps, defaultExposureMode, operatorUsername, start]);
+    void installAll();
+    return () => {
+      cancelled = true;
+      // The requests were never sent. A reload, or a strict remount, has to be able to send them.
+      if (!installsCommitted) {
+        for (const urn of ownedClaims) releaseOnboardingInstallUrn(urn);
+      }
+    };
+  }, [apps, defaultExposureMode, operatorUsername, resume, start]);
 
   const statusIcon = (status: AppInstallStatus) => {
     switch (status) {

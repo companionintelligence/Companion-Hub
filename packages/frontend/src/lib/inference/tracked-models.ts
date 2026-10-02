@@ -6,6 +6,8 @@ import { TranslatableError } from '@/types/error.types';
 import type { TrackedModel } from '@ci-hub/common/types';
 
 const PULLED_MODEL_STATES = new Set(['pulled', 'loaded', 'pinned']);
+/** Still on its way. The install wait is shorter than a large download, and the choice should survive it. */
+const ARRIVING_MODEL_STATES = new Set(['pulling', 'loading']);
 
 export interface ParsedPullProgress {
   progressById: Record<string, number>;
@@ -57,6 +59,19 @@ export function parsePullProgress(modelIds: string[], installedCatalogIds: strin
   }
 
   return { progressById, errorsById, pulledIds, allDone };
+}
+
+/**
+ * The id to store as a default. A model that is already usable is kept. A model that is still
+ * downloading is kept too: the wait gives up before a large pull finishes, and writing nothing
+ * is what drops the choice. A model that failed, or never started, is not stored.
+ */
+export function preferenceModelId(chosen: string | undefined, availableIds: ReadonlySet<string>, tracked: TrackedModel[]): string | null {
+  if (!chosen) return null;
+  if (availableIds.has(chosen)) return chosen;
+  const entry = tracked.find((model) => model.catalogId === chosen);
+  if (entry && ARRIVING_MODEL_STATES.has(entry.state)) return chosen;
+  return null;
 }
 
 /**

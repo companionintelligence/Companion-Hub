@@ -22,6 +22,12 @@ import type { AiSetupConfig, OnboardingApp } from '../helpers/types';
 import { ModelDownloadFooterSummary, ModelDownloadStatus } from '../components/model-download-status';
 import { useModelPullOrchestrator } from '@/lib/hooks/use-model-pull-orchestrator';
 import { prefetchOnboardingMarketplace } from '../helpers/prefetch-onboarding-marketplace';
+import {
+  clearOnboardingInstallSession,
+  installSessionFromSelection,
+  readOnboardingInstallSession,
+  writeOnboardingInstallSession,
+} from '../helpers/install-session';
 
 /** Long enough for a Hub that is still coming back up to start answering. */
 const COMPLETE_ONBOARDING_RETRY_DELAY_MS = 500;
@@ -129,7 +135,11 @@ function OnboardingWizard() {
   } = useMarketplaceCatalogApps();
   const navigate = useNavigate();
 
-  const [phase, setPhase] = useState<'form' | 'installing'>('form');
+  // A reload mid-install otherwise paints the empty wizard, and the next click asks for every
+  // app again. The session is read once: writing it on the way into the install must not make
+  // this same visit look like a reload.
+  const restoredInstall = useRef(readOnboardingInstallSession());
+  const [phase, setPhase] = useState<'form' | 'installing'>(restoredInstall.current ? 'installing' : 'form');
   const [selectedApps, setSelectedApps] = useState<OnboardingApp[]>([]);
   const [companionApps, setCompanionApps] = useState<OnboardingApp[]>([]);
   const [aiSetupConfig, setAiSetupConfig] = useState<AiSetupConfig | undefined>();
@@ -184,7 +194,10 @@ function OnboardingWizard() {
 
   const recommendationsLoading = (isCatalogLoading || isCatalogFetching) && !isCatalogError;
   const canFinish = aiSetupConfig !== undefined && !aiSetupConfig.installBlocked;
-  const installExposureMode = resolveExposureMode(aiSetupConfig?.exposureMode, { cloudflareAvailable, tailscaleAvailable });
+  const installExposureMode = resolveExposureMode((restoredInstall.current?.aiSetupConfig ?? aiSetupConfig)?.exposureMode, {
+    cloudflareAvailable,
+    tailscaleAvailable,
+  });
   const publicExposureMode = resolveExposureMode('cloudflare', { cloudflareAvailable, tailscaleAvailable });
 
   const agentSlugs = useMemo(
@@ -233,6 +246,7 @@ function OnboardingWizard() {
   }
 
   if (phase === 'installing') {
+    const resumed = restoredInstall.current;
     return (
       <Shell>
         {completionFailed && (
@@ -241,11 +255,12 @@ function OnboardingWizard() {
           </Alert>
         )}
         <InstallStep
-          apps={installApps}
+          apps={resumed ? resumed.apps : installApps}
           start={true}
+          resume={resumed !== null}
           defaultExposureMode={installExposureMode}
           operatorUsername={user.username}
-          aiSetupConfig={aiSetupConfig}
+          aiSetupConfig={resumed ? resumed.aiSetupConfig : aiSetupConfig}
           onComplete={async (summary) => {
             // InstallStep's Continue button is never disabled and drops the promise it gets back,
             // and this handler now stays alive across the retry pause — so without a latch a
@@ -302,6 +317,7 @@ function OnboardingWizard() {
               }
 
               setCompletionFailed(false);
+              clearOnboardingInstallSession();
               // The Toaster is mounted above the router, so a failed attempt's toast would ride
               // along to /home still claiming the setup could not be saved.
               toast.dismiss(COMPLETE_ONBOARDING_TOAST_ID);
@@ -368,7 +384,16 @@ function OnboardingWizard() {
             </p>
           </div>
           <div className="flex gap-2 sm:justify-end">
-            <Button intent="primary" size="lg" disabled={!canFinish} onClick={() => setPhase('installing')} data-testid="finish-setup-btn">
+            <Button
+              intent="primary"
+              size="lg"
+              disabled={!canFinish}
+              onClick={() => {
+                writeOnboardingInstallSession(installSessionFromSelection(installApps, aiSetupConfig));
+                setPhase('installing');
+              }}
+              data-testid="finish-setup-btn"
+            >
               {t('ONBOARDING_INSTALL_AND_FINISH')}
             </Button>
           </div>
