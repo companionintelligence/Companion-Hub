@@ -972,6 +972,7 @@
   "SETTINGS_NETWORK_DISCONNECTED": "Disconnected",
   "SETTINGS_NETWORK_ACTIVE": "Active",
   "SETTINGS_NETWORK_INACTIVE": "Inactive",
+  "SETTINGS_NETWORK_STATUS_ERROR": "Could not check this connection. Try again.",
   "SETTINGS_NETWORK_TAILNET_IP": "Tailnet IP",
   "SETTINGS_NETWORK_TUNNEL_ID": "Tunnel ID",
   "SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED": "Tailscale not installed",
