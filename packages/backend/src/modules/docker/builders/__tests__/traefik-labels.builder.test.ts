@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { TraefikLabelsBuilder } from '../traefik-labels.builder';
+import { APP_STARTING_MIDDLEWARE, TraefikLabelsBuilder, withAppStartingPage } from '../traefik-labels.builder';
 
 const base = {
   internalPort: 12002,
@@ -76,5 +76,60 @@ describe('TraefikLabelsBuilder — forward-auth middleware', () => {
     const labels = new TraefikLabelsBuilder({ ...base, exposureMode: 'local', enableAuth: true }).addCloudflareLabels().build();
 
     expect(Object.keys(labels).some((key) => key.startsWith('traefik.http.routers.'))).toBe(false);
+  });
+});
+
+describe('withAppStartingPage', () => {
+  const routerChains = (labels: Record<string, string | boolean>) =>
+    Object.fromEntries(Object.entries(labels).filter(([key]) => /^traefik\.http\.routers\.[^.]+\.middlewares$/i.test(key)));
+
+  it('ends every router this builder makes with the page, after the edge strip and the login', () => {
+    const labels = withAppStartingPage(build({ enableAuth: true, cloudflarePublicHostname: 'ci-planning-hub1.example.com' }));
+
+    expect(routerChains(labels)).toEqual({
+      'traefik.http.routers.ci-planning-ci-marketplace.middlewares':
+        'ci-hub-edge-headers@file,ci-hub@file,ci-planning-ci-marketplace-public-host@docker,ci-hub-app-starting@file',
+      'traefik.http.routers.ci-planning-ci-marketplace-insecure.middlewares':
+        'ci-hub-edge-headers@file,ci-hub@file,ci-planning-ci-marketplace-public-host@docker,ci-hub-app-starting@file',
+    });
+  });
+
+  it('gives a router with no chain one of its own', () => {
+    const labels = withAppStartingPage(new TraefikLabelsBuilder({ ...base, exposureMode: 'tailscale' }).addTailscaleLabels().build());
+
+    expect(labels['traefik.http.routers.ci-planning-ci-marketplace-tailscale.middlewares']).toBe(APP_STARTING_MIDDLEWARE);
+  });
+
+  it('extends a chain under the spelling it was given instead of adding a second one', () => {
+    const labels = withAppStartingPage({
+      'traefik.http.routers.app.rule': 'Host(`app.ci.lan`)',
+      'traefik.http.routers.app.Middlewares': 'ci-hub@file',
+    });
+
+    expect(labels['traefik.http.routers.app.Middlewares']).toBe('ci-hub@file,ci-hub-app-starting@file');
+    expect(labels).not.toHaveProperty('traefik.http.routers.app.middlewares');
+  });
+
+  it('adds it once, wherever a chain already has it', () => {
+    const once = withAppStartingPage(build({ enableAuth: true }));
+
+    expect(withAppStartingPage(once)).toEqual(once);
+    expect(
+      withAppStartingPage({ 'traefik.http.routers.app.middlewares': 'ci-hub-app-starting@file, ci-hub@file' })[
+        'traefik.http.routers.app.middlewares'
+      ],
+    ).toBe('ci-hub-app-starting@file,ci-hub@file');
+  });
+
+  it('leaves labels without HTTP routers alone: no route, no page', () => {
+    const local = new TraefikLabelsBuilder({ ...base, exposureMode: 'local' }).addCloudflareLabels().build();
+    const tcpOnly = {
+      'traefik.enable': true,
+      'traefik.tcp.routers.db.rule': 'HostSNI(`*`)',
+      'traefik.http.services.db.loadbalancer.server.port': '5432',
+    };
+
+    expect(withAppStartingPage(local)).toEqual(local);
+    expect(withAppStartingPage(tcpOnly)).toEqual(tcpOnly);
   });
 });

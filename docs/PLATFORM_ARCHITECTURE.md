@@ -255,6 +255,15 @@ so no app can hold a hop's address. The `httpHostHeader`
 carries the app's local hostname, which is what Traefik's routers match on; the public hostname
 the tunnel received is not what the router expects.
 
+Every app router ends with `ci-hub-app-starting@file`, an `errors` middleware for 502 and 504.
+It leaves 503 alone: apps send that on purpose, with a body their own clients read. While an
+app's container is up but the app does not answer yet, Traefik fetches
+`GET /api/apps/starting` from the Hub with the visitor's `Host` and shows "*App* is starting…"
+(or that it is stopped or not responding) under the app's own status code. It runs after forward
+auth, so a visitor who is not signed in still gets the login page, and it is on no route of the
+Hub's own. Apps opened on their own port or over the Private VPN do not pass through Traefik and
+do not get the page.
+
 The Hub's own rule is the exception: Portal always rebuilds it as
 `host.docker.internal:{hubListenPort}`, whatever the Hub's entry says. `cloudflared` reaches that
 through the host's published port (its `extra_hosts` entry is load-bearing), so the Hub sees those

@@ -7,6 +7,7 @@ import { MarketplaceModule } from '../marketplace/marketplace.module';
 import { QueueModule } from '../queue/queue.module';
 import { AppHelpers } from './app.helpers';
 import { AppRuntimeMonitorService } from './app-runtime-monitor.service';
+import { AppStartingPageService } from './app-starting-page.service';
 import { AppsController } from './apps.controller';
 import { AppsReadModule } from './apps-read.module';
 import { AppsService } from './apps.service';
@@ -42,6 +43,7 @@ import { POOL_CONTAINER_SAMPLER } from '@/common/helpers/hub-pool';
     AppsService,
     AppIntentSyncService,
     AppRuntimeMonitorService,
+    AppStartingPageService,
     InferenceEnvStalenessService,
     // The Hub pool publishes an aggregate container rollup to its peers and reads it from the
     // sample this monitor has already collected. It resolves this token through ModuleRef with

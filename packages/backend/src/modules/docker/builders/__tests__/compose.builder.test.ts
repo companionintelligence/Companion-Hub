@@ -758,7 +758,7 @@ describe('DockerComposeBuilder', () => {
 
       expect(loopback.services.service.labels).toEqual(plain.services.service.labels);
       expect(loopback.services.service.labels['traefik.http.routers.nginx-store-id-insecure.middlewares']).toBe(
-        'ci-hub-edge-headers@file,ci-hub@file',
+        'ci-hub-edge-headers@file,ci-hub@file,ci-hub-app-starting@file',
       );
     });
 
@@ -890,7 +890,7 @@ describe('DockerComposeBuilder — public web hostname in Traefik labels', () =>
       'myapp-dev1-org.example.com',
     );
     expect(labels['traefik.http.routers.nginx-store-id-insecure.middlewares']).toBe(
-      'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host@docker',
+      'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host@docker,ci-hub-app-starting@file',
     );
   });
 
@@ -921,8 +921,8 @@ describe('DockerComposeBuilder — public web hostname in Traefik labels', () =>
       const middlewares = await routeMiddlewares({ exposureMode: 'cloudflare', openPort: true });
 
       expect(middlewares).toEqual([
-        'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host@docker',
-        'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host@docker',
+        'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host@docker,ci-hub-app-starting@file',
+        'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host@docker,ci-hub-app-starting@file',
       ]);
     });
 
@@ -930,8 +930,8 @@ describe('DockerComposeBuilder — public web hostname in Traefik labels', () =>
       const middlewares = await routeMiddlewares({ exposureMode: 'cloudflare', openPort: true, enableAuth: false });
 
       expect(middlewares).toEqual([
-        'ci-hub-edge-headers@file,nginx-store-id-public-host@docker',
-        'ci-hub-edge-headers@file,nginx-store-id-public-host@docker',
+        'ci-hub-edge-headers@file,nginx-store-id-public-host@docker,ci-hub-app-starting@file',
+        'ci-hub-edge-headers@file,nginx-store-id-public-host@docker,ci-hub-app-starting@file',
       ]);
     });
 
@@ -939,8 +939,8 @@ describe('DockerComposeBuilder — public web hostname in Traefik labels', () =>
       const middlewares = await routeMiddlewares({ exposureMode: 'cloudflare', openPort: false });
 
       expect(middlewares).toEqual([
-        'ci-hub-edge-headers@file,nginx-store-id-public-host@docker',
-        'ci-hub-edge-headers@file,nginx-store-id-public-host@docker',
+        'ci-hub-edge-headers@file,nginx-store-id-public-host@docker,ci-hub-app-starting@file',
+        'ci-hub-edge-headers@file,nginx-store-id-public-host@docker,ci-hub-app-starting@file',
       ]);
     });
   });
@@ -961,6 +961,101 @@ describe('DockerComposeBuilder — public web hostname in Traefik labels', () =>
     const hostRule = labels['traefik.http.routers.nginx-store-id.rule'];
 
     expect(hostRule).toBe('Host(`myapp-dev1-org.ci.lan`)');
+  });
+});
+
+/*
+ * CI-Hub#1764: while an app starts, Traefik answered its routers with a bare "Bad Gateway". Every
+ * router an app container declares now ends with the Hub's "<app> is starting…" page, including the
+ * ones a manifest writes or rewrites through `extraLabels`.
+ */
+describe('DockerComposeBuilder — the app-starting page on every app router', () => {
+  const ORIGIN = 'nginx-hub1-acme.ci.lan';
+
+  const labelsFor = async (form: Record<string, unknown>, services: ServiceInput[] = [mainService]) => {
+    const result = await new DockerComposeBuilder('ci.computer', 'ci.lan').getDockerCompose(
+      services,
+      form,
+      urn,
+      subnet,
+      'ci.computer',
+      'ci.lan',
+      undefined,
+      ORIGIN,
+      'nginx-hub1-acme.ci.computer',
+    );
+    return yaml.parse(result).services as Record<string, { labels: Record<string, string | boolean> }>;
+  };
+
+  it('keeps a manifest’s own chain, login included, when it replaces ours under the app-id placeholder', async () => {
+    // Donetick's shape: the manifest names the router through `{{CI_HUB_APP_ID}}` and sets its chain.
+    const services = await labelsFor({ exposureMode: 'cloudflare', enableAuth: true }, [
+      {
+        ...mainService,
+        extraLabels: {
+          'traefik.http.routers.{{CI_HUB_APP_ID}}.middlewares': 'ci-hub@file,{{CI_HUB_APP_ID}}-public-host@docker',
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-insecure.middlewares': 'ci-hub@file,{{CI_HUB_APP_ID}}-public-host@docker',
+        },
+      },
+    ]);
+    const labels = services.nginx?.labels ?? {};
+
+    expect(labels['traefik.http.routers.nginx-store-id.middlewares']).toBe('ci-hub@file,nginx-store-id-public-host@docker,ci-hub-app-starting@file');
+    expect(labels['traefik.http.routers.nginx-store-id-insecure.middlewares']).toBe(
+      'ci-hub@file,nginx-store-id-public-host@docker,ci-hub-app-starting@file',
+    );
+    expect(Object.keys(labels).some((key) => key.includes('{{'))).toBe(false);
+  });
+
+  it('keeps our chain when a manifest only rewrites a router’s hosts', async () => {
+    // Kimai's shape: the LAN host and the public host on the routers the builder made.
+    const services = await labelsFor({ exposureMode: 'cloudflare', enableAuth: true }, [
+      {
+        ...mainService,
+        extraLabels: {
+          'traefik.http.routers.{{CI_HUB_APP_ID}}.rule': 'Host(`${APP_LOCAL_DOMAIN}`) || Host(`${APP_BASE_HOST}`)',
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-insecure.rule': 'Host(`${APP_LOCAL_DOMAIN}`) || Host(`${APP_BASE_HOST}`)',
+        },
+      },
+    ]);
+    const labels = services.nginx?.labels ?? {};
+
+    for (const router of ['nginx-store-id', 'nginx-store-id-insecure']) {
+      expect(labels[`traefik.http.routers.${router}.middlewares`], router).toBe(
+        'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host@docker,ci-hub-app-starting@file',
+      );
+    }
+    expect(Object.keys(labels).some((key) => key.includes('{{'))).toBe(false);
+  });
+
+  it('reaches a router a manifest declares on another service of the app', async () => {
+    const services = await labelsFor({ exposureMode: 'cloudflare' }, [
+      mainService,
+      {
+        name: 'admin',
+        image: 'admin:latest',
+        internalPort: 8080,
+        extraLabels: {
+          'traefik.enable': true,
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-admin.rule': 'Host(`admin.ci.lan`)',
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-admin.entrypoints': 'web',
+        },
+      },
+    ]);
+
+    expect(services.admin?.labels['traefik.http.routers.nginx-store-id-admin.middlewares']).toBe('ci-hub-app-starting@file');
+  });
+
+  it('covers the Private VPN router too', async () => {
+    const services = await labelsFor({ exposureMode: 'tailscale' });
+
+    expect(services.nginx?.labels['traefik.http.routers.nginx-store-id-tailscale.middlewares']).toBe('ci-hub-app-starting@file');
+  });
+
+  it('adds nothing to an app with no Traefik route: it is opened on its own port', async () => {
+    const services = await labelsFor({ exposureMode: 'local' });
+
+    expect(Object.keys(services.nginx?.labels ?? {}).filter((key) => key.startsWith('traefik.http.routers.'))).toEqual([]);
   });
 });
 

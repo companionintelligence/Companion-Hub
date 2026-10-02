@@ -1,11 +1,13 @@
 import { castAppUrn } from '@/common/helpers/app-helpers';
-import { Controller, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
-import type { Request } from 'express';
+import { Controller, Get, Param, Patch, Post, Req, Res, UseGuards } from '@nestjs/common';
+import type { Request, Response } from 'express';
 import { ModuleRef } from '@nestjs/core';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { AuthGuard } from '../auth/auth.guard';
 import { ObservabilityRead, ObservabilityReadGuard } from '../auth/observability-read.guard';
 import { AppRuntimeMonitorService } from './app-runtime-monitor.service';
+import { appStartingPageHeaders, appStartingPageStatus, renderAppStartingPage } from './app-starting-page';
+import { AppStartingPageService } from './app-starting-page.service';
 import { AppsReadService } from './apps-read.service';
 import { AppsService } from './apps.service';
 import { InferenceEnvStalenessService } from './inference-env-staleness.service';
@@ -36,6 +38,7 @@ export class AppsController {
     private readonly moduleRef: ModuleRef,
     private readonly whois: MarketplaceWhoIsService,
     private readonly inferenceEnvStaleness: InferenceEnvStalenessService,
+    private readonly appStartingPage: AppStartingPageService,
   ) {}
 
   @Get('installed')
@@ -94,6 +97,21 @@ export class AppsController {
     const installed = guest.map(({ app, info, metadata }) => ({ app: pickGuestAppFields(app), info, metadata }));
 
     return GuestAppsDto.parse({ installed }, { reportOnly: true });
+  }
+
+  /**
+   * The page Traefik shows instead of its bare 502 or 504 when an app does not answer
+   * (CI-Hub#1764): "<app> is starting…", stopped, or not responding.
+   *
+   * No guard: Traefik's `ci-hub-app-starting` errors middleware fetches it with the visitor's own
+   * request headers and `Host`, and nothing that proves a Hub sign-in. That is also why it shows
+   * nothing beyond the app's name and status. Declared above `:urn`, which would otherwise take
+   * `starting` for an app URN. Traefik answers the visitor with the app's own status code.
+   */
+  @Get('starting')
+  async getAppStartingPage(@Req() req: Request, @Res() res: Response) {
+    const page = await this.appStartingPage.describe(req.headers.host);
+    res.status(appStartingPageStatus(req.query.status)).set(appStartingPageHeaders(page)).type('html').send(renderAppStartingPage(page));
   }
 
   @Post('random-port')

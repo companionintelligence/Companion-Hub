@@ -12,6 +12,13 @@ http:
   serversTransports:
     insecuretransport:
       insecureSkipVerify: true
+    # For the Hub's app-starting page below. The Hub answers it in milliseconds, so this only bounds
+    # how long a Hub that is down or stuck can hold up an app's error response: past it the visitor
+    # gets Traefik's plain error text under the app's status, as before the page existed.
+    ci-hub-app-starting:
+      forwardingTimeouts:
+        dialTimeout: 2s
+        responseHeaderTimeout: 5s
 
   middlewares:
     ci-hub:
@@ -62,3 +69,36 @@ http:
           X-Forwarded-Port: ""
           X-Forwarded-Tls-Client-Cert: ""
           X-Forwarded-Tls-Client-Cert-Info: ""
+
+    # Last on every app router (withAppStartingPage in traefik-labels.builder.ts, and the
+    # port-expose routes) and on nothing else: not the Hub's own routers, not forward auth. When the
+    # app's route answers 502 (its container is up but nothing listens yet) or 504 (the app, or a
+    # proxy inside it, timed out), Traefik asks the Hub for "<app> is starting…" or why it is not,
+    # and sends that page under the app's own status code, so API clients and health checks still
+    # see the failure. Traefik makes that request with the visitor's own headers (cookies and Authorization
+    # too; it has no option to drop them before v3.6.15) and `Host`, which is how the Hub knows
+    # which app it is. An app's OWN 502 or 504 body is replaced as well; there is no telling the two
+    # apart from here.
+    #
+    # Not 503. Apps send it on purpose, with a body their own clients read: Companion Memory's
+    # PowerSync token endpoint answers 503 by design, and model servers answer 503 while a model
+    # loads. Traefik itself seldom answers 503 on these routes, since the Hub drops a stopped app's
+    # router and these services have no health checks.
+    ci-hub-app-starting:
+      errors:
+        status:
+          - "502"
+          - "504"
+        service: ci-hub-app-starting
+        query: "/api/apps/starting?status={status}"
+
+  services:
+    # The Hub, for the page above, by the same container-name placeholder as forward auth's address,
+    # which the Hub fills in when it copies this file (AppService.copyAssets). Keeps the visitor's
+    # `Host` (Traefik's default, written out because the page depends on it) rather than the Hub's.
+    ci-hub-app-starting:
+      loadBalancer:
+        passHostHeader: true
+        serversTransport: ci-hub-app-starting
+        servers:
+          - url: "http://{{HUB_CONTAINER_NAME}}:5002"
