@@ -1,4 +1,5 @@
 import dns, { type LookupAddress, promises as dnsPromises } from 'node:dns';
+import type { IncomingMessage } from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
 import { withTimeout } from '@/common/helpers/with-timeout';
@@ -229,34 +230,104 @@ export function allowedAddressLookup(isAllowedAddress: AddressFilter): net.Looku
   };
 }
 
+type HttpsGetOptions = { addresses?: string[]; isAllowedAddress?: AddressFilter; timeoutMs: number };
+
+/**
+ * How much of a response the app probe keeps. Cloudflare puts the Ray ID and the error number near
+ * the top of its error page, and that is all the availability check reads. The rest of an app's
+ * document is not part of the verdict.
+ */
+const RESPONSE_EXCERPT_BYTES = 64 * 1024;
+
+/**
+ * Opens `url` over HTTPS.
+ *
+ * With `addresses`, the connection goes there while the Host header, SNI, and certificate check all
+ * keep the URL's name, so a pinned request proves exactly what an unpinned one would.
+ */
+function openHttpsGet(url: string, options: HttpsGetOptions, onResponse: (response: IncomingMessage) => void) {
+  const lookup = options.addresses?.length
+    ? pinnedLookup(options.addresses)
+    : options.isAllowedAddress
+      ? allowedAddressLookup(options.isAllowedAddress)
+      : undefined;
+  return https.get(
+    url,
+    {
+      // A fresh connection every time: a pooled socket answers for whichever address it was opened to.
+      agent: false,
+      signal: AbortSignal.timeout(options.timeoutMs),
+      headers: { 'user-agent': 'ci-hub-public-reachability' },
+      ...(lookup ? { lookup } : {}),
+    },
+    onResponse,
+  );
+}
+
 /**
  * GETs `url` over HTTPS and resolves with the status, without reading the body.
  *
  * With `addresses`, the connection goes there while the Host header, SNI, and certificate check all
  * keep the URL's name, so a pinned request proves exactly what an unpinned one would.
  */
-export function httpsGetStatus(url: string, options: { addresses?: string[]; isAllowedAddress?: AddressFilter; timeoutMs: number }): Promise<number> {
-  const lookup = options.addresses?.length
-    ? pinnedLookup(options.addresses)
-    : options.isAllowedAddress
-      ? allowedAddressLookup(options.isAllowedAddress)
-      : undefined;
+export function httpsGetStatus(url: string, options: HttpsGetOptions): Promise<number> {
   return new Promise((resolve, reject) => {
-    const request = https.get(
-      url,
-      {
-        // A fresh connection every time: a pooled socket answers for whichever address it was opened to.
-        agent: false,
-        signal: AbortSignal.timeout(options.timeoutMs),
-        headers: { 'user-agent': 'ci-hub-public-reachability' },
-        ...(lookup ? { lookup } : {}),
-      },
-      (response) => {
-        response.resume();
-        resolve(response.statusCode ?? 0);
-      },
-    );
+    const request = openHttpsGet(url, options, (response) => {
+      response.resume();
+      resolve(response.statusCode ?? 0);
+    });
     request.on('error', reject);
+  });
+}
+
+/**
+ * GETs `url` and keeps the status plus the start of the body.
+ *
+ * The app availability check tells a Cloudflare error page from the app itself by the page text, so
+ * a status alone is not enough. The pin is the same one {@link httpsGetStatus} uses.
+ */
+export function httpsGetExcerpt(url: string, options: HttpsGetOptions): Promise<{ status: number; text: string }> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (status: number, text: string) => {
+      if (settled) return;
+      settled = true;
+      resolve({ status, text });
+    };
+    const request = openHttpsGet(url, options, (response) => {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      // Destroying the socket once the excerpt is full raises an error. That stop is the point.
+      let capped = false;
+      const done = () => finish(response.statusCode ?? 0, Buffer.concat(chunks).toString('utf8'));
+      response.on('data', (chunk: Buffer | string) => {
+        if (size >= RESPONSE_EXCERPT_BYTES) return;
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        const room = RESPONSE_EXCERPT_BYTES - size;
+        chunks.push(buf.subarray(0, room));
+        size += Math.min(buf.length, room);
+        if (size >= RESPONSE_EXCERPT_BYTES) {
+          capped = true;
+          response.destroy();
+        }
+      });
+      response.on('end', done);
+      response.on('close', done);
+      response.on('error', (error) => {
+        if (capped) {
+          done();
+          return;
+        }
+        if (settled) return;
+        settled = true;
+        reject(error);
+      });
+    });
+    request.on('error', (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    });
   });
 }
 

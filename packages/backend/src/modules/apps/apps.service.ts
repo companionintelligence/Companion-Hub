@@ -1,5 +1,7 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
+import { isPrivateOrLocalIp } from '@/common/helpers/ip-address';
+import { withTimeout } from '@/common/helpers/with-timeout';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Inject, Injectable, forwardRef } from '@nestjs/common';
@@ -9,6 +11,7 @@ import type { App } from '@/core/database/drizzle/types';
 import type { AppUrn } from '@ci-hub/common/types';
 import { buildPublicWebIdentity, normalizeStoredHostname } from '@ci-hub/common/types';
 import axios from 'axios';
+import { httpsGetExcerpt, resolveAtZoneNameservers, type ZoneAnswer } from '../registration/public-reachability';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { RegistrationService } from '../registration/registration.service';
 import { AppsRepository } from './apps.repository';
@@ -42,6 +45,170 @@ export interface AppAvailabilityResult {
   detail?: string;
   errorCode?: string;
   resolvable?: boolean;
+}
+
+/** Same budget the registration probe gives each DNS and HTTP step. */
+const APP_PROBE_TIMEOUT_MS = 5_000;
+
+function publicProbeAddressAllowed(address: string): boolean {
+  return !isPrivateOrLocalIp(address, { includeUnspecified: true });
+}
+
+function probeText(data: unknown): string {
+  return typeof data === 'string' ? data : JSON.stringify(data);
+}
+
+/**
+ * This host's resolver produced no address. Axios often keeps only the message, so the code and the
+ * text both count. `ENOTFOUND` is the cached NXDOMAIN, `ENODATA` a name with no address, `EAI_AGAIN`
+ * a resolver that did not answer.
+ */
+function isDnsMiss(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (code === 'ENOTFOUND' || code === 'ENODATA' || code === 'EAI_AGAIN') {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : '';
+  return message.includes('ENOTFOUND') || message.includes('getaddrinfo') || message.includes('ENODATA') || message.includes('EAI_AGAIN');
+}
+
+function dnsNotFoundResult(exposureMode: string, appUrl: string): AppAvailabilityResult {
+  return {
+    available: false,
+    appUrl,
+    stage: 'propagating',
+    reason: 'NETWORK_ERROR',
+    errorCode: 'DNS_NOT_FOUND',
+    detail:
+      exposureMode === 'cloudflare'
+        ? 'DNS record not found. The domain may not be synced with Cloudflare yet.'
+        : exposureMode === 'tailscale'
+          ? 'DNS resolution failed. Tailscale may not be serving this app yet.'
+          : 'DNS resolution failed. The domain configuration may need updating.',
+    resolvable: true,
+  };
+}
+
+/**
+ * What an HTTP answer means for this app. A Cloudflare error page is the tunnel, not the app. Any
+ * other response means something at that name answered.
+ */
+function classifyReachedApp(exposureMode: string, appUrl: string, status: number, text: string): AppAvailabilityResult {
+  const isCloudflare = text.includes('Cloudflare Ray ID') || text.includes('cf-error-details');
+
+  if (exposureMode === 'cloudflare' && isCloudflare) {
+    const cfErrorMatch = text.match(/Error\s+(\d{3,4})/i);
+    const cfCode = cfErrorMatch ? Number(cfErrorMatch[1]) : status;
+
+    if (cfCode === 1033) {
+      return {
+        available: false,
+        appUrl,
+        stage: 'propagating',
+        reason: 'CLOUDFLARE',
+        errorCode: 'CF_TUNNEL_NOT_FOUND',
+        detail: 'Tunnel route not configured for this app. DNS or tunnel config may be out of sync.',
+        resolvable: true,
+      };
+    }
+
+    if ([502, 503, 504].includes(cfCode) || [502, 503, 504].includes(status)) {
+      return {
+        available: false,
+        appUrl,
+        stage: 'propagating',
+        reason: 'CLOUDFLARE',
+        errorCode: 'CF_UPSTREAM_ERROR',
+        detail: `Cloudflare can't reach the app (HTTP ${status}). The container may need restarting or the tunnel config may be stale.`,
+        resolvable: true,
+      };
+    }
+
+    if (cfCode === 521 || status === 521) {
+      return {
+        available: false,
+        appUrl,
+        stage: 'propagating',
+        reason: 'CLOUDFLARE',
+        errorCode: 'CF_ORIGIN_DOWN',
+        detail: 'Cloudflare reports the origin server is down. The tunnel may not be running.',
+        resolvable: true,
+      };
+    }
+
+    if ([522, 524].includes(cfCode) || [522, 524].includes(status)) {
+      return {
+        available: false,
+        appUrl,
+        stage: 'error',
+        reason: 'CLOUDFLARE',
+        errorCode: 'CF_TIMEOUT',
+        detail: 'Connection to the app timed out through Cloudflare. The tunnel or app may be overloaded.',
+        resolvable: true,
+      };
+    }
+
+    return {
+      available: false,
+      appUrl,
+      stage: 'error',
+      reason: 'CLOUDFLARE',
+      errorCode: 'CF_UNKNOWN',
+      detail: cfErrorMatch ? `Cloudflare Error ${cfErrorMatch[1]}` : `Cloudflare Error (HTTP ${status})`,
+      resolvable: false,
+    };
+  }
+
+  return { available: true, appUrl, httpStatus: status, stage: 'ready' };
+}
+
+async function fetchThroughSystemResolver(appUrl: string): Promise<{ status: number; text: string }> {
+  const response = await axios.get(appUrl, { timeout: APP_PROBE_TIMEOUT_MS, validateStatus: () => true });
+  return { status: response.status, text: probeText(response.data) };
+}
+
+/**
+ * Reads a Public Web app without letting a cached "no such name" decide for half an hour.
+ *
+ * The zone's nameservers are asked first. A name they do not publish is not fetched through this
+ * host's resolver, because that lookup is what plants the NXDOMAIN systemd-resolved and Docker's DNS
+ * then repeat for the zone's negative TTL (1800 s on the public zones). When they do publish it and
+ * this host still has no address, the read goes to the address they published. The registration probe
+ * already does this for the Hub's own name. This is the same question for an app.
+ */
+async function fetchPublicApp(appUrl: string): Promise<{ status: number; text: string; unpublished?: boolean }> {
+  const hostname = new URL(appUrl).hostname;
+  let zone: ZoneAnswer | undefined;
+  try {
+    zone = await withTimeout(
+      resolveAtZoneNameservers(hostname, { timeoutMs: APP_PROBE_TIMEOUT_MS, isAllowedAddress: publicProbeAddressAllowed }),
+      APP_PROBE_TIMEOUT_MS,
+      "the zone's nameservers did not answer within 5000 ms",
+    );
+  } catch {
+    // A network that blocks DNS to the zone's servers leaves this host's resolver as the only one,
+    // which is what the probe did before.
+    zone = undefined;
+  }
+
+  if (zone?.kind === 'nxdomain') {
+    return { status: 0, text: '', unpublished: true };
+  }
+
+  try {
+    return await fetchThroughSystemResolver(appUrl);
+  } catch (error) {
+    const addresses = zone?.kind === 'addresses' ? zone.addresses.filter(publicProbeAddressAllowed) : [];
+    if (!isDnsMiss(error) || addresses.length === 0) {
+      throw error;
+    }
+    const excerpt = await httpsGetExcerpt(appUrl, {
+      addresses,
+      timeoutMs: APP_PROBE_TIMEOUT_MS,
+      isAllowedAddress: publicProbeAddressAllowed,
+    });
+    return { status: excerpt.status, text: excerpt.text };
+  }
 }
 
 function buildTailscalePortUrl(nodeFqdn?: string | null, port?: number | null, suffix = ''): string | null {
@@ -296,103 +463,19 @@ export class AppsService {
       appUrl = `${customDomain ? `https://${customDomain}` : identity.publicUrl}${urlSuffix}`;
     }
 
-    // Helper to determine stage from error code
-    const propagatingCodes = new Set(['DNS_NOT_FOUND', 'CF_TUNNEL_NOT_FOUND', 'CF_UPSTREAM_ERROR', 'CF_ORIGIN_DOWN']);
-
     try {
-      const response = await axios.get(appUrl, { timeout: 5000, validateStatus: () => true });
-      const text = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
-      const isCloudflare = text.includes('Cloudflare Ray ID') || text.includes('cf-error-details');
-
-      if (exposureMode === 'cloudflare' && isCloudflare) {
-        const cfErrorMatch = text.match(/Error\s+(\d{3,4})/i);
-        const cfCode = cfErrorMatch ? Number(cfErrorMatch[1]) : response.status;
-
-        // Cloudflare 1033 = Argo Tunnel not found
-        if (cfCode === 1033) {
-          return {
-            available: false,
-            appUrl,
-            stage: 'propagating',
-            reason: 'CLOUDFLARE',
-            errorCode: 'CF_TUNNEL_NOT_FOUND',
-            detail: 'Tunnel route not configured for this app. DNS or tunnel config may be out of sync.',
-            resolvable: true,
-          };
-        }
-
-        // 502/503/504 = upstream unreachable
-        if ([502, 503, 504].includes(cfCode) || [502, 503, 504].includes(response.status)) {
-          return {
-            available: false,
-            appUrl,
-            stage: 'propagating',
-            reason: 'CLOUDFLARE',
-            errorCode: 'CF_UPSTREAM_ERROR',
-            detail: `Cloudflare can't reach the app (HTTP ${response.status}). The container may need restarting or the tunnel config may be stale.`,
-            resolvable: true,
-          };
-        }
-
-        // 521 = Web server is down
-        if (cfCode === 521 || response.status === 521) {
-          return {
-            available: false,
-            appUrl,
-            stage: 'propagating',
-            reason: 'CLOUDFLARE',
-            errorCode: 'CF_ORIGIN_DOWN',
-            detail: 'Cloudflare reports the origin server is down. The tunnel may not be running.',
-            resolvable: true,
-          };
-        }
-
-        // 522/524 = Connection timed out
-        if ([522, 524].includes(cfCode) || [522, 524].includes(response.status)) {
-          return {
-            available: false,
-            appUrl,
-            stage: 'error',
-            reason: 'CLOUDFLARE',
-            errorCode: 'CF_TIMEOUT',
-            detail: 'Connection to the app timed out through Cloudflare. The tunnel or app may be overloaded.',
-            resolvable: true,
-          };
-        }
-
-        return {
-          available: false,
-          appUrl,
-          stage: 'error',
-          reason: 'CLOUDFLARE',
-          errorCode: 'CF_UNKNOWN',
-          detail: cfErrorMatch ? `Cloudflare Error ${cfErrorMatch[1]}` : `Cloudflare Error (HTTP ${response.status})`,
-          resolvable: false,
-        };
+      const response: { status: number; text: string; unpublished?: boolean } =
+        exposureMode === 'cloudflare' ? await fetchPublicApp(appUrl) : await fetchThroughSystemResolver(appUrl);
+      if (response.unpublished) {
+        return dnsNotFoundResult(exposureMode, appUrl);
       }
-
-      // Any non-Cloudflare HTTP response means the app is reachable
-      return { available: true, appUrl, httpStatus: response.status, stage: 'ready' };
+      return classifyReachedApp(exposureMode, appUrl, response.status, response.text);
     } catch (e) {
       const message = e instanceof Error ? e.message : 'UNKNOWN_ERROR';
 
       // DNS resolution failure
       if (message.includes('ENOTFOUND') || message.includes('getaddrinfo')) {
-        const errorCode = 'DNS_NOT_FOUND';
-        return {
-          available: false,
-          appUrl,
-          stage: propagatingCodes.has(errorCode) ? 'propagating' : 'error',
-          reason: 'NETWORK_ERROR',
-          errorCode,
-          detail:
-            exposureMode === 'cloudflare'
-              ? 'DNS record not found. The domain may not be synced with Cloudflare yet.'
-              : exposureMode === 'tailscale'
-                ? 'DNS resolution failed. Tailscale may not be serving this app yet.'
-                : 'DNS resolution failed. The domain configuration may need updating.',
-          resolvable: true,
-        };
+        return dnsNotFoundResult(exposureMode, appUrl);
       }
 
       // Connection refused = nothing listening on that port
