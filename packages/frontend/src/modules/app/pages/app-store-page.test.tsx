@@ -51,7 +51,9 @@ vi.mock('@tanstack/react-query', () => ({
     hasNextPage: false,
     isFetchingNextPage: false,
     isFetching: false,
+    isError: false,
     fetchNextPage: vi.fn(),
+    refetch: vi.fn(),
   })),
   useMutation: vi.fn(() => ({
     mutate: vi.fn(),
@@ -359,6 +361,31 @@ describe('AppStorePage — multi-store UX', () => {
 
     expect(screen.getByTestId('app-card-A')).toBeInTheDocument();
     expect(fetchNextPage).toHaveBeenCalled();
+  });
+
+  it('shows a retry when the catalog request fails, and an empty catalog stays empty', () => {
+    const refetch = vi.fn();
+    setupQueries();
+    mockUseInfiniteQuery.mockReturnValueOnce({
+      data: undefined,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      isFetching: false,
+      isError: true,
+      fetchNextPage: vi.fn(),
+      refetch,
+    } as unknown as ReturnType<typeof useInfiniteQuery>);
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByTestId('empty-page')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('app-card-skeleton')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'COMMON_RETRY' }));
+    expect(refetch).toHaveBeenCalled();
   });
 
   it('paints store chrome and in-grid skeletons while the first catalog page is loading', () => {

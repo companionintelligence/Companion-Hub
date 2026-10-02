@@ -221,7 +221,7 @@ export default () => {
     [category, setCategory, setSearch],
   );
 
-  const { data, hasNextPage, isFetchingNextPage, isFetching, fetchNextPage } = useInfiniteQuery({
+  const { data, hasNextPage, isFetchingNextPage, isFetching, isError, fetchNextPage, refetch } = useInfiniteQuery({
     ...searchAppsInfiniteOptions({ query: catalogSearchQuery }),
     getNextPageParam: (lastPage) => lastPage.nextCursor,
     placeholderData: keepPreviousData,
@@ -229,7 +229,8 @@ export default () => {
     enabled: catalogSearchEnabled,
   });
 
-  const isLoading = catalogSearchEnabled && !data;
+  const catalogFailed = catalogSearchEnabled && isError;
+  const isLoading = catalogSearchEnabled && !data && !isError;
   const apps = data?.pages.flatMap((page) => page.data) ?? [];
 
   useEffect(() => {
@@ -371,6 +372,13 @@ export default () => {
           ) : !isAlternativesDataLoading && !isAlternativesDataError ? (
             <AlternativesCatalog alternatives={filteredAlts} marketplaceSlug={marketplaceSlug} />
           ) : null}
+        </div>
+      ) : catalogFailed ? (
+        <div className="rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          {t('APP_STORE_COULD_NOT_LOAD_CATALOG')}{' '}
+          <button type="button" className="font-medium underline" onClick={() => void refetch()}>
+            {t('COMMON_RETRY')}
+          </button>
         </div>
       ) : !apps?.length && !isLoading && !showSearchAlternatives ? (
         <EmptyPage title="APP_STORE_NO_RESULTS" subtitle="APP_STORE_NO_RESULTS_SUBTITLE" />
