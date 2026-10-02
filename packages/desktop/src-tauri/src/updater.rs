@@ -1039,6 +1039,20 @@ fn relaunch_args(mode: PersistedLaunchMode) -> Vec<String> {
     args
 }
 
+/// An update started from the open window comes back as a window, even when a
+/// `--detached` start recorded headless while that window was open. A headless
+/// update keeps the recorded mode.
+fn relaunch_mode_for_update(
+    recorded: PersistedLaunchMode,
+    from_open_window: bool,
+) -> PersistedLaunchMode {
+    if from_open_window {
+        PersistedLaunchMode::Desktop
+    } else {
+        recorded
+    }
+}
+
 /// Binary to respawn after an update. Not `current_exe` as is: once an update has replaced the
 /// file, Linux reports it as "… (deleted)", and starting that path fails.
 fn respawn_target() -> Result<PathBuf, String> {
@@ -1107,7 +1121,12 @@ fn relaunch_hub(mode: PersistedLaunchMode) -> Result<(), String> {
 /// freshly-updated instance signals with [`RELAUNCH_AFTER_UPDATE_FLAG`]; the
 /// caller is responsible for exiting the app once this returns Ok.
 pub fn prepare_self_restart_for_update() -> Result<(), String> {
-    let mode = hub_manager::read_launch_mode(&hub_manager::get_hub_data_dir());
+    // This callback runs in the open window. Reading the file here used to turn
+    // the restart headless after `--detached` had overwritten it.
+    let mode = relaunch_mode_for_update(
+        hub_manager::read_launch_mode(&hub_manager::get_hub_data_dir()),
+        true,
+    );
     let exe = respawn_target()?;
     // Keep the relaunch flag: if this (old) instance takes longer than the delay
     // to exit, the respawned instance re-triggers the handshake instead of being
@@ -1137,7 +1156,18 @@ pub fn perform_host_update(
     expected_sha256: Option<&str>,
 ) -> Result<(), String> {
     let _guard = HostUpdateGuard::acquire()?;
-    perform_host_update_inner(download_url, expected_size, expected_sha256)
+    perform_host_update_inner(download_url, expected_size, expected_sha256, false)
+}
+
+/// Settings → Update, from the open window. Relaunches with a window whatever
+/// the launch-mode file says.
+pub fn perform_host_update_from_open_window(
+    download_url: &str,
+    expected_size: Option<u64>,
+    expected_sha256: Option<&str>,
+) -> Result<(), String> {
+    let _guard = HostUpdateGuard::acquire()?;
+    perform_host_update_inner(download_url, expected_size, expected_sha256, true)
 }
 
 /// The parts of a desktop app update that act on this computer. [`run_host_update`] decides their
@@ -1264,6 +1294,7 @@ fn perform_host_update_inner(
     download_url: &str,
     expected_size: Option<u64>,
     expected_sha256: Option<&str>,
+    from_open_window: bool,
 ) -> Result<(), String> {
     let source = UpdateSource::resolve();
     if !source.is_trusted(download_url) {
@@ -1287,7 +1318,10 @@ fn perform_host_update_inner(
         expected_size,
         expected_sha256,
         installer: staging.path().join(suffix),
-        launch_mode: hub_manager::read_launch_mode(&data_dir),
+        launch_mode: relaunch_mode_for_update(
+            hub_manager::read_launch_mode(&data_dir),
+            from_open_window,
+        ),
         compose_path: data_dir.join(hub_manager::HUB_COMPOSE_FILENAME),
         env_path: hub_manager::hub_env_path_for(&data_dir),
         data_dir,
@@ -1597,9 +1631,12 @@ fn check_and_trigger_update_from_listener() -> Result<String, String> {
     let guard = HostUpdateGuard::acquire()?;
     std::thread::spawn(move || {
         let _guard = guard;
-        if let Err(err) =
-            perform_host_update_inner(&download_url, expected_size, expected_sha256.as_deref())
-        {
+        if let Err(err) = perform_host_update_inner(
+            &download_url,
+            expected_size,
+            expected_sha256.as_deref(),
+            false,
+        ) {
             set_progress("error", &err);
         }
     });
@@ -2461,6 +2498,33 @@ mod tests {
         );
         assert!(nsis.contains(r#""C:\staging\Companion Hub_0.3.0_x64-setup.exe" /S"#));
         assert!(!nsis.contains("--detached"));
+    }
+
+    #[test]
+    fn update_from_an_open_window_relaunches_as_desktop_even_when_recorded_detached() {
+        assert_eq!(
+            relaunch_mode_for_update(PersistedLaunchMode::Detached, true),
+            PersistedLaunchMode::Desktop
+        );
+        assert_eq!(
+            relaunch_args(relaunch_mode_for_update(
+                PersistedLaunchMode::Detached,
+                true
+            )),
+            vec![RELAUNCH_AFTER_UPDATE_FLAG.to_string()]
+        );
+    }
+
+    #[test]
+    fn headless_update_keeps_the_recorded_mode() {
+        assert_eq!(
+            relaunch_mode_for_update(PersistedLaunchMode::Detached, false),
+            PersistedLaunchMode::Detached
+        );
+        assert_eq!(
+            relaunch_mode_for_update(PersistedLaunchMode::Desktop, false),
+            PersistedLaunchMode::Desktop
+        );
     }
 
     #[test]
