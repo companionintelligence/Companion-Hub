@@ -502,6 +502,28 @@ export const InstallStep = ({
     }
   };
 
+  const aiStatusLabel = (state: 'waiting' | 'working' | 'done' | 'failed') => {
+    switch (state) {
+      case 'failed':
+        return t('COMMON_FAILED');
+      case 'done':
+        return t('COMMON_RUNNING');
+      case 'working':
+        return t('ONBOARDING_INSTALL_STATUS_INSTALLING');
+      case 'waiting':
+        return t('ONBOARDING_INSTALL_STATUS_QUEUED');
+    }
+  };
+
+  const aiMark = (state: 'waiting' | 'working' | 'done' | 'failed') => (
+    <span className="inline-flex items-center gap-1.5">
+      <span aria-hidden="true" className="w-4 text-center">
+        {state === 'failed' ? '✕' : state === 'done' ? '✓' : state === 'working' ? '●' : '○'}
+      </span>
+      <span className="text-xs text-muted-foreground">{aiStatusLabel(state)}</span>
+    </span>
+  );
+
   const statusLabel = (status: AppInstallStatus) => {
     switch (status) {
       case 'queued':
@@ -596,15 +618,15 @@ export const InstallStep = ({
           <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">{t('ONBOARDING_AI_SETUP')}</div>
           {canAutoInstallRunners && (
             <div className="flex items-center gap-2 px-3 py-1.5 text-sm" data-testid="inference-runners-phase">
-              <span className="w-4 text-center">
-                {aiPhase.runnerResults.length > 0
+              {aiMark(
+                aiPhase.runnerResults.length > 0
                   ? aiPhase.runnerResults.some((result) => result.state === 'failed')
-                    ? '✕'
-                    : '✓'
+                    ? 'failed'
+                    : 'done'
                   : aiPhase.status === 'installing-runners'
-                    ? '●'
-                    : '○'}
-              </span>
+                    ? 'working'
+                    : 'waiting',
+              )}
               <span className="flex-1">{t('ONBOARDING_INFERENCE_RUNNERS')}</span>
               {unavailableRunnerCount > 0 && (
                 <span className="text-xs text-warning">{t('ONBOARDING_INFERENCE_RUNNERS_UNAVAILABLE', { count: unavailableRunnerCount })}</span>
@@ -613,21 +635,21 @@ export const InstallStep = ({
           )}
           {aiSetupConfig?.cloudProviders && aiSetupConfig.cloudProviders.length > 0 && (
             <div className="flex items-center gap-2 px-3 py-1.5 text-sm">
-              <span className="w-4 text-center">{aiPhase.cloudConfigured ? '✓' : aiPhase.status === 'configuring-cloud' ? '●' : '○'}</span>
+              {aiMark(aiPhase.cloudConfigured ? 'done' : aiPhase.status === 'configuring-cloud' ? 'working' : 'waiting')}
               <span>{t('ONBOARDING_CLOUD_PROVIDERS_CONFIGURED')}</span>
             </div>
           )}
           {aiSetupConfig?.selectedModels.map((modelId) => (
             <div key={modelId} className="flex items-center gap-2 px-3 py-1.5 text-sm">
-              <span className="w-4 text-center">
-                {aiPhase.modelErrors[modelId]
-                  ? '✕'
+              {aiMark(
+                aiPhase.modelErrors[modelId]
+                  ? 'failed'
                   : (aiPhase.modelProgress[modelId] ?? 0) >= 100
-                    ? '✓'
+                    ? 'done'
                     : aiPhase.status === 'pulling-models'
-                      ? '●'
-                      : '○'}
-              </span>
+                      ? 'working'
+                      : 'waiting',
+              )}
               <span className="flex-1">
                 {modelId}
                 {modelId === aiSetupConfig.preferredModelId && <span className="ml-2 text-xs text-primary">{t('ONBOARDING_AGENT_DEFAULT')}</span>}
@@ -653,7 +675,7 @@ export const InstallStep = ({
           )}
           {aiSetupConfig?.selectedModels && aiSetupConfig.selectedModels.length > 0 && (
             <div className="flex items-center gap-2 px-3 py-1.5 text-sm">
-              <span className="w-4 text-center">{aiPhase.status === 'done' ? '✓' : aiPhase.status === 'pinning-models' ? '●' : '○'}</span>
+              {aiMark(aiPhase.status === 'done' ? 'done' : aiPhase.status === 'pinning-models' ? 'working' : 'waiting')}
               <span>{t('ONBOARDING_PIN_MODELS')}</span>
             </div>
           )}

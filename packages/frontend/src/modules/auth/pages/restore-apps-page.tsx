@@ -181,6 +181,17 @@ function RestoreAppsContent() {
           </Alert>
         ) : null}
 
+        {!isExecuting && error && !result?.incomplete ? (
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Button intent="secondary" onClick={() => void retry()}>
+              {t('COMMON_RETRY')}
+            </Button>
+            <Button intent="primary" onClick={() => void continueToDashboard()}>
+              {t('RESTORE_APPS_CONTINUE_IN_BACKGROUND')}
+            </Button>
+          </div>
+        ) : null}
+
         {isExecuting ? (
           <div className="flex items-center gap-3 rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">
             <Loader2 className="h-5 w-5 animate-spin text-primary" aria-hidden />
