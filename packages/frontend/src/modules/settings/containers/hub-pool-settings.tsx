@@ -748,6 +748,87 @@ export const HubPoolSection = () => {
       },
     });
 
+  const pairingWaiting = pendingInbound.length > 0 || pendingOutbound.length > 0;
+  const pendingBlock = (
+    <Block title={t('HUB_POOL_PENDING_TITLE')} help={t('HUB_POOL_PENDING_HELP')}>
+      {!pendingInbound.length && !pendingOutbound.length ? (
+        <p className="text-sm text-muted-foreground">{t('HUB_POOL_PENDING_EMPTY')}</p>
+      ) : (
+        <ul className="space-y-2">
+          {pendingInbound.map((peer) => (
+            <li key={peer.id} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+              {/* The FQDN, not the display name: approving issues a fresh token to this exact host,
+                      and the name is whatever the (unauthenticated) requester chose to call itself. */}
+              <div className="min-w-0">
+                <span className="block break-all font-mono text-xs sm:truncate" title={peer.nodeFqdn} data-testid="hub-pool-pending-fqdn">
+                  {peer.nodeFqdn}
+                </span>
+                {peer.displayName ? <span className="block truncate text-xs text-muted-foreground">{peer.displayName}</span> : null}
+                {/* The other half of the confirmation. A PIN-authenticated request arrives with the
+                        requester's key already pinned, so the operator can compare this fingerprint
+                        against the one shown on that Hub's own screen before approving. Absent means
+                        the request carried no PIN — i.e. an unauthenticated claim of a name, which is
+                        exactly the case the PIN exists to close. */}
+                <span className="block break-all font-mono text-[11px] text-muted-foreground sm:truncate" data-testid="hub-pool-pending-fingerprint">
+                  {peer.peerKeyFingerprint
+                    ? t('HUB_POOL_PEER_FINGERPRINT', { fingerprint: peer.peerKeyFingerprint })
+                    : t('HUB_POOL_PEER_FINGERPRINT_UNVERIFIED')}
+                </span>
+              </div>
+              <div className="flex shrink-0 gap-2 self-end sm:self-auto">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={demoMode}
+                  loading={rejectMutation.isPending && rejectMutation.variables === peer.id}
+                  onClick={() => rejectMutation.mutate(peer.id)}
+                >
+                  {t('HUB_POOL_REJECT_BUTTON')}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={demoMode}
+                  loading={approveMutation.isPending && approveMutation.variables === peer.id}
+                  onClick={() => approveMutation.mutate(peer.id)}
+                >
+                  {t('HUB_POOL_APPROVE_BUTTON')}
+                </Button>
+              </div>
+            </li>
+          ))}
+          {/* Without this row's cancel the request is unrecoverable from the page: nothing sweeps
+                  outbound pending rows, and discovery hides any FQDN already in the peer table, so a
+                  peer that never answers would drop out of the pairing list forever. */}
+          {pendingOutbound.map((peer) => (
+            <li key={peer.id} data-testid="hub-pool-pending-outbound" className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+              <span className="min-w-0 break-all font-mono text-xs sm:truncate" title={peer.nodeFqdn}>
+                {peerLabel(peer)}
+              </span>
+              <div className="flex shrink-0 items-center justify-end gap-3 self-end sm:self-auto">
+                <span className="text-xs text-muted-foreground">{t('HUB_POOL_OUTBOUND_WAITING', { name: peerLabel(peer) })}</span>
+                {/* No confirm dialog, unlike Unpair: this discards a request nobody answered, so
+                        there is no established pairing or issued token to lose. */}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  data-testid="hub-pool-cancel-request-btn"
+                  disabled={demoMode}
+                  loading={cancelRequestMutation.isPending && cancelRequestMutation.variables === peer.id}
+                  onClick={() => cancelRequestMutation.mutate(peer.id)}
+                >
+                  {t('HUB_POOL_CANCEL_REQUEST_BUTTON')}
+                </Button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Block>
+  );
+
   return (
     <Card data-testid="hub-pool-card">
       <SectionHeader
@@ -761,6 +842,7 @@ export const HubPoolSection = () => {
         }
       />
       <CardContent className="space-y-4">
+        {pairingWaiting ? pendingBlock : null}
         {/* ── State at a glance ───────────────────────────────────────── */}
         <div className="space-y-3">
           {/* Only when something is NOT nominal. With routing active the badge in the header
@@ -1577,90 +1659,7 @@ export const HubPoolSection = () => {
           )}
         </Block>
 
-        <Block title={t('HUB_POOL_PENDING_TITLE')} help={t('HUB_POOL_PENDING_HELP')}>
-          {!pendingInbound.length && !pendingOutbound.length ? (
-            <p className="text-sm text-muted-foreground">{t('HUB_POOL_PENDING_EMPTY')}</p>
-          ) : (
-            <ul className="space-y-2">
-              {pendingInbound.map((peer) => (
-                <li key={peer.id} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
-                  {/* The FQDN, not the display name: approving issues a fresh token to this exact host,
-                      and the name is whatever the (unauthenticated) requester chose to call itself. */}
-                  <div className="min-w-0">
-                    <span className="block break-all font-mono text-xs sm:truncate" title={peer.nodeFqdn} data-testid="hub-pool-pending-fqdn">
-                      {peer.nodeFqdn}
-                    </span>
-                    {peer.displayName ? <span className="block truncate text-xs text-muted-foreground">{peer.displayName}</span> : null}
-                    {/* The other half of the confirmation. A PIN-authenticated request arrives with the
-                        requester's key already pinned, so the operator can compare this fingerprint
-                        against the one shown on that Hub's own screen before approving. Absent means
-                        the request carried no PIN — i.e. an unauthenticated claim of a name, which is
-                        exactly the case the PIN exists to close. */}
-                    <span
-                      className="block break-all font-mono text-[11px] text-muted-foreground sm:truncate"
-                      data-testid="hub-pool-pending-fingerprint"
-                    >
-                      {peer.peerKeyFingerprint
-                        ? t('HUB_POOL_PEER_FINGERPRINT', { fingerprint: peer.peerKeyFingerprint })
-                        : t('HUB_POOL_PEER_FINGERPRINT_UNVERIFIED')}
-                    </span>
-                  </div>
-                  <div className="flex shrink-0 gap-2 self-end sm:self-auto">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      disabled={demoMode}
-                      loading={rejectMutation.isPending && rejectMutation.variables === peer.id}
-                      onClick={() => rejectMutation.mutate(peer.id)}
-                    >
-                      {t('HUB_POOL_REJECT_BUTTON')}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      disabled={demoMode}
-                      loading={approveMutation.isPending && approveMutation.variables === peer.id}
-                      onClick={() => approveMutation.mutate(peer.id)}
-                    >
-                      {t('HUB_POOL_APPROVE_BUTTON')}
-                    </Button>
-                  </div>
-                </li>
-              ))}
-              {/* Without this row's cancel the request is unrecoverable from the page: nothing sweeps
-                  outbound pending rows, and discovery hides any FQDN already in the peer table, so a
-                  peer that never answers would drop out of the pairing list forever. */}
-              {pendingOutbound.map((peer) => (
-                <li
-                  key={peer.id}
-                  data-testid="hub-pool-pending-outbound"
-                  className="flex items-center justify-between gap-3 rounded-md border px-3 py-2"
-                >
-                  <span className="min-w-0 break-all font-mono text-xs sm:truncate" title={peer.nodeFqdn}>
-                    {peerLabel(peer)}
-                  </span>
-                  <div className="flex shrink-0 items-center justify-end gap-3 self-end sm:self-auto">
-                    <span className="text-xs text-muted-foreground">{t('HUB_POOL_OUTBOUND_WAITING', { name: peerLabel(peer) })}</span>
-                    {/* No confirm dialog, unlike Unpair: this discards a request nobody answered, so
-                        there is no established pairing or issued token to lose. */}
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      data-testid="hub-pool-cancel-request-btn"
-                      disabled={demoMode}
-                      loading={cancelRequestMutation.isPending && cancelRequestMutation.variables === peer.id}
-                      onClick={() => cancelRequestMutation.mutate(peer.id)}
-                    >
-                      {t('HUB_POOL_CANCEL_REQUEST_BUTTON')}
-                    </Button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Block>
+        {pairingWaiting ? null : pendingBlock}
       </CardContent>
 
       <Dialog open={!!unpairTarget} onOpenChange={(open) => !open && setUnpairTarget(null)}>

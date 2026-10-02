@@ -722,6 +722,9 @@ describe('HubPoolSection', () => {
     const fqdn = await screen.findByTestId('hub-pool-pending-fqdn');
     expect(fqdn.textContent).toBe('attacker-box.example-tailnet.ts.net');
     expect(screen.getByText("Liam's MacBook")).toBeTruthy();
+    const pending = screen.getByText('HUB_POOL_PENDING_TITLE');
+    const peers = screen.getByText('HUB_POOL_CONNECTED_TITLE');
+    expect(pending.compareDocumentPosition(peers) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   // Nothing sweeps outbound pending rows and discovery hides an FQDN already in the peer table, so
