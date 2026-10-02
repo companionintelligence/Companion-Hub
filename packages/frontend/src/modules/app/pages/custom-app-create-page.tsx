@@ -10,11 +10,19 @@ import { createCustomAppMutation } from '@/api-client/@tanstack/react-query.gen'
 import { Input } from '@/components/ui/Input/Input';
 import { Card, CardContent } from '@/components/ui/Card';
 import type { TranslatableError } from '@/types/error.types';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useMultiServiceStore } from '@/stores/multiServiceStore';
 
 export default () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const resetToDefaults = useMultiServiceStore((state) => state.resetToDefaults);
+
+  // Create starts from a blank app. Edit fills this same store from the saved
+  // config, so it must not reset.
+  useEffect(() => {
+    resetToDefaults();
+  }, [resetToDefaults]);
   const [appName, setAppName] = useState('');
   const [appNameError, setAppNameError] = useState<string>();
 
