@@ -350,10 +350,11 @@ describe('HubPoolSection', () => {
     expect(screen.getByText('HUB_POOL_STATUS_UNREACHABLE')).toBeTruthy();
     // An unreachable peer's cached inventory is not capacity the pool can offer right now, so only
     // this node's own model is listed as servable.
-    // Asserted on the row's data attributes, not its textContent: the matrix renders node
-    // presence as dots, so which nodes can serve a model is not readable as text.
     expect(screen.getAllByTestId('hub-pool-model').map((row) => row.getAttribute('data-model'))).toEqual(['llama3.2:3b']);
     expect(screen.getAllByTestId('hub-pool-model').map((row) => row.getAttribute('data-nodes'))).toEqual(['HUB_POOL_LOCAL_NODE_LABEL']);
+    const cell = screen.getAllByTestId('hub-pool-model')[0]?.querySelector('td[headers]');
+    expect(cell?.textContent).toContain('HUB_POOL_MODELS_ONLY_HERE');
+    expect(cell?.getAttribute('headers')).toBe('hub-pool-model-col-0');
   });
 
   it('shows a distinct "needs re-pair" badge and the backend\'s exact remedy for an identity-changed peer, never the self-heals hint', async () => {

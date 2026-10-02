@@ -1248,8 +1248,8 @@ export const HubPoolSection = () => {
                     <>
                       <Th>{t('HUB_POOL_MODELS_COL_MODEL')}</Th>
                       {asMatrix ? (
-                        poolNodes.map((node) => (
-                          <Th key={node} align="right">
+                        poolNodes.map((node, index) => (
+                          <Th key={node} id={`hub-pool-model-col-${index}`} align="right">
                             {node}
                           </Th>
                         ))
@@ -1276,15 +1276,20 @@ export const HubPoolSection = () => {
                             </span>
                           </Td>
                           {asMatrix ? (
-                            poolNodes.map((node) => (
-                              <Td key={node} align="right">
-                                {entry.nodes.includes(node) ? (
-                                  <StatusDot tone={sole ? 'warn' : 'ok'} />
-                                ) : (
-                                  <span className="text-muted-foreground/40">·</span>
-                                )}
-                              </Td>
-                            ))
+                            poolNodes.map((node, index) => {
+                              const present = entry.nodes.includes(node);
+                              const presence = present
+                                ? t(sole ? 'HUB_POOL_MODELS_ONLY_HERE' : 'HUB_POOL_MODELS_HERE')
+                                : t('HUB_POOL_MODELS_NOT_HERE');
+                              return (
+                                <Td key={node} align="right" headers={`hub-pool-model-col-${index}`}>
+                                  <span className="inline-flex items-center justify-end gap-1.5">
+                                    {present ? <StatusDot tone={sole ? 'warn' : 'ok'} /> : <span className="text-muted-foreground/40">·</span>}
+                                    <span>{presence}</span>
+                                  </span>
+                                </Td>
+                              );
+                            })
                           ) : (
                             <Td className="text-muted-foreground" title={entry.nodes.join(', ')}>
                               {entry.nodes.join(', ')}
