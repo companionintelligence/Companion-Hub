@@ -295,6 +295,8 @@ export const GeneralActionsContainer = () => {
   }, [shellUpdate]);
 
   const handleAutoUpdatesToggle = useCallback(async () => {
+    // Stay focusable while the save runs. `disabled` would drop keyboard focus to the page.
+    if (autoUpdatesLoading) return;
     setAutoUpdatesLoading(true);
     const newValue = !autoUpdates;
     try {
@@ -305,7 +307,7 @@ export const GeneralActionsContainer = () => {
       // ignore
     }
     setAutoUpdatesLoading(false);
-  }, [autoUpdates]);
+  }, [autoUpdates, autoUpdatesLoading]);
 
   const stackUpdateAvailable = isStackUpdateAvailable(version.current, version.latest);
   // After an update installed while the app was open, the running version is no longer what this
@@ -583,9 +585,10 @@ export const GeneralActionsContainer = () => {
                 aria-checked={autoUpdates}
                 aria-labelledby={autoUpdatesTitleId}
                 aria-describedby={autoUpdatesDescriptionId}
+                aria-disabled={autoUpdatesLoading}
+                aria-busy={autoUpdatesLoading}
                 onClick={handleAutoUpdatesToggle}
-                disabled={autoUpdatesLoading}
-                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${autoUpdates ? 'bg-primary' : 'bg-input'} ${autoUpdatesLoading ? 'opacity-50' : ''}`}
+                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background ${autoUpdates ? 'bg-primary' : 'bg-foreground/50'} ${autoUpdatesLoading ? 'cursor-wait opacity-50' : ''}`}
               >
                 <span
                   className={`inline-block h-4 w-4 transform rounded-full bg-background transition-transform ${autoUpdates ? 'translate-x-6' : 'translate-x-1'}`}

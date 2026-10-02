@@ -19,8 +19,9 @@ import { toast } from 'sonner';
 import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import { GeneralActionsContainer } from './general-actions';
 
-const { getAutoUpdates, checkHubForUpdatesApi, getDesktopRelease } = vi.hoisted(() => ({
+const { getAutoUpdates, setAutoUpdates, checkHubForUpdatesApi, getDesktopRelease } = vi.hoisted(() => ({
   getAutoUpdates: vi.fn(),
+  setAutoUpdates: vi.fn(),
   checkHubForUpdatesApi: vi.fn(),
   getDesktopRelease: vi.fn(),
 }));
@@ -34,7 +35,7 @@ vi.mock('@/api-client/sdk.gen', async (importOriginal) => {
   return {
     ...actual,
     getAutoUpdates,
-    setAutoUpdates: vi.fn(),
+    setAutoUpdates,
     restartOnboarding: vi.fn(),
     factoryReset: vi.fn(),
     checkForUpdates: checkHubForUpdatesApi,
@@ -424,6 +425,41 @@ describe('GeneralActionsContainer', () => {
     expect(toggle).toHaveAccessibleDescription('Automatically pull and restart Docker stack images when updates are available');
     // jsdom does no layout. Without shrink-0, the description beside it squeezes the switch to a dot on a phone.
     expect(toggle).toHaveClass('shrink-0');
+  });
+
+  it('keeps keyboard focus while Auto-update stack saves, and paints the off track darker than the card', async () => {
+    getAutoUpdates.mockResolvedValue(sdkOk({ enabled: false }));
+    let finishSave: (value: ReturnType<typeof sdkOk>) => void = () => {};
+    setAutoUpdates.mockReturnValue(
+      new Promise((resolve) => {
+        finishSave = resolve;
+      }),
+    );
+
+    render(<GeneralActionsContainer />);
+
+    const toggle = await screen.findByRole('switch', { name: 'Auto-update stack' });
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'));
+    // Off track is foreground at 50%, which is 3:1 against the card. bg-input is about 1.1:1.
+    expect(toggle).toHaveClass('bg-foreground/50');
+    expect(toggle).not.toHaveClass('bg-input');
+
+    toggle.focus();
+    await userEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-disabled', 'true');
+    expect(toggle).toHaveAttribute('aria-busy', 'true');
+    expect(toggle).not.toBeDisabled();
+    expect(toggle).toHaveFocus();
+    expect(setAutoUpdates).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      finishSave(sdkOk({ enabled: true }));
+    });
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
+    expect(toggle).toHaveAttribute('aria-disabled', 'false');
+    expect(toggle).toHaveFocus();
+    expect(toggle).toHaveClass('bg-primary');
   });
 
   it('tells a browser where to update the desktop app when the Hub cannot reach it', async () => {
