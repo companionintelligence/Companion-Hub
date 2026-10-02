@@ -224,6 +224,7 @@
   "PORT_EXPOSE_TITLE": "Expose a port",
   "PORT_EXPOSE_DESCRIPTION": "Publish a service already running on this Hub. Choose where it should be reachable: this device, your private VPN, or the public web.",
   "PORT_EXPOSE_SIDEBAR_LINK": "Expose a port",
+  "APP_STORE_CREATE_CUSTOM_APP": "Create a custom app",
   "PORT_EXPOSE_SUBMIT": "Expose workload",
   "PORT_EXPOSE_CREATE_SUCCESS": "Workload {{name}} is now exposed",
   "PORT_EXPOSE_CREATE_ERROR": "Could not expose workload",

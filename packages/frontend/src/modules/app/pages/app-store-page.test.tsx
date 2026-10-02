@@ -16,6 +16,7 @@ const { mockStoreState, mockSearchAppsInfiniteOptions } = vi.hoisted(() => ({
   mockSearchAppsInfiniteOptions: vi.fn(() => ({ queryKey: ['searchApps'] })),
 }));
 
+const mockNavigate = vi.fn();
 const mockSetSearchParams = vi.fn();
 let capturedSearchParams = new URLSearchParams();
 
@@ -24,6 +25,7 @@ vi.mock('react-router', async () => {
   return {
     ...actual,
     useParams: vi.fn(() => ({})),
+    useNavigate: () => mockNavigate,
     useSearchParams: vi.fn(() => [capturedSearchParams, mockSetSearchParams]),
     Navigate: vi.fn(({ to }: { to: string }) => <div data-testid="navigate-to">{to}</div>),
     Link: vi.fn(({ to, children, ...rest }: { to: string; children: React.ReactNode }) => (
@@ -168,6 +170,22 @@ describe('AppStorePage — multi-store UX', () => {
       alternativesError: undefined,
       refetchAlternatives: vi.fn(),
     });
+  });
+
+  it('offers expose and custom app from the store header', () => {
+    setupQueries();
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'PORT_EXPOSE_SIDEBAR_LINK' }));
+    fireEvent.click(screen.getByRole('button', { name: 'APP_STORE_CREATE_CUSTOM_APP' }));
+
+    expect(mockNavigate).toHaveBeenCalledWith('/apps/expose');
+    expect(mockNavigate).toHaveBeenCalledWith('/apps/create');
   });
 
   it('renders store switcher buttons when multiple stores are enabled', () => {

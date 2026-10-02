@@ -23,7 +23,7 @@ import { keepPreviousData, useInfiniteQuery, useQuery, useMutation, useQueryClie
 import clsx from 'clsx';
 import { ArrowLeftRight, LayoutGrid, Loader2, RefreshCw, Store } from 'lucide-react';
 import { useCallback, useEffect, useState, useMemo, useRef } from 'react';
-import { Navigate, useParams, useSearchParams } from 'react-router';
+import { Navigate, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 
@@ -48,6 +48,7 @@ export const AppStorePageSuspense = () => {
 
 export default () => {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const params = useParams<{ storeId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const { setCategory, category, storeId, setStoreId, search, setSearch, setSearchImmediate } = useAppStoreState();
@@ -288,10 +289,18 @@ export default () => {
             </div>
           ) : null}
         </div>
-        <Button onClick={() => pullApps()} disabled={isPulling} variant="outline" size="sm" className="w-full gap-2 sm:w-auto">
-          <RefreshCw className={clsx('h-4 w-4', isPulling && 'animate-spin')} />
-          {isPulling ? t('APP_STORE_SYNCING') : t('APP_STORE_CHECK_FOR_UPDATES')}
-        </Button>
+        <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:justify-end">
+          <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => navigate('/apps/expose')}>
+            {t('PORT_EXPOSE_SIDEBAR_LINK')}
+          </Button>
+          <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => navigate('/apps/create')}>
+            {t('APP_STORE_CREATE_CUSTOM_APP')}
+          </Button>
+          <Button onClick={() => pullApps()} disabled={isPulling} variant="outline" size="sm" className="w-full gap-2 sm:w-auto">
+            <RefreshCw className={clsx('h-4 w-4', isPulling && 'animate-spin')} />
+            {isPulling ? t('APP_STORE_SYNCING') : t('APP_STORE_CHECK_FOR_UPDATES')}
+          </Button>
+        </div>
       </div>
 
       {/* Mobile Search & Categories */}
