@@ -336,6 +336,7 @@ export class MemoryManagerService {
     };
 
     const busy: string[] = [];
+    const busyFreesMb: number[] = [];
     const isBusy = (candidate: EvictionCandidate): boolean => {
       const working = options.inUse?.(candidate.backend) ?? [];
       const inUse = working.some(
@@ -343,7 +344,10 @@ export class MemoryManagerService {
           sameEngineModelId(candidate.backend, work.model, candidate.backendModelId) ||
           (candidate.catalogId !== null && work.model === candidate.catalogId),
       );
-      if (inUse) busy.push(candidate.backendModelId);
+      if (inUse) {
+        busy.push(candidate.backendModelId);
+        busyFreesMb.push(candidate.estimatedMb ?? 0);
+      }
       return inUse;
     };
 
@@ -389,7 +393,8 @@ export class MemoryManagerService {
     }
 
     if (freedMb < requiredMb) {
-      return { canFree: false, candidates: [], freedMb, busy };
+      const idleWouldFree = busy.length > 0 && freedMb + sum(busyFreesMb.filter((mb) => mb > 0)) >= requiredMb;
+      return { canFree: false, candidates: [], freedMb, busy, ...(idleWouldFree ? { idleWouldFree } : {}) };
     }
     return { canFree: true, candidates, freedMb, busy };
   }
@@ -400,6 +405,9 @@ export class MemoryManagerService {
    */
   invalidateObservation(): void {
     this.observation = null;
+    // A sweep already under way began before whatever invalidated: it is as stale as the cache was,
+    // and neither a caller arriving now nor its own result may stand in for a fresh one.
+    this.observationInFlight = null;
   }
 
   /** Check if an app can start given the current memory state */
@@ -475,6 +483,7 @@ export class MemoryManagerService {
     let moved = false;
     for (const { backend, backendModelId, sighting } of attributeSightings(pool, observation, usage)) {
       const key = sightingKey(backend, backendModelId);
+      if (downgradesMeasurement(this.sightings.get(key), sighting)) continue;
       this.sightings.set(key, { ...sighting, backend, model: backendModelId, seenAt: observation.sampledAt });
       moved ||= sightingMovedMaterially(this.persistedSightings.get(key), sighting);
     }
@@ -530,7 +539,7 @@ export class MemoryManagerService {
     }
     const promise = this.sweep(vendor)
       .then((value) => {
-        this.observation = { at: Date.now(), vendor, value };
+        if (this.observationInFlight?.promise === promise) this.observation = { at: Date.now(), vendor, value };
         return value;
       })
       .finally(() => {
@@ -613,6 +622,11 @@ export type EvictionPlan = {
   freedMb: number;
   /** Models left alone because a request is running on them, for the refusal's reason. */
   busy: string[];
+  /**
+   * True when `canFree` is false only because of `busy`: this scope's idle models free less than was
+   * asked, but they plus the busy ones would free enough. Such a refusal passes when the generations end.
+   */
+  idleWouldFree?: boolean;
 };
 
 /** Keyed under {@link engineModelKey}'s folding, so the kept model and a pin match however the engine spells them. */
@@ -672,6 +686,19 @@ function sum(values: readonly number[]): number {
  */
 function sightingKey(backend: InferenceBackendType, backendModelId: string): string {
   return `${backend}\u0000${engineModelKey(backend, backendModelId)}`;
+}
+
+/**
+ * Whether `next` would replace a sighting measured from the vendor tool's view of the runner with one
+ * from the engine's own accounting at the same window. It must not: `/api/ps` leaves out what the
+ * runner holds beyond the weights and cache (the CUDA context, compute buffers), and it is what a
+ * sample falls back to when the vendor tool lists no process for the runner. Measured 2026-10-01 on
+ * beta-red: right after a load the engine's 3,257 MB stood in for the 8,785 MiB the card held, replaced
+ * the recorded figure for about 20 s, and a pin checked in that window was checked against it. A
+ * process reading at the same window replaces it, as does any reading at another window.
+ */
+function downgradesMeasurement(recorded: FootprintSighting | undefined, next: FootprintSighting): boolean {
+  return recorded?.source === 'process' && next.source === 'engine' && recorded.contextLength === next.contextLength;
 }
 
 /**

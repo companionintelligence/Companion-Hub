@@ -60,7 +60,14 @@ const EVICTION_SETTLE_INTERVAL_MS = 1_000;
 const SELF_ARBITRATING_BACKENDS: ReadonlySet<InferenceBackendType> = new Set<InferenceBackendType>(['ollama']);
 
 /** What {@link InferenceRouterService.loadTrackedModel} did: the model is in memory, or why it is not. */
-export type LoadOutcome = { loaded: true } | { loaded: false; reason: string };
+export type LoadOutcome =
+  | { loaded: true }
+  | {
+      loaded: false;
+      reason: string;
+      /** Set when only generations in progress stood in the way: the load would have been made once they end (see {@link EvictionPlan.idleWouldFree}). */
+      idleWouldFree?: true;
+    };
 
 /**
  * Who asked for a load. The one field decides both what the load may do: the window it is loaded at
@@ -912,7 +919,11 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       const deficit = footprint - fit.availableMb;
       const plan = await this.memoryManager.planEviction(profile, deficit, { backend: backendType, backendModelId }, this.evictionOptions(scope));
       if (!plan.canFree) {
-        return { loaded: false, reason: describeRefusal(catalogId, footprint, fit.availableMb, scope, plan) };
+        return {
+          loaded: false,
+          reason: describeRefusal(catalogId, footprint, fit.availableMb, scope, plan),
+          ...(plan.idleWouldFree ? { idleWouldFree: true as const } : {}),
+        };
       }
       const evicted: EvictionCandidate[] = [];
       let refused: EvictionCandidate | null = null;

@@ -25,7 +25,7 @@ import {
 } from '@/common/helpers/hub-pool';
 import { HubPoolPressureService } from '../hub-pool-pressure.service';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
-import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from '../hub-pool-load.service';
+import { HubPoolLoadService, LOCAL_CANDIDATE_KEY, type LocalGeneration } from '../hub-pool-load.service';
 import { PLACEMENT_PROBE_BUDGET_MS } from '../hub-pool-local-health.service';
 import { HubPoolRoutingLogService } from '../hub-pool-routing-log.service';
 import {
@@ -8635,6 +8635,77 @@ describe('PoolProxyService', () => {
 
         expect(urls()).toEqual(['http://local-lemonade:13305/api/chat']);
         expect(routingLog.list()[0]).toMatchObject({ outcome: 'served', backend: 'lemonade', attempts: [], localLoadRefused: null });
+      });
+
+      // beta-3-glass, 2026-10-01: qwen3.5:4b was streaming when a request for qwen3.5:9b arrived. Sent on at
+      // once, Ollama marked the 4b runner to expire and made the request wait for it; the Hub waits itself.
+      describe('because only generations in progress stand in the way', () => {
+        const BUSY: LocalGeneration = { backend: 'ollama', model: 'qwen3.5:4b', numCtx: null };
+        const BUSY_REFUSAL = `${REFUSAL}; qwen3.5:4b is serving a request and will not be unloaded`;
+
+        beforeEach(() => {
+          peerService.listConnectedPeers.mockResolvedValue([]);
+          loadService.acquire(LOCAL_CANDIDATE_KEY, BUSY);
+        });
+
+        it('holds the request until they end, then loads the model itself and sends it', async () => {
+          router.loadTrackedModel.mockResolvedValueOnce({ loaded: false, reason: BUSY_REFUSAL, idleWouldFree: true });
+          router.loadTrackedModel.mockResolvedValue({ loaded: true });
+          const res = createMockResponse();
+
+          const served = chat(res);
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          expect(urls()).toEqual([]);
+
+          loadService.release(LOCAL_CANDIDATE_KEY, BUSY);
+          await served;
+
+          expect(router.loadTrackedModel).toHaveBeenCalledTimes(2);
+          expect(urls()).toEqual([LOCAL_URL]);
+          expect(res.status).toHaveBeenCalledWith(200);
+          expect(routingLog.list()[0]).toMatchObject({ outcome: 'served', node: POOL_SERVED_LOCALLY, attempts: [], localLoadRefused: null });
+        });
+
+        it('sends it on, saying so, when the load is refused again for a reason waiting does not change', async () => {
+          router.loadTrackedModel.mockResolvedValueOnce({ loaded: false, reason: BUSY_REFUSAL, idleWouldFree: true });
+          router.loadTrackedModel.mockResolvedValue({ loaded: false, reason: REFUSAL });
+
+          const served = chat();
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          loadService.release(LOCAL_CANDIDATE_KEY, BUSY);
+          await served;
+
+          expect(router.loadTrackedModel).toHaveBeenCalledTimes(2);
+          expect(urls()).toEqual([LOCAL_URL]);
+          expect(routingLog.list()[0]).toMatchObject({ outcome: 'served', localLoadRefused: REFUSAL });
+        });
+
+        it('stops waiting when the client leaves, and neither loads nor sends for nobody', async () => {
+          router.loadTrackedModel.mockResolvedValueOnce({ loaded: false, reason: BUSY_REFUSAL, idleWouldFree: true });
+          const res = createMockResponse();
+
+          const served = chat(res);
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          res.destroy();
+          await served;
+          loadService.release(LOCAL_CANDIDATE_KEY, BUSY);
+
+          expect(router.loadTrackedModel).toHaveBeenCalledTimes(1);
+          expect(routingLog.list()[0]).toMatchObject({ localLoadRefused: null });
+        });
+
+        it('does not wait when another candidate can take the request, which is passed over for it as before', async () => {
+          const peer = peerServing('peer-a', MODEL);
+          peerService.listConnectedPeers.mockResolvedValue([peer]);
+          // Busy locally, the engine would rank behind the peer and never be asked; the refusal is the point here.
+          loadService.release(LOCAL_CANDIDATE_KEY, BUSY);
+          router.loadTrackedModel.mockResolvedValue({ loaded: false, reason: BUSY_REFUSAL, idleWouldFree: true });
+
+          await chat();
+
+          expect(urls()).toEqual([PEER_A_URL]);
+          expect(router.loadTrackedModel).toHaveBeenCalledTimes(1);
+        });
       });
 
       // What the fix leaves alone: a load that goes through, and one that is not needed.
