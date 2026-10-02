@@ -10,6 +10,7 @@ import {
   type ZoneAnswer,
   allowedAddressLookup,
   describePublicReachability,
+  httpsGetExcerpt,
   httpsGetStatus,
   pinnedLookup,
   probePublicHostname,
@@ -406,6 +407,22 @@ describe('httpsGetStatus', () => {
     await expect(
       httpsGetStatus(`https://pinned-hub.invalid:${port}${PUBLIC_PROBE_PATH}`, { addresses: ['127.0.0.1'], timeoutMs: 5_000 }),
     ).rejects.toMatchObject({ code: 'DEPTH_ZERO_SELF_SIGNED_CERT' });
+  });
+
+  it.skipIf(!canTrustAtRunTime)('keeps the start of a pinned response and stops once that excerpt is full', async () => {
+    const certificate = selfSignedCertificate('pinned-hub.invalid');
+    tls.setDefaultCACertificates([...bundledTrust, certificate.cert]);
+    const page = `${'Cloudflare Ray ID '.padEnd(70_000, 'x')} Error 1033`;
+    const port = await listen(
+      https.createServer(certificate, (_request, response) => response.writeHead(530, { 'content-type': 'text/html' }).end(page)),
+    );
+
+    const excerpt = await httpsGetExcerpt(`https://pinned-hub.invalid:${port}/`, { addresses: ['127.0.0.1'], timeoutMs: 5_000 });
+
+    expect(excerpt.status).toBe(530);
+    expect(excerpt.text.startsWith('Cloudflare Ray ID ')).toBe(true);
+    expect(excerpt.text.length).toBeLessThan(page.length);
+    expect(excerpt.text).not.toContain('Error 1033');
   });
 
   it.skipIf(!canTrustAtRunTime)('answers with the status from a pinned address whose trusted certificate is valid for the name', async () => {
