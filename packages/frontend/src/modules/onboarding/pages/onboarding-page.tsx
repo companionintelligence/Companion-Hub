@@ -22,6 +22,7 @@ import type { AiSetupConfig, OnboardingApp } from '../helpers/types';
 import { ModelDownloadFooterSummary, ModelDownloadStatus } from '../components/model-download-status';
 import { useModelPullOrchestrator } from '@/lib/hooks/use-model-pull-orchestrator';
 import { prefetchOnboardingMarketplace } from '../helpers/prefetch-onboarding-marketplace';
+import { useOnboardingAppsStep } from '../helpers/onboarding-step-numbers';
 
 /** Long enough for a Hub that is still coming back up to start answering. */
 const COMPLETE_ONBOARDING_RETRY_DELAY_MS = 500;
@@ -104,6 +105,25 @@ function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
+function RecommendedAppsSection({
+  detectedServices,
+  agentSlugs,
+  onChange,
+}: {
+  detectedServices: DetectedService[];
+  agentSlugs: string[];
+  onChange: (apps: OnboardingApp[]) => void;
+}) {
+  const { t } = useTranslation();
+  const step = useOnboardingAppsStep();
+
+  return (
+    <StepSection number={step} badge="optional" title={t('ONBOARDING_RECOMMENDED_APPS')}>
+      <RecommendationsStep embedded detectedServices={detectedServices} agentSlugs={agentSlugs} onChange={onChange} />
+    </StepSection>
+  );
+}
+
 const SKIPPED_AI_CONFIG: AiSetupConfig = {
   agentFrameworks: [],
   selectedModels: [],
@@ -183,7 +203,7 @@ function OnboardingWizard() {
   }, [isCatalogError, isCatalogFetching, isCatalogLoading, isCatalogUnavailable, refetchCatalog, storeApps.length]);
 
   const recommendationsLoading = (isCatalogLoading || isCatalogFetching) && !isCatalogError;
-  const canFinish = aiSetupConfig !== undefined && !aiSetupConfig.installBlocked;
+  const canFinish = aiSetupConfig !== undefined && !aiSetupConfig.installBlocked && !aiSetupConfig.engineBlocked;
   const installExposureMode = resolveExposureMode(aiSetupConfig?.exposureMode, { cloudflareAvailable, tailscaleAvailable });
   const publicExposureMode = resolveExposureMode('cloudflare', { cloudflareAvailable, tailscaleAvailable });
 
@@ -338,9 +358,7 @@ function OnboardingWizard() {
           publicExposureMode={publicExposureMode}
           onCompanionAppsChange={setCompanionApps}
         >
-          <StepSection number={6} badge="optional" title={t('ONBOARDING_RECOMMENDED_APPS')}>
-            <RecommendationsStep embedded detectedServices={detectedServices} agentSlugs={agentSlugs} onChange={setSelectedApps} />
-          </StepSection>
+          <RecommendedAppsSection detectedServices={detectedServices} agentSlugs={agentSlugs} onChange={setSelectedApps} />
         </AiSetupStep>
 
         {modelPullEnabled && (
@@ -356,15 +374,23 @@ function OnboardingWizard() {
           scrolled out from under it. `h-2` left the System Overview rows (RAM/GPU)
           permanently covered on a 375px viewport.
         */}
-        <div aria-hidden className="h-24 sm:h-20" />
+        <div aria-hidden className="h-[calc(6rem+var(--safe-area-bottom))] sm:h-[calc(5rem+var(--safe-area-bottom))]" />
 
-        <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-lg border border-border bg-card p-4 shadow-lg sm:flex-row sm:items-center sm:justify-between">
+        <div
+          className="sticky bottom-[max(1rem,var(--safe-area-bottom))] z-10 flex flex-col gap-3 rounded-lg border border-border bg-card p-4 shadow-lg sm:flex-row sm:items-center sm:justify-between"
+          data-testid="onboarding-finish-bar"
+        >
           <div className="flex flex-col gap-0.5 min-w-0">
             <ModelDownloadFooterSummary pullState={modelPullState} />
             <p className="text-sm text-muted-foreground">
               {recommendationsLoading
                 ? t('ONBOARDING_RECOMMENDATIONS_LOADING')
-                : (aiSetupConfig?.installBlockReason ?? (canFinish ? t('ONBOARDING_CHANGE_LATER_SETTINGS') : t('COMMON_DETECTING_HARDWARE')))}
+                : (aiSetupConfig?.installBlockReason ??
+                  (aiSetupConfig?.engineBlocked
+                    ? t('ONBOARDING_FINISH_ENGINE_NOT_READY')
+                    : canFinish
+                      ? t('ONBOARDING_CHANGE_LATER_SETTINGS')
+                      : t('COMMON_DETECTING_HARDWARE')))}
             </p>
           </div>
           <div className="flex gap-2 sm:justify-end">

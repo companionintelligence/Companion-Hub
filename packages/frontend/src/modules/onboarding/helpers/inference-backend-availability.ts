@@ -37,6 +37,27 @@ export function hiddenInferenceBackends(profile: HardwareProfileResponse): Infer
   return hidden;
 }
 
+/**
+ * Whether Install & Finish and the AI step's Continue must wait.
+ *
+ * A machine that cannot run a local model is allowed through: there is no engine to wait for.
+ * The desktop app can install the runner itself, so it is allowed through too.
+ * Every other machine waits until the engine the operator picked reports ready.
+ */
+export function localEngineBlocksFinish(input: {
+  tier: string;
+  backend: InferenceBackendType;
+  canAutoInstall: boolean;
+  /** `null` while the probe has not answered. `true` only when that engine is ready. */
+  engineReady: boolean | null;
+}): boolean {
+  if (input.tier === 'insufficient' || input.canAutoInstall) return false;
+  if (input.backend !== 'ollama' && input.backend !== 'vllm' && input.backend !== 'omlx' && input.backend !== 'lemonade') {
+    return false;
+  }
+  return input.engineReady !== true;
+}
+
 export function recommendedInferenceBackend(profile: HardwareProfileResponse): InferenceBackendType {
   const hidden = new Set(hiddenInferenceBackends(profile));
   const recommended = profile.backends.recommended;

@@ -309,6 +309,7 @@ export function ModelCard({
       className={cn(
         'group relative flex h-full cursor-pointer flex-col gap-2.5 rounded-md border p-4 text-left transition-all',
         selected ? 'border-primary bg-primary/[0.06] shadow-lg shadow-primary/20' : 'border-border bg-foreground/[0.015] hover:border-primary/50',
+        'has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-primary has-[:focus-visible]:ring-offset-2',
       )}
     >
       <input type="checkbox" className="sr-only" checked={selected} onChange={onToggle} data-testid={checkboxTestId} />

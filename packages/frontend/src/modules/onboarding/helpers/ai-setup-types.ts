@@ -58,6 +58,11 @@ export interface AiSetupConfig {
   /** When true, onboarding install must not proceed (budget or missing agent model). */
   installBlocked?: boolean;
   installBlockReason?: string;
+  /**
+   * The selected local engine has not reported ready. Weak hardware leaves this unset:
+   * that machine is not waiting on an engine. Install & Finish uses the same rule as Continue.
+   */
+  engineBlocked?: boolean;
 }
 
 /** How the user reaches their agents/Hub from other devices. "Web" in the UI maps to 'cloudflare'. */
