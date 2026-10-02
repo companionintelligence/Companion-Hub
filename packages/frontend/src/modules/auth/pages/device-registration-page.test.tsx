@@ -230,20 +230,124 @@ describe('DeviceRegistrationPage', () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
-  it('does not keep polling registration status after a failed lookup', async () => {
-    fetchRegistrationStatusResult.mockResolvedValue({ ok: false, status: 503, data: undefined });
+  it('keeps polling after a failed lookup and returns to the pairing form when a later check succeeds', async () => {
+    vi.useFakeTimers();
+    fetchRegistrationStatusResult.mockResolvedValueOnce({ ok: false, status: 503, data: undefined }).mockResolvedValue(statusOk('unregistered'));
 
     render(<DeviceRegistrationPage />);
-    expect(await screen.findByRole('heading', { name: 'Registration status temporarily unavailable' })).toBeInTheDocument();
-    const initialCalls = fetchRegistrationStatusResult.mock.calls.length;
 
-    vi.useFakeTimers();
     await act(async () => {
-      vi.advanceTimersByTime(30_000);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByRole('heading', { name: 'Registration status temporarily unavailable' })).toBeInTheDocument();
+    const callsAfterFailure = fetchRegistrationStatusResult.mock.calls.length;
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
     });
 
-    expect(fetchRegistrationStatusResult.mock.calls.length).toBe(initialCalls);
-    vi.useRealTimers();
+    expect(fetchRegistrationStatusResult.mock.calls.length).toBeGreaterThan(callsAfterFailure);
+    expect(screen.getByRole('heading', { name: 'Step 2: Connect this device' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Registration status temporarily unavailable' })).not.toBeInTheDocument();
+  });
+
+  it('shows the failed status on the pairing form, with a retry, and keeps polling', async () => {
+    vi.useFakeTimers();
+    fetchRegistrationStatusResult.mockResolvedValueOnce(statusOk('unregistered')).mockResolvedValueOnce({ ok: false, status: 503, data: undefined });
+
+    render(<DeviceRegistrationPage />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByRole('heading', { name: 'Step 2: Connect this device' })).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+
+    expect(screen.getByRole('heading', { name: 'Step 2: Connect this device' })).toBeInTheDocument();
+    expect(
+      screen.getByText("We couldn't confirm your Hub status right now. This is usually temporary. Please retry in a moment."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry status check' })).toBeInTheDocument();
+
+    fetchRegistrationStatusResult.mockResolvedValue(statusOk('unregistered'));
+    fireEvent.click(screen.getByRole('button', { name: 'Retry status check' }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(screen.queryByRole('button', { name: 'Retry status check' })).not.toBeInTheDocument();
+  });
+
+  it('shows the probe status and waits between two ready checks', async () => {
+    vi.useFakeTimers();
+    fetchRegistrationStatusResult.mockResolvedValueOnce(statusOk('unregistered')).mockResolvedValue(statusOk('locally_ready', true));
+    probeRegistrationDomain.mockResolvedValueOnce({ ready: true }).mockResolvedValueOnce({ ready: true });
+
+    render(<DeviceRegistrationPage />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    fireEvent.change(screen.getByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(screen.getByRole('heading', { name: 'Setting up your Hub' })).toBeInTheDocument();
+    expect(screen.getByText('Local setup is complete. Checking your public Hub URL...')).toBeInTheDocument();
+    expect(probeRegistrationDomain).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4_999);
+    });
+    expect(probeRegistrationDomain).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(probeRegistrationDomain).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('Public Hub URL is ready. Redirecting...')).toBeInTheDocument();
+  });
+
+  it('shows DNS wait after repeated probes that are not ready', async () => {
+    vi.useFakeTimers();
+    fetchRegistrationStatusResult.mockResolvedValueOnce(statusOk('unregistered')).mockResolvedValue(statusOk('locally_ready', true));
+    probeRegistrationDomain.mockResolvedValue({ ready: false });
+
+    render(<DeviceRegistrationPage />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    fireEvent.change(screen.getByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+    for (let interval = 0; interval < 12; interval++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+    }
+
+    expect(probeRegistrationDomain.mock.calls.length).toBeGreaterThanOrEqual(12);
+    expect(screen.getByText('Waiting for DNS propagation...')).toBeInTheDocument();
+    expect(screen.queryByText('Loading your Hub...')).not.toBeInTheDocument();
+  });
+
+  it('shows the provisioning status the pairing step sets', async () => {
+    fetchRegistrationStatusResult.mockResolvedValueOnce(statusOk('unregistered')).mockResolvedValue(statusOk('paired'));
+
+    render(<DeviceRegistrationPage />);
+    fireEvent.change(await screen.findByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+
+    expect(await screen.findByRole('heading', { name: 'Provisioning your domain' })).toBeInTheDocument();
+    expect(
+      screen.getByText('Provisioning your domain and secure connection. DNS and tunnel setup can take a few minutes. Please wait on this screen.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Your pairing code worked/)).not.toBeInTheDocument();
   });
 
   it('submits pairing without immediate navigation when status remains unregistered', async () => {
