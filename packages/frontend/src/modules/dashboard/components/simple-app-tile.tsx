@@ -66,10 +66,10 @@ export const SimpleAppTile = ({
           <div
             className="absolute -top-1 -right-1 flex items-center justify-center w-5 h-5 rounded-full bg-red-500 shadow-sm"
             data-testid="app-stopped-badge"
-            title="Stopped"
+            title={t('APP_STATUS_STOPPED')}
           >
             <PowerOff className="w-3 h-3 text-white" strokeWidth={2.5} aria-hidden />
-            <span className="sr-only">Stopped</span>
+            <span className="sr-only">{t('APP_STATUS_STOPPED')}</span>
           </div>
         )}
         {showPendingRestart && (
