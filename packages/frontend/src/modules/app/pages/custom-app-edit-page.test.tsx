@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
+import type { ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 
@@ -44,13 +45,17 @@ vi.mock('./+types/custom-app-edit-page', () => ({
 
 import EditPageContent from './custom-app-edit-page';
 
+function pageProps(loaderData: { composeDiff: { current: string } } | undefined): ComponentProps<typeof EditPageContent> {
+  return { loaderData } as ComponentProps<typeof EditPageContent>;
+}
+
 describe('custom app edit', () => {
   it('shows the parse error and a way back instead of staying on loading', () => {
     composeCurrent.value = '{';
 
     render(
       <MemoryRouter>
-        <EditPageContent {...({ loaderData: { composeDiff: { current: '{' } } } as never)} />
+        <EditPageContent {...pageProps({ composeDiff: { current: '{' } })} />
       </MemoryRouter>,
     );
 
@@ -65,7 +70,7 @@ describe('custom app edit', () => {
 
     render(
       <MemoryRouter>
-        <EditPageContent {...({ loaderData: undefined } as never)} />
+        <EditPageContent {...pageProps(undefined)} />
       </MemoryRouter>,
     );
 
