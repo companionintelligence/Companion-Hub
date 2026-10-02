@@ -268,6 +268,73 @@ describe('HostMetricsService', () => {
       expect(load.hasVmWedge).toBe(false);
       expect(load.containerMemoryTotal).toBeUndefined();
     });
+
+    it('refreshes a Linux disk sample older than four hours from the live filesystem', async () => {
+      filesystemService.readTextFile.mockImplementation(async (path: string) => {
+        if (path === '/data/state/hardware/host_metrics.json') {
+          return hostProbeJson({
+            platform: 'linux',
+            cpuArch: 'x86_64',
+            probedAt: '2026-01-01T00:00:00.000Z',
+            host: {
+              totalRamMb: 16384,
+              availableRamMb: 8192,
+              cpuCores: 8,
+              cpuModel: 'Test CPU',
+              diskTotalGb: 494,
+              diskUsedGb: 100,
+              diskMount: '/',
+            },
+          });
+        }
+        if (path === '/host/proc/meminfo') return 'MemTotal: 16777216\nMemAvailable: 8388608';
+        return null;
+      });
+      filesystemService.writeJsonFile.mockResolvedValue(true);
+
+      const load = await service.getDisplayLoad(5, 8);
+
+      // The fsSize mock is 100 GB with 50 GB free, so used is size minus free.
+      expect(load.diskSize).toBe(100);
+      expect(load.diskUsed).toBe(50);
+      expect(load.percentUsed).toBe(50);
+      expect(filesystemService.writeJsonFile).toHaveBeenCalledWith(
+        '/data/state/hardware/host_metrics.json',
+        expect.objectContaining({
+          platform: 'linux',
+          host: expect.objectContaining({ diskTotalGb: 100, diskUsedGb: 50, diskMount: '/' }),
+        }),
+      );
+    });
+
+    it('keeps a Linux disk sample that is still inside the four hour window', async () => {
+      filesystemService.readTextFile.mockImplementation(async (path: string) => {
+        if (path === '/data/state/hardware/host_metrics.json') {
+          return hostProbeJson({
+            platform: 'linux',
+            cpuArch: 'x86_64',
+            probedAt: new Date().toISOString(),
+            host: {
+              totalRamMb: 16384,
+              availableRamMb: 8192,
+              cpuCores: 8,
+              cpuModel: 'Test CPU',
+              diskTotalGb: 494,
+              diskUsedGb: 477,
+              diskMount: '/',
+            },
+          });
+        }
+        if (path === '/host/proc/meminfo') return 'MemTotal: 16777216\nMemAvailable: 8388608';
+        return null;
+      });
+
+      const load = await service.getDisplayLoad(5, 8);
+
+      expect(load.diskSize).toBe(494);
+      expect(load.diskUsed).toBe(477);
+      expect(filesystemService.writeJsonFile).not.toHaveBeenCalled();
+    });
   });
 
   describe('init-host-probe script', () => {
