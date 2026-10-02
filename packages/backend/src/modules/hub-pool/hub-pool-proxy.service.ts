@@ -588,6 +588,37 @@ const PEER_PAIRING_STATUSES: ReadonlySet<number> = new Set([401, 403]);
 const PEER_ENGINE_REFUSAL_WARN_INTERVAL_MS = 10 * 60_000;
 
 /**
+ * How long a request waits in the Hub, with its model's load refused only because other models'
+ * generations are running, for those to end (see `PoolProxyService.awaitBusyModels`). The same wait
+ * Ollama would impose once the request reached it, but taken here it leaves the busy models alone
+ * meanwhile: an engine with a load pending marks the runner it needs to expire at once, so the app
+ * streaming on it loses the model at the end of that turn. Bounded, since past it the request is the
+ * engine's to arbitrate again, as it always was.
+ */
+const BUSY_MODEL_WAIT_MS = 60_000;
+/** How often the models busy on the engine are looked at while a request waits for them. */
+const BUSY_MODEL_POLL_MS = 1_000;
+
+/** Resolves after `ms`, or as soon as `signal` aborts. */
+function sleepUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, ms);
+    function done(): void {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', done);
+      resolve();
+    }
+    signal.addEventListener('abort', done, { once: true });
+  });
+}
+
+/** Why the Hub would not load a model on a local engine for a request, and whether that is only because of generations in progress. */
+interface LocalLoadRefusal {
+  reason: string;
+  idleWouldFree: boolean;
+}
+
+/**
  * Load assumed for a peer whose snapshot is stale, or predates `inFlightRequests` entirely.
  * Deliberately not 0: an unmeasured node must never outrank one we know to be idle. Same
  * neutral-when-stale rule NVIDIA's PAIR applies to its GPU-pressure band.
@@ -1140,7 +1171,19 @@ export function applySlowerPlacement(
     const movedAhead = new Set(faster);
     ordered = [...faster, first, ...rest.filter((candidate) => !movedAhead.has(candidate))];
   }
-  if (demoted.length === 0) {
+  // The list is also the failover walk, which the first candidate failing sends the request down, and
+  // judging only the first left the node it displaced second, ahead of every node that rule passed over
+  // for being busier. The rest is judged the same way, from the node the ranker put first of it, and its
+  // moves are not logged: the log names the node that goes first. A first that is unmeasured or holds
+  // the front leaves the whole list alone, as it does for its own move.
+  const lead = ordered[0];
+  const rest = ordered.slice(1);
+  const walked = lead && placement.measuredOf(lead) && !placement.holdsFront(lead) ? applySlowerPlacement(rest, placement).ordered : rest;
+  const walkMoved = walked !== rest;
+  if (walkMoved && lead) {
+    ordered = [lead, ...walked];
+  }
+  if (demoted.length === 0 && !walkMoved) {
     return { ordered: group, demoted };
   }
   // Back into the slots the candidates judged came from, around the withheld ones.
@@ -1188,8 +1231,8 @@ export const SLOT_STATED_BACKENDS: ReadonlySet<InferenceBackendType> = new Set<I
  * 3. **All full means nothing moves.** When every candidate is at or over its slots, `demoted` is
  *    empty, the ranker's order stands, and `overridden: true` says so.
  *
- * The queue depth judged is the one the ranker sorted on — for a peer the larger of what it reported
- * and what this node has forwarded it, or the neutral assumed load when its snapshot is stale — so a
+ * The queue depth judged is the one the ranker sorted on — for a peer what this node has forwarded it
+ * plus what it reported beyond those forwards, or the neutral assumed load when its snapshot is stale — so a
  * 1-slot peer that cannot be measured counts as full: an unmeasured node is never taken for an idle
  * one. `decision` is `null` when no candidate carried a slot count, so a fleet that never states one
  * gets the list back untouched. Pure and exported for its own test, like `applyPromptCeiling`.
@@ -2762,7 +2805,7 @@ export class PoolProxyService {
     const walk = [...candidates];
     // Each local engine passed over for a refused load, with the Hub's reason. Reaching it again at
     // the end means every other candidate failed; it is then sent the request without arbitration.
-    const refusedLoads = new Map<PoolCandidate, string>();
+    const refusedLoads = new Map<PoolCandidate, LocalLoadRefusal>();
     for (let index = 0; index < walk.length; index += 1) {
       const candidate = walk[index] as PoolCandidate;
       const key = candidate.peerId ?? LOCAL_CANDIDATE_KEY;
@@ -2845,29 +2888,37 @@ export class PoolProxyService {
       try {
         if (candidate.peerId === null) {
           const earlier = refusedLoads.get(candidate);
-          const refusal = earlier ?? (await this.arbitrateLocalLoad(candidate, path, body, model, clientClosed));
+          // A refusal kept from before the other candidates were tried is read again when it was for busy
+          // models: they may have ended since, and `awaitBusyModels` only looks again when they change.
+          let refusal = earlier?.idleWouldFree === false ? earlier : await this.arbitrateLocalLoad(candidate, path, body, model, clientClosed);
           if (refusal !== null && earlier === undefined && walk.slice(index + 1).some((other) => !refusedLoads.has(other))) {
             // Another candidate can take the request, so this engine is not asked to load a model the
             // Hub could not make room for: it would load it anyway and overcommit the card, or put part
             // of it in system memory. Tried again after the rest rather than dropped, so a request
             // every other candidate fails is still sent here, as it was before a refusal failed over.
             refusedLoads.set(candidate, refusal);
-            passOver(candidate, nodeLabel, null, describeLocalLoadRefusal(refusal));
+            passOver(candidate, nodeLabel, null, describeLocalLoadRefusal(refusal.reason));
             // At log, not warn: nothing failed, the Hub kept a model off a card that could not hold it.
             this.logger.log(
-              `[PoolProxy] the Hub refused to load "${model}" on ${candidate.backend} here (${refusal}); ` +
+              `[PoolProxy] the Hub refused to load "${model}" on ${candidate.backend} here (${refusal.reason}); ` +
                 `trying the ${walk.length - index - 1} candidate(s) after it first`,
             );
             walk.push(candidate);
             continue;
           }
+          if (refusal?.idleWouldFree) {
+            // Nothing else can take it, and what stands in the way is generations that will end: waited
+            // for here, so the models running them are not marked to expire for this request, and the
+            // Hub makes the room itself once they are idle.
+            refusal = await this.awaitBusyModels(candidate, path, body, model, clientClosed, refusal);
+          }
           if (refusal !== null) {
             // Nothing else can take it: sent to the engine, which loads the model on its own terms.
             // Recorded on the row, because a local answer after a refused load is the one that may
             // have overcommitted the card.
-            this.routingLog.update(row, { localLoadRefused: refusal });
+            this.routingLog.update(row, { localLoadRefused: refusal.reason });
             this.logger.warn(
-              `[PoolProxy] the Hub refused to load "${model}" on ${candidate.backend} here (${refusal}), and no other candidate is left ` +
+              `[PoolProxy] the Hub refused to load "${model}" on ${candidate.backend} here (${refusal.reason}), and no other candidate is left ` +
                 `to take the request; sending it to ${candidate.backend} anyway, which loads the model on its own terms`,
             );
           }
@@ -3188,7 +3239,7 @@ export class PoolProxyService {
     body: unknown,
     model: string,
     clientClosed: AbortSignal,
-  ): Promise<string | null> {
+  ): Promise<LocalLoadRefusal | null> {
     const router = this.router;
     const registry = this.modelRegistry;
     if (!GENERATION_PATHS.has(path) || !router || !registry || clientClosed.aborted) {
@@ -3214,13 +3265,55 @@ export class PoolProxyService {
         );
         return null;
       }
-      return outcome.reason;
+      return { reason: outcome.reason, idleWouldFree: outcome.idleWouldFree === true };
     } catch (error) {
       this.logger.debug(
         `[PoolProxy] residency arbitration for ${model} failed; forwarding anyway: ${error instanceof Error ? error.message : String(error)}`,
       );
       return null;
     }
+  }
+
+  /**
+   * A refusal that only generations in progress caused, waited out: the Hub looks again each time the
+   * models busy on the engine change, up to {@link BUSY_MODEL_WAIT_MS}. Returns null once the load was
+   * made or the client left, else the latest refusal (still waiting on busy models at the deadline, or
+   * refused for another reason now they are idle), which the caller then handles as any other.
+   *
+   * A model the Hub did not load stays protected: this only lets the Hub's own idle loads be unloaded,
+   * as the request path always could, once nothing is running on them.
+   */
+  private async awaitBusyModels(
+    candidate: PoolCandidate,
+    path: string,
+    body: unknown,
+    model: string,
+    clientClosed: AbortSignal,
+    refusal: LocalLoadRefusal,
+  ): Promise<LocalLoadRefusal | null> {
+    // Without this request's own model: it is already counted in flight, and is not what is being waited for.
+    const busyElsewhere = (): string =>
+      this.loadService
+        .localBusyModelsOn(candidate.backend)
+        .filter((work) => !sameModelId(work.model, model))
+        .map((work) => work.model)
+        .sort()
+        .join(',');
+    const deadline = Date.now() + BUSY_MODEL_WAIT_MS;
+    this.logger.log(
+      `[PoolProxy] "${model}" is waiting up to ${BUSY_MODEL_WAIT_MS / 1000}s for ${busyElsewhere() || 'the models running on it'} to finish before it is loaded on ${candidate.backend} here`,
+    );
+    let current: LocalLoadRefusal | null = refusal;
+    let watching = busyElsewhere();
+    while (current?.idleWouldFree && Date.now() < deadline) {
+      await sleepUnlessAborted(BUSY_MODEL_POLL_MS, clientClosed);
+      if (clientClosed.aborted) return null;
+      const now = busyElsewhere();
+      if (now === watching) continue;
+      watching = now;
+      current = await this.arbitrateLocalLoad(candidate, path, body, model, clientClosed);
+    }
+    return current;
   }
 
   /**
@@ -4167,24 +4260,33 @@ export class PoolProxyService {
   }
 
   /**
-   * A peer's queue depth, from the two vantage points we have on it: what it reported at its last
-   * health poll, and what we have forwarded it since. Both count the same requests, so the larger
-   * wins rather than the sum — the snapshot sees work from apps and nodes we cannot observe, our own
-   * counter sees the up-to-30s the snapshot missed.
+   * A peer's queue depth, from the two vantage points we have on it: what we have forwarded to it and
+   * not finished reading back, counted live, plus what its last health poll reported beyond our own
+   * forwards of that moment — work from its apps and from other nodes, which only the snapshot sees.
+   *
+   * Not the larger of our counter and the report. The report counts our forwards too, and is up to a
+   * poll interval old, so a node that served us a request seconds ago read as busy until the next
+   * poll, long after that request had finished. Placement treats queue depth as a hard key, so the
+   * nodes in use looked busier than an idle slow one. Fleet retest, 2026-10-01: a 37,571-token turn
+   * went to core-7 (187 s predicted) while beta-1 (6 s) had finished its last request two seconds
+   * before, and was still reported as having one.
    */
   private peerLoad(peer: HubPoolPeer, capabilities: PoolPeerCapabilities): number {
-    return Math.max(this.loadService.get(peer.id), this.reportedPeerLoad(peer, capabilities));
+    const forwarded = this.loadService.get(peer.id);
+    const reported = this.reportedPeerLoad(peer, capabilities);
+    // A figure we cannot read is a floor, not a count to take our own forwards out of.
+    return reported === null ? Math.max(forwarded, UNKNOWN_PEER_LOAD) : forwarded + this.loadService.externalLoad(peer.id, reported);
   }
 
-  /** Self-reported queue depth, or {@link UNKNOWN_PEER_LOAD} when the snapshot is stale or carries no figure. */
-  private reportedPeerLoad(peer: HubPoolPeer, capabilities: PoolPeerCapabilities): number {
+  /** Self-reported queue depth, or `null` when the snapshot is stale or carries no figure. */
+  private reportedPeerLoad(peer: HubPoolPeer, capabilities: PoolPeerCapabilities): number | null {
     // Freshness comes from the shared helper so that load and pressure — two fields of one snapshot
     // — can never drift apart on what "stale" means. It is judged on lastSeenAt, stamped by OUR
     // clock when the probe succeeded, not on capabilities.updatedAt, which is the peer's.
     if (!this.isSnapshotFresh(peer)) {
-      return UNKNOWN_PEER_LOAD;
+      return null;
     }
-    return capabilities.inFlightRequests ?? UNKNOWN_PEER_LOAD;
+    return capabilities.inFlightRequests ?? null;
   }
 
   private isSnapshotFresh(peer: HubPoolPeer): boolean {

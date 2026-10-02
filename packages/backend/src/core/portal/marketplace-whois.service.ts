@@ -1,5 +1,6 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { describeNetworkError } from '@/common/helpers/network-error';
 import { DatabaseService } from '@/core/database/database.service';
 import { whoisCache } from '@/core/database/drizzle/schema';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -160,6 +161,29 @@ export class MarketplaceWhoIsService {
   }
 
   /**
+   * Whether the store listing for one app is shown.
+   *
+   * Same rule as `filterSessionByView`: an unknown grant stays visible, and a
+   * known grant that omits `view` is refused. Callers still decide "not found"
+   * from the catalog before asking, and they still refuse the private install
+   * record on an unknown grant.
+   */
+  async catalogVisibility(req: Request, appUrn: AppUrn, surface: GrantSurface = 'store'): Promise<'visible' | 'refused'> {
+    const userId = hubSessionOperatorUserId(req);
+
+    if (userId == null) {
+      return 'visible';
+    }
+
+    const can = (await this.canMap(userId, [appUrn], surface)).get(appUrn);
+    if (can == null || can.includes('view')) {
+      return 'visible';
+    }
+
+    return 'refused';
+  }
+
+  /**
    * Whether this operator is an owner or admin of this device's organization —
    * what changing which custom domain an app serves takes (R2-HUBDOMAINS-1).
    *
@@ -233,7 +257,7 @@ export class MarketplaceWhoIsService {
 
       return role === 'owner' || role === 'admin';
     } catch (error) {
-      this.logger.warn(`Could not read the organization role (${purpose}): ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.warn(`Could not read the organization role (${purpose}): ${describeNetworkError(error)}`);
       return false;
     }
   }
@@ -423,7 +447,7 @@ export class MarketplaceWhoIsService {
 
       return bySlug;
     } catch (error) {
-      this.logger.warn(`Portal WhoIs failed: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.warn(`Portal WhoIs failed: ${describeNetworkError(error)}`);
       return this.cacheFallback(subject, slugs);
     }
   }

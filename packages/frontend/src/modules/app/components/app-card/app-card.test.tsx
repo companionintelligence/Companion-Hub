@@ -71,6 +71,21 @@ describe('AppCard', () => {
     expect(screen.queryByRole('img', { name: 'Test App' })).not.toBeInTheDocument();
   });
 
+  it('clamps a long description on the card instead of cutting it mid-sentence', () => {
+    const shortDesc = 'Browser UI for the pi coding agent, pre-wired to your Hub’s local model so you can edit files from another machine.';
+
+    render(
+      <MemoryRouter>
+        <AppCard app={{ ...appFixture, short_desc: shortDesc }} />
+      </MemoryRouter>,
+    );
+
+    const description = screen.getByText(shortDesc);
+    expect(description.tagName).toBe('P');
+    expect(description).toHaveClass('line-clamp-2');
+    expect(description).toHaveAttribute('title', shortDesc);
+  });
+
   it('applies light-mode elevation styles to the card surface', () => {
     const { container } = render(
       <MemoryRouter>

@@ -4,6 +4,7 @@ import { BadRequestException, forwardRef, Inject, Injectable, Optional } from '@
 import { LoggerService } from '@/core/logger/logger.service';
 import { normalizePeerFqdn } from '@/common/helpers/hub-pool';
 import { isPoolProbeTarget } from '@/common/helpers/ip-address';
+import { describeNetworkError } from '@/common/helpers/network-error';
 import { formatProbeAuthority, parseProbeTarget, poolProbePortCandidates, type PoolProbeTarget } from '@/common/helpers/hub-pool-probe';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { PortalClientService } from '@/core/portal/portal-client.service';
@@ -236,7 +237,7 @@ export class HubPoolDiscoveryService {
       );
       return probed.filter((candidate): candidate is DiscoverablePoolPeer => candidate !== null);
     } catch (error) {
-      this.logger.debug(`[HubPool] Portal discovery failed: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.debug(`[HubPool] Portal discovery failed: ${describeNetworkError(error)}`);
       return [];
     }
   }

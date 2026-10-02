@@ -3,6 +3,7 @@ import { Injectable } from '@nestjs/common';
 import axios from 'axios';
 import { firstValueFrom } from 'rxjs';
 import { HUB_STACK_REGISTRY_REPO } from '@/common/constants';
+import { describeNetworkError } from '@/common/helpers/network-error';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import * as semver from 'semver';
@@ -157,7 +158,7 @@ export class RegistryService {
       return token;
     } catch (error) {
       this.registryTokenCache = null;
-      this.logger.debug(`Failed to mint Portal registry token: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.debug(`Failed to mint Portal registry token: ${describeNetworkError(error)}`);
       return null;
     }
   }

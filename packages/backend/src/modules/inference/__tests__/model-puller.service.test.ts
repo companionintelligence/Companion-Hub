@@ -252,6 +252,27 @@ describe('ModelPullerService.evaluatePull', () => {
     });
   });
 
+  it('records its own load as the Hub’s, and drops the cached memory observation after a load and after an unload, failed or not', async () => {
+    modelRegistry.getCuratedModel.mockReturnValue(curated);
+
+    await service.loadModel('phi-4-mini');
+    expect(modelRegistry.markHubLoaded).toHaveBeenCalledWith('phi-4-mini');
+    expect(memoryManager.invalidateObservation).toHaveBeenCalledTimes(1);
+
+    await service.unloadModel('phi-4-mini');
+    expect(memoryManager.invalidateObservation).toHaveBeenCalledTimes(2);
+
+    ollamaBackend.unloadModel.mockRejectedValueOnce(new Error('engine busy'));
+    await expect(service.unloadModel('phi-4-mini')).rejects.toThrow('engine busy');
+    expect(memoryManager.invalidateObservation).toHaveBeenCalledTimes(3);
+
+    ollamaBackend.loadModel.mockRejectedValueOnce(new Error('out of memory'));
+    modelRegistry.markHubLoaded.mockClear();
+    await expect(service.loadModel('phi-4-mini')).rejects.toThrow('out of memory');
+    expect(modelRegistry.markHubLoaded).not.toHaveBeenCalled();
+    expect(memoryManager.invalidateObservation).toHaveBeenCalledTimes(4);
+  });
+
   // L3: the router marks a window it stepped below an app's floor for memory it could not free; the
   // engine is the one that decides not to save it, so the mark must reach it.
   it("hands the engine the router's provisional window mark, and adds nothing when there is none", async () => {

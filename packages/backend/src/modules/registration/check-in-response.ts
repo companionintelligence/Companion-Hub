@@ -1,3 +1,4 @@
+import { describeNetworkError } from '@/common/helpers/network-error';
 import { scrubString } from '@/core/error-reporting/sentry-scrubber';
 
 /**
@@ -123,11 +124,13 @@ function describePortalError(status: number, object: Record<string, unknown> | n
   return truncate(scrubString(text ? `HTTP ${status}: ${text.trim()}` : `HTTP ${status}`));
 }
 
-/** A check-in that never got an HTTP response, described the same bounded way. */
+/**
+ * A check-in that never got an HTTP response, described the same bounded way. Not by its message
+ * alone: when no address of the Portal accepted the connection, that message is empty, and the
+ * record said only "request failed".
+ */
 export function describeCheckInTransportError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-
-  return truncate(scrubString(message || 'request failed'));
+  return truncate(describeNetworkError(error));
 }
 
 function truncate(value: string): string {

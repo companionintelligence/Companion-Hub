@@ -128,4 +128,51 @@ describe('HubPoolLoadService', () => {
       expect(load.localBusyModelsOn('ollama')).toEqual([]);
     });
   });
+
+  describe("what a peer's self-report counted that is not this node's own forwards", () => {
+    it('takes out the forwards that were in flight when the report was read, and keeps the rest', () => {
+      const load = new HubPoolLoadService();
+      load.acquire('peer-1');
+      load.noteReport('peer-1', load.get('peer-1'));
+
+      // It reported 3: our one, and two of its own apps' or another node's.
+      expect(load.externalLoad('peer-1', 3)).toBe(2);
+      expect(load.externalLoad('peer-1', 1)).toBe(0);
+    });
+
+    it('reads a report that is lower than what we forwarded, or negative, as no outside work', () => {
+      const load = new HubPoolLoadService();
+      load.noteReport('peer-1', 2);
+
+      expect(load.externalLoad('peer-1', 0)).toBe(0);
+      expect(load.externalLoad('peer-1', -4)).toBe(0);
+    });
+
+    it('takes nothing out of a peer no report was noted for, so a restart reads it as before', () => {
+      const load = new HubPoolLoadService();
+
+      expect(load.externalLoad('peer-1', 2)).toBe(2);
+    });
+
+    it('replaces the figure with each report, and a report with nothing forwarded clears it', () => {
+      const load = new HubPoolLoadService();
+      load.noteReport('peer-1', 2);
+      load.noteReport('peer-1', 1);
+      expect(load.externalLoad('peer-1', 2)).toBe(1);
+
+      load.noteReport('peer-1', 0);
+      expect(load.externalLoad('peer-1', 2)).toBe(2);
+    });
+
+    it('forgets the peers that are no longer polled', () => {
+      const load = new HubPoolLoadService();
+      load.noteReport('peer-1', 1);
+      load.noteReport('peer-2', 1);
+
+      load.forgetReportsExcept(new Set(['peer-2']));
+
+      expect(load.externalLoad('peer-1', 1)).toBe(1);
+      expect(load.externalLoad('peer-2', 1)).toBe(0);
+    });
+  });
 });

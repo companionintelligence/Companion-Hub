@@ -2681,6 +2681,36 @@
         ]
       }
     },
+    "/api/marketplace/apps/{urn}/listing": {
+      "get": {
+        "operationId": "getAppListing",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppListingDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Marketplace"
+        ]
+      }
+    },
     "/api/marketplace/apps/{urn}/image": {
       "get": {
         "operationId": "getImage",
@@ -13127,6 +13157,10 @@
           "total"
         ],
         "additionalProperties": false
+      },
+      "AppListingDto": {
+        "type": "object",
+        "properties": {}
       },
       "AppMediaDto": {
         "type": "object",

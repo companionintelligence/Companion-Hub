@@ -10,6 +10,7 @@ import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import path from 'node:path';
 import { PortalClientService } from '@/core/portal/portal-client.service';
+import { EVERY_ADDRESS_FAILED, axiosEveryAddressFailed } from '@/tests/utils/network-failures';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 
@@ -571,6 +572,13 @@ describe('CloudflareClientService', () => {
       mockAxiosInstance.get.mockRejectedValue(new Error('Request failed with status code 503'));
 
       await expect(service.getDeviceApplications()).rejects.toThrow('503');
+    });
+
+    it('says why when no address of the Portal accepted the connection', async () => {
+      // The pairing apps check logs this message, which used to end at its colon for this error.
+      mockAxiosInstance.get.mockRejectedValue(axiosEveryAddressFailed());
+
+      await expect(service.getDeviceApplications()).rejects.toThrow(`Could not read this device's apps from CI Portal: ${EVERY_ADDRESS_FAILED}`);
     });
 
     it('throws when the answer carries no applications list', async () => {

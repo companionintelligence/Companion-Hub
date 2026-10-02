@@ -20,7 +20,7 @@ export class FilesystemService {
       allowedDirs.push(path.resolve('/dev/kfd'));
       allowedDirs.push(path.resolve('/dev/dri'));
       // amdgpu publishes each card's real VRAM total under sysfs, readable from the Hub
-      // container without device passthrough (HardwareInspectorService.detectAmdVramFromSysfs).
+      // container without device passthrough (HardwareInspectorService.detectAmdCardsFromSysfs).
       allowedDirs.push(path.resolve('/sys/class/drm'));
     }
 

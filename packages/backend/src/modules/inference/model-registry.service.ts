@@ -138,6 +138,14 @@ export class ModelRegistryService implements OnModuleInit {
   private readonly trackedModels = new Map<string, TrackedModel>();
 
   /**
+   * The tracked models this Hub loaded itself ({@link markHubLoaded}), as opposed to ones the
+   * registry only found resident (an app's request made Ollama load it, and `GET /models/tracked`
+   * reconciled it to `loaded`). `loaded` says the model is in memory; this says whose load it was,
+   * and the request path may unload only the Hub's own ({@link getEvictionCandidates}).
+   */
+  private readonly hubLoaded = new Set<string>();
+
+  /**
    * The catalog ids the operator pinned, whether or not the model is tracked or in memory right now,
    * persisted to `inference-pinned-models.json` (see `pinned-models-record.ts`) and read back at boot.
    * A model tracked while its id is here is tracked pinned, so a pin survives the Hub restarting, the
@@ -514,12 +522,24 @@ export class ModelRegistryService implements OnModuleInit {
     const tracked = this.trackedModels.get(catalogId);
     if (tracked) {
       tracked.state = tracked.pinned && state === 'loaded' ? 'pinned' : state;
+      // Out of memory, or on its way: whatever loads it next is a new load, and says whose it was.
+      if (state !== 'loaded' && state !== 'pinned') this.hubLoaded.delete(catalogId);
       if (errorMessage) tracked.errorMessage = errorMessage;
       if (state === 'pinned') this.pinModel(catalogId);
       if (state === 'loaded' || state === 'pinned') {
         tracked.lastUsedAt = Date.now();
       }
     }
+  }
+
+  /**
+   * Record that this Hub loaded the model it tracks, which is what makes it an eviction candidate for
+   * the request path. Only a load the Hub made calls this: `ModelPullerService.loadModel`. Adopting a
+   * resident model or reconciling the registry with the engines (`updateModelState(…, 'loaded')`) does
+   * not, because the model was loaded by whoever used the engine, who is likely to use it again.
+   */
+  markHubLoaded(catalogId: string): void {
+    if (this.trackedModels.has(catalogId)) this.hubLoaded.add(catalogId);
   }
 
   /** Update pull progress */
@@ -580,10 +600,14 @@ export class ModelRegistryService implements OnModuleInit {
     }
   }
 
-  /** Get eviction candidates sorted by score (worst first) */
+  /**
+   * Eviction candidates sorted by score (worst first): the unpinned models in memory that this Hub
+   * loaded itself ({@link markHubLoaded}). A model that is merely `loaded` in the registry because an
+   * engine holds it is not one: it is evictable by an operator only, through the engines' own residency.
+   */
   getEvictionCandidates(): TrackedModel[] {
     return Array.from(this.trackedModels.values())
-      .filter((m) => !m.pinned && m.state === 'loaded')
+      .filter((m) => !m.pinned && m.state === 'loaded' && this.hubLoaded.has(m.catalogId))
       .sort((a, b) => {
         // Score: lower = evict first
         const aLru = a.lastUsedAt ?? 0;
@@ -598,6 +622,7 @@ export class ModelRegistryService implements OnModuleInit {
   /** Remove a tracked model */
   removeTrackedModel(catalogId: string): void {
     this.trackedModels.delete(catalogId);
+    this.hubLoaded.delete(catalogId);
   }
 
   /** Get all pinned models */

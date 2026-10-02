@@ -196,6 +196,10 @@ fn start_hub_inner(
         return Err(message.to_string());
     }
 
+    // Before anything is pulled or created: an older Compose rejects the stack file outright, and
+    // its error does not say that Docker is the problem. An older Engine only gets a warning.
+    ensure_docker_supports_hub_stack(data_dir)?;
+
     let traefik_preflight = prepare_traefik_runtime_state(data_dir).map_err(|error| {
         let message = format!("Traefik runtime preflight failed before startup: {}", error);
         let _ = append_desktop_log_for(data_dir, "hub.start", &message);
@@ -615,7 +619,7 @@ pub fn compute_config_hash(compose_path: &Path, env_path: &Path) -> String {
     if let Ok(content) = std::fs::read(env_path) {
         hasher.update(&content);
     }
-    format!("{:x}", hasher.finalize())
+    crate::digest_hex::lower_hex(&hasher.finalize())
 }
 
 /// Pull all stack images before compose up when configuration changed.

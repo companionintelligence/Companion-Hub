@@ -536,6 +536,33 @@ describe('HubPoolPeerService', () => {
       expect(repo.update).toHaveBeenCalledWith(peer.id, expect.objectContaining({ consecutiveFailures: 0 }));
     });
 
+    it("notes how many forwards were in flight to the peer when its report arrived, so the proxy can take them out of that report's count", async () => {
+      const peer = mockPeer({ status: 'connected', presentTokenEncrypted: 'ENC:token' });
+      const capabilities = { hardwareTier: 'high', backends: [], updatedAt: new Date().toISOString(), inFlightRequests: 3 };
+      vi.mocked(global.fetch).mockResolvedValue(new Response(JSON.stringify(capabilities), { status: 200 }));
+      loadService.acquire(peer.id);
+
+      await (service as unknown as { refreshOnePeer: (p: HubPoolPeer) => Promise<void> }).refreshOnePeer(peer);
+      // Finished since: the report still counts it, and the live counter no longer does.
+      loadService.release(peer.id);
+
+      expect(loadService.externalLoad(peer.id, 3)).toBe(2);
+    });
+
+    it('notes nothing for a probe that failed, and forgets the peers it no longer polls', async () => {
+      const gone = mockPeer({ id: 'gone', status: 'connected', presentTokenEncrypted: 'ENC:token' });
+      const failing = mockPeer({ id: 'failing', status: 'connected', presentTokenEncrypted: 'ENC:token' });
+      loadService.noteReport(gone.id, 2);
+      repo.listByStatuses.mockResolvedValue([failing]);
+      vi.mocked(global.fetch).mockRejectedValue(new Error('timeout'));
+      loadService.acquire(failing.id);
+
+      await (service as unknown as { refreshPeerHealth: () => Promise<void> }).refreshPeerHealth();
+
+      expect(loadService.externalLoad(gone.id, 2)).toBe(2);
+      expect(loadService.externalLoad(failing.id, 1)).toBe(1);
+    });
+
     it('keeps polling unreachable rows, not just connected ones', async () => {
       repo.listByStatuses.mockResolvedValue([]);
 

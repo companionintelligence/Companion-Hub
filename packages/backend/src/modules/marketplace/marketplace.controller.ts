@@ -1,10 +1,12 @@
-import { castAppUrn } from '@/common/helpers/app-helpers';
+import { TranslatableError } from '@/common/error/translatable-error';
+import { castAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import {
   BadRequestException,
   Body,
   Controller,
   Delete,
   Get,
+  HttpStatus,
   NotFoundException,
   Param,
   Patch,
@@ -24,6 +26,7 @@ import { RegistrationGuard } from '../registration/registration.guard';
 import { parseByteRange } from './app-media.helpers';
 import {
   AllAppStoresDto,
+  AppListingDto,
   AppMediaDto,
   AppStoreDto,
   CreateAppStoreBodyDto,
@@ -34,6 +37,7 @@ import {
   UpdateAppStoreDto,
 } from './dto/marketplace.dto';
 import { ImageSizeService } from './image-size.service';
+import type { AppUrn } from '@ci-hub/common/types';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { MarketplaceService } from './marketplace.service';
 import { CATALOG_PAGE_SIZE } from './catalog-page-size';
@@ -74,9 +78,33 @@ export class MarketplaceController {
     return SearchAppsDto.parse({ ...res, data }, { reportOnly: true });
   }
 
+  /**
+   * Catalog fields for the app page. A missing catalog entry is not found, and
+   * that does not ask WhoIs. An explicit denial is a refusal. An unknown grant
+   * still returns the listing. The private install record stays on `GET /api/apps/:urn`.
+   */
+  @Get('apps/:urn/listing')
+  @UseGuards(AuthGuard, RegistrationGuard)
+  @ApiResponse({ type: AppListingDto })
+  async getAppListing(@Param('urn') urn: string, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    const info = await this.loadCatalogInfo(appUrn);
+
+    if (!info) {
+      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
+    }
+
+    await this.refuseHiddenListing(req, appUrn, { inCatalog: true, name: info.name });
+    const iconUrl = await this.marketplaceService.getPortalIconUrl(appUrn);
+
+    return AppListingDto.parse({ info, iconUrl }, { reportOnly: true });
+  }
+
   @Get('apps/:urn/image')
   async getImage(@Param('urn') urn: string, @Res() res: Response, @Req() req: Request) {
-    const { image, etag, contentType } = await this.marketplaceService.getAppImage(castAppUrn(urn));
+    const appUrn = castAppUrn(urn);
+    await this.refuseHiddenListing(req, appUrn);
+    const { image, etag, contentType } = await this.marketplaceService.getAppImage(appUrn);
 
     if (!image) {
       throw new NotFoundException('App image not found');
@@ -102,21 +130,27 @@ export class MarketplaceController {
 
   @Get('apps/:urn/image-size')
   @UseGuards(AuthGuard)
-  async getAppImageSize(@Param('urn') urn: string) {
-    return this.imageSizeService.getAppImageSize(castAppUrn(urn));
+  async getAppImageSize(@Param('urn') urn: string, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.refuseHiddenListing(req, appUrn);
+    return this.imageSizeService.getAppImageSize(appUrn);
   }
 
   @Get('apps/:urn/media')
   @UseGuards(AuthGuard, RegistrationGuard)
   @ApiResponse({ type: AppMediaDto })
-  async getAppMedia(@Param('urn') urn: string) {
-    const media = await this.marketplaceService.getAppMedia(castAppUrn(urn));
+  async getAppMedia(@Param('urn') urn: string, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.refuseHiddenListing(req, appUrn);
+    const media = await this.marketplaceService.getAppMedia(appUrn);
     return AppMediaDto.parse(media, { reportOnly: true });
   }
 
   @Get('apps/:urn/screenshots/:filename')
   async getAppScreenshot(@Param('urn') urn: string, @Param('filename') filename: string, @Res() res: Response, @Req() req: Request) {
-    const { image, etag, contentType } = await this.marketplaceService.getAppScreenshot(castAppUrn(urn), filename);
+    const appUrn = castAppUrn(urn);
+    await this.refuseHiddenListing(req, appUrn);
+    const { image, etag, contentType } = await this.marketplaceService.getAppScreenshot(appUrn, filename);
 
     if (!image) {
       throw new NotFoundException('Screenshot not found');
@@ -142,7 +176,9 @@ export class MarketplaceController {
 
   @Get('apps/:urn/demo-video')
   async getAppDemoVideo(@Param('urn') urn: string, @Res() res: Response, @Req() req: Request) {
-    const file = await this.marketplaceService.getAppDemoVideo(castAppUrn(urn));
+    const appUrn = castAppUrn(urn);
+    await this.refuseHiddenListing(req, appUrn);
+    const file = await this.marketplaceService.getAppDemoVideo(appUrn);
 
     if (!file) {
       throw new NotFoundException('Demo video not found');
@@ -258,5 +294,34 @@ export class MarketplaceController {
     await this.marketplaceService.initialize();
 
     return { success: true };
+  }
+
+  private async loadCatalogInfo(appUrn: AppUrn) {
+    try {
+      return await this.marketplaceService.getAppInfoFromAppStore(appUrn);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * A catalog miss stays the caller's own not-found. An explicit WhoIs denial
+   * refuses the bytes, including image, screenshot, and demo-video URLs.
+   */
+  private async refuseHiddenListing(req: Request, appUrn: AppUrn, known?: { inCatalog: true; name?: string }) {
+    let name = known?.name;
+    if (!known?.inCatalog) {
+      const info = await this.loadCatalogInfo(appUrn);
+      if (!info) {
+        return;
+      }
+      name = info.name;
+    }
+
+    if ((await this.whois.catalogVisibility(req, appUrn, 'store')) !== 'refused') {
+      return;
+    }
+
+    throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action: 'view', app: name ?? extractAppUrn(appUrn).appName }, HttpStatus.FORBIDDEN);
   }
 }

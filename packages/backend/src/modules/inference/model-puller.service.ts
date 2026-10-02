@@ -444,11 +444,15 @@ export class ModelPullerService {
         ...(onCpu && { device: 'cpu' }),
       });
       this.modelRegistry.updateModelState(catalogId, 'loaded');
+      this.modelRegistry.markHubLoaded(catalogId);
       this.logger.info(`[ModelPuller] Loaded ${catalogId}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.modelRegistry.updateModelState(catalogId, 'error', msg);
       throw err;
+    } finally {
+      // The next plan must see this model's memory, not the reading from before it loaded.
+      this.memoryManager.invalidateObservation();
     }
   }
 
@@ -472,6 +476,10 @@ export class ModelPullerService {
     } catch (err) {
       this.logger.error(`[ModelPuller] Failed to unload ${catalogId}: ${err}`);
       throw err;
+    } finally {
+      // Every unload passes here (the REST and MCP unloads, an eviction), and the observation cached
+      // within the last 5 s still lists the model: a pin right after read 1 GB free on an empty card.
+      this.memoryManager.invalidateObservation();
     }
   }
 }

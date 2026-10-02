@@ -379,6 +379,37 @@ describe('MemoryManagerService', () => {
       expect(budget.modelUsedVramMb).toBe(1533);
     });
 
+    it('invalidating drops a sweep already under way, so an unload is never answered with what began before it', async () => {
+      const before = [
+        {
+          backend: 'ollama' as const,
+          source: 'measured' as const,
+          models: [resident('gemma4:e4b', { engineGpuBytes: 3_364_754_553, totalBytes: 3_364_754_553 })],
+        },
+      ];
+      let release: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      residency.getReport.mockImplementationOnce(async () => {
+        await gate;
+        return { backends: [...before, ...nothingResident().filter((entry) => entry.backend !== 'ollama')], residentCount: 1, sampledAt: 'x' };
+      });
+      const stale = service.calculateBudget(makeProfile());
+      await vi.waitFor(() => expect(residency.getReport).toHaveBeenCalledTimes(1));
+
+      // The model is unloaded while that sweep is still reading, and the pin that follows asks again.
+      service.invalidateObservation();
+      reportResidency(nothingResident());
+      const fresh = await service.calculateBudget(makeProfile());
+      release();
+      await stale;
+
+      expect(fresh.modelUsedVramMb).toBe(0);
+      expect((await service.calculateBudget(makeProfile())).modelUsedVramMb).toBe(0);
+      expect(residency.getReport).toHaveBeenCalledTimes(2);
+    });
+
     it('one sweep serves every budget asked for within the TTL', async () => {
       await Promise.all([service.calculateBudget(makeProfile()), service.calculateBudget(makeProfile())]);
       await service.calculateBudget(makeProfile());
@@ -713,6 +744,39 @@ describe('MemoryManagerService', () => {
       expect(modelMemoryCeilingMb({ ...unified, ram: { totalMb: 98_304, availableMb: 12_288 }, effectiveInferenceMemoryMb: 12_288 })).toBe(12_288);
     });
 
+    describe('a node with two cards (beta-1, 2 x RX 7900 XTX)', () => {
+      // sysfs lists 25,753,026,560 bytes = 24,560 MB on each card; vramMb is the larger single one.
+      const beta1TwoCards = (): HardwareProfile =>
+        makeProfile({
+          gpu: { ...makeProfile().gpu, vendor: 'amd', model: 'Navi 31', vramMb: 24_560, deviceCount: 2, poolVramMb: 49_120 },
+          effectiveInferenceMemoryMb: 49_120,
+        });
+
+      it('budgets every card, each less its own display reserve', async () => {
+        const budget = await service.calculateBudget(beta1TwoCards());
+        expect(budget.totalVramMb).toBe(49_120);
+        expect(budget.modelBudgetVramMb).toBe(49_120 - 2 * 512);
+        expect(modelMemoryCeilingMb(beta1TwoCards())).toBe(48_096);
+        await expect(service.loadHeadroomMb(beta1TwoCards())).resolves.toBe(48_096);
+      });
+
+      it('no longer reads the 27B that Ollama split across both cards as over budget', async () => {
+        // /api/ps: 20,135 MB at 65536; rocm-smi: the one llama-server holds 26.1 GB across GPUs 1 and 2, beside gemma4 and nomic.
+        reportResidency(ollamaHolding(resident('qwen3.8:27b', { engineGpuBytes: 20_135 * MiB, totalBytes: 20_135 * MiB, contextLength: 65_536 })));
+        gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 1, processName: 'llama-server', vramMb: 36_642 }]);
+        const one = makeProfile({ gpu: { ...makeProfile().gpu, vendor: 'amd', vramMb: 24_560 }, effectiveInferenceMemoryMb: 24_560 });
+        await expect(service.loadHeadroomMb(one)).resolves.toBe(24_048 - 36_642);
+        service.invalidateObservation();
+        await expect(service.loadHeadroomMb(beta1TwoCards())).resolves.toBe(48_096 - 36_642);
+      });
+
+      it('leaves a one-card profile exactly as it was', async () => {
+        const one = makeProfile({ gpu: { ...makeProfile().gpu, vendor: 'amd', vramMb: 24_560 }, effectiveInferenceMemoryMb: 24_560 });
+        expect(modelMemoryCeilingMb(one)).toBe(24_048);
+        expect((await service.calculateBudget(one)).totalVramMb).toBe(24_560);
+      });
+    });
+
     it('loadHeadroomMb is the figure canFitModel compares against', async () => {
       reportResidency(ollamaHolding(resident('gemma4:e4b', { engineGpuBytes: 3_364_754_553, totalBytes: 3_364_754_553, contextLength: 16_384 })));
       gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 1, processName: '/usr/local/lib/ollama/llama-server', vramMb: 5550 }]);
@@ -806,6 +870,59 @@ describe('MemoryManagerService', () => {
         contextLength: 16_384,
         source: 'engine',
       });
+    });
+
+    // beta-red, 2026-10-01: right after a load the vendor tool listed no runner for a sample, the engine's
+    // 3,257 MB stood in for the 8,785 MiB the card held, and a pin checked in that window used it.
+    it('does not let the engine’s own figure replace a measured one at the same window', async () => {
+      const gemma = resident('gemma4:e4b', { engineGpuBytes: 3_257 * MiB, totalBytes: 3_257 * MiB, contextLength: 65_536 });
+      reportResidency(ollamaHolding(gemma));
+      gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 1, processName: '/usr/local/lib/ollama/llama-server', vramMb: 8_660 }]);
+      await expect(service.footprintSighting(betaRed(), 'ollama', 'gemma4:e4b')).resolves.toEqual({
+        footprintMb: 8_660,
+        contextLength: 65_536,
+        source: 'process',
+      });
+
+      // The next sweep finds no runner row: only /api/ps is left to read.
+      service.invalidateObservation();
+      gpuSampler.sampleVramByProcess.mockResolvedValue([]);
+      await expect(service.footprintSighting(betaRed(), 'ollama', 'gemma4:e4b')).resolves.toEqual({
+        footprintMb: 8_660,
+        contextLength: 65_536,
+        source: 'process',
+      });
+
+      // The same model at another window is another question, and the engine's figure is all there is for it.
+      service.invalidateObservation();
+      reportResidency(ollamaHolding({ ...gemma, contextLength: 16_384 }));
+      await expect(service.footprintSighting(betaRed(), 'ollama', 'gemma4:e4b')).resolves.toEqual({
+        footprintMb: 3_257,
+        contextLength: 16_384,
+        source: 'engine',
+      });
+
+      // And a process reading replaces whatever is there.
+      service.invalidateObservation();
+      gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 1, processName: '/usr/local/lib/ollama/llama-server', vramMb: 7_854 }]);
+      await expect(service.footprintSighting(betaRed(), 'ollama', 'gemma4:e4b')).resolves.toEqual({
+        footprintMb: 7_854,
+        contextLength: 16_384,
+        source: 'process',
+      });
+    });
+
+    it('does not let a pin be checked against the engine’s figure while it is the only one this sweep has', async () => {
+      const gemma = resident('gemma4:e4b', { engineGpuBytes: 3_257 * MiB, totalBytes: 3_257 * MiB, contextLength: 65_536 });
+      const pinned = tracked({ catalogId: 'gemma4-e4b', backendModelId: 'gemma4:e4b', pinned: true, memoryUsedMb: 10_813 });
+      modelRegistry.getLoadedModels.mockReturnValue([pinned]);
+      reportResidency(ollamaHolding(gemma));
+      gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 1, processName: '/usr/local/lib/ollama/llama-server', vramMb: 8_660 }]);
+      await service.calculateBudget(betaRed());
+
+      service.invalidateObservation();
+      gpuSampler.sampleVramByProcess.mockResolvedValue([]);
+      await expect(service.calculateBudget(betaRed())).resolves.toMatchObject({ pinnedVramMb: 8_660 });
     });
 
     it('records nothing for a model partly in system RAM: that says nothing about what the card must hold', async () => {
@@ -1010,7 +1127,7 @@ describe('MemoryManagerService', () => {
         // Memory batch-embedding through the pool, under the bare name it was handed on another version.
         const inUse = (backend: InferenceBackendType) => (backend === 'lemonade' ? [{ model: 'nomic-embed-text-v1.5-GGUF' }] : []);
         const busy = await service.planEviction(makeProfile(), 152, gemmaLemonade, { scope: 'operator', inUse });
-        expect(busy).toEqual({ canFree: false, candidates: [], freedMb: 0, busy: [EMBEDDER] });
+        expect(busy).toEqual({ canFree: false, candidates: [], freedMb: 0, busy: [EMBEDDER], idleWouldFree: true });
       });
 
       it('matches the model being loaded under either spelling', async () => {
@@ -1128,7 +1245,37 @@ describe('MemoryManagerService', () => {
 
       const plan = await service.planEviction(makeProfile(), 4_000, { backend: 'ollama', backendModelId: 'qwen3-coder:30b' }, { ...scope, inUse });
 
-      expect(plan).toEqual({ canFree: false, candidates: [], freedMb: 0, busy: ['gemma4:e4b'] });
+      expect(plan).toEqual({ canFree: false, candidates: [], freedMb: 0, busy: ['gemma4:e4b'], idleWouldFree: true });
+    });
+
+    it('says a refusal is only the busy models’ doing when idle they would have covered it, and not otherwise', async () => {
+      const gemma = tracked({ catalogId: 'gemma4-e4b', backendModelId: 'gemma4:e4b' });
+      modelRegistry.getEvictionCandidates.mockReturnValue([gemma]);
+      modelRegistry.getTrackedModels.mockReturnValue([gemma]);
+      reportResidency([
+        {
+          backend: 'ollama',
+          source: 'measured',
+          models: [resident('gemma4:e4b', { engineGpuBytes: 6_640 * MiB }), resident('qwen3.5:9b', { engineGpuBytes: 1_000 * MiB })],
+        },
+        { backend: 'lemonade', source: 'measured', models: [] },
+      ]);
+      const inUse = (backend: InferenceBackendType) => (backend === 'ollama' ? [{ model: 'gemma4:e4b' }] : []);
+      const keep = { backend: 'ollama' as const, backendModelId: 'qwen3-coder:30b' };
+
+      // Short by 4,000: gemma4's 6,640 would cover it once its generation ends.
+      await expect(service.planEviction(makeProfile(), 4_000, keep, { ...request, inUse })).resolves.toMatchObject({
+        canFree: false,
+        idleWouldFree: true,
+      });
+      // Short by 20,000: nothing the Hub may unload would, busy or not.
+      const hopeless = await service.planEviction(makeProfile(), 20_000, keep, { ...request, inUse });
+      expect(hopeless.canFree).toBe(false);
+      expect(hopeless.idleWouldFree).toBeUndefined();
+      // The idle model an app loaded is not the Hub's to unload for a request, so nothing waits on it.
+      modelRegistry.getEvictionCandidates.mockReturnValue([]);
+      const appLoaded = await service.planEviction(makeProfile(), 4_000, keep, { ...request, inUse: () => [] });
+      expect(appLoaded).toEqual({ canFree: false, candidates: [], freedMb: 0, busy: [] });
     });
 
     it('still names the idle model beside a busy one', async () => {

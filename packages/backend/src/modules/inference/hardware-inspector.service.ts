@@ -332,6 +332,9 @@ export class HardwareInspectorService {
       driverVersion: effectiveGpuInfo.driverVersion,
       runtimeAvailable: isAppleSilicon || (effectiveGpuInfo.vendor === 'nvidia' ? nvidiaRuntime : rocmSupport),
       containerHostKind,
+      ...(!isAppleSilicon && effectiveGpuInfo.deviceCount && effectiveGpuInfo.poolVramMb
+        ? { deviceCount: effectiveGpuInfo.deviceCount, poolVramMb: effectiveGpuInfo.poolVramMb }
+        : {}),
     };
 
     if (!isAppleSilicon) {
@@ -376,7 +379,7 @@ export class HardwareInspectorService {
       }
     }
 
-    const effectiveInferenceMemoryMb = gpu.unifiedMemory ? ramInfo.availableMb : gpu.available ? gpu.vramMb : ramInfo.availableMb;
+    const effectiveInferenceMemoryMb = gpu.unifiedMemory ? ramInfo.availableMb : gpu.available ? (gpu.poolVramMb ?? gpu.vramMb) : ramInfo.availableMb;
 
     const tier = this.computeTier(gpu, ramInfo);
     const os = await this.detectOs(platform, hostPlatform === 'darwin' || hostPlatform === 'win32');
@@ -571,6 +574,8 @@ export class HardwareInspectorService {
     model: string;
     vramMb: number;
     driverVersion: string;
+    deviceCount?: number;
+    poolVramMb?: number;
   }> {
     try {
       const platform = this.getHostPlatform();
@@ -635,6 +640,7 @@ export class HardwareInspectorService {
       let vramMb = best.vramMb;
       let model = best.model;
       let driverVersion = best.driverVersion;
+      let multiGpu: { deviceCount: number; poolVramMb: number } | null = null;
       // Only cross-check NVIDIA VRAM against nvidia-smi when the systeminformation reading looks
       // unreliable: a sub-512 MB PCIe BAR/framebuffer (any platform), or a value in the Windows WMI
       // 32-bit AdapterRAM cap band (~4095 MB). Such a capped >4 GB card also lands below the 4096 MB
@@ -676,12 +682,21 @@ export class HardwareInspectorService {
         // PCIe aperture, not the memory: a 24 GB RX 7900 XTX reads 32768 with resizable BAR on
         // and 256 with it off. The amdgpu driver publishes the real total in sysfs, which the
         // Hub container can read without any device passthrough.
-        const sysfsVramMb = await this.detectAmdVramFromSysfs();
+        const sysfsCards = await this.detectAmdCardsFromSysfs();
+        const sysfsVramMb = Math.max(0, ...sysfsCards);
         if (sysfsVramMb >= MIN_PLAUSIBLE_DISCRETE_VRAM_MB) {
           if (sysfsVramMb !== vramMb) {
             this.logger.info(`[HardwareInspector] AMD VRAM from sysfs: ${sysfsVramMb} MB (systeminformation reported ${vramMb} MB).`);
           }
           vramMb = sysfsVramMb;
+          // Ollama spreads a model over every card it can, and the per-process VRAM the budget counts
+          // is summed over all of them, so the pool has to be. A card under half the largest is a
+          // display controller or an iGPU's carve-out, not one a model is split onto.
+          const cards = sysfsCards.filter((cardMb) => cardMb >= sysfsVramMb / 2);
+          if (cards.length > 1) {
+            multiGpu = { deviceCount: cards.length, poolVramMb: cards.reduce((total, cardMb) => total + cardMb, 0) };
+            this.logger.info(`[HardwareInspector] ${cards.length} AMD cards found in sysfs; models can spread over ${multiGpu.poolVramMb} MB.`);
+          }
         } else if (vramMb <= 0) {
           vramMb = await this.detectAmdVram();
         }
@@ -693,6 +708,7 @@ export class HardwareInspectorService {
         model,
         vramMb,
         driverVersion,
+        ...multiGpu,
       };
     } catch (err) {
       this.logger.warn(
@@ -1044,26 +1060,26 @@ export class HardwareInspectorService {
 
   /** Detect AMD VRAM using rocm-smi */
   /**
-   * Largest `mem_info_vram_total` across `/sys/class/drm/card*` — the amdgpu driver's own
-   * figure, in bytes. 0 when sysfs is unavailable or no card publishes one. An iGPU (a
-   * Raphael die reports 512 MB) never wins over a discrete card because the largest is taken.
+   * Every `mem_info_vram_total` across `/sys/class/drm/card*` — the amdgpu driver's own figure, in
+   * MB. Empty when sysfs is unavailable or no card publishes one. The caller takes the largest, so an
+   * iGPU (a Raphael die reports 512 MB) never wins over a discrete card.
    */
-  private async detectAmdVramFromSysfs(): Promise<number> {
+  private async detectAmdCardsFromSysfs(): Promise<number[]> {
     try {
       const entries = (await this.filesystem.listFiles('/sys/class/drm')) ?? [];
       const cards = entries.filter((name) => /^card\d+$/.test(name));
-      let largestVramMb = 0;
+      const sizesMb: number[] = [];
       for (const card of cards) {
         const raw = await this.filesystem.readTextFile(`/sys/class/drm/${card}/device/mem_info_vram_total`);
         const vramBytes = Number.parseInt(raw?.trim() ?? '', 10);
         if (!Number.isFinite(vramBytes) || vramBytes <= 0) {
           continue;
         }
-        largestVramMb = Math.max(largestVramMb, Math.round(vramBytes / (1024 * 1024)));
+        sizesMb.push(Math.round(vramBytes / (1024 * 1024)));
       }
-      return largestVramMb;
+      return sizesMb;
     } catch {
-      return 0;
+      return [];
     }
   }
 

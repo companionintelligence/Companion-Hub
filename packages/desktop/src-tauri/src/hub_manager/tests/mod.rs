@@ -8,6 +8,7 @@ mod compose;
 mod containers;
 mod core;
 mod docker_access;
+mod docker_versions;
 mod installers;
 mod lifecycle;
 mod logging;

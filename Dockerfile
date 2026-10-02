@@ -131,7 +131,11 @@ RUN pnpm run build
 RUN echo "CI_HUB_VERSION: ${CI_HUB_VERSION}"
 RUN echo "LOCAL: ${LOCAL}"
 
-RUN cd /app && pnpm run bundle 2>&1 | tail -100 || true
+# There is deliberately no `pnpm run bundle` step here. For the backend and frontend, `bundle` is the
+# same command as `build` (the backend's runs `tsx compile.ts && tsx build.ts`), so a second run only
+# rebuilt both, and the rest of the `bundle` task (the OpenClaw plugin) is not copied into this
+# image. It was also written as `... | tail -100 || true`, which cannot fail, so a broken bundle
+# would have shipped. `RUN pnpm run build` above is the step that fails the image.
 
 # Inject Sentry debug IDs into the backend bundle and upload its source maps so
 # production backend stack traces are readable instead of minified/bundled.
@@ -230,6 +234,11 @@ WORKDIR /app
 
 # Install native modules and docker-compose on the TARGET platform so the arm64
 # image slot cannot contain amd64 Node/native deps (Rosetta/QEMU footgun).
+# Everything else, express included, is compiled into main.js. This install is
+# unpinned, so a package added here runs at whatever version npm has that day
+# rather than the lockfile's. packages/backend/build.ts keeps the matching list
+# (packageExternals) and fails the build when the bundle would load anything
+# else at runtime, so a missing package shows up there, not as a crash-looping Hub.
 RUN --mount=type=cache,target=/root/.npm \
     npm install --no-save --omit=dev argon2 class-transformer @nestjs/mapped-types @opentelemetry/api drizzle-orm pg ssh2 i18next-fs-backend
 
