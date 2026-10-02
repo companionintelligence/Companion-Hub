@@ -12,8 +12,7 @@ import { type SettingsFormValues, UserSettingsForm } from '../components/user-se
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Switch } from '@/components/ui/Switch';
 import { Sparkles } from 'lucide-react';
-import clsx from 'clsx';
-import { Tooltip } from 'react-tooltip';
+import { SettingsHint } from '../components/settings-hint';
 
 type Props = {
   initialValues?: SettingsFormValues;
@@ -88,16 +87,7 @@ export const UserSettingsContainer = ({ initialValues, publicHubHostname }: Prop
             label={
               <>
                 {t('SETTINGS_GENERAL_ADVANCED_MODE_TOGGLE')}
-                <Tooltip className="tooltip" anchorSelect=".advanced-mode-hint">
-                  {t('SETTINGS_GENERAL_ADVANCED_MODE_HINT')}
-                </Tooltip>
-                <span
-                  className={clsx(
-                    'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help advanced-mode-hint',
-                  )}
-                >
-                  ?
-                </span>
+                <SettingsHint className="advanced-mode-hint" hint={t('SETTINGS_GENERAL_ADVANCED_MODE_HINT')} />
               </>
             }
           />

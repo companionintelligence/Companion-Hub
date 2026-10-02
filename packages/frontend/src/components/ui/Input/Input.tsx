@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { cn } from '@/lib/utils';
+import { splitNamedLabel } from '@/lib/named-label';
 
 export interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
   error?: string;
@@ -13,13 +14,15 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
     const errorId = React.useId();
     const helpId = React.useId();
     const describedBy = [describedByProp, helpText ? helpId : undefined, error ? errorId : undefined].filter(Boolean).join(' ') || undefined;
+    const labelParts = label ? splitNamedLabel(label) : null;
 
     return (
       <div className={cn('space-y-2', className)}>
-        {label && (
-          <label htmlFor={id || name} className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
-            {label}
-          </label>
+        {labelParts && (
+          <div className="inline-flex items-center text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
+            <label htmlFor={id || name}>{labelParts.named}</label>
+            {labelParts.extra}
+          </div>
         )}
         <div className="relative">
           <input

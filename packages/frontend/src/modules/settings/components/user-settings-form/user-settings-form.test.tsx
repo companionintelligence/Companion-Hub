@@ -40,6 +40,17 @@ async function typeLocalDomain(value: string) {
 
 const submit = () => userEvent.click(screen.getByRole('button', { name: 'Update settings' }));
 
+it('lets a keyboard user focus a setting hint', () => {
+  render(<UserSettingsForm initialValues={newHubSettings} onSubmit={vi.fn()} />);
+
+  const hint = screen.getByRole('button', {
+    name: 'This will allow non-authenticated users to see a limited dashboard and easily access the running apps on your instance.',
+  });
+  expect(hint).toHaveTextContent('?');
+  hint.focus();
+  expect(hint).toHaveFocus();
+});
+
 /** The Timezone box. Its label is not tied to it, so find it by its name. */
 const timezoneField = () => screen.getAllByRole('combobox').find((box) => box.getAttribute('name') === 'timezone');
 
@@ -49,7 +60,7 @@ describe('UserSettingsForm Local domain check', () => {
     render(<UserSettingsForm initialValues={newHubSettings} onSubmit={onSubmit} />);
 
     expect(localDomainField()).toHaveAttribute('readonly');
-    await userEvent.click(screen.getByRole('switch', { name: 'Enable guest dashboard?' }));
+    await userEvent.click(screen.getByRole('switch', { name: 'Enable guest dashboard' }));
     await submit();
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
@@ -76,7 +87,7 @@ describe('UserSettingsForm Local domain check', () => {
     const onSubmit = vi.fn();
     render(<UserSettingsForm initialValues={{ ...newHubSettings, localDomain: 'lan' }} onSubmit={onSubmit} />);
 
-    await userEvent.click(screen.getByRole('switch', { name: 'Enable guest dashboard?' }));
+    await userEvent.click(screen.getByRole('switch', { name: 'Enable guest dashboard' }));
     await submit();
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
