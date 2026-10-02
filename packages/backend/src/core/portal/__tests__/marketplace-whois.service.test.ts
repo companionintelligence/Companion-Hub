@@ -108,9 +108,10 @@ describe('MarketplaceWhoIsService', () => {
     portExposeRows = [{ appName: 'qa-probe', config: { kind: 'port-expose' } }];
 
     await expect(service.has(USER_ID, 'qa-probe:_user' as AppUrn, 'view')).resolves.toBe(true);
-    await expect(service.has(USER_ID, 'qa-probe:_user' as AppUrn, 'configure')).resolves.toBe(true);
+    await expect(service.has(USER_ID, 'qa-probe:_user' as AppUrn, 'start')).resolves.toBe(true);
+    await expect(service.has(USER_ID, 'qa-probe:_user' as AppUrn, 'stop')).resolves.toBe(true);
     await expect(service.has(USER_ID, 'qa-probe:_user' as AppUrn, 'uninstall')).resolves.toBe(true);
-    for (const action of ['install', 'update', 'reset', 'restart', 'backup', 'restore'] as const) {
+    for (const action of ['configure', 'install', 'update', 'reset', 'restart', 'backup', 'restore'] as const) {
       await expect(service.has(USER_ID, 'qa-probe:_user' as AppUrn, action)).resolves.toBe(false);
     }
     await expect(service.assertSessionAction(sessionReq(), 'qa-probe:_user' as AppUrn, 'view')).resolves.toBeUndefined();

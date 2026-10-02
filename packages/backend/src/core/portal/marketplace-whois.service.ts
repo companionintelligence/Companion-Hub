@@ -22,11 +22,14 @@ export type GrantSurface = 'hub' | 'store';
 
 /**
  * Verbs a logged-in operator may use on a port-expose row without a Portal grant.
- * `install`, `update`, `reset`, `restart`, `backup`, and `restore` stay off this
- * list: those routes have no port-expose path and would run the catalog lifecycle
- * against the row.
+ *
+ * `configure` stays off this list too. The exposure editor is its own route and
+ * does not consult WhoIs. The shared configure routes (`update-config`, Hub
+ * access rotation) apply a catalog form, and a pass here would let that form
+ * rewrite the row. `install`, `update`, `reset`, `restart`, `backup`, and
+ * `restore` have no port-expose path and would run the catalog lifecycle.
  */
-const PORT_EXPOSE_ACTIONS: readonly HubAction[] = ['view', 'start', 'stop', 'uninstall', 'configure'];
+const PORT_EXPOSE_ACTIONS: readonly HubAction[] = ['view', 'start', 'stop', 'uninstall'];
 
 type CachedWhoIs = {
   can: HubAction[];
