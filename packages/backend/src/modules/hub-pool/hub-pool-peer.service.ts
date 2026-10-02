@@ -1682,6 +1682,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         this.probeFailures.delete(id);
       }
     }
+    this.loadService.forgetReportsExcept(polled);
     const now = Date.now();
     await Promise.all(peers.filter((peer) => !this.probeBackedOff(peer.id, now)).map((peer) => this.refreshOnePeer(peer)));
   }
@@ -1706,6 +1707,8 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         throw new PoolProbeHttpError(response.status, response.headers.get(POOL_REFUSAL_HEADER));
       }
       const capabilities = (await response.json()) as PoolPeerCapabilities;
+      // Its `inFlightRequests` counts what we have forwarded to it; the proxy counts those live instead.
+      const forwardedAtReport = this.loadService.get(current.id);
       const refreshed = await this.repo.update(current.id, {
         // A successful probe is the only recovery path back out of 'unreachable' — without this the
         // row would stay excluded from routing forever and Unpair would be the operator's only move.
@@ -1715,6 +1718,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         lastCapabilities: capabilities as unknown as Record<string, unknown>,
       });
       this.probeFailures.delete(current.id);
+      this.loadService.noteReport(current.id, forwardedAtReport);
       // Both of these are deliberately SEPARATE writes, after the health write has already
       // committed. `peer_node_uuid` carries a partial UNIQUE index (migration 0059), so pinning one
       // can raise a 23505 when the same physical node is somehow paired twice. Folding that into

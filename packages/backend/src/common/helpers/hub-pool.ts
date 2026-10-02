@@ -224,8 +224,9 @@ export function isCapabilitiesSnapshotFresh(lastSeenAt: string | null, freshness
  * purely self-reported, so a peer that pins `gpuPressure: 0` forever would win every tie forever.
  * What we have handed it and not yet finished reading is the one part of its GPU load we can
  * observe ourselves — a peer running three of our requests is not at band 0 whatever it claims.
- * Taking the larger of the two (rather than the sum) is the same reasoning as `peerLoad`: both
- * numbers describe the same work from different vantage points.
+ * Taking the larger of the two (rather than the sum) is right for a band, which is not a count of
+ * requests: both numbers describe the same work from different vantage points. `peerLoad`, which
+ * counts requests, takes our own forwards out of the report instead.
  *
  * A stale snapshot discards the peer's claim but keeps the floor, again exactly as `peerLoad` does.
  */

@@ -1140,7 +1140,19 @@ export function applySlowerPlacement(
     const movedAhead = new Set(faster);
     ordered = [...faster, first, ...rest.filter((candidate) => !movedAhead.has(candidate))];
   }
-  if (demoted.length === 0) {
+  // The list is also the failover walk, which the first candidate failing sends the request down, and
+  // judging only the first left the node it displaced second, ahead of every node that rule passed over
+  // for being busier. The rest is judged the same way, from the node the ranker put first of it, and its
+  // moves are not logged: the log names the node that goes first. A first that is unmeasured or holds
+  // the front leaves the whole list alone, as it does for its own move.
+  const lead = ordered[0];
+  const rest = ordered.slice(1);
+  const walked = lead && placement.measuredOf(lead) && !placement.holdsFront(lead) ? applySlowerPlacement(rest, placement).ordered : rest;
+  const walkMoved = walked !== rest;
+  if (walkMoved && lead) {
+    ordered = [lead, ...walked];
+  }
+  if (demoted.length === 0 && !walkMoved) {
     return { ordered: group, demoted };
   }
   // Back into the slots the candidates judged came from, around the withheld ones.
@@ -1188,8 +1200,8 @@ export const SLOT_STATED_BACKENDS: ReadonlySet<InferenceBackendType> = new Set<I
  * 3. **All full means nothing moves.** When every candidate is at or over its slots, `demoted` is
  *    empty, the ranker's order stands, and `overridden: true` says so.
  *
- * The queue depth judged is the one the ranker sorted on — for a peer the larger of what it reported
- * and what this node has forwarded it, or the neutral assumed load when its snapshot is stale — so a
+ * The queue depth judged is the one the ranker sorted on — for a peer what this node has forwarded it
+ * plus what it reported beyond those forwards, or the neutral assumed load when its snapshot is stale — so a
  * 1-slot peer that cannot be measured counts as full: an unmeasured node is never taken for an idle
  * one. `decision` is `null` when no candidate carried a slot count, so a fleet that never states one
  * gets the list back untouched. Pure and exported for its own test, like `applyPromptCeiling`.
@@ -4167,24 +4179,33 @@ export class PoolProxyService {
   }
 
   /**
-   * A peer's queue depth, from the two vantage points we have on it: what it reported at its last
-   * health poll, and what we have forwarded it since. Both count the same requests, so the larger
-   * wins rather than the sum — the snapshot sees work from apps and nodes we cannot observe, our own
-   * counter sees the up-to-30s the snapshot missed.
+   * A peer's queue depth, from the two vantage points we have on it: what we have forwarded to it and
+   * not finished reading back, counted live, plus what its last health poll reported beyond our own
+   * forwards of that moment — work from its apps and from other nodes, which only the snapshot sees.
+   *
+   * Not the larger of our counter and the report. The report counts our forwards too, and is up to a
+   * poll interval old, so a node that served us a request seconds ago read as busy until the next
+   * poll, long after that request had finished. Placement treats queue depth as a hard key, so the
+   * nodes in use looked busier than an idle slow one. Fleet retest, 2026-10-01: a 37,571-token turn
+   * went to core-7 (187 s predicted) while beta-1 (6 s) had finished its last request two seconds
+   * before, and was still reported as having one.
    */
   private peerLoad(peer: HubPoolPeer, capabilities: PoolPeerCapabilities): number {
-    return Math.max(this.loadService.get(peer.id), this.reportedPeerLoad(peer, capabilities));
+    const forwarded = this.loadService.get(peer.id);
+    const reported = this.reportedPeerLoad(peer, capabilities);
+    // A figure we cannot read is a floor, not a count to take our own forwards out of.
+    return reported === null ? Math.max(forwarded, UNKNOWN_PEER_LOAD) : forwarded + this.loadService.externalLoad(peer.id, reported);
   }
 
-  /** Self-reported queue depth, or {@link UNKNOWN_PEER_LOAD} when the snapshot is stale or carries no figure. */
-  private reportedPeerLoad(peer: HubPoolPeer, capabilities: PoolPeerCapabilities): number {
+  /** Self-reported queue depth, or `null` when the snapshot is stale or carries no figure. */
+  private reportedPeerLoad(peer: HubPoolPeer, capabilities: PoolPeerCapabilities): number | null {
     // Freshness comes from the shared helper so that load and pressure — two fields of one snapshot
     // — can never drift apart on what "stale" means. It is judged on lastSeenAt, stamped by OUR
     // clock when the probe succeeded, not on capabilities.updatedAt, which is the peer's.
     if (!this.isSnapshotFresh(peer)) {
-      return UNKNOWN_PEER_LOAD;
+      return null;
     }
-    return capabilities.inFlightRequests ?? UNKNOWN_PEER_LOAD;
+    return capabilities.inFlightRequests ?? null;
   }
 
   private isSnapshotFresh(peer: HubPoolPeer): boolean {
