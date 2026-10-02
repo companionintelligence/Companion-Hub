@@ -123,8 +123,15 @@ pub fn pin_engine(engine: PinnedDockerEngine) {
 }
 
 fn explicit_docker_host_override() -> Option<String> {
+    explicit_docker_host_override_from(|key| std::env::var(key).ok())
+}
+
+/// The first non-blank of `CI_HUB_DOCKER_HOST` and `DOCKER_HOST`, as `lookup` reads them. Tests pass
+/// their own lookup: the process environment is shared by every test in the binary, and one that
+/// sets it races the others.
+fn explicit_docker_host_override_from(lookup: impl Fn(&str) -> Option<String>) -> Option<String> {
     for key in ["CI_HUB_DOCKER_HOST", "DOCKER_HOST"] {
-        if let Ok(value) = std::env::var(key) {
+        if let Some(value) = lookup(key) {
             let trimmed = value.trim();
             if !trimmed.is_empty() {
                 return Some(trimmed.to_string());
@@ -911,6 +918,40 @@ mod tests {
             has_hub_identity,
             hub_host_ports: Vec::new(),
         }
+    }
+
+    #[test]
+    fn explicit_override_prefers_ci_hub_docker_host_and_skips_blank_values() {
+        let env = |vars: &'static [(&'static str, &'static str)]| {
+            move |key: &str| {
+                vars.iter()
+                    .find(|(name, _)| *name == key)
+                    .map(|(_, value)| value.to_string())
+            }
+        };
+
+        assert_eq!(
+            explicit_docker_host_override_from(env(&[(
+                "DOCKER_HOST",
+                " unix:///tmp/ci-hub-docker.sock "
+            )])),
+            Some("unix:///tmp/ci-hub-docker.sock".to_string())
+        );
+        assert_eq!(
+            explicit_docker_host_override_from(env(&[
+                ("CI_HUB_DOCKER_HOST", "unix:///run/hub.sock"),
+                ("DOCKER_HOST", "unix:///tmp/ci-hub-docker.sock"),
+            ])),
+            Some("unix:///run/hub.sock".to_string())
+        );
+        assert_eq!(
+            explicit_docker_host_override_from(env(&[
+                ("CI_HUB_DOCKER_HOST", "  "),
+                ("DOCKER_HOST", "unix:///tmp/ci-hub-docker.sock"),
+            ])),
+            Some("unix:///tmp/ci-hub-docker.sock".to_string())
+        );
+        assert_eq!(explicit_docker_host_override_from(env(&[])), None);
     }
 
     #[test]
