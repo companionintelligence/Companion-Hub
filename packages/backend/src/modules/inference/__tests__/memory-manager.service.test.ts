@@ -713,6 +713,39 @@ describe('MemoryManagerService', () => {
       expect(modelMemoryCeilingMb({ ...unified, ram: { totalMb: 98_304, availableMb: 12_288 }, effectiveInferenceMemoryMb: 12_288 })).toBe(12_288);
     });
 
+    describe('a node with two cards (beta-1, 2 x RX 7900 XTX)', () => {
+      // sysfs lists 25,753,026,560 bytes = 24,560 MB on each card; vramMb is the larger single one.
+      const beta1TwoCards = (): HardwareProfile =>
+        makeProfile({
+          gpu: { ...makeProfile().gpu, vendor: 'amd', model: 'Navi 31', vramMb: 24_560, deviceCount: 2, totalVramMb: 49_120 },
+          effectiveInferenceMemoryMb: 49_120,
+        });
+
+      it('budgets every card, each less its own display reserve', async () => {
+        const budget = await service.calculateBudget(beta1TwoCards());
+        expect(budget.totalVramMb).toBe(49_120);
+        expect(budget.modelBudgetVramMb).toBe(49_120 - 2 * 512);
+        expect(modelMemoryCeilingMb(beta1TwoCards())).toBe(48_096);
+        await expect(service.loadHeadroomMb(beta1TwoCards())).resolves.toBe(48_096);
+      });
+
+      it('no longer reads the 27B that Ollama split across both cards as over budget', async () => {
+        // /api/ps: 20,135 MB at 65536; rocm-smi: the one llama-server holds 26.1 GB across GPUs 1 and 2, beside gemma4 and nomic.
+        reportResidency(ollamaHolding(resident('qwen3.8:27b', { engineGpuBytes: 20_135 * MiB, totalBytes: 20_135 * MiB, contextLength: 65_536 })));
+        gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 1, processName: 'llama-server', vramMb: 36_642 }]);
+        const one = makeProfile({ gpu: { ...makeProfile().gpu, vendor: 'amd', vramMb: 24_560 }, effectiveInferenceMemoryMb: 24_560 });
+        await expect(service.loadHeadroomMb(one)).resolves.toBe(24_048 - 36_642);
+        service.invalidateObservation();
+        await expect(service.loadHeadroomMb(beta1TwoCards())).resolves.toBe(48_096 - 36_642);
+      });
+
+      it('leaves a one-card profile exactly as it was', async () => {
+        const one = makeProfile({ gpu: { ...makeProfile().gpu, vendor: 'amd', vramMb: 24_560 }, effectiveInferenceMemoryMb: 24_560 });
+        expect(modelMemoryCeilingMb(one)).toBe(24_048);
+        expect((await service.calculateBudget(one)).totalVramMb).toBe(24_560);
+      });
+    });
+
     it('loadHeadroomMb is the figure canFitModel compares against', async () => {
       reportResidency(ollamaHolding(resident('gemma4:e4b', { engineGpuBytes: 3_364_754_553, totalBytes: 3_364_754_553, contextLength: 16_384 })));
       gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 1, processName: '/usr/local/lib/ollama/llama-server', vramMb: 5550 }]);

@@ -195,6 +195,8 @@ function describeFloorShortfall(shortfall: FloorShortfall | null, wanted: number
 export class InferenceRouterService implements OnApplicationBootstrap {
   /** The tail of {@link loadTrackedModel}'s queue: every load on this node waits for the one before it. */
   private loadQueue: Promise<void> = Promise.resolve();
+  /** Whether {@link warnSlotsUnstated} has spoken yet. */
+  private warnedSlotsUnstated = false;
 
   constructor(
     readonly _logger: LoggerService,
@@ -1172,12 +1174,14 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       this.memoryManager.footprintSighting(profile, target.backend, target.backendModelId),
       this.memoryManager.loadHeadroomMb(profile),
     ]);
+    const slots = this.statedSlots(target.backend, backend);
+    this.warnSlotsUnstated(target.backend, slots, profile);
     const sizing: ModelMemoryInput = {
       modelFootprintMb: catalogFootprint,
       kvMbPerToken: cost?.kvMbPerToken ?? null,
       weightMb: cost?.weightMb ?? null,
       visionReserveMb: visionReserveMbFor(curated),
-      kvSlots: kvSequencesFor(target.backend, cost, this.statedSlots(target.backend, backend)),
+      kvSlots: kvSequencesFor(target.backend, cost, slots),
       sighting,
     };
     const ceilingMb = modelMemoryCeilingMb(profile);
@@ -1346,6 +1350,24 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Says, once per process, that an Ollama load on a discrete card is being sized for one slot because
+   * nothing states more. The API does not expose `OLLAMA_NUM_PARALLEL` and the Hub cannot read the daemon's
+   * environment from its container, so the only source is `inferenceOllamaSlots` — which a Hub reset
+   * discards while the daemon's drop-in survives. beta-red ran four slots unstated (retest 2026-10-01): its
+   * Hub sized one, admitted qwen3:8b at 16384, and Ollama allocated four times the KV cache and put 6.3 GB
+   * of the model on the CPU.
+   */
+  private warnSlotsUnstated(backendType: InferenceBackendType, slots: number | null, profile: HardwareProfile): void {
+    if (this.warnedSlotsUnstated || backendType !== 'ollama' || slots !== null || modelPoolFor(profile) !== 'vram') return;
+    this.warnedSlotsUnstated = true;
+    this._logger.warn(
+      '[Inference] No Ollama slot count is stated for this node, so context windows are sized for one slot. If its daemon runs ' +
+        'OLLAMA_NUM_PARALLEL above 1, the KV cache is that many times larger and a model sized this way spills to the CPU: ' +
+        'state it with `cihub pool slots <n>` (or `PATCH /api/user-settings {"inferenceOllamaSlots": <n>}`).',
+    );
   }
 
   /**

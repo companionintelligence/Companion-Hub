@@ -117,6 +117,13 @@ const MEASURED_FIXED_OVERHEAD_MB = 768;
  * a 27B at 32k reported 16.2 GiB by `/api/ps` while the card showed 22.5 GiB in use.
  */
 const MEASURED_SAFETY_MARGIN_MB = 1024;
+/**
+ * The least a window below a sighting is charged, as a share of the sighting. A footprint is mostly
+ * weights and runner buffers: measured 2026-10-01, qwen3.5:9b held 4,872 MB at 4096 against 6,836 at
+ * 16384 (71 %), and qwen3.8:27b 18,949 MB at 16384 against 29,115 at 65536 (65 %). Half sits under
+ * both, and only binds when the per-token cost is badly over-estimated.
+ */
+const SIGHTING_SCALE_FLOOR = 0.5;
 
 /**
  * What the ladder assumes one token of context costs: each rung doubles the window for each
@@ -131,11 +138,15 @@ export const LADDER_KV_MB_PER_TOKEN = 2048 / 8192;
  * check before a load compares this, not the catalog footprint, against free memory: the catalog
  * figure is the weights, and a load at a large window can be half as big again.
  *
- * With a {@link FootprintSighting} the base is what the engine was seen holding, and only the KV
- * cache above the sighted window is added. A window below the sighting is charged the sighting
- * itself, never less: the per-token cost is an estimate (gemma4's geometry counts its 512-token
- * sliding-window layers as global, about ten times what core-7 measured), and subtracting an
- * over-estimate would let a load through on memory the model really needs.
+ * With a {@link FootprintSighting} the base is what the engine was seen holding at the sighted window,
+ * and the KV cache is charged for the difference: added above that window, taken off below it. A
+ * sighting is evidence for its own window and for larger ones; charged unscaled at a smaller window
+ * it made every step-down as expensive as the window it started from, so a 27B sighted at 65536
+ * (29,115 MB) was refused at 16384 on an empty 24 GB card, where the engine then served it in 16.5 GB.
+ * What is taken off is bounded ({@link SIGHTING_SCALE_FLOOR}): the per-token cost is an estimate
+ * (gemma4's geometry counts its 512-token sliding-window layers as global, about ten times what
+ * core-7 measured), and subtracting an over-estimate unbounded would let a load through on memory the
+ * model really needs.
  */
 export function estimateLoadedFootprintMb(input: ModelMemoryInput & { numCtx: number }): number {
   const { modelFootprintMb, numCtx, weightMb } = input;
@@ -144,7 +155,8 @@ export function estimateLoadedFootprintMb(input: ModelMemoryInput & { numCtx: nu
   const sighting = usableSighting(input);
   if (sighting) {
     const margin = sighting.source === 'process' ? 0 : MEASURED_SAFETY_MARGIN_MB;
-    return Math.ceil(sighting.footprintMb + Math.max(0, numCtx - sighting.contextLength) * perToken + margin + visionReserve(input));
+    const scaledMb = sighting.footprintMb + (numCtx - sighting.contextLength) * perToken;
+    return Math.ceil(Math.max(scaledMb, sighting.footprintMb * SIGHTING_SCALE_FLOOR) + margin + visionReserve(input));
   }
   const footprint = Math.max(0, modelFootprintMb || 0);
   if (measuredKv !== null) {

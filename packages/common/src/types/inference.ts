@@ -7,7 +7,15 @@ export interface HardwareProfile {
     available: boolean;
     vendor: 'nvidia' | 'amd' | 'intel' | 'apple' | 'none';
     model: string;
+    /** VRAM of the largest single card, in MB. See {@link totalVramMb} for what models can spread over. */
     vramMb: number;
+    /**
+     * How many discrete cards models are spread over, when more than one (Ollama splits a model that does
+     * not fit one card across all of them). Linux AMD only, counted from sysfs; absent means one.
+     */
+    deviceCount?: number;
+    /** Those cards' VRAM summed, in MB — the pool the process-memory figures are counted in. Absent means {@link vramMb}. */
+    totalVramMb?: number;
     unifiedMemory: boolean;
     driverVersion: string;
     /** Container GPU runtime (e.g. ROCm/NVIDIA device passthrough). Optional on older profiles. */

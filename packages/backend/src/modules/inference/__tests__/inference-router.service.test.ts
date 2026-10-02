@@ -1007,7 +1007,8 @@ describe('InferenceRouterService', () => {
     });
 
     it('warns instead of refusing an operator load that was measured running here in what is free now', async () => {
-      // Only the reserves charged on top of the measurement are over: 6,800 seen at 16384, 7,003 free.
+      // Only the reserves charged on top of the measurement are over, at every window: 1,500 seen at 16384, 1,600 free.
+      // (A larger model steps down instead: a sighting is charged less at a smaller window.)
       const ollamaModel = {
         id: 'gemma4-e4b',
         backend: 'ollama',
@@ -1019,16 +1020,16 @@ describe('InferenceRouterService', () => {
       ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma4:e4b'] });
       modelRegistry.getCuratedModel.mockReturnValue(ollamaModel);
       ollamaBackend.isModelLoaded.mockResolvedValue(false);
-      memoryManager.footprintSighting.mockResolvedValue({ footprintMb: 6_800, contextLength: 16_384, source: 'process' });
-      memoryManager.loadHeadroomMb.mockResolvedValue(7_003);
-      memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 7_003, requiredMb: 6_800 });
+      memoryManager.footprintSighting.mockResolvedValue({ footprintMb: 1_500, contextLength: 16_384, source: 'process' });
+      memoryManager.loadHeadroomMb.mockResolvedValue(1_600);
+      memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 1_600, requiredMb: 1_500 });
 
       await expect(service.loadTrackedModel(ollamaModel.id, { origin: 'operator' })).resolves.toEqual({ loaded: true });
 
-      expect(memoryManager.canFitModel).toHaveBeenCalledWith(defaultProfile, 6_800);
+      expect(memoryManager.canFitModel).toHaveBeenCalledWith(defaultProfile, 1_500);
       expect(modelPuller.loadModel).toHaveBeenCalledWith(ollamaModel.id, { contextLength: 16_384 });
       expect(loggerService.warn).toHaveBeenCalledWith(
-        expect.stringContaining('loading it anyway, because ollama was measured serving it here at 16384 in 6800 MB'),
+        expect.stringContaining('loading it anyway, because ollama was measured serving it here at 16384 in 1500 MB'),
       );
     });
 

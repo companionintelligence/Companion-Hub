@@ -321,11 +321,15 @@ describe('a sighting of the model on this node', () => {
     expect(recommendContextLength({ effectiveInferenceMemoryMb: 9_728, modelContextWindow: 128_000, ...gemma, sighting: seen })).toBe(16_384);
   });
 
-  it('adds only the KV cache above the sighted window, and never charges less than was seen', () => {
+  it('adds the KV cache above the sighted window', () => {
     expect(estimateLoadedFootprintMb({ ...gemma, numCtx: 32_768, sighting: seen })).toBe(5_550 + 16_384 * 0.375 + 1_024);
-    // The per-token cost is an over-estimate for gemma4's sliding-window layers; subtracting it below
-    // the sighting would admit a load on memory the model really holds.
-    expect(estimateLoadedFootprintMb({ ...gemma, numCtx: 4_096, sighting: seen })).toBe(5_550 + 1_024);
+  });
+
+  it('takes the KV cache off below the sighted window, but never more than half of what was seen', () => {
+    // 12,288 tokens at 0.375 MB across four slots would be 4,608 MB off a 5,550 MB sighting. The per-token
+    // cost is an over-estimate for gemma4's sliding-window layers, so the charge stops at half.
+    expect(estimateLoadedFootprintMb({ ...gemma, numCtx: 4_096, sighting: seen })).toBe(5_550 / 2 + 1_024);
+    expect(estimateLoadedFootprintMb({ ...gemma, numCtx: 12_288, sighting: seen })).toBe(5_550 - 4_096 * 0.375 + 1_024);
   });
 
   it("keeps the safety margin over the engine's own figure, which leaves out the runtime's buffers", () => {
@@ -341,5 +345,50 @@ describe('a sighting of the model on this node', () => {
     ]) {
       expect(estimateLoadedFootprintMb({ ...gemma, numCtx: 16_384, sighting })).toBe(19_005);
     }
+  });
+});
+
+describe('a sighting taken at a larger window than the one being sized (fleet retest 2026-10-01)', () => {
+  // beta-3-glass, RTX 3070 (7,680 MB for models): qwen3.5:9b measured 6,836 MB at 16384 and 4,872 MB at 4096,
+  // so 0.16 MB a token. The engine's own figure, so the 1,024 MB margin goes on top.
+  const nine = { modelFootprintMb: 6_600, kvMbPerToken: 0.16, kvSlots: 1 };
+  const nineAt16k = { footprintMb: 6_836, contextLength: 16_384, source: 'engine' as const };
+  const glassCeilingMb = 7_168;
+
+  it('charges a smaller window less than the sighted one, close to what the engine then held', () => {
+    expect(estimateLoadedFootprintMb({ ...nine, numCtx: 16_384, sighting: nineAt16k })).toBe(6_836 + 1_024);
+    const at4k = estimateLoadedFootprintMb({ ...nine, numCtx: 4_096, sighting: nineAt16k });
+    expect(at4k).toBe(Math.ceil(6_836 - 12_288 * 0.16 + 1_024));
+    expect(at4k - 1_024).toBeGreaterThanOrEqual(4_872 - 8);
+    expect(at4k - 1_024).toBeLessThanOrEqual(4_872 + 8);
+  });
+
+  it('lets the step-down reach a window that fits where the sighted one does not', () => {
+    // 7,860 MB at 16384 against 7,168: it was the same 7,860 at every smaller window, so null.
+    expect(largestFittingWindow({ ...nine, sighting: nineAt16k, from: 16_384, budgetMb: glassCeilingMb })).toBe(8_192);
+    expect(largestFittingWindow({ ...nine, sighting: nineAt16k, from: 16_384, budgetMb: 6_000 })).toBe(4_096);
+  });
+
+  it('still refuses what even the smallest window cannot hold', () => {
+    expect(largestFittingWindow({ ...nine, sighting: nineAt16k, from: 16_384, budgetMb: 5_000 })).toBeNull();
+  });
+
+  it('steps a 27B sighted at 65536 down to the window that fits an empty 24 GB card', () => {
+    // beta-1, RX 7900 XTX (24,048 MB for models): the Hub charged 30,139 MB at 16384 and refused, then the engine
+    // served it at 16384 in 16.5 GB. 0.207 MB a token is the slope between its 16384 and 65536 sightings.
+    const big = { modelFootprintMb: 17_000, kvMbPerToken: 0.207, kvSlots: 1, visionReserveMb: VISION_ENCODER_RESERVE_MB };
+    const seenAt64k = { footprintMb: 29_115, contextLength: 65_536, source: 'process' as const };
+    expect(estimateLoadedFootprintMb({ ...big, numCtx: 65_536, sighting: seenAt64k })).toBe(30_139);
+    expect(largestFittingWindow({ ...big, sighting: seenAt64k, from: 65_536, budgetMb: 24_048 })).toBe(32_768);
+  });
+
+  it('sizes the recommendation from the sighting, so the handout and the load agree', () => {
+    expect(recommendContextLength({ effectiveInferenceMemoryMb: glassCeilingMb, modelContextWindow: 262_144, ...nine, sighting: nineAt16k })).toBe(
+      8_192,
+    );
+  });
+
+  it('leaves a window above the sighting, and the sighting itself, as they were', () => {
+    expect(estimateLoadedFootprintMb({ ...nine, numCtx: 32_768, sighting: nineAt16k })).toBe(Math.ceil(6_836 + 16_384 * 0.16 + 1_024));
   });
 });
