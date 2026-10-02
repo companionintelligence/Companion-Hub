@@ -630,8 +630,8 @@ export const AiSettingsContainer = () => {
   const inferenceMemory = inferenceMemoryMb(profile);
   const installedCatalogIds = profile.installedCatalogIds ?? [];
 
-  // The warning applies only when Save will unpin every managed model. A null
-  // preferred-model result does not clear defaults, and unmanaged pins remain untouched.
+  // The unpin warning applies only when Save will unpin every managed model.
+  // A null preferred model clears that stored default on its own, and unmanaged pins stay.
   const saveUnpinsEveryModel =
     compatibleSelection(availableModelById, selectedBackend, selectedModelIds).length === 0 &&
     unpinnablePins(availableModelById, pinnedModelIds).length > 0;

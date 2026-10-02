@@ -634,9 +634,8 @@ describe('AiSettingsContainer', () => {
   });
 
   it('does not warn when an empty selection has no pins to release', async () => {
-    // Nothing pinned, so the save destroys nothing — and a save cannot clear a stored preference:
-    // `saveInferencePreferences` maps null to undefined and JSON.stringify drops the key. Warning
-    // here would be a lie.
+    // Nothing pinned, so this save does not unpin. Clearing the stored default is a separate
+    // effect of the empty selection, and this dialog is only the unpin warning.
     fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled([]));
     fetchInferenceTrackedModels.mockResolvedValue([]);
     fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'vllm', preferredModel: 'm1' });

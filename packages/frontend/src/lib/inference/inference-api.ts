@@ -127,14 +127,17 @@ export async function saveInferencePreferences(body: {
     updatePreferences({
       body: {
         backend: body.backend,
-        model: body.model ?? undefined,
-        embeddingModel: body.embeddingModel ?? undefined,
-        visionModel: body.visionModel ?? undefined,
-        vllmApiKey: body.vllmApiKey ?? undefined,
-        vllmUrl: body.vllmUrl ?? undefined,
-        omlxUrl: body.omlxUrl ?? undefined,
-        decodeEndpoint: body.decodeEndpoint ?? undefined,
-        encodeEndpoint: body.encodeEndpoint ?? undefined,
+        // `null` clears the stored value. `undefined` is left out of the JSON, and the Hub
+        // then keeps what is already on disk. Coercing `null` to `undefined` made a cleared
+        // model or vLLM key impossible to remove.
+        model: body.model,
+        embeddingModel: body.embeddingModel,
+        visionModel: body.visionModel,
+        vllmApiKey: body.vllmApiKey,
+        vllmUrl: body.vllmUrl,
+        omlxUrl: body.omlxUrl,
+        decodeEndpoint: body.decodeEndpoint,
+        encodeEndpoint: body.encodeEndpoint,
       },
     } as Parameters<typeof updatePreferences>[0]),
   );
