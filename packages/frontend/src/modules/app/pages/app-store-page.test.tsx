@@ -6,7 +6,7 @@ const { mockStoreState, mockSearchAppsInfiniteOptions } = vi.hoisted(() => ({
   mockStoreState: {
     setCategory: vi.fn(),
     category: undefined as string | undefined,
-    storeId: 'ci-apps',
+    storeId: 'ci-apps' as string | undefined,
     setStoreId: vi.fn(),
     search: '',
     setSearch: vi.fn(),

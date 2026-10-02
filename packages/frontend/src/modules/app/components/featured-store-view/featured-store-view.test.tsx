@@ -32,7 +32,9 @@ describe('FeaturedStoreView', () => {
 
     expect(screen.getAllByText(/^App /)).toHaveLength(16);
 
-    fireEvent.click(screen.getAllByRole('button', { name: /View all 20/ })[0]);
+    const viewAll = screen.getAllByRole('button', { name: /View all 20/ })[0];
+    if (!viewAll) throw new Error('expected a View all button');
+    fireEvent.click(viewAll);
 
     expect(screen.getAllByText(/^App /)).toHaveLength(28);
     expect(screen.getAllByRole('button', { name: 'Show more' })).toHaveLength(1);

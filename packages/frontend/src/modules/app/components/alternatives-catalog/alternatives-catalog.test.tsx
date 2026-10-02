@@ -13,7 +13,7 @@ describe('AlternativesCatalog', () => {
             data: [
               {
                 proprietary: [{ name: 'Dropbox', icon: '', url: null }],
-                alternatives: [{ name: 'Nextcloud', icon: '', url: null, appSlug: 'nextcloud' }],
+                alternatives: [{ name: 'Nextcloud', icon: '', url: 'https://nextcloud.com', appSlug: 'nextcloud' }],
               },
             ],
           }}
