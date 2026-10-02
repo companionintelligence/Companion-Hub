@@ -23,17 +23,23 @@
  * Whatever the provenance, {@link PLATFORM_REQUIRED_MODELS} is appended. That is a requirement, not a
  * recommendation, and it never depends on hardware.
  *
- * AUTH, settled from the source rather than guessed (2026-09-10): the route is behind `AuthGuard`,
- * which only checks `req.user`; `AuthMiddleware` (mounted on `*all`) installs the first operator as
- * `req.user` when `Authorization: Bearer <ciHubApiKey>` matches the device key in constant time.
- * So a device key IS accepted — a browser session is not required. Verified with one read-only GET
- * against a claimed node: HTTP 200. Two refusals look alike and must stay distinct: an unclaimed Hub
+ * AUTH, settled from the source rather than guessed (2026-09-10) and corrected 2026-10-02: the route is
+ * behind `AuthGuard`, which only checks `req.user`; `AuthMiddleware` (mounted on `*all`) installs the
+ * first operator as `req.user` when `Authorization: Bearer <key>` matches. A browser session is not
+ * required. Which key matches changed with #1612: the Portal device key (`ciHubApiKey`) was accepted
+ * when this was written (a read-only GET against a claimed node answered 200) and still is on a Hub
+ * Portal has not yet given a push key; past that it answers 401. The box's own `hubLocalKey` is
+ * accepted on both, so `hubOperatorKeyShell` reads that first and the device key only as the fallback.
+ *
+ * Two refusals look alike and must stay distinct: an unclaimed Hub
  * answers 409 `AUTH_ERROR_HUB_NOT_CLAIMED` (fix: `cihub claim`), a wrong or missing key answers 401
  * `SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN` (fix: the key). Reading both as "bad key" cost a week once.
  *
  * The key never leaves the node: the fetch runs ON the node over SSH against its own loopback, and
  * the script prints only the HTTP status and the body. Nothing here echoes the key.
  */
+
+import { hubOperatorKeyShell } from './hub-operator-key.js';
 
 /** Models every node must hold regardless of hardware. CI-Server throws at boot without a 768-dim embedder. */
 export const PLATFORM_REQUIRED_MODELS: readonly string[] = ['nomic-embed-text'];
@@ -82,14 +88,7 @@ export function hubRecommendationScript(dataDir = '/var/lib/companion-hub'): str
   const hostSettings = `${dataDir.replace(/'/g, "'\\''")}/state/settings.json`;
   return [
     'set +e',
-    'key=""',
-    "if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx ci-hub; then",
-    // `node -e` rather than grep/sed: a JSON value can legally carry escapes a regex would truncate.
-    `  key="$(docker exec ci-hub node -e 'try{const s=require("/data/state/settings.json");process.stdout.write(String(s.ciHubApiKey||""))}catch{}' 2>/dev/null)"`,
-    'fi',
-    `if [ -z "$key" ] && [ -r '${hostSettings}' ]; then`,
-    `  key="$(sed -n 's/.*"ciHubApiKey"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' '${hostSettings}' | head -1)"`,
-    'fi',
+    ...hubOperatorKeyShell('key', hostSettings),
     'if [ -n "$key" ]; then echo "device-key=present"; else echo "device-key=missing"; fi',
     'body="$(mktemp)"',
     // `-w '%{http_code}'` prints `000` itself when the connection fails, so there is no `|| echo 000`

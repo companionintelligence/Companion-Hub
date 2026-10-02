@@ -37,6 +37,7 @@
  */
 
 import type { HostFacts } from './fleet-hardware.js';
+import { hubOperatorKeyShell } from './hub-operator-key.js';
 
 /** Host port the fleet's llama-server listens on. 8080 belongs to dspark and to Traefik's dashboard. */
 export const LLAMACPP_FLEET_PORT = 8081;
@@ -817,7 +818,7 @@ export const HUB_AUTO_MODEL_MARKERS = {
  * Ask the node's Hub which model it hands out for `auto`, so `--llamacpp-model` has a default that
  * is the node's own answer rather than a fleet-wide guess.
  *
- * Two reads, both over the node's loopback with its own device key (same lookup as
+ * Two reads, both over the node's loopback with its own operator key (same lookup as
  * `hubRecommendationScript`, never printed): `preferredModel` from the inference preferences — the
  * pin `auto` resolves to first, a CATALOG id such as `qwen3-coder-30b` — and the onboarding profile,
  * whose catalog rows map that id to the Ollama tag (`backendModelId`) llama-server needs. When no
@@ -828,13 +829,7 @@ export function hubAutoModelShell(dataDir = '/var/lib/companion-hub'): string {
   const m = HUB_AUTO_MODEL_MARKERS;
   return [
     'set +e',
-    'cihub_am_key=""',
-    "if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx ci-hub; then",
-    `  cihub_am_key="$(docker exec ci-hub node -e 'try{const s=require("/data/state/settings.json");process.stdout.write(String(s.ciHubApiKey||""))}catch{}' 2>/dev/null)"`,
-    'fi',
-    `if [ -z "$cihub_am_key" ] && [ -r '${hostSettings}' ]; then`,
-    `  cihub_am_key="$(sed -n 's/.*"ciHubApiKey"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' '${hostSettings}' | head -1)"`,
-    'fi',
+    ...hubOperatorKeyShell('cihub_am_key', hostSettings),
     `if [ -n "$cihub_am_key" ]; then echo "${m.key} present"; else echo "${m.key} missing"; fi`,
     'cihub_am_body="$(mktemp)"',
     `cihub_am_curl() { curl -s -o "$cihub_am_body" -w '%{http_code}' --max-time 30 -H "Authorization: Bearer $cihub_am_key" "$@" 2>/dev/null; }`,
