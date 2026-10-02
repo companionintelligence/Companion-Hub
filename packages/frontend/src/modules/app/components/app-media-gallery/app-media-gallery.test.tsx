@@ -20,7 +20,10 @@ describe('AppMediaGallery', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Open screenshot fullscreen' }));
-    expect(screen.getByRole('dialog', { name: 'Companion Memory screenshots' })).toBeInTheDocument();
+    const dialog = screen.getByRole('dialog', { name: 'Companion Memory screenshots' });
+    expect(dialog).toBeInTheDocument();
+    expect(dialog).toContainElement(screen.getByRole('button', { name: 'Close' }));
+    expect(dialog.contains(document.activeElement)).toBe(true);
   });
 
   it('starts the lightbox at the header bottom edge so the close button is not covered', () => {

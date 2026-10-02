@@ -41,10 +41,13 @@ interface DialogContentProps extends React.ComponentPropsWithoutRef<typeof Dialo
   type?: DialogType;
   /** Set false for a dialog that asks for a choice and cannot be dismissed, where an X would do nothing. */
   showCloseButton?: boolean;
+  /** Lets a full-screen dialog sit below the app header instead of covering it. */
+  overlayClassName?: string;
+  overlayStyle?: React.CSSProperties;
 }
 
 const DialogContent = React.forwardRef<React.ElementRef<typeof DialogPrimitive.Content>, DialogContentProps>(
-  ({ className, children, size = 'lg', type, showCloseButton = true, ...props }, ref) => {
+  ({ className, children, size = 'lg', type, showCloseButton = true, overlayClassName, overlayStyle, ...props }, ref) => {
     const maxWidthClass =
       {
         sm: 'sm:max-w-sm',
@@ -55,7 +58,7 @@ const DialogContent = React.forwardRef<React.ElementRef<typeof DialogPrimitive.C
 
     return (
       <DialogPortal>
-        <DialogOverlay />
+        <DialogOverlay className={overlayClassName} style={overlayStyle} />
         <DialogPrimitive.Content
           ref={ref}
           className={cn(
