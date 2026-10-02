@@ -57,6 +57,12 @@ export class HubPoolLoadService {
   private readonly generations = new Map<InferenceBackendType, Map<string, RunningGenerations>>();
   /** The local {@link LocalModelWork} among that work, per engine: canonical model id → requests in flight. */
   private readonly otherWork = new Map<InferenceBackendType, Map<string, number>>();
+  /**
+   * Per peer, how many of the requests this node had forwarded to it were still in flight when its
+   * latest self-report was read. The report counts them, so {@link externalLoad} takes them out.
+   * Only peers with a non-zero figure have an entry.
+   */
+  private readonly forwardedAtReport = new Map<string, number>();
 
   /**
    * `generation` and `work` are recorded only under {@link LOCAL_CANDIDATE_KEY}: a peer's engines are
@@ -111,6 +117,36 @@ export class HubPoolLoadService {
 
   get(key: string): number {
     return this.inFlight.get(key) ?? 0;
+  }
+
+  /**
+   * Record, when a peer's self-report arrives, how many requests this node had in flight to it. That
+   * report counts them, and keeps counting them until the next poll, up to 30 s after they finished.
+   */
+  noteReport(peerId: string, forwarded: number): void {
+    if (forwarded > 0) {
+      this.forwardedAtReport.set(peerId, forwarded);
+    } else {
+      this.forwardedAtReport.delete(peerId);
+    }
+  }
+
+  /**
+   * What a peer's last self-report counted that was not this node's own forwards: its own apps' work
+   * and other nodes'. Requests this node sent are counted live by {@link get} instead, so a request
+   * that has since finished no longer makes the peer look busy.
+   */
+  externalLoad(peerId: string, reported: number): number {
+    return Math.max(0, reported - (this.forwardedAtReport.get(peerId) ?? 0));
+  }
+
+  /** Drop the reports of peers no longer polled, so an unpaired peer's entry does not outlive it. */
+  forgetReportsExcept(peerIds: ReadonlySet<string>): void {
+    for (const id of this.forwardedAtReport.keys()) {
+      if (!peerIds.has(id)) {
+        this.forwardedAtReport.delete(id);
+      }
+    }
   }
 
   /** Requests this node's own engines are serving — its apps' and its peers' alike. */
