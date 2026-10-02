@@ -7,7 +7,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { FederatedIdentityRepository } from '@/modules/user/federated-identity.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { isPortExposeApp } from '@ci-hub/common/schemas';
+import { PORT_EXPOSE_KIND } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { Request } from 'express';
@@ -30,6 +30,11 @@ export type GrantSurface = 'hub' | 'store';
  * `restore` have no port-expose path and would run the catalog lifecycle.
  */
 const PORT_EXPOSE_ACTIONS: readonly HubAction[] = ['view', 'start', 'stop', 'uninstall'];
+
+/** The app row stores config as jsonb, so `kind` is checked before it is treated as a port expose. */
+function storedConfigIsPortExpose(config: unknown): boolean {
+  return typeof config === 'object' && config !== null && 'kind' in config && config.kind === PORT_EXPOSE_KIND;
+}
 
 type CachedWhoIs = {
   can: HubAction[];
@@ -403,7 +408,7 @@ export class MarketplaceWhoIsService {
       return out;
     }
 
-    const grantedNames = new Set(rows.filter((row) => isPortExposeApp(row.config as { kind?: string } | null)).map((row) => row.appName));
+    const grantedNames = new Set(rows.filter((row) => storedConfigIsPortExpose(row.config)).map((row) => row.appName));
     for (const urn of local) {
       if (grantedNames.has(extractAppUrn(urn).appName)) {
         out.set(urn, [...PORT_EXPOSE_ACTIONS]);
