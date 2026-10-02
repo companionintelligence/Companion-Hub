@@ -9,7 +9,7 @@ describe('TotpForm', () => {
     expect(screen.getAllByRole('textbox')[0]).toHaveFocus();
   });
 
-  it('takes the cursor back to the first digit after a submit, which empties the field', () => {
+  it('keeps the code after a submit so a wrong code can be corrected', () => {
     const onSubmit = vi.fn();
     render(<TotpForm onSubmit={onSubmit} />);
     const digits = screen.getAllByRole('textbox');
@@ -17,10 +17,20 @@ describe('TotpForm', () => {
     '123456'.split('').forEach((digit, index) => {
       fireEvent.change(digits[index] as HTMLElement, { target: { value: digit } });
     });
-    screen.getByRole('button').focus();
-    fireEvent.submit(screen.getByRole('button').closest('form') as HTMLFormElement);
+    fireEvent.submit(screen.getByRole('button', { name: 'Confirm' }).closest('form') as HTMLFormElement);
 
     expect(onSubmit).toHaveBeenCalledWith('123456');
-    expect(screen.getAllByRole('textbox')[0]).toHaveFocus();
+    expect(digits.map((digit) => (digit as HTMLInputElement).value).join('')).toBe('123456');
+  });
+
+  it('goes back without submitting the code', () => {
+    const onSubmit = vi.fn();
+    const onBack = vi.fn();
+    render(<TotpForm onSubmit={onSubmit} onBack={onBack} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+
+    expect(onBack).toHaveBeenCalledOnce();
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 });

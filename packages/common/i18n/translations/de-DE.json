@@ -264,7 +264,6 @@
   "AUTH_REGISTER_SUBMIT": "Registrieren",
   "AUTH_REGISTER_TITLE": "Ihr Konto erstellen",
   "AUTH_RESET_PASSWORD_BACK_TO_LOGIN": "Zurück zur Anmeldung",
-  "AUTH_RESET_PASSWORD_CANCEL": "Passwortänderung abbrechen",
   "AUTH_RESET_PASSWORD_COMPLETE_FAILED": "Passwort konnte nicht zurückgesetzt werden. Der Link zum Zurücksetzen ist möglicherweise ungültig oder abgelaufen.",
   "AUTH_RESET_PASSWORD_COMPLETE_SUCCESS": "Passwort aktualisiert. Du kannst dich jetzt mit deinem neuen Passwort anmelden.",
   "AUTH_RESET_PASSWORD_INSTRUCTIONS": "Um zu beginnen, führe diesen Befehl auf deinem Server aus und aktualisiere dann diese Seite. Falls du das bereits zuvor getan hast, könnte die Anforderung zum Zurücksetzen des Passworts abgelaufen sein. In diesem Fall versuche es bitte erneut",

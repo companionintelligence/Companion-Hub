@@ -264,7 +264,6 @@
   "AUTH_REGISTER_SUBMIT": "Registrati",
   "AUTH_REGISTER_TITLE": "Crea un nuovo account",
   "AUTH_RESET_PASSWORD_BACK_TO_LOGIN": "Torna alla pagina di login",
-  "AUTH_RESET_PASSWORD_CANCEL": "Annulla richiesta di cambio password",
   "AUTH_RESET_PASSWORD_COMPLETE_FAILED": "Impossibile reimpostare la password. Il link di reimpostazione potrebbe non essere valido o essere scaduto.",
   "AUTH_RESET_PASSWORD_COMPLETE_SUCCESS": "Password aggiornata. Ora puoi accedere con la nuova password.",
   "AUTH_RESET_PASSWORD_INSTRUCTIONS": "Per iniziare, esegui questo comando sul tuo server e aggiorna questa pagina. Se l'hai fatto in precedenza, la richiesta di reimpostazione della password potrebbe essere scaduta. In tal caso riprova",

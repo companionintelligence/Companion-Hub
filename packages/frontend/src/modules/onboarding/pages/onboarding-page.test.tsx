@@ -216,6 +216,24 @@ vi.mock('../components/ai-setup-step', () => ({
       <button
         type="button"
         onClick={() =>
+          onConfigChange?.({
+            agentFrameworks: ['openclaw'],
+            selectedModels: ['phi-4-mini'],
+            installedCatalogIds: ['phi-4-mini'],
+            backend: 'ollama',
+            cloudProviders: [],
+            remoteAccess: [],
+            skipped: false,
+            installBlocked: false,
+            engineBlocked: true,
+          })
+        }
+      >
+        emit-ai-config-engine-down
+      </button>
+      <button
+        type="button"
+        onClick={() =>
           onCompanionAppsChange?.([
             {
               appSlug: 'ci-memory',
@@ -391,6 +409,17 @@ describe('OnboardingPage (single vertical form)', () => {
   it('keeps Install & Finish disabled until AI config is provided', () => {
     renderPage();
     expect(screen.getByTestId('finish-setup-btn')).toBeDisabled();
+  });
+
+  it('keeps Install & Finish disabled while the selected engine is down, and lifts the bar clear of the home indicator', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(screen.getByTestId('onboarding-finish-bar').className).toContain('bottom-[max(1rem,var(--safe-area-bottom))]');
+
+    await user.click(screen.getByRole('button', { name: 'emit-ai-config-engine-down' }));
+    expect(screen.getByTestId('finish-setup-btn')).toBeDisabled();
+    expect(screen.getByText('The local engine is not ready yet. Start it, then finish setup.')).toBeInTheDocument();
   });
 
   it('keeps Install & Finish enabled while the marketplace catalog is loading', async () => {

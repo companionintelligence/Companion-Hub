@@ -831,6 +831,87 @@ describe('AiSetupStep', () => {
     expect(screen.getByText('vLLM detected')).toBeInTheDocument();
   });
 
+  it('keeps the chosen engine and the ticked models when hardware is rescanned', async () => {
+    api.profile = { ...highTierProfile, recommendedModels: highTierProfile.availableModels };
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('model-checkbox-phi-4-mini')).toBeInTheDocument());
+
+    await user.click(screen.getByTestId('model-checkbox-phi-4-mini'));
+    await user.click(screen.getByTestId('model-checkbox-qwen-coder'));
+    expect((screen.getByTestId('model-checkbox-phi-4-mini') as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByTestId('model-checkbox-qwen-coder') as HTMLInputElement).checked).toBe(true);
+
+    await user.click(screen.getByTestId('rescan-btn'));
+    await waitFor(() => expect(screen.getByTestId('rescan-btn')).not.toBeDisabled());
+
+    expect((screen.getByTestId('model-checkbox-phi-4-mini') as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByTestId('model-checkbox-qwen-coder') as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByTestId('backend-option-ollama').querySelector('input')).toBeChecked();
+  });
+
+  it('keeps a chosen engine that is not the recommendation when hardware is rescanned', async () => {
+    api.vllm = vllmReady;
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('backend-option-vllm')).toBeInTheDocument());
+    await user.click(screen.getByTestId('backend-option-vllm'));
+    await waitFor(() => expect(screen.getByTestId('backend-option-vllm').querySelector('input')).toBeChecked());
+
+    await user.click(screen.getByTestId('rescan-btn'));
+    await waitFor(() => expect(screen.getByTestId('rescan-btn')).not.toBeDisabled());
+
+    expect(screen.getByTestId('backend-option-vllm').querySelector('input')).toBeChecked();
+  });
+
+  it('drops a ticked model the rescan no longer lists', async () => {
+    api.profile = { ...highTierProfile, recommendedModels: highTierProfile.availableModels };
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('model-checkbox-qwen-coder')).toBeInTheDocument());
+    await user.click(screen.getByTestId('model-checkbox-qwen-coder'));
+
+    api.profile = {
+      ...highTierProfile,
+      recommendedModels: highTierProfile.availableModels.filter((model) => model.id !== 'qwen-coder'),
+      availableModels: highTierProfile.availableModels.filter((model) => model.id !== 'qwen-coder'),
+    };
+    await user.click(screen.getByTestId('rescan-btn'));
+    await waitFor(() => expect(screen.getByTestId('rescan-btn')).not.toBeDisabled());
+
+    expect(screen.queryByTestId('model-checkbox-qwen-coder')).not.toBeInTheDocument();
+    expect((screen.getByTestId('model-checkbox-phi-4-mini') as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('reports the same engine block on the embedded config that disables Continue', async () => {
+    api.ollama = ollamaMissing;
+    const onConfigChange = vi.fn();
+    renderStep({ embedded: true, onConfigChange });
+    await waitFor(() => expect(screen.getByText('Ollama not detected')).toBeInTheDocument());
+    await waitFor(() => expect(onConfigChange).toHaveBeenCalledWith(expect.objectContaining({ engineBlocked: true })));
+  });
+
+  it('does not block finish on a weak machine that has no local engine', async () => {
+    api.profile = insufficientProfile;
+    api.ollama = ollamaMissing;
+    const onConfigChange = vi.fn();
+    renderStep({ embedded: true, onConfigChange });
+    await waitFor(() => expect(screen.getByTestId('cloud-keys-section')).toBeInTheDocument());
+    await waitFor(() => expect(onConfigChange).toHaveBeenCalled());
+    const latest = onConfigChange.mock.calls.at(-1)?.[0] as { engineBlocked?: boolean };
+    expect(latest.engineBlocked).toBeUndefined();
+  });
+
+  it('gives model tiles and access options a visible focus ring without showing the checkbox', async () => {
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('model-row-phi-4-mini')).toBeInTheDocument());
+
+    expect(screen.getByTestId('model-checkbox-phi-4-mini')).toHaveClass('sr-only');
+    expect(screen.getByTestId('model-row-phi-4-mini').className).toContain('has-[:focus-visible]:ring-2');
+    expect(screen.getByTestId('access-cloudflare')).toHaveClass('sr-only');
+    expect(screen.getByTestId('access-cloudflare').closest('label')?.className).toContain('has-[:focus-visible]:ring-2');
+  });
+
   it('allows toggling model selection', async () => {
     const user = userEvent.setup();
     renderStep();
@@ -855,7 +936,11 @@ describe('AiSetupStep', () => {
     api.profile = insufficientProfile;
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
-    await userEvent.setup().click(screen.getByTestId('step-section-toggle-7'));
+    expect(screen.getByTestId('access-methods-card')).toBeInTheDocument();
+    expect(screen.getByTestId('agent-apps-card')).toBeInTheDocument();
+    expect(screen.queryByTestId('inference-setup-section')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('step-section-toggle-7')).not.toBeInTheDocument();
+    expect(screen.getByTestId('cloud-keys-section')).toHaveTextContent('5');
     expect(screen.getByTestId('cloud-inputs')).toBeInTheDocument();
     expect(screen.getByText(/can't run local AI models/)).toBeInTheDocument();
   });

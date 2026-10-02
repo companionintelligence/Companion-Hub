@@ -19,6 +19,8 @@ import { HorizontalAppList } from '../components/horizontal-app-list';
 import { QueuedInstallsIndicator } from '../components/queued-installs-indicator';
 import { useInstallQueue } from '@/modules/app/helpers/use-install-queue';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
+import { Button } from '@/components/ui/Button';
+import { diskStatCopy } from './disk-stat';
 
 type DashboardLocationState = {
   showBackgroundInstallToast?: boolean;
@@ -57,13 +59,23 @@ export default () => {
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams, t]);
 
-  const { data: systemData } = useQuery({
+  const {
+    data: systemData,
+    isPending: systemPending,
+    isError: systemError,
+    refetch: refetchSystem,
+  } = useQuery({
     ...systemLoadOptions(),
     refetchInterval: 3000,
     staleTime: 30_000,
   });
 
-  const { data: appsData } = useQuery({
+  const {
+    data: appsData,
+    isPending: appsPending,
+    isError: appsError,
+    refetch: refetchApps,
+  } = useQuery({
     ...getInstalledAppsOptions(),
     staleTime: 30_000,
   });
@@ -114,7 +126,7 @@ export default () => {
     return byUrn;
   }, [appsData]);
 
-  const isLoading = !systemData;
+  const statsLoading = systemPending && !systemData;
   const memoryUsed = systemData?.memoryUsed ?? (systemData ? Math.round((systemData.memoryTotal * systemData.percentUsedMemory) / 100) : 0);
 
   return (
@@ -122,25 +134,25 @@ export default () => {
       <div className="flex flex-col gap-4 pt-2 pb-4 px-1">
         {/* System stats — stacked on mobile, three columns from sm */}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          {isLoading ? (
-            <div className="col-span-3 flex justify-center py-4">
+          {systemError ? (
+            <div className="col-span-full flex flex-col items-start gap-2 py-2">
+              <p className="text-sm text-muted-foreground">{t('DASHBOARD_STATS_FAILED')}</p>
+              <Button type="button" variant="outline" onClick={() => refetchSystem()}>
+                {t('COMMON_RETRY')}
+              </Button>
+            </div>
+          ) : statsLoading || !systemData ? (
+            <div className="col-span-full flex justify-center py-4">
               <LoadingSpinner />
             </div>
           ) : (
             <>
-              <CompactSystemStat
-                isLoading={false}
-                title={t('DASHBOARD_DISK_SPACE_TITLE')}
-                metric={`${systemData.percentUsed}%`}
-                subtitle={`${systemData.diskUsed} / ${systemData.diskSize} GB`}
-                icon={Database}
-                progress={systemData.percentUsed}
-              />
+              <CompactSystemStat isLoading={false} title={t('DASHBOARD_DISK_SPACE_TITLE')} icon={Database} {...diskStatCopy(systemData, t)} />
               <CompactSystemStat
                 isLoading={false}
                 title={t('DASHBOARD_CPU_TITLE')}
                 metric={`${systemData.cpuLoad.toFixed(2)}%`}
-                subtitle={systemData.cpuCores ? `${systemData.cpuCores} cores` : undefined}
+                subtitle={systemData.cpuCores ? t('DASHBOARD_CPU_CORES', { count: systemData.cpuCores }) : undefined}
                 icon={Cpu}
                 progress={systemData.cpuLoad}
               />
@@ -148,7 +160,7 @@ export default () => {
                 isLoading={false}
                 title={t('DASHBOARD_MEMORY_TITLE')}
                 metric={`${systemData.percentUsedMemory}%`}
-                subtitle={`${memoryUsed} / ${systemData.memoryTotal} GB`}
+                subtitle={t('DASHBOARD_GB_OF', { used: memoryUsed, total: systemData.memoryTotal })}
                 icon={MemoryStick}
                 progress={systemData.percentUsedMemory}
               />
@@ -165,7 +177,20 @@ export default () => {
               <BatchActionsMenu runningCount={runningCount} stoppedCount={stoppedCount} updatesAvailable={updatesAvailable} />
             </div>
           )}
-          <HorizontalAppList apps={appsData?.installed ?? []} isLoading={!appsData} customDomainsAwaitingRestart={customDomainsAwaitingRestart} />
+          {appsError ? (
+            <div className="flex flex-col items-start gap-2 py-6">
+              <p className="text-sm text-muted-foreground">{t('DASHBOARD_APPS_FAILED')}</p>
+              <Button type="button" variant="outline" onClick={() => refetchApps()}>
+                {t('COMMON_RETRY')}
+              </Button>
+            </div>
+          ) : (
+            <HorizontalAppList
+              apps={appsData?.installed ?? []}
+              isLoading={appsPending && !appsData}
+              customDomainsAwaitingRestart={customDomainsAwaitingRestart}
+            />
+          )}
         </div>
       </div>
     </div>

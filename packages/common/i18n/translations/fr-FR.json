@@ -264,7 +264,6 @@
   "AUTH_REGISTER_SUBMIT": "S'inscrire",
   "AUTH_REGISTER_TITLE": "Créez votre compte",
   "AUTH_RESET_PASSWORD_BACK_TO_LOGIN": "Retour au login",
-  "AUTH_RESET_PASSWORD_CANCEL": "Annuler la demande de changement de mot de passe",
   "AUTH_RESET_PASSWORD_COMPLETE_FAILED": "Impossible de réinitialiser le mot de passe. Le lien de réinitialisation est peut-être invalide ou expiré.",
   "AUTH_RESET_PASSWORD_COMPLETE_SUCCESS": "Mot de passe mis à jour. Vous pouvez maintenant vous connecter avec votre nouveau mot de passe.",
   "AUTH_RESET_PASSWORD_INSTRUCTIONS": "Pour commencer, exécutez cette commande sur votre serveur puis actualisez cette page. Si vous l'avez déjà fait, la demande de réinitialisation du mot de passe peut avoir expiré. Dans ce cas, veuillez réessayer.",

@@ -264,7 +264,6 @@
   "AUTH_REGISTER_SUBMIT": "Registrar",
   "AUTH_REGISTER_TITLE": "Crie sua conta",
   "AUTH_RESET_PASSWORD_BACK_TO_LOGIN": "Voltar para o login",
-  "AUTH_RESET_PASSWORD_CANCEL": "Cancelar solicitação de alteração de senha",
   "AUTH_RESET_PASSWORD_COMPLETE_FAILED": "Não foi possível redefinir a senha. O link de redefinição pode ser inválido ou ter expirado.",
   "AUTH_RESET_PASSWORD_COMPLETE_SUCCESS": "Senha atualizada. Agora você pode entrar com sua nova senha.",
   "AUTH_RESET_PASSWORD_INSTRUCTIONS": "Para começar, execute este comando em seu servidor e depois atualize esta página. Se você já fez isso anteriormente, a solicitação de redefinição de senha pode ter expirado. Nesse caso, por favor, tente novamente",

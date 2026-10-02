@@ -3,7 +3,7 @@ import path from 'node:path';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { hashEmailForLog } from '@/common/helpers/log-privacy';
 import { describeNetworkError } from '@/common/helpers/network-error';
-import { meetsPasswordComplexity } from '@/common/helpers/password-policy';
+import { meetsPasswordComplexity } from '@ci-hub/common/validation';
 import { CacheService } from '@/core/cache/cache.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { EncryptionService } from '@/core/encryption/encryption.service';

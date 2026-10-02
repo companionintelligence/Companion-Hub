@@ -264,7 +264,6 @@
   "AUTH_REGISTER_SUBMIT": "サインアップ",
   "AUTH_REGISTER_TITLE": "アカウントを作成",
   "AUTH_RESET_PASSWORD_BACK_TO_LOGIN": "ログインページへ戻る",
-  "AUTH_RESET_PASSWORD_CANCEL": "パスワード変更リクエストをキャンセルする",
   "AUTH_RESET_PASSWORD_COMPLETE_FAILED": "パスワードをリセットできませんでした。リセットリンクが無効または期限切れの可能性があります。",
   "AUTH_RESET_PASSWORD_COMPLETE_SUCCESS": "パスワードを更新しました。新しいパスワードでログインできます。",
   "AUTH_RESET_PASSWORD_INSTRUCTIONS": "To get started, run this command on your server and then refresh this page. If you have previously done so, the password reset request may have expired. In that case please retry",

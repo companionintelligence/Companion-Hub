@@ -140,7 +140,7 @@ export default () => {
       );
     }
 
-    return <ResetPasswordForm loading={isCompletionPending} onCancel={() => navigate('/login')} onSubmit={submitCompletion} />;
+    return <ResetPasswordForm loading={isCompletionPending} onSubmit={submitCompletion} />;
   }
 
   if (requestSubmitted) {
