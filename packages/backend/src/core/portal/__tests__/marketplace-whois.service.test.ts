@@ -31,6 +31,7 @@ describe('MarketplaceWhoIsService', () => {
     version: number;
     cachedAt: string;
   }>;
+  let portExposeRows: Array<{ appName: string; config: { kind?: string } | null }>;
 
   const sessionReq = (userId = USER_ID): Request => ({ hubSessionId: 'sess-1', user: { id: userId }, hubPrincipal: 'session' }) as Request;
 
@@ -50,13 +51,17 @@ describe('MarketplaceWhoIsService', () => {
     federatedIdentities = mock<FederatedIdentityRepository>();
     registration = mock<RegistrationService>();
     cacheRows = [];
+    portExposeRows = [];
 
     database.db = {
       select: () => ({
-        from: () => ({
-          where: () => ({
-            limit: async () => cacheRows,
-          }),
+        from: (table: object) => ({
+          where: () => {
+            const rows = 'appName' in table ? portExposeRows : cacheRows;
+            const query = Promise.resolve(rows) as Promise<typeof rows> & { limit: () => Promise<typeof rows> };
+            query.limit = () => Promise.resolve(rows);
+            return query;
+          },
         }),
       }),
       insert: () => ({
@@ -97,6 +102,57 @@ describe('MarketplaceWhoIsService', () => {
     expect(logger.warn).toHaveBeenCalledWith(`whois_skipped_unlinked_operator userId=${USER_ID}`);
     expect(DEFAULT_MEMBER_ACTIONS).toContain('view');
     expect(DEFAULT_MEMBER_ACTIONS).not.toContain('install');
+  });
+
+  it('lets a linked operator manage a local port-expose app without asking WhoIs', async () => {
+    portExposeRows = [{ appName: 'qa-probe', config: { kind: 'port-expose' } }];
+
+    await expect(service.has(USER_ID, 'qa-probe:_user' as AppUrn, 'view')).resolves.toBe(true);
+    await expect(service.has(USER_ID, 'qa-probe:_user' as AppUrn, 'start')).resolves.toBe(true);
+    await expect(service.has(USER_ID, 'qa-probe:_user' as AppUrn, 'stop')).resolves.toBe(true);
+    await expect(service.has(USER_ID, 'qa-probe:_user' as AppUrn, 'uninstall')).resolves.toBe(true);
+    for (const action of ['configure', 'install', 'update', 'reset', 'restart', 'backup', 'restore'] as const) {
+      await expect(service.has(USER_ID, 'qa-probe:_user' as AppUrn, action)).resolves.toBe(false);
+    }
+    await expect(service.assertSessionAction(sessionReq(), 'qa-probe:_user' as AppUrn, 'view')).resolves.toBeUndefined();
+    await expect(service.assertSessionAction(sessionReq(), 'qa-probe:_user' as AppUrn, 'install')).rejects.toMatchObject({
+      message: 'APP_ACTION_GRANT_DENIED',
+    });
+    expect(portal.whoisApps).not.toHaveBeenCalled();
+    expect(cacheRows).toEqual([]);
+  });
+
+  it('still asks WhoIs for a catalog app that shares the port-expose name', async () => {
+    portExposeRows = [{ appName: 'immich', config: { kind: 'port-expose' } }];
+    portal.whoisApps.mockResolvedValue({
+      status: 200,
+      body: {
+        organizations: [{ organizationId: 'org-hub', version: 1, apps: [{ appId: 'immich', can: ['view'] }] }],
+      },
+    });
+
+    await expect(service.has(USER_ID, 'immich:_user' as AppUrn, 'uninstall')).resolves.toBe(true);
+    await expect(service.has(USER_ID, APP_URN, 'uninstall')).resolves.toBe(false);
+    await expect(service.has(USER_ID, APP_URN, 'view')).resolves.toBe(true);
+    expect(portal.whoisApps).toHaveBeenCalledWith({
+      subject: SUBJECT,
+      appIds: ['immich'],
+      surface: 'hub',
+      organizationId: 'org-hub',
+    });
+  });
+
+  it('does not exempt a custom app in _user that is not a port expose', async () => {
+    portExposeRows = [{ appName: 'my-compose', config: { kind: 'custom' } }];
+    portal.whoisApps.mockResolvedValue({
+      status: 200,
+      body: { organizations: [{ organizationId: 'org-hub', version: 1, apps: [] }] },
+    });
+
+    await expect(service.assertSessionAction(sessionReq(), 'my-compose:_user' as AppUrn, 'view')).rejects.toMatchObject({
+      message: 'APP_ACTION_GRANT_DENIED',
+    });
+    expect(portal.whoisApps).toHaveBeenCalledWith(expect.objectContaining({ appIds: ['my-compose'] }));
   });
 
   it('uses WhoIs can[] for a linked operator', async () => {

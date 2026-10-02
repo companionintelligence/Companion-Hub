@@ -2,13 +2,14 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { describeNetworkError } from '@/common/helpers/network-error';
 import { DatabaseService } from '@/core/database/database.service';
-import { whoisCache } from '@/core/database/drizzle/schema';
+import { app, whoisCache } from '@/core/database/drizzle/schema';
 import { LoggerService } from '@/core/logger/logger.service';
 import { FederatedIdentityRepository } from '@/modules/user/federated-identity.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { HttpStatus, Injectable } from '@nestjs/common';
+import { PORT_EXPOSE_KIND } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import type { Request } from 'express';
 
 import { DEFAULT_MEMBER_ACTIONS, type HubAction, HUB_CAPABILITY, isHubAction, MAX_WHOIS_APP_IDS, WHOIS_CACHE_TTL_MS } from './hub-actions';
@@ -18,6 +19,22 @@ import { PortalClientService, type PortalWhoIsResponse } from './portal-client.s
 import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 
 export type GrantSurface = 'hub' | 'store';
+
+/**
+ * Verbs a logged-in operator may use on a port-expose row without a Portal grant.
+ *
+ * `configure` stays off this list too. The exposure editor is its own route and
+ * does not consult WhoIs. The shared configure routes (`update-config`, Hub
+ * access rotation) apply a catalog form, and a pass here would let that form
+ * rewrite the row. `install`, `update`, `reset`, `restart`, `backup`, and
+ * `restore` have no port-expose path and would run the catalog lifecycle.
+ */
+const PORT_EXPOSE_ACTIONS: readonly HubAction[] = ['view', 'start', 'stop', 'uninstall'];
+
+/** The app row stores config as jsonb, so `kind` is checked before it is treated as a port expose. */
+function storedConfigIsPortExpose(config: unknown): boolean {
+  return typeof config === 'object' && config !== null && 'kind' in config && config.kind === PORT_EXPOSE_KIND;
+}
 
 type CachedWhoIs = {
   can: HubAction[];
@@ -327,20 +344,75 @@ export class MarketplaceWhoIsService {
   /** `null` can means WhoIs missed and there is no fresh cache (fail closed on mutate, fail open on list). */
   private async canMap(userId: number, appUrns: AppUrn[], surface: GrantSurface): Promise<Map<string, HubAction[] | null>> {
     const unique = [...new Set(appUrns)];
+    // Resolved from the local row, never from the name alone, and never written
+    // into the WhoIs cache: that cache is keyed by app name, which a catalog
+    // app can share.
+    const local = await this.portExposeGrants(unique);
+    const rest = unique.filter((urn) => !local.has(urn));
+
+    if (rest.length === 0) {
+      return local;
+    }
+
     const subject = await this.portalSubject(userId);
 
     if (!subject) {
       this.logUnlinked(userId);
-      return new Map(unique.map((urn) => [urn, [...DEFAULT_MEMBER_ACTIONS]]));
+      const out = new Map<string, HubAction[] | null>(rest.map((urn) => [urn, [...DEFAULT_MEMBER_ACTIONS]]));
+      for (const [urn, can] of local) {
+        out.set(urn, can);
+      }
+      return out;
     }
 
-    const slugs = unique.map((urn) => extractAppUrn(urn).appName);
+    const slugs = rest.map((urn) => extractAppUrn(urn).appName);
     const bySlug = await this.whoisSlugs(subject, slugs, surface);
     const out = new Map<string, HubAction[] | null>();
-    for (const urn of unique) {
+    for (const urn of rest) {
       const slug = extractAppUrn(urn).appName;
       const can = bySlug.get(slug);
       out.set(urn, can === undefined ? [] : can);
+    }
+    for (const [urn, can] of local) {
+      out.set(urn, can);
+    }
+    return out;
+  }
+
+  /**
+   * Local port-expose workloads are not Portal catalog apps. WhoIs has no row
+   * for them, and a missing catalog name is stored as no grants, which locked
+   * the person who had just created the workload out of its page.
+   *
+   * The exception is the row, not the name and not the `_user` store. A custom
+   * Docker app in `_user` still goes to WhoIs. A catalog app that shares the
+   * name still goes to WhoIs. Nothing is cached under the bare name. The verbs
+   * are `PORT_EXPOSE_ACTIONS`, not the full Hub set.
+   */
+  private async portExposeGrants(urns: AppUrn[]): Promise<Map<AppUrn, HubAction[]>> {
+    const out = new Map<AppUrn, HubAction[]>();
+    const local = urns.filter((urn) => extractAppUrn(urn).appStoreId === '_user');
+    if (local.length === 0) {
+      return out;
+    }
+
+    const names = [...new Set(local.map((urn) => extractAppUrn(urn).appName))];
+    let rows: Array<{ appName: string; config: unknown }> = [];
+    try {
+      rows = await this.database.db
+        .select({ appName: app.appName, config: app.config })
+        .from(app)
+        .where(and(eq(app.appStoreSlug, '_user'), inArray(app.appName, names)));
+    } catch (error) {
+      this.logger.warn(`port_expose_grant_lookup_failed: ${describeNetworkError(error)}`);
+      return out;
+    }
+
+    const grantedNames = new Set(rows.filter((row) => storedConfigIsPortExpose(row.config)).map((row) => row.appName));
+    for (const urn of local) {
+      if (grantedNames.has(extractAppUrn(urn).appName)) {
+        out.set(urn, [...PORT_EXPOSE_ACTIONS]);
+      }
     }
     return out;
   }

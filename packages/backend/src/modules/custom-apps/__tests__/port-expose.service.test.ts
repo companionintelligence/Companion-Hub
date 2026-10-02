@@ -12,6 +12,13 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { PORT_EXPOSE_KIND } from '@ci-hub/common/schemas';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { TranslatableError } from '@/common/error/translatable-error';
+
+vi.mock('../port-expose-reachability', () => ({
+  assertHubCanReachPort: vi.fn().mockResolvedValue(undefined),
+}));
+
+import { assertHubCanReachPort } from '../port-expose-reachability';
 
 describe('PortExposeService', () => {
   let service: PortExposeService;
@@ -121,7 +128,7 @@ describe('PortExposeService', () => {
           port: 8080,
           exposureMode: 'local',
         }),
-      ).rejects.toThrow('CUSTOM_APP_NAME_NO_SLUG');
+      ).rejects.toMatchObject({ message: 'CUSTOM_APP_NAME_NO_SLUG' });
     });
 
     it('throws when the derived slug is reserved', async () => {
@@ -131,7 +138,7 @@ describe('PortExposeService', () => {
           port: 8080,
           exposureMode: 'local',
         }),
-      ).rejects.toThrow('CUSTOM_APP_NAME_RESERVED');
+      ).rejects.toMatchObject({ message: 'CUSTOM_APP_NAME_RESERVED' });
     });
 
     it('throws when cloudflare mode is missing a subdomain', async () => {
@@ -141,7 +148,7 @@ describe('PortExposeService', () => {
           port: 8080,
           exposureMode: 'cloudflare',
         }),
-      ).rejects.toThrow('PORT_EXPOSE_SUBDOMAIN_REQUIRED');
+      ).rejects.toMatchObject({ message: 'PORT_EXPOSE_SUBDOMAIN_REQUIRED' });
     });
 
     it('throws when app name already exists', async () => {
@@ -153,7 +160,24 @@ describe('PortExposeService', () => {
           port: 8080,
           exposureMode: 'local',
         }),
-      ).rejects.toThrow('CUSTOM_APP_ERROR_DUPLICATE_NAME');
+      ).rejects.toMatchObject({ message: 'CUSTOM_APP_ERROR_DUPLICATE_NAME' });
+    });
+
+    it('does not publish a port the Hub cannot open', async () => {
+      vi.mocked(assertHubCanReachPort).mockRejectedValueOnce(
+        new TranslatableError('PORT_EXPOSE_PORT_UNREACHABLE', { port: '18765', host: 'host.docker.internal' }, 400),
+      );
+
+      await expect(
+        service.createPortExposeApp({
+          name: 'QA Probe',
+          port: 18765,
+          exposureMode: 'local',
+        }),
+      ).rejects.toMatchObject({ message: 'PORT_EXPOSE_PORT_UNREACHABLE' });
+
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
+      expect(traefikConfigService.syncPortExposeRoutes).not.toHaveBeenCalled();
     });
   });
 
@@ -203,7 +227,7 @@ describe('PortExposeService', () => {
           port: 8080,
           exposureMode: 'cloudflare',
         }),
-      ).rejects.toThrow('PORT_EXPOSE_SUBDOMAIN_REQUIRED');
+      ).rejects.toMatchObject({ message: 'PORT_EXPOSE_SUBDOMAIN_REQUIRED' });
     });
 
     it('throws when another app already uses the port', async () => {
@@ -214,7 +238,7 @@ describe('PortExposeService', () => {
           port: 9090,
           exposureMode: 'local',
         }),
-      ).rejects.toThrow('APP_ERROR_PORT_ALREADY_IN_USE');
+      ).rejects.toMatchObject({ message: 'APP_ERROR_PORT_ALREADY_IN_USE' });
     });
 
     it('removes portal registry entry when switching from local to cloudflare', async () => {

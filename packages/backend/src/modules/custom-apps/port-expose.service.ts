@@ -17,6 +17,7 @@ import { ExposureSyncService } from '../app-lifecycle/exposure-sync.service';
 import { DeviceRegistrationRepository } from '../registration/device-registration.repository';
 import { TraefikConfigService, type PortExposeRoute } from '../docker/traefik-config.service';
 import type { CreatePortExposeAppDto, UpdatePortExposeAppDto } from './dto/custom-apps.dto';
+import { assertHubCanReachPort } from './port-expose-reachability';
 
 const APPS_FOLDER = '_user';
 
@@ -56,6 +57,8 @@ export class PortExposeService {
     if (exposureMode === 'cloudflare' && !localSubdomain?.trim()) {
       throw new TranslatableError('PORT_EXPOSE_SUBDOMAIN_REQUIRED', undefined, HttpStatus.BAD_REQUEST);
     }
+
+    await assertHubCanReachPort(port);
 
     const appUrn = createAppUrn(slug, APPS_FOLDER);
     const existingApp = await this.appsRepository.getAppByUrn(appUrn);
@@ -169,6 +172,8 @@ export class PortExposeService {
         });
       }
     }
+
+    await assertHubCanReachPort(port);
 
     try {
       await this.updatePortExposeConfigJson(appUrn, port);
