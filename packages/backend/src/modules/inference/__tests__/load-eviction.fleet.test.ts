@@ -5,6 +5,7 @@ import { sameModelId } from '@/common/helpers/hub-pool';
 import { LoggerService } from '@/core/logger/logger.service';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY, type LocalGeneration, type LocalModelWork } from '@/modules/hub-pool/hub-pool-load.service';
+import { InferenceController } from '../inference.controller';
 import { InferenceRouterService } from '../inference-router.service';
 import { MemoryManagerService } from '../memory-manager.service';
 import { ModelRegistryService } from '../model-registry.service';
@@ -268,7 +269,13 @@ function world(
     const row = registry.getCuratedModel(catalogId);
     (row?.backend === 'lemonade' && lemonade ? lemonade.installed : ollama.installed).add(row?.backendModelId ?? catalogId);
   };
-  return { router, registry, poolLoad, delay, pulled, logger };
+  return { router, registry, poolLoad, delay, pulled, logger, residency, memory, puller, profile };
+}
+
+/** A model in memory that this Hub loaded itself, as `ModelPullerService.loadModel` records one. */
+function hubLoaded(registry: ModelRegistryService, catalogId: string): void {
+  registry.trackModel(catalogId, 'loaded');
+  registry.markHubLoaded(catalogId);
 }
 
 describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () => {
@@ -297,13 +304,52 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
     it('never evicts a model the Hub loaded while a generation is running on it', async () => {
       ollama.hold('gemma4:e4b', 6_640, { busy: true });
       const w = world(BETA_1, ollama, { 'qwen3-coder-30b': 19_000 });
-      w.registry.trackModel('gemma4-e4b', 'loaded');
+      hubLoaded(w.registry, 'gemma4-e4b');
       w.pulled('qwen3-coder-30b');
       w.poolLoad.acquire(LOCAL_CANDIDATE_KEY, HERMES_TURN);
 
       const outcome = await w.router.loadTrackedModel('qwen3-coder-30b', { origin: 'request', numCtx: null });
 
-      expect(outcome).toEqual({ loaded: false, reason: expect.stringContaining('gemma4:e4b is serving a request') });
+      expect(outcome).toEqual({ loaded: false, reason: expect.stringContaining('gemma4:e4b is serving a request'), idleWouldFree: true });
+      expect(ollama.unloads).toEqual([]);
+    });
+
+    // beta-red, 2026-10-01: gemma3:4b was loaded by Ollama for an app; the models page asked
+    // `GET /models/tracked`, which recorded it `loaded`, and the next pool request for qwen3:8b evicted it.
+    it('never evicts a model the models page only found resident (GET /models/tracked reconciles it to loaded)', async () => {
+      ollama.hold('gemma4:e4b', 6_640);
+      const w = world(BETA_1, ollama, { 'qwen3-coder-30b': 19_000 });
+      w.pulled('qwen3-coder-30b');
+      const controller = Object.assign(Object.create(InferenceController.prototype), { residency: w.residency, modelRegistry: w.registry });
+
+      const listed = await (controller as InferenceController).getTrackedModels();
+
+      expect(listed.find((entry) => entry.catalogId === 'gemma4-e4b')?.state).toBe('loaded');
+      await expect(w.router.prepareTrackedModel('qwen3-coder:30b')).resolves.toBeNull();
+      expect(ollama.unloads).toEqual([]);
+      expect(ollama.resident.has('gemma4:e4b')).toBe(true);
+    });
+
+    it('evicts a model once the Hub loaded it itself, through the puller, whoever asked it to', async () => {
+      const w = world(BETA_1, ollama, { 'gemma4-e4b': 6_640, 'qwen3-coder-30b': 19_000 });
+      w.pulled('gemma4-e4b');
+      w.pulled('qwen3-coder-30b');
+      await expect(w.router.loadTrackedModel('gemma4-e4b', { origin: 'request', numCtx: null })).resolves.toEqual({ loaded: true });
+
+      await expect(w.router.prepareTrackedModel('qwen3-coder:30b')).resolves.toEqual({ backend: 'ollama', backendModelId: 'qwen3-coder:30b' });
+      expect(ollama.unloads).toEqual(['gemma4:e4b']);
+    });
+
+    it('does not take a model the Hub adopted for one it loaded', async () => {
+      ollama.hold('gemma4:e4b', 6_640);
+      const w = world(BETA_1, ollama, { 'gemma4-e4b': 6_640, 'qwen3-coder-30b': 19_000 });
+      w.pulled('gemma4-e4b');
+      w.pulled('qwen3-coder-30b');
+      // A request for the resident model adopts it as loaded.
+      await expect(w.router.prepareTrackedModel('gemma4:e4b')).resolves.toEqual({ backend: 'ollama', backendModelId: 'gemma4:e4b' });
+      expect(w.registry.getTrackedModel('gemma4-e4b')?.state).toBe('loaded');
+
+      await expect(w.router.prepareTrackedModel('qwen3-coder:30b')).resolves.toBeNull();
       expect(ollama.unloads).toEqual([]);
     });
 
@@ -319,7 +365,7 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
     it('evicts an idle model the Hub loaded itself, then loads', async () => {
       ollama.hold('gemma4:e4b', 6_640);
       const w = world(BETA_1, ollama, { 'qwen3-coder-30b': 19_000 });
-      w.registry.trackModel('gemma4-e4b', 'loaded');
+      hubLoaded(w.registry, 'gemma4-e4b');
       w.pulled('qwen3-coder-30b');
 
       await expect(w.router.prepareTrackedModel('qwen3-coder:30b')).resolves.toEqual({ backend: 'ollama', backendModelId: 'qwen3-coder:30b' });
@@ -335,7 +381,7 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
     it("refuses without evicting when the Hub load's real size cannot cover the shortfall — beta-1, qwen3.8:27b", async () => {
       ollama.hold('gemma4:e4b', 6_640);
       const w = world(BETA_1, ollama, { 'qwen3-8-27b': 24_371 });
-      w.registry.trackModel('gemma4-e4b', 'loaded');
+      hubLoaded(w.registry, 'gemma4-e4b');
       w.pulled('qwen3-8-27b');
 
       const outcome = await w.router.loadTrackedModel('qwen3-8-27b', { origin: 'request', numCtx: null });
@@ -351,8 +397,8 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
       ollama.hold('gemma4:e4b', 5_550, { sizeVramMb: 3_208, busy: true });
       ollama.hold('nomic-embed-text:latest', 900, { sizeVramMb: 300, busy: true });
       const w = world(BETA_RED, ollama, { 'qwen3-5-4b': 3_700 });
-      w.registry.trackModel('gemma4-e4b', 'loaded');
-      w.registry.trackModel('nomic-embed-text', 'loaded');
+      hubLoaded(w.registry, 'gemma4-e4b');
+      hubLoaded(w.registry, 'nomic-embed-text');
       w.pulled('qwen3-5-4b');
       w.poolLoad.acquire(LOCAL_CANDIDATE_KEY, HERMES_TURN);
       // Memory's `/api/embed` through the pool proxy, as the proxy records it.
@@ -361,7 +407,11 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
 
       const outcome = await w.router.loadTrackedModel('qwen3-5-4b', { origin: 'request', numCtx: null });
 
-      expect(outcome).toEqual({ loaded: false, reason: expect.stringContaining('gemma4:e4b, nomic-embed-text:latest are serving a request') });
+      expect(outcome).toEqual({
+        loaded: false,
+        reason: expect.stringContaining('gemma4:e4b, nomic-embed-text:latest are serving a request'),
+        idleWouldFree: true,
+      });
       expect(ollama.unloads).toEqual([]);
       expect(ollama.resident.get('nomic-embed-text:latest')?.expireOnIdle).toBe(false);
     });
@@ -407,7 +457,7 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
     it("sizes a Hub load by the engine's process figure, not the catalog's — beta-red, llama3.1:8b", async () => {
       ollama.hold('gemma4:e4b', 5_550, { sizeVramMb: 3_208 });
       const w = world(BETA_RED, ollama, { 'llama3-1-8b': 8_592 });
-      w.registry.trackModel('gemma4-e4b', 'loaded');
+      hubLoaded(w.registry, 'gemma4-e4b');
       w.pulled('llama3-1-8b');
 
       await expect(w.router.loadTrackedModel('llama3-1-8b', { origin: 'request', numCtx: null })).resolves.toEqual({ loaded: true });
@@ -464,8 +514,27 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
         reason:
           'qwen3-coder-30b needs 19000 MB but only 17408 MB is free, and unloading every idle unpinned model would free 0 MB; ' +
           'gemma4:e4b is serving a request and will not be unloaded',
+        idleWouldFree: true,
       });
       expect(ollama.unloads).toEqual([]);
+    });
+
+    // beta-red, 2026-10-01: an unload followed 2 s later by a pin was refused 'needs 9694 MB but only
+    // 1058 MB is free ... would free 0 MB' on an empty card; the same pin 7 s later was accepted.
+    it('loads straight after an unload, without reading the card as it was before it', async () => {
+      ollama.hold('gemma4:e4b', 6_640);
+      const w = world(BETA_1, ollama, { 'gemma4-e4b': 6_640, 'qwen3-coder-30b': 19_000 });
+      w.pulled('gemma4-e4b');
+      w.pulled('qwen3-coder-30b');
+      // The budget the dashboard or the last request asked for, still inside its 5 s.
+      expect((await w.memory.calculateBudget(w.profile)).modelUsedVramMb).toBe(6_640);
+
+      await w.puller.unloadModel('gemma4-e4b');
+      const outcome = await w.router.loadTrackedModel('qwen3-coder-30b', { origin: 'operator' });
+
+      expect(outcome).toEqual({ loaded: true });
+      expect(ollama.unloads).toEqual(['gemma4:e4b']);
+      expect(ollama.loads).toEqual(['qwen3-coder:30b']);
     });
 
     it('evicts it once the turn has ended', async () => {
