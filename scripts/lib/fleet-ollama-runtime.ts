@@ -47,6 +47,7 @@ import {
   parseShowEnvironment,
   systemdNameCompare,
 } from './fleet-ollama-bind.js';
+import { hubOperatorKeyShell } from './hub-operator-key.js';
 
 /**
  * Five `z`s for the same reason the bind file has them: systemd sorts drop-ins with `strcmp`, and
@@ -548,13 +549,7 @@ export function hubContextCapShell(
         ];
   return [
     'set +e',
-    'cihub_cap_key=""',
-    "if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx ci-hub; then",
-    `  cihub_cap_key="$(docker exec ci-hub node -e 'try{const s=require("/data/state/settings.json");process.stdout.write(String(s.ciHubApiKey||""))}catch{}' 2>/dev/null)"`,
-    'fi',
-    `if [ -z "$cihub_cap_key" ] && [ -r '${hostSettings}' ]; then`,
-    `  cihub_cap_key="$(sed -n 's/.*"ciHubApiKey"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' '${hostSettings}' | head -1)"`,
-    'fi',
+    ...hubOperatorKeyShell('cihub_cap_key', hostSettings),
     'cihub_cap_body="$(mktemp)"',
     'if [ -z "$cihub_cap_key" ]; then',
     `  echo "${m.key} missing"`,
