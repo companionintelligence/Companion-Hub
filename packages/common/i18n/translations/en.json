@@ -1335,6 +1335,7 @@
   "APP_STORE_RECENT_SECTION_TITLE": "Recently Added",
   "APP_STORE_RECENT_SECTION_SUBTITLE": "The latest additions to the marketplace",
   "APP_STORE_FEATURED_SHOW_LESS": "Show less",
+  "APP_STORE_FEATURED_SHOW_MORE": "Show more",
   "APP_STORE_FEATURED_VIEW_ALL": "View all {{count}}",
   "APP_STORE_PROPRIETARY": "Proprietary",
   "APP_STORE_OPEN_SOURCE_ALTERNATIVES": "Open Source Alternatives",
