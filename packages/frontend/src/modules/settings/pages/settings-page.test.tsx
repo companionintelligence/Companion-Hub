@@ -65,9 +65,9 @@ describe('SettingsPage', () => {
 
     const tabsList = screen.getByRole('tablist');
     expect(tabsList.parentElement).toHaveClass('flex', 'justify-center', 'min-w-0');
-    // The strip is inline-flex and wider than a phone. It has to shrink and scroll
-    // inside itself, or that width becomes the page and the phone pans sideways.
-    expect(tabsList).toHaveClass('w-full', 'min-w-0', 'overflow-x-auto');
+    // The labels are centered in the column. A phone still scrolls the strip, but
+    // the desktop bar does not: a scrollbar there shifts the row off center.
+    expect(tabsList).toHaveClass('w-full', 'min-w-0', 'justify-center', 'overflow-x-hidden', 'max-md:overflow-x-auto');
 
     const scrollContainer = screen.getByTestId('settings-scroll-container');
     const innerWrapper = scrollContainer.firstElementChild as HTMLElement;

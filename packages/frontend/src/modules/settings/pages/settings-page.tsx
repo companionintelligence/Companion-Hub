@@ -45,15 +45,14 @@ export default () => {
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <Tabs value={currentTab} onValueChange={handleTabChange} className="flex h-full min-h-0 min-w-0 w-full flex-1 flex-col">
           <div className="mx-auto flex w-full min-w-0 max-w-5xl justify-center">
-            {/* One scrolling strip, not six tabs plus a "More" dropdown.
-                The dropdown was three separate defects: the active tab lost its indicator
-                whenever it lived inside it, the items were DropdownMenuItems rather than
-                tabs so the tablist told a screen reader it had two children when it has
-                eight, and roving arrow-key focus stopped at the visible pair. All eight
-                triggers measure 598px, which scrolls comfortably in the 358px mobile pane,
-                so the strip is simply better on every axis. min-w-0 keeps that width
-                inside the strip instead of letting it widen the settings column. */}
-            <TabsList className="w-full min-w-0 max-w-full justify-start overflow-x-auto border border-border/50 bg-card/50 md:justify-center">
+            {/* One strip, not six tabs plus a "More" dropdown. The dropdown hid the
+                active tab, lied to the tablist about how many tabs exist, and stopped
+                arrow-key focus. The eight labels fit this column, so they stay centered
+                and do not scroll: overflow-x-auto painted a scrollbar for the active
+                tab's shadow and shifted the row off center. Below the md breakpoint the
+                same labels are wider than a phone, so that pane still scrolls inside
+                the strip instead of widening the page. */}
+            <TabsList className="w-full min-w-0 max-w-full justify-center overflow-x-hidden border border-border/50 bg-card/50 max-md:justify-start max-md:overflow-x-auto max-md:[scrollbar-width:none] max-md:[&::-webkit-scrollbar]:hidden">
               <TabsTrigger value="settings">{t('COMMON_SETTINGS')}</TabsTrigger>
               <TabsTrigger value="security">{t('COMMON_SECURITY')}</TabsTrigger>
               <TabsTrigger value="appstores">{t('COMMON_APP_STORES')}</TabsTrigger>
