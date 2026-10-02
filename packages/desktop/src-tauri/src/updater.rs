@@ -1,10 +1,10 @@
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock, PoisonError};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
@@ -154,9 +154,16 @@ pub struct UpdateProgress {
 
 static UPDATE_PROGRESS: OnceLock<Mutex<Option<UpdateProgress>>> = OnceLock::new();
 static HOST_UPDATE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
-/// Held while the update listener answers a request, so moving onto a new program never cuts one
-/// off.
+/// Held while the update listener answers a request whose headers have already arrived, so moving
+/// onto a new program never cuts one off. Waiting for those bytes does not take it: a silent
+/// socket would otherwise freeze the swap for as long as the read blocked.
 static LISTENER_BUSY: Mutex<()> = Mutex::new(());
+/// Shorter than the Hub's 1.5 s probe, so a socket that never speaks is gone before Settings
+/// decides the desktop app is down.
+const LISTENER_HEADER_DEADLINE: Duration = Duration::from_secs(1);
+const LISTENER_MAX_HEADER_BYTES: usize = 4096;
+/// One silent connection must not occupy every worker the Hub's health check needs.
+const LISTENER_MAX_WORKERS: usize = 4;
 
 /// Ensures only one host update runs at a time (listener retries, double-clicks, CLI + UI).
 struct HostUpdateGuard;
@@ -1327,13 +1334,45 @@ pub fn run_update_cli(check_only: bool) -> Result<i32, String> {
     Ok(0)
 }
 
-fn handle_update_http_request(mut stream: TcpStream, data_dir: &Path) {
-    let mut buffer = [0u8; 4096];
-    let read = stream.read(&mut buffer).unwrap_or(0);
-    if read == 0 {
-        return;
+/// Headers of one request, or nothing when the peer closed, stalled, or never finished them.
+///
+/// One `read` used to decide the request. A header that arrived in a second packet lost its
+/// token, and a peer that sent nothing held the only thread until it hung up.
+fn read_request_headers(stream: &mut TcpStream) -> std::io::Result<Option<String>> {
+    stream.set_write_timeout(Some(LISTENER_HEADER_DEADLINE))?;
+    let mut buf = vec![0u8; LISTENER_MAX_HEADER_BYTES];
+    let mut filled = 0usize;
+    let deadline = Instant::now() + LISTENER_HEADER_DEADLINE;
+    while filled < LISTENER_MAX_HEADER_BYTES {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        stream.set_read_timeout(Some(remaining))?;
+        match stream.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => {
+                filled += n;
+                if buf[..filled].windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            Err(error)
+                if error.kind() == ErrorKind::WouldBlock || error.kind() == ErrorKind::TimedOut =>
+            {
+                break;
+            }
+            Err(error) => return Err(error),
+        }
     }
-    let request = String::from_utf8_lossy(&buffer[..read]);
+    if filled == 0 || !buf[..filled].windows(4).any(|window| window == b"\r\n\r\n") {
+        return Ok(None);
+    }
+    Ok(Some(String::from_utf8_lossy(&buf[..filled]).into_owned()))
+}
+
+fn respond_to_update_request(stream: &mut TcpStream, request: &str, data_dir: &Path) {
     let is_post_update = request.starts_with("POST /update");
     let (status, body) = if is_post_update {
         match authorize_update_listener_request(&request, data_dir) {
@@ -1359,6 +1398,43 @@ fn handle_update_http_request(mut stream: TcpStream, data_dir: &Path) {
         body
     );
     let _ = stream.write_all(response.as_bytes());
+}
+
+/// Reads the headers first, then answers. The busy lock covers only the answer, so a socket that
+/// has not spoken yet does not stop another request, or the swap onto a replaced program.
+fn serve_one_update_connection(mut stream: TcpStream, data_dir: &Path) {
+    let request = match read_request_headers(&mut stream) {
+        Ok(Some(request)) => request,
+        _ => return,
+    };
+    let _busy = LISTENER_BUSY.lock().unwrap_or_else(PoisonError::into_inner);
+    respond_to_update_request(&mut stream, &request, data_dir);
+}
+
+/// Accepts until `listener` closes. Each connection is its own thread, up to
+/// [`LISTENER_MAX_WORKERS`]. Past that the new socket is closed and the loop keeps accepting, so
+/// one silent peer cannot sit in front of the Hub's health check.
+fn accept_update_connections(listener: TcpListener, data_dir: PathBuf) {
+    let workers = Arc::new(AtomicUsize::new(0));
+    for stream in listener.incoming().flatten() {
+        if workers.fetch_add(1, Ordering::SeqCst) >= LISTENER_MAX_WORKERS {
+            workers.fetch_sub(1, Ordering::SeqCst);
+            drop(stream);
+            continue;
+        }
+        let workers = Arc::clone(&workers);
+        let data_dir = data_dir.clone();
+        std::thread::spawn(move || {
+            struct Released(Arc<AtomicUsize>);
+            impl Drop for Released {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, Ordering::SeqCst);
+                }
+            }
+            let _released = Released(workers);
+            serve_one_update_connection(stream, &data_dir);
+        });
+    }
 }
 
 /// In `state/` because the Hub container mounts that folder (as `/data/state`) but not the data
@@ -1541,10 +1617,7 @@ pub fn run_update_listener() {
     };
     #[cfg(unix)]
     move_onto_replaced_program_when_idle();
-    for stream in listener.incoming().flatten() {
-        let _busy = LISTENER_BUSY.lock().unwrap_or_else(PoisonError::into_inner);
-        handle_update_http_request(stream, &data_dir);
-    }
+    accept_update_connections(listener, data_dir);
 }
 
 /// The listener outlives the app, so an update installed while it runs would leave it answering
@@ -1787,6 +1860,78 @@ mod tests {
     fn mode_of(path: &Path) -> u32 {
         use std::os::unix::fs::PermissionsExt;
         std::fs::metadata(path).expect("stat").permissions().mode() & 0o777
+    }
+
+    fn spawn_test_update_listener(token: &str) -> (std::net::SocketAddr, tempfile::TempDir) {
+        let data_dir = data_dir_with_state_token(token);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let addr = listener.local_addr().expect("addr");
+        let path = data_dir.path().to_path_buf();
+        std::thread::spawn(move || accept_update_connections(listener, path));
+        (addr, data_dir)
+    }
+
+    fn read_listener_response(stream: &mut TcpStream) -> String {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("timeout");
+        let mut buf = Vec::new();
+        let _ = stream.read_to_end(&mut buf);
+        String::from_utf8_lossy(&buf).into_owned()
+    }
+
+    #[test]
+    fn silent_connection_does_not_stop_a_health_check() {
+        let (addr, _data_dir) = spawn_test_update_listener("health-token");
+        let _silent = TcpStream::connect(addr).expect("silent connect");
+        std::thread::sleep(Duration::from_millis(50));
+        let started = Instant::now();
+        let mut health = TcpStream::connect(addr).expect("health connect");
+        health
+            .write_all(b"GET /health HTTP/1.1\r\nAuthorization: Bearer health-token\r\n\r\n")
+            .expect("write health");
+        let response = read_listener_response(&mut health);
+        assert!(
+            started.elapsed() < Duration::from_millis(900),
+            "health waited on the silent socket: {response}"
+        );
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.contains("\r\n\r\nok"));
+    }
+
+    #[test]
+    fn split_headers_still_authorize() {
+        let (addr, _data_dir) = spawn_test_update_listener("split-token");
+        let mut health = TcpStream::connect(addr).expect("connect");
+        std::thread::sleep(Duration::from_millis(50));
+        health
+            .write_all(b"GET /health HTTP/1.1\r\n")
+            .expect("write request line");
+        std::thread::sleep(Duration::from_millis(200));
+        health
+            .write_all(b"Authorization: Bearer split-token\r\n\r\n")
+            .expect("write authorization");
+        let response = read_listener_response(&mut health);
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    }
+
+    #[test]
+    fn unfinished_headers_are_dropped_without_a_refusal() {
+        let (addr, _data_dir) = spawn_test_update_listener("drop-token");
+        let mut stalled = TcpStream::connect(addr).expect("connect");
+        stalled
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("timeout");
+        let started = Instant::now();
+        let mut buf = Vec::new();
+        let read = stalled.read_to_end(&mut buf);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "stalled socket was not dropped"
+        );
+        assert!(read.is_ok(), "stalled socket was not closed: {read:?}");
+        let response = String::from_utf8_lossy(&buf);
+        assert!(!response.contains("401"), "{response}");
     }
 
     #[test]
