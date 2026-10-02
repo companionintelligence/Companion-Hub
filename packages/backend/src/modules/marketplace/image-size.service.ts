@@ -39,6 +39,13 @@ export function parseDockerImageRef(image: string): { registry: string; reposito
   } else {
     tag = name.slice(atIndex + 1);
     name = name.slice(0, atIndex);
+    // name:tag@digest keeps the tag on the repository unless it is stripped here.
+    // The registry then 404s on /v2/<repo>:<tag>/manifests/<digest>.
+    const digestNameSlash = name.lastIndexOf('/');
+    const digestNameColon = name.lastIndexOf(':');
+    if (digestNameColon !== -1 && digestNameColon > digestNameSlash) {
+      name = name.slice(0, digestNameColon);
+    }
   }
 
   if (!name) {

@@ -51,6 +51,19 @@ describe('parseDockerImageRef', () => {
     });
   });
 
+  it('drops the tag from a tag-and-digest reference so the repository path stays valid', () => {
+    expect(parseDockerImageRef('ghcr.io/companionintelligence/ci-openclaw:2026.10.2@sha256:e7d9de7f')).toEqual({
+      registry: 'ghcr.io',
+      repository: 'companionintelligence/ci-openclaw',
+      tag: 'sha256:e7d9de7f',
+    });
+    expect(parseDockerImageRef('my.registry:5000/ns/repo:tag@sha256:abc')).toEqual({
+      registry: 'my.registry:5000',
+      repository: 'ns/repo',
+      tag: 'sha256:abc',
+    });
+  });
+
   it('parses localhost registry references', () => {
     expect(parseDockerImageRef('localhost:5000/myimage:v1')).toEqual({
       registry: 'localhost:5000',
