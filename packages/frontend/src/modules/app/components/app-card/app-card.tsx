@@ -1,4 +1,3 @@
-import { Button } from '@/components/ui/Button';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { GlassContainer } from '@/components/ui/glass-container';
 import { getMarketplaceAppImageUrl } from '@/lib/marketplace-image-url';
@@ -110,13 +109,14 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled, i
 
         <div className="flex items-center justify-end mt-auto">
           {isInstalled ? (
-            <div className="h-8 w-8 rounded-full flex items-center justify-center bg-success/20">
-              <Check className="w-4 h-4 text-success" />
-            </div>
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-success/20" title={t('APP_CARD_INSTALLED')}>
+              <Check className="h-4 w-4 text-success" aria-hidden />
+              <span className="sr-only">{t('APP_CARD_INSTALLED')}</span>
+            </span>
           ) : (
-            <Button variant="ghost" size="sm" className="h-8 w-8 rounded-full p-0">
-              <Download className="w-4 h-4" />
-            </Button>
+            <span className="flex h-8 w-8 items-center justify-center rounded-full" aria-hidden>
+              <Download className="h-4 w-4" />
+            </span>
           )}
         </div>
       </GlassContainer>

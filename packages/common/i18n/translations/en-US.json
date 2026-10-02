@@ -433,6 +433,7 @@
   "APP_STATUS_RUNNING_PROPAGATING": "Running (DNS propagating...)",
   "APP_STATUS_RUNNING_PROPAGATING_DETAIL": "The app is running. Its public web address is still coming up.",
   "APP_STATUS_STOPPED": "Stopped",
+  "APP_CARD_INSTALLED": "Installed",
   "APP_STATUS_DEGRADED": "Needs attention",
   "APP_STATUS_STOPPING": "Stopping",
   "APP_STATUS_RESTARTING": "Restarting",
