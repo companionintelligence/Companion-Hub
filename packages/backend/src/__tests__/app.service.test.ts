@@ -160,7 +160,7 @@ describe('AppService', () => {
         [path.join(APP_DIR, 'assets', 'traefik', 'traefik.yml')]:
           'entryPoints:\n  web:\n    forwardedHeaders:\n      trustedIPs:\n        - 10.128.0.3/32 # edge hop: cloudflared\n        - 10.128.0.4/32 # edge hop: hub-tailscale\n  websecure:\n    forwardedHeaders:\n      trustedIPs:\n        - 10.128.0.3/32 # edge hop: cloudflared\n        - 10.128.0.4/32 # edge hop: hub-tailscale\ncertificatesResolvers:\n  letsencrypt:\n    acme:\n      email: {{ACME_EMAIL}}',
         [path.join(APP_DIR, 'assets', 'traefik', 'dynamic', 'dynamic.yml')]:
-          'http:\n  middlewares:\n    ci-hub:\n      forwardAuth:\n        address: http://{{HUB_CONTAINER_NAME}}:5002/api/auth/traefik',
+          'http:\n  middlewares:\n    ci-hub:\n      forwardAuth:\n        address: http://ci-hub:5002/api/auth/traefik # hub container',
       });
 
       const traefikConfigPath = path.join(DATA_DIR, 'state', 'traefik', 'config', 'traefik.yml');

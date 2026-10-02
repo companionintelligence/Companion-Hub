@@ -62,7 +62,7 @@ describe('traefik ci-hub-app-starting middleware config', () => {
     // `{url}` would put the visitor's full URL, tokens in its query string and all, on the Hub's
     // request line. The Host header already says which app it is.
     expect(query).not.toContain('{url}');
-    expect(dynamic.http.services[service].loadBalancer.servers).toEqual([{ url: 'http://{{HUB_CONTAINER_NAME}}:5002' }]);
+    expect(dynamic.http.services[service].loadBalancer.servers).toEqual([{ url: 'http://ci-hub:5002' }]);
   });
 
   it("passes the visitor's Host through, which is how the Hub knows the app", () => {
@@ -79,16 +79,13 @@ describe('traefik ci-hub-app-starting middleware config', () => {
   });
 
   /*
-   * Traefik's file provider reads every file as a Go template: any `{{` left in it after the Hub's
-   * config-copy substitution is a template error, and Traefik then drops the WHOLE file — forward
-   * auth, the edge-header strip and this page with it. Measured on traefik:v3.6.7.
+   * Traefik's file provider reads every file as a Go template, comments included: any `{{` in it is a
+   * template error, and Traefik then drops the WHOLE file, forward auth, the edge-header strip and this
+   * page with it. Measured on traefik:v3.6.7. The desktop app and the CLI write the asset as shipped,
+   * before the Hub has run, so the asset itself must have none (Companion-Hub#1832).
    */
-  it('leaves no template braces once the Hub has filled in its container name', () => {
-    const asset = read(DYNAMIC_YML);
-    const copied = asset.replaceAll('{{HUB_CONTAINER_NAME}}', 'ci-hub');
-
-    expect(asset.match(/\{\{[^}]*\}\}/g)?.every((placeholder) => placeholder === '{{HUB_CONTAINER_NAME}}')).toBe(true);
-    expect(copied).not.toContain('{{');
+  it('has no template braces as shipped', () => {
+    expect(read(DYNAMIC_YML)).not.toContain('{{');
   });
 
   it("stays off the Hub's own routes", () => {

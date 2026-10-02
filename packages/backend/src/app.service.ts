@@ -2,8 +2,9 @@ import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Inject, Injectable, type OnApplicationShutdown } from '@nestjs/common';
-import { APP_DATA_DIR, DATA_DIR, HUB_MANAGED_LABEL, HUB_STACK_REGISTRY_REPO, hubContainerName } from './common/constants';
+import { APP_DATA_DIR, DATA_DIR, HUB_MANAGED_LABEL, HUB_STACK_REGISTRY_REPO } from './common/constants';
 import { redactSecretsForLog } from './common/helpers/log-privacy';
+import { fillHubContainerName } from './common/helpers/traefik-hub-address';
 import { withTimeout } from './common/helpers/with-timeout';
 import { CacheService, ONE_DAY_IN_SECONDS } from './core/cache/cache.service';
 import { resolveHubBuildInfo } from './core/build-info/hub-build-info';
@@ -350,8 +351,10 @@ export class AppService implements OnApplicationShutdown {
       // Copy dynamic config
       const dynamicDestDir = path.join(dataDir, 'state', 'traefik', 'dynamic');
       await this.filesystem.createDirectory(dynamicDestDir);
+      // The desktop app writes this file as shipped on every launch, so on the default container name
+      // the Hub must leave it exactly as shipped too. See fillHubContainerName.
       await this.copyTraefikConfigFile(path.join(assetsTraefikDir, 'dynamic', 'dynamic.yml'), path.join(dynamicDestDir, 'dynamic.yml'), (content) =>
-        content.replaceAll('{{HUB_CONTAINER_NAME}}', hubContainerName()),
+        fillHubContainerName(content),
       );
     } catch (error) {
       this.logger.warn(`Failed to copy Traefik config files: ${error instanceof Error ? error.message : error}. Traefik may not start correctly.`);
