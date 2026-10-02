@@ -40,6 +40,7 @@ export const AccessMethodsCard = ({
           className={cn(
             'flex cursor-pointer items-start gap-3 rounded-md border p-4 transition-colors',
             webSelected ? 'border-primary bg-primary/[0.06] ring-1 ring-primary/30' : 'border-border hover:border-primary/40 hover:bg-muted/40',
+            'has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-primary has-[:focus-visible]:ring-offset-2',
           )}
         >
           <input
@@ -72,6 +73,7 @@ export const AccessMethodsCard = ({
             className={cn(
               'flex cursor-pointer items-start gap-3 rounded-md border p-4 transition-colors',
               vpnSelected ? 'border-primary bg-primary/[0.06] ring-1 ring-primary/30' : 'border-border hover:border-primary/40 hover:bg-muted/40',
+              'has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-primary has-[:focus-visible]:ring-offset-2',
             )}
           >
             <input

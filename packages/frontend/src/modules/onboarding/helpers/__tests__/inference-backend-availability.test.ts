@@ -6,6 +6,7 @@ import {
   hubLoadableSelection,
   hiddenInferenceBackends,
   isAppleSiliconMacProfile,
+  localEngineBlocksFinish,
   isHubLoadableBackend,
   recommendedInferenceBackend,
   unavailableInferenceBackends,
@@ -86,6 +87,19 @@ describe('inference-backend-availability', () => {
       expect(isHubLoadableBackend('omlx')).toBe(false);
       expect(isHubLoadableBackend('vllm')).toBe(false);
       expect(isHubLoadableBackend(undefined)).toBe(false);
+    });
+  });
+
+  describe('localEngineBlocksFinish', () => {
+    it('waits when the chosen engine has not reported ready', () => {
+      expect(localEngineBlocksFinish({ tier: 'high', backend: 'ollama', canAutoInstall: false, engineReady: false })).toBe(true);
+      expect(localEngineBlocksFinish({ tier: 'high', backend: 'vllm', canAutoInstall: false, engineReady: null })).toBe(true);
+    });
+
+    it('lets a weak machine and a desktop auto-install through', () => {
+      expect(localEngineBlocksFinish({ tier: 'insufficient', backend: 'ollama', canAutoInstall: false, engineReady: false })).toBe(false);
+      expect(localEngineBlocksFinish({ tier: 'high', backend: 'ollama', canAutoInstall: true, engineReady: false })).toBe(false);
+      expect(localEngineBlocksFinish({ tier: 'high', backend: 'omlx', canAutoInstall: false, engineReady: true })).toBe(false);
     });
   });
 

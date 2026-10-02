@@ -16,9 +16,11 @@ interface CompanionAppsCardProps {
   /** Resolved public-web exposure mode (Cloudflare preferred, with fallbacks). */
   publicExposureMode: ExposureMode;
   onChange?: (apps: OnboardingApp[]) => void;
+  /** Wizard step number. A weak machine skips the local-model steps, so this moves up. */
+  stepNumber?: number;
 }
 
-export function CompanionAppsCard({ publicExposureMode, onChange }: CompanionAppsCardProps) {
+export function CompanionAppsCard({ publicExposureMode, onChange, stepNumber = 5 }: CompanionAppsCardProps) {
   const { t } = useTranslation();
   const { apps: storeApps, isLoading: isCatalogLoading, isRetryingEmptyCatalog } = useMarketplaceCatalogApps();
 
@@ -124,7 +126,7 @@ export function CompanionAppsCard({ publicExposureMode, onChange }: CompanionApp
   const memoryAvailable = Boolean(memoryApp?.available) && !showLoadingState;
 
   return (
-    <StepSection number={5} title={t('ONBOARDING_COMPANION_MEMORY_TITLE')} description={t('ONBOARDING_COMPANION_MEMORY_DESC')}>
+    <StepSection number={stepNumber} title={t('ONBOARDING_COMPANION_MEMORY_TITLE')} description={t('ONBOARDING_COMPANION_MEMORY_DESC')}>
       <div data-testid="companion-apps-card">
         <div className="mb-4 flex items-start gap-2 rounded-md border border-success/30 bg-success/10 p-3" data-testid="companion-privacy-callout">
           <Shield className="mt-0.5 h-4 w-4 shrink-0 text-success" aria-hidden="true" />

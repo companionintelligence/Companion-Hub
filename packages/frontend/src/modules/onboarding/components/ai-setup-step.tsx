@@ -32,6 +32,7 @@ import { StepSection } from './ai-setup/primitives';
 import { BackendSelectionCard } from './ai-setup/backend-selection-card';
 import { OtherModelsSection, RecommendedModels } from './ai-setup/model-selection-card';
 import { AdvancedDrawers } from './ai-setup/advanced-drawers';
+import { CloudProviderCard } from './ai-setup/cloud-provider-card';
 import { SystemOverview } from './ai-setup/system-overview';
 import { ResourceSummaryBar } from './ai-setup/resource-summary-bar';
 import { backendDisplayName } from '@/lib/inference/backend-names';
@@ -47,9 +48,11 @@ import {
   hubLoadableSelection,
   hiddenInferenceBackends,
   isHostServedBackend,
+  localEngineBlocksFinish,
   recommendedInferenceBackend,
   unavailableInferenceBackends,
 } from '../helpers/inference-backend-availability';
+import { OnboardingAppsStepContext } from '../helpers/onboarding-step-numbers';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -199,15 +202,30 @@ export const AiSetupStep = ({
       // Ignore superseded rescans so they cannot restore an earlier backend and its defaults.
       if (profileRequestId.current !== requestId) return;
       setProfile(data);
-      const requestedBackend = backendOverride ?? recommendedInferenceBackend(data);
       const hiddenBackends = hiddenInferenceBackends(data);
+      // A rescan keeps the engine the operator picked. The first load still follows the recommendation.
+      const requestedBackend = backendOverride ?? (isRescan && !hiddenBackends.includes(backend) ? backend : recommendedInferenceBackend(data));
       const resolvedBackend = hiddenBackends.includes(requestedBackend)
         ? (data.backends.available.find(({ type }) => !hiddenBackends.includes(type))?.type ?? 'ollama')
         : requestedBackend;
       setSelectedBackend(resolvedBackend);
-      const defaultSelected = getDefaultSelectedModelIds(data, resolvedBackend);
+
+      const modelStillListed = (id: string) => {
+        const model = data.availableModels.find((candidate) => candidate.id === id);
+        if (!model) return false;
+        if (model.backend === resolvedBackend) return true;
+        return isHostServedBackend(resolvedBackend) && model.backend === EMBEDDING_INFERENCE_BACKEND && isEmbeddingModel(model);
+      };
+      const engineKept = isRescan && resolvedBackend === backend;
+      const keptSelection = engineKept ? selectedModelIdsRef.current.filter(modelStillListed) : null;
+      const defaultSelected = keptSelection ?? getDefaultSelectedModelIds(data, resolvedBackend);
       setSelectedModelIds(defaultSelected);
-      setPreferredModelId(getDefaultPreferredModelId(data, resolvedBackend, defaultSelected));
+      const keptPreferred = preferredModelIdRef.current;
+      setPreferredModelId(
+        keptSelection && keptPreferred && defaultSelected.includes(keptPreferred)
+          ? keptPreferred
+          : getDefaultPreferredModelId(data, resolvedBackend, defaultSelected),
+      );
     } catch (e) {
       // Same rule for the failure path: a newer request is already in flight and may well succeed,
       // so raising the error screen on its behalf would discard a setup that is about to be fine.
@@ -517,6 +535,21 @@ export const AiSetupStep = ({
       installedCatalogIds,
       installBlocked,
       installBlockReason,
+      ...(localEngineBlocksFinish({
+        tier: profile.tier,
+        backend: selectedBackend,
+        canAutoInstall: getTauriInvoke() !== null,
+        engineReady:
+          selectedBackend === 'vllm'
+            ? (vllmStatus?.ready ?? null)
+            : selectedBackend === 'omlx'
+              ? (omlxStatus?.ready ?? null)
+              : selectedBackend === 'lemonade'
+                ? (lemonadeStatus?.ready ?? null)
+                : (ollamaStatus?.ready ?? null),
+      })
+        ? { engineBlocked: true }
+        : {}),
       ...(selectedBackend === 'vllm' && vllmApiKey.trim() ? { vllmApiKey: vllmApiKey.trim() } : {}),
       ...(selectedBackend === 'vllm' && vllmUrl.trim() ? { vllmUrl: vllmUrl.trim() } : {}),
       ...(selectedBackend === 'omlx' && omlxUrl.trim() ? { omlxUrl: omlxUrl.trim() } : {}),
@@ -555,6 +588,10 @@ export const AiSetupStep = ({
     omlxUrl,
     decodeEndpoint,
     encodeEndpoint,
+    ollamaStatus,
+    vllmStatus,
+    omlxStatus,
+    lemonadeStatus,
     onConfigChange,
   ]);
 
@@ -625,11 +662,11 @@ export const AiSetupStep = ({
   const availableDiskMb = profile.resourceEstimate.availableDiskMb;
   const diskTotalMb = profile.resourceEstimate.diskTotalMb;
   const inferenceMemory = inferenceMemoryMb(profile);
-  const needsOllamaForContinue = selectedBackend === 'ollama' && (ollamaStatus === null || !ollamaStatus.ready);
-  const needsVllmForContinue = selectedBackend === 'vllm' && (vllmStatus === null || !vllmStatus.ready);
-  const needsOmlxForContinue = selectedBackend === 'omlx' && (omlxStatus === null || !omlxStatus.ready);
-  const needsLemonadeForContinue = selectedBackend === 'lemonade' && (lemonadeStatus === null || !lemonadeStatus.ready);
   const canAutoInstallRunners = getTauriInvoke() !== null;
+  const engineBlocked = buildConfig()?.engineBlocked === true;
+  const memoryStep = isInsufficient ? 3 : 5;
+  const appsStep = isInsufficient ? 4 : 6;
+  const cloudStep = isInsufficient ? 5 : 7;
   // Host-run backends leave embeddings on Ollama, so the co-install warning covers all of them.
   const ollamaEmbeddingsWarning = isHostServedBackend(selectedBackend) && ollamaStatus !== null && !ollamaStatus.ready && !checkingOllama;
   const showTailscaleSetup = remoteAccess.includes('tailscale');
@@ -645,18 +682,18 @@ export const AiSetupStep = ({
         diskTotalMb={diskTotalMb}
       />
 
+      <AccessMethodsCard
+        remoteAccess={remoteAccess}
+        onToggleAccess={toggleAccess}
+        cloudflareAvailable={cloudflareAvailable}
+        tailscaleAvailable={tailscaleAvailable}
+        tailscaleSetup={showTailscaleSetup ? <TailscaleSetupStep embedded inline /> : undefined}
+      />
+
+      <AgentFrameworkCard frameworks={agentFrameworks} onToggleFramework={toggleFramework} />
+
       {!isInsufficient && (
         <>
-          <AccessMethodsCard
-            remoteAccess={remoteAccess}
-            onToggleAccess={toggleAccess}
-            cloudflareAvailable={cloudflareAvailable}
-            tailscaleAvailable={tailscaleAvailable}
-            tailscaleSetup={showTailscaleSetup ? <TailscaleSetupStep embedded inline /> : undefined}
-          />
-
-          <AgentFrameworkCard frameworks={agentFrameworks} onToggleFramework={toggleFramework} />
-
           <StepSection
             number={3}
             badge="required"
@@ -769,14 +806,20 @@ export const AiSetupStep = ({
               preferredModelId={preferredModelId}
             />
           </RecommendedModels>
-
-          <CompanionAppsCard publicExposureMode={publicExposureMode} onChange={onCompanionAppsChange} />
         </>
       )}
 
-      {embedded && children}
+      <CompanionAppsCard publicExposureMode={publicExposureMode} onChange={onCompanionAppsChange} stepNumber={memoryStep} />
 
-      <AdvancedDrawers providers={cloudProviders} onUpdateProviders={setCloudProviders} insufficientHardware={isInsufficient} />
+      <OnboardingAppsStepContext.Provider value={appsStep}>{embedded && children}</OnboardingAppsStepContext.Provider>
+
+      {isInsufficient ? (
+        <StepSection number={cloudStep} badge="recommended" title={t('ONBOARDING_CLOUD_API_KEYS')} testId="cloud-keys-section">
+          <CloudProviderCard providers={cloudProviders} insufficientHardware onUpdate={setCloudProviders} />
+        </StepSection>
+      ) : (
+        <AdvancedDrawers providers={cloudProviders} onUpdateProviders={setCloudProviders} insufficientHardware={false} />
+      )}
 
       {!embedded && (
         <div className="flex items-center justify-between pt-1">
@@ -787,20 +830,7 @@ export const AiSetupStep = ({
             <Button variant="outline" onClick={handleSkip} data-testid="ai-skip-btn">
               {t('ONBOARDING_SKIP_TO_PRIVATE_VPN')}
             </Button>
-            <Button
-              intent="primary"
-              onClick={handleContinue}
-              data-testid="ai-continue-btn"
-              disabled={
-                !canAutoInstallRunners &&
-                (needsOllamaForContinue || needsVllmForContinue || needsOmlxForContinue || needsLemonadeForContinue) &&
-                !isInsufficient &&
-                ((needsOllamaForContinue && (checkingOllama || !ollamaStatus?.ready)) ||
-                  (needsVllmForContinue && (checkingVllm || !vllmStatus?.ready)) ||
-                  (needsOmlxForContinue && (checkingOmlx || !omlxStatus?.ready)) ||
-                  (needsLemonadeForContinue && (checkingLemonade || !lemonadeStatus?.ready)))
-              }
-            >
+            <Button intent="primary" onClick={handleContinue} data-testid="ai-continue-btn" disabled={engineBlocked}>
               {isInsufficient && cloudProviders.filter((p) => p.apiKey.trim()).length === 0
                 ? t('ONBOARDING_CONTINUE_PRIVATE_VPN_WITHOUT_AI')
                 : t('ONBOARDING_CONTINUE_PRIVATE_VPN')}
