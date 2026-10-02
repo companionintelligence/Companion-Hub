@@ -24,7 +24,10 @@ const SelectTrigger = React.forwardRef<
     onClear?: () => void;
     value?: string | number | undefined | null;
   }
->(({ className, children, label, error, onClear, value, ...props }, ref) => {
+>(({ className, children, label, error, onClear, value, id, ...props }, ref) => {
+  const generatedId = React.useId();
+  const labelId = React.useId();
+  const triggerId = id ?? generatedId;
   const handleClear = (e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
@@ -38,18 +41,22 @@ const SelectTrigger = React.forwardRef<
         // `focus-visible`, not `focus`, to match Input: a plain `focus` ring fires
         // on a mouse click too, so clicking a select drew a ring that clicking an
         // input never did — the two controls sit side by side in the install form.
-        'flex h-9 w-full items-center justify-between rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50',
+        'flex h-9 w-full min-w-0 items-center justify-between rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50',
         error && 'border-destructive focus-visible:ring-destructive',
         !label && className,
       )}
       {...props}
+      id={triggerId}
+      {...(label ? { 'aria-labelledby': labelId } : {})}
     >
-      {children}
+      {/* The closed value stays one line. Radix copies ItemText into this span, so the
+          ellipsis lives here; the open list keeps the full name on the item. */}
+      <span className="min-w-0 flex-1 truncate text-left">{children}</span>
       <SelectPrimitive.Icon asChild>
         {onClear && value ? (
-          <X className="h-4 w-4 opacity-50 hover:opacity-100 cursor-pointer z-50 rounded-sm hover:bg-muted" onClick={handleClear} />
+          <X className="h-4 w-4 shrink-0 opacity-50 hover:opacity-100 cursor-pointer z-50 rounded-sm hover:bg-muted" onClick={handleClear} />
         ) : (
-          <ChevronDown className="h-4 w-4 opacity-50" />
+          <ChevronDown className="h-4 w-4 shrink-0 opacity-50" />
         )}
       </SelectPrimitive.Icon>
     </SelectPrimitive.Trigger>
@@ -58,8 +65,15 @@ const SelectTrigger = React.forwardRef<
   if (label || error) {
     return (
       <div className={cn('space-y-2', label && typeof className === 'string' ? className : '')}>
-        {/* biome-ignore lint/a11y/noLabelWithoutControl: Label is styling only here */}
-        {label && <label className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">{label}</label>}
+        {label && (
+          <label
+            id={labelId}
+            htmlFor={triggerId}
+            className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+          >
+            {label}
+          </label>
+        )}
         {trigger}
         {error && <p className="text-[0.8rem] font-medium text-destructive">{error}</p>}
       </div>
