@@ -1,7 +1,6 @@
 import { Button } from '@/components/ui/Button';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { GlassContainer } from '@/components/ui/glass-container';
-import { limitText } from '@/lib/helpers/text-helpers';
 import { getMarketplaceAppImageUrl } from '@/lib/marketplace-image-url';
 import { storeBrowseQueryString } from '@/lib/store-browse-params';
 import { useAppStoreState } from '@/stores/app-store';
@@ -101,7 +100,13 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled, i
         <h3 title={app.name} className="font-bold text-base sm:text-lg mb-1 line-clamp-2 text-foreground group-hover:text-primary transition-colors">
           {app.name}
         </h3>
-        <p className="text-sm text-muted-foreground line-clamp-2 mb-4 flex-grow">{limitText(app.short_desc, 80)}</p>
+        {/*
+          Clamp the description itself. A nested span from a character cutoff
+          skips the ellipsis, and flex-grow then slices the next line in half.
+        */}
+        <p title={app.short_desc} className="mb-4 line-clamp-2 min-w-0 text-sm leading-5 text-muted-foreground">
+          {app.short_desc}
+        </p>
 
         <div className="flex items-center justify-end mt-auto">
           {isInstalled ? (
