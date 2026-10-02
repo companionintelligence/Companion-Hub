@@ -132,7 +132,10 @@ export class OllamaBackend implements InferenceBackend {
       const url = await this.resolveUrl();
       const response = await axios.get(`${url}/api/tags`, { timeout: 5000 });
       const models = response.data?.models ?? [];
-      const unservableModels = await this.reconcileQuarantine(url);
+      // Residency is not a successful answer. A model that loads and then fails every request
+      // is in /api/ps the whole time, so releasing it there skipped the backoff. Only a
+      // completed request (or a load that actually returns) clears the quarantine.
+      const unservableModels = this.quarantine.list();
       return {
         running: true,
         healthy: true,
@@ -150,39 +153,6 @@ export class OllamaBackend implements InferenceBackend {
         error: err instanceof Error ? err.message : String(err),
       };
     }
-  }
-
-  /**
-   * Currently withheld models, after giving any of them that Ollama reports **resident** their
-   * release. `/api/ps` is the one place the engine speaks about VRAM rather than disk, so a model
-   * listed there is proof of the exact thing we withheld it for lacking — and it costs nothing to
-   * ask, no load, no generation.
-   *
-   * Skipped while the quarantine is tracking nothing at all, which is the overwhelmingly common
-   * case: a node that has never failed to serve keeps its single-request health poll.
-   *
-   * Note the guard is `isEmpty()`, not "is anything withheld" — a model keeps its entry for the
-   * whole strike window after a single failure, so one strike that never reached the withhold
-   * threshold still costs one extra `/api/ps` per poll until the window closes.
-   */
-  private async reconcileQuarantine(url: string): Promise<string[]> {
-    if (this.quarantine.isEmpty()) {
-      return [];
-    }
-    try {
-      const response = await axios.get(`${url}/api/ps`, { timeout: 5000 });
-      const resident: Array<{ name: string }> = response.data?.models ?? [];
-      for (const withheld of this.quarantine.list()) {
-        if (resident.some((m) => this.matchesModel(m.name, withheld))) {
-          this.noteServingSuccess(withheld);
-        }
-      }
-    } catch (err) {
-      // The inventory call above already succeeded, so this is a `/api/ps` problem, not a down
-      // engine. Keeping the existing verdict is the safe read: it decays on its own.
-      this.logger.debug(`[Ollama] Could not read /api/ps to re-check withheld models: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    return this.quarantine.list();
   }
 
   /** Ollama reports fully-qualified tags (`gemma3:1b`); callers may hold either that or the bare name. */
@@ -294,7 +264,7 @@ export class OllamaBackend implements InferenceBackend {
         size: m.size || 0,
         // Hardcoded, and it means "in this engine's inventory", NOT resident in VRAM:
         // `/api/tags` lists what is on disk and says nothing about what is loaded. Residency
-        // is only knowable from `/api/ps` (read elsewhere in this file for quarantine).
+        // is only knowable from `/api/ps`.
         // Callers that surface this to a user must not call it "loaded".
         loaded: true,
       }));

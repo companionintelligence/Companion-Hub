@@ -24,9 +24,10 @@
  *   the re-probe. A node that has really broken pays one failed request per (doubling) window
  *   instead of every request; a node whose blip is over is back immediately.
  *
- * Anything that proves the model *can* be served — a completed request, or the engine reporting it
- * resident — clears the entry outright, including the backoff. Recovery must not have to wait out
- * a penalty earned before the operator fixed the box.
+ * A completed request clears the entry outright, including the backoff. Recovery must not have
+ * to wait out a penalty earned before the operator fixed the box. Residency does not: a model
+ * that loads and then fails every request is in memory the whole time, and treating that as
+ * success released it on the next health check, so the backoff never grew.
  */
 
 /** Consecutive observed serving failures before a model is withheld from routing. */
@@ -101,9 +102,9 @@ export class ServingQuarantine {
   }
 
   /**
-   * Record proof that `modelId` can be served — a completed request, or the engine reporting it
-   * resident. Clears the strikes and the backoff alike; returns true when something was actually
-   * cleared, so the caller can log a recovery rather than a no-op.
+   * Record proof that `modelId` can be served: a request that actually completed. Clears the
+   * strikes and the backoff alike; returns true when something was actually cleared, so the
+   * caller can log a recovery rather than a no-op.
    */
   recordSuccess(modelId: string): boolean {
     return this.entries.delete(modelId);
@@ -149,8 +150,8 @@ export class ServingQuarantine {
   /**
    * Forget entries that are neither withheld nor still inside their strike window. Such an entry
    * describes a model that has been on offer, unpunished, for {@link STRIKE_WINDOW_MS} — which is
-   * the definition of no longer having evidence against it. Dropping it also takes the map, and the
-   * `/api/ps` probe {@link isEmpty} gates, back to nothing on a node that had one bad afternoon.
+   * the definition of no longer having evidence against it. Dropping it also takes the map back
+   * to nothing on a node that had one bad afternoon.
    */
   private prune(): void {
     const now = this.now();

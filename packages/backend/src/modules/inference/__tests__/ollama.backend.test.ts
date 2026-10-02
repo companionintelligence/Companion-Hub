@@ -158,28 +158,33 @@ describe('OllamaBackend', () => {
       expect(psCalls()).toHaveLength(0);
     });
 
-    it('releases a withheld model that Ollama reports resident in /api/ps', async () => {
-      // Resident means loaded in VRAM right now — proof of the exact thing it was withheld for
-      // lacking, and free to ask for.
-      mockOllamaGet({ tags: [MODEL], resident: [MODEL] });
-      backend.noteServingFailure(MODEL, 'HTTP 500');
-      backend.noteServingFailure(MODEL, 'HTTP 500');
+    it('keeps a resident model withheld until a request succeeds, and lets the backoff grow', async () => {
+      // Loaded and then failing every request: /api/ps lists it the whole time. That used to
+      // count as served, so the 60s sentence was cleared on the next health check and the
+      // backoff never reached 2 minutes.
+      vi.useFakeTimers();
+      try {
+        mockOllamaGet({ tags: [MODEL], resident: [MODEL] });
+        backend.noteServingFailure(MODEL, 'HTTP 500');
+        backend.noteServingFailure(MODEL, 'HTTP 500');
 
-      const health = await backend.healthCheck();
+        expect((await backend.healthCheck()).unservableModels).toContain(MODEL);
+        expect(psCalls()).toHaveLength(0);
+        expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('withholding it from routing for 60s'));
 
-      expect(health.unservableModels).toBeUndefined();
-      expect(psCalls()).toHaveLength(1);
-      expect(loggerService.info).toHaveBeenCalledWith(expect.stringContaining(`Model ${MODEL} served again`));
-    });
+        vi.advanceTimersByTime(BASE_QUARANTINE_MS + 1_000);
+        expect((await backend.healthCheck()).unservableModels).toBeUndefined();
 
-    it('keeps the verdict when /api/ps itself fails', async () => {
-      // The inventory call already succeeded, so this is a /api/ps problem, not a down engine —
-      // and the verdict decays on its own rather than needing this call to survive.
-      mockOllamaGet({ tags: [MODEL], psFails: true });
-      backend.noteServingFailure(MODEL, 'HTTP 500');
-      backend.noteServingFailure(MODEL, 'HTTP 500');
+        backend.noteServingFailure(MODEL, 'HTTP 500');
 
-      expect((await backend.healthCheck()).unservableModels).toContain(MODEL);
+        expect((await backend.healthCheck()).unservableModels).toContain(MODEL);
+        expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('withholding it from routing for 120s'));
+
+        backend.noteServingSuccess(MODEL);
+        expect((await backend.healthCheck()).unservableModels).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('clears the record as soon as the model is served again', async () => {
