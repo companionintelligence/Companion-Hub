@@ -26,6 +26,7 @@ export const UserSettingsContainer = ({ initialValues, publicHubHostname }: Prop
   const { t } = useTranslation();
   const { refreshAppContext, user } = useAppContext();
   const [requireRestart, setRequireRestart] = useState(initialValues?.advancedSettings);
+  const [advancedModeDraft, setAdvancedModeDraft] = useState<boolean | null>(null);
 
   const updateSettings = useMutation({
     ...updateUserSettingsMutation(),
@@ -45,11 +46,13 @@ export const UserSettingsContainer = ({ initialValues, publicHubHostname }: Prop
   const updateAdvancedMode = useMutation({
     ...updateAdvancedModeMutation(),
     onError: (e: TranslatableError) => {
+      setAdvancedModeDraft(null);
       toast.error(t(e.message, e.intlParams));
     },
-    onSuccess: () => {
+    onSuccess: async () => {
       toast.success(t('SETTINGS_GENERAL_SETTINGS_UPDATED'));
-      refreshAppContext();
+      await refreshAppContext();
+      setAdvancedModeDraft(null);
     },
   });
 
@@ -63,6 +66,7 @@ export const UserSettingsContainer = ({ initialValues, publicHubHostname }: Prop
   };
 
   const onAdvancedModeChange = (checked: boolean) => {
+    setAdvancedModeDraft(checked);
     updateAdvancedMode.mutate({ body: { advancedMode: checked } });
   };
 
@@ -78,7 +82,8 @@ export const UserSettingsContainer = ({ initialValues, publicHubHostname }: Prop
         </CardHeader>
         <CardContent>
           <Switch
-            checked={user.advancedMode}
+            checked={advancedModeDraft ?? Boolean(user.advancedMode)}
+            disabled={updateAdvancedMode.isPending}
             onCheckedChange={onAdvancedModeChange}
             label={
               <>
@@ -102,6 +107,7 @@ export const UserSettingsContainer = ({ initialValues, publicHubHostname }: Prop
         initialValues={initialValues}
         currentLocale={currentLocale as Locale}
         onSubmit={onSubmit}
+        loading={updateSettings.isPending}
         publicHubHostname={publicHubHostname}
       />
     </div>
