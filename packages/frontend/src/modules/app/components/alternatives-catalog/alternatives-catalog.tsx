@@ -1,6 +1,7 @@
 import { Card, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/Table/Table';
-import { colorSchemeForCategory, iconForCategory } from '@/modules/app/helpers/table-helpers';
+import { getCategoryLabel } from '@/modules/app/helpers/category-label';
+import { iconClassForCategory, iconForCategory } from '@/modules/app/helpers/table-helpers';
 import type { AltEntry, AltsCategory } from '@/modules/onboarding/helpers/types';
 import clsx from 'clsx';
 import { ArrowRight } from 'lucide-react';
@@ -28,14 +29,13 @@ export function AlternativesCatalog({ alternatives, marketplaceSlug, title, subt
       {Object.entries(alternatives).map(([altCategory, items]) => {
         const categoryInfo = iconForCategory.find((c) => c.id === altCategory);
         const Icon = categoryInfo?.icon;
-        const color = colorSchemeForCategory[altCategory] || 'blue';
 
         return (
           <Card key={altCategory} className="overflow-hidden">
             <CardHeader className="border-b bg-muted/30 px-3 py-3 sm:px-6 sm:py-4">
               <div className="flex items-center gap-2">
-                {Icon && <Icon className={clsx('h-5 w-5', `text-${color}`)} />}
-                <CardTitle className="capitalize text-base">{altCategory}</CardTitle>
+                {Icon && <Icon className={clsx('h-5 w-5', iconClassForCategory(altCategory))} />}
+                <CardTitle className="text-base">{getCategoryLabel(t, altCategory)}</CardTitle>
               </div>
             </CardHeader>
             <div className="w-full overflow-x-auto">
