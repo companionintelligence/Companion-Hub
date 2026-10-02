@@ -2,6 +2,14 @@ import { render, screen } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { MemoryRouter } from 'react-router';
 
+const { mockNavigate, updateMutation } = vi.hoisted(() => ({
+  mockNavigate: vi.fn(),
+  updateMutation: {
+    pending: false,
+    options: null as { onSuccess?: () => void; onMutate?: () => void } | null,
+  },
+}));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, params?: Record<string, string>) => {
@@ -19,7 +27,7 @@ vi.mock('react-router', async () => {
   return {
     ...actual,
     useParams: () => ({ storeId: 'store1', appId: 'test-app' }),
-    useNavigate: () => vi.fn(),
+    useNavigate: () => mockNavigate,
     useLocation: () => ({ state: null, pathname: '/apps/store1/test-app/update' }),
     redirect: vi.fn(),
   };
@@ -27,10 +35,10 @@ vi.mock('react-router', async () => {
 
 vi.mock('@tanstack/react-query', () => ({
   useQuery: vi.fn(),
-  useMutation: vi.fn(() => ({
-    mutate: vi.fn(),
-    isPending: false,
-  })),
+  useMutation: vi.fn((options: { onSuccess?: () => void; onMutate?: () => void }) => {
+    updateMutation.options = options;
+    return { mutate: vi.fn(), isPending: updateMutation.pending };
+  }),
 }));
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
@@ -100,7 +108,11 @@ function setupQueries(configChanged = true, composeChanged = false) {
 }
 
 describe('AppUpdatePage — one-step confirmation', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    updateMutation.pending = false;
+    updateMutation.options = null;
+  });
 
   it('renders the summary with version change', () => {
     setupQueries();
@@ -199,5 +211,22 @@ describe('AppUpdatePage — one-step confirmation', () => {
     );
 
     expect(screen.getByTestId('update-backup-switch')).toHaveAttribute('data-state', 'checked');
+  });
+
+  it('stays on the page until the update succeeds, and ignores a second click while it is running', () => {
+    setupQueries();
+    updateMutation.pending = true;
+
+    render(
+      <MemoryRouter>
+        <AppUpdatePage {...({ loaderData: APP_DATA } as any)} />
+      </MemoryRouter>,
+    );
+
+    expect(updateMutation.options?.onMutate).toBeUndefined();
+    expect(screen.getByTestId('update-confirm')).toBeDisabled();
+
+    updateMutation.options?.onSuccess?.();
+    expect(mockNavigate).toHaveBeenCalledWith('/apps');
   });
 });
