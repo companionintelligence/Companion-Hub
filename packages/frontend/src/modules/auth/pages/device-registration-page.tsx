@@ -47,6 +47,26 @@ const DOMAIN_PROBE_INTERVAL_MS = 5000;
 const MAX_DOMAIN_PROBE_ATTEMPTS = 60;
 const REQUIRED_CONSECUTIVE_PROBES = 2;
 
+/** Status lines the probe and the pairing step set. A fixed sentence stays until one of these is set. */
+const LIVE_REGISTRATION_STATUS_KEYS = new Set([
+  'DEVICE_REGISTRATION_PROVISIONING_STATUS',
+  'DEVICE_REGISTRATION_LOCAL_SETUP_COMPLETE_CHECKING_PUBLIC_URL',
+  'DEVICE_REGISTRATION_PUBLIC_URL_READY_REDIRECTING',
+  'DEVICE_REGISTRATION_WAITING_DNS_PROPAGATION',
+  'DEVICE_REGISTRATION_STILL_WAITING_PUBLIC_URL',
+  'DEVICE_REGISTRATION_PUBLIC_ROUTE_PROPAGATING_REDIRECTING_LOCAL',
+  'DEVICE_REGISTRATION_COMPLETE_LOADING_LOCAL',
+  'DEVICE_REGISTRATION_LOCAL_READY_PUBLIC_NEEDS_ATTENTION_REDIRECTING',
+  'DEVICE_REGISTRATION_COMPLETE_REDIRECTING_LOCAL',
+]);
+
+/** Public-URL checks that are still in progress, as opposed to a redirect that is about to happen. */
+const PUBLIC_URL_WAIT_KEYS = new Set([
+  'DEVICE_REGISTRATION_LOCAL_SETUP_COMPLETE_CHECKING_PUBLIC_URL',
+  'DEVICE_REGISTRATION_WAITING_DNS_PROPAGATION',
+  'DEVICE_REGISTRATION_STILL_WAITING_PUBLIC_URL',
+]);
+
 function buildPortalPairingRedirectPath(deviceId: string | null): string {
   const params = new URLSearchParams({ add_device: '1' });
   if (deviceId) {
@@ -133,11 +153,12 @@ function ScanQrDisclosure({ value, label, summaryLabel }: { value: string; label
   );
 }
 
-function getProgressCopy(status: RegistrationStatus | null, redirectStatus: string, t: (key: string) => string) {
+function getProgressCopy(status: RegistrationStatus | null, redirectStatusKey: string, t: (key: string) => string) {
+  const liveStatus = LIVE_REGISTRATION_STATUS_KEYS.has(redirectStatusKey) ? t(redirectStatusKey) : undefined;
   if (!status) {
     return {
       title: t('DEVICE_REGISTRATION_CHECKING_STATUS'),
-      description: t('DEVICE_REGISTRATION_PLEASE_WAIT'),
+      description: liveStatus ?? t('DEVICE_REGISTRATION_PLEASE_WAIT'),
       hint: undefined as string | undefined,
     };
   }
@@ -146,26 +167,26 @@ function getProgressCopy(status: RegistrationStatus | null, redirectStatus: stri
     case 'paired':
       return {
         title: t('DEVICE_REGISTRATION_PROVISIONING_YOUR_DOMAIN'),
-        description: t('DEVICE_REGISTRATION_PROVISIONING_YOUR_DOMAIN_DESC'),
+        description: liveStatus ?? t('DEVICE_REGISTRATION_PROVISIONING_YOUR_DOMAIN_DESC'),
         hint: t(REGISTRATION_PROVISIONING_HINT),
       };
     case 'provisioning':
       return {
         title: t('DEVICE_REGISTRATION_SETTING_UP_HUB'),
-        description: t('DEVICE_REGISTRATION_SETTING_UP_HUB_DESC'),
+        description: liveStatus ?? t('DEVICE_REGISTRATION_SETTING_UP_HUB_DESC'),
         hint: t(REGISTRATION_DNS_HINT),
       };
     case 'degraded':
       return {
         title: t('DEVICE_REGISTRATION_HUB_SETUP_NEEDS_ATTENTION'),
-        description: redirectStatus,
+        description: liveStatus ?? t(redirectStatusKey),
         hint: undefined,
       };
     default:
       return {
-        title: t('DEVICE_REGISTRATION_COMPLETE'),
-        description: redirectStatus,
-        hint: undefined,
+        title: PUBLIC_URL_WAIT_KEYS.has(redirectStatusKey) ? t('DEVICE_REGISTRATION_SETTING_UP_HUB') : t('DEVICE_REGISTRATION_COMPLETE'),
+        description: liveStatus ?? t(redirectStatusKey),
+        hint: PUBLIC_URL_WAIT_KEYS.has(redirectStatusKey) ? t(REGISTRATION_DNS_HINT) : undefined,
       };
   }
 }
@@ -187,6 +208,8 @@ export default function DeviceRegistrationPage() {
   /** A pairing the Portal will only finish as a move, waiting for the person's yes. */
   const [moveConfirmation, setMoveConfirmation] = useState<{ code: string; organizationName: string | null } | null>(null);
   const [redirectStatusKey, setRedirectStatusKey] = useState('DEVICE_REGISTRATION_SETTING_UP_HUB_ELLIPSIS');
+  /** True while this page is checking the public URL after pairing, which can take several minutes. */
+  const [followingPublicUrl, setFollowingPublicUrl] = useState(false);
 
   const pairingInputRef = useRef<HTMLInputElement>(null);
   const pendingPairTargetRef = useRef<PairingTarget | null>(null);
@@ -371,35 +394,38 @@ export default function DeviceRegistrationPage() {
 
       if (domain && subdomain) {
         const fullUrl = `https://${subdomain}.${domain}`;
+        setFollowingPublicUrl(true);
         setRedirectStatusKey('DEVICE_REGISTRATION_LOCAL_SETUP_COMPLETE_CHECKING_PUBLIC_URL');
 
         let consecutiveSuccesses = 0;
         for (let attempt = 1; attempt <= MAX_DOMAIN_PROBE_ATTEMPTS; attempt++) {
+          let ready = false;
           try {
             const probeData = await probeRegistrationDomain(fullUrl);
-            if (probeData?.ready) {
-              consecutiveSuccesses++;
-              if (consecutiveSuccesses >= REQUIRED_CONSECUTIVE_PROBES) {
-                setRedirectStatusKey('DEVICE_REGISTRATION_PUBLIC_URL_READY_REDIRECTING');
-                window.location.href = `${fullUrl}/login`;
-                return;
-              }
-              continue;
-            }
+            ready = Boolean(probeData?.ready);
           } catch {
             // Continue probing while tunnel and DNS changes converge.
           }
 
-          // Require consecutive successes by resetting the streak after any failure.
-          consecutiveSuccesses = 0;
-
-          if (attempt >= 12) {
-            setRedirectStatusKey('DEVICE_REGISTRATION_WAITING_DNS_PROPAGATION');
+          if (ready) {
+            consecutiveSuccesses++;
+            if (consecutiveSuccesses >= REQUIRED_CONSECUTIVE_PROBES) {
+              setRedirectStatusKey('DEVICE_REGISTRATION_PUBLIC_URL_READY_REDIRECTING');
+              window.location.href = `${fullUrl}/login`;
+              return;
+            }
+            setRedirectStatusKey('DEVICE_REGISTRATION_LOCAL_SETUP_COMPLETE_CHECKING_PUBLIC_URL');
+          } else {
+            // Require consecutive successes by resetting the streak after any failure.
+            consecutiveSuccesses = 0;
+            if (attempt >= 36) {
+              setRedirectStatusKey('DEVICE_REGISTRATION_STILL_WAITING_PUBLIC_URL');
+            } else if (attempt >= 12) {
+              setRedirectStatusKey('DEVICE_REGISTRATION_WAITING_DNS_PROPAGATION');
+            }
           }
-          if (attempt >= 36) {
-            setRedirectStatusKey('DEVICE_REGISTRATION_STILL_WAITING_PUBLIC_URL');
-          }
 
+          // A ready answer still waits. Two immediate probes would not show that the URL stayed up.
           await sleep(DOMAIN_PROBE_INTERVAL_MS);
         }
 
@@ -424,15 +450,18 @@ export default function DeviceRegistrationPage() {
   useEffect(() => {
     // Poll active provisioning phases at the standard interval. Poll an
     // unregistered appliance less often so externally completed headless setup
-    // still appears without creating unnecessary requests.
+    // still appears without creating unnecessary requests. One failed fetch is a
+    // blip: keep polling, and let Retry run a check immediately.
     const isUnregistered = registrationStatus?.phase === 'unregistered';
-    const shouldPoll = !statusError && ((registrationStatus && isRegistrationPending(registrationStatus)) || isUnregistered);
+    const isPending = Boolean(registrationStatus && isRegistrationPending(registrationStatus));
+    const retryingUnknownStatus = !registrationStatus && statusError !== null;
+    const shouldPoll = isPending || isUnregistered || retryingUnknownStatus;
 
     if (!shouldPoll) {
       return;
     }
 
-    const intervalMs = isUnregistered ? HEADLESS_POLL_INTERVAL_MS : STATUS_POLL_INTERVAL_MS;
+    const intervalMs = isPending ? STATUS_POLL_INTERVAL_MS : HEADLESS_POLL_INTERVAL_MS;
     const intervalId = window.setInterval(() => {
       void refreshRegistrationStatus();
     }, intervalMs);
@@ -681,7 +710,6 @@ export default function DeviceRegistrationPage() {
   // setup and a move to another organization use that scoped URL intentionally.
   const loginUrl = driftChoice === 'restore' ? `${portalUrl}/home` : (registrationUrl ?? portalUrl);
   const signupUrl = buildPortalSignupUrl(portalUrl, deviceId);
-  const redirectStatus = t(redirectStatusKey);
 
   if (isLoading) {
     return (
@@ -697,11 +725,11 @@ export default function DeviceRegistrationPage() {
 
   const showProgressState =
     (registrationStatus && isRegistrationPending(registrationStatus)) ||
-    (registrationStatus && isRegistrationOperational(registrationStatus) && Boolean(pendingPairTargetRef.current));
+    (registrationStatus && isRegistrationOperational(registrationStatus) && (Boolean(pendingPairTargetRef.current) || followingPublicUrl));
 
   if (showProgressState) {
-    const progressCopy = getProgressCopy(registrationStatus, redirectStatus, t);
-    const showSuccessIcon = registrationStatus?.registered;
+    const progressCopy = getProgressCopy(registrationStatus, redirectStatusKey, t);
+    const showSuccessIcon = Boolean(registrationStatus?.registered) && !PUBLIC_URL_WAIT_KEYS.has(redirectStatusKey);
 
     return (
       <div className="mx-auto flex max-w-md flex-col items-center gap-4 py-4 text-center">
@@ -948,14 +976,19 @@ export default function DeviceRegistrationPage() {
       </div>
 
       {statusError && (
-        <Alert variant="warning">
-          <AlertDescription>
-            <div className="flex items-start gap-2">
-              <AlertCircle role="img" aria-label={t('COMMON_WARNING')} className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>{statusError}</span>
-            </div>
-          </AlertDescription>
-        </Alert>
+        <div className="space-y-3">
+          <Alert variant="warning">
+            <AlertDescription>
+              <div className="flex items-start gap-2">
+                <AlertCircle role="img" aria-label={t('COMMON_WARNING')} className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>{statusError}</span>
+              </div>
+            </AlertDescription>
+          </Alert>
+          <Button variant="outline" onClick={() => void handleRetryStatus()}>
+            {t('DEVICE_REGISTRATION_RETRY_STATUS_CHECK')}
+          </Button>
+        </div>
       )}
 
       {deviceInfoError && (
