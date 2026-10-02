@@ -518,10 +518,13 @@ export const HubPoolSection = () => {
   });
 
   /* The PIN an operator read off the OTHER Hub's screen. Optional: without one this is the
-     pre-existing request/approve flow, which is what keeps a mixed-version fleet pairing at all. */
+     pre-existing request/approve flow, which is what keeps a mixed-version fleet pairing at all.
+     A partial PIN is not a blank one — sending the request without it would pair as if they
+     had not typed anything. */
   const [pairingPinInput, setPairingPinInput] = useState('');
+  const [pairingPinError, setPairingPinError] = useState(false);
   const pairMutation = useMutation({
-    mutationFn: (nodeFqdn: string) => pairPeer({ body: { nodeFqdn, ...(/^\d{6}$/.test(pairingPinInput) ? { pin: pairingPinInput } : {}) } as never }),
+    mutationFn: (nodeFqdn: string) => pairPeer({ body: { nodeFqdn, ...(pairingPinInput ? { pin: pairingPinInput } : {}) } as never }),
     onSuccess: () => {
       toast.success(t('HUB_POOL_PAIR_SUCCESS'));
       setPairingPinInput('');
@@ -529,6 +532,14 @@ export const HubPoolSection = () => {
     },
     onError: () => toast.error(t('HUB_POOL_PAIR_ERROR')),
   });
+  const requestPair = (nodeFqdn: string) => {
+    if (pairingPinInput.length > 0 && !/^\d{6}$/.test(pairingPinInput)) {
+      setPairingPinError(true);
+      return;
+    }
+    setPairingPinError(false);
+    pairMutation.mutate(nodeFqdn);
+  };
 
   const approveMutation = useMutation({
     mutationFn: (id: string) => approvePeer({ path: { id } }),
@@ -1406,22 +1417,27 @@ export const HubPoolSection = () => {
                 </Button>
               </div>
             )}
-
-            {/* Entered on the OTHER Hub, next to the address being paired. Left blank, pairing
-                behaves exactly as it did before this shipped. */}
-            <Input
-              value={pairingPinInput}
-              inputMode="numeric"
-              maxLength={6}
-              data-testid="hub-pool-pin-input"
-              placeholder={t('HUB_POOL_PIN_INPUT_PLACEHOLDER')}
-              onChange={(event) => setPairingPinInput(event.target.value.replace(/\D/g, '').slice(0, 6))}
-            />
           </div>
         </Block>
 
         {/* ── Discovery and pairing ───────────────────────────────────── */}
         <Block title={t('HUB_POOL_DISCOVERABLE_TITLE')} help={t('HUB_POOL_DISCOVERABLE_HELP')}>
+          {/* The digits from the other Hub's screen. Same block as Pair: a short PIN used to be
+              dropped on the way out, and the field lived under Generate PIN instead of here. */}
+          <Input
+            value={pairingPinInput}
+            inputMode="numeric"
+            autoComplete="off"
+            maxLength={6}
+            data-testid="hub-pool-pin-input"
+            label={t('HUB_POOL_PIN_INPUT_LABEL')}
+            placeholder={t('HUB_POOL_PIN_INPUT_PLACEHOLDER')}
+            error={pairingPinError ? t('HUB_POOL_PIN_INPUT_INVALID') : undefined}
+            onChange={(event) => {
+              setPairingPinInput(event.target.value.replace(/\D/g, '').slice(0, 6));
+              setPairingPinError(false);
+            }}
+          />
           {/* `tailscaleAdminApiConfigured` covers one of three sources: the daemon peer map and the
               Portal registry need no credential, and neither RESULT is reported by `GET status`. The
               two fields that come close — `localNode.tailscaleConnected` (rendered above) and
@@ -1467,7 +1483,7 @@ export const HubPoolSection = () => {
                         size="sm"
                         disabled={demoMode || pairMutation.isPending}
                         loading={pairMutation.isPending && pairMutation.variables === device.nodeFqdn}
-                        onClick={() => pairMutation.mutate(device.nodeFqdn)}
+                        onClick={() => requestPair(device.nodeFqdn)}
                       >
                         {pairMutation.isPending && pairMutation.variables === device.nodeFqdn ? t('HUB_POOL_PAIRING') : t('HUB_POOL_PAIR_BUTTON')}
                       </Button>

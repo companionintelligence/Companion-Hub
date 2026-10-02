@@ -1,4 +1,4 @@
-import { removePeer } from '@/api-client/sdk.gen';
+import { pairPeer, removePeer } from '@/api-client/sdk.gen';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -142,6 +142,7 @@ describe('HubPoolSection', () => {
     fixtures.pinCancel.mockClear();
     fixtures.upsertPin.mockClear();
     fixtures.deletePin.mockClear();
+    vi.mocked(pairPeer).mockReset();
     vi.mocked(removePeer).mockClear();
   });
 
@@ -779,6 +780,47 @@ describe('HubPoolSection', () => {
   });
 
   describe('pairing PIN and peer identity', () => {
+    const pairable = () => {
+      fixtures.discoverable = [{ tailscaleDeviceId: 'ts-1', nodeFqdn: 'hub-b.example-tailnet.ts.net', hostname: 'hub-b' }];
+    };
+
+    it('keeps a short PIN on the field and does not pair', async () => {
+      pairable();
+      renderSection();
+
+      await userEvent.type(await screen.findByTestId('hub-pool-pin-input'), '12345');
+      await userEvent.click(screen.getByRole('button', { name: 'HUB_POOL_PAIR_BUTTON' }));
+
+      expect(screen.getByText('HUB_POOL_PIN_INPUT_INVALID')).toBeTruthy();
+      expect(vi.mocked(pairPeer)).not.toHaveBeenCalled();
+    });
+
+    it('sends a six-digit PIN with the Hub being paired', async () => {
+      pairable();
+      vi.mocked(pairPeer).mockResolvedValue({} as never);
+      renderSection();
+
+      await userEvent.type(await screen.findByTestId('hub-pool-pin-input'), '481502');
+      await userEvent.click(screen.getByRole('button', { name: 'HUB_POOL_PAIR_BUTTON' }));
+
+      await waitFor(() => expect(vi.mocked(pairPeer)).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(pairPeer).mock.calls[0]?.[0]).toMatchObject({
+        body: { nodeFqdn: 'hub-b.example-tailnet.ts.net', pin: '481502' },
+      });
+    });
+
+    it('pairs with no PIN when the field is left blank', async () => {
+      pairable();
+      vi.mocked(pairPeer).mockResolvedValue({} as never);
+      renderSection();
+
+      await userEvent.click(await screen.findByRole('button', { name: 'HUB_POOL_PAIR_BUTTON' }));
+
+      await waitFor(() => expect(vi.mocked(pairPeer)).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(pairPeer).mock.calls[0]?.[0]).toMatchObject({ body: { nodeFqdn: 'hub-b.example-tailnet.ts.net' } });
+      expect(vi.mocked(pairPeer).mock.calls[0]?.[0]?.body).not.toHaveProperty('pin');
+    });
+
     it('renders the digits once, straight from the mint response and never from status', async () => {
       fixtures.status = baseStatus();
       fixtures.pinMint.mockResolvedValueOnce({ data: { pin: '481502', expiresAt: '2026-01-01T00:10:00.000Z' } });
