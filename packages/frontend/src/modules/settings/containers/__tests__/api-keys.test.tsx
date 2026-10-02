@@ -9,11 +9,15 @@ import { ApiKeysContainer } from '../api-keys';
 // appliance-wide switch is gone — so the capability controls are exercised here too.
 
 const mockApiFetch = vi.fn();
+const i18nCalls = vi.hoisted(() => ({ calls: [] as { key: string; params?: Record<string, unknown> }[] }));
 vi.mock('@/lib/api-fetch', () => ({ apiFetch: (...args: unknown[]) => mockApiFetch(...args) }));
 // Return a referentially STABLE t (like the real hook) so useCallback/useEffect deps on `t`
 // don't thrash and re-fire the data load on every render.
 vi.mock('react-i18next', () => {
-  const t = (key: string) => key;
+  const t = (key: string, params?: Record<string, unknown>) => {
+    i18nCalls.calls.push({ key, params });
+    return key;
+  };
   return { useTranslation: () => ({ t }) };
 });
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -577,6 +581,22 @@ describe('ApiKeysContainer', () => {
     });
   });
 
+  it('names a managed key and the app that holds it before revoking', async () => {
+    const user = userEvent.setup();
+    render(<ApiKeysContainer />);
+    await waitFor(() => expect(screen.getByTestId('api-key-list')).toBeTruthy());
+
+    const row = screen.getByText('openclaw').closest('li') as HTMLElement;
+    await user.click(within(row).getByRole('button', { name: 'API_KEYS_REVOKE' }));
+
+    expect(screen.getByText('API_KEYS_REVOKE_CONFIRM_MANAGED')).toBeTruthy();
+    expect(i18nCalls.calls).toContainEqual({
+      key: 'API_KEYS_REVOKE_CONFIRM_MANAGED',
+      params: { name: 'openclaw', app: 'openclaw:ci-store' },
+    });
+    expect(mockApiFetch).not.toHaveBeenCalledWith('/api/api-keys/2', expect.objectContaining({ method: 'DELETE' }));
+  });
+
   it('revokes a key via DELETE and refreshes the list so the row disappears', async () => {
     const user = userEvent.setup();
     let revoked = false;
@@ -597,6 +617,8 @@ describe('ApiKeysContainer', () => {
 
     const row = screen.getByText('Laptop CLI').closest('li') as HTMLElement;
     await user.click(within(row).getByRole('button', { name: 'API_KEYS_REVOKE' }));
+    expect(mockApiFetch).not.toHaveBeenCalledWith('/api/api-keys/1', expect.objectContaining({ method: 'DELETE' }));
+    await user.click(screen.getByTestId('api-key-revoke-confirm'));
 
     await waitFor(() => expect(mockApiFetch).toHaveBeenCalledWith('/api/api-keys/1', expect.objectContaining({ method: 'DELETE' })));
     // The refresh must actually re-render without the revoked key (not just fire the DELETE).
@@ -621,6 +643,7 @@ describe('ApiKeysContainer', () => {
 
     const row = screen.getByText('Laptop CLI').closest('li') as HTMLElement;
     await user.click(within(row).getByRole('button', { name: 'API_KEYS_REVOKE' }));
+    await user.click(screen.getByTestId('api-key-revoke-confirm'));
 
     await waitFor(() => expect(screen.getByText('API_KEYS_EMPTY')).toBeTruthy());
     expect(toast.error).not.toHaveBeenCalled();
