@@ -454,6 +454,17 @@ export function describeHubImageSource(resolved: Pick<ResolvedApplianceHubImage,
 }
 
 /**
+ * What the seed tells an operator about a desktop package nothing uses. Never "remove it": the
+ * package's uninstall (deb `postrm` on remove or purge, rpm `postun` on erase) deletes every Hub-managed
+ * app with its volumes, the Hub's containers, the `ci_hub_pgdata` volume and
+ * `~/.local/share/companion-hub` in every home. That is the Hub this seed has just written, which uses
+ * the desktop's own layout and compose (Companion-Hub#1831). The app only rewrites the env when it
+ * runs, and it does not start at login on Linux, so keeping it closed is all it takes.
+ */
+export const UNUSED_DESKTOP_APP_ADVICE =
+  'If nothing here uses the desktop app, quit it and leave it closed. Do not remove the companion-hub package: removing it deletes this Hub, its apps and their data.';
+
+/**
  * The Hub image a fresh install pins, where it came from, and what on this machine disagrees.
  *
  * In order: CI_HUB_IMAGE in the environment (a fleet roll, or an operator pinning on purpose); the
@@ -508,9 +519,7 @@ export function resolveApplianceHubImage(
         'If that build is older than this one, it starts on a database the newer Hub may already have migrated.',
       );
     }
-    warnings.push(
-      `To pin a release on purpose: CI_HUB_IMAGE=<ref> ${BASE_COMMAND} up. If nothing here uses the desktop app: sudo apt remove companion-hub`,
-    );
+    warnings.push(`To pin a release on purpose: CI_HUB_IMAGE=<ref> ${BASE_COMMAND} up.`, UNUSED_DESKTOP_APP_ADVICE);
   }
 
   // A running desktop app is a second writer of the same env file, and it wins every start it makes:
@@ -667,7 +676,8 @@ function describeDesktopPortalRewrite(resolved: ResolvedAppliancePortal, host: A
   return [
     `${app} Every launch and every Hub start it makes rewrites CI_CLOUD_URL to the Portal its build`,
     `was compiled for, replacing ${resolved.url} unless that is its Portal too${running ? '' : ' — on its next launch, even after this Hub has paired'}.`,
-    `To keep ${resolved.url} under the desktop app, write it to ${desktopPortalOverridePath(env)}, the app's Portal override.${desktop ? ' If nothing here uses the desktop app: sudo apt remove companion-hub' : ''}`,
+    `To keep ${resolved.url} under the desktop app, write it to ${desktopPortalOverridePath(env)}, the app's Portal override.`,
+    ...(desktop ? [UNUSED_DESKTOP_APP_ADVICE] : []),
   ];
 }
 

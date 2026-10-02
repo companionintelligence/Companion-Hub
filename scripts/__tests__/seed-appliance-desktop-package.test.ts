@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -18,7 +18,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const childProcess = vi.hoisted(() => ({ execFileSync: vi.fn() }));
 vi.mock('node:child_process', async (importOriginal) => ({ ...(await importOriginal<typeof import('node:child_process')>()), ...childProcess }));
 
-const { HUB_STACK_IMAGE_REPO, resolveApplianceHubImage, seedApplianceInstall } = await import('../lib/seed-appliance');
+const { HUB_STACK_IMAGE_REPO, UNUSED_DESKTOP_APP_ADVICE, resolveApplianceHubImage, seedApplianceInstall } = await import('../lib/seed-appliance');
+
+/**
+ * A command that uninstalls the desktop package. Its uninstall deletes the Hub's database, every app
+ * and `~/.local/share/companion-hub`, which is the Hub the seed has just written (Companion-Hub#1831).
+ */
+const PACKAGE_REMOVAL =
+  /\b(apt(-get)?\s+(remove|purge|autoremove)|dpkg\s+(-r|-P|--remove|--purge)|dnf\s+(remove|erase)|yum\s+(remove|erase)|rpm\s+(-e|--erase)|zypper\s+(rm|remove))\b/;
 const { BUNDLED_HUB_COMPOSE } = await import('../lib/bundled-hub-assets.generated');
 
 type NodeFacts = { desktopPackage?: string; desktopRunning?: boolean };
@@ -93,14 +100,15 @@ describe('a fresh install on a node with a leftover desktop package', () => {
     expect(seeded.hubImage).toBe(`${HUB_STACK_IMAGE_REPO}:0.2.76`);
   });
 
-  it('fzzy: says which package it did not follow, and how to be rid of it', () => {
+  it('fzzy: says which package it did not follow, and to leave the app closed rather than remove it', () => {
     const seeded = seedOn({ desktopPackage: '0.2.61' });
 
     const said = seeded.warnings.join('\n');
     expect(said).toContain('companion-hub 0.2.61 desktop package');
     expect(said).toContain('this cihub is 0.2.76');
     expect(said).toContain(`takes neither the package's image (${HUB_STACK_IMAGE_REPO}:0.2.61) nor its compose`);
-    expect(said).toContain('sudo apt remove companion-hub');
+    expect(said).toContain(UNUSED_DESKTOP_APP_ADVICE);
+    expect(said).not.toMatch(PACKAGE_REMOVAL);
     expect(said).toContain('CI_HUB_IMAGE=<ref>');
     // The idle 0.2.61 app keeps a newer release tag, so starting it later does not undo this pin.
     expect(said).not.toContain('If that desktop app is started');
@@ -288,5 +296,70 @@ describe('resolveApplianceHubImage — the seeding that is meant to happen', () 
     const resolved = resolveApplianceHubImage({ CI_HUB_IMAGE: digest });
     expect(resolved.source).toBe('environment');
     expect(resolved.warnings.join('\n')).toContain(`replacing ${digest}`);
+  });
+});
+
+/**
+ * Companion-Hub#1831. The seed writes the desktop's own layout and starts its compose, so the package's
+ * uninstall (deb postrm, rpm postun) deletes the Hub it has just set up: the database volume, every app
+ * and its data, and ~/.local/share/companion-hub. No message may point an operator at it.
+ */
+describe('never tells the operator to remove the desktop package', () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'cihub-seed-removal-'));
+    vi.stubEnv('CIHUB_BUILD_VERSION', '0.2.76');
+    vi.stubEnv('CI_HUB_IMAGE', '');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    childProcess.execFileSync.mockReset();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it.each([
+    ['an idle package at another release', { desktopPackage: '0.2.61' }, {}],
+    ['a running app at another release', { desktopPackage: '0.2.70', desktopRunning: true }, {}],
+    ['an idle package on a trial build', { desktopPackage: '0.2.61' }, { CIHUB_BUILD_VERSION: TRIAL_BUILD }],
+    ['a running app on a trial build', { desktopPackage: '0.2.70', desktopRunning: true }, { CIHUB_BUILD_VERSION: TRIAL_BUILD }],
+    ['an idle package when CI_CLOUD_URL chose the Portal', { desktopPackage: '0.2.76' }, { CI_CLOUD_URL: 'https://hub.companionintelligence.com' }],
+    [
+      'a running app when CI_CLOUD_URL chose the Portal',
+      { desktopPackage: '0.2.76', desktopRunning: true },
+      { CI_CLOUD_URL: 'https://hub.companionintelligence.com' },
+    ],
+  ] as [string, NodeFacts, Record<string, string>][])('with %s, it says to leave the app closed', (_case, facts, env) => {
+    for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+    onNode(facts);
+
+    const seeded = seedApplianceInstall({
+      dataDir: join(home, '.local', 'share', 'companion-hub'),
+      postgresPassword: 'operator-secret',
+      findCompose: () => undefined,
+    });
+    const said = seeded.warnings.join('\n');
+
+    expect(said).toContain(UNUSED_DESKTOP_APP_ADVICE);
+    expect(said).not.toMatch(PACKAGE_REMOVAL);
+  });
+
+  it('has no package removal command anywhere in the CLI', () => {
+    const scriptsDir = join(__dirname, '..');
+    const sources = [
+      ...readdirSync(scriptsDir)
+        .filter((name) => name.endsWith('.ts'))
+        .map((name) => join(scriptsDir, name)),
+      ...readdirSync(join(scriptsDir, 'lib'))
+        .filter((name) => name.endsWith('.ts'))
+        .map((name) => join(scriptsDir, 'lib', name)),
+    ];
+    const naming = new RegExp(`${PACKAGE_REMOVAL.source}[^\\n]*companion-hub`);
+
+    expect(sources.length).toBeGreaterThan(20);
+    for (const source of sources) {
+      expect(readFileSync(source, 'utf8'), source).not.toMatch(naming);
+    }
   });
 });
