@@ -264,7 +264,6 @@
   "AUTH_REGISTER_SUBMIT": "Înregistrare",
   "AUTH_REGISTER_TITLE": "Înregistrați-vă contul",
   "AUTH_RESET_PASSWORD_BACK_TO_LOGIN": "Inapoi la autentificare",
-  "AUTH_RESET_PASSWORD_CANCEL": "Anulează cererea de modificare a parolei",
   "AUTH_RESET_PASSWORD_COMPLETE_FAILED": "Nu s-a putut reseta parola. Linkul de resetare poate fi invalid sau expirat.",
   "AUTH_RESET_PASSWORD_COMPLETE_SUCCESS": "Parolă actualizată. Acum te poți conecta cu noua parolă.",
   "AUTH_RESET_PASSWORD_INSTRUCTIONS": "To get started, run this command on your server and then refresh this page. If you have previously done so, the password reset request may have expired. In that case please retry",

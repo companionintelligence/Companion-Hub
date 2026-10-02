@@ -4,17 +4,17 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import type React from 'react';
 import { useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
+import { Link } from 'react-router';
 import { z } from 'zod';
 
 interface IProps {
   onSubmit: (values: FormValues) => void;
-  onCancel: () => void;
   loading: boolean;
 }
 
 type FormValues = { password: string; passwordConfirm: string };
 
-export const ResetPasswordForm: React.FC<IProps> = ({ onSubmit, loading, onCancel }) => {
+export const ResetPasswordForm: React.FC<IProps> = ({ onSubmit, loading }) => {
   const { t } = useTranslation();
   const schema = z
     .object({
@@ -65,8 +65,8 @@ export const ResetPasswordForm: React.FC<IProps> = ({ onSubmit, loading, onCance
           <Button loading={loading} type="submit" intent="primary" className="w-full mb-3">
             {t('AUTH_RESET_PASSWORD_SUBMIT')}
           </Button>
-          <Button onClick={onCancel} type="button" variant="outline" className="w-full">
-            {t('AUTH_RESET_PASSWORD_CANCEL')}
+          <Button asChild variant="outline" className="w-full">
+            <Link to="/login">{t('AUTH_RESET_PASSWORD_BACK_TO_LOGIN')}</Link>
           </Button>
         </div>
       </form>

@@ -264,7 +264,6 @@
   "AUTH_REGISTER_SUBMIT": "Register",
   "AUTH_REGISTER_TITLE": "Register your account",
   "AUTH_RESET_PASSWORD_BACK_TO_LOGIN": "Back to login",
-  "AUTH_RESET_PASSWORD_CANCEL": "Cancel password change request",
   "AUTH_RESET_PASSWORD_COMPLETE_FAILED": "تعذّر إعادة تعيين كلمة المرور. قد يكون رابط إعادة التعيين غير صالح أو منتهي الصلاحية.",
   "AUTH_RESET_PASSWORD_COMPLETE_SUCCESS": "تم تحديث كلمة المرور. يمكنك الآن تسجيل الدخول بكلمة المرور الجديدة.",
   "AUTH_RESET_PASSWORD_INSTRUCTIONS": "To get started, run this command on your server and then refresh this page. If you have previously done so, the password reset request may have expired. In that case please retry",

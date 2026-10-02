@@ -346,7 +346,6 @@
   "AUTH_REGISTER_SUBMIT": "Crear usuario administrador local",
   "AUTH_REGISTER_TITLE": "Crear usuario administrador local para este dispositivo",
   "AUTH_RESET_PASSWORD_BACK_TO_LOGIN": "Volver a iniciar sesión",
-  "AUTH_RESET_PASSWORD_CANCEL": "Cancelar solicitud de cambio de contraseña",
   "AUTH_RESET_PASSWORD_COMPLETE_FAILED": "No se ha podido restablecer la contraseña. El enlace de restablecimiento puede ser inválido o haber caducado.",
   "AUTH_RESET_PASSWORD_COMPLETE_SUCCESS": "Contraseña actualizada. Ahora puedes iniciar sesión con tu nueva contraseña.",
   "AUTH_RESET_PASSWORD_INSTRUCTIONS": "Para comenzar, ejecuta este comando en tu servidor y luego recarga esta página. Si ya lo hiciste anteriormente, la solicitud de cambio de contraseña puede haber expirado. En ese caso, por favor reinténtalo",

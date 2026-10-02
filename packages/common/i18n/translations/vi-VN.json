@@ -264,7 +264,6 @@
   "AUTH_REGISTER_SUBMIT": "Đăng ký",
   "AUTH_REGISTER_TITLE": "Đăng kí tài khoản của bạn",
   "AUTH_RESET_PASSWORD_BACK_TO_LOGIN": "Trở lại trang đăng nhập",
-  "AUTH_RESET_PASSWORD_CANCEL": "Hủy yêu cầu thay đổi mật khẩu",
   "AUTH_RESET_PASSWORD_COMPLETE_FAILED": "Không thể đặt lại mật khẩu. Liên kết đặt lại có thể không hợp lệ hoặc đã hết hạn.",
   "AUTH_RESET_PASSWORD_COMPLETE_SUCCESS": "Đã cập nhật mật khẩu. Bạn có thể đăng nhập bằng mật khẩu mới.",
   "AUTH_RESET_PASSWORD_INSTRUCTIONS": "Để bắt đầu, chạy lệnh này trên máy chủ của bạn và sau đó làm mới trang này. Nếu bạn đã thực hiện điều này trước đó, yêu cầu đặt lại mật khẩu có thể đã hết hạn. Trong trường hợp đó, vui lòng thử lại",

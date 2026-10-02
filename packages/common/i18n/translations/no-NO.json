@@ -264,7 +264,6 @@
   "AUTH_REGISTER_SUBMIT": "Register",
   "AUTH_REGISTER_TITLE": "Register your account",
   "AUTH_RESET_PASSWORD_BACK_TO_LOGIN": "Back to login",
-  "AUTH_RESET_PASSWORD_CANCEL": "Cancel password change request",
   "AUTH_RESET_PASSWORD_COMPLETE_FAILED": "Kunne ikke tilbakestille passord. Tilbakestillingslenken kan være ugyldig eller utløpt.",
   "AUTH_RESET_PASSWORD_COMPLETE_SUCCESS": "Passord oppdatert. Du kan nå logge inn med det nye passordet.",
   "AUTH_RESET_PASSWORD_INSTRUCTIONS": "To get started, run this command on your server and then refresh this page. If you have previously done so, the password reset request may have expired. In that case please retry",

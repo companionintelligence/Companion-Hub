@@ -264,7 +264,6 @@
   "AUTH_REGISTER_SUBMIT": "Kayıt Ol",
   "AUTH_REGISTER_TITLE": "Hesabınızı kaydedin",
   "AUTH_RESET_PASSWORD_BACK_TO_LOGIN": "Giriş ekranına dön",
-  "AUTH_RESET_PASSWORD_CANCEL": "Parola değiştirme isteğini iptal et",
   "AUTH_RESET_PASSWORD_COMPLETE_FAILED": "Parola sıfırlanamadı. Sıfırlama bağlantısı geçersiz veya süresi dolmuş olabilir.",
   "AUTH_RESET_PASSWORD_COMPLETE_SUCCESS": "Parola güncellendi. Artık yeni parolanızla oturum açabilirsiniz.",
   "AUTH_RESET_PASSWORD_INSTRUCTIONS": "Başlamak için sunucunuzda bu komutu çalıştırın ve ardından bu sayfayı yenileyin. Daha önce yaptıysanız, parola sıfırlama isteğinin süresi dolmuş olabilir. Bu durumda lütfen yeniden deneyin",
