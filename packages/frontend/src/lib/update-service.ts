@@ -454,8 +454,9 @@ let desktopUpdatesRunning = 0;
 
 /**
  * True while this page waits on the desktop app to install an update. The desktop gate keeps the page
- * on screen meanwhile: the updater stops the Hub before it installs, and the gate would otherwise
- * swap the page for its "isn't running" screen, along with the update's progress.
+ * on screen meanwhile: the updater stops the Hub (older apps before they install, current ones once
+ * the update is installed), and the gate would otherwise swap the page for its "isn't running"
+ * screen, along with the update's progress.
  */
 export function isDesktopUpdateRunning(): boolean {
   return desktopUpdatesRunning > 0;
@@ -500,9 +501,10 @@ async function startHubIfDown(invoke: CoreInvoke, onRestartingHub: () => void): 
  * installer, checks it against the release manifest (size and SHA-256), installs it (`pkexec` on
  * Linux, which asks for the password), and exits into the new version.
  *
- * Every desktop app so far stops the Hub before it downloads, and leaves it stopped when the install
- * fails, for example when the password prompt is cancelled. So after a failure, a Hub whose API no
- * longer answers is started again. The outcome says what happened; the caller offers the download.
+ * Older desktop apps stop the Hub before they download, and leave it stopped when the install fails,
+ * for example when the password prompt is cancelled. Current ones keep it running until the update is
+ * installed. So after a failure, a Hub whose API no longer answers is started again. The outcome says
+ * what happened; the caller offers the download.
  */
 export async function installDesktopUpdate(info: UpdateInfo, callbacks: DesktopUpdateCallbacks = {}): Promise<DesktopUpdateOutcome> {
   if (!isTauri() || !info.downloadUrl || !isTrustedDownloadUrl(info.downloadUrl)) {

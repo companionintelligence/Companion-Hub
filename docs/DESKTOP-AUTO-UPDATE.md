@@ -34,10 +34,14 @@ separate dev feed so dev desktop builds can update without touching production.
 | Settings UI (desktop) | **Update to X** on the Desktop app card calls the `perform_desktop_update_command` Tauri command and shows the steps from `get_update_progress_command`. See [The one-click update in the desktop window](#the-one-click-update-in-the-desktop-window). |
 | Settings UI (any browser) | backend `POST /api/system/update` — Hub probes `host.docker.internal:17400/health`, then `POST /update` with the listener token. The tab never talks to `127.0.0.1:17400`. If the listener can't be reached, Hub updates the stack only, and Settings says to update from Companion Hub on the computer that runs the Hub, or with `companion-hub update` in a terminal there. |
 | CLI | `companion-hub update` (`--check` for exit-code-only: 1 = update available) |
-| Hub Docker stack (separate from app binary) | backend `SystemUpdateService` daily timer, gated by the Settings auto-update toggle; only a release-pinned node moves (see [`hub-stack-self-update.md`](hub-stack-self-update.md)) |
+| Hub Docker stack (separate from app binary) | backend `SystemUpdateService` daily timer, gated by the Settings auto-update toggle; only a release-pinned node moves (see [`hub-stack-self-update.md`](hub-stack-self-update.md)). It never calls the listener. |
 
 The desktop **app binary** is never updated without a user action; the **stack
-images** auto-update daily when the toggle is on.
+images** auto-update daily when the toggle is on. The daily timer updates the
+stack image only, even when the listener is running: the installer can ask for
+the computer's password, and nobody may be there to type it. Settings offers
+the desktop app update to a person instead. The Hub log says
+`Auto-update: updating the Hub image only` when the timer starts an update.
 
 ### The listener token
 
@@ -86,8 +90,9 @@ In the desktop window, an available update shows **Update to X** on Settings →
   the computer may ask for a password.
 - The page polls `get_update_progress_command` once a second and shows each step. The app keeps
   the last update's step, a failed one's too, so the page skips that until the step changes.
-- Every release so far stops the Hub before it downloads and leaves it stopped when the install
-  fails, for example when the password prompt is cancelled. While the page waits, the desktop
+- Older releases stop the Hub before they download and leave it stopped when the install fails,
+  for example when the password prompt is cancelled. Current ones stop it only once the update is
+  installed (see [Install flow](#install-flow-per-platform)). While the page waits, the desktop
   gate keeps it on screen instead of its "isn't running" screen. After a failure, if the Hub's
   API doesn't answer, the page calls `start_hub_command`.
 - After a failure, the card shows the app's error, then offers the installer download and the
@@ -132,8 +137,22 @@ See [Keeping the CLI and the stack together](CLI.md#keeping-the-cli-and-the-stac
   AppImage target comes from `$APPIMAGE` (set by the AppImage runtime); the old
   file is unlinked before copying to avoid `ETXTBSY`.
 
-Before installing, the updater stops the Hub Docker stack and invalidates the
-config hash so the relaunched app re-pulls images and recreates containers.
+The Hub keeps running while the update downloads and installs. It stops only
+when the app is about to hand over to the new version:
+
+- **Linux and macOS.** Replacing the app on disk doesn't touch the Hub's
+  containers. Once the install succeeds, the updater clears the user-stopped
+  marker and the config hash, stops the Hub stack, and relaunches, so the new
+  app re-pulls images and recreates the containers. If the download, the
+  checksum, or the install fails, for example because nobody entered the
+  password, the Hub was never stopped. If the relaunch fails, the updater starts
+  the Hub again.
+- **Windows.** The installer runs only after the app exits, so the updater stops
+  the stack right before it hands over to the installer. If the stop or the
+  hand-over fails, it starts the Hub again.
+
+The desktop log records each failed update under `hub.update`, and says whether
+the Hub kept running or was started again.
 
 If the app is still running when an update lands from the listener (browser
 trigger), the freshly-started new instance signals the old one through the
