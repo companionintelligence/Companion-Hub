@@ -206,6 +206,27 @@ describe('MarketplaceWhoIsService', () => {
     expect(portal.whoisApps).not.toHaveBeenCalled();
   });
 
+  it('forgets a cached grant once the cache is cleared', async () => {
+    cacheRows = [
+      {
+        subject: SUBJECT,
+        appId: 'immich',
+        canJson: JSON.stringify(['view', 'configure']),
+        version: 3,
+        cachedAt: new Date().toISOString(),
+      },
+    ];
+    database.db.delete = (async () => {
+      cacheRows = [];
+    }) as unknown as DatabaseService['db']['delete'];
+    registration.getDeviceRegistrationInfo.mockResolvedValue(undefined as never);
+
+    await service.clearCache();
+
+    await expect(service.has(USER_ID, APP_URN, 'configure')).resolves.toBe(false);
+    expect(portal.whoisApps).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['cannot be read', () => registration.getDeviceRegistrationInfo.mockRejectedValue(new Error('db down'))],
     ['does not exist', () => registration.getDeviceRegistrationInfo.mockResolvedValue(undefined as never)],

@@ -4,6 +4,8 @@ import path from 'node:path';
 import { Injectable, type OnApplicationBootstrap, type OnApplicationShutdown, Inject, forwardRef, Optional } from '@nestjs/common';
 import axios from 'axios';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { DatabaseService } from '@/core/database/database.service';
+import { whoisCache } from '@/core/database/drizzle/schema';
 import { scrubString } from '@/core/error-reporting/sentry-scrubber';
 import { LoggerService } from '@/core/logger/logger.service';
 import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR, tunnelUserClearedMarkerPath } from '@/common/constants';
@@ -341,6 +343,31 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * Lazily, and optional: the check-in must not depend on the key store being wired, and the
    * service's tests build this class without it.
    */
+  /**
+   * The WhoIs cache has no organization column. A reset, or a pair into a
+   * different organization, has to empty it or the next request treats the
+   * previous tenant's grants as current.
+   */
+  private async forgetCachedGrants(): Promise<void> {
+    let database: DatabaseService | undefined;
+    try {
+      database = this.moduleRef?.get(DatabaseService, { strict: false });
+    } catch {
+      this.logger.warn('Could not clear cached app grants: database is not available');
+      return;
+    }
+    if (!database) {
+      return;
+    }
+
+    try {
+      await database.db.delete(whoisCache);
+      this.logger.info('Cleared cached app grants');
+    } catch (error) {
+      this.logger.warn(`Could not clear cached app grants: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   private portalPushKey(): PortalPushKeyService | null {
     try {
       return this.moduleRef?.get(PortalPushKeyService, { strict: false }) ?? null;
@@ -1351,6 +1378,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
     // Remove all durable device-registration rows.
     await this.deviceRegistrationRepository.deleteAll();
+    // Grants are cached without an organization id. Once this device has none,
+    // WhoIs stops asking Portal and would keep serving those rows for a day.
+    await this.forgetCachedGrants();
 
     // Remove the tunnel token from disk.
     const tokenPath = path.join(TUNNEL_DIR, 'token');
@@ -2004,6 +2034,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     const replacesRegistration = rePairing;
     if (replacesRegistration) {
       this.portalRejectedSince = null;
+      // This branch runs only when the new organization is not the row we
+      // already hold. The cache cannot tell those organizations apart.
+      await this.forgetCachedGrants();
     }
 
     // Provisioning begins only after the device reaches the paired phase.

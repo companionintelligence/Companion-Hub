@@ -4,6 +4,9 @@ packages:
 # Security overrides — pin vulnerable transitive deps to patched versions
 # (Dependabot alerts on CI-Hub@dev). Direct deps are also bumped in their package.json.
 overrides:
+  # 26.6.4 was published inside pnpm's release-age window, so a frozen install
+  # (CI, the image build, and the pre-commit hook) rejects the lockfile.
+  '@types/node@26.6.4': 26.6.3
   '@babel/core': 7.29.6
   '@grpc/grpc-js': 1.14.4
   '@hono/node-server': 1.19.15
