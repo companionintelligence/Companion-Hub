@@ -1228,10 +1228,13 @@ export const HubPoolSection = () => {
                           </span>
                         ) : null}
                       </span>
-                      {/* The FQDN is the identity the token was issued to; the label is only a label. */}
-                      <span className="break-all font-mono text-[10px] text-muted-foreground sm:truncate" title={peer.nodeFqdn}>
-                        {peer.nodeFqdn}
-                      </span>
+                      {/* The FQDN is the identity the token was issued to; the label is only a label.
+                          When there is no display name, the line above already is the address. */}
+                      {peer.displayName && peer.displayName !== peer.nodeFqdn ? (
+                        <span className="break-all font-mono text-[10px] text-muted-foreground sm:truncate" title={peer.nodeFqdn}>
+                          {peer.nodeFqdn}
+                        </span>
+                      ) : null}
                       {peer.status === 'unreachable' && peer.probeFailure?.action ? (
                         // The backend only sets `action` when "wait, it clears on its own" is false
                         // (see PoolPeerProbeFailureSummary) — this is the operator's actual next step,

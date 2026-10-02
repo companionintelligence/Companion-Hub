@@ -750,6 +750,18 @@ describe('HubPoolSection', () => {
     expect(vi.mocked(removePeer).mock.calls[0]?.[0]).toMatchObject({ path: { id: 'outbound-1' } });
   });
 
+  it('shows a peer address once when that peer has no display name', async () => {
+    fixtures.status = baseStatus({
+      peers: [connectedPeer({ displayName: null })],
+      peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0, disabled: 0 },
+    });
+
+    renderSection();
+
+    const row = await screen.findByTestId('hub-pool-peer');
+    expect(row.textContent?.match(/hub-b\.example-tailnet\.ts\.net/g)).toHaveLength(1);
+  });
+
   it('holds an unpair behind a confirmation dialog because it revokes both tokens', async () => {
     fixtures.status = baseStatus({
       peers: [connectedPeer()],
