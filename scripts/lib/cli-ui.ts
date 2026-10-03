@@ -76,6 +76,11 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
       { command: `${BASE_COMMAND} logs [env] [service]`, description: 'Stream compose logs for the target environment' },
       { command: `${BASE_COMMAND} config [env]`, description: 'Show resolved configuration values' },
       {
+        command: `${BASE_COMMAND} compose refresh [--execute] [--no-recreate]`,
+        description:
+          "Replace the installed docker-compose.prod.yml with this cihub's own and recreate only the Hub (dry run by default; env file untouched)",
+      },
+      {
         command: `${BASE_COMMAND} update [--check]`,
         description: 'Report CLI vs stack versions, then install the desktop + stack update (requires CI Hub)',
       },
