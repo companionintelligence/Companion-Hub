@@ -57,6 +57,7 @@
     installDocker: byId('install-docker'),
     copyError: byId('copy-error'),
     openLogs: byId('open-logs'),
+    logsError: byId('logs-error'),
     aside: byId('aside'),
     waiting: byId('waiting'),
   };
@@ -822,7 +823,12 @@
   el.copyError.addEventListener('click', () => void copyText(errorToCopy(page.progress), el.copyError));
   el.commandCopy.addEventListener('click', () => void copyText(el.commandText.textContent, el.commandCopy));
   el.openLogs.addEventListener('click', () => {
-    void invoke('open_logs_dir_command').catch(() => undefined);
+    setText(el.logsError, '');
+    el.logsError.hidden = true;
+    void invoke('open_logs_dir_command').catch((error) => {
+      setText(el.logsError, errorText(error) || "Couldn't open the logs folder.");
+      el.logsError.hidden = false;
+    });
   });
 
   renderTitlebar();

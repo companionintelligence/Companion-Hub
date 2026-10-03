@@ -410,14 +410,13 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                 let _ = app.opener().open_url(portal_url, None::<&str>);
             }
             "view_logs" => {
-                let logs_dir = crate::hub_manager::logs_open_target();
-                let _ = std::fs::create_dir_all(&logs_dir);
-                let _ = crate::hub_manager::append_desktop_log(
-                    "tray.logs",
-                    &format!("Opening logs folder: {}", logs_dir.display()),
-                );
-                let path = logs_dir.display().to_string();
-                let _ = app.opener().open_path(path, None::<&str>);
+                if let Err(error) = crate::open_logs_folder(app) {
+                    app.dialog()
+                        .message(error)
+                        .title("Couldn't open logs")
+                        .kind(MessageDialogKind::Error)
+                        .show(|_| {});
+                }
             }
             "quit" => {
                 save_window_geometry(app);

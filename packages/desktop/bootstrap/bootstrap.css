@@ -639,6 +639,15 @@ h2 {
   gap: 0.625rem;
 }
 
+.action-error {
+  width: 100%;
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--destructive);
+  text-align: center;
+}
+
 .btn {
   display: inline-flex;
   align-items: center;
