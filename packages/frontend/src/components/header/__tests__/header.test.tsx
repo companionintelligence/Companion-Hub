@@ -1,5 +1,5 @@
 import { render, screen, userEvent, waitFor } from '@/tests/test-utils';
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import { Header } from '../header';
 
@@ -25,10 +25,13 @@ vi.mock('@/components/mode-toggle', () => ({
   ModeToggle: () => <div data-testid="mode-toggle">ModeToggle</div>,
 }));
 
+const logoutState = vi.hoisted(() => ({
+  mutate: vi.fn(),
+  isPending: false,
+}));
+
 vi.mock('@tanstack/react-query', () => ({
-  useMutation: () => ({
-    mutate: vi.fn(),
-  }),
+  useMutation: () => logoutState,
 }));
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
@@ -51,6 +54,11 @@ function renderHeader(isLoggedIn = true, initialEntry = '/dashboard') {
 }
 
 describe('Header', () => {
+  beforeEach(() => {
+    logoutState.isPending = false;
+    logoutState.mutate.mockClear();
+  });
+
   it('renders Home and Store links when logged in', () => {
     renderHeader(true);
 
@@ -112,6 +120,20 @@ describe('Header', () => {
     await userEvent.keyboard('{Escape}');
     expect(screen.queryByTestId('mobile-app-menu')).not.toBeInTheDocument();
     expect(screen.getByTestId('mobile-app-menu-btn')).toHaveFocus();
+  });
+
+  it('closes the phone menu when logging out and keeps the control pending until that finishes', async () => {
+    renderHeader(true);
+
+    await userEvent.click(screen.getByTestId('mobile-app-menu-btn'));
+    await userEvent.click(screen.getByRole('menuitem', { name: /HEADER_LOGOUT|Logout/ }));
+    expect(logoutState.mutate).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('mobile-app-menu')).not.toBeInTheDocument();
+
+    logoutState.isPending = true;
+    renderHeader(true);
+    expect(screen.getAllByRole('button', { name: 'HEADER_LOGGING_OUT' }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('button', { name: 'HEADER_LOGGING_OUT' })[0]).toHaveAttribute('aria-busy', 'true');
   });
 
   it('uses the stronger active styling for the selected settings button', () => {
