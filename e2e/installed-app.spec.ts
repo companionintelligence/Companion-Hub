@@ -69,13 +69,13 @@ test.describe('installed app routes', () => {
     await openAsOperator(page);
     await page.goto(customApp);
     await expect(page).toHaveURL(new RegExp(`${customApp}$`));
-    await expect(page.getByRole('button', { name: 'Open' })).toBeVisible();
+    await expect(page.getByTestId('action-open')).toBeVisible();
   });
 
   test('custom app edit shows the nginx compose', async ({ page }) => {
     await openAsOperator(page);
     await page.goto(`${customApp}/edit`);
     await expect(page).toHaveURL(new RegExp(`${customApp}/edit$`));
-    await expect(page.getByDisplayValue(INSTALLED_APP.image)).toBeVisible();
+    await expect(page.getByRole('textbox', { name: 'Image' })).toHaveValue(INSTALLED_APP.image);
   });
 });
