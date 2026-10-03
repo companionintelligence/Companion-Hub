@@ -79,6 +79,16 @@ describe('SettingsPage', () => {
     expect(innerWrapper).not.toHaveClass('h-full');
   });
 
+  it('scrolls the active settings tab into view when the strip overflows', async () => {
+    const scrollIntoView = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+
+    renderSettingsPage('/settings?tab=logs');
+
+    expect(await screen.findByRole('tab', { name: 'COMMON_LOGS' })).toBeInTheDocument();
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest', inline: 'nearest' });
+  });
+
   it('expands only the logs tab to the full available size', async () => {
     renderSettingsPage('/settings?tab=logs');
 
