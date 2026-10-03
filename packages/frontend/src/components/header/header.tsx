@@ -102,7 +102,7 @@ export const Header = (props: HeaderProps) => {
 
         {!isLoggedIn && (
           <Button variant="ghost" size="sm" onClick={() => navigate('/login')}>
-            {t('login', 'Login')}
+            {t('COMMON_LOGIN')}
             <LogIn className="ml-2 size-4" />
           </Button>
         )}
@@ -282,7 +282,7 @@ function MobileAppMenu({
                 }}
               >
                 <LogIn className="mr-2 size-4" />
-                {t('login', 'Login')}
+                {t('COMMON_LOGIN')}
               </button>
             )}
           </div>

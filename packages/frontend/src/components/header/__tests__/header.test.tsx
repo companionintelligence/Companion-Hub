@@ -78,6 +78,12 @@ describe('Header', () => {
     expect(screen.queryByRole('link', { name: /COMMON_APP_STORE|App Store|Store/i })).not.toBeInTheDocument();
   });
 
+  it('labels Login from the shared catalog', () => {
+    renderHeader(false);
+
+    expect(screen.getByRole('button', { name: 'COMMON_LOGIN' })).toBeInTheDocument();
+  });
+
   it('offsets the bar with the iOS safe-area token so it clears the notch', () => {
     renderHeader(true);
     const header = screen.getByTestId('app-header');
