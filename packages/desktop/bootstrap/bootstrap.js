@@ -207,6 +207,10 @@
     commandError: null,
     failedAfterSecs: null,
     installError: null,
+    /** Last install_docker_command result, kept on screen after the button returns. */
+    installResult: null,
+    /** True while Install Docker is running. The status note reports it, not the button label. */
+    installRunning: false,
     navigating: false,
     /** True while get_startup_progress_command has not come back. */
     pollInFlight: false,
@@ -531,7 +535,17 @@
   }
 
   function dockerStatusNote() {
-    return page.installError ? `Docker install didn't finish. ${page.installError}` : 'Service status shows here once Docker is running.';
+    if (page.installRunning) return 'Installing Docker… This can take a few minutes.';
+    if (page.installError) return `Docker install didn't finish. ${page.installError}`;
+    const result = page.installResult;
+    if (result?.state === 'needs_restart') {
+      const detail = typeof result.detail === 'string' && result.detail ? ` ${result.detail}` : '';
+      return `Docker is installed. Restart to finish using it.${detail}`;
+    }
+    if (result?.state === 'completed') {
+      return result.detail || 'Docker is installed. CI Hub will carry on once Docker is running.';
+    }
+    return 'Service status shows here once Docker is running.';
   }
 
   /** Structure of the status rows, without the elapsed clock that ticks every second. */
@@ -619,6 +633,8 @@
       openLogs: view === 'stuck' || view === 'failed' || (view === 'starting' && elapsed > LOGS_LINK_AFTER_S),
     };
     for (const [key, visible] of Object.entries(shown)) el[key].hidden = !visible;
+    el.installDocker.disabled = page.installRunning;
+    el.installDocker.setAttribute('aria-busy', page.installRunning ? 'true' : 'false');
     el.actions.hidden = !Object.values(shown).some(Boolean);
     el.aside.hidden = view !== 'stopped';
     el.waiting.hidden = view !== 'docker';
@@ -744,17 +760,18 @@
   }
 
   async function installDocker() {
-    const label = el.installDocker.textContent;
-    el.installDocker.disabled = true;
-    el.installDocker.textContent = 'Installing Docker…';
+    if (page.installRunning) return;
+    page.installRunning = true;
     page.installError = null;
+    page.installResult = null;
+    render();
     try {
-      await invoke('install_docker_command');
+      page.installResult = await invoke('install_docker_command');
     } catch (error) {
       page.installError = errorText(error) || 'Try again, or install Docker yourself.';
     } finally {
-      el.installDocker.disabled = false;
-      el.installDocker.textContent = label;
+      page.installRunning = false;
+      render();
       void pollProgress();
     }
   }
