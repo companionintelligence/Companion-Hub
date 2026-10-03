@@ -12,8 +12,7 @@ import { type SettingsFormValues, UserSettingsForm } from '../components/user-se
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Switch } from '@/components/ui/Switch';
 import { Sparkles } from 'lucide-react';
-import clsx from 'clsx';
-import { Tooltip } from 'react-tooltip';
+import { SettingsHint } from '../components/settings-hint';
 
 type Props = {
   initialValues?: SettingsFormValues;
@@ -26,6 +25,7 @@ export const UserSettingsContainer = ({ initialValues, publicHubHostname }: Prop
   const { t } = useTranslation();
   const { refreshAppContext, user } = useAppContext();
   const [requireRestart, setRequireRestart] = useState(initialValues?.advancedSettings);
+  const [advancedModeDraft, setAdvancedModeDraft] = useState<boolean | null>(null);
 
   const updateSettings = useMutation({
     ...updateUserSettingsMutation(),
@@ -45,11 +45,13 @@ export const UserSettingsContainer = ({ initialValues, publicHubHostname }: Prop
   const updateAdvancedMode = useMutation({
     ...updateAdvancedModeMutation(),
     onError: (e: TranslatableError) => {
+      setAdvancedModeDraft(null);
       toast.error(t(e.message, e.intlParams));
     },
-    onSuccess: () => {
+    onSuccess: async () => {
       toast.success(t('SETTINGS_GENERAL_SETTINGS_UPDATED'));
-      refreshAppContext();
+      await refreshAppContext();
+      setAdvancedModeDraft(null);
     },
   });
 
@@ -63,6 +65,7 @@ export const UserSettingsContainer = ({ initialValues, publicHubHostname }: Prop
   };
 
   const onAdvancedModeChange = (checked: boolean) => {
+    setAdvancedModeDraft(checked);
     updateAdvancedMode.mutate({ body: { advancedMode: checked } });
   };
 
@@ -78,21 +81,13 @@ export const UserSettingsContainer = ({ initialValues, publicHubHostname }: Prop
         </CardHeader>
         <CardContent>
           <Switch
-            checked={user.advancedMode}
+            checked={advancedModeDraft ?? Boolean(user.advancedMode)}
+            disabled={updateAdvancedMode.isPending}
             onCheckedChange={onAdvancedModeChange}
             label={
               <>
                 {t('SETTINGS_GENERAL_ADVANCED_MODE_TOGGLE')}
-                <Tooltip className="tooltip" anchorSelect=".advanced-mode-hint">
-                  {t('SETTINGS_GENERAL_ADVANCED_MODE_HINT')}
-                </Tooltip>
-                <span
-                  className={clsx(
-                    'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help advanced-mode-hint',
-                  )}
-                >
-                  ?
-                </span>
+                <SettingsHint className="advanced-mode-hint" hint={t('SETTINGS_GENERAL_ADVANCED_MODE_HINT')} />
               </>
             }
           />
@@ -102,6 +97,7 @@ export const UserSettingsContainer = ({ initialValues, publicHubHostname }: Prop
         initialValues={initialValues}
         currentLocale={currentLocale as Locale}
         onSubmit={onSubmit}
+        loading={updateSettings.isPending}
         publicHubHostname={publicHubHostname}
       />
     </div>

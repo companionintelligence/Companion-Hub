@@ -2,6 +2,7 @@
 
 import * as SwitchPrimitives from '@radix-ui/react-switch';
 import { cn } from '@/lib/utils';
+import { splitNamedLabel } from '@/lib/named-label';
 import { useId } from 'react';
 import type * as React from 'react';
 
@@ -19,6 +20,7 @@ const Switch = ({ className, label, ...props }: SwitchProps) => {
   // `aria-label={name}` hid the label from assistive technology. `name` survives as the fallback for a
   // switch with no label, and as the label's id where it was already used as one.
   const labelId = props.name ?? generatedId;
+  const parts = label ? splitNamedLabel(label) : null;
 
   return (
     // biome-ignore lint/a11y/noLabelWithoutControl: the control is the Radix switch nested inside this label, which the rule cannot see through
@@ -31,9 +33,10 @@ const Switch = ({ className, label, ...props }: SwitchProps) => {
       >
         <SwitchPrimitives.Thumb className="pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform data-[state=checked]:translate-x-4 data-[state=unchecked]:translate-x-0" />
       </SwitchPrimitives.Root>
-      {label && (
-        <span id={labelId} className="text-sm font-medium text-foreground">
-          {label}
+      {parts && (
+        <span className="inline-flex items-center text-sm font-medium text-foreground">
+          <span id={labelId}>{parts.named}</span>
+          {parts.extra}
         </span>
       )}
     </label>

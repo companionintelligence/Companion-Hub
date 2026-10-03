@@ -12,7 +12,7 @@ import { Suspense, lazy, useEffect } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
-import { Tooltip } from 'react-tooltip';
+import { SettingsHint } from '../settings-hint';
 import validator from 'validator';
 import { z } from 'zod';
 import { AdvancedSettingsModal } from '../advanced-settings-modal/advanced-settings-modal';
@@ -240,16 +240,7 @@ export const UserSettingsForm = (props: IProps) => {
                     label={
                       <>
                         {t('SETTINGS_GENERAL_GUEST_DASHBOARD')}
-                        <Tooltip className="tooltip" anchorSelect=".guest-dashboard-hint">
-                          {t('SETTINGS_GENERAL_GUEST_DASHBOARD_HINT')}
-                        </Tooltip>
-                        <span
-                          className={clsx(
-                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help guest-dashboard-hint',
-                          )}
-                        >
-                          ?
-                        </span>
+                        <SettingsHint className="guest-dashboard-hint" hint={t('SETTINGS_GENERAL_GUEST_DASHBOARD_HINT')} />
                       </>
                     }
                   />
@@ -271,16 +262,7 @@ export const UserSettingsForm = (props: IProps) => {
                     label={
                       <>
                         {t('SETTINGS_GENERAL_ALLOW_ERROR_MONITORING')}
-                        <Tooltip className="tooltip" anchorSelect=".allow-errors-hint">
-                          {t('SETTINGS_GENERAL_ALLOW_ERROR_MONITORING_HINT')}
-                        </Tooltip>
-                        <span
-                          className={clsx(
-                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help allow-errors-hint',
-                          )}
-                        >
-                          ?
-                        </span>
+                        <SettingsHint className="allow-errors-hint" hint={t('SETTINGS_GENERAL_ALLOW_ERROR_MONITORING_HINT')} />
                       </>
                     }
                   />
@@ -316,16 +298,7 @@ export const UserSettingsForm = (props: IProps) => {
                     label={
                       <>
                         {t('SETTINGS_GENERAL_ALLOW_AUTO_THEMES')}
-                        <Tooltip className="tooltip" anchorSelect=".allow-auto-themes-hint">
-                          {t('SETTINGS_GENERAL_ALLOW_AUTO_THEMES_HINT')}
-                        </Tooltip>
-                        <span
-                          className={clsx(
-                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help allow-auto-themes-hint',
-                          )}
-                        >
-                          ?
-                        </span>
+                        <SettingsHint className="allow-auto-themes-hint" hint={t('SETTINGS_GENERAL_ALLOW_AUTO_THEMES_HINT')} />
                       </>
                     }
                   />
@@ -361,16 +334,7 @@ export const UserSettingsForm = (props: IProps) => {
                       label={
                         <>
                           {t('SETTINGS_GENERAL_ADVANCED_SETTINGS_TITLE')}
-                          <Tooltip className="tooltip" anchorSelect=".advanced-settings-hint">
-                            {t('SETTINGS_GENERAL_ADVANCED_SETTINGS_SUBTITLE')}
-                          </Tooltip>
-                          <span
-                            className={clsx(
-                              'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help advanced-settings-hint',
-                            )}
-                          >
-                            ?
-                          </span>
+                          <SettingsHint className="advanced-settings-hint" hint={t('SETTINGS_GENERAL_ADVANCED_SETTINGS_SUBTITLE')} />
                         </>
                       }
                     />
@@ -384,10 +348,7 @@ export const UserSettingsForm = (props: IProps) => {
             label={
               <>
                 {t('SETTINGS_GENERAL_APPS_REPO')}
-                <Tooltip className="tooltip" anchorSelect=".apps-repo-hint">
-                  {t('SETTINGS_GENERAL_APPS_REPO_HINT')}
-                </Tooltip>
-                <span className={clsx('ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help apps-repo-hint')}>?</span>
+                <SettingsHint className="apps-repo-hint" hint={t('SETTINGS_GENERAL_APPS_REPO_HINT')} />
               </>
             }
             error={errors.appsRepoUrl?.message}
@@ -411,17 +372,8 @@ export const UserSettingsForm = (props: IProps) => {
                 <div className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
                   <label htmlFor="settings-local-domain" className="inline">
                     {t('SETTINGS_GENERAL_LOCAL_DOMAIN')}
-                    <Tooltip className="tooltip" anchorSelect=".local-domain-hint">
-                      {t('SETTINGS_GENERAL_LOCAL_DOMAIN_HINT')}
-                    </Tooltip>
-                    <span
-                      className={clsx(
-                        'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help local-domain-hint align-middle',
-                      )}
-                    >
-                      ?
-                    </span>
                   </label>
+                  <SettingsHint className="local-domain-hint align-middle" hint={t('SETTINGS_GENERAL_LOCAL_DOMAIN_HINT')} />
                 </div>
                 {/* Copy sits inside the field rather than beside it, so the row keeps the
                     full width of every other control in this card. Input wraps children
@@ -441,17 +393,8 @@ export const UserSettingsForm = (props: IProps) => {
                 <div className="text-sm font-medium leading-none">
                   <label htmlFor="public-hub-hostname" className="inline">
                     {t('COMMON_PUBLIC_DOMAIN')}
-                    <Tooltip className="tooltip" anchorSelect=".public-domain-hint">
-                      {t('SETTINGS_GENERAL_PUBLIC_DOMAIN_HINT')}
-                    </Tooltip>
-                    <span
-                      className={clsx(
-                        'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help public-domain-hint align-middle',
-                      )}
-                    >
-                      ?
-                    </span>
                   </label>
+                  <SettingsHint className="public-domain-hint align-middle" hint={t('SETTINGS_GENERAL_PUBLIC_DOMAIN_HINT')} />
                 </div>
                 <Input
                   id="public-hub-hostname"
@@ -493,16 +436,7 @@ export const UserSettingsForm = (props: IProps) => {
                         label={
                           <>
                             {t('SETTINGS_GENERAL_PERSIST_TRAEFIK_CONFIG')}
-                            <Tooltip className="tooltip" anchorSelect=".persist-traefik-config-hint">
-                              {t('SETTINGS_GENERAL_PERSIST_TRAEFIK_CONFIG_HINT')}
-                            </Tooltip>
-                            <span
-                              className={clsx(
-                                'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help persist-traefik-config-hint',
-                              )}
-                            >
-                              ?
-                            </span>
+                            <SettingsHint className="persist-traefik-config-hint" hint={t('SETTINGS_GENERAL_PERSIST_TRAEFIK_CONFIG_HINT')} />
                           </>
                         }
                       />
@@ -515,16 +449,7 @@ export const UserSettingsForm = (props: IProps) => {
                     label={
                       <>
                         {t('COMMON_DOMAIN_NAME')}
-                        <Tooltip className="tooltip" anchorSelect=".domain-hint">
-                          {t('SETTINGS_GENERAL_DOMAIN_HINT')}
-                        </Tooltip>
-                        <span
-                          className={clsx(
-                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help domain-hint',
-                          )}
-                        >
-                          ?
-                        </span>
+                        <SettingsHint className="domain-hint" hint={t('SETTINGS_GENERAL_DOMAIN_HINT')} />
                       </>
                     }
                     error={errors.domain?.message}
@@ -537,16 +462,7 @@ export const UserSettingsForm = (props: IProps) => {
                     label={
                       <>
                         {t('SETTINGS_GENERAL_INTERNAL_IP')}
-                        <Tooltip className="tooltip" anchorSelect=".internal-ip-hint">
-                          {t('SETTINGS_GENERAL_INTERNAL_IP_HINT')}
-                        </Tooltip>
-                        <span
-                          className={clsx(
-                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help internal-ip-hint',
-                          )}
-                        >
-                          ?
-                        </span>
+                        <SettingsHint className="internal-ip-hint" hint={t('SETTINGS_GENERAL_INTERNAL_IP_HINT')} />
                       </>
                     }
                     error={errors.internalIp?.message}
@@ -559,16 +475,7 @@ export const UserSettingsForm = (props: IProps) => {
                     label={
                       <>
                         {t('SETTINGS_GENERAL_LISTEN_IP')}
-                        <Tooltip className="tooltip" anchorSelect=".listen-ip-hint">
-                          {t('SETTINGS_GENERAL_LISTEN_IP_HINT')}
-                        </Tooltip>
-                        <span
-                          className={clsx(
-                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help listen-ip-hint',
-                          )}
-                        >
-                          ?
-                        </span>
+                        <SettingsHint className="listen-ip-hint" hint={t('SETTINGS_GENERAL_LISTEN_IP_HINT')} />
                       </>
                     }
                     error={errors.listenIp?.message}
@@ -583,16 +490,7 @@ export const UserSettingsForm = (props: IProps) => {
                     label={
                       <>
                         {t('COMMON_PORT')}
-                        <Tooltip className="tooltip" anchorSelect=".port-hint">
-                          {t('SETTINGS_GENERAL_PORT_HINT')}
-                        </Tooltip>
-                        <span
-                          className={clsx(
-                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help port-hint',
-                          )}
-                        >
-                          ?
-                        </span>
+                        <SettingsHint className="port-hint" hint={t('SETTINGS_GENERAL_PORT_HINT')} />
                       </>
                     }
                     error={errors.port?.message}
@@ -609,16 +507,7 @@ export const UserSettingsForm = (props: IProps) => {
                     label={
                       <>
                         {t('SETTINGS_GENERAL_SSL_PORT')}
-                        <Tooltip className="tooltip" anchorSelect=".sslPort-hint">
-                          {t('SETTINGS_GENERAL_SSL_PORT_HINT')}
-                        </Tooltip>
-                        <span
-                          className={clsx(
-                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help sslPort-hint',
-                          )}
-                        >
-                          ?
-                        </span>
+                        <SettingsHint className="sslPort-hint" hint={t('SETTINGS_GENERAL_SSL_PORT_HINT')} />
                       </>
                     }
                     error={errors.sslPort?.message}
@@ -636,16 +525,7 @@ export const UserSettingsForm = (props: IProps) => {
                     label={
                       <>
                         {t('SETTINGS_GENERAL_EVENTS_TIMEOUT')}
-                        <Tooltip className="tooltip" anchorSelect=".events-timeout-hint">
-                          {t('SETTINGS_GENERAL_EVENTS_TIMEOUT_HINT')}
-                        </Tooltip>
-                        <span
-                          className={clsx(
-                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help events-timeout-hint',
-                          )}
-                        >
-                          ?
-                        </span>
+                        <SettingsHint className="events-timeout-hint" hint={t('SETTINGS_GENERAL_EVENTS_TIMEOUT_HINT')} />
                       </>
                     }
                     error={errors.eventsTimeout?.message}
@@ -662,16 +542,7 @@ export const UserSettingsForm = (props: IProps) => {
                     label={
                       <>
                         {t('SETTINGS_GENERAL_MAX_BACKUPS')}
-                        <Tooltip className="tooltip" anchorSelect=".max-backups-hint">
-                          {t('SETTINGS_GENERAL_MAX_BACKUPS_HINT')}
-                        </Tooltip>
-                        <span
-                          className={clsx(
-                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help max-backups-hint',
-                          )}
-                        >
-                          ?
-                        </span>
+                        <SettingsHint className="max-backups-hint" hint={t('SETTINGS_GENERAL_MAX_BACKUPS_HINT')} />
                       </>
                     }
                     error={errors.maxBackups?.message}
@@ -687,16 +558,7 @@ export const UserSettingsForm = (props: IProps) => {
                     label={
                       <>
                         {t('SETTINGS_GENERAL_APP_DATA_PATH')}
-                        <Tooltip className="tooltip" anchorSelect=".app-data-path-hint">
-                          {t('SETTINGS_GENERAL_APP_DATA_PATH_HINT')}
-                        </Tooltip>
-                        <span
-                          className={clsx(
-                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help app-data-path-hint',
-                          )}
-                        >
-                          ?
-                        </span>
+                        <SettingsHint className="app-data-path-hint" hint={t('SETTINGS_GENERAL_APP_DATA_PATH_HINT')} />
                       </>
                     }
                     error={errors.appDataPath?.message}
@@ -709,16 +571,7 @@ export const UserSettingsForm = (props: IProps) => {
                     label={
                       <>
                         {t('SETTINGS_GENERAL_FORWARD_AUTH_URL')}
-                        <Tooltip className="tooltip" anchorSelect=".forward-auth-url-hint">
-                          {t('SETTINGS_GENERAL_FORWARD_AUTH_URL_HINT')}
-                        </Tooltip>
-                        <span
-                          className={clsx(
-                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help forward-auth-url-hint',
-                          )}
-                        >
-                          ?
-                        </span>
+                        <SettingsHint className="forward-auth-url-hint" hint={t('SETTINGS_GENERAL_FORWARD_AUTH_URL_HINT')} />
                       </>
                     }
                     error={errors.forwardAuthUrl?.message}

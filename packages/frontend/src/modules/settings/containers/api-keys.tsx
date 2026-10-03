@@ -118,6 +118,8 @@ export const ApiKeysContainer = () => {
   const [changeTarget, setChangeTarget] = useState<ApiKeyInfo | null>(null);
   const [changeTo, setChangeTo] = useState<ApiKeyCapability>('write');
   const [changeStep, setChangeStep] = useState<'choose' | 'confirm'>('choose');
+  const [revokeTarget, setRevokeTarget] = useState<ApiKeyInfo | null>(null);
+  const [revokingId, setRevokingId] = useState<number | null>(null);
   const [savingCapability, setSavingCapability] = useState(false);
   // Whether this operator may give a key full capability — an organization owner or admin. The routes
   // decide regardless; this only keeps the screen from offering a choice the Hub will refuse.
@@ -253,19 +255,23 @@ export const ApiKeysContainer = () => {
   }, [changeTarget, changeTo, changeStep, closeCapabilityChange, refreshKeys, loadGrantable, t]);
 
   const revokeKey = useCallback(
-    async (id: number) => {
+    async (key: ApiKeyInfo) => {
+      setRevokingId(key.id);
       try {
         // Any key can be revoked, including the last one — nothing is seeded at boot, so an
         // appliance with zero keys is a valid end state (the MCP tool surface is just closed).
-        const res = await apiFetch(`/api/api-keys/${id}`, { method: 'DELETE' });
+        const res = await apiFetch(`/api/api-keys/${key.id}`, { method: 'DELETE' });
         if (!res.ok) throw new Error('revoke');
         const body = (await res.json()) as { revoked: boolean };
         // revoked:false = the id no longer exists (e.g. revoked from another tab). No success toast
         // for a no-op — the refresh below reconciles the stale list.
         if (body.revoked) toast.success(t('API_KEYS_REVOKED'));
+        setRevokeTarget(null);
         await refreshKeys();
       } catch {
         toast.error(t('API_KEYS_REVOKE_ERROR'));
+      } finally {
+        setRevokingId(null);
       }
     },
     [refreshKeys, t],
@@ -332,7 +338,7 @@ export const ApiKeysContainer = () => {
             ) : (
               <ul className="divide-y divide-border" data-testid="api-key-list">
                 {keys.map((key) => (
-                  <li key={key.id} className="flex items-center justify-between gap-3 py-2">
+                  <li key={key.id} className="flex items-center justify-between gap-3 py-2" aria-busy={revokingId === key.id}>
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="truncate text-sm font-medium">{key.name}</span>
@@ -359,11 +365,23 @@ export const ApiKeysContainer = () => {
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
                       {governsTools(key) && (
-                        <Button variant="ghost" size="sm" onClick={() => openCapabilityChange(key)} data-testid={`api-key-change-${key.id}`}>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => openCapabilityChange(key)}
+                          disabled={revokingId === key.id}
+                          data-testid={`api-key-change-${key.id}`}
+                        >
                           {t('API_KEYS_CAPABILITY_CHANGE')}
                         </Button>
                       )}
-                      <Button variant="ghost" size="sm" className="text-destructive" onClick={() => void revokeKey(key.id)}>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-destructive"
+                        disabled={revokingId === key.id}
+                        onClick={() => setRevokeTarget(key)}
+                      >
                         {t('API_KEYS_REVOKE')}
                       </Button>
                     </div>
@@ -374,6 +392,36 @@ export const ApiKeysContainer = () => {
           </>
         )}
       </CardContent>
+
+      <Dialog open={revokeTarget !== null} onOpenChange={(open) => !open && revokingId === null && setRevokeTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('API_KEYS_REVOKE_CONFIRM_TITLE', { name: revokeTarget?.name ?? '' })}</DialogTitle>
+            <DialogDescription>
+              {revokeTarget?.managed
+                ? t('API_KEYS_REVOKE_CONFIRM_MANAGED', {
+                    name: revokeTarget.name,
+                    app: revokeTarget.ownerAppUrn ?? revokeTarget.name,
+                  })
+                : t('API_KEYS_REVOKE_CONFIRM', { name: revokeTarget?.name ?? '' })}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRevokeTarget(null)} disabled={revokingId !== null}>
+              {t('COMMON_CANCEL')}
+            </Button>
+            <Button
+              variant="destructive"
+              loading={revokingId !== null}
+              disabled={revokingId !== null || !revokeTarget}
+              onClick={() => revokeTarget && void revokeKey(revokeTarget)}
+              data-testid="api-key-revoke-confirm"
+            >
+              {t('API_KEYS_REVOKE')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Create-key dialog */}
       <Dialog open={createKeyOpen} onOpenChange={(open) => !open && setCreateKeyOpen(false)}>

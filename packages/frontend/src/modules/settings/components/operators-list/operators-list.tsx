@@ -37,8 +37,12 @@ export const OperatorsList = () => {
         <CardDescription>{t('SETTINGS_SECURITY_OPERATORS_SUBTITLE')}</CardDescription>
       </CardHeader>
       <CardContent>
-        {operators.isError ? (
+        {operators.isPending ? (
+          <p className="text-sm text-muted-foreground">{t('COMMON_LOADING')}</p>
+        ) : operators.isError ? (
           <p className="text-sm text-muted-foreground">{t('COMMON_AN_ERROR_OCCURRED')}</p>
+        ) : operators.data.length === 0 ? (
+          <p className="text-sm text-muted-foreground">{t('SETTINGS_SECURITY_OPERATORS_EMPTY')}</p>
         ) : (
           <div className="min-w-0 overflow-x-auto">
             <table className="w-full text-sm">
