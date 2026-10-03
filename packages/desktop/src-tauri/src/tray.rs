@@ -7,8 +7,25 @@ use tauri::{
     tray::TrayIconBuilder,
     App, Manager,
 };
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_store::StoreExt;
+
+/// Shown before Clear Tunnel Token runs. It stops the Hub and installed apps
+/// and removes only the tunnel token — it is not a factory reset.
+pub(crate) const CLEAR_TUNNEL_TOKEN_CONFIRM: &str =
+    "This stops the Hub and installed apps and removes only the tunnel token.";
+
+pub(crate) fn clear_tunnel_token_result(problems: &[String]) -> String {
+    if problems.is_empty() {
+        "Stopped the Hub and installed apps, and removed the tunnel token.".to_string()
+    } else {
+        format!(
+            "Clear tunnel token stopped partway.\n{}",
+            problems.join("\n")
+        )
+    }
+}
 
 pub(crate) fn save_window_geometry(app_handle: &tauri::AppHandle) {
     if let Some(win) = app_handle.get_webview_window("main") {
@@ -277,69 +294,113 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                 let compose = paths.compose_path.clone();
                 let env = paths.env_path.clone();
                 let data = paths.data_dir.clone();
-                let _ = crate::hub_manager::append_desktop_log_for(
-                    &data,
-                    "tray.reset",
-                    "Clear tunnel token requested from tray — stops containers and removes the local tunnel token only. Use Settings → Factory reset or `cihub reset --yes` for a full wipe.",
-                );
-                tauri::async_runtime::spawn(async move {
-                    // 1. Stop the Hub compose project (best-effort — keep going on error).
-                    match crate::hub_manager::stop_hub(&compose, &env) {
-                        Ok(message) => {
-                            let _ = crate::hub_manager::append_desktop_log_for(
-                                &data,
-                                "tray.reset",
-                                &message,
-                            );
+                let app_handle = app.clone();
+                app.dialog()
+                    .message(CLEAR_TUNNEL_TOKEN_CONFIRM)
+                    .title("Clear Tunnel Token?")
+                    .kind(MessageDialogKind::Warning)
+                    .buttons(MessageDialogButtons::OkCancelCustom(
+                        "Clear Tunnel Token".to_string(),
+                        "Cancel".to_string(),
+                    ))
+                    .show(move |confirmed| {
+                        if !confirmed {
+                            return;
                         }
-                        Err(error) => {
-                            let _ = crate::hub_manager::append_desktop_log_for(
-                                &data,
-                                "tray.reset",
-                                &format!("stop_hub during reset failed: {}", error),
-                            );
-                        }
-                    }
+                        let _ = crate::hub_manager::append_desktop_log_for(
+                            &data,
+                            "tray.reset",
+                            "Clear tunnel token requested from tray — stops containers and removes the local tunnel token only. Use Settings → Factory reset or `cihub reset --yes` for a full wipe.",
+                        );
+                        let data_for_result = data.clone();
+                        let app_for_result = app_handle.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let mut problems = Vec::new();
+                            // 1. Stop the Hub compose project (best-effort — keep going on error).
+                            match crate::hub_manager::stop_hub(&compose, &env) {
+                                Ok(message) => {
+                                    let _ = crate::hub_manager::append_desktop_log_for(
+                                        &data,
+                                        "tray.reset",
+                                        &message,
+                                    );
+                                }
+                                Err(error) => {
+                                    let _ = crate::hub_manager::append_desktop_log_for(
+                                        &data,
+                                        "tray.reset",
+                                        &format!("stop_hub during reset failed: {}", error),
+                                    );
+                                    problems.push(format!("Could not stop the Hub: {error}"));
+                                }
+                            }
 
-                    // 2. Stop any managed app containers (best-effort).
-                    match crate::hub_manager::stop_managed_app_containers() {
-                        Ok(Some(summary)) => {
+                            // 2. Stop any managed app containers (best-effort).
+                            match crate::hub_manager::stop_managed_app_containers() {
+                                Ok(Some(summary)) => {
+                                    let _ = crate::hub_manager::append_desktop_log_for(
+                                        &data,
+                                        "tray.reset",
+                                        &summary,
+                                    );
+                                }
+                                Ok(None) => {}
+                                Err(error) => {
+                                    let _ = crate::hub_manager::append_desktop_log_for(
+                                        &data,
+                                        "tray.reset",
+                                        &format!(
+                                            "Managed app containers cleanup failed: {}",
+                                            error
+                                        ),
+                                    );
+                                    problems
+                                        .push(format!("Could not stop installed apps: {error}"));
+                                }
+                            }
+
+                            // 3. Clear the Cloudflare tunnel token from disk. Local-only;
+                            // server-side tunnel invalidation requires a Portal call that is
+                            // not wired here yet — tracked in issue #453.
+                            match crate::hub_manager::clear_tunnel_token(&data) {
+                                Ok(message) => {
+                                    let _ = crate::hub_manager::append_desktop_log_for(
+                                        &data,
+                                        "tray.reset",
+                                        &message,
+                                    );
+                                }
+                                Err(error) => {
+                                    let _ = crate::hub_manager::append_desktop_log_for(
+                                        &data,
+                                        "tray.reset",
+                                        &format!("Tunnel token cleanup failed: {}", error),
+                                    );
+                                    problems.push(format!(
+                                        "Could not remove the tunnel token: {error}"
+                                    ));
+                                }
+                            }
+
+                            let summary = clear_tunnel_token_result(&problems);
                             let _ = crate::hub_manager::append_desktop_log_for(
-                                &data,
+                                &data_for_result,
                                 "tray.reset",
                                 &summary,
                             );
-                        }
-                        Ok(None) => {}
-                        Err(error) => {
-                            let _ = crate::hub_manager::append_desktop_log_for(
-                                &data,
-                                "tray.reset",
-                                &format!("Managed app containers cleanup failed: {}", error),
-                            );
-                        }
-                    }
-
-                    // 3. Clear the Cloudflare tunnel token from disk. Local-only;
-                    // server-side tunnel invalidation requires a Portal call that is
-                    // not wired here yet — tracked in issue #453.
-                    match crate::hub_manager::clear_tunnel_token(&data) {
-                        Ok(message) => {
-                            let _ = crate::hub_manager::append_desktop_log_for(
-                                &data,
-                                "tray.reset",
-                                &message,
-                            );
-                        }
-                        Err(error) => {
-                            let _ = crate::hub_manager::append_desktop_log_for(
-                                &data,
-                                "tray.reset",
-                                &format!("Tunnel token cleanup failed: {}", error),
-                            );
-                        }
-                    }
-                });
+                            let kind = if problems.is_empty() {
+                                MessageDialogKind::Info
+                            } else {
+                                MessageDialogKind::Error
+                            };
+                            app_for_result
+                                .dialog()
+                                .message(summary)
+                                .title("Clear Tunnel Token")
+                                .kind(kind)
+                                .show(|_| {});
+                        });
+                    });
             }
             "open_portal" => {
                 // The CI_CLOUD_URL the running stack was started with, so an override opens here
@@ -349,14 +410,13 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                 let _ = app.opener().open_url(portal_url, None::<&str>);
             }
             "view_logs" => {
-                let logs_dir = crate::hub_manager::logs_open_target();
-                let _ = std::fs::create_dir_all(&logs_dir);
-                let _ = crate::hub_manager::append_desktop_log(
-                    "tray.logs",
-                    &format!("Opening logs folder: {}", logs_dir.display()),
-                );
-                let path = logs_dir.display().to_string();
-                let _ = app.opener().open_path(path, None::<&str>);
+                if let Err(error) = crate::open_logs_folder(app) {
+                    app.dialog()
+                        .message(error)
+                        .title("Couldn't open logs")
+                        .kind(MessageDialogKind::Error)
+                        .show(|_| {});
+                }
             }
             "quit" => {
                 save_window_geometry(app);
@@ -553,4 +613,30 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clear_tunnel_token_result, CLEAR_TUNNEL_TOKEN_CONFIRM};
+
+    #[test]
+    fn confirm_says_clear_tunnel_token_stops_apps_and_removes_only_the_token() {
+        assert!(CLEAR_TUNNEL_TOKEN_CONFIRM.contains("stops the Hub and installed apps"));
+        assert!(CLEAR_TUNNEL_TOKEN_CONFIRM.contains("removes only the tunnel token"));
+    }
+
+    #[test]
+    fn clear_tunnel_token_result_says_when_it_finished() {
+        let message = clear_tunnel_token_result(&[]);
+        assert!(message.contains("Stopped the Hub and installed apps"));
+        assert!(message.contains("removed the tunnel token"));
+    }
+
+    #[test]
+    fn clear_tunnel_token_result_reports_a_partial_stop() {
+        let message =
+            clear_tunnel_token_result(&["Could not stop the Hub: docker down".to_string()]);
+        assert!(message.contains("stopped partway"));
+        assert!(message.contains("Could not stop the Hub: docker down"));
+    }
 }

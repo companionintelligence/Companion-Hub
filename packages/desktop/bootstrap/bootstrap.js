@@ -26,6 +26,11 @@
    * desktop app may still be about to auto-start it, so wait this long before saying so.
    */
   const NOT_RUNNING_GRACE_MS = 15 * 1000;
+  /**
+   * A Docker check that never returns used to leave "Checking CI Hub" up forever.
+   * After this, say Docker didn't answer instead of spinning.
+   */
+  const CHECKING_GIVE_UP_MS = 20 * 1000;
 
   const byId = (id) => document.getElementById(id);
   const el = {
@@ -52,6 +57,7 @@
     installDocker: byId('install-docker'),
     copyError: byId('copy-error'),
     openLogs: byId('open-logs'),
+    logsError: byId('logs-error'),
     aside: byId('aside'),
     waiting: byId('waiting'),
   };
@@ -202,7 +208,13 @@
     commandError: null,
     failedAfterSecs: null,
     installError: null,
+    /** Last install_docker_command result, kept on screen after the button returns. */
+    installResult: null,
+    /** True while Install Docker is running. The status note reports it, not the button label. */
+    installRunning: false,
     navigating: false,
+    /** True while get_startup_progress_command has not come back. */
+    pollInFlight: false,
   };
 
   // ── Formatting ────────────────────────────────────────────────────────────
@@ -494,6 +506,11 @@
     if (progress.hub_api_live) api = ['Answering', ''];
     else if (view === 'stuck') api = ['Not answering', 'tone-warn'];
     else if (view === 'starting') api = ['Not answering yet', ''];
+    const signature = [images, docker, dockerTone, api[0], api[1]].join('\n');
+    // The clock ticks every second. Rebuilding the facts then throws away a
+    // selection in the error text beside them, so only rebuild when a value changes.
+    if (el.facts.dataset.signature === signature) return;
+    el.facts.dataset.signature = signature;
     el.facts.replaceChildren(fact('Images pulled', images), fact('Docker', docker, dockerTone), fact('Hub API', ...api));
   }
 
@@ -518,19 +535,57 @@
     return row;
   }
 
+  function dockerStatusNote() {
+    if (page.installRunning) return 'Installing Docker… This can take a few minutes.';
+    if (page.installError) return `Docker install didn't finish. ${page.installError}`;
+    const result = page.installResult;
+    if (result?.state === 'needs_restart') {
+      const detail = typeof result.detail === 'string' && result.detail ? ` ${result.detail}` : '';
+      return `Docker is installed. Restart to finish using it.${detail}`;
+    }
+    if (result?.state === 'completed') {
+      return result.detail || 'Docker is installed. CI Hub will carry on once Docker is running.';
+    }
+    return 'Service status shows here once Docker is running.';
+  }
+
+  /** Structure of the status rows, without the elapsed clock that ticks every second. */
+  function rowsSignature(view, core) {
+    if (view === 'docker') return `docker\n${dockerStatusNote()}`;
+    const stuckId = view === 'stuck' ? (stuckService(core)?.container ?? '') : '';
+    const body = core.map((service) => `${service.container}\t${service.state}\t${service.detail || ''}`).join('\n');
+    return `${view}\n${stuckId}\n${body}`;
+  }
+
+  function refreshRowClocks(view, core) {
+    if (view !== 'stuck') return;
+    const stuck = stuckService(core);
+    const labels = el.rows.querySelectorAll('.row-main > .state');
+    core.forEach((service, index) => {
+      const label = service === stuck ? `Starting for ${clock(stuckSecs(service))}` : (STATE_LABEL[service.state] ?? service.state);
+      const node = labels[index];
+      if (node) setText(node, label);
+    });
+  }
+
   function renderRows(view, progress, core) {
-    if (view === 'docker') {
-      const note = page.installError ? `Docker install didn't finish. ${page.installError}` : 'Service status shows here once Docker is running.';
-      el.rows.replaceChildren(textNode('p', note, 'rows-note'));
+    const signature = rowsSignature(view, core);
+    if (el.rows.dataset.signature === signature) {
+      refreshRowClocks(view, core);
     } else {
-      const stuck = view === 'stuck' ? stuckService(core) : null;
-      el.rows.replaceChildren(...core.map((service) => serviceRow(service, service === stuck)));
+      el.rows.dataset.signature = signature;
+      if (view === 'docker') {
+        el.rows.replaceChildren(textNode('p', dockerStatusNote(), 'rows-note'));
+      } else {
+        const stuck = view === 'stuck' ? stuckService(core) : null;
+        el.rows.replaceChildren(...core.map((service) => serviceRow(service, service === stuck)));
+      }
     }
 
     // A failure no service row can carry, e.g. Docker refusing the compose file.
     const failedRowHasDetail = Boolean(failedService(core)?.detail);
     const panelError = view === 'failed' && !failedRowHasDetail ? startError(progress) : '';
-    el.panelError.textContent = panelError;
+    setText(el.panelError, panelError);
     el.panelError.hidden = !panelError;
   }
 
@@ -543,6 +598,9 @@
         if (count > 0) items.push([state, count, label]);
       }
     }
+    const signature = items.map(([state, count, label]) => `${state}:${count}:${label}`).join('\n');
+    if (el.counts.dataset.signature === signature) return;
+    el.counts.dataset.signature = signature;
     el.counts.replaceChildren(
       ...items.map(([state, count, label]) => {
         const node = document.createElement('span');
@@ -576,14 +634,34 @@
       openLogs: view === 'stuck' || view === 'failed' || (view === 'starting' && elapsed > LOGS_LINK_AFTER_S),
     };
     for (const [key, visible] of Object.entries(shown)) el[key].hidden = !visible;
+    el.installDocker.disabled = page.installRunning;
+    el.installDocker.setAttribute('aria-busy', page.installRunning ? 'true' : 'false');
     el.actions.hidden = !Object.values(shown).some(Boolean);
     el.aside.hidden = view !== 'stopped';
     el.waiting.hidden = view !== 'docker';
   }
 
+  function giveUpChecking(now) {
+    if (page.progress) return;
+    if (now - openedAt < CHECKING_GIVE_UP_MS) return;
+    page.progress = {
+      docker_access: {
+        state: 'error',
+        detail: "Checking Docker didn't finish. Check that Docker is running.",
+      },
+      services: [],
+      progress_pct: 0,
+      image_pulled: 0,
+      image_total: 0,
+      image_pull_pct: 0,
+    };
+    page.progressAt = now;
+  }
+
   function render() {
     if (page.navigating) return;
     const now = Date.now();
+    giveUpChecking(now);
     const view = pickView(now);
     enterView(view, now);
 
@@ -611,6 +689,9 @@
   // ── Polling ───────────────────────────────────────────────────────────────
 
   async function pollProgress() {
+    // A hung Docker check must not stack another invoke on top of itself.
+    if (page.pollInFlight) return;
+    page.pollInFlight = true;
     try {
       const progress = await invoke('get_startup_progress_command');
       // A start from somewhere else supersedes this page's last failed attempt.
@@ -619,8 +700,10 @@
       page.progressAt = Date.now();
     } catch {
       // Docker or the shell not answering this once: keep showing the last known state.
+    } finally {
+      page.pollInFlight = false;
+      render();
     }
-    render();
   }
 
   async function resolveHubUrl() {
@@ -678,17 +761,18 @@
   }
 
   async function installDocker() {
-    const label = el.installDocker.textContent;
-    el.installDocker.disabled = true;
-    el.installDocker.textContent = 'Installing Docker…';
+    if (page.installRunning) return;
+    page.installRunning = true;
     page.installError = null;
+    page.installResult = null;
+    render();
     try {
-      await invoke('install_docker_command');
+      page.installResult = await invoke('install_docker_command');
     } catch (error) {
       page.installError = errorText(error) || 'Try again, or install Docker yourself.';
     } finally {
-      el.installDocker.disabled = false;
-      el.installDocker.textContent = label;
+      page.installRunning = false;
+      render();
       void pollProgress();
     }
   }
@@ -739,7 +823,12 @@
   el.copyError.addEventListener('click', () => void copyText(errorToCopy(page.progress), el.copyError));
   el.commandCopy.addEventListener('click', () => void copyText(el.commandText.textContent, el.commandCopy));
   el.openLogs.addEventListener('click', () => {
-    void invoke('open_logs_dir_command').catch(() => undefined);
+    setText(el.logsError, '');
+    el.logsError.hidden = true;
+    void invoke('open_logs_dir_command').catch((error) => {
+      setText(el.logsError, errorText(error) || "Couldn't open the logs folder.");
+      el.logsError.hidden = false;
+    });
   });
 
   renderTitlebar();

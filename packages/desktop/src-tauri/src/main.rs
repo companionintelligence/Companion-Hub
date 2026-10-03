@@ -377,10 +377,16 @@ fn open_directory(
 }
 
 /// Open the desktop logs directory in the system file manager.
+/// The splash and the tray both call this, so View logs does one thing.
+pub(crate) fn open_logs_folder(app: &tauri::AppHandle) -> Result<(), String> {
+    let logs_dir = hub_manager::logs_open_target();
+    open_directory(app, &logs_dir, true)
+}
+
+/// Open the desktop logs directory in the system file manager.
 #[tauri::command]
 async fn open_logs_dir_command(app: tauri::AppHandle) -> Result<(), String> {
-    let logs_dir = hub_manager::logs_open_target();
-    open_directory(&app, &logs_dir, true)
+    open_logs_folder(&app)
 }
 
 /// Open an absolute host directory in the OS default file explorer. The path is
@@ -584,6 +590,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             check_hub_status,
