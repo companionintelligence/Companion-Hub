@@ -7,6 +7,8 @@ import { useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 const PREVIEW_COUNT = 4;
+/** How many more cards "View all" reveals at a time. The rest stay unmounted. */
+const WINDOW_COUNT = 12;
 
 const LOADING_APP = { urn: 'loading:loading', name: '', short_desc: '' } as const;
 
@@ -29,9 +31,13 @@ function AppSection({
 }) {
   const { t } = useTranslation();
   const gridId = useId();
-  const [expanded, setExpanded] = useState(false);
-  const visible = expanded ? apps : apps?.slice(0, PREVIEW_COUNT);
-  const hasMore = (apps?.length ?? 0) > PREVIEW_COUNT;
+  const [visibleCount, setVisibleCount] = useState(PREVIEW_COUNT);
+  const total = apps?.length ?? 0;
+  const shown = Math.min(visibleCount, total);
+  const visible = apps?.slice(0, shown);
+  const hasMore = total > shown;
+  const isExpanded = shown > PREVIEW_COUNT;
+  const revealMore = () => setVisibleCount((count) => count + WINDOW_COUNT);
 
   return (
     <section className="w-full space-y-4">
@@ -40,24 +46,37 @@ function AppSection({
           <h2 className="text-2xl font-semibold text-foreground">{title}</h2>
           <p className="text-muted-foreground">{subtitle}</p>
         </div>
-        {hasMore && !isLoading && !isError && (
-          <button
-            type="button"
-            onClick={() => setExpanded((v) => !v)}
-            aria-expanded={expanded}
-            aria-controls={gridId}
-            className="flex shrink-0 items-center gap-1 text-sm font-medium text-primary hover:underline"
-          >
-            {expanded ? (
-              <>
-                {t('APP_STORE_FEATURED_SHOW_LESS')} <ChevronUp className="h-3.5 w-3.5" />
-              </>
-            ) : (
-              <>
-                {t('APP_STORE_FEATURED_VIEW_ALL', { count: apps?.length ?? 0 })} <ChevronDown className="h-3.5 w-3.5" />
-              </>
+        {(hasMore || isExpanded) && !isLoading && !isError && (
+          <div className="flex shrink-0 items-center gap-3">
+            {hasMore && (
+              <button
+                type="button"
+                onClick={revealMore}
+                aria-expanded={isExpanded}
+                aria-controls={gridId}
+                className="flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+              >
+                {shown === PREVIEW_COUNT ? (
+                  <>
+                    {t('APP_STORE_FEATURED_VIEW_ALL', { count: total })} <ChevronDown className="h-3.5 w-3.5" />
+                  </>
+                ) : (
+                  <>
+                    {t('APP_STORE_FEATURED_SHOW_MORE')} <ChevronDown className="h-3.5 w-3.5" />
+                  </>
+                )}
+              </button>
             )}
-          </button>
+            {isExpanded && (
+              <button
+                type="button"
+                onClick={() => setVisibleCount(PREVIEW_COUNT)}
+                className="flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+              >
+                {t('APP_STORE_FEATURED_SHOW_LESS')} <ChevronUp className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
         )}
       </div>
 

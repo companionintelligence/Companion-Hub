@@ -2,7 +2,7 @@ import { getEnabledAppStoresOptions } from '@/api-client/@tanstack/react-query.g
 import { CATALOG_PAGE_SIZE } from '@/lib/catalog-page-size';
 import { searchAppsInfiniteOptions } from '@/lib/marketplace-search-query';
 import { getInstalledAppUrnsOptions } from '@/lib/installed-app-urns-query';
-import { applyStoreBrowseParams, parseStoreBrowseParams } from '@/lib/store-browse-params';
+import { applyStoreBrowseParams, parseStoreBrowseParams, storeParamToWrite } from '@/lib/store-browse-params';
 import { invalidateStoreCatalogQueries } from '@/lib/invalidate-store-catalog-queries';
 import { pullAppStores } from '@/api-client/sdk.gen';
 import { EmptyPage } from '@/components/empty-page/empty-page';
@@ -23,7 +23,7 @@ import { keepPreviousData, useInfiniteQuery, useQuery, useMutation, useQueryClie
 import clsx from 'clsx';
 import { ArrowLeftRight, LayoutGrid, Loader2, RefreshCw, Store } from 'lucide-react';
 import { useCallback, useEffect, useState, useMemo, useRef } from 'react';
-import { Navigate, useParams, useSearchParams } from 'react-router';
+import { Navigate, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 
@@ -48,6 +48,7 @@ export const AppStorePageSuspense = () => {
 
 export default () => {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const params = useParams<{ storeId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const { setCategory, category, storeId, setStoreId, search, setSearch, setSearchImmediate } = useAppStoreState();
@@ -82,13 +83,19 @@ export default () => {
     }
   }, [searchParams, setCategory, setSearchImmediate]);
 
+  const { data: appStores } = useQuery({
+    ...getEnabledAppStoresOptions(),
+    staleTime: 30_000,
+  });
+  const knownStoreSlugs = useMemo(() => appStores?.appStores?.map((store) => store.slug), [appStores]);
+
   useEffect(() => {
     setSearchParams(
       (prev) => {
         const next = applyStoreBrowseParams(prev, {
           q: search.trim() ? search : undefined,
           category,
-          store: storeId,
+          store: storeParamToWrite(prev.get('store')?.trim() || undefined, storeId, knownStoreSlugs),
         });
 
         if (next.toString() === prev.toString()) {
@@ -100,7 +107,7 @@ export default () => {
       },
       { replace: true },
     );
-  }, [search, category, storeId, setSearchParams]);
+  }, [search, category, storeId, knownStoreSlugs, setSearchParams]);
 
   const queryClient = useQueryClient();
 
@@ -152,11 +159,6 @@ export default () => {
       window.location.href = '/device-registration';
     }
   }, [registrationStatus, isCheckingRegistration]);
-
-  const { data: appStores } = useQuery({
-    ...getEnabledAppStoresOptions(),
-    staleTime: 30_000,
-  });
 
   const { data: installedUrnsData } = useQuery({
     ...getInstalledAppUrnsOptions(),
@@ -220,7 +222,7 @@ export default () => {
     [category, setCategory, setSearch],
   );
 
-  const { data, hasNextPage, isFetchingNextPage, isFetching, fetchNextPage } = useInfiniteQuery({
+  const { data, hasNextPage, isFetchingNextPage, isFetching, isError, fetchNextPage, refetch } = useInfiniteQuery({
     ...searchAppsInfiniteOptions({ query: catalogSearchQuery }),
     getNextPageParam: (lastPage) => lastPage.nextCursor,
     placeholderData: keepPreviousData,
@@ -228,7 +230,8 @@ export default () => {
     enabled: catalogSearchEnabled,
   });
 
-  const isLoading = catalogSearchEnabled && !data;
+  const catalogFailed = catalogSearchEnabled && isError;
+  const isLoading = catalogSearchEnabled && !data && !isError;
   const apps = data?.pages.flatMap((page) => page.data) ?? [];
 
   useEffect(() => {
@@ -286,10 +289,18 @@ export default () => {
             </div>
           ) : null}
         </div>
-        <Button onClick={() => pullApps()} disabled={isPulling} variant="outline" size="sm" className="w-full gap-2 sm:w-auto">
-          <RefreshCw className={clsx('h-4 w-4', isPulling && 'animate-spin')} />
-          {isPulling ? t('APP_STORE_SYNCING') : t('APP_STORE_CHECK_FOR_UPDATES')}
-        </Button>
+        <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:justify-end">
+          <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => navigate('/apps/expose')}>
+            {t('PORT_EXPOSE_SIDEBAR_LINK')}
+          </Button>
+          <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => navigate('/apps/create')}>
+            {t('APP_STORE_CREATE_CUSTOM_APP')}
+          </Button>
+          <Button onClick={() => pullApps()} disabled={isPulling} variant="outline" size="sm" className="w-full gap-2 sm:w-auto">
+            <RefreshCw className={clsx('h-4 w-4', isPulling && 'animate-spin')} />
+            {isPulling ? t('APP_STORE_SYNCING') : t('APP_STORE_CHECK_FOR_UPDATES')}
+          </Button>
+        </div>
       </div>
 
       {/* Mobile Search & Categories */}
@@ -370,6 +381,13 @@ export default () => {
           ) : !isAlternativesDataLoading && !isAlternativesDataError ? (
             <AlternativesCatalog alternatives={filteredAlts} marketplaceSlug={marketplaceSlug} />
           ) : null}
+        </div>
+      ) : catalogFailed ? (
+        <div className="rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          {t('APP_STORE_COULD_NOT_LOAD_CATALOG')}{' '}
+          <button type="button" className="font-medium underline" onClick={() => void refetch()}>
+            {t('COMMON_RETRY')}
+          </button>
         </div>
       ) : !apps?.length && !isLoading && !showSearchAlternatives ? (
         <EmptyPage title="APP_STORE_NO_RESULTS" subtitle="APP_STORE_NO_RESULTS_SUBTITLE" />

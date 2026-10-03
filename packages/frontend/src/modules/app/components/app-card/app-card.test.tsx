@@ -86,6 +86,18 @@ describe('AppCard', () => {
     expect(description).toHaveAttribute('title', shortDesc);
   });
 
+  it('is one link, and an installed app says so', () => {
+    render(
+      <MemoryRouter>
+        <AppCard app={appFixture} isInstalled />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole('link', { name: /Test App/ })).toBeInTheDocument();
+    expect(screen.getByText('Installed')).toBeInTheDocument();
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+  });
+
   it('applies light-mode elevation styles to the card surface', () => {
     const { container } = render(
       <MemoryRouter>

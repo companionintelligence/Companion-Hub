@@ -6,7 +6,7 @@ const { mockStoreState, mockSearchAppsInfiniteOptions } = vi.hoisted(() => ({
   mockStoreState: {
     setCategory: vi.fn(),
     category: undefined as string | undefined,
-    storeId: 'ci-apps',
+    storeId: 'ci-apps' as string | undefined,
     setStoreId: vi.fn(),
     search: '',
     setSearch: vi.fn(),
@@ -16,6 +16,7 @@ const { mockStoreState, mockSearchAppsInfiniteOptions } = vi.hoisted(() => ({
   mockSearchAppsInfiniteOptions: vi.fn(() => ({ queryKey: ['searchApps'] })),
 }));
 
+const mockNavigate = vi.fn();
 const mockSetSearchParams = vi.fn();
 let capturedSearchParams = new URLSearchParams();
 
@@ -24,6 +25,7 @@ vi.mock('react-router', async () => {
   return {
     ...actual,
     useParams: vi.fn(() => ({})),
+    useNavigate: () => mockNavigate,
     useSearchParams: vi.fn(() => [capturedSearchParams, mockSetSearchParams]),
     Navigate: vi.fn(({ to }: { to: string }) => <div data-testid="navigate-to">{to}</div>),
     Link: vi.fn(({ to, children, ...rest }: { to: string; children: React.ReactNode }) => (
@@ -51,7 +53,9 @@ vi.mock('@tanstack/react-query', () => ({
     hasNextPage: false,
     isFetchingNextPage: false,
     isFetching: false,
+    isError: false,
     fetchNextPage: vi.fn(),
+    refetch: vi.fn(),
   })),
   useMutation: vi.fn(() => ({
     mutate: vi.fn(),
@@ -166,6 +170,22 @@ describe('AppStorePage — multi-store UX', () => {
       alternativesError: undefined,
       refetchAlternatives: vi.fn(),
     });
+  });
+
+  it('offers expose and custom app from the store header', () => {
+    setupQueries();
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'PORT_EXPOSE_SIDEBAR_LINK' }));
+    fireEvent.click(screen.getByRole('button', { name: 'APP_STORE_CREATE_CUSTOM_APP' }));
+
+    expect(mockNavigate).toHaveBeenCalledWith('/apps/expose');
+    expect(mockNavigate).toHaveBeenCalledWith('/apps/create');
   });
 
   it('renders store switcher buttons when multiple stores are enabled', () => {
@@ -361,6 +381,31 @@ describe('AppStorePage — multi-store UX', () => {
     expect(fetchNextPage).toHaveBeenCalled();
   });
 
+  it('shows a retry when the catalog request fails, and an empty catalog stays empty', () => {
+    const refetch = vi.fn();
+    setupQueries();
+    mockUseInfiniteQuery.mockReturnValueOnce({
+      data: undefined,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      isFetching: false,
+      isError: true,
+      fetchNextPage: vi.fn(),
+      refetch,
+    } as unknown as ReturnType<typeof useInfiniteQuery>);
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByTestId('empty-page')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('app-card-skeleton')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'COMMON_RETRY' }));
+    expect(refetch).toHaveBeenCalled();
+  });
+
   it('paints store chrome and in-grid skeletons while the first catalog page is loading', () => {
     setupQueries();
     mockUseInfiniteQuery.mockReturnValueOnce({
@@ -452,5 +497,27 @@ describe('AppStorePage — multi-store UX', () => {
     expect(next.get('q')).toBe('docs');
     expect(next.get('category')).toBe('development');
     expect(next.get('store')).toBe('ci-apps');
+  });
+
+  it('does not replace a linked store with the store id still in memory', () => {
+    capturedSearchParams = new URLSearchParams('store=community');
+    setupQueries();
+    mockStoreState.storeId = undefined;
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    const updater = mockSetSearchParams.mock.calls.find((call) => typeof call[0] === 'function')?.[0] as
+      | ((prev: URLSearchParams) => URLSearchParams)
+      | undefined;
+
+    expect(updater).toBeTypeOf('function');
+    if (typeof updater !== 'function') {
+      throw new Error('expected setSearchParams updater');
+    }
+    expect(updater(new URLSearchParams('store=community')).get('store')).toBe('community');
   });
 });
