@@ -1,0 +1,93 @@
+{
+  "$schema": "https://raw.githubusercontent.com/companionintelligence/CI-Common/main/packages/video-kit/schema/storyboard.schema.json",
+  "app": {
+    "id": "docker-linux-install",
+    "name": "Install Docker on Linux",
+    "repo": "companionintelligence/CI-Hub"
+  },
+  "meta": {
+    "fps": 30,
+    "transitionSeconds": 0.5
+  },
+  "chapters": {
+    "site": "Find the steps",
+    "terminal": "Run them"
+  },
+  "scenes": [
+    {
+      "id": "title",
+      "kind": "intro",
+      "seconds": 4,
+      "title": "Install Docker on Linux",
+      "caption": "Companion Hub runs on Docker. Here is the whole install, at real speed."
+    },
+    {
+      "id": "docs",
+      "kind": "clip",
+      "chapter": "site",
+      "seconds": 19.43,
+      "src": {
+        "landscape": "assets/video/website.mp4",
+        "portrait": "assets/video/website-portrait.mp4"
+      },
+      "caption": "Open Docker's Ubuntu guide and copy the first block."
+    },
+    {
+      "id": "apt-update",
+      "kind": "clip",
+      "chapter": "terminal",
+      "seconds": 12.6,
+      "src": {
+        "landscape": "assets/video/terminal-1.mp4",
+        "portrait": "assets/video/terminal-1-portrait.mp4"
+      },
+      "caption": "Refresh your package list. Your password stays hidden as you type."
+    },
+    {
+      "id": "add-repo",
+      "kind": "clip",
+      "chapter": "terminal",
+      "seconds": 8.7,
+      "src": {
+        "landscape": "assets/video/terminal-2.mp4",
+        "portrait": "assets/video/terminal-2-portrait.mp4"
+      },
+      "caption": "Paste the block. It adds Docker's signing key and repository.",
+      "transition": "cut"
+    },
+    {
+      "id": "install",
+      "kind": "clip",
+      "chapter": "terminal",
+      "seconds": 28.9,
+      "src": {
+        "landscape": "assets/video/terminal-3.mp4",
+        "portrait": "assets/video/terminal-3-portrait.mp4"
+      },
+      "caption": "Install Docker Engine. Type y to confirm.",
+      "transition": "cut"
+    },
+    {
+      "id": "hello",
+      "kind": "clip",
+      "chapter": "terminal",
+      "seconds": 9.07,
+      "src": {
+        "landscape": "assets/video/terminal-4.mp4",
+        "portrait": "assets/video/terminal-4-portrait.mp4"
+      },
+      "caption": "Run hello-world. If you see Hello from Docker, it works.",
+      "transition": "cut"
+    },
+    {
+      "id": "close",
+      "kind": "outro",
+      "seconds": 4,
+      "cta": "Next: install Companion Hub",
+      "tagline": "UnCloud your life.",
+      "url": "ci.computer/download",
+      "caption": "ci.computer/download",
+      "transition": "hold"
+    }
+  ]
+}
