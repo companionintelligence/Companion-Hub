@@ -1,7 +1,7 @@
 import { render, screen } from '@/tests/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router';
-import { DashboardLayout } from '@/components/layouts/dashboard/layout';
+import { DashboardLayout, DashboardLayoutSuspense } from '@/components/layouts/dashboard/layout';
 
 const { appContext } = vi.hoisted(() => ({
   appContext: {
@@ -66,6 +66,25 @@ describe('DashboardLayout onboarding gate', () => {
     appContext.user = { hasCompletedOnboarding: false };
     appContext.isLoading = false;
     appContext.loadFailed = false;
+  });
+
+  it('pads the scrolling column for the home indicator', () => {
+    appContext.user = { hasCompletedOnboarding: true };
+    renderAt('/resource-monitor');
+
+    expect(document.querySelector('main')?.style.paddingBottom).toBe('var(--safe-area-bottom)');
+  });
+
+  it('pads the suspense shell for the home indicator', () => {
+    render(
+      <MemoryRouter>
+        <DashboardLayoutSuspense>
+          <p>Loading</p>
+        </DashboardLayoutSuspense>
+      </MemoryRouter>,
+    );
+
+    expect(document.querySelector('.dashboard-column')?.style.paddingBottom).toBe('var(--safe-area-bottom)');
   });
 
   it('keeps a deep link in place while app-context is still loading (the default payload says "not onboarded")', () => {
