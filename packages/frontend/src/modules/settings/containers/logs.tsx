@@ -14,8 +14,8 @@ type HubLogEvent = Extract<SSE, { topic: 'ci-hub-logs' }>['data'];
 type LogStreamState = 'connecting' | 'open' | 'failed';
 
 /**
- * One EventSource for this visit. Remounting (a new `key`) is how Retry asks the Hub again:
- * `useSSE` opens its stream once per mount.
+ * One EventSource for this max-lines value. Remounting (a new `key`) is how Retry, or a settled
+ * new length, asks the Hub again: `useSSE` opens its stream once per mount.
  */
 function HubLogStream({
   maxLines,
@@ -62,9 +62,13 @@ export const LogsContainer = () => {
   };
 
   const updateMaxLines = (lines: number) => {
-    const linesToKeep = Math.max(1, lines);
+    const linesToKeep = Math.max(1, Math.trunc(lines));
+    if (linesToKeep === maxLines) return;
+    // Drop the old buffer instead of slicing it on the way to the new length. The new stream
+    // sends that many lines itself; keeping the old ones would duplicate them.
     setMaxLines(linesToKeep);
-    setLogs((currentLogs) => currentLogs.slice(currentLogs.length - linesToKeep));
+    setLogs([]);
+    setStream('connecting');
   };
 
   const downloadHubLogs = async () => {
@@ -95,7 +99,13 @@ export const LogsContainer = () => {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <HubLogStream key={attempt} maxLines={maxLines} onEvent={appendLogs} onOpen={() => setStream('open')} onError={() => setStream('failed')} />
+      <HubLogStream
+        key={`${maxLines}:${attempt}`}
+        maxLines={maxLines}
+        onEvent={appendLogs}
+        onOpen={() => setStream('open')}
+        onError={() => setStream('failed')}
+      />
       {showTerminal ? (
         <Suspense>
           <LogsTerminal

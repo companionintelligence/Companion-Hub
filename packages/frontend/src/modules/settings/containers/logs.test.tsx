@@ -33,8 +33,11 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('@/components/logs-terminal/logs-terminal', () => ({
-  LogsTerminal: ({ toolbarActions }: { toolbarActions?: ReactNode }) => (
+  LogsTerminal: ({ toolbarActions, onMaxLinesChange }: { toolbarActions?: ReactNode; onMaxLinesChange: (lines: number) => void }) => (
     <div data-testid="logs-terminal">
+      <button type="button" onClick={() => onMaxLinesChange(250)}>
+        Apply 250 lines
+      </button>
       <div data-testid="logs-terminal-toolbar">{toolbarActions}</div>
     </div>
   ),
@@ -125,5 +128,26 @@ describe('LogsContainer', () => {
     expect(screen.getByTestId('logs-stream-status')).toHaveTextContent('SETTINGS_LOGS_CONNECTING');
     // `useSSE` runs on each render; Retry remounts the stream, so it runs again.
     expect(mockUseSSE.mock.calls.length).toBeGreaterThan(callsBeforeRetry);
+  });
+
+  it('asks the log stream for a settled max-lines value without keeping the old buffer', async () => {
+    render(<LogsContainer />);
+
+    const first = mockUseSSE.mock.calls[0]?.[0] as { params: URLSearchParams; onOpen: () => void; onEvent: (data: { lines?: string[] }) => void };
+    expect(first.params.get('maxLines')).toBe('1000');
+
+    act(() => {
+      first.onOpen();
+      first.onEvent({ lines: ['hub ready'] });
+    });
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Apply 250 lines' }));
+
+    await waitFor(() => {
+      const latest = mockUseSSE.mock.calls.at(-1)?.[0] as { params: URLSearchParams };
+      expect(latest.params.get('maxLines')).toBe('250');
+    });
+    expect(screen.getByTestId('logs-stream-status')).toHaveTextContent('SETTINGS_LOGS_CONNECTING');
+    expect(screen.queryByTestId('logs-terminal')).not.toBeInTheDocument();
   });
 });

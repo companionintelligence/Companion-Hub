@@ -1,6 +1,6 @@
-import { fireEvent, render, screen } from '@/tests/test-utils';
+import { act, fireEvent, render, screen } from '@/tests/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { LogsTerminal } from './logs-terminal';
+import { LogsTerminal, MAX_LINES_SETTLE_MS } from './logs-terminal';
 
 const mockUseLocalStorage = vi.fn();
 
@@ -29,7 +29,11 @@ describe('LogsTerminal', () => {
 
     render(<LogsTerminal logs={[]} maxLines={300} onMaxLinesChange={onMaxLinesChange} />);
 
-    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '25' } });
+    const input = screen.getByRole('spinbutton');
+    fireEvent.change(input, { target: { value: '25' } });
+    expect(onMaxLinesChange).not.toHaveBeenCalled();
+
+    fireEvent.blur(input);
 
     expect(onMaxLinesChange).toHaveBeenCalledWith(25);
   });
@@ -70,6 +74,7 @@ describe('LogsTerminal', () => {
     expect(input).toHaveAttribute('step', '1');
 
     fireEvent.change(input, { target: { value: '25.7' } });
+    fireEvent.blur(input);
 
     expect(onMaxLinesChange).toHaveBeenLastCalledWith(25);
   });
@@ -79,7 +84,34 @@ describe('LogsTerminal', () => {
     render(<LogsTerminal logs={[]} maxLines={300} onMaxLinesChange={onMaxLinesChange} />);
 
     fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '0.4' } });
+    fireEvent.blur(screen.getByRole('spinbutton'));
 
     expect(onMaxLinesChange).toHaveBeenLastCalledWith(1);
+  });
+
+  it('keeps a longer max-lines value intact until typing settles', () => {
+    vi.useFakeTimers();
+    try {
+      const onMaxLinesChange = vi.fn();
+      render(<LogsTerminal logs={[]} maxLines={300} onMaxLinesChange={onMaxLinesChange} />);
+
+      const input = screen.getByRole('spinbutton');
+      fireEvent.change(input, { target: { value: '1' } });
+      expect(input).toHaveValue(1);
+      expect(onMaxLinesChange).not.toHaveBeenCalled();
+
+      fireEvent.change(input, { target: { value: '1200' } });
+      expect(input).toHaveValue(1200);
+      expect(onMaxLinesChange).not.toHaveBeenCalled();
+
+      act(() => {
+        vi.advanceTimersByTime(MAX_LINES_SETTLE_MS);
+      });
+
+      expect(onMaxLinesChange).toHaveBeenCalledTimes(1);
+      expect(onMaxLinesChange).toHaveBeenCalledWith(1200);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
