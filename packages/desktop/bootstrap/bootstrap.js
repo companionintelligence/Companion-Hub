@@ -26,6 +26,11 @@
    * desktop app may still be about to auto-start it, so wait this long before saying so.
    */
   const NOT_RUNNING_GRACE_MS = 15 * 1000;
+  /**
+   * A Docker check that never returns used to leave "Checking CI Hub" up forever.
+   * After this, say Docker didn't answer instead of spinning.
+   */
+  const CHECKING_GIVE_UP_MS = 20 * 1000;
 
   const byId = (id) => document.getElementById(id);
   const el = {
@@ -203,6 +208,8 @@
     failedAfterSecs: null,
     installError: null,
     navigating: false,
+    /** True while get_startup_progress_command has not come back. */
+    pollInFlight: false,
   };
 
   // ── Formatting ────────────────────────────────────────────────────────────
@@ -617,9 +624,27 @@
     el.waiting.hidden = view !== 'docker';
   }
 
+  function giveUpChecking(now) {
+    if (page.progress) return;
+    if (now - openedAt < CHECKING_GIVE_UP_MS) return;
+    page.progress = {
+      docker_access: {
+        state: 'error',
+        detail: "Checking Docker didn't finish. Check that Docker is running.",
+      },
+      services: [],
+      progress_pct: 0,
+      image_pulled: 0,
+      image_total: 0,
+      image_pull_pct: 0,
+    };
+    page.progressAt = now;
+  }
+
   function render() {
     if (page.navigating) return;
     const now = Date.now();
+    giveUpChecking(now);
     const view = pickView(now);
     enterView(view, now);
 
@@ -647,6 +672,9 @@
   // ── Polling ───────────────────────────────────────────────────────────────
 
   async function pollProgress() {
+    // A hung Docker check must not stack another invoke on top of itself.
+    if (page.pollInFlight) return;
+    page.pollInFlight = true;
     try {
       const progress = await invoke('get_startup_progress_command');
       // A start from somewhere else supersedes this page's last failed attempt.
@@ -655,8 +683,10 @@
       page.progressAt = Date.now();
     } catch {
       // Docker or the shell not answering this once: keep showing the last known state.
+    } finally {
+      page.pollInFlight = false;
+      render();
     }
-    render();
   }
 
   async function resolveHubUrl() {
