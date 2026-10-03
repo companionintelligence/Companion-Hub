@@ -1,7 +1,7 @@
 import { render, screen } from '@/tests/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router';
-import { DashboardLayout } from '@/components/layouts/dashboard/layout';
+import { DashboardLayout, DashboardLayoutSuspense } from '@/components/layouts/dashboard/layout';
 
 const { appContext } = vi.hoisted(() => ({
   appContext: {
@@ -60,6 +60,21 @@ function renderAt(path: string) {
     </MemoryRouter>,
   );
 }
+
+describe('DashboardLayoutSuspense', () => {
+  it('keeps the signed-in header for a person who already has a session', () => {
+    render(
+      <MemoryRouter>
+        <DashboardLayoutSuspense>
+          <p>Still loading</p>
+        </DashboardLayoutSuspense>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole('navigation', { name: 'HEADER_MAIN_NAVIGATION' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Login' })).not.toBeInTheDocument();
+  });
+});
 
 describe('DashboardLayout onboarding gate', () => {
   beforeEach(() => {

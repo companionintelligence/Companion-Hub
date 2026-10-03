@@ -191,7 +191,7 @@ function MobileAppMenu({
           <div
             role="menu"
             data-testid="mobile-app-menu"
-            className="absolute right-0 top-full z-50 mt-2 w-56 origin-top-right animate-in fade-in-0 zoom-in-95 slide-in-from-top-2 rounded-md border bg-popover p-1 text-popover-foreground shadow-md duration-200"
+            className="absolute right-0 top-full z-50 mt-2 max-h-[calc(100dvh-var(--header-offset)-1rem)] w-56 origin-top-right animate-in overflow-y-auto fade-in-0 zoom-in-95 slide-in-from-top-2 rounded-md border bg-popover p-1 text-popover-foreground shadow-md duration-200"
           >
             {isLoggedIn ? (
               <>

@@ -23,9 +23,11 @@ const getAnimationKey = (path: string) => {
 };
 
 export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
+  const { isLoggedIn } = useUserContext();
+
   return (
     <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
-      <Header isLoggedIn={false} allowAutoThemes={false} />
+      <Header isLoggedIn={isLoggedIn} allowAutoThemes={false} />
       <div
         className="dashboard-column flex h-full flex-1 flex-col overflow-y-auto"
         style={{ marginTop: 'var(--header-offset)', paddingTop: '0.5rem' }}
