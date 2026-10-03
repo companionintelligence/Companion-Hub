@@ -1983,6 +1983,7 @@
   "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Skipped. No matching app store listing",
   "AI_SETTINGS_PROFILE_NOT_READY": "AI profile is not loaded yet. Please retry in a moment.",
   "AI_SETTINGS_SAVED_WITH_ISSUES": "AI settings saved with {{count}} model issue(s).",
+  "AI_SETTINGS_SAVE": "Save AI Settings",
   "AI_SETTINGS_SAVED": "AI settings saved",
   "AI_SETTINGS_SAVE_FAILED": "Failed to save: {{message}}",
   "AI_SETTINGS_LOAD_FAILED": "Failed to load AI settings: {{error}}",
