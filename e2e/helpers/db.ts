@@ -17,8 +17,9 @@ export const clearDatabase = async () => {
   await emptyDir('./user-config');
   await emptyDir('./state');
 
-  // delete all data in table user
+  // Portal login links the operator before the next test wipes the user.
   await db.delete(schema.link);
+  await db.delete(schema.federatedIdentity);
   await db.delete(schema.user);
   await db.delete(schema.app);
   await db.delete(schema.appStore);

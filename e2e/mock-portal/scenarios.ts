@@ -89,12 +89,43 @@ const deviceKeyRejected = () => ({ body: { error: 'Invalid Device Key', code: 'U
  */
 const deviceApplications: RouteHandler = () => ({ body: { applications: [] }, status: 200 });
 
+/**
+ * Hub login asks WhoIs whether the Portal subject belongs to the paired org
+ * (`test-org-id`, the same id the registration routes and the e2e seed use).
+ * A missing route is a 404, which the Hub treats as "could not check" and
+ * answers the login form with 503.
+ *
+ * The same answer is how the app page decides `view`. A subject who is in the
+ * org but whose `apps` list omits the requested id is a known empty grant, and
+ * the page refuses. Echo the ids the Hub asked about with the owner verb set.
+ */
+const WHOIS_OWNER_CAN = ['view', 'start', 'stop', 'restart', 'install', 'update', 'uninstall', 'reset', 'backup', 'restore', 'configure'];
+
+const whoisMembership: RouteHandler = (_url, body) => {
+  const payload = (body ?? {}) as { appIds?: unknown };
+  const appIds = Array.isArray(payload.appIds) ? payload.appIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0) : [];
+  return {
+    body: {
+      organizations: [
+        {
+          organizationId: 'test-org-id',
+          version: 1,
+          user: { role: 'owner' },
+          apps: appIds.map((appId) => ({ appId, can: WHOIS_OWNER_CAN })),
+        },
+      ],
+    },
+    status: 200,
+  };
+};
+
 /** Shared routes present in every scenario (health / registry / auth). */
 const baseRoutes: RouteMap = {
   'GET /v2/': () => ({ body: {}, status: 200 }),
   'GET /v2/ci-hub/tags/list': () => ({ body: { name: 'ci-hub', tags: ['1.0.0'] }, status: 200 }),
   'POST /api/auth/sign-in/email': signInWithEmail,
   'POST /api/auth/sign-up/email': signUpWithEmail,
+  'POST /api/whois': whoisMembership,
   'POST /api/devices/check-in': deviceCheckIn,
   'GET /api/devices/applications': deviceApplications,
 };
@@ -333,6 +364,7 @@ const degradedRoutes: RouteMap = {
   // Degraded means the Portal is unhealthy, so the shared auth/check-in routes
   // from baseRoutes have to fail here too.
   'POST /api/auth/sign-in/email': () => ({ body: { error: 'Service unavailable' }, status: 503 }),
+  'POST /api/whois': () => ({ body: { error: 'Service unavailable' }, status: 503 }),
   'POST /api/devices/check-in': () => ({ body: { error: 'Service unavailable' }, status: 503 }),
 };
 

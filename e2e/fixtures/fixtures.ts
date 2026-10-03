@@ -42,17 +42,44 @@ export const createTestUser = async () => {
   await db.insert(user).values({ password: testUser.hashedPassword, username: testUser.email, operator: true, hasCompletedOnboarding: true });
 };
 
+async function submitLogin(page: Page) {
+  const email = page.getByPlaceholder('you@example.com');
+  await email.waitFor();
+  // The login page writes the operator address into this field when the portal
+  // hint returns. Filling while that write is in flight doubles the address
+  // (`test@test.comtest@test.com`), and the browser then blocks the submit.
+  await page.waitForResponse((response) => response.url().includes('/api/auth/portal/session-hint'), { timeout: 15_000 }).catch(() => undefined);
+  await expect(async () => {
+    if ((await email.inputValue()) !== testUser.email) {
+      await email.fill(testUser.email);
+    }
+    expect(await email.inputValue()).toBe(testUser.email);
+  }).toPass();
+  await page.getByPlaceholder('Enter your password').fill(testUser.password);
+  const login = page.getByRole('button', { name: 'Login', exact: true });
+  await expect(login).toBeEnabled();
+  await login.click();
+  await page.waitForURL(/\/home/, { timeout: 30_000 });
+}
+
 export const loginUser = async (page: Page, _?: BrowserContext) => {
   // Create user in database
   await createTestUser();
 
-  // Login flow
   await page.goto('/login');
+  await submitLogin(page);
 
-  await page.getByPlaceholder('you@example.com').fill(testUser.email);
-  await page.getByPlaceholder('Enter your password').fill(testUser.password);
-  await page.getByRole('button', { name: 'Login' }).click();
-
-  await page.waitForURL(/\/home/, { timeout: 30000 });
-  await expect(page.getByText('Disk space')).toBeVisible({ timeout: 30000 });
+  const disk = page.getByText('Disk space');
+  try {
+    await expect(disk).toBeVisible({ timeout: 20_000 });
+  } catch {
+    // The first authenticated navigation can miss a Vite chunk. The app reloads
+    // once for that, and the reload can land back on the login form. Check the
+    // URL after the navigation settles, then sign in again if the session did not stick.
+    await page.goto('/home');
+    if (page.url().includes('/login')) {
+      await submitLogin(page);
+    }
+    await expect(disk).toBeVisible({ timeout: 30_000 });
+  }
 };

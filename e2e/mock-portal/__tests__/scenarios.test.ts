@@ -53,6 +53,20 @@ describe('buildRoutes', () => {
       assert.strictEqual(body.user?.email, 'new@example.com');
     });
 
+    it('answers WhoIs with membership in the seeded org', () => {
+      const handler = routes['POST /api/whois'];
+      assert.ok(handler);
+      const result = handler(dummyUrl, { subject: 'test-portal-user', organizationId: 'test-org-id', appIds: ['e2e-nginx'] });
+      assert.strictEqual(result.status, 200);
+      const body = result.body as {
+        organizations?: Array<{ organizationId?: string; user?: { role?: string }; apps?: Array<{ appId?: string; can?: string[] }> }>;
+      };
+      assert.strictEqual(body.organizations?.[0]?.organizationId, 'test-org-id');
+      assert.strictEqual(body.organizations?.[0]?.user?.role, 'owner');
+      assert.strictEqual(body.organizations?.[0]?.apps?.[0]?.appId, 'e2e-nginx');
+      assert.ok(body.organizations?.[0]?.apps?.[0]?.can?.includes('view'));
+    });
+
     it('reports device as registered', () => {
       const handler = routes['GET /api/devices/registration-status'];
       assert.ok(handler);
@@ -194,6 +208,13 @@ describe('buildRoutes', () => {
 
     it('returns 503 for store', () => {
       const handler = routes['GET /api/store'];
+      assert.ok(handler);
+      const result = handler(dummyUrl);
+      assert.strictEqual(result.status, 503);
+    });
+
+    it('returns 503 for WhoIs', () => {
+      const handler = routes['POST /api/whois'];
       assert.ok(handler);
       const result = handler(dummyUrl);
       assert.strictEqual(result.status, 503);
