@@ -60,6 +60,7 @@ import {
   prefillPointsOf,
   readAdvertisedThroughput,
   SLOWER_PLACEMENT_FLOOR_MS,
+  SLOWER_PLACEMENT_MAX_COLD_TOKENS_PER_SEC,
   SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT,
   SLOWER_PLACEMENT_RATIO,
   UNMEASURED_DEFER_MIN_PROMPT_TOKENS,
@@ -151,20 +152,24 @@ function placementSwitchOn(envVar: string): boolean {
 
 /**
  * `HUB_POOL_SLOWER_PLACEMENT_RATIO` and `HUB_POOL_SLOWER_PLACEMENT_FLOOR_MS` retune how much slower
- * the candidate about to go first must be predicted to be before a faster one goes ahead of it — see
- * {@link applySlowerPlacement}. A ratio below 1, a negative floor, or anything that is not a finite
- * number reads as the default rather than a guess, and a very large ratio (1000) turns the rule off
- * on its own; `HUB_POOL_THROUGHPUT_PLACEMENT=off` turns it off with the rest of throughput placement.
- * Read per request, like the switches above.
+ * the candidate about to go first must be predicted to be before a faster one goes ahead of it, and
+ * `HUB_POOL_SLOWER_PLACEMENT_MAX_TOKENS_PER_SEC` the fastest measured rate the faster one may have —
+ * see {@link applySlowerPlacement}. A ratio below 1, a negative floor, a rate that is not positive,
+ * or anything that is not a finite number reads as the default rather than a guess, and a very large
+ * ratio (1000) turns the rule off on its own; `HUB_POOL_THROUGHPUT_PLACEMENT=off` turns it off with
+ * the rest of throughput placement. Read per request, like the switches above.
  */
 export const HUB_POOL_SLOWER_PLACEMENT_RATIO_ENV_VAR = 'HUB_POOL_SLOWER_PLACEMENT_RATIO';
 export const HUB_POOL_SLOWER_PLACEMENT_FLOOR_MS_ENV_VAR = 'HUB_POOL_SLOWER_PLACEMENT_FLOOR_MS';
-function slowerPlacementThresholds(): { ratio: number; floorMs: number } {
+export const HUB_POOL_SLOWER_PLACEMENT_MAX_TOKENS_PER_SEC_ENV_VAR = 'HUB_POOL_SLOWER_PLACEMENT_MAX_TOKENS_PER_SEC';
+function slowerPlacementThresholds(): { ratio: number; floorMs: number; maxColdTokensPerSec: number } {
   const ratio = finiteEnvNumber(HUB_POOL_SLOWER_PLACEMENT_RATIO_ENV_VAR);
   const floorMs = finiteEnvNumber(HUB_POOL_SLOWER_PLACEMENT_FLOOR_MS_ENV_VAR);
+  const maxColdTokensPerSec = finiteEnvNumber(HUB_POOL_SLOWER_PLACEMENT_MAX_TOKENS_PER_SEC_ENV_VAR);
   return {
     ratio: ratio !== null && ratio >= 1 ? ratio : SLOWER_PLACEMENT_RATIO,
     floorMs: floorMs !== null && floorMs >= 0 ? floorMs : SLOWER_PLACEMENT_FLOOR_MS,
+    maxColdTokensPerSec: maxColdTokensPerSec !== null && maxColdTokensPerSec > 0 ? maxColdTokensPerSec : SLOWER_PLACEMENT_MAX_COLD_TOKENS_PER_SEC,
   };
 }
 
@@ -988,6 +993,8 @@ export interface SlowerPlacement {
   ratio: number;
   /** {@link SLOWER_PLACEMENT_FLOOR_MS}, or its env override. */
   floorMs: number;
+  /** {@link SLOWER_PLACEMENT_MAX_COLD_TOKENS_PER_SEC}, or its env override. */
+  maxColdTokensPerSec: number;
 }
 
 /**
@@ -1008,8 +1015,17 @@ export interface SlowerPlacement {
  *
  * - **Measured to meet the budget, on a reading that is not a lower bound.** A missed deadline says
  *   "at least this slow", which says nothing about how much faster than the first it is.
- * - **No more than {@link SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT} busier.** Queue depth stays the
- *   ranker's first key; this settles a tie, or a single request, not a queue.
+ * - **Measured at a rate a cold read reaches.** A reading above `maxColdTokensPerSec` is a prompt
+ *   the engine answered from its prefix cache, timed against the whole prompt: it says the node
+ *   holds that session warm, not that it reads a cold prompt fast, and a CPU node serving one agent
+ *   session reads that way on every turn. The engine saying it read from cache keeps most such
+ *   turns out of the evidence (see `HubPoolThroughputService.recordPrefill`); this is what is left
+ *   for an engine that does not say. Such a candidate is not brought forward, and keeps its place.
+ * - **No more than {@link SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT} busier than the candidate the ranker
+ *   put first.** Queue depth stays the ranker's first key; this settles a tie, or a single request,
+ *   not a queue. The bound is the ranker's first's, fixed before any move: judged from each new first
+ *   instead, it would grow by one with every move, and a chain of two moves could put the turn
+ *   behind two requests on a `-np 1` engine while the node the ranker chose sat idle.
  * - **Not a local engine that contention moves**, which would put it back where contention just took
  *   it from.
  *
@@ -1051,6 +1067,10 @@ export function applySlowerPlacement(
   // Asked once per candidate, so a withhold running out mid-call cannot leave a slot without a candidate.
   const withheld = new Set(group.filter((candidate) => placement.withheld(candidate)));
   let ordered = group.filter((candidate) => !withheld.has(candidate));
+  // From the candidate the ranker put first, once: every move is bounded against the node the ranker
+  // chose, never against the one the last move put there, whose own margin would add another request.
+  const rankedFirst = ordered[0];
+  const busiest = rankedFirst ? placement.inFlightOf(rankedFirst) + SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT : 0;
   // Bounded as well as terminating: each move puts a strictly faster candidate first.
   for (let moves = 0; moves < group.length; moves += 1) {
     const [first, ...rest] = ordered;
@@ -1059,10 +1079,12 @@ export function applySlowerPlacement(
       break;
     }
     const slowerMs = firstMeasured.prediction.predictedMs;
-    const busiest = placement.inFlightOf(first) + SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT;
     const faster = rest.filter((candidate) => {
       const measured = placement.measuredOf(candidate);
       if (!measured || measured.slow || measured.prediction.deadline) {
+        return false;
+      }
+      if (measured.prediction.tokensPerSec > placement.maxColdTokensPerSec) {
         return false;
       }
       if (!placement.mayGoAhead(candidate) || placement.inFlightOf(candidate) > busiest) {
@@ -1268,10 +1290,12 @@ interface ResponseTiming {
   completedAt: number | null;
   engine: EngineTimings | null;
   usage: PoolRoutingUsage | null;
+  /** Prompt tokens the engine said it took from its prefix cache; `null` when it did not say. */
+  cachedPromptTokens: number | null;
 }
 
 function startResponseTiming(): { timing: ResponseTiming; observer: ResponseTapObserver } {
-  const timing: ResponseTiming = { firstChunkAt: null, completedAt: null, engine: null, usage: null };
+  const timing: ResponseTiming = { firstChunkAt: null, completedAt: null, engine: null, usage: null, cachedPromptTokens: null };
   return {
     timing,
     observer: {
@@ -1283,6 +1307,9 @@ function startResponseTiming(): { timing: ResponseTiming; observer: ResponseTapO
       },
       onEngineTimings: (engine) => {
         timing.engine = engine;
+      },
+      onCachedPromptTokens: (cachedTokens) => {
+        timing.cachedPromptTokens = cachedTokens;
       },
     },
   };
@@ -1770,11 +1797,12 @@ export class PoolProxyService {
    *
    * Last, within each of those groups and for a large prompt only: when the candidate the group would
    * try first is predicted {@link SLOWER_PLACEMENT_RATIO} times and {@link SLOWER_PLACEMENT_FLOOR_MS}
-   * slower than another measured to meet the budget, and that one has at most one request more in
-   * flight, the faster one goes ahead — see {@link applySlowerPlacement}. Meeting the budget is a low
-   * bar that a CPU node can clear, and this is what stops a turn waiting minutes on one while a GPU
-   * node as idle would answer in seconds. Last because it needs the final first candidate, and never
-   * moves the pinned node or the engine prefix affinity holds from the front.
+   * slower than another measured to meet the budget at a rate a cold read reaches, and that one has
+   * at most one request more in flight than the group's first had, the faster one goes ahead — see
+   * {@link applySlowerPlacement}. Meeting the budget is a low bar that a CPU node can clear, and this
+   * is what stops a turn waiting minutes on one while a GPU node as idle would answer in seconds. Last
+   * because it needs the final first candidate, and never moves the pinned node or the engine prefix
+   * affinity holds from the front.
    */
   async buildCandidateList(model: string, promptBytes?: number, streaming = true, numCtx: number | null = null): Promise<PoolCandidate[]> {
     return (await this.rankCandidates(model, promptBytes === undefined ? undefined : { bytes: () => promptBytes, streaming, numCtx: () => numCtx }))
@@ -3144,6 +3172,12 @@ export class PoolProxyService {
    * one, since that leaves out the model load and the queue; otherwise, for a streamed request, the
    * wait for the first chunk. A non-streamed request with no engine timings says nothing about
    * prefill, because its wait was the whole generation. Decode is reported, never ranked on.
+   *
+   * Either figure covers only the part of the prompt the engine read, while the rate is taken against
+   * the whole prompt's estimate. So a turn the engine says it answered partly from its prefix cache —
+   * most agent turns after the first — is recorded as `warm`, which may slow a band but never speeds
+   * one up: see `isWarmRead`. The prompt count is the engine's own when it gave timings, else the usage
+   * frame's.
    */
   private recordServedThroughput(
     target: ThroughputTarget,
@@ -3155,7 +3189,12 @@ export class PoolProxyService {
   ): void {
     const prefillMs = timing.engine?.promptMs ?? (streaming ? (timing.firstChunkAt ?? headersAt) - startedAt : null);
     if (prefillMs !== null) {
-      this.throughput.recordPrefill(target, { promptTokens: estimatePromptTokens(promptBytes), ms: prefillMs, deadline: false });
+      const promptTokens = estimatePromptTokens(promptBytes);
+      const warm = isWarmRead(promptTokens, {
+        cachedTokens: timing.cachedPromptTokens,
+        countedTokens: timing.engine?.promptTokens ?? timing.usage?.promptTokens ?? null,
+      });
+      this.throughput.recordPrefill(target, { promptTokens, ms: prefillMs, deadline: false, warm });
     }
     const engine = timing.engine;
     if (engine && engine.completionTokens !== null && engine.decodeMs !== null) {

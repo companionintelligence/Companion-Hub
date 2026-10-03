@@ -116,9 +116,53 @@ export function extractEngineTimingsFromParsedJson(value: unknown): EngineTiming
   return null;
 }
 
+/**
+ * How many of the prompt's tokens the engine took from its prefix cache instead of reading, from one
+ * parsed frame, or `null` when the frame does not say. Throughput placement needs it because a turn
+ * answered from cache reaches its first byte in a fraction of a cold read's time, and taken for a cold
+ * read it makes the node look many times faster than it is. Three dialects, each on the frame that
+ * ends the response:
+ *   - OpenAI-compatible: `usage.prompt_tokens_details.cached_tokens` — Ollama's `/v1` surface from
+ *     0.33.3, llama.cpp's server, vLLM.
+ *   - Ollama native: `prompt_eval_cached_count` on the `done: true` line, from 0.33.3. Its
+ *     `prompt_eval_count` counts the cached tokens too, so on an older Ollama nothing says a turn was warm.
+ *   - llama.cpp's server: `timings.cache_n`, beside a `prompt_n` that counts only what it read.
+ */
+export function extractCachedPromptTokensFromParsedJson(value: unknown): number | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const usage = record.usage;
+  if (usage && typeof usage === 'object' && !Array.isArray(usage)) {
+    const details = (usage as Record<string, unknown>).prompt_tokens_details;
+    if (details && typeof details === 'object' && !Array.isArray(details)) {
+      const cached = toCountOrNull((details as Record<string, unknown>).cached_tokens);
+      if (cached !== null) return cached;
+    }
+  }
+  if (record.done === true) {
+    const cached = toCountOrNull(record.prompt_eval_cached_count);
+    if (cached !== null) return cached;
+  }
+  const timings = record.timings;
+  if (timings && typeof timings === 'object' && !Array.isArray(timings)) {
+    return toCountOrNull((timings as Record<string, unknown>).cache_n);
+  }
+  return null;
+}
+
+/** A token count as an engine reports one: finite and not negative, else nothing was said. */
+function toCountOrNull(value: unknown): number | null {
+  const count = toFiniteNumberOrNull(value);
+  return count !== null && count >= 0 ? count : null;
+}
+
 /** The rest of what a response can tell throughput placement while it streams through. Every callback is optional and at most once. */
 export interface ResponseTapObserver {
   onEngineTimings?: (timings: EngineTimings) => void;
+  /** The engine said how many prompt tokens it took from its prefix cache — see {@link extractCachedPromptTokensFromParsedJson}. */
+  onCachedPromptTokens?: (cachedTokens: number) => void;
   /** The first body chunk arrived. For an engine that holds its headers until it has a token, that is the same moment. */
   onFirstChunk?: () => void;
   /** The body ended normally. Never called for a stream that was cut off. */
@@ -173,9 +217,10 @@ export function tapResponseUsageWhileStreaming(
   let usageFired = false;
   // Nothing to look for when nobody asked, so a usage-only tap stops parsing where it always did.
   let timingsFired = !observer.onEngineTimings;
+  let cacheFired = !observer.onCachedPromptTokens;
   let sawFirstChunk = false;
   let sawNewline = false;
-  const fired = () => usageFired && timingsFired;
+  const fired = () => usageFired && timingsFired && cacheFired;
 
   const tryLine = (line: string) => {
     if (fired()) return;
@@ -197,6 +242,13 @@ export function tapResponseUsageWhileStreaming(
         if (timings) {
           timingsFired = true;
           observer.onEngineTimings?.(timings);
+        }
+      }
+      if (!cacheFired) {
+        const cached = extractCachedPromptTokensFromParsedJson(parsed);
+        if (cached !== null) {
+          cacheFired = true;
+          observer.onCachedPromptTokens?.(cached);
         }
       }
     } catch {

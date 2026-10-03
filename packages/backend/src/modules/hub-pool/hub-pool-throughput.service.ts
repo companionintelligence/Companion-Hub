@@ -29,6 +29,9 @@ import type { PoolDecodeEstimate, PoolPrefillEstimate, PoolThroughputEstimate } 
  *   sample apart. The slow evidence holds outright for {@link THROUGHPUT_HOLD_MS}, then gives way to
  *   the faster sample as it decays — however many fast samples arrive. Everything is forgotten after
  *   {@link THROUGHPUT_FORGET_AFTER_MS}, which is also how a demoted node gets tried again.
+ * - **A warm read is never fast evidence.** Once the slow evidence is forgotten the faster sample is
+ *   all a band has, so a cache hit kept there would read as the node's cold speed. A turn the engine
+ *   says it answered partly from its prefix cache may only make a band slower (see {@link isWarmRead}).
  * - **Missed deadlines count.** A request that ran out of its budget with no first byte carries no
  *   usage frame, and it is exactly the failure placement exists to avoid repeating, so it is recorded
  *   as "at least this slow".
@@ -135,6 +138,73 @@ export const SLOWER_PLACEMENT_FLOOR_MS = 20_000;
  * a node whose slots that request fills is in a later group and is never considered at all.
  */
 export const SLOWER_PLACEMENT_MAX_EXTRA_IN_FLIGHT = 1;
+
+/**
+ * The fastest measured prefill rate, in estimated tokens per second, that `applySlowerPlacement`
+ * believes of the candidate it would bring forward. `HUB_POOL_SLOWER_PLACEMENT_MAX_TOKENS_PER_SEC`
+ * overrides it.
+ *
+ * A turn the engine answered from its prefix cache reaches its first byte in well under a second and
+ * is timed against the whole prompt, so it reads as tens of thousands of tokens a second: 400 ms for
+ * a 14.5k-token Hermes turn is ~36,000. Cold reads on this fleet are one to three orders of magnitude
+ * slower: 27–496 tok/s for 27–30B models (2026-09-17), 608 for OpenClaw's first 44k-token turn on
+ * core-2, 1,019 for 35b alone at 7.4k tokens on beta-max, and ~1,600 behind beta-1's predictions of
+ * 2026-09-30. Taking a cache hit for a cold read is what would pull a large cold turn onto a CPU node
+ * that one agent session keeps warm, ahead of an idle GPU node, every time that node's cold evidence
+ * aged out. Ten thousand is six times the fastest cold read seen here and under a third of that cache
+ * hit.
+ *
+ * It only ever stops a move: a candidate over it keeps the place the ranker gave it, as before the
+ * rule existed. Samples an engine says it read from cache are already kept out of the evidence (see
+ * {@link isWarmRead}); this is for the engines that do not say — Ollama before 0.33.3, whose counts
+ * include the cached tokens with no share given.
+ */
+export const SLOWER_PLACEMENT_MAX_COLD_TOKENS_PER_SEC = 10_000;
+
+/**
+ * The most of a prompt an engine may say it took from its prefix cache for a sample to count as a
+ * cold read — see {@link isWarmRead}. Below a tenth the reading is at most ~1.1 times too fast,
+ * inside the noise between two cold reads, and some share always matches: a chat template's opening
+ * tokens, or the system prompt every session of one agent shares.
+ */
+export const COLD_READ_MAX_CACHED_SHARE = 0.1;
+
+/**
+ * The least of the estimated prompt an engine's own prompt count may come to for a sample to count as
+ * a cold read — see {@link isWarmRead}. The estimate (`bytes / 4`) is within about a third of an
+ * engine's count for text; below half, the engine either counted only what it read (llama.cpp's
+ * `prompt_n` leaves the cached tokens out) or was sent far fewer tokens than the bytes suggest, as an
+ * image makes it. Both make a rate taken against the estimate read too fast.
+ */
+export const COLD_READ_MIN_COUNTED_SHARE = 0.5;
+
+/** What an engine said about the prompt it was sent, for {@link isWarmRead}. `null` where it did not say. */
+export interface EnginePromptReport {
+  /** Prompt tokens the engine took from its prefix cache rather than reading. */
+  cachedTokens: number | null;
+  /** The prompt tokens it counted: the whole prompt on Ollama, only those it read on llama.cpp. */
+  countedTokens: number | null;
+}
+
+/**
+ * Whether a served sample is a warm read — the engine answered part of the prompt from its prefix
+ * cache — by the engine's own account. A warm read's time to a first byte covers only the part it
+ * read, so taken against the whole prompt it is a lower bound on a cold read's time, not a measure of
+ * it: `recordPrefill` lets one make a band slower, never faster. Most agent turns share a prefix with
+ * the turn before, so without this a CPU node serving one agent session read as fast as its warm
+ * turns once its cold evidence aged out, and was placed first for other sessions' cold turns.
+ *
+ * `false` when the engine said nothing, which is every engine for a streamed OpenAI-compatible request
+ * on Ollama before 0.33.3 — see {@link SLOWER_PLACEMENT_MAX_COLD_TOKENS_PER_SEC} for what covers
+ * those.
+ */
+export function isWarmRead(estimatedTokens: number, report: EnginePromptReport): boolean {
+  const { cachedTokens, countedTokens } = report;
+  if (cachedTokens !== null && cachedTokens > estimatedTokens * COLD_READ_MAX_CACHED_SHARE) {
+    return true;
+  }
+  return countedTokens !== null && countedTokens < estimatedTokens * COLD_READ_MIN_COUNTED_SHARE;
+}
 
 /**
  * What placement assumes about a peer engine it has no applicable measurement for, from the one hint
@@ -449,18 +519,34 @@ export class HubPoolThroughputService {
   /** Insertion order is recency order: every write re-inserts, so the first key is the one to evict. */
   private readonly tracked = new Map<string, TrackedThroughput>();
 
-  /** A prompt of `promptTokens` reached its first byte after `ms` — or, with `deadline`, had not after `ms`. */
-  recordPrefill(target: ThroughputTarget, sample: { promptTokens: number; ms: number; deadline: boolean }, now = Date.now()): void {
+  /**
+   * A prompt of `promptTokens` reached its first byte after `ms` — or, with `deadline`, had not after `ms`.
+   *
+   * With `warm`, the engine said it answered part of the prompt from its prefix cache (see
+   * {@link isWarmRead}), so a cold read of it takes at least `ms`: the sample may make its band read
+   * slower, which a cold read would too, and is dropped when it would make the band read faster or
+   * would be the band's only evidence. Kept as a fast sample it would outlast the cold evidence it
+   * sits beside, and read as a fast node once that was forgotten.
+   */
+  recordPrefill(
+    target: ThroughputTarget,
+    sample: { promptTokens: number; ms: number; deadline: boolean; warm?: boolean },
+    now = Date.now(),
+  ): void {
     const band = prefillBand(sample.promptTokens);
     if (band === null || !Number.isFinite(sample.ms) || sample.ms <= 0) {
       return;
     }
+    const point: PrefillPoint = { msPerToken: sample.ms / sample.promptTokens, promptTokens: sample.promptTokens, deadline: sample.deadline, at: now };
+    if (sample.warm) {
+      const stored = this.tracked.get(keyOf(target))?.prefill[band];
+      const current = stored ? effectivePrefillPoint(stored, now) : null;
+      if (!current || point.msPerToken < current.msPerToken) {
+        return;
+      }
+    }
     const entry = this.touch(target, now);
-    entry.prefill[band] = mergePrefillEvidence(
-      entry.prefill[band],
-      { msPerToken: sample.ms / sample.promptTokens, promptTokens: sample.promptTokens, deadline: sample.deadline, at: now },
-      now,
-    );
+    entry.prefill[band] = mergePrefillEvidence(entry.prefill[band], point, now);
   }
 
   /** `tokens` engine tokens were generated over `ms`. Too short a generation measures scheduling, not decode, and is ignored. */
