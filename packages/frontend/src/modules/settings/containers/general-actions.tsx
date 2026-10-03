@@ -500,9 +500,13 @@ export const GeneralActionsContainer = () => {
         <div className="flex items-center gap-2 p-3 rounded-md bg-muted text-sm" data-testid="hub-update-status">
           {updating && <Loader2 className="h-4 w-4 animate-spin" />}
           <span className="flex-1">{stackMessage}</span>
-          {updating && (
+          {updating ? (
             <Button variant="ghost" size="sm" onClick={handleStopWaiting} data-testid="hub-update-stop-waiting">
               {t('SETTINGS_ACTIONS_UPDATE_STOP_WAITING')}
+            </Button>
+          ) : (
+            <Button variant="ghost" size="sm" onClick={() => setStackMessage(null)} data-testid="hub-update-dismiss">
+              {t('SETTINGS_ACTIONS_UPDATE_DISMISS')}
             </Button>
           )}
         </div>

@@ -14,6 +14,7 @@ import {
   type UpdateInfo,
 } from '@/lib/update-service';
 import { factoryReset } from '@/api-client/sdk.gen';
+import { resolveStackUpdate } from '@/lib/desktop-stack-session';
 import { sdkOk } from '@/tests/sdk-mock-helpers';
 import { toast } from 'sonner';
 import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
@@ -744,6 +745,25 @@ describe('GeneralActionsContainer', () => {
     expect(screen.getByText('Version 0.2.46')).toBeInTheDocument();
     expect(screen.queryByText('Version 0.2.45')).not.toBeInTheDocument();
     expect(screen.queryByText('Release 0.2.46')).not.toBeInTheDocument();
+  });
+
+  it('brings the update controls back after a finished stack update is dismissed', async () => {
+    render(<GeneralActionsContainer />);
+
+    expect(await screen.findByTestId('hub-check-updates-btn')).toBeInTheDocument();
+
+    act(() => {
+      resolveStackUpdate({ state: 'completed', version: '4.7.0' });
+    });
+
+    expect(await screen.findByTestId('hub-update-status')).toHaveTextContent('Updated. The Hub is running 4.7.0.');
+    expect(screen.queryByTestId('hub-check-updates-btn')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('hub-update-stop-waiting')).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('hub-update-dismiss'));
+
+    expect(screen.queryByTestId('hub-update-status')).not.toBeInTheDocument();
+    expect(screen.getByTestId('hub-check-updates-btn')).toBeInTheDocument();
   });
 
   it('asks for this device name before factory reset', async () => {
