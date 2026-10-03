@@ -125,7 +125,7 @@ export const GuestDashboard = () => {
   return (
     <div className="flex min-h-screen flex-col bg-background">
       <Header isLoggedIn={false} />
-      <div className="flex flex-1 flex-col pt-24 px-4 container mx-auto pb-8">
+      <div className="flex flex-1 flex-col pt-24 px-4 container mx-auto pb-[max(2rem,var(--safe-area-bottom))]">
         {loadFailed && (
           <div className="flex flex-col items-start gap-2 py-8">
             <p className="text-sm text-muted-foreground">{t('GUEST_DASHBOARD_LOAD_FAILED')}</p>

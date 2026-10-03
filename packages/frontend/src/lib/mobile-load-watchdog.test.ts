@@ -38,6 +38,28 @@ describe('installMobileLoadWatchdog', () => {
     expect(retry.style.backgroundColor).toBe('var(--primary)');
     expect(retry.style.color).toBe('var(--primary-foreground)');
     expect(document.querySelector('[data-testid="mobile-load-switch-hub"]')).toBeTruthy();
+    const hint = overlay?.querySelector('p:nth-of-type(2)') as HTMLElement;
+    const switchHub = document.querySelector('[data-testid="mobile-load-switch-hub"]') as HTMLElement;
+    expect(overlay?.style.background).toBe('var(--background)');
+    expect(hint.style.color).toBe('var(--muted-foreground)');
+    expect(switchHub.style.color).toBe('var(--muted-foreground)');
+    expect(hint.style.color).not.toBe('#52525b');
+  });
+
+  it('does not cover a dashboard that is already up just because a spinner is on screen', () => {
+    document.body.innerHTML = '<main id="root"><header data-testid="app-header"></header><div class="animate-spin"></div></main>';
+    installMobileLoadWatchdog();
+    vi.advanceTimersByTime(12_000);
+    expect(document.getElementById('ci-hub-mobile-load-error')).toBeNull();
+  });
+
+  it('stops watching after the first successful paint', () => {
+    document.body.innerHTML = '<main id="root"><header data-testid="app-header">Home</header></main>';
+    installMobileLoadWatchdog();
+    vi.advanceTimersByTime(6_000);
+    document.body.innerHTML = '<main id="root"><p>Loading…</p><div class="animate-spin"></div></main>';
+    vi.advanceTimersByTime(6_000);
+    expect(document.getElementById('ci-hub-mobile-load-error')).toBeNull();
   });
 
   it('does not overlay a real login form', () => {

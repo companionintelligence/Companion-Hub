@@ -83,6 +83,25 @@ describe('DashboardLayout onboarding gate', () => {
     appContext.loadFailed = false;
   });
 
+  it('pads the scrolling column for the home indicator', () => {
+    appContext.user = { hasCompletedOnboarding: true };
+    renderAt('/resource-monitor');
+
+    expect(document.querySelector('main')?.style.paddingBottom).toBe('var(--safe-area-bottom)');
+  });
+
+  it('pads the suspense shell for the home indicator', () => {
+    render(
+      <MemoryRouter>
+        <DashboardLayoutSuspense>
+          <p>Loading</p>
+        </DashboardLayoutSuspense>
+      </MemoryRouter>,
+    );
+
+    expect(document.querySelector<HTMLElement>('.dashboard-column')?.style.paddingBottom).toBe('var(--safe-area-bottom)');
+  });
+
   it('keeps a deep link in place while app-context is still loading (the default payload says "not onboarded")', () => {
     appContext.isLoading = true;
     renderAt('/resource-monitor');

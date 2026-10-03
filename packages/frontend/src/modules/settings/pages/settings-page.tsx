@@ -1,7 +1,7 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useAppContext } from '@/context/app-context';
 import { cn } from '@/lib/utils';
-import { Suspense, lazy, useMemo } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router';
 import { AppStoresContainer } from '../containers/app-stores-container';
@@ -35,6 +35,14 @@ export default () => {
 
   const currentTab = tab || 'settings';
   const isLogsTab = currentTab === 'logs';
+  const tabListRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const active = tabListRef.current?.querySelector<HTMLElement>('[role="tab"][data-state="active"]');
+    if (currentTab && typeof active?.scrollIntoView === 'function') {
+      active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+  }, [currentTab]);
 
   const handleTabChange = (newTab: string) => {
     setSearchParams({ tab: newTab });
@@ -44,7 +52,7 @@ export default () => {
     <div className="flex h-full min-w-0 flex-col">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <Tabs value={currentTab} onValueChange={handleTabChange} className="flex h-full min-h-0 min-w-0 w-full flex-1 flex-col">
-          <div className="mx-auto flex w-full min-w-0 max-w-5xl justify-center">
+          <div ref={tabListRef} className="mx-auto flex w-full min-w-0 max-w-5xl justify-center">
             {/* One strip, not six tabs plus a "More" dropdown. The dropdown hid the
                 active tab, lied to the tablist about how many tabs exist, and stopped
                 arrow-key focus. The eight labels fit this column, so they stay centered

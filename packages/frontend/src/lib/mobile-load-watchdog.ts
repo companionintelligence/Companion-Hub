@@ -14,9 +14,15 @@ function looksLikeInteractiveUi(): boolean {
   );
 }
 
+/** The shell is on screen. A spinner after that is a request, not a page that never loaded. */
+function appHasPainted(): boolean {
+  return Boolean(document.querySelector('[data-testid="app-header"]') || document.querySelector('[data-testid="dashboard-page"]'));
+}
+
 function looksStuck(): boolean {
   if (looksLikeInteractiveUi()) return false;
   if (document.getElementById(OVERLAY_ID)) return false;
+  if (appHasPainted()) return false;
   const main = document.getElementById('root');
   const text = (main?.innerText || '').trim();
   const firstLine = text.split('\n')[0] ?? '';
@@ -40,8 +46,8 @@ function showOverlay(): void {
     justifyContent: 'center',
     gap: '16px',
     padding: '24px',
-    background: document.documentElement.classList.contains('dark') ? '#18181b' : '#f4f4f5',
-    color: document.documentElement.classList.contains('dark') ? '#fafafa' : '#18181b',
+    background: 'var(--background)',
+    color: 'var(--foreground)',
     textAlign: 'center',
     font: '16px/1.4 -apple-system, sans-serif',
   });
@@ -52,7 +58,7 @@ function showOverlay(): void {
 
   const hint = document.createElement('p');
   hint.style.fontSize = '14px';
-  hint.style.color = '#52525b';
+  hint.style.color = 'var(--muted-foreground)';
   hint.textContent = 'Check that the Hub is online, or switch to a different Hub.';
 
   const retry = document.createElement('button');
@@ -79,7 +85,7 @@ function showOverlay(): void {
     minHeight: '44px',
     border: '0',
     background: 'transparent',
-    color: '#52525b',
+    color: 'var(--muted-foreground)',
     textDecoration: 'underline',
     font: '14px/1.2 -apple-system, sans-serif',
   });
@@ -98,7 +104,13 @@ export function installMobileLoadWatchdog(): void {
   if ((window as Window & { __ciHubLoadWatchdog?: boolean }).__ciHubLoadWatchdog) return;
   (window as Window & { __ciHubLoadWatchdog?: boolean }).__ciHubLoadWatchdog = true;
 
+  let sawApp = false;
   const tick = () => {
+    if (sawApp) return;
+    if (appHasPainted() || looksLikeInteractiveUi()) {
+      sawApp = true;
+      return;
+    }
     if (looksStuck()) showOverlay();
   };
   globalThis.setTimeout(tick, BUDGET_MS);

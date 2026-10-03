@@ -30,7 +30,7 @@ export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
       <Header isLoggedIn={isLoggedIn} allowAutoThemes={false} />
       <div
         className="dashboard-column flex h-full flex-1 flex-col overflow-y-auto"
-        style={{ marginTop: 'var(--header-offset)', paddingTop: '0.5rem' }}
+        style={{ marginTop: 'var(--header-offset)', paddingTop: '0.5rem', paddingBottom: 'var(--safe-area-bottom)' }}
       >
         <div className="rounded-lg border bg-card text-card-foreground shadow p-6">{children}</div>
       </div>
@@ -117,7 +117,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
       <main
         ref={mainRef}
         className="dashboard-column relative flex h-full flex-1 flex-col overflow-x-hidden overflow-y-auto"
-        style={{ marginTop: 'var(--header-offset)', paddingTop: '0.5rem' }}
+        style={{ marginTop: 'var(--header-offset)', paddingTop: '0.5rem', paddingBottom: 'var(--safe-area-bottom)' }}
       >
         <div className="mb-1 flex shrink-0 flex-col gap-2 empty:hidden">
           {showCoreServerBanner && <CoreServerBanner onDismiss={dismiss} />}
