@@ -1,5 +1,6 @@
 import type { CuratedModel } from '@ci-hub/common/types';
 import { render, screen } from '@testing-library/react';
+import { expect, it } from 'vitest';
 import { OtherModels } from './model-selection-card';
 
 function model(id: string, parameterScale: number): CuratedModel {
