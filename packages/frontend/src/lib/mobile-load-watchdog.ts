@@ -14,9 +14,15 @@ function looksLikeInteractiveUi(): boolean {
   );
 }
 
+/** The shell is on screen. A spinner after that is a request, not a page that never loaded. */
+function appHasPainted(): boolean {
+  return Boolean(document.querySelector('[data-testid="app-header"]') || document.querySelector('[data-testid="dashboard-page"]'));
+}
+
 function looksStuck(): boolean {
   if (looksLikeInteractiveUi()) return false;
   if (document.getElementById(OVERLAY_ID)) return false;
+  if (appHasPainted()) return false;
   const main = document.getElementById('root');
   const text = (main?.innerText || '').trim();
   const firstLine = text.split('\n')[0] ?? '';
@@ -98,7 +104,13 @@ export function installMobileLoadWatchdog(): void {
   if ((window as Window & { __ciHubLoadWatchdog?: boolean }).__ciHubLoadWatchdog) return;
   (window as Window & { __ciHubLoadWatchdog?: boolean }).__ciHubLoadWatchdog = true;
 
+  let sawApp = false;
   const tick = () => {
+    if (sawApp) return;
+    if (appHasPainted() || looksLikeInteractiveUi()) {
+      sawApp = true;
+      return;
+    }
     if (looksStuck()) showOverlay();
   };
   globalThis.setTimeout(tick, BUDGET_MS);
