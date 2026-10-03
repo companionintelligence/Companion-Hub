@@ -776,6 +776,30 @@ describe('GeneralActionsContainer', () => {
     });
   });
 
+  it('says a failed factory reset may have stopped halfway', async () => {
+    mockUseAppContext.mockReturnValue({
+      version: { current: '4.7.0', latest: '4.7.0', body: '', releases: [] },
+      refreshAppContext: vi.fn(),
+      userSettings: { ciHubDeviceSlug: 'core' },
+    } as unknown as ReturnType<typeof useAppContext>);
+    mockFactoryReset.mockResolvedValue({ error: new Error('uninstall failed'), response: new Response(null, { status: 500 }) } as Awaited<
+      ReturnType<typeof factoryReset>
+    >);
+
+    render(<GeneralActionsContainer />);
+
+    await userEvent.click(await screen.findByTestId('factory-reset-btn'));
+    await userEvent.type(screen.getByTestId('factory-reset-confirmation-input'), 'core');
+    await userEvent.click(screen.getByTestId('factory-reset-confirm-btn'));
+
+    await waitFor(() => {
+      expect(mockToastError).toHaveBeenCalledWith(
+        'Factory reset may have stopped halfway. Running it again is safe. If the Hub is unreachable, try `cihub reset --yes` from the CLI.',
+      );
+    });
+    expect(screen.getByTestId('factory-reset-confirmation-input')).toBeInTheDocument();
+  });
+
   it('requires the device name again after the factory-reset dialog closes', async () => {
     mockUseAppContext.mockReturnValue({
       version: { current: '4.7.0', latest: '4.7.0', body: '', releases: [] },
