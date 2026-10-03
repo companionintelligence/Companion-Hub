@@ -30,9 +30,12 @@ export const INSTALLED_APP = {
   name: 'e2e-nginx',
   storeSlug: 'e2e-store',
   storeName: 'E2E Store',
+  /** Host port of the store install. The custom app uses the next port. */
   hostPort: 18080,
   image: 'nginx:alpine',
 } as const;
+
+const CUSTOM_HOST_PORT = INSTALLED_APP.hostPort + 1;
 
 const COMPOSE_PROJECT = 'cihub-e2e-installed-app';
 const COMPOSE_DIR = path.join(DATA_DIR, 'e2e-installed-app');
@@ -127,15 +130,38 @@ function writeAppTree(root: string, storeSlug: string, version: string, compose:
 
 async function ensureNginxContainer() {
   fs.mkdirSync(COMPOSE_DIR, { recursive: true });
-  fs.writeFileSync(COMPOSE_FILE, `services:\n  web:\n    image: ${INSTALLED_APP.image}\n    ports:\n      - "${INSTALLED_APP.hostPort}:80"\n`);
+  // One compose project, one nginx per app row. The Hub's status sync marks an
+  // app stopped unless a container carries that app's urn, so a single unlabeled
+  // container would flip both rows to stopped before the page renders.
+  const service = (name: string, hostPort: number, appUrn: string) =>
+    [
+      `  ${name}:`,
+      `    image: ${INSTALLED_APP.image}`,
+      '    ports:',
+      `      - "${hostPort}:80"`,
+      '    labels:',
+      '      "ci-hub.managed": "true"',
+      `      "ci-hub.appurn": "${appUrn}"`,
+      '      "ci-os-hub.managed": "true"',
+      `      "ci-os-hub.appurn": "${appUrn}"`,
+    ].join('\n');
+  fs.writeFileSync(
+    COMPOSE_FILE,
+    [
+      'services:',
+      service('store', INSTALLED_APP.hostPort, `${INSTALLED_APP.name}:${INSTALLED_APP.storeSlug}`),
+      service('custom', CUSTOM_HOST_PORT, `${INSTALLED_APP.name}:_user`),
+      '',
+    ].join('\n'),
+  );
   if (containerStarted) return;
   await execFileAsync('docker', ['compose', '-p', COMPOSE_PROJECT, '-f', COMPOSE_FILE, 'up', '-d'], { timeout: 120_000 });
   containerStarted = true;
 }
 
 /**
- * A running one-service app, plus the store copy the details and update
- * screens read. Starts nginx:alpine only when E2E_WITH_DOCKER=true.
+ * A running nginx app, plus the store copy the details and update screens
+ * read. Starts nginx:alpine only when E2E_WITH_DOCKER=true.
  *
  * The store row is in the database. After login, PATCH
  * `/api/marketplace/e2e-store` so the already-running backend loads it.
@@ -173,17 +199,25 @@ export async function installedApp() {
     status: 'running' as const,
     config: {},
     version: 1,
-    port: INSTALLED_APP.hostPort,
     openPort: true,
     exposedLocal: true,
     exposureMode: 'local',
-    localSubdomain: INSTALLED_APP.name,
     appName: INSTALLED_APP.name,
   };
 
   await db.insert(schema.app).values([
-    { ...running, appStoreSlug: INSTALLED_APP.storeSlug },
-    { ...running, appStoreSlug: '_user' },
+    {
+      ...running,
+      appStoreSlug: INSTALLED_APP.storeSlug,
+      port: INSTALLED_APP.hostPort,
+      localSubdomain: INSTALLED_APP.name,
+    },
+    {
+      ...running,
+      appStoreSlug: '_user',
+      port: CUSTOM_HOST_PORT,
+      localSubdomain: `${INSTALLED_APP.name}-custom`,
+    },
   ]);
 
   await ensureNginxContainer();
