@@ -604,6 +604,30 @@ describe('InferenceRouterService', () => {
     });
   });
 
+  describe('AUDIT-1679 pool arbitration', () => {
+    it('evicts an app-loaded resident on the pool path, then refuses and lets the caller forward anyway', async () => {
+      const pulled = { catalogId: 'qwen3-8-27b-mtp', backendModelId: 'qwen3.8:27b-mtp-q4_K_M', backend: 'ollama', state: 'pulled' } as TrackedModel;
+      modelRegistry.getTrackedModel.mockImplementation((id) => (id === pulled.catalogId ? pulled : undefined));
+      modelRegistry.getTrackedModels.mockReturnValue([pulled]);
+      modelRegistry.getCuratedModel.mockReturnValue({ id: 'qwen3-8-27b-mtp', runtime: { memoryFootprintMb: 18_000, contextWindow: 262_144 } } as CuratedModel);
+      ollamaBackend.isModelLoaded.mockResolvedValue(false);
+      const delay = vi.spyOn(service as unknown as { delay: (ms: number) => Promise<void> }, 'delay').mockResolvedValue(undefined);
+      memoryManager.canFitModel.mockResolvedValue({ fits: false, availableMb: 6_000, requiredMb: 22_000 });
+      memoryManager.planEviction.mockResolvedValue({
+        canFree: true,
+        candidates: [{ backend: 'ollama', backendModelId: 'gemma4:e4b', catalogId: null, estimatedMb: 6_600 }],
+        freedMb: 6_600,
+      });
+
+      const prepared = await service.prepareTrackedModel('qwen3.8:27b-mtp-q4_K_M');
+
+      expect(ollamaBackend.unloadModel).toHaveBeenCalledWith('gemma4:e4b');
+      expect(delay).toHaveBeenCalledTimes(9);
+      expect(modelPuller.loadModel).not.toHaveBeenCalled();
+      expect(prepared).toBeNull();
+    });
+  });
+
   // ─── routeCompletion ─────────────────────────────────
   describe('routeCompletion', () => {
     it('routes text completions to /v1/completions on the active backend', async () => {

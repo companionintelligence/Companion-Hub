@@ -753,4 +753,20 @@ describe('MemoryManagerService', () => {
       expect(plan.candidates).toEqual([]);
     });
   });
+
+  // AUDIT-1679 scratch: a pinned catalog model Ollama reports under its `:latest` spelling.
+  describe('AUDIT planEviction tag folding', () => {
+    it('never names a pinned model Ollama lists as name:latest', async () => {
+      const nomic = tracked({ catalogId: 'nomic-embed-text', backendModelId: 'nomic-embed-text', pinned: true, state: 'pinned' });
+      modelRegistry.getTrackedModels.mockReturnValue([nomic]);
+      modelRegistry.getCatalog.mockReturnValue([]);
+      modelRegistry.getCuratedModel.mockReturnValue(undefined);
+      reportResidency([
+        { backend: 'ollama', source: 'measured', models: [resident('nomic-embed-text:latest', { engineGpuBytes: 600 * MiB })] },
+        { backend: 'lemonade', source: 'measured', models: [] },
+      ]);
+      const plan = await service.planEviction(makeProfile(), 500, { backend: 'lemonade', backendModelId: 'Qwen3.8-27B-GGUF' });
+      expect(plan.candidates).toEqual([]);
+    });
+  });
 });
