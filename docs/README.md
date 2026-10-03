@@ -52,6 +52,9 @@ Follow the [Google developer documentation style guide](https://developers.googl
 | [`inference-supervision.md`](inference-supervision.md) | Observing inference backends and Compose-wide crash loops — and why the Hub never restarts one |
 | [`hub-pool-fleet-testing.md`](hub-pool-fleet-testing.md) | Two-node validation plan for Hub Pool |
 | [`hub-pool-vs-pair.md`](hub-pool-vs-pair.md) | Hub Pool compared with NVIDIA Personal-AI-Router |
+| [`fleet-router.md`](fleet-router.md) | Prompt every tailnet inference node when no Hub can run |
+| [`openclaw-test-account.md`](openclaw-test-account.md) | Isolated OpenClaw profile routed across the fleet |
+| [`runbooks/fleet-pool-upgrade.md`](runbooks/fleet-pool-upgrade.md) | Release and roll out a pool-capable Hub to the fleet |
 | [`ci-cd-pipeline.md`](ci-cd-pipeline.md) | Historical multi-env deploy notes |
 | [`dns-cache-analysis.md`](dns-cache-analysis.md) | Desktop DNS NXDOMAIN investigation |
 
