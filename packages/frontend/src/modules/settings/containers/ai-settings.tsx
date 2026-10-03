@@ -864,7 +864,7 @@ export const AiSettingsContainer = () => {
 
       <div className="flex justify-end">
         <Button intent="primary" onClick={() => setConfirmOpen(true)} loading={saving} data-testid="ai-settings-save-btn">
-          Save AI Settings
+          {t('AI_SETTINGS_SAVE')}
         </Button>
       </div>
 

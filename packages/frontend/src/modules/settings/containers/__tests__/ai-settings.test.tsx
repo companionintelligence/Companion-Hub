@@ -274,6 +274,7 @@ describe('AiSettingsContainer', () => {
     });
 
     await user.click(screen.getByTestId('select-lemonade'));
+    expect(screen.getByTestId('ai-settings-save-btn')).toHaveTextContent('Save AI Settings');
     await user.click(screen.getByTestId('ai-settings-save-btn'));
     // Saving now goes through a confirmation modal before patching preferences.
     await user.click(screen.getByTestId('ai-settings-confirm-btn'));

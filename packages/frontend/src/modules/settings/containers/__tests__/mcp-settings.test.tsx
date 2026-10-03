@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import { toast } from 'sonner';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { McpSettingsContainer } from '../mcp-settings';
+import { McpSettingsContainer, mcpAppStorePath, mcpToolFields } from '../mcp-settings';
 
 // ENH-MCP-4: exercises the MCP settings screen against a mocked /api/mcp-admin surface.
 // Key management moved to the hub-wide Settings → Security card (see api-keys.test.tsx);
@@ -89,6 +89,7 @@ const TOOLS = {
 function mockGet(url: string) {
   if (url === '/api/mcp-admin/status') return Promise.resolve({ ok: true, json: async () => STATUS });
   if (url === '/api/mcp-admin/tools') return Promise.resolve({ ok: true, json: async () => TOOLS });
+  if (url === '/api/apps/installed') return Promise.resolve({ ok: true, json: async () => ({ installed: [] }) });
   return Promise.resolve({ ok: true, json: async () => ({}) });
 }
 
@@ -137,6 +138,48 @@ describe('McpSettingsContainer', () => {
     // Tools still render under their group.
     expect(screen.getByText('hub_list_installed_apps')).toBeTruthy();
     expect(screen.getByText('hub_uninstall_app')).toBeTruthy();
+  });
+
+  it('links an installed MCP app to its store page', async () => {
+    mockApiFetch.mockImplementation((url: string) => {
+      if (url === '/api/apps/installed') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            installed: [{ app: { status: 'running' }, info: { urn: 'openclaw:ci-store', name: 'OpenClaw', mcp: {} } }],
+          }),
+        });
+      }
+      if (String(url).includes('/mcp/status')) {
+        return Promise.resolve({ ok: true, json: async () => ({ connected: true, toolCount: 2, containerStatus: 'running' }) });
+      }
+      return mockGet(url);
+    });
+
+    renderContainer();
+
+    const link = await screen.findByRole('link', { name: 'OpenClaw' });
+    expect(link.getAttribute('href')).toBe('/store/ci-store/openclaw');
+    expect(mcpAppStorePath('openclaw:ci-store')).toBe('/store/ci-store/openclaw');
+    expect(mcpAppStorePath('not-a-urn')).toBeNull();
+  });
+
+  it('says the installed list failed instead of claiming there are no MCP servers', async () => {
+    mockApiFetch.mockImplementation((url: string) => {
+      if (url === '/api/apps/installed') return Promise.resolve({ ok: false, json: async () => ({}) });
+      return mockGet(url);
+    });
+
+    renderContainer();
+
+    expect(await screen.findByTestId('mcp-installed-error')).toHaveTextContent('MCP_SETTINGS_INSTALLED_ERROR');
+    expect(screen.queryByText('MCP_SETTINGS_INSTALLED_EMPTY')).toBeNull();
+
+    mockApiFetch.mockImplementation((url: string) => mockGet(url));
+    fireEvent.click(screen.getByRole('button', { name: 'COMMON_RETRY' }));
+
+    await waitFor(() => expect(screen.getByText('MCP_SETTINGS_INSTALLED_EMPTY')).toBeTruthy());
+    expect(screen.queryByTestId('mcp-installed-error')).toBeNull();
   });
 
   it('links to hub-wide key management on the Security tab instead of listing keys', async () => {
@@ -212,6 +255,46 @@ describe('McpSettingsContainer', () => {
       expect(mockApiFetch).toHaveBeenCalledWith('/api/mcp-admin/tools/hub_list_installed_apps/call', expect.objectContaining({ method: 'POST' })),
     );
     await waitFor(() => expect(screen.getByTestId('mcp-run-result').textContent).toContain('5'));
+  });
+
+  it('lists a tool’s schema fields above the arguments box', async () => {
+    const user = userEvent.setup();
+    mockApiFetch.mockImplementation((url: string) => {
+      if (url === '/api/mcp-admin/tools') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            tools: [
+              {
+                name: 'hub_start_app',
+                description: 'Start an app',
+                inputSchema: {
+                  type: 'object',
+                  properties: { urn: { type: 'string' }, force: { type: 'boolean' } },
+                  required: ['urn'],
+                },
+                destructive: false,
+                access: 'write',
+                category: 'App Lifecycle',
+              },
+            ],
+          }),
+        });
+      }
+      return mockGet(url);
+    });
+
+    renderContainer();
+    await waitFor(() => expect(screen.getByText('hub_start_app')).toBeTruthy());
+    await user.click(screen.getByRole('button', { name: 'MCP_SETTINGS_RUN' }));
+
+    const fields = await screen.findByTestId('mcp-run-fields');
+    expect(fields.textContent).toContain('urn');
+    expect(fields.textContent).toContain('MCP_SETTINGS_FIELD_REQUIRED');
+    expect(fields.textContent).toContain('force');
+    expect(fields.textContent).toContain('MCP_SETTINGS_FIELD_OPTIONAL');
+    expect(screen.getByTestId('mcp-run-args')).toBeTruthy();
+    expect(mcpToolFields({ type: 'object', properties: { urn: {} }, required: ['urn'] })).toEqual([{ name: 'urn', required: true }]);
   });
 
   it('rejects non-object JSON arguments before calling the backend', async () => {

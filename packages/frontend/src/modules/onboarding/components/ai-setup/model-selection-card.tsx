@@ -324,26 +324,26 @@ function ModelGroup({
   );
 }
 
-// Parameter-count ranges (small ≤14B, medium 15–70B, large >70B) plus embedding/speech. Each category
-// gets its own level color, red → orange → gold → green → blue.
+// Parameter-count ranges match the filters below: small is 14B and under, medium is over 14B up to
+// 70B, large is over 70B. The labels say that. Do not retune the matchers to fit a rounder phrase.
 const OTHER_MODEL_GROUPS: { key: string; title: string; testId: string; color: LevelColor; match: (m: CuratedModel) => boolean }[] = [
   {
     key: 'large',
-    title: 'Large models · 70B+',
+    title: 'Large models - over 70B',
     testId: 'other-group-large',
     color: 'red',
     match: (m) => m.modality === 'llm' && (m.parameterScale ?? 0) > 70,
   },
   {
     key: 'medium',
-    title: 'Medium models · 15–70B',
+    title: 'Medium models - over 14B up to 70B',
     testId: 'other-group-medium',
     color: 'orange',
     match: (m) => m.modality === 'llm' && (m.parameterScale ?? 0) > 14 && (m.parameterScale ?? 0) <= 70,
   },
   {
     key: 'small',
-    title: 'Small models · ≤14B',
+    title: 'Small models - 14B and under',
     testId: 'other-group-small',
     color: 'gold',
     match: (m) => m.modality === 'llm' && (m.parameterScale ?? 0) <= 14,
