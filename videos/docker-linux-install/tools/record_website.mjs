@@ -1,22 +1,49 @@
-// Record "go to docs.docker.com and copy the install commands" at real speed.
+// Record "open a docs page, jump to a section, copy a command" at real speed.
 //
 // Frame-stepped: every frame's state (cursor, typed URL, scroll) is computed from
 // a timeline, applied, and screenshotted, then piped to ffmpeg at 30 fps. The
-// page itself is the live docs.docker.com, shown in a plain browser window.
+// page itself is the live site, shown in a plain browser window.
 //
-//   node record_website.mjs out.mp4 [stillsDir]
+//   node record_website.mjs <site> out.mp4 [stillsDir]     site: docker-apt | ci-engine
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 
-const OUT = process.argv[2] ?? 'website.mp4';
-const STILLS = process.argv[3];
+const SITES = {
+  // docs.docker.com: Ubuntu apt-repository steps (Alpine.js copy button, OneTrust banner, promo strip).
+  'docker-apt': {
+    typed: 'docs.docker.com/engine/install/ubuntu',
+    page: 'https://docs.docker.com/engine/install/ubuntu/',
+    anchor: 'install-using-the-repository',
+    block: /^# Add Docker's official GPG key/,
+    copyButton: 'button[title="copy"]',
+    block3p: /onetrust|cookielaw|googletagmanager|google-analytics|segment\.(io|com)|hotjar|clarity\.ms|doubleclick/,
+    css: '#onetrust-consent-sdk{display:none!important}',
+    promo: /Cloud Sandboxes/,
+    stills: ['docs-page-top', 'docs-apt-section', 'docs-copied'],
+  },
+  // docs.ci.computer: Install Docker -> Docker Engine (Linux) (Nextra copy button).
+  'ci-engine': {
+    typed: 'docs.ci.computer/docs/getting-started/installing-docker',
+    page: 'https://docs.ci.computer/docs/getting-started/installing-docker',
+    anchor: 'install-docker-engine-linux',
+    block: /^curl -fsSL https:\/\/get\.docker\.com \| sh$/,
+    copyButton: 'button[title="Copy code"], button[aria-label="Copy code"]',
+    block3p: /cloudflareinsights|googletagmanager|google-analytics|plausible|posthog/,
+    css: '',
+    promo: null,
+    stills: ['ci-docs-page-top', 'ci-docs-engine-section', 'ci-docs-copied'],
+  },
+};
+const SITE = SITES[process.argv[2]];
+if (!SITE) throw new Error(`usage: record_website.mjs <${Object.keys(SITES).join('|')}> out.mp4 [stillsDir]`);
+const OUT = process.argv[3] ?? 'website.mp4';
+const STILLS = process.argv[4];
 const FPS = 30, W = 1920, H = 1080;
 const ZOOM = 1.2, CHROME_H = 92;
 const VW = Math.round(W / ZOOM), VH = Math.round((H - CHROME_H) / ZOOM);
-const URL_TYPED = 'docs.docker.com/engine/install/ubuntu';
-const PAGE = 'https://docs.docker.com/engine/install/ubuntu/';
-const ANCHOR = 'install-using-the-repository';
+const URL_TYPED = SITE.typed, PAGE = SITE.page, ANCHOR = SITE.anchor;
+const HOST = new URL(PAGE).host, PATHNAME = new URL(PAGE).pathname;
 
 // deterministic human typing
 let seed = 11;
@@ -62,7 +89,7 @@ const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: W, height: H }, deviceScaleFactor: 1 });
 await ctx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: 'https://docs.docker.com' });
 // Privacy: block consent/analytics scripts outright (no cookies accepted).
-await ctx.route(/onetrust|cookielaw|googletagmanager|google-analytics|segment\.(io|com)|hotjar|clarity\.ms|doubleclick/, r => r.abort());
+await ctx.route(SITE.block3p, r => r.abort());
 // The docs send X-Frame-Options: DENY; drop it in this recording browser only.
 await ctx.route(PAGE + '**', async route => {
   if (route.request().resourceType() !== 'document') return route.continue();
@@ -80,25 +107,31 @@ await page.evaluate(src => { document.getElementById('frame').src = src; }, PAGE
 let frame;
 for (let i = 0; i < 100 && !frame; i++) { frame = page.frames().find(f => f.url().startsWith(PAGE)); if (!frame) await page.waitForTimeout(100); }
 await frame.waitForLoadState('networkidle');
-await frame.evaluate(() => {
+await frame.evaluate(({ css, promo }) => {
   const st = document.createElement('style');
-  st.textContent = '#onetrust-consent-sdk{display:none!important} html{scroll-behavior:auto!important} ::-webkit-scrollbar{width:0}';
+  st.textContent = css + ' html{scroll-behavior:auto!important} ::-webkit-scrollbar{width:0}';
   document.head.appendChild(st);
-  // Hide the promotional strip above the header (not part of the docs).
-  const promo = [...document.querySelectorAll('body *')].find(e => /Cloud Sandboxes/.test(e.textContent) && e.children.length < 6 && e.getBoundingClientRect().top < 50);
-  let n = promo; while (n && n.parentElement && n.parentElement !== document.body && n.parentElement.getBoundingClientRect().height < 60) n = n.parentElement;
-  if (n) n.style.display = 'none';
+  if (promo) {
+    // Hide the promotional strip above the header (not part of the docs).
+    const rx = new RegExp(promo);
+    const hit = [...document.querySelectorAll('body *')].find(e => rx.test(e.textContent) && e.children.length < 6 && e.getBoundingClientRect().top < 50);
+    let n = hit; while (n && n.parentElement && n.parentElement !== document.body && n.parentElement.getBoundingClientRect().height < 60) n = n.parentElement;
+    if (n) n.style.display = 'none';
+  }
   window.scrollTo(0, 0);
-});
+}, { css: SITE.css, promo: SITE.promo?.source ?? null });
 await page.waitForTimeout(800);
-const geo = await frame.evaluate(a => {
+const geo = await frame.evaluate(({ a, block, copyButton }) => {
   const r = el => { const b = el.getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2 + scrollY }; };
   const toc = [...document.querySelectorAll(`a[href="#${a}"]`)].find(x => x.getBoundingClientRect().width > 0 && x.getBoundingClientRect().left > innerWidth * 0.6);
   const h = document.getElementById(a);
-  const btn = h.parentElement.querySelector(`#${a} ~ * button[title="copy"]`) || [...document.querySelectorAll('button[title="copy"]')].find(b => b.getBoundingClientRect().top + scrollY > h.getBoundingClientRect().top + scrollY);
   const hy = h.getBoundingClientRect().top + scrollY;
+  const rx = new RegExp(block);
+  const pre = [...document.querySelectorAll('pre')].find(p => p.getBoundingClientRect().top + scrollY > hy && rx.test(p.textContent.trim()));
+  let box = pre, btn = null;
+  while (box && !(btn = box.querySelector(copyButton))) box = box.parentElement;
   return { toc: r(toc), headY: hy, btn: r(btn), title: document.title };
-}, ANCHOR);
+}, { a: ANCHOR, block: SITE.block.source, copyButton: SITE.copyButton });
 const fav = await frame.evaluate(() => new URL(document.querySelector('link[rel~="icon"]')?.getAttribute('href') || '/favicon.ico', location.href).href);
 const scrollTarget = Math.round(geo.headY - 80);
 
@@ -141,11 +174,11 @@ const ff = spawn('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'image2pipe', '-fr
   '-c:v', 'libx264', '-preset', 'slow', '-crf', '18', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', OUT], { stdio: ['pipe', 'inherit', 'inherit'] });
 const frames = Math.ceil(T.end * FPS);
 let lastScroll = -1, phase = '';
-const stills = { 'docs-page-top': T.shown + 1.5, 'docs-apt-section': T.scroll[1] + 1.5, 'docs-copied': T.clickBtn + 0.6 };
+const stills = Object.fromEntries(SITE.stills.map((n, i) => [n, [T.shown + 1.5, T.scroll[1] + 1.5, T.clickBtn + 0.6][i]]));
 for (let i = 0; i < frames; i++) {
   const t = i / FPS, s = state(t);
   const p = t < T.clickBar ? 'idle' : t < T.enter ? 'typing' : t < T.shown ? 'loading' : t < T.clickToc ? 'page' : 'anchor';
-  await page.evaluate(({ s, t, p, typedText, T, title, fav, anchor }) => {
+  await page.evaluate(({ s, t, p, typedText, T, title, fav, anchor, hostName, pathName }) => {
     const c = document.getElementById('cursor'); c.style.transform = `translate(${s.cur.x}px,${s.cur.y}px)`;
     document.getElementById('arrow').style.display = s.hand ? 'none' : 'block';
     document.getElementById('hand').style.display = s.hand ? 'block' : 'none';
@@ -156,7 +189,7 @@ for (let i = 0; i < frames; i++) {
     else if (p === 'typing') { url.className = 'focus'; ph.style.display = s.typed ? 'none' : 'inline'; host.textContent = typedText.slice(0, s.typed); rest.textContent = ''; caret.style.visibility = (Math.floor((t - T.clickBar) / 0.53) % 2 === 0 || s.typed > 0) ? 'visible' : 'hidden'; }
     else {
       url.className = p === 'loading' ? '' : 'loaded'; ph.style.display = 'none'; caret.style.visibility = 'hidden';
-      host.textContent = 'docs.docker.com'; rest.textContent = '/engine/install/ubuntu/' + (p === 'anchor' ? '#' + anchor : '');
+      host.textContent = hostName; rest.textContent = pathName + (p === 'anchor' ? '#' + anchor : '');
     }
     const prog = document.getElementById('progress');
     if (p === 'loading') { const k = (t - T.enter) / (T.shown - T.enter); prog.style.width = (20 + 75 * Math.sqrt(k)) + '%'; prog.style.opacity = '1'; }
@@ -166,14 +199,18 @@ for (let i = 0; i < frames; i++) {
     document.getElementById('frame').style.visibility = shown ? 'visible' : 'hidden';
     document.getElementById('newtab').style.display = shown ? 'none' : 'grid';
     if (shown) { document.getElementById('title').textContent = title; const f = document.getElementById('fav'); if (!f.src) f.src = fav; f.style.visibility = 'visible'; }
-  }, { s, t, p, typedText: URL_TYPED, T, title: geo.title, fav, anchor: ANCHOR });
+  }, { s, t, p, typedText: URL_TYPED, T, title: geo.title, fav, anchor: ANCHOR, hostName: HOST, pathName: PATHNAME });
   await page.mouse.move(s.cur.x + 4, s.cur.y + 3);
   if (s.scroll !== lastScroll) { await frame.evaluate(y => window.scrollTo(0, y), s.scroll); lastScroll = s.scroll; }
   if (p !== phase && p === 'anchor') { /* hover state on TOC link is cosmetic; skip */ }
-  // The site's own click handler resets "copied" after 2 s of wall-clock time, which is
-  // not video time here — so drive its Alpine state on the video clock instead.
-  for (const [at, v] of [[T.clickBtn, true], [T.clickBtn + 2.0, false]])
-    if (Math.abs(t - at) < 0.5 / FPS) await frame.evaluate(v => { const b = [...document.querySelectorAll('button[title="copy"]')].find(b => { const r = b.getBoundingClientRect(); return r.top > 0 && r.top < innerHeight; }); window.Alpine.$data(b).copying = v; }, v);
+  // Copy feedback runs on the site's own timers, which tick in wall-clock time —
+  // not video time here. docs.docker.com: drive its Alpine state on the video clock.
+  // Elsewhere: click for real, with long timers frozen so the check mark holds to the end.
+  if (Math.abs(t - T.clickBtn) < 0.5 / FPS && !SITE.promo)
+    await frame.evaluate(() => { const st = window.setTimeout; window.setTimeout = (fn, d, ...a) => (d >= 1000 ? 0 : st(fn, d, ...a)); });
+  if (Math.abs(t - T.clickBtn) < 0.5 / FPS && !SITE.promo) await page.mouse.click(s.cur.x + 4, s.cur.y + 3);
+  if (SITE.promo) for (const [at, v] of [[T.clickBtn, true], [T.clickBtn + 2.0, false]])
+    if (Math.abs(t - at) < 0.5 / FPS) await frame.evaluate(({ v, sel }) => { const b = [...document.querySelectorAll(sel)].find(b => { const r = b.getBoundingClientRect(); return r.top > 0 && r.top < innerHeight; }); window.Alpine.$data(b).copying = v; }, { v, sel: SITE.copyButton });
   phase = p;
   const png = await page.screenshot({ type: 'png' });
   if (STILLS) for (const [name, at] of Object.entries(stills)) if (Math.abs(t - at) < 0.5 / FPS) fs.writeFileSync(`${STILLS}/${name}.png`, png);

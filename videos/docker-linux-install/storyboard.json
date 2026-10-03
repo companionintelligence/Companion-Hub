@@ -10,8 +10,8 @@
     "transitionSeconds": 0.5
   },
   "chapters": {
-    "site": "Find the steps",
-    "terminal": "Run them"
+    "site": "Find the command",
+    "terminal": "Install and check"
   },
   "scenes": [
     {
@@ -25,58 +25,70 @@
       "id": "docs",
       "kind": "clip",
       "chapter": "site",
-      "seconds": 19.43,
+      "seconds": 21.7,
       "src": {
         "landscape": "assets/video/website.mp4",
         "portrait": "assets/video/website-portrait.mp4"
       },
-      "caption": "Open Docker's Ubuntu guide and copy the first block."
-    },
-    {
-      "id": "apt-update",
-      "kind": "clip",
-      "chapter": "terminal",
-      "seconds": 12.6,
-      "src": {
-        "landscape": "assets/video/terminal-1.mp4",
-        "portrait": "assets/video/terminal-1-portrait.mp4"
-      },
-      "caption": "Refresh your package list. Your password stays hidden as you type."
-    },
-    {
-      "id": "add-repo",
-      "kind": "clip",
-      "chapter": "terminal",
-      "seconds": 8.7,
-      "src": {
-        "landscape": "assets/video/terminal-2.mp4",
-        "portrait": "assets/video/terminal-2-portrait.mp4"
-      },
-      "caption": "Paste the block. It adds Docker's signing key and repository.",
-      "transition": "cut"
+      "caption": "Open Install Docker on docs.ci.computer and copy the Docker Engine command."
     },
     {
       "id": "install",
       "kind": "clip",
       "chapter": "terminal",
-      "seconds": 28.9,
+      "seconds": 28.8,
       "src": {
-        "landscape": "assets/video/terminal-3.mp4",
-        "portrait": "assets/video/terminal-3-portrait.mp4"
+        "landscape": "assets/video/engine-1.mp4",
+        "portrait": "assets/video/engine-1-portrait.mp4"
       },
-      "caption": "Install Docker Engine. Type y to confirm.",
+      "caption": "Paste it and enter your password. Docker's script installs the engine and Compose."
+    },
+    {
+      "id": "group",
+      "kind": "clip",
+      "chapter": "terminal",
+      "seconds": 6.27,
+      "src": {
+        "landscape": "assets/video/engine-2.mp4",
+        "portrait": "assets/video/engine-2-portrait.mp4"
+      },
+      "caption": "Add yourself to the docker group, then log out.",
+      "transition": "cut"
+    },
+    {
+      "id": "relogin",
+      "kind": "clip",
+      "chapter": "terminal",
+      "seconds": 5.77,
+      "src": {
+        "landscape": "assets/video/engine-3.mp4",
+        "portrait": "assets/video/engine-3-portrait.mp4"
+      },
+      "caption": "Log back in and check the engine is running.",
       "transition": "cut"
     },
     {
       "id": "hello",
       "kind": "clip",
       "chapter": "terminal",
-      "seconds": 9.07,
+      "seconds": 8.47,
       "src": {
-        "landscape": "assets/video/terminal-4.mp4",
-        "portrait": "assets/video/terminal-4-portrait.mp4"
+        "landscape": "assets/video/engine-4.mp4",
+        "portrait": "assets/video/engine-4-portrait.mp4"
       },
-      "caption": "Run hello-world. If you see Hello from Docker, it works.",
+      "caption": "Run a test container.",
+      "transition": "cut"
+    },
+    {
+      "id": "compose",
+      "kind": "clip",
+      "chapter": "terminal",
+      "seconds": 6.67,
+      "src": {
+        "landscape": "assets/video/engine-5.mp4",
+        "portrait": "assets/video/engine-5-portrait.mp4"
+      },
+      "caption": "Check the Compose plugin. Docker is ready for Companion Hub.",
       "transition": "cut"
     },
     {

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Record a real Docker Engine install in a throwaway Ubuntu 24.04 container.
+"""Record a real Docker install in a throwaway Ubuntu 24.04 container.
+
+    python3 record_terminal.py <flow> out.cast     flow: apt | engine
+
 
 Types at human speed into a real pty, captures every output byte with its real
 timestamp, and writes an asciicast v2 file. Nothing is installed on the host.
@@ -8,7 +11,8 @@ import fcntl, json, os, pty, random, re, select, struct, subprocess, sys, termio
 
 NAME = "dk-tut"
 COLS, ROWS = 92, 26
-OUT = sys.argv[1] if len(sys.argv) > 1 else "install.cast"
+FLOW = sys.argv[1] if len(sys.argv) > 1 else "engine"
+OUT = sys.argv[2] if len(sys.argv) > 2 else f"{FLOW}.cast"
 PASSWORD = "companion"  # throwaway container user, never shown (sudo does not echo)
 rng = random.Random(7)
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\r")
@@ -75,16 +79,23 @@ rm -rf /var/lib/apt/lists/*
 
 
 class Session:
-    def __init__(self):
+    def __init__(self, prev=None):
         pid, fd = pty.fork()
         if pid == 0:
+            os.environ["DOCKER_CLI_HINTS"] = "false"  # no host-side "What's next" tips on exit
             os.execvp("docker", ["docker", "exec", "-it", "-e", "TERM=xterm-256color",
+                                 "-e", "USER=ci", "-e", "LOGNAME=ci",
                                  "-u", "ci", "-w", "/home/ci", NAME, "bash", "-l"])
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
         self.fd, self.pid = fd, pid
-        self.t0 = time.monotonic()
-        self.events = []
+        self.t0 = prev.t0 if prev else time.monotonic()
+        self.events = prev.events if prev else []
         self.buf = ""
+        if prev:  # a fresh login: new window contents
+            self.events.append([round(self.now(), 4), "o", "\x1b[3J\x1b[H\x1b[2J"])
+
+    def mark(self, label):
+        self.events.append([round(self.now(), 4), "m", label])
 
     def now(self):
         return time.monotonic() - self.t0
@@ -143,7 +154,7 @@ class Session:
         self.pump(0.4)
 
 
-def main():
+def flow_apt():
     prep()
     s = Session()
     s.prompt()
@@ -179,11 +190,58 @@ def main():
     s.prompt()
     s.pump(3.0)
 
+    return s
+
+
+def flow_engine():
+    """docs.ci.computer -> Install Docker Engine (Linux), then the page's three checks."""
+    prep()
+    s = Session()
+    s.prompt()
+    s.pump(1.2)
+
+    s.mark("install")
+    s.paste("curl -fsSL https://get.docker.com | sh")
+    s.pump(0.6); s.enter()
+    s.wait_for(r"\[sudo\] password for ci: $", timeout=120)
+    s.pump(0.9)
+    s.type(PASSWORD); s.pump(0.25); s.enter()
+    s.prompt(timeout=600); s.pump(1.8)
+
+    s.mark("group")
+    s.type("sudo usermod -aG docker $USER")
+    s.pump(0.4); s.enter()
+    s.prompt(); s.pump(1.5)
+    s.type("exit"); s.pump(0.3); s.enter()
+    s.pump(1.0)
+
+    # Log out and back in: a new login session picks up the docker group.
+    s = Session(prev=s)
+    s.mark("relogin")
+    s.prompt(); s.pump(1.4)
+
+    s.mark("info")
+    s.type("docker info"); s.pump(0.4); s.enter()
+    s.prompt(); s.pump(2.2)
+
+    s.mark("hello")
+    s.type("docker run --rm hello-world"); s.pump(0.4); s.enter()
+    s.wait_for(r"docs\.docker\.com/get-started/", timeout=180)
+    s.prompt(); s.pump(2.0)
+
+    s.mark("compose")
+    s.type("docker compose version"); s.pump(0.4); s.enter()
+    s.prompt(); s.pump(3.0)
+    return s
+
+
+def main():
+    s = {"apt": flow_apt, "engine": flow_engine}[FLOW]()
     header = {"version": 2, "width": COLS, "height": ROWS, "timestamp": int(time.time()),
               "env": {"TERM": "xterm-256color", "SHELL": "/bin/bash"}}
     with open(OUT, "w") as f:
         f.write(json.dumps(header) + "\n")
-        for e in s.events:
+        for e in sorted(s.events, key=lambda e: e[0]):
             f.write(json.dumps(e) + "\n")
     print(f"wrote {OUT}: {len(s.events)} events, {s.events[-1][0]:.1f}s")
 
