@@ -775,4 +775,26 @@ describe('GeneralActionsContainer', () => {
       expect(mockFactoryReset).toHaveBeenCalledWith({ body: { confirmation: 'core' } });
     });
   });
+
+  it('requires the device name again after the factory-reset dialog closes', async () => {
+    mockUseAppContext.mockReturnValue({
+      version: { current: '4.7.0', latest: '4.7.0', body: '', releases: [] },
+      refreshAppContext: vi.fn(),
+      userSettings: { ciHubDeviceSlug: 'core' },
+    } as unknown as ReturnType<typeof useAppContext>);
+
+    render(<GeneralActionsContainer />);
+
+    await userEvent.click(await screen.findByTestId('factory-reset-btn'));
+    await userEvent.type(screen.getByTestId('factory-reset-confirmation-input'), 'core');
+    expect(screen.getByTestId('factory-reset-confirm-btn')).toBeEnabled();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByTestId('factory-reset-confirmation-input')).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('factory-reset-btn'));
+    const input = screen.getByTestId('factory-reset-confirmation-input');
+    expect(input).toHaveValue('');
+    expect(screen.getByTestId('factory-reset-confirm-btn')).toBeDisabled();
+  });
 });

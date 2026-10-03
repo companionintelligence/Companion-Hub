@@ -126,6 +126,13 @@ export const GeneralActionsContainer = () => {
     }
   }, [t]);
 
+  const setFactoryResetDialogOpen = useCallback((open: boolean) => {
+    setFactoryResetOpen(open);
+    // Cancel, the X, and a click outside all close through here. A phrase left in state would
+    // still match the device name, so the next open could wipe the Hub in one click.
+    if (!open) setFactoryResetPhrase('');
+  }, []);
+
   const handleFactoryReset = useCallback(async () => {
     if (demoMode) {
       toast.error(t('SERVER_ERROR_NOT_ALLOWED_IN_DEMO'));
@@ -713,13 +720,19 @@ export const GeneralActionsContainer = () => {
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground mb-4">{t('SETTINGS_FACTORY_RESET_DESCRIPTION')}</p>
-          <Button intent="danger" variant="outline" disabled={demoMode} onClick={() => setFactoryResetOpen(true)} data-testid="factory-reset-btn">
+          <Button
+            intent="danger"
+            variant="outline"
+            disabled={demoMode}
+            onClick={() => setFactoryResetDialogOpen(true)}
+            data-testid="factory-reset-btn"
+          >
             {t('SETTINGS_FACTORY_RESET_BUTTON')}
           </Button>
         </CardContent>
       </Card>
 
-      <Dialog open={factoryResetOpen} onOpenChange={setFactoryResetOpen}>
+      <Dialog open={factoryResetOpen} onOpenChange={setFactoryResetDialogOpen}>
         <DialogContent type="danger" size="sm">
           <DialogHeader>
             <DialogTitle>{t('SETTINGS_FACTORY_RESET_DIALOG_TITLE')}</DialogTitle>
@@ -746,7 +759,7 @@ export const GeneralActionsContainer = () => {
             </div>
           </DialogDescription>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setFactoryResetOpen(false)} disabled={factoryResetting}>
+            <Button variant="ghost" onClick={() => setFactoryResetDialogOpen(false)} disabled={factoryResetting}>
               {t('COMMON_CANCEL')}
             </Button>
             <Button
