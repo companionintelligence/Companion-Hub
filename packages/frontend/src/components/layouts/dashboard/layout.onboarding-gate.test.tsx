@@ -84,7 +84,7 @@ describe('DashboardLayout onboarding gate', () => {
       </MemoryRouter>,
     );
 
-    expect(document.querySelector('.dashboard-column')?.style.paddingBottom).toBe('var(--safe-area-bottom)');
+    expect(document.querySelector<HTMLElement>('.dashboard-column')?.style.paddingBottom).toBe('var(--safe-area-bottom)');
   });
 
   it('keeps a deep link in place while app-context is still loading (the default payload says "not onboarded")', () => {
