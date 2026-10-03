@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import { toast } from 'sonner';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { McpSettingsContainer, mcpAppStorePath } from '../mcp-settings';
+import { McpSettingsContainer, mcpAppStorePath, mcpToolFields } from '../mcp-settings';
 
 // ENH-MCP-4: exercises the MCP settings screen against a mocked /api/mcp-admin surface.
 // Key management moved to the hub-wide Settings → Security card (see api-keys.test.tsx);
@@ -255,6 +255,46 @@ describe('McpSettingsContainer', () => {
       expect(mockApiFetch).toHaveBeenCalledWith('/api/mcp-admin/tools/hub_list_installed_apps/call', expect.objectContaining({ method: 'POST' })),
     );
     await waitFor(() => expect(screen.getByTestId('mcp-run-result').textContent).toContain('5'));
+  });
+
+  it('lists a tool’s schema fields above the arguments box', async () => {
+    const user = userEvent.setup();
+    mockApiFetch.mockImplementation((url: string) => {
+      if (url === '/api/mcp-admin/tools') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            tools: [
+              {
+                name: 'hub_start_app',
+                description: 'Start an app',
+                inputSchema: {
+                  type: 'object',
+                  properties: { urn: { type: 'string' }, force: { type: 'boolean' } },
+                  required: ['urn'],
+                },
+                destructive: false,
+                access: 'write',
+                category: 'App Lifecycle',
+              },
+            ],
+          }),
+        });
+      }
+      return mockGet(url);
+    });
+
+    renderContainer();
+    await waitFor(() => expect(screen.getByText('hub_start_app')).toBeTruthy());
+    await user.click(screen.getByRole('button', { name: 'MCP_SETTINGS_RUN' }));
+
+    const fields = await screen.findByTestId('mcp-run-fields');
+    expect(fields.textContent).toContain('urn');
+    expect(fields.textContent).toContain('MCP_SETTINGS_FIELD_REQUIRED');
+    expect(fields.textContent).toContain('force');
+    expect(fields.textContent).toContain('MCP_SETTINGS_FIELD_OPTIONAL');
+    expect(screen.getByTestId('mcp-run-args')).toBeTruthy();
+    expect(mcpToolFields({ type: 'object', properties: { urn: {} }, required: ['urn'] })).toEqual([{ name: 'urn', required: true }]);
   });
 
   it('rejects non-object JSON arguments before calling the backend', async () => {

@@ -2106,6 +2106,8 @@
   "MCP_SETTINGS_RUN": "Run",
   "MCP_SETTINGS_RUN_TITLE": "Run {{tool}}",
   "MCP_SETTINGS_RUN_ARGS_LABEL": "Arguments (JSON)",
+  "MCP_SETTINGS_FIELD_REQUIRED": "required",
+  "MCP_SETTINGS_FIELD_OPTIONAL": "optional",
   "MCP_SETTINGS_RUN_INVALID_JSON": "Arguments must be valid JSON.",
   "MCP_SETTINGS_RUN_ARGS_NOT_OBJECT": "Arguments must be a JSON object (e.g. {}), not an array or primitive.",
   "MCP_SETTINGS_RUN_RESULT": "Result",

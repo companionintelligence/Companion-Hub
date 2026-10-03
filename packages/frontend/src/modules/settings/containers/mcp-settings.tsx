@@ -61,6 +61,14 @@ interface InstalledAppsResponse {
 
 type ToolCallResponse = { ok: true; result: unknown } | { ok: false; error: string };
 
+/** Top-level field names from a tool's JSON schema. Not a form: the textarea stays the way arguments are sent. */
+export function mcpToolFields(schema: Record<string, unknown>): { name: string; required: boolean }[] {
+  const properties = schema.properties;
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) return [];
+  const required = new Set(Array.isArray(schema.required) ? schema.required.filter((name): name is string => typeof name === 'string') : []);
+  return Object.keys(properties).map((name) => ({ name, required: required.has(name) }));
+}
+
 /** App URNs are `appId:storeId`. The app page is `/store/:storeId/:appId`. */
 export function mcpAppStorePath(urn: string): string | null {
   const [appId, storeId] = urn.split(':');
@@ -426,6 +434,19 @@ export const McpSettingsContainer = () => {
           {/* min-w-0: this is a grid item of DialogContent; without it the result <pre>'s long lines
               force the grid track wide and blow the dialog past its max-width instead of scrolling. */}
           <div className="min-w-0 space-y-2">
+            {runTool && mcpToolFields(runTool.inputSchema).length > 0 ? (
+              <ul className="space-y-1 text-sm" data-testid="mcp-run-fields">
+                {mcpToolFields(runTool.inputSchema).map((field) => (
+                  <li key={field.name}>
+                    <code className="font-medium">{field.name}</code>
+                    <span className="text-muted-foreground">
+                      {' '}
+                      {field.required ? t('MCP_SETTINGS_FIELD_REQUIRED') : t('MCP_SETTINGS_FIELD_OPTIONAL')}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
             <label className="text-sm font-medium" htmlFor="mcp-run-args">
               {t('MCP_SETTINGS_RUN_ARGS_LABEL')}
             </label>
