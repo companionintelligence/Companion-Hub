@@ -10,7 +10,7 @@ import { useMutation } from '@tanstack/react-query';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import { logoutMutation } from '@/api-client/@tanstack/react-query.gen';
 import { useAppStoreState } from '@/stores/app-store';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppContext } from '@/context/app-context';
 
 type HeaderProps = {
@@ -162,10 +162,25 @@ function MobileAppMenu({
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setOpen(false);
+      toggleRef.current?.focus();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [open]);
 
   return (
     <div className="relative ml-auto flex justify-end lg:hidden">
       <Button
+        ref={toggleRef}
         type="button"
         variant="ghost"
         size="icon"
@@ -184,11 +199,13 @@ function MobileAppMenu({
             type="button"
             aria-label={t('COMMON_CLOSE')}
             data-testid="mobile-app-menu-scrim"
+            tabIndex={-1}
             className="fixed inset-x-0 bottom-0 z-40 bg-black/25"
             style={{ top: 'var(--header-offset)' }}
             onClick={() => setOpen(false)}
           />
           <div
+            ref={menuRef}
             role="menu"
             data-testid="mobile-app-menu"
             className="absolute right-0 top-full z-50 mt-2 max-h-[calc(100dvh-var(--header-offset)-1rem)] w-56 origin-top-right animate-in overflow-y-auto fade-in-0 zoom-in-95 slide-in-from-top-2 rounded-md border bg-popover p-1 text-popover-foreground shadow-md duration-200"

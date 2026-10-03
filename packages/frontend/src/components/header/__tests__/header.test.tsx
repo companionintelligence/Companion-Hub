@@ -1,4 +1,4 @@
-import { render, screen, userEvent } from '@/tests/test-utils';
+import { render, screen, userEvent, waitFor } from '@/tests/test-utils';
 import { describe, it, expect, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import { Header } from '../header';
@@ -95,6 +95,23 @@ describe('Header', () => {
     expect(scrim.style.top).toBe('var(--header-offset)');
     expect(scrim.className).not.toContain('inset-0');
     expect(screen.getByRole('menuitem', { name: /COMMON_SETTINGS|Settings/i })).toBeInTheDocument();
+  });
+
+  it('moves focus into the phone menu, closes it on Escape, and keeps the scrim out of the tab order', async () => {
+    renderHeader(true);
+
+    await userEvent.click(screen.getByTestId('mobile-app-menu-btn'));
+    const menu = screen.getByTestId('mobile-app-menu');
+    const scrim = screen.getByTestId('mobile-app-menu-scrim');
+    expect(scrim).toHaveAttribute('tabindex', '-1');
+
+    await waitFor(() => {
+      expect(menu.querySelector('[role="menuitem"]')).toHaveFocus();
+    });
+
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByTestId('mobile-app-menu')).not.toBeInTheDocument();
+    expect(screen.getByTestId('mobile-app-menu-btn')).toHaveFocus();
   });
 
   it('uses the stronger active styling for the selected settings button', () => {
