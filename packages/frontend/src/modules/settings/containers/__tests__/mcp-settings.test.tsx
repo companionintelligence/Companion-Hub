@@ -89,6 +89,7 @@ const TOOLS = {
 function mockGet(url: string) {
   if (url === '/api/mcp-admin/status') return Promise.resolve({ ok: true, json: async () => STATUS });
   if (url === '/api/mcp-admin/tools') return Promise.resolve({ ok: true, json: async () => TOOLS });
+  if (url === '/api/apps/installed') return Promise.resolve({ ok: true, json: async () => ({ installed: [] }) });
   return Promise.resolve({ ok: true, json: async () => ({}) });
 }
 
@@ -161,6 +162,24 @@ describe('McpSettingsContainer', () => {
     expect(link.getAttribute('href')).toBe('/store/ci-store/openclaw');
     expect(mcpAppStorePath('openclaw:ci-store')).toBe('/store/ci-store/openclaw');
     expect(mcpAppStorePath('not-a-urn')).toBeNull();
+  });
+
+  it('says the installed list failed instead of claiming there are no MCP servers', async () => {
+    mockApiFetch.mockImplementation((url: string) => {
+      if (url === '/api/apps/installed') return Promise.resolve({ ok: false, json: async () => ({}) });
+      return mockGet(url);
+    });
+
+    renderContainer();
+
+    expect(await screen.findByTestId('mcp-installed-error')).toHaveTextContent('MCP_SETTINGS_INSTALLED_ERROR');
+    expect(screen.queryByText('MCP_SETTINGS_INSTALLED_EMPTY')).toBeNull();
+
+    mockApiFetch.mockImplementation((url: string) => mockGet(url));
+    fireEvent.click(screen.getByRole('button', { name: 'COMMON_RETRY' }));
+
+    await waitFor(() => expect(screen.getByText('MCP_SETTINGS_INSTALLED_EMPTY')).toBeTruthy());
+    expect(screen.queryByTestId('mcp-installed-error')).toBeNull();
   });
 
   it('links to hub-wide key management on the Security tab instead of listing keys', async () => {

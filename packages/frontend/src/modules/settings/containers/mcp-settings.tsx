@@ -84,11 +84,15 @@ export const McpSettingsContainer = () => {
   // Explicit operator confirmation for running a destructive tool (never auto-confirmed).
   const [runConfirmed, setRunConfirmed] = useState(false);
   const [installedMcpApps, setInstalledMcpApps] = useState<McpInstalledApp[]>([]);
+  const [installedError, setInstalledError] = useState(false);
 
   const loadInstalledMcpApps = useCallback(async () => {
     try {
       const res = await apiFetch('/api/apps/installed');
-      if (!res.ok) return;
+      if (!res.ok) {
+        setInstalledError(true);
+        return;
+      }
       const body = (await res.json()) as InstalledAppsResponse;
       const mcpApps = body.installed.filter((entry) => entry.info.mcp);
       const withStatus = await Promise.all(
@@ -121,9 +125,10 @@ export const McpSettingsContainer = () => {
           };
         }),
       );
+      setInstalledError(false);
       setInstalledMcpApps(withStatus);
     } catch {
-      /* optional section */
+      setInstalledError(true);
     }
   }, []);
 
@@ -279,7 +284,16 @@ export const McpSettingsContainer = () => {
           <CardDescription>{t('MCP_SETTINGS_INSTALLED_DESC')}</CardDescription>
         </CardHeader>
         <CardContent>
-          {installedMcpApps.length === 0 ? (
+          {installedError ? (
+            <div className="space-y-2">
+              <p className="text-sm text-destructive" data-testid="mcp-installed-error">
+                {t('MCP_SETTINGS_INSTALLED_ERROR')}
+              </p>
+              <Button type="button" variant="outline" size="sm" onClick={() => void loadInstalledMcpApps()}>
+                {t('COMMON_RETRY')}
+              </Button>
+            </div>
+          ) : installedMcpApps.length === 0 ? (
             <p className="text-sm text-muted-foreground">{t('MCP_SETTINGS_INSTALLED_EMPTY')}</p>
           ) : (
             <div className="min-w-0 overflow-x-auto">

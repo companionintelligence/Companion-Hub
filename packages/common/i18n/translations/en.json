@@ -2116,6 +2116,7 @@
   "MCP_SETTINGS_INSTALLED_TITLE": "Installed MCP servers",
   "MCP_SETTINGS_INSTALLED_DESC": "Marketplace MCP apps installed on this Hub and their bridge status.",
   "MCP_SETTINGS_INSTALLED_EMPTY": "No MCP server apps installed yet.",
+  "MCP_SETTINGS_INSTALLED_ERROR": "Could not load installed MCP servers.",
   "MCP_SETTINGS_INSTALLED_VIEW_APP": "View app",
   "HEADER_OPEN_MENU": "Open menu",
   "HEADER_THEME": "Theme",
