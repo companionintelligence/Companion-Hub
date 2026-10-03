@@ -140,10 +140,22 @@ export class ModelRegistryService implements OnModuleInit {
   /**
    * The catalog ids the operator pinned, whether or not the model is tracked or in memory right now,
    * persisted to `inference-pinned-models.json` (see `pinned-models-record.ts`) and read back at boot.
-   * A model tracked while its id is here is tracked pinned, so a pin survives the Hub restarting, the
-   * model being unloaded and loaded again, and the registry forgetting it in between.
+   * A model tracked while its id is here is tracked pinned, so a pin survives the Hub restarting while
+   * the engine keeps the model. It does not survive the model leaving memory: an unload through the Hub
+   * unpins it (`ModelPullerService.unloadModel`), and so does an engine that comes back without it
+   * after a restart (`InferenceRouterService.readoptPinnedModels`). The Hub UI shows a pin only on a
+   * model in memory, so it could not have unpinned one anywhere else.
    */
   private readonly pins = new Set<string>();
+  /**
+   * The pins read back at boot that no engine has answered for yet. A Hub restart alone leaves the
+   * engine holding a pinned model (Ollama keeps it at `keep_alive: -1`), but a node reboot restarts the
+   * engine too, and then the model is gone. Until an engine says which, the pin is honoured as if the
+   * model were on the card. `InferenceRouterService.readoptPinnedModels` settles each one: kept for a
+   * model the engine still holds ({@link confirmPin}), dropped for one it answered without
+   * ({@link unpinModel}). A pin made in this process is never in here.
+   */
+  private readonly unconfirmedPins = new Set<string>();
   /** The read of the persisted pins at boot; every write waits for it, so the file is never replaced before it is read. */
   private pinsRead: Promise<void> = Promise.resolve();
   /** Writes in the order they were asked for, each of the whole set as it stands when it runs. */
@@ -166,19 +178,39 @@ export class ModelRegistryService implements OnModuleInit {
   /**
    * Reads the pins the last Hub process persisted. Awaited at boot (`onModuleInit`), before
    * anything tracks a model, so a pinned model is tracked pinned from the first time this process sees
-   * it; `InferenceRouterService.readoptPinnedModels` then finds the ones an engine still holds. A file
-   * that cannot be read costs the restored pins, never the boot.
+   * it; `InferenceRouterService.readoptPinnedModels` then asks the engines which of them they still
+   * hold ({@link unconfirmedPins}). A file that cannot be read costs the restored pins, never the boot.
+   *
+   * An id with no catalog row in this build is dropped, and the file rewritten without it. Pins are
+   * made on catalog rows, so one whose row was renamed or removed can never be loaded, tracked or
+   * shown again. Kept, it was restored on every boot, and nothing, the Hub UI's Save included, could
+   * unpin it.
    */
   restorePins(): Promise<void> {
     this.pinsRead = readPinnedModels()
       .then((record) => {
         if (!record || record.pinned.length === 0) return;
+        const restored: string[] = [];
+        const unknown: string[] = [];
         for (const catalogId of record.pinned) {
+          if (!this.getCuratedModel(catalogId)) {
+            unknown.push(catalogId);
+            continue;
+          }
+          restored.push(catalogId);
           this.pins.add(catalogId);
           const tracked = this.trackedModels.get(catalogId);
           if (tracked) this.markPinned(tracked);
+          // Settled only for a model this process already has in memory; any other waits for an engine's word.
+          if (tracked?.state !== 'pinned') this.unconfirmedPins.add(catalogId);
         }
-        this.logger.info(`[ModelRegistry] Restored ${record.pinned.length} pinned model(s): ${record.pinned.join(', ')}`);
+        if (restored.length > 0) {
+          this.logger.info(`[ModelRegistry] Restored ${restored.length} pinned model(s): ${restored.join(', ')}`);
+        }
+        if (unknown.length > 0) {
+          this.logger.warn(`[ModelRegistry] Dropped pinned model(s) this catalog no longer has: ${unknown.join(', ')}`);
+          this.persistPins();
+        }
       })
       .catch((error) => {
         this.logger.warn(`[ModelRegistry] Could not read the persisted pins: ${error instanceof Error ? error.message : String(error)}`);
@@ -506,9 +538,9 @@ export class ModelRegistryService implements OnModuleInit {
   /**
    * Update model state. `loaded` on a pinned model records `pinned`: the pin is the operator's, and a
    * load that finds the model already in memory (`InferenceRouterService.adoptIfResident`, including a
-   * request queued behind the pin of that very model) or loads it again after an unload must not show
-   * it unpinned. The Hub UI reads `state === 'pinned'`; the `pinned` flag alone kept it out of eviction
-   * while the UI said it was not pinned.
+   * request queued behind the pin of that very model) must not show it unpinned. The Hub UI reads
+   * `state === 'pinned'`; the `pinned` flag alone kept it out of eviction while the UI said it was not
+   * pinned.
    */
   updateModelState(catalogId: string, state: ModelState, errorMessage?: string): void {
     const tracked = this.trackedModels.get(catalogId);
@@ -536,6 +568,8 @@ export class ModelRegistryService implements OnModuleInit {
     if (tracked) {
       tracked.pinned = true;
       tracked.state = 'pinned';
+      // Pinned now, on a model in memory: whatever the boot restored for it is settled.
+      this.unconfirmedPins.delete(catalogId);
       if (!this.pins.has(catalogId)) {
         this.pins.add(catalogId);
         this.persistPins();
@@ -552,9 +586,28 @@ export class ModelRegistryService implements OnModuleInit {
         tracked.state = 'loaded';
       }
     }
+    this.unconfirmedPins.delete(catalogId);
     if (this.pins.delete(catalogId)) {
       this.persistPins();
     }
+  }
+
+  /** Pins read back at boot that no engine has answered for yet (see {@link unconfirmedPins}). */
+  getUnconfirmedPins(): string[] {
+    return [...this.unconfirmedPins];
+  }
+
+  /**
+   * Whether `catalogId` is a pin read back at boot that no engine has answered for yet. The model may
+   * or may not still be on the card, so the pin is honoured as if it were.
+   */
+  isPinUnconfirmed(catalogId: string): boolean {
+    return this.unconfirmedPins.has(catalogId);
+  }
+
+  /** An engine still holds the model a restored pin is on, so the pin stands. A no-op for any other id. */
+  confirmPin(catalogId: string): void {
+    this.unconfirmedPins.delete(catalogId);
   }
 
   /**

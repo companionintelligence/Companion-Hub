@@ -173,7 +173,7 @@ export class InferenceTools implements OnModuleInit {
       category: 'Inference & Models',
       name: 'hub_unload_model',
       access: 'write',
-      description: 'Unload a model from memory.',
+      description: 'Unload a model from memory. A pinned model is unpinned.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -195,7 +195,7 @@ export class InferenceTools implements OnModuleInit {
       access: 'write',
       description:
         'Pin a model in memory (prevent eviction), loading it first if it is not loaded, the same way hub_load_model does. ' +
-        'The pin survives Hub restarts until hub_unpin_model.',
+        'The pin survives a Hub restart while the model stays in memory; hub_unpin_model or hub_unload_model ends it.',
       inputSchema: {
         type: 'object',
         properties: {

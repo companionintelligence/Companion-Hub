@@ -448,7 +448,13 @@ export class ModelPullerService {
     }
   }
 
-  /** Unload a model from memory */
+  /**
+   * Unload a model from memory, and unpin it once it is out. A pin is the word that a model stays in
+   * memory, and an unload (REST `models/unload`, MCP `hub_unload_model`) says otherwise. Kept, the pin
+   * outlived the unload, persisted, where the Hub UI could neither show it (it shows a pin only on a
+   * model in memory) nor remove it, and it came back on whatever loaded the model next. The Hub's own
+   * eviction also unloads through here, but never a pinned model.
+   */
   async unloadModel(catalogId: string): Promise<void> {
     const curated = this.modelRegistry.getCuratedModel(catalogId);
     if (!curated) {
@@ -463,6 +469,7 @@ export class ModelPullerService {
     try {
       const engineId = backend.engineModelId?.(curated.backendModelId) ?? curated.backendModelId;
       await backend.unloadModel(engineId, { embedding: curated.modality === 'embedding' });
+      this.modelRegistry.unpinModel(catalogId);
       this.modelRegistry.updateModelState(catalogId, 'pulled');
       this.logger.info(`[ModelPuller] Unloaded ${catalogId}`);
     } catch (err) {

@@ -1,4 +1,4 @@
-import { Injectable, forwardRef, Inject, type OnApplicationBootstrap, Optional } from '@nestjs/common';
+import { Injectable, forwardRef, Inject, type OnApplicationBootstrap, type OnApplicationShutdown, Optional } from '@nestjs/common';
 import axios from 'axios';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -34,7 +34,7 @@ import { CloudFallbackService, speaksOpenAiCompletions } from './cloud-fallback.
 import { ModelPullerService } from './model-puller.service';
 import { InferenceBackendRegistry } from './backends/backend-registry';
 import type { InferenceBackend } from './backends/backend.interface';
-import { isCatalogModelInstalled, isServedModelForCatalog, resolveInstalledCatalogIds } from './model-availability.util';
+import { isCatalogModelInstalled, isServedModelForCatalog, resolveInstalledCatalogIds, sameEngineModelId } from './model-availability.util';
 import { InferenceRouteError, modelNotFound } from './inference-error-reply';
 import { firstByteBudgetMs, forwardBudgetMs } from '@/modules/hub-pool/hub-pool-budget';
 import { HubPoolLoadService } from '@/modules/hub-pool/hub-pool-load.service';
@@ -121,8 +121,34 @@ type LoadTarget = {
   backendModelId: string;
 };
 
+/**
+ * What an engine says of the model a pin restored at boot is on: it holds it, it answered without it,
+ * it gave no clear answer (unreachable, or the model appeared between two reads), or it cannot say
+ * what it holds (no residency listing: vLLM, oMLX, a Lemonade without `all_models_loaded`). See
+ * {@link InferenceRouterService.readoptPinnedModels}.
+ */
+type PinnedResidency = 'resident' | 'absent' | 'unanswered' | 'unknowable';
+
+/** One pass of {@link InferenceRouterService.readoptPinnedModels} over the pins restored at boot. */
+export type RestoredPinsPass = {
+  /** Still in memory: pinned again. */
+  readopted: string[];
+  /** The engine answered without them: unpinned. */
+  dropped: string[];
+  /** Their engine did not answer: asked again later. */
+  waiting: string[];
+};
+
+/**
+ * The first wait before asking again about restored pins whose engine did not answer, doubled after each
+ * pass up to {@link RESTORED_PIN_RETRY_MAX_MS}. After a node reboot the Hub can be up before Ollama or
+ * Lemonade, and the first pass then reaches neither.
+ */
+const RESTORED_PIN_RETRY_FIRST_MS = 5_000;
+const RESTORED_PIN_RETRY_MAX_MS = 5 * 60_000;
+
 /** One parallel health sweep over every registered backend. */
-type ProbedBackends = ReadonlyArray<readonly [InferenceBackendType, InferenceBackend, BackendHealthStatus]>;
+type ProbedBackends =ReadonlyArray<readonly [InferenceBackendType, InferenceBackend, BackendHealthStatus]>;
 
 /** The window {@link InferenceRouterService.planLoad} chose for a load, and what the load then occupies. */
 type LoadPlan = {
@@ -192,9 +218,13 @@ function describeFloorShortfall(shortfall: FloorShortfall | null, wanted: number
  * Inference router — unified routing view over local backends + multi-node pool + cloud fallback.
  */
 @Injectable()
-export class InferenceRouterService implements OnApplicationBootstrap {
+export class InferenceRouterService implements OnApplicationBootstrap, OnApplicationShutdown {
   /** The tail of {@link loadTrackedModel}'s queue: every load on this node waits for the one before it. */
   private loadQueue: Promise<void> = Promise.resolve();
+
+  /** The next pass of {@link settleRestoredPins}, while an engine has not answered for a restored pin. */
+  private restoredPinsRetry: ReturnType<typeof setTimeout> | null = null;
+  private shuttingDown = false;
 
   constructor(
     readonly _logger: LoggerService,
@@ -218,38 +248,109 @@ export class InferenceRouterService implements OnApplicationBootstrap {
   ) {}
 
   /**
-   * Finds the pinned models the engines still hold, in the background: boot must not wait on an
-   * engine probe, which costs up to 5 s for one that is not up yet.
+   * Settles the pins restored at boot, in the background: boot must not wait on an engine probe, which
+   * costs up to 5 s for one that is not up yet.
    */
   onApplicationBootstrap(): void {
-    void this.readoptPinnedModels().catch((err) => {
-      this._logger.warn(`[Inference] Could not re-mark the pinned models after a restart: ${err instanceof Error ? err.message : String(err)}`);
-    });
+    void this.settleRestoredPins(RESTORED_PIN_RETRY_FIRST_MS);
+  }
+
+  onApplicationShutdown(): void {
+    this.shuttingDown = true;
+    if (this.restoredPinsRetry) clearTimeout(this.restoredPinsRetry);
+    this.restoredPinsRetry = null;
   }
 
   /**
-   * Re-marks as pinned each model the operator pinned (persisted by the registry) that an engine still
-   * holds, and returns the ones it found.
-   *
-   * A Hub restart leaves the engines as they were: Ollama keeps a pinned model at `keep_alive: -1`, so
-   * it is still in memory, but the new Hub process tracks nothing, and until it did the model was an
-   * eviction candidate for the next operator load (PIN-2 in the audit of #1679). Only what is resident
-   * is tracked here; a pinned model an engine no longer holds (the engine restarted too) keeps its pin,
-   * and is tracked pinned whenever this Hub next tracks it: a pull check, or a load through the Hub.
+   * Runs {@link readoptPinnedModels} until no restored pin waits on an engine that did not answer,
+   * asking again less often each time, up to every {@link RESTORED_PIN_RETRY_MAX_MS}. A pin is neither
+   * kept nor dropped on a probe that never reached the engine: after a node reboot the Hub is often up
+   * before its engines, and after a Hub restart alone an engine that was briefly unreachable may still
+   * hold the model.
    */
-  async readoptPinnedModels(): Promise<string[]> {
-    const readopted: string[] = [];
-    for (const catalogId of this.modelRegistry.getPinnedCatalogIds()) {
-      const tracked = this.modelRegistry.getTrackedModel(catalogId);
-      if (tracked?.state === 'pinned') continue;
+  private async settleRestoredPins(delayMs: number): Promise<void> {
+    let waiting: boolean;
+    try {
+      waiting = (await this.readoptPinnedModels()).waiting.length > 0;
+    } catch (err) {
+      this._logger.warn(`[Inference] Could not settle the pins restored after a restart: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (!waiting || this.shuttingDown) return;
+    this.restoredPinsRetry = setTimeout(() => {
+      this.restoredPinsRetry = null;
+      void this.settleRestoredPins(Math.min(delayMs * 2, RESTORED_PIN_RETRY_MAX_MS));
+    }, delayMs);
+    // A pending retry must not keep a stopping process (or a test run) alive.
+    this.restoredPinsRetry.unref?.();
+  }
+
+  /**
+   * One pass over the pins restored at boot that no engine has answered for yet
+   * (`ModelRegistryService.getUnconfirmedPins`): each is kept or dropped on what its engine says now.
+   *
+   * - **The engine holds the model:** re-marked pinned. A Hub restart alone leaves the engines as they
+   *   were, and Ollama keeps a pinned model at `keep_alive: -1`. Before pins were persisted the new Hub
+   *   process tracked nothing, and the model was an eviction candidate for the next operator load (PIN-2
+   *   in the audit of #1679).
+   * - **The engine answered without it:** unpinned, persisted pin included. A node reboot restarts the
+   *   engine with the Hub, and the model is gone, as is the `keep_alive: -1` that held it. Kept, the pin
+   *   came back on whatever loaded the model next, an app's request included, although the Hub UI shows
+   *   a pin only on a model in memory and so could neither show nor remove it. It also kept refusing
+   *   unmeasured operator trials ({@link mayTryUnmeasured}). Before pins were persisted a restart
+   *   ended the pin, which is the outcome this keeps.
+   * - **The engine did not answer:** left as it is, pin honoured, for {@link settleRestoredPins} to ask
+   *   again. An engine that cannot list what it holds is not asked again: it never will.
+   *
+   * A pin settled while its probe was out (pinned again, unpinned, or loaded by this Hub) is left as that
+   * made it.
+   */
+  async readoptPinnedModels(): Promise<RestoredPinsPass> {
+    const pass: RestoredPinsPass = { readopted: [], dropped: [], waiting: [] };
+    for (const catalogId of this.modelRegistry.getUnconfirmedPins()) {
+      // `restorePins` keeps only ids with a catalog row, so a target is always found.
       const target = this.loadTarget(catalogId);
       if (!target) continue;
-      if (await this.adoptIfResident(catalogId, target)) readopted.push(catalogId);
+      const residency = await this.pinnedResidency(target);
+      if (!this.modelRegistry.isPinUnconfirmed(catalogId)) continue;
+      if (residency === 'resident') {
+        this.recordResident(catalogId);
+        pass.readopted.push(catalogId);
+      } else if (residency === 'absent') {
+        this.modelRegistry.unpinModel(catalogId);
+        pass.dropped.push(catalogId);
+      } else if (residency === 'unanswered') {
+        pass.waiting.push(catalogId);
+      }
     }
-    if (readopted.length > 0) {
-      this._logger.info(`[Inference] Still resident after the restart, and pinned again: ${readopted.join(', ')}`);
+    if (pass.readopted.length > 0) {
+      this._logger.info(`[Inference] Still resident after the restart, and pinned again: ${pass.readopted.join(', ')}`);
     }
-    return readopted;
+    if (pass.dropped.length > 0) {
+      this._logger.info(`[Inference] No longer in memory after the restart, so no longer pinned: ${pass.dropped.join(', ')}`);
+    }
+    return pass;
+  }
+
+  /**
+   * What `target`'s engine says of it, for {@link readoptPinnedModels}. `isModelLoaded` reads an engine
+   * it could not reach as not holding the model, so `absent` needs a second read that shows the engine
+   * answered: its residency listing, measured. A listing that does show the model (loaded between the
+   * two reads) is not taken as either answer; the next pass asks again.
+   */
+  private async pinnedResidency(target: LoadTarget): Promise<PinnedResidency> {
+    let backend: InferenceBackend;
+    try {
+      backend = this.backends.get(target.backendType);
+    } catch {
+      return 'unknowable';
+    }
+    if (await backend.isModelLoaded(target.backendModelId).catch(() => false)) return 'resident';
+    if (!backend.listResident) return 'unknowable';
+    const residency = await backend.listResident().catch(() => null);
+    if (!residency || residency.source === 'unreachable') return 'unanswered';
+    if ((residency.source !== 'measured' && residency.source !== 'implicit') || !residency.models) return 'unknowable';
+    return residency.models.some((model) => sameEngineModelId(target.backendType, model.id, target.backendModelId)) ? 'unanswered' : 'absent';
   }
 
   /**
@@ -853,9 +954,36 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     if (!resident) {
       return false;
     }
+    this.recordResident(catalogId);
+    return true;
+  }
+
+  /**
+   * Records `catalogId` as in memory, as the engine just said it is. A pin restored at boot on it is
+   * settled as kept: this Hub process did not load the model (its own load ends such a pin first, see
+   * {@link dropStaleRestoredPin}), so the engine held it from before the restart.
+   */
+  private recordResident(catalogId: string): void {
     if (this.modelRegistry.getTrackedModel(catalogId)) this.modelRegistry.updateModelState(catalogId, 'loaded');
     else this.modelRegistry.trackModel(catalogId, 'loaded');
-    return true;
+    this.modelRegistry.confirmPin(catalogId);
+  }
+
+  /**
+   * Ends a pin restored at boot that no engine has answered for, once this Hub has itself loaded the
+   * model. The load path asks the engine first and adopts a model it holds, so a model the Hub had to
+   * load was not in memory: the pin was on a model the engine dropped when it restarted (a node
+   * reboot). Kept, it made this load, an app's request included, record the model pinned again,
+   * although the Hub UI never showed that pin and could not have removed it. This is the same outcome
+   * {@link readoptPinnedModels} reaches for a pin it asks about first; checked here because a load can
+   * run before it does, while the engine is only just up. Checked after the load rather than before,
+   * so a load that fails with the engine unreachable leaves the pin for the engine to answer for. An
+   * operator's pin of the model (`pinTrackedModel`) pins it again after this.
+   */
+  private dropStaleRestoredPin(catalogId: string): void {
+    if (!this.modelRegistry.isPinUnconfirmed(catalogId)) return;
+    this.modelRegistry.unpinModel(catalogId);
+    this._logger.info(`[Inference] ${catalogId} was pinned before the restart but was no longer in memory; loaded unpinned`);
   }
 
   private async loadTrackedModelLocked(catalogId: string, options: LoadOptions): Promise<LoadOutcome> {
@@ -934,6 +1062,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
         catalogId,
         contextLength === null ? undefined : { contextLength, ...(plan.provisionalWindow ? { provisionalWindow: true } : {}) },
       );
+      this.dropStaleRestoredPin(catalogId);
       return { loaded: true };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1026,6 +1155,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       // the model behind, which the next plan must see too.
       this.memoryManager.invalidateObservation();
     }
+    this.dropStaleRestoredPin(catalogId);
     const profile = await this.hardwareInspector.getProfile();
     const measured = await this.memoryManager.footprintSighting(profile, target.backend, target.backendModelId).catch(() => null);
     if (measured) {
@@ -1268,17 +1398,21 @@ export class InferenceRouterService implements OnApplicationBootstrap {
    *   the whole model onto the card.
    * - A discrete card only: on unified memory the ceiling is what is free now, not an empty machine, and
    *   a spill would come out of the memory the OS itself runs in.
-   * - Not while the Hub holds a pin on that engine: Ollama makes room among its own runners and knows
-   *   nothing of the Hub's pins, so a guess that was right could unload a model the operator pinned.
-   *   Every persisted pin counts, tracked or not: after a Hub restart the engine can still hold a
-   *   pinned model this process has not re-marked yet (see {@link readoptPinnedModels}).
+   * - Not while a model the operator pinned may be in memory on that engine: Ollama makes room among
+   *   its own runners and knows nothing of the Hub's pins, so a guess that was right could unload it.
+   *   That is a pinned model tracked `pinned` (in memory), or a pin restored at boot that the engine
+   *   has not answered for yet: after a Hub restart the engine can still hold it, untracked (see
+   *   {@link readoptPinnedModels}). A pin on a model out of memory gives Ollama nothing to unload, and
+   *   counting one refused the trial for as long as the pin was on file.
    */
   private mayTryUnmeasured(target: { backend: InferenceBackendType }, profile: HardwareProfile): boolean {
     if (target.backend !== 'ollama' || modelPoolFor(profile) !== 'vram') return false;
     const registry = this.modelRegistry;
-    return !registry
-      .getPinnedCatalogIds()
-      .some((catalogId) => (registry.getTrackedModel(catalogId) ?? registry.getCuratedModel(catalogId))?.backend === target.backend);
+    return !registry.getPinnedCatalogIds().some((catalogId) => {
+      const tracked = registry.getTrackedModel(catalogId);
+      const mayBeInMemory = tracked?.state === 'pinned' || registry.isPinUnconfirmed(catalogId);
+      return mayBeInMemory && (tracked ?? registry.getCuratedModel(catalogId))?.backend === target.backend;
+    });
   }
 
   /**
