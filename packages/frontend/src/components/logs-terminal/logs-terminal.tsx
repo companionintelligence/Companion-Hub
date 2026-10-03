@@ -5,9 +5,12 @@ import { useResolvedTheme } from '@/lib/use-resolved-theme';
 import { cn } from '@/lib/utils';
 import { useLocalStorage } from '@uidotdev/usehooks';
 import DOMPurify from 'dompurify';
-import { type ReactNode, useEffect, useMemo, useRef } from 'react';
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import './logs-terminal.css';
+
+/** Wait until typing pauses before the buffer and the log stream adopt a new length. */
+export const MAX_LINES_SETTLE_MS = 400;
 
 type Props = {
   logs: { id: number; text: string }[];
@@ -32,6 +35,10 @@ export const LogsTerminal = (props: Props) => {
     [logs, resolvedTheme],
   );
 
+  const [draft, setDraft] = useState(String(maxLines));
+  const editing = useRef(false);
+  const settleTimer = useRef<number | null>(null);
+
   const lastLogId = logs.length > 0 ? logs.at(-1)?.id : null;
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: necessary to update the scroll when a new log is added
@@ -41,14 +48,41 @@ export const LogsTerminal = (props: Props) => {
     }
   }, [lastLogId, follow]);
 
-  const updateMaxLines = (lines: number) => {
-    if (!Number.isFinite(lines)) {
+  useEffect(() => {
+    if (!editing.current) setDraft(String(maxLines));
+  }, [maxLines]);
+
+  useEffect(
+    () => () => {
+      if (settleTimer.current !== null) window.clearTimeout(settleTimer.current);
+    },
+    [],
+  );
+
+  const commitMaxLines = (raw: string) => {
+    if (settleTimer.current !== null) {
+      window.clearTimeout(settleTimer.current);
+      settleTimer.current = null;
+    }
+    editing.current = false;
+    const parsed = Number(raw);
+    if (raw.trim() === '' || !Number.isFinite(parsed)) {
+      setDraft(String(maxLines));
       return;
     }
 
     // Whole lines only: a typed "2.5" would otherwise be stored and later used as a slice offset.
-    const linesToKeep = Math.max(1, Math.trunc(lines));
+    const linesToKeep = Math.max(1, Math.trunc(parsed));
+    setDraft(String(linesToKeep));
     onMaxLinesChange(linesToKeep);
+  };
+
+  const scheduleMaxLines = (raw: string) => {
+    if (settleTimer.current !== null) window.clearTimeout(settleTimer.current);
+    settleTimer.current = window.setTimeout(() => {
+      settleTimer.current = null;
+      commitMaxLines(raw);
+    }, MAX_LINES_SETTLE_MS);
   };
 
   return (
@@ -67,8 +101,21 @@ export const LogsTerminal = (props: Props) => {
               inputMode="numeric"
               min={1}
               step={1}
-              value={maxLines}
-              onChange={(e) => updateMaxLines(e.currentTarget.valueAsNumber)}
+              value={draft}
+              onChange={(e) => {
+                const raw = e.currentTarget.value;
+                editing.current = true;
+                setDraft(raw);
+                if (raw.trim() === '' || !Number.isFinite(Number(raw))) {
+                  if (settleTimer.current !== null) {
+                    window.clearTimeout(settleTimer.current);
+                    settleTimer.current = null;
+                  }
+                  return;
+                }
+                scheduleMaxLines(raw);
+              }}
+              onBlur={(e) => commitMaxLines(e.currentTarget.value)}
             />
           </div>
         </div>

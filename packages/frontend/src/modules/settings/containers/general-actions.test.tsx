@@ -14,7 +14,8 @@ import {
   type UpdateInfo,
 } from '@/lib/update-service';
 import { factoryReset } from '@/api-client/sdk.gen';
-import { sdkOk } from '@/tests/sdk-mock-helpers';
+import { resolveStackUpdate } from '@/lib/desktop-stack-session';
+import { sdkFail, sdkOk } from '@/tests/sdk-mock-helpers';
 import { toast } from 'sonner';
 import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import { GeneralActionsContainer } from './general-actions';
@@ -462,6 +463,24 @@ describe('GeneralActionsContainer', () => {
     expect(toggle).toHaveClass('bg-primary');
   });
 
+  it('keeps the Auto-update stack switch where it was when the save fails', async () => {
+    getAutoUpdates.mockResolvedValue(sdkOk({ enabled: true }));
+    setAutoUpdates.mockResolvedValue(sdkFail(500));
+
+    render(<GeneralActionsContainer />);
+
+    const toggle = await screen.findByRole('switch', { name: 'Auto-update stack' });
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
+
+    await userEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(mockToastError).toHaveBeenCalledWith('Could not save auto-update. The switch is unchanged.');
+    });
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    expect(setAutoUpdates).toHaveBeenCalledTimes(1);
+  });
+
   it('tells a browser where to update the desktop app when the Hub cannot reach it', async () => {
     mockFetchHostListenerStatus.mockResolvedValue(false);
 
@@ -746,6 +765,25 @@ describe('GeneralActionsContainer', () => {
     expect(screen.queryByText('Release 0.2.46')).not.toBeInTheDocument();
   });
 
+  it('brings the update controls back after a finished stack update is dismissed', async () => {
+    render(<GeneralActionsContainer />);
+
+    expect(await screen.findByTestId('hub-check-updates-btn')).toBeInTheDocument();
+
+    act(() => {
+      resolveStackUpdate({ state: 'completed', version: '4.7.0' });
+    });
+
+    expect(await screen.findByTestId('hub-update-status')).toHaveTextContent('Updated. The Hub is running 4.7.0.');
+    expect(screen.queryByTestId('hub-check-updates-btn')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('hub-update-stop-waiting')).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('hub-update-dismiss'));
+
+    expect(screen.queryByTestId('hub-update-status')).not.toBeInTheDocument();
+    expect(screen.getByTestId('hub-check-updates-btn')).toBeInTheDocument();
+  });
+
   it('asks for this device name before factory reset', async () => {
     mockUseAppContext.mockReturnValue({
       version: { current: '4.7.0', latest: '4.7.0', body: '', releases: [] },
@@ -774,5 +812,51 @@ describe('GeneralActionsContainer', () => {
     await waitFor(() => {
       expect(mockFactoryReset).toHaveBeenCalledWith({ body: { confirmation: 'core' } });
     });
+  });
+
+  it('says a failed factory reset may have stopped halfway', async () => {
+    mockUseAppContext.mockReturnValue({
+      version: { current: '4.7.0', latest: '4.7.0', body: '', releases: [] },
+      refreshAppContext: vi.fn(),
+      userSettings: { ciHubDeviceSlug: 'core' },
+    } as unknown as ReturnType<typeof useAppContext>);
+    mockFactoryReset.mockResolvedValue({ error: new Error('uninstall failed'), response: new Response(null, { status: 500 }) } as Awaited<
+      ReturnType<typeof factoryReset>
+    >);
+
+    render(<GeneralActionsContainer />);
+
+    await userEvent.click(await screen.findByTestId('factory-reset-btn'));
+    await userEvent.type(screen.getByTestId('factory-reset-confirmation-input'), 'core');
+    await userEvent.click(screen.getByTestId('factory-reset-confirm-btn'));
+
+    await waitFor(() => {
+      expect(mockToastError).toHaveBeenCalledWith(
+        'Factory reset may have stopped halfway. Running it again is safe. If the Hub is unreachable, try `cihub reset --yes` from the CLI.',
+      );
+    });
+    expect(screen.getByTestId('factory-reset-confirmation-input')).toBeInTheDocument();
+  });
+
+  it('requires the device name again after the factory-reset dialog closes', async () => {
+    mockUseAppContext.mockReturnValue({
+      version: { current: '4.7.0', latest: '4.7.0', body: '', releases: [] },
+      refreshAppContext: vi.fn(),
+      userSettings: { ciHubDeviceSlug: 'core' },
+    } as unknown as ReturnType<typeof useAppContext>);
+
+    render(<GeneralActionsContainer />);
+
+    await userEvent.click(await screen.findByTestId('factory-reset-btn'));
+    await userEvent.type(screen.getByTestId('factory-reset-confirmation-input'), 'core');
+    expect(screen.getByTestId('factory-reset-confirm-btn')).toBeEnabled();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByTestId('factory-reset-confirmation-input')).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('factory-reset-btn'));
+    const input = screen.getByTestId('factory-reset-confirmation-input');
+    expect(input).toHaveValue('');
+    expect(screen.getByTestId('factory-reset-confirm-btn')).toBeDisabled();
   });
 });
