@@ -1,4 +1,4 @@
-import { render, screen, userEvent, waitFor } from '@/tests/test-utils';
+import { act, render, screen, userEvent, waitFor } from '@/tests/test-utils';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LogsContainer } from './logs';
@@ -33,7 +33,11 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('@/components/logs-terminal/logs-terminal', () => ({
-  LogsTerminal: ({ toolbarActions }: { toolbarActions?: ReactNode }) => <div data-testid="logs-terminal-toolbar">{toolbarActions}</div>,
+  LogsTerminal: ({ toolbarActions }: { toolbarActions?: ReactNode }) => (
+    <div data-testid="logs-terminal">
+      <div data-testid="logs-terminal-toolbar">{toolbarActions}</div>
+    </div>
+  ),
 }));
 
 describe('LogsContainer', () => {
@@ -72,5 +76,54 @@ describe('LogsContainer', () => {
       expect(mockToastError).toHaveBeenCalledWith('Hub log download failed with status 500');
     });
     expect(mockDownloadResponseAsFile).not.toHaveBeenCalled();
+  });
+
+  it('says the log stream is connecting until it opens', () => {
+    render(<LogsContainer />);
+
+    expect(screen.getByTestId('logs-stream-status')).toHaveTextContent('SETTINGS_LOGS_CONNECTING');
+    expect(screen.queryByTestId('logs-terminal')).not.toBeInTheDocument();
+  });
+
+  it('says the log stream is empty after it opens with no lines', () => {
+    render(<LogsContainer />);
+
+    act(() => {
+      mockUseSSE.mock.calls[0]?.[0].onOpen();
+    });
+
+    expect(screen.getByTestId('logs-stream-status')).toHaveTextContent('SETTINGS_LOGS_EMPTY');
+    expect(screen.queryByTestId('logs-terminal')).not.toBeInTheDocument();
+  });
+
+  it('shows the terminal once a log line arrives', async () => {
+    render(<LogsContainer />);
+
+    act(() => {
+      const stream = mockUseSSE.mock.calls[0]?.[0];
+      stream.onOpen();
+      stream.onEvent({ event: 'newLogs', lines: ['hub ready'] });
+    });
+
+    expect(await screen.findByTestId('logs-terminal')).toBeInTheDocument();
+    expect(screen.queryByTestId('logs-stream-status')).not.toBeInTheDocument();
+  });
+
+  it('says the log stream failed and retries it', async () => {
+    render(<LogsContainer />);
+
+    act(() => {
+      mockUseSSE.mock.calls[0]?.[0].onError();
+    });
+
+    expect(screen.getByTestId('logs-stream-error')).toHaveTextContent('SETTINGS_LOGS_STREAM_ERROR');
+    expect(screen.queryByTestId('logs-terminal')).not.toBeInTheDocument();
+
+    const callsBeforeRetry = mockUseSSE.mock.calls.length;
+    await userEvent.click(screen.getByRole('button', { name: 'COMMON_RETRY' }));
+
+    expect(screen.getByTestId('logs-stream-status')).toHaveTextContent('SETTINGS_LOGS_CONNECTING');
+    // `useSSE` runs on each render; Retry remounts the stream, so it runs again.
+    expect(mockUseSSE.mock.calls.length).toBeGreaterThan(callsBeforeRetry);
   });
 });
