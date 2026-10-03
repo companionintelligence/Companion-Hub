@@ -68,6 +68,10 @@ services:
     # Set DOCKER_PLATFORM=linux/arm64 for Mac development (native ARM64 build, faster)
     # Set DOCKER_PLATFORM=linux/amd64 for Linux production (AMD64 build, slower on Mac due to emulation)
     platform: ${DOCKER_PLATFORM:-linux/amd64}
+    # PID 1 is `node`, which has no SIGTERM handler, and the kernel gives PID 1 no default signal
+    # action: `docker restart ci-hub` waited out the 10 s grace and SIGKILLed (exit 137), cutting
+    # streams with no error frame. Docker's init forwards the signal so node exits at once (143).
+    init: true
     # SECURITY: the Hub container does NOT run privileged. It manages app
     # containers by talking to the host Docker daemon over the mounted
     # /var/run/docker.sock (see docker.service.ts — it spawns `docker compose`
