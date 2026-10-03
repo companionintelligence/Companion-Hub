@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import { toast } from 'sonner';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { McpSettingsContainer } from '../mcp-settings';
+import { McpSettingsContainer, mcpAppStorePath } from '../mcp-settings';
 
 // ENH-MCP-4: exercises the MCP settings screen against a mocked /api/mcp-admin surface.
 // Key management moved to the hub-wide Settings → Security card (see api-keys.test.tsx);
@@ -137,6 +137,30 @@ describe('McpSettingsContainer', () => {
     // Tools still render under their group.
     expect(screen.getByText('hub_list_installed_apps')).toBeTruthy();
     expect(screen.getByText('hub_uninstall_app')).toBeTruthy();
+  });
+
+  it('links an installed MCP app to its store page', async () => {
+    mockApiFetch.mockImplementation((url: string) => {
+      if (url === '/api/apps/installed') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            installed: [{ app: { status: 'running' }, info: { urn: 'openclaw:ci-store', name: 'OpenClaw', mcp: {} } }],
+          }),
+        });
+      }
+      if (String(url).includes('/mcp/status')) {
+        return Promise.resolve({ ok: true, json: async () => ({ connected: true, toolCount: 2, containerStatus: 'running' }) });
+      }
+      return mockGet(url);
+    });
+
+    renderContainer();
+
+    const link = await screen.findByRole('link', { name: 'OpenClaw' });
+    expect(link.getAttribute('href')).toBe('/store/ci-store/openclaw');
+    expect(mcpAppStorePath('openclaw:ci-store')).toBe('/store/ci-store/openclaw');
+    expect(mcpAppStorePath('not-a-urn')).toBeNull();
   });
 
   it('links to hub-wide key management on the Security tab instead of listing keys', async () => {

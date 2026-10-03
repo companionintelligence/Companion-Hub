@@ -61,6 +61,13 @@ interface InstalledAppsResponse {
 
 type ToolCallResponse = { ok: true; result: unknown } | { ok: false; error: string };
 
+/** App URNs are `appId:storeId`. The app page is `/store/:storeId/:appId`. */
+export function mcpAppStorePath(urn: string): string | null {
+  const [appId, storeId] = urn.split(':');
+  if (!appId || !storeId) return null;
+  return `/store/${encodeURIComponent(storeId)}/${encodeURIComponent(appId)}`;
+}
+
 export const McpSettingsContainer = () => {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
@@ -286,20 +293,31 @@ export const McpSettingsContainer = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {installedMcpApps.map((entry) => (
-                    <tr key={entry.urn} className="border-b border-border/40 last:border-0">
-                      <td className="py-2 pr-4">
-                        <Link to={`/app-store/${entry.urn.replace(':', '/')}`} className="text-primary underline-offset-2 hover:underline">
-                          {entry.name}
-                        </Link>
-                      </td>
-                      <td className="py-2 pr-4 capitalize">{entry.status}</td>
-                      <td className="py-2 pr-4">
-                        {entry.bridge?.connected ? 'Connected' : entry.bridge?.lastError ? 'Needs attention' : (entry.bridge?.containerStatus ?? '—')}
-                      </td>
-                      <td className="py-2">{entry.bridge?.toolCount ?? '—'}</td>
-                    </tr>
-                  ))}
+                  {installedMcpApps.map((entry) => {
+                    const appPath = mcpAppStorePath(entry.urn);
+                    return (
+                      <tr key={entry.urn} className="border-b border-border/40 last:border-0">
+                        <td className="py-2 pr-4">
+                          {appPath ? (
+                            <Link to={appPath} className="text-primary underline-offset-2 hover:underline">
+                              {entry.name}
+                            </Link>
+                          ) : (
+                            entry.name
+                          )}
+                        </td>
+                        <td className="py-2 pr-4 capitalize">{entry.status}</td>
+                        <td className="py-2 pr-4">
+                          {entry.bridge?.connected
+                            ? 'Connected'
+                            : entry.bridge?.lastError
+                              ? 'Needs attention'
+                              : (entry.bridge?.containerStatus ?? '—')}
+                        </td>
+                        <td className="py-2">{entry.bridge?.toolCount ?? '—'}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
