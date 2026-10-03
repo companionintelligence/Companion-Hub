@@ -85,41 +85,37 @@ export const InstallDialog: React.FC<IProps> = ({ info, isOpen, onClose, boundCu
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-2xl max-h-[calc(100dvh-2rem)] overflow-y-auto">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden sm:max-w-2xl">
+        <DialogHeader className="shrink-0">
           <DialogTitle>{t('APP_INSTALL_FORM_TITLE', { name: info.name })}</DialogTitle>
         </DialogHeader>
-        {info.force_pull && (
-          <Alert variant="warning">
-            <AlertIcon>
-              <AlertCircle strokeWidth={2} />
-            </AlertIcon>
-            <div>
-              <AlertHeading>{t('COMMON_WARNING')}</AlertHeading>
-              <AlertDescription>
-                <Trans i18nKey={'APP_INSTALL_FORM_FORCE_PULL_WARNING'} values={{ tag: info.version }} components={{ code: <code /> }} />
-              </AlertDescription>
-            </div>
-          </Alert>
-        )}
-        {info.mcp ? <McpSetupPanel info={info} /> : null}
-        <InstallForm
-          onSubmit={(data) => installMutation.mutate({ path: { urn: info.urn }, body: normalizeFormValues(data) })}
-          formFields={info.form_fields}
-          info={info}
-          initialValues={initialValues}
-          formId={formId}
-          editingAppUrn={info.urn}
-          onValidityChange={handleValidityChange}
-        />
-        <DialogFooter className="flex-col items-stretch gap-2 sm:flex-col">
-          {!isFormValid && (
-            <p className="text-sm text-muted-foreground text-left">
-              {t('APP_INSTALL_FORM_COMPLETE_REQUIRED', {
-                defaultValue: 'Fill every required field before installing. Fields with defaults can stay as-is.',
-              })}
-            </p>
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto">
+          {info.force_pull && (
+            <Alert variant="warning">
+              <AlertIcon>
+                <AlertCircle strokeWidth={2} />
+              </AlertIcon>
+              <div>
+                <AlertHeading>{t('COMMON_WARNING')}</AlertHeading>
+                <AlertDescription>
+                  <Trans i18nKey={'APP_INSTALL_FORM_FORCE_PULL_WARNING'} values={{ tag: info.version }} components={{ code: <code /> }} />
+                </AlertDescription>
+              </div>
+            </Alert>
           )}
+          {info.mcp ? <McpSetupPanel info={info} /> : null}
+          <InstallForm
+            onSubmit={(data) => installMutation.mutate({ path: { urn: info.urn }, body: normalizeFormValues(data) })}
+            formFields={info.form_fields}
+            info={info}
+            initialValues={initialValues}
+            formId={formId}
+            editingAppUrn={info.urn}
+            onValidityChange={handleValidityChange}
+          />
+        </div>
+        <DialogFooter className="shrink-0 flex-col items-stretch gap-2 sm:flex-col">
+          {!isFormValid && <p className="text-sm text-muted-foreground text-left">{t('APP_INSTALL_FORM_COMPLETE_REQUIRED')}</p>}
           <InstallFormButtons loading={installMutation.isPending} formId={formId} disabled={!isFormValid} />
         </DialogFooter>
       </DialogContent>

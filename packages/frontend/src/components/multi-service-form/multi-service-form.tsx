@@ -172,7 +172,14 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
             <div className="w-full shrink-0 border-b border-border p-0 md:w-1/6 md:border-r md:border-b-0">
               <div className="flex items-center justify-between p-3">
                 <div className="font-semibold">{t('MULTI_SERVICE_SERVICES')}</div>
-                <Plus className="text-primary cursor-pointer" size={20} onClick={() => saveBeforeAction(addService)()} />
+                <button
+                  type="button"
+                  className="rounded-sm text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label={t('MULTI_SERVICE_ADD_SERVICE')}
+                  onClick={() => saveBeforeAction(addService)()}
+                >
+                  <Plus aria-hidden size={20} />
+                </button>
               </div>
               <div className="w-full border-t border-border">
                 <div className="flex flex-col">

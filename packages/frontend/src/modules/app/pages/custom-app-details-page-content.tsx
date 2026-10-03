@@ -3,6 +3,7 @@ import { AppDetailsTabs } from '../containers/app-details-tabs/app-details-tabs'
 import { AppActions } from '../containers/app-actions/app-actions';
 import { AppStatus } from '../components/app-status/app-status';
 import { CustomAppLogo } from '@/components/custom-app-logo/custom-app-logo';
+import { VersionChip } from '@/modules/app/components/version-chip';
 import { Card, CardHeader } from '@/components/ui/Card';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { uploadAppImageMutation } from '@/api-client/@tanstack/react-query.gen';
@@ -89,7 +90,7 @@ export const CustomAppDetailsPageContent = ({ appId, info, app, metadata }: Prop
           <div className="w-full flex flex-col md:ml-3 items-center md:items-start">
             <div>
               <span className="mt-1 me-1">{t('COMMON_VERSION')}: </span>
-              <span className="badge bg-muted mt-2 text-white">{info?.version}</span>
+              <VersionChip className="mt-2">{info?.version}</VersionChip>
             </div>
             <span className="mt-1 text-muted-foreground text-center md:text-start mb-2">{info?.short_desc}</span>
             <div data-testid="app-header-actions-row" className="flex w-full flex-col gap-3 md:flex-row md:items-start md:justify-between">
