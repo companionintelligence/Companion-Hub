@@ -1825,6 +1825,8 @@
   "DASHBOARD_TRENDS_AXIS": "scale to {{max}}",
   "DASHBOARD_TRENDS_WAITING": "{{total}} of 2 samples needed for a trend — the Hub samples every 60 seconds.",
   "DASHBOARD_TRENDS_NO_WORKLOADS": "No workloads running.",
+  "DASHBOARD_TRENDS_MORE_one": "1 more workload, not charted",
+  "DASHBOARD_TRENDS_MORE_other": "{{count}} more workloads, not charted",
   "DASHBOARD_TRENDS_GPU_ABSENT": "VRAM is not read on this node, so rows show gaps, not zeros. Install the probe: cihub fleet update --gpu-probe --execute.",
   "DASHBOARD_TRENDS_GPU_ABSENT_APPLE": "Apple GPUs expose no per-process memory to any tool, so rows show gaps, not zeros. There is no probe to install.",
   "DASHBOARD_TRENDS_GPU_UNATTRIBUTED": "Held outside any workload",

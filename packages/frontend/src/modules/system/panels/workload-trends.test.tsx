@@ -128,6 +128,72 @@ describe('WorkloadTrend', () => {
     expect(container.querySelector('[class*="min-w-["]')).toBeNull();
   });
 
+  it('charts the five busiest workloads and lists the rest instead of dropping them', () => {
+    // Lowest first on purpose: slicing the input, rather than the ranking, would chart Golf.
+    const present = [
+      { appUrn: 'urn:golf', appName: 'Golf', cpuPercent: 1 },
+      { appUrn: 'urn:foxtrot', appName: 'Foxtrot', cpuPercent: 5 },
+      { appUrn: 'urn:echo', appName: 'Echo', cpuPercent: 10 },
+      { appUrn: 'urn:delta', appName: 'Delta', cpuPercent: 20 },
+      { appUrn: 'urn:charlie', appName: 'Charlie', cpuPercent: 30 },
+      { appUrn: 'urn:bravo', appName: 'Bravo', cpuPercent: 40 },
+      { appUrn: 'urn:alpha', appName: 'Alpha', cpuPercent: 50 },
+    ];
+    const history = [sample(20, present), sample(21, present)];
+    const apps = present.map((entry) => app(entry.appUrn, entry.appName, entry.cpuPercent));
+
+    const { container } = render(<WorkloadTrend metric="cpu" history={history} apps={apps} state={READY} />);
+
+    expect([...container.querySelectorAll('svg[aria-label]')].map((svg) => svg.getAttribute('aria-label'))).toEqual([
+      'Alpha — CPU by workload',
+      'Bravo — CPU by workload',
+      'Charlie — CPU by workload',
+      'Delta — CPU by workload',
+      'Echo — CPU by workload',
+    ]);
+
+    const omitted = container.querySelector('[data-testid="workload-trend-omitted"]');
+    expect(omitted?.tagName).toBe('DETAILS');
+    expect(omitted?.querySelector('summary')?.textContent).toBe('2 more workloads, not charted');
+    const lines = [...(omitted?.querySelectorAll('li') ?? [])].map((li) => li.textContent);
+    expect(lines).toEqual(['Foxtrot5.0%peak 5.0%', 'Golf1.0%peak 1.0%']);
+    expect(container.querySelector('svg[aria-label="Foxtrot — CPU by workload"]')).toBeNull();
+    expect(container.querySelector('svg[aria-label="Golf — CPU by workload"]')).toBeNull();
+  });
+
+  it('names a single omitted workload in the singular, and says nothing when every workload is charted', () => {
+    const six = [
+      { appUrn: 'urn:foxtrot', appName: 'Foxtrot', cpuPercent: 5 },
+      { appUrn: 'urn:echo', appName: 'Echo', cpuPercent: 10 },
+      { appUrn: 'urn:delta', appName: 'Delta', cpuPercent: 20 },
+      { appUrn: 'urn:charlie', appName: 'Charlie', cpuPercent: 30 },
+      { appUrn: 'urn:bravo', appName: 'Bravo', cpuPercent: 40 },
+      { appUrn: 'urn:alpha', appName: 'Alpha', cpuPercent: 50 },
+    ];
+    const oneLeftOut = render(
+      <WorkloadTrend
+        metric="cpu"
+        history={[sample(20, six), sample(21, six)]}
+        apps={six.map((entry) => app(entry.appUrn, entry.appName, entry.cpuPercent))}
+        state={READY}
+      />,
+    );
+    expect(oneLeftOut.container.querySelector('[data-testid="workload-trend-omitted"] summary')?.textContent).toBe('1 more workload, not charted');
+    expect(oneLeftOut.container.querySelector('[data-testid="workload-trend-omitted-list"]')?.textContent).toContain('Foxtrot');
+
+    const five = six.slice(1);
+    const allCharted = render(
+      <WorkloadTrend
+        metric="cpu"
+        history={[sample(20, five), sample(21, five)]}
+        apps={five.map((entry) => app(entry.appUrn, entry.appName, entry.cpuPercent))}
+        state={READY}
+      />,
+    );
+    expect(allCharted.container.querySelector('[data-testid="workload-trend-omitted"]')).toBeNull();
+    expect(allCharted.container.querySelectorAll('svg[aria-label]')).toHaveLength(5);
+  });
+
   it('says it is waiting rather than drawing a trend from a single sample', () => {
     const { container } = render(
       <WorkloadTrend metric="cpu" history={[sample(20, [OLD])]} apps={[app(OLD.appUrn, OLD.appName, 20)]} state={READY} />,

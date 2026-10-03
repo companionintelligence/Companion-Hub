@@ -69,9 +69,10 @@ import { useTranslation } from 'react-i18next';
 /*
  * Series colours come from the canon's `--chart-*` ramp, not from hardcoded hex — five slots with
  * separate light and dark values, so the traces follow the theme instead of drawing at 1.9:1
- * against a dark card. Five, not eight: the ramp is the palette that exists, and a sixth series
- * repeating slot 1 is honest, whereas inventing three more hues is how a healthy container ended
- * up drawn in this app's failure red.
+ * against a dark card. Five, not eight: the ramp is the palette that exists. A sixth trace would
+ * repeat slot 1, and inventing more hues is how a healthy container ended up drawn in this app's
+ * failure red. Workloads past the five busiest stay in the ranking and are listed under the
+ * charts, with how many were left out. They are not drawn.
  */
 const CHART_SLOTS = ['--chart-1', '--chart-2', '--chart-3', '--chart-4', '--chart-5'] as const;
 
@@ -201,7 +202,7 @@ export function WorkloadTrend({
   // as a measurement that happened to land on the ceiling rather than as the ceiling itself.
   const formatAxis = (value: number) => (metric === 'cpu' ? `${Math.round(value)}%` : humanBytes(value));
 
-  const rows = useMemo(() => {
+  const { charted, omitted } = useMemo(() => {
     const labels = new Map(apps.map((app) => [app.appUrn, app.appName]));
 
     const metricValue = (point: { cpuPercent: number; memoryUsageBytes: number; gpuVramMb: number | null }) =>
@@ -228,10 +229,9 @@ export function WorkloadTrend({
           ]
         : apps.map((app): [string, number] => [app.appUrn, metricValue(app)]);
 
-    return ranked
+    const rankedRows = ranked
       .sort((a, b) => b[1] - a[1])
-      .slice(0, CHART_SLOTS.length)
-      .map(([appUrn], index) => {
+      .map(([appUrn]) => {
         // A gap slot is `null` for every row: the break is in the Hub's sampling, not the workload.
         const series = timeline.slots.map((slot) => (slot.kind === 'sample' ? valueForApp(slot.sample, appUrn, metric) : null));
         const observed = series.filter((value): value is number => value !== null && Number.isFinite(value));
@@ -239,7 +239,6 @@ export function WorkloadTrend({
         return {
           appUrn,
           appName: labels.get(appUrn) ?? appUrn,
-          color: `var(${CHART_SLOTS[index % CHART_SLOTS.length]})`,
           series,
           // The LAST observation, not the last array slot: a workload missing from the newest
           // sample has a current value of "unknown", which the caller renders as a dash.
@@ -247,6 +246,14 @@ export function WorkloadTrend({
           peak: observed.length > 0 ? Math.max(...observed) : null,
         };
       });
+
+    return {
+      charted: rankedRows.slice(0, CHART_SLOTS.length).map((row, index) => ({
+        ...row,
+        color: `var(${CHART_SLOTS[index]})`,
+      })),
+      omitted: rankedRows.slice(CHART_SLOTS.length),
+    };
   }, [apps, samples, timeline, metric]);
 
   /*
@@ -255,12 +262,12 @@ export function WorkloadTrend({
    * draw a workload at 3% and a workload at 300% as the same shape.
    */
   const axisMax = useMemo(() => {
-    const values = rows.flatMap((row) => row.series.filter((value): value is number => value !== null && Number.isFinite(value)));
+    const values = charted.flatMap((row) => row.series.filter((value): value is number => value !== null && Number.isFinite(value)));
 
     if (metric === 'cpu') return computeCpuChartScale(values).max;
     // Bytes in both cases; the VRAM scale differs only in where it floors an empty tile.
     return metric === 'gpu' ? computeVramChartScale(values).max : computeMemoryChartScale(values).max;
-  }, [metric, rows]);
+  }, [metric, charted]);
 
   /*
    * Which source answered is in the caption's hint, not in the line: it matters when the chart goes
@@ -291,7 +298,7 @@ export function WorkloadTrend({
         </div>
       ) : null}
       <PanelBody state={state} error={t('DASHBOARD_CONTAINERS_FAILED')} lines={6}>
-        {rows.length === 0 ? (
+        {charted.length === 0 ? (
           <p className="py-5 text-center text-[13px] italic text-muted-foreground">{t('DASHBOARD_TRENDS_NO_WORKLOADS')}</p>
         ) : samples.length < 2 ? (
           <p className="py-5 text-center text-[13px] italic text-muted-foreground">{t('DASHBOARD_TRENDS_WAITING', { total: samples.length })}</p>
@@ -319,7 +326,7 @@ export function WorkloadTrend({
             )}
 
             <ul className="space-y-1.5">
-              {rows.map((row) => (
+              {charted.map((row) => (
                 <li key={row.appUrn} className="space-y-0.5">
                   <div className="flex items-baseline gap-2 text-[11px]">
                     <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: row.color }} />
@@ -344,6 +351,26 @@ export function WorkloadTrend({
                 </li>
               ))}
             </ul>
+            {omitted.length === 0 ? null : (
+              <details data-testid="workload-trend-omitted" className="text-[11px] text-muted-foreground">
+                <summary className="cursor-pointer select-none py-0.5 hover:text-foreground">
+                  {t('DASHBOARD_TRENDS_MORE', { count: omitted.length })}
+                </summary>
+                <ul data-testid="workload-trend-omitted-list" className="mt-1 space-y-0.5">
+                  {omitted.map((row) => (
+                    <li key={row.appUrn} className="flex items-baseline gap-2">
+                      <span className="min-w-0 flex-1 truncate font-medium text-foreground" title={`${row.appName} · ${row.appUrn}`}>
+                        {row.appName}
+                      </span>
+                      <span className="shrink-0 font-medium tabular-nums text-foreground">{row.current === null ? DASH : format(row.current)}</span>
+                      <span className="shrink-0 text-[10px] tabular-nums">
+                        {t('DASHBOARD_TRENDS_PEAK', { value: row.peak === null ? DASH : format(row.peak) })}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
           </div>
         )}
         {outside.length > 0 ? (
