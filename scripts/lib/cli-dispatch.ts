@@ -24,6 +24,7 @@ import { doctorHub, logsHub, showStatus, uninstallHub } from './cli-doctor.js';
 import { printConfig, setupHub, startHub } from './cli-lifecycle.js';
 import { runModelsCommand, runPublicWebCommand, setMcpState } from './cli-models.js';
 import { runFleetCommand } from './cli-fleet.js';
+import { runComposeRefreshCommand } from './cli-compose-refresh.js';
 import { runPoolCommand } from './cli-pool.js';
 import { confirmDestructiveAction } from './cli-prompt.js';
 import { registerHub, showDeviceId } from './cli-register.js';
@@ -243,6 +244,12 @@ export async function runCli(rawArgs: string[]) {
 
   if (first === 'public-web') {
     await runPublicWebCommand(args.slice(1));
+    return;
+  }
+
+  if (first === 'compose') {
+    if (args[1] !== 'refresh') usageAndExit(`Unknown compose command: ${args[1] ?? '(none)'}. Try: ${BASE_COMMAND} compose refresh`);
+    await runComposeRefreshCommand(args.slice(2));
     return;
   }
 

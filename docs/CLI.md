@@ -351,6 +351,26 @@ that is reported as **cannot be compared** rather than as a match.
 different ones. A `:dev` node whose image carries no release tag is a yellow note, because that state
 is normal there. So is a source checkout on a different commit from the running image.
 
+### `cihub compose refresh`
+
+```bash
+cihub compose refresh                 # dry run: say what would change in the installed compose file
+cihub compose refresh --execute       # back it up, replace it, recreate only the Hub
+cihub compose refresh --execute --no-recreate   # replace and validate; leave the running Hub alone
+```
+
+The installed `docker-compose.prod.yml` is written once, by the install seed. `cihub pool update` and
+`cihub fleet update --hub` move the Hub **image** and never touch that file, so a fix made in the
+compose (for example `init: true`, which makes `docker restart ci-hub` stop in under a second instead
+of waiting out the 10 s grace and being SIGKILLed) reached no node that was already installed.
+
+This replaces it with the compose built into this `cihub` — so the `cihub` must be the release that has
+the fix; run `cihub self-update` first. It never reads or writes the env file, which is why it is not
+"run the seed again": the seed also generates new JWT, database and RabbitMQ secrets. `--execute` keeps
+the old file as `docker-compose.prod.yml.bak-<stamp>`, has Docker Compose resolve the new one against the
+node's own env file, and puts the old one back if that fails. The recreate touches only `ci-hub`: the
+queue, database, Traefik and installed apps keep running. Appliance installs only.
+
 ### `cihub self-update`
 
 ```bash
@@ -1978,6 +1998,7 @@ normalization is in `scripts/lib/cli-args.ts`.
 | `cli-fleet.ts` | `fleet` |
 | `cli-api-key.ts` | `api-key` |
 | `cli-update.ts` | `version`, `update`, `self-update`, `connect` |
+| `cli-compose-refresh.ts` | `compose refresh` |
 | `cli-wizard.ts` | `wizard` |
 | `catalog-submit.ts` | `login`, `logout`, `submit` |
 
