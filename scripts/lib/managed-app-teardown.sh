@@ -44,6 +44,11 @@ remove_compose_project() {
     docker rm -f $ids >/dev/null || true
   fi
   for network in $(docker network ls -q --filter "label=com.docker.compose.project=$project"); do
+    # The Hub, still running at this point, joins every app's own network, and Docker refuses to
+    # remove a network with an endpoint on it. "Not connected" is the normal answer.
+    for hub in ci-hub ci-os-hub; do
+      docker network disconnect --force "$network" "$hub" >/dev/null 2>&1 || true
+    done
     docker network rm "$network" >/dev/null || true
   done
   for volume in $(docker volume ls -q --filter "label=com.docker.compose.project=$project"); do

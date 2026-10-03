@@ -4,6 +4,7 @@ import { AppsDataModule } from '../apps/apps-data.module';
 import { DOCKERODE } from './constants';
 import { DockerReadFacade } from './docker-read.facade';
 import { DockerService } from './docker.service';
+import { HubAppNetworkService } from './hub-app-networks.service';
 import { TraefikConfigService } from './traefik-config.service';
 
 // biome-ignore lint/performance/noBarrelFile: This is a module entry point
@@ -16,6 +17,7 @@ export { DOCKERODE } from './constants';
   providers: [
     DockerReadFacade,
     DockerService,
+    HubAppNetworkService,
     TraefikConfigService,
     {
       provide: DOCKERODE,
@@ -23,6 +25,6 @@ export { DOCKERODE } from './constants';
       inject: [],
     },
   ],
-  exports: [DockerReadFacade, DockerService, TraefikConfigService, DOCKERODE],
+  exports: [DockerReadFacade, DockerService, HubAppNetworkService, TraefikConfigService, DOCKERODE],
 })
 export class DockerModule {}

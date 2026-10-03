@@ -113,6 +113,17 @@ describe('legacy wipe scripts remove Hub-managed apps before the state they moun
     expect(existsSync(path.join(root, '.internal'))).toBe(false);
   });
 
+  it('nuke.sh takes the still-running Hub off each app network before removing it', () => {
+    // The Hub joins every app's own network (backend HubAppNetworkService), and Docker refuses to
+    // remove a network with an endpoint on it; the Hub stack is only stopped after the apps.
+    runScript('nuke.sh');
+
+    expect(indexOfCall('network disconnect --force net1 ci-hub |')).toBeGreaterThan(-1);
+    expect(indexOfCall('network disconnect --force net1 ci-os-hub |')).toBeGreaterThan(-1);
+    expect(indexOfCall('network disconnect --force net1 ci-hub |')).toBeLessThan(indexOfCall('network rm net1'));
+    expect(indexOfCall('network rm net1')).toBeLessThan(indexOfCall('rm -f ci-hub '));
+  });
+
   it('nuke.sh does not treat the Hub stack as an app, but still removes its sidecars by project', () => {
     runScript('nuke.sh');
 

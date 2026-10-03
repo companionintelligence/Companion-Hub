@@ -1,4 +1,4 @@
-import { HUB_NETWORK_NAMES } from '@/common/constants';
+import { HUB_CONTAINER_NAMES, HUB_NETWORK_NAMES, hubContainerName } from '@/common/constants';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Inject, Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -36,6 +36,18 @@ export interface NetworkDiagnosticsReport {
   issueCount: number;
 }
 
+/** An orphan plus the Hub containers still on it, which must leave before Docker removes it. */
+type OrphanNetworkCandidate = OrphanNetworkIssue & { hubContainerIds: string[] };
+
+/**
+ * Whether a container is the Hub itself. The Hub joins each app's own network so the app's services
+ * can reach it (`HubAppNetworkService`), so its endpoint is on networks it does not own.
+ */
+function isHubContainer(container: { Names?: string[] }): boolean {
+  const hubNames = new Set<string>([...HUB_CONTAINER_NAMES, hubContainerName()]);
+  return (container.Names ?? []).some((name) => hubNames.has(name.replace(/^\//, '')));
+}
+
 export interface NetworkRepairResult {
   removed: string[];
   skipped: string[];
@@ -55,7 +67,7 @@ export class NetworkDiagnosticsService {
     const occupied = await collectOccupiedSubnets(apps, this.docker);
     const duplicateDbSubnets = this.findDuplicateDbSubnets(apps);
     const hubPoolOverlaps = this.findOccupiedRangeConflicts(occupied);
-    const orphanNetworks = await this.findOrphanNetworks();
+    const orphanNetworks = (await this.findOrphanNetworks()).map(({ hubContainerIds: _hub, ...orphan }) => orphan);
 
     return {
       duplicateDbSubnets,
@@ -96,6 +108,15 @@ export class NetworkDiagnosticsService {
 
     for (const orphan of orphans) {
       try {
+        for (const hubContainerId of orphan.hubContainerIds) {
+          await this.docker
+            .getNetwork(orphan.dockerNetworkId)
+            .disconnect({ Container: hubContainerId, Force: true })
+            .catch((error: unknown) => {
+              // The removal below reports what matters if the Hub is in fact still attached.
+              this.logger.debug(`Could not take the Hub off orphan network ${orphan.dockerNetworkName}: ${error}`);
+            });
+        }
         await this.docker.getNetwork(orphan.dockerNetworkId).remove();
         removed.push(orphan.dockerNetworkName);
       } catch (error) {
@@ -191,7 +212,14 @@ export class NetworkDiagnosticsService {
     return false;
   }
 
-  private async findOrphanNetworks(): Promise<OrphanNetworkIssue[]> {
+  /**
+   * Compose-project networks no container is on.
+   *
+   * The Hub's own endpoint does not count on an app's network: the Hub joins every app network it
+   * can, so counting it would keep each app network alive forever once the app's containers are
+   * gone. It still counts on the networks of the Hub's own compose project.
+   */
+  private async findOrphanNetworks(): Promise<OrphanNetworkCandidate[]> {
     const networks = await this.docker.listNetworks().catch((error) => {
       this.logger.warn(`Failed to list Docker networks for diagnostics: ${error}`);
       return [];
@@ -203,13 +231,24 @@ export class NetworkDiagnosticsService {
     });
 
     const networksInUse = new Set<string>();
+    const hubContainersByNetwork = new Map<string, string[]>();
+    const hubProjects = new Set<string>();
     for (const container of containers) {
+      const isHub = isHubContainer(container);
+      const hubProject = isHub ? container.Labels?.['com.docker.compose.project'] : undefined;
+      if (hubProject) {
+        hubProjects.add(hubProject);
+      }
       for (const networkName of Object.keys(container.NetworkSettings?.Networks ?? {})) {
-        networksInUse.add(networkName);
+        if (isHub) {
+          hubContainersByNetwork.set(networkName, [...(hubContainersByNetwork.get(networkName) ?? []), container.Id]);
+        } else {
+          networksInUse.add(networkName);
+        }
       }
     }
 
-    const orphans: OrphanNetworkIssue[] = [];
+    const orphans: OrphanNetworkCandidate[] = [];
 
     for (const network of networks) {
       const networkName = network.Name;
@@ -218,7 +257,7 @@ export class NetworkDiagnosticsService {
       }
 
       const composeProject = network.Labels?.['com.docker.compose.project'];
-      if (!composeProject || composeProject === 'ci-hub') {
+      if (!composeProject || composeProject === 'ci-hub' || hubProjects.has(composeProject)) {
         continue;
       }
 
@@ -235,6 +274,7 @@ export class NetworkDiagnosticsService {
         dockerNetworkId: network.Id,
         dockerNetworkName: networkName,
         composeProject,
+        hubContainerIds: hubContainersByNetwork.get(networkName) ?? [],
       });
     }
 

@@ -139,6 +139,21 @@ describe('hub-cleanup-lib', () => {
       expect(calls.some((command) => command.includes('com.docker.compose.project=ci-hub'))).toBe(false);
     });
 
+    it('takes the still-running Hub off each app network before removing it (cihub reset)', () => {
+      // The Hub joins every app's own network (backend HubAppNetworkService); reset tears the apps
+      // down before `compose down` stops the Hub, and Docker refuses to remove a network with an
+      // endpoint on it.
+      const { calls, docker } = fakeDocker();
+
+      removeManagedAppProjects(docker, { removeVolumes: true });
+
+      const removal = calls.indexOf('network rm ci-hermes_ci-marketplace_default');
+      expect(calls.slice(removal - 2, removal)).toEqual([
+        'network disconnect --force ci-hermes_ci-marketplace_default ci-hub',
+        'network disconnect --force ci-hermes_ci-marketplace_default ci-os-hub',
+      ]);
+    });
+
     it('plans containers on the Hub network that no label ties to the Hub, and leaves the Hub stack out', () => {
       const { calls, docker } = fakeDocker(BETA_MAX_HUB_NETWORK);
 
@@ -339,6 +354,50 @@ describe('hub-cleanup-lib', () => {
     }
   });
 
+  it('does not count "not connected" from the Hub disconnect as a failed command (cihub doctor totals them)', () => {
+    const prevDataHome = process.env.XDG_DATA_HOME;
+    const prevConfigHome = process.env.XDG_CONFIG_HOME;
+    const prevCacheHome = process.env.XDG_CACHE_HOME;
+    process.env.XDG_DATA_HOME = '/home/dev/.local/share';
+    process.env.XDG_CONFIG_HOME = '/home/dev/.config';
+    process.env.XDG_CACHE_HOME = '/home/dev/.cache';
+    const commands: string[] = [];
+
+    try {
+      const summary = runHubCleanup({
+        cwd: '/home/dev/ci-hub',
+        homeDir: '/home/dev',
+        platform: 'linux',
+        execCommand: (command) => {
+          commands.push(command);
+          if (command.includes('label=ci-hub.managed=true')) {
+            return { ok: true, stdout: 'ci-hub.managed=true,com.docker.compose.project=ci-memory_ci-marketplace' };
+          }
+          if (command.includes('docker network ls --filter label=com.docker.compose.project=ci-memory_ci-marketplace')) {
+            return { ok: true, stdout: 'ci-memory_ci-marketplace_network' };
+          }
+          if (command.startsWith('docker network disconnect')) {
+            return { ok: false, stdout: '', error: 'Error response from daemon: container ci-os-hub is not connected to the network' };
+          }
+          return { ok: true, stdout: '' };
+        },
+        exists: () => false,
+        removeDir: () => {},
+        logger: { info: () => {}, warn: () => {}, error: () => {} },
+      });
+
+      expect(commands).toContain('docker network disconnect --force ci-memory_ci-marketplace_network ci-os-hub');
+      expect(summary.failedCommands).toBe(0);
+    } finally {
+      if (prevDataHome === undefined) delete process.env.XDG_DATA_HOME;
+      else process.env.XDG_DATA_HOME = prevDataHome;
+      if (prevConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = prevConfigHome;
+      if (prevCacheHome === undefined) delete process.env.XDG_CACHE_HOME;
+      else process.env.XDG_CACHE_HOME = prevCacheHome;
+    }
+  });
+
   it('tears down marketplace app projects discovered via the ci-os-hub.managed label', () => {
     const prevDataHome = process.env.XDG_DATA_HOME;
     const prevConfigHome = process.env.XDG_CONFIG_HOME;
@@ -400,6 +459,11 @@ describe('hub-cleanup-lib', () => {
       expect(commands).toContain('docker image rm -f sha256:appimage');
       // The Hub-stack project is excluded from the marketplace loop (handled by Hub teardown).
       expect(commands).not.toContain('docker ps -a --filter label=com.docker.compose.project=ci-os-hub --format "{{.ID}}"');
+      // The Hub, still running, is taken off the app network first; it joins every app's network.
+      expect(commands.indexOf('docker network disconnect --force ci-hermes_ci-marketplace_network ci-hub')).toBeGreaterThan(-1);
+      expect(commands.indexOf('docker network disconnect --force ci-hermes_ci-marketplace_network ci-hub')).toBeLessThan(
+        commands.indexOf('docker network rm ci-hermes_ci-marketplace_network'),
+      );
     } finally {
       if (prevDataHome === undefined) delete process.env.XDG_DATA_HOME;
       else process.env.XDG_DATA_HOME = prevDataHome;

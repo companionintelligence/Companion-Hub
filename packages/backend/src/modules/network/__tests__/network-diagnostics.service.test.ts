@@ -74,4 +74,87 @@ describe('NetworkDiagnosticsService', () => {
     expect(repair.removed).toEqual(['ghost_ci-marketplace_network']);
     expect(dockerMock.getNetwork).toHaveBeenCalledWith('net-ghost');
   });
+
+  /*
+   * The Hub joins every app's own network so the app's non-main services can reach it
+   * (HubAppNetworkService). Its endpoint must not keep an app network alive once the app's
+   * containers are gone, and Docker will not remove the network until the Hub has left it.
+   */
+  describe('with the Hub on app networks', () => {
+    const hub = (networks: string[]) =>
+      fromPartial({
+        Id: 'hub-id',
+        Names: ['/ci-hub'],
+        Labels: { 'com.docker.compose.project': 'ci-hub' },
+        NetworkSettings: { Networks: Object.fromEntries(networks.map((name) => [name, { IPAddress: '10.128.10.2' }])) },
+      });
+    const network = (name: string, project: string) =>
+      fromPartial({ Id: `net-${name}`, Name: name, Labels: { 'com.docker.compose.project': project } });
+
+    beforeEach(() => {
+      appsRepository.getApps.mockResolvedValue([]);
+    });
+
+    it('reports an app network only the Hub is on as an orphan, without the Hub in the public report', async () => {
+      dockerMock.listNetworks.mockResolvedValue([network('ghost_ci-marketplace_network', 'ghost_ci-marketplace')]);
+      dockerMock.listContainers.mockResolvedValue([hub(['ci-hub_network', 'ghost_ci-marketplace_network'])]);
+
+      const report = await service.getDiagnostics();
+
+      expect(report.orphanNetworks).toEqual([
+        {
+          dockerNetworkId: 'net-ghost_ci-marketplace_network',
+          dockerNetworkName: 'ghost_ci-marketplace_network',
+          composeProject: 'ghost_ci-marketplace',
+        },
+      ]);
+    });
+
+    it('does not report an app network an app container is still on, Hub or not', async () => {
+      dockerMock.listNetworks.mockResolvedValue([network('ghost_ci-marketplace_network', 'ghost_ci-marketplace')]);
+      dockerMock.listContainers.mockResolvedValue([
+        hub(['ghost_ci-marketplace_network']),
+        fromPartial({
+          Id: 'ghost-1',
+          Names: ['/ghost_ci-marketplace-ghost-1'],
+          NetworkSettings: { Networks: { 'ghost_ci-marketplace_network': {} } },
+        }),
+      ]);
+
+      expect((await service.getDiagnostics()).orphanNetworks).toEqual([]);
+    });
+
+    it("never reports a network of the Hub's own compose project, whatever it is called", async () => {
+      dockerMock.listNetworks.mockResolvedValue([network('ci-os-hub_internal', 'ci-os-hub')]);
+      dockerMock.listContainers.mockResolvedValue([
+        fromPartial({
+          Id: 'hub-id',
+          Names: ['/ci-os-hub'],
+          Labels: { 'com.docker.compose.project': 'ci-os-hub' },
+          NetworkSettings: { Networks: { 'ci-os-hub_internal': {} } },
+        }),
+      ]);
+
+      expect((await service.getDiagnostics()).orphanNetworks).toEqual([]);
+    });
+
+    it('takes the Hub off an orphan before removing it', async () => {
+      dockerMock.listNetworks.mockResolvedValue([network('ghost_ci-marketplace_network', 'ghost_ci-marketplace')]);
+      dockerMock.listContainers.mockResolvedValue([hub(['ghost_ci-marketplace_network'])]);
+      const calls: string[] = [];
+      const disconnect = vi.fn(async (options: { Container: string }) => {
+        calls.push(`disconnect ${options.Container}`);
+      });
+      const remove = vi.fn(async () => {
+        calls.push('remove');
+      });
+      dockerMock.getNetwork.mockReturnValue({ disconnect, remove });
+
+      const repair = await service.repairOrphanNetworks();
+
+      expect(repair.removed).toEqual(['ghost_ci-marketplace_network']);
+      expect(calls).toEqual(['disconnect hub-id', 'remove']);
+      expect(disconnect).toHaveBeenCalledWith({ Container: 'hub-id', Force: true });
+    });
+  });
 });

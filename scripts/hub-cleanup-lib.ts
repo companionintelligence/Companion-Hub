@@ -249,6 +249,25 @@ export function planAppTeardown(docker: DockerCliRunner, options: { removeVolume
 }
 
 /**
+ * The container names the Hub has run under. The same list as `lib/compose-discovery.ts`, repeated
+ * so this file keeps importing nothing but Node.
+ */
+const HUB_CONTAINER_NAMES = ['ci-hub', 'ci-os-hub'] as const;
+
+/**
+ * Takes a still-running Hub off an app's network so the network can be removed. The Hub joins every
+ * installed app's own network (backend `HubAppNetworkService`), and Docker refuses to remove a
+ * network with an endpoint on it, so teardown that runs before the Hub stack is stopped would
+ * otherwise leave every app network behind. Best effort: "not connected" and "no such container"
+ * are the normal answers.
+ */
+export function disconnectHubFromNetwork(docker: DockerCliRunner, network: string): void {
+  for (const hub of HUB_CONTAINER_NAMES) {
+    docker(['network', 'disconnect', '--force', network, hub]);
+  }
+}
+
+/**
  * Removes what {@link planAppTeardown} listed: each app's containers, networks, and (when planned)
  * named volumes, then the unmanaged containers. Those lose only the container. No named volume can
  * be traced to them, and their bind mounts live in the data directory the caller deletes, or keeps,
@@ -260,6 +279,7 @@ export function executeAppTeardown(docker: DockerCliRunner, plan: AppTeardownPla
       docker(['rm', '-f', ...containers]);
     }
     for (const network of networks) {
+      disconnectHubFromNetwork(docker, network);
       docker(['network', 'rm', network]);
     }
     for (const volume of volumes) {
@@ -537,6 +557,21 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
     summary,
   };
 
+  // The Hub is still running while the app loop below removes app networks, and it joins every
+  // app's own network (see disconnectHubFromNetwork). Run outside runCommand: "not connected" is the
+  // normal answer here, and counting it would report a clean wipe as failed commands to `cihub doctor`.
+  const disconnectHubBestEffort = (networkName: string): void => {
+    disconnectHubFromNetwork((args) => {
+      const command = `docker ${args.join(' ')}`;
+      if (dryRun) {
+        logger.info(`[dry-run] ${command}`);
+        return { ok: true, stdout: '' };
+      }
+      const result = execCommand(command, cwd);
+      return { ok: result.ok, stdout: result.stdout };
+    }, networkName);
+  };
+
   // Collect the unique image IDs used by a compose project (pulled or built). Must be
   // called before the project's containers are removed — refs can't be recovered after.
   const snapshotProjectImages = (project: string): string[] => {
@@ -591,6 +626,7 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
 
     const projectNetworks = runCommand(`docker network ls --filter label=com.docker.compose.project=${project} --format "{{.Name}}"`, commandContext);
     for (const networkName of parseNames(projectNetworks).filter((name) => !sharedNetworks.has(name))) {
+      disconnectHubBestEffort(networkName);
       runCommand(`docker network rm ${networkName}`, commandContext);
     }
 

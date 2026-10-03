@@ -14,7 +14,7 @@ import {
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { Injectable, InternalServerErrorException, Inject } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, Inject, Optional } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
 import { AppFilesManager } from '../apps/app-files-manager';
@@ -22,6 +22,7 @@ import { AppsRepository } from '../apps/apps.repository';
 import { DOCKERODE } from './constants';
 import { DockerReadFacade, type ManagedAppContainerVerification } from './docker-read.facade';
 import { listContainersMatchingAnyLabelSets, managedAppLabelSets } from './hub-container-query';
+import { HubAppNetworkService } from './hub-app-networks.service';
 import { resolveEdgeHopAddress } from '../network/edge-hops';
 import { DEFAULT_HUB_EDGE_TRAEFIK_IP, HUB_EDGE_NETWORK_NAME, TRAEFIK_CONTAINER_NAME } from '../network/network-constants';
 
@@ -85,6 +86,16 @@ const COMPOSE_UP_TIMEOUT_MS = 300_000;
 const COMPOSE_OP_MAX_ATTEMPTS = 2;
 /** Unblocks the caller if a child remains after the SIGKILL grace period. */
 const PROCESS_EXIT_BACKSTOP_MS = 5_000;
+
+/**
+ * Returns whether Docker refused to remove a network because something is still attached to it.
+ * Compose reports it for `down`, and for an `up` that must recreate a network whose definition
+ * changed.
+ */
+function isActiveEndpointsError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return /has active endpoints/i.test(msg);
+}
 
 /** Returns whether Docker failed because the container network endpoint is stale. */
 function isStaleContainerNetworkError(error: unknown): boolean {
@@ -156,6 +167,9 @@ export class DockerService {
     private readonly appsRepository: AppsRepository,
     @Inject(DOCKERODE) private readonly docker: Dockerode,
     private readonly dockerReadFacade: DockerReadFacade,
+    // Optional so a test module that builds DockerService alone keeps working; the Docker module
+    // always provides it.
+    @Optional() private readonly hubAppNetworks?: HubAppNetworkService,
   ) {}
 
   /**
@@ -348,7 +362,7 @@ export class DockerService {
       }
 
       try {
-        await this.docker.getNetwork(network.Id).remove();
+        await this.removeNetworkReleasingHub(network.Id);
       } catch (error) {
         if (this.isResourceMissingError(error) || this.isResourceInUseError(error)) {
           this.logger.warn(`Skipping network removal for ${networkName} (${appUrn}): ${error}`);
@@ -357,6 +371,25 @@ export class DockerService {
 
         this.logger.warn(`Failed to remove network ${networkName} for ${appUrn}: ${error}`);
       }
+    }
+  }
+
+  /**
+   * Removes a network, first taking the Hub off it when the Hub is the only thing left there.
+   *
+   * The Hub joins each app's network (see {@link HubAppNetworkService}), so after a partial teardown
+   * its endpoint alone can keep an app's network alive, and the stale-network cleanup before an `up`
+   * would then leave a network whose subnet no longer matches the compose file. A network that still
+   * carries app containers is refused as before, with the Hub still on it.
+   */
+  private async removeNetworkReleasingHub(networkId: string): Promise<void> {
+    try {
+      await this.docker.getNetwork(networkId).remove();
+    } catch (error) {
+      if (!this.isResourceInUseError(error) || !(await this.hubAppNetworks?.releaseNetworkHeldOnlyByHub(networkId))) {
+        throw error;
+      }
+      await this.docker.getNetwork(networkId).remove();
     }
   }
 
@@ -541,11 +574,58 @@ export class DockerService {
    * When `signal` aborts, terminate the child with SIGTERM, escalate to SIGKILL
    * after the grace period, and reject with an `AbortError`.
    *
+   * `up` and `down` also move the Hub on and off the app's own networks (see
+   * {@link HubAppNetworkService}). Every lifecycle path that brings an app up or takes it down —
+   * install, start, restart, update and its rollback, reset, uninstall, install cancel — runs its
+   * compose through here, so doing it here covers all of them and any added later:
+   *
+   * - before `down`, the Hub leaves, because Docker refuses to remove a network that still has an
+   *   endpoint on it and `down` would fail every stop and uninstall;
+   * - after `up`, the Hub joins, so every service of the app resolves `ci-hub` and `ci-os-hub`;
+   * - when compose is still refused with "has active endpoints" (an `up` that must recreate a
+   *   network whose definition changed, or a `down` that raced a join), the Hub leaves and the
+   *   command runs once more;
+   * - after a failed `up` or `down` the Hub rejoins whatever network survived, since the app's
+   *   containers may still be running on it.
+   *
    * @param appUrn App URN.
    * @param command Compose subcommand, such as `up --detach`.
    * @param signal Optional signal that cancels the Compose process.
    */
   public async composeApp(appUrn: AppUrn, command: string, signal?: AbortSignal) {
+    const hubAppNetworks = this.hubAppNetworks;
+    const subcommand = command.trim().split(/\s+/)[0];
+    if (!hubAppNetworks || (subcommand !== 'up' && subcommand !== 'down')) {
+      return this.runComposeApp(appUrn, command, signal);
+    }
+
+    if (subcommand === 'down') {
+      await hubAppNetworks.detachFromApp(appUrn);
+    }
+
+    let result: Awaited<ReturnType<DockerService['runComposeApp']>>;
+    try {
+      result = await this.runComposeApp(appUrn, command, signal).catch(async (error: unknown) => {
+        if (isAbortError(error) || !isActiveEndpointsError(error) || (await hubAppNetworks.detachFromApp(appUrn)).length === 0) {
+          throw error;
+        }
+        this.logger.warn(`docker compose ${subcommand} for ${appUrn} was refused while the Hub was on its network; retrying once without it`);
+        return this.runComposeApp(appUrn, command, signal);
+      });
+    } catch (error) {
+      if (!isAbortError(error)) {
+        await hubAppNetworks.attachToApp(appUrn);
+      }
+      throw error;
+    }
+
+    if (subcommand === 'up') {
+      await hubAppNetworks.attachToApp(appUrn);
+    }
+    return result;
+  }
+
+  private async runComposeApp(appUrn: AppUrn, command: string, signal?: AbortSignal) {
     let { args, isCustomConfig } = await this.getBaseComposeArgsApp(appUrn);
     args.push(...command.split(' '));
     args = args.filter(Boolean);
