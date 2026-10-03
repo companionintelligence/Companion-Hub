@@ -38,6 +38,12 @@ describe('installMobileLoadWatchdog', () => {
     expect(retry.style.backgroundColor).toBe('var(--primary)');
     expect(retry.style.color).toBe('var(--primary-foreground)');
     expect(document.querySelector('[data-testid="mobile-load-switch-hub"]')).toBeTruthy();
+    const hint = overlay?.querySelector('p:nth-of-type(2)') as HTMLElement;
+    const switchHub = document.querySelector('[data-testid="mobile-load-switch-hub"]') as HTMLElement;
+    expect(overlay?.style.background).toBe('var(--background)');
+    expect(hint.style.color).toBe('var(--muted-foreground)');
+    expect(switchHub.style.color).toBe('var(--muted-foreground)');
+    expect(hint.style.color).not.toBe('#52525b');
   });
 
   it('does not cover a dashboard that is already up just because a spinner is on screen', () => {

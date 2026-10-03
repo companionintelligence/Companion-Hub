@@ -46,8 +46,8 @@ function showOverlay(): void {
     justifyContent: 'center',
     gap: '16px',
     padding: '24px',
-    background: document.documentElement.classList.contains('dark') ? '#18181b' : '#f4f4f5',
-    color: document.documentElement.classList.contains('dark') ? '#fafafa' : '#18181b',
+    background: 'var(--background)',
+    color: 'var(--foreground)',
     textAlign: 'center',
     font: '16px/1.4 -apple-system, sans-serif',
   });
@@ -58,7 +58,7 @@ function showOverlay(): void {
 
   const hint = document.createElement('p');
   hint.style.fontSize = '14px';
-  hint.style.color = '#52525b';
+  hint.style.color = 'var(--muted-foreground)';
   hint.textContent = 'Check that the Hub is online, or switch to a different Hub.';
 
   const retry = document.createElement('button');
@@ -85,7 +85,7 @@ function showOverlay(): void {
     minHeight: '44px',
     border: '0',
     background: 'transparent',
-    color: '#52525b',
+    color: 'var(--muted-foreground)',
     textDecoration: 'underline',
     font: '14px/1.2 -apple-system, sans-serif',
   });
