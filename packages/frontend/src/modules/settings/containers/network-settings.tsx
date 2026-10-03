@@ -110,7 +110,7 @@ const TailscaleSidecarSection = () => {
   const queryClient = useQueryClient();
   const demoMode = useDemoMode();
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch, isFetching } = useQuery({
     ...tailscaleStatusOptions(),
     select: (payload) => payload as unknown as TailscaleApiStatus,
     refetchInterval: 10_000,
@@ -173,6 +173,22 @@ const TailscaleSidecarSection = () => {
 
   if (isLoading) {
     return <LoadingCard icon={Shield} title={t('SETTINGS_NETWORK_PRIVATE_VPN_TITLE')} />;
+  }
+
+  if (isError) {
+    return (
+      <Card data-testid="private-vpn-card">
+        <SectionHeader icon={Shield} title={t('SETTINGS_NETWORK_PRIVATE_VPN_TITLE')} />
+        <CardContent className="space-y-3">
+          <p className="text-sm text-destructive" data-testid="tailscale-status-error">
+            {t('SETTINGS_NETWORK_STATUS_ERROR')}
+          </p>
+          <Button type="button" size="sm" variant="outline" loading={isFetching} onClick={() => refetch()}>
+            {t('COMMON_RETRY')}
+          </Button>
+        </CardContent>
+      </Card>
+    );
   }
 
   const active = data?.installed && data?.connected;
@@ -241,7 +257,13 @@ const TailscaleSidecarSection = () => {
 const CloudflareSection = () => {
   const { t } = useTranslation();
 
-  const { data: status, isLoading } = useQuery({
+  const {
+    data: status,
+    isLoading,
+    isError,
+    refetch,
+    isFetching,
+  } = useQuery({
     ...cloudflareStatusOptions(),
     select: (payload) => payload as unknown as CloudflareStatus,
     refetchInterval: 30_000,
@@ -249,6 +271,22 @@ const CloudflareSection = () => {
 
   if (isLoading) {
     return <LoadingCard icon={Globe} title={t('SETTINGS_NETWORK_CLOUDFLARE_TUNNEL')} />;
+  }
+
+  if (isError) {
+    return (
+      <Card data-testid="cloudflare-tunnel-card">
+        <SectionHeader icon={Globe} title={t('SETTINGS_NETWORK_CLOUDFLARE_TUNNEL')} />
+        <CardContent className="space-y-3">
+          <p className="text-sm text-destructive" data-testid="cloudflare-status-error">
+            {t('SETTINGS_NETWORK_STATUS_ERROR')}
+          </p>
+          <Button type="button" size="sm" variant="outline" loading={isFetching} onClick={() => refetch()}>
+            {t('COMMON_RETRY')}
+          </Button>
+        </CardContent>
+      </Card>
+    );
   }
 
   return (

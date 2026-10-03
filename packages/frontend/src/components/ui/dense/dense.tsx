@@ -110,8 +110,20 @@ export const KpiTable = ({ head, children, className }: { head: ReactNode; child
  * silently shifts by one cell, so the header and its cells must be able to carry the SAME
  * class. Every column drop on the dashboard applies the identical utility to both.
  */
-export const Th = ({ children, align = 'left', className }: { children: ReactNode; align?: 'left' | 'right'; className?: string }) => (
+export const Th = ({
+  children,
+  align = 'left',
+  className,
+  id,
+}: {
+  children: ReactNode;
+  align?: 'left' | 'right';
+  className?: string;
+  id?: string;
+}) => (
   <th
+    id={id}
+    scope="col"
     className={cn(
       'whitespace-nowrap border-b border-border px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.06em] text-muted-foreground',
       align === 'right' ? 'text-right' : 'text-left',
@@ -127,13 +139,16 @@ export const Td = ({
   align = 'left',
   className,
   title,
+  headers,
 }: {
   children: ReactNode;
   align?: 'left' | 'right';
   className?: string;
   title?: string;
+  headers?: string;
 }) => (
   <td
+    headers={headers}
     className={cn('border-b border-border/70 px-3 py-1.5 align-middle tabular-nums', align === 'right' ? 'text-right' : 'text-left', className)}
     title={title}
   >

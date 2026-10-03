@@ -1,4 +1,4 @@
-import { removePeer } from '@/api-client/sdk.gen';
+import { pairPeer, removePeer } from '@/api-client/sdk.gen';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -6,6 +6,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { HubPoolSection } from '../hub-pool-settings';
 
 type Json = Record<string, unknown>;
+
+const i18nCalls = vi.hoisted(() => [] as { key: string; params?: unknown }[]);
 
 const fixtures = vi.hoisted(() => ({
   status: {} as Json,
@@ -22,7 +24,10 @@ const fixtures = vi.hoisted(() => ({
 }));
 
 vi.mock('react-i18next', () => {
-  const t = (key: string) => key;
+  const t = (key: string, params?: unknown) => {
+    i18nCalls.push({ key, params });
+    return key;
+  };
   return { useTranslation: () => ({ t }) };
 });
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -142,6 +147,8 @@ describe('HubPoolSection', () => {
     fixtures.pinCancel.mockClear();
     fixtures.upsertPin.mockClear();
     fixtures.deletePin.mockClear();
+    i18nCalls.length = 0;
+    vi.mocked(pairPeer).mockReset();
     vi.mocked(removePeer).mockClear();
   });
 
@@ -349,10 +356,11 @@ describe('HubPoolSection', () => {
     expect(screen.getByText('HUB_POOL_STATUS_UNREACHABLE')).toBeTruthy();
     // An unreachable peer's cached inventory is not capacity the pool can offer right now, so only
     // this node's own model is listed as servable.
-    // Asserted on the row's data attributes, not its textContent: the matrix renders node
-    // presence as dots, so which nodes can serve a model is not readable as text.
     expect(screen.getAllByTestId('hub-pool-model').map((row) => row.getAttribute('data-model'))).toEqual(['llama3.2:3b']);
     expect(screen.getAllByTestId('hub-pool-model').map((row) => row.getAttribute('data-nodes'))).toEqual(['HUB_POOL_LOCAL_NODE_LABEL']);
+    const cell = screen.getAllByTestId('hub-pool-model')[0]?.querySelector('td[headers]');
+    expect(cell?.textContent).toContain('HUB_POOL_MODELS_ONLY_HERE');
+    expect(cell?.getAttribute('headers')).toBe('hub-pool-model-col-0');
   });
 
   it('shows a distinct "needs re-pair" badge and the backend\'s exact remedy for an identity-changed peer, never the self-heals hint', async () => {
@@ -720,6 +728,9 @@ describe('HubPoolSection', () => {
     const fqdn = await screen.findByTestId('hub-pool-pending-fqdn');
     expect(fqdn.textContent).toBe('attacker-box.example-tailnet.ts.net');
     expect(screen.getByText("Liam's MacBook")).toBeTruthy();
+    const pending = screen.getByText('HUB_POOL_PENDING_TITLE');
+    const peers = screen.getByText('HUB_POOL_CONNECTED_TITLE');
+    expect(pending.compareDocumentPosition(peers) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   // Nothing sweeps outbound pending rows and discovery hides an FQDN already in the peer table, so
@@ -743,6 +754,36 @@ describe('HubPoolSection', () => {
 
     await waitFor(() => expect(vi.mocked(removePeer)).toHaveBeenCalledTimes(1));
     expect(vi.mocked(removePeer).mock.calls[0]?.[0]).toMatchObject({ path: { id: 'outbound-1' } });
+  });
+
+  it('names the peer on its pool switch and its Unpair button', async () => {
+    fixtures.status = baseStatus({
+      peers: [connectedPeer()],
+      peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0, disabled: 0 },
+    });
+
+    renderSection();
+
+    expect(await screen.findByTestId('hub-pool-peer-toggle')).toHaveAttribute('aria-label', 'HUB_POOL_PEER_TOGGLE_NAMED');
+    expect(screen.getByTestId('hub-pool-unpair-btn')).toHaveAttribute('aria-label', 'HUB_POOL_UNPAIR_NAMED');
+    expect(i18nCalls).toEqual(
+      expect.arrayContaining([
+        { key: 'HUB_POOL_PEER_TOGGLE_NAMED', params: { name: 'Studio Hub' } },
+        { key: 'HUB_POOL_UNPAIR_NAMED', params: { name: 'Studio Hub' } },
+      ]),
+    );
+  });
+
+  it('shows a peer address once when that peer has no display name', async () => {
+    fixtures.status = baseStatus({
+      peers: [connectedPeer({ displayName: null })],
+      peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0, disabled: 0 },
+    });
+
+    renderSection();
+
+    const row = await screen.findByTestId('hub-pool-peer');
+    expect(row.textContent?.match(/hub-b\.example-tailnet\.ts\.net/g)).toHaveLength(1);
   });
 
   it('holds an unpair behind a confirmation dialog because it revokes both tokens', async () => {
@@ -779,26 +820,90 @@ describe('HubPoolSection', () => {
   });
 
   describe('pairing PIN and peer identity', () => {
+    const pairable = () => {
+      fixtures.discoverable = [{ tailscaleDeviceId: 'ts-1', nodeFqdn: 'hub-b.example-tailnet.ts.net', hostname: 'hub-b' }];
+    };
+
+    it('keeps a short PIN on the field and does not pair', async () => {
+      pairable();
+      renderSection();
+
+      await userEvent.type(await screen.findByTestId('hub-pool-pin-input'), '12345');
+      await userEvent.click(screen.getByRole('button', { name: 'HUB_POOL_PAIR_BUTTON' }));
+
+      expect(screen.getByText('HUB_POOL_PIN_INPUT_INVALID')).toBeTruthy();
+      expect(vi.mocked(pairPeer)).not.toHaveBeenCalled();
+    });
+
+    it('sends a six-digit PIN with the Hub being paired', async () => {
+      pairable();
+      vi.mocked(pairPeer).mockResolvedValue({} as never);
+      renderSection();
+
+      await userEvent.type(await screen.findByTestId('hub-pool-pin-input'), '481502');
+      await userEvent.click(screen.getByRole('button', { name: 'HUB_POOL_PAIR_BUTTON' }));
+
+      await waitFor(() => expect(vi.mocked(pairPeer)).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(pairPeer).mock.calls[0]?.[0]).toMatchObject({
+        body: { nodeFqdn: 'hub-b.example-tailnet.ts.net', pin: '481502' },
+      });
+    });
+
+    it('pairs with no PIN when the field is left blank', async () => {
+      pairable();
+      vi.mocked(pairPeer).mockResolvedValue({} as never);
+      renderSection();
+
+      await userEvent.click(await screen.findByRole('button', { name: 'HUB_POOL_PAIR_BUTTON' }));
+
+      await waitFor(() => expect(vi.mocked(pairPeer)).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(pairPeer).mock.calls[0]?.[0]).toMatchObject({ body: { nodeFqdn: 'hub-b.example-tailnet.ts.net' } });
+      expect(vi.mocked(pairPeer).mock.calls[0]?.[0]?.body).not.toHaveProperty('pin');
+    });
+
     it('renders the digits once, straight from the mint response and never from status', async () => {
       fixtures.status = baseStatus();
-      fixtures.pinMint.mockResolvedValueOnce({ data: { pin: '481502', expiresAt: '2026-01-01T00:10:00.000Z' } });
+      fixtures.pinMint.mockResolvedValueOnce({ data: { pin: '481502', expiresAt: '2099-01-01T00:10:00.000Z' } });
       renderSection();
       await screen.findByTestId('hub-pool-mint-pin-btn');
 
       await userEvent.click(screen.getByTestId('hub-pool-mint-pin-btn'));
 
       expect(await screen.findByTestId('hub-pool-minted-pin')).toHaveTextContent('481502');
+      expect(screen.getByTestId('hub-pool-minted-pin-expiry')).toHaveAttribute('datetime', '2099-01-01T00:10:00.000Z');
       expect(fixtures.pinMint).toHaveBeenCalledWith(expect.objectContaining({ url: '/api/inference/pool/pairing-pin' }));
+    });
+
+    it('takes the digits off the screen once the PIN has expired', async () => {
+      fixtures.status = baseStatus();
+      fixtures.pinMint.mockImplementation(async () => ({
+        data: { pin: '481502', expiresAt: new Date(Date.now() + 150).toISOString() },
+      }));
+      renderSection();
+
+      await userEvent.click(await screen.findByTestId('hub-pool-mint-pin-btn'));
+
+      expect(await screen.findByTestId('hub-pool-minted-pin')).toHaveTextContent('481502');
+      await waitFor(() => expect(screen.queryByTestId('hub-pool-minted-pin')).not.toBeInTheDocument(), { timeout: 2000 });
     });
 
     it('says a PIN is outstanding without ever re-showing it, which is what status reports', async () => {
       // `GET status` carries `{ active, expiresAt }` and never the value, so a page reload — or any
       // other operator polling the same endpoint — cannot recover a PIN it did not mint.
-      fixtures.status = baseStatus({ pairingPin: { active: true, expiresAt: '2026-01-01T00:10:00.000Z' } });
+      fixtures.status = baseStatus({ pairingPin: { active: true, expiresAt: '2099-01-01T00:10:00.000Z' } });
       renderSection();
 
       expect(await screen.findByTestId('hub-pool-pin-state')).toHaveTextContent('HUB_POOL_PIN_ACTIVE_ELSEWHERE');
+      expect(screen.getByTestId('hub-pool-pin-expiry')).toHaveAttribute('datetime', '2099-01-01T00:10:00.000Z');
       expect(screen.queryByTestId('hub-pool-minted-pin')).not.toBeInTheDocument();
+    });
+
+    it('does not keep a dead PIN on screen after its expiry', async () => {
+      fixtures.status = baseStatus({ pairingPin: { active: true, expiresAt: '2020-01-01T00:10:00.000Z' } });
+      renderSection();
+
+      expect(await screen.findByTestId('hub-pool-pin-state')).toHaveTextContent('HUB_POOL_PIN_NONE');
+      expect(screen.queryByTestId('hub-pool-pin-expiry')).not.toBeInTheDocument();
     });
 
     it('shows the requester’s key fingerprint on the confirm row, next to its FQDN', async () => {

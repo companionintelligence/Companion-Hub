@@ -22,7 +22,7 @@ import { cn } from '@/lib/utils';
 import { isRefused, outputFault, settledOutcome } from '@/modules/system/pool-node-series';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowRightLeft, ChevronRight, Network } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
@@ -518,10 +518,13 @@ export const HubPoolSection = () => {
   });
 
   /* The PIN an operator read off the OTHER Hub's screen. Optional: without one this is the
-     pre-existing request/approve flow, which is what keeps a mixed-version fleet pairing at all. */
+     pre-existing request/approve flow, which is what keeps a mixed-version fleet pairing at all.
+     A partial PIN is not a blank one — sending the request without it would pair as if they
+     had not typed anything. */
   const [pairingPinInput, setPairingPinInput] = useState('');
+  const [pairingPinError, setPairingPinError] = useState(false);
   const pairMutation = useMutation({
-    mutationFn: (nodeFqdn: string) => pairPeer({ body: { nodeFqdn, ...(/^\d{6}$/.test(pairingPinInput) ? { pin: pairingPinInput } : {}) } as never }),
+    mutationFn: (nodeFqdn: string) => pairPeer({ body: { nodeFqdn, ...(pairingPinInput ? { pin: pairingPinInput } : {}) } as never }),
     onSuccess: () => {
       toast.success(t('HUB_POOL_PAIR_SUCCESS'));
       setPairingPinInput('');
@@ -529,6 +532,14 @@ export const HubPoolSection = () => {
     },
     onError: () => toast.error(t('HUB_POOL_PAIR_ERROR')),
   });
+  const requestPair = (nodeFqdn: string) => {
+    if (pairingPinInput.length > 0 && !/^\d{6}$/.test(pairingPinInput)) {
+      setPairingPinError(true);
+      return;
+    }
+    setPairingPinError(false);
+    pairMutation.mutate(nodeFqdn);
+  };
 
   const approveMutation = useMutation({
     mutationFn: (id: string) => approvePeer({ path: { id } }),
@@ -592,13 +603,19 @@ export const HubPoolSection = () => {
      swagger.json after this lands. The mint RESPONSE is the only place the digits ever appear —
      `GET status` reports `pairingPin: { active, expiresAt }` and never the value, so polling can
      render the countdown without the PIN becoming re-servable. */
-  const [mintedPin, setMintedPin] = useState<string | null>(null);
+  const [mintedPin, setMintedPin] = useState<{ pin: string; expiresAt: string } | null>(null);
+  // Status lags the mint response. Only treat `active: false` as "this PIN was used" after a poll
+  // has already reported it live, so the digits are not cleared by the status that was on screen
+  // before Generate PIN returned.
+  const mintedPinSeenLive = useRef(false);
   const mintPinMutation = useMutation({
     mutationFn: () => client.post({ url: '/api/inference/pool/pairing-pin' }),
     onSuccess: (response) => {
       // Cast rather than a generic: the low-level client types every response as `unknown` until
       // swagger.json and the api-client are regenerated. `hub-pool.controller.ts` is the contract.
-      setMintedPin((response.data as { pin?: string } | undefined)?.pin ?? null);
+      const minted = response.data as { pin?: string; expiresAt?: string } | undefined;
+      mintedPinSeenLive.current = false;
+      setMintedPin(minted?.pin ? { pin: minted.pin, expiresAt: minted.expiresAt ?? '' } : null);
       invalidatePool();
     },
     onError: () => toast.error(t('HUB_POOL_PIN_MINT_ERROR')),
@@ -611,6 +628,38 @@ export const HubPoolSection = () => {
     },
     onError: () => toast.error(t('HUB_POOL_PIN_CANCEL_ERROR')),
   });
+
+  useEffect(() => {
+    if (!mintedPin) {
+      mintedPinSeenLive.current = false;
+      return;
+    }
+    const expiresAt = new Date(mintedPin.expiresAt).getTime();
+    if (mintedPin.expiresAt && Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
+      setMintedPin(null);
+      return;
+    }
+    if (status?.pairingPin?.active) {
+      mintedPinSeenLive.current = true;
+    } else if (mintedPinSeenLive.current && status?.pairingPin?.active === false) {
+      setMintedPin(null);
+      return;
+    }
+    if (!Number.isFinite(expiresAt)) return;
+    // setTimeout takes a 32-bit delay. A longer one overflows and fires immediately, which would
+    // wipe a PIN that is still good. Re-arm when the cap hits before the real expiry.
+    let timer = 0;
+    const arm = () => {
+      const remaining = expiresAt - Date.now();
+      if (remaining <= 0) {
+        setMintedPin(null);
+        return;
+      }
+      timer = window.setTimeout(arm, Math.min(remaining, 2_147_483_647));
+    };
+    arm();
+    return () => window.clearTimeout(timer);
+  }, [mintedPin, status?.pairingPin?.active]);
 
   /* Same DELETE as Unpair, split out only so the toasts match what the operator did: cancelling
      an unanswered outbound request is not the same event as tearing down a live pairing. */
@@ -699,6 +748,87 @@ export const HubPoolSection = () => {
       },
     });
 
+  const pairingWaiting = pendingInbound.length > 0 || pendingOutbound.length > 0;
+  const pendingBlock = (
+    <Block title={t('HUB_POOL_PENDING_TITLE')} help={t('HUB_POOL_PENDING_HELP')}>
+      {!pendingInbound.length && !pendingOutbound.length ? (
+        <p className="text-sm text-muted-foreground">{t('HUB_POOL_PENDING_EMPTY')}</p>
+      ) : (
+        <ul className="space-y-2">
+          {pendingInbound.map((peer) => (
+            <li key={peer.id} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+              {/* The FQDN, not the display name: approving issues a fresh token to this exact host,
+                      and the name is whatever the (unauthenticated) requester chose to call itself. */}
+              <div className="min-w-0">
+                <span className="block break-all font-mono text-xs sm:truncate" title={peer.nodeFqdn} data-testid="hub-pool-pending-fqdn">
+                  {peer.nodeFqdn}
+                </span>
+                {peer.displayName ? <span className="block truncate text-xs text-muted-foreground">{peer.displayName}</span> : null}
+                {/* The other half of the confirmation. A PIN-authenticated request arrives with the
+                        requester's key already pinned, so the operator can compare this fingerprint
+                        against the one shown on that Hub's own screen before approving. Absent means
+                        the request carried no PIN — i.e. an unauthenticated claim of a name, which is
+                        exactly the case the PIN exists to close. */}
+                <span className="block break-all font-mono text-[11px] text-muted-foreground sm:truncate" data-testid="hub-pool-pending-fingerprint">
+                  {peer.peerKeyFingerprint
+                    ? t('HUB_POOL_PEER_FINGERPRINT', { fingerprint: peer.peerKeyFingerprint })
+                    : t('HUB_POOL_PEER_FINGERPRINT_UNVERIFIED')}
+                </span>
+              </div>
+              <div className="flex shrink-0 gap-2 self-end sm:self-auto">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={demoMode}
+                  loading={rejectMutation.isPending && rejectMutation.variables === peer.id}
+                  onClick={() => rejectMutation.mutate(peer.id)}
+                >
+                  {t('HUB_POOL_REJECT_BUTTON')}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={demoMode}
+                  loading={approveMutation.isPending && approveMutation.variables === peer.id}
+                  onClick={() => approveMutation.mutate(peer.id)}
+                >
+                  {t('HUB_POOL_APPROVE_BUTTON')}
+                </Button>
+              </div>
+            </li>
+          ))}
+          {/* Without this row's cancel the request is unrecoverable from the page: nothing sweeps
+                  outbound pending rows, and discovery hides any FQDN already in the peer table, so a
+                  peer that never answers would drop out of the pairing list forever. */}
+          {pendingOutbound.map((peer) => (
+            <li key={peer.id} data-testid="hub-pool-pending-outbound" className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+              <span className="min-w-0 break-all font-mono text-xs sm:truncate" title={peer.nodeFqdn}>
+                {peerLabel(peer)}
+              </span>
+              <div className="flex shrink-0 items-center justify-end gap-3 self-end sm:self-auto">
+                <span className="text-xs text-muted-foreground">{t('HUB_POOL_OUTBOUND_WAITING', { name: peerLabel(peer) })}</span>
+                {/* No confirm dialog, unlike Unpair: this discards a request nobody answered, so
+                        there is no established pairing or issued token to lose. */}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  data-testid="hub-pool-cancel-request-btn"
+                  disabled={demoMode}
+                  loading={cancelRequestMutation.isPending && cancelRequestMutation.variables === peer.id}
+                  onClick={() => cancelRequestMutation.mutate(peer.id)}
+                >
+                  {t('HUB_POOL_CANCEL_REQUEST_BUTTON')}
+                </Button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Block>
+  );
+
   return (
     <Card data-testid="hub-pool-card">
       <SectionHeader
@@ -712,6 +842,7 @@ export const HubPoolSection = () => {
         }
       />
       <CardContent className="space-y-4">
+        {pairingWaiting ? pendingBlock : null}
         {/* ── State at a glance ───────────────────────────────────────── */}
         <div className="space-y-3">
           {/* Only when something is NOT nominal. With routing active the badge in the header
@@ -1097,10 +1228,13 @@ export const HubPoolSection = () => {
                           </span>
                         ) : null}
                       </span>
-                      {/* The FQDN is the identity the token was issued to; the label is only a label. */}
-                      <span className="break-all font-mono text-[10px] text-muted-foreground sm:truncate" title={peer.nodeFqdn}>
-                        {peer.nodeFqdn}
-                      </span>
+                      {/* The FQDN is the identity the token was issued to; the label is only a label.
+                          When there is no display name, the line above already is the address. */}
+                      {peer.displayName && peer.displayName !== peer.nodeFqdn ? (
+                        <span className="break-all font-mono text-[10px] text-muted-foreground sm:truncate" title={peer.nodeFqdn}>
+                          {peer.nodeFqdn}
+                        </span>
+                      ) : null}
                       {peer.status === 'unreachable' && peer.probeFailure?.action ? (
                         // The backend only sets `action` when "wait, it clears on its own" is false
                         // (see PoolPeerProbeFailureSummary) — this is the operator's actual next step,
@@ -1141,7 +1275,7 @@ export const HubPoolSection = () => {
                         checked={peer.enabled}
                         disabled={demoMode || peerEnabledMutation.isPending}
                         onCheckedChange={(checked: boolean) => peerEnabledMutation.mutate({ id: peer.id, enabled: checked })}
-                        aria-label={t('HUB_POOL_PEER_TOGGLE_LABEL')}
+                        aria-label={t('HUB_POOL_PEER_TOGGLE_NAMED', { name: peerLabel(peer) })}
                       />
                       <Button
                         type="button"
@@ -1149,6 +1283,7 @@ export const HubPoolSection = () => {
                         variant="outline"
                         intent="danger"
                         data-testid="hub-pool-unpair-btn"
+                        aria-label={t('HUB_POOL_UNPAIR_NAMED', { name: peerLabel(peer) })}
                         disabled={demoMode}
                         loading={removeMutation.isPending && removeMutation.variables === peer.id}
                         onClick={() => setUnpairTarget(peer)}
@@ -1199,8 +1334,8 @@ export const HubPoolSection = () => {
                     <>
                       <Th>{t('HUB_POOL_MODELS_COL_MODEL')}</Th>
                       {asMatrix ? (
-                        poolNodes.map((node) => (
-                          <Th key={node} align="right">
+                        poolNodes.map((node, index) => (
+                          <Th key={node} id={`hub-pool-model-col-${index}`} align="right">
                             {node}
                           </Th>
                         ))
@@ -1227,15 +1362,20 @@ export const HubPoolSection = () => {
                             </span>
                           </Td>
                           {asMatrix ? (
-                            poolNodes.map((node) => (
-                              <Td key={node} align="right">
-                                {entry.nodes.includes(node) ? (
-                                  <StatusDot tone={sole ? 'warn' : 'ok'} />
-                                ) : (
-                                  <span className="text-muted-foreground/40">·</span>
-                                )}
-                              </Td>
-                            ))
+                            poolNodes.map((node, index) => {
+                              const present = entry.nodes.includes(node);
+                              const presence = present
+                                ? t(sole ? 'HUB_POOL_MODELS_ONLY_HERE' : 'HUB_POOL_MODELS_HERE')
+                                : t('HUB_POOL_MODELS_NOT_HERE');
+                              return (
+                                <Td key={node} align="right" headers={`hub-pool-model-col-${index}`}>
+                                  <span className="inline-flex items-center justify-end gap-1.5">
+                                    {present ? <StatusDot tone={sole ? 'warn' : 'ok'} /> : <span className="text-muted-foreground/40">·</span>}
+                                    <span>{presence}</span>
+                                  </span>
+                                </Td>
+                              );
+                            })
                           ) : (
                             <Td className="text-muted-foreground" title={entry.nodes.join(', ')}>
                               {entry.nodes.join(', ')}
@@ -1382,8 +1522,15 @@ export const HubPoolSection = () => {
                 {/* The only place the digits are ever rendered: they came back from the mint call and
                     are held in this component's state, never re-fetched. A reload loses them, which
                     is correct — the operator mints a new one. */}
-                <span className="font-mono text-2xl tracking-[0.3em]" data-testid="hub-pool-minted-pin">
-                  {mintedPin}
+                <span>
+                  <span className="block font-mono text-2xl tracking-[0.3em]" data-testid="hub-pool-minted-pin">
+                    {mintedPin.pin}
+                  </span>
+                  {mintedPin.expiresAt ? (
+                    <time dateTime={mintedPin.expiresAt} className="text-xs text-muted-foreground" data-testid="hub-pool-minted-pin-expiry">
+                      {t('HUB_POOL_PIN_EXPIRES', { time: formatHubDateTime(mintedPin.expiresAt) })}
+                    </time>
+                  ) : null}
                 </span>
                 <Button type="button" size="sm" variant="outline" disabled={demoMode} onClick={() => cancelPinMutation.mutate()}>
                   {t('HUB_POOL_PIN_CANCEL_BUTTON')}
@@ -1392,7 +1539,16 @@ export const HubPoolSection = () => {
             ) : (
               <div className="flex items-center justify-between gap-3">
                 <span className="text-xs text-muted-foreground" data-testid="hub-pool-pin-state">
-                  {status.pairingPin?.active ? t('HUB_POOL_PIN_ACTIVE_ELSEWHERE') : t('HUB_POOL_PIN_NONE')}
+                  {status.pairingPin?.active && status.pairingPin.expiresAt && new Date(status.pairingPin.expiresAt).getTime() > Date.now() ? (
+                    <>
+                      {t('HUB_POOL_PIN_ACTIVE_ELSEWHERE')}{' '}
+                      <time dateTime={status.pairingPin.expiresAt} data-testid="hub-pool-pin-expiry">
+                        {t('HUB_POOL_PIN_EXPIRES', { time: formatHubDateTime(status.pairingPin.expiresAt) })}
+                      </time>
+                    </>
+                  ) : (
+                    t('HUB_POOL_PIN_NONE')
+                  )}
                 </span>
                 <Button
                   type="button"
@@ -1406,22 +1562,27 @@ export const HubPoolSection = () => {
                 </Button>
               </div>
             )}
-
-            {/* Entered on the OTHER Hub, next to the address being paired. Left blank, pairing
-                behaves exactly as it did before this shipped. */}
-            <Input
-              value={pairingPinInput}
-              inputMode="numeric"
-              maxLength={6}
-              data-testid="hub-pool-pin-input"
-              placeholder={t('HUB_POOL_PIN_INPUT_PLACEHOLDER')}
-              onChange={(event) => setPairingPinInput(event.target.value.replace(/\D/g, '').slice(0, 6))}
-            />
           </div>
         </Block>
 
         {/* ── Discovery and pairing ───────────────────────────────────── */}
         <Block title={t('HUB_POOL_DISCOVERABLE_TITLE')} help={t('HUB_POOL_DISCOVERABLE_HELP')}>
+          {/* The digits from the other Hub's screen. Same block as Pair: a short PIN used to be
+              dropped on the way out, and the field lived under Generate PIN instead of here. */}
+          <Input
+            value={pairingPinInput}
+            inputMode="numeric"
+            autoComplete="off"
+            maxLength={6}
+            data-testid="hub-pool-pin-input"
+            label={t('HUB_POOL_PIN_INPUT_LABEL')}
+            placeholder={t('HUB_POOL_PIN_INPUT_PLACEHOLDER')}
+            error={pairingPinError ? t('HUB_POOL_PIN_INPUT_INVALID') : undefined}
+            onChange={(event) => {
+              setPairingPinInput(event.target.value.replace(/\D/g, '').slice(0, 6));
+              setPairingPinError(false);
+            }}
+          />
           {/* `tailscaleAdminApiConfigured` covers one of three sources: the daemon peer map and the
               Portal registry need no credential, and neither RESULT is reported by `GET status`. The
               two fields that come close — `localNode.tailscaleConnected` (rendered above) and
@@ -1467,7 +1628,7 @@ export const HubPoolSection = () => {
                         size="sm"
                         disabled={demoMode || pairMutation.isPending}
                         loading={pairMutation.isPending && pairMutation.variables === device.nodeFqdn}
-                        onClick={() => pairMutation.mutate(device.nodeFqdn)}
+                        onClick={() => requestPair(device.nodeFqdn)}
                       >
                         {pairMutation.isPending && pairMutation.variables === device.nodeFqdn ? t('HUB_POOL_PAIRING') : t('HUB_POOL_PAIR_BUTTON')}
                       </Button>
@@ -1502,90 +1663,7 @@ export const HubPoolSection = () => {
           )}
         </Block>
 
-        <Block title={t('HUB_POOL_PENDING_TITLE')} help={t('HUB_POOL_PENDING_HELP')}>
-          {!pendingInbound.length && !pendingOutbound.length ? (
-            <p className="text-sm text-muted-foreground">{t('HUB_POOL_PENDING_EMPTY')}</p>
-          ) : (
-            <ul className="space-y-2">
-              {pendingInbound.map((peer) => (
-                <li key={peer.id} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
-                  {/* The FQDN, not the display name: approving issues a fresh token to this exact host,
-                      and the name is whatever the (unauthenticated) requester chose to call itself. */}
-                  <div className="min-w-0">
-                    <span className="block break-all font-mono text-xs sm:truncate" title={peer.nodeFqdn} data-testid="hub-pool-pending-fqdn">
-                      {peer.nodeFqdn}
-                    </span>
-                    {peer.displayName ? <span className="block truncate text-xs text-muted-foreground">{peer.displayName}</span> : null}
-                    {/* The other half of the confirmation. A PIN-authenticated request arrives with the
-                        requester's key already pinned, so the operator can compare this fingerprint
-                        against the one shown on that Hub's own screen before approving. Absent means
-                        the request carried no PIN — i.e. an unauthenticated claim of a name, which is
-                        exactly the case the PIN exists to close. */}
-                    <span
-                      className="block break-all font-mono text-[11px] text-muted-foreground sm:truncate"
-                      data-testid="hub-pool-pending-fingerprint"
-                    >
-                      {peer.peerKeyFingerprint
-                        ? t('HUB_POOL_PEER_FINGERPRINT', { fingerprint: peer.peerKeyFingerprint })
-                        : t('HUB_POOL_PEER_FINGERPRINT_UNVERIFIED')}
-                    </span>
-                  </div>
-                  <div className="flex shrink-0 gap-2 self-end sm:self-auto">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      disabled={demoMode}
-                      loading={rejectMutation.isPending && rejectMutation.variables === peer.id}
-                      onClick={() => rejectMutation.mutate(peer.id)}
-                    >
-                      {t('HUB_POOL_REJECT_BUTTON')}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      disabled={demoMode}
-                      loading={approveMutation.isPending && approveMutation.variables === peer.id}
-                      onClick={() => approveMutation.mutate(peer.id)}
-                    >
-                      {t('HUB_POOL_APPROVE_BUTTON')}
-                    </Button>
-                  </div>
-                </li>
-              ))}
-              {/* Without this row's cancel the request is unrecoverable from the page: nothing sweeps
-                  outbound pending rows, and discovery hides any FQDN already in the peer table, so a
-                  peer that never answers would drop out of the pairing list forever. */}
-              {pendingOutbound.map((peer) => (
-                <li
-                  key={peer.id}
-                  data-testid="hub-pool-pending-outbound"
-                  className="flex items-center justify-between gap-3 rounded-md border px-3 py-2"
-                >
-                  <span className="min-w-0 break-all font-mono text-xs sm:truncate" title={peer.nodeFqdn}>
-                    {peerLabel(peer)}
-                  </span>
-                  <div className="flex shrink-0 items-center justify-end gap-3 self-end sm:self-auto">
-                    <span className="text-xs text-muted-foreground">{t('HUB_POOL_OUTBOUND_WAITING', { name: peerLabel(peer) })}</span>
-                    {/* No confirm dialog, unlike Unpair: this discards a request nobody answered, so
-                        there is no established pairing or issued token to lose. */}
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      data-testid="hub-pool-cancel-request-btn"
-                      disabled={demoMode}
-                      loading={cancelRequestMutation.isPending && cancelRequestMutation.variables === peer.id}
-                      onClick={() => cancelRequestMutation.mutate(peer.id)}
-                    >
-                      {t('HUB_POOL_CANCEL_REQUEST_BUTTON')}
-                    </Button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Block>
+        {pairingWaiting ? null : pendingBlock}
       </CardContent>
 
       <Dialog open={!!unpairTarget} onOpenChange={(open) => !open && setUnpairTarget(null)}>

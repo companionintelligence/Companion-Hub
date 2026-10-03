@@ -10,6 +10,8 @@ import { NetworkSettingsContainer } from '../network-settings';
 const fixtures = vi.hoisted(() => ({
   poolStatus: {} as Record<string, unknown>,
   tailscaleStatus: { installed: false, connected: false, ip: null, hostname: null, backendState: null } as Record<string, unknown>,
+  tailscaleFails: false,
+  cloudflareFails: false,
 }));
 
 vi.mock('react-i18next', () => {
@@ -40,12 +42,18 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getStatus2QueryKey: () => ['cf'],
   getStatus2Options: () => ({
     queryKey: ['cf'],
-    queryFn: async () => ({ tunnelEnabled: true, tunnelId: 'fe950a10-8659', message: 'Tunnel is managed by CI-Cloud.' }),
+    queryFn: async () => {
+      if (fixtures.cloudflareFails) throw new Error('tunnel status failed');
+      return { tunnelEnabled: true, tunnelId: 'fe950a10-8659', message: 'Tunnel is managed by CI-Cloud.' };
+    },
   }),
   getStatus3QueryKey: () => ['ts'],
   getStatus3Options: () => ({
     queryKey: ['ts'],
-    queryFn: async () => fixtures.tailscaleStatus,
+    queryFn: async () => {
+      if (fixtures.tailscaleFails) throw new Error('vpn status failed');
+      return fixtures.tailscaleStatus;
+    },
   }),
   poolStatusQueryKey: () => ['pool-status'],
   poolStatusOptions: () => ({ queryKey: ['pool-status'], queryFn: async () => fixtures.poolStatus }),
@@ -95,6 +103,8 @@ describe('NetworkSettingsContainer', () => {
     vi.clearAllMocks();
     fixtures.poolStatus = poolStatus();
     fixtures.tailscaleStatus = { installed: false, connected: false, ip: null, hostname: null, backendState: null };
+    fixtures.tailscaleFails = false;
+    fixtures.cloudflareFails = false;
   });
 
   it('renders both cards with status badges and the tunnel id', async () => {
@@ -108,6 +118,33 @@ describe('NetworkSettingsContainer', () => {
     expect(screen.getByText('SETTINGS_NETWORK_ACTIVE')).toBeTruthy();
     expect(screen.getByText('fe950a10-8659')).toBeTruthy();
     expect(screen.getByText('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED_DESC')).toBeTruthy();
+  });
+
+  it('shows an error and a retry when the VPN status cannot be loaded, not Inactive', async () => {
+    fixtures.tailscaleFails = true;
+    renderContainer();
+
+    const card = await screen.findByTestId('private-vpn-card');
+    expect(within(card).getByTestId('tailscale-status-error').textContent).toBe('SETTINGS_NETWORK_STATUS_ERROR');
+    expect(within(card).getByRole('button', { name: 'COMMON_RETRY' })).toBeTruthy();
+    expect(within(card).queryByText('SETTINGS_NETWORK_INACTIVE')).toBeNull();
+
+    fixtures.tailscaleFails = false;
+    fixtures.tailscaleStatus = { installed: true, connected: false, ip: null, hostname: null, backendState: null };
+    fireEvent.click(within(card).getByRole('button', { name: 'COMMON_RETRY' }));
+
+    await waitFor(() => expect(within(screen.getByTestId('private-vpn-card')).getByText('SETTINGS_NETWORK_INACTIVE')).toBeTruthy());
+    expect(within(screen.getByTestId('private-vpn-card')).queryByTestId('tailscale-status-error')).toBeNull();
+  });
+
+  it('shows an error and a retry when the tunnel status cannot be loaded, not Inactive', async () => {
+    fixtures.cloudflareFails = true;
+    renderContainer();
+
+    const card = await screen.findByTestId('cloudflare-tunnel-card');
+    expect(within(card).getByTestId('cloudflare-status-error').textContent).toBe('SETTINGS_NETWORK_STATUS_ERROR');
+    expect(within(card).queryByText('SETTINGS_NETWORK_INACTIVE')).toBeNull();
+    expect(within(card).queryByText('SETTINGS_NETWORK_ACTIVE')).toBeNull();
   });
 
   it('still renders the Hub Pool section inside the Network tab', async () => {
