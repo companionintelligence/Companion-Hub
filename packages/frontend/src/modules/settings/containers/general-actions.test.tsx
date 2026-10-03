@@ -15,7 +15,7 @@ import {
 } from '@/lib/update-service';
 import { factoryReset } from '@/api-client/sdk.gen';
 import { resolveStackUpdate } from '@/lib/desktop-stack-session';
-import { sdkOk } from '@/tests/sdk-mock-helpers';
+import { sdkFail, sdkOk } from '@/tests/sdk-mock-helpers';
 import { toast } from 'sonner';
 import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import { GeneralActionsContainer } from './general-actions';
@@ -461,6 +461,24 @@ describe('GeneralActionsContainer', () => {
     expect(toggle).toHaveAttribute('aria-disabled', 'false');
     expect(toggle).toHaveFocus();
     expect(toggle).toHaveClass('bg-primary');
+  });
+
+  it('keeps the Auto-update stack switch where it was when the save fails', async () => {
+    getAutoUpdates.mockResolvedValue(sdkOk({ enabled: true }));
+    setAutoUpdates.mockResolvedValue(sdkFail(500));
+
+    render(<GeneralActionsContainer />);
+
+    const toggle = await screen.findByRole('switch', { name: 'Auto-update stack' });
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
+
+    await userEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(mockToastError).toHaveBeenCalledWith('Could not save auto-update. The switch is unchanged.');
+    });
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    expect(setAutoUpdates).toHaveBeenCalledTimes(1);
   });
 
   it('tells a browser where to update the desktop app when the Hub cannot reach it', async () => {

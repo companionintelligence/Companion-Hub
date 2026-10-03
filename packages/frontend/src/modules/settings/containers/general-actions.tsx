@@ -311,10 +311,11 @@ export const GeneralActionsContainer = () => {
       if (!result.ok) throw new Error(`HTTP ${result.status}`);
       setAutoUpdates(newValue);
     } catch {
-      // ignore
+      // The switch only moves after a successful save, so a failure leaves the previous position.
+      toast.error(t('SETTINGS_ACTIONS_AUTO_UPDATE_SAVE_ERROR'));
     }
     setAutoUpdatesLoading(false);
-  }, [autoUpdates, autoUpdatesLoading]);
+  }, [autoUpdates, autoUpdatesLoading, t]);
 
   const stackUpdateAvailable = isStackUpdateAvailable(version.current, version.latest);
   // After an update installed while the app was open, the running version is no longer what this

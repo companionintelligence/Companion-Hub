@@ -804,6 +804,7 @@
   "SETTINGS_ACTIONS_UPDATE_REPO_MODAL_SUBTITLE": "This will reset your appstores and pull the latest changes from GitHub",
   "SETTINGS_ACTIONS_UPDATE_REPO_SUCCESS": "Appstores updated successfully",
   "SETTINGS_ACTIONS_AUTO_UPDATE_STACK_DESCRIPTION": "Automatically pull and restart Docker stack images when updates are available",
+  "SETTINGS_ACTIONS_AUTO_UPDATE_SAVE_ERROR": "Could not save auto-update. The switch is unchanged.",
   "SETTINGS_ACTIONS_AUTO_UPDATE_STACK_TITLE": "Auto-update stack",
   "SETTINGS_ACTIONS_AUTO_UPDATE_TITLE": "Auto-update",
   "SETTINGS_ACTIONS_AUTO_UPDATE_SUBTITLE": "Automatically update when new versions are available",
