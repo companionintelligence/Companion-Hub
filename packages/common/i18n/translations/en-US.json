@@ -731,6 +731,7 @@
   "HEADER_EXIT_FULLSCREEN": "Exit fullscreen",
   "HEADER_LIGHT_MODE": "Light Mode",
   "HEADER_LOGOUT": "Logout",
+  "HEADER_LOGGING_OUT": "Logging out…",
   "HEADER_SPONSOR": "Sponsor",
   "INTERNAL_SERVER_ERROR": "Internal server error",
   "LINKS_ADD_SUBMIT": "Submit",

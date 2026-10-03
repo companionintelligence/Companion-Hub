@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as hubStatusModule from './hub-status';
 
-const { HubStatus, getDockerDesktopGuideContent } = hubStatusModule;
+const { HubStatus, detectMacChip, getDockerDesktopGuideContent } = hubStatusModule;
 
 const revalidateMock = vi.fn();
 
@@ -220,6 +220,40 @@ describe('getDockerDesktopGuideContent', () => {
   });
 });
 
+describe('detectMacChip', () => {
+  const originalPlatform = navigator.platform;
+
+  afterEach(() => {
+    Object.defineProperty(window.navigator, 'platform', { value: originalPlatform, configurable: true });
+    restoreNavigator();
+  });
+
+  it('reads Apple silicon only from client hints or an arm user agent', () => {
+    setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)', { architecture: 'arm' });
+    expect(detectMacChip()).toBe('arm');
+
+    setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)', { architecture: 'x86' });
+    expect(detectMacChip()).toBe('intel');
+
+    setUserAgent('Mozilla/5.0 (Macintosh; ARM64 Mac OS X)');
+    expect(detectMacChip()).toBe('arm');
+  });
+
+  it('does not treat a Mac platform, or a thrown client-hints read, as Apple silicon', () => {
+    Object.defineProperty(window.navigator, 'platform', { value: 'MacIntel', configurable: true });
+    setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)');
+    expect(detectMacChip()).toBe('unknown');
+
+    Object.defineProperty(window.navigator, 'userAgentData', {
+      configurable: true,
+      get() {
+        throw new Error('client hints unavailable');
+      },
+    });
+    expect(detectMacChip()).toBe('unknown');
+  });
+});
+
 describe('HubStatus Docker guidance', () => {
   it('shows Windows manual guidance with a direct download link and no install button', async () => {
     const { invoke } = renderWithTauriStatus('DockerNotAvailable', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
@@ -237,6 +271,21 @@ describe('HubStatus Docker guidance', () => {
     expect(screen.queryByRole('button', { name: 'Install Docker Desktop' })).not.toBeInTheDocument();
     expect(invoke).toHaveBeenCalledWith('get_hub_status_command');
     expect(invoke).not.toHaveBeenCalledWith('install_docker_command');
+  });
+
+  it('offers both Mac Docker downloads when the chip is unknown, including on an Intel Mac', async () => {
+    Object.defineProperty(window.navigator, 'platform', { value: 'MacIntel', configurable: true });
+    renderWithTauriStatus('DockerNotAvailable', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)');
+
+    expect(await screen.findByRole('link', { name: 'Download Docker Desktop for Apple Silicon' })).toHaveAttribute(
+      'href',
+      'https://desktop.docker.com/mac/main/arm64/Docker.dmg',
+    );
+    expect(screen.getByRole('link', { name: 'Download Docker Desktop for Intel Chip' })).toHaveAttribute(
+      'href',
+      'https://desktop.docker.com/mac/main/amd64/Docker.dmg',
+    );
+    expect(screen.queryByRole('link', { name: 'Download Docker Desktop for Mac' })).not.toBeInTheDocument();
   });
 
   it('shows the Apple Silicon macOS download link and no install button', async () => {

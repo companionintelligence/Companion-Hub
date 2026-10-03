@@ -1,5 +1,5 @@
 import { Link, NavLink, useNavigate } from 'react-router';
-import { LogOut, Home, Settings, Store, Menu, LogIn, Sun, Moon, Activity } from 'lucide-react';
+import { LogOut, Home, Settings, Store, Menu, LogIn, Sun, Moon, Activity, Loader2 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { useTranslation } from 'react-i18next';
 import { Button, buttonVariants } from '@/components/ui/Button';
@@ -10,7 +10,7 @@ import { useMutation } from '@tanstack/react-query';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import { logoutMutation } from '@/api-client/@tanstack/react-query.gen';
 import { useAppStoreState } from '@/stores/app-store';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppContext } from '@/context/app-context';
 
 type HeaderProps = {
@@ -38,6 +38,7 @@ export const Header = (props: HeaderProps) => {
   });
 
   const handleLogout = () => {
+    if (logout.isPending) return;
     logout.mutate({});
   };
 
@@ -101,7 +102,7 @@ export const Header = (props: HeaderProps) => {
 
         {!isLoggedIn && (
           <Button variant="ghost" size="sm" onClick={() => navigate('/login')}>
-            {t('login', 'Login')}
+            {t('COMMON_LOGIN')}
             <LogIn className="ml-2 size-4" />
           </Button>
         )}
@@ -123,12 +124,13 @@ export const Header = (props: HeaderProps) => {
             <Button
               variant="ghost"
               size="icon"
-              title={t('HEADER_LOGOUT', 'Logout')}
+              title={logout.isPending ? t('HEADER_LOGGING_OUT') : t('HEADER_LOGOUT', 'Logout')}
               onClick={handleLogout}
+              loading={logout.isPending}
               className="text-foreground/80 hover:bg-accent hover:text-accent-foreground"
             >
               <LogOut className="size-4" />
-              <span className="sr-only">{t('HEADER_LOGOUT', 'Logout')}</span>
+              <span className="sr-only">{logout.isPending ? t('HEADER_LOGGING_OUT') : t('HEADER_LOGOUT', 'Logout')}</span>
             </Button>
           </>
         )}
@@ -136,6 +138,7 @@ export const Header = (props: HeaderProps) => {
 
       <MobileAppMenu
         isLoggedIn={isLoggedIn}
+        loggingOut={logout.isPending}
         onLogout={handleLogout}
         onOpenStore={openStoreWithFeaturedDefaults}
         onLogin={() => navigate('/login')}
@@ -149,12 +152,14 @@ const menuItemClass = 'flex min-h-[44px] w-full items-center rounded-sm px-2 tex
 
 function MobileAppMenu({
   isLoggedIn,
+  loggingOut,
   onLogout,
   onOpenStore,
   onLogin,
   setTheme,
 }: {
   isLoggedIn: boolean;
+  loggingOut: boolean;
   onLogout: () => void;
   onOpenStore: () => void;
   onLogin: () => void;
@@ -162,10 +167,25 @@ function MobileAppMenu({
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setOpen(false);
+      toggleRef.current?.focus();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [open]);
 
   return (
     <div className="relative ml-auto flex justify-end lg:hidden">
       <Button
+        ref={toggleRef}
         type="button"
         variant="ghost"
         size="icon"
@@ -173,6 +193,7 @@ function MobileAppMenu({
         aria-haspopup="menu"
         data-testid="mobile-app-menu-btn"
         className="text-foreground"
+        loading={loggingOut}
         onClick={() => setOpen((current) => !current)}
       >
         <Menu className="size-5" />
@@ -184,14 +205,16 @@ function MobileAppMenu({
             type="button"
             aria-label={t('COMMON_CLOSE')}
             data-testid="mobile-app-menu-scrim"
+            tabIndex={-1}
             className="fixed inset-x-0 bottom-0 z-40 bg-black/25"
             style={{ top: 'var(--header-offset)' }}
             onClick={() => setOpen(false)}
           />
           <div
+            ref={menuRef}
             role="menu"
             data-testid="mobile-app-menu"
-            className="absolute right-0 top-full z-50 mt-2 w-56 origin-top-right animate-in fade-in-0 zoom-in-95 slide-in-from-top-2 rounded-md border bg-popover p-1 text-popover-foreground shadow-md duration-200"
+            className="absolute right-0 top-full z-50 mt-2 max-h-[calc(100dvh-var(--header-offset)-1rem)] w-56 origin-top-right animate-in overflow-y-auto fade-in-0 zoom-in-95 slide-in-from-top-2 rounded-md border bg-popover p-1 text-popover-foreground shadow-md duration-200"
           >
             {isLoggedIn ? (
               <>
@@ -233,9 +256,19 @@ function MobileAppMenu({
                   {t('COMMON_SYSTEM')}
                 </button>
                 <div className="my-1 h-px bg-muted" />
-                <button type="button" role="menuitem" className={`${menuItemClass} text-red-600`} onClick={onLogout}>
-                  <LogOut className="mr-2 size-4" />
-                  {t('HEADER_LOGOUT', 'Logout')}
+                <button
+                  type="button"
+                  role="menuitem"
+                  className={`${menuItemClass} text-red-600`}
+                  disabled={loggingOut}
+                  aria-busy={loggingOut || undefined}
+                  onClick={() => {
+                    setOpen(false);
+                    onLogout();
+                  }}
+                >
+                  {loggingOut ? <Loader2 className="mr-2 size-4 animate-spin" /> : <LogOut className="mr-2 size-4" />}
+                  {loggingOut ? t('HEADER_LOGGING_OUT') : t('HEADER_LOGOUT', 'Logout')}
                 </button>
               </>
             ) : (
@@ -249,7 +282,7 @@ function MobileAppMenu({
                 }}
               >
                 <LogIn className="mr-2 size-4" />
-                {t('login', 'Login')}
+                {t('COMMON_LOGIN')}
               </button>
             )}
           </div>

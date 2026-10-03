@@ -90,13 +90,21 @@ function detectPlatform(): 'windows' | 'macos' | 'linux' {
   return 'linux';
 }
 
-function isAppleSilicon(): boolean {
+export type MacChip = 'arm' | 'intel' | 'unknown';
+
+/**
+ * Apple silicon only when the browser says so. `navigator.platform` contains `Mac` on an Intel
+ * Mac too, and a thrown client-hints read is the same unknown — neither one is a reason to
+ * hand someone the arm64 Docker image.
+ */
+export function detectMacChip(): MacChip {
   try {
-    const uad = (navigator as unknown as { userAgentData?: { architecture?: string } }).userAgentData;
-    if (uad?.architecture) return uad.architecture === 'arm';
-    return /arm64|aarch64/i.test(navigator.userAgent) || /Mac/.test(navigator.platform);
+    const architecture = (navigator as Navigator & { userAgentData?: { architecture?: string } }).userAgentData?.architecture;
+    if (architecture) return architecture === 'arm' ? 'arm' : 'intel';
+    if (/arm64|aarch64/i.test(navigator.userAgent)) return 'arm';
+    return 'unknown';
   } catch {
-    return true;
+    return 'unknown';
   }
 }
 
@@ -185,13 +193,15 @@ function DockerDesktopGuide({
   notInstalledSteps,
   footer,
   alternative,
-}: DockerDesktopGuideProps) {
+  macChip = 'unknown',
+}: DockerDesktopGuideProps & { macChip?: MacChip }) {
   const { t } = useTranslation();
   const isMac = platformLabel === 'Mac';
-  const [macArch, setMacArch] = useState<'arm' | 'intel'>(isAppleSilicon() ? 'arm' : 'intel');
+  const [macArch, setMacArch] = useState<MacChip>(macChip);
   const macArmUrl = 'https://desktop.docker.com/mac/main/arm64/Docker.dmg';
   const macIntelUrl = 'https://desktop.docker.com/mac/main/amd64/Docker.dmg';
   const activeDownloadUrl = isMac ? (macArch === 'arm' ? macArmUrl : macIntelUrl) : downloadUrl;
+  const macDownloadUnknown = isMac && macArch === 'unknown';
 
   return (
     <div className="space-y-6 w-full max-w-2xl">
@@ -215,15 +225,38 @@ function DockerDesktopGuide({
           </div>
 
           <div className="space-y-3">
-            <a
-              href={activeDownloadUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-            >
-              <Download className="h-4 w-4" aria-hidden />
-              {t('HUB_STATUS_DOWNLOAD_DOCKER_DESKTOP_FOR')} {platformLabel}
-            </a>
+            {macDownloadUnknown ? (
+              <div className="flex flex-col gap-2">
+                <a
+                  href={macArmUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+                >
+                  <Download className="h-4 w-4" aria-hidden />
+                  {t('HUB_STATUS_DOWNLOAD_DOCKER_DESKTOP_FOR')} {t('COMMON_APPLE_SILICON')}
+                </a>
+                <a
+                  href={macIntelUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-border px-6 py-3 text-sm font-medium text-foreground hover:bg-muted"
+                >
+                  <Download className="h-4 w-4" aria-hidden />
+                  {t('HUB_STATUS_DOWNLOAD_DOCKER_DESKTOP_FOR')} {t('HUB_STATUS_INTEL_CHIP')}
+                </a>
+              </div>
+            ) : (
+              <a
+                href={activeDownloadUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+              >
+                <Download className="h-4 w-4" aria-hidden />
+                {t('HUB_STATUS_DOWNLOAD_DOCKER_DESKTOP_FOR')} {platformLabel}
+              </a>
+            )}
             {isMac && (
               <div className="flex flex-col items-center gap-2">
                 <div className="flex justify-center gap-2">
@@ -469,10 +502,12 @@ function DockerInstallGuide() {
   }
 
   if (platform === 'macos') {
-    const guide = getDockerDesktopGuideContent('macos', isAppleSilicon());
+    const macChip = detectMacChip();
+    const guide = getDockerDesktopGuideContent('macos', macChip === 'arm');
     return (
       <DockerDesktopGuide
         {...guide}
+        macChip={macChip}
         footer={guide.hint ? <p className="text-xs text-muted-foreground">{guide.hint}</p> : undefined}
         alternative={<EngineAlternativePanel platform="macos" />}
       />
