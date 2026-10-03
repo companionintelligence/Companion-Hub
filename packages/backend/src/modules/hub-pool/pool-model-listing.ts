@@ -114,24 +114,39 @@ export function mergeLocalListings(path: string, bodies: readonly unknown[]): un
 export const LOCAL_LISTING_DEADLINE_MS = 2_500;
 
 /**
+ * How old a backend's last listing may be and still stand in for it when it misses
+ * `LOCAL_LISTING_DEADLINE_MS`. Without a stand-in, a healthy engine that is slow for a moment takes
+ * every model it holds out of the listing for that moment, and ci-server, which checks its model
+ * against the listing on every call, calls a model it has been using absent. An inventory changes only
+ * on a pull or a delete, so what the engine answered a few minutes ago is still what it holds. The cap
+ * bounds how long an engine that has stopped answering listings, while the health snapshot still calls
+ * it healthy, keeps its models offered. Five minutes is the forward budget's default, which is as long
+ * as the listing waited for such an engine before it had a deadline at all.
+ */
+export const LOCAL_LISTING_STAND_IN_MAX_AGE_MS = 5 * 60_000;
+
+/**
  * Every backend's listing body, asked in parallel, in `backends` order (the order the merge keeps),
  * without waiting past `deadlineMs` for a backend once another has answered:
  *
  * - Every answer that arrives within the deadline is kept, however many there are.
  * - At the deadline, the backends still out are dropped: each is reported to `onDropped` and its
- *   request aborted through the signal `fetchOne` was given.
+ *   request aborted through the signal `fetchOne` was given. What `onDropped` returns, if anything
+ *   usable, is kept in the dropped backend's place (its last listing; see
+ *   `LOCAL_LISTING_STAND_IN_MAX_AGE_MS`).
  * - When nothing has answered by the deadline, the first answer to arrive is kept and the rest are
  *   dropped then. A listing with one backend in it beats a listing that waits for them all, and an
  *   empty one would read as "no model here" to a client that would otherwise have waited.
  *
  * `null` from `fetchOne` (or a rejection) is a backend that answered with nothing usable: it is not
- * kept and does not count as an answer. The result is empty only when no backend answered at all.
+ * kept, does not count as an answer, and gets no stand-in, since it did answer. The result is empty
+ * only when no backend answered at all.
  */
 export function gatherListings<Backend>(
   backends: readonly Backend[],
   fetchOne: (backend: Backend, signal: AbortSignal) => Promise<unknown>,
   deadlineMs: number,
-  onDropped: (backend: Backend) => void,
+  onDropped: (backend: Backend) => unknown,
 ): Promise<unknown[]> {
   return new Promise((resolve) => {
     const controllers = backends.map(() => new AbortController());
@@ -147,8 +162,9 @@ export function gatherListings<Backend>(
       clearTimeout(timer);
       backends.forEach((backend, index) => {
         if (answers[index] === undefined) {
-          onDropped(backend);
           controllers[index]?.abort(new Error(`No listing within ${deadlineMs}ms while another backend had answered`));
+          // The aborted request settles later, finds the gather settled and leaves this alone.
+          answers[index] = onDropped(backend) ?? null;
         }
       });
       resolve(answers.filter(usable));

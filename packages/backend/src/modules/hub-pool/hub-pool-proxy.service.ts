@@ -1,12 +1,14 @@
 import { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { forwardRef, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import type { Response } from 'express';
-import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/common/types';
+import { INFERENCE_BACKEND_TYPES, type InferenceBackendType, type TrackedModel } from '@ci-hub/common/types';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
 import type { EngineCapabilities } from '@/modules/inference/backends/backend.interface';
 import { ModelRegistryService } from '@/modules/inference/model-registry.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
+import { MemoryManagerService, modelPoolFor } from '@/modules/inference/memory-manager.service';
+import { HardwareInspectorService } from '@/modules/inference/hardware-inspector.service';
 import { RelayError, relayToResponse, watchResponseClose, type ResponseCloseWatch } from '@/modules/inference/upstream-stream';
 import { QUARANTINE_STRIKES, STRIKE_WINDOW_MS } from '@/modules/inference/backends/serving-quarantine';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -102,6 +104,7 @@ import {
 } from './hub-pool-output-check';
 import {
   LOCAL_LISTING_DEADLINE_MS,
+  LOCAL_LISTING_STAND_IN_MAX_AGE_MS,
   MERGED_LISTING_PATHS,
   gatherListings,
   listedModelIds,
@@ -1427,6 +1430,13 @@ export function describeAttemptError(error: unknown): string {
 }
 
 /**
+ * The Hub's refusal to load a model on a local engine, from `arbitrateLocalLoad`. `unmeasured` marks a
+ * refusal that rests only on the catalog's figure for a model the engine places itself, which the walk
+ * sends to the engine instead of failing over (see `refusalRestsOnEstimate`).
+ */
+type LocalLoadRefusal = { reason: string; unmeasured: boolean };
+
+/**
  * An `attempts` reason for a local engine passed over because the Hub refused to load the model there.
  * The Hub's own sentence: sizes and what it could not unload, or, for a load the engine failed, the
  * engine's error about that load, which carries no prompt. Kept to the length of every other attempt
@@ -1647,6 +1657,12 @@ export class PoolProxyService {
     // slot the constructor-shape test pins. A harness that passes none gets a snapshot of its own
     // over the same registry and settings, which is all Nest's would be.
     @Optional() localHealth?: HubPoolLocalHealthService,
+    // Optional, and before the router, for the same positional reason. Read only after the Hub has
+    // refused a local load, to tell a refusal that rests on the catalog's figure for a model never
+    // measured here from one that does not (see `refusalRestsOnEstimate`). Without them every
+    // refusal fails over.
+    @Optional() @Inject(forwardRef(() => MemoryManagerService)) private readonly memoryManager?: MemoryManagerService,
+    @Optional() @Inject(forwardRef(() => HardwareInspectorService)) private readonly hardwareInspector?: HardwareInspectorService,
     // Appended last and optional for the same positional reason. #1483 took the router out of
     // `auto` resolution, which now runs against the whole pool; residency arbitration
     // (`arbitrateLocalLoad`, through `loadTrackedModel`) is a separate job and is the only thing left
@@ -1664,6 +1680,12 @@ export class PoolProxyService {
   private readonly prefixAffinity = new PrefixAffinityStore();
   /** When each peer engine's key refusal was last warned about — see {@link warnPeerEngineRefusal}. Bounded by peers × engines × two statuses. */
   private readonly peerEngineRefusalWarnedAt = new Map<string, number>();
+  /**
+   * Each local backend's last listing that answered in a merged listing, keyed by backend and path,
+   * with when it answered: what stands in for that backend when it misses the deadline (see
+   * {@link localListing}). Bounded by backends × the two listing paths.
+   */
+  private readonly lastLocalListings = new Map<string, { listing: unknown; at: number }>();
   /**
    * Engines that have been answering 200 with cut-off or degenerate output, and are withheld from the
    * front of the walk for a cooldown — see `hub-pool-output-check.ts`. Per node, engine and model.
@@ -2757,7 +2779,8 @@ export class PoolProxyService {
     const contextWindows = memoize(() => this.contextWindowOf(path, body, peers));
     // The candidates in the order they are tried: the ranked order, then, once more at the end, each
     // local engine the Hub refused to load the model on while another candidate could still take the
-    // request (see `arbitrateLocalLoad`). On such a row `attempt` can run one past `candidates`.
+    // request (see `arbitrateLocalLoad`; a refusal on the catalog's figure alone is not passed over).
+    // On such a row `attempt` can run one past `candidates`.
     const walk = [...candidates];
     // Each local engine passed over for a refused load, with the Hub's reason. Reaching it again at
     // the end means every other candidate failed; it is then sent the request without arbitration.
@@ -2844,31 +2867,43 @@ export class PoolProxyService {
       try {
         if (candidate.peerId === null) {
           const earlier = refusedLoads.get(candidate);
-          const refusal = earlier ?? (await this.arbitrateLocalLoad(candidate, path, body, model, clientClosed));
-          if (refusal !== null && earlier === undefined && walk.slice(index + 1).some((other) => !refusedLoads.has(other))) {
+          const refusal: LocalLoadRefusal | null =
+            earlier !== undefined ? { reason: earlier, unmeasured: false } : await this.arbitrateLocalLoad(candidate, path, body, model, clientClosed);
+          const othersLeft = walk.slice(index + 1).some((other) => !refusedLoads.has(other));
+          if (refusal !== null && !refusal.unmeasured && earlier === undefined && othersLeft) {
             // Another candidate can take the request, so this engine is not asked to load a model the
             // Hub could not make room for: it would load it anyway and overcommit the card, or put part
             // of it in system memory. Tried again after the rest rather than dropped, so a request
             // every other candidate fails is still sent here, as it was before a refusal failed over.
-            refusedLoads.set(candidate, refusal);
-            passOver(candidate, nodeLabel, null, describeLocalLoadRefusal(refusal));
+            refusedLoads.set(candidate, refusal.reason);
+            passOver(candidate, nodeLabel, null, describeLocalLoadRefusal(refusal.reason));
             // At log, not warn: nothing failed, the Hub kept a model off a card that could not hold it.
             this.logger.log(
-              `[PoolProxy] the Hub refused to load "${model}" on ${candidate.backend} here (${refusal}); ` +
+              `[PoolProxy] the Hub refused to load "${model}" on ${candidate.backend} here (${refusal.reason}); ` +
                 `trying the ${walk.length - index - 1} candidate(s) after it first`,
             );
             walk.push(candidate);
             continue;
           }
           if (refusal !== null) {
-            // Nothing else can take it: sent to the engine, which loads the model on its own terms.
-            // Recorded on the row, because a local answer after a refused load is the one that may
-            // have overcommitted the card.
-            this.routingLog.update(row, { localLoadRefused: refusal });
-            this.logger.warn(
-              `[PoolProxy] the Hub refused to load "${model}" on ${candidate.backend} here (${refusal}), and no other candidate is left ` +
-                `to take the request; sending it to ${candidate.backend} anyway, which loads the model on its own terms`,
-            );
+            // Sent to the engine, which loads the model on its own terms. Recorded on the row, because
+            // a local answer after a refused load is the one that may have overcommitted the card or
+            // put part of the model in system memory.
+            this.routingLog.update(row, { localLoadRefused: refusal.reason });
+            if (refusal.unmeasured) {
+              // At log, not warn: this is how a model the catalog oversizes gets its first measurement
+              // here, after which the Hub's own fit check decides. See `refusalRestsOnEstimate`.
+              this.logger.log(
+                `[PoolProxy] the Hub refused to load "${model}" on ${candidate.backend} here (${refusal.reason}), but only on the catalog's ` +
+                  `figure: it has never been measured on this node. Sending it to ${candidate.backend}, which places the model itself, ` +
+                  `so it is measured once it lands${othersLeft ? ', rather than to the candidate(s) after it' : ''}`,
+              );
+            } else {
+              this.logger.warn(
+                `[PoolProxy] the Hub refused to load "${model}" on ${candidate.backend} here (${refusal.reason}), and no other candidate is left ` +
+                  `to take the request; sending it to ${candidate.backend} anyway, which loads the model on its own terms`,
+              );
+            }
           }
         }
         const upstream = await this.forward(candidate, path, method, body, model, payload(), row.id, clientClosed);
@@ -3166,7 +3201,9 @@ export class PoolProxyService {
    * Returns why the Hub refused the load this request needed on `candidate`'s engine, or null when
    * nothing stands in the way: the model is resident, is not one the Hub tracks, was loaded, or the
    * arbitration itself failed, which leaves the engine to do what it always did. A refusal for a
-   * model the Hub tracks on another local engine is not this candidate's either.
+   * model the Hub tracks on another local engine is not this candidate's either. A refusal is marked
+   * `unmeasured` when it rests only on the catalog's figure for a model the engine places itself
+   * (see {@link refusalRestsOnEstimate}); the walk sends that one to the engine rather than failing over.
    *
    * The load is `InferenceRouterService.loadTrackedModel` with origin `request`, as
    * `prepareTrackedModel` makes it, and the model is found as that method finds it: by catalog id or
@@ -3187,7 +3224,7 @@ export class PoolProxyService {
     body: unknown,
     model: string,
     clientClosed: AbortSignal,
-  ): Promise<string | null> {
+  ): Promise<LocalLoadRefusal | null> {
     const router = this.router;
     const registry = this.modelRegistry;
     if (!GENERATION_PATHS.has(path) || !router || !registry || clientClosed.aborted) {
@@ -3213,12 +3250,61 @@ export class PoolProxyService {
         );
         return null;
       }
-      return outcome.reason;
+      return { reason: outcome.reason, unmeasured: await this.refusalRestsOnEstimate(tracked) };
     } catch (error) {
       this.logger.debug(
         `[PoolProxy] residency arbitration for ${model} failed; forwarding anyway: ${error instanceof Error ? error.message : String(error)}`,
       );
       return null;
+    }
+  }
+
+  /**
+   * Whether the Hub's refusal to load `tracked` here rests only on the catalog's figure, for a model
+   * the engine places itself: Ollama on a discrete card, a model never measured on this node, and no
+   * pin on that Ollama. The same conditions under which an operator's load of such a model is tried
+   * rather than refused (`InferenceRouterService.mayTryUnmeasured`), read from the same sources.
+   *
+   * A request's load is never tried unmeasured by the router, so for a model that has not been seen
+   * resident here the fit check sizes it by the catalog alone, and for some models that is far off:
+   * the catalog puts gemma4:e4b, the fleet's default app model, at 10,813 MB, while beta-red's 10 GB
+   * RTX 3080 serves it in 5,550 MiB (nvidia-smi). Every such request is refused on an 8 or 10 GB
+   * card. Failing it over would keep the model off this card for good: a sighting is only recorded
+   * while the model is resident here, so it would never be measured, and the refusal would repeat on
+   * every request for as long as any peer listed the model. Sent to the engine instead, as every
+   * refusal was before refusals failed over, it lands, is measured, and the Hub's fit check decides
+   * from then on. Ollama does not overcommit the card for it: it unloads its own idle runners to make
+   * room, waits for busy ones, and puts in system RAM what the card cannot take, so a catalog figure
+   * that was right costs speed on this request.
+   *
+   * Everywhere else the refusal stands and the walk fails over: Lemonade loads the whole model onto the
+   * card, on unified memory a spill comes out of the memory the OS runs in, and with a pin on that
+   * Ollama the room it made could be the pinned model's. A model measured here is refused on its
+   * measurement. Anything that cannot be read (no memory manager or inspector, or a failed read) keeps
+   * the refusal too: failing over is the safe side of a check that could not be made.
+   */
+  private async refusalRestsOnEstimate(tracked: TrackedModel): Promise<boolean> {
+    const memory = this.memoryManager;
+    const inspector = this.hardwareInspector;
+    const registry = this.modelRegistry;
+    if (tracked.backend !== 'ollama' || !memory || !inspector || !registry) {
+      return false;
+    }
+    try {
+      if (registry.getPinnedModels().some((pinned) => pinned.backend === tracked.backend)) {
+        return false;
+      }
+      const profile = await inspector.getProfile();
+      if (modelPoolFor(profile) !== 'vram') {
+        return false;
+      }
+      return (await memory.footprintSighting(profile, tracked.backend, tracked.backendModelId)) === null;
+    } catch (error) {
+      this.logger.debug(
+        `[PoolProxy] could not tell whether the refusal to load ${tracked.catalogId} rests on the catalog's figure alone; keeping it: ` +
+          (error instanceof Error ? error.message : String(error)),
+      );
+      return false;
     }
   }
 
@@ -3892,9 +3978,11 @@ export class PoolProxyService {
    * than refuses — one listing must not wait out a connect timeout per absent engine.
    *
    * Nor does it wait on a healthy engine that has stopped answering: each backend gets
-   * `LOCAL_LISTING_DEADLINE_MS` from the start, and one still out then is left out of this listing
+   * `LOCAL_LISTING_DEADLINE_MS` from the start, and one still out then is dropped from this listing
    * when another has answered (see `gatherListings`). The health snapshot is up to a poll old, and an
-   * engine wedged since it was taken used to hold the listing for the whole forward budget.
+   * engine wedged since it was taken used to hold the listing for the whole forward budget. A dropped
+   * backend's last listing stands in for it while it is younger than
+   * `LOCAL_LISTING_STAND_IN_MAX_AGE_MS`, so an engine slow for a moment does not take its models out.
    */
   private async localListing(path: string, method: string, clientClosed: AbortSignal): Promise<unknown> {
     const healthy = await this.localHealth
@@ -3913,7 +4001,9 @@ export class PoolProxyService {
             this.logger.debug(`[PoolProxy] ${path} via local ${type} answered ${upstream.status}; leaving it out of the listing`);
             return null;
           }
-          return (await upstream.json()) as unknown;
+          const listing = (await upstream.json()) as unknown;
+          this.lastLocalListings.set(`${type} ${path}`, { listing, at: Date.now() });
+          return listing;
         } catch (error) {
           // A backend dropped for its deadline was logged when it was dropped.
           if (!dropped.aborted) {
@@ -3923,10 +4013,20 @@ export class PoolProxyService {
         }
       },
       LOCAL_LISTING_DEADLINE_MS,
-      (type) =>
+      (type) => {
+        const last = this.lastLocalListings.get(`${type} ${path}`);
+        const ageMs = last ? Date.now() - last.at : null;
+        if (last && ageMs !== null && ageMs <= LOCAL_LISTING_STAND_IN_MAX_AGE_MS) {
+          this.logger.debug(
+            `[PoolProxy] ${path} via local ${type} had not answered within ${LOCAL_LISTING_DEADLINE_MS}ms; listing what it answered ${Math.round(ageMs / 1000)}s ago`,
+          );
+          return last.listing;
+        }
         this.logger.debug(
           `[PoolProxy] ${path} via local ${type} had not answered within ${LOCAL_LISTING_DEADLINE_MS}ms; leaving it out of the listing`,
-        ),
+        );
+        return undefined;
+      },
     );
     return answered.length === 0 ? this.firstLocalListing(path, method, clientClosed) : mergeLocalListings(path, answered);
   }

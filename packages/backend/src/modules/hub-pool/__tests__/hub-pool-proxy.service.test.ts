@@ -1,4 +1,4 @@
-import { INFERENCE_BACKEND_TYPES, type BackendResidency } from '@ci-hub/common/types';
+import { INFERENCE_BACKEND_TYPES, type BackendResidency, type HardwareProfile } from '@ci-hub/common/types';
 import { Writable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
@@ -70,7 +70,7 @@ import {
 } from '../hub-pool-proxy.service';
 import { firstByteBudgetMs, forwardBudgetMs } from '../hub-pool-budget';
 import type { PoolOutputQuarantine } from '../hub-pool-output-check';
-import { LOCAL_LISTING_DEADLINE_MS } from '../pool-model-listing';
+import { LOCAL_LISTING_DEADLINE_MS, LOCAL_LISTING_STAND_IN_MAX_AGE_MS } from '../pool-model-listing';
 import {
   POOL_AFFINITY_HEADER,
   PREFIX_AFFINITY_TTL_MS,
@@ -82,6 +82,8 @@ import {
 } from '../hub-pool-prefix-affinity';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
 import { ModelRegistryService } from '@/modules/inference/model-registry.service';
+import { MemoryManagerService } from '@/modules/inference/memory-manager.service';
+import { HardwareInspectorService } from '@/modules/inference/hardware-inspector.service';
 import type { LoggerService } from '@/core/logger/logger.service';
 import type { PoolCandidate, PoolPeerCapabilities, PoolThroughputEstimate } from '../hub-pool.types';
 
@@ -7319,6 +7321,40 @@ describe('PoolProxyService', () => {
           expect(lemonadeSignal?.aborted).toBe(true);
         });
 
+        // Review of #1709: without a stand-in, a healthy engine slow for a moment took every model it
+        // holds out of the listing, which ci-server checks its model against on every call.
+        it('lists what the stalled backend answered last, until that is older than the stand-in cap', async () => {
+          const LEMONADE_MODELS = { object: 'list', data: [{ id: 'Qwen3.8-27B-GGUF', object: 'model', created: 2, owned_by: 'lemonade' }] };
+          const stalled = vi.mocked(global.fetch).getMockImplementation();
+          const listed = async () => {
+            const res = createMockResponse();
+            const listing = service.proxyLocalOnlyRequest('/v1/models', 'GET', undefined, res);
+            await vi.advanceTimersByTimeAsync(LOCAL_LISTING_DEADLINE_MS);
+            await listing;
+            return (vi.mocked(res.json).mock.calls[0]?.[0] as { data: { id: string }[] }).data.map((row) => row.id);
+          };
+          // Lemonade answers once, then stalls.
+          vi.mocked(global.fetch).mockImplementation(async (input) =>
+            String(input).startsWith('http://local-ollama:11434')
+              ? new Response(JSON.stringify(OLLAMA_MODELS), { status: 200 })
+              : new Response(JSON.stringify(LEMONADE_MODELS), { status: 200 }),
+          );
+          expect(await listed()).toEqual(['qwen3.8:27b-mtp-q4_K_M', 'Qwen3.8-27B-GGUF']);
+          vi.mocked(global.fetch).mockImplementation(stalled as NonNullable<typeof stalled>);
+
+          expect(await listed()).toEqual(['qwen3.8:27b-mtp-q4_K_M', 'Qwen3.8-27B-GGUF']);
+          expect(lemonadeSignal?.aborted).toBe(true);
+
+          // Past the cap, an engine that still does not answer is left out.
+          const realNow = Date.now.bind(Date);
+          const clock = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + LOCAL_LISTING_STAND_IN_MAX_AGE_MS + 1_000);
+          try {
+            expect(await listed()).toEqual(['qwen3.8:27b-mtp-q4_K_M']);
+          } finally {
+            clock.mockRestore();
+          }
+        });
+
         it('still waits for the stalled backend when it is the only one the snapshot calls healthy', async () => {
           ollama.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
           vi.mocked(global.fetch).mockImplementation(async (input, init) => {
@@ -8191,7 +8227,20 @@ describe('PoolProxyService', () => {
     // The real registry over the real catalog: arbitration finds the model by catalog id or engine
     // tag the way the router does, and a mocked lookup would only prove the test's own fixture.
     let registry: ModelRegistryService;
+    // Read only after a refusal, to tell one on the catalog's figure alone from one on a measurement.
+    let memoryManager: MockProxy<MemoryManagerService>;
+    let hardwareInspector: MockProxy<HardwareInspectorService>;
     let withRouter: PoolProxyService;
+
+    // A discrete 10 GB card, beta-red's shape: where a catalog figure alone refuses gemma4:e4b.
+    const DISCRETE_CARD: HardwareProfile = {
+      gpu: { available: true, vendor: 'nvidia', model: 'RTX 3080', vramMb: 10240, unifiedMemory: false, driverVersion: '580', runtimeAvailable: true },
+      npu: { available: false, model: '' },
+      ram: { totalMb: 32768, availableMb: 16384 },
+      cpu: { arch: 'x86_64', cores: 16, model: 'AMD Ryzen 9' },
+      effectiveInferenceMemoryMb: 10240,
+      tier: 'medium',
+    };
 
     beforeEach(() => {
       router = mock<InferenceRouterService>();
@@ -8199,6 +8248,11 @@ describe('PoolProxyService', () => {
       registry = new ModelRegistryService(mock<LoggerService>());
       // Downloaded and not in memory: the one state a request has the Hub load.
       registry.trackModel(CATALOG_ID, 'pulled');
+      memoryManager = mock<MemoryManagerService>();
+      // Measured here unless a test says otherwise, so a refusal is one on a measurement.
+      memoryManager.footprintSighting.mockResolvedValue({ footprintMb: 9000, contextLength: 4096, source: 'process' });
+      hardwareInspector = mock<HardwareInspectorService>();
+      hardwareInspector.getProfile.mockResolvedValue(DISCRETE_CARD);
       withRouter = new PoolProxyService(
         new InferenceBackendRegistry(ollama, vllm, lemonade, omlx),
         peerService,
@@ -8210,9 +8264,12 @@ describe('PoolProxyService', () => {
         registry,
         // Two `undefined`s: `router` is appended after `throughput` and the local-health snapshot,
         // because #1483 dropped the old router slot that used to sit before them (see the note in
-        // `buildService`). Passing it positionally here would land it in the throughput slot.
+        // `buildService`). Passing it positionally here would land it in the throughput slot. The
+        // memory manager and the hardware inspector sit between them and the router.
         undefined,
         undefined,
+        memoryManager,
+        hardwareInspector,
         router,
       );
       ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
@@ -8348,6 +8405,117 @@ describe('PoolProxyService', () => {
         });
         // Arbitrated once: a refusal is not asked again.
         expect(router.loadTrackedModel).toHaveBeenCalledTimes(1);
+        // A refusal on what the model was measured occupying on this card, not on the catalog's figure.
+        expect(memoryManager.footprintSighting).toHaveBeenCalledWith(DISCRETE_CARD, 'ollama', MODEL);
+      });
+
+      /*
+       * Review of #1709: a request's load is never tried unmeasured, so where the model has no
+       * sighting the fit check sizes it by the catalog alone, and the catalog puts gemma4:e4b, the
+       * fleet's default app model, at 10,813 MB while beta-red's 10 GB RTX 3080 serves it in 5,550 MiB.
+       * Failing that refusal over kept the model off the card for good: a sighting is only recorded
+       * while the model is resident here, so it was never measured and the refusal repeated on every
+       * request for as long as a peer listed the model.
+       */
+      describe("on the catalog's figure alone, for a model never measured here", () => {
+        const LEMONADE_CATALOG_ID = 'qwen3-6-35b-lemonade';
+        const LEMONADE_MODEL = 'Qwen3.6-35B-A3B-GGUF';
+
+        beforeEach(() => {
+          memoryManager.footprintSighting.mockResolvedValue(null);
+        });
+
+        it('sends the request to the local Ollama on a discrete card instead of the peer, so the model lands and is measured', async () => {
+          const res = createMockResponse();
+
+          await chat(res);
+
+          expect(urls()).toEqual([LOCAL_URL]);
+          expect(res.status).toHaveBeenCalledWith(200);
+          expect(memoryManager.footprintSighting).toHaveBeenCalledWith(DISCRETE_CARD, 'ollama', MODEL);
+          // Still recorded: a local answer after a refused load is the one that may have spilled.
+          expect(routingLog.list()[0]).toMatchObject({
+            outcome: 'served',
+            node: POOL_SERVED_LOCALLY,
+            attempt: 1,
+            candidates: 2,
+            failedOverFrom: [],
+            attempts: [],
+            localLoadRefused: REFUSAL,
+          });
+
+          // Measured once it landed: a later refusal is on that measurement, and fails over.
+          memoryManager.footprintSighting.mockResolvedValue({ footprintMb: 9000, contextLength: 4096, source: 'process' });
+          await chat();
+
+          expect(urls()).toEqual([LOCAL_URL, PEER_A_URL]);
+          expect(routingLog.list()[0]).toMatchObject({ node: 'peer-a.tailxyz.ts.net', attempts: [{ node: POOL_SERVED_LOCALLY, status: null }] });
+        });
+
+        it('still fails over to the peer when the local engine then fails, without arbitrating again', async () => {
+          vi.mocked(global.fetch).mockImplementation(async (input) =>
+            String(input) === LOCAL_URL ? new Response('engine down', { status: 503 }) : new Response(JSON.stringify({ done: true }), { status: 200 }),
+          );
+
+          await chat();
+
+          expect(urls()).toEqual([LOCAL_URL, PEER_A_URL]);
+          expect(router.loadTrackedModel).toHaveBeenCalledTimes(1);
+          expect(routingLog.list()[0]).toMatchObject({
+            outcome: 'served',
+            node: 'peer-a.tailxyz.ts.net',
+            attempt: 2,
+            attempts: [{ node: POOL_SERVED_LOCALLY, status: 503, reason: 'HTTP 503' }],
+            localLoadRefused: REFUSAL,
+          });
+        });
+
+        it('fails over on unified memory, where a spill comes out of the memory the OS runs in', async () => {
+          hardwareInspector.getProfile.mockResolvedValue({ ...DISCRETE_CARD, gpu: { ...DISCRETE_CARD.gpu, unifiedMemory: true } });
+
+          await chat();
+
+          expect(urls()).toEqual([PEER_A_URL]);
+        });
+
+        it('fails over while the Hub holds a pin on that Ollama, which could make the room by unloading the pinned model', async () => {
+          registry.trackModel('nomic-embed-text', 'loaded');
+          registry.pinModel('nomic-embed-text');
+
+          await chat();
+
+          expect(urls()).toEqual([PEER_A_URL]);
+        });
+
+        it('fails over on Lemonade, which loads the whole model onto the card', async () => {
+          registry.trackModel(LEMONADE_CATALOG_ID, 'pulled');
+          lemonade.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [LEMONADE_MODEL] });
+          lemonade.getBaseUrl.mockReturnValue('http://local-lemonade:13305');
+          const peer = peerServing('peer-a', LEMONADE_MODEL);
+          peerService.listConnectedPeers.mockResolvedValue([peer]);
+          peerService.getPeerById.mockResolvedValue(peer);
+
+          await withRouter.proxyRequest({
+            path: '/api/chat',
+            method: 'POST',
+            body: { model: LEMONADE_MODEL, messages: [] },
+            model: LEMONADE_MODEL,
+            res: createMockResponse(),
+          });
+
+          expect(router.loadTrackedModel).toHaveBeenCalledWith(LEMONADE_CATALOG_ID, expect.objectContaining({ origin: 'request' }));
+          expect(urls()).toEqual([PEER_A_URL]);
+          expect(routingLog.list()[0]).toMatchObject({ attempts: [{ node: POOL_SERVED_LOCALLY, backend: 'lemonade', status: null }] });
+          expect(memoryManager.footprintSighting).not.toHaveBeenCalled();
+        });
+
+        it('fails over when whether the model was measured cannot be read', async () => {
+          hardwareInspector.getProfile.mockRejectedValue(new Error('detect failed'));
+
+          await chat();
+
+          expect(urls()).toEqual([PEER_A_URL]);
+        });
       });
 
       it('sends the request to the local engine anyway when no other candidate exists, and says so on the row', async () => {

@@ -191,13 +191,17 @@ describe('gatherListings', () => {
     return { fetchOne, seen };
   }
 
-  function gather(backends: Record<string, FakeBackend>) {
+  /** `standIns` is what `onDropped` hands back for a dropped backend: its last listing, when it has one. */
+  function gather(backends: Record<string, FakeBackend>, standIns: Record<string, unknown> = {}) {
     const dropped: string[] = [];
     const settled = gatherListings(
       Object.keys(backends),
       (name, signal) => (backends[name] as FakeBackend).fetchOne(signal),
       LOCAL_LISTING_DEADLINE_MS,
-      (name) => dropped.push(name),
+      (name) => {
+        dropped.push(name);
+        return standIns[name];
+      },
     );
     return { settled, dropped };
   }
@@ -221,6 +225,22 @@ describe('gatherListings', () => {
 
     await expect(settled).resolves.toEqual(['ollama-body']);
     expect(dropped).toEqual(['lemonade']);
+    expect(wedged.seen.signal?.aborted).toBe(true);
+  });
+
+  // Review of #1709: a healthy engine slow for a moment took every model it holds out of the listing,
+  // and ci-server checks its model against the listing on every call.
+  it("keeps what onDropped hands back for a dropped backend, in that backend's place", async () => {
+    const wedged = backendAnswering('ollama-body', null);
+    const { settled, dropped } = gather(
+      { ollama: wedged, vllm: backendAnswering('vllm-body', 5), lemonade: backendAnswering('lemonade-body', 10) },
+      { ollama: 'ollama-last-listing' },
+    );
+
+    await vi.advanceTimersByTimeAsync(LOCAL_LISTING_DEADLINE_MS);
+
+    await expect(settled).resolves.toEqual(['ollama-last-listing', 'vllm-body', 'lemonade-body']);
+    expect(dropped).toEqual(['ollama']);
     expect(wedged.seen.signal?.aborted).toBe(true);
   });
 
