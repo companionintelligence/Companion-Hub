@@ -494,6 +494,11 @@
     if (progress.hub_api_live) api = ['Answering', ''];
     else if (view === 'stuck') api = ['Not answering', 'tone-warn'];
     else if (view === 'starting') api = ['Not answering yet', ''];
+    const signature = [images, docker, dockerTone, api[0], api[1]].join('\n');
+    // The clock ticks every second. Rebuilding the facts then throws away a
+    // selection in the error text beside them, so only rebuild when a value changes.
+    if (el.facts.dataset.signature === signature) return;
+    el.facts.dataset.signature = signature;
     el.facts.replaceChildren(fact('Images pulled', images), fact('Docker', docker, dockerTone), fact('Hub API', ...api));
   }
 
@@ -518,19 +523,47 @@
     return row;
   }
 
+  function dockerStatusNote() {
+    return page.installError ? `Docker install didn't finish. ${page.installError}` : 'Service status shows here once Docker is running.';
+  }
+
+  /** Structure of the status rows, without the elapsed clock that ticks every second. */
+  function rowsSignature(view, core) {
+    if (view === 'docker') return `docker\n${dockerStatusNote()}`;
+    const stuckId = view === 'stuck' ? (stuckService(core)?.container ?? '') : '';
+    const body = core.map((service) => `${service.container}\t${service.state}\t${service.detail || ''}`).join('\n');
+    return `${view}\n${stuckId}\n${body}`;
+  }
+
+  function refreshRowClocks(view, core) {
+    if (view !== 'stuck') return;
+    const stuck = stuckService(core);
+    const labels = el.rows.querySelectorAll('.row-main > .state');
+    core.forEach((service, index) => {
+      const label = service === stuck ? `Starting for ${clock(stuckSecs(service))}` : (STATE_LABEL[service.state] ?? service.state);
+      const node = labels[index];
+      if (node) setText(node, label);
+    });
+  }
+
   function renderRows(view, progress, core) {
-    if (view === 'docker') {
-      const note = page.installError ? `Docker install didn't finish. ${page.installError}` : 'Service status shows here once Docker is running.';
-      el.rows.replaceChildren(textNode('p', note, 'rows-note'));
+    const signature = rowsSignature(view, core);
+    if (el.rows.dataset.signature === signature) {
+      refreshRowClocks(view, core);
     } else {
-      const stuck = view === 'stuck' ? stuckService(core) : null;
-      el.rows.replaceChildren(...core.map((service) => serviceRow(service, service === stuck)));
+      el.rows.dataset.signature = signature;
+      if (view === 'docker') {
+        el.rows.replaceChildren(textNode('p', dockerStatusNote(), 'rows-note'));
+      } else {
+        const stuck = view === 'stuck' ? stuckService(core) : null;
+        el.rows.replaceChildren(...core.map((service) => serviceRow(service, service === stuck)));
+      }
     }
 
     // A failure no service row can carry, e.g. Docker refusing the compose file.
     const failedRowHasDetail = Boolean(failedService(core)?.detail);
     const panelError = view === 'failed' && !failedRowHasDetail ? startError(progress) : '';
-    el.panelError.textContent = panelError;
+    setText(el.panelError, panelError);
     el.panelError.hidden = !panelError;
   }
 
@@ -543,6 +576,9 @@
         if (count > 0) items.push([state, count, label]);
       }
     }
+    const signature = items.map(([state, count, label]) => `${state}:${count}:${label}`).join('\n');
+    if (el.counts.dataset.signature === signature) return;
+    el.counts.dataset.signature = signature;
     el.counts.replaceChildren(
       ...items.map(([state, count, label]) => {
         const node = document.createElement('span');
