@@ -32,7 +32,7 @@ import {
 import { HubPoolLoadService } from '../hub-pool-load.service';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
 import { HubPoolPressureService } from '../hub-pool-pressure.service';
-import { PoolProxyService, describeAttemptError } from '../hub-pool-proxy.service';
+import { EMPTY_ANSWER_LIMIT, PoolProxyService, describeAttemptError } from '../hub-pool-proxy.service';
 import { HubPoolRoutingLogService } from '../hub-pool-routing-log.service';
 import { HubPoolThroughputService } from '../hub-pool-throughput.service';
 
@@ -51,6 +51,13 @@ const HEALTHY_STREAM = [ollamaFrame('Hel'), ollamaFrame('lo'), OLLAMA_DONE];
 function sseFrame(content: string | null, finishReason: string | null = null): string {
   return `data: ${JSON.stringify({ choices: [{ index: 0, delta: content === null ? {} : { content }, finish_reason: finishReason }] })}\n\n`;
 }
+
+/** What qwen3-coder's tool-call parser makes Ollama answer on every node: 200, no content, no finish_reason, zero usage. */
+const EMPTY_COMPLETION = JSON.stringify({
+  choices: [{ index: 0, message: { role: 'assistant', content: '' }, finish_reason: null }],
+  usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+});
+const OK_COMPLETION = JSON.stringify({ choices: [{ index: 0, message: { role: 'assistant', content: 'Hello' }, finish_reason: 'stop' }] });
 
 const NDJSON = 'application/x-ndjson';
 /** What Ollama and the OpenAI-compatible engines label a non-streamed completion. */
@@ -491,6 +498,36 @@ describe('pool proxy: degenerate and cut-off output, and why candidates were pas
         requestError: { signature: 'degenerate-output', basis: 'node' },
         failedOverFrom: [],
       });
+    });
+  });
+
+  describe('a body every node answers with nothing in it', () => {
+    it('stops asking after EMPTY_ANSWER_LIMIT empty 200s and fails the request rather than walking every node', async () => {
+      const peers = Array.from({ length: 6 }, (_, n) => ({ ...peerWithModel(), id: `peer-${n}`, nodeFqdn: `core-${n}.tailxyz.ts.net` }));
+      peerService.listConnectedPeers.mockResolvedValue(peers);
+      let asked = 0;
+      vi.mocked(global.fetch).mockImplementation(async () => {
+        asked += 1;
+        return whole(EMPTY_COMPLETION);
+      });
+
+      const res = await chat({ stream: false, path: '/v1/chat/completions' });
+
+      expect(asked).toBe(EMPTY_ANSWER_LIMIT);
+      expect(res.status).toHaveBeenCalledWith(502);
+      expect(routingLog.list()[0]).toMatchObject({ outcome: 'failed' });
+    });
+
+    it('still walks on when only one node answers empty', async () => {
+      const asked = engines(
+        () => whole(EMPTY_COMPLETION),
+        () => whole(OK_COMPLETION),
+      );
+
+      const res = await chat({ stream: false, path: '/v1/chat/completions' });
+
+      expect(asked).toEqual(['local', 'peer']);
+      expect(res.text()).toBe(OK_COMPLETION);
     });
   });
 

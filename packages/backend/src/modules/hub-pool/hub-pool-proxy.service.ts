@@ -94,6 +94,7 @@ import {
   applyOutputQuarantine,
   describeOutputFault,
   isStreamedContentType,
+  isEmptyAnswer,
   judgeWholeBody,
   outputDialectOf,
   type OutputTarget,
@@ -434,6 +435,15 @@ export function describeAppliedDeadline(message: string, undiciHeaderTimeout: bo
   }
   return 'the request was aborted before any response headers arrived';
 }
+
+/**
+ * How many candidates may answer one request with a 200 whose body is empty before the walk stops.
+ * An empty body is a property of the request and the model (fleet round 3: one qwen3-coder tool call
+ * came back empty from every Ollama), not of a node: the walk asked all 12 for 286 s, loaded the
+ * model on 8 of them, and still handed the caller an empty 200. Three agreeing nodes is the
+ * evidence a fourth would not differ, and the caller gets the 502 a failed walk always gives.
+ */
+export const EMPTY_ANSWER_LIMIT = 3;
 
 const HOP_BY_HOP_HEADERS = new Set(['connection', 'keep-alive', 'transfer-encoding', 'content-length', 'content-encoding', 'upgrade']);
 
@@ -2797,6 +2807,8 @@ export class PoolProxyService {
     // An engine's verdict on the request that its node alone could not vouch for, carried forward
     // until the next candidate to answer agrees with it or serves the request.
     let unconfirmed: UnconfirmedRequestError<PoolCandidate> | null = null;
+    // Candidates that answered 200 with a body that said nothing at all. See EMPTY_ANSWER_LIMIT.
+    let emptyAnswers = 0;
     // Built only once an engine says the prompt was too long, which is the one verdict that needs it.
     const contextWindows = memoize(() => this.contextWindowOf(path, body, peers));
     // The candidates in the order they are tried: the ranked order, then, once more at the end, each
@@ -3005,10 +3017,17 @@ export class PoolProxyService {
           const judgedBody = held.text === null ? null : judgeWholeBody(dialect, held.text);
           if (judgedBody?.fault) {
             this.strikeOutput(target, judgedBody.fault, nodeLabel);
+            if (judgedBody.fault === 'truncated-upstream' && held.text !== null && isEmptyAnswer(dialect, held.text)) emptyAnswers += 1;
             if (untried.length > 0) {
               lastError = new Error(`${nodeLabel} answered with ${describeOutputFault(judgedBody.fault)}`);
               passOver(candidate, nodeLabel, upstream.status, judgedBody.fault);
               this.logFailover(model, candidate, nodeLabel, upstream.status, describeOutputFault(judgedBody.fault), untried.length);
+              if (emptyAnswers >= EMPTY_ANSWER_LIMIT) {
+                this.logger.warn(
+                  `[PoolProxy] ${emptyAnswers} candidates answered "${model}" with an empty body; not asking the other ${untried.length}`,
+                );
+                break;
+              }
               continue;
             }
             // The last candidate: its answer goes to the caller as the engine gave it, which is all

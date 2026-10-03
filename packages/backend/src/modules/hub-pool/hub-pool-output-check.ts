@@ -157,6 +157,20 @@ function parse(text: string): unknown {
   }
 }
 
+/**
+ * Whether a whole body says nothing: no body at all, or one whose generated text is empty and that
+ * carries no tool call. The deterministic shape of an engine that cannot answer THIS request
+ * (qwen3-coder's tool-call parser on Ollama answers 200 with empty content, no finish_reason and zero
+ * usage, on every node), as opposed to a node that is merely down.
+ */
+export function isEmptyAnswer(dialect: OutputDialect, text: string): boolean {
+  if (text.trim() === '') return true;
+  const body = parse(text);
+  if (!isRecord(body)) return false;
+  if (generatedTextOf(dialect, body) !== '') return false;
+  return !JSON.stringify(body).includes('"tool_calls"');
+}
+
 /** A whole non-streamed body's verdict. */
 export function judgeWholeBody(dialect: OutputDialect, text: string): OutputVerdict {
   const body = parse(text);
