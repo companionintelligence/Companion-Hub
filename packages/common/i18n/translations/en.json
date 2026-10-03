@@ -2386,6 +2386,8 @@
   "MEMORY_CONNECT_FINISHING_PROPAGATING_TITLE_GENERIC": "Preparing the app's web address…",
   "MEMORY_CONNECT_FINISHING_PROPAGATING_DESC": "Connected! <strong>{{name}}</strong> is back up — its public address is still propagating. This usually takes a few more seconds…",
   "MEMORY_CONNECT_FINISHING_PROPAGATING_DESC_GENERIC": "Connected! The app is back up — its public address is still propagating. This usually takes a few more seconds…",
+  "MEMORY_CONNECT_FINISHING_PROPAGATING_TIMEOUT_TITLE": "The web address is still catching up",
+  "MEMORY_CONNECT_FINISHING_PROPAGATING_TIMEOUT_TITLE_GENERIC": "The web address is still catching up",
   "MEMORY_CONNECT_FINISHING_PROPAGATING_TIMEOUT_DESC": "Your CI Memory connection was saved, but <strong>{{name}}</strong>'s web address is still not responding. You can try opening it anyway, or manage it from the dashboard.",
   "MEMORY_CONNECT_FINISHING_PROPAGATING_TIMEOUT_DESC_GENERIC": "Your CI Memory connection was saved, but the app's web address is still not responding. You can manage it from the dashboard.",
   "MEMORY_CONNECT_FINISHING_ERROR_TITLE": "The app didn't come back up",

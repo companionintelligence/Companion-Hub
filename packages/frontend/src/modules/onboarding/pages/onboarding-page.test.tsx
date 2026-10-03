@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { writeOnboardingInstallSession } from '../helpers/install-session';
 import type { InstallSummary } from '../helpers/types';
 import OnboardingPage from './onboarding-page';
 
@@ -341,6 +342,7 @@ const renderPage = () => {
 
 describe('OnboardingPage (single vertical form)', () => {
   beforeEach(() => {
+    sessionStorage.clear();
     mockCatalogState.isLoading = false;
     mockCatalogState.isError = false;
     mockCatalogState.isEmpty = false;
@@ -353,6 +355,27 @@ describe('OnboardingPage (single vertical form)', () => {
     mockToast.dismiss.mockClear();
     // The generated client resolves with a real `Response`; `sdkResult` reads `.ok`/`.status` off it.
     mockCompleteOnboarding.mockReset().mockResolvedValue(sdkOk(undefined));
+  });
+
+  it('resumes the install after a reload instead of showing the wizard again', () => {
+    writeOnboardingInstallSession({
+      apps: [
+        {
+          appSlug: 'plane',
+          name: 'Plane',
+          icon: '/icons/plane.png',
+          category: 'utilities',
+          replacesNames: [],
+          urn: 'plane:store1',
+        },
+      ],
+      claimedUrns: ['plane:store1'],
+    });
+
+    renderPage();
+
+    expect(screen.getByTestId('install-step')).toHaveAttribute('data-apps', 'plane');
+    expect(screen.queryByTestId('finish-setup-btn')).not.toBeInTheDocument();
   });
 
   describe('empty marketplace catalog', () => {

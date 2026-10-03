@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { parsePullProgress } from '@/lib/inference/tracked-models';
+import { parsePullProgress, preferenceModelId } from '@/lib/inference/tracked-models';
 import type { TrackedModel } from '@ci-hub/common/types';
 
 const mockStartInferenceModelPull = vi.fn();
@@ -27,6 +27,23 @@ describe('parsePullProgress', () => {
     const result = parsePullProgress(['bad-model'], [], tracked);
     expect(result.allDone).toBe(true);
     expect(result.errorsById['bad-model']).toBe('failed');
+  });
+});
+
+describe('preferenceModelId', () => {
+  it('keeps a model that is still downloading', () => {
+    const tracked = [{ catalogId: 'llama3-3-70b', state: 'pulling', pullProgress: 12 }] as TrackedModel[];
+    expect(preferenceModelId('llama3-3-70b', new Set(), tracked)).toBe('llama3-3-70b');
+  });
+
+  it('drops a model that failed or never started', () => {
+    const tracked = [{ catalogId: 'bad-model', state: 'error', errorMessage: 'failed' }] as TrackedModel[];
+    expect(preferenceModelId('bad-model', new Set(), tracked)).toBeNull();
+    expect(preferenceModelId('missing-model', new Set(), [])).toBeNull();
+  });
+
+  it('keeps a model that is already usable', () => {
+    expect(preferenceModelId('phi-4-mini', new Set(['phi-4-mini']), [])).toBe('phi-4-mini');
   });
 });
 

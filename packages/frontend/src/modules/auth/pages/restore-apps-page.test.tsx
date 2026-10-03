@@ -1,7 +1,7 @@
 import { act, render, screen, userEvent, waitFor } from '@/tests/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import RestoreAppsPage from './restore-apps-page';
-import { sdkOk } from '@/tests/sdk-mock-helpers';
+import { sdkFail, sdkOk } from '@/tests/sdk-mock-helpers';
 
 const { executeRehydrate, getRehydrateStatus, navigate } = vi.hoisted(() => ({
   executeRehydrate: vi.fn(),
@@ -147,6 +147,33 @@ describe('RestoreAppsPage', () => {
     await waitFor(() => {
       expect(screen.getByTestId('navigate-/home')).toBeInTheDocument();
     });
+  });
+
+  it('offers retry and a way into the Hub when the restore request fails', async () => {
+    getRehydrateStatus.mockResolvedValue(sdkFail(500));
+
+    await act(async () => {
+      render(<RestoreAppsPage />);
+    });
+
+    expect(await screen.findByText('Could not check restore status. Please try again from Settings after signing in.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+
+    getRehydrateStatus.mockResolvedValue(sdkOk({ completed: false, restoreIntent: true }));
+    executeRehydrate.mockResolvedValue(
+      sdkOk({
+        success: true,
+        message: 'done',
+        alreadyCompleted: true,
+        plan: { portalAppCount: 0, items: [] },
+        queued: [],
+        started: [],
+        skipped: [],
+      }),
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(executeRehydrate).toHaveBeenCalled());
   });
 
   /*

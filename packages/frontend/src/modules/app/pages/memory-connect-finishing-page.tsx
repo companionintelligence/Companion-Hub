@@ -6,7 +6,7 @@ import { buildAppAccessPoints, buildTailscaleServedPortSet } from '@/modules/app
 import type { AppStatus } from '@/types/app.types';
 import { useQuery } from '@tanstack/react-query';
 import { CheckCircle2 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { Navigate, useNavigate, useSearchParams } from 'react-router';
 import './memory-connect-finishing-page.css';
@@ -349,6 +349,7 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
   }, [phase, target]);
 
   const failed = phase === 'error' || phase === 'timeout';
+  const failedTitleRef = useRef<HTMLHeadingElement>(null);
 
   // Interpolate the name only when the server confirmed it; otherwise use the
   // nameless copy variant. The named strings wrap {{name}} in <strong> so the
@@ -356,6 +357,17 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
   // (not t()) so that markup becomes a real element, never literal text.
   const named = (key: string, genericKey: string) =>
     appName ? <Trans t={t} i18nKey={key} values={{ name: appName }} components={{ strong: <strong className="mcf-app" /> }} /> : t(genericKey);
+
+  const failureTitle = timedOutWhilePropagating
+    ? named('MEMORY_CONNECT_FINISHING_PROPAGATING_TIMEOUT_TITLE', 'MEMORY_CONNECT_FINISHING_PROPAGATING_TIMEOUT_TITLE_GENERIC')
+    : t('MEMORY_CONNECT_FINISHING_ERROR_TITLE');
+
+  useEffect(() => {
+    if (!failed) {
+      return;
+    }
+    failedTitleRef.current?.focus();
+  }, [failed]);
 
   // In-place SPA navigation on purpose — never window.open/a new tab. When the
   // connect flow was started from the Tauri desktop app, this page is running
@@ -397,7 +409,13 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
           <AppLogo urn={CI_MEMORY_URN} size={56} alt="CI Memory" />
         </div>
 
-        <div className="mcf-status" role="status" aria-busy={phase === 'connecting' || phase === 'propagating'}>
+        <div
+          className="mcf-status"
+          role="status"
+          aria-live="polite"
+          aria-labelledby={failed ? 'memory-connect-failure-title' : undefined}
+          aria-busy={phase === 'connecting' || phase === 'propagating'}
+        >
           {phase === 'ready' ? (
             <CheckCircle2 className="mcf-check" size={34} aria-hidden="true" />
           ) : failed ? null : (
@@ -420,7 +438,9 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
           </>
         ) : failed ? (
           <>
-            <h1 className="mcf-title">{t('MEMORY_CONNECT_FINISHING_ERROR_TITLE')}</h1>
+            <h1 id="memory-connect-failure-title" ref={failedTitleRef} tabIndex={-1} className="mcf-title outline-none">
+              {failureTitle}
+            </h1>
             <p className="mcf-desc">
               {phase === 'timeout'
                 ? timedOutWhilePropagating

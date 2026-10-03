@@ -309,6 +309,8 @@ describe('MemoryConnectFinishingPage', () => {
       vi.advanceTimersByTime(60_000);
     });
 
+    expect(screen.getByText('MEMORY_CONNECT_FINISHING_PROPAGATING_TIMEOUT_TITLE')).toBeInTheDocument();
+    expect(screen.queryByText('MEMORY_CONNECT_FINISHING_ERROR_TITLE')).not.toBeInTheDocument();
     expect(screen.getByText('MEMORY_CONNECT_FINISHING_PROPAGATING_TIMEOUT_DESC')).toBeInTheDocument();
     expect(window.location.replace).not.toHaveBeenCalled();
 
