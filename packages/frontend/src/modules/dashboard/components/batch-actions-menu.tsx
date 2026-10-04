@@ -107,7 +107,7 @@ export const BatchActionsMenu = ({ runningCount, stoppedCount, updatesAvailable 
             <ChevronDown className="ml-1 size-4" aria-hidden="true" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
+        <DropdownMenuContent align="end" side="top">
           <DropdownMenuItem disabled={stoppedCount === 0} onSelect={() => setConfirming('start')}>
             <Play className="mr-2 size-4" aria-hidden="true" />
             {t('MY_APPS_START_ALL_FORM_SUBMIT')}
