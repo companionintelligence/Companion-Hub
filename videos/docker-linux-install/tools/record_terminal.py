@@ -3,6 +3,10 @@
 
     python3 record_terminal.py <flow> out.cast     flow: apt | engine
 
+The engine flow runs in a full Ubuntu 24.04 VM (QEMU/KVM, official cloud image,
+reached over SSH) so `docker info` reports a real machine. Put the image at
+vm/noble.img next to this script (see README). The apt flow uses a container.
+
 
 Types at human speed into a real pty, captures every output byte with its real
 timestamp, and writes an asciicast v2 file. Nothing is installed on the host.
@@ -42,6 +46,85 @@ def sh(*cmd, check=True):
 
 
 BASE = "dk-tut-base"
+HERE = os.path.dirname(os.path.abspath(__file__))
+VM = os.environ.get("VM_DIR", os.path.join(HERE, "vm"))
+SSH_PORT = 2222
+SESSION_CMD = None  # set by prep() / vm_prep()
+
+
+def ssh_cmd(*extra):
+    return ["ssh", "-q", "-p", str(SSH_PORT), "-i", os.path.join(VM, "id_ed25519"),
+            "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=3", *extra, "ci@127.0.0.1"]
+
+
+def vm_prep():
+    """Boot a fresh Ubuntu 24.04 cloud-image VM with a user `ci` (sudo with password)."""
+    global SESSION_CMD
+    vm_cleanup()
+    key = os.path.join(VM, "id_ed25519")
+    if not os.path.exists(key):
+        sh("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", key)
+    pub = open(key + ".pub").read().strip()
+    with open(os.path.join(VM, "user-data"), "w") as f:
+        f.write(f"""#cloud-config
+hostname: ubuntu
+manage_etc_hosts: true
+users:
+  - name: ci
+    groups: [sudo]
+    shell: /bin/bash
+    lock_passwd: false
+    ssh_authorized_keys: [{pub}]
+chpasswd:
+  expire: false
+  users: [{{name: ci, password: {PASSWORD}, type: text}}]
+ssh_pwauth: false
+package_update: false
+package_upgrade: false
+timezone: America/Los_Angeles
+runcmd:
+  - systemctl disable --now unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer
+  - touch /home/ci/.hushlogin /home/ci/.sudo_as_admin_successful
+  - chown ci:ci /home/ci/.hushlogin /home/ci/.sudo_as_admin_successful
+""")
+    with open(os.path.join(VM, "meta-data"), "w") as f:
+        f.write("instance-id: dk-tut\nlocal-hostname: ubuntu\n")
+    sh("xorriso", "-as", "mkisofs", "-output", os.path.join(VM, "seed.iso"), "-volid", "cidata",
+       "-joliet", "-rock", os.path.join(VM, "user-data"), os.path.join(VM, "meta-data"))
+    sh("qemu-img", "create", "-q", "-f", "qcow2", "-F", "qcow2", "-b", os.path.join(VM, "noble.img"),
+       os.path.join(VM, "disk.qcow2"), "20G")
+    sh("qemu-system-x86_64", "-enable-kvm", "-cpu", "host", "-smp", "4", "-m", "8192",
+       "-drive", f"file={os.path.join(VM, 'disk.qcow2')},if=virtio",
+       "-drive", f"file={os.path.join(VM, 'seed.iso')},if=virtio,format=raw",
+       "-nic", f"user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:{SSH_PORT}-:22",
+       "-display", "none", "-serial", f"file:{os.path.join(VM, 'serial.log')}",
+       "-daemonize", "-pidfile", os.path.join(VM, "qemu.pid"))
+    for _ in range(180):
+        if subprocess.run(ssh_cmd() + ["true"], capture_output=True).returncode == 0:
+            break
+        time.sleep(1)
+    else:
+        raise RuntimeError("VM never accepted SSH; see vm/serial.log")
+    r = subprocess.run(ssh_cmd() + ["cloud-init status --wait"], capture_output=True, text=True)
+    if "done" not in r.stdout:
+        raise RuntimeError("cloud-init: " + r.stdout + r.stderr)
+    SESSION_CMD = ["ssh", "-tt"] + ssh_cmd()[1:]
+
+
+def vm_cleanup():
+    pidf = os.path.join(VM, "qemu.pid")
+    if os.path.exists(pidf):
+        try:
+            os.kill(int(open(pidf).read()), 15)
+            time.sleep(2)
+        except (ProcessLookupError, ValueError):
+            pass
+        if os.path.exists(pidf):
+            os.remove(pidf)
+    for f in ("disk.qcow2", "seed.iso"):
+        if os.path.exists(os.path.join(VM, f)):
+            os.remove(os.path.join(VM, f))
 
 
 def prep():
@@ -67,6 +150,9 @@ rm -rf /var/lib/apt/lists/*
 """)
         sh("docker", "commit", "-c", 'CMD ["/sbin/init"]', f"{NAME}-build", BASE)
         sh("docker", "rm", "-f", f"{NAME}-build")
+    global SESSION_CMD
+    SESSION_CMD = ["docker", "exec", "-it", "-e", "TERM=xterm-256color", "-e", "USER=ci", "-e", "LOGNAME=ci",
+                   "-u", "ci", "-w", "/home/ci", NAME, "bash", "-l"]
     sh("docker", "run", "-d", "--privileged", "--cgroupns=host", "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
        "--tmpfs", "/run", "--tmpfs", "/run/lock", "--hostname", "ubuntu", "--name", NAME,
        "-v", f"{NAME}-lib:/var/lib/docker", "-v", f"{NAME}-ctd:/var/lib/containerd", BASE, "/sbin/init")
@@ -83,9 +169,8 @@ class Session:
         pid, fd = pty.fork()
         if pid == 0:
             os.environ["DOCKER_CLI_HINTS"] = "false"  # no host-side "What's next" tips on exit
-            os.execvp("docker", ["docker", "exec", "-it", "-e", "TERM=xterm-256color",
-                                 "-e", "USER=ci", "-e", "LOGNAME=ci",
-                                 "-u", "ci", "-w", "/home/ci", NAME, "bash", "-l"])
+            os.environ["TERM"] = "xterm-256color"
+            os.execvp(SESSION_CMD[0], SESSION_CMD)
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
         self.fd, self.pid = fd, pid
         self.t0 = prev.t0 if prev else time.monotonic()
@@ -194,8 +279,8 @@ def flow_apt():
 
 
 def flow_engine():
-    """docs.ci.computer -> Install Docker Engine (Linux), then the page's three checks."""
-    prep()
+    """docs.ci.computer -> Install Docker Engine (Linux), then docker info and compose."""
+    vm_prep()
     s = Session()
     s.prompt()
     s.pump(1.2)
@@ -224,11 +309,6 @@ def flow_engine():
     s.type("docker info"); s.pump(0.4); s.enter()
     s.prompt(); s.pump(2.2)
 
-    s.mark("hello")
-    s.type("docker run --rm hello-world"); s.pump(0.4); s.enter()
-    s.wait_for(r"docs\.docker\.com/get-started/", timeout=180)
-    s.prompt(); s.pump(2.0)
-
     s.mark("compose")
     s.type("docker compose version"); s.pump(0.4); s.enter()
     s.prompt(); s.pump(3.0)
@@ -237,6 +317,8 @@ def flow_engine():
 
 def main():
     s = {"apt": flow_apt, "engine": flow_engine}[FLOW]()
+    if FLOW == "engine":
+        vm_cleanup()
     header = {"version": 2, "width": COLS, "height": ROWS, "timestamp": int(time.time()),
               "env": {"TERM": "xterm-256color", "SHELL": "/bin/bash"}}
     with open(OUT, "w") as f:
@@ -250,5 +332,6 @@ if __name__ == "__main__":
     try:
         main()
     finally:
+        vm_cleanup()
         sh("docker", "rm", "-f", NAME, check=False)
         sh("docker", "volume", "rm", "-f", f"{NAME}-lib", f"{NAME}-ctd", check=False)
