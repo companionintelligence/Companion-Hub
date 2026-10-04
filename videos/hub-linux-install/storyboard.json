@@ -1,0 +1,93 @@
+{
+  "$schema": "https://raw.githubusercontent.com/companionintelligence/CI-Common/main/packages/video-kit/schema/storyboard.schema.json",
+  "app": {
+    "id": "hub-linux-install",
+    "name": "Install Companion Hub on Linux",
+    "repo": "companionintelligence/CI-Hub"
+  },
+  "meta": {
+    "fps": 30,
+    "transitionSeconds": 0.5
+  },
+  "chapters": {
+    "site": "Find the steps",
+    "terminal": "Install and start",
+    "browser": "Open your Hub"
+  },
+  "scenes": [
+    {
+      "id": "title",
+      "kind": "intro",
+      "seconds": 4,
+      "title": "Install Companion Hub on Linux",
+      "caption": "Docker is already set up. Here is the rest, at real speed."
+    },
+    {
+      "id": "docs",
+      "kind": "clip",
+      "chapter": "site",
+      "seconds": 21.23,
+      "src": {
+        "landscape": "assets/video/docs.mp4",
+        "portrait": "assets/video/docs-portrait.mp4"
+      },
+      "caption": "Open Installation on docs.ci.computer. Option 2 is the Linux server install."
+    },
+    {
+      "id": "download",
+      "kind": "clip",
+      "chapter": "terminal",
+      "seconds": 54.0,
+      "src": {
+        "landscape": "assets/video/hub-1.mp4",
+        "portrait": "assets/video/hub-1-portrait.mp4"
+      },
+      "caption": "Docker's already installed, so paste the Hub lines. Enter your password, then y."
+    },
+    {
+      "id": "start",
+      "kind": "clip",
+      "chapter": "terminal",
+      "seconds": 52.4,
+      "src": {
+        "landscape": "assets/video/hub-2.mp4",
+        "portrait": "assets/video/hub-2-portrait.mp4"
+      },
+      "caption": "Start the Hub. The first start downloads its containers.",
+      "transition": "cut"
+    },
+    {
+      "id": "status",
+      "kind": "clip",
+      "chapter": "terminal",
+      "seconds": 5.73,
+      "src": {
+        "landscape": "assets/video/hub-3.mp4",
+        "portrait": "assets/video/hub-3-portrait.mp4"
+      },
+      "caption": "Check it: four containers, all healthy.",
+      "transition": "cut"
+    },
+    {
+      "id": "dashboard",
+      "kind": "clip",
+      "chapter": "browser",
+      "seconds": 10.5,
+      "src": {
+        "landscape": "assets/video/dashboard.mp4",
+        "portrait": "assets/video/dashboard-portrait.mp4"
+      },
+      "caption": "Open localhost:5002. Your Hub is running and ready to pair."
+    },
+    {
+      "id": "close",
+      "kind": "outro",
+      "seconds": 4,
+      "cta": "Next: pair your Hub",
+      "tagline": "UnCloud your life.",
+      "url": "docs.ci.computer",
+      "caption": "docs.ci.computer",
+      "transition": "hold"
+    }
+  ]
+}

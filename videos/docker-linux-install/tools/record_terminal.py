@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Record a real Docker install in a throwaway Ubuntu 24.04 container.
 
-    python3 record_terminal.py <flow> out.cast     flow: apt | engine
+    python3 record_terminal.py <flow> out.cast     flow: apt | engine | hub
 
 The engine flow runs in a full Ubuntu 24.04 VM (QEMU/KVM, official cloud image,
 reached over SSH) so `docker info` reports a real machine. Put the image at
@@ -49,6 +49,7 @@ BASE = "dk-tut-base"
 HERE = os.path.dirname(os.path.abspath(__file__))
 VM = os.environ.get("VM_DIR", os.path.join(HERE, "vm"))
 SSH_PORT = 2222
+HUB_PORT = 15002  # the VM's Hub dashboard (:5002), for the browser clip
 SESSION_CMD = None  # set by prep() / vm_prep()
 
 
@@ -58,8 +59,11 @@ def ssh_cmd(*extra):
             "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=3", *extra, "ci@127.0.0.1"]
 
 
-def vm_prep():
-    """Boot a fresh Ubuntu 24.04 cloud-image VM with a user `ci` (sudo with password)."""
+def vm_prep(with_docker=False):
+    """Boot a fresh Ubuntu 24.04 cloud-image VM with a user `ci` (sudo with password).
+
+    with_docker: start where the Docker video ends — Docker Engine installed with
+    get.docker.com and `ci` in the docker group (done before recording starts)."""
     global SESSION_CMD
     vm_cleanup()
     key = os.path.join(VM, "id_ed25519")
@@ -97,7 +101,7 @@ runcmd:
     sh("qemu-system-x86_64", "-enable-kvm", "-cpu", "host", "-smp", "4", "-m", "8192",
        "-drive", f"file={os.path.join(VM, 'disk.qcow2')},if=virtio",
        "-drive", f"file={os.path.join(VM, 'seed.iso')},if=virtio,format=raw",
-       "-nic", f"user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:{SSH_PORT}-:22",
+       "-nic", f"user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:{SSH_PORT}-:22,hostfwd=tcp:127.0.0.1:{HUB_PORT}-:5002",
        "-display", "none", "-serial", f"file:{os.path.join(VM, 'serial.log')}",
        "-daemonize", "-pidfile", os.path.join(VM, "qemu.pid"))
     for _ in range(180):
@@ -109,6 +113,12 @@ runcmd:
     r = subprocess.run(ssh_cmd() + ["cloud-init status --wait"], capture_output=True, text=True)
     if "done" not in r.stdout:
         raise RuntimeError("cloud-init: " + r.stdout + r.stderr)
+    if with_docker:
+        r = subprocess.run(ssh_cmd() + [f"echo {PASSWORD} | sudo -S -p '' sh -c "
+                                        "'curl -fsSL https://get.docker.com | sh >/dev/null 2>&1 && usermod -aG docker ci'"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError("docker setup failed: " + r.stdout + r.stderr)
     SESSION_CMD = ["ssh", "-tt"] + ssh_cmd()[1:]
 
 
@@ -315,9 +325,43 @@ def flow_engine():
     return s
 
 
+HUB_BLOCK = """# Find the latest version and download the .deb (x86_64; use linux/deb/arm and _arm64 on ARM)
+VERSION=$(curl -fsSL https://dl.ci.computer/latest.json | grep -o '"version":"[^"]*"' | cut -d'"' -f4)
+curl -fLo companion-hub.deb "https://dl.ci.computer/${VERSION}/linux/deb/x64/Companion%20Hub_${VERSION#v}_amd64.deb"
+sudo apt install ./companion-hub.deb"""
+
+
+def flow_hub():
+    """docs.ci.computer -> Installation -> Option 2 (Linux server), after the Docker video."""
+    vm_prep(with_docker=True)
+    s = Session()
+    s.prompt()
+    s.pump(1.2)
+
+    s.mark("download")
+    s.paste(HUB_BLOCK)
+    s.pump(0.6); s.enter()
+    s.wait_for(r"\[sudo\] password for ci: $", timeout=120)
+    s.pump(0.9)
+    s.type(PASSWORD); s.pump(0.25); s.enter()
+    s.wait_for(r"\[Y/n\] $", timeout=180)
+    s.pump(1.3)
+    s.type("y"); s.pump(0.2); s.enter()
+    s.prompt(timeout=600); s.pump(1.8)
+
+    s.mark("start")
+    s.type("companion-hub --detached"); s.pump(0.4); s.enter()
+    s.prompt(timeout=900); s.pump(1.8)
+
+    s.mark("status")
+    s.type("cihub status"); s.pump(0.4); s.enter()
+    s.prompt(); s.pump(3.0)
+    return s
+
+
 def main():
-    s = {"apt": flow_apt, "engine": flow_engine}[FLOW]()
-    if FLOW == "engine":
+    s = {"apt": flow_apt, "engine": flow_engine, "hub": flow_hub}[FLOW]()
+    if FLOW in ("engine", "hub") and not os.environ.get("KEEP_VM"):
         vm_cleanup()
     header = {"version": 2, "width": COLS, "height": ROWS, "timestamp": int(time.time()),
               "env": {"TERM": "xterm-256color", "SHELL": "/bin/bash"}}
@@ -332,6 +376,7 @@ if __name__ == "__main__":
     try:
         main()
     finally:
-        vm_cleanup()
+        if not os.environ.get("KEEP_VM"):
+            vm_cleanup()
         sh("docker", "rm", "-f", NAME, check=False)
         sh("docker", "volume", "rm", "-f", f"{NAME}-lib", f"{NAME}-ctd", check=False)
