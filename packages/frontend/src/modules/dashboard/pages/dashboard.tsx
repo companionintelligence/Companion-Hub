@@ -172,11 +172,6 @@ export default () => {
         <div className="rounded-lg border border-border bg-linear-to-b from-card to-card/60 p-4 shadow-sm">
           <QueuedInstallsIndicator queue={installQueue} isLoading={installQueueLoading} />
           <CustomDomainRestartBanner apps={diagnosticsApps} namesByUrn={appNamesByUrn} />
-          {installedApps.length > 0 && (
-            <div className="mb-1 flex justify-end">
-              <BatchActionsMenu runningCount={runningCount} stoppedCount={stoppedCount} updatesAvailable={updatesAvailable} />
-            </div>
-          )}
           {appsError ? (
             <div className="flex flex-col items-start gap-2 py-6">
               <p className="text-sm text-muted-foreground">{t('DASHBOARD_APPS_FAILED')}</p>
@@ -192,6 +187,12 @@ export default () => {
             />
           )}
         </div>
+
+        {installedApps.length > 0 && (
+          <div className="flex justify-end">
+            <BatchActionsMenu runningCount={runningCount} stoppedCount={stoppedCount} updatesAvailable={updatesAvailable} />
+          </div>
+        )}
       </div>
     </div>
   );
