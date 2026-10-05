@@ -3,7 +3,7 @@ import { ErrorReportingService } from '@/core/error-reporting/error-reporting.se
 import { LoggerService } from '@/core/logger/logger.service';
 import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
 import { SSEService } from '@/core/sse/sse.service';
-import { Injectable, Optional } from '@nestjs/common';
+import { Injectable, Optional, type OnModuleDestroy } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
 import {
@@ -223,7 +223,7 @@ const HELD_BY_ANOTHER_HUB_BIND_REFUSAL = 'DOMAIN_BOUND_TO_ANOTHER_DEVICE';
 const MOVE_IN_PORTAL_REMEDY = 'To serve it here, move it to this Hub from the portal: organization settings → domains.';
 
 @Injectable()
-export class ExposureSyncService {
+export class ExposureSyncService implements OnModuleDestroy {
   private lastPublicDnsFailureReportAt = 0;
   private readonly lastPublicDnsToastAt = new Map<string, number>();
   private static readonly PUBLIC_DNS_FAILURE_COOLDOWN_MS = 5 * 60_000;
@@ -290,6 +290,19 @@ export class ExposureSyncService {
 
   /** Cloudflare passes currently running. See {@link isCloudflareSyncInFlight}. */
   private cloudflareSyncDepth = 0;
+
+  /**
+   * Waits before re-running a Cloudflare pass that never reached Companion Portal.
+   *
+   * A pass that fails on the network leaves a new or changed app with no DNS record, and a
+   * browser that looks the name up in that window caches the miss (resolvers keep NXDOMAIN for
+   * the zone's negative TTL, up to 30 minutes). The 5-minute background poll is too slow to
+   * prevent that, so a failed pass retries on its own, quickly at first, then gives the poll
+   * the rest.
+   */
+  private static readonly CLOUDFLARE_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000, 120_000];
+  private cloudflareRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private cloudflareRetryAttempt = 0;
 
   /**
    * Reserves HTTPS port 443 for the Hub on the tailnet.
@@ -746,6 +759,46 @@ export class ExposureSyncService {
     return this.cloudflareSyncDepth > 0;
   }
 
+  onModuleDestroy() {
+    this.clearCloudflareRetry();
+  }
+
+  private clearCloudflareRetry() {
+    if (this.cloudflareRetryTimer) {
+      clearTimeout(this.cloudflareRetryTimer);
+      this.cloudflareRetryTimer = null;
+    }
+  }
+
+  /**
+   * Ends the retry run after a pass Companion Portal answered, or books the next attempt after
+   * one it did not. A pass that was refused for an app-specific reason counts as answered: it
+   * would refuse again, and it is reported to the person through the toasts instead.
+   */
+  private settleCloudflareRetry(answered: boolean, options?: ExposureSyncOptions) {
+    this.clearCloudflareRetry();
+    if (answered) {
+      this.cloudflareRetryAttempt = 0;
+      return;
+    }
+
+    const delay = ExposureSyncService.CLOUDFLARE_RETRY_DELAYS_MS[this.cloudflareRetryAttempt];
+    if (delay === undefined) {
+      this.cloudflareRetryAttempt = 0;
+      return;
+    }
+    this.cloudflareRetryAttempt += 1;
+    this.logger.info(`[Cloudflare] Public DNS sync did not complete; retrying in ${delay / 1000}s`);
+    this.cloudflareRetryTimer = setTimeout(() => {
+      this.cloudflareRetryTimer = null;
+      if (this.isCloudflareSyncInFlight()) {
+        return;
+      }
+      void this.triggerCloudflareSync(options);
+    }, delay);
+    this.cloudflareRetryTimer.unref?.();
+  }
+
   public async triggerCloudflareSync(options?: ExposureSyncOptions) {
     this.cloudflareSyncDepth += 1;
     try {
@@ -877,6 +930,7 @@ export class ExposureSyncService {
       const customDomainApps = await this.buildCustomDomainApplyReport(apps, toPublicHostname);
 
       const result = await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined, customDomainApps);
+      this.settleCloudflareRetry(result.ok, options);
 
       const appEntries = exposedApps.filter((entry) => entry.privilegedKind !== 'hub');
 
@@ -1078,6 +1132,7 @@ export class ExposureSyncService {
       } else {
         this.logger.error(`[Cloudflare] Sync failed: ${String(error)}`);
       }
+      this.settleCloudflareRetry(false, options);
     } finally {
       this.cloudflareSyncDepth -= 1;
     }
