@@ -1,6 +1,6 @@
 import { pairPeer, removePeer } from '@/api-client/sdk.gen';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { HubPoolSection } from '../hub-pool-settings';
@@ -10,9 +10,13 @@ type Json = Record<string, unknown>;
 const i18nCalls = vi.hoisted(() => [] as { key: string; params?: unknown }[]);
 
 const fixtures = vi.hoisted(() => ({
+  demo: false,
   status: {} as Json,
   statusFails: false,
   discoverable: [] as Json[],
+  /** How many times the discovery route was read, and a gate that holds the next read open until released. */
+  discoverableReads: 0,
+  discoverableGate: null as null | Promise<void>,
   routingLog: { entries: [] as Json[], summary: { recorded: 0, capacity: 200, served: 0, failed: 0, failovers: 0, lastAt: null } } as Json,
   updateSettings: vi.fn(async (_options: { body: Record<string, unknown> }) => ({})),
   peerToggle: vi.fn(async (_options: { url: string }) => ({})),
@@ -31,7 +35,19 @@ vi.mock('react-i18next', () => {
   return { useTranslation: () => ({ t }) };
 });
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
-vi.mock('@/lib/hooks/use-demo-mode', () => ({ useDemoMode: () => false }));
+vi.mock('@/lib/hooks/use-demo-mode', () => ({ useDemoMode: () => fixtures.demo }));
+// The setup guide has its own suite. Here it only needs to be observable as open or closed, with the step it was
+// asked to start at, and a stub keeps its real dependencies out of this file's closed mock lists.
+vi.mock('../../components/pool-setup-wizard/lazy-pool-setup-wizard', () => ({
+  LazyPoolSetupWizard: ({ open, startAt, onOpenChange }: { open: boolean; startAt?: 'find'; onOpenChange: (open: boolean) => void }) =>
+    open ? (
+      <div data-testid="pool-setup-wizard-stub" data-start-at={startAt ?? ''}>
+        <button type="button" onClick={() => onOpenChange(false)}>
+          close-guide
+        </button>
+      </div>
+    ) : null,
+}));
 // The per-peer verbs and the two directional switches go through the generated client's low-level
 // post/patch until swagger.json and the api-client are regenerated; see hub-pool-settings.tsx.
 vi.mock('@/api-client/client.gen', () => ({
@@ -61,7 +77,14 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
     },
   }),
   listDiscoverableQueryKey: () => ['pool-discoverable'],
-  listDiscoverableOptions: () => ({ queryKey: ['pool-discoverable'], queryFn: async () => fixtures.discoverable }),
+  listDiscoverableOptions: () => ({
+    queryKey: ['pool-discoverable'],
+    queryFn: async () => {
+      fixtures.discoverableReads += 1;
+      await fixtures.discoverableGate;
+      return fixtures.discoverable;
+    },
+  }),
   getPoolRoutingLogQueryKey: () => ['pool-routing-log'],
   getPoolRoutingLogOptions: () => ({ queryKey: ['pool-routing-log'], queryFn: async () => fixtures.routingLog }),
   updatePoolSettingsMutation: () => ({ mutationFn: fixtures.updateSettings }),
@@ -127,18 +150,24 @@ const pendingInboundPeer = (overrides: Json = {}): Json => ({
 
 const renderSection = () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={client}>
-      <HubPoolSection />
-    </QueryClientProvider>,
-  );
+  return {
+    client,
+    ...render(
+      <QueryClientProvider client={client}>
+        <HubPoolSection />
+      </QueryClientProvider>,
+    ),
+  };
 };
 
 describe('HubPoolSection', () => {
   beforeEach(() => {
+    fixtures.demo = false;
     fixtures.status = baseStatus();
     fixtures.statusFails = false;
     fixtures.discoverable = [];
+    fixtures.discoverableReads = 0;
+    fixtures.discoverableGate = null;
     fixtures.routingLog = { entries: [], summary: { recorded: 0, capacity: 200, served: 0, failed: 0, failovers: 0, lastAt: null } };
     fixtures.updateSettings.mockClear();
     fixtures.peerToggle.mockClear();
@@ -1137,5 +1166,273 @@ describe('HubPoolSection', () => {
     expect(screen.getAllByTestId('hub-pool-model')[0]?.getAttribute('data-model')).toBe('qwen3:8b');
     // A filter is a view concern: it must not have written anything.
     expect(fixtures.updateSettings).not.toHaveBeenCalled();
+  });
+
+  describe('setup guide entry point', () => {
+    it('shows the setup callout when nothing is paired, and its button opens the guide', async () => {
+      renderSection();
+
+      const callout = await screen.findByTestId('pool-setup-callout');
+      expect(callout.textContent).toContain('HUB_POOL_SETUP_CALLOUT_TITLE');
+      expect(screen.queryByTestId('pool-setup-wizard-stub')).toBeNull();
+
+      await userEvent.click(screen.getByRole('button', { name: 'HUB_POOL_SETUP_OPEN' }));
+
+      expect(screen.getByTestId('pool-setup-wizard-stub')).toBeTruthy();
+    });
+
+    it('opens the guide from the callout with no starting step, so it resumes wherever the pool is', async () => {
+      renderSection();
+
+      await userEvent.click(await screen.findByTestId('pool-setup-callout-open'));
+
+      expect(screen.getByTestId('pool-setup-wizard-stub').getAttribute('data-start-at')).toBe('');
+    });
+
+    it('still shows the callout when the only rows are pending, because the guide resumes on Approve', async () => {
+      fixtures.status = baseStatus({
+        peers: [pendingInboundPeer()],
+        peerCounts: { total: 1, connected: 0, pending: 1, unreachable: 0, disabled: 0 },
+      });
+
+      renderSection();
+
+      expect(await screen.findByTestId('pool-setup-callout')).toBeTruthy();
+    });
+
+    it.each([
+      ['connected', connectedPeer()],
+      ['unreachable', connectedPeer({ status: 'unreachable' })],
+    ])('hides the callout once a %s peer exists', async (_name, peer) => {
+      fixtures.status = baseStatus({
+        peers: [peer],
+        peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0, disabled: 0 },
+      });
+
+      renderSection();
+      await screen.findByTestId('hub-pool-card');
+
+      expect(screen.queryByTestId('pool-setup-callout')).toBeNull();
+    });
+
+    it('hides the callout when the .env file locks pooling off, because the guide could not change it', async () => {
+      fixtures.status = baseStatus({ enabled: false, disabledBy: 'env', reason: 'disabled_by_env', routingActive: false });
+
+      renderSection();
+      await screen.findByTestId('hub-pool-card');
+
+      expect(screen.queryByTestId('pool-setup-callout')).toBeNull();
+    });
+
+    it('disables the callout button in demo mode', async () => {
+      fixtures.demo = true;
+
+      renderSection();
+
+      expect((await screen.findByRole('button', { name: 'HUB_POOL_SETUP_OPEN' })).hasAttribute('disabled')).toBe(true);
+    });
+
+    describe('once a Hub is paired', () => {
+      const pairedStatus = () =>
+        baseStatus({ peers: [connectedPeer()], peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0, disabled: 0 } });
+
+      it('keeps the guide reachable with Add another Hub in the Discoverable block, and it opens the guide', async () => {
+        fixtures.status = pairedStatus();
+        renderSection();
+        await screen.findByTestId('hub-pool-card');
+        expect(screen.queryByTestId('pool-setup-callout')).toBeNull();
+
+        await userEvent.click(await screen.findByTestId('hub-pool-add-hub-btn'));
+
+        expect(screen.getByTestId('pool-setup-wizard-stub')).toBeTruthy();
+        expect(screen.getByTestId('hub-pool-add-hub-btn').textContent).toBe('HUB_POOL_SETUP_SUCCESS_ADD');
+      });
+
+      it('opens the guide at the scan from Add another Hub, because an existing pairing would otherwise resume it on Approve', async () => {
+        fixtures.status = pairedStatus();
+        renderSection();
+
+        await userEvent.click(await screen.findByTestId('hub-pool-add-hub-btn'));
+
+        expect(screen.getByTestId('pool-setup-wizard-stub').getAttribute('data-start-at')).toBe('find');
+      });
+
+      describe('Add Hubs', () => {
+        it('shows once a connected Hub is paired, labelled Add Hubs, with the callout gone', async () => {
+          fixtures.status = pairedStatus();
+          renderSection();
+
+          const addHubs = await screen.findByTestId('pool-setup-add-hubs');
+
+          expect(addHubs.textContent).toBe('HUB_POOL_SETUP_ADD_HUBS');
+          expect(addHubs.hasAttribute('disabled')).toBe(false);
+          expect(screen.queryByTestId('pool-setup-callout')).toBeNull();
+        });
+
+        it('opens the guide at the scan, so the Hubs already paired do not send it to Approve', async () => {
+          fixtures.status = pairedStatus();
+          renderSection();
+          expect(screen.queryByTestId('pool-setup-wizard-stub')).toBeNull();
+
+          await userEvent.click(await screen.findByTestId('pool-setup-add-hubs'));
+
+          expect(screen.getByTestId('pool-setup-wizard-stub').getAttribute('data-start-at')).toBe('find');
+        });
+
+        it('shows for a paired Hub that is unreachable too, because it is still paired', async () => {
+          fixtures.status = baseStatus({
+            peers: [connectedPeer({ status: 'unreachable' })],
+            peerCounts: { total: 1, connected: 0, pending: 0, unreachable: 1, disabled: 0 },
+          });
+          renderSection();
+
+          expect(await screen.findByTestId('pool-setup-add-hubs')).toBeTruthy();
+          expect(screen.queryByTestId('pool-setup-callout')).toBeNull();
+        });
+
+        it('does not show while nothing is paired, where the callout is the way in', async () => {
+          renderSection();
+
+          await screen.findByTestId('pool-setup-callout');
+
+          expect(screen.queryByTestId('pool-setup-add-hubs')).toBeNull();
+        });
+
+        it('does not show when only a request is pending, because nothing is paired yet and the callout still is', async () => {
+          fixtures.status = baseStatus({
+            peers: [pendingInboundPeer()],
+            peerCounts: { total: 1, connected: 0, pending: 1, unreachable: 0, disabled: 0 },
+          });
+          renderSection();
+
+          await screen.findByTestId('pool-setup-callout');
+
+          expect(screen.queryByTestId('pool-setup-add-hubs')).toBeNull();
+        });
+
+        it('does not show when the .env file locks pooling off, because the guide could not change it', async () => {
+          fixtures.status = { ...pairedStatus(), enabled: false, disabledBy: 'env', reason: 'disabled_by_env', routingActive: false };
+          renderSection();
+          await screen.findByTestId('hub-pool-card');
+
+          expect(screen.queryByTestId('pool-setup-add-hubs')).toBeNull();
+        });
+
+        it('is disabled in demo mode, and pressing it opens nothing', async () => {
+          fixtures.demo = true;
+          fixtures.status = pairedStatus();
+          renderSection();
+
+          const addHubs = await screen.findByTestId('pool-setup-add-hubs');
+          await userEvent.click(addHubs);
+
+          expect(addHubs.hasAttribute('disabled')).toBe(true);
+          expect(screen.queryByTestId('pool-setup-wizard-stub')).toBeNull();
+        });
+      });
+
+      it('opens at the scan from both buttons even when the guide was last opened from the callout, which resumes', async () => {
+        const { client } = renderSection();
+        // Nothing paired: the callout is the way in, and it opens the guide wherever the pool is.
+        await userEvent.click(await screen.findByTestId('pool-setup-callout-open'));
+        expect(screen.getByTestId('pool-setup-wizard-stub').getAttribute('data-start-at')).toBe('');
+        await userEvent.click(screen.getByRole('button', { name: 'close-guide' }));
+        expect(screen.queryByTestId('pool-setup-wizard-stub')).toBeNull();
+
+        // The guide's first request was approved: now a Hub is paired and the callout is gone.
+        fixtures.status = pairedStatus();
+        await act(async () => {
+          await client.invalidateQueries({ queryKey: ['pool-status'] });
+        });
+        await userEvent.click(await screen.findByTestId('hub-pool-add-hub-btn'));
+        expect(screen.getByTestId('pool-setup-wizard-stub').getAttribute('data-start-at')).toBe('find');
+        await userEvent.click(screen.getByRole('button', { name: 'close-guide' }));
+
+        await userEvent.click(screen.getByTestId('pool-setup-add-hubs'));
+        expect(screen.getByTestId('pool-setup-wizard-stub').getAttribute('data-start-at')).toBe('find');
+      });
+
+      it('does not offer it while nothing is paired, because the callout already does', async () => {
+        renderSection();
+        await screen.findByTestId('pool-setup-callout');
+
+        expect(screen.queryByTestId('hub-pool-add-hub-btn')).toBeNull();
+      });
+
+      it('does not offer it when the .env file locks pooling off', async () => {
+        fixtures.status = { ...pairedStatus(), enabled: false, disabledBy: 'env', reason: 'disabled_by_env', routingActive: false };
+        renderSection();
+        await screen.findByTestId('hub-pool-card');
+
+        expect(screen.queryByTestId('hub-pool-add-hub-btn')).toBeNull();
+      });
+
+      it('disables it in demo mode', async () => {
+        fixtures.demo = true;
+        fixtures.status = pairedStatus();
+        renderSection();
+
+        expect((await screen.findByTestId('hub-pool-add-hub-btn')).hasAttribute('disabled')).toBe(true);
+      });
+    });
+
+    describe('Scan again in the Discoverable block', () => {
+      it('reads the discovery route again, once per press, and never on its own', async () => {
+        renderSection();
+        await waitFor(() => expect(fixtures.discoverableReads).toBe(1));
+
+        await userEvent.click(await screen.findByTestId('hub-pool-rescan-btn'));
+
+        await waitFor(() => expect(fixtures.discoverableReads).toBe(2));
+        expect(screen.getByTestId('hub-pool-rescan-btn').textContent).toBe('HUB_POOL_SETUP_FIND_RESCAN');
+      });
+
+      it('shows a Hub that came online after the panel opened, which the removed 30 second poll used to do', async () => {
+        renderSection();
+        await waitFor(() => expect(fixtures.discoverableReads).toBe(1));
+        expect(screen.queryByText('hub-d')).toBeNull();
+
+        fixtures.discoverable = [{ tailscaleDeviceId: 'device-hub-d', nodeFqdn: 'hub-d.example-tailnet.ts.net', hostname: 'hub-d' }];
+        await userEvent.click(await screen.findByTestId('hub-pool-rescan-btn'));
+
+        expect(await screen.findByText('hub-d')).toBeTruthy();
+      });
+
+      it('stays enabled and marks itself busy while a scan runs, and a second press does not restart the scan', async () => {
+        renderSection();
+        await waitFor(() => expect(fixtures.discoverableReads).toBe(1));
+        let release: () => void = () => undefined;
+        fixtures.discoverableGate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+
+        const rescan = await screen.findByTestId('hub-pool-rescan-btn');
+        await userEvent.click(rescan);
+        await waitFor(() => expect(rescan.getAttribute('aria-busy')).toBe('true'));
+        expect(rescan.hasAttribute('disabled')).toBe(false);
+        await userEvent.click(rescan);
+        release();
+
+        await waitFor(() => expect(rescan.getAttribute('aria-busy')).toBeNull());
+        expect(fixtures.discoverableReads).toBe(2);
+      });
+
+      it('is available in demo mode, because a scan changes nothing', async () => {
+        fixtures.demo = true;
+        renderSection();
+
+        expect((await screen.findByTestId('hub-pool-rescan-btn')).hasAttribute('disabled')).toBe(false);
+      });
+    });
+
+    it('does not poll the discovery route: its query has no refetchInterval, while the cheap status query keeps its own', async () => {
+      const { client } = renderSection();
+      await screen.findByTestId('hub-pool-card');
+
+      const optionsOf = (key: string) => client.getQueryCache().find({ queryKey: [key] })?.observers[0]?.options;
+
+      expect(optionsOf('pool-discoverable')?.refetchInterval).toBeUndefined();
+      expect(optionsOf('pool-status')?.refetchInterval).toBe(15_000);
+    });
   });
 });

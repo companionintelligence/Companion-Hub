@@ -2169,4 +2169,231 @@ describe('HubPoolPeerService', () => {
       expect(repo.update).not.toHaveBeenCalledWith(peer.id, expect.objectContaining({ status: 'unreachable' }));
     });
   });
+
+  describe('listDiscoverableDevices', () => {
+    const SELF_FQDN = 'self-hub.tailxyz.ts.net';
+
+    type TailnetPeer = NonNullable<Awaited<ReturnType<TailscaleService['getStatusCached']>>['peers']>[number];
+
+    /** A device in the local daemon's peer map. `online` and `os` are left off unless the test names them: the daemon omits what it does not know. */
+    const daemonPeer = (name: string, overrides: Partial<TailnetPeer> = {}): TailnetPeer => ({
+      id: `daemon-${name}`,
+      nodeFqdn: `${name}.tailxyz.ts.net`,
+      hostname: name,
+      ip: '100.64.0.9',
+      ...overrides,
+    });
+
+    const useTailnet = (peers: TailnetPeer[]) => {
+      tailscaleService.getStatusCached.mockResolvedValue({
+        installed: true,
+        connected: true,
+        version: '1.90.0',
+        hostname: 'self-hub',
+        nodeFqdn: SELF_FQDN,
+        tailnet: 'tailxyz.ts.net',
+        ip: '100.64.0.1',
+        supportsServices: true,
+        httpsAvailable: true,
+        backendState: 'Running',
+        authUrl: null,
+        peers,
+      });
+    };
+
+    /** Every device whose name starts with `hub-` answers /identify as a Hub; anything else answers as not one. */
+    const identifyHubsByName = () => {
+      vi.mocked(global.fetch).mockImplementation(async (input) => {
+        const host = new URL(String(input)).hostname;
+        return new Response(JSON.stringify({ isCiHub: host.startsWith('hub-') }), { status: 200 });
+      });
+    };
+
+    const discoverByName = async () => {
+      const found = await service.listDiscoverableDevices();
+      return new Map(found.map((device) => [device.hostname, device]));
+    };
+
+    beforeEach(() => {
+      repo.listAll.mockResolvedValue([]);
+      tailscaleAdminApi.isConfigured.mockReturnValue(false);
+      identifyHubsByName();
+    });
+
+    it('carries the OS and the online flag from the local daemon peer map onto each Hub that answers /identify', async () => {
+      useTailnet([daemonPeer('hub-b', { os: 'linux', online: true }), daemonPeer('hub-c', { os: 'macOS', online: false })]);
+
+      const found = await discoverByName();
+
+      expect(found.get('hub-b')).toEqual({
+        tailscaleDeviceId: 'daemon-hub-b',
+        nodeFqdn: 'hub-b.tailxyz.ts.net',
+        hostname: 'hub-b',
+        os: 'linux',
+        online: true,
+      });
+      expect(found.get('hub-c')).toMatchObject({ os: 'macOS', online: false });
+    });
+
+    it('keeps online: false, because a device the tailnet calls offline is a fact and not an absence', async () => {
+      useTailnet([daemonPeer('hub-b', { os: 'windows', online: false })]);
+
+      const found = await discoverByName();
+
+      expect(found.get('hub-b')).toHaveProperty('online', false);
+    });
+
+    it('omits os and online entirely, not as null or empty, when the tailnet reported neither', async () => {
+      useTailnet([daemonPeer('hub-b')]);
+
+      const found = await discoverByName();
+      const hub = found.get('hub-b');
+
+      expect(hub).toBeDefined();
+      expect(hub).not.toHaveProperty('os');
+      expect(hub).not.toHaveProperty('online');
+      expect(Object.keys(hub ?? {}).sort()).toEqual(['hostname', 'nodeFqdn', 'tailscaleDeviceId']);
+    });
+
+    it('omits an OS the daemon reported as null or empty, while still carrying a known online flag', async () => {
+      useTailnet([daemonPeer('hub-b', { os: null, online: true }), daemonPeer('hub-c', { os: '', online: true })]);
+
+      const found = await discoverByName();
+
+      for (const name of ['hub-b', 'hub-c']) {
+        expect(found.get(name), name).not.toHaveProperty('os');
+        expect(found.get(name), name).toHaveProperty('online', true);
+      }
+    });
+
+    it('carries os and online per device, so one Hub is never described with another Hub’s values', async () => {
+      useTailnet([daemonPeer('hub-b', { os: 'linux', online: true }), daemonPeer('hub-c'), daemonPeer('hub-d', { os: 'windows', online: false })]);
+
+      const found = await discoverByName();
+
+      expect(found.get('hub-b')).toMatchObject({ os: 'linux', online: true });
+      expect(found.get('hub-c')).not.toHaveProperty('os');
+      expect(found.get('hub-c')).not.toHaveProperty('online');
+      expect(found.get('hub-d')).toMatchObject({ os: 'windows', online: false });
+    });
+
+    it('keeps the daemon’s os and online when the Tailscale Admin API lists the same device, while taking the Admin API’s id and hostname', async () => {
+      useTailnet([daemonPeer('hub-b', { os: 'linux', online: true })]);
+      tailscaleAdminApi.isConfigured.mockReturnValue(true);
+      tailscaleAdminApi.listDevices.mockResolvedValue([
+        {
+          id: 'admin-id-b',
+          nodeId: 'node-b',
+          hostname: 'hub-b',
+          name: 'hub-b.tailxyz.ts.net',
+          addresses: ['100.64.0.9'],
+          // Spelled differently on purpose: the daemon's value is what survives, and the Admin API row carries no presence at all.
+          os: 'Linux',
+          clientVersion: '1.90.0',
+          lastSeen: null,
+          tags: [],
+        },
+      ]);
+
+      const found = await discoverByName();
+
+      expect(found.get('hub-b')).toEqual({
+        tailscaleDeviceId: 'admin-id-b',
+        nodeFqdn: 'hub-b.tailxyz.ts.net',
+        hostname: 'hub-b',
+        os: 'linux',
+        online: true,
+      });
+      expect(tailscaleAdminApi.listDevices).toHaveBeenCalledWith('tailxyz.ts.net');
+    });
+
+    it('keeps the daemon’s online: false when the Admin API row for the same device overwrites the map entry', async () => {
+      useTailnet([daemonPeer('hub-b', { os: 'macOS', online: false })]);
+      tailscaleAdminApi.isConfigured.mockReturnValue(true);
+      tailscaleAdminApi.listDevices.mockResolvedValue([
+        {
+          id: 'admin-id-b',
+          nodeId: 'node-b',
+          hostname: 'hub-b',
+          name: 'hub-b.tailxyz.ts.net',
+          addresses: [],
+          os: '',
+          clientVersion: '',
+          lastSeen: null,
+          tags: [],
+        },
+      ]);
+
+      const found = await discoverByName();
+
+      expect(found.get('hub-b')).toMatchObject({ tailscaleDeviceId: 'admin-id-b', os: 'macOS', online: false });
+    });
+
+    it('reports no online flag for a device only the Admin API knows, because the Admin API has no presence to report', async () => {
+      useTailnet([]);
+      tailscaleAdminApi.isConfigured.mockReturnValue(true);
+      tailscaleAdminApi.listDevices.mockResolvedValue([
+        {
+          id: 'admin-id-e',
+          nodeId: 'node-e',
+          hostname: 'hub-e',
+          name: 'hub-e.tailxyz.ts.net',
+          addresses: [],
+          os: '',
+          clientVersion: '',
+          lastSeen: null,
+          tags: [],
+        },
+      ]);
+
+      const found = await discoverByName();
+
+      expect(found.get('hub-e')).toBeDefined();
+      expect(found.get('hub-e')).not.toHaveProperty('online');
+    });
+
+    it('still returns the daemon’s os and online when the Admin API call fails', async () => {
+      useTailnet([daemonPeer('hub-b', { os: 'linux', online: true })]);
+      tailscaleAdminApi.isConfigured.mockReturnValue(true);
+      tailscaleAdminApi.listDevices.mockRejectedValue(new Error('403 forbidden'));
+
+      const found = await discoverByName();
+
+      expect(found.get('hub-b')).toMatchObject({ os: 'linux', online: true });
+    });
+
+    it('still leaves out a device that does not answer as a Hub, a Hub that is already paired, and this Hub itself', async () => {
+      useTailnet([
+        daemonPeer('hub-b', { os: 'linux', online: true }),
+        daemonPeer('printer', { os: 'other', online: true }),
+        daemonPeer('hub-paired', { os: 'linux', online: true }),
+        { id: 'self', nodeFqdn: SELF_FQDN, hostname: 'self-hub', ip: '100.64.0.1', os: 'macOS', online: true },
+      ]);
+      repo.listAll.mockResolvedValue([mockPeer({ nodeFqdn: 'hub-paired.tailxyz.ts.net' })]);
+
+      const found = await service.listDiscoverableDevices();
+
+      expect(found.map((device) => device.hostname)).toEqual(['hub-b']);
+    });
+
+    it('returns nothing, and probes nothing, when Tailscale is not connected and no Admin API credential is set', async () => {
+      tailscaleService.getStatusCached.mockResolvedValue({
+        installed: true,
+        connected: false,
+        version: null,
+        hostname: null,
+        nodeFqdn: null,
+        tailnet: null,
+        ip: null,
+        supportsServices: false,
+        httpsAvailable: false,
+        backendState: 'Stopped',
+        authUrl: null,
+        peers: [daemonPeer('hub-b', { os: 'linux', online: true })],
+      });
+
+      await expect(service.listDiscoverableDevices()).resolves.toEqual([]);
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+  });
 });

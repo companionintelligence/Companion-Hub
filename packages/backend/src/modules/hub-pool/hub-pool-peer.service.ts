@@ -398,7 +398,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       return [];
     }
 
-    const candidateMap = new Map<string, { id: string; name: string; hostname: string }>();
+    const candidateMap = new Map<string, { id: string; name: string; hostname: string; os: string | null; online: boolean | null }>();
 
     // 1. From local Tailscale daemon peer map (zero-config, no OAuth needed)
     for (const peer of selfStatus.peers ?? []) {
@@ -407,6 +407,8 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
           id: peer.id ?? '',
           name: peer.nodeFqdn,
           hostname: peer.hostname ?? peer.nodeFqdn,
+          os: peer.os ?? null,
+          online: typeof peer.online === 'boolean' ? peer.online : null,
         });
       }
     }
@@ -417,10 +419,14 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         const adminDevices = await this.tailscaleAdminApi.listDevices(selfStatus.tailnet);
         for (const device of adminDevices) {
           if (device.name && device.name !== selfStatus.nodeFqdn) {
+            // The local daemon already told us OS and presence for this device; the Admin API row must not erase them.
+            const fromDaemon = candidateMap.get(device.name);
             candidateMap.set(device.name, {
               id: device.id,
               name: device.name,
               hostname: device.hostname,
+              os: fromDaemon?.os ?? null,
+              online: fromDaemon?.online ?? null,
             });
           }
         }
@@ -446,7 +452,14 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
           if (!response.ok) return null;
           const body = (await response.json()) as { isCiHub?: boolean };
           if (!body.isCiHub) return null;
-          return { tailscaleDeviceId: device.id, nodeFqdn: device.name, hostname: device.hostname };
+          return {
+            tailscaleDeviceId: device.id,
+            nodeFqdn: device.name,
+            hostname: device.hostname,
+            // Display only, and only what the tailnet itself reported: absent beats a guess.
+            ...(device.os ? { os: device.os } : {}),
+            ...(device.online === null ? {} : { online: device.online }),
+          };
         } catch (error) {
           this.logger.debug(`[HubPool] discovery probe for ${device.name} failed: ${error instanceof Error ? error.message : String(error)}`);
           return null;

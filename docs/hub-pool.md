@@ -4,9 +4,139 @@ Hub Pool lets two or more CI-Hub devices you operate on the same tailnet share i
 
 This complements, and does not replace, the existing single-node model recommendation described in [`MODEL_REGISTRY.md`](MODEL_REGISTRY.md): hardware-aware model selection still runs per node, unchanged. Hub Pool only changes *where* a resolved model actually runs once more than one Hub is paired.
 
+## Set up a pool
+
+A pool is two or more Hubs that you operate on one tailnet. You pair them once. After that, an app on either Hub runs on whichever Hub has the model and the shortest queue.
+
+**Each Hub approves its own request.** The Hub that sends a request waits, and an operator on the other Hub approves it. Nothing is pooled until then, and the sender cannot approve for the other Hub.
+
+**Pairing is an introduction to another machine.** The guide never chooses a Hub for you, and a tailnet can contain Hubs that are not yours. Choose only Hubs you operate, and approve only requests from Hubs you recognize.
+
+Use the [guide](#set-up-with-the-guide) in the Hub UI, or the [CLI](#set-up-with-the-cli) on a Hub with no dashboard. Both use the same Hub API, so you can start in one and finish in the other.
+
+### Before you start
+
+Check these on every Hub in the pool:
+
+1. **Same tailnet.** Each Hub is signed in to the same Tailscale account. See [`private-vpn.md`](private-vpn.md). A Hub on another tailnet is never offered, and a Hub refuses a request from a name outside its own tailnet.
+2. **MagicDNS and HTTPS certificates.** Both are on for the tailnet (Tailscale admin console → DNS). Hubs reach each other at their tailnet names over HTTPS, and a Hub publishes itself at that name once Tailscale connects. To check certificates across many machines, see [The TLS certificate](fleet-setup.md#the-tls-certificate).
+3. **Hub Pool is on.** It is on by default. To check, open **Settings → Network → Hub Pool** or run `cihub pool status`. If it is off, turn it on there or run `cihub pool enable`. If `HUB_POOL_USER_DISABLED=true` is in the Hub's `.env`, the setting cannot override it: remove that line and restart the Hub.
+
+The guide's **Check** step tests items 2 and 3 for you. If a Hub fails any of these, run `cihub pool doctor` on it. Its C1 and C2 checks name a missing tailnet name or a Hub that Tailscale does not publish.
+
+### Set up with the guide
+
+Open the guide from any of these places:
+
+- **Home.** The **Pool your Hubs** card appears when the Hub is registered with Portal, Tailscale is connected, Hub Pool is on, the Hub has no paired or pending Hubs, and you have not dismissed the card. Select **Set up Hub Pool**. The browser stores the dismissal, so the desktop app and each address you use to open the Hub keep their own.
+- **Home, on a Hub that received a request.** A card reading **1 Hub wants to join your pool** has a **Review request** button (**Review requests** when several wait). Dismissing the Pool your Hubs card does not hide it. See [Approve on the other Hub](#approve-on-the-other-hub).
+- **Settings → Network → Hub Pool.** While no Hub is paired, a **Set up Hub Pool** callout sits at the top. A request that still waits does not count as paired, so the callout stays and the guide opens on **Approve**. Once at least one Hub is paired, **Add Hubs** replaces the callout and opens the guide at the scan. Neither shows if `HUB_POOL_USER_DISABLED=true` is in the Hub's `.env`.
+- **First-run setup.** When Tailscale is connected, an optional **Pool with your other Hubs** section opens the guide. It does not affect whether you can finish setup.
+
+The guide is a dialog, full screen on a phone. Its four steps are **Check**, **Find**, **Connect**, and **Approve**. On a phone, the step row becomes "Step 2 of 4 · Find" over a progress bar.
+
+1. **Check.** The guide tests that Hub Pool is on, Tailscale is connected with a tailnet name, HTTPS certificates are available, Tailscale accepts changes from this Hub, and this Hub sends work to paired Hubs. Each check reads **Ready**, **Warning**, or **Needs action**. A check with a fix has a button: **Turn on Hub Pool**, **Connect Tailscale**, or **Open Tailscale DNS settings**. **Continue** stays off while a check needs action, and reads **Continue anyway** when there are only warnings. If every check is ready, the guide skips this step.
+2. **Find.** The guide scans your tailnet when the step opens and when you select **Rescan**. It never scans on a timer, because each scan contacts every unpaired device on the tailnet. Hubs appear as cards, sorted by name and two to a row on a wide screen. Each card has an OS chip and an **Online** or **Offline** chip, when the tailnet reports them.
+
+   **Nothing is selected.** Choose the Hubs you want, or select **Select all**. The main button reads **Choose Hubs** until you choose one, then **Send 1 request**, **Send 2 requests**, and so on. To pair with a PIN, open **Have a PIN?** and type the six digits. Generate the PIN on the other Hub, under **Settings → Network → Hub Pool**. A PIN works for one Hub at a time, so the field is off unless exactly one Hub is chosen.
+3. **Connect.** The guide sends one request to each Hub you chose and shows a result per Hub: **Request sent**, or **Not sent** with what to check. Select **Retry** beside one Hub, or **Retry failed requests** for all of them. Then select **Continue**.
+4. **Approve.** Each other Hub has to approve its request. See [Approve on the other Hub](#approve-on-the-other-hub). This step shows:
+   - **Waiting for approval:** Hubs that have not answered, each with **Cancel request**.
+   - **Requests from other Hubs:** requests that arrived here, each with its key fingerprint, **Approve**, and **Reject**.
+   - **Connected Hubs:** cards with the Hub's hardware tier (**High-end**, **Mid-range**, or **CPU only**), the engines that are running, a model count, and **Verified**.
+
+   A Hub is verified after its first health check, which comes within one poll of the approval (30 seconds by default, `poolHealthPollSeconds`). When the first Hub is verified, a **Your pool is ready** summary shows the connected Hubs and the models in the pool. **Add another Hub** returns to **Find**, and **Done** closes the guide.
+
+   While a request waits, the guide reads this Hub's pool status every 3 seconds, for up to 10 minutes, then offers **Check again**. It never rescans the tailnet. A Hub that needs you shows what to do and an **Unpair** button: one that no longer recognizes this Hub, one that refuses its credentials, or one that never received your approval. A Hub that is only unreachable gets no button, because it rejoins by itself.
+
+**Closing the guide is safe.** It reads its state from the Hub each time it opens. If any Hub is paired or waiting, it opens on **Approve**, and it never sends a request again by itself. A request already on its way when you close the guide carries on, and shows as waiting when you reopen it.
+
+### Approve on the other Hub
+
+The request reaches the other Hub as an incoming pending request. On that Hub, use any of these:
+
+- **Home.** The review card (**1 Hub wants to join your pool**) appears whenever a request waits. Home reads the pool status every 30 seconds, so it can take that long to appear. Select **Review request**. The guide opens on its last step, with **Approve** and **Reject** beside the request.
+- **Settings → Network → Hub Pool → Pending requests.** Select **Approve** or **Reject** beside the request.
+- **CLI.** Run `cihub pool peers` to read the request's ID, then `cihub pool approve <id>` or `cihub pool reject <id>`.
+
+Approve a request only from a Hub you recognize. Each request shows the requester's tailnet name. A request that carried a PIN also shows the requester's key fingerprint: compare it with the fingerprint the requesting Hub shows under **Pairing PIN**, or in `cihub pool status` under **This node**. A request that carried no PIN has no key, so its name is only a claim.
+
+Some limits to know:
+
+- A request waits 24 hours. After that, both Hubs drop it.
+- A PIN lasts 10 minutes, works once, and is destroyed by its fifth wrong guess.
+- A Hub holds at most 20 pending requests. It refuses more until you approve or reject some.
+- When you approve, your Hub calls the requester back at `https://<its tailnet name>`. Each Hub therefore has to reach the other over HTTPS. If the call fails, your approval stands but the requester keeps waiting. See [Half paired](#troubleshooting-a-new-pool).
+
+### Set up with the CLI
+
+`cihub pool` manages only the Hub on the machine where you run it, so approval runs on the receiving Hub. The examples use `hub-a`, which sends the request, and `hub-b`, which receives it. `pair`, `approve`, and `reject` ask you to confirm. On a terminal that cannot prompt, pass `--yes` or set `CI_HUB_ASSUME_YES=1`.
+
+On `hub-a`, check the Hub, find `hub-b`, and send the request:
+
+```bash
+cihub pool doctor                              # can this Hub pool, and will peers reach it
+cihub pool discover                            # unpaired Hubs this Hub can name
+cihub pool pair hub-b.example-tailnet.ts.net   # send the request
+```
+
+On `hub-b`, find the request and approve it:
+
+```bash
+cihub pool peers            # the request is the row marked in and pending; copy its ID
+cihub pool approve <id>     # the ID prefix peers prints, the full ID, or the node name
+```
+
+Back on `hub-a`, check the result. The peer shows `connected` once `hub-b` approves:
+
+```bash
+cihub pool status
+```
+
+**With a PIN.** A PIN shows that whoever sends the request could read `hub-b`'s screen, because the PIN is minted there. It does not replace the approval. Mint it on `hub-b`, the Hub that receives the request, and type it on `hub-a`:
+
+```text
+on hub-b:  cihub pool pairing-pin
+on hub-a:  cihub pool pair hub-b.example-tailnet.ts.net --pin 123456
+on hub-b:  cihub pool peers, then cihub pool approve <id>
+```
+
+`cihub pool peers` does not print a request's key fingerprint. To compare it before you approve, use the guide's **Approve** step or **Settings → Network → Hub Pool → Pending requests** on `hub-b`.
+
+**By address.** If no directory names `hub-b`, pair by its address. This is command line only, because an address cannot name a Hub and the PIN exchange is what returns the name:
+
+```text
+on hub-b:  cihub pool pairing-pin
+on hub-a:  cihub pool probe 192.168.1.42
+on hub-a:  cihub pool pair 192.168.1.42 --pin 123456
+on hub-b:  cihub pool peers, then cihub pool approve <id>
+```
+
+Both Hubs still need to be on the same tailnet, because a peer is stored under its tailnet name. See [Finding a peer by address](#finding-a-peer-by-address).
+
+### Troubleshooting a new pool
+
+- **The scan finds nothing.** The guide shows **No Hubs found**. That is not an error: no unpaired Hub on your tailnet answered. Check these in order:
+  1. The other Hub is installed, running, and signed in to this tailnet, and its machine is awake.
+  2. MagicDNS and HTTPS certificates are on for the tailnet.
+  3. The other Hub is published over Tailscale. Run `cihub pool doctor` on it: checks C1 and C2 name a missing tailnet name or Serve entry.
+
+  The empty state lists the tailnet devices that did not answer as a Hub, which helps you spot a machine that is off or on the wrong account. A device heard only on the local network (LAN discovery, off by default) is unverified and cannot be chosen. Use `cihub pool probe <address>` and a PIN instead.
+- **A request stays pending.** It waits for an operator on the other Hub, and stays open for 24 hours. If the other Hub never shows it, that Hub is ignoring the request. A Hub ignores a request without saying so when it already holds a row for the sender's name. Two causes are common:
+  - The other Hub has an old row for this Hub, for example after its database was reset. Remove that row on the other Hub (**Paired Hubs → Unpair**, or `cihub pool unpair <this Hub's name>`), cancel the request here (**Cancel request**, or `cihub pool unpair <id>`), and pair again.
+  - You sent a request from each Hub. Each Hub holds a row for the request it sent, so each ignores the other's request and both wait. Cancel both, then pair again from one Hub only.
+- **A Hub shows unreachable.** Usually it needs no action. A Hub that fails three health checks in a row is marked unreachable, and it rejoins by itself on the next check that works. A Hub marked **identity changed** or **credentials refused** does not recover by waiting: see [A peer whose identity changed](#a-peer-whose-identity-changed).
+- **The request vanished.** The guide says "The request to *name* is gone" and offers **Pair again**. The other Hub rejected the request, an operator removed it there, or it expired after 24 hours. Select **Pair again** to send a new one. The guide reports this only for requests it sent since you opened it, and not for one you cancelled yourself.
+- **Half paired.** You approved a request, but the requester still lists it as pending, and your Hub lists the requester as unreachable a minute or two later. The approval never reached the requester. Your Hub's log says `pairing confirmed locally but callback to <name> failed` (read it with `cihub logs`), and the guide shows an **Unpair** button on the row. Make sure each Hub reaches the other over HTTPS, and run `cihub pool doctor` on both. Then remove both halves: unpair the requester on your Hub (**Unpair**, or `cihub pool unpair <id>`), cancel the request on the requester if it still lists it, and pair again. Removing only one half can leave a Hub ignoring the new request, as in **A request stays pending**.
+- **Not sent.** The Hub reports one generic error whether the other Hub was unreachable, declined the request, refused a wrong or expired PIN, or already held 20 waiting requests. The reason is in the sending Hub's log: run `cihub logs` and look for `Peer declined pairing request` or `Peer refused the pairing PIN`. Then:
+  - Check that the other Hub is online and has Hub Pool turned on.
+  - If you typed a PIN, generate a fresh one on the other Hub. A PIN works once and lasts 10 minutes.
+  - If the other Hub connected to Tailscale a moment ago, wait a minute and try again. Its first HTTPS request can wait on certificate issuance, and a pairing request gives up after 10 seconds.
+- **Check reports a Tailscale problem.** If Tailscale shows connected but the Hub has no tailnet name, turn on MagicDNS for the tailnet in the Tailscale admin console, then select **Check again**. If Tailscale refused to publish this Hub, run the command the guide shows once on the machine that runs the Hub, then select **Check again**. A host Tailscale client accepts changes only from root or its operator. See [Private VPN](private-vpn.md#access-the-hub-itself).
+
 ## How it fits together
 
-- **Discovery**: `GET /api/inference/pool/peers/discoverable` lists every unpaired node this Hub can *name*, from up to three directories — the local Tailscale daemon's peer map, the Tailscale Admin API when `TAILSCALE_OAUTH_CLIENT_ID` / `TAILSCALE_OAUTH_CLIENT_SECRET` are configured, and the CI Portal device registry on a registered Hub (which [returns nothing today](#where-pairing-candidates-come-from)) — and probes each unpaired candidate's `GET /api/inference/pool/identify` (reachable over the tailnet the same way the Hub's own dashboard is) to confirm it is a CI-Hub node. None of the three is required, and a node two of them both name is offered once. A Hub with no directory at all is found by address instead. See [Where pairing candidates come from](#where-pairing-candidates-come-from).
+- **Discovery**: `GET /api/inference/pool/peers/discoverable` lists every unpaired node this Hub can *name*, from up to three directories — the local Tailscale daemon's peer map, the Tailscale Admin API when `TAILSCALE_OAUTH_CLIENT_ID` / `TAILSCALE_OAUTH_CLIENT_SECRET` are configured, and the CI Portal device registry on a registered Hub (which [returns nothing today](#where-pairing-candidates-come-from)) — and probes each unpaired candidate's `GET /api/inference/pool/identify` (reachable over the tailnet the same way the Hub's own dashboard is) to confirm it is a CI-Hub node. Each candidate also carries the OS and online state the tailnet reports, when it reports them. They are display only: the setup guide shows them as chips. None of the three is required, and a node two of them both name is offered once. A Hub with no directory at all is found by address instead. See [Where pairing candidates come from](#where-pairing-candidates-come-from).
 - **Pairing**: a two-way handshake — the requesting Hub sends a token to the candidate; the candidate's operator approves or rejects in **Settings → Network → Hub Pool**; on approval, the candidate issues its own token back. Each side ends up trusting the other with one bearer token per direction (see `hub_pool_peer` in `schema.ts` for the exact model). Rejecting, or never approving, leaves nothing paired. Rejecting and unpairing both send a best-effort *authenticated* notification — the caller presents the token the other side issued it — so the other Hub drops its half immediately instead of forwarding work to a node that will now reject it.
 - **Routing**: once at least one peer is `connected`, every app using `hub_integration.inference` is routed through this Hub's own pool proxy (`/api/inference/pool/*`) instead of a directly-resolved backend URL — this is a global switch, not a per-app setting. With zero connected peers, nothing changes: a single-node Hub behaves exactly as it did before this feature existed. A routed app is also handed its chat model from what the *pool* serves — this node's healthy backends plus every usable peer's inventory — filtered by the app's requirements (tool calling, minimum context), and AI apps whose env would change are regenerated and restarted when pool membership changes. See [App inference handout](system/backend.md#app-inference-handout).
 - **Ranking**: local backends and connected peers go into a **single** list ordered by queue depth — in-flight inference requests — so a saturated Hub hands work to an idle peer instead of queueing behind itself. The local node gets a deliberate head start of `poolLocalAffinity` queued requests (default 1): a follow-up turn served here reuses the prompt prefix and KV cache the previous turn left resident, while the same turn sent to a peer re-processes the prompt cold — so work only leaves this node once a peer is at least that much emptier. A peer's queue depth is what this Hub has forwarded it and not finished reading back, counted live, plus what the `inFlightRequests` figure the peer published at its last health poll counted beyond this Hub's own forwards of that moment — its apps' work and other nodes', which only the snapshot sees. It is not the larger of the two: the snapshot counts this Hub's forwards too and is up to a poll old, so a node that served this Hub a request seconds ago read as busy until the next poll, and the nodes in use looked busier than an idle slow one (fleet retest, 2026-10-01: a 37,571-token turn went to core-7, predicted at 187 s, over beta-1, predicted at 6 s, whose last request had ended two seconds before). A snapshot older than three health polls (90 seconds at the default cadence) is discarded and the peer ranks as mid-load: an unmeasured node must never be mistaken for an idle one. Peers that tie on queue depth are ordered by the hardware tier they report, unless `poolPressureWeight` is non-zero, in which case a [GPU-pressure band](#gpu-pressure-a-second-load-signal-amd-only-and-off-by-default) is consulted first — an unmeasured node ranking mid-band, never idle. With `poolPrefixAffinityMaxInFlight` above zero, the node and engine that last served a session are moved to the front of that list while their queue is under the limit — a session being what the app names with `X-Hub-Pool-Session`, else what a digest of its system prompt and first turn, in full, names — see [Prefix affinity](#prefix-affinity). With `poolSlotAwareness` on, an Ollama candidate whose queue already fills the slots its node stated is placed behind every candidate that still has one free — see [Slot-aware placement](#slot-aware-placement). For a chat or completion, a local engine that is generating for work the request cannot join — another model, or the same model at another window — gives up its head start to peers — see [Local engine contention](#local-engine-contention).
@@ -1072,7 +1202,7 @@ it"; the PIN-gated exchange answers "and this is who it is".
    `/identify` does not disclose one — so pairing by address needs a PIN and happens from the CLI:
    - **By directory:** `cihub pool discover`, or the Discoverable devices list in the UI. On a tailnet-connected Hub this already works with no credential. Set the Tailscale OAuth client env vars above to add the whole tailnet. (The CI Portal registry is wired in as a third directory but [returns nothing today](#where-pairing-candidates-come-from), so registering does not add candidates.) See [Where pairing candidates come from](#where-pairing-candidates-come-from).
    - **By address, no directory needed:** `cihub pool probe 192.168.1.42` (or `192.168.1.42:5002`, or a hostname) confirms a Hub is there; `cihub pool pair 192.168.1.42 --pin <digits>` pairs with it, using a PIN minted on that Hub. See [Finding a peer by address](#finding-a-peer-by-address) for what each half does and does not do.
-3. Open **Settings → Network → Hub Pool**. Named candidates appear with a **Pair** button — a Hub found by address is not in that list (it has no name to show yet) and is paired with from the CLI. With no OAuth credential and nothing to list, the section says which variables would add whole-tailnet enumeration rather than showing a bare empty list. It does not claim discovery is off, because it cannot: of the three directories, `GET status` reports only the Tailscale credential and `localNode.tailscaleConnected`, and says nothing at all about the Portal registry.
+3. Open **Settings → Network → Hub Pool**. Named candidates appear with a **Pair** button — a Hub found by address is not in that list (it has no name to show yet) and is paired with from the CLI. With no OAuth credential and nothing to list, the section says which variables would add whole-tailnet enumeration rather than showing a bare empty list. It does not claim discovery is off, because it cannot: of the three directories, `GET status` reports only the Tailscale credential and `localNode.tailscaleConnected`, and says nothing at all about the Portal registry. While no Hub is paired, **Set up Hub Pool** at the top of the section opens the [setup guide](#set-up-with-the-guide), and **Add Hubs** does the same once a Hub is paired. The guide's **Find**, **Connect**, and **Approve** steps cover the same ground for Hubs a directory names.
 4. On the *other* Hub, a pending inbound request appears with **Approve** / **Reject**, identified by the requester's FQDN and — when the request carried a pairing PIN — its key fingerprint, which is the value to compare against that Hub's own **Pairing PIN** card.
 5. Once connected, both Hubs' **Hub Pool** sections show whether pooling is actually routing (and if not, which of the two kill switches is responsible), the `poolEnabled` and `poolLocalAffinity` controls, each peer's status / last-seen / queue depth / hardware tier / engines, the merged list of models the pool can serve and which nodes hold each, and the recent routing decisions with failovers called out.
 

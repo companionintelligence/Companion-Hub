@@ -16,6 +16,7 @@ import { useAppContext } from '@/context/app-context';
 import { BatchActionsMenu } from '../components/batch-actions-menu';
 import { CompactSystemStat } from '../components/compact-system-stat';
 import { HorizontalAppList } from '../components/horizontal-app-list';
+import { PoolSetupCard } from '../components/pool-setup-card';
 import { QueuedInstallsIndicator } from '../components/queued-installs-indicator';
 import { useInstallQueue } from '@/modules/app/helpers/use-install-queue';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
@@ -167,6 +168,9 @@ export default () => {
             </>
           )}
         </div>
+
+        {/* Hub Pool: an invite while this Hub has no peers, or a prompt when another Hub asked to join. Renders nothing otherwise. */}
+        <PoolSetupCard />
 
         {/* Apps section */}
         <div className="rounded-lg border border-border bg-linear-to-b from-card to-card/60 p-4 shadow-sm">
