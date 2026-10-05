@@ -479,9 +479,9 @@ export class DockerReadFacade {
    * Both halves are needed and neither subsumes the other. The compose-project half is what makes
    * the Hub's *own* stack legible — the fleet's worst observed loop was `hub-tailscale` at
    * `RestartCount=11463`, which an inference-only scope structurally cannot see. The name half
-   * catches inference containers created outside compose, which on the fleet means
-   * `ci-hub-inference-lucebox`, started by the desktop app with a plain `docker run` and therefore
-   * carrying no compose labels at all.
+   * catches inference containers created outside compose, which carry no compose labels at all.
+   * On the fleet that was `ci-hub-inference-lucebox`, started by the desktop app with a plain
+   * `docker run`; Lucebox is retired and the desktop app no longer starts it.
    *
    * Read-only by construction: it lists and inspects. Never throws — a Docker daemon that is
    * unreachable, slow, or not present at all yields an empty sweep and a logged warning, because

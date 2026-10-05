@@ -1,5 +1,5 @@
 /**
- * Per-driver conformance: what each of the six backends is asked, and — the part that is easy to
+ * Per-driver conformance: what each backend is asked, and — the part that is easy to
  * leave out — what it is NOT asked, and why.
  *
  * A prompt bank can express coverage but not ABSENCE. Prompts name the backends they apply to, so a
@@ -24,8 +24,8 @@
  * this matrix.
  *
  * SPECULATIVE DECODING is the dimension this file exists for most. Each engine toggles it
- * differently, three of the six cannot be toggled at all from a read-only request, and two of the
- * obvious "off" switches do not turn it off. Those are recorded as data in {@link SPEC_DECODE}
+ * differently, only one of them can be toggled from a read-only request, and an obvious-looking
+ * switch on another does not do what it appears to. Those are recorded as data in {@link SPEC_DECODE}
  * rather than as prose, because each of them has already been got wrong once from vendor docs, and a
  * constant with a test on it cannot be re-derived wrongly.
  */
@@ -90,7 +90,7 @@ export const CONFORMANCE_DIMENSIONS: ConformanceDimension[] = [
   {
     id: 'openai-chat',
     label: 'POST /v1/chat/completions',
-    why: 'The one route all six engines share. If a driver diverges here every app that speaks OpenAI breaks against it, so it is the only dimension with no legitimate skip.',
+    why: 'The one route every engine shares. If a driver diverges here every app that speaks OpenAI breaks against it, so it is the only dimension with no legitimate skip.',
   },
   {
     id: 'openai-completions',
@@ -170,7 +170,7 @@ export const CONFORMANCE_DIMENSIONS: ConformanceDimension[] = [
   {
     id: 'no-spurious-tool-call',
     label: 'No tool call when none was offered',
-    why: 'The false-positive half. A model that emits a tool call against a request with no `tools` array hands every plain chat client a 200 whose `content` is null. This one applies to all six because it needs no tool support to answer correctly.',
+    why: 'The false-positive half. A model that emits a tool call against a request with no `tools` array hands every plain chat client a 200 whose `content` is null. This one applies to every engine because it needs no tool support to answer correctly.',
   },
   {
     id: 'json-mode',
@@ -195,7 +195,7 @@ export const CONFORMANCE_DIMENSIONS: ConformanceDimension[] = [
   {
     id: 'error-oversized-context',
     label: 'Error shape: prompt past the advertised context window',
-    why: "Refusing cleanly is correct behaviour and only a hang is a failure. The window is read from the engine's own /v1/models rather than assumed, because across these six it ranges from 8,192 to 262,144 on hardware of the same class.",
+    why: "Refusing cleanly is correct behaviour and only a hang is a failure. The window is read from the engine's own /v1/models rather than assumed, because across the engines this fleet has run it ranged from 8,192 to 262,144 on hardware of the same class.",
   },
   {
     id: 'spec-decode-capability',
@@ -238,7 +238,7 @@ export interface SpecDecodeCapability {
   /** The CORRECT control arm. Null where the only control is a differently-launched server. */
   offArm: string | null;
   /**
-   * A switch that LOOKS like the off arm and is not. Both entries here cost a withdrawn result:
+   * A switch that LOOKS like the off arm and is not. Each entry here cost a withdrawn result:
    * used as the control they compare speculation against speculation and report a bogus ~1.0x.
    */
   falseOffArm: string | null;
@@ -250,18 +250,24 @@ export interface SpecDecodeCapability {
 
 /**
  * The table. Every row was measured against a live engine or read out of the engine's own binary;
- * none of it is from a vendor's documentation, which is how the two false-off-arms below got in.
+ * none of it is from a vendor's documentation, which is how the lemonade `falseOffArm` below got in.
  *
- * The shape of the answer, across six engines. TOGGLING and OBSERVING are different questions and
+ * The shape of the answer, across four engines. TOGGLING and OBSERVING are different questions and
  * the table keeps them apart:
  *
- *   · toggle from an ordinary inference request — ollama, mtplx (2 of 6)
- *   · toggle only through a write endpoint a read-only harness refuses to call — dspark, lemonade
- *   · toggle only by relaunching the server — vllm, lucebox
+ *   · toggle from an ordinary inference request — ollama (1 of 4)
+ *   · toggle only through a write endpoint a read-only harness refuses to call — lemonade
+ *   · toggle only by relaunching the server — vllm
  *
- * Observing is wider: five of the six say something read-only. Only vLLM says nothing at all. That
- * asymmetry is why `reach` and `observable` are separate fields — lucebox cannot be toggled by a
- * request and nevertheless reports, on every completion, whether the drafter ran.
+ * oMLX is the fourth row and is `unmeasured`: the Hub does not offer speculative decoding there, so
+ * there is no toggle to record.
+ *
+ * Observing is a separate axis. Two of the four say something read-only, and neither says whether
+ * speculation is running: ollama reports its version, which gates whether a runner can speculate at
+ * all, and lemonade reports each model's `checkpoints`, which shows a configured drafter and not
+ * whether it drafts. vLLM and oMLX say nothing. That is why `reach` and `observable` are separate
+ * fields — ollama can be toggled by a request and still has no read-only route that says whether a
+ * runner was launched with speculation.
  */
 export const SPEC_DECODE: Record<InferenceBackendType, SpecDecodeCapability> = {
   ollama: {
@@ -320,18 +326,23 @@ export const SPEC_DECODE: Record<InferenceBackendType, SpecDecodeCapability> = {
  *
  * This is a conformance fact, not a tuning preference. A hybrid-reasoning model bills its chain of
  * thought to the same budget as the answer and returns it under a different key (`reasoning_content`
- * on llama.cpp/vLLM/mtplx, `reasoning` on Ollama's shim, `message.thinking` on Ollama-native), so a
+ * on llama.cpp and vLLM, `reasoning` on Ollama's shim, `message.thinking` on Ollama-native), so a
  * terse question on a small budget comes back `content: ""` with `finish_reason: length` from a
  * perfectly healthy node.
  *
- * The trap this table exists for: **`reasoning_effort` is accepted with HTTP 200 by mtplx and
- * changes nothing.** Measured against a hybrid-reasoning model — with `reasoning_effort: "none"` and
+ * The trap this table exists for: **a spelling that is accepted with HTTP 200 and changes nothing.**
+ * It was established on mtplx, an engine the Hub has since retired, which accepted
+ * `reasoning_effort` and ignored it. Measured against a hybrid-reasoning model — with
+ * `reasoning_effort: "none"` and
  * max_tokens 64, `content` was empty, `finish_reason` was `length` and
  * `completion_tokens_details.reasoning_tokens` was 64: the entire budget went to thinking, and
  * nothing in the response said the parameter had been ignored. That is a system reporting success
- * for work it never did, and copying the ollama override to mtplx reproduces it.
- * `chat_template_kwargs: {enable_thinking: false}` DOES work there — the same request returned a
+ * for work it never did, and copying the ollama override to mtplx reproduced it.
+ * `chat_template_kwargs: {enable_thinking: false}` DID work there — the same request returned a
  * one-word answer with `finish_reason: "stop"` and no reasoning at all.
+ *
+ * None of the four current rows records a silent no-op, so `silentNoOp` is null throughout. The
+ * field stays so the next engine that has one has a place to record it.
  */
 export interface ThinkingSuppression {
   backend: InferenceBackendType;
@@ -468,7 +479,7 @@ export const DIMENSION_SKIPS: Partial<Record<ConformanceDimensionId, Partial<Rec
 
 function nonOllama(): Partial<Record<InferenceBackendType, string>> {
   const reason =
-    "/api/* is Ollama's own surface and nothing else implements it — the five other engines were each probed on their live port and answered only their /v1/* surface. This is a route that does not exist on this engine, not a route that failed.";
+    "/api/* is Ollama's own surface and nothing else implements it — vLLM and Lemonade, with the engines since retired, were each probed on their live port and answered only their /v1/* surface; oMLX joined after that probe and is skipped on the same expectation. This is a route that does not exist on these engines, not a route that failed.";
   return Object.fromEntries(INFERENCE_BACKEND_TYPES.filter((b) => b !== 'ollama').map((b) => [b, reason])) as Partial<
     Record<InferenceBackendType, string>
   >;
@@ -477,11 +488,10 @@ function nonOllama(): Partial<Record<InferenceBackendType, string>> {
 /**
  * The engines excused from a dimension that only the verified-capable ones are asked.
  *
- * `mtplx`, `dspark` and `lucebox` are here because they were driven and found to be chat-shaped.
- * `llamacpp` and `lmstudio` are here for a weaker reason — neither has been driven on this fleet at
- * all — and the reason strings passed in say "no verified route", which is true of both kinds. The
- * two are not the same finding, and a run that establishes either capability should take that engine
- * out of this list rather than widen the prose.
+ * Only `omlx` is on the list, and for the weaker kind of reason: it has not been measured on this
+ * fleet, so the reason strings passed in say "no verified route" and nothing has been found lacking.
+ * A run that establishes the capability should take oMLX out of this list rather than widen the
+ * prose.
  */
 function chatOnly(reason: string): Partial<Record<InferenceBackendType, string>> {
   const unverified: InferenceBackendType[] = ['omlx'];

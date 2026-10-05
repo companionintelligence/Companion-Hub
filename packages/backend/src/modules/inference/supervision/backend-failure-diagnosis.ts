@@ -2,17 +2,6 @@ import type { InferenceBackendType } from '@ci-hub/common/types';
 import type { BackendDiagnosis, SupervisionContainerState } from './supervision.types';
 
 /**
- * The LLVM target family named in the diagnosis when the evidence is a segfault rather than a
- * detected architecture.
- *
- * Nothing in this repo produces a `gfx*` string at runtime: `HardwareProfile.gpu` carries
- * `{available, vendor, model, vramMb, unifiedMemory, driverVersion, …}` and no LLVM target, and
- * `LuceboxComposeOptions.gpuArch` is an input nothing ever fills. So the diagnosis below does not
- * pretend to know the exact part — it matches on the legacy image tag, an AMD GPU, and a repeated
- * SIGSEGV, which is the signature `LUCEBOX_ROCM_LEGACY_IMAGE`'s own contract describes, and names
- * the family the contract names.
- */
-/**
  * A SIGSEGV-shaped exit. 139 is the shell's `128 + SIGSEGV(11)`, which is what dockerd reports in
  * `State.ExitCode` for a segfaulting entrypoint.
  */
@@ -34,9 +23,9 @@ export interface DiagnosisInput {
   /** `HardwareProfile.gpu.vendor`, read lazily and cached; `null` when it was never needed or failed. */
   gpuVendor: string | null;
   /**
-   * Separate observations of a SIGSEGV-shaped death for this container. Two is the threshold:
-   * one segfault is a bad afternoon, and the ROCm 6.4.1 contract describes a failure that repeats
-   * on every single generation.
+   * Separate observations of a SIGSEGV-shaped death for this container. The observer still counts
+   * them, but no rule here reads the count: the segfault diagnosis it fed was specific to the
+   * retired Lucebox ROCm 6.4.1 image, which repeated the failure on every generation.
    */
   segfaultObservations: number;
   /** Last captured `docker logs --tail`, when one was captured. */

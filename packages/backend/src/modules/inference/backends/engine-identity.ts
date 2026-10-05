@@ -42,13 +42,14 @@ const ENDPOINT_VAR: Record<SharedPortEngine, string> = {
  *
  * Every OpenAI-compatible server answers `/v1/models`, so a health check built on that route
  * cannot tell whose server it reached. On a fleet node serving vLLM on :8000, the Hub reported
- * vllm, mtplx AND lucebox healthy with the same model — three local pool candidates for one
- * engine (each failover hop re-hit the same process), an inventory that advertised the model
- * three times to peers, and a status page that claimed two engines the node has never run.
+ * vllm, mtplx AND lucebox healthy with the same model (the last two have since been retired) —
+ * three local pool candidates for one engine (each failover hop re-hit the same process), an
+ * inventory that advertised the model three times to peers, and a status page that claimed two
+ * engines the node has never run.
  *
  * `running: true` because something answered; `healthy: false` so routing, inventory and the
- * tracked-model registry all leave it alone — the same shape lucebox already uses for "up but
- * no weights". A server that does not name itself is left as it was: absent evidence is not
+ * tracked-model registry all leave it alone — the same shape the retired lucebox backend used for
+ * "up but no weights". A server that does not name itself is left as it was: absent evidence is not
  * evidence of a foreign engine, and the heuristics that could go further belong to the eval
  * sweep, not to a 5-second health probe.
  */

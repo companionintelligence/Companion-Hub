@@ -13,14 +13,14 @@
  *   *itself*, because {@link import('@/modules/inference/backends/ollama.backend').OllamaBackend}
  *   rediscovers `resolvedUrl` by probing and flips it on every failed health check. A flapping
  *   backend therefore oscillates its own fingerprint and is handed a fresh budget on every flip.
- * - A "stop restarting once the failure is deterministic" rule that requires the process to exit
- *   *early* structurally excludes the Lucebox ROCm case (see {@link LUCEBOX_ROCM_LEGACY_IMAGE}'s
- *   contract): that container starts, passes `/health`, and dies inside the first generation,
- *   which can be hours later.
- * - On the fleet the Lucebox container is created and started by the desktop app
- *   (`packages/desktop/src-tauri/src/inference_runners.rs`). A Hub that stopped it would be
- *   fighting a component that starts it again on next launch, and the operator would see an engine
- *   that flaps between two owners with no explanation on either side.
+ * - A "stop restarting once the failure is deterministic" rule that required the process to exit
+ *   *early* structurally excluded the Lucebox ROCm case: that container started, passed `/health`,
+ *   and died inside the first generation, which could be hours later. Lucebox is a retired engine;
+ *   the case stays here as the reason the rule was rejected.
+ * - On the fleet the desktop app created and started the Lucebox container. A Hub that stopped it
+ *   would have been fighting a component that started it again on next launch, and the operator
+ *   would have seen an engine that flapped between two owners with no explanation on either side.
+ *   The desktop app no longer runs Lucebox.
  *
  * So the mode enum below has exactly two members and the union type is the guarantee: there is no
  * value a caller can pass that selects a code path capable of acting on a container.
@@ -171,8 +171,9 @@ export const RESTART_ALARM_WINDOW_MS = 60 * 60_000;
  *
  * `HardwareInspectorService.getProfile()` re-runs the full `detect()` chain (nvidia-smi, rocm-smi,
  * system_profiler, `docker info`, each with its own timeout) whenever the discrete-GPU profile is
- * incomplete, which is common. The vendor is the only field the Lucebox diagnosis needs, it does
- * not change without a reboot, and it is read lazily — only once a legacy-image Lucebox container
- * has actually been seen — so no node without that container ever pays for it.
+ * incomplete, which is common. The vendor was the only field the Lucebox diagnosis needed. That
+ * diagnosis has been removed and `needsGpuVendor` currently returns false, so nothing reads the
+ * cache today. The vendor does not change without a reboot, and it is read lazily so a node that
+ * never needs it never pays for it.
  */
 export const SUPERVISION_GPU_VENDOR_TTL_MS = 30 * 60_000;

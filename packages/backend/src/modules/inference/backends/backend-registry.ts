@@ -90,8 +90,8 @@ export class InferenceBackendRegistry {
    * Every backend paired with its type, in {@link INFERENCE_BACKEND_TYPES} order.
    *
    * The counterpart to {@link get} for the callers that walk *all* backends rather than resolving
-   * one. Those each kept their own six-element literal — `['ollama', …] as InferenceBackendType[]`
-   * in the router, an array of the six injected instances in the MCP tools, `ALL_BACKEND_TYPES` in
+   * one. Those each kept their own hand-written list — `['ollama', …] as InferenceBackendType[]`
+   * in the router, an array of the injected instances in the MCP tools, `ALL_BACKEND_TYPES` in
    * the pool proxy — and every one of them was a subtype of `InferenceBackendType[]` however short
    * it got, so omitting a newly added backend was invisible to the compiler. Deriving the walk from
    * the source tuple makes the omission impossible rather than merely unlikely.
