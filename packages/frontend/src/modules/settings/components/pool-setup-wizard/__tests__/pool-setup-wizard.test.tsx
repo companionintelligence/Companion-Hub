@@ -1981,6 +1981,65 @@ describe('Hub cards in the steps', () => {
       expect(summaryOf(waitingNamed).getByText('Loft Hub')).toBeInTheDocument();
       expect(summaryOf(waitingNamed).getByTitle('core-6.example-tailnet.ts.net')).toBeInTheDocument();
     });
+
+    describe('order', () => {
+      const hub = (id: string, displayName: string | null, overrides: Partial<ReturnType<typeof poolPeer>> = {}) =>
+        poolPeer({ id, displayName, nodeFqdn: `${id.replace(/^p-/, '')}.example-tailnet.ts.net`, ...overrides });
+      const alpha = hub('p-alpha', 'alpha');
+      const core2 = hub('p-core-2', 'core-2');
+      // Not Verified: a Hub that needs a look sits among the others by its name, not after them.
+      const core10 = hub('p-core-10', 'Core-10', { status: 'unreachable' });
+      // No display name, so it is titled by the host part of its tailnet name.
+      const delta1 = hub('p-delta-1', null);
+      const twinA = hub('p-twin-a', 'Twin');
+      const twinB = hub('p-twin-b', 'Twin');
+      /** The cards in the order they must appear: numbers count as numbers and case does not matter, so core-2 comes before Core-10, and equal names fall back to the id. */
+      const EXPECTED = [alpha, core2, core10, delta1, twinA, twinB].map((peer) => peer.id);
+      /** The ids of the connected cards, top to bottom. */
+      const connectedOrder = () =>
+        within(screen.getByTestId('pool-setup-connected'))
+          .getAllByTestId(/^pool-setup-connected-/)
+          .map((card) => card.getAttribute('data-testid')?.replace('pool-setup-connected-', ''));
+
+      it('lists the connected Hubs by the name on their card, however the server orders them', async () => {
+        fixtures.pool = poolWith([twinB, core10, delta1, alpha, twinA, core2]);
+        renderWizard();
+
+        await screen.findByTestId('pool-setup-connected');
+
+        expect(connectedOrder()).toEqual(EXPECTED);
+        // The order follows the title on the card, so check the cards carry the titles it was worked out from.
+        const titled = [
+          [alpha, 'alpha'],
+          [core2, 'core-2'],
+          [core10, 'Core-10'],
+          [delta1, 'delta-1'],
+          [twinA, 'Twin'],
+          [twinB, 'Twin'],
+        ] as const;
+        for (const [peer, title] of titled) {
+          expect(summaryOf(screen.getByTestId(`pool-setup-connected-${peer.id}`)).getByText(title)).toBeInTheDocument();
+        }
+      });
+
+      it('keeps that order when a later poll returns the same Hubs in another order', async () => {
+        fixtures.pool = poolWith([core2, twinB, alpha, delta1, core10, twinA]);
+        const { client } = renderWizard();
+        await screen.findByTestId('pool-setup-connected');
+        expect(connectedOrder()).toEqual(EXPECTED);
+
+        const reads = fixtures.poolReads;
+        fixtures.pool = poolWith([twinA, delta1, core10, twinB, core2, { ...alpha, inFlightRequests: 2 }]);
+        await act(async () => {
+          await client.invalidateQueries();
+        });
+
+        // The new status was read and drawn (alpha now shows its load), and no card moved.
+        expect(fixtures.poolReads).toBeGreaterThan(reads);
+        expect(await within(screen.getByTestId('pool-setup-connected-p-alpha')).findByText('2 running')).toBeInTheDocument();
+        expect(connectedOrder()).toEqual(EXPECTED);
+      });
+    });
   });
 });
 

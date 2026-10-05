@@ -71,7 +71,9 @@ export function ApproveStep({
 }: ApproveStepProps) {
   const { t } = useTranslation();
 
-  const rows = pool.peers.map((peer) => ({ peer, progress: peerProgress(peer) }));
+  // Pool status lists peers in the server's order, which shifts between polls. Sorted once here, by the title the card shows,
+  // so every group below keeps its Hubs where the user last saw them.
+  const rows = pool.peers.map((peer) => ({ peer, progress: peerProgress(peer) })).sort((a, b) => byTitle(a.peer, b.peer));
   const waiting = rows.filter((row) => row.progress === 'waiting');
   const incoming = rows.filter((row) => row.progress === 'incoming');
   const connected = rows.filter((row) => SETTLED_PROGRESS.includes(row.progress));
@@ -366,6 +368,10 @@ function Group({ title, testId, children }: { title: string; testId: string; chi
 
 /** A Hub's title: the name it was given, else the host part of its tailnet name. The full tailnet name is shown under it either way. */
 const hubTitle = (peer: PoolPeer) => peer.displayName || peer.nodeFqdn.split('.')[0] || peer.nodeFqdn;
+
+/** Cards in name order, so core-2 comes before core-10. The id breaks a tie between equal names, so their order does not depend on the poll. */
+const byTitle = (a: PoolPeer, b: PoolPeer) =>
+  hubTitle(a).localeCompare(hubTitle(b), undefined, { numeric: true, sensitivity: 'base' }) || a.id.localeCompare(b.id);
 
 /** A fingerprint is colon-separated hex; a zero-width space after each colon lets it wrap there instead of splitting a byte pair. */
 const breakAtColons = (fingerprint: string) => fingerprint.replace(/:/g, ':\u200b');
