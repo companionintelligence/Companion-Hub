@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { diagnoseBackendFailure, looksLikeSegfault, type DiagnosisInput } from '../supervision/backend-failure-diagnosis';
+import { diagnoseBackendFailure, type DiagnosisInput } from '../supervision/backend-failure-diagnosis';
 import type { SupervisionContainerState } from '../supervision/supervision.types';
 
 function container(overrides: Partial<SupervisionContainerState> = {}): SupervisionContainerState {
@@ -12,7 +12,7 @@ function container(overrides: Partial<SupervisionContainerState> = {}): Supervis
     running: false,
     restartCount: 12,
     restartPolicy: 'unless-stopped',
-    exitCode: 139,
+    exitCode: 1,
     oomKilled: false,
     startedAt: null,
     finishedAt: null,
@@ -28,8 +28,6 @@ function input(overrides: Partial<DiagnosisInput> = {}): DiagnosisInput {
   return {
     backend: 'ollama',
     container: container(),
-    gpuVendor: 'amd',
-    segfaultObservations: 2,
     logTail: null,
     zombieProcessCount: null,
     healthError: null,
@@ -37,31 +35,13 @@ function input(overrides: Partial<DiagnosisInput> = {}): DiagnosisInput {
   };
 }
 
-describe('looksLikeSegfault', () => {
-  it('recognises the 128+SIGSEGV exit code', () => {
-    expect(looksLikeSegfault(container({ exitCode: 139 }), null)).toBe(true);
-  });
-
-  it('recognises a segfault in the log tail for a container whose exit was missed', () => {
-    // A container the daemon has already restarted is `running` again by poll time, so the exit
-    // code is gone. The log tail is the only surviving evidence.
-    expect(looksLikeSegfault(container({ running: true, exitCode: null }), 'ggml-hip: Segmentation fault (core dumped)')).toBe(true);
-  });
-
-  it('does not treat an ordinary non-zero exit as a segfault', () => {
-    expect(looksLikeSegfault(container({ exitCode: 1 }), 'exiting: bad config')).toBe(false);
-  });
-});
-
-describe('other diagnoses', () => {
+describe('diagnoseBackendFailure', () => {
   it('names a startup dependency failure from the log tail', () => {
     // The fleet's vLLM restart loop was a FlashInfer JIT compile against an incompatible gcc.
     const diagnoses = diagnoseBackendFailure(
       input({
         backend: 'vllm',
         container: container({ name: 'ci-hub-vllm', image: 'vllm/vllm-openai:latest', exitCode: 1 }),
-        gpuVendor: 'nvidia',
-        segfaultObservations: 0,
         logTail: 'RuntimeError: Failed to build flashinfer: error: command ‘/usr/bin/gcc’ failed with exit code 1',
       }),
     );
@@ -76,7 +56,6 @@ describe('other diagnoses', () => {
       input({
         backend: 'lemonade',
         container: container({ name: 'ci-hub-lemonade', image: 'lemonade:latest', running: true, exitCode: null }),
-        segfaultObservations: 0,
         zombieProcessCount: 11,
       }),
     );
@@ -89,6 +68,6 @@ describe('other diagnoses', () => {
   });
 
   it('says nothing about a healthy backend', () => {
-    expect(diagnoseBackendFailure(input({ container: null, segfaultObservations: 0 }))).toEqual([]);
+    expect(diagnoseBackendFailure(input({ container: null }))).toEqual([]);
   });
 });

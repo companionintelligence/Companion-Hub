@@ -155,7 +155,7 @@ costs three fallback probes plus a `/api/tags` timeout, and the URL cache is dis
 every failure.
 
 Only `'off'` costs a deployed Hub nothing: `onModuleInit` reads one setting and returns without
-arming a timer, issuing a Docker call, running a health check, or touching hardware detection. A
+arming a timer, issuing a Docker call, or running a health check. A
 peerless single-node Hub therefore behaves exactly as it did before this shipped. There is a test
 that asserts each of those.
 

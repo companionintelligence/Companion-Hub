@@ -235,22 +235,24 @@ describe('the aggregate that is never produced', () => {
 
 describe('control arms that are not actually off', () => {
   it('refuses a drafter depth of zero as a control', () => {
-    // Measured, not assumed: at least one runner silently coerces this to `auto`, so the "control"
-    // speculates too and the run reports a bogus ~1.0x.
-    const problems = validateControlArm({ id: 'off', label: 'bad control', why: 'fixture', params: { max_draft: 0 } });
+    // A depth of zero is not a documented off switch, so the "control" may speculate too and the
+    // run would report a bogus ~1.0x. The case that was measured was the retired mlx-dspark's
+    // `max_draft: 0`, which it silently coerced to `auto`.
+    const problems = validateControlArm({ id: 'off', label: 'bad control', why: 'fixture', params: { num_draft: 0 } });
     expect(problems).toHaveLength(1);
-    expect(problems[0]).toMatch(/max_draft/);
-    expect(problems[0]).toMatch(/coerces/);
+    expect(problems[0]).toMatch(/num_draft/);
+    expect(problems[0]).toMatch(/omit the parameter/);
   });
 
   it('reports every trap at once rather than stopping at the first', () => {
-    const problems = validateControlArm({ id: 'off', label: 'bad control', why: 'fixture', params: { max_draft: 0, num_draft: 0 } });
+    const everyTrap = Object.fromEntries(SPEC_OFF_TRAPS.map((trap) => [trap.param, trap.value]));
+    const problems = validateControlArm({ id: 'off', label: 'bad control', why: 'fixture', params: everyTrap });
     expect(problems).toHaveLength(SPEC_OFF_TRAPS.length);
   });
 
   it('accepts an explicit baseline mode, and does not fire on a non-zero depth', () => {
     expect(validateControlArm(ARMS[1])).toEqual([]);
-    expect(validateControlArm({ id: 'on', label: 'treatment', why: 'fixture', params: { max_draft: 6 } })).toEqual([]);
+    expect(validateControlArm({ id: 'on', label: 'treatment', why: 'fixture', params: { num_draft: 6 } })).toEqual([]);
   });
 });
 

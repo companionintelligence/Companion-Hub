@@ -11,7 +11,6 @@
 
 import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/common/types';
 import { describe, expect, it } from 'vitest';
-import { SPEC_OFF_TRAPS } from '../bench-ab';
 import {
   CONFORMANCE_DIMENSIONS,
   CONFORMANCE_DIMENSION_IDS,
@@ -154,24 +153,18 @@ describe('SPEC_DECODE', () => {
     }
   });
 
-  it('exactly two of the "off" switches do not actually turn speculation off', () => {
-    // The headline claim of the module, asserted as a count so a third trap cannot be added without
-    // the docs above it being reread — and so neither of these two can quietly be deleted.
+  it('exactly one engine has an "off" switch that does not actually turn speculation off', () => {
+    // The headline claim of the module, asserted as a count so a second trap cannot be added without
+    // the docs above it being reread — and so this one cannot quietly be deleted.
     const traps = INFERENCE_BACKEND_TYPES.filter((b) => SPEC_DECODE[b].falseOffArm !== null);
     expect(traps).toEqual(['lemonade']);
     expect(SPEC_DECODE.lemonade.falseOffArm).toMatch(/false ON/);
   });
 
-  it("the benchmark's control-arm traps and the capability table name the same parameter", () => {
-    // Two files that must not drift: bench-ab refuses an arm that sets the parameter dspark coerces.
-    expect(SPEC_OFF_TRAPS.map((t) => t.param)).toContain('max_draft');
-    const maxDraft = SPEC_OFF_TRAPS.find((t) => t.param === 'max_draft');
-    expect(maxDraft?.value).toBe(0);
-  });
-
   it('separates "can be toggled" from "can be observed"', () => {
-    // The asymmetry is the reason `reach` and `observable` are different fields: an engine that
-    // cannot be toggled by a request can still report, per completion, whether the drafter ran.
+    // The asymmetry is the reason `reach` and `observable` are different fields: ollama can be
+    // toggled by a request and still has no read-only route that says whether a runner was launched
+    // with speculation.
     expect(SPEC_DECODE.omlx.capable).toBe('unmeasured');
     expect(SPEC_DECODE.omlx.reach).toBe('launch-flag');
     // vLLM is the one engine that was DRIVEN and says nothing read-only, which is why its cell is a

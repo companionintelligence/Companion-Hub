@@ -2,15 +2,6 @@ import type { InferenceBackendType } from '@ci-hub/common/types';
 import type { BackendDiagnosis, SupervisionContainerState } from './supervision.types';
 
 /**
- * A SIGSEGV-shaped exit. 139 is the shell's `128 + SIGSEGV(11)`, which is what dockerd reports in
- * `State.ExitCode` for a segfaulting entrypoint.
- */
-const SIGSEGV_EXIT_CODE = 139;
-
-/** Log-tail shapes that mean a segfault, for containers whose exit is not visible at poll time. */
-const SEGFAULT_LOG_PATTERN = /segmentation fault|sigsegv|signal 11|core dumped/i;
-
-/**
  * A build/JIT/import failure during startup. The fleet hit this as a vLLM restart loop caused by a
  * FlashInfer JIT compile against an incompatible gcc.
  */
@@ -20,14 +11,6 @@ export interface DiagnosisInput {
   backend: InferenceBackendType;
   /** The matched container, when the target resolved to one. */
   container: SupervisionContainerState | null;
-  /** `HardwareProfile.gpu.vendor`, read lazily and cached; `null` when it was never needed or failed. */
-  gpuVendor: string | null;
-  /**
-   * Separate observations of a SIGSEGV-shaped death for this container. The observer still counts
-   * them, but no rule here reads the count: the segfault diagnosis it fed was specific to the
-   * retired Lucebox ROCm 6.4.1 image, which repeated the failure on every generation.
-   */
-  segfaultObservations: number;
   /** Last captured `docker logs --tail`, when one was captured. */
   logTail: string | null;
   /** Count of `Z`/`defunct` entries seen in the container's process table, when it was read. */
@@ -80,13 +63,4 @@ export function diagnoseBackendFailure(input: DiagnosisInput): BackendDiagnosis[
   }
 
   return diagnoses;
-}
-
-/**
- * Whether this observation looks like a SIGSEGV death, used by the caller to increment
- * `segfaultObservations`. Split out so the counting rule is testable on its own.
- */
-export function looksLikeSegfault(container: SupervisionContainerState, logTail: string | null): boolean {
-  if (container.exitCode === SIGSEGV_EXIT_CODE) return true;
-  return logTail !== null && SEGFAULT_LOG_PATTERN.test(logTail);
 }
