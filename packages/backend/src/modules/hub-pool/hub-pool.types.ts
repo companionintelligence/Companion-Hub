@@ -269,6 +269,14 @@ export interface DiscoverablePoolPeer {
   nodeFqdn: string;
   hostname: string;
   /**
+   * The operating system the tailnet reports for this device (`linux`, `macOS`, `windows`, ...). Display
+   * only: it is the control plane's word, not something the device itself was asked. Absent when the
+   * directory that named the candidate did not say.
+   */
+  os?: string;
+  /** Whether the tailnet reports the device online right now. Display only; absent when not reported. */
+  online?: boolean;
+  /**
    * Directory that discovered this candidate: 'portal' for CI Portal, 'mdns' for local zero-conf LAN beacon.
    * Absent indicates standard tailnet discovery.
    */

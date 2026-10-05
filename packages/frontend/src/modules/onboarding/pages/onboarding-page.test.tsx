@@ -254,6 +254,12 @@ vi.mock('../components/ai-setup-step', () => ({
   ),
 }));
 
+// The Hub Pool section reads live Tailscale status and has its own suite. Left real, this file's real
+// QueryClientProvider would send it to the network; what matters here is that it cannot affect finishing.
+vi.mock('../components/pool-setup-onboarding-section', () => ({
+  PoolSetupOnboardingSection: () => <div data-testid="pool-setup-onboarding-section" />,
+}));
+
 vi.mock('../components/ai-setup/companion-apps-card', () => ({
   CompanionAppsCard: ({ onChange }: { onChange?: (apps: unknown[]) => void }) => (
     <div data-testid="companion-apps-card">
@@ -420,6 +426,17 @@ describe('OnboardingPage (single vertical form)', () => {
     await user.click(screen.getByRole('button', { name: 'emit-ai-config-engine-down' }));
     expect(screen.getByTestId('finish-setup-btn')).toBeDisabled();
     expect(screen.getByText('The local engine is not ready yet. Start it, then finish setup.')).toBeInTheDocument();
+  });
+
+  it('renders the optional Hub Pool section without it deciding whether setup can finish', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(screen.getByTestId('pool-setup-onboarding-section')).toBeInTheDocument();
+    expect(screen.getByTestId('finish-setup-btn')).toBeDisabled();
+
+    await user.click(screen.getByRole('button', { name: 'emit-ai-config' }));
+    expect(screen.getByTestId('finish-setup-btn')).toBeEnabled();
   });
 
   it('keeps Install & Finish enabled while the marketplace catalog is loading', async () => {

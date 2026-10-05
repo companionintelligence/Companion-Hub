@@ -14,6 +14,7 @@ import { AGENT_APP_SLUG } from '../helpers/ai-setup-types';
 import { AiSetupStep } from '../components/ai-setup-step';
 import { StepSection } from '../components/ai-setup/primitives';
 import { InstallStep } from '../components/install-step';
+import { PoolSetupOnboardingSection } from '../components/pool-setup-onboarding-section';
 import { RecommendationsStep } from '../components/recommendations-step';
 import { buildAgentApp, resolveExposureMode } from '../helpers/agent-onboarding';
 import { identifyServices, type DetectedService } from '../helpers/service-detection';
@@ -376,6 +377,9 @@ function OnboardingWizard() {
         >
           <RecommendedAppsSection detectedServices={detectedServices} agentSlugs={agentSlugs} onChange={setSelectedApps} />
         </AiSetupStep>
+
+        {/* Optional and unnumbered: it only opens the Hub Pool guide, and never touches `canFinish`. */}
+        <PoolSetupOnboardingSection />
 
         {modelPullEnabled && (
           <ModelDownloadStatus

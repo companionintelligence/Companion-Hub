@@ -395,7 +395,8 @@ describe('HubPoolDiscoveryService', () => {
       const candidates = await connected.listDiscoverableNodes();
 
       expect(vi.mocked(global.fetch).mock.calls.map((call) => call[0])).toEqual(['https://peer-hub.tailxyz.ts.net/api/inference/pool/identify']);
-      expect(candidates).toEqual([{ tailscaleDeviceId: 'ts-1', nodeFqdn: 'peer-hub.tailxyz.ts.net', hostname: 'peer-hub' }]);
+      // `online` rides along from the daemon's peer map (display only); `os` is absent because this peer reported none.
+      expect(candidates).toEqual([{ tailscaleDeviceId: 'ts-1', nodeFqdn: 'peer-hub.tailxyz.ts.net', hostname: 'peer-hub', online: true }]);
     });
 
     it('never remembers a probed address as a candidate', async () => {

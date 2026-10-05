@@ -590,7 +590,7 @@ Plugin versions are **pinned in the CLI** and bumped deliberately; `connect` nev
 ## Hub Pool
 
 Operate multi-Hub inference pooling from the terminal — the same surface as **Settings → Network →
-Hub Pool**. See [`hub-pool.md`](./hub-pool.md) for how pooling works.
+Hub Pool**. See [`hub-pool.md`](./hub-pool.md) for how pooling works. To pool two Hubs for the first time, see [Set up a pool](./hub-pool.md#set-up-a-pool), which covers both the CLI and the guided setup in the Hub UI.
 
 ```bash
 cihub pool status [env]                       # is pooling routing, and why or why not

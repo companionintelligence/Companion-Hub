@@ -13,7 +13,7 @@ buys you, and where the seams are.
 | 2. Operators on each Hub | [Operators and accounts](#operators-and-accounts-three-identity-planes) below |
 | 3. Private network | [`private-vpn.md`](private-vpn.md) |
 | 4. Inference backends and models | [`MODEL_REGISTRY.md`](MODEL_REGISTRY.md), [`inference-supervision.md`](inference-supervision.md) |
-| 5. Pool the nodes | [`hub-pool.md`](hub-pool.md), [`CLI.md` → Hub Pool](CLI.md#hub-pool) |
+| 5. Pool the nodes | [`hub-pool.md` → Set up a pool](hub-pool.md#set-up-a-pool), [`CLI.md` → Hub Pool](CLI.md#hub-pool) |
 | 6. Validate | [`hub-pool-fleet-testing.md`](hub-pool-fleet-testing.md) |
 | Optional: remote desktop | [Remote desktop (tailnet-only)](#remote-desktop-tailnet-only) below, [`CLI.md` → `cihub fleet rdp`](CLI.md#cihub-fleet-rdp) |
 
@@ -247,7 +247,7 @@ Two things about measuring it:
 
 ## Pooling the fleet
 
-Full model in [`hub-pool.md`](hub-pool.md). The setup path, in the order it actually happens:
+Full model in [`hub-pool.md`](hub-pool.md). For one or two Hubs with a dashboard, the [setup guide](hub-pool.md#set-up-with-the-guide) in the Hub UI is faster than the commands below. Use the commands for a headless node or a larger fleet. The setup path, in the order it actually happens:
 
 **Find the other Hub.** Two routes, and they are not interchangeable — one learns a name, the other
 does not:

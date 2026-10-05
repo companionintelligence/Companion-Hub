@@ -48,7 +48,7 @@ Follow the [Google developer documentation style guide](https://developers.googl
 | [`hub-stack-self-update.md`](hub-stack-self-update.md) | What the Hub self-updater moves and refuses, and how to turn off auto-update on a node |
 | [`fleet-setup.md`](fleet-setup.md) | End-to-end setup: account, devices, operators, tailnet, and pooling — the order to do them in |
 | [`private-vpn.md`](private-vpn.md) | Tailscale private VPN |
-| [`hub-pool.md`](hub-pool.md) | Multi-Hub inference pooling over Tailscale |
+| [`hub-pool.md`](hub-pool.md) | Multi-Hub inference pooling over Tailscale, with a quick start for the setup guide and the CLI |
 | [`inference-supervision.md`](inference-supervision.md) | Observing inference backends and Compose-wide crash loops — and why the Hub never restarts one |
 | [`hub-pool-fleet-testing.md`](hub-pool-fleet-testing.md) | Two-node validation plan for Hub Pool |
 | [`hub-pool-vs-pair.md`](hub-pool-vs-pair.md) | Hub Pool compared with NVIDIA Personal-AI-Router |
