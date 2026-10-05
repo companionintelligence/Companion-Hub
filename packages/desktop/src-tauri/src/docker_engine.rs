@@ -19,6 +19,8 @@ use crate::hub_names::{HUB_CONTAINER, HUB_NETWORK_NAMES, LEGACY_HUB_CONTAINER};
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub const DOCKER_CONTEXT_WSL_ENGINE: &str = "wsl-engine";
+/// The Docker context socktainer registers on startup.
+pub const DOCKER_CONTEXT_SOCKTAINER: &str = "socktainer";
 pub const DOCKER_ENGINE_STATE_FILENAME: &str = "docker-engine.json";
 
 const HUB_IDENTITY_CONTAINERS: &[&str] = &["ci-hub-db", HUB_CONTAINER, LEGACY_HUB_CONTAINER];
@@ -34,6 +36,9 @@ pub enum DockerEngineKind {
     System,
     WslEngine,
     Rootless,
+    /// Apple's `container` runtime behind socktainer's Docker-compatible socket. Experimental:
+    /// it cannot attach a running container to a network, which Hub does after `up`.
+    AppleContainer,
     Other,
 }
 
@@ -44,12 +49,19 @@ impl DockerEngineKind {
             Self::System => "system",
             Self::WslEngine => "wsl-engine",
             Self::Rootless => "rootless",
+            Self::AppleContainer => "apple-container",
             Self::Other => "other",
         }
     }
 
     pub fn is_desktop(self) -> bool {
         matches!(self, Self::Desktop)
+    }
+
+    /// An engine Hub supports only with known gaps. Never chosen over a stable engine on a fresh
+    /// install; an existing Hub stack on it, or an explicit `CI_HUB_DOCKER_HOST`, still selects it.
+    pub fn is_experimental(self) -> bool {
+        matches!(self, Self::AppleContainer)
     }
 }
 
@@ -153,6 +165,7 @@ fn kind_from_context_name(context_name: &str) -> DockerEngineKind {
     match context_name {
         "desktop-linux" | "desktop-windows" => DockerEngineKind::Desktop,
         DOCKER_CONTEXT_WSL_ENGINE => DockerEngineKind::WslEngine,
+        DOCKER_CONTEXT_SOCKTAINER => DockerEngineKind::AppleContainer,
         _ => DockerEngineKind::Other,
     }
 }
@@ -163,6 +176,9 @@ fn label_for(kind: DockerEngineKind, context_name: Option<&str>, host: &str) -> 
         DockerEngineKind::System => "system Docker Engine".to_string(),
         DockerEngineKind::WslEngine => "WSL Engine".to_string(),
         DockerEngineKind::Rootless => "rootless Docker Engine".to_string(),
+        DockerEngineKind::AppleContainer => {
+            "Apple container (socktainer, experimental)".to_string()
+        }
         DockerEngineKind::Other => context_name
             .map(|name| format!("Docker context `{name}`"))
             .unwrap_or_else(|| format!("Docker at {host}")),
@@ -388,6 +404,18 @@ fn candidate_from_unix_socket(
     })
 }
 
+/// socktainer's Docker-compatible socket, when it is running. It also registers a `socktainer`
+/// Docker context; the socket is checked directly so an unset or different current context does
+/// not hide it. The context and the socket share a host string, so the two never double up.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn apple_container_socket_candidate(home: &Path) -> Option<DockerEngineCandidate> {
+    candidate_from_unix_socket(
+        home.join(".socktainer").join("container.sock"),
+        DockerEngineKind::AppleContainer,
+        Some(DOCKER_CONTEXT_SOCKTAINER),
+    )
+}
+
 #[cfg(target_os = "linux")]
 fn enumerate_linux_candidates(host_docker_dir: Option<&Path>) -> Vec<DockerEngineCandidate> {
     let mut out = Vec::new();
@@ -562,6 +590,13 @@ fn enumerate_macos_candidates(host_docker_dir: Option<&Path>) -> Vec<DockerEngin
         }
     }
 
+    if let Some(candidate) = dirs::home_dir()
+        .as_deref()
+        .and_then(apple_container_socket_candidate)
+    {
+        push_unique_candidate(&mut out, candidate);
+    }
+
     out
 }
 
@@ -689,11 +724,22 @@ pub fn select_docker_engine(
         ));
     }
 
-    let engine = &reachable[0];
+    // An experimental engine is the last resort: a Mac with socktainer running beside a working
+    // Docker engine keeps the Docker engine. It is chosen alone only because the alternative is
+    // refusing to start, and the reason says so.
+    let engine = reachable
+        .iter()
+        .find(|e| !e.candidate.kind.is_experimental())
+        .unwrap_or(&reachable[0]);
+    let note = if engine.candidate.kind.is_experimental() {
+        "; experimental, the only reachable engine"
+    } else {
+        ""
+    };
     Ok((
         engine.candidate.clone(),
         format!(
-            "fresh install: platform fallback {} ({})",
+            "fresh install: platform fallback {} ({}){note}",
             engine.candidate.label, engine.candidate.docker_host
         ),
     ))
@@ -772,6 +818,15 @@ pub fn effective_docker_host(data_dir: Option<&Path>) -> Option<String> {
         Ok(engine) => Some(engine.docker_host),
         Err(_) => load_persisted_engine(dir).map(|e| e.docker_host),
     }
+}
+
+/// The kind of the pinned / persisted engine, if any. Does not resolve a new one.
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+pub fn pinned_engine_kind(data_dir: Option<&Path>) -> Option<DockerEngineKind> {
+    if let Some(pinned) = pinned_engine() {
+        return Some(pinned.kind);
+    }
+    load_persisted_engine(data_dir?).map(|e| e.kind)
 }
 
 /// Windows path-style hint from the pinned / persisted engine, if any.
@@ -1168,5 +1223,153 @@ mod tests {
         assert_eq!(loaded.docker_host, engine.docker_host);
         assert_eq!(loaded.kind, DockerEngineKind::System);
         assert_eq!(loaded.reason, "affinity");
+    }
+
+    const APPLE_HOST: &str = "unix:///Users/u/.socktainer/container.sock";
+    const DESKTOP_HOST: &str = "unix:///Users/u/.docker/run/docker.sock";
+
+    #[test]
+    fn socktainer_context_is_an_experimental_apple_container_engine() {
+        let kind = kind_from_context_name(DOCKER_CONTEXT_SOCKTAINER);
+        assert_eq!(kind, DockerEngineKind::AppleContainer);
+        assert!(kind.is_experimental());
+        assert!(!kind.is_desktop());
+        // No other kind is experimental, and an unknown context stays `other`.
+        assert!(!DockerEngineKind::Desktop.is_experimental());
+        assert_eq!(kind_from_context_name("colima"), DockerEngineKind::Other);
+    }
+
+    #[test]
+    fn apple_container_kind_serializes_kebab_case_for_persisted_state() {
+        // `state/docker-engine.json` stores this; a rename would orphan an existing pin.
+        assert_eq!(
+            serde_json::to_string(&DockerEngineKind::AppleContainer).unwrap(),
+            "\"apple-container\""
+        );
+        assert_eq!(DockerEngineKind::AppleContainer.as_str(), "apple-container");
+    }
+
+    #[test]
+    fn persists_and_loads_an_apple_container_pin() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = PinnedDockerEngine {
+            docker_host: APPLE_HOST.to_string(),
+            kind: DockerEngineKind::AppleContainer,
+            context_name: Some(DOCKER_CONTEXT_SOCKTAINER.to_string()),
+            reason: "explicit override".to_string(),
+            selected_at: 7,
+            path_style: None,
+        };
+        persist_engine(dir.path(), &engine).expect("persist");
+        let loaded = load_persisted_engine(dir.path()).expect("load");
+        assert_eq!(loaded.kind, DockerEngineKind::AppleContainer);
+        assert_eq!(loaded.context_name.as_deref(), Some("socktainer"));
+    }
+
+    #[test]
+    fn fresh_install_keeps_a_stable_engine_over_apple_container() {
+        // Apple container enumerated first must still lose to any stable engine.
+        let engines = vec![
+            reachable("Apple", APPLE_HOST, DockerEngineKind::AppleContainer, false),
+            reachable(
+                "system",
+                "unix:///var/run/docker.sock",
+                DockerEngineKind::System,
+                false,
+            ),
+        ];
+        let (selected, reason) = select_docker_engine(&engines, None).unwrap();
+        assert_eq!(selected.kind, DockerEngineKind::System);
+        assert!(!reason.contains("experimental"));
+    }
+
+    #[test]
+    fn fresh_install_keeps_docker_desktop_over_apple_container() {
+        let engines = vec![
+            reachable("Apple", APPLE_HOST, DockerEngineKind::AppleContainer, false),
+            reachable("Desktop", DESKTOP_HOST, DockerEngineKind::Desktop, false),
+        ];
+        let (selected, _) = select_docker_engine(&engines, None).unwrap();
+        assert!(selected.kind.is_desktop());
+    }
+
+    #[test]
+    fn fresh_install_uses_apple_container_when_it_is_the_only_engine_and_says_so() {
+        let engines = vec![reachable(
+            "Apple",
+            APPLE_HOST,
+            DockerEngineKind::AppleContainer,
+            false,
+        )];
+        let (selected, reason) = select_docker_engine(&engines, None).unwrap();
+        assert_eq!(selected.kind, DockerEngineKind::AppleContainer);
+        assert!(reason.contains("fallback"));
+        assert!(reason.contains("experimental"));
+    }
+
+    #[test]
+    fn existing_hub_stack_on_apple_container_is_not_moved_to_desktop() {
+        // Moving would start a second stack on the same host ports.
+        let engines = vec![
+            reachable("Desktop", DESKTOP_HOST, DockerEngineKind::Desktop, false),
+            reachable("Apple", APPLE_HOST, DockerEngineKind::AppleContainer, true),
+        ];
+        let (selected, reason) = select_docker_engine(&engines, None).unwrap();
+        assert_eq!(selected.kind, DockerEngineKind::AppleContainer);
+        assert!(reason.contains("affinity"));
+    }
+
+    #[test]
+    fn explicit_host_selects_the_socktainer_socket() {
+        let engines = vec![
+            reachable("Desktop", DESKTOP_HOST, DockerEngineKind::Desktop, false),
+            reachable("Apple", APPLE_HOST, DockerEngineKind::AppleContainer, false),
+        ];
+        let (selected, reason) = select_docker_engine(&engines, Some(APPLE_HOST)).unwrap();
+        assert_eq!(selected.kind, DockerEngineKind::AppleContainer);
+        assert!(reason.contains("explicit"));
+    }
+
+    #[test]
+    fn finds_the_socktainer_socket_under_home_only_when_it_exists() {
+        let home = tempfile::tempdir().expect("tempdir");
+        assert!(apple_container_socket_candidate(home.path()).is_none());
+
+        let dir = home.path().join(".socktainer");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join("container.sock"), b"").expect("socket stand-in");
+
+        let candidate = apple_container_socket_candidate(home.path()).expect("candidate");
+        assert_eq!(candidate.kind, DockerEngineKind::AppleContainer);
+        assert_eq!(candidate.context_name.as_deref(), Some("socktainer"));
+        assert_eq!(
+            candidate.docker_host,
+            format!(
+                "unix://{}",
+                home.path().join(".socktainer/container.sock").display()
+            )
+        );
+        assert!(candidate.label.contains("experimental"));
+    }
+
+    #[test]
+    fn socktainer_context_and_socket_are_one_candidate() {
+        // The context's Host and the directly probed socket are the same string, so listing
+        // both must not offer the engine twice.
+        let from_context = DockerEngineCandidate {
+            label: label_for(
+                DockerEngineKind::AppleContainer,
+                Some(DOCKER_CONTEXT_SOCKTAINER),
+                APPLE_HOST,
+            ),
+            docker_host: APPLE_HOST.to_string(),
+            kind: DockerEngineKind::AppleContainer,
+            context_name: Some(DOCKER_CONTEXT_SOCKTAINER.to_string()),
+        };
+        let from_socket = from_context.clone();
+        let mut out = Vec::new();
+        push_unique_candidate(&mut out, from_context);
+        push_unique_candidate(&mut out, from_socket);
+        assert_eq!(out.len(), 1);
     }
 }
