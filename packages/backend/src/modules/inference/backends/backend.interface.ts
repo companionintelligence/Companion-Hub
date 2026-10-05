@@ -33,8 +33,7 @@ export interface EngineCapabilities {
 }
 
 /**
- * Common interface implemented by all inference backends (Ollama, vLLM, Lemonade, MTPLX,
- * mlx-dspark, Lucebox speculative inference, llama.cpp, LM Studio).
+ * Common interface implemented by all inference backends (Ollama, vLLM, Lemonade, oMLX).
  */
 export interface InferenceBackend {
   readonly type: InferenceBackendType;

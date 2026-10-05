@@ -10,7 +10,10 @@ This is a decision, not a missing feature.
 
 The failure that motivated this work is an ollama service that systemd restarted roughly 97,000
 times against a wedged NFS model directory, silently, for as long as it took someone to look. Every
-design for an automatic restarter that was reviewed against that incident reproduced its shape:
+design for an automatic restarter that was reviewed against that incident reproduced its shape.
+
+The second and third findings below involve Lucebox, an engine the Hub has since retired. They are
+history, so they use the past tense.
 
 - **A restart budget can reset itself.** A budget has to be keyed on something. Key it on the
   backend's identity and you have to include the base URL — and `OllamaBackend.getBaseUrl()` returns
@@ -19,13 +22,15 @@ design for an automatic restarter that was reviewed against that incident reprod
   flapping backend oscillates its own key, and each oscillation hands it a fresh budget.
 - **"Stop once the failure is deterministic" excluded the flagship case.** The rule proposed for it
   required the process to exit *early*. The Lucebox ROCm failure this feature was built around
-  starts fine, passes `/health`, and dies inside the first generation — which on an idle node can be
-  hours later. The one failure the restarter existed to stop is the one it would have restarted
+  started fine, passed `/health`, and died inside the first generation — which on an idle node could
+  be hours later. The one failure the restarter existed to stop is the one it would have restarted
   forever.
-- **Something else already owns the container.** On the fleet, `ci-hub-inference-lucebox` is created
-  and started by the desktop app (`packages/desktop/src-tauri/src/inference_runners.rs`). A Hub that
-  stopped it would be overruled on the operator's next launch, and the operator would see an engine
-  flapping between two owners with no explanation from either.
+- **Something else already owned the container.** On the fleet, the desktop app created and started
+  `ci-hub-inference-lucebox`. A Hub that stopped it would have been overruled on the operator's next
+  launch, and the operator would have seen an engine flapping between two owners with no explanation
+  from either. The desktop app no longer runs Lucebox:
+  `packages/desktop/src-tauri/src/inference_runners.rs` now starts only the host runners for oMLX,
+  vLLM, and Ollama.
 
 So `inferenceSupervisionMode` has exactly two values, `'off'` and `'observe'`. The union is the
 guarantee: there is no value that selects a code path capable of acting on a container, the service
@@ -45,7 +50,7 @@ because the four engines are not uniform:
 | Target kind | What it means | Which backends land here |
 |---|---|---|
 | `container` | A local container whose published port matches the URL the health check probes | `ollama`, `vllm`, or `lemonade` if the operator runs that container |
-| `host-process` | A daemon outside this container's PID namespace | Host Ollama under systemd; oMLX and vLLM, which run on the host |
+| `host-process` | A daemon outside this container's PID namespace | Host Ollama under systemd; oMLX, which always runs on the host; vLLM when it runs natively |
 | `remote` | An endpoint on another machine | `vllm` whenever `preferredVllmUrl` points across a tailnet |
 | `absent` | Nothing answers and nothing matches | Any backend that is not deployed here |
 
@@ -57,13 +62,13 @@ Two rules matter more than the rest:
 - **A name match is not enough.** The container's published host port must match the port in the
   base URL. No port match downgrades to `host-process`, never up to `container`.
 
-oMLX and vLLM are host processes. Their compose helpers throw, so neither has a Hub container to find.
+oMLX always runs on the host: its compose helper throws, so it has no Hub container to find. vLLM's compose helper throws on Apple Silicon and AMD, so there it runs on the host too. On other hardware it can be a Hub container.
 
 ### Across the whole Compose project
 
-The restart sweep is scoped to `com.docker.compose.project=ci-hub`, **not** to the six inference
-backends, plus the inference containers by name (the desktop's `docker run` carries no Compose
-labels at all).
+The restart sweep is scoped to `com.docker.compose.project=ci-hub`, **not** to the four inference
+backends, plus the resolved inference containers by name, because a container started with a plain
+`docker run` carries no Compose labels at all.
 
 That scope is the only reason the alarm can see the failure it was built for. The worst loop the
 fleet has recorded is `hub-tailscale` at `RestartCount=11463`, respawning about every 60 seconds
@@ -180,7 +185,5 @@ There is no companion `POST`. The Hub takes no action on a backend, so there is 
   sample, so it does not alias. There is no equivalent counter for a host daemon.
 - **Remote endpoints are reported, never observed.** Their process, restarts, and logs belong to
   another host.
-- **`mtplx` and `dspark` cannot be observed beyond HTTP health.** They have no Docker path, and the
-  Hub has no access to the host's launchd.
 - **The frontend does not render this yet.** The route exists; the generated API client is
   regenerated after merge, so the settings card is a follow-up.

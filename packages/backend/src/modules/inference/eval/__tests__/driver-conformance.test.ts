@@ -202,8 +202,9 @@ describe('SPEC_DECODE', () => {
 
 describe('THINKING_SUPPRESSION', () => {
   it('names the spelling that works and the spelling that answers 200 and does nothing', () => {
-    // The trap the table exists for: copying the ollama override to mtplx reproduces a run where the
-    // entire token budget goes to hidden reasoning and nothing in the response says so.
+    // The trap the table exists for, established on the since-retired mtplx: copying the ollama override
+    // there reproduced a run where the entire token budget went to hidden reasoning and nothing in the
+    // response said so.
     expect(THINKING_SUPPRESSION.ollama.works).toMatch(/reasoning_effort/);
     expect(THINKING_SUPPRESSION.omlx.works).toBeNull();
   });
