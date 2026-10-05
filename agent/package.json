@@ -8,10 +8,10 @@
     "fix:dry": "DRY_RUN=true ts-node fix-agent.ts"
   },
   "dependencies": {
-    "openai": "^7.23.0"
+    "openai": "^7.27.0"
   },
   "devDependencies": {
-    "@types/node": "^26.6.3",
+    "@types/node": "^26.6.4",
     "ts-node": "^10.9.2",
     "typescript": "^7.0.2"
   }
