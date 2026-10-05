@@ -44,6 +44,7 @@ Follow the [Google developer documentation style guide](https://developers.googl
 | [`portal-check-in.md`](portal-check-in.md) | Portal check-in, reading registration health without sending one, and recovering a Hub whose device key Portal rejects |
 | [`telemetry.md`](telemetry.md) | What Hub reports to Sentry, and the switches that stop it |
 | [`CLI.md`](CLI.md) | `cihub` CLI |
+| [`apple-container.md`](apple-container.md) | Run a Hub on Apple container through socktainer on a Mac: setup, how the desktop app chooses an engine, and what differs from Docker |
 | [`editor-inference.md`](editor-inference.md) | Point Continue, Zed, Cline, Aider, or an OpenAI SDK at the Hub: base URL, `inference` key, and model |
 | [`hub-stack-self-update.md`](hub-stack-self-update.md) | What the Hub self-updater moves and refuses, and how to turn off auto-update on a node |
 | [`fleet-setup.md`](fleet-setup.md) | End-to-end setup: account, devices, operators, tailnet, and pooling — the order to do them in |

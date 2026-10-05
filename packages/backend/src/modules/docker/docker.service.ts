@@ -24,6 +24,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsRepository } from '../apps/apps.repository';
+import { APPLE_CONTAINER_ENGINE_NOTICE, isSocktainerVersion } from './container-engine';
 import { DOCKERODE } from './constants';
 import { DockerReadFacade, type ManagedAppContainerVerification } from './docker-read.facade';
 import { listContainersMatchingAnyLabelSets, managedAppLabelSets } from './hub-container-query';
@@ -70,6 +71,10 @@ export interface ContainerHealthProbeResult {
   containers: ContainerHealthProbeDetail[];
   message: string;
 }
+
+const HUB_APP_NETWORK_GAP = 'Not attaching the Hub to app networks';
+const HUB_APP_NETWORK_CONSEQUENCE =
+  'Services that are not on the shared Hub network cannot resolve ci-hub, so an app that calls Hub inference from such a service fails with ENOTFOUND.';
 
 const MANAGED_APP_STARTUP_MAX_ATTEMPTS = 6;
 const MANAGED_APP_STARTUP_DELAY_MS = 2_000;
@@ -162,6 +167,11 @@ interface AppProjectNetwork {
 
 @Injectable()
 export class DockerService {
+  /** Whether the engine is Apple container, once probed. Fixed for the process: DOCKERODE is built once. */
+  private appleContainerEngine: boolean | undefined;
+  /** Gaps already warned about, so a periodic caller logs each once. */
+  private readonly warnedAppleContainerGaps = new Set<string>();
+
   constructor(
     private readonly logger: LoggerService,
     private readonly config: ConfigurationService,
@@ -1375,10 +1385,57 @@ export class DockerService {
    * the operator already has, and must not fail the `up` that just succeeded.
    */
   public async attachHubToAppNetworks(appUrn: AppUrn): Promise<void> {
+    if (await this.skipsNetworkHotAttach(HUB_APP_NETWORK_GAP, HUB_APP_NETWORK_CONSEQUENCE)) {
+      return;
+    }
     if (!(await this.runningHubContainerName())) {
       return;
     }
     await this.joinHubToAppNetworks(await this.listComposeProjectNetworks(appUrn));
+  }
+
+  /**
+   * Whether Hub runs on Apple container (socktainer) rather than Docker, read from `GET /version`.
+   *
+   * An unreachable daemon is not an answer: this returns false without remembering it, so the next
+   * call asks again instead of pinning the wrong engine for the life of the process.
+   */
+  public async isAppleContainerEngine(): Promise<boolean> {
+    if (this.appleContainerEngine !== undefined) {
+      return this.appleContainerEngine;
+    }
+    let apple: boolean;
+    try {
+      apple = isSocktainerVersion(await this.docker.version());
+    } catch {
+      return false;
+    }
+    // Two first calls can both reach here; the first to resume records the answer and warns.
+    if (this.appleContainerEngine === undefined) {
+      this.appleContainerEngine = apple;
+      if (apple) {
+        this.logger.warn(APPLE_CONTAINER_ENGINE_NOTICE);
+      }
+    }
+    return this.appleContainerEngine;
+  }
+
+  /**
+   * True, with one warning per `gap`, when the engine cannot attach a running container to a network.
+   *
+   * socktainer answers `network connect` and `disconnect` with success and changes nothing: Apple
+   * container fixes a container's networks when it is created. Calling it anyway would log
+   * "Attached …" for a join that never happened.
+   */
+  private async skipsNetworkHotAttach(gap: string, consequence: string): Promise<boolean> {
+    if (!(await this.isAppleContainerEngine())) {
+      return false;
+    }
+    if (!this.warnedAppleContainerGaps.has(gap)) {
+      this.warnedAppleContainerGaps.add(gap);
+      this.logger.warn(`${gap}: Apple container cannot attach or detach a running container's networks. ${consequence}`);
+    }
+    return true;
   }
 
   /**
@@ -1389,6 +1446,9 @@ export class DockerService {
    * until the next `up`.
    */
   public async ensureHubOnAppNetworks(): Promise<void> {
+    if (await this.skipsNetworkHotAttach(HUB_APP_NETWORK_GAP, HUB_APP_NETWORK_CONSEQUENCE)) {
+      return;
+    }
     if (!(await this.runningHubContainerName())) {
       return;
     }
@@ -1416,6 +1476,11 @@ export class DockerService {
    * Never throws.
    */
   public async detachHubFromAppNetworks(appUrn: AppUrn): Promise<void> {
+    // The Hub never joined these networks on Apple container, so it has nothing to leave. No
+    // warning: attach already said so once, and an uninstall is not the moment to repeat it.
+    if (await this.isAppleContainerEngine()) {
+      return;
+    }
     const hubName = await this.runningHubContainerName();
     if (!hubName) {
       return;
@@ -1594,6 +1659,18 @@ export class DockerService {
 
     if (traefikNetworks[HUB_EDGE_NETWORK_NAME]) {
       return 'present';
+    }
+
+    // A Traefik created with the edge network by a full `up` is 'present' above. One that predates
+    // it cannot be joined in place here, so say what recreates it rather than log a join that did not happen.
+    if (
+      await this.skipsNetworkHotAttach(
+        `Not attaching ${TRAEFIK_CONTAINER_NAME} to ${HUB_EDGE_NETWORK_NAME}`,
+        'Tunnelled app hostnames cannot reach Traefik until it is recreated from the current compose file ' +
+          "(`cihub up`, or `docker compose up -d traefik` with the stack's env file).",
+      )
+    ) {
+      return 'failed';
     }
 
     const address = resolveEdgeHopAddress(process.env.HUB_EDGE_TRAEFIK_IP, DEFAULT_HUB_EDGE_TRAEFIK_IP);

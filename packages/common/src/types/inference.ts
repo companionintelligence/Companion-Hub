@@ -37,9 +37,11 @@ export interface HardwareProfile {
      * Which Docker backend the daemon is (from `docker info` OS/kernel). Drives GPU
      * setup guidance: Docker Desktop manages the container GPU runtime itself, a
      * native engine inside WSL2 needs nvidia-container-toolkit installed in the
-     * distro, and native Linux needs it on the host. Optional on older profiles.
+     * distro, and native Linux needs it on the host. `apple-container` is Apple's `container`
+     * runtime behind socktainer's Docker-compatible socket (experimental; no container GPU).
+     * Optional on older profiles.
      */
-    containerHostKind?: 'docker-desktop' | 'wsl-engine' | 'native-linux' | 'unknown';
+    containerHostKind?: 'docker-desktop' | 'wsl-engine' | 'native-linux' | 'apple-container' | 'unknown';
   };
   npu: {
     available: boolean;
