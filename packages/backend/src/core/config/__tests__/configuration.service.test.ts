@@ -20,6 +20,7 @@ vi.mock('@/common/helpers/env-helpers', async (importOriginal) => ({
 import fs from 'node:fs';
 import { settingsSchema } from '@/app.dto';
 import { writeSettingsJsonFile } from '@/common/helpers/env-helpers';
+import { EnvUtils } from '@/modules/env/env.utils';
 import { ConfigurationService } from '../configuration.service';
 
 const mockedFs = vi.mocked(fs);
@@ -631,37 +632,39 @@ describe('ConfigurationService.mergeSettingsToDisk', () => {
   });
 });
 
+/** The full appliance environment `configure()` validates; each test sets the key it is about. */
+const APPLIANCE_ENV: Record<string, string> = {
+  POSTGRES_HOST: 'db',
+  POSTGRES_DBNAME: 'hub',
+  POSTGRES_USERNAME: 'hub',
+  POSTGRES_PASSWORD: 'hub',
+  RABBITMQ_HOST: 'queue',
+  RABBITMQ_USERNAME: 'hub',
+  RABBITMQ_PASSWORD: 'hub',
+  INTERNAL_IP: '127.0.0.1',
+  CI_HUB_VERSION: '0.0.0',
+  JWT_SECRET: 'jwt',
+  CI_CLOUD_URL: 'https://cloud.example.com',
+  DOMAIN: 'example.com',
+  CI_HUB_APP_DATA_PATH: '/host/app-data',
+  CI_HUB_FORWARD_AUTH_URL: 'http://auth',
+  DEMO_MODE: 'false',
+  GUEST_DASHBOARD: 'false',
+  ALLOW_AUTO_THEMES: 'true',
+  PERSIST_TRAEFIK_CONFIG: 'false',
+  TZ: 'UTC',
+  ROOT_FOLDER_HOST: '/host',
+  ADVANCED_SETTINGS: 'false',
+  THEME_BASE: 'gray',
+  THEME_COLOR: 'blue',
+  EXPERIMENTAL_INSECURE_COOKIE: 'false',
+};
+
 describe('ConfigurationService — error-monitoring consent precedence', () => {
   // The other half of the audited contradiction. generateSystemEnvFile resolved this key env-first
   // and configure() resolved it settings-first, so the resolved env and the running config could
   // disagree about a privacy control. Both now call resolveAllowErrorMonitoring; this pins the
   // configure() half against the same truth table env-helpers.test.ts pins for the boot half.
-  const APPLIANCE_ENV: Record<string, string> = {
-    POSTGRES_HOST: 'db',
-    POSTGRES_DBNAME: 'hub',
-    POSTGRES_USERNAME: 'hub',
-    POSTGRES_PASSWORD: 'hub',
-    RABBITMQ_HOST: 'queue',
-    RABBITMQ_USERNAME: 'hub',
-    RABBITMQ_PASSWORD: 'hub',
-    INTERNAL_IP: '127.0.0.1',
-    CI_HUB_VERSION: '0.0.0',
-    JWT_SECRET: 'jwt',
-    CI_CLOUD_URL: 'https://cloud.example.com',
-    DOMAIN: 'example.com',
-    CI_HUB_APP_DATA_PATH: '/host/app-data',
-    CI_HUB_FORWARD_AUTH_URL: 'http://auth',
-    DEMO_MODE: 'false',
-    GUEST_DASHBOARD: 'false',
-    ALLOW_AUTO_THEMES: 'true',
-    PERSIST_TRAEFIK_CONFIG: 'false',
-    TZ: 'UTC',
-    ROOT_FOLDER_HOST: '/host',
-    ADVANCED_SETTINGS: 'false',
-    THEME_BASE: 'gray',
-    THEME_COLOR: 'blue',
-    EXPERIMENTAL_INSECURE_COOKIE: 'false',
-  };
 
   // configure() spreads process.env over the .env map, so the environment half of the truth table
   // has to be set there rather than in APPLIANCE_ENV.
@@ -700,5 +703,110 @@ describe('ConfigurationService — error-monitoring consent precedence', () => {
 
   it('takes the environment value when the user has never touched the switch', () => {
     expect(configureWith(undefined, 'false')).toBe(false);
+  });
+});
+
+describe('ConfigurationService — the domain Portal assigned survives a restart (CI-Hub#1894)', () => {
+  // The configure() half of resolveHubDomain; env-helpers.test.ts pins the boot half. The container's
+  // environment is the data env file as it was when the container was created, before pairing.
+  function configureWith(sources: { inherited: string; dataEnv: string; settings: Record<string, unknown> }) {
+    process.env.DOMAIN = sources.inherited;
+
+    const svc = Object.create(ConfigurationService.prototype) as unknown as {
+      getEnvMap: () => Map<string, string>;
+      readPersistedSettings: () => Record<string, unknown>;
+      configure: () => { domain: string; userSettings: { domain: string } };
+    };
+    svc.getEnvMap = () => new Map(Object.entries({ ...APPLIANCE_ENV, ALLOW_ERROR_MONITORING: 'false', DOMAIN: sources.dataEnv }));
+    svc.readPersistedSettings = () => sources.settings;
+
+    const config = svc.configure();
+    return { domain: config.domain, settingsDomain: config.userSettings.domain };
+  }
+
+  let savedDomain: string | undefined;
+
+  beforeEach(() => {
+    savedDomain = process.env.DOMAIN;
+  });
+
+  afterEach(() => {
+    if (savedDomain === undefined) delete process.env.DOMAIN;
+    else process.env.DOMAIN = savedDomain;
+  });
+
+  it('takes portalDomain over the DOMAIN the container inherited', () => {
+    expect(
+      configureWith({ inherited: 'companionintelligence.com', dataEnv: 'companionintelligence.com', settings: { portalDomain: 'ci0.pw' } }),
+    ).toEqual({ domain: 'ci0.pw', settingsDomain: 'ci0.pw' });
+  });
+
+  it('on a Hub paired before portalDomain existed, takes the data env file over the inherited DOMAIN', () => {
+    expect(configureWith({ inherited: 'companionintelligence.com', dataEnv: 'ci0.pw', settings: { ciHubApiKey: 'device-key' } })).toEqual({
+      domain: 'ci0.pw',
+      settingsDomain: 'ci0.pw',
+    });
+  });
+
+  it('keeps the inherited DOMAIN on a Hub that never paired', () => {
+    expect(configureWith({ inherited: 'companionintelligence.com', dataEnv: 'ci0.pw', settings: {} })).toEqual({
+      domain: 'companionintelligence.com',
+      settingsDomain: 'companionintelligence.com',
+    });
+  });
+});
+
+describe('ConfigurationService.setDomain', () => {
+  function makeDomainService() {
+    const svc = Object.create(ConfigurationService.prototype) as unknown as {
+      logger: { warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn>; info: ReturnType<typeof vi.fn> };
+      config: { domain: string; userSettings: { domain: string } };
+      envUtils: EnvUtils;
+      envPath: string;
+      mergeSettingsToDisk: ReturnType<typeof vi.fn>;
+      setDomain: (domain: string) => Promise<void>;
+    };
+    svc.logger = { warn: vi.fn(), error: vi.fn(), info: vi.fn() };
+    svc.config = { domain: 'companionintelligence.com', userSettings: { domain: 'companionintelligence.com' } };
+    svc.envUtils = new EnvUtils();
+    svc.envPath = '/data/.env';
+    svc.mergeSettingsToDisk = vi.fn().mockResolvedValue(undefined);
+    return svc;
+  }
+
+  let savedDomain: string | undefined;
+
+  beforeEach(() => {
+    savedDomain = process.env.DOMAIN;
+    mockedFs.readFileSync.mockReturnValue('DOMAIN=companionintelligence.com\n');
+  });
+
+  afterEach(() => {
+    if (savedDomain === undefined) delete process.env.DOMAIN;
+    else process.env.DOMAIN = savedDomain;
+  });
+
+  it('keeps the zone in settings.json, where boot reads it back over the inherited DOMAIN', async () => {
+    const svc = makeDomainService();
+
+    await svc.setDomain('ci0.pw');
+
+    expect(svc.mergeSettingsToDisk).toHaveBeenCalledWith({ portalDomain: 'ci0.pw' });
+    expect(mockedFs.promises.writeFile).toHaveBeenCalledWith('/data/.env', expect.stringContaining('DOMAIN=ci0.pw'), 'utf8');
+    expect(svc.config.domain).toBe('ci0.pw');
+    expect(svc.config.userSettings.domain).toBe('ci0.pw');
+    expect(process.env.DOMAIN).toBe('ci0.pw');
+  });
+
+  it('uses the new zone in this process and still saves it when the .env write fails', async () => {
+    const svc = makeDomainService();
+    vi.mocked(mockedFs.promises.writeFile).mockRejectedValueOnce(new Error('EROFS'));
+
+    await svc.setDomain('ci0.pw');
+
+    expect(svc.config.domain).toBe('ci0.pw');
+    expect(process.env.DOMAIN).toBe('ci0.pw');
+    expect(svc.mergeSettingsToDisk).toHaveBeenCalledWith({ portalDomain: 'ci0.pw' });
+    expect(svc.logger.error).toHaveBeenCalled();
   });
 });

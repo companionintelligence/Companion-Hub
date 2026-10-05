@@ -286,6 +286,12 @@ const fileOnlySettingsSchema = z.object({
   portalPushKeyPrefix: z.string().trim().optional(),
   portalPushKeyPending: z.string().trim().optional(),
   portalPushKeyDeliveredAt: z.string().trim().optional(),
+  /**
+   * The zone Portal assigned this Hub when it paired (`ci0.pw` and the rest of the `.pw` pool),
+   * which its own address `hub-<slug>.<zone>` is built on. Written by `ConfigurationService.setDomain`
+   * and read at boot by `resolveHubDomain`, where it wins over the `DOMAIN` the container inherited.
+   */
+  portalDomain: z.string().trim().optional(),
 });
 
 export type FileOnlySettings = z.infer<typeof fileOnlySettingsSchema>;

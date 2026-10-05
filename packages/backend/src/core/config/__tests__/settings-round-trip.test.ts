@@ -69,6 +69,7 @@ const ONE_OF_EVERY_KEY: Required<PersistedSettings> = {
   portalPushKeyPrefix: 'abcdef01',
   portalPushKeyPending: `abcdef01${'b'.repeat(56)}`,
   portalPushKeyDeliveredAt: '2026-09-25T12:00:00.000Z',
+  portalDomain: 'ci0.pw',
   ciHubOrganizationId: 'org-1',
   ciHubOrganizationSlug: 'acme',
   ciHubOrganizationLabel: 'Acme',
