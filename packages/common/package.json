@@ -59,9 +59,9 @@
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
     "@changesets/cli": "^3.0.3",
-    "@types/node": "^26.6.3",
+    "@types/node": "^26.6.4",
     "@types/validator": "^13.15.10",
-    "vitest": "^5.0.2"
+    "vitest": "^5.0.3"
   },
   "dependencies": {
     "validator": "^13.15.35"
