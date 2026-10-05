@@ -8,7 +8,6 @@ import type { LoggerService } from '@/core/logger/logger.service';
 import type { DockerReadFacade, SupervisionContainerInspection } from '@/modules/docker/docker-read.facade';
 import type { HostTelemetryService } from '@/modules/system/host-telemetry.service';
 import type { InferenceBackendRegistry } from '../backends/backend-registry';
-import type { HardwareInspectorService } from '../hardware-inspector.service';
 import { BackendObserverService } from '../supervision/backend-observer.service';
 
 const HEALTHY: BackendHealthStatus = { running: true, healthy: true, modelsLoaded: ['qwen36-27b'] };
@@ -45,7 +44,6 @@ interface Harness {
     countContainerZombieProcesses: ReturnType<typeof vi.fn>;
   };
   healthChecks: Map<InferenceBackendType, ReturnType<typeof vi.fn>>;
-  getProfile: ReturnType<typeof vi.fn>;
 }
 
 function harness(
@@ -54,7 +52,6 @@ function harness(
     containers?: SupervisionContainerInspection[];
     baseUrls?: Partial<Record<InferenceBackendType, string>>;
     health?: Partial<Record<InferenceBackendType, BackendHealthStatus>>;
-    gpuVendor?: string;
     logTail?: string;
     zombies?: number | null;
   } = {},
@@ -81,8 +78,6 @@ function harness(
       };
     },
   };
-  const getProfile = vi.fn().mockResolvedValue({ gpu: { vendor: options.gpuVendor ?? 'none' } });
-
   const configuration = {
     getInferenceSupervisionMode: () => options.mode ?? 'off',
     getInferenceSupervisionPollSeconds: () => 30,
@@ -93,11 +88,10 @@ function harness(
     configuration as unknown as ConfigurationService,
     backends as unknown as InferenceBackendRegistry,
     dockerRead as unknown as DockerReadFacade,
-    { getProfile } as unknown as HardwareInspectorService,
     telemetry as unknown as HostTelemetryService,
   );
 
-  return { service, logger, telemetry, dockerRead, healthChecks, getProfile };
+  return { service, logger, telemetry, dockerRead, healthChecks };
 }
 
 describe('BackendObserverService — cost on a Hub that never opted in', () => {
@@ -108,15 +102,14 @@ describe('BackendObserverService — cost on a Hub that never opted in', () => {
 
   it('arms no timer and issues no probe at boot when the mode is off', () => {
     // The whole default-off argument in one assertion. A peerless single-node Hub must pay nothing:
-    // no Docker call, no health check, no hardware detection, no timer to fire later.
+    // no Docker call, no health check, no timer to fire later.
     vi.useFakeTimers();
-    const { service, dockerRead, healthChecks, getProfile } = harness({ mode: 'off' });
+    const { service, dockerRead, healthChecks } = harness({ mode: 'off' });
 
     service.onModuleInit();
 
     expect(vi.getTimerCount()).toBe(0);
     expect(dockerRead.inspectSupervisionCandidates).not.toHaveBeenCalled();
-    expect(getProfile).not.toHaveBeenCalled();
     expect([...healthChecks.values()].some((check) => check.mock.calls.length > 0)).toBe(false);
 
     service.onModuleDestroy();
@@ -313,18 +306,6 @@ describe('BackendObserverService — per-backend observation', () => {
     expect(ollama).toMatchObject({ health: 'healthy', consecutiveUnhealthy: 0 });
     expect(vllm).toMatchObject({ health: 'unreachable', consecutiveUnhealthy: 2 });
     expect(report.lastSweepAt).not.toBeNull();
-  });
-
-  it('does not read the GPU profile when not required by any active diagnosis', async () => {
-    // `getProfile()` can re-run the whole nvidia-smi / rocm-smi / system_profiler detection chain.
-    const { service, getProfile } = harness({
-      mode: 'observe',
-      containers: [containerFixture({ name: 'ci-hub-db', restartCount: 0 })],
-    });
-
-    await service.sweepOnce();
-
-    expect(getProfile).not.toHaveBeenCalled();
   });
 
   it('spends no evidence-gathering calls on a healthy backend', async () => {

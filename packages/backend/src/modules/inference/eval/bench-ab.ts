@@ -105,21 +105,17 @@ export interface BenchArm {
 /**
  * Parameter values that LOOK like a control arm and are not.
  *
- * `max_draft: 0` does not turn speculation off on every runner — at least one silently coerces it to
- * `auto`, so a benchmark using it as the "off" arm compares speculation against speculation and
- * reports a bogus 1.0x. Only an explicit mode string, or the absence of the drafter parameter
- * entirely, is a control.
+ * A drafter depth of zero is not a documented off switch on any known backend, so a benchmark that
+ * uses it as the "off" arm risks comparing speculation against speculation and reporting a bogus
+ * 1.0x. Only an explicit mode string, or the absence of the drafter parameter entirely, is a
+ * control. The case that was measured, `max_draft: 0` on the retired mlx-dspark runner, silently
+ * coerced to `auto`; that engine is gone and so is its entry here.
  */
 export const SPEC_OFF_TRAPS: readonly { param: string; value: unknown; why: string }[] = [
   {
-    param: 'max_draft',
-    value: 0,
-    why: 'at least one runner silently coerces max_draft:0 to `auto` — this is speculation, not a control arm. Use an explicit baseline mode.',
-  },
-  {
     param: 'num_draft',
     value: 0,
-    why: 'same shape of trap as max_draft:0. A drafter depth of zero is not a documented off switch on any known backend; omit the parameter instead.',
+    why: 'A drafter depth of zero is not a documented off switch on any known backend; omit the parameter instead.',
   },
 ];
 

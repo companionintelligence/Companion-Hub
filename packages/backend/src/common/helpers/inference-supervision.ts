@@ -165,15 +165,3 @@ export const RESTART_ALARM_ESCALATION_STEP = 100;
  * this, a container that restarts twice a month reaches five eventually and reads as a loop.
  */
 export const RESTART_ALARM_WINDOW_MS = 60 * 60_000;
-
-/**
- * How long the GPU vendor is cached inside the observer.
- *
- * `HardwareInspectorService.getProfile()` re-runs the full `detect()` chain (nvidia-smi, rocm-smi,
- * system_profiler, `docker info`, each with its own timeout) whenever the discrete-GPU profile is
- * incomplete, which is common. The vendor was the only field the Lucebox diagnosis needed. That
- * diagnosis has been removed and `needsGpuVendor` currently returns false, so nothing reads the
- * cache today. The vendor does not change without a reboot, and it is read lazily so a node that
- * never needs it never pays for it.
- */
-export const SUPERVISION_GPU_VENDOR_TTL_MS = 30 * 60_000;

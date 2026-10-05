@@ -1,20 +1,14 @@
 import { Injectable, Optional, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import type { InferenceBackendType } from '@ci-hub/common/types';
 import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
-import {
-  clampSupervisionPollSeconds,
-  hubComposeProject,
-  resolveInferenceSupervisionMode,
-  SUPERVISION_GPU_VENDOR_TTL_MS,
-} from '@/common/helpers/inference-supervision';
+import { clampSupervisionPollSeconds, hubComposeProject, resolveInferenceSupervisionMode } from '@/common/helpers/inference-supervision';
 import { withTimeout } from '@/common/helpers/with-timeout';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import { HostTelemetryService } from '@/modules/system/host-telemetry.service';
 import { InferenceBackendRegistry } from '../backends/backend-registry';
-import { HardwareInspectorService } from '../hardware-inspector.service';
-import { diagnoseBackendFailure, looksLikeSegfault } from './backend-failure-diagnosis';
+import { diagnoseBackendFailure } from './backend-failure-diagnosis';
 import { RestartLoopWatcher } from './restart-loop-watcher';
 import { resolveSupervisionTarget, SUPERVISION_CONTAINER_CANDIDATES } from './supervision-target.resolver';
 import type {
@@ -41,10 +35,6 @@ interface BackendRuntimeState {
   observedAt: number | null;
   lastHealthyAt: number | null;
   consecutiveUnhealthy: number;
-  /** Distinct SIGSEGV-shaped deaths seen for the currently matched container. */
-  segfaultObservations: number;
-  /** `RestartCount` at the last observation, so a segfault is only counted once per death. */
-  lastRestartCount: number | null;
   /** Diagnosis codes reported last tick, so a *change* can be announced without repeating. */
   lastDiagnosisKey: string;
   diagnoses: BackendDiagnosis[];
@@ -94,14 +84,12 @@ export class BackendObserverService implements OnModuleInit, OnModuleDestroy {
   private readonly containerByBackend = new Map<InferenceBackendType, SupervisionContainerState>();
   private readonly restartWatcher = new RestartLoopWatcher();
   private restartLoops: RestartLoopReport[] = [];
-  private gpuVendor: { value: string | null; readAt: number } | null = null;
 
   constructor(
     private readonly logger: LoggerService,
     private readonly configuration: ConfigurationService,
     private readonly backends: InferenceBackendRegistry,
     private readonly dockerRead: DockerReadFacade,
-    private readonly hardwareInspector: HardwareInspectorService,
     // `@Optional()`, matching `AppRuntimeMonitorService`: this service reaches SystemModule across
     // InferenceModule's `forwardRef`, and its construction must not depend on that chain resolving
     // in a particular order. When telemetry is absent the alarm still reaches the logger.
@@ -243,22 +231,14 @@ export class BackendObserverService implements OnModuleInit, OnModuleDestroy {
       this.containerByBackend.set(backend, container);
     } else {
       this.containerByBackend.delete(backend);
-      state.segfaultObservations = 0;
-      state.lastRestartCount = null;
     }
 
     // Evidence is only gathered for a container that is actually in trouble. A healthy engine costs
-    // one health check per tick and nothing else — no log tail, no process table, no GPU probe.
+    // one health check per tick and nothing else — no log tail, no process table.
     let zombieCount: number | null = null;
     const inTrouble = container !== null && (state.health !== 'healthy' || container.restartCount > 0 || !container.running);
     if (container && inTrouble) {
       state.logTail = await this.dockerRead.tailContainerLogs(container.name, LOG_TAIL_LINES);
-      // Counted once per death: `restartCount` moving is what makes this a *new* corpse rather
-      // than the same one seen twice at a 30-second cadence.
-      if (looksLikeSegfault(container, state.logTail) && container.restartCount !== state.lastRestartCount) {
-        state.segfaultObservations += 1;
-      }
-      state.lastRestartCount = container.restartCount;
       if (container.running) {
         zombieCount = await this.dockerRead.countContainerZombieProcesses(container.name);
       }
@@ -270,10 +250,6 @@ export class BackendObserverService implements OnModuleInit, OnModuleDestroy {
     const diagnoses = diagnoseBackendFailure({
       backend,
       container,
-      // Read lazily and only when it can change the answer: `getProfile()` can re-run the
-      // whole nvidia-smi/rocm-smi/system_profiler detection chain.
-      gpuVendor: this.needsGpuVendor(backend, container) ? await this.readGpuVendor() : null,
-      segfaultObservations: state.segfaultObservations,
       logTail: state.logTail,
       zombieProcessCount: zombieCount,
       healthError: state.healthError,
@@ -302,25 +278,6 @@ export class BackendObserverService implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       return { health: 'unreachable', error: error instanceof Error ? error.message : String(error) };
     }
-  }
-
-  private needsGpuVendor(_backend: InferenceBackendType, _container: SupervisionContainerState | null): boolean {
-    return false;
-  }
-
-  private async readGpuVendor(): Promise<string | null> {
-    const now = Date.now();
-    if (this.gpuVendor && now - this.gpuVendor.readAt < SUPERVISION_GPU_VENDOR_TTL_MS) {
-      return this.gpuVendor.value;
-    }
-    try {
-      const profile = await this.hardwareInspector.getProfile();
-      this.gpuVendor = { value: profile.gpu.vendor, readAt: now };
-    } catch (error) {
-      this.logger.debug(`Could not read the GPU vendor for supervision diagnosis: ${error instanceof Error ? error.message : String(error)}`);
-      this.gpuVendor = { value: null, readAt: now };
-    }
-    return this.gpuVendor.value;
   }
 
   // ── Restart loops ────────────────────────────────────────────────────────
@@ -468,8 +425,6 @@ export class BackendObserverService implements OnModuleInit, OnModuleDestroy {
         observedAt: null,
         lastHealthyAt: null,
         consecutiveUnhealthy: 0,
-        segfaultObservations: 0,
-        lastRestartCount: null,
         lastDiagnosisKey: '',
         diagnoses: [],
         logTail: null,
