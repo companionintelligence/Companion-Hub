@@ -1,0 +1,93 @@
+{
+  "$schema": "https://raw.githubusercontent.com/companionintelligence/CI-Common/main/packages/video-kit/schema/storyboard.schema.json",
+  "app": {
+    "id": "docker-linux-install",
+    "name": "Install Docker on Linux",
+    "repo": "companionintelligence/CI-Hub"
+  },
+  "meta": {
+    "fps": 30,
+    "transitionSeconds": 0.5
+  },
+  "chapters": {
+    "site": "Find the command",
+    "terminal": "Install and check"
+  },
+  "scenes": [
+    {
+      "id": "title",
+      "kind": "intro",
+      "seconds": 4,
+      "title": "Install Docker on Linux",
+      "caption": "Companion Hub runs on Docker. Here is the whole install, at real speed."
+    },
+    {
+      "id": "docs",
+      "kind": "clip",
+      "chapter": "site",
+      "seconds": 21.7,
+      "src": {
+        "landscape": "assets/video/website.mp4",
+        "portrait": "assets/video/website-portrait.mp4"
+      },
+      "caption": "Open Install Docker on docs.ci.computer and copy the Docker Engine command."
+    },
+    {
+      "id": "install",
+      "kind": "clip",
+      "chapter": "terminal",
+      "seconds": 34.67,
+      "src": {
+        "landscape": "assets/video/engine-1.mp4",
+        "portrait": "assets/video/engine-1-portrait.mp4"
+      },
+      "caption": "Paste it and enter your password. Docker's script installs the engine and Compose."
+    },
+    {
+      "id": "group",
+      "kind": "clip",
+      "chapter": "terminal",
+      "seconds": 6.2,
+      "src": {
+        "landscape": "assets/video/engine-2.mp4",
+        "portrait": "assets/video/engine-2-portrait.mp4"
+      },
+      "caption": "Add yourself to the docker group, then log out.",
+      "transition": "cut"
+    },
+    {
+      "id": "relogin",
+      "kind": "clip",
+      "chapter": "terminal",
+      "seconds": 5.97,
+      "src": {
+        "landscape": "assets/video/engine-3.mp4",
+        "portrait": "assets/video/engine-3-portrait.mp4"
+      },
+      "caption": "Log back in and check the engine is running.",
+      "transition": "cut"
+    },
+    {
+      "id": "compose",
+      "kind": "clip",
+      "chapter": "terminal",
+      "seconds": 7.2,
+      "src": {
+        "landscape": "assets/video/engine-4.mp4",
+        "portrait": "assets/video/engine-4-portrait.mp4"
+      },
+      "caption": "Check the Compose plugin. Docker is ready for Companion Hub.",
+      "transition": "cut"
+    },
+    {
+      "id": "close",
+      "kind": "outro",
+      "seconds": 4,
+      "cta": "Next: install Companion Hub",
+      "tagline": "UnCloud your life.",
+      "url": "ci.computer/download",
+      "caption": "ci.computer/download",
+      "transition": "hold"
+    }
+  ]
+}
