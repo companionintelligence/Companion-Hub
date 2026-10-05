@@ -55,7 +55,7 @@ vi.mock('@/modules/env/env.utils', () => {
 
 import fs from 'node:fs';
 import dotenv from 'dotenv';
-import { generateSystemEnvFile, resolveRabbitmqPassword, writeResolvedEnvFile, ensureSettingsJsonReady } from '../env-helpers';
+import { generateSystemEnvFile, resolveHubDomain, resolveRabbitmqPassword, writeResolvedEnvFile, ensureSettingsJsonReady } from '../env-helpers';
 
 const mockedFs = vi.mocked(fs);
 const savedEnv: Record<string, string | undefined> = {};
@@ -781,5 +781,101 @@ describe('env-helpers — legacy env aliases (RUNTIPI_* / TIPI_*)', () => {
     });
     const envMap = await generateSystemEnvFile();
     expect(envMap.get('CI_HUB_APP_DATA_PATH')).toBe('/home/user/persisted-legacy');
+  });
+});
+
+describe('resolveHubDomain', () => {
+  it('takes the zone Portal assigned over everything else', () => {
+    expect(resolveHubDomain({ portalDomain: 'ci0.pw', paired: true, dataEnvDomain: 'ci3.pw', env: 'companionintelligence.com' })).toBe('ci0.pw');
+  });
+
+  it('on a paired Hub without one, takes the data env file over the environment', () => {
+    expect(resolveHubDomain({ portalDomain: null, paired: true, dataEnvDomain: 'ci0.pw', env: 'companionintelligence.com' })).toBe('ci0.pw');
+  });
+
+  it('on a Hub that never paired, keeps the environment first', () => {
+    expect(resolveHubDomain({ portalDomain: undefined, paired: false, dataEnvDomain: 'ci0.pw', env: 'companionintelligence.com' })).toBe(
+      'companionintelligence.com',
+    );
+  });
+
+  it('ignores blank values', () => {
+    expect(resolveHubDomain({ portalDomain: '  ', paired: true, dataEnvDomain: ' ', env: 'companionintelligence.com' })).toBe(
+      'companionintelligence.com',
+    );
+  });
+});
+
+describe('generateSystemEnvFile — DOMAIN keeps the zone Portal assigned (CI-Hub#1894)', () => {
+  // A container's environment is the data env file as it was when the container was created, which
+  // is before pairing. Env-first brought that DOMAIN back on every restart and broke sign-in on
+  // every app, because the Hub's own address is built from it.
+  let envSnapshot: NodeJS.ProcessEnv;
+
+  const setSources = (settingsJson: Record<string, unknown>, dataEnv: string) => {
+    (mockedFs.promises.readFile as any).mockImplementation(async (filePath: string) => {
+      const p = String(filePath);
+      if (p.includes('settings.json')) return JSON.stringify(settingsJson);
+      if (p.includes('.env')) return dataEnv;
+      if (p.includes('seed')) return 'a'.repeat(64);
+      throw new Error(`Unexpected readFile: ${p}`);
+    });
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    envSnapshot = { ...process.env };
+
+    process.env.ROOT_FOLDER_HOST = '/home/user/ci-os-hub';
+    process.env.CI_CLOUD_URL = 'https://cloud.example.com';
+
+    mockedFs.existsSync.mockReturnValue(true);
+    (mockedFs.promises.writeFile as any).mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    for (const key of Object.keys(process.env)) {
+      if (!(key in envSnapshot)) delete process.env[key];
+    }
+    Object.assign(process.env, envSnapshot);
+  });
+
+  it('MUST take portalDomain over the DOMAIN the container inherited, in the env map and in process.env', async () => {
+    process.env.DOMAIN = 'companionintelligence.com';
+    setSources({ portalDomain: 'ci0.pw', ciHubApiKey: 'device-key' }, 'DOMAIN=companionintelligence.com\n');
+
+    const envMap = await generateSystemEnvFile();
+
+    expect(envMap.get('DOMAIN')).toBe('ci0.pw');
+    expect(process.env.DOMAIN).toBe('ci0.pw');
+  });
+
+  it('MUST take the data env file over the inherited DOMAIN on a Hub paired before portalDomain existed', async () => {
+    process.env.DOMAIN = 'companionintelligence.com';
+    setSources({ ciHubApiKey: 'device-key' }, 'DOMAIN=ci0.pw\n');
+
+    const envMap = await generateSystemEnvFile();
+
+    expect(envMap.get('DOMAIN')).toBe('ci0.pw');
+    expect(process.env.DOMAIN).toBe('ci0.pw');
+  });
+
+  it('keeps the environment first on a Hub that never paired', async () => {
+    process.env.DOMAIN = 'companionintelligence.com';
+    setSources({}, 'DOMAIN=ci0.pw\n');
+
+    const envMap = await generateSystemEnvFile();
+
+    expect(envMap.get('DOMAIN')).toBe('companionintelligence.com');
+  });
+
+  it('falls back to the default when no source has a value', async () => {
+    delete process.env.DOMAIN;
+    setSources({}, '');
+
+    const envMap = await generateSystemEnvFile();
+
+    expect(envMap.get('DOMAIN')).toBe('companionintelligence.com');
+    expect(process.env.DOMAIN).toBe('companionintelligence.com');
   });
 });

@@ -212,6 +212,31 @@ export function resolveAllowErrorMonitoring(sources: { setting: boolean | undefi
 }
 
 /**
+ * The zone this Hub's own address is built on (`hub-<slug>.<DOMAIN>`), and the ONLY place its
+ * precedence is decided. `generateSystemEnvFile` and `ConfigurationService.configure()` both call
+ * it, the same arrangement as {@link resolveAllowErrorMonitoring}.
+ *
+ * Portal tells the Hub its zone when it pairs, and `setDomain` keeps it in settings.json as
+ * `portalDomain`. That wins over `DOMAIN` from the environment, which is NOT the env-first order
+ * `resolve()` gives every other key. A container's environment is the data env file as it was when
+ * the container was created, which is before pairing, so env-first brought the pre-pairing value
+ * back on every restart. Every app's sign-in then went to `hub-<slug>.companionintelligence.com`,
+ * a name Portal never published, because the Hub was on `ci0.pw` (CI-Hub#1894).
+ *
+ * A Hub paired before `portalDomain` existed has the zone only in the data env file, which
+ * `setDomain` has always written. So on a paired Hub that file's `DOMAIN` comes next, and only
+ * then the environment.
+ */
+export function resolveHubDomain(sources: {
+  portalDomain: string | null | undefined;
+  paired: boolean;
+  dataEnvDomain: string | undefined;
+  env: string;
+}): string {
+  return sources.portalDomain?.trim() || (sources.paired ? sources.dataEnvDomain?.trim() : '') || sources.env;
+}
+
+/**
  * Resolves the RabbitMQ password without silently using the development default in
  * production. Production requires an explicit value; an explicit `admin` remains
  * compatible but returns a migration warning.
@@ -687,7 +712,16 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   // Keep inherited TZ consistent because ConfigurationService lets process.env win.
   process.env.TZ = timeZone;
   envMap.set('DNS_IP', resolve('DNS_IP', { envMap, settingsVal: settingsData.dnsIp, fallback: DEFAULT_DNS_IP }));
-  envMap.set('DOMAIN', resolve('DOMAIN', { envMap, fallback: DEFAULT_PUBLIC_DOMAIN }));
+  const domain = resolveHubDomain({
+    portalDomain: settingsData.portalDomain,
+    paired: Boolean(settingsData.ciHubApiKey?.trim()),
+    dataEnvDomain: envMap.get('DOMAIN'),
+    env: resolve('DOMAIN', { envMap, fallback: DEFAULT_PUBLIC_DOMAIN }),
+  });
+  envMap.set('DOMAIN', domain);
+  // As for TZ above: `applyEnvMapToProcess` leaves an inherited value alone and ConfigurationService
+  // lets process.env win, so without this the container's pre-pairing DOMAIN would come back.
+  process.env.DOMAIN = domain;
   envMap.set(
     'LOCAL_DOMAIN',
     resolve('LOCAL_DOMAIN', {

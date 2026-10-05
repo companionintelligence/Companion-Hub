@@ -4,7 +4,7 @@ import { type FileOnlySettings, type PersistedSettings, type UserSettingsBody, p
 import { clampContextCap } from '@/common/helpers/inference-context-cap';
 import { clampOllamaSlots } from '@/common/helpers/inference-ollama-slots';
 import { APP_DATA_DIR, APP_DIR, ARCHITECTURES, DATA_DIR, DEFAULT_LOCAL_DOMAIN } from '@/common/constants';
-import { ensureSettingsJsonReady, resolveAllowErrorMonitoring, writeSettingsJsonFile } from '@/common/helpers/env-helpers';
+import { ensureSettingsJsonReady, resolveAllowErrorMonitoring, resolveHubDomain, writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import {
   DEFAULT_POOL_HEALTH_POLL_SECONDS,
   DEFAULT_POOL_LOCAL_AFFINITY,
@@ -118,8 +118,9 @@ type PersistedSettingsValues = {
    */
   ciHubMoveKey: string | null;
   ciHubOrganizationId: string | null;
-  /** See `fileOnlySettingsSchema` in app.dto.ts for these four. */
+  /** See `fileOnlySettingsSchema` in app.dto.ts for these five. */
   hubLocalKey: string | null;
+  portalDomain: string | null;
   portalPushKeyPrefix: string | null;
   portalPushKeyPending: string | null;
   portalPushKeyDeliveredAt: string | null;
@@ -164,6 +165,7 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   ciHubMoveKey: null,
   ciHubOrganizationId: null,
   hubLocalKey: null,
+  portalDomain: null,
   portalPushKeyPrefix: null,
   portalPushKeyPending: null,
   portalPushKeyDeliveredAt: null,
@@ -272,6 +274,7 @@ export class ConfigurationService {
       ciHubMoveKey: settings.ciHubMoveKey || null,
       ciHubOrganizationId: settings.ciHubOrganizationId || null,
       hubLocalKey: settings.hubLocalKey || null,
+      portalDomain: settings.portalDomain || null,
       portalPushKeyPrefix: settings.portalPushKeyPrefix || null,
       portalPushKeyPending: settings.portalPushKeyPending || null,
       portalPushKeyDeliveredAt: settings.portalPushKeyDeliveredAt || null,
@@ -331,6 +334,14 @@ export class ConfigurationService {
     // Load settings.json manually to get credentials, bypassing .env
     const settingsValues = this.readPersistedSettings();
 
+    // The zone Portal assigned at pairing, over the DOMAIN the container inherited. See resolveHubDomain.
+    const domain = resolveHubDomain({
+      portalDomain: settingsValues.portalDomain,
+      paired: Boolean(settingsValues.ciHubApiKey),
+      dataEnvDomain: envMap.get('DOMAIN'),
+      env: env.data.DOMAIN,
+    });
+
     return {
       database: {
         host: env.data.POSTGRES_HOST,
@@ -368,7 +379,7 @@ export class ConfigurationService {
         disablePasswordReset: env.data.DISABLE_PASSWORD_RESET,
         guestDashboard: env.data.GUEST_DASHBOARD,
         timeZone: env.data.TZ,
-        domain: env.data.DOMAIN,
+        domain,
         localDomain: env.data.LOCAL_DOMAIN,
         port: env.data.NGINX_PORT || 80,
         sslPort: env.data.NGINX_PORT_SSL || 443,
@@ -422,7 +433,7 @@ export class ConfigurationService {
           insecureCookie: env.data.EXPERIMENTAL_INSECURE_COOKIE,
         },
       },
-      domain: env.data.DOMAIN,
+      domain,
       localDomain: env.data.LOCAL_DOMAIN,
       ciCloudUrl: env.data.CI_CLOUD_URL,
       ciHubOrganizationId: settingsValues.ciHubOrganizationId,
@@ -825,10 +836,17 @@ export class ConfigurationService {
   }
 
   /**
-   * Update the DOMAIN value in the data .env file and in-memory config.
-   * Called after registration when the real domain is known.
+   * Record the zone Portal assigned this Hub at pairing: in memory, in the data .env file, and in
+   * settings.json as `portalDomain`. Only the last survives a restart. The container's environment
+   * keeps the DOMAIN it was created with, before pairing, and boot lets `portalDomain` win over it
+   * (`resolveHubDomain`, CI-Hub#1894).
    */
   public async setDomain(domain: string) {
+    // In memory first, so this process uses the new zone even if a write below fails.
+    this.config.domain = domain;
+    this.config.userSettings.domain = domain;
+    process.env.DOMAIN = domain;
+
     try {
       let envFile = '';
       try {
@@ -842,13 +860,15 @@ export class ConfigurationService {
       const newContent = this.envUtils.envMapToString(envMap);
       await fs.promises.writeFile(this.envPath, newContent, 'utf8');
 
-      // Update in-memory config
-      this.config.domain = domain;
-      this.config.userSettings.domain = domain;
-
       this.logger.info(`Updated DOMAIN in data .env to: ${domain}`);
     } catch (error) {
       this.logger.error('Failed to update DOMAIN in .env', error);
+    }
+
+    try {
+      await this.mergeSettingsToDisk({ portalDomain: domain });
+    } catch (error) {
+      this.logger.error(`Failed to save portalDomain to settings.json: ${describeSettingsError(error)}`);
     }
   }
 }
