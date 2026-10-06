@@ -58,6 +58,7 @@ http:
           - "X-CI-Hub-User-Issuer"
           - "X-CI-Hub-User-Id"
           - "X-CI-Hub-User-Id-Signature"
+          - "X-CI-Hub-User-Assertion"
 
     # First on every tunnel route (TraefikLabelsBuilder.addCloudflareLabels).
     # Traefik keeps a trusted peer's forwarded headers and fills in only those

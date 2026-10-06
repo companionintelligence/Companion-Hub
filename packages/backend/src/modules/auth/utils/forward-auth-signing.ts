@@ -29,6 +29,14 @@ import crypto from 'node:crypto';
  * three original headers are unchanged, so a consumer that only knows them verifies exactly what
  * it always did. See CI-Engineering architecture/identity/hub-memory-account-link.md.
  *
+ * Neither message names the app it was signed for, so a consumer can only tell its own headers
+ * from another app's by the key. An app that has a key of its own therefore also gets a bound
+ * assertion, `X-CI-Hub-User-Assertion: 2.<nonce>.<signature>`, signed with that key over
+ * `ci-hub-forward-auth/2\n${audience}\n${nonce}\n${timestampMs}\n${username}\n${issuer}\n${userId}`.
+ * The audience is the app URN the forwarded host resolved to, the nonce is fresh per call, and
+ * the stable id fields are empty when there is none. A consumer that knows its own URN can then
+ * refuse an assertion meant for any other app, and spend a nonce where one use is all it allows.
+ *
  * This contract is duplicated (by design, kept in lock-step) in CI-Server at
  * `backend/apps/api/src/common/crypto/hub-forward-auth.ts`.
  */
@@ -39,6 +47,10 @@ export const FORWARD_AUTH_SIGNATURE_HEADER = 'X-CI-Hub-User-Signature';
 export const FORWARD_AUTH_USER_ISSUER_HEADER = 'X-CI-Hub-User-Issuer';
 export const FORWARD_AUTH_USER_ID_HEADER = 'X-CI-Hub-User-Id';
 export const FORWARD_AUTH_USER_ID_SIGNATURE_HEADER = 'X-CI-Hub-User-Id-Signature';
+export const FORWARD_AUTH_ASSERTION_HEADER = 'X-CI-Hub-User-Assertion';
+
+/** The bound assertion's format version, the first field of its header. */
+export const FORWARD_AUTH_ASSERTION_VERSION = '2';
 
 /** Prefix of every Hub user-directory issuer. Never a valid OIDC issuer, which is always an https URL. */
 export const HUB_ISSUER_PREFIX = 'urn:ci-hub:';
@@ -58,6 +70,25 @@ export interface SignedForwardAuthHeaders {
   [FORWARD_AUTH_USER_ISSUER_HEADER]?: string;
   [FORWARD_AUTH_USER_ID_HEADER]?: string;
   [FORWARD_AUTH_USER_ID_SIGNATURE_HEADER]?: string;
+}
+
+/** Everything forward auth may answer with. Only the username is always present. */
+export interface ForwardAuthIdentityHeaders {
+  [FORWARD_AUTH_USER_HEADER]: string;
+  [FORWARD_AUTH_TIMESTAMP_HEADER]?: string;
+  [FORWARD_AUTH_SIGNATURE_HEADER]?: string;
+  [FORWARD_AUTH_USER_ISSUER_HEADER]?: string;
+  [FORWARD_AUTH_USER_ID_HEADER]?: string;
+  [FORWARD_AUTH_USER_ID_SIGNATURE_HEADER]?: string;
+  [FORWARD_AUTH_ASSERTION_HEADER]?: string;
+}
+
+/** The keys forward auth may sign one app's headers with. */
+export interface ForwardAuthSigningKeys {
+  /** Signs the username triple and stable id; null when the app has no key, and then nothing is signed. */
+  secret: string | null;
+  /** Signs the bound assertion naming `audience`; absent when the app has no key of its own. */
+  assertion?: { secret: string; audience: string } | null;
 }
 
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
@@ -116,6 +147,81 @@ export function buildSignedForwardAuthHeaders(
     headers[FORWARD_AUTH_USER_ISSUER_HEADER] = stableId.issuer;
     headers[FORWARD_AUTH_USER_ID_HEADER] = stableId.userId;
     headers[FORWARD_AUTH_USER_ID_SIGNATURE_HEADER] = signForwardAuthUserId(secret, stableId.issuer, stableId.userId, username, now);
+  }
+
+  return headers;
+}
+
+/** Build the canonical message the bound assertion is signed over. Keep in lock-step with the consumer. */
+export function buildForwardAuthAssertionMessage(
+  audience: string,
+  nonce: string,
+  timestampMs: number,
+  username: string,
+  issuer: string | null,
+  userId: string | null,
+): string {
+  return `ci-hub-forward-auth/${FORWARD_AUTH_ASSERTION_VERSION}\n${audience}\n${nonce}\n${timestampMs}\n${username}\n${issuer ?? ''}\n${userId ?? ''}`;
+}
+
+/** Compute the lowercase-hex HMAC-SHA256 signature of a bound assertion. */
+export function signForwardAuthAssertion(
+  secret: string,
+  audience: string,
+  nonce: string,
+  timestampMs: number,
+  username: string,
+  issuer: string | null = null,
+  userId: string | null = null,
+): string {
+  return crypto
+    .createHmac('sha256', secret)
+    .update(buildForwardAuthAssertionMessage(audience, nonce, timestampMs, username, issuer, userId))
+    .digest('hex');
+}
+
+/** A fresh assertion nonce: 16 random bytes, base64url, so it never holds the header's `.` separator. */
+export function newForwardAuthNonce(): string {
+  return crypto.randomBytes(16).toString('base64url');
+}
+
+/**
+ * The forward-auth headers for a person, signed as far as the target app's keys allow.
+ *
+ * - With `keys.secret`: the username triple and stable id, signed with it, exactly as
+ *   {@link buildSignedForwardAuthHeaders} has always produced them.
+ * - With `keys.assertion`: the bound assertion beside them, under the app's own key.
+ * - With neither: the username alone. An app that holds no key has nothing to check a signature
+ *   with, so none is sent.
+ */
+export function buildForwardAuthIdentityHeaders(
+  keys: ForwardAuthSigningKeys,
+  username: string,
+  now: number = Date.now(),
+  stableId?: ForwardAuthStableId | null,
+  nonce: string = newForwardAuthNonce(),
+): ForwardAuthIdentityHeaders {
+  const headers: ForwardAuthIdentityHeaders = keys.secret
+    ? { ...buildSignedForwardAuthHeaders(keys.secret, username, now, stableId) }
+    : { [FORWARD_AUTH_USER_HEADER]: username };
+
+  if (keys.assertion?.secret && keys.assertion.audience) {
+    // The assertion is checked against these, so they ride along even when nothing else is signed.
+    headers[FORWARD_AUTH_TIMESTAMP_HEADER] = String(now);
+    if (stableId) {
+      headers[FORWARD_AUTH_USER_ISSUER_HEADER] = stableId.issuer;
+      headers[FORWARD_AUTH_USER_ID_HEADER] = stableId.userId;
+    }
+    const signature = signForwardAuthAssertion(
+      keys.assertion.secret,
+      keys.assertion.audience,
+      nonce,
+      now,
+      username,
+      stableId?.issuer ?? null,
+      stableId?.userId ?? null,
+    );
+    headers[FORWARD_AUTH_ASSERTION_HEADER] = `${FORWARD_AUTH_ASSERTION_VERSION}.${nonce}.${signature}`;
   }
 
   return headers;
