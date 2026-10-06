@@ -3,7 +3,7 @@
  *
  * Companion Memory's first account becomes its administrator. Memory reads the owner from its
  * environment (`auth.applianceOwner`) and, while it has no account, lets only that person create
- * one, whether they arrive through this Hub, a Companion account sign-in or the Memory app. The
+ * one, whether they arrive through this Hub, a Companion account sign-in, or the Memory app. The
  * owner is this Hub's owner: the operator who claimed it (`UserRepository.getFirstOperator`).
  *
  * The variables, and how Memory matches each one:

@@ -29,7 +29,19 @@ describe('AppHelpers: Companion Memory owner environment', () => {
   let appFilesManager: MockProxy<AppFilesManager>;
   let envUtils: MockProxy<EnvUtils>;
   let logger: MockProxy<LoggerService>;
+  let config: MockProxy<ConfigurationService>;
   let envMap: Map<string, string>;
+
+  const hubConfig = (overrides: Record<string, unknown> = {}) =>
+    fromPartial({
+      internalIp: '192.168.1.10',
+      envFilePath: '/data/.env',
+      rootFolderHost: '/opt/ci-hub',
+      domain: 'example.com',
+      ciHubApiKey: 'hub-api-key',
+      userSettings: { appDataPath: '/opt/ci-hub', domain: 'example.com' },
+      ...overrides,
+    });
 
   const users = { getFirstOperator: vi.fn() };
   const federated = { findByUserId: vi.fn() };
@@ -56,21 +68,12 @@ describe('AppHelpers: Companion Memory owner environment', () => {
     appFilesManager = moduleRef.get(AppFilesManager);
     envUtils = moduleRef.get(EnvUtils);
     logger = moduleRef.get(LoggerService);
-    const config = moduleRef.get<MockProxy<ConfigurationService>>(ConfigurationService);
+    config = moduleRef.get<MockProxy<ConfigurationService>>(ConfigurationService);
     const filesystem = moduleRef.get<MockProxy<FilesystemService>>(FilesystemService);
     const registrationService = moduleRef.get<MockProxy<RegistrationService>>(RegistrationService);
     const apiKeys = moduleRef.get<MockProxy<ApiKeyService>>(ApiKeyService);
 
-    config.getConfig.mockReturnValue(
-      fromPartial({
-        internalIp: '192.168.1.10',
-        envFilePath: '/data/.env',
-        rootFolderHost: '/opt/ci-hub',
-        domain: 'example.com',
-        ciHubApiKey: 'hub-api-key',
-        userSettings: { appDataPath: '/opt/ci-hub', domain: 'example.com' },
-      }),
-    );
+    config.getConfig.mockReturnValue(hubConfig());
     envMap = new Map<string, string>();
     envUtils.envStringToMap.mockImplementation(() => envMap);
     envUtils.envMapToString.mockReturnValue('');
@@ -121,6 +124,40 @@ describe('AppHelpers: Companion Memory owner environment', () => {
     await run(memoryUrn);
 
     expect(ownerKeys()).toEqual([]);
+  });
+
+  it('names nobody when Portal has revoked the operator who claimed the Hub', async () => {
+    users.getFirstOperator.mockResolvedValue({ id: 1, username: 'former@example.com', accessStatus: 'revoked' });
+
+    await run(memoryUrn);
+
+    expect(ownerKeys()).toEqual([]);
+    expect(identities.stableIdFor).not.toHaveBeenCalled();
+  });
+
+  it('names the Companion account from the Portal Memory trusts when the owner has several', async () => {
+    config.getConfig.mockReturnValue(hubConfig({ ciCloudUrl: 'https://hub.ci.computer/' }));
+    federated.findByUserId.mockResolvedValue([
+      { issuer: 'https://dev.hub.ci.computer', subject: 'dev-owner' },
+      { issuer: 'https://hub.ci.computer', subject: 'portal-owner' },
+    ]);
+
+    await run(memoryUrn);
+
+    expect(envMap.get('PORTAL_OIDC_ISSUER')).toBe('https://hub.ci.computer');
+    expect(envMap.get('CI_OWNER_PORTAL_ISSUER')).toBe('https://hub.ci.computer');
+    expect(envMap.get('CI_OWNER_PORTAL_SUBJECT')).toBe('portal-owner');
+  });
+
+  it('still names the owner when only their Companion account cannot be read', async () => {
+    federated.findByUserId.mockRejectedValue(new Error('database unavailable'));
+
+    await run(memoryUrn);
+
+    expect(envMap.get('CI_OWNER_EMAIL')).toBe('owner@example.com');
+    expect(envMap.get('CI_OWNER_HUB_SUBJECT')).toBe(OWNER_PUBLIC_ID);
+    expect(envMap.has('CI_OWNER_PORTAL_SUBJECT')).toBe(false);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/Companion account for Companion Memory/));
   });
 
   it('still writes the environment when the owner cannot be read, without one', async () => {

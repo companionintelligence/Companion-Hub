@@ -367,8 +367,9 @@ export class AppHelpers {
   /**
    * This Hub's owner, as Companion Memory needs them to know who may create its first account
    * (`memory-owner.ts`): the operator who claimed the Hub, their stable id, and their Companion
-   * account when they have signed in with one. Null when there is no operator yet or it cannot be
-   * read, which leaves Memory as it was.
+   * account when they have signed in with one. Null when there is no operator yet, when Portal has
+   * revoked the one who claimed it, or when it cannot be read, which leaves Memory as it was. A
+   * Companion account that cannot be read is left out on its own.
    *
    * Resolved lazily, like `hubTailnetOrigin`: the user and auth modules depend on this one.
    */
@@ -389,11 +390,22 @@ export class AppHelpers {
 
       const operator = await users.getFirstOperator();
 
-      if (!operator) {
+      // A revoked operator can no longer sign in to this Hub. Naming them would let a person Portal
+      // removed claim Memory and lock out the operators who remain.
+      if (!operator || operator.accessStatus === 'revoked') {
         return null;
       }
 
-      const [stableId, links] = await Promise.all([identities.stableIdFor(operator.id), federated.findByUserId(operator.id)]);
+      const [stableId, links] = await Promise.all([
+        identities.stableIdFor(operator.id),
+        federated.findByUserId(operator.id).catch((err: unknown) => {
+          this.logger.warn(
+            `[AppHelpers] could not read the Hub owner's Companion account for Companion Memory: ${err instanceof Error ? err.message : String(err)}`,
+          );
+
+          return [];
+        }),
+      ]);
 
       return {
         username: operator.username,
