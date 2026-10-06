@@ -259,6 +259,26 @@ describe('ForwardAuthSecretResolver', () => {
     expect((await resolveVia(host)).secret).toBe('rotated-secret');
   });
 
+  it('does not cache keys read before an invalidation that landed while the read was in flight', async () => {
+    const host = 'importer-ci-marketplace-dev-org.ci.lan';
+    await resolveVia(host); // primes the host map
+    resolver.invalidateApp('importer:ci-marketplace' as never);
+
+    // The read starts against the old app.env; env generation writes the new one and invalidates
+    // before the read returns.
+    let finishRead: (value: { path: string; content: string }) => void = () => undefined;
+    appFilesManager.getAppEnv.mockReturnValueOnce(new Promise((resolve) => (finishRead = resolve)));
+    const inFlight = resolveVia(host);
+    await vi.advanceTimersByTimeAsync(0);
+    appFilesManager.getAppEnv.mockResolvedValue({ path: '/x', content: 'CI_HUB_FORWARD_AUTH_SECRET=new-secret\n' });
+    resolver.invalidateApp('importer:ci-marketplace' as never);
+    finishRead({ path: '/x', content: 'CI_HUB_FORWARD_AUTH_SECRET=old-secret\n' });
+
+    expect((await inFlight).secret).toBe('old-secret');
+    // The next request reads the new file instead of the old keys pinned for a full TTL.
+    expect((await resolveVia(host)).secret).toBe('new-secret');
+  });
+
   it('single-flights the host-map rebuild: a burst past the TTL triggers one repo read, not one per request', async () => {
     await resolveVia('importer-ci-marketplace-dev-org.ci.lan'); // primes the map (1 read)
     vi.advanceTimersByTime(31_000); // TTL lapses

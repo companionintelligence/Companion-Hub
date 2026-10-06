@@ -72,6 +72,8 @@ export class ForwardAuthSecretResolver {
   /** Shared rebuild prevents duplicate repository reads after cache expiry. */
   private hostMapRebuild: Promise<void> | null = null;
   private secretCache = new Map<string, CacheEntry>();
+  /** Bumped by {@link invalidateApp}, so a lookup that read app.env before the bump does not cache what it read. */
+  private invalidations = 0;
   /** Prevents per-request warnings until a map rebuild rechecks secretless apps. */
   private warnedUrns = new Set<string>();
 
@@ -248,6 +250,7 @@ export class ForwardAuthSecretResolver {
    * can cause 401 responses until the cache expires.
    */
   invalidateApp(appUrn: AppUrn): void {
+    this.invalidations += 1;
     for (const [host, entry] of this.secretCache) {
       if (entry.value.appUrn === appUrn) {
         this.secretCache.delete(host);
@@ -256,7 +259,7 @@ export class ForwardAuthSecretResolver {
   }
 
   /**
-   * Resolves the signing keys for a forward-auth subrequest. A missing host, an unmatched host
+   * Resolves the signing keys for a forward-auth subrequest. A missing host, an unmatched host,
    * and a failed read all resolve to no keys: the username goes out unsigned.
    */
   async resolveForHost(forwardedHost: string | string[] | undefined): Promise<ResolvedForwardAuthSecret> {
@@ -274,6 +277,7 @@ export class ForwardAuthSecretResolver {
     // Unmatched hosts and read errors remain uncached so transient state recovers promptly.
     let resolved: ResolvedForwardAuthSecret;
     let ttlMs = CACHE_TTL_MS;
+    const invalidationsAtStart = this.invalidations;
     try {
       await this.ensureHostMapFresh();
       const appUrn = this.hostToUrn.get(host);
@@ -295,6 +299,11 @@ export class ForwardAuthSecretResolver {
       // Do not cache read failures so the next request can recover.
       this.logger.warn(`[ForwardAuthSecretResolver] resolution failed for ${host}: ${err instanceof Error ? err.message : String(err)}`);
       return this.unsigned();
+    }
+
+    // An app.env written (and invalidated) while this lookup awaited may already hold newer keys.
+    if (invalidationsAtStart !== this.invalidations) {
+      return resolved;
     }
 
     this.secretCache.set(host, { value: resolved, expiresAt: Date.now() + ttlMs });
