@@ -11,8 +11,8 @@ import { ForwardAuthSecretResolver } from '../forward-auth-secret.resolver';
 
 /**
  * Per-app forward-auth signing resolution (CI-Engineering#74): /traefik must sign with the
- * secret the TARGET app's own app.env holds, resolved from X-Forwarded-Host, falling back
- * to the Hub-global secret for unknown hosts or unprovisioned apps.
+ * keys the TARGET app's own app.env holds, resolved from X-Forwarded-Host. An unknown host or
+ * an app with no key gets no keys at all: the Hub-wide secret never stands in.
  */
 describe('ForwardAuthSecretResolver', () => {
   let resolver: ForwardAuthSecretResolver;
@@ -65,7 +65,13 @@ describe('ForwardAuthSecretResolver', () => {
     // this is the host Traefik matches and forwards (#75 caveat: it identifies the app,
     // never the caller's locality).
     const result = await resolveVia('importer-ci-marketplace-dev-org.ci.lan');
-    expect(result).toEqual({ secret: 'per-app-secret', appUrn: 'importer:ci-marketplace', source: 'app-env' });
+    // The app's own key signs the triple and its bound assertion, which names the app's URN.
+    expect(result).toEqual({
+      secret: 'per-app-secret',
+      assertion: { secret: 'per-app-secret', audience: 'importer:ci-marketplace' },
+      appUrn: 'importer:ci-marketplace',
+      source: 'app-env',
+    });
   });
 
   it('matches case-insensitively and strips a port', async () => {
@@ -90,38 +96,101 @@ describe('ForwardAuthSecretResolver', () => {
     expect(result.source).toBe('app-env');
   });
 
-  it('falls back to the global secret for an unknown host and for a missing host', async () => {
-    expect(await resolveVia('unknown.example.com')).toEqual({ secret: 'global-secret', source: 'global' });
-    expect(await resolver.resolveForHost(undefined)).toEqual({ secret: 'global-secret', source: 'global' });
+  it('signs nothing for an unknown host or a missing host', async () => {
+    expect(await resolveVia('unknown.example.com')).toEqual({ secret: null, source: 'none' });
+    expect(await resolver.resolveForHost(undefined)).toEqual({ secret: null, source: 'none' });
   });
 
-  it('falls back to the global secret (warning once, not per request) for a matched app with no provisioned secret', async () => {
+  it('signs nothing for a matched app with no key, and never with the Hub-wide secret', async () => {
     appFilesManager.getAppEnv.mockResolvedValue({ path: '/x', content: '' });
     const host = 'importer-ci-marketplace-dev-org.ci.lan';
 
-    const first = await resolveVia(host);
-    expect(first).toEqual({ secret: 'global-secret', appUrn: 'importer:ci-marketplace', source: 'global' });
-    expect(logger.warn).toHaveBeenCalledTimes(1);
-
-    // Second resolution (cache expired so the lookup re-runs) must not warn again.
-    vi.advanceTimersByTime(31_000);
+    expect(await resolveVia(host)).toEqual({ secret: null, appUrn: 'importer:ci-marketplace', source: 'none' });
+    // Ordinary for a third-party app, so not a warning, and noted once per rebuild rather than per request.
+    expect(logger.warn).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(2_500);
     await resolveVia(host);
-    // One rebuild clears the warned set, so at most one additional warn per rebuild —
-    // never one per request. (Same tick ⇒ same rebuild ⇒ deduped.)
-    const warns = logger.warn.mock.calls.filter(([msg]) => String(msg).includes('no forward-auth secret'));
-    expect(warns.length).toBeLessThanOrEqual(2);
+    const notes = logger.debug.mock.calls.filter(([msg]) => String(msg).includes('no forward-auth key'));
+    expect(notes).toHaveLength(1);
   });
 
-  it('does not cache the unmatched-host fallback, so a newly installed app resolves at the next map rebuild', async () => {
+  it("does not sign another app with the Hub-wide secret even when that app's env holds it", async () => {
+    appFilesManager.getAppEnv.mockResolvedValue({ path: '/x', content: 'CI_HUB_FORWARD_AUTH_SECRET=global-secret\n' });
+
+    expect(await resolveVia('importer-ci-marketplace-dev-org.ci.lan')).toEqual({
+      secret: null,
+      appUrn: 'importer:ci-marketplace',
+      source: 'none',
+    });
+  });
+
+  describe('Companion Memory', () => {
+    const MEMORY_HOST = 'ci-memory-ci-marketplace-dev-org.ci.lan';
+
+    beforeEach(() => {
+      appsRepository.getApps.mockResolvedValue([appRow({ appName: 'ci-memory' })]);
+    });
+
+    it('signs the triple with the Hub-wide secret it holds, and the bound assertion with its own key', async () => {
+      appFilesManager.getAppEnv.mockResolvedValue({
+        path: '/x',
+        content:
+          'CI_HUB_FORWARD_AUTH_SECRET=global-secret\nCI_HUB_FORWARD_AUTH_IDENTITY_SECRET=memory-own-secret\nCI_APP_URN=ci-memory:ci-marketplace\n',
+      });
+
+      expect(await resolveVia(MEMORY_HOST)).toEqual({
+        secret: 'global-secret',
+        assertion: { secret: 'memory-own-secret', audience: 'ci-memory:ci-marketplace' },
+        appUrn: 'ci-memory:ci-marketplace',
+        source: 'app-env',
+      });
+    });
+
+    it('signs the assertion with the identity key whenever the env has one, whatever the triple is signed with', async () => {
+      appFilesManager.getAppEnv.mockResolvedValue({
+        path: '/x',
+        content: 'CI_HUB_FORWARD_AUTH_SECRET=some-other-secret\nCI_HUB_FORWARD_AUTH_IDENTITY_SECRET=memory-own-secret\n',
+      });
+
+      expect(await resolveVia(MEMORY_HOST)).toMatchObject({
+        secret: 'some-other-secret',
+        assertion: { secret: 'memory-own-secret', audience: 'ci-memory:ci-marketplace' },
+      });
+    });
+
+    it('keeps signing the triple alone until its env carries its own key (an install from before the key)', async () => {
+      appFilesManager.getAppEnv.mockResolvedValue({ path: '/x', content: 'CI_HUB_FORWARD_AUTH_SECRET=global-secret\n' });
+
+      expect(await resolveVia(MEMORY_HOST)).toEqual({
+        secret: 'global-secret',
+        appUrn: 'ci-memory:ci-marketplace',
+        source: 'app-env',
+      });
+    });
+
+    it('is told apart by install provenance: a ci-memory from another store gets no Hub-wide signature', async () => {
+      appsRepository.getApps.mockResolvedValue([appRow({ appName: 'ci-memory', appStoreSlug: 'other-store' })]);
+      appFilesManager.getAppEnv.mockResolvedValue({ path: '/x', content: 'CI_HUB_FORWARD_AUTH_SECRET=global-secret\n' });
+
+      expect(await resolveVia('ci-memory-other-store-dev-org.ci.lan')).toMatchObject({ secret: null, source: 'none' });
+    });
+  });
+
+  it('does not cache the unmatched-host answer, so a newly installed app resolves at the next map rebuild', async () => {
     const host = 'importer-ci-marketplace-dev-org.ci.lan';
     appsRepository.getApps.mockResolvedValue([]); // app not installed yet
-    expect(await resolveVia(host)).toEqual({ secret: 'global-secret', source: 'global' });
+    expect(await resolveVia(host)).toEqual({ secret: null, source: 'none' });
 
     // The app lands. Once the host map's TTL lapses the rebuild picks it up — the earlier
-    // global fallback must not be pinned for a second TTL on top of the map's.
+    // unsigned answer must not be pinned for a second TTL on top of the map's.
     appsRepository.getApps.mockResolvedValue([appRow()]);
     vi.advanceTimersByTime(31_000);
-    expect(await resolveVia(host)).toEqual({ secret: 'per-app-secret', appUrn: 'importer:ci-marketplace', source: 'app-env' });
+    expect(await resolveVia(host)).toEqual({
+      secret: 'per-app-secret',
+      assertion: { secret: 'per-app-secret', audience: 'importer:ci-marketplace' },
+      appUrn: 'importer:ci-marketplace',
+      source: 'app-env',
+    });
   });
 
   it('caches resolutions for the TTL window (no repo re-query per request)', async () => {
@@ -137,10 +206,10 @@ describe('ForwardAuthSecretResolver', () => {
     expect(appsRepository.getApps).toHaveBeenCalledTimes(2);
   });
 
-  it('never throws: a repository failure degrades to the global secret', async () => {
+  it('never throws: a repository failure degrades to signing nothing', async () => {
     appsRepository.getApps.mockRejectedValue(new Error('db down'));
     const result = await resolveVia('importer-ci-marketplace-dev-org.ci.lan');
-    expect(result).toEqual({ secret: 'global-secret', source: 'global' });
+    expect(result).toEqual({ secret: null, source: 'none' });
     expect(logger.warn).toHaveBeenCalled();
   });
 
@@ -150,25 +219,30 @@ describe('ForwardAuthSecretResolver', () => {
     expect(result.source).toBe('app-env');
   });
 
-  it('caches the matched-but-secretless fallback only BRIEFLY, so a landing secret is picked up in seconds not a full TTL', async () => {
+  it('caches the matched-but-keyless answer only BRIEFLY, so a landing secret is picked up in seconds not a full TTL', async () => {
     const host = 'importer-ci-marketplace-dev-org.ci.lan';
     appFilesManager.getAppEnv.mockResolvedValue({ path: '/x', content: '' }); // secret not written yet
-    expect((await resolveVia(host)).source).toBe('global');
+    expect((await resolveVia(host)).source).toBe('none');
     // A burst within the short window is served from cache (one env read, not one per request).
-    expect((await resolveVia(host)).source).toBe('global');
+    expect((await resolveVia(host)).source).toBe('none');
     expect(appFilesManager.getAppEnv).toHaveBeenCalledTimes(1);
 
     // The secret lands. Past the short secretless TTL (2s) — but well before the 30s definitive TTL —
-    // the next request re-reads and resolves it. It is NOT pinned to the global fallback for 30s.
+    // the next request re-reads and resolves it. It is NOT pinned to the keyless answer for 30s.
     appFilesManager.getAppEnv.mockResolvedValue({ path: '/x', content: 'CI_HUB_FORWARD_AUTH_SECRET=per-app-secret\n' });
     vi.advanceTimersByTime(2_500);
-    expect(await resolveVia(host)).toEqual({ secret: 'per-app-secret', appUrn: 'importer:ci-marketplace', source: 'app-env' });
+    expect(await resolveVia(host)).toEqual({
+      secret: 'per-app-secret',
+      assertion: { secret: 'per-app-secret', audience: 'importer:ci-marketplace' },
+      appUrn: 'importer:ci-marketplace',
+      source: 'app-env',
+    });
   });
 
-  it('does NOT cache a transient resolution error: a one-off app.env read failure does not pin the global secret', async () => {
+  it('does NOT cache a transient resolution error: a one-off app.env read failure does not pin the keyless answer', async () => {
     const host = 'importer-ci-marketplace-dev-org.ci.lan';
     appFilesManager.getAppEnv.mockRejectedValueOnce(new Error('disk hiccup'));
-    expect((await resolveVia(host)).source).toBe('global');
+    expect((await resolveVia(host)).source).toBe('none');
 
     // Next request (env readable again) resolves the per-app secret immediately, not 30s later.
     expect((await resolveVia(host)).source).toBe('app-env');

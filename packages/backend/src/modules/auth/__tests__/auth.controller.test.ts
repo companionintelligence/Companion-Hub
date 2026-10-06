@@ -21,7 +21,7 @@ import { HUB_FAVICON_LINK_TAG, HUB_FAVICON_PATH, HUB_FAVICON_PNG } from '../hub-
 import { exchangePortalAuthorizationCode, fetchPortalSessionEmail } from '../portal-sso';
 import { verifyPortalIdToken } from '../portal-token';
 import { SessionManager } from '../session.manager';
-import { signForwardAuthUser, signForwardAuthUserId } from '../utils/forward-auth-signing';
+import { signForwardAuthAssertion, signForwardAuthUser, signForwardAuthUserId } from '../utils/forward-auth-signing';
 
 vi.mock('../portal-sso', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../portal-sso')>();
@@ -249,14 +249,15 @@ describe('AuthController', () => {
       config.get.mockImplementation((key: string) => (key === 'ciCloudUrl' ? 'https://hub.ci.computer/' : (undefined as never)));
       vi.mocked(verifyPortalIdToken).mockResolvedValue({ sub: 'portal-sub', email: 'new-portal@example.com', name: 'Owner' });
       authService.resolvePairedOrgMembership.mockResolvedValue('member');
-      forwardAuthSecrets.resolveForHost.mockResolvedValue({
-        secret: 'per-app-secret',
-        appUrn: 'ci-memory:ci-marketplace' as never,
-        source: 'app-env',
-      });
       forwardAuthIdentities.personForPortalSubject.mockResolvedValue({
         username: 'owner@example.com',
         stableId: { issuer: STABLE_ISSUER, userId: PUBLIC_ID },
+      });
+      forwardAuthSecrets.resolveForHost.mockResolvedValue({
+        secret: 'per-app-secret',
+        assertion: { secret: 'memory-own-secret', audience: 'ci-memory:ci-marketplace' },
+        appUrn: 'ci-memory:ci-marketplace' as never,
+        source: 'app-env',
       });
       const req = {
         user: undefined,
@@ -276,6 +277,19 @@ describe('AuthController', () => {
       expect(headers['X-CI-Hub-User-Id']).toBe(PUBLIC_ID);
       expect(headers['X-CI-Hub-User-Id-Signature']).toBe(
         signForwardAuthUserId('per-app-secret', STABLE_ISSUER, PUBLIC_ID, 'owner@example.com', timestamp),
+      );
+      // A machine client reaches Memory with the same bound assertion its owner's browser gets.
+      const [, nonce, signature] = String(headers['X-CI-Hub-User-Assertion']).split('.');
+      expect(signature).toBe(
+        signForwardAuthAssertion(
+          'memory-own-secret',
+          'ci-memory:ci-marketplace',
+          nonce as string,
+          timestamp,
+          'owner@example.com',
+          STABLE_ISSUER,
+          PUBLIC_ID,
+        ),
       );
       expect(res.status).toHaveBeenCalledWith(200);
     });
@@ -686,10 +700,12 @@ describe('AuthController', () => {
       expect(res.status).toHaveBeenCalledWith(200);
     });
 
-    it('falls back to the global secret for a host that maps to no app', async () => {
+    it('sends the username unsigned for a host that maps to no app, or an app with no key', async () => {
       // A host that IS forwarded and simply matches no app in the map. Sending no host at all
       // exercised a different branch (it is now refused outright), so this case went uncovered.
-      forwardAuthSecrets.resolveForHost.mockResolvedValue({ secret: 'global-secret', source: 'global' });
+      // Nothing is signed: such an app has no key to check a signature with.
+      forwardAuthSecrets.resolveForHost.mockResolvedValue({ secret: null, source: 'none' });
+      forwardAuthIdentities.stableIdFor.mockResolvedValue({ issuer: STABLE_ISSUER, userId: PUBLIC_ID });
       const req = {
         user: { id: 1, username: 'testuser' },
         headers: { 'x-forwarded-host': 'dashboard.ci.lan' },
@@ -699,9 +715,41 @@ describe('AuthController', () => {
 
       await authController.traefik(req, res);
 
+      expect(Object.fromEntries(setHeader.mock.calls)).toEqual({ 'X-CI-Hub-User': 'testuser' });
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    it("adds Companion Memory's bound assertion, under its own key and naming its URN, beside the triple", async () => {
+      forwardAuthSecrets.resolveForHost.mockResolvedValue({
+        secret: 'hub-wide-secret',
+        assertion: { secret: 'memory-own-secret', audience: 'ci-memory:ci-marketplace' },
+        appUrn: 'ci-memory:ci-marketplace' as never,
+        source: 'app-env',
+      });
+      forwardAuthIdentities.stableIdFor.mockResolvedValue({ issuer: STABLE_ISSUER, userId: PUBLIC_ID });
+      const req = { user: { id: 7, username: 'owner@example.com' }, headers: { 'x-forwarded-host': 'ci-memory.ci.lan' } } as unknown as Request;
+      const setHeader = vi.fn();
+      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader } as unknown as Response;
+
+      await authController.traefik(req, res);
+
       const headers = Object.fromEntries(setHeader.mock.calls);
       const timestamp = Number(headers['X-CI-Hub-User-Timestamp']);
-      expect(headers['X-CI-Hub-User-Signature']).toBe(signForwardAuthUser('global-secret', 'testuser', timestamp));
+      // The triple an older Memory verifies, unchanged.
+      expect(headers['X-CI-Hub-User-Signature']).toBe(signForwardAuthUser('hub-wide-secret', 'owner@example.com', timestamp));
+      const [version, nonce, signature] = String(headers['X-CI-Hub-User-Assertion']).split('.');
+      expect(version).toBe('2');
+      expect(signature).toBe(
+        signForwardAuthAssertion(
+          'memory-own-secret',
+          'ci-memory:ci-marketplace',
+          nonce as string,
+          timestamp,
+          'owner@example.com',
+          STABLE_ISSUER,
+          PUBLIC_ID,
+        ),
+      );
       expect(res.status).toHaveBeenCalledWith(200);
     });
 
@@ -1363,7 +1411,7 @@ describe('AuthController', () => {
         headers: { 'x-forwarded-uri': '/home?xcihub_sso=1', 'x-forwarded-proto': 'https', 'x-forwarded-host': APP_HOST },
       } as unknown as Request;
       const res = consumeRes();
-      forwardAuthSecrets.resolveForHost.mockResolvedValue({ secret: 's', source: 'global' });
+      forwardAuthSecrets.resolveForHost.mockResolvedValue({ secret: 's', appUrn: 'importer:ci-marketplace' as never, source: 'app-env' });
 
       await authController.traefik(req, res);
 

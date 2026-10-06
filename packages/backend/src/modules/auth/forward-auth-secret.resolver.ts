@@ -8,8 +8,10 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { EnvUtils } from '@/modules/env/env.utils';
+import { isMemoryProviderApp } from '@/modules/memory-connect/memory-provider.predicate';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { normalizeForwardedHost } from './utils/forward-auth-host';
+import type { ForwardAuthSigningKeys } from './utils/forward-auth-signing';
 
 /**
  * Cache interval for host mappings and resolved secrets. Rotation restarts outlast this
@@ -18,11 +20,20 @@ import { normalizeForwardedHost } from './utils/forward-auth-host';
 const CACHE_TTL_MS = 30_000;
 
 /**
- * Briefly caches global fallbacks for matched apps without a per-app secret. This absorbs
- * request bursts from legacy apps while quickly detecting secrets added during installation
- * or rotation.
+ * Briefly caches matched apps without a forward-auth key. This absorbs request bursts from
+ * such apps while quickly detecting keys added during installation or rotation.
  */
 const SECRETLESS_CACHE_TTL_MS = 2_000;
+
+/** The app-env key forward auth signs the username triple and stable id with. */
+export const FORWARD_AUTH_SECRET_ENV = 'CI_HUB_FORWARD_AUTH_SECRET';
+
+/**
+ * Companion Memory's own forward-auth key. Memory's `CI_HUB_FORWARD_AUTH_SECRET` is the Hub-wide
+ * secret, because it also authenticates the connect exchange and the agent doorbell, so it cannot
+ * be Memory's own; this one signs Memory's bound assertion instead.
+ */
+export const FORWARD_AUTH_IDENTITY_SECRET_ENV = 'CI_HUB_FORWARD_AUTH_IDENTITY_SECRET';
 
 /**
  * Applies a short backoff after failed host-map rebuilds. This permits quick recovery
@@ -30,11 +41,11 @@ const SECRETLESS_CACHE_TTL_MS = 2_000;
  */
 const HOST_MAP_ERROR_BACKOFF_MS = 5_000;
 
-export interface ResolvedForwardAuthSecret {
-  secret: string;
+export interface ResolvedForwardAuthSecret extends ForwardAuthSigningKeys {
   /** Target app when the forwarded host matches an installed app. */
   appUrn?: AppUrn;
-  source: 'app-env' | 'global';
+  /** `none` when nothing may be signed: no app matched, or the app holds no key. */
+  source: 'app-env' | 'none';
 }
 
 interface CacheEntry {
@@ -43,10 +54,14 @@ interface CacheEntry {
 }
 
 /**
- * Resolves the secret used to sign forward-auth identity headers for the target app
+ * Resolves the keys used to sign forward-auth identity headers for the target app
  * identified by `X-Forwarded-Host` (CI-Engineering#74). Each app's `app.env` is
  * authoritative, and an app can affect only signatures destined for itself. The forwarded
  * host identifies only the target app, never caller locality (CI-Engineering#75).
+ *
+ * Nothing is ever signed with the Hub-wide secret for an app that does not hold it. A host
+ * that matches no app, or an app with no key, gets no signature at all, since such an app has
+ * no key to check one with.
  */
 @Injectable()
 export class ForwardAuthSecretResolver {
@@ -74,8 +89,38 @@ export class ForwardAuthSecretResolver {
     return normalizeForwardedHost(forwardedHost);
   }
 
-  private globalSecret(): ResolvedForwardAuthSecret {
-    return { secret: this.config.get('forwardAuthSecret') ?? '', source: 'global' };
+  private unsigned(appUrn?: AppUrn): ResolvedForwardAuthSecret {
+    return appUrn ? { secret: null, appUrn, source: 'none' } : { secret: null, source: 'none' };
+  }
+
+  /**
+   * The keys in one app's env.
+   *
+   * - The triple is signed with the app's `CI_HUB_FORWARD_AUTH_SECRET`. Only Companion Memory may
+   *   hold the Hub-wide value there (env generation puts it there for the connect exchange); any
+   *   other app found holding it signs nothing.
+   * - The bound assertion is signed with the app's own key: Memory's
+   *   `CI_HUB_FORWARD_AUTH_IDENTITY_SECRET`, else a `CI_HUB_FORWARD_AUTH_SECRET` that is not the
+   *   Hub-wide value. Its audience is the app's URN.
+   */
+  private keysFromEnv(appUrn: AppUrn, env: Map<string, string>): ResolvedForwardAuthSecret {
+    const shared = (env.get(FORWARD_AUTH_SECRET_ENV) ?? '').trim();
+    const identity = (env.get(FORWARD_AUTH_IDENTITY_SECRET_ENV) ?? '').trim();
+    const hubWide = (this.config.get('forwardAuthSecret') ?? '').trim();
+    const sharedIsHubWide = shared !== '' && shared === hubWide;
+
+    const secret = shared && (!sharedIsHubWide || isMemoryProviderApp({ urn: appUrn })) ? shared : null;
+    const ownKey = identity || (sharedIsHubWide ? '' : shared);
+    if (!secret && !ownKey) {
+      return this.unsigned(appUrn);
+    }
+
+    return {
+      secret,
+      ...(ownKey ? { assertion: { secret: ownKey, audience: appUrn } } : {}),
+      appUrn,
+      source: 'app-env',
+    };
   }
 
   private async rebuildHostMap(): Promise<void> {
@@ -211,13 +256,13 @@ export class ForwardAuthSecretResolver {
   }
 
   /**
-   * Resolves the signing secret for a forward-auth subrequest. Failures fall back to the
-   * Hub-global secret for compatibility with apps that predate CI-Engineering#74.
+   * Resolves the signing keys for a forward-auth subrequest. A missing host, an unmatched host
+   * and a failed read all resolve to no keys: the username goes out unsigned.
    */
   async resolveForHost(forwardedHost: string | string[] | undefined): Promise<ResolvedForwardAuthSecret> {
     const host = this.normalizeHost(forwardedHost);
     if (!host) {
-      return this.globalSecret();
+      return this.unsigned();
     }
 
     const cached = this.secretCache.get(host);
@@ -225,7 +270,7 @@ export class ForwardAuthSecretResolver {
       return cached.value;
     }
 
-    // Cache definitive app secrets for the full TTL and secretless fallbacks briefly.
+    // Cache definitive app keys for the full TTL and keyless apps briefly.
     // Unmatched hosts and read errors remain uncached so transient state recovers promptly.
     let resolved: ResolvedForwardAuthSecret;
     let ttlMs = CACHE_TTL_MS;
@@ -233,27 +278,23 @@ export class ForwardAuthSecretResolver {
       await this.ensureHostMapFresh();
       const appUrn = this.hostToUrn.get(host);
       if (!appUrn) {
-        // Dashboard and other non-app routes legitimately use the global secret.
-        return this.globalSecret();
+        return this.unsigned();
       }
       const appEnv = await this.appFilesManager.getAppEnv(appUrn);
-      const secret = (this.envUtils.envStringToMap(appEnv.content).get('CI_HUB_FORWARD_AUTH_SECRET') ?? '').trim();
-      if (secret) {
-        resolved = { secret, appUrn, source: 'app-env' };
-      } else {
-        // Legacy apps may lack a per-app secret, as can apps during installation or rotation.
-        // Cache the global fallback briefly so a new secret becomes visible quickly.
+      resolved = this.keysFromEnv(appUrn, this.envUtils.envStringToMap(appEnv.content));
+      if (resolved.source === 'none') {
+        // Third-party apps hold no key, and neither does an app mid-install or mid-rotation.
+        // Cache that briefly so a new key becomes visible quickly.
         if (!this.warnedUrns.has(appUrn)) {
           this.warnedUrns.add(appUrn);
-          this.logger.warn(`[ForwardAuthSecretResolver] ${appUrn} has no forward-auth secret in app.env; signing with the global secret`);
+          this.logger.debug(`[ForwardAuthSecretResolver] ${appUrn} has no forward-auth key in app.env; its identity headers go out unsigned`);
         }
-        resolved = { ...this.globalSecret(), appUrn };
         ttlMs = SECRETLESS_CACHE_TTL_MS;
       }
     } catch (err) {
       // Do not cache read failures so the next request can recover.
       this.logger.warn(`[ForwardAuthSecretResolver] resolution failed for ${host}: ${err instanceof Error ? err.message : String(err)}`);
-      return this.globalSecret();
+      return this.unsigned();
     }
 
     this.secretCache.set(host, { value: resolved, expiresAt: Date.now() + ttlMs });
