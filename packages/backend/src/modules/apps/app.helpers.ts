@@ -29,6 +29,7 @@ import type { ApiKeyScope } from '../api-keys/api-key.scopes';
 import { isOfficialStoreApp } from './official-store.predicate';
 import { MemoryConnectionService } from '../memory-connect/memory-connection.service';
 import { GATEWAY_API_PREFIX } from '../memory-connect/memory-exchange.client';
+import { applyMemoryOwnerEnv, type MemoryOwner, pickPortalIdentity } from '../memory-connect/memory-owner';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
 import { ProxyTrustService } from '../network/proxy-trust.service';
 import { mergeFormFieldDefaults } from '@ci-hub/common/validation';
@@ -358,6 +359,50 @@ export class AppHelpers {
       // Omit the tailnet entry but retain a diagnostic because Companion Memory
       // rejects VPN callbacks when this origin is missing.
       this.logger.debug(`[AppHelpers] tailnet origin unavailable for CI_HUB_ORIGINS: ${err instanceof Error ? err.message : String(err)}`);
+
+      return null;
+    }
+  }
+
+  /**
+   * This Hub's owner, as Companion Memory needs them to know who may create its first account
+   * (`memory-owner.ts`): the operator who claimed the Hub, their stable id, and their Companion
+   * account when they have signed in with one. Null when there is no operator yet or it cannot be
+   * read, which leaves Memory as it was.
+   *
+   * Resolved lazily, like `hubTailnetOrigin`: the user and auth modules depend on this one.
+   */
+  private async memoryOwner(portalIssuer: string | undefined): Promise<MemoryOwner | null> {
+    try {
+      const [{ UserRepository }, { FederatedIdentityRepository }, { ForwardAuthIdentityResolver }] = await Promise.all([
+        import('../user/user.repository'),
+        import('../user/federated-identity.repository'),
+        import('../auth/forward-auth-identity.resolver'),
+      ]);
+      const users = this.moduleRef?.get(UserRepository, { strict: false });
+      const federated = this.moduleRef?.get(FederatedIdentityRepository, { strict: false });
+      const identities = this.moduleRef?.get(ForwardAuthIdentityResolver, { strict: false });
+
+      if (!users || !federated || !identities) {
+        return null;
+      }
+
+      const operator = await users.getFirstOperator();
+
+      if (!operator) {
+        return null;
+      }
+
+      const [stableId, links] = await Promise.all([identities.stableIdFor(operator.id), federated.findByUserId(operator.id)]);
+
+      return {
+        username: operator.username,
+        hub: stableId ? { issuer: stableId.issuer, subject: stableId.userId } : null,
+        portal: pickPortalIdentity(links, portalIssuer),
+      };
+    } catch (err) {
+      // Memory then lets whoever arrives first create its first account, as before this existed.
+      this.logger.warn(`[AppHelpers] could not read the Hub owner for Companion Memory: ${err instanceof Error ? err.message : String(err)}`);
 
       return null;
     }
@@ -1195,6 +1240,14 @@ export class AppHelpers {
       if (hubOrigins.length > 0) {
         envMap.set('CI_HUB_ORIGINS', hubOrigins.join(','));
       }
+    }
+
+    // --- Companion Memory owner ---
+    // Memory's first account becomes its administrator. Name this Hub's owner, so that only they
+    // can create it, through whichever door they arrive (memory-owner.ts). Gated like the provider
+    // block above: these name a person, and only the official Memory acts on them.
+    if (isMemoryProviderApp(config)) {
+      applyMemoryOwnerEnv(envMap, await this.memoryOwner(envMap.get('PORTAL_OIDC_ISSUER')));
     }
 
     envMap.delete('APP_PUBLIC_DOMAIN');
