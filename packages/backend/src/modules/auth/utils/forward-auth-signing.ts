@@ -202,7 +202,7 @@ export function buildForwardAuthIdentityHeaders(
   nonce: string = newForwardAuthNonce(),
 ): ForwardAuthIdentityHeaders {
   const headers: ForwardAuthIdentityHeaders = keys.secret
-    ? { ...buildSignedForwardAuthHeaders(keys.secret, username, now, stableId) }
+    ? buildSignedForwardAuthHeaders(keys.secret, username, now, stableId)
     : { [FORWARD_AUTH_USER_HEADER]: username };
 
   if (keys.assertion?.secret && keys.assertion.audience) {
