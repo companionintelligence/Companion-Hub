@@ -146,6 +146,18 @@ describe('AppHelpers trust material (#74)', () => {
     expect(envMap.get('CI_HUB_FORWARD_AUTH_SECRET')).toBe('a'.repeat(64));
   });
 
+  it('replaces an existing forward-auth secret that is the Hub-wide one with a key of its own', async () => {
+    // An older Hub copied its .env into app envs, so a consumer can still hold the Hub-wide value.
+    config.get.mockImplementation((key: string) => (key === 'forwardAuthSecret' ? 'hub-global-secret' : undefined) as never);
+    const existingAppEnv = new Map<string, string>([['CI_HUB_FORWARD_AUTH_SECRET', 'hub-global-secret']]);
+    appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/app.env', content: 'EXISTING' });
+    envUtils.envStringToMap.mockImplementation((content?: string) => (content === 'EXISTING' ? existingAppEnv : envMap));
+
+    await run(officialConsumerUrn, memoryConsumer);
+
+    expect(envMap.get('CI_HUB_FORWARD_AUTH_SECRET')).toMatch(/^[a-f0-9]{64}$/);
+  });
+
   it('passes the existing HUB_APP_KEY (falling back to legacy HUB_MCP_API_KEY) as the preserve candidate', async () => {
     // The legacy key is in the app's own app.env (distinct from the Hub .env
     // seed, which is allowlisted and never carries a managed key).

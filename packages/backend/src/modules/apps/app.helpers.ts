@@ -1151,10 +1151,16 @@ export class AppHelpers {
     // Hub-wide secret because its verifier also authenticates the connect exchange,
     // which is keyed on the global value (memory-exchange.client). ci-memory's own
     // forward-auth key lives in CI_HUB_FORWARD_AUTH_IDENTITY_SECRET instead.
+    //
+    // An existing value equal to the Hub-wide secret is not a key of the app's own, so it is
+    // replaced rather than kept. An older Hub copied its .env, that secret included, into app
+    // envs, and forward auth signs nothing with the Hub-wide value for any app but ci-memory.
     if (isFirstPartyConsumer) {
       const existingForwardAuthSecret = (existingAppEnvMap.get('CI_HUB_FORWARD_AUTH_SECRET') ?? '').trim();
+      const hubWideSecret = (this.config.get('forwardAuthSecret') ?? '').trim();
+      const ownForwardAuthSecret = existingForwardAuthSecret === hubWideSecret ? '' : existingForwardAuthSecret;
       envMap.set('CI_HUB_FORWARD_AUTH_ENABLED', 'true');
-      envMap.set('CI_HUB_FORWARD_AUTH_SECRET', existingForwardAuthSecret || randomBytes(32).toString('hex'));
+      envMap.set('CI_HUB_FORWARD_AUTH_SECRET', ownForwardAuthSecret || randomBytes(32).toString('hex'));
       this.logger.debug(`[AppHelpers] Injected per-app forward-auth secret for ${appUrn}`);
     }
 
