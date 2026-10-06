@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 // The shared test setup mocks `fs`; these assertions are ABOUT the real files on disk.
 const { readFileSync } = await vi.importActual<typeof import('node:fs')>('node:fs');
 import {
+  FORWARD_AUTH_ASSERTION_HEADER,
   FORWARD_AUTH_SIGNATURE_HEADER,
   FORWARD_AUTH_TIMESTAMP_HEADER,
   FORWARD_AUTH_USER_HEADER,
@@ -34,6 +35,8 @@ const EXPECTED_HEADERS = [
   FORWARD_AUTH_USER_ISSUER_HEADER,
   FORWARD_AUTH_USER_ID_HEADER,
   FORWARD_AUTH_USER_ID_SIGNATURE_HEADER,
+  // The bound assertion: an app that requires it signs nobody in through a copy that drops it.
+  FORWARD_AUTH_ASSERTION_HEADER,
 ];
 
 /** The compose label form: a single comma-separated string. */

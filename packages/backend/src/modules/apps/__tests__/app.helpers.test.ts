@@ -18,6 +18,7 @@ import { DeviceRegistrationRepository } from '@/modules/registration/device-regi
 import { InferenceEnvResolver } from '../../inference/inference-env-resolver';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { MemoryConnectionService } from '@/modules/memory-connect/memory-connection.service';
+import { ForwardAuthSecretResolver } from '@/modules/auth/forward-auth-secret.resolver';
 import { ProxyTrustService } from '@/modules/network/proxy-trust.service';
 
 // APP_DATA_DIR is a host path built with Node's platform-aware path.join, so it uses
@@ -234,6 +235,25 @@ describe('AppHelpers', () => {
       expect(written.get('CI_CLOUD_URL')).toBe('https://portal.example');
       expect(written.get('GOOGLE_MAPS_KEY')).toBe('operator-maps-key');
       expect(written.get('PORTAL_OIDC_ISSUER')).toBe('https://portal.example');
+    });
+
+    it('SECURITY: a manifest cannot name a Hub-only secret as its Memory env and inherit it', async () => {
+      envUtils.envStringToMap.mockReturnValue(
+        new Map([
+          ['CI_HUB_FORWARD_AUTH_SECRET', 'hub-wide-secret'],
+          ['JWT_SECRET', 'hub-jwt-secret'],
+        ]),
+      );
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({
+        ...mockAppInfo,
+        hub_integration: { memory: { url_env: 'CI_HUB_FORWARD_AUTH_SECRET', token_env: 'JWT_SECRET' } },
+      } as AppInfo);
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      const written = envUtils.envMapToString.mock.calls.at(-1)?.[0] as Map<string, string>;
+      expect(written.has('CI_HUB_FORWARD_AUTH_SECRET')).toBe(false);
+      expect(written.has('JWT_SECRET')).toBe(false);
     });
 
     describe('Companion Memory credential injection', () => {
@@ -683,6 +703,39 @@ describe('AppHelpers', () => {
         envUtils.envStringToMap.mockReturnValue(envMap);
         await appHelpers.generateEnvFile(testAppUrn, {});
         expect(envMap.has('HUB_TRUSTED_PROXY_CIDRS')).toBe(false);
+      } finally {
+        moduleRefGet.mockRestore();
+      }
+    });
+
+    it("drops forward auth's cached keys for the app once its new app.env is written, and only after", async () => {
+      const order: string[] = [];
+      const resolver = { invalidateApp: vi.fn(() => order.push('invalidate')) };
+      appFilesManager.writeAppEnv.mockImplementation(async () => {
+        order.push('write');
+      });
+      const moduleRefGet = vi
+        .spyOn(moduleRefForHelpers, 'get')
+        .mockImplementation((token: unknown) => (token === ForwardAuthSecretResolver ? resolver : undefined));
+      try {
+        envUtils.envStringToMap.mockReturnValue(new Map<string, string>());
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(resolver.invalidateApp).toHaveBeenCalledWith(testAppUrn);
+        expect(order).toEqual(['write', 'invalidate']);
+      } finally {
+        moduleRefGet.mockRestore();
+      }
+    });
+
+    it('still writes app.env when the forward-auth resolver is unavailable', async () => {
+      const moduleRefGet = vi.spyOn(moduleRefForHelpers, 'get').mockImplementation(() => {
+        throw new Error('no such provider');
+      });
+      try {
+        envUtils.envStringToMap.mockReturnValue(new Map<string, string>());
+        await expect(appHelpers.generateEnvFile(testAppUrn, {})).resolves.toBeUndefined();
+        expect(appFilesManager.writeAppEnv).toHaveBeenCalled();
       } finally {
         moduleRefGet.mockRestore();
       }

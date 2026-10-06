@@ -5,7 +5,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { hubTrustMaterialScopes } from '@/modules/apps/app.helpers';
-import { ForwardAuthSecretResolver } from '@/modules/auth/forward-auth-secret.resolver';
+import { FORWARD_AUTH_IDENTITY_SECRET_ENV, FORWARD_AUTH_SECRET_ENV, ForwardAuthSecretResolver } from '@/modules/auth/forward-auth-secret.resolver';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { AppLifecycleService } from './app-lifecycle.service';
 
@@ -57,7 +57,7 @@ export class HubAccessService {
     const envMap = this.envUtils.envStringToMap(appEnv.content);
     return {
       appKey: managed ? { prefix: managed.prefix, scopes: managed.scopes, lastUsedAt: managed.lastUsedAt, createdAt: managed.createdAt } : null,
-      identityVerification: (envMap.get('CI_HUB_FORWARD_AUTH_SECRET') ?? '').trim().length > 0,
+      identityVerification: [FORWARD_AUTH_SECRET_ENV, FORWARD_AUTH_IDENTITY_SECRET_ENV].some((key) => (envMap.get(key) ?? '').trim().length > 0),
       // Same gate generateEnvFile provisions from — never a restatement of it.
       provisioned: hubTrustMaterialScopes(info).length > 0,
     };
@@ -77,7 +77,9 @@ export class HubAccessService {
 
     const appEnv = await this.appFilesManager.getAppEnv(appUrn);
     const envMap = this.envUtils.envStringToMap(appEnv.content);
-    if (envMap.delete('CI_HUB_FORWARD_AUTH_SECRET')) {
+    // Both forward-auth keys: Companion Memory's own one is the identity secret.
+    const cleared = [FORWARD_AUTH_SECRET_ENV, FORWARD_AUTH_IDENTITY_SECRET_ENV].filter((key) => envMap.delete(key));
+    if (cleared.length > 0) {
       await this.appFilesManager.writeAppEnv(appUrn, this.envUtils.envMapToString(envMap));
     }
 

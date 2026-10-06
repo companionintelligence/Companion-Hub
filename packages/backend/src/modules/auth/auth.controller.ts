@@ -30,7 +30,7 @@ import type { Request, Response } from 'express';
 import { AuthGuard } from './auth.guard';
 import { AuthRateLimiter, authClientKey, type AuthRateScope } from './auth-rate-limiter';
 import { AuthService, type PairedOrgMembership } from './auth.service';
-import { buildSignedForwardAuthHeaders } from './utils/forward-auth-signing';
+import { buildForwardAuthIdentityHeaders } from './utils/forward-auth-signing';
 import { normalizeForwardedHost, rawForwardedHost } from './utils/forward-auth-host';
 import { ForwardAuthIdentityResolver } from './forward-auth-identity.resolver';
 import { ForwardAuthSecretResolver } from './forward-auth-secret.resolver';
@@ -1469,11 +1469,9 @@ export class AuthController {
       this.logger.debug(`Traefik forward auth: Memory-only exemption refused for ${forwardedHost || '(no host)'} ${cleanUri}`);
     }
 
-    // Without a forwarded host `resolveForHost` falls back to the Hub-GLOBAL signing secret, which
-    // is the cross-app forgery the per-app secret exists to prevent (CI-Engineering#74), and there
-    // is no valid return route to build either. One guard for every branch below rather than one
-    // per branch: the Bearer path and the cookie path BOTH sign identity headers, so neither may
-    // be allowed to reach `resolveForHost('')`.
+    // Without a forwarded host there is no target app to sign for (`resolveForHost` returns no
+    // keys) and no valid return route to build either. One guard for every branch below rather
+    // than one per branch: the Bearer path and the cookie path BOTH answer with identity headers.
     if (!forwardedHost) {
       this.logger.debug('Traefik forward auth rejected a request with no forwarded host');
       return res.status(401).send();
@@ -1511,7 +1509,7 @@ export class AuthController {
           secretSource: resolved.source,
           targetApp: resolved.appUrn,
         });
-        const signed = buildSignedForwardAuthHeaders(resolved.secret, username, Date.now(), person?.stableId);
+        const signed = buildForwardAuthIdentityHeaders(resolved, username, Date.now(), person?.stableId);
         for (const [header, value] of Object.entries(signed)) {
           res.setHeader(header, value);
         }
@@ -1537,7 +1535,7 @@ export class AuthController {
       }
 
       // Per-app signing prevents one container from forging identity headers accepted by a sibling (CI-Engineering#74).
-      // Unknown hosts retain the Hub-global fallback.
+      // An app with no key of its own, or a host that matches no app, gets the username unsigned.
       const resolved = await this.forwardAuthSecrets.resolveForHost(forwardedHost);
       this.logger.debug('User authenticated for Traefik forward auth', {
         username: forwardAuthUser.username,
@@ -1546,7 +1544,7 @@ export class AuthController {
       });
       // The username can change at any time; the stable id beside it cannot (ForwardAuthIdentityResolver).
       const stableId = await this.forwardAuthIdentities.stableIdFor(forwardAuthUser.id);
-      const signed = buildSignedForwardAuthHeaders(resolved.secret, forwardAuthUser.username, Date.now(), stableId);
+      const signed = buildForwardAuthIdentityHeaders(resolved, forwardAuthUser.username, Date.now(), stableId);
       for (const [header, value] of Object.entries(signed)) {
         res.setHeader(header, value);
       }

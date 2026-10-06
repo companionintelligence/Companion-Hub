@@ -70,6 +70,11 @@ describe('HubAccessService', () => {
       expect(status).toEqual({ appKey: null, identityVerification: false, provisioned: false });
     });
 
+    it("reports identity verification for Companion Memory's own key alone", async () => {
+      appFilesManager.getAppEnv.mockResolvedValue({ path: '/x', content: 'CI_HUB_FORWARD_AUTH_IDENTITY_SECRET=own\n' });
+      expect((await service.getStatus(urn)).identityVerification).toBe(true);
+    });
+
     it('404s for an unknown app', async () => {
       appFilesManager.getInstalledAppInfo.mockResolvedValue(null as never);
       await expect(service.getStatus(urn)).rejects.toThrow(NotFoundException);
@@ -90,6 +95,19 @@ describe('HubAccessService', () => {
       // As the Hub: the rotation was the authorized act, and a refused restart would strand the app.
       expect(appLifecycle.restartApp).toHaveBeenCalledWith({ appUrn: urn, actor: { kind: 'system', reason: 'hub-access-rotate' } });
       expect(res).toEqual({ requestId: 'req-1' });
+    });
+
+    it("clears Companion Memory's own forward-auth key too, so the restart mints a fresh one", async () => {
+      appFilesManager.getAppEnv.mockResolvedValue({
+        path: '/x',
+        content: 'CI_HUB_FORWARD_AUTH_SECRET=hub-wide\nCI_HUB_FORWARD_AUTH_IDENTITY_SECRET=own\nOTHER=1\n',
+      });
+      await service.rotate(urn);
+
+      const written = appFilesManager.writeAppEnv.mock.calls[0]?.[1] as string;
+      expect(written).not.toContain('CI_HUB_FORWARD_AUTH_IDENTITY_SECRET');
+      expect(written).not.toContain('CI_HUB_FORWARD_AUTH_SECRET');
+      expect(written).toContain('OTHER=1');
     });
 
     it("flushes the resolver's cached signing secret for the app so the old one isn't served post-restart", async () => {
