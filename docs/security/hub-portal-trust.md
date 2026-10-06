@@ -117,6 +117,12 @@ Skipping or forging this cache cannot download a paid bundle or mint an app regi
 
 Traefik `forwardauth` calls Hub `/api/auth/traefik`. On a valid Hub session, Hub returns HMAC-signed `X-CI-Hub-User` headers for **apps on that appliance**. Those headers are not a Portal session and must not be treated as one. See [`ARCHITECTURE.md`](../ARCHITECTURE.md) (forward auth) and [`adr/002-sibling-public-hostnames-edge-sso.md`](../adr/002-sibling-public-hostnames-edge-sso.md).
 
+Each app's headers are signed with that app's own key, read from its `app.env`:
+
+- An app with `CI_HUB_FORWARD_AUTH_SECRET` gets the username, timestamp and stable id signed with it, plus `X-CI-Hub-User-Assertion: 2.<nonce>.<hex>`, an HMAC under its own key over `ci-hub-forward-auth/2\n<app urn>\n<nonce>\n<timestampMs>\n<username>\n<issuer>\n<user id>`. The assertion names the app it was signed for, and the nonce is fresh per request.
+- Companion Memory's `CI_HUB_FORWARD_AUTH_SECRET` is the Hub-wide secret, because it also authenticates the connect exchange and the agent doorbell. Its own key is `CI_HUB_FORWARD_AUTH_IDENTITY_SECRET`, written with `CI_APP_URN` (its audience). The username triple is still signed with the Hub-wide secret for Memory releases that predate the assertion.
+- An app with no key (every third-party app), or a host that matches no installed app, gets `X-CI-Hub-User` alone, unsigned. Such an app cannot check a signature, and the Hub-wide secret never stands in for a missing key.
+
 ## Review checklist for publication
 
 - [x] Registry-token: Portal rejects a missing or invalid `x-device-key` (`MintRegistryToken` + `deviceAuthMiddleware`; covered by Portal tests).

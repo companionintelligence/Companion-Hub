@@ -166,6 +166,36 @@ describe('AppHelpers trust material (#74)', () => {
     expect(apiKeys.provisionManagedKey).not.toHaveBeenCalled();
     expect(envMap.has('HUB_APP_KEY')).toBe(false);
   });
+
+  it('the memory PROVIDER also gets a forward-auth key of its own and its URN, the audience of its bound assertion', async () => {
+    config.get.mockImplementation((key: string) => (key === 'forwardAuthSecret' ? 'hub-global-secret' : undefined) as never);
+    await run(providerUrn, { memory: { provider: { service: 'gateway', port: 8642 } } } as never);
+
+    expect(envMap.get('CI_HUB_FORWARD_AUTH_IDENTITY_SECRET')).toMatch(/^[a-f0-9]{64}$/);
+    expect(envMap.get('CI_HUB_FORWARD_AUTH_IDENTITY_SECRET')).not.toBe('hub-global-secret');
+    expect(envMap.get('CI_APP_URN')).toBe(providerUrn);
+  });
+
+  it("preserves the memory PROVIDER's own key across env regeneration, so the running Memory and the Hub keep agreeing", async () => {
+    config.get.mockImplementation((key: string) => (key === 'forwardAuthSecret' ? 'hub-global-secret' : undefined) as never);
+    const existingAppEnv = new Map<string, string>([['CI_HUB_FORWARD_AUTH_IDENTITY_SECRET', 'b'.repeat(64)]]);
+    appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/app.env', content: 'EXISTING' });
+    envUtils.envStringToMap.mockImplementation((content?: string) => (content === 'EXISTING' ? existingAppEnv : envMap));
+
+    await run(providerUrn, { memory: { provider: { service: 'gateway', port: 8642 } } } as never);
+
+    expect(envMap.get('CI_HUB_FORWARD_AUTH_IDENTITY_SECRET')).toBe('b'.repeat(64));
+  });
+
+  it('gives no other app the identity key, first-party consumers and third-party apps alike', async () => {
+    await run(officialConsumerUrn, memoryConsumer);
+    expect(envMap.has('CI_HUB_FORWARD_AUTH_IDENTITY_SECRET')).toBe(false);
+
+    envMap.clear();
+    await run(createAppUrn('ci-memory', 'sketchy-store'), { memory: { provider: { service: 'gateway', port: 8642 } } } as never);
+    expect(envMap.has('CI_HUB_FORWARD_AUTH_IDENTITY_SECRET')).toBe(false);
+    expect(envMap.has('CI_HUB_FORWARD_AUTH_SECRET')).toBe(false);
+  });
 });
 
 /**

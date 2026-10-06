@@ -31,6 +31,7 @@ import { MemoryConnectionService } from '../memory-connect/memory-connection.ser
 import { GATEWAY_API_PREFIX } from '../memory-connect/memory-exchange.client';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
 import { ProxyTrustService } from '../network/proxy-trust.service';
+import { FORWARD_AUTH_IDENTITY_SECRET_ENV, ForwardAuthSecretResolver } from '../auth/forward-auth-secret.resolver';
 import { mergeFormFieldDefaults } from '@ci-hub/common/validation';
 
 /**
@@ -1148,7 +1149,8 @@ export class AppHelpers {
     // To rotate it, clear the variable, regenerate the environment, and restart.
     // The provider block below intentionally overrides this for ci-memory with the
     // Hub-wide secret because its verifier also authenticates the connect exchange,
-    // which is keyed on the global value (memory-exchange.client).
+    // which is keyed on the global value (memory-exchange.client). ci-memory's own
+    // forward-auth key lives in CI_HUB_FORWARD_AUTH_IDENTITY_SECRET instead.
     if (isFirstPartyConsumer) {
       const existingForwardAuthSecret = (existingAppEnvMap.get('CI_HUB_FORWARD_AUTH_SECRET') ?? '').trim();
       envMap.set('CI_HUB_FORWARD_AUTH_ENABLED', 'true');
@@ -1170,6 +1172,18 @@ export class AppHelpers {
         envMap.set('CI_HUB_FORWARD_AUTH_ENABLED', 'true');
         envMap.set('CI_HUB_FORWARD_AUTH_SECRET', forwardAuthSecret);
       }
+
+      // ci-memory's own forward-auth key and the audience it checks. The Hub signs ci-memory's
+      // bound assertion (X-CI-Hub-User-Assertion) with this key over the app URN, and a Memory
+      // that finds both values requires that assertion and refuses headers signed only with the
+      // Hub-wide secret above. Preserved like the per-app secret: minted once, kept across
+      // regenerations, so a running Memory and the Hub always hold the same value. A Memory
+      // that predates the assertion ignores both and keeps verifying the triple, which forward
+      // auth still signs with CI_HUB_FORWARD_AUTH_SECRET for it.
+      const existingIdentitySecret = (existingAppEnvMap.get(FORWARD_AUTH_IDENTITY_SECRET_ENV) ?? '').trim();
+      envMap.set(FORWARD_AUTH_IDENTITY_SECRET_ENV, existingIdentitySecret || randomBytes(32).toString('hex'));
+      envMap.set('CI_APP_URN', appUrn);
+      envMap.set('CI_HUB_FORWARD_AUTH_ENABLED', 'true');
       // `ci-memory` allowlists these Hub origins as valid connect return targets.
       //
       // List both browser-reachable origins, separated by commas. Companion Memory
@@ -1207,5 +1221,19 @@ export class AppHelpers {
     envMap.set('HUB_INFERENCE_URL', `http://${hubContainer}:${hubPort}/api/inference/v1`);
 
     await this.appFilesManager.writeAppEnv(appUrn, this.envUtils.envMapToString(envMap));
+
+    // Forward auth reads its signing keys back from this file. Drop what it cached from the
+    // previous one, so a key added here is used from the next request on rather than up to a
+    // cache lifetime later, when the container started with it may already be serving.
+    this.invalidateForwardAuthKeys(appUrn);
   };
+
+  /** Looked up lazily, like ProxyTrustService: AuthModule imports AppsModule, and a miss is harmless. */
+  private invalidateForwardAuthKeys(appUrn: AppUrn): void {
+    try {
+      this.moduleRef.get(ForwardAuthSecretResolver, { strict: false })?.invalidateApp(appUrn);
+    } catch {
+      // No resolver in this context (tests, CLI): its cache lifetime bounds the delay instead.
+    }
+  }
 }
