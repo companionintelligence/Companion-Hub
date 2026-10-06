@@ -237,6 +237,25 @@ describe('AppHelpers', () => {
       expect(written.get('PORTAL_OIDC_ISSUER')).toBe('https://portal.example');
     });
 
+    it('SECURITY: a manifest cannot name a Hub-only secret as its Memory env and inherit it', async () => {
+      envUtils.envStringToMap.mockReturnValue(
+        new Map([
+          ['CI_HUB_FORWARD_AUTH_SECRET', 'hub-wide-secret'],
+          ['JWT_SECRET', 'hub-jwt-secret'],
+        ]),
+      );
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({
+        ...mockAppInfo,
+        hub_integration: { memory: { url_env: 'CI_HUB_FORWARD_AUTH_SECRET', token_env: 'JWT_SECRET' } },
+      } as AppInfo);
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      const written = envUtils.envMapToString.mock.calls.at(-1)?.[0] as Map<string, string>;
+      expect(written.has('CI_HUB_FORWARD_AUTH_SECRET')).toBe(false);
+      expect(written.has('JWT_SECRET')).toBe(false);
+    });
+
     describe('Companion Memory credential injection', () => {
       // A consumer app declaring the env vars it reads its memory URL + key from.
       const memoryConsumerApp: AppInfo = {

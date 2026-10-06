@@ -31,7 +31,7 @@ import { MemoryConnectionService } from '../memory-connect/memory-connection.ser
 import { GATEWAY_API_PREFIX } from '../memory-connect/memory-exchange.client';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
 import { ProxyTrustService } from '../network/proxy-trust.service';
-import { FORWARD_AUTH_IDENTITY_SECRET_ENV, ForwardAuthSecretResolver } from '../auth/forward-auth-secret.resolver';
+import { FORWARD_AUTH_IDENTITY_SECRET_ENV, FORWARD_AUTH_SECRET_ENV, ForwardAuthSecretResolver } from '../auth/forward-auth-secret.resolver';
 import { mergeFormFieldDefaults } from '@ci-hub/common/validation';
 
 /**
@@ -104,12 +104,20 @@ for (const secret of HUB_ONLY_SECRET_ENV_VARS) {
   }
 }
 
-/** The allowlist for one app: the shared keys plus the Memory env names its manifest declares. */
+const HUB_ONLY_SECRET_ENV_VAR_SET: ReadonlySet<string> = new Set(HUB_ONLY_SECRET_ENV_VARS);
+
+/**
+ * The allowlist for one app: the shared keys plus the Memory env names its manifest declares.
+ *
+ * Those names come from the manifest, which any store can publish, so a Hub-only secret is never
+ * passed through under one: `"token_env": "JWT_SECRET"` would otherwise hand the app that secret.
+ */
 export function appInheritableHubEnvKeys(config: Pick<AppInfo, 'hub_integration'>): ReadonlySet<string> {
   const keys = new Set(HUB_ENV_KEYS_INHERITED_BY_APPS);
   const memory = config.hub_integration?.memory;
-  if (memory?.url_env) keys.add(memory.url_env);
-  if (memory?.token_env) keys.add(memory.token_env);
+  for (const name of [memory?.url_env, memory?.token_env]) {
+    if (name && !HUB_ONLY_SECRET_ENV_VAR_SET.has(name)) keys.add(name);
+  }
   return keys;
 }
 
@@ -1156,11 +1164,11 @@ export class AppHelpers {
     // replaced rather than kept. An older Hub copied its .env, that secret included, into app
     // envs, and forward auth signs nothing with the Hub-wide value for any app but ci-memory.
     if (isFirstPartyConsumer) {
-      const existingForwardAuthSecret = (existingAppEnvMap.get('CI_HUB_FORWARD_AUTH_SECRET') ?? '').trim();
+      const existingForwardAuthSecret = (existingAppEnvMap.get(FORWARD_AUTH_SECRET_ENV) ?? '').trim();
       const hubWideSecret = (this.config.get('forwardAuthSecret') ?? '').trim();
       const ownForwardAuthSecret = existingForwardAuthSecret === hubWideSecret ? '' : existingForwardAuthSecret;
       envMap.set('CI_HUB_FORWARD_AUTH_ENABLED', 'true');
-      envMap.set('CI_HUB_FORWARD_AUTH_SECRET', ownForwardAuthSecret || randomBytes(32).toString('hex'));
+      envMap.set(FORWARD_AUTH_SECRET_ENV, ownForwardAuthSecret || randomBytes(32).toString('hex'));
       this.logger.debug(`[AppHelpers] Injected per-app forward-auth secret for ${appUrn}`);
     }
 
@@ -1176,7 +1184,7 @@ export class AppHelpers {
       const forwardAuthSecret = this.config.get('forwardAuthSecret');
       if (forwardAuthSecret) {
         envMap.set('CI_HUB_FORWARD_AUTH_ENABLED', 'true');
-        envMap.set('CI_HUB_FORWARD_AUTH_SECRET', forwardAuthSecret);
+        envMap.set(FORWARD_AUTH_SECRET_ENV, forwardAuthSecret);
       }
 
       // ci-memory's own forward-auth key and the audience it checks. The Hub signs ci-memory's
