@@ -1,7 +1,6 @@
 import { BadRequestException, Body, Controller, Get, Param, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import type { AppUrn } from '@ci-hub/common/types';
-import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AuthGuard } from '../auth/auth.guard';
@@ -12,6 +11,7 @@ import {
   verifyForwardAuthHeaders,
 } from '../auth/utils/forward-auth-signing';
 import { InternalNetworkGuard } from '../auth/internal-network.guard';
+import { FORWARD_AUTH_SECRET_ENV } from '../auth/forward-auth-secret.resolver';
 import { EnvUtils } from '../env/env.utils';
 import { UserRepository } from '../user/user.repository';
 import { ManagedAppKeyGuard } from './managed-app-key.guard';
@@ -45,7 +45,6 @@ export class MemoryConnectController {
     private readonly users: UserRepository,
     private readonly appFiles: AppFilesManager,
     private readonly envUtils: EnvUtils,
-    private readonly config: ConfigurationService,
   ) {}
 
   @Get('start')
@@ -236,16 +235,14 @@ export class MemoryConnectController {
       return raw ?? null;
     };
 
+    // The app's own key only. Forward auth signs nothing with the Hub-wide secret for an app
+    // without one, so a header set that verifies under it was not sent by forward auth.
     let secret = '';
     try {
       const appEnv = await this.appFiles.getAppEnv(appUrn);
-      secret = (this.envUtils.envStringToMap(appEnv.content).get('CI_HUB_FORWARD_AUTH_SECRET') ?? '').trim();
+      secret = (this.envUtils.envStringToMap(appEnv.content).get(FORWARD_AUTH_SECRET_ENV) ?? '').trim();
     } catch {
       secret = '';
-    }
-
-    if (!secret) {
-      secret = this.config.get('forwardAuthSecret') ?? '';
     }
 
     const verified = verifyForwardAuthHeaders(secret, {
