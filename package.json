@@ -80,7 +80,7 @@
     "@biomejs/biome": "2.5.15",
     "@hey-api/openapi-ts": "^0.99.0",
     "@playwright/test": "^1.63.0",
-    "cloudflare": "^7.2.0",
+    "cloudflare": "^7.3.0",
     "dotenv-cli": "^11.0.0",
     "drizzle-orm": "^0.45.3",
     "husky": "^9.1.7",
@@ -91,7 +91,7 @@
     "pixelmatch": "^7.2.0",
     "pngjs": "^7.0.0",
     "systeminformation": "^5.31.11",
-    "turbo": "^2.11.6",
+    "turbo": "^2.11.7",
     "vitest": "^5.0.3",
     "zod": "^4.6.5"
   },
