@@ -1,12 +1,16 @@
 name: Desktop Tests
 # Auto-triggers are scoped to `packages/desktop/src-tauri/**` so this only burns
 # Actions credit when the Rust crate actually changes (~62 commits/quarter).
+# >>> ci-local:gated original triggers below, restore with `ci-local restore`
+# on:
+#   workflow_dispatch:
+#   pull_request:
+#     paths:
+#       - 'packages/desktop/src-tauri/**'
+#       - '.github/workflows/desktop-tests.yml'
+# <<< ci-local:gated
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - 'packages/desktop/src-tauri/**'
-      - '.github/workflows/desktop-tests.yml'
 
 concurrency:
   group: desktop-tests-${{ github.ref }}

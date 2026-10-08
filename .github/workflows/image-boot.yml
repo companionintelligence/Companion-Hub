@@ -11,13 +11,18 @@ name: Image boot
 #
 # The check itself is scripts/smoke-boot-image.sh, so it runs the same way on a laptop:
 #   docker build --target runner -t hub-smoke . && scripts/smoke-boot-image.sh hub-smoke
+# >>> ci-local:gated original triggers below, restore with `ci-local restore`
+# on:
+#   workflow_call:
+#   workflow_dispatch:
+#   pull_request:
+#   push:
+#     branches:
+#       - dev
+# <<< ci-local:gated
 on:
   workflow_call:
   workflow_dispatch:
-  pull_request:
-  push:
-    branches:
-      - dev
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
