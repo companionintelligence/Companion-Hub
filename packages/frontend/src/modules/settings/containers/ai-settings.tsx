@@ -8,6 +8,7 @@ import {
   fetchOllamaInstallStatus,
   fetchOmlxInstallStatus,
   fetchVllmInstallStatus,
+  loadInferenceModel,
   pinInferenceModel,
   rescanInferenceHardware,
   saveCloudProviderConfig,
@@ -144,21 +145,6 @@ export const AiSettingsContainer = () => {
   // rebuild it independently.
   const availableModelById = useMemo<ModelIndex>(() => (profile ? indexAvailableModels(profile) : new Map()), [profile]);
 
-  /**
-   * The catalog id of an engine-listed model that the Hub currently tracks as resident, else null.
-   * The Downloaded Models list is the engine's own inventory, so this is how a model outside the
-   * recommended set — one the person picked from the full catalog — gets its Unload button too.
-   */
-  const residentCatalogIdFor = (engineId: string): string | null => {
-    for (const model of availableModelById.values()) {
-      if (model.backendModelId === engineId || `user.${model.backendModelId}` === engineId) {
-        const state = trackedModels[model.id]?.state;
-        return state === 'loaded' || state === 'pinned' ? model.id : null;
-      }
-    }
-    return null;
-  };
-
   const applyTrackedModels = useCallback((tracked: TrackedModel[]) => {
     const trackedById = Object.fromEntries(tracked.map((model) => [model.catalogId, model]));
     const pinned = new Set<string>();
@@ -244,6 +230,25 @@ export const AiSettingsContainer = () => {
 
       const tracked = await fetchTrackedModels();
       seedSelectedModelIds(data, preferredBackend, tracked);
+      const knownIds = new Set<string>();
+      for (const model of data.availableModels) {
+        knownIds.add(model.id);
+        if (model.backendModelId) {
+          knownIds.add(model.backendModelId);
+          knownIds.add(`user.${model.backendModelId}`);
+        }
+      }
+      const storedPreferred = prefData?.preferredModel;
+      const downloadedChoice = storedPreferred && !knownIds.has(storedPreferred) ? storedPreferred : null;
+      setChosenChatModelId(downloadedChoice);
+      if (downloadedChoice) {
+        setSelectedModelIds((prev) =>
+          prev.filter((id) => {
+            const model = data.availableModels.find((candidate) => candidate.id === id);
+            return model?.modality !== 'llm' || model.backend !== preferredBackend;
+          }),
+        );
+      }
       await fetchRuntimeModels(preferredBackend);
       void checkOllamaStatus();
       if (preferredBackend === 'vllm') {
@@ -364,8 +369,9 @@ export const AiSettingsContainer = () => {
       const data = await fetchInferenceOnboardingProfile('lemonade');
       setProfile(data);
       seedSelectedModelIds(data, 'lemonade', trackedModelsRef.current);
+      await fetchRuntimeModels('lemonade');
     }
-  }, [checkLemonadeStatus, seedSelectedModelIds]);
+  }, [checkLemonadeStatus, fetchRuntimeModels, seedSelectedModelIds]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: only on mount
   useEffect(() => {
@@ -389,7 +395,17 @@ export const AiSettingsContainer = () => {
   };
 
   const handleToggleModel = (modelId: string) => {
+    const model = availableModelById.get(modelId);
+    if (model?.modality === 'llm') setChosenChatModelId(null);
     setSelectedModelIds((prev) => (prev.includes(modelId) ? prev.filter((id) => id !== modelId) : [...prev, modelId]));
+  };
+
+  /** Catalog id for an engine id, including Lemonade's `user.` spelling. */
+  const catalogIdForEngineModel = (engineId: string): string | null => {
+    for (const model of availableModelById.values()) {
+      if (model.id === engineId || model.backendModelId === engineId || `user.${model.backendModelId}` === engineId) return model.id;
+    }
+    return null;
   };
 
   // Unload is the one memory action the page offers directly, because nothing else reaches it:
@@ -398,6 +414,13 @@ export const AiSettingsContainer = () => {
   // embedder without its batch flags, 2026-09-30 — could not be made to pick up new ones from here.
   // After an unload the model is tracked as `pulled`, so the next Save pins (loads) it again.
   const [unloadingModelId, setUnloadingModelId] = useState<string | null>(null);
+  const [loadingModelId, setLoadingModelId] = useState<string | null>(null);
+  /**
+   * The chat model chosen from Downloaded Models. A catalog id, or an engine id the catalog does
+   * not have. Save writes this instead of the first checked recommended model, so a file Lemonade
+   * downloaded under its own name stays the model the apps restart with.
+   */
+  const [chosenChatModelId, setChosenChatModelId] = useState<string | null>(null);
   // One button for both places a resident model appears. It lives inside a `<label>` on the
   // recommended cards, so the click must not reach the label — that would toggle the selection.
   // `outline`, not `ghost`: ghost's hover is the accent fill, which on the dark card background is
@@ -424,8 +447,9 @@ export const AiSettingsContainer = () => {
   const handleUnloadModel = async (modelId: string) => {
     setUnloadingModelId(modelId);
     try {
-      await unloadInferenceModel(modelId);
+      await unloadInferenceModel(modelId, selectedBackend);
       await fetchTrackedModels();
+      await fetchRuntimeModels(selectedBackend);
       toast.success(t('AI_SETTINGS_UNLOADED', { model: availableModelById.get(modelId)?.displayName ?? modelId }));
     } catch (e) {
       toast.error(t('AI_SETTINGS_UNLOAD_FAILED', { error: (e as Error).message }));
@@ -479,6 +503,33 @@ export const AiSettingsContainer = () => {
     };
   }, [fetchTrackedModels, hasActiveTransfers, saving]);
 
+  const handleLoadModel = async (engineId: string) => {
+    setLoadingModelId(engineId);
+    try {
+      await loadInferenceModel(engineId, selectedBackend);
+      const catalogId = catalogIdForEngineModel(engineId);
+      const curated = catalogId ? availableModelById.get(catalogId) : undefined;
+      if (!curated || curated.modality === 'llm') {
+        const chatId = catalogId ?? engineId;
+        setChosenChatModelId(chatId);
+        setSelectedModelIds((prev) => {
+          const withoutOtherLlms = prev.filter((id) => {
+            const model = availableModelById.get(id);
+            return model?.modality !== 'llm' || model.backend !== selectedBackend;
+          });
+          return catalogId ? [...withoutOtherLlms, catalogId] : withoutOtherLlms;
+        });
+      }
+      await fetchRuntimeModels(selectedBackend);
+      await fetchTrackedModels();
+      toast.success(t('AI_SETTINGS_LOADED', { model: curated?.displayName ?? engineId }));
+    } catch (e) {
+      toast.error(t('AI_SETTINGS_MODEL_LOAD_FAILED', { error: (e as Error).message }));
+    } finally {
+      setLoadingModelId(null);
+    }
+  };
+
   const handleSave = async () => {
     setSaving(true);
     try {
@@ -489,7 +540,8 @@ export const AiSettingsContainer = () => {
 
       const compatibleSelectedModelIds = compatibleSelection(availableModelById, selectedBackend, selectedModelIds);
 
-      const preferredModel = resolvePreferredModelId(profile, selectedBackend, isAgentModel, compatibleSelectedModelIds);
+      const checkboxPreferred = resolvePreferredModelId(profile, selectedBackend, isAgentModel, compatibleSelectedModelIds);
+      const preferredModel = chosenChatModelId ?? checkboxPreferred;
       const embeddingBackend = selectedBackend === 'omlx' || selectedBackend === 'ollama' ? selectedBackend : EMBEDDING_INFERENCE_BACKEND;
       const preferredEmbeddingModel = resolvePreferredModelId(profile, embeddingBackend, isEmbeddingModel, compatibleSelectedModelIds);
       const preferredVisionModel = resolvePreferredModelId(profile, selectedBackend, isVisionModel, compatibleSelectedModelIds);
@@ -754,10 +806,17 @@ export const AiSettingsContainer = () => {
               <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 [&>*]:min-w-0">
                 {runtimeModels.map((model) => {
                   // A model the engine lists is a catalog model when its id is the catalog's engine
-                  // id (or Lemonade's `user.` spelling of it); that is what the Hub can unload.
-                  const catalogId = residentCatalogIdFor(model.id);
+                  // id (or Lemonade's `user.` spelling of it). That id is what the Hub loads and unloads.
+                  const catalogId = catalogIdForEngineModel(model.id);
+                  const trackedState = catalogId ? trackedModels[catalogId]?.state : undefined;
+                  const resident = model.resident === true || trackedState === 'loaded' || trackedState === 'pinned';
+                  const actionId = catalogId ?? model.id;
+                  const chosen = chosenChatModelId != null && (chosenChatModelId === catalogId || chosenChatModelId === model.id);
                   return (
-                    <div key={model.id} className="flex min-w-0 items-center gap-3 rounded-md border border-border bg-foreground/[0.015] p-4">
+                    <div
+                      key={model.id}
+                      className={`flex min-w-0 items-center gap-3 rounded-md border bg-foreground/[0.015] p-4 ${chosen ? 'border-primary' : 'border-border'}`}
+                    >
                       <span className="flex-shrink-0 text-foreground/60 [&>*]:size-8">
                         <ModelIcon model={{ id: model.id, displayName: model.name, modality: 'llm', metadata: undefined }} />
                       </span>
@@ -765,12 +824,20 @@ export const AiSettingsContainer = () => {
                         <div className="text-sm font-medium truncate">{model.name}</div>
                         <div className="text-[11px] text-muted-foreground uppercase tracking-wide truncate">{model.id}</div>
                       </div>
-                      {catalogId ? (
-                        unloadButton(catalogId)
+                      {resident ? (
+                        unloadButton(actionId)
                       ) : (
-                        <span className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-md border border-success/30 bg-success/10 text-success font-medium">
-                          {t('AI_SETTINGS_DOWNLOADED_BADGE')}
-                        </span>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="hover:border-primary/60 hover:bg-primary/10 hover:text-primary"
+                          onClick={() => void handleLoadModel(model.id)}
+                          loading={loadingModelId === model.id}
+                          disabled={loadingModelId !== null || unloadingModelId !== null || saving}
+                          data-testid={`load-model-${model.id}`}
+                        >
+                          {t('AI_SETTINGS_LOAD')}
+                        </Button>
                       )}
                     </div>
                   );

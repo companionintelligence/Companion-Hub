@@ -42,6 +42,8 @@ describe('InferenceController — preferences', () => {
   let controller: InferenceController;
   let configService: MockProxy<ConfigurationService>;
   let ollamaBackend: MockProxy<OllamaBackend>;
+  let lemonadeBackend: MockProxy<LemonadeBackend>;
+  let modelRegistry: MockProxy<ModelRegistryService>;
   let inferenceRefresh: { requestRefresh: ReturnType<typeof vi.fn> };
   let appCredentials: MockProxy<AppCredentialsService>;
 
@@ -89,6 +91,8 @@ describe('InferenceController — preferences', () => {
     controller = moduleRef.get(InferenceController);
     configService = moduleRef.get(ConfigurationService);
     ollamaBackend = moduleRef.get(OllamaBackend);
+    lemonadeBackend = moduleRef.get(LemonadeBackend);
+    modelRegistry = moduleRef.get(ModelRegistryService);
   });
 
   it('returns nulls when global preferences are unset', async () => {
@@ -279,8 +283,50 @@ describe('InferenceController — preferences', () => {
     expect(result).toEqual({
       backend: 'ollama',
       discoveryUnavailable: false,
-      models: [{ id: 'mistral:latest', name: 'mistral:latest', state: 'available' }],
+      models: [{ id: 'mistral:latest', name: 'mistral:latest', state: 'available', resident: false }],
     });
+  });
+
+  it('marks a runtime model resident only when the engine says it is loaded', async () => {
+    ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['mistral:latest'] } as any);
+    ollamaBackend.listModels.mockResolvedValue([
+      { id: 'mistral:latest', name: 'mistral:latest', size: 0, loaded: true },
+      { id: 'other:latest', name: 'other:latest', size: 0, loaded: true },
+    ]);
+    ollamaBackend.listResident.mockResolvedValue({
+      backend: 'ollama',
+      source: 'measured',
+      models: [{ id: 'mistral:latest', engineGpuBytes: null, totalBytes: null, expiresAt: null, contextLength: null, quantization: null }],
+    });
+
+    const result = await controller.getRuntimeModels({ backend: 'ollama' });
+
+    expect(result.models).toEqual([
+      { id: 'mistral:latest', name: 'mistral:latest', state: 'available', resident: true },
+      { id: 'other:latest', name: 'other:latest', state: 'available', resident: false },
+    ]);
+  });
+
+  it('loads a downloaded model the catalog does not know by its engine id', async () => {
+    modelRegistry.getCuratedModel.mockReturnValue(undefined);
+    modelRegistry.getCatalog.mockReturnValue([]);
+    lemonadeBackend.listModels.mockResolvedValue([{ id: 'Qwen3-Coder-30B', name: 'Qwen3-Coder-30B', size: 0, loaded: true }]);
+
+    const result = await controller.loadModel({ modelId: 'Qwen3-Coder-30B', backend: 'lemonade' });
+
+    expect(result).toEqual({ success: true, message: 'Model Qwen3-Coder-30B loaded' });
+    expect(lemonadeBackend.loadModel).toHaveBeenCalledWith('Qwen3-Coder-30B');
+  });
+
+  it('refuses to load an engine id that is not downloaded', async () => {
+    modelRegistry.getCuratedModel.mockReturnValue(undefined);
+    modelRegistry.getCatalog.mockReturnValue([]);
+    lemonadeBackend.listModels.mockResolvedValue([]);
+
+    const result = await controller.loadModel({ modelId: 'Qwen3-Coder-30B', backend: 'lemonade' });
+
+    expect(result.success).toBe(false);
+    expect(lemonadeBackend.loadModel).not.toHaveBeenCalled();
   });
 
   it('returns empty model list when selected backend is unavailable', async () => {

@@ -60,7 +60,7 @@ import { buildLemonadeRemediation, classifyLemonadeFailure } from './backends/le
 import { resolveBridgeTopology, resolveHostPlatform } from './backends/ollama-host-bridge';
 import { buildOmlxRemediation, OMLX_PROBE_API_KEY_HEADER, OmlxBackend, resolveOmlxProbeUrl } from './backends/omlx.backend';
 import { OpenAiCompatibleClient } from './backends/openai-compatible.client';
-import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels } from './model-availability.util';
+import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels, servedIdForCatalogModel } from './model-availability.util';
 import { BackendObserverService } from './supervision/backend-observer.service';
 import { buildTranscriptionForm, MAX_TRANSCRIPTION_BYTES, speechContentType, type UploadedAudio } from './audio-proxy.util';
 import { sendRouteError } from './inference-error-reply';
@@ -397,6 +397,14 @@ export class InferenceController {
     }
 
     const models = await backendService.listModels();
+    // `state` stays the on-disk inventory. `resident` is the engine's own residency read, so a
+    // downloaded row can offer Load or Unload without treating every file on disk as in memory.
+    const residency = backendService.listResident
+      ? await Promise.resolve()
+          .then(() => backendService.listResident?.())
+          .catch(() => null)
+      : null;
+    const residentIds = new Set(residency?.source === 'measured' ? (residency.models ?? []).map((model) => model.id) : []);
 
     return {
       backend,
@@ -414,13 +422,11 @@ export class InferenceController {
          * `pulled` is the on-disk one, so the route asserted residency it never measured.
          *
          * Measured on beta-max: this route reported 11/11 `loaded` while the engine's own
-         * `/api/ps` reported zero models resident. Nothing reads this field — the AI settings
-         * card ignores it and renders a "Downloaded" badge — so correcting the word costs
-         * nothing and stops the API stating something false.
-         *
-         * Real residency needs `/api/ps`, which no authenticated route exposes today.
+         * `/api/ps` reported zero models resident. `resident` is that measurement. `state` stays
+         * the inventory word.
          */
         state: model.loaded ? 'available' : 'unknown',
+        resident: residentIds.has(model.id),
       })),
     };
   }
@@ -549,25 +555,62 @@ export class InferenceController {
     }
   }
 
+  /**
+   * A catalog id for `modelId`, which may already be one or may be the engine's spelling of one
+   * (`backendModelId`, or Lemonade's `user.` form). Null when the file is only in the engine.
+   */
+  private catalogIdForEngineModel(modelId: string): string | null {
+    if (this.modelRegistry.getCuratedModel(modelId)) return modelId;
+    const catalog = this.modelRegistry.getCatalog() ?? [];
+    return catalog.find((model) => servedIdForCatalogModel(model, [modelId]))?.id ?? null;
+  }
+
   @UseGuards(AuthGuard)
   @Post('models/load')
-  async loadModel(@Body() body: { modelId: string }) {
-    // Through the router, like a pin: it makes room, sizes the context window and refuses a load
-    // that cannot fit, where the engine's own load would go on top of whatever holds the card.
-    // `operator`: AuthGuard admits only a signed-in operator or a host-local credential acting as
-    // one, never an app's key, so this load may unload any idle model — an app's included — and
-    // the Hub picks its window.
-    const outcome = await this.router.loadTrackedModel(body.modelId, { origin: 'operator' });
-    if (!outcome.loaded) {
-      return { success: false, message: outcome.reason };
+  async loadModel(@Body() body: { modelId: string; backend?: InferenceBackendType }) {
+    const catalogId = this.catalogIdForEngineModel(body.modelId);
+    if (catalogId) {
+      // Through the router, like a pin: it makes room, sizes the context window and refuses a load
+      // that cannot fit, where the engine's own load would go on top of whatever holds the card.
+      // `operator`: AuthGuard admits only a signed-in operator or a host-local credential acting as
+      // one, never an app's key, so this load may unload any idle model — an app's included — and
+      // the Hub picks its window.
+      const outcome = await this.router.loadTrackedModel(catalogId, { origin: 'operator' });
+      if (!outcome.loaded) {
+        return { success: false, message: outcome.reason };
+      }
+      return { success: true, message: `Model ${catalogId} loaded` };
     }
+
+    // A file the engine downloaded under a name the catalog does not have. Lemonade keeps the
+    // window that was saved with the file; the Hub has no footprint for it, so this does not run
+    // the catalog fit. The engine still replaces its other chat model when it only holds one.
+    if (!body.backend) {
+      return { success: false, message: `Model ${body.modelId} is not in the catalog` };
+    }
+    const backend = this.backends.get(body.backend);
+    const listed = ((await Promise.resolve()
+      .then(() => backend.listModels())
+      .catch(() => [])) ?? []) as { id: string }[];
+    if (!listed.some((model) => model.id === body.modelId)) {
+      return { success: false, message: `${body.modelId} is not downloaded on ${body.backend}` };
+    }
+    await backend.loadModel(body.modelId);
     return { success: true, message: `Model ${body.modelId} loaded` };
   }
 
   @UseGuards(AuthGuard)
   @Post('models/unload')
-  async unloadModel(@Body() body: { modelId: string }) {
-    await this.modelPuller.unloadModel(body.modelId);
+  async unloadModel(@Body() body: { modelId: string; backend?: InferenceBackendType }) {
+    const catalogId = this.catalogIdForEngineModel(body.modelId);
+    if (catalogId) {
+      await this.modelPuller.unloadModel(catalogId);
+      return { success: true, message: `Model ${catalogId} unloaded` };
+    }
+    if (!body.backend) {
+      return { success: false, message: `Model ${body.modelId} is not in the catalog` };
+    }
+    await this.backends.get(body.backend).unloadModel(body.modelId);
     return { success: true, message: `Model ${body.modelId} unloaded` };
   }
 
@@ -744,12 +787,20 @@ export class InferenceController {
     const ready = !!(health.running && health.healthy);
     const apiKeyConfigured = Boolean(this.lemonadeBackend.getApiKey());
     if (ready) {
+      // `loadedModels` is the download inventory. `residentModels` is what Lemonade is actually
+      // holding, so the status card does not present the first downloaded name as the chosen model.
+      const residency = await Promise.resolve()
+        .then(() => this.lemonadeBackend.listResident())
+        .catch(() => null);
+      const residentModels =
+        residency?.source === 'measured' ? (residency.models ?? []).map((model) => model.id).filter((id) => id && id !== 'unknown') : [];
       return {
         ready,
         running: health.running,
         endpointUrl,
         displayEndpoint: `${endpointUrl}/v1`,
         loadedModels: health.modelsLoaded,
+        residentModels,
         apiKeyConfigured,
       };
     }

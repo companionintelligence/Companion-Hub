@@ -193,7 +193,8 @@ export const LemonadeSetupCard = ({ status, checking, onRecheck }: LemonadeSetup
 
   if (status.ready) {
     const endpoint = status.displayEndpoint ?? `${status.endpointUrl}/v1`;
-    const loadedModel = status.loadedModels?.[0];
+    const residentModel = status.residentModels?.find((id) => id.length > 0);
+    const downloadedCount = status.loadedModels?.length ?? 0;
     return (
       <Card className="border-success/30 bg-success/10">
         <CardContent className="space-y-3 p-4">
@@ -203,8 +204,16 @@ export const LemonadeSetupCard = ({ status, checking, onRecheck }: LemonadeSetup
               <div className="min-w-0">
                 <div className="text-sm font-medium text-success">{t('ONBOARDING_LEMONADE_DETECTED')}</div>
                 <div className="text-xs text-success">{endpoint}</div>
-                {loadedModel && (
-                  <div className="mt-0.5 truncate text-xs text-success">{t('ONBOARDING_LEMONADE_MODEL_LOADED', { model: loadedModel })}</div>
+                {residentModel ? (
+                  <div className="mt-0.5 truncate text-xs text-success" data-testid="lemonade-resident-model">
+                    {t('ONBOARDING_LEMONADE_RESIDENT', { model: residentModel })}
+                  </div>
+                ) : (
+                  downloadedCount > 0 && (
+                    <div className="mt-0.5 truncate text-xs text-success" data-testid="lemonade-downloaded-count">
+                      {t('ONBOARDING_LEMONADE_DOWNLOADED_COUNT', { count: downloadedCount })}
+                    </div>
+                  )
                 )}
               </div>
             </div>
