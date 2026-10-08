@@ -1,11 +1,16 @@
 name: Hub CI
+# >>> ci-local:gated original triggers below, restore with `ci-local restore`
+# on:
+#   workflow_call:
+#   workflow_dispatch:
+#   pull_request:
+#   push:
+#     branches:
+#       - dev
+# <<< ci-local:gated
 on:
   workflow_call:
   workflow_dispatch:
-  pull_request:
-  push:
-    branches:
-      - dev
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
