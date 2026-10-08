@@ -424,5 +424,26 @@ describe('InferenceController — onboarding-profile', () => {
       expect(status).toMatchObject({ ready: true, displayEndpoint: 'http://host.docker.internal:13305/v1', loadedModels: ['Gemma-4-E4B-it-GGUF'] });
       expect(hostMetrics.readHostProbe).not.toHaveBeenCalled();
     });
+
+    it('lists a resident chat model ahead of the embedder', async () => {
+      lemonadeBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:13305');
+      lemonadeBackend.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['nomic-embed-text-v1.5-GGUF', 'Qwen3-Coder-30B'],
+      });
+      lemonadeBackend.listResident.mockResolvedValue({
+        backend: 'lemonade',
+        source: 'measured',
+        models: [
+          { id: 'nomic-embed-text-v1.5-GGUF', engineGpuBytes: null, totalBytes: null, expiresAt: null, contextLength: 8192, quantization: null },
+          { id: 'Qwen3-Coder-30B', engineGpuBytes: null, totalBytes: null, expiresAt: null, contextLength: 262144, quantization: null },
+        ],
+      });
+
+      const status = await controller.getLemonadeStatus();
+
+      expect(status.residentModels?.[0]).toBe('Qwen3-Coder-30B');
+    });
   });
 });

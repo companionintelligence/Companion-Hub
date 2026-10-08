@@ -565,6 +565,13 @@ export class InferenceController {
     return catalog.find((model) => servedIdForCatalogModel(model, [modelId]))?.id ?? null;
   }
 
+  /** True when this resident id is an embedder, so the status card does not present it as the chat model. */
+  private isEmbeddingResident(modelId: string): boolean {
+    if (/embed/i.test(modelId)) return true;
+    const catalog = this.modelRegistry.getCatalog() ?? [];
+    return catalog.some((model) => model.modality !== 'llm' && (model.id === modelId || model.backendModelId === modelId));
+  }
+
   @UseGuards(AuthGuard)
   @Post('models/load')
   async loadModel(@Body() body: { modelId: string; backend?: InferenceBackendType }) {
@@ -792,8 +799,11 @@ export class InferenceController {
       const residency = await Promise.resolve()
         .then(() => this.lemonadeBackend.listResident())
         .catch(() => null);
-      const residentModels =
+      const measured =
         residency?.source === 'measured' ? (residency.models ?? []).map((model) => model.id).filter((id) => id && id !== 'unknown') : [];
+      // Lemonade lists the embedder ahead of the chat model. The card shows the first id, so an
+      // embedding-only reading hid the coder the operator just loaded.
+      const residentModels = [...measured].sort((a, b) => Number(this.isEmbeddingResident(a)) - Number(this.isEmbeddingResident(b)));
       return {
         ready,
         running: health.running,

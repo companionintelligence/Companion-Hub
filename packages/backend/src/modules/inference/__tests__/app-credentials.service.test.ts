@@ -759,6 +759,28 @@ describe('AppCredentialsService', () => {
       expect(config.prePull.find((d) => d.kind === 'embeddings')).toMatchObject({ catalogId: lemonadeEmbedder.id, pull: true });
     });
 
+    it('hands OpenClaw the downloaded file the operator saved, not another catalog model on the same server', async () => {
+      const file = 'Qwen3-Coder-30B-A3B-Instruct-GGUF-Qwen3-Coder-30B-A3B-Instruct-Q6_K.gguf';
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'lemonade',
+        preferredModel: file,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      } as never);
+      lemonadeBackend.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['Gemma-4-E4B-it-GGUF', 'nomic-embed-text-v1.5-GGUF', file],
+      });
+      lemonadeBackend.servedContextLength.mockResolvedValue(262144);
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.env.DEFAULT_MODEL).toBe(file);
+      expect(config.env.CI_LLM_NUM_CTX).toBe('262144');
+    });
+
     it("keeps Lemonade's embedder when a healthy Ollama runs beside Lemonade: one engine, one card", async () => {
       ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['nomic-embed-text:latest'] });
 

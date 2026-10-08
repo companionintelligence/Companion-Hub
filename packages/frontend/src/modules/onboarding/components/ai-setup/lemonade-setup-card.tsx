@@ -193,7 +193,10 @@ export const LemonadeSetupCard = ({ status, checking, onRecheck }: LemonadeSetup
 
   if (status.ready) {
     const endpoint = status.displayEndpoint ?? `${status.endpointUrl}/v1`;
-    const residentModel = status.residentModels?.find((id) => id.length > 0);
+    const residents = status.residentModels?.filter((id) => id.length > 0) ?? [];
+    // The embedder is resident beside the chat model and Lemonade lists it first. The line is the
+    // chat model when one is holding; an embedder-only server still names that model.
+    const residentModel = residents.find((id) => !/embed/i.test(id)) ?? residents[0];
     const downloadedCount = status.loadedModels?.length ?? 0;
     return (
       <Card className="border-success/30 bg-success/10">
