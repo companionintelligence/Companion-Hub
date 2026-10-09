@@ -9,7 +9,9 @@ import type { InferenceEnvStaleness } from '@/modules/apps/inference-env-stalene
 // one method the refresh calls, so the module is replaced with an empty class and mocked per test.
 vi.mock('../app-lifecycle.service', () => ({ AppLifecycleService: class AppLifecycleService {} }));
 vi.mock('@/modules/apps/inference-env-staleness.service', () => ({ InferenceEnvStalenessService: class InferenceEnvStalenessService {} }));
+vi.mock('node:fs/promises', () => ({ readFile: vi.fn() }));
 
+import { readFile } from 'node:fs/promises';
 import { AppLifecycleService } from '../app-lifecycle.service';
 import { InferenceEnvStalenessService } from '@/modules/apps/inference-env-staleness.service';
 import { AppCredentialsService } from '@/modules/inference/app-credentials.service';
@@ -24,6 +26,7 @@ import {
 
 const HERMES = 'hermes-agent:ci-marketplace' as AppUrn;
 const OPENCLAW = 'openclaw:ci-marketplace' as AppUrn;
+const CI_OPENCLAW = 'ci-openclaw:ci-marketplace' as AppUrn;
 const MEMORY = 'ci-memory:ci-marketplace' as AppUrn;
 
 const staleness = (appUrn: AppUrn, overrides: Partial<InferenceEnvStaleness>): InferenceEnvStaleness => ({
@@ -47,6 +50,7 @@ describe('AiAppInferenceRefreshService', () => {
   let stalenessService: MockProxy<InferenceEnvStalenessService>;
   let credentials: MockProxy<AppCredentialsService>;
   let endpoints: MockProxy<InferenceEndpointService>;
+  let configuration: MockProxy<ConfigurationService>;
   let restarted: AppUrn[];
   let results: Map<AppUrn, InferenceEnvStaleness | Error>;
 
@@ -55,14 +59,14 @@ describe('AiAppInferenceRefreshService', () => {
     stalenessService = mock<InferenceEnvStalenessService>();
     credentials = mock<AppCredentialsService>();
     endpoints = mock<InferenceEndpointService>();
-    const configuration = mock<ConfigurationService>();
+    configuration = mock<ConfigurationService>();
     configuration.getHubPoolPreferences.mockReturnValue({ poolHealthPollSeconds: 30 } as never);
 
     restarted = [];
     results = new Map();
     // Stands in for restartAiApps' loop over running AI apps: ask, then restart on a yes.
     lifecycle.restartAiApps.mockImplementation(async (options) => {
-      for (const appUrn of [HERMES, OPENCLAW, MEMORY]) {
+      for (const appUrn of [HERMES, OPENCLAW, CI_OPENCLAW, MEMORY]) {
         if (!options?.shouldRestart || (await options.shouldRestart(appUrn))) restarted.push(appUrn);
       }
     });
@@ -163,6 +167,25 @@ describe('AiAppInferenceRefreshService', () => {
       // Still stale when the cooldown from that restart ends: the recheck picks it up without another event.
       await vi.advanceTimersByTimeAsync(AUTOMATIC_RESTART_COOLDOWN_MS + REFRESH_DEBOUNCE_MS);
       expect(restarted).toEqual([OPENCLAW, OPENCLAW, OPENCLAW]);
+    });
+
+    it('restarts ci-openclaw on an operator save when the picker left a downloaded model selected', async () => {
+      configuration.getConfig.mockReturnValue({ directories: { appDataDir: '/data' } } as never);
+      vi.mocked(readFile).mockResolvedValue(
+        JSON.stringify({ agents: { defaults: { model: { primary: 'ollama/Qwen3-0.6B-GGUF:latest' } } } }) as never,
+      );
+      results.set(CI_OPENCLAW, staleness(CI_OPENCLAW, { stale: false }));
+
+      service.requestRefresh('inference preferences changed');
+      const decisions = await service.flush();
+      expect(restarted).toEqual([CI_OPENCLAW]);
+      expect(decisions.find((decision) => decision.appUrn === CI_OPENCLAW)?.why).toContain('returning it to Hub Auto');
+      expect(readFile).toHaveBeenCalledWith('/data/ci-marketplace/ci-openclaw/data/.openclaw/openclaw.json', 'utf8');
+
+      restarted.length = 0;
+      service.requestRefresh('pool membership changed', { automatic: true });
+      await service.flush();
+      expect(restarted).toEqual([]);
     });
 
     it('restarts on a failed staleness check only when an operator changed a setting', async () => {

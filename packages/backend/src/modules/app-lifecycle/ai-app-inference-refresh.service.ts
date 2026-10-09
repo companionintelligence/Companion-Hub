@@ -1,4 +1,7 @@
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import { Injectable, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
+import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -215,6 +218,15 @@ export class AiAppInferenceRefreshService implements OnModuleInit, OnModuleDestr
         return { appUrn, restart: false, why: 'the Hub hands it no inference config' };
       }
       if (!result.stale) {
+        // The env can already name the saved model while OpenClaw's picker still holds an
+        // older downloaded row. An operator save puts that agent back on Hub Auto. An
+        // automatic sweep leaves the pick until the next start.
+        if (!automatic) {
+          const drift = await this.openClawLocalPickerDrift(appUrn);
+          if (drift) {
+            return { appUrn, restart: true, why: drift };
+          }
+        }
         return { appUrn, restart: false, why: 'its inference config is already current' };
       }
       if (automatic && (result.wouldRemoveEndpoint || result.wouldRemoveChatModel)) {
@@ -242,6 +254,32 @@ export class AiAppInferenceRefreshService implements OnModuleInit, OnModuleDestr
         ? { appUrn, restart: false, why: `staleness check failed (${message}); not restarting automatically` }
         : { appUrn, restart: true, why: `staleness check failed (${message}); restarting because a setting changed` };
     }
+  }
+
+  /**
+   * OpenClaw stores a click on a downloaded model as `ollama/<tag>`. That is not the
+   * Hub handout, so the env comparison stays current and Save would leave the old row
+   * selected. Returns the restart reason when an operator save should take the default back.
+   */
+  private async openClawLocalPickerDrift(appUrn: AppUrn): Promise<string | null> {
+    if (extractAppUrn(appUrn).appName !== 'ci-openclaw') {
+      return null;
+    }
+    try {
+      const { directories } = this.configuration.getConfig();
+      const { appStoreId, appName } = extractAppUrn(appUrn);
+      const configPath = path.join(directories.appDataDir, appStoreId, appName, 'data', '.openclaw', 'openclaw.json');
+      const config = JSON.parse(await readFile(configPath, 'utf8')) as {
+        agents?: { defaults?: { model?: { primary?: unknown } } };
+      };
+      const primary = config.agents?.defaults?.model?.primary;
+      if (typeof primary === 'string' && primary.startsWith('ollama/')) {
+        return `chat default left the Hub model (${primary}); returning it to Hub Auto`;
+      }
+    } catch {
+      // A missing or unreadable config is not a drifted default.
+    }
+    return null;
   }
 
   /** One automatic sweep once the earliest pending cooldown ends; a later request never delays an earlier one. */
