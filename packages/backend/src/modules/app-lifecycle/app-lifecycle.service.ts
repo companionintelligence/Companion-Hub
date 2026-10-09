@@ -1214,23 +1214,19 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     const store = await this.appStoreService.getAppStoreBySlug(appStoreId);
 
     if (store && store.type === 'ci_cloud_api') {
-      try {
-        const result = await this.repoHelpers.downloadAppFiles(store.url, store.slug, appName);
-        if (!result.success) {
-          const rawMessage = result.message ?? 'COMMON_AN_ERROR_OCCURRED';
-          const messageKey = (Object.hasOwn(messages, rawMessage) ? rawMessage : 'COMMON_AN_ERROR_OCCURRED') as keyof typeof messages;
-          throw new TranslatableError(messageKey, undefined, HttpStatus.BAD_GATEWAY);
-        }
-      } catch (error) {
+      const result = await this.repoHelpers.downloadAppFiles(store.url, store.slug, appName);
+      if (!result.success) {
+        const failure = this.describePortalBundleFailure(appUrn, 'install', result);
         this.sseService.emit('app', {
           event: 'install_error',
           appUrn,
           appStatus: 'uninstalled',
-          error: error instanceof Error ? error.message : String(error),
+          error: failure.messageKey,
+          errorCode: result.errorCode,
+          errorDetail: failure.detail,
         });
         this.agentNotifyService?.notify('install_error', { appUrn }, 'high');
-        this.reportAppFailure(appUrn, 'install', error instanceof Error ? error.message : String(error));
-        throw error;
+        throw failure.error;
       }
     }
 
@@ -2558,9 +2554,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     if (store && store.type === 'ci_cloud_api') {
       const result = await this.repoHelpers.downloadAppFiles(store.url, store.slug, appName);
       if (!result.success) {
-        const rawMessage = result.message ?? 'COMMON_AN_ERROR_OCCURRED';
-        const messageKey = (Object.hasOwn(messages, rawMessage) ? rawMessage : 'COMMON_AN_ERROR_OCCURRED') as keyof typeof messages;
-        throw new TranslatableError(messageKey, undefined, HttpStatus.BAD_GATEWAY);
+        throw this.describePortalBundleFailure(appUrn, 'update', result).error;
       }
     }
 
@@ -2801,6 +2795,36 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
   private reportAppFailure(appUrn: AppUrn, phase: AppFailurePhase, message: string, errorCode?: string): void {
     this.errorReportingService?.reportAppFailure({ appUrn, phase, message, errorCode });
+  }
+
+  /**
+   * Turn a failed Portal bundle fetch into the error the caller throws, and report it first.
+   *
+   * The user sees a translation key: the one `downloadAppFiles` chose when Portal's status had a
+   * meaning of its own (401/402/403), else `COMMON_AN_ERROR_OCCURRED`. Everything else about the
+   * failure — `timeout of 20000ms exceeded`, `Failed to fetch app files: 503 …` — used to stop
+   * here: it was replaced by that key before being reported, so every non-auth Portal failure
+   * reached Sentry as `COMMON_AN_ERROR_OCCURRED`, unclassified, with the cause only in a log on
+   * the device (#1912). The reason now travels as the report's message, the error's `cause`, and
+   * the SSE `errorDetail`; the key stays what is rendered.
+   */
+  private describePortalBundleFailure(
+    appUrn: AppUrn,
+    phase: 'install' | 'update',
+    result: { message: string; errorCode?: string },
+  ): { messageKey: keyof typeof messages; detail: string | undefined; error: TranslatableError } {
+    const reason = result.message || 'unknown error';
+    const isKey = Object.hasOwn(messages, reason);
+    const messageKey = (isKey ? reason : 'COMMON_AN_ERROR_OCCURRED') as keyof typeof messages;
+    // A key is already the whole story and would read as noise in a tooltip.
+    const detail = isKey ? undefined : reason;
+
+    this.logger.error(`Portal bundle fetch failed for ${appUrn} (${phase}${result.errorCode ? `, ${result.errorCode}` : ''}): ${reason}`);
+    this.reportAppFailure(appUrn, phase, reason, result.errorCode);
+
+    const error = new TranslatableError(messageKey, undefined, HttpStatus.BAD_GATEWAY, detail ? { cause: new Error(detail) } : undefined);
+
+    return { messageKey, detail, error };
   }
 
   /**

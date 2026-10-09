@@ -861,6 +861,93 @@ describe('AppLifecycleService', () => {
     });
 
     /*
+     * #1912: a customer hub's n8n install failed twice and Sentry received only
+     * "COMMON_AN_ERROR_OCCURRED", unclassified. `downloadAppFiles` had said why
+     * ("timeout of 20000ms exceeded"); this method replaced that with the key it
+     * shows the user, then reported the key. The key is still what is shown; the
+     * reason now goes to Sentry, to the SSE payload, and onto the error's `cause`.
+     */
+    describe('when the Portal install bundle cannot be fetched', () => {
+      const portalStore = { slug: 'ci-marketplace', url: 'http://portal/api', type: 'ci_cloud_api' };
+
+      beforeEach(() => {
+        appStoreService.getAppStoreBySlug.mockResolvedValue(portalStore as any);
+      });
+
+      it('shows the user the generic key but reports the reason and its code', async () => {
+        reposHelpers.downloadAppFiles.mockResolvedValue({
+          success: false,
+          message: 'timeout of 20000ms exceeded (ECONNABORTED)',
+          errorCode: 'portal_timeout',
+        });
+
+        const thrown = await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }).then(
+          () => null,
+          (error: unknown) => error,
+        );
+
+        expect(thrown).toBeInstanceOf(TranslatableError);
+        expect((thrown as TranslatableError).message).toBe('COMMON_AN_ERROR_OCCURRED');
+        expect((thrown as TranslatableError).cause).toEqual(new Error('timeout of 20000ms exceeded (ECONNABORTED)'));
+        expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith({
+          appUrn,
+          phase: 'install',
+          message: 'timeout of 20000ms exceeded (ECONNABORTED)',
+          errorCode: 'portal_timeout',
+        });
+        expect(sseService.emit).toHaveBeenCalledWith('app', {
+          event: 'install_error',
+          appUrn,
+          appStatus: 'uninstalled',
+          error: 'COMMON_AN_ERROR_OCCURRED',
+          errorCode: 'portal_timeout',
+          errorDetail: 'timeout of 20000ms exceeded (ECONNABORTED)',
+        });
+        expect(appsRepository.createApp).not.toHaveBeenCalled();
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+
+      it('shows a Portal auth or payment answer by its own key, with no detail to repeat it', async () => {
+        reposHelpers.downloadAppFiles.mockResolvedValue({ success: false, message: 'APP_INSTALL_PORTAL_DOWNLOAD_PAYMENT_REQUIRED' });
+
+        await expect(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} })).rejects.toThrow('APP_INSTALL_PORTAL_DOWNLOAD_PAYMENT_REQUIRED');
+
+        expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith(
+          expect.objectContaining({ phase: 'install', message: 'APP_INSTALL_PORTAL_DOWNLOAD_PAYMENT_REQUIRED', errorCode: undefined }),
+        );
+        expect(sseService.emit).toHaveBeenCalledWith(
+          'app',
+          expect.objectContaining({ event: 'install_error', error: 'APP_INSTALL_PORTAL_DOWNLOAD_PAYMENT_REQUIRED', errorDetail: undefined }),
+        );
+      });
+
+      it('reports a failed bundle fetch during an update the same way, under the update phase', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({
+          id: 1,
+          appName: 'testapp',
+          appStoreSlug: 'ci-marketplace',
+          status: 'running',
+          config: {},
+        } as any);
+        reposHelpers.downloadAppFiles.mockResolvedValue({
+          success: false,
+          message: 'Failed to fetch app files: 503 Service Unavailable',
+          errorCode: 'portal_http_error',
+        });
+
+        await expect(service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false })).rejects.toThrow('COMMON_AN_ERROR_OCCURRED');
+
+        expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith({
+          appUrn,
+          phase: 'update',
+          message: 'Failed to fetch app files: 503 Service Unavailable',
+          errorCode: 'portal_http_error',
+        });
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+    });
+
+    /*
      * The service is the gate now, not the HTTP controller (CI-Hub#1397): MCP and
      * rehydrate reached `installApp` / `updateAppConfig` with no check at all, and
      * the sweeps read "no operator id" and "WhoIs unavailable" as "allowed".
