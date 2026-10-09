@@ -218,7 +218,7 @@ export default function ConnectPage() {
 
   if (step === 'sign-in') {
     return (
-      <div className="safe-area-inset flex min-h-dvh flex-col items-center justify-center gap-5 overflow-y-auto px-8">
+      <div className="safe-area-inset flex h-dvh flex-col items-center justify-center-safe gap-5 overflow-y-auto px-8">
         <img src={CI_LOGO} alt="" className="aspect-square w-[min(48vw,12rem)]" />
         <div className="flex w-full max-w-sm flex-col items-center gap-3">
           <Button
@@ -259,8 +259,11 @@ export default function ConnectPage() {
     );
   }
 
+  // app.css sets `body { overflow: hidden }`, so the document never scrolls.
+  // This wrapper has to be the scroller: a fixed h-dvh, not min-h-dvh, which
+  // grows with a long Hub list and leaves the bottom rows unreachable.
   return (
-    <div className="safe-area-inset flex min-h-dvh flex-col items-stretch justify-start overflow-y-auto sm:items-center sm:justify-center">
+    <div className="safe-area-inset flex h-dvh flex-col items-stretch justify-start overflow-y-auto sm:items-center sm:justify-center-safe">
       <Card className="mx-auto w-full max-w-md shrink-0">
         <CardHeader>
           <CardTitle>{t('MOBILE_CONNECT_PICK_TITLE')}</CardTitle>
