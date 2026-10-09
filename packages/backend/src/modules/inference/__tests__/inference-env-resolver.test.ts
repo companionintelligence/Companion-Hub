@@ -619,6 +619,27 @@ describe('InferenceEnvResolver', () => {
       await expect(service.resolve()).resolves.toMatchObject({ CI_UTILITY_MODEL: 'Qwen3.8-27B-GGUF' });
     });
 
+    it('uses the downloaded file the operator saved instead of another catalog model on the same server', async () => {
+      const file = 'Qwen3-Coder-30B-A3B-Instruct-GGUF-Qwen3-Coder-30B-A3B-Instruct-Q6_K.gguf';
+      config.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'lemonade',
+        preferredModel: file,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      });
+      lemonadeBackend.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['Qwen3.8-27B-GGUF', 'nomic-embed-text-v1.5-GGUF', file],
+      });
+      lemonadeBackend.servedContextLength.mockResolvedValue(262144);
+
+      const env = await service.resolve();
+
+      expect(env.CI_CHAT_MODEL).toBe(file);
+      expect(env.CI_LLM_NUM_CTX).toBe('262144');
+    });
+
     it("embeds on Lemonade itself when there is no Ollama (Lemonade serves Ollama's /api/embed)", async () => {
       ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
 

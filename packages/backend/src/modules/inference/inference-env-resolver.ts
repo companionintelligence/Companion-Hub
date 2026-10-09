@@ -377,6 +377,11 @@ export class InferenceEnvResolver {
       })) {
         this.logger.warn(`[InferenceEnvResolver] ${note}`);
       }
+    } else if (chatModel && chatServedLocally && !chatCurated) {
+      const servedContextLength = await Promise.resolve(backend.servedContextLength?.(chatModel) ?? null).catch(() => null);
+      if (servedContextLength && servedContextLength > 0) {
+        env.CI_LLM_NUM_CTX = String(servedContextLength);
+      }
     }
 
     if (Object.keys(cloudProviderEnv).length > 0) {
@@ -438,6 +443,15 @@ export class InferenceEnvResolver {
     };
 
     const preferredCurated = preferredId ? this.modelRegistry.getCuratedModel(preferredId) : undefined;
+    if (preferredId && modelsLoaded.includes(preferredId)) {
+      const catalogChatHere = preferredCurated?.backend === backendType && preferredCurated.modality === 'llm';
+      const nonChat = (preferredCurated != null && preferredCurated.modality !== 'llm') || /embed/i.test(preferredId);
+      // Same rule as the credentials handout: a file the operator saved, which the catalog has no
+      // chat row for, is the chat model. A recommended catalog model on the same disk is not.
+      if (!catalogChatHere && !nonChat && this.servedModelVerdict(preferredId, backendType, requirements) !== 'fails') {
+        return { engineId: preferredId };
+      }
+    }
     const backendPreferredCurated = preferredCurated?.backend === backendType ? preferredCurated : undefined;
     const llmCandidates = this.modelRegistry
       .getRecommendedModelsForHardware(profile.tier, profile)

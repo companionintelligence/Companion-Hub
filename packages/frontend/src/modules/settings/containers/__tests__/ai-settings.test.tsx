@@ -21,6 +21,7 @@ const {
   ensurePullsStarted,
   unpinInferenceModel,
   unloadInferenceModel,
+  loadInferenceModel,
 } = vi.hoisted(() => ({
   fetchInferenceOnboardingProfile: vi.fn(),
   fetchInferencePreferences: vi.fn(),
@@ -37,6 +38,7 @@ const {
   ensurePullsStarted: vi.fn(),
   unpinInferenceModel: vi.fn(),
   unloadInferenceModel: vi.fn(),
+  loadInferenceModel: vi.fn(),
 }));
 
 vi.mock('@/lib/inference/inference-api', () => ({
@@ -56,6 +58,7 @@ vi.mock('@/lib/inference/inference-api', () => ({
   // `unpinInferenceModel is not a function` into handleSave's catch and reports a failed save.
   unpinInferenceModel,
   unloadInferenceModel,
+  loadInferenceModel,
 }));
 
 vi.mock('@/lib/inference/tracked-models', async (importOriginal) => {
@@ -343,7 +346,10 @@ describe('AiSettingsContainer', () => {
 
     expect(screen.getByTestId('recommended-model-checkbox-m1')).toBeInTheDocument();
     expect(screen.queryByTestId('runtime-model-checkbox-llama3.2:latest')).not.toBeInTheDocument();
-    expect(screen.getByText('Models currently active in the inference backend.')).toBeInTheDocument();
+    expect(screen.getByTestId('load-model-llama3.2:latest')).toBeInTheDocument();
+    expect(
+      screen.getByText('Models downloaded on the selected backend. Load one to use it, then save so your apps restart with it.'),
+    ).toBeInTheDocument();
   });
 
   it('keeps curated model selection independent of runtime model discovery', async () => {
@@ -528,7 +534,7 @@ describe('AiSettingsContainer', () => {
     await waitFor(() => expect(screen.getByTestId('unload-model-o1')).toBeInTheDocument());
     await user.click(screen.getByTestId('unload-model-o1'));
 
-    await waitFor(() => expect(unloadInferenceModel).toHaveBeenCalledWith('o1'));
+    await waitFor(() => expect(unloadInferenceModel).toHaveBeenCalledWith('o1', 'ollama'));
     // The registry is re-read, and a model that is only on disk has nothing to unload.
     await waitFor(() => expect(screen.queryByTestId('unload-model-o1')).not.toBeInTheDocument());
     // Still selected, so the next Save pins — loads — it again.
@@ -562,7 +568,32 @@ describe('AiSettingsContainer', () => {
     const inDownloadedList = screen.getAllByTestId('unload-model-o1')[1];
     if (!inDownloadedList) throw new Error('expected a second Unload button');
     await user.click(inDownloadedList);
-    await waitFor(() => expect(unloadInferenceModel).toHaveBeenCalledWith('o1'));
+    await waitFor(() => expect(unloadInferenceModel).toHaveBeenCalledWith('o1', 'ollama'));
+  });
+
+  it('loads a downloaded model the catalog does not know and saves that id as the chat model', async () => {
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['o1'], [llm('o1', 'ollama')]));
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama' });
+    fetchInferenceRuntimeModels.mockResolvedValue({
+      backend: 'ollama',
+      discoveryUnavailable: false,
+      models: [{ id: 'Qwen3-Coder-30B', name: 'Qwen3-Coder-30B', state: 'available', resident: false }],
+    });
+    loadInferenceModel.mockResolvedValue(undefined);
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('load-model-Qwen3-Coder-30B')).toBeInTheDocument());
+    await user.click(screen.getByTestId('load-model-Qwen3-Coder-30B'));
+    await waitFor(() => expect(loadInferenceModel).toHaveBeenCalledWith('Qwen3-Coder-30B', 'ollama'));
+
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() =>
+      expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ backend: 'ollama', model: 'Qwen3-Coder-30B' })),
+    );
   });
 
   it('warns that an emptying save unpins every pinned model', async () => {

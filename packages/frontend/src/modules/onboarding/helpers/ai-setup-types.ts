@@ -110,7 +110,10 @@ export type OmlxStatus = VllmStatus;
 
 /** Lemonade's health card uses the same connection shape and also reports cached model ids. */
 export interface LemonadeStatus extends VllmStatus {
+  /** Downloaded model ids. Not what is in memory. */
   loadedModels?: string[];
+  /** Model ids Lemonade is actually holding, when the health body can say. */
+  residentModels?: string[];
   /** How the probe failed; `auth` means Lemonade answered and refused the Hub's key. */
   failureMode?: BridgeFailureMode | 'auth';
   /** The Hub host's OS, from the host probe: the systemd and firewall steps are Linux-only. */
@@ -138,6 +141,8 @@ export interface RuntimeModelInfo {
   name: string;
   /** In the engine's inventory (on disk), not resident in VRAM — see inference.controller.ts. */
   state: 'available' | 'unknown';
+  /** True when the engine's residency read says this id is in memory. */
+  resident?: boolean;
 }
 
 export interface RuntimeModelsResponse {

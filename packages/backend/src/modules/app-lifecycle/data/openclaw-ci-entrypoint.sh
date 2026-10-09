@@ -384,7 +384,17 @@ const baseEntry = (id, name, caps) => {
     await addModel(model?.id, model?.id);
   }
 
-  const defaultModelAvailable = defaultModel && discoveredIds.has(defaultModel) ? defaultModel : null;
+  // The pool lists untagged files as name:latest. The Hub saves the bare id.
+  // Fold only that implicit tag, the same way the image reconciler does.
+  const withLatestTag = (id) => {
+    const slash = id.lastIndexOf('/');
+    const colon = id.lastIndexOf(':');
+    return colon > slash ? id : id + ':latest';
+  };
+  const sameModelId = (a, b) => a === b || withLatestTag(a) === withLatestTag(b);
+  const defaultModelAvailable = defaultModel
+    ? (discovered.find((model) => typeof model?.id === 'string' && sameModelId(model.id, defaultModel))?.id ?? null)
+    : null;
   const firstModelId = models.find((model) => model.id !== 'auto')?.id ?? null;
   const autoTargetId = defaultModelAvailable || firstModelId;
 

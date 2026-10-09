@@ -10,6 +10,7 @@ import {
   getRuntimeModels,
   getTrackedModels,
   getVllmStatus,
+  loadModel,
   pinModel,
   rescanHardware,
   setCloudProvider,
@@ -168,6 +169,19 @@ export async function saveCloudProviderConfig(body: { provider: CloudProviderTyp
   await unwrap(setCloudProvider({ body } as Parameters<typeof setCloudProvider>[0]));
 }
 
+/**
+ * Load a model into the selected backend. A catalog id goes through the Hub's fit and window.
+ * An engine id the catalog does not know is loaded by that name, keeping the window saved on the file.
+ */
+export async function loadInferenceModel(modelId: string, backend: InferenceBackendType): Promise<void> {
+  const result = (await unwrap(loadModel({ body: { modelId, backend } } as Parameters<typeof loadModel>[0]))) as
+    | { success?: boolean; message?: string }
+    | undefined;
+  if (result?.success === false) {
+    throw new Error(result.message ?? `Could not load ${modelId}`);
+  }
+}
+
 export async function pinInferenceModel(modelId: string): Promise<void> {
   // A refused pin (over the pin budget, or the model cannot be made to fit) is a 201 with
   // `success: false`, not an HTTP error — surface it, or callers report a pin that never happened.
@@ -188,8 +202,8 @@ export async function unpinInferenceModel(modelId: string): Promise<void> {
  * so the next Save pins it again through the load path, which is the one way to make the engine
  * pick up new load options: a pin of a model that is already resident reloads nothing.
  */
-export async function unloadInferenceModel(modelId: string): Promise<void> {
-  await unwrap(unloadModel({ body: { modelId } } as Parameters<typeof unloadModel>[0]));
+export async function unloadInferenceModel(modelId: string, backend?: InferenceBackendType): Promise<void> {
+  await unwrap(unloadModel({ body: { modelId, ...(backend ? { backend } : {}) } } as Parameters<typeof unloadModel>[0]));
 }
 
 export async function fetchOllamaInstallStatus() {

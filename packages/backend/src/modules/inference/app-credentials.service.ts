@@ -120,6 +120,11 @@ function isHostServedBackend(backendType: InferenceBackendType): boolean {
 
 interface LocalChatSelection {
   model: CuratedModel | null;
+  /**
+   * Set when the operator named an engine id the catalog has no chat row for and the backend lists
+   * it. `model` stays null: there is no catalog row to size from.
+   */
+  engineId?: string;
   /** Installed models the app's requirements excluded. */
   rejected: Array<{ engineId: string; unmet: string[] }>;
 }
@@ -339,6 +344,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
 
     let chatModel: CuratedModel | null;
     let chatModelId: string | null;
+    let namedEngineId: string | null = null;
     let chatServedLocally = true;
     let chatModelError: string | null = null;
     let chatModelReady: boolean;
@@ -366,7 +372,8 @@ export class AppCredentialsService implements OnApplicationShutdown {
         requirements,
       );
       chatModel = localChat.model;
-      chatModelId = localChat.model?.backendModelId ?? null;
+      namedEngineId = localChat.engineId ?? null;
+      chatModelId = namedEngineId ?? localChat.model?.backendModelId ?? null;
       // vLLM and oMLX are both host-managed servers with no Hub pull registry — an
       // operator can serve a model outside the catalog, so fall back to whatever it reports rather
       // than leaving chatModelId empty. A served model the catalog knows fails the app is skipped.
@@ -437,7 +444,16 @@ export class AppCredentialsService implements OnApplicationShutdown {
     // pass it as the backend's native `num_ctx` so they don't inherit an oversized memory-based
     // default (e.g. 262144 on unified-memory APUs). The model already meets the app's minimum, so
     // the floor below is always reachable.
-    if (provider !== 'cloud' && chatModel && chatModelId === chatModel.backendModelId) {
+    if (provider !== 'cloud' && namedEngineId && chatModelId === namedEngineId) {
+      // No catalog row to size from. The window Lemonade (or vLLM) already serves this file at is
+      // the one the app must ask for, so a later Save does not reload it at a catalog model's window.
+      const servedContextLength = chatServedLocally
+        ? await Promise.resolve(backend.servedContextLength?.(chatModelId) ?? null).catch(() => null)
+        : null;
+      if (servedContextLength && servedContextLength > 0) {
+        env[keys.numCtx] = String(servedContextLength);
+      }
+    } else if (provider !== 'cloud' && chatModel && chatModelId === chatModel.backendModelId) {
       // Same measured-first sizing as InferenceEnvResolver; see `probeLocalSizing`. Only a
       // model this node serves can be measured, so a pool-served one keeps the heuristic.
       const askOllama = chatServedLocally && backendType === 'ollama';
@@ -650,6 +666,20 @@ export class AppCredentialsService implements OnApplicationShutdown {
       if (curated && curated.modality === 'llm' && hardwareModels.some((m) => m.id === preferredId)) {
         const preferredCurated = pickIfAvailable(curated);
         if (preferredCurated) return { model: preferredCurated, rejected };
+      }
+
+      // A downloaded file the catalog does not name (the operator's Q6 beside the catalog's Q4 row).
+      // Their explicit choice outranks a recommended catalog model that happens to be on disk too.
+      const curatedForId = this.modelRegistry.getCuratedModel(preferredId);
+      const catalogChatHere = curatedForId?.backend === backendType && curatedForId.modality === 'llm';
+      const nonChat = (curatedForId != null && curatedForId.modality !== 'llm') || /embed/i.test(preferredId);
+      if (
+        modelsLoaded.includes(preferredId) &&
+        !catalogChatHere &&
+        !nonChat &&
+        this.servedModelVerdict(preferredId, backendType, requirements) !== 'fails'
+      ) {
+        return { model: null, engineId: preferredId, rejected };
       }
 
       this.logger.warn(

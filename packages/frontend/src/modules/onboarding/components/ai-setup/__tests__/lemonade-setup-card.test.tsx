@@ -114,6 +114,47 @@ describe('LemonadeSetupCard', () => {
     expect(screen.queryByTestId('lemonade-docker-access-hint')).not.toBeInTheDocument();
   });
 
+  it('names the model Lemonade is holding, and otherwise how many are downloaded', () => {
+    const { rerender } = renderCard({
+      ready: true,
+      running: true,
+      endpointUrl: 'http://host.docker.internal:13305',
+      loadedModels: ['Qwen3-0.6B-GGUF', 'Qwen3-Coder-30B'],
+      residentModels: ['Qwen3-Coder-30B'],
+    });
+
+    expect(screen.getByTestId('lemonade-resident-model')).toHaveTextContent('Loaded: Qwen3-Coder-30B');
+    expect(screen.queryByText(/Model available: Qwen3-0.6B-GGUF/)).not.toBeInTheDocument();
+
+    rerender(
+      <LemonadeSetupCard
+        status={{
+          ready: true,
+          running: true,
+          endpointUrl: 'http://host.docker.internal:13305',
+          loadedModels: ['Qwen3-0.6B-GGUF', 'Qwen3-Coder-30B'],
+          residentModels: [],
+        }}
+        checking={false}
+        onRecheck={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('lemonade-downloaded-count')).toHaveTextContent('2 models downloaded');
+  });
+
+  it('names the resident chat model when the embedder is listed first', () => {
+    renderCard({
+      ready: true,
+      running: true,
+      endpointUrl: 'http://host.docker.internal:13305',
+      loadedModels: ['nomic-embed-text-v1.5-GGUF', 'Qwen3-Coder-30B'],
+      residentModels: ['nomic-embed-text-v1.5-GGUF', 'Qwen3-Coder-30B'],
+    });
+
+    expect(screen.getByTestId('lemonade-resident-model')).toHaveTextContent('Loaded: Qwen3-Coder-30B');
+  });
+
   // Audit NIT-2 of #1679: no block had a copy button, and the key script is seven lines an operator
   // had to select by hand out of a block that scrolls sideways.
   describe('copying a command', () => {
