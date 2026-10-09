@@ -7,13 +7,25 @@ import { describeNetworkError } from '@/common/helpers/network-error';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { PORTAL_STORE_LISTING_TIMEOUT_MS } from '@/core/portal/portal.constants';
+import {
+  PORTAL_HTTP_ERROR_CODE,
+  PORTAL_STORE_LISTING_TIMEOUT_MS,
+  type PortalRequestErrorCode,
+  portalErrorCodeFor,
+} from '@/core/portal/portal.constants';
 import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import axios, { type AxiosHeaderValue, type AxiosRequestConfig } from 'axios';
 import git from 'isomorphic-git';
 import http from 'isomorphic-git/http/node';
 import { RegistrationService } from '../registration/registration.service';
 import { buildCatalogSnapshotIndex, catalogSnapshotIndexPath, isSafeCatalogSlug } from './catalog-snapshot-index';
+
+/**
+ * Outcome of a repo or Portal operation. On failure `message` is either a translation key the
+ * caller may show as-is (Portal 401/402/403) or the plain reason, and `errorCode` names the cause
+ * when the operation was a Portal request so callers do not have to parse the message.
+ */
+export type RepoOperationResult = { success: true; message: string } | { success: false; message: string; errorCode?: PortalRequestErrorCode };
 
 @Injectable()
 export class ReposHelpers {
@@ -76,13 +88,13 @@ export class ReposHelpers {
    * Error handler for repo operations
    * @param {unknown} err
    */
-  private handleRepoError(err: unknown) {
+  private handleRepoError(err: unknown): RepoOperationResult {
     // A Portal request that failed below HTTP is told by why it failed: its message is empty when no
     // address of the Portal answered, and its stack is only axios's own frames.
     if (axios.isAxiosError(err)) {
       const message = describeNetworkError(err);
       this.logger.error(`CI Cloud request failed: ${message}`);
-      return { success: false, message };
+      return { success: false, message, errorCode: portalErrorCodeFor(err) };
     }
 
     if (err instanceof Error) {
@@ -531,7 +543,7 @@ export class ReposHelpers {
     }
   }
 
-  public async downloadAppFiles(repoUrl: string, repoSlug: string, appSlug: string) {
+  public async downloadAppFiles(repoUrl: string, repoSlug: string, appSlug: string): Promise<RepoOperationResult> {
     try {
       const repoPath = this.getRepoPath(repoSlug);
       const appPath = path.join(repoPath, 'apps', appSlug);
@@ -563,7 +575,11 @@ export class ReposHelpers {
         if (response.status === 403) {
           return { success: false, message: 'APP_INSTALL_PORTAL_DOWNLOAD_FORBIDDEN' };
         }
-        throw new Error(`Failed to fetch app files: ${response.status} ${response.statusText}`);
+        // Portal answered; the status is the whole story, and it is Portal's to explain. Named
+        // so Sentry groups "Portal said 500" apart from "Portal never answered".
+        const message = `Failed to fetch app files: ${response.status} ${response.statusText}`;
+        this.logger.error(`CI Cloud request failed: ${message}`);
+        return { success: false, message, errorCode: PORTAL_HTTP_ERROR_CODE };
       }
 
       const data = response.data;

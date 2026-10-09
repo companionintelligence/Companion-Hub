@@ -3,6 +3,8 @@ import { Injectable } from '@nestjs/common';
 import * as Sentry from '@sentry/nestjs';
 import type { AppUrn } from '@ci-hub/common/types';
 import { KVM_MISSING_CODE, NETWORK_OVERLAP_CODE, ROCM_KFD_MISSING_CODE } from '@/modules/app-lifecycle/commands/app-lifecycle-errors';
+import { PORTAL_HTTP_ERROR_CODE, PORTAL_TIMEOUT_CODE, PORTAL_UNREACHABLE_CODE } from '@/core/portal/portal.constants';
+import { snapshotHostHealth } from './host-health';
 import { scrubString } from './sentry-scrubber';
 import { type UserConsent, currentUserConsent, resolveTelemetryDecision } from './telemetry-consent';
 
@@ -28,7 +30,14 @@ export interface AppFailureContext {
   containers?: Array<{ name: string; state: string; logs?: string }>;
 }
 
-export type AppFailureCategory = 'user_environment' | 'app_config' | 'unknown';
+/**
+ * - `user_environment`: the device — Docker, disk, network, host load. A warning.
+ * - `app_config`: the marketplace manifest. An error, the app's author's to fix.
+ * - `platform`: a Companion service the Hub depends on answered wrongly (Portal 5xx). An error,
+ *   ours, grouped by cause across apps like the other classified kinds.
+ * - `unknown`: nothing matched; grouped per app so a new failure mode stays its own issue.
+ */
+export type AppFailureCategory = 'user_environment' | 'app_config' | 'platform' | 'unknown';
 
 export interface AppFailureClassification {
   category: AppFailureCategory;
@@ -79,6 +88,12 @@ const ERROR_CODE_CLASSIFICATIONS: Readonly<Record<string, AppFailureClassificati
   [ROCM_KFD_MISSING_CODE]: { category: 'user_environment', errorClass: 'rocm-unavailable' },
   [KVM_MISSING_CODE]: { category: 'user_environment', errorClass: 'kvm-unavailable' },
   [NETWORK_OVERLAP_CODE]: { category: 'user_environment', errorClass: 'network-overlap' },
+  // A Portal request that got no answer is the device's path to Portal or a host too starved to
+  // drive a socket, not Portal (#1912: one hub timed out against Portal, Cloudflare and its own
+  // Postgres in the same minute). Both kinds share a class so one bad hub is one issue.
+  [PORTAL_TIMEOUT_CODE]: { category: 'user_environment', errorClass: 'portal-unreachable' },
+  [PORTAL_UNREACHABLE_CODE]: { category: 'user_environment', errorClass: 'portal-unreachable' },
+  [PORTAL_HTTP_ERROR_CODE]: { category: 'platform', errorClass: 'portal-http-error' },
 };
 
 export function classifyAppFailure(message: string, errorCode?: string): AppFailureClassification {
@@ -239,6 +254,10 @@ export class ErrorReportingService {
           : ['app-failure', context.phase, classification.errorClass],
       );
       scope.setExtra('message', scrubString(context.message));
+      // Whether the host could have driven a socket when this failed. The difference between
+      // "the device's network is broken" and "the device is too busy to notice its network" is
+      // not in any message, and the device is a customer's: this is the only look we get.
+      scope.setContext('host_health', snapshotHostHealth());
 
       if (context.containers?.length) {
         scope.setExtra(

@@ -9,6 +9,7 @@ const { scopes } = vi.hoisted(() => ({
     setLevel: ReturnType<typeof vi.fn>;
     setExtra: ReturnType<typeof vi.fn>;
     setFingerprint: ReturnType<typeof vi.fn>;
+    setContext: ReturnType<typeof vi.fn>;
   }>,
 }));
 
@@ -22,6 +23,7 @@ vi.mock('@sentry/nestjs', () => ({
       setLevel: vi.fn(),
       setExtra: vi.fn(),
       setFingerprint: vi.fn(),
+      setContext: vi.fn(),
     };
     scopes.push(scope);
     callback(scope);
@@ -146,6 +148,86 @@ describe('ErrorReportingService', () => {
       'Marketplace app crashed: comfyui:ci-marketplace: App transitioned from running to stopped during status sync',
       'error',
     );
+  });
+
+  // #1912: one hub timed out against Portal, Cloudflare and its own Postgres in the same minute.
+  // Whether that is a broken network or a starved host is not in any message; the report has to
+  // carry the host's state, because the host is a customer's and nobody can log in to look.
+  it('attaches the host state at the time of the failure', () => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({
+      appUrn: 'n8n:ci-marketplace',
+      phase: 'install',
+      message: 'timeout of 20000ms exceeded (ECONNABORTED)',
+      errorCode: 'portal_timeout',
+    });
+
+    const scope = lastScope();
+    expect(scope.setContext).toHaveBeenCalledWith(
+      'host_health',
+      expect.objectContaining({
+        cpu_count: expect.any(Number),
+        load_avg_1m: expect.any(Number),
+        load_per_core_1m: expect.any(Number),
+        mem_free_mib: expect.any(Number),
+        process_rss_mib: expect.any(Number),
+        event_loop_delay_p99_ms: expect.any(Number),
+        event_loop_delay_max_ms: expect.any(Number),
+      }),
+    );
+  });
+
+  it('groups every hub that could not reach Portal into one warning, whichever app it was installing', () => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({
+      appUrn: 'n8n:ci-marketplace',
+      phase: 'install',
+      message: 'timeout of 20000ms exceeded (ECONNABORTED)',
+      errorCode: 'portal_timeout',
+    });
+    service.reportAppFailure({
+      appUrn: 'immich:ci-marketplace',
+      phase: 'update',
+      message: 'getaddrinfo ENOTFOUND hub.ci.computer',
+      errorCode: 'portal_unreachable',
+    });
+
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      'Marketplace app install failed: n8n:ci-marketplace: timeout of 20000ms exceeded (ECONNABORTED)',
+      'warning',
+    );
+    const [first, second] = scopes.slice(-2);
+    expect(first?.setFingerprint).toHaveBeenCalledWith(['app-failure', 'install', 'portal-unreachable']);
+    expect(second?.setFingerprint).toHaveBeenCalledWith(['app-failure', 'update', 'portal-unreachable']);
+    expect(second?.setTag).toHaveBeenCalledWith('failure_category', 'user_environment');
+  });
+
+  it('keeps a Portal error status an error, grouped by cause rather than by app', () => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({
+      appUrn: 'n8n:ci-marketplace',
+      phase: 'install',
+      message: 'Failed to fetch app files: 503 Service Unavailable',
+      errorCode: 'portal_http_error',
+    });
+
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.stringContaining('503 Service Unavailable'), 'error');
+    const scope = lastScope();
+    expect(scope.setFingerprint).toHaveBeenCalledWith(['app-failure', 'install', 'portal-http-error']);
+    expect(scope.setTag).toHaveBeenCalledWith('failure_category', 'platform');
+    expect(scope.setTag).toHaveBeenCalledWith('error_class', 'portal-http-error');
   });
 });
 

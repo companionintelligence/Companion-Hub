@@ -3,7 +3,12 @@ import { ReposHelpers } from './repos.helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { PORTAL_STORE_LISTING_TIMEOUT_MS } from '@/core/portal/portal.constants';
+import {
+  PORTAL_HTTP_ERROR_CODE,
+  PORTAL_STORE_LISTING_TIMEOUT_MS,
+  PORTAL_TIMEOUT_CODE,
+  PORTAL_UNREACHABLE_CODE,
+} from '@/core/portal/portal.constants';
 import { RegistrationService } from '../registration/registration.service';
 import { EVERY_ADDRESS_FAILED, axiosEveryAddressFailed } from '@/tests/utils/network-failures';
 import axios from 'axios';
@@ -379,7 +384,7 @@ describe('ReposHelpers', () => {
 
         const result = await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
 
-        expect(result).toEqual({ success: false, message: EVERY_ADDRESS_FAILED });
+        expect(result).toEqual({ success: false, message: EVERY_ADDRESS_FAILED, errorCode: PORTAL_UNREACHABLE_CODE });
         expect(logger.error).toHaveBeenCalledWith(`CI Cloud request failed: ${EVERY_ADDRESS_FAILED}`);
       });
     });
@@ -576,6 +581,71 @@ describe('ReposHelpers', () => {
 
       expect(result.success).toBe(false);
       expect(result.message).toContain('Failed to fetch app files');
+    });
+
+    // #1912: a customer hub's n8n install reached Sentry as COMMON_AN_ERROR_OCCURRED with nothing
+    // else, because the only description of the Portal failure was a message the caller threw away.
+    // Each way the bundle fetch can fail now also names its cause in `errorCode`.
+    describe('names why the install bundle could not be fetched', () => {
+      const transportError = (code: string, message: string) => Object.assign(new Error(message), { isAxiosError: true, code });
+
+      beforeEach(() => {
+        vi.mocked(axios.isAxiosError).mockImplementation(((error: unknown) =>
+          Boolean((error as { isAxiosError?: boolean } | null)?.isAxiosError)) as typeof axios.isAxiosError);
+      });
+
+      afterEach(() => {
+        vi.mocked(axios.isAxiosError).mockReset();
+      });
+
+      it('a Portal status it has no handling for is a Portal HTTP error, with the status in the message', async () => {
+        axiosMock.get.mockResolvedValue({ status: 503, statusText: 'Service Unavailable', data: { error: 'Entitlement check unavailable' } });
+
+        const result = await service.downloadAppFiles('http://cloud.api', 'ci-marketplace', 'app1');
+
+        expect(result).toEqual({ success: false, message: 'Failed to fetch app files: 503 Service Unavailable', errorCode: PORTAL_HTTP_ERROR_CODE });
+        expect(logger.error).toHaveBeenCalledWith('CI Cloud request failed: Failed to fetch app files: 503 Service Unavailable');
+      });
+
+      it('the 20s client timeout elapsing is a Portal timeout', async () => {
+        axiosMock.get.mockRejectedValue(transportError('ECONNABORTED', 'timeout of 20000ms exceeded'));
+
+        const result = await service.downloadAppFiles('http://cloud.api', 'ci-marketplace', 'app1');
+
+        expect(result).toEqual({ success: false, message: 'timeout of 20000ms exceeded (ECONNABORTED)', errorCode: PORTAL_TIMEOUT_CODE });
+      });
+
+      it('a connection that never formed is Portal unreachable', async () => {
+        axiosMock.get.mockRejectedValue(axiosEveryAddressFailed());
+
+        const result = await service.downloadAppFiles('http://cloud.api', 'ci-marketplace', 'app1');
+
+        expect(result).toEqual({ success: false, message: EVERY_ADDRESS_FAILED, errorCode: PORTAL_UNREACHABLE_CODE });
+      });
+
+      it('a name that does not resolve is Portal unreachable', async () => {
+        const error = Object.assign(new Error('getaddrinfo ENOTFOUND hub.ci.computer'), {
+          isAxiosError: true,
+          code: 'ENOTFOUND',
+          syscall: 'getaddrinfo',
+          hostname: 'hub.ci.computer',
+        });
+        axiosMock.get.mockRejectedValue(error);
+
+        const result = await service.downloadAppFiles('http://cloud.api', 'ci-marketplace', 'app1');
+
+        expect(result.success).toBe(false);
+        expect(result.message).toContain('getaddrinfo ENOTFOUND hub.ci.computer');
+        expect(result.success === false && result.errorCode).toBe(PORTAL_UNREACHABLE_CODE);
+      });
+
+      it('an auth or payment status keeps its translation key and carries no Portal error code', async () => {
+        axiosMock.get.mockResolvedValue({ status: 402, statusText: 'Payment Required', data: {} });
+
+        const result = await service.downloadAppFiles('http://cloud.api', 'ci-marketplace', 'paid-app');
+
+        expect(result).toEqual({ success: false, message: 'APP_INSTALL_PORTAL_DOWNLOAD_PAYMENT_REQUIRED' });
+      });
     });
 
     it('should handle empty files object gracefully', async () => {
