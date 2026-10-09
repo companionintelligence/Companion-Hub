@@ -53,7 +53,7 @@ export default function ConnectAdvancedPage() {
   };
 
   return (
-    <div className="safe-area-inset flex min-h-dvh flex-col items-center justify-center overflow-y-auto px-6">
+    <div className="safe-area-inset flex h-dvh flex-col items-center justify-center-safe overflow-y-auto px-6">
       <Card className="mx-auto w-full max-w-sm shrink-0">
         <CardHeader>
           <CardTitle>{t('MOBILE_CONNECT_ADVANCED')}</CardTitle>
