@@ -34,7 +34,7 @@ interface BuilderConstruction {
   domain: string;
   localDomain: string;
   posixPermissionsSupported: boolean;
-  options?: { loopbackHostPort?: boolean };
+  options?: { loopbackHostPort?: boolean; defaultAppCpuLimit?: string };
 }
 
 const { builderSpy, posixProbe, schemaSpy } = vi.hoisted(() => ({
@@ -59,7 +59,7 @@ const { builderSpy, posixProbe, schemaSpy } = vi.hoisted(() => ({
  */
 vi.mock('@/modules/docker/builders/compose.builder', () => ({
   DockerComposeBuilder: class {
-    constructor(domain: string, localDomain: string, posixPermissionsSupported = true, options?: { loopbackHostPort?: boolean }) {
+    constructor(domain: string, localDomain: string, posixPermissionsSupported = true, options?: BuilderConstruction['options']) {
       builderSpy.constructions.push({ domain, localDomain, posixPermissionsSupported, options });
     }
 
@@ -766,6 +766,28 @@ describe('prepareAppComposeDir', () => {
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
 
       expect(lastComposeCall().cpuLimit).toBeUndefined();
+    });
+
+    it('hands the builder the Default app CPU limit from Settings to apply, trimmed', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.configService.getConfig.mockReturnValue({
+        domain: 'config.example',
+        localDomain: 'config.local',
+        userSettings: { defaultAppCpuLimit: ' 0.5 ' },
+      });
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+      expect(lastConstruction().options).toMatchObject({ defaultAppCpuLimit: '0.5' });
+    });
+
+    it("never hands the builder the allocator's recommendation to apply when Settings has no default", async () => {
+      // The harness allocator recommends 4 CPUs: the host-sized cap #1186 stopped stamping on every service.
+      const { moduleRef, docker } = createHarness();
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+      expect(lastConstruction().options?.defaultAppCpuLimit).toBeUndefined();
     });
   });
 

@@ -106,6 +106,19 @@ describe('UserSettingsForm Local domain check', () => {
   });
 });
 
+describe('UserSettingsForm Default app CPU limit', () => {
+  it('sends an emptied field, so the saved default is cleared rather than kept', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={{ ...newHubSettings, defaultAppCpuLimit: '0.5' }} onSubmit={onSubmit} />);
+
+    await userEvent.clear(screen.getByLabelText(/^default app cpu limit/i));
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ defaultAppCpuLimit: '' }));
+  });
+});
+
 describe('UserSettingsForm Timezone', () => {
   it.each([
     ['Asia/Karachi', '(GMT+5:00) Islamabad, Karachi, Tashkent (PKT)'],

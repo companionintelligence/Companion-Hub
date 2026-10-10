@@ -796,7 +796,13 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     'ADVANCED_SETTINGS',
     resolve('ADVANCED_SETTINGS', { envMap, settingsVal: boolStr(settingsData.advancedSettings), fallback: DEFAULT_ADVANCED_SETTINGS }),
   );
-  envMap.set('LOG_LEVEL', resolve('LOG_LEVEL', { envMap, settingsVal: settingsData.logLevel, fallback: DEFAULT_LOG_LEVEL }));
+  // The Log level saved in Settings first, then the environment. The compose files always set
+  // LOG_LEVEL (info unless the env file says otherwise) and CI-OS writes LOG_LEVEL=info into its env
+  // file, so in resolve()'s env-first order a saved level never applied. As for TZ, process.env gets
+  // it too: ConfigurationService and the Hub's logger read it there, where the compose value stays.
+  const logLevel = settingsData.logLevel ?? resolve('LOG_LEVEL', { envMap, fallback: DEFAULT_LOG_LEVEL });
+  envMap.set('LOG_LEVEL', logLevel);
+  process.env.LOG_LEVEL = logLevel;
   envMap.set(
     'EXPERIMENTAL_INSECURE_COOKIE',
     resolve('EXPERIMENTAL_INSECURE_COOKIE', {

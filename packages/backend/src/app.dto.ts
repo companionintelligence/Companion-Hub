@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { createZodDto } from '@/common/zod-dto';
 import { canonicalTimeZone } from '@/common/helpers/timezone-helpers';
-import { optionalCpuLimitSchema } from '@/common/validation/cpu-limit';
+import { clearableCpuLimitSchema, optionalCpuLimitSchema } from '@/common/validation/cpu-limit';
 import { optionalMemoryLimitSchema } from '@/common/validation/memory-limit';
 import {
   MAX_POOL_HEALTH_POLL_SECONDS,
@@ -420,6 +420,9 @@ export class UserSettingsBody extends createZodDto(
       // never holds a case-variant that the boot path would have to repair on every start.
       .transform((zone) => canonicalTimeZone(zone) as string)
       .optional(),
+    // An emptied field clears the default. The read path keeps `optionalCpuLimitSchema`, so the file
+    // never holds an empty string.
+    defaultAppCpuLimit: clearableCpuLimitSchema,
     hubPoolLocalAffinity: poolLocalAffinitySchema.optional(),
     hubPoolHealthPollSeconds: poolHealthPollSecondsSchema.optional(),
     hubPoolPressureWeight: poolPressureWeightSchema.optional(),

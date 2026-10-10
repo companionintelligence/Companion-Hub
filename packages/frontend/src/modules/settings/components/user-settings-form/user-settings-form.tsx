@@ -275,7 +275,9 @@ export const UserSettingsForm = (props: IProps) => {
                 step="0.1"
                 min="0.1"
                 {...register('defaultAppCpuLimit', {
-                  setValueAs: (value) => (value === '' || value === null ? undefined : String(value)),
+                  // An emptied field is sent as '', which the Hub reads as "no default". Dropping it
+                  // left the saved default in place.
+                  setValueAs: (value) => (value === null || value === undefined ? undefined : String(value)),
                 })}
                 label={t('SETTINGS_GENERAL_DEFAULT_APP_CPU_LIMIT')}
                 error={errors.defaultAppCpuLimit?.message}

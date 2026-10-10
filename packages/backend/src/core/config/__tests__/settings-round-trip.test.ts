@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { InternalServerErrorException } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
-import { type PersistedSettings, parsePersistedSettings, settingsFileSchema } from '@/app.dto';
+import { type PersistedSettings, UserSettingsBody, parsePersistedSettings, settingsFileSchema } from '@/app.dto';
 import { DATA_DIR } from '@/common/constants';
 import { SystemUpdateService } from '@/modules/system-update/system-update.service';
 import { ConfigurationService } from '../configuration.service';
@@ -240,6 +240,17 @@ describe('settings.json round trip', () => {
     await writers.configuration.setUserSettings({ allowErrorMonitoring: false });
 
     expect(writers.systemUpdate.getAutoUpdatesEnabled()).toBe(false);
+  });
+
+  it('MUST remove the Default app CPU limit, and nothing else, when the Settings page sends the field empty', async () => {
+    await fs.promises.writeFile(SETTINGS_PATH, JSON.stringify(ONE_OF_EVERY_KEY, null, 2));
+    const writers = makeWriters();
+
+    await writers.configuration.setUserSettings(UserSettingsBody.schema.parse({ defaultAppCpuLimit: '' }));
+
+    const written = JSON.parse(await fs.promises.readFile(SETTINGS_PATH, 'utf8')) as Record<string, unknown>;
+    const { defaultAppCpuLimit: _cleared, ...rest } = ONE_OF_EVERY_KEY;
+    expect(written).toEqual(rest);
   });
 
   it('MUST NOT erase the Portal credential, or log its text, when the auto-update switch meets a file it cannot parse', async () => {

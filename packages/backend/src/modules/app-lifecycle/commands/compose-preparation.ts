@@ -183,11 +183,18 @@ export async function prepareAppComposeDir(
     }
     const loopbackHostPort = appInfo ? hostPortStaysOnLoopback(appInfo) : false;
 
+    // The builder applies the operator's Default app CPU limit to services the form and the manifest
+    // leave uncapped. Only the saved setting: `defaultCpuLimit` above can be the allocator's
+    // host-sized recommendation, which #1186 stopped stamping on every service.
+    const configuredCpuLimit = (fullConfig.userSettings as Record<string, unknown> | undefined)?.defaultAppCpuLimit;
+    const defaultAppCpuLimit = typeof configuredCpuLimit === 'string' ? configuredCpuLimit.trim() || undefined : undefined;
+
     // The manifest also carries the edge-auth default the route builder falls back to for a stored
     // form that never decided `enableAuth` (see `requiresHubLoginOnPublicRoute`).
     const dockerComposeBuilder = new DockerComposeBuilder(domain, localDomain, posixPermissionsSupported, {
       loopbackHostPort,
       manifest: appInfo ?? undefined,
+      defaultAppCpuLimit,
     });
     const subnet = await subnetManager.allocateSubnet(appUrn, 0, options?.excludeSubnets ?? []);
 
