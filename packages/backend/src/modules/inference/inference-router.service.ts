@@ -34,7 +34,7 @@ import { CloudFallbackService, speaksOpenAiCompletions } from './cloud-fallback.
 import { ModelPullerService } from './model-puller.service';
 import { InferenceBackendRegistry } from './backends/backend-registry';
 import type { InferenceBackend } from './backends/backend.interface';
-import { isCatalogModelInstalled, isServedModelForCatalog, resolveInstalledCatalogIds } from './model-availability.util';
+import { isCatalogModelInstalled, isServedModelForCatalog, resolveInstalledCatalogIds, trackedPullCounts } from './model-availability.util';
 import { InferenceRouteError, modelNotFound } from './inference-error-reply';
 import { firstByteBudgetMs, forwardBudgetMs } from '@/modules/hub-pool/hub-pool-budget';
 import { HubPoolLoadService } from '@/modules/hub-pool/hub-pool-load.service';
@@ -904,7 +904,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
 
     // Before anything is unloaded for it: a model that was never downloaded here can only fail to
     // load, and it used to do so after the eviction, as a 500, with the other apps' models gone.
-    if (!(await this.isDownloaded(tracked, curated, backend))) {
+    if (!(await this.isDownloaded(tracked, curated, backend, backendType))) {
       return { loaded: false, reason: `${catalogId} is not downloaded on this node; pull it first` };
     }
 
@@ -979,18 +979,24 @@ export class InferenceRouterService implements OnApplicationBootstrap {
   }
 
   /**
-   * Whether `catalogId`'s weights are on this node. The registry knows what the Hub pulled; the
-   * engine's own inventory knows the rest (a model pulled with `ollama pull`, or before this Hub
-   * process started).
+   * Whether `catalogId`'s weights are on this node. The engine's own inventory knows what is there,
+   * including a model pulled with `ollama pull` or before this Hub process started. The registry's
+   * record of a pull counts only where `trackedPullCounts` lets it: not once Ollama has answered,
+   * since the record outlives a model removed with `ollama rm`.
    */
-  private async isDownloaded(tracked: TrackedModel | undefined, curated: CuratedModel | undefined, backend: InferenceBackend): Promise<boolean> {
-    if (tracked && (tracked.state === 'pulled' || tracked.state === 'loaded' || tracked.state === 'pinned')) {
+  private async isDownloaded(
+    tracked: TrackedModel | undefined,
+    curated: CuratedModel | undefined,
+    backend: InferenceBackend,
+    backendType: InferenceBackendType,
+  ): Promise<boolean> {
+    const health = await backend.healthCheck().catch(() => null);
+    if (trackedPullCounts(tracked, health?.running && health.healthy ? backendType : null)) {
       return true;
     }
     if (!curated) {
       return false;
     }
-    const health = await backend.healthCheck().catch(() => null);
     const inventory = health?.modelsLoaded ?? [];
     return curated.backend === 'ollama'
       ? isCatalogModelInstalled(curated, inventory, false, this.modelRegistry.getCatalogBackendModelIds())

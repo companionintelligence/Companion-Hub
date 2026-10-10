@@ -390,6 +390,14 @@ describe('InferenceRouterService', () => {
   // routes by ENGINE tag gets the same arbitration `auto` always had.
   describe('prepareTrackedModel', () => {
     const pulled = { catalogId: 'qwen3-8-27b-mtp', backendModelId: 'qwen3.8:27b-mtp-q4_K_M', backend: 'ollama', state: 'pulled' } as TrackedModel;
+    const pulledRow = {
+      backend: 'ollama',
+      backendModelId: pulled.backendModelId,
+      modality: 'llm',
+      runtime: { memoryFootprintMb: 20_000 },
+    } as CuratedModel;
+    /** Downloaded: Ollama's own list has it, whatever the registry says. */
+    const onOllamaDisk = () => ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [pulled.backendModelId] });
 
     it('answers null for a model the Hub does not track, so the caller falls through to the engine', async () => {
       modelRegistry.getTrackedModel.mockReturnValue(undefined);
@@ -421,7 +429,8 @@ describe('InferenceRouterService', () => {
 
     it('loads a `pulled` model that is absent from the engine when it fits', async () => {
       modelRegistry.getTrackedModel.mockReturnValue(pulled);
-      modelRegistry.getCuratedModel.mockReturnValue({ modality: 'llm', runtime: { memoryFootprintMb: 20_000 } } as CuratedModel);
+      modelRegistry.getCuratedModel.mockReturnValue(pulledRow);
+      onOllamaDisk();
       ollamaBackend.isModelLoaded.mockResolvedValue(false);
       memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 20_000 });
 
@@ -434,9 +443,8 @@ describe('InferenceRouterService', () => {
 
     it('evicts what the memory manager plans, re-measures, then loads, when the model does not fit as is', async () => {
       modelRegistry.getTrackedModel.mockReturnValue(pulled);
-      modelRegistry.getCuratedModel.mockImplementation((id) =>
-        id === 'gemma4-e4b' ? ({ id } as CuratedModel) : ({ modality: 'llm', runtime: { memoryFootprintMb: 20_000 } } as CuratedModel),
-      );
+      modelRegistry.getCuratedModel.mockImplementation((id) => (id === 'gemma4-e4b' ? ({ id } as CuratedModel) : pulledRow));
+      onOllamaDisk();
       ollamaBackend.isModelLoaded.mockResolvedValue(false);
       memoryManager.canFitModel
         .mockResolvedValueOnce({ fits: false, availableMb: 8_000, requiredMb: 20_000 })
@@ -614,6 +622,7 @@ describe('InferenceRouterService', () => {
           state: 'pulled',
         } as TrackedModel);
         modelRegistry.getCuratedModel.mockImplementation((id) => (id === ollamaModel.id ? ollamaModel : undefined));
+        ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [ollamaModel.backendModelId] });
         ollamaBackend.isModelLoaded.mockResolvedValue(false);
         memoryManager.canFitModel.mockResolvedValue({ fits: false, availableMb: 6_000, requiredMb: 18_000 });
       });
@@ -751,6 +760,46 @@ describe('InferenceRouterService', () => {
       expect(memoryManager.planEviction).not.toHaveBeenCalled();
       expect(ollamaBackend.unloadModel).not.toHaveBeenCalled();
       expect(modelPuller.loadModel).not.toHaveBeenCalled();
+    });
+
+    // `ollama rm` leaves the registry's entry behind until the Hub restarts. Believed over Ollama's
+    // own list, a request for the removed model planned, unloaded idle models, then failed to load.
+    it('refuses a model the Hub pulled that Ollama no longer lists, before planning or unloading anything', async () => {
+      const removed = { catalogId: 'qwen3-coder-30b', backend: 'ollama', backendModelId: 'qwen3-coder:30b', state: 'pulled' } as TrackedModel;
+      modelRegistry.getTrackedModel.mockReturnValue(removed);
+      modelRegistry.getCuratedModel.mockReturnValue({
+        id: removed.catalogId,
+        backend: 'ollama',
+        backendModelId: removed.backendModelId,
+        runtime: { memoryFootprintMb: 4_000 },
+      } as CuratedModel);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma4:e4b'] });
+      ollamaBackend.isModelLoaded.mockResolvedValue(false);
+      memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 4_000 });
+
+      const outcome = await service.loadTrackedModel(removed.catalogId, { origin: 'request', numCtx: null });
+
+      expect(outcome).toEqual({ loaded: false, reason: 'qwen3-coder-30b is not downloaded on this node; pull it first' });
+      expect(memoryManager.canFitModel).not.toHaveBeenCalled();
+      expect(memoryManager.planEviction).not.toHaveBeenCalled();
+      expect(modelPuller.loadModel).not.toHaveBeenCalled();
+    });
+
+    it('still counts a model the Hub pulled while Ollama cannot be asked', async () => {
+      const pulled = { catalogId: 'qwen3-coder-30b', backend: 'ollama', backendModelId: 'qwen3-coder:30b', state: 'pulled' } as TrackedModel;
+      modelRegistry.getTrackedModel.mockReturnValue(pulled);
+      modelRegistry.getCuratedModel.mockReturnValue({
+        id: pulled.catalogId,
+        backend: 'ollama',
+        backendModelId: pulled.backendModelId,
+        runtime: { memoryFootprintMb: 4_000 },
+      } as CuratedModel);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [], error: 'connect ECONNREFUSED' });
+      ollamaBackend.isModelLoaded.mockResolvedValue(false);
+      memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 4_000 });
+
+      await expect(service.loadTrackedModel(pulled.catalogId, { origin: 'request', numCtx: null })).resolves.toEqual({ loaded: true });
+      expect(modelPuller.loadModel).toHaveBeenCalledWith(pulled.catalogId, undefined);
     });
 
     it("loads an untracked model the engine's inventory lists", async () => {
@@ -893,7 +942,17 @@ describe('InferenceRouterService', () => {
       // An app's request for another Hub-tracked model arrives while the pin's load is running.
       const pinned = modelRegistry.getTrackedModel(lemonadeModel.id);
       const other = { catalogId: 'qwen3-coder-30b', backend: 'ollama', backendModelId: 'qwen3-coder:30b', state: 'pulled' } as TrackedModel;
+      const otherRow = {
+        id: other.catalogId,
+        backend: 'ollama',
+        backendModelId: other.backendModelId,
+        runtime: { memoryFootprintMb: 0 },
+      } as CuratedModel;
       modelRegistry.getTrackedModel.mockImplementation((id) => (id === 'qwen3-coder-30b' ? other : pinned));
+      modelRegistry.getCuratedModel.mockImplementation((id) =>
+        id === other.catalogId ? otherRow : id === lemonadeModel.id ? lemonadeModel : undefined,
+      );
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [other.backendModelId] });
       ollamaBackend.isModelLoaded.mockResolvedValue(false);
       const queued = service.prepareTrackedModel('qwen3-coder-30b', { numCtx: null });
       await vi.waitFor(() => expect(ollamaBackend.isModelLoaded).toHaveBeenCalledWith('qwen3-coder:30b'));
@@ -945,6 +1004,7 @@ describe('InferenceRouterService', () => {
         state: 'pulled',
       } as TrackedModel);
       modelRegistry.getCuratedModel.mockReturnValue(ollamaModel);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [ollamaModel.backendModelId] });
       ollamaBackend.isModelLoaded.mockResolvedValue(false);
       ollamaBackend.contextCostForModel.mockResolvedValue({ kvMbPerToken: 0.0625, weightMb: 16_000, source: 'geometry' });
       memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 23_120 });

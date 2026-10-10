@@ -155,7 +155,8 @@ Both scopes share these rules:
   refuses stops the plan at once, so the models after it stay loaded, and the load goes ahead only
   if what was already freed shows up in the re-measure.
 - **A model that is not downloaded is refused first.** The check runs before any fit check or
-  eviction.
+  eviction. Once Ollama answers, its own list decides, so a model removed with `ollama rm` is refused
+  here even while the registry still has it as pulled.
 - **Loads are serialized per node.** Fit, eviction, and load run under one lock, and so do a
   never-measured model's trial load and the measurement after it. A pin holds the lock from its
   budget check to the pin itself: between the load and the pin the model is an idle Hub load, which
@@ -487,8 +488,9 @@ keys `LLM_API_BASE`, `LLM_API_KEY`, `LLM_DEFAULT_CHAT_MODEL`, `LLM_DEFAULT_EMBED
   model is installed. The registry's record of a pull counts only while Ollama cannot be asked: the
   record is in memory, and nothing dropped it when a model was removed with `ollama rm`, so apps were
   handed that model until the Hub restarted (`trackedPullCounts`). The handout, the app env, the pull
-  check and the onboarding profile all apply this rule, and `GET /api/inference/models/tracked` drops a
-  `pulled` entry that Ollama no longer lists. Lemonade, vLLM and oMLX keep the old rule.
+  check, the onboarding profile and the load path's not-downloaded check all apply this rule, and
+  `GET /api/inference/models/tracked` drops a `pulled` entry that Ollama no longer lists. Lemonade,
+  vLLM and oMLX keep the old rule.
 - **Pre-pull.** `decideModelPrePull` returns a logged decision for every handout. A credentials GET
   never pulls a model a pool node already serves, nor one the app's requirements rule out. When the
   pool already serves the app a suitable model, it pulls only the operator's preferred model, never
