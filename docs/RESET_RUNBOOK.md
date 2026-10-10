@@ -83,7 +83,8 @@ If you cannot delete one of the Hub's files as your user, reset prints a command
 - Requires an **operator** login
 - Requires typing the confirmation phrase: `factory-reset`
 - Calls `POST /api/system/factory-reset`
-- Tears down installed apps, wipes Postgres tables (including `user` and every API key, so agents and `cihub api-key` users need new keys afterwards), clears `settings.json`, app data mounts, repos, backups, and registration artifacts
+- Tears down installed apps, wipes Postgres tables (including `user` and every API key, so agents and `cihub api-key` users need new keys afterwards), clears `settings.json` and registration artifacts, and empties the `app-data`, `apps`, `repos`, `media`, `backups`, and `user-config` folders
+- Those folders are bind mounts, so each one is emptied and kept. If anything is left in one, the reset stops with an error before it touches Postgres and names the folder in the Hub log; running it again is safe
 - Does **not** remove Docker named volumes — use `cihub reset --yes` if you also need `ci_hub_pgdata` removed while containers are stopped
 
 Best when the Hub is healthy but auth/setup is stuck after a partial reset.

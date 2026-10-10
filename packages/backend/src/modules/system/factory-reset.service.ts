@@ -124,6 +124,14 @@ export class FactoryResetService {
     }
   }
 
+  /**
+   * Empty each folder that holds app data, keeping the folder: each is a bind mount, and removing a
+   * mount point fails with EBUSY before anything inside it is touched. That is how a reset used to
+   * report success with every app backup still on disk.
+   *
+   * Throws when a folder still has something in it, before the database and the registration are
+   * wiped, so the operator can still sign in and run the reset again.
+   */
   public async wipeDataMounts(): Promise<void> {
     const { dataDir } = this.configuration.get('directories');
     const targets = [
@@ -132,10 +140,22 @@ export class FactoryResetService {
       path.join(dataDir, 'repos'),
       path.join(dataDir, 'media'),
       path.join(dataDir, 'backups'),
+      // Per-app env and compose overrides, which a reinstalled app would pick up again.
+      path.join(dataDir, 'user-config'),
     ];
+    const notEmptied: string[] = [];
 
     for (const target of targets) {
-      await this.wipeDirectory(target);
+      const left = await this.emptyDirectory(target);
+
+      if (left.length > 0) {
+        this.logger.error(`Factory reset could not empty ${target}; still there: ${left.slice(0, 10).join(', ')}`);
+        notEmptied.push(target);
+      }
+    }
+
+    if (notEmptied.length > 0) {
+      throw new Error(`Factory reset could not empty ${notEmptied.join(', ')}`);
     }
   }
 
@@ -157,10 +177,25 @@ export class FactoryResetService {
     await writeSettingsJsonFile(settingsPath, '{}', this.logger);
   }
 
-  private async wipeDirectory(dirPath: string): Promise<void> {
-    if (await this.filesystem.pathExists(dirPath)) {
-      await this.filesystem.removeDirectory(dirPath);
-    }
+  /** Remove everything inside `dirPath`, and return the names of what is still there. */
+  private async emptyDirectory(dirPath: string): Promise<string[]> {
     await this.filesystem.createDirectory(dirPath);
+
+    for (const entry of await this.listDirectory(dirPath)) {
+      await this.filesystem.removeDirectory(path.join(dirPath, entry));
+    }
+
+    return this.listDirectory(dirPath);
+  }
+
+  /** `readdir`, with a missing folder read as empty. Any other error is thrown, never read as empty. */
+  private async listDirectory(dirPath: string): Promise<string[]> {
+    return fs.promises.readdir(dirPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') {
+        return [];
+      }
+
+      throw error;
+    });
   }
 }
