@@ -653,6 +653,23 @@ describe('AppActions', () => {
 
       expect(screen.getByText('APP_ACTION_DOWNLOADING')).toBeInTheDocument();
     });
+
+    // Docker often reports a small layer first; on a live Hub the readout opened as "0 MB / 0 MB".
+    it('waits for a megabyte before it shows sizes', () => {
+      hoisted.installationProgress = { percent: 98, downloadedBytes: 300 * 1024, totalBytes: 400 * 1024 };
+
+      renderInstalling();
+
+      expect(screen.getByText('APP_ACTION_DOWNLOADING')).toBeInTheDocument();
+    });
+
+    it('gives sizes under 10 MB to a tenth of a megabyte', () => {
+      hoisted.installationProgress = { percent: 63, downloadedBytes: 7.2 * MB, totalBytes: 91 * MB };
+
+      renderInstalling();
+
+      expect(screen.getByText('APP_ACTION_DOWNLOADING 7.2 MB / 91 MB')).toBeInTheDocument();
+    });
   });
 
   describe('cancelling an install', () => {

@@ -181,11 +181,16 @@ const IconActionButton: React.FC<IconBtnProps> = ({ icon: Icon, label, className
 
 const INSTALL_FINALIZING_PROGRESS = 99;
 
-/** "412 MB", "1.5 GB": the download under the install progress bar. */
+/** "7.2 MB", "412 MB", "1.5 GB": the download under the install progress bar. */
 function formatDownloadSize(bytes: number): string {
-  if (bytes < 1024 * 1024 * 1024) return `${Math.round(bytes / (1024 * 1024))} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  const megabytes = bytes / (1024 * 1024);
+  if (megabytes < 10) return `${megabytes.toFixed(1)} MB`;
+  if (megabytes < 1024) return `${Math.round(megabytes)} MB`;
+  return `${(megabytes / 1024).toFixed(1)} GB`;
 }
+
+/** Docker often reports a small layer first, so the sizes wait until they add up to a megabyte. */
+const DOWNLOAD_SIZE_SHOWN_FROM_BYTES = 1024 * 1024;
 
 // In-progress statuses that render the LoadingButton, mapped to their status label key.
 const LOADING_STATUS_LABEL_KEYS: Partial<Record<AppStatus, string>> = {
@@ -395,8 +400,8 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       stageText = t('APP_STATUS_CANCELLING');
     } else if (progress !== null) {
       if (progress.percent >= INSTALL_FINALIZING_PROGRESS) stageText = t('APP_ACTION_FINALIZING');
-      else if (progress.percent >= 60 && progress.totalBytes)
-        stageText = `${t('APP_ACTION_DOWNLOADING')} ${formatDownloadSize(progress.downloadedBytes ?? 0)} / ${formatDownloadSize(progress.totalBytes)}`;
+      else if (progress.percent >= 60 && (progress.totalBytes ?? 0) >= DOWNLOAD_SIZE_SHOWN_FROM_BYTES)
+        stageText = `${t('APP_ACTION_DOWNLOADING')} ${formatDownloadSize(progress.downloadedBytes ?? 0)} / ${formatDownloadSize(progress.totalBytes ?? 0)}`;
       else if (progress.percent >= 60) stageText = t('APP_ACTION_DOWNLOADING');
       else stageText = t('APP_ACTION_PREPARING');
     }
