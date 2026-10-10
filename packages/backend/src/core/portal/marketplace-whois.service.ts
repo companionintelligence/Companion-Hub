@@ -12,7 +12,15 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { Request } from 'express';
 
-import { DEFAULT_MEMBER_ACTIONS, type HubAction, HUB_CAPABILITY, isHubAction, MAX_WHOIS_APP_IDS, WHOIS_CACHE_TTL_MS } from './hub-actions';
+import {
+  DEFAULT_MEMBER_ACTIONS,
+  type HubAction,
+  HUB_ACTIONS,
+  HUB_CAPABILITY,
+  isHubAction,
+  MAX_WHOIS_APP_IDS,
+  WHOIS_CACHE_TTL_MS,
+} from './hub-actions';
 import { type HubPrincipalFields, hubSessionOperatorUserId, isAppViewObserverPrincipal, isGrantExemptPrincipal } from './hub-session-operator';
 import type { LifecycleActor } from './lifecycle-actor';
 import { PortalClientService, type PortalWhoIsResponse } from './portal-client.service';
@@ -105,7 +113,7 @@ export class MarketplaceWhoIsService {
       throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action }, HttpStatus.FORBIDDEN);
     }
 
-    const map = await this.canMap(userId, appUrns, surface);
+    const map = await this.canMap(userId, appUrns, surface, action);
     for (const appUrn of appUrns) {
       // `null` (WhoIs missed, no fresh cache) is a refusal: these callers mutate.
       if (map.get(appUrn)?.includes(action) !== true) {
@@ -142,7 +150,7 @@ export class MarketplaceWhoIsService {
       return [];
     }
 
-    const map = await this.canMap(userId, appUrns, surface);
+    const map = await this.canMap(userId, appUrns, surface, action);
     return appUrns.filter((appUrn) => map.get(appUrn)?.includes(action) === true);
   }
 
@@ -161,7 +169,7 @@ export class MarketplaceWhoIsService {
     }
 
     const urns = items.map((item) => urnOf(item)).filter((urn): urn is AppUrn => urn?.includes(':') ?? false);
-    const map = await this.canMap(userId, urns, surface);
+    const map = await this.canMap(userId, urns, surface, 'view');
     return items.filter((item) => {
       const urn = urnOf(item);
       if (!urn) {
@@ -192,7 +200,7 @@ export class MarketplaceWhoIsService {
       return 'visible';
     }
 
-    const can = (await this.canMap(userId, [appUrn], surface)).get(appUrn);
+    const can = (await this.canMap(userId, [appUrn], surface, 'view')).get(appUrn);
     if (can == null || can.includes('view')) {
       return 'visible';
     }
@@ -239,10 +247,11 @@ export class MarketplaceWhoIsService {
   }
 
   /**
-   * The role question both ask, about `appUrn` or, when it is `null`, about no app: fresh, from this
-   * device's own organization, and `false` whenever it cannot be answered.
+   * The role question both ask, and a change to a custom app (`localAppGrants`), about `appUrn` or, when
+   * it is `null`, about no app: fresh, from this device's own organization, and `false` whenever it
+   * cannot be answered.
    */
-  private async readManagingRole(userId: number, appUrn: AppUrn | null, purpose: 'custom_domain' | 'api_key_full'): Promise<boolean> {
+  private async readManagingRole(userId: number, appUrn: AppUrn | null, purpose: 'custom_domain' | 'api_key_full' | 'custom_app'): Promise<boolean> {
     // The identity read and the urn split inside the `try` too: a database error, or a urn
     // `extractAppUrn` rejects, is another way of not knowing, not a 500.
     try {
@@ -337,17 +346,20 @@ export class MarketplaceWhoIsService {
   }
 
   async has(userId: number, appUrn: AppUrn, action: HubAction, surface: GrantSurface = 'hub'): Promise<boolean> {
-    const map = await this.canMap(userId, [appUrn], surface);
+    const map = await this.canMap(userId, [appUrn], surface, action);
     return map.get(appUrn)?.includes(action) === true;
   }
 
-  /** `null` can means WhoIs missed and there is no fresh cache (fail closed on mutate, fail open on list). */
-  private async canMap(userId: number, appUrns: AppUrn[], surface: GrantSurface): Promise<Map<string, HubAction[] | null>> {
+  /**
+   * `null` can means WhoIs missed and there is no fresh cache (fail closed on mutate, fail open on list).
+   * `action` is the one verb the caller checks: changing a custom app takes a role lookup a view does not.
+   */
+  private async canMap(userId: number, appUrns: AppUrn[], surface: GrantSurface, action: HubAction): Promise<Map<string, HubAction[] | null>> {
     const unique = [...new Set(appUrns)];
-    // Resolved from the local row, never from the name alone, and never written
-    // into the WhoIs cache: that cache is keyed by app name, which a catalog
-    // app can share.
-    const local = await this.portExposeGrants(unique);
+    // Resolved on this Hub, never from the name alone, and never written into
+    // the WhoIs cache: that cache is keyed by app name, which a catalog app can
+    // share.
+    const local = await this.localAppGrants(userId, unique, action);
     const rest = unique.filter((urn) => !local.has(urn));
 
     if (rest.length === 0) {
@@ -380,19 +392,35 @@ export class MarketplaceWhoIsService {
   }
 
   /**
-   * Local port-expose workloads are not Portal catalog apps. WhoIs has no row
+   * Apps in the `_user` store are made on this Hub: custom Docker apps and
+   * port-expose workloads. They are not Portal catalog apps. WhoIs has no row
    * for them, and a missing catalog name is stored as no grants, which locked
-   * the person who had just created the workload out of its page.
+   * everyone, the person who had just created the app included, out of it.
    *
-   * The exception is the row, not the name and not the `_user` store. A custom
-   * Docker app in `_user` still goes to WhoIs. A catalog app that shares the
-   * name still goes to WhoIs. Nothing is cached under the bare name. The verbs
-   * are `PORT_EXPOSE_ACTIONS`, not the full Hub set.
+   * So the Hub decides for every `_user` urn, and anyone signed in may view
+   * one. A port-expose row also gets `PORT_EXPOSE_ACTIONS`. Every other change
+   * to a `_user` app (start, stop, uninstall, configure and the rest) takes an
+   * organization owner or admin, asked of the Portal as `hasManagingRole` asks
+   * it, and a role that cannot be read refuses the change. The one exception
+   * is an operator with no linked Portal identity: see `customAppGrant`. A
+   * catalog app that shares the name still goes to WhoIs, and nothing is
+   * cached under the bare name.
+   *
+   * When the rows cannot be read, a port expose cannot be told from a custom
+   * app, so only the view is granted.
    */
-  private async portExposeGrants(urns: AppUrn[]): Promise<Map<AppUrn, HubAction[]>> {
+  private async localAppGrants(userId: number, urns: AppUrn[], action: HubAction): Promise<Map<AppUrn, HubAction[]>> {
     const out = new Map<AppUrn, HubAction[]>();
     const local = urns.filter((urn) => extractAppUrn(urn).appStoreId === '_user');
     if (local.length === 0) {
+      return out;
+    }
+
+    // A view of any `_user` app needs neither the row nor a role, so the lists the UI polls cost nothing here.
+    if (action === 'view') {
+      for (const urn of local) {
+        out.set(urn, ['view']);
+      }
       return out;
     }
 
@@ -404,17 +432,41 @@ export class MarketplaceWhoIsService {
         .from(app)
         .where(and(eq(app.appStoreSlug, '_user'), inArray(app.appName, names)));
     } catch (error) {
-      this.logger.warn(`port_expose_grant_lookup_failed: ${describeNetworkError(error)}`);
+      this.logger.warn(`local_app_grant_lookup_failed: ${describeNetworkError(error)}`);
+      for (const urn of local) {
+        out.set(urn, ['view']);
+      }
       return out;
     }
 
-    const grantedNames = new Set(rows.filter((row) => storedConfigIsPortExpose(row.config)).map((row) => row.appName));
+    const portExposeNames = new Set(rows.filter((row) => storedConfigIsPortExpose(row.config)).map((row) => row.appName));
+    const [firstCustomApp] = local.filter((urn) => !portExposeNames.has(extractAppUrn(urn).appName));
+    // The role is the organization's, not the app's, so one answer covers every custom app here.
+    const customGrant = firstCustomApp === undefined ? [] : await this.customAppGrant(userId, firstCustomApp);
     for (const urn of local) {
-      if (grantedNames.has(extractAppUrn(urn).appName)) {
-        out.set(urn, [...PORT_EXPOSE_ACTIONS]);
-      }
+      out.set(urn, portExposeNames.has(extractAppUrn(urn).appName) ? [...PORT_EXPOSE_ACTIONS] : [...customGrant]);
     }
     return out;
+  }
+
+  /**
+   * What a person may do to a custom app when asked about a change: every Hub verb for an
+   * organization owner or admin, and only the view for anyone else or when the Portal can't say.
+   *
+   * An operator with no linked Portal identity has no role to read. They keep the member fallback
+   * every app gives them (`DEFAULT_MEMBER_ACTIONS`), as they had before custom apps were decided
+   * here, so they can still start, stop and restart one but not remove or reconfigure it.
+   */
+  private async customAppGrant(userId: number, appUrn: AppUrn): Promise<HubAction[]> {
+    // A failed identity read is `undefined`, not "unlinked": `readManagingRole` reads it again and refuses.
+    const subject = await this.portalSubject(userId).catch(() => undefined);
+
+    if (subject !== undefined && !subject) {
+      this.logUnlinked(userId);
+      return [...DEFAULT_MEMBER_ACTIONS];
+    }
+
+    return (await this.readManagingRole(userId, appUrn, 'custom_app')) ? [...HUB_ACTIONS] : ['view'];
   }
 
   private async portalSubject(userId: number): Promise<string | null> {

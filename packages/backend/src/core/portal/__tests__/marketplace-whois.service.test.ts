@@ -11,7 +11,7 @@ import { FederatedIdentityRepository } from '@/modules/user/federated-identity.r
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { PortalClientService } from '../portal-client.service';
 import { MarketplaceWhoIsService } from '../marketplace-whois.service';
-import { DEFAULT_MEMBER_ACTIONS } from '../hub-actions';
+import { DEFAULT_MEMBER_ACTIONS, HUB_ACTIONS } from '../hub-actions';
 
 const APP_URN = 'immich:ci-marketplace' as AppUrn;
 const SUBJECT = 'portal-user-1';
@@ -32,6 +32,8 @@ describe('MarketplaceWhoIsService', () => {
     cachedAt: string;
   }>;
   let portExposeRows: Array<{ appName: string; config: { kind?: string } | null }>;
+  /** When set, reading `_user` rows from the app table fails with it. */
+  let appRowsError: Error | null;
 
   const sessionReq = (userId = USER_ID): Request => ({ hubSessionId: 'sess-1', user: { id: userId }, hubPrincipal: 'session' }) as Request;
 
@@ -52,11 +54,15 @@ describe('MarketplaceWhoIsService', () => {
     registration = mock<RegistrationService>();
     cacheRows = [];
     portExposeRows = [];
+    appRowsError = null;
 
     database.db = {
       select: () => ({
         from: (table: object) => ({
           where: () => {
+            if ('appName' in table && appRowsError) {
+              return Promise.reject(appRowsError);
+            }
             const rows = 'appName' in table ? portExposeRows : cacheRows;
             const query = Promise.resolve(rows) as Promise<typeof rows> & { limit: () => Promise<typeof rows> };
             query.limit = () => Promise.resolve(rows);
@@ -142,17 +148,111 @@ describe('MarketplaceWhoIsService', () => {
     });
   });
 
-  it('does not exempt a custom app in _user that is not a port expose', async () => {
-    portExposeRows = [{ appName: 'my-compose', config: { kind: 'custom' } }];
-    portal.whoisApps.mockResolvedValue({
-      status: 200,
-      body: { organizations: [{ organizationId: 'org-hub', version: 1, apps: [] }] },
+  /*
+   * The Portal has no catalog row for an app made on this Hub and answers `can: []` for it, which
+   * locked everyone, the owner included, out of the app they had just created. The Hub decides
+   * instead: anyone signed in may see a custom app, and changing one takes an organization owner or
+   * admin. The grant is never cached under the name, which a catalog app can share.
+   */
+  describe('a custom app in _user', () => {
+    const CUSTOM_URN = 'my-compose:_user' as AppUrn;
+    const CHANGES = HUB_ACTIONS.filter((action) => action !== 'view');
+    const roleAnswer = (role: string, status = 200) =>
+      ({ status, body: { organizations: [{ organizationId: 'org-hub', version: 1, user: { role }, apps: [] }] } }) as never;
+
+    beforeEach(() => {
+      portExposeRows = [{ appName: 'my-compose', config: {} }];
     });
 
-    await expect(service.assertSessionAction(sessionReq(), 'my-compose:_user' as AppUrn, 'view')).rejects.toMatchObject({
-      message: 'APP_ACTION_GRANT_DENIED',
+    it('may be viewed by anyone signed in, without asking WhoIs', async () => {
+      portal.whoisApps.mockResolvedValue(roleAnswer('member'));
+
+      await expect(service.has(USER_ID, CUSTOM_URN, 'view')).resolves.toBe(true);
+      await expect(service.assertSessionAction(sessionReq(), CUSTOM_URN, 'view')).resolves.toBeUndefined();
+      expect(portal.whoisApps).not.toHaveBeenCalled();
+      expect(cacheRows).toEqual([]);
     });
-    expect(portal.whoisApps).toHaveBeenCalledWith(expect.objectContaining({ appIds: ['my-compose'] }));
+
+    it('is listed next to catalog apps WhoIs still decides', async () => {
+      portal.whoisApps.mockResolvedValue({
+        status: 200,
+        body: { organizations: [{ organizationId: 'org-hub', version: 1, apps: [] }] },
+      });
+      const items = [{ urn: 'my-compose:_user' }, { urn: APP_URN }];
+
+      await expect(service.filterSessionByView(sessionReq(), items, (item) => item.urn, 'hub')).resolves.toEqual([{ urn: 'my-compose:_user' }]);
+      expect(portal.whoisApps).toHaveBeenCalledTimes(1);
+      expect(portal.whoisApps).toHaveBeenCalledWith(expect.objectContaining({ appIds: ['immich'] }));
+    });
+
+    it.each(['owner', 'admin'])('may be started, stopped, removed and changed by an organization %s', async (role) => {
+      portal.whoisApps.mockResolvedValue(roleAnswer(role));
+
+      for (const action of CHANGES) {
+        await expect(service.has(USER_ID, CUSTOM_URN, action)).resolves.toBe(true);
+      }
+      await expect(service.assertSessionAction(sessionReq(), CUSTOM_URN, 'start')).resolves.toBeUndefined();
+      // Only the role is asked of the Portal, in the form `hasManagingRole` uses.
+      expect(portal.whoisApps).toHaveBeenCalledWith({ subject: SUBJECT, appIds: ['my-compose'], surface: 'hub', organizationId: 'org-hub' });
+      expect(cacheRows).toEqual([]);
+    });
+
+    it('can be seen, but not started or changed, by a member without a managing role', async () => {
+      portal.whoisApps.mockResolvedValue(roleAnswer('member'));
+
+      await expect(service.has(USER_ID, CUSTOM_URN, 'view')).resolves.toBe(true);
+      await expect(service.assertSessionAction(sessionReq(), CUSTOM_URN, 'start')).rejects.toMatchObject({
+        message: 'APP_ACTION_GRANT_DENIED',
+      });
+      for (const action of CHANGES) {
+        await expect(service.has(USER_ID, CUSTOM_URN, action)).resolves.toBe(false);
+      }
+      expect(cacheRows).toEqual([]);
+    });
+
+    it.each([
+      ['WhoIs answering 503', () => portal.whoisApps.mockResolvedValue(roleAnswer('owner', 503))],
+      ['WhoIs throwing', () => portal.whoisApps.mockRejectedValue(new Error('ECONNRESET'))],
+      // Not knowing who the operator is, which is not the same as knowing they have no Portal identity.
+      ['the linked-identity read failing', () => federatedIdentities.findByUserId.mockRejectedValue(new Error('db down'))],
+    ])('refuses a change but stays listed on %s, since the role cannot be read', async (_label, arrange) => {
+      arrange();
+
+      await expect(service.assertSessionAction(sessionReq(), CUSTOM_URN, 'start')).rejects.toMatchObject({
+        message: 'APP_ACTION_GRANT_DENIED',
+      });
+      await expect(service.has(USER_ID, CUSTOM_URN, 'view')).resolves.toBe(true);
+      const items = [{ urn: 'my-compose:_user' }];
+      await expect(service.filterSessionByView(sessionReq(), items, (item) => item.urn, 'hub')).resolves.toEqual(items);
+    });
+
+    it('keeps the member fallback for an operator with no linked Portal identity: start, stop and restart, not uninstall', async () => {
+      // There is no role to read without a Portal subject. Such an operator got `DEFAULT_MEMBER_ACTIONS`
+      // on every app before custom apps were decided here, and keeps them on a custom app.
+      federatedIdentities.findByUserId.mockResolvedValue([] as never);
+
+      for (const action of HUB_ACTIONS) {
+        await expect(service.has(USER_ID, CUSTOM_URN, action)).resolves.toBe(DEFAULT_MEMBER_ACTIONS.includes(action));
+      }
+      await expect(service.assertSessionAction(sessionReq(), CUSTOM_URN, 'start')).resolves.toBeUndefined();
+      await expect(service.assertSessionAction(sessionReq(), CUSTOM_URN, 'uninstall')).rejects.toMatchObject({
+        message: 'APP_ACTION_GRANT_DENIED',
+      });
+      expect(portal.whoisApps).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(`whois_skipped_unlinked_operator userId=${USER_ID}`);
+    });
+
+    it('refuses a change, without asking the Portal, when its row cannot be read', async () => {
+      // Without the row a port expose can't be told from a custom app, so only the view is left.
+      appRowsError = new Error('db down');
+
+      await expect(service.assertSessionAction(sessionReq(), CUSTOM_URN, 'start')).rejects.toMatchObject({
+        message: 'APP_ACTION_GRANT_DENIED',
+      });
+      await expect(service.has(USER_ID, CUSTOM_URN, 'view')).resolves.toBe(true);
+      expect(portal.whoisApps).not.toHaveBeenCalled();
+      expect(cacheRows).toEqual([]);
+    });
   });
 
   it('uses WhoIs can[] for a linked operator', async () => {
