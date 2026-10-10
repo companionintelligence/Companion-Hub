@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io;
-use std::net::TcpListener;
+use std::net::{Ipv4Addr, Ipv6Addr, TcpListener};
 use std::path::Path;
 
 use crate::hub_names::{HUB_CONTAINER, HUB_QUEUE, LEGACY_HUB_CONTAINER, LEGACY_HUB_QUEUE};
@@ -46,7 +46,7 @@ struct HostPorts {
     /// Host ports our own running containers publish. A port held by our own
     /// stack is not a conflict — docker compose up will reuse those containers.
     ours: HashSet<u16>,
-    /// Bind the port on 127.0.0.1 and let it go.
+    /// Bind the port on each address Docker may publish it on, and let it go.
     bind: fn(u16) -> io::Result<()>,
 }
 
@@ -54,7 +54,7 @@ impl HostPorts {
     fn new(ours: HashSet<u16>) -> Self {
         Self {
             ours,
-            bind: bind_loopback,
+            bind: bind_host_port,
         }
     }
 
@@ -76,8 +76,24 @@ impl HostPorts {
     }
 }
 
-fn bind_loopback(port: u16) -> io::Result<()> {
-    TcpListener::bind(("127.0.0.1", port)).map(drop)
+/// Binds the port on 127.0.0.1, 0.0.0.0 and [::] in turn. Docker Desktop publishes on the
+/// wildcard addresses and the WSL engine's relay on loopback, and Windows lets a bind on
+/// 127.0.0.1 succeed while another program listens on 0.0.0.0 or [::], so loopback alone missed
+/// a port that was already taken. A host without IPv6 has nothing listening on [::].
+fn bind_host_port(port: u16) -> io::Result<()> {
+    TcpListener::bind((Ipv4Addr::LOCALHOST, port)).map(drop)?;
+    TcpListener::bind((Ipv4Addr::UNSPECIFIED, port)).map(drop)?;
+    match TcpListener::bind((Ipv6Addr::UNSPECIFIED, port)) {
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::AddrInUse | io::ErrorKind::PermissionDenied
+            ) =>
+        {
+            Err(error)
+        }
+        _ => Ok(()),
+    }
 }
 
 fn can_assign_port(port: u16, host: &HostPorts, assigned_ports: &HashSet<u16>) -> bool {
@@ -544,6 +560,32 @@ mod tests {
         let resolution = resolve_ports(&host).expect("resolution");
         assert_eq!(resolution.env_vars["HTTP_PORT"], 8880);
         assert_eq!(resolution.env_vars["HTTPS_PORT"], 8443);
+    }
+
+    /// Windows lets a bind on 127.0.0.1 succeed while another program listens on the same port
+    /// on 0.0.0.0 or [::], so a check on loopback alone handed the Hub a port that `localhost`
+    /// and the PC's other addresses split between two programs. Checked against real sockets.
+    #[test]
+    fn a_port_another_program_holds_on_a_wildcard_address_is_not_free() {
+        use std::net::IpAddr;
+
+        let host = HostPorts::new(HashSet::new());
+        let mut read_as_free = Vec::new();
+        for wildcard in [
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+        ] {
+            let Ok(holder) = TcpListener::bind((wildcard, 0)) else {
+                eprintln!("skipped {wildcard}: this host can't listen there");
+                continue;
+            };
+            let port = holder.local_addr().expect("held port").port();
+            if host.is_available_or_ours(port) {
+                read_as_free.push(format!("port {port} held on {wildcard}"));
+            }
+        }
+
+        assert!(read_as_free.is_empty(), "read as free: {read_as_free:?}");
     }
 
     #[test]
