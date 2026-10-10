@@ -297,6 +297,8 @@ describe('portal-sso helpers', () => {
 
   it.each([
     ['the desktop window on the published port', true, { host: '127.0.0.1:5002' }, '172.18.0.1'],
+    // How Node reports that peer when the server listens on `::`.
+    ['the desktop window seen on a dual-stack socket', true, { host: '127.0.0.1:5002' }, '::ffff:172.18.0.1'],
     ['the dev shell through the Vite proxy', true, { host: 'localhost:5005' }, '::1'],
     [
       'a tunnel visitor naming a loopback host',
