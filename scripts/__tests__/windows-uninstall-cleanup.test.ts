@@ -66,12 +66,19 @@ if (pwsh) SHELLS.push(['PowerShell 7', pwsh]);
 const PS_TIMEOUT = 300_000;
 const describeEachShell = SHELLS.length > 0 ? describe.each(SHELLS) : describe.skip.each<[string, string]>([['PowerShell (not installed)', '']]);
 
+interface FakeMount {
+  name: string;
+  /** Mounted by name: a named volume, or an anonymous one Compose carried over into a recreated container. */
+  byName?: boolean;
+}
+
 interface FakeContainer {
   id: string;
   name: string;
   image: string;
   labels: Record<string, string>;
   networks: string[];
+  mounts?: FakeMount[];
 }
 
 interface FakeResource {
@@ -79,23 +86,50 @@ interface FakeResource {
   labels: Record<string, string>;
 }
 
+interface FakeEngine {
+  containers: FakeContainer[];
+  networks: FakeResource[];
+  volumes: FakeResource[];
+}
+
 const hubProject = { 'com.docker.compose.project': 'ci-hub' };
 const managed = { 'ci-hub.managed': 'true', 'ci-os-hub.managed': 'true' };
 const wordpressProject = { 'com.docker.compose.project': 'wordpress_ci-marketplace', ...managed };
-const ANONYMOUS_VOLUME = '512303c264585eba54d38783f0eaa650700800989d35a81e13dc688666e74483';
+const anonymous = { 'com.docker.volume.anonymous': '' };
+/** RabbitMQ's data, which Compose carried over when it recreated ci-hub-queue, so `rm -v` keeps it. */
+const RABBITMQ_VOLUME = '3a347be0ac1d86f306c799093a7e7e01756bf37cbf0d6502c93e58e84e9ce6cb';
+/** An anonymous volume the engine made with the WordPress container, which `rm -v` takes with it. */
+const WORDPRESS_ANONYMOUS_VOLUME = '6ac4dec8eac8c88d081e12c0c5f7289813cf40829498ff8f9e4b8d9ffac493e2';
+/** Left by an earlier uninstall: no container mounts it and nothing ties it to the Hub. */
+const ORPHANED_VOLUME = '512303c264585eba54d38783f0eaa650700800989d35a81e13dc688666e74483';
 
 /** A Windows Hub with WordPress installed, as the manual test left it, plus a compose project of the user's own. */
-const FIXTURE: { containers: FakeContainer[]; networks: FakeResource[]; volumes: FakeResource[] } = {
+const FIXTURE: FakeEngine = {
   containers: [
     {
       id: 'c0ffee000001',
       name: 'ci-hub',
       image: 'sha256:hub',
       labels: { ...hubProject, ...managed },
-      networks: ['ci-hub_network', 'ci-hub_internal'],
+      // The Hub joins every app's network.
+      networks: ['ci-hub_network', 'ci-hub_internal', 'wordpress_ci-marketplace_network'],
     },
-    { id: 'c0ffee000002', name: 'ci-hub-db', image: 'sha256:postgres', labels: hubProject, networks: ['ci-hub_internal'] },
-    { id: 'c0ffee000003', name: 'ci-hub-queue', image: 'sha256:rabbitmq', labels: hubProject, networks: ['ci-hub_internal'] },
+    {
+      id: 'c0ffee000002',
+      name: 'ci-hub-db',
+      image: 'sha256:postgres',
+      labels: hubProject,
+      networks: ['ci-hub_internal'],
+      mounts: [{ name: 'ci_hub_pgdata', byName: true }],
+    },
+    {
+      id: 'c0ffee000003',
+      name: 'ci-hub-queue',
+      image: 'sha256:rabbitmq',
+      labels: hubProject,
+      networks: ['ci-hub_internal'],
+      mounts: [{ name: RABBITMQ_VOLUME, byName: true }],
+    },
     {
       id: 'c0ffee000004',
       name: 'traefik',
@@ -111,6 +145,7 @@ const FIXTURE: { containers: FakeContainer[]; networks: FakeResource[]; volumes:
       // A label value with commas in it, as compose writes depends_on.
       labels: { ...wordpressProject, 'com.docker.compose.depends_on': 'wordpress-db:service_started:false,mail:service_started:false' },
       networks: ['wordpress_ci-marketplace_network', 'ci-hub_network'],
+      mounts: [{ name: WORDPRESS_ANONYMOUS_VOLUME }],
     },
     // The database is on its app's network only, so only the app pass can find it.
     {
@@ -119,6 +154,7 @@ const FIXTURE: { containers: FakeContainer[]; networks: FakeResource[]; volumes:
       image: 'sha256:mariadb',
       labels: wordpressProject,
       networks: ['wordpress_ci-marketplace_network'],
+      mounts: [{ name: 'wordpress_ci-marketplace_data-mariadb', byName: true }],
     },
     {
       id: 'b55000000001',
@@ -144,16 +180,20 @@ const FIXTURE: { containers: FakeContainer[]; networks: FakeResource[]; volumes:
     { name: 'hub_tailscale_state', labels: {} },
     { name: 'wordpress_ci-marketplace_data-mariadb', labels: { 'com.docker.compose.project': 'wordpress_ci-marketplace' } },
     { name: 'myproject_pgdata', labels: { 'com.docker.compose.project': 'myproject' } },
-    { name: ANONYMOUS_VOLUME, labels: { 'com.docker.volume.anonymous': '' } },
+    { name: RABBITMQ_VOLUME, labels: anonymous },
+    { name: WORDPRESS_ANONYMOUS_VOLUME, labels: anonymous },
+    { name: ORPHANED_VOLUME, labels: anonymous },
   ],
 };
 
 /** Names and IDs of everything the cleanup must leave alone. */
-const NOT_THE_HUBS = ['b55000000001', 'devdb', 'sha256:devpostgres', 'myproject_default', 'myproject_pgdata', ANONYMOUS_VOLUME];
+const NOT_THE_HUBS = ['b55000000001', 'devdb', 'sha256:devpostgres', 'myproject_default', 'myproject_pgdata', ORPHANED_VOLUME];
 
 /**
  * The fake docker. It handles the queries the cleanup scripts make, renders the Go templates they use, and fails on
  * any other template the way docker does. Every call is appended to FAKE_DOCKER_LOG as a JSON array of its arguments.
+ * Removals change the state file the way the engine would: a network with a container still attached, or a volume a
+ * container still mounts, can't be removed, and `rm -v` takes only the anonymous volumes not mounted by name.
  */
 const FAKE_DOCKER_JS = String.raw`'use strict';
 const fs = require('node:fs');
@@ -167,16 +207,33 @@ function fail(message) {
   process.exit(1);
 }
 
-function parse(rest) {
-  const opts = { filters: [], format: null, quiet: false, targets: [] };
+function parse(rest, { filterFlag = true } = {}) {
+  const opts = { filters: [], format: null, quiet: false, flags: '', targets: [] };
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i];
-    if (arg === '--filter' || arg === '-f') opts.filters.push(rest[++i]);
+    if (arg === '--filter' || (filterFlag && arg === '-f')) opts.filters.push(rest[++i]);
     else if (arg === '--format') opts.format = rest[++i];
-    else if (/^-[a-z]+$/.test(arg)) opts.quiet = opts.quiet || arg.includes('q');
+    else if (/^-[a-z]+$/.test(arg)) opts.flags += arg.slice(1);
     else opts.targets.push(arg);
   }
+  opts.quiet = opts.flags.includes('q');
   return opts;
+}
+
+const save = () => fs.writeFileSync(process.env.FAKE_DOCKER_STATE, JSON.stringify(state));
+const mounts = (container) => container.mounts || [];
+
+function remove(kind, targets, find, blocker, onRemove) {
+  let failed = false;
+  for (const target of targets) {
+    const item = find(target);
+    if (!item) { process.stderr.write('Error response from daemon: No such ' + kind + ': ' + target + '\n'); failed = true; continue; }
+    const blocked = blocker(item);
+    if (blocked) { process.stderr.write('Error response from daemon: ' + blocked + '\n'); failed = true; continue; }
+    onRemove(item);
+  }
+  save();
+  process.exit(failed ? 1 : 0);
 }
 
 function matches(item, filter) {
@@ -194,6 +251,7 @@ function matches(item, filter) {
 function render(template, item) {
   const label = /^\{\{\.Label "([^"]+)"\}\}$/.exec(template);
   if (label) return item.labels[label[1]] ?? '';
+  if (template === '{{range .Mounts}}{{.Name}} {{end}}') return mounts(item).map((m) => m.name + ' ').join('');
   const fields = {
     ID: item.id,
     Names: item.name,
@@ -229,8 +287,25 @@ if (command === 'ps') {
   // No image carries a compose label in the fixture.
 } else if ((command === 'network' || command === 'volume') && sub === 'ls') {
   list(command === 'network' ? state.networks : state.volumes, parse(rest.slice(1)), 'name');
-} else if (command === 'rm' || (['network', 'volume', 'image'].includes(command) && sub === 'rm')) {
-  // Removals are only recorded.
+} else if (command === 'rm') {
+  const opts = parse(rest, { filterFlag: false });
+  remove('container', opts.targets, (t) => state.containers.find((c) => c.id === t || c.name === t), () => null, (c) => {
+    state.containers = state.containers.filter((other) => other !== c);
+    if (!opts.flags.includes('v')) return;
+    const inUse = new Set(state.containers.flatMap((other) => mounts(other).map((m) => m.name)));
+    const taken = mounts(c).filter((m) => !m.byName && !inUse.has(m.name)).map((m) => m.name);
+    state.volumes = state.volumes.filter((v) => !taken.includes(v.name));
+  });
+} else if (command === 'network' && sub === 'rm') {
+  remove('network', rest.slice(1), (t) => state.networks.find((n) => n.name === t),
+    (n) => (state.containers.some((c) => c.networks.includes(n.name)) ? 'error while removing network: network ' + n.name + ' has active endpoints' : null),
+    (n) => { state.networks = state.networks.filter((other) => other !== n); });
+} else if (command === 'volume' && sub === 'rm') {
+  remove('volume', rest.slice(1), (t) => state.volumes.find((v) => v.name === t),
+    (v) => (state.containers.some((c) => mounts(c).some((m) => m.name === v.name)) ? 'remove ' + v.name + ': volume is in use' : null),
+    (v) => { state.volumes = state.volumes.filter((other) => other !== v); });
+} else if (command === 'image' && sub === 'rm') {
+  // Images aren't modelled; the call is only recorded.
 } else {
   fail('fake docker: unsupported command: ' + args.join(' '));
 }
@@ -240,6 +315,7 @@ interface Sandbox {
   root: string;
   env: NodeJS.ProcessEnv;
   log: string;
+  state: string;
 }
 
 const sandboxes: string[] = [];
@@ -276,7 +352,7 @@ function makeSandbox(extraEnv: Record<string, string> = {}): Sandbox {
   env.FAKE_DOCKER_PATH = fakeDocker;
   env.FAKE_DOCKER_STATE = state;
   env.FAKE_DOCKER_LOG = log;
-  return { root, env: { ...env, ...extraEnv }, log };
+  return { root, env: { ...env, ...extraEnv }, log, state };
 }
 
 /**
@@ -330,10 +406,14 @@ const removals = (sandbox: Sandbox) =>
     .filter(isRemoval)
     .map((args) => args.join(' '));
 
+const engineAfter = (sandbox: Sandbox) => JSON.parse(fs.readFileSync(sandbox.state, 'utf-8')) as FakeEngine;
+const names = (items: { name: string }[]) => items.map((item) => item.name).sort();
+
 const DOCKER_BLOCK = () => extractBlock(read(PS_SCRIPT), '# BEGIN docker cleanup', '# END docker cleanup');
 
 describeEachShell('uninstall-cleanup.ps1 Docker cleanup under %s', (_name, shell) => {
   let removed: string[];
+  let left: FakeEngine;
   let dryRunRemoved: string[];
   let dryRunOutput: string;
 
@@ -341,6 +421,7 @@ describeEachShell('uninstall-cleanup.ps1 Docker cleanup under %s', (_name, shell
     const sandbox = makeSandbox();
     runPowerShell(shell, sandbox, harness(DOCKER_BLOCK(), { importFunctions: true }));
     removed = removals(sandbox);
+    left = engineAfter(sandbox);
 
     const drySandbox = makeSandbox();
     const dry = runPowerShell(shell, drySandbox, harness(DOCKER_BLOCK(), { importFunctions: true }), ['-DryRun']);
@@ -387,11 +468,27 @@ describeEachShell('uninstall-cleanup.ps1 Docker cleanup under %s', (_name, shell
     expect(removed.filter((call) => NOT_THE_HUBS.some((name) => call.includes(name)))).toEqual([]);
   });
 
+  it('removes an app network once the ci-hub container that was attached to it is gone', () => {
+    expect(names(left.networks)).not.toContain('wordpress_ci-marketplace_network');
+  });
+
+  it('removes the anonymous volume Compose carried over into a recreated container, which rm -v keeps', () => {
+    expect(removed).toContain(`volume rm ${RABBITMQ_VOLUME}`);
+    expect(names(left.volumes)).not.toContain(RABBITMQ_VOLUME);
+  });
+
+  it('leaves nothing of the Hub or WordPress in the engine, and everything else as it was', () => {
+    expect(names(left.containers)).toEqual(['devdb']);
+    expect(names(left.networks)).toEqual(['bridge', 'host', 'myproject_default', 'none']);
+    expect(names(left.volumes)).toEqual([ORPHANED_VOLUME, 'myproject_pgdata'].sort());
+  });
+
   it('with -DryRun lists the removals and runs none of them', () => {
     expect(dryRunRemoved).toEqual([]);
     expect(dryRunOutput).toContain('[cleanup][DRYRUN] Would run: docker rm -f -v a99000000002');
     expect(dryRunOutput).toContain('[cleanup][DRYRUN] Would run: docker volume rm wordpress_ci-marketplace_data-mariadb');
     expect(dryRunOutput).toContain('[cleanup][DRYRUN] Would run: docker network rm ci-hub_edge');
+    expect(dryRunOutput).toContain(`[cleanup][DRYRUN] Would run: docker volume rm ${RABBITMQ_VOLUME}`);
   });
 });
 

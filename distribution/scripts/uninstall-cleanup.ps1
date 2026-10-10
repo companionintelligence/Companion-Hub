@@ -232,6 +232,30 @@ function Get-ComposeProjectsByLabel {
     }
 }
 
+# Anonymous volumes the given containers mount. `docker rm -v` removes a container's anonymous
+# volume only when the engine made it with that container. When Compose recreates a container it
+# mounts the old anonymous volume into the new one by name, and `rm -v` then leaves it behind:
+# RabbitMQ's data outlived an uninstall that way after a desktop launch had recreated the stack.
+function Get-AnonymousVolumes {
+    param([string[]]$Containers)
+    $Containers = @($Containers | Where-Object { $_ })
+    if (-not $Containers) { return }
+    $anonymous = @(docker volume ls -q --filter label=com.docker.volume.anonymous 2>$null)
+    $mounted = (docker inspect --format '{{range .Mounts}}{{.Name}} {{end}}' $Containers 2>$null) -join ' '
+    $mounted -split '\s+' | Where-Object { $_ -and $_ -in $anonymous } | Select-Object -Unique
+}
+
+# Removes those of $Names that are still there once their containers are gone.
+function Remove-AnonymousVolumes {
+    param([string[]]$Names)
+    $Names = @($Names | Where-Object { $_ })
+    if (-not $Names) { return }
+    $left = @(docker volume ls -q --filter label=com.docker.volume.anonymous 2>$null)
+    foreach ($name in ($Names | Select-Object -Unique)) {
+        if ($name -in $left) { Invoke-CleanupCommand "docker volume rm $name" }
+    }
+}
+
 # Marketplace apps run as their own compose projects (<app>_<store>), separate from
 # the Hub stack. New apps carry `ci-hub.managed=true`; pre-rename apps carry
 # `ci-os-hub.managed=true`. Discover the union, then remove each project's
@@ -264,6 +288,7 @@ function Remove-MarketplaceApps {
         $projectImages = Get-ProjectImageIds $project
 
         $containerIds = docker ps -a --filter "label=com.docker.compose.project=$project" --format '{{.ID}}' 2>$null
+        $appAnonymousVolumes = Get-AnonymousVolumes $containerIds
         # -v takes the container's anonymous volumes with it.
         foreach ($cid in $containerIds) { if ($cid) { Invoke-CleanupCommand "docker rm -f -v $cid" } }
 
@@ -276,6 +301,7 @@ function Remove-MarketplaceApps {
 
         $appVolumes = docker volume ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>$null
         foreach ($vol in $appVolumes) { if ($vol) { Invoke-CleanupCommand "docker volume rm $vol" } }
+        Remove-AnonymousVolumes $appAnonymousVolumes
 
         foreach ($img in $projectImages) { if ($img) { Invoke-CleanupCommand "docker image rm -f $img" } }
     }
@@ -296,17 +322,20 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
     $containerNames += Get-ContainerNamesByFilter 'network=ci-os-hub_network'
 
     $containerNames = $containerNames | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+    $hubAnonymousVolumes = Get-AnonymousVolumes $containerNames
     foreach ($name in $containerNames) {
         # -v takes anonymous volumes (RabbitMQ's data) with the container.
         Invoke-CleanupCommand "docker rm -f -v $name"
     }
 
     # The network names older installs used, plus every network and volume the Hub's compose
-    # projects created, whatever its name (ci-hub_edge and ci-hub_internal among them).
+    # projects created, whatever its name (ci-hub_edge and ci-hub_internal among them). Also
+    # every app network: the ci-hub container joins them, so the app pass above can't remove
+    # one while the Hub still runs.
     $hubProjects = @('ci-os-hub', 'ci-hub')
     $networks = @('ci_hub_network', 'ci-hub_network', 'ci_os_hub_network', 'ci-os-hub_network')
-    foreach ($project in $hubProjects) {
-        $networks += docker network ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>$null
+    foreach ($label in @('com.docker.compose.project=ci-os-hub', 'com.docker.compose.project=ci-hub', 'ci-hub.managed=true', 'ci-os-hub.managed=true')) {
+        $networks += docker network ls --filter "label=$label" --format '{{.Name}}' 2>$null
     }
     foreach ($network in ($networks | Where-Object { $_ } | Select-Object -Unique)) {
         Invoke-CleanupCommand "docker network rm $network"
@@ -328,6 +357,7 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
     foreach ($volume in ($volumes | Where-Object { $_ } | Select-Object -Unique)) {
         Invoke-CleanupCommand "docker volume rm $volume"
     }
+    Remove-AnonymousVolumes $hubAnonymousVolumes
 
     foreach ($img in $hubImages) { if ($img) { Invoke-CleanupCommand "docker image rm -f $img" } }
 } else {
