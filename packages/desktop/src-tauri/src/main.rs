@@ -828,6 +828,8 @@ pub fn run() {
                         if !hub_manager::docker_available_for_launch(&data_for_decision) {
                             return Ok::<_, String>(None);
                         }
+                        // Also when the Hub is already up and isn't started below.
+                        hub_manager::record_update_listener_host(&data_for_decision);
 
                         let config_hash =
                             hub_manager::compute_config_hash(&compose_for_decision, &env_for_decision);

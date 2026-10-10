@@ -1,11 +1,13 @@
 //! Tests for the `wsl` module.
 
 use std::cell::{Cell, RefCell};
+use std::net::Ipv4Addr;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use crate::docker_engine::{DockerEngineKind, PinnedDockerEngine};
 use crate::hub_manager::{
+    default_gateway_from_route_table, is_own_address, write_update_listener_host,
     wsl_engine_should_revive, wsl_keepalive_args, KeepaliveProcess, KeepaliveStart, KeepaliveState,
     WslKeepalive,
 };
@@ -127,4 +129,69 @@ fn a_keepalive_that_cannot_start_is_retried_by_the_polls_only_after_a_pause() {
         .ensure(start + Duration::from_secs(36), false, fail)
         .is_err());
     assert_eq!(attempts.get(), 3);
+}
+
+/// `/proc/net/route` in the distro behind a Windows Hub on the WSL engine, as `cat` prints it:
+/// the default route goes to the Windows host on the WSL adapter, 172.27.96.1.
+const WSL_ROUTE_TABLE: &str =
+    "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n\
+eth0\t00000000\t01601BAC\t0003\t0\t0\t0\t00000000\t0\t0\t0\n\
+docker0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n\
+eth0\t00601BAC\t00000000\t0001\t0\t0\t0\t00F0FFFF\t0\t0\t0\n";
+
+#[test]
+fn the_windows_host_is_the_distros_default_gateway() {
+    let windows_host = Some(Ipv4Addr::new(172, 27, 96, 1));
+
+    assert_eq!(
+        default_gateway_from_route_table(WSL_ROUTE_TABLE),
+        windows_host
+    );
+    // A login shell's banner before the table changes nothing.
+    assert_eq!(
+        default_gateway_from_route_table(&format!("Welcome to Ubuntu\n{WSL_ROUTE_TABLE}")),
+        windows_host
+    );
+}
+
+#[test]
+fn a_table_without_a_default_route_has_no_gateway() {
+    let bridges_only =
+        "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n\
+docker0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n";
+
+    assert_eq!(default_gateway_from_route_table(bridges_only), None);
+    assert_eq!(default_gateway_from_route_table(""), None);
+}
+
+#[test]
+fn only_an_address_of_this_computer_counts_as_the_host() {
+    assert!(is_own_address(Ipv4Addr::LOCALHOST));
+    // TEST-NET-1 (RFC 5737) is never a machine's own address.
+    assert!(!is_own_address(Ipv4Addr::new(192, 0, 2, 1)));
+}
+
+#[test]
+fn the_listener_address_is_written_where_the_hub_reads_it_and_removed_again() {
+    let data_dir = tempfile::tempdir().expect("tempdir");
+    // The backend reads this exact file (UPDATE_LISTENER_HOST_FILENAME), and one address in it.
+    let file = data_dir.path().join("state").join("update-listener.host");
+    let windows_host = Some(Ipv4Addr::new(172, 27, 96, 1));
+
+    assert_eq!(
+        write_update_listener_host(data_dir.path(), windows_host),
+        Ok(true)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file).expect("written"),
+        "172.27.96.1\n"
+    );
+    assert_eq!(
+        write_update_listener_host(data_dir.path(), windows_host),
+        Ok(false)
+    );
+
+    assert_eq!(write_update_listener_host(data_dir.path(), None), Ok(true));
+    assert!(!file.exists());
+    assert_eq!(write_update_listener_host(data_dir.path(), None), Ok(false));
 }

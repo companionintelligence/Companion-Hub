@@ -634,6 +634,44 @@ describe('SystemUpdateService', () => {
       await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
       expect(axios.get).not.toHaveBeenCalled();
     });
+
+    // On the Docker engine inside WSL, host.docker.internal is the WSL VM, where nothing listens on
+    // 17400. The desktop app records the Windows host's address on the WSL adapter (CI-Hub#1934).
+    describe('from inside the Hub container', () => {
+      const STATE_HOST = '/data/state/update-listener.host';
+      const expectCalledAt = (baseUrl: string) => expect(axios.get).toHaveBeenCalledWith(`${baseUrl}/health`, expect.anything());
+
+      beforeEach(() => {
+        vi.mocked(fs.existsSync).mockImplementation((target) => String(target) === '/.dockerenv');
+      });
+
+      it('calls the listener at the Windows host address the desktop app recorded', async () => {
+        withFiles({ [STATE_TOKEN]: 'state-token\n', [STATE_HOST]: '172.27.96.1\n' });
+
+        await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: true });
+        expectCalledAt('http://172.27.96.1:17400');
+      });
+
+      it('calls host.docker.internal when the desktop app recorded no address', async () => {
+        withFiles({ [STATE_TOKEN]: 'state-token\n' });
+
+        await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: true });
+        expectCalledAt('http://host.docker.internal:17400');
+      });
+
+      // Whatever answers at that address gets the token.
+      it.each([
+        ['a host name', 'listener.example.com\n'],
+        ['an address and port', '172.27.96.1:80\n'],
+        ['a public address', '8.8.8.8\n'],
+        ['a symlink', SYMLINK],
+      ])('sends the token to host.docker.internal, not to %s in the address file', async (_name, entry) => {
+        withFiles({ [STATE_TOKEN]: 'state-token\n', [STATE_HOST]: entry });
+
+        await service.getHostListenerStatus();
+        expectCalledAt('http://host.docker.internal:17400');
+      });
+    });
   });
 
   // Asserted against literals, not the constants themselves: the other tests interpolate

@@ -1,5 +1,5 @@
-//! WSL2 Docker Engine backend: distro discovery, keeping the engine running, GPU runtime and
-//! Ollama reachability.
+//! WSL2 Docker Engine backend: distro discovery, keeping the engine running, where the Hub reaches
+//! the update listener, GPU runtime and Ollama reachability.
 
 // Windows-only bodies below need the parent scope; on other hosts this looks unused.
 #[allow(unused_imports)]
@@ -509,6 +509,7 @@ fn start_wsl_engine_and_wait(
         if crate::docker_engine::probe_docker_host_reachable(&engine.docker_host) {
             forget_docker_access_check();
             let _ = append_desktop_log_for(data_dir, "wsl.engine", "Docker in WSL answers again.");
+            record_update_listener_host(data_dir);
             return Ok(());
         }
         if let Some(KeepaliveState::Exited(code)) = lock_recovering(&WSL_KEEPALIVE).state() {
@@ -590,4 +591,110 @@ pub fn docker_available_for_launch(data_dir: &Path) -> bool {
     }
     let _ = data_dir;
     false
+}
+
+// ─── Where the Hub reaches the update listener ────────────────────────────────
+//
+// The Hub calls the desktop app's update listener (port 17400) at host.docker.internal. On the
+// WSL engine that name is the WSL VM, where nothing listens on that port, while the listener runs
+// on Windows. The distro's default gateway is the Windows host's address on the WSL adapter, and
+// the Hub's container reaches it through the VM, so the app records that address for the Hub.
+
+/// The file in `state/` the Hub reads the listener's address from (`UPDATE_LISTENER_HOST_FILENAME`
+/// in the backend's `common/constants.ts`).
+#[cfg(any(test, windows))]
+pub(crate) const UPDATE_LISTENER_HOST_FILENAME: &str = "update-listener.host";
+
+/// The default route's gateway in a `/proc/net/route` table. The table prints addresses as hex in
+/// host byte order, little-endian on the x86 and arm64 machines WSL runs on.
+#[cfg(any(test, windows))]
+pub(crate) fn default_gateway_from_route_table(table: &str) -> Option<std::net::Ipv4Addr> {
+    table.lines().find_map(|line| {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let (destination, gateway, mask) = (fields.get(1)?, fields.get(2)?, fields.get(7)?);
+        if *destination != "00000000" || *mask != "00000000" {
+            return None;
+        }
+        let gateway = u32::from_str_radix(gateway, 16)
+            .ok()
+            .filter(|gateway| *gateway != 0)?;
+        Some(std::net::Ipv4Addr::from(gateway.to_le_bytes()))
+    })
+}
+
+/// Whether `address` is one of this computer's own addresses: a socket binds to it only then.
+/// With WSL's mirrored networking the distro's default gateway is the router, and the Hub must not
+/// send the listener token there.
+#[cfg(any(test, windows))]
+pub(crate) fn is_own_address(address: std::net::Ipv4Addr) -> bool {
+    std::net::TcpListener::bind((address, 0)).is_ok()
+}
+
+/// Writes the listener address for the Hub to read, or removes the file for `None`, and says
+/// whether that changed anything. Written whole through a temporary file, so the Hub never reads
+/// half of it.
+#[cfg(any(test, windows))]
+pub(crate) fn write_update_listener_host(
+    data_dir: &Path,
+    address: Option<std::net::Ipv4Addr>,
+) -> Result<bool, String> {
+    use std::io::Write as _;
+
+    let state_dir = data_dir.join("state");
+    let path = state_dir.join(UPDATE_LISTENER_HOST_FILENAME);
+    let wanted = address.map(|address| format!("{address}\n"));
+    if std::fs::read_to_string(&path).ok() == wanted {
+        return Ok(false);
+    }
+    let Some(content) = wanted else {
+        return std::fs::remove_file(&path)
+            .map(|()| true)
+            .map_err(|error| format!("Couldn't remove {}: {error}", path.display()));
+    };
+    std::fs::create_dir_all(&state_dir)
+        .map_err(|error| format!("Couldn't create {}: {error}", state_dir.display()))?;
+    let mut file = tempfile::Builder::new()
+        .prefix(".update-listener.host.")
+        .tempfile_in(&state_dir)
+        .map_err(|error| format!("Couldn't write {}: {error}", path.display()))?;
+    file.write_all(content.as_bytes())
+        .map_err(|error| format!("Couldn't write {}: {error}", path.display()))?;
+    file.persist(&path)
+        .map_err(|error| format!("Couldn't write {}: {}", path.display(), error.error))?;
+    Ok(true)
+}
+
+/// Records where the Hub reaches the update listener from inside its container: the Windows host's
+/// address on the WSL adapter on the WSL engine, and nothing (so host.docker.internal) on any
+/// other. Called only while Docker answers, so asking the distro never starts WSL.
+pub fn record_update_listener_host(data_dir: &Path) {
+    #[cfg(windows)]
+    {
+        let on_wsl_engine = hub_docker_engine(data_dir)
+            .is_some_and(|engine| engine.kind == crate::docker_engine::DockerEngineKind::WslEngine);
+        let address = if on_wsl_engine {
+            let Some(table) = find_wsl_distro()
+                .and_then(|distro| run_wsl_root_script_capture(&distro, "cat /proc/net/route"))
+            else {
+                // The distro didn't answer this time: keep what an earlier start recorded.
+                return;
+            };
+            default_gateway_from_route_table(&table).filter(|address| is_own_address(*address))
+        } else {
+            None
+        };
+        let message = match write_update_listener_host(data_dir, address) {
+            Ok(false) => return,
+            Ok(true) => match address {
+                Some(address) => format!(
+                    "The Hub reaches the update listener at {address}, this PC's address on the WSL adapter."
+                ),
+                None => "The Hub reaches the update listener at host.docker.internal.".to_string(),
+            },
+            Err(error) => error,
+        };
+        let _ = append_desktop_log_for(data_dir, "updater.listener", &message);
+    }
+    #[cfg(not(windows))]
+    let _ = data_dir;
 }

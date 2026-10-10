@@ -330,6 +330,8 @@ fn start_hub_inner(
     // host.docker.internal bridge). No-op once configured or if Ollama isn't present.
     #[cfg(target_os = "windows")]
     ensure_wsl_engine_ollama_reachable(data_dir);
+    // And tell the Hub where the update listener answers: there, host.docker.internal is the WSL VM.
+    record_update_listener_host(data_dir);
     #[cfg(target_os = "linux")]
     refresh_rocm_host_probe_cache(data_dir);
 
