@@ -11,7 +11,7 @@ import { FederatedIdentityRepository } from '@/modules/user/federated-identity.r
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { PortalClientService } from '../portal-client.service';
 import { MarketplaceWhoIsService } from '../marketplace-whois.service';
-import { DEFAULT_MEMBER_ACTIONS } from '../hub-actions';
+import { DEFAULT_MEMBER_ACTIONS, HUB_ACTIONS } from '../hub-actions';
 
 const APP_URN = 'immich:ci-marketplace' as AppUrn;
 const SUBJECT = 'portal-user-1';
@@ -32,6 +32,8 @@ describe('MarketplaceWhoIsService', () => {
     cachedAt: string;
   }>;
   let portExposeRows: Array<{ appName: string; config: { kind?: string } | null }>;
+  /** When set, reading `_user` rows from the app table fails with it. */
+  let appRowsError: Error | null;
 
   const sessionReq = (userId = USER_ID): Request => ({ hubSessionId: 'sess-1', user: { id: userId }, hubPrincipal: 'session' }) as Request;
 
@@ -52,11 +54,15 @@ describe('MarketplaceWhoIsService', () => {
     registration = mock<RegistrationService>();
     cacheRows = [];
     portExposeRows = [];
+    appRowsError = null;
 
     database.db = {
       select: () => ({
         from: (table: object) => ({
           where: () => {
+            if ('appName' in table && appRowsError) {
+              return Promise.reject(appRowsError);
+            }
             const rows = 'appName' in table ? portExposeRows : cacheRows;
             const query = Promise.resolve(rows) as Promise<typeof rows> & { limit: () => Promise<typeof rows> };
             query.limit = () => Promise.resolve(rows);
@@ -142,17 +148,50 @@ describe('MarketplaceWhoIsService', () => {
     });
   });
 
-  it('does not exempt a custom app in _user that is not a port expose', async () => {
-    portExposeRows = [{ appName: 'my-compose', config: { kind: 'custom' } }];
+  it('lets an operator use a custom Docker app in _user without asking WhoIs', async () => {
+    // The Portal has no catalog row for an app made on this Hub and answers `can: []` for it,
+    // which locked everyone, the owner included, out of the app they had just created.
+    portExposeRows = [{ appName: 'my-compose', config: {} }];
     portal.whoisApps.mockResolvedValue({
       status: 200,
       body: { organizations: [{ organizationId: 'org-hub', version: 1, apps: [] }] },
     });
 
-    await expect(service.assertSessionAction(sessionReq(), 'my-compose:_user' as AppUrn, 'view')).rejects.toMatchObject({
+    for (const action of HUB_ACTIONS) {
+      await expect(service.has(USER_ID, 'my-compose:_user' as AppUrn, action)).resolves.toBe(true);
+    }
+    await expect(service.assertSessionAction(sessionReq(), 'my-compose:_user' as AppUrn, 'view')).resolves.toBeUndefined();
+    await expect(service.assertSessionAction(sessionReq(), 'my-compose:_user' as AppUrn, 'uninstall')).resolves.toBeUndefined();
+    expect(portal.whoisApps).not.toHaveBeenCalled();
+    expect(cacheRows).toEqual([]);
+  });
+
+  it('lists a custom app in _user next to catalog apps WhoIs still decides', async () => {
+    portExposeRows = [{ appName: 'my-compose', config: {} }];
+    portal.whoisApps.mockResolvedValue({
+      status: 200,
+      body: { organizations: [{ organizationId: 'org-hub', version: 1, apps: [] }] },
+    });
+    const items = [{ urn: 'my-compose:_user' }, { urn: APP_URN }];
+
+    await expect(service.filterSessionByView(sessionReq(), items, (item) => item.urn, 'hub')).resolves.toEqual([{ urn: 'my-compose:_user' }]);
+    expect(portal.whoisApps).toHaveBeenCalledTimes(1);
+    expect(portal.whoisApps).toHaveBeenCalledWith(expect.objectContaining({ appIds: ['immich'] }));
+  });
+
+  it('refuses a _user app on mutate, without asking WhoIs, when its row cannot be read', async () => {
+    // Whether the row is a port expose decides its verbs, so a failed read is "unknown": refused on a
+    // mutate, kept on a list, and never sent to WhoIs, which would cache an empty grant under the name.
+    appRowsError = new Error('db down');
+
+    await expect(service.has(USER_ID, 'my-compose:_user' as AppUrn, 'view')).resolves.toBe(false);
+    await expect(service.assertSessionAction(sessionReq(), 'my-compose:_user' as AppUrn, 'start')).rejects.toMatchObject({
       message: 'APP_ACTION_GRANT_DENIED',
     });
-    expect(portal.whoisApps).toHaveBeenCalledWith(expect.objectContaining({ appIds: ['my-compose'] }));
+    const items = [{ urn: 'my-compose:_user' }];
+    await expect(service.filterSessionByView(sessionReq(), items, (item) => item.urn, 'hub')).resolves.toEqual(items);
+    expect(portal.whoisApps).not.toHaveBeenCalled();
+    expect(cacheRows).toEqual([]);
   });
 
   it('uses WhoIs can[] for a linked operator', async () => {
@@ -601,6 +640,16 @@ describe('MarketplaceWhoIsService', () => {
       );
 
       await expect(service.hasManagingRole(USER_ID, APP_URN)).resolves.toBe(false);
+    });
+
+    it('still asks the Portal for a custom app, which a member may otherwise configure', async () => {
+      portExposeRows = [{ appName: 'my-compose', config: {} }];
+      portal.whoisApps.mockResolvedValue(answer([{ organizationId: 'org-hub', user: { role: 'member' }, apps: [] }]));
+
+      await expect(service.has(USER_ID, 'my-compose:_user' as AppUrn, 'configure')).resolves.toBe(true);
+      await expect(service.hasManagingRole(USER_ID, 'my-compose:_user' as AppUrn)).resolves.toBe(false);
+      expect(portal.whoisApps).toHaveBeenCalledTimes(1);
+      expect(portal.whoisApps).toHaveBeenCalledWith({ subject: SUBJECT, appIds: ['my-compose'], surface: 'hub', organizationId: 'org-hub' });
     });
 
     it("reads the role from this device's organization, not the first one listed", async () => {

@@ -643,6 +643,11 @@ Routes that read or mutate one app assert the operator's Portal grant through
 `filterSessionByView` to trim a list. Both asserts no-op when the request carries no Hub session, so
 API-key callers such as the `cihub` CLI are unaffected.
 
+Apps in the `_user` store (custom apps and port exposes) exist only on this Hub, so the Portal is not
+asked about them and nothing is cached for them. A port-expose row gets `view`, `start`, `stop` and
+`uninstall`. Any other `_user` app gets every Hub verb. A custom-domain change on one still takes an
+organization owner or admin, read from the Portal as for any app.
+
 Assert over **every** app a request could touch before touching any of them, and include apps the
 caller named even when they turn out to need no work — checking only the apps that do lets an
 unauthorized caller read an app's state out of the 403-vs-200 answer.

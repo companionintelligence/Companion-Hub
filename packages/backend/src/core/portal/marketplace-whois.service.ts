@@ -12,7 +12,15 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { Request } from 'express';
 
-import { DEFAULT_MEMBER_ACTIONS, type HubAction, HUB_CAPABILITY, isHubAction, MAX_WHOIS_APP_IDS, WHOIS_CACHE_TTL_MS } from './hub-actions';
+import {
+  DEFAULT_MEMBER_ACTIONS,
+  type HubAction,
+  HUB_ACTIONS,
+  HUB_CAPABILITY,
+  isHubAction,
+  MAX_WHOIS_APP_IDS,
+  WHOIS_CACHE_TTL_MS,
+} from './hub-actions';
 import { type HubPrincipalFields, hubSessionOperatorUserId, isAppViewObserverPrincipal, isGrantExemptPrincipal } from './hub-session-operator';
 import type { LifecycleActor } from './lifecycle-actor';
 import { PortalClientService, type PortalWhoIsResponse } from './portal-client.service';
@@ -344,10 +352,10 @@ export class MarketplaceWhoIsService {
   /** `null` can means WhoIs missed and there is no fresh cache (fail closed on mutate, fail open on list). */
   private async canMap(userId: number, appUrns: AppUrn[], surface: GrantSurface): Promise<Map<string, HubAction[] | null>> {
     const unique = [...new Set(appUrns)];
-    // Resolved from the local row, never from the name alone, and never written
-    // into the WhoIs cache: that cache is keyed by app name, which a catalog
-    // app can share.
-    const local = await this.portExposeGrants(unique);
+    // Resolved on this Hub, never from the name alone, and never written into
+    // the WhoIs cache: that cache is keyed by app name, which a catalog app can
+    // share.
+    const local = await this.localAppGrants(unique);
     const rest = unique.filter((urn) => !local.has(urn));
 
     if (rest.length === 0) {
@@ -380,17 +388,24 @@ export class MarketplaceWhoIsService {
   }
 
   /**
-   * Local port-expose workloads are not Portal catalog apps. WhoIs has no row
+   * Apps in the `_user` store are made on this Hub: custom Docker apps and
+   * port-expose workloads. They are not Portal catalog apps. WhoIs has no row
    * for them, and a missing catalog name is stored as no grants, which locked
-   * the person who had just created the workload out of its page.
+   * everyone, the person who had just created the app included, out of it.
    *
-   * The exception is the row, not the name and not the `_user` store. A custom
-   * Docker app in `_user` still goes to WhoIs. A catalog app that shares the
-   * name still goes to WhoIs. Nothing is cached under the bare name. The verbs
-   * are `PORT_EXPOSE_ACTIONS`, not the full Hub set.
+   * So the Hub decides for every `_user` urn. A port-expose row gets
+   * `PORT_EXPOSE_ACTIONS`. Any other `_user` app gets every Hub verb, which is
+   * also what the Portal's default grants give an organization member on a
+   * catalog app. A catalog app that shares the name still goes to WhoIs, and
+   * nothing is cached under the bare name. The owner and admin checks
+   * (`hasManagingRole`, `isOrgManager`) do not read this and still ask the
+   * Portal.
+   *
+   * When the rows cannot be read, the grant is unknown (`null`): refused on a
+   * mutate, kept on a list.
    */
-  private async portExposeGrants(urns: AppUrn[]): Promise<Map<AppUrn, HubAction[]>> {
-    const out = new Map<AppUrn, HubAction[]>();
+  private async localAppGrants(urns: AppUrn[]): Promise<Map<AppUrn, HubAction[] | null>> {
+    const out = new Map<AppUrn, HubAction[] | null>();
     const local = urns.filter((urn) => extractAppUrn(urn).appStoreId === '_user');
     if (local.length === 0) {
       return out;
@@ -404,15 +419,16 @@ export class MarketplaceWhoIsService {
         .from(app)
         .where(and(eq(app.appStoreSlug, '_user'), inArray(app.appName, names)));
     } catch (error) {
-      this.logger.warn(`port_expose_grant_lookup_failed: ${describeNetworkError(error)}`);
+      this.logger.warn(`local_app_grant_lookup_failed: ${describeNetworkError(error)}`);
+      for (const urn of local) {
+        out.set(urn, null);
+      }
       return out;
     }
 
-    const grantedNames = new Set(rows.filter((row) => storedConfigIsPortExpose(row.config)).map((row) => row.appName));
+    const portExposeNames = new Set(rows.filter((row) => storedConfigIsPortExpose(row.config)).map((row) => row.appName));
     for (const urn of local) {
-      if (grantedNames.has(extractAppUrn(urn).appName)) {
-        out.set(urn, [...PORT_EXPOSE_ACTIONS]);
-      }
+      out.set(urn, portExposeNames.has(extractAppUrn(urn).appName) ? [...PORT_EXPOSE_ACTIONS] : [...HUB_ACTIONS]);
     }
     return out;
   }
