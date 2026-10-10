@@ -113,6 +113,19 @@ export class CloudFallbackService implements OnModuleInit {
     return Array.from(this.providers.values());
   }
 
+  /**
+   * Forget a provider and its key, in memory and in settings.json. {@link setProvider} cannot: it
+   * keeps the stored key when `apiKey` is blank. Resolves false when nothing was stored for it.
+   */
+  async removeProvider(provider: CloudProviderType): Promise<boolean> {
+    if (!this.providers.delete(provider)) {
+      return false;
+    }
+    this.logger.info(`[CloudFallback] Removed provider: ${provider}`);
+    await this.persist();
+    return true;
+  }
+
   /** Get enabled providers */
   getEnabledProviders(): CloudProviderConfig[] {
     return this.listProviders().filter((p) => p.enabled && p.apiKey);

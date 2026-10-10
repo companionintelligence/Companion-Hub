@@ -20,6 +20,7 @@ import {
   updatePreferences,
   updateRocmInstallState,
 } from '@/api-client/sdk.gen';
+import { client } from '@/api-client/client.gen';
 import type { CloudProviderType, InferenceBackendType, TrackedModel } from '@ci-hub/common/types';
 import type {
   CloudProviderInput,
@@ -103,6 +104,7 @@ export async function fetchConfiguredCloudProviders(): Promise<CloudProviderInpu
         provider: p.provider,
         apiKey: '••••••••',
         enabled: p.enabled,
+        stored: true,
       }));
   } catch {
     return [];
@@ -167,6 +169,14 @@ export async function fetchLemonadeInstallStatus(): Promise<LemonadeStatus> {
 
 export async function saveCloudProviderConfig(body: { provider: CloudProviderType; apiKey?: string; enabled: boolean }): Promise<void> {
   await unwrap(setCloudProvider({ body } as Parameters<typeof setCloudProvider>[0]));
+}
+
+/**
+ * Delete the key the Hub holds for `provider`; a save cannot, since a blank key there keeps the
+ * stored one. Called through the shared client because the generated SDK predates this route.
+ */
+export async function removeCloudProviderConfig(provider: CloudProviderType): Promise<void> {
+  await unwrap(client.delete({ url: `/api/inference/cloud-providers/${encodeURIComponent(provider)}` }));
 }
 
 /**

@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   ConflictException,
+  Delete,
   Get,
   Headers,
   HttpCode,
@@ -665,6 +666,21 @@ export class InferenceController {
     });
     this.scheduleAiAppRestart(`cloud provider ${body.provider} changed`);
     return { success: true };
+  }
+
+  /**
+   * Delete a stored cloud key. The POST cannot: a blank `apiKey` there keeps the stored key, which
+   * the masked Settings field relies on. Running AI apps hold the key in their env, so they are
+   * refreshed as they are after a save.
+   */
+  @UseGuards(AuthGuard)
+  @Delete('cloud-providers/:provider')
+  async removeCloudProvider(@Param('provider') provider: CloudProviderType) {
+    const removed = await this.cloudFallback.removeProvider(provider);
+    if (removed) {
+      this.scheduleAiAppRestart(`cloud provider ${provider} removed`);
+    }
+    return { success: true, removed };
   }
 
   // ─── Onboarding Aggregated Endpoint ───────────────────────────────────

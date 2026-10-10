@@ -415,6 +415,12 @@ On save the Hub:
 AI apps that want these tokens must read the `CI_CLOUD_*` contract (or `hub_integration.inference`
 plus the extra env). See the tracking issue on marketplace / OpenClaw / Hermes.
 
+A blank key in the POST keeps the stored one, so a key is removed with
+`DELETE /api/inference/cloud-providers/:provider`. It forgets the provider, key included, in memory
+and in `settings.json`, and requests the same AI app refresh as a save. Settings > AI calls it on
+save for a provider whose stored key was cleared, by hand or with its **Remove** button. The card
+shows **On** or **Off** for a provider that holds a key.
+
 ## App inference handout
 
 Installed apps get inference config two ways, and both choose the model through the same rules:
@@ -490,7 +496,7 @@ keys `LLM_API_BASE`, `LLM_API_KEY`, `LLM_DEFAULT_CHAT_MODEL`, `LLM_DEFAULT_EMBED
   handout per app is kept in `state/inference-handouts.json` as SHA-256 digests of its values, so
   apps that keep running through a Hub restart are not read as stale.
 - **Refresh.** `AiAppInferenceRefreshService` is the one path that restarts AI apps for inference
-  changes. `PATCH /api/inference/preferences`, `POST /api/inference/cloud-providers`,
+  changes. `PATCH /api/inference/preferences`, `POST` and `DELETE /api/inference/cloud-providers`,
   `PATCH /api/user-settings` (when a write changes an inference or pool-switch value), and
   `PATCH /api/inference/pool/settings` (when the master or outbound switch moves) all request a
   sweep. A watcher also requests one when pool membership holds a new value for two health polls. A
