@@ -401,9 +401,10 @@ export class MarketplaceWhoIsService {
    * one. A port-expose row also gets `PORT_EXPOSE_ACTIONS`. Every other change
    * to a `_user` app (start, stop, uninstall, configure and the rest) takes an
    * organization owner or admin, asked of the Portal as `hasManagingRole` asks
-   * it, and a role that cannot be read refuses the change. A catalog app that
-   * shares the name still goes to WhoIs, and nothing is cached under the bare
-   * name.
+   * it, and a role that cannot be read refuses the change. The one exception
+   * is an operator with no linked Portal identity: see `customAppGrant`. A
+   * catalog app that shares the name still goes to WhoIs, and nothing is
+   * cached under the bare name.
    *
    * When the rows cannot be read, a port expose cannot be told from a custom
    * app, so only the view is granted.
@@ -441,15 +442,31 @@ export class MarketplaceWhoIsService {
     const portExposeNames = new Set(rows.filter((row) => storedConfigIsPortExpose(row.config)).map((row) => row.appName));
     const [firstCustomApp] = local.filter((urn) => !portExposeNames.has(extractAppUrn(urn).appName));
     // The role is the organization's, not the app's, so one answer covers every custom app here.
-    const managing = firstCustomApp !== undefined && (await this.readManagingRole(userId, firstCustomApp, 'custom_app'));
+    const customGrant = firstCustomApp === undefined ? [] : await this.customAppGrant(userId, firstCustomApp);
     for (const urn of local) {
-      if (portExposeNames.has(extractAppUrn(urn).appName)) {
-        out.set(urn, [...PORT_EXPOSE_ACTIONS]);
-      } else {
-        out.set(urn, managing ? [...HUB_ACTIONS] : ['view']);
-      }
+      out.set(urn, portExposeNames.has(extractAppUrn(urn).appName) ? [...PORT_EXPOSE_ACTIONS] : [...customGrant]);
     }
     return out;
+  }
+
+  /**
+   * What a person may do to a custom app when asked about a change: every Hub verb for an
+   * organization owner or admin, and only the view for anyone else or when the Portal can't say.
+   *
+   * An operator with no linked Portal identity has no role to read. They keep the member fallback
+   * every app gives them (`DEFAULT_MEMBER_ACTIONS`), as they had before custom apps were decided
+   * here, so they can still start, stop and restart one but not remove or reconfigure it.
+   */
+  private async customAppGrant(userId: number, appUrn: AppUrn): Promise<HubAction[]> {
+    // A failed identity read is `undefined`, not "unlinked": `readManagingRole` reads it again and refuses.
+    const subject = await this.portalSubject(userId).catch(() => undefined);
+
+    if (subject !== undefined && !subject) {
+      this.logUnlinked(userId);
+      return [...DEFAULT_MEMBER_ACTIONS];
+    }
+
+    return (await this.readManagingRole(userId, appUrn, 'custom_app')) ? [...HUB_ACTIONS] : ['view'];
   }
 
   private async portalSubject(userId: number): Promise<string | null> {

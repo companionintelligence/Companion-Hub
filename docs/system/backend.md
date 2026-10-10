@@ -648,6 +648,8 @@ not read from WhoIs and nothing is cached for them. Anyone signed in may view on
 also gets `start`, `stop` and `uninstall`. Any other change to a `_user` app, starting or removing a
 custom app included, takes an organization owner or admin: the role check `hasManagingRole` makes,
 asked of the Portal fresh. When the role can't be read, the change is refused and the app stays listed.
+An operator with no linked Portal identity has no role to read, and keeps the member fallback every
+app gives them (`DEFAULT_MEMBER_ACTIONS`: start, stop and restart, never uninstall).
 
 Assert over **every** app a request could touch before touching any of them, and include apps the
 caller named even when they turn out to need no work — checking only the apps that do lets an

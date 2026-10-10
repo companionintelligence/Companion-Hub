@@ -213,7 +213,8 @@ describe('MarketplaceWhoIsService', () => {
     it.each([
       ['WhoIs answering 503', () => portal.whoisApps.mockResolvedValue(roleAnswer('owner', 503))],
       ['WhoIs throwing', () => portal.whoisApps.mockRejectedValue(new Error('ECONNRESET'))],
-      ['an operator with no linked Portal subject', () => federatedIdentities.findByUserId.mockResolvedValue([] as never)],
+      // Not knowing who the operator is, which is not the same as knowing they have no Portal identity.
+      ['the linked-identity read failing', () => federatedIdentities.findByUserId.mockRejectedValue(new Error('db down'))],
     ])('refuses a change but stays listed on %s, since the role cannot be read', async (_label, arrange) => {
       arrange();
 
@@ -223,6 +224,22 @@ describe('MarketplaceWhoIsService', () => {
       await expect(service.has(USER_ID, CUSTOM_URN, 'view')).resolves.toBe(true);
       const items = [{ urn: 'my-compose:_user' }];
       await expect(service.filterSessionByView(sessionReq(), items, (item) => item.urn, 'hub')).resolves.toEqual(items);
+    });
+
+    it('keeps the member fallback for an operator with no linked Portal identity: start, stop and restart, not uninstall', async () => {
+      // There is no role to read without a Portal subject. Such an operator got `DEFAULT_MEMBER_ACTIONS`
+      // on every app before custom apps were decided here, and keeps them on a custom app.
+      federatedIdentities.findByUserId.mockResolvedValue([] as never);
+
+      for (const action of HUB_ACTIONS) {
+        await expect(service.has(USER_ID, CUSTOM_URN, action)).resolves.toBe(DEFAULT_MEMBER_ACTIONS.includes(action));
+      }
+      await expect(service.assertSessionAction(sessionReq(), CUSTOM_URN, 'start')).resolves.toBeUndefined();
+      await expect(service.assertSessionAction(sessionReq(), CUSTOM_URN, 'uninstall')).rejects.toMatchObject({
+        message: 'APP_ACTION_GRANT_DENIED',
+      });
+      expect(portal.whoisApps).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(`whois_skipped_unlinked_operator userId=${USER_ID}`);
     });
 
     it('refuses a change, without asking the Portal, when its row cannot be read', async () => {
