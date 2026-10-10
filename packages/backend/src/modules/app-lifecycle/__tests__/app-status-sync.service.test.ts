@@ -8,6 +8,7 @@ import { SSEService } from '@/core/sse/sse.service';
 import { SystemEventsQueue } from '@/modules/queue/entities/system-events';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
+import type { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import { AppOperationRegistry } from '../app-operation-registry';
 import type Dockerode from 'dockerode';
 
@@ -16,6 +17,7 @@ describe('AppStatusSyncService', () => {
   let appRepository: MockProxy<AppsRepository>;
   let docker: MockProxy<Dockerode>;
   let errorReportingService: MockProxy<ErrorReportingService>;
+  let agentNotifyService: MockProxy<AgentNotifyService>;
   let sseService: MockProxy<SSEService>;
   let installPipelineTracker: InstallPipelineTracker;
   let operationRegistry: AppOperationRegistry;
@@ -29,6 +31,7 @@ describe('AppStatusSyncService', () => {
     docker = mock<Dockerode>();
     docker.listContainers.mockResolvedValue([]);
     errorReportingService = mock<ErrorReportingService>();
+    agentNotifyService = mock<AgentNotifyService>();
     sseService = mock<SSEService>();
     installPipelineTracker = new InstallPipelineTracker();
     operationRegistry = new AppOperationRegistry(mock<LoggerService>());
@@ -58,7 +61,7 @@ describe('AppStatusSyncService', () => {
       docker,
       installPipelineTracker,
       operationRegistry,
-      undefined,
+      agentNotifyService,
       errorReportingService,
       undefined,
       dockerReadFacade as never,
@@ -382,6 +385,64 @@ describe('AppStatusSyncService', () => {
     await service.syncAllAppStatuses();
 
     expect(appRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+  });
+
+  /*
+   * Every container exiting 0 means something stopped the app on purpose. A stop from the Hub reports
+   * no crash, so this one doesn't either: no app.crashed for the agent, nothing to error reporting.
+   */
+  it('reports no crash for an app it marks stopped because every container exited cleanly', async () => {
+    appRepository.getApps.mockResolvedValue([
+      { id: 12, appName: 'wordpress', appStoreSlug: 'ci-marketplace', status: 'running', updatedAt: new Date().toISOString() },
+    ] as never);
+    docker.listContainers.mockResolvedValue([
+      {
+        Id: 'wp',
+        State: 'exited',
+        Status: 'Exited (0) 6 minutes ago',
+        Labels: { 'ci-hub.appurn': 'wordpress:ci-marketplace' },
+      },
+      {
+        Id: 'db',
+        State: 'exited',
+        Status: 'Exited (0) 6 minutes ago',
+        Labels: { 'ci-hub.appurn': 'wordpress:ci-marketplace' },
+      },
+    ] as never);
+
+    await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(12, 'running', expect.objectContaining({ status: 'stopped' }));
+    expect(agentNotifyService.notify).not.toHaveBeenCalled();
+    expect(errorReportingService.reportAppFailure).not.toHaveBeenCalled();
+  });
+
+  it('still reports a crash when one of the stopped containers exited with an error', async () => {
+    appRepository.getApps.mockResolvedValue([
+      { id: 13, appName: 'wordpress', appStoreSlug: 'ci-marketplace', status: 'running', updatedAt: new Date().toISOString() },
+    ] as never);
+    docker.listContainers.mockResolvedValue([
+      {
+        Id: 'wp',
+        State: 'exited',
+        Status: 'Exited (137) 1 minute ago',
+        Labels: { 'ci-hub.appurn': 'wordpress:ci-marketplace' },
+      },
+      {
+        Id: 'db',
+        State: 'exited',
+        Status: 'Exited (0) 1 minute ago',
+        Labels: { 'ci-hub.appurn': 'wordpress:ci-marketplace' },
+      },
+    ] as never);
+
+    await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(13, 'running', expect.objectContaining({ status: 'stopped' }));
+    expect(agentNotifyService.notify).toHaveBeenCalledWith('app.crashed', expect.objectContaining({ appUrn: 'wordpress:ci-marketplace' }), 'high');
+    expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ appUrn: 'wordpress:ci-marketplace', phase: 'crash' }),
+    );
   });
 
   it('reports top-level sync failures to Sentry so crash detection outages are visible', async () => {

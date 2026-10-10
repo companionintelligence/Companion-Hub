@@ -203,6 +203,9 @@ When a status actually changes, it is written to the DB and broadcast over SSE
 (`status_change`). **Crash detection:** a `running → stopped` or
 `running → missing` transition fires an `app.crashed` agent notification at
 **high** urgency, so the agent layer can react.
+An app turned `stopped` because every container exited 0 is the exception. It
+was stopped on purpose, so it gets no notification and no crash report, the
+same as a stop from the Hub.
 
 > Related: `agent-health-check.service.ts` notifies the agent on high disk usage
 > (high urgency), high memory (medium), and health-check failures (low).
