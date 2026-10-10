@@ -9,6 +9,7 @@ import {
   exchangePortalAuthorizationCode,
   fetchPortalSessionEmail,
   buildPortalDesktopHandoffHtml,
+  isDirectLoopbackRequest,
   resolvePortalDesktopHandoffState,
   shouldHandoffPortalLoginToDesktop,
   resolvePortalCallbackUrl,
@@ -292,6 +293,32 @@ describe('portal-sso helpers', () => {
         desktopAppPresent: false,
       }),
     ).toBe(true);
+  });
+
+  it.each([
+    ['the desktop window on the published port', true, { host: '127.0.0.1:5002' }, '172.18.0.1'],
+    // How Node reports that peer when the server listens on `::`.
+    ['the desktop window seen on a dual-stack socket', true, { host: '127.0.0.1:5002' }, '::ffff:172.18.0.1'],
+    ['the dev shell through the Vite proxy', true, { host: 'localhost:5005' }, '::1'],
+    [
+      'a tunnel visitor naming a loopback host',
+      false,
+      { host: 'hub-device-org.example.com', 'x-forwarded-host': 'localhost:5002', 'cf-ray': '8c1f2e3d4a5b6c7d-AMS' },
+      '10.20.0.2',
+    ],
+    ['a public caller naming a loopback host', false, { host: 'localhost:5002' }, '203.0.113.7'],
+    ['a LAN device on the host address', false, { host: '192.168.1.20:5002' }, '192.168.1.50'],
+    ['a request with no host at all', false, {}, '172.18.0.1'],
+  ])('isDirectLoopbackRequest: %s -> %s', (_caller, expected, headers: Record<string, string>, ip) => {
+    const req = {
+      headers,
+      ip,
+      protocol: 'http',
+      socket: { remoteAddress: ip },
+      get: (name: string) => (name.toLowerCase() === 'host' ? headers.host : undefined),
+    } as unknown as Request;
+
+    expect(isDirectLoopbackRequest(req)).toBe(expected);
   });
 
   it('exchanges authorization codes for user email via Portal OAuth endpoints', async () => {

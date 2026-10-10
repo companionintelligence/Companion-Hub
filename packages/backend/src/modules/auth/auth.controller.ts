@@ -86,6 +86,7 @@ import {
   shouldHandoffPortalLoginToDesktop,
   exchangePortalAuthorizationCode,
   fetchPortalSessionEmail,
+  isDirectLoopbackRequest,
   probePortalReachable,
   type PortalDesktopExchange,
   type PortalSsoErrorCode,
@@ -635,7 +636,9 @@ export class AuthController {
     @Query('desktop') desktop?: string,
     @Query('desktop_channel') desktopChannel?: string,
   ) {
-    const isDesktop = desktop === '1' || desktop === 'true' || this.cache.get(PORTAL_DESKTOP_PRESENCE_CACHE_KEY) === '1';
+    // Only this sign-in's own request decides. The desktop app always sends desktop=1, and the
+    // presence flag is applied at the callback, to loopback sign-ins only.
+    const isDesktop = desktop === '1' || desktop === 'true';
     // Declared by the client. Absent reads as 'packaged' — see
     // resolvePortalDesktopDeepLinkScheme for why that is the safe default.
     const channel = parseDesktopChannel(desktopChannel);
@@ -848,8 +851,15 @@ export class AuthController {
   @Get('/portal/session-hint')
   @ApiResponse({ type: PortalSessionHintDto })
   async portalSessionHint(@Req() req: Request, @Query('desktop') desktop?: string) {
-    if (desktop === '1' || desktop === 'true') {
-      this.cache.set(PORTAL_DESKTOP_PRESENCE_CACHE_KEY, '1', PORTAL_DESKTOP_PRESENCE_TTL_SECONDS);
+    // The flag hands sign-ins started on this machine's loopback address to the desktop app, so only
+    // a request sent straight to that address may set it. A signed-in window is not waiting for a
+    // sign-in, so its heartbeat clears the flag instead.
+    if ((desktop === '1' || desktop === 'true') && isDirectLoopbackRequest(req)) {
+      if (req.user) {
+        this.cache.del(PORTAL_DESKTOP_PRESENCE_CACHE_KEY);
+      } else {
+        this.cache.set(PORTAL_DESKTOP_PRESENCE_CACHE_KEY, '1', PORTAL_DESKTOP_PRESENCE_TTL_SECONDS);
+      }
     }
     const portalBaseUrl = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '') || null;
 
@@ -891,19 +901,8 @@ export class AuthController {
       );
     }
 
-    const operator = await this.userRepository.getFirstOperator();
-    if (operator?.username?.trim()) {
-      return PortalSessionHintDto.parse(
-        {
-          email: operator.username.trim(),
-          portalBaseUrl,
-          source: 'hub_operator',
-          portalReachable,
-        },
-        { reportOnly: true },
-      );
-    }
-
+    // No fallback to the operator's address for a caller who is not signed in. This route answers on
+    // the Hub's public address, and the sign-in page every visitor sees renders what it returns.
     return PortalSessionHintDto.parse({ email: null, portalBaseUrl, source: null, portalReachable }, { reportOnly: true });
   }
 
