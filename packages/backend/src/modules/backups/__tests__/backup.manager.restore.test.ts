@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConfigurationService } from '@/core/config/configuration.service';
 import type { LoggerService } from '@/core/logger/logger.service';
 import type { AppFilesManager } from '@/modules/apps/app-files-manager';
+import type { AppVolumeArchiveService } from '@/modules/docker/app-volume-archive.service';
 import type { AppUrn } from '@ci-hub/common/types';
 
 vi.unmock('node:fs');
@@ -143,7 +144,10 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
     });
 
     archive = new ArchiveService(logger);
-    manager = new BackupManager(archive, logger, config, filesystem, appFilesManager);
+    // An app with no named Docker volumes, which is every app outside a Windows Hub.
+    const appVolumes = mock<AppVolumeArchiveService>();
+    appVolumes.listAppVolumes.mockResolvedValue([]);
+    manager = new BackupManager(archive, logger, config, filesystem, appFilesManager, appVolumes);
     manager.onApplicationShutdown(); // stop the constructor's weekly interval
   });
 

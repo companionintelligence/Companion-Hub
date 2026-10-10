@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import Dockerode from 'dockerode';
 import { AppsDataModule } from '../apps/apps-data.module';
+import { AppVolumeArchiveService } from './app-volume-archive.service';
 import { DOCKERODE } from './constants';
 import { DockerReadFacade } from './docker-read.facade';
 import { DockerService } from './docker.service';
@@ -14,6 +15,7 @@ export { DOCKERODE } from './constants';
   // Marketplace ↔ Portal ↔ Cloudflare ↔ Docker service cycle.
   imports: [AppsDataModule],
   providers: [
+    AppVolumeArchiveService,
     DockerReadFacade,
     DockerService,
     TraefikConfigService,
@@ -23,6 +25,6 @@ export { DOCKERODE } from './constants';
       inject: [],
     },
   ],
-  exports: [DockerReadFacade, DockerService, TraefikConfigService, DOCKERODE],
+  exports: [AppVolumeArchiveService, DockerReadFacade, DockerService, TraefikConfigService, DOCKERODE],
 })
 export class DockerModule {}

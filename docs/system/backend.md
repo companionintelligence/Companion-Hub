@@ -57,6 +57,19 @@ data directory into an empty named volume over what may be a transient IO failur
 reason the redirect is keyed off the filesystem rather than applied everywhere: on Linux and macOS
 bind mounts keep working and existing data stays exactly where it is.
 
+Backups carry the named volumes. `BackupManager` asks Docker for the volumes compose created for
+the app's project and puts each in the archive as `volumes/<key>.tar`, next to `app-data`, `app`
+and `user-config`. A restore checks that every volume can go back before it replaces any file, then
+empties the app's volume with that key and unpacks the archive into it. When a reset removed the
+volume, the restore creates it with compose's project and volume labels, so `up` adopts it.
+`AppVolumeArchiveService` does the copying with busybox `tar` in a short-lived container of the
+Hub's own image (the image ID of the container it runs in), as root, with no network and no log
+driver, so nothing is pulled and the stream is not also written to a container log. An app without
+named volumes gets the same archive as before, and restoring a backup without a `volumes` folder
+does not ask Docker anything. A backup made where the database is in a volume and restored where it
+is a folder (Windows to Linux) still comes back without it, because nothing maps a volume key back
+to a path.
+
 ## App lifecycle command structure
 
 `AppLifecycleCommandFactory` builds one command object per operation (`commands/install-app-command.ts`,
