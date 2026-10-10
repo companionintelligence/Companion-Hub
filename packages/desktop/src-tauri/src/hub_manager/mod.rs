@@ -492,6 +492,9 @@ pub struct StartupProgress {
     pub docker_access: DockerAccessCheck,
     /// The Hub API answers its liveness check.
     pub hub_api_live: bool,
+    /// The engine the Hub runs on (`wsl-engine`, `desktop`, ...), when known. The startup
+    /// screens explain the WSL engine stopping instead of offering Docker Desktop's steps.
+    pub docker_engine: Option<String>,
 }
 
 /// Get the Hub data directory (platform-specific)

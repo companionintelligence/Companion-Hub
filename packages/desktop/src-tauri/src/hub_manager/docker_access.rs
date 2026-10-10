@@ -26,6 +26,12 @@ pub fn check_docker_access() -> DockerAccessCheck {
     check
 }
 
+/// Drop the cached check, so the next one asks Docker: it has just started.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn forget_docker_access_check() {
+    *lock_recovering(&DOCKER_ACCESS_CACHE) = None;
+}
+
 fn check_docker_access_uncached() -> DockerAccessCheck {
     let output = match docker_command().arg("info").output() {
         Ok(output) => output,

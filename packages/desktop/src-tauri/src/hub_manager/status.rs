@@ -405,6 +405,10 @@ pub fn get_startup_progress() -> StartupProgress {
     let start_error = read_start_failed(&data_dir);
     let docker_access = check_docker_access();
     let docker_available = matches!(docker_access.state, DockerAccessState::Available);
+    #[cfg(target_os = "windows")]
+    if !docker_available {
+        revive_wsl_engine(&data_dir);
+    }
     let ctx = CoreServiceContext {
         start_in_progress,
         start_began_at: start_began_at(),
@@ -540,6 +544,7 @@ pub fn get_startup_progress() -> StartupProgress {
         start_error,
         hub_api_live: docker_available && probe_hub_api_live(),
         docker_access,
+        docker_engine: hub_docker_engine(&data_dir).map(|engine| engine.kind.as_str().to_string()),
     }
 }
 
@@ -551,11 +556,13 @@ pub fn get_hub_status() -> HubStatus {
         return HubStatus::Starting;
     }
 
+    let data_dir = get_hub_data_dir();
+
     if !is_docker_available() {
+        #[cfg(target_os = "windows")]
+        revive_wsl_engine(&data_dir);
         return HubStatus::DockerNotAvailable;
     }
-
-    let data_dir = get_hub_data_dir();
 
     // Check the Hub container (canonical name first, then the legacy alias).
     let hub_name = hub_container_name();

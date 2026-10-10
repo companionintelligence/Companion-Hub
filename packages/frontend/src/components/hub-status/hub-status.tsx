@@ -487,10 +487,121 @@ function LinuxDockerGuide() {
   );
 }
 
-function DockerInstallGuide() {
+type WslEngineStartState = 'idle' | 'starting' | 'error';
+
+/**
+ * After Start engine succeeds, the next status poll (every 5 s) moves the gate on. Until then the
+ * screen keeps saying the engine is starting; if the gate is still up after this long, for one
+ * because WSL stopped the engine again, the button comes back.
+ */
+const WSL_ENGINE_STARTED_GRACE_MS = 15_000;
+
+/**
+ * The Hub runs on the Docker engine inside WSL, and WSL stopped it (`wsl --shutdown`, for one).
+ * The desktop app starts the engine again by itself; Start engine does it now and says why when
+ * it can't. Docker Desktop's steps don't apply to this engine, so they aren't offered.
+ */
+function WslEngineGuide() {
+  const { t } = useTranslation();
+  const [startState, setStartState] = useState<WslEngineStartState>('idle');
+  const [errorMessage, setErrorMessage] = useState('');
+  const graceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (graceTimerRef.current) clearTimeout(graceTimerRef.current);
+    },
+    [],
+  );
+
+  const handleStart = useCallback(async () => {
+    const invoke = getTauriInvoke();
+    if (!invoke) return;
+    if (graceTimerRef.current) clearTimeout(graceTimerRef.current);
+    setStartState('starting');
+    setErrorMessage('');
+    try {
+      await invoke('start_wsl_engine_command');
+      // Docker answers now, and the next status poll moves the gate on. Offering the button again
+      // in between would read as if the start had failed.
+      graceTimerRef.current = setTimeout(() => setStartState('idle'), WSL_ENGINE_STARTED_GRACE_MS);
+    } catch (err) {
+      setErrorMessage(getErrorMessage(err));
+      setStartState('error');
+    }
+  }, []);
+
+  return (
+    <div className="space-y-6 w-full max-w-2xl">
+      <SetupCard>
+        <div className="space-y-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1">
+              <h2 className="text-xl font-semibold text-foreground">{t('HUB_STATUS_WSL_ENGINE_STOPPED')}</h2>
+              <p className="text-sm text-muted-foreground">{t('HUB_STATUS_WSL_ENGINE_STOPPED_DESC')}</p>
+            </div>
+            <Container className="h-10 w-10 shrink-0 text-primary" aria-hidden />
+          </div>
+
+          {startState === 'starting' ? (
+            <div className="flex items-center justify-center gap-2 rounded-md border border-border px-6 py-3 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+              {t('HUB_STATUS_WSL_ENGINE_STARTING')}
+            </div>
+          ) : (
+            <Button type="button" className="w-full" onClick={() => void handleStart()}>
+              {t('HUB_STATUS_WSL_ENGINE_START')}
+            </Button>
+          )}
+
+          {startState === 'error' && errorMessage && (
+            <div className="flex items-start gap-3 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+              <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" aria-hidden />
+              <span>{errorMessage}</span>
+            </div>
+          )}
+        </div>
+      </SetupCard>
+      <DockerAccessStatusPanel />
+    </div>
+  );
+}
+
+/**
+ * The engine the desktop app runs the Hub on (`docker_engine` in its startup progress), or null
+ * while unknown and from an older shell that doesn't say. Read when the gate mounts, so it is
+ * usually known before Docker stops answering, and again when it does.
+ */
+function useHubDockerEngine(dockerUnavailable: boolean): string | null {
+  const [engine, setEngine] = useState<string | null>(null);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: dockerUnavailable only triggers the re-read
+  useEffect(() => {
+    const invoke = getTauriInvoke();
+    if (!invoke) return;
+    let active = true;
+    invoke('get_startup_progress_command')
+      .then((raw) => {
+        if (active) setEngine(readStartupProgress(raw)?.docker_engine ?? null);
+      })
+      .catch(() => {
+        // Keep what the last read said.
+      });
+    return () => {
+      active = false;
+    };
+  }, [dockerUnavailable]);
+
+  return engine;
+}
+
+function DockerInstallGuide({ dockerEngine }: { dockerEngine: string | null }) {
   const platform = detectPlatform();
 
   if (platform === 'windows') {
+    if (dockerEngine === 'wsl-engine') {
+      return <WslEngineGuide />;
+    }
     const guide = getDockerDesktopGuideContent('windows', false);
     return (
       <DockerDesktopGuide
@@ -559,6 +670,8 @@ interface StartupProgress {
   start_failed_at_ms: number | null;
   docker_access: DockerAccessState;
   hub_api_live: boolean;
+  /** The engine the Hub runs on, such as `wsl-engine`; null from a shell that doesn't say. */
+  docker_engine: string | null;
 }
 
 const SERVICE_STATES: ReadonlySet<string> = new Set<ServiceState>(['pending', 'starting', 'ready', 'failed', 'stopped', 'not_started']);
@@ -617,6 +730,7 @@ function readStartupProgress(raw: unknown): StartupProgress | null {
     start_failed_at_ms: finiteOrNull(payload.start_failed_at_ms),
     docker_access: readDockerAccess(payload.docker_access),
     hub_api_live: payload.hub_api_live === true,
+    docker_engine: typeof payload.docker_engine === 'string' ? payload.docker_engine : null,
   };
 }
 
@@ -1200,6 +1314,7 @@ export function HubStatus({ children }: HubStatusProps) {
   const [failedAfterSeconds, setFailedAfterSeconds] = useState<number | null>(null);
   const [logs, setLogs] = useState<string | null>(null);
   const [showLogs, setShowLogs] = useState(false);
+  const dockerEngine = useHubDockerEngine(status === 'DockerNotAvailable');
   const resolvedTheme = useResolvedTheme();
   const renderedLogs = useMemo(() => {
     if (!logs) {
@@ -1549,7 +1664,8 @@ export function HubStatus({ children }: HubStatusProps) {
     return <>{children}</>;
   }
 
-  const gateTitle = status === 'DockerNotAvailable' ? t('COMMON_SET_UP_YOUR_HUB') : t('APP_NAME');
+  // A Hub on the WSL engine is set up already: only its engine stopped.
+  const gateTitle = status === 'DockerNotAvailable' && dockerEngine !== 'wsl-engine' ? t('COMMON_SET_UP_YOUR_HUB') : t('APP_NAME');
   let screenStatus: StartupScreenStatus = 'starting';
   if (status === 'Stopped') {
     screenStatus = 'stopped';
@@ -1562,7 +1678,7 @@ export function HubStatus({ children }: HubStatusProps) {
     <SetupPageShell title={gateTitle} className="bg-transparent" contentClassName="items-center" fitShortWindows>
       <div className="flex flex-col items-center gap-6 w-full max-w-3xl px-4">
         {status === 'DockerNotAvailable' ? (
-          <DockerInstallGuide />
+          <DockerInstallGuide dockerEngine={dockerEngine} />
         ) : (
           <StartupScreen
             status={screenStatus}

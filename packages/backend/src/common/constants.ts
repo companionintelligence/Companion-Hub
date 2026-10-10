@@ -54,6 +54,8 @@ export const TUNNEL_LEFTOVER_MARKER = 'leftover.json';
 export const tunnelLeftoverMarkerPath = () => path.join(TUNNEL_DIR, TUNNEL_LEFTOVER_MARKER);
 /** Shared secret for the desktop host update listener (written by companion-hub desktop). */
 export const UPDATE_LISTENER_TOKEN_FILENAME = 'update-listener.token';
+/** Where that listener answers from inside the Hub container, when the desktop app knows better than host.docker.internal. */
+export const UPDATE_LISTENER_HOST_FILENAME = 'update-listener.host';
 
 export const SESSION_COOKIE_NAME = 'ci-hub-sid';
 /**
