@@ -490,6 +490,13 @@ function LinuxDockerGuide() {
 type WslEngineStartState = 'idle' | 'starting' | 'error';
 
 /**
+ * After Start engine succeeds, the next status poll (every 5 s) moves the gate on. Until then the
+ * screen keeps saying the engine is starting; if the gate is still up after this long, for one
+ * because WSL stopped the engine again, the button comes back.
+ */
+const WSL_ENGINE_STARTED_GRACE_MS = 15_000;
+
+/**
  * The Hub runs on the Docker engine inside WSL, and WSL stopped it (`wsl --shutdown`, for one).
  * The desktop app starts the engine again by itself; Start engine does it now and says why when
  * it can't. Docker Desktop's steps don't apply to this engine, so they aren't offered.
@@ -498,16 +505,26 @@ function WslEngineGuide() {
   const { t } = useTranslation();
   const [startState, setStartState] = useState<WslEngineStartState>('idle');
   const [errorMessage, setErrorMessage] = useState('');
+  const graceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (graceTimerRef.current) clearTimeout(graceTimerRef.current);
+    },
+    [],
+  );
 
   const handleStart = useCallback(async () => {
     const invoke = getTauriInvoke();
     if (!invoke) return;
+    if (graceTimerRef.current) clearTimeout(graceTimerRef.current);
     setStartState('starting');
     setErrorMessage('');
     try {
       await invoke('start_wsl_engine_command');
-      // The status poll moves the gate on now that Docker answers.
-      setStartState('idle');
+      // Docker answers now, and the next status poll moves the gate on. Offering the button again
+      // in between would read as if the start had failed.
+      graceTimerRef.current = setTimeout(() => setStartState('idle'), WSL_ENGINE_STARTED_GRACE_MS);
     } catch (err) {
       setErrorMessage(getErrorMessage(err));
       setStartState('error');

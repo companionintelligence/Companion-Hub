@@ -83,6 +83,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   delete tauriWindow.__TAURI_INTERNALS__;
   Object.defineProperty(window.navigator, 'userAgent', { value: originalUserAgent, configurable: true });
   vi.unstubAllGlobals();
@@ -123,6 +124,34 @@ describe('HubStatus when Docker in WSL stops (CI-Hub#1935)', () => {
     });
 
     expect(screen.getByText('WSL distro Ubuntu stopped right away (exit code 1).')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Start engine' })).toBeInTheDocument();
+  });
+
+  it('keeps saying the engine is starting once it answers, until the status poll moves on', async () => {
+    let finishStart: (value: unknown) => void = () => undefined;
+    renderDockerDown(
+      'wsl-engine',
+      () =>
+        new Promise((resolve) => {
+          finishStart = resolve;
+        }),
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Start engine' }, SCREEN_TIMEOUT));
+    await flushAsyncWork();
+    vi.useFakeTimers();
+    await act(async () => {
+      finishStart('started');
+    });
+
+    // The next status poll hasn't run yet. The button coming back here would read as a failed start.
+    expect(screen.getByText(/Starting the engine/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start engine' })).not.toBeInTheDocument();
+
+    // Docker still doesn't answer 15 s on (WSL stopped it again): the button is back.
+    await act(async () => {
+      vi.advanceTimersByTime(15_000);
+    });
     expect(screen.getByRole('button', { name: 'Start engine' })).toBeInTheDocument();
   });
 
