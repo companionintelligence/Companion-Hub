@@ -439,6 +439,83 @@ describe('InstallStep', () => {
     });
   });
 
+  describe('a model that is still downloading', () => {
+    const downloadingConfig = {
+      agentFrameworks: [],
+      remoteAccess: [],
+      selectedModels: ['gemma3-270m'],
+      installedCatalogIds: [],
+      backend: 'ollama' as const,
+      cloudProviders: [],
+      preferredModelId: 'gemma3-270m',
+      skipped: false,
+    };
+    const excalidraw = makeApp('excalidraw', 'Excalidraw', 'excalidraw:store1');
+
+    beforeEach(() => {
+      fetchTrackedModels.mockResolvedValue([{ catalogId: 'gemma3-270m', state: 'pulling', pullProgress: 10 }] as never);
+    });
+
+    it('asks for the apps without waiting for it, after saving the settings they are installed with', async () => {
+      render(<InstallStep apps={[excalidraw]} onComplete={onComplete} aiSetupConfig={downloadingConfig} />);
+
+      expect(await screen.findByText('10%')).toBeInTheDocument();
+      await waitFor(() => expect(installApp).toHaveBeenCalledWith(expect.objectContaining({ path: { urn: 'excalidraw:store1' } })));
+      // An AI app gets its inference config when its install starts, so the choice is saved first.
+      expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ backend: 'ollama', model: 'gemma3-270m' }));
+      expect(saveInferencePreferences.mock.invocationCallOrder[0]).toBeLessThan(installApp.mock.invocationCallOrder[0] ?? 0);
+    });
+
+    it('still installs the apps when Continue is pressed during the download', async () => {
+      const { unmount } = render(<InstallStep apps={[excalidraw]} onComplete={onComplete} aiSetupConfig={downloadingConfig} />);
+      expect(await screen.findByText('10%')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('install-continue-btn'));
+      expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ continuedInBackground: true }));
+      // Continue takes the wizard to Home, which unmounts the step.
+      unmount();
+
+      await waitFor(() => expect(installApp).toHaveBeenCalledWith(expect.objectContaining({ path: { urn: 'excalidraw:store1' } })));
+    });
+  });
+
+  it('still installs the apps when Continue is pressed while the desktop app sets up the engine', async () => {
+    let finishRunners: ((results: unknown) => void) | undefined;
+    const invoke = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          finishRunners = resolve;
+        }),
+    );
+    (window as TauriWindow).__TAURI_INTERNALS__ = { invoke };
+
+    const { unmount } = render(
+      <InstallStep
+        apps={[makeApp('excalidraw', 'Excalidraw', 'excalidraw:store1')]}
+        onComplete={onComplete}
+        aiSetupConfig={{
+          agentFrameworks: [],
+          remoteAccess: [],
+          selectedModels: [],
+          installedCatalogIds: [],
+          backend: 'ollama',
+          cloudProviders: [],
+          skipped: false,
+        }}
+      />,
+    );
+    await waitFor(() => expect(finishRunners).toBeDefined());
+
+    fireEvent.click(screen.getByTestId('install-continue-btn'));
+    unmount();
+    await act(async () => {
+      finishRunners?.([{ runner: 'ollama', state: 'already_running', endpointUrl: 'http://127.0.0.1:11434' }]);
+    });
+
+    await waitFor(() => expect(installApp).toHaveBeenCalledWith(expect.objectContaining({ path: { urn: 'excalidraw:store1' } })));
+    expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ backend: 'ollama' }));
+  });
+
   it('does not ask again for an install this tab already started', async () => {
     claimOnboardingInstallUrn('plane:store1');
     getInstalledApps.mockResolvedValue(

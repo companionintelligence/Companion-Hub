@@ -72,8 +72,69 @@ describe('inference-backend-availability', () => {
 
   it('keeps the server recommendation when that engine is visible', () => {
     expect(isAppleSiliconMacProfile(appleMacProfile)).toBe(true);
-    expect(recommendedInferenceBackend(appleMacProfile)).toBe('omlx');
-    expect(recommendedInferenceBackend(nvidiaProfile)).toBe('vllm');
+    expect(recommendedInferenceBackend(appleMacProfile, false)).toBe('omlx');
+    expect(recommendedInferenceBackend(nvidiaProfile, false)).toBe('vllm');
+  });
+
+  describe('recommendedInferenceBackend with live engines', () => {
+    type Engine = HardwareProfileResponse['backends']['available'][number];
+    const up = (type: InferenceBackendType, modelsLoaded?: number): Engine => ({ type, running: true, healthy: true, modelsLoaded });
+    const down = (type: InferenceBackendType): Engine => ({ type, running: false, healthy: false, modelsLoaded: 0 });
+    const withEngines = (profile: HardwareProfileResponse, available: Engine[]): HardwareProfileResponse => ({
+      ...profile,
+      backends: { ...profile.backends, available },
+    });
+
+    describe('in a browser tab', () => {
+      it('starts on an engine that answers when the recommended one does not', () => {
+        expect(recommendedInferenceBackend(withEngines(nvidiaProfile, [up('ollama', 4), down('vllm')]), false)).toBe('ollama');
+      });
+
+      it('decides on reachability alone when the Hub does not report model counts', () => {
+        expect(recommendedInferenceBackend(withEngines(nvidiaProfile, [up('ollama'), down('vllm')]), false)).toBe('ollama');
+      });
+
+      it('keeps the recommended engine while it answers', () => {
+        expect(recommendedInferenceBackend(withEngines(nvidiaProfile, [up('ollama', 4), up('vllm', 1)]), false)).toBe('vllm');
+      });
+
+      it('prefers an engine that already has models over one that answers with none', () => {
+        expect(recommendedInferenceBackend(withEngines(appleMacProfile, [up('ollama', 3), up('omlx', 0)]), false)).toBe('ollama');
+      });
+
+      it('keeps the recommendation when no engine answers', () => {
+        expect(recommendedInferenceBackend(withEngines(nvidiaProfile, [down('ollama'), down('vllm')]), false)).toBe('vllm');
+      });
+
+      it('never starts on an engine this hardware hides', () => {
+        expect(recommendedInferenceBackend(withEngines(nvidiaProfile, [down('ollama'), down('vllm'), up('lemonade', 2)]), false)).toBe('vllm');
+      });
+    });
+
+    describe('in the desktop window', () => {
+      const windowsNvidiaProfile = {
+        ...nvidiaProfile,
+        hardware: { ...nvidiaProfile.hardware, os: { platform: 'win32', name: 'Windows', version: '' } },
+      } as HardwareProfileResponse;
+      const lemonadePick = (available: Engine[]) => ({ ...amdProfile, backends: { recommended: 'lemonade', available } }) as HardwareProfileResponse;
+
+      it('keeps oMLX on a Mac, which the app installs itself, even with Ollama answering', () => {
+        expect(recommendedInferenceBackend(withEngines(appleMacProfile, [up('ollama', 3), down('omlx')]), true)).toBe('omlx');
+        expect(recommendedInferenceBackend(withEngines(appleMacProfile, [up('ollama', 3), up('omlx', 0)]), true)).toBe('omlx');
+      });
+
+      it('keeps vLLM on Linux, which the app installs itself', () => {
+        expect(recommendedInferenceBackend(withEngines(nvidiaProfile, [up('ollama', 4), down('vllm')]), true)).toBe('vllm');
+      });
+
+      it('starts on an engine that answers on Windows, where the app cannot install vLLM', () => {
+        expect(recommendedInferenceBackend(withEngines(windowsNvidiaProfile, [up('ollama', 4), down('vllm')]), true)).toBe('ollama');
+      });
+
+      it('starts on an engine that answers when the app does not install the pick, as Lemonade', () => {
+        expect(recommendedInferenceBackend(lemonadePick([up('ollama', 2), down('lemonade')]), true)).toBe('ollama');
+      });
+    });
   });
 
   it('keeps embeddings on Ollama when the decoder cannot embed', () => {

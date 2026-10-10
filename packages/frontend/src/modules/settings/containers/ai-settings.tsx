@@ -17,6 +17,7 @@ import {
   unpinInferenceModel,
 } from '@/lib/inference/inference-api';
 import { POLLING } from '@/lib/polling-budget';
+import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import { ensurePullsStarted, waitForModelPulls } from '@/lib/inference/tracked-models';
 import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
@@ -47,6 +48,7 @@ import {
   hubLoadableSelection,
   isHubLoadableBackend,
   hiddenInferenceBackends,
+  recommendedInferenceBackend,
   unavailableInferenceBackends,
 } from '@/modules/onboarding/helpers/inference-backend-availability';
 import { useTranslation } from 'react-i18next';
@@ -220,10 +222,15 @@ export const AiSettingsContainer = () => {
         setEncodeEndpoint(prefData.preferredEncodeEndpoint);
       }
       const requestedBackend = backendOverride ?? prefData?.preferredBackend ?? undefined;
-      const data = await fetchInferenceOnboardingProfile(requestedBackend);
+      let data = await fetchInferenceOnboardingProfile(requestedBackend);
+      // Nothing saved: show the engine setup would start on. Asked about no engine, the endpoint
+      // described the hardware's pick, so ask again when the one shown is different.
+      const preferredBackend = requestedBackend ?? recommendedInferenceBackend(data, getTauriInvoke() !== null);
+      if (!requestedBackend && preferredBackend !== data.backends.recommended) {
+        data = await fetchInferenceOnboardingProfile(preferredBackend);
+      }
       setProfile(data);
 
-      const preferredBackend = requestedBackend ?? data.backends.recommended;
       // fetchProfile handles initial runtime model fetch to avoid duplicate effect calls.
       lastHandledBackendRef.current = preferredBackend;
       setSelectedBackend(preferredBackend);
@@ -847,7 +854,7 @@ export const AiSettingsContainer = () => {
           </section>
 
           <BackendSelectionCard
-            recommended={profile.backends.recommended}
+            recommended={recommendedInferenceBackend(profile, getTauriInvoke() !== null)}
             available={profile.backends.available}
             selected={selectedBackend}
             onSelect={setSelectedBackend}

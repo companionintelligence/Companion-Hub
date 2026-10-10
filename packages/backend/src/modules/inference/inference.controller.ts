@@ -760,7 +760,8 @@ export class InferenceController {
       memoryBudget: budget,
       backends: {
         recommended: recommendedBackend,
-        available: status.backends.map((b) => ({ type: b.type, running: b.running, healthy: b.healthy })),
+        // `modelsLoaded` lets setup prefer an engine that already has models (#1927).
+        available: status.backends.map((b) => ({ type: b.type, running: b.running, healthy: b.healthy, modelsLoaded: b.modelsLoaded })),
       },
       resourceEstimate: {
         totalDiskMb: recommendedModels.reduce((sum, m) => sum + m.requirements.diskMb, 0),
