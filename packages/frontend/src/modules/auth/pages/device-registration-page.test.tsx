@@ -281,6 +281,39 @@ describe('DeviceRegistrationPage', () => {
     expect(screen.queryByRole('button', { name: 'Retry status check' })).not.toBeInTheDocument();
   });
 
+  it('starts no new status check while the last one is still waiting for the Hub', async () => {
+    vi.useFakeTimers();
+    let answerDriftCheck: (drift: { detected: boolean; signals: never[] }) => void = () => {};
+    fetchRegistrationStateDrift.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answerDriftCheck = resolve;
+        }),
+    );
+
+    render(<DeviceRegistrationPage />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(fetchRegistrationStateDrift).toHaveBeenCalledTimes(1);
+
+    // A Hub slow to answer: three poll intervals go by while the first drift check is open.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000);
+    });
+    expect(fetchRegistrationStatusResult).toHaveBeenCalledTimes(1);
+    expect(fetchRegistrationStateDrift).toHaveBeenCalledTimes(1);
+
+    // Once the Hub answers, polling goes on as before.
+    await act(async () => {
+      answerDriftCheck({ detected: false, signals: [] });
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(screen.getByRole('heading', { name: 'Step 2: Connect this device' })).toBeInTheDocument();
+    expect(fetchRegistrationStatusResult).toHaveBeenCalledTimes(2);
+    expect(fetchRegistrationStateDrift).toHaveBeenCalledTimes(2);
+  });
+
   it('shows the probe status and waits between two ready checks', async () => {
     vi.useFakeTimers();
     fetchRegistrationStatusResult.mockResolvedValueOnce(statusOk('unregistered')).mockResolvedValue(statusOk('locally_ready', true));
@@ -393,6 +426,44 @@ describe('DeviceRegistrationPage', () => {
     });
 
     expect(screen.queryByRole('heading', { name: 'Reconnect this Hub' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the error from a failed pairing in view instead of opening Reconnect this Hub over it', async () => {
+    vi.useFakeTimers();
+    const portalTimeout =
+      'CI Portal did not answer in time. It may still be provisioning this Hub, or this machine may not be reaching it. Get a new pairing code before trying again.';
+    pairWithCode.mockResolvedValue({ ok: true, status: 200, data: { success: false, message: portalTimeout } });
+    // The attempt reached the Portal, so the drift checks after it find the device there.
+    fetchRegistrationStateDrift.mockImplementation(async () =>
+      pairWithCode.mock.calls.length > 0 ? { ...PORTAL_ACCEPTS_KEY_DRIFT } : { detected: false, signals: [] },
+    );
+
+    render(<DeviceRegistrationPage />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    fireEvent.change(screen.getByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByText(portalTimeout)).toBeInTheDocument();
+
+    // Two status polls go by, and both find drift.
+    const driftChecksBefore = fetchRegistrationStateDrift.mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(fetchRegistrationStateDrift.mock.calls.length).toBe(driftChecksBefore + 2);
+    expect(screen.queryByRole('heading', { name: 'Reconnect this Hub' })).not.toBeInTheDocument();
+    expect(screen.getByText(portalTimeout)).toBeInTheDocument();
+
+    // Once the person starts on a new code, the dialog asks for its choice again.
+    fireEvent.change(screen.getByLabelText('Enter Pairing Code:'), { target: { value: 'XYZ789' } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(screen.getByRole('heading', { name: 'Reconnect this Hub' })).toBeInTheDocument();
   });
 
   it('shows the state drift dialog when local and portal registration disagree', async () => {

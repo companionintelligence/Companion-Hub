@@ -205,6 +205,8 @@ export default function DeviceRegistrationPage() {
   const [pairingCode, setPairingCode] = useState('');
   const [isPairing, setIsPairing] = useState(false);
   const [pairingError, setPairingError] = useState<string | null>(null);
+  /** The error under the pairing form, for the status poll, which runs outside render. */
+  const pairingErrorRef = useRef<string | null>(null);
   /** A pairing the Portal will only finish as a move, waiting for the person's yes. */
   const [moveConfirmation, setMoveConfirmation] = useState<{ code: string; organizationName: string | null } | null>(null);
   const [redirectStatusKey, setRedirectStatusKey] = useState('DEVICE_REGISTRATION_SETTING_UP_HUB_ELLIPSIS');
@@ -216,6 +218,8 @@ export default function DeviceRegistrationPage() {
   const pairingInProgressRef = useRef(false);
   const completionStartedRef = useRef(false);
   const lastStatusFetchSucceededRef = useRef(false);
+  /** Status checks still waiting for the Hub. The poll skips its turn while there is one. */
+  const statusChecksInFlightRef = useRef(0);
   const deepLinkPairAttemptRef = useRef<string | null>(null);
   const [pendingDeepLinkCode, setPendingDeepLinkCode] = useState<string | null>(null);
   const [stateDrift, setStateDrift] = useState<RegistrationStateDrift | null>(null);
@@ -284,6 +288,7 @@ export default function DeviceRegistrationPage() {
   }, []);
 
   const refreshRegistrationStatus = useCallback(async () => {
+    statusChecksInFlightRef.current += 1;
     try {
       const statusResult = await fetchRegistrationStatusResult();
       if (!statusResult.ok) {
@@ -319,7 +324,9 @@ export default function DeviceRegistrationPage() {
           } else {
             const drift = await loadStateDrift();
             const storedChoice = getStoredDriftChoice();
-            if (drift?.detected && !storedChoice) {
+            // Not over the error a failed pairing left under the form: the dialog hid the only word on
+            // what went wrong. It asks again once the person edits the code or pairs again.
+            if (drift?.detected && !storedChoice && !pairingErrorRef.current) {
               setDriftDialogOpen(true);
             }
           }
@@ -367,6 +374,7 @@ export default function DeviceRegistrationPage() {
       });
       return null;
     } finally {
+      statusChecksInFlightRef.current -= 1;
       setIsLoading(false);
     }
   }, [loadDeviceInfo, loadStateDrift, t]);
@@ -448,6 +456,10 @@ export default function DeviceRegistrationPage() {
   }, [refreshRegistrationStatus]);
 
   useEffect(() => {
+    pairingErrorRef.current = pairingError;
+  }, [pairingError]);
+
+  useEffect(() => {
     // Poll active provisioning phases at the standard interval. Poll an
     // unregistered appliance less often so externally completed headless setup
     // still appears without creating unnecessary requests. One failed fetch is a
@@ -463,6 +475,11 @@ export default function DeviceRegistrationPage() {
 
     const intervalMs = isPending ? STATUS_POLL_INTERVAL_MS : HEADLESS_POLL_INTERVAL_MS;
     const intervalId = window.setInterval(() => {
+      // A check that is still running answers for this one. Starting another on every tick stacked
+      // requests onto a Hub that was slow to answer, and made it slower still.
+      if (statusChecksInFlightRef.current > 0) {
+        return;
+      }
       void refreshRegistrationStatus();
     }, intervalMs);
 
