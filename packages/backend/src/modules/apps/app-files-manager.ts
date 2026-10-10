@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { supportsPosixPermissions } from '@/common/helpers/bind-mount-helpers';
 import { execAsync } from '@/common/helpers/exec-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
@@ -258,11 +259,21 @@ export class AppFilesManager {
    *    created.
    *
    * See {@link buildPermissionsCommand} for the exact shell.
+   *
+   * Skipped when the app-data mount cannot carry POSIX permissions (a Windows
+   * drive under WSL2). Every chmod is discarded there, yet the sweep still
+   * stats and chmods each file over 9p, which took minutes on every restart of
+   * an app with a large data tree. The answer is the one the compose builder
+   * asks for, cached per folder.
    */
   public async setAppDataDirPermissions(appUrn: AppUrn) {
     const { appDataDir } = this.getAppPaths(appUrn);
 
     if (process.platform === 'win32') {
+      return;
+    }
+
+    if (!(await supportsPosixPermissions(this.configuration.getConfig().directories.appDataDir))) {
       return;
     }
 
