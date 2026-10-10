@@ -232,6 +232,10 @@ fn rejects_placeholder_host_device_ids() {
     assert!(!crate::hub_manager::is_usable_host_device_id(
         "00000000-0000-0000-0000-000000000000"
     ));
+    // What CIM reports for a board whose firmware never set a UUID.
+    assert!(!crate::hub_manager::is_usable_host_device_id(
+        "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF"
+    ));
     assert!(crate::hub_manager::is_usable_host_device_id(
         "06151E8B-A400-470C-B48C-67AE51D297A9"
     ));
@@ -722,4 +726,139 @@ fn runtime_env_keeps_an_operators_tailscale_serve_opt_out() {
         !relaunched.contains("TAILSCALE_SERVE_USER_DISABLED"),
         "{relaunched}"
     );
+}
+
+// --- DEVICE_ID (Companion-Hub#1953) ---
+
+/// The ID a Windows Hub paired with while `wmic` was still installed: its SMBIOS UUID.
+const PAIRED_DEVICE_ID: &str = "0E7A1C42-5D3B-4F6A-9C21-7B3E8D4F1A60";
+/// The registry `MachineGuid` an older launch wrote over it once `wmic` was gone.
+const MACHINE_GUID: &str = "9b2f6e31-48c7-4d0a-b5e2-3c1f7a9d8e24";
+
+fn rendered_device_id(rendered: &str) -> Option<&str> {
+    rendered
+        .lines()
+        .find_map(|line| line.strip_prefix("DEVICE_ID="))
+}
+
+fn render_with_device_id(data_dir: &std::path::Path, device_id: Option<&str>) -> String {
+    let mut existing = portal_test_env_map();
+    if let Some(device_id) = device_id {
+        existing.insert("DEVICE_ID".into(), device_id.into());
+    }
+    render_runtime_env_content_for_portal(data_dir, &existing, &resolve_portal_url_at(None))
+}
+
+/// Written by the backend when the Hub pairs (`registeredDeviceIdPath`).
+fn write_registered_device_id(data_dir: &std::path::Path, device_id: &str) {
+    std::fs::write(
+        data_dir.join("state").join("registered-device-id"),
+        format!("{device_id}\n"),
+    )
+    .expect("write registered-device-id");
+}
+
+/// Portal knows a Hub by the device ID it paired with, and the Hub's device key only works with
+/// that ID. Every launch derived the ID again and wrote it over the one in the env file, so when
+/// Windows removed `wmic` the ID became the MachineGuid and Portal refused the Hub.
+#[test]
+fn a_launch_keeps_the_device_id_in_the_env_file() {
+    let (_tempdir, data_dir) = portal_test_data_dir();
+
+    let rendered = render_with_device_id(&data_dir, Some(PAIRED_DEVICE_ID));
+
+    assert_eq!(rendered_device_id(&rendered), Some(PAIRED_DEVICE_ID));
+}
+
+/// What the Hub registered as wins over the env file, so a launch also puts back an ID that an
+/// older build already wrote over it, and the Hub's next start checks in as the paired device.
+#[test]
+fn a_launch_puts_the_registered_device_id_back_into_a_rewritten_env_file() {
+    let (_tempdir, data_dir) = portal_test_data_dir();
+    write_registered_device_id(&data_dir, PAIRED_DEVICE_ID);
+    let env_path = crate::hub_manager::hub_env_path_for(&data_dir);
+    std::fs::write(
+        &env_path,
+        format!("{}DEVICE_ID={MACHINE_GUID}\n", portal_test_env_lines()),
+    )
+    .expect("write env");
+
+    let changed =
+        ensure_runtime_env_state_for_portal(&data_dir, &env_path, &resolve_portal_url_at(None))
+            .expect("launch");
+
+    assert!(changed);
+    let env = std::fs::read_to_string(&env_path).expect("read env");
+    assert_eq!(rendered_device_id(&env), Some(PAIRED_DEVICE_ID), "{env}");
+}
+
+#[test]
+fn a_hub_with_no_device_id_yet_derives_one_from_the_host() {
+    let (_tempdir, data_dir) = portal_test_data_dir();
+
+    let rendered = render_with_device_id(&data_dir, None);
+
+    assert_eq!(
+        rendered_device_id(&rendered),
+        Some(crate::hub_manager::TEST_HOST_DEVICE_ID)
+    );
+}
+
+#[test]
+fn a_placeholder_device_id_is_derived_again() {
+    let (_tempdir, data_dir) = portal_test_data_dir();
+
+    for placeholder in ["FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF", "Not Specified", "0"] {
+        let rendered = render_with_device_id(&data_dir, Some(placeholder));
+        assert_eq!(
+            rendered_device_id(&rendered),
+            Some(crate::hub_manager::TEST_HOST_DEVICE_ID),
+            "{placeholder}"
+        );
+    }
+}
+
+/// `reg query HKLM\SOFTWARE\Microsoft\Cryptography /v MachineGuid`, as Windows prints it.
+fn machine_guid_output() -> String {
+    format!(
+        "\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Cryptography\r\n    MachineGuid    REG_SZ    {MACHINE_GUID}\r\n\r\n"
+    )
+}
+
+/// Current Windows 11 builds no longer ship `wmic`. CIM still reports the SMBIOS UUID that
+/// `wmic csproduct get uuid` printed, so a Hub set up on such a PC gets the ID that PC had before,
+/// and Restore existing device still finds it.
+#[test]
+fn a_windows_pc_without_wmic_still_gives_its_smbios_uuid() {
+    let pc_without_wmic = |program: &str, _args: &[&str]| match program {
+        "powershell.exe" => Some(format!("{PAIRED_DEVICE_ID}\r\n")),
+        "reg" => Some(machine_guid_output()),
+        _ => None,
+    };
+
+    assert_eq!(
+        crate::hub_manager::windows_host_device_id(pc_without_wmic),
+        Some(PAIRED_DEVICE_ID.to_string())
+    );
+}
+
+#[test]
+fn a_windows_pc_without_a_firmware_uuid_falls_back_to_its_machine_guid() {
+    for cim in [
+        None,
+        Some("FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF\r\n".to_string()),
+        Some("\r\n".to_string()),
+    ] {
+        let pc = |program: &str, _args: &[&str]| match program {
+            "powershell.exe" => cim.clone(),
+            "reg" => Some(machine_guid_output()),
+            _ => None,
+        };
+
+        assert_eq!(
+            crate::hub_manager::windows_host_device_id(pc),
+            Some(MACHINE_GUID.to_string()),
+            "{cim:?}"
+        );
+    }
 }
