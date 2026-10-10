@@ -83,24 +83,33 @@ http:
     # Last on every app router (withAppStartingPage in traefik-labels.builder.ts, and the
     # port-expose routes) and on nothing else: not the Hub's own routers, not forward auth. When the
     # app's route answers 502 (its container is up but nothing listens yet) or 504 (the app, or a
-    # proxy inside it, timed out), Traefik asks the Hub for "<app> is starting…" or why it is not,
-    # and sends that page under the app's own status code, so API clients and health checks still
-    # see the failure. Traefik makes that request with the visitor's own headers (cookies and Authorization
+    # proxy inside it, timed out), Traefik asks the Hub for "<app> is starting…" or why it is not.
+    # Traefik makes that request with the visitor's own headers (cookies and Authorization
     # too; it has no option to drop them before v3.6.15) and `Host`, which is how the Hub knows
     # which app it is. An app's OWN 502 or 504 body is replaced as well; there is no telling the two
     # apart from here.
     #
-    # Not 503. Apps send it on purpose, with a body their own clients read: Companion Memory's
-    # PowerSync token endpoint answers 503 by design, and model servers answer 503 while a model
-    # loads. Traefik itself seldom answers 503 on these routes, since the Hub drops a stopped app's
-    # router and these services have no health checks.
+    # The visitor gets the page as a 503, so API clients and health checks still see a failure. Not
+    # as the app's 502 or 504: Cloudflare puts its own "Bad gateway" page in place of an origin 502
+    # or 504, so a Public Web visitor never saw this page, and it passes a 503 through. The Hub is
+    # still told the status the app answered. `statusRewrites` and `{originalStatus}` need Traefik
+    # 3.4 or later, and the compose files have pinned 3.6.7 or later since this repository's first
+    # commit.
+    #
+    # An app's own 503 is never caught. Apps send it on purpose, with a body their own clients
+    # read: Companion Memory's PowerSync token endpoint answers 503 by design, and model servers
+    # answer 503 while a model loads. Traefik itself seldom answers 503 on these routes, since the
+    # Hub drops a stopped app's router and these services have no health checks.
     ci-hub-app-starting:
       errors:
         status:
           - "502"
           - "504"
+        statusRewrites:
+          "502": 503
+          "504": 503
         service: ci-hub-app-starting
-        query: "/api/apps/starting?status={status}"
+        query: "/api/apps/starting?status={originalStatus}"
 
   services:
     # The Hub, for the page above, at the same tagged address as forward auth (see the top of this

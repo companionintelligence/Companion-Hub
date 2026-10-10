@@ -7,8 +7,9 @@ import type { AppStatus } from '@/core/database/drizzle/types';
  *
  * Traefik fetches it through the `ci-hub-app-starting` errors middleware in
  * assets/traefik/dynamic/dynamic.yml, which every app router ends with. It sends the visitor's own
- * request headers along, `Host` included, and answers the visitor with this page's body under the
- * app's original status code, so API clients and health checks still see the failure.
+ * request headers along, `Host` included, and answers the visitor with this page's body as a 503,
+ * so API clients and health checks still see a failure. Cloudflare passes a 503 through to a Public
+ * Web visitor, where it would have put its own page in place of the app's 502 or 504.
  *
  * Self-contained by necessity: it is served at the app's address, where a relative link to a
  * stylesheet or an icon would ask the app that just failed. No scripts either; the page reloads
@@ -30,7 +31,7 @@ export const RECENTLY_STARTED_MS = 2 * 60_000;
 
 /** The status codes this page stands in for. Anything else asked for gets {@link DEFAULT_PAGE_STATUS}. */
 const GATEWAY_ERROR_STATUSES: ReadonlySet<number> = new Set([502, 504]);
-/** What Traefik answers while an app starts. Traefik sends the app's own code to the visitor anyway. */
+/** What Traefik answers while an app starts. Traefik sends the visitor a 503 whatever this page answers. */
 const DEFAULT_PAGE_STATUS = 502;
 
 /** States the app comes back from by itself, without anyone pressing Start. */
@@ -87,7 +88,7 @@ export function classifyApp(input: {
   return 'not_responding';
 }
 
-/** The status code Traefik asked about (`?status={status}`), or 502 for anything else. */
+/** The status the app answered, which Traefik passes as `?status={originalStatus}`, or 502 for anything else. */
 export function appStartingPageStatus(requested: unknown): number {
   const raw = Array.isArray(requested) ? requested[0] : requested;
   const status = typeof raw === 'string' && /^\d{3}$/.test(raw) ? Number(raw) : Number.NaN;

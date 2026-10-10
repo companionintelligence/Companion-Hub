@@ -259,10 +259,11 @@ Every app router ends with `ci-hub-app-starting@file`, an `errors` middleware fo
 It leaves 503 alone: apps send that on purpose, with a body their own clients read. While an
 app's container is up but the app does not answer yet, Traefik fetches
 `GET /api/apps/starting` from the Hub with the visitor's `Host` and shows "*App* is starting…"
-(or that it is stopped or not responding) under the app's own status code. It runs after forward
-auth, so a visitor who is not signed in still gets the login page, and it is on no route of the
-Hub's own. Apps opened on their own port or over the Private VPN do not pass through Traefik and
-do not get the page.
+(or that it is stopped or not responding) as a 503 (`statusRewrites`). Cloudflare puts its own
+"Bad gateway" page in place of an origin 502 or 504 but passes a 503 through, which is what lets a
+Public Web visitor see the page. It runs after forward auth, so a visitor who is not signed in
+still gets the login page, and it is on no route of the Hub's own. Apps opened on their own port
+or over the Private VPN do not pass through Traefik and do not get the page.
 
 The Hub's own rule is the exception: Portal always rebuilds it as
 `host.docker.internal:{hubListenPort}`, whatever the Hub's entry says. `cloudflared` reaches that

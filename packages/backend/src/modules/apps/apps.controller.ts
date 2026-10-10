@@ -106,7 +106,7 @@ export class AppsController {
    * No guard: Traefik's `ci-hub-app-starting` errors middleware fetches it with the visitor's own
    * request headers and `Host`, and nothing that proves a Hub sign-in. That is also why it shows
    * nothing beyond the app's name and status. Declared above `:urn`, which would otherwise take
-   * `starting` for an app URN. Traefik answers the visitor with the app's own status code.
+   * `starting` for an app URN. Traefik answers the visitor with a 503, whatever status this sends.
    */
   @Get('starting')
   async getAppStartingPage(@Req() req: Request, @Res() res: Response) {
