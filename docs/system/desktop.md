@@ -178,6 +178,8 @@ Before it starts the stack, `start_hub` checks the Docker it runs on (`hub_manag
 
 Container identity: `CI_HUB_CONTAINER_UID/GID`, `DOCKER_GID` env vars from `resolve_hub_container_identity()`.
 
+Device ID: Portal knows a Hub by its `DEVICE_ID`, and the Hub's device key works only with that ID, so a launch keeps the one the Hub has. `render_runtime_env_content` (`hub_manager/runtime_env.rs`) takes it from `state/registered-device-id`, which the backend writes when the Hub pairs and removes when it is set up fresh, then from the `DEVICE_ID` already in the env file. Only a Hub with neither reads one from the host: on Windows the SMBIOS UUID through CIM (`Win32_ComputerSystemProduct`, what `wmic csproduct get uuid` printed), else the registry `MachineGuid`; on macOS `IOPlatformUUID`; on Linux `/etc/machine-id`. A data folder copied to another computer keeps its device ID, as an env file copied between fleet nodes does (see [One device ID per machine](../fleet-setup.md#one-device-id-per-machine)).
+
 The Hub's own Docker calls (its self-update, every app install and start) read `<data dir>/.docker/config.json`, mounted as `DOCKER_CONFIG=/data/.docker`. On every launch, `generate_container_docker_config` (`hub_manager/compose.rs`) writes it from the host's `~/.docker/config.json`, keeping only what works inside the container: inline registry auths, credential helpers that aren't host-only binaries, and the `proxies` section as it is. Docker Compose sets `HTTPS_PROXY`, `NO_PROXY`, and the rest from `proxies` in each container it creates, so the containers the Hub starts get the same proxy as the ones the desktop starts. `cihub setup` writes the same file (`scripts/init-docker-config.ts`).
 
 ## Host update listener
