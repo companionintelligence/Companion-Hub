@@ -151,6 +151,8 @@ Both Windows packaged installers run the bundled cleanup script before removing 
 - **NSIS `-setup.exe`** — `packages/desktop/src-tauri/windows/installer-hooks.nsh` defines an `NSIS_HOOK_PREUNINSTALL` macro (wired through `bundle.windows.nsis.installerHooks`) that runs the script before `$INSTDIR` is removed.
 - **WiX `.msi`** — `packages/desktop/src-tauri/windows/cleanup-on-uninstall.wxs` adds a custom action (wired through `bundle.windows.wix.fragmentPaths` + `componentGroupRefs`) sequenced `Before="RemoveFiles"` and conditioned on `(REMOVE="ALL") AND (NOT UPGRADINGPRODUCTCODE)`.
 
+The NSIS hook closes the app first if it is running, with the same prompt Tauri's template shows. The template's own check only comes after the hook, and an open app put back part of what the cleanup had just deleted.
+
 Unlike Scoop, both only run on a real uninstall — in-place updates reuse the install (NSIS, and the hook also skips cleanup when the uninstaller is launched with `/UPDATE`) or set `UPGRADINGPRODUCTCODE` during the major-upgrade removal pass (MSI), so they perform the **full purge** (volumes and images included) only on a genuine removal. WinGet inherits whichever of the two its manifest installs. Running a newer interactive `-setup.exe` and keeping its default "Uninstall before installing" choice is a genuine removal and purges too.
 
 **Uninstall is a full purge, not a `remove`.** Cleanup deletes Hub-related state in user
@@ -159,6 +161,15 @@ config/cache/data directories **and the Hub Docker data volumes** (`ci_hub_pgdat
 intentional ([#566](https://github.com/companionintelligence/CI-Hub/issues/566)); there is
 no `remove`-vs-`purge` distinction and no confirmation prompt. Users must back up before
 uninstalling.
+
+On Windows, `uninstall-cleanup.ps1` also removes every network and volume labelled with the
+Hub's compose project (`ci-hub_edge` and `ci-hub_internal` included), removes containers with
+`docker rm -f -v` so their anonymous volumes go too, takes the `Companion Hub\bin` folder off
+the user PATH, and deletes the `CompanionHub-WSL-Docker.vbs` logon script that keeps the
+Docker Engine's WSL2 distro running. Run it with `-DryRun` to list what it would remove
+without removing anything. It must work under Windows PowerShell 5.1, which the installers
+use: keep double quotes out of any `--format` template it passes to docker, because 5.1
+drops them.
 
 **The Cloudflare tunnel token is removed too.** The desktop keeps it in a folder named
 `tunnel` *beside* its data folder (`~/.local/share/tunnel`, `%APPDATA%\tunnel`,
