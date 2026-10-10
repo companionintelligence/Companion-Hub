@@ -178,3 +178,66 @@ fn docker_permission_repair_with_nothing_to_keep_is_the_recursive_one() {
          else chmod -R u+rwX,g+rwX,o+rwX /mnt 2>/dev/null || chmod -R a+rwX /mnt 2>/dev/null || true; fi"
     );
 }
+
+/// The Hub rewrites both Traefik files on every boot (`AppService.copyAssets`) with LF line endings,
+/// and its write adds a newline to a file that already ends with one. A Windows build embeds the
+/// seeds with the CRLF line endings of the checkout it was built from. Neither changes what Traefik
+/// reads, and counting either as a change recreated Traefik and the whole Hub on every launch
+/// (Companion-Hub#1931).
+#[test]
+fn a_launch_leaves_traefik_files_alone_that_differ_only_in_line_endings() {
+    fn with_lf(text: &str) -> String {
+        text.replace("\r\n", "\n")
+    }
+    fn as_the_hub_writes_it(seed: &str) -> String {
+        format!("{}\n", with_lf(seed))
+    }
+    fn as_a_windows_build_writes_it(seed: &str) -> String {
+        with_lf(seed).replace('\n', "\r\n")
+    }
+
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let data_dir = tempdir.path();
+    prepare_traefik_runtime_state(data_dir).expect("first launch");
+    let seeds = [
+        (TRAEFIK_CONFIG_FILE, seeded_traefik_config_contents()),
+        (
+            TRAEFIK_DYNAMIC_FILE,
+            TRAEFIK_DYNAMIC_CONFIG_SEED.to_string(),
+        ),
+    ];
+
+    for rewrite in [as_the_hub_writes_it, as_a_windows_build_writes_it] {
+        for (file, seed) in &seeds {
+            std::fs::write(data_dir.join(file), rewrite(seed)).expect("rewrite");
+        }
+
+        let result = prepare_traefik_runtime_state(data_dir).expect("next launch");
+
+        assert!(!result.changed, "no change, so nothing to recreate");
+        for (file, seed) in &seeds {
+            assert_eq!(
+                std::fs::read_to_string(data_dir.join(file)).expect("read"),
+                rewrite(seed),
+                "{file} is left as it was"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_launch_still_replaces_a_traefik_file_whose_content_differs() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let data_dir = tempdir.path();
+    prepare_traefik_runtime_state(data_dir).expect("first launch");
+    let dynamic = data_dir.join(TRAEFIK_DYNAMIC_FILE);
+    std::fs::write(&dynamic, "http: {}\n").expect("write an older dynamic.yml");
+
+    let result = prepare_traefik_runtime_state(data_dir).expect("next launch");
+
+    assert!(result.changed);
+    assert_eq!(
+        std::fs::read_to_string(&dynamic).expect("read"),
+        TRAEFIK_DYNAMIC_CONFIG_SEED
+    );
+}

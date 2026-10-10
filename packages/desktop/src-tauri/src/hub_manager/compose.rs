@@ -186,11 +186,15 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
     // Build .env content with deterministic key order
     let env_content = render_runtime_env_content(&data_dir, &existing);
 
-    // Write the primary runtime env file (port manager will append dynamic port vars after this)
+    // Write the primary runtime env file, keeping the port lines the last start wrote
     let old_content = std::fs::read_to_string(&env_path).unwrap_or_default();
     // Strip port vars from old content for comparison (port manager manages those)
     let env_changed = strip_port_vars(&old_content) != env_content;
-    std::fs::write(&env_path, &env_content).map_err(|e| {
+    std::fs::write(
+        &env_path,
+        launch_env_file_content(&env_content, &old_content),
+    )
+    .map_err(|e| {
         let message = format!("Failed to write {}: {}", env_path.display(), e);
         let _ = append_desktop_log_for(&data_dir, "initialize", &message);
         with_view_logs_hint(message)
@@ -469,20 +473,44 @@ pub(crate) fn generate_container_docker_config(
     Ok(())
 }
 
+/// The env file lines the port manager owns. It writes them when it starts the Hub.
+const PORT_VAR_PREFIXES: [&str; 6] = [
+    "API_PORT=",
+    "POSTGRES_PORT=",
+    "RABBITMQ_PORT=",
+    "TRAEFIK_DASHBOARD_PORT=",
+    "HTTP_PORT=",
+    "HTTPS_PORT=",
+];
+
+fn is_port_var_line(line: &str) -> bool {
+    PORT_VAR_PREFIXES
+        .iter()
+        .any(|prefix| line.starts_with(prefix))
+}
+
+/// The env file a launch writes: `rendered`, then the port lines of `previous`. Only a start writes
+/// the ports, and a launch that finds the Hub running and unchanged doesn't start it, so the file
+/// keeps the ones the last start chose. Dropping them made every launch hash a different file from
+/// the one that start saved, and recreate the stack (Companion-Hub#1931).
+pub(crate) fn launch_env_file_content(rendered: &str, previous: &str) -> String {
+    let mut content = rendered.to_string();
+    for line in previous.lines().filter(|line| is_port_var_line(line)) {
+        if !content.is_empty() && !content.ends_with('\n') {
+            content.push('\n');
+        }
+        content.push_str(line);
+        content.push('\n');
+    }
+    content
+}
+
 /// Strip dynamic port variables from .env content for comparison purposes.
-/// Port manager owns these vars and rewrites them each launch.
+/// Port manager owns these vars (see [`PORT_VAR_PREFIXES`]).
 pub(crate) fn strip_port_vars(content: &str) -> String {
-    let port_vars = [
-        "API_PORT=",
-        "POSTGRES_PORT=",
-        "RABBITMQ_PORT=",
-        "TRAEFIK_DASHBOARD_PORT=",
-        "HTTP_PORT=",
-        "HTTPS_PORT=",
-    ];
     content
         .lines()
-        .filter(|line| !port_vars.iter().any(|pv| line.starts_with(pv)))
+        .filter(|line| !is_port_var_line(line))
         .collect::<Vec<_>>()
         .join("\n")
         + "\n"

@@ -1,0 +1,5 @@
+# The desktop app compiles these Traefik seeds into its binary and compares them with the copies
+# the Hub writes, which have LF line endings. Keep them LF in Windows checkouts too, where
+# core.autocrlf would otherwise ship them with CRLF.
+packages/backend/assets/traefik/traefik.yml text eol=lf
+packages/backend/assets/traefik/dynamic/dynamic.yml text eol=lf

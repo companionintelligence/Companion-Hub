@@ -521,10 +521,11 @@ mod tests {
         assert!(changed);
     }
 
-    /// The desktop app picks its ports again on every launch (`initialize_hub`
-    /// rewrites the env file without them), so a port Linux refuses must never
-    /// read as free here, or every Linux desktop Hub moves off 8880/8443 to
-    /// 80/443 at its next start. Checked against the real kernel.
+    /// The desktop app picks all its ports again whenever the env file has none
+    /// (a new install, or a start whose env file `ensure_runtime_env_state` had
+    /// to render again), so a port Linux refuses must never read as free here,
+    /// or a Linux desktop Hub moves off 8880/8443 to 80/443 at that start.
+    /// Checked against the real kernel.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_port_linux_refuses_is_never_free_to_the_desktop_app() {
