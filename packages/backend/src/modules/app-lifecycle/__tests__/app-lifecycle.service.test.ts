@@ -1634,6 +1634,88 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.createApp).toHaveBeenCalled();
     });
 
+    /*
+     * The page offers Cancel from the moment Install is clicked, but the operation used to
+     * register only after the Portal bundle download and the architecture check. A cancel in
+     * those seconds got `not_found` ("This install can no longer be cancelled.") and the app
+     * installed anyway.
+     */
+    describe('a cancel that arrives before the install is queued', () => {
+      /** A promise the test settles, to hold installApp at one of its awaits. */
+      const held = <T>() => {
+        let release!: (value: T) => void;
+        const promise = new Promise<T>((resolve) => {
+          release = resolve;
+        });
+        return { promise, release };
+      };
+      /** Lets installApp run up to the await the test is holding. */
+      const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+      const cancelledEvents = () => sseService.emit.mock.calls.filter(([, data]) => (data as { event?: string }).event === 'install_cancelled');
+
+      it('is held while the Portal bundle downloads, and nothing is written or queued', async () => {
+        appStoreService.getAppStoreBySlug.mockResolvedValue({ slug: 'ci-marketplace', url: 'http://portal/api', type: 'ci_cloud_api' } as any);
+        const download = held<unknown>();
+        reposHelpers.downloadAppFiles.mockReturnValue(download.promise as any);
+
+        const install = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+        await settle();
+        const cancel = await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
+        download.release({ success: true, files: {} });
+        await install;
+
+        expect(cancel.outcome).toBe('cancelling');
+        expect(imageSizeService.verifyAppArchitecture).not.toHaveBeenCalled();
+        expect(appsRepository.createApp).not.toHaveBeenCalled();
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        expect(cancelledEvents()).toEqual([['app', expect.objectContaining({ event: 'install_cancelled', appUrn })]]);
+      });
+
+      it('is held through the architecture check', async () => {
+        const archCheck = held<null>();
+        imageSizeService.verifyAppArchitecture.mockReturnValue(archCheck.promise);
+
+        const install = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+        await settle();
+        const cancel = await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
+        archCheck.release(null);
+        await install;
+
+        expect(cancel.outcome).toBe('cancelling');
+        expect(appsRepository.createApp).not.toHaveBeenCalled();
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        expect(cancelledEvents()).toHaveLength(1);
+      });
+
+      it('removes the row when it lands while the row is being written', async () => {
+        const created = held<unknown>();
+        appsRepository.createApp.mockImplementation(() => created.promise as any);
+        appsRepository.getAppByUrn.mockResolvedValueOnce(null as any).mockResolvedValue({ id: 1, status: 'installing' } as any);
+
+        const install = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+        await settle();
+        const cancel = await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
+        created.release({ id: 1, status: 'installing', port: 8080, exposedLocal: true });
+        await install;
+
+        expect(cancel.outcome).toBe('cancelling');
+        expect(appsRepository.deleteAppById).toHaveBeenCalledWith(1);
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        expect(operationRegistry.get(appUrn)).toBeUndefined();
+        expect(cancelledEvents()).toHaveLength(1);
+      });
+
+      it('is answered by the queue once the install is queued', async () => {
+        // The worker has not taken it yet.
+        appEventsQueue.publish.mockReturnValue(new Promise(() => {}));
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+
+        const cancel = await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
+
+        expect(cancel.outcome).toBe('cancelled_queued');
+      });
+    });
+
     // ── production port fallback ──────────────────────────────────────────
     // `requirePortWhenExposedLocal` only bites when isProduction, which every other test in this
     // describe turns off — that is how a production-only install break went unnoticed.
@@ -1966,11 +2048,13 @@ describe('AppLifecycleService', () => {
       });
 
       it("lets a managed app's key at full cancel an operation on another app", async () => {
+        const entry = operationRegistry.get(appUrn);
+
         await expect(service.cancelOperation({ actor: MANAGED_NEIGHBOUR_FULL, appUrn, requestId })).resolves.toMatchObject({
           outcome: 'cancelled_queued',
         });
 
-        expect(operationRegistry.get(appUrn)?.abortController.signal.aborted).toBe(true);
+        expect(entry?.abortController.signal.aborted).toBe(true);
         expect(whois.has).not.toHaveBeenCalled();
       });
 
@@ -6005,14 +6089,58 @@ describe('AppLifecycleService', () => {
     });
 
     it('returns cancelled_queued and aborts when the op is still queued', async () => {
-      operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      const entry = operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
       const abortSpy = vi.spyOn(operationRegistry, 'abort');
 
       const res = await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
 
       expect(res.outcome).toBe('cancelled_queued');
       expect(abortSpy).toHaveBeenCalledWith(appUrn, undefined);
-      expect(operationRegistry.get(appUrn)?.abortController.signal.aborted).toBe(true);
+      expect(entry.abortController.signal.aborted).toBe(true);
+    });
+
+    /*
+     * A queued install used to stay in `installing`, and in the queue list, until the worker
+     * reached it after the install ahead of it, and nothing said the cancel had worked.
+     */
+    describe('a queued install', () => {
+      beforeEach(() => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 7, status: 'installing' } as any);
+        appsRepository.deleteAppById.mockResolvedValue(undefined as any);
+      });
+
+      it('is settled at once: the row goes, the page hears install_cancelled, and the queue is sent again', async () => {
+        operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+
+        const res = await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
+
+        expect(res.outcome).toBe('cancelled_queued');
+        expect(appsRepository.deleteAppById).toHaveBeenCalledWith(7);
+        expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_cancelled', appUrn }));
+        expect(appsService.getInstallQueueState).toHaveBeenCalled();
+      });
+
+      it('is skipped by the worker, even after the app was installed again', async () => {
+        operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+        await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
+        // The operator installs the app again before the worker reaches the cancelled message.
+        const reinstallRequestId = '00000000-0000-4000-8000-000000000def';
+        operationRegistry.register(appUrn, { requestId: reinstallRequestId, command: 'install', tier: 'safe' });
+        appsRepository.deleteAppById.mockClear();
+        sseService.emit.mockClear();
+        const execute = vi.fn();
+        commandFactory.createCommand.mockReturnValue({ execute } as any);
+        const reply = vi.fn();
+
+        await service.invokeCommand({ appUrn, command: 'install', requestId, form: {} } as any, reply);
+
+        expect(execute).not.toHaveBeenCalled();
+        expect(appsRepository.deleteAppById).not.toHaveBeenCalled();
+        expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_cancelled' }));
+        expect(reply).toHaveBeenCalledWith(expect.objectContaining({ cancelled: true }));
+        expect(operationRegistry.get(appUrn)?.requestId).toBe(reinstallRequestId);
+      });
     });
 
     it('returns cancelling and aborts when the op is in flight', async () => {

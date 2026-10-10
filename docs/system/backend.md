@@ -274,6 +274,18 @@ mid-install shows where the download is instead of waiting for the next tick. `p
 when each image's pull starts, its first event from Docker, and every 30 seconds where the layers
 are.
 
+What cancelling an install (`AppLifecycleService.cancelOperation`) does depends on how far it got:
+
+- `installApp` registers the operation only after the Portal bundle download and the image
+  architecture check. A cancel during those checks is held in `AppOperationRegistry`
+  (`holdPreparingCancel`), and `installApp` stops before its next write, or removes the row it was
+  writing, and sends `install_cancelled`.
+- A queued install's cancel is settled at once. The row is deleted, `install_cancelled` and the
+  install queue go out, and the worker skips the message when it reaches it
+  (`takeSettledBeforeStart`), even if the app has been installed again since.
+- A running install's abort reaches the pull or `compose up`, and the worker compensates and sends
+  `install_cancelled`. From `finalizing` on, the cancel is refused.
+
 ## Install lifecycle recovery
 
 The UI "install queue" is derived from DB rows with `status = 'installing'`, not a durable job table.

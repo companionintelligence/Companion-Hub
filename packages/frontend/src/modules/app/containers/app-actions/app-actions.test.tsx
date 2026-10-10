@@ -1,4 +1,4 @@
-import { render, screen, userEvent, waitFor } from '@/tests/test-utils';
+import { act, render, screen, userEvent, waitFor } from '@/tests/test-utils';
 import { stashPendingInstallIntent } from '@/lib/deep-link-install';
 import type { AppDetails, AppInfo, AppMetadata } from '@/types/app.types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -49,6 +49,8 @@ const hoisted = vi.hoisted(() => ({
   installDialogProps: undefined as undefined | Record<string, unknown>,
   /** What the install progress bar reads, as the SSE progress ticks leave it. */
   installationProgress: null as null | { percent: number; downloadedBytes?: number; totalBytes?: number },
+  /** Props the cancel-install confirmation was last rendered with. */
+  cancelInstallProps: undefined as undefined | { onCancelStart?: () => void },
 }));
 
 vi.mock('@/modules/app/helpers/use-memory-connection', () => ({
@@ -181,7 +183,10 @@ vi.mock('../../components/dialogs/install-dialog/install-dialog', () => ({
   },
 }));
 vi.mock('../../components/dialogs/cancel-install-dialog/cancel-install-dialog', () => ({
-  CancelInstallDialog: () => null,
+  CancelInstallDialog: (props: { onCancelStart?: () => void }) => {
+    hoisted.cancelInstallProps = props;
+    return null;
+  },
 }));
 vi.mock('../../components/dialogs/stop-dialog/stop-dialog', () => ({
   StopDialog: () => null,
@@ -309,6 +314,7 @@ describe('AppActions', () => {
     hoisted.updateSettingsProps = undefined;
     hoisted.installDialogProps = undefined;
     hoisted.installationProgress = null;
+    hoisted.cancelInstallProps = undefined;
     disclosureOpen.mockReset();
   });
 
@@ -646,6 +652,38 @@ describe('AppActions', () => {
       renderInstalling();
 
       expect(screen.getByText('APP_ACTION_DOWNLOADING')).toBeInTheDocument();
+    });
+  });
+
+  describe('cancelling an install', () => {
+    const renderWithStatus = (status: AppDetails['status']) => (
+      <MemoryRouter>
+        <AppActions app={makeApp({ status })} metadata={metadata} info={info} urlAvailability={idleAvailability} />
+      </MemoryRouter>
+    );
+
+    it('starts the next install without "Cancelling" when the cancel reply came after the install was gone', () => {
+      const { rerender } = render(renderWithStatus('installing'));
+
+      // A queued install is settled at once: install_cancelled can reach the page before the
+      // reply to the cancel request does.
+      rerender(renderWithStatus('missing'));
+      act(() => hoisted.cancelInstallProps?.onCancelStart?.());
+
+      // The operator installs the app again.
+      rerender(renderWithStatus('installing'));
+
+      expect(screen.queryByText('APP_STATUS_CANCELLING')).not.toBeInTheDocument();
+      expect(screen.getByTestId('icon-action-common_cancel')).toBeEnabled();
+    });
+
+    it('shows Cancelling while the install it cancelled winds down', () => {
+      render(renderWithStatus('installing'));
+
+      act(() => hoisted.cancelInstallProps?.onCancelStart?.());
+
+      expect(screen.getAllByText('APP_STATUS_CANCELLING').length).toBeGreaterThan(0);
+      expect(screen.getByTestId('icon-action-common_cancel')).toBeDisabled();
     });
   });
 

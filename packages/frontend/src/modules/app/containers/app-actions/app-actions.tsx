@@ -244,12 +244,12 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   // fails open, so an unavailable handoff never blocks the open.
   const openExternalUrl = (url: string) => (memory.applicable ? openExternalWithHubSession(url) : openExternal(url));
 
-  // Clear the optimistic "cancelling" flag once the app leaves the installing state (the
-  // install_cancelled SSE flips it to uninstalled/missing), so a later re-install isn't affected.
+  // Clear the optimistic "cancelling" flag whenever the status moves, into `installing` too. A queued
+  // install is cancelled at once, so install_cancelled can land before the reply that sets the flag,
+  // and the app's next install would then start out "Cancelling…" with Cancel disabled.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: app?.status is the trigger, not an input.
   useEffect(() => {
-    if (app?.status !== 'installing') {
-      setIsCancellingInstall(false);
-    }
+    setIsCancellingInstall(false);
   }, [app?.status]);
 
   const urnParts = info.urn.split(':');
