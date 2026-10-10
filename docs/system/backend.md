@@ -643,10 +643,11 @@ Routes that read or mutate one app assert the operator's Portal grant through
 `filterSessionByView` to trim a list. Both asserts no-op when the request carries no Hub session, so
 API-key callers such as the `cihub` CLI are unaffected.
 
-Apps in the `_user` store (custom apps and port exposes) exist only on this Hub, so the Portal is not
-asked about them and nothing is cached for them. A port-expose row gets `view`, `start`, `stop` and
-`uninstall`. Any other `_user` app gets every Hub verb. A custom-domain change on one still takes an
-organization owner or admin, read from the Portal as for any app.
+Apps in the `_user` store (custom apps and port exposes) exist only on this Hub, so their grants are
+not read from WhoIs and nothing is cached for them. Anyone signed in may view one. A port-expose row
+also gets `start`, `stop` and `uninstall`. Any other change to a `_user` app, starting or removing a
+custom app included, takes an organization owner or admin: the role check `hasManagingRole` makes,
+asked of the Portal fresh. When the role can't be read, the change is refused and the app stays listed.
 
 Assert over **every** app a request could touch before touching any of them, and include apps the
 caller named even when they turn out to need no work — checking only the apps that do lets an
