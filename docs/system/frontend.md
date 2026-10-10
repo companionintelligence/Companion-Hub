@@ -5,7 +5,7 @@
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-10-04 (Hub Pool setup guide)
+> **Last updated:** 2026-10-10 (onboarding install order)
 > **Related:** docs/system/desktop.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/system/e2e.md
 
 ---
@@ -135,6 +135,12 @@ the selected backend's readiness check, and the Ollama embeddings check when a h
 is selected. Apple Silicon offers Ollama and oMLX. NVIDIA offers Ollama and vLLM. AMD or NPU offers Ollama and Lemonade. Manual mode is a decode endpoint and an encode endpoint. When the
 operator confirms “Install & Finish”, `InstallStep` asks the desktop shell to install the chosen runner. oMLX is Homebrew. vLLM pairs with Ollama for embeddings. A plain browser build does not
 have a native process boundary, so it retains the manual setup and re-check flow.
+
+`InstallStep` runs in this order: runners, cloud keys, the preference save, the app install
+requests, then the wait for model downloads and the pins. The preferences go before the installs
+because an AI app gets its inference config when its install starts. The installs go before the
+downloads so that **Continue** cannot drop them: closing the step stops the waiting, the pins and
+the progress polling, never a request that has not been sent yet.
 
 `RecommendationsStep` uses the Alternatives chart treatment for its optional app discovery section:
 it shows a curated 20-app shortlist across ten categories, grouped in compact paired comparison rows. Category

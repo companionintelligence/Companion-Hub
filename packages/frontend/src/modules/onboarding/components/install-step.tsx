@@ -128,21 +128,27 @@ export const InstallStep = ({
     started.current = true;
 
     const preexistingClaims = new Set(apps.flatMap((app) => (app.urn && onboardingInstallUrnClaimed(app.urn) ? [app.urn] : [])));
-    const ownedClaims: string[] = [];
     for (const app of apps) {
       if (!app.urn || preexistingClaims.has(app.urn)) continue;
       claimOnboardingInstallUrn(app.urn);
-      ownedClaims.push(app.urn);
     }
 
+    // Set when the step goes away. It stops the polling and the pinning, not the requests before
+    // them. Continue says the setup carries on in the background, and an unsent request is lost.
     let cancelled = false;
-    let installsCommitted = false;
 
     const installAll = async () => {
       const minDelay = (ms: number) => new Promise((r) => setTimeout(r, ms));
       let latestTracked: TrackedModel[] = [];
+      const installedSet = new Set(aiSetupConfig?.installedCatalogIds ?? []);
+      const availablePreferenceModelIds = new Set(aiSetupConfig?.installedCatalogIds ?? []);
+      const ollamaSelected = aiSetupConfig?.ollamaSelectedModelIds ?? aiSetupConfig?.selectedModels ?? [];
+      const modelsToPull = ollamaSelected.filter((id) => !installedSet.has(id));
 
       // ─── AI Setup Phase ───────────────────────────────────────────────
+      // Runners, cloud keys and preferences go before the app installs, because an AI app gets its
+      // inference config when its install starts. The downloads are waited on after the installs
+      // are requested. Waiting first left the apps unrequested when someone pressed Continue.
       if (aiSetupConfig && !aiSetupConfig.skipped) {
         let automaticRunnerUrls = new Map<string, string>();
         const automaticRunners = automaticRunnersForBackend(aiSetupConfig.backend);
@@ -195,74 +201,16 @@ export const InstallStep = ({
           }
         }
 
-        const installedSet = new Set(aiSetupConfig.installedCatalogIds ?? []);
-        const availablePreferenceModelIds = new Set(aiSetupConfig.installedCatalogIds ?? []);
-        const ollamaSelected = aiSetupConfig.ollamaSelectedModelIds ?? aiSetupConfig.selectedModels;
-        const modelsToPull = ollamaSelected.filter((id) => !installedSet.has(id));
-
-        if (aiSetupConfig.selectedModels.length > 0) {
-          const modelErrors: Record<string, string> = {};
-          const modelProgress: Record<string, number> = {};
-
-          if (modelsToPull.length > 0) {
-            setAiPhase((prev) => ({ ...prev, status: 'pulling-models', modelErrors }));
-
-            const pullWaitMs = 60_000;
-            const pullWaitStart = Date.now();
-            while (!cancelled && Date.now() - pullWaitStart < pullWaitMs) {
-              const tracked = await fetchTrackedModels();
-              if (cancelled) return;
-              latestTracked = tracked;
-              const parsed = parsePullProgress(modelsToPull, aiSetupConfig.installedCatalogIds ?? [], tracked);
-              Object.assign(modelProgress, parsed.progressById);
-              for (const [id, msg] of Object.entries(parsed.errorsById)) {
-                modelErrors[id] = msg;
-              }
-              for (const id of parsed.pulledIds) {
-                availablePreferenceModelIds.add(id);
-              }
-              setAiPhase((prev) => ({ ...prev, modelProgress: { ...modelProgress }, modelErrors: { ...modelErrors } }));
-              if (parsed.allDone) break;
-              await minDelay(1000);
-            }
-
-            const finalTracked = await fetchTrackedModels();
-            if (cancelled) return;
-            latestTracked = finalTracked;
-            const finalParsed = parsePullProgress(modelsToPull, aiSetupConfig.installedCatalogIds ?? [], finalTracked);
-            Object.assign(modelProgress, finalParsed.progressById);
-            for (const [id, msg] of Object.entries(finalParsed.errorsById)) {
-              modelErrors[id] = msg;
-            }
-            for (const id of finalParsed.pulledIds) {
-              availablePreferenceModelIds.add(id);
-            }
-
-            if (Object.keys(modelErrors).length > 0) {
-              setAiPhase((prev) => ({
-                ...prev,
-                modelProgress: { ...modelProgress },
-                modelErrors: { ...modelErrors },
-                error: t('ONBOARDING_INSTALL_MODEL_DOWNLOADS_FAILED', { count: Object.keys(modelErrors).length }),
-              }));
-            }
+        if (modelsToPull.length > 0) {
+          // A chosen model that has arrived, or is still arriving, is kept as a default; one that
+          // failed or never started is not (see preferenceModelId).
+          try {
+            latestTracked = await fetchTrackedModels();
+          } catch {
+            // Decide from what is installed. A failed read must not hold up the installs.
           }
-
-          setAiPhase((prev) => ({ ...prev, status: 'pinning-models', modelErrors }));
-          const pinTracked = await fetchTrackedModels();
-          if (cancelled) return;
-          latestTracked = pinTracked;
-          const pinableIds = new Set(
-            pinTracked.filter((m) => m.state === 'pulled' || m.state === 'loaded' || m.state === 'pinned').map((m) => m.catalogId),
-          );
-
-          for (const modelId of ollamaSelected) {
-            if (!pinableIds.has(modelId)) continue;
-            try {
-              await pinInferenceModel(modelId);
-            } catch {
-              // Non-fatal
-            }
+          for (const id of parsePullProgress(modelsToPull, aiSetupConfig.installedCatalogIds ?? [], latestTracked).pulledIds) {
+            availablePreferenceModelIds.add(id);
           }
         }
 
@@ -272,7 +220,6 @@ export const InstallStep = ({
         const configuredOrAutomaticUrl = (configured: string | undefined, runner: string) =>
           configured?.trim() || automaticRunnerUrls.get(runner) || null;
 
-        if (cancelled) return;
         try {
           await saveInferencePreferences({
             backend: aiSetupConfig.backend,
@@ -290,8 +237,6 @@ export const InstallStep = ({
         } catch {
           setAiPhase((prev) => ({ ...prev, error: t('ONBOARDING_INSTALL_FAILED_SAVE_PREFERRED_BACKEND', { status: 0 }) }));
         }
-
-        setAiPhase((prev) => ({ ...prev, status: 'done', modelsDone: true }));
       }
 
       // ─── App Install Phase ────────────────────────────────────────────
@@ -324,8 +269,6 @@ export const InstallStep = ({
       };
 
       const alreadyInstalled = await fetchInstalledStatusMap();
-      if (cancelled) return;
-      installsCommitted = true;
 
       const enqueueApp = async (index: number, app: OnboardingApp) => {
         if (!app.urn) {
@@ -396,6 +339,68 @@ export const InstallStep = ({
       // Enqueue every selected app immediately; the backend serializes Docker pulls.
       await Promise.all(apps.map((app, index) => enqueueApp(index, app)));
 
+      // ─── Model Downloads ──────────────────────────────────────────────
+      if (aiSetupConfig && !aiSetupConfig.skipped) {
+        if (aiSetupConfig.selectedModels.length > 0) {
+          const modelErrors: Record<string, string> = {};
+          const modelProgress: Record<string, number> = {};
+
+          if (modelsToPull.length > 0) {
+            setAiPhase((prev) => ({ ...prev, status: 'pulling-models', modelErrors }));
+
+            const pullWaitMs = 60_000;
+            const pullWaitStart = Date.now();
+            while (!cancelled && Date.now() - pullWaitStart < pullWaitMs) {
+              const tracked = await fetchTrackedModels();
+              if (cancelled) return;
+              const parsed = parsePullProgress(modelsToPull, aiSetupConfig.installedCatalogIds ?? [], tracked);
+              Object.assign(modelProgress, parsed.progressById);
+              for (const [id, msg] of Object.entries(parsed.errorsById)) {
+                modelErrors[id] = msg;
+              }
+              setAiPhase((prev) => ({ ...prev, modelProgress: { ...modelProgress }, modelErrors: { ...modelErrors } }));
+              if (parsed.allDone) break;
+              await minDelay(1000);
+            }
+
+            const finalTracked = await fetchTrackedModels();
+            if (cancelled) return;
+            const finalParsed = parsePullProgress(modelsToPull, aiSetupConfig.installedCatalogIds ?? [], finalTracked);
+            Object.assign(modelProgress, finalParsed.progressById);
+            for (const [id, msg] of Object.entries(finalParsed.errorsById)) {
+              modelErrors[id] = msg;
+            }
+
+            if (Object.keys(modelErrors).length > 0) {
+              setAiPhase((prev) => ({
+                ...prev,
+                modelProgress: { ...modelProgress },
+                modelErrors: { ...modelErrors },
+                error: t('ONBOARDING_INSTALL_MODEL_DOWNLOADS_FAILED', { count: Object.keys(modelErrors).length }),
+              }));
+            }
+          }
+
+          setAiPhase((prev) => ({ ...prev, status: 'pinning-models', modelErrors }));
+          const pinTracked = await fetchTrackedModels();
+          if (cancelled) return;
+          const pinableIds = new Set(
+            pinTracked.filter((m) => m.state === 'pulled' || m.state === 'loaded' || m.state === 'pinned').map((m) => m.catalogId),
+          );
+
+          for (const modelId of ollamaSelected) {
+            if (!pinableIds.has(modelId)) continue;
+            try {
+              await pinInferenceModel(modelId);
+            } catch {
+              // Non-fatal
+            }
+          }
+        }
+
+        setAiPhase((prev) => ({ ...prev, status: 'done', modelsDone: true }));
+      }
+
       const pollInterval = 1000;
       const timeoutMs = 120_000;
       const monitorStart = Date.now();
@@ -463,11 +468,8 @@ export const InstallStep = ({
 
     void installAll();
     return () => {
+      // The claims stay: this run still sends the requests, so a remount must not send them again.
       cancelled = true;
-      // The requests were never sent. A reload, or a strict remount, has to be able to send them.
-      if (!installsCommitted) {
-        for (const urn of ownedClaims) releaseOnboardingInstallUrn(urn);
-      }
     };
   }, [apps, defaultExposureMode, operatorUsername, resume, start]);
 
