@@ -43,6 +43,30 @@ export function stripSecretFields(values: Record<string, unknown>, formFields: F
   return result;
 }
 
+/**
+ * The access settings the install dialog adds to every exposable app's own `form_fields`. They
+ * travel in an exported config like the app's fields do. Whether the port or subdomain is still
+ * free where the file is imported is for the Hub's install checks to say, not the importer.
+ */
+const ACCESS_SETTING_KEYS: readonly string[] = ['exposureMode', 'localSubdomain', 'publicDomain', 'enableAuth', 'exposedLocal', 'openPort', 'port'];
+
+/**
+ * `customDomainExpected` is the custom domain the app was served on when the dialog opened,
+ * seeded from the installed app so the Hub can refuse a save made against a stale view. Carried
+ * in from a file or an earlier install, it would describe some other moment.
+ */
+const DIALOG_ONLY_KEY = 'customDomainExpected';
+
+function withoutDialogOnlyKey(values: Record<string, unknown>): Record<string, unknown> {
+  const { [DIALOG_ONLY_KEY]: _dialogOnly, ...rest } = values;
+  return rest;
+}
+
+/** The keys an exported config holds and an import applies: the app's own fields plus the access settings. */
+function portableKeys(formFields: FormField[]): Set<string> {
+  return new Set([...formFields.map((field) => field.env_variable), ...ACCESS_SETTING_KEYS]);
+}
+
 export interface InstallConfigExport {
   /** Lets future versions evolve this payload shape without breaking older exported files. */
   schemaVersion: 1;
@@ -57,12 +81,18 @@ export function installConfigFilename(appId: string): string {
   return `${safeAppId}-install-config.json`;
 }
 
+/**
+ * Writes only what `parseInstallConfigJson` applies, so a file imports with nothing ignored. The
+ * dialog's other values (the custom domain picker, Advanced Mode's backup limit, CPU limit and
+ * guest dashboard switch) stay out.
+ */
 export function buildInstallConfigExport(appId: string, values: Record<string, unknown>, formFields: FormField[]): InstallConfigExport {
+  const portable = portableKeys(formFields);
   return {
     schemaVersion: 1,
     appId,
     exportedAt: new Date().toISOString(),
-    values: stripSecretFields(values, formFields),
+    values: Object.fromEntries(Object.entries(stripSecretFields(values, formFields)).filter(([key]) => portable.has(key))),
   };
 }
 
@@ -77,9 +107,11 @@ export type ImportInstallConfigResult =
 
 /**
  * Parses a previously-exported install config and restricts it to keys that match the CURRENT
- * app's `form_fields`. Keys that don't match a known `env_variable` are reported back in
+ * app's `form_fields` or one of the `ACCESS_SETTING_KEYS`. Keys that match neither are reported back in
  * `unrecognizedKeys`, not applied — this is what stops an operator who imports a config exported
  * for a different app from silently corrupting unrelated form state.
+ *
+ * `customDomainExpected`, which older exports wrote, is dropped without a report.
  */
 export function parseInstallConfigJson(json: string, formFields: FormField[]): ImportInstallConfigResult {
   let parsed: unknown;
@@ -101,13 +133,13 @@ export function parseInstallConfigJson(json: string, formFields: FormField[]): I
       ? (rawValues as Record<string, unknown>)
       : (parsed as Record<string, unknown>);
 
-  const knownEnvVars = new Set(formFields.map((field) => field.env_variable));
+  const knownKeys = portableKeys(formFields);
   const values: Record<string, unknown> = {};
   const recognizedKeys: string[] = [];
   const unrecognizedKeys: string[] = [];
 
-  for (const [key, value] of Object.entries(candidateValues)) {
-    if (knownEnvVars.has(key)) {
+  for (const [key, value] of Object.entries(withoutDialogOnlyKey(candidateValues))) {
+    if (knownKeys.has(key)) {
       values[key] = value;
       recognizedKeys.push(key);
     } else {
@@ -153,7 +185,8 @@ export function readLastUsedConfigs(appStoreSlug: string, storage?: Storage): La
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isLastUsedInstallConfig);
+    // Entries saved before `recordLastUsedConfig` dropped the dialog-only key still hold it.
+    return parsed.filter(isLastUsedInstallConfig).map((entry) => ({ ...entry, values: withoutDialogOnlyKey(entry.values) }));
   } catch {
     return [];
   }
@@ -175,7 +208,7 @@ export function recordLastUsedConfig(
   const entry: LastUsedInstallConfig = {
     id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
     savedAt: new Date().toISOString(),
-    values: stripSecretFields(values, formFields),
+    values: withoutDialogOnlyKey(stripSecretFields(values, formFields)),
   };
 
   const next = [entry, ...readLastUsedConfigs(appStoreSlug, storage)].slice(0, MAX_LAST_USED_CONFIGS);
