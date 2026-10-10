@@ -50,6 +50,7 @@ Follow the [Google developer documentation style guide](https://developers.googl
 | [`private-vpn.md`](private-vpn.md) | Tailscale private VPN |
 | [`hub-pool.md`](hub-pool.md) | Multi-Hub inference pooling over Tailscale, with a quick start for the setup guide and the CLI |
 | [`inference-supervision.md`](inference-supervision.md) | Observing inference backends and Compose-wide crash loops — and why the Hub never restarts one |
+| [`inference-engine-comparison.md`](inference-engine-comparison.md) | Ollama, vLLM, Lemonade, and oMLX compared with the Strix Halo engines Halogen and Gufo, and what a fair test needs |
 | [`hub-pool-fleet-testing.md`](hub-pool-fleet-testing.md) | Two-node validation plan for Hub Pool |
 | [`hub-pool-vs-pair.md`](hub-pool-vs-pair.md) | Hub Pool compared with NVIDIA Personal-AI-Router |
 | [`fleet-router.md`](fleet-router.md) | Prompt every tailnet inference node when no Hub can run |
