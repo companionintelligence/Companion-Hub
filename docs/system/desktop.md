@@ -75,6 +75,12 @@ the app starts that same command again (`hub_manager/wsl.rs`):
   Desktop's steps when `docker_engine` is `wsl-engine`. It waits like a start and returns why the
   engine didn't come back.
 
+All of these run the keepalive in the installer's distro: the first `Ubuntu` or `Ubuntu-*` that
+`wsl -l -q` lists. Separately, each launch on the WSL engine puts the logon script
+(`Startup\CompanionHub-WSL-Docker.vbs`, same content as the installer's) back when it's missing:
+after an uninstall removed it, a reinstall over an engine that is already set up doesn't run the
+installer that writes it. A script that is there is left alone.
+
 ## Native inference runners
 
 The desktop shell owns the best-effort native setup used by the onboarding FTUE. oMLX, on Apple Silicon, is installed with `brew tap jundot/omlx https://github.com/jundot/omlx`, then `brew install jundot/omlx/omlx`, then `omlx start`. vLLM is NVIDIA only and is not installed on Apple Silicon. Lemonade is operator-managed. MTPLX, mlx-dspark, Lucebox, llama.cpp, and LM Studio are not installed.

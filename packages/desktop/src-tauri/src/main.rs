@@ -825,6 +825,10 @@ pub fn run() {
                     let data_for_decision = data.clone();
 
                     let decision = tokio::task::spawn_blocking(move || {
+                        // Not about Docker answering now: put back the logon script that starts
+                        // the WSL engine, which an uninstall can remove and a reinstall over an
+                        // engine that is already set up doesn't write again.
+                        hub_manager::ensure_wsl_engine_logon_script(&data_for_decision);
                         if !hub_manager::docker_available_for_launch(&data_for_decision) {
                             return Ok::<_, String>(None);
                         }

@@ -7,9 +7,10 @@ use std::time::{Duration, Instant};
 
 use crate::docker_engine::{DockerEngineKind, PinnedDockerEngine};
 use crate::hub_manager::{
-    default_gateway_from_route_table, is_own_address, write_update_listener_host,
-    wsl_engine_should_revive, wsl_keepalive_args, KeepaliveProcess, KeepaliveStart, KeepaliveState,
-    WslKeepalive,
+    default_gateway_from_route_table, engine_distro_from_listing, is_own_address,
+    restore_wsl_engine_logon_script, write_update_listener_host, wsl2_engine_user_script,
+    wsl_engine_logon_script, wsl_engine_should_revive, wsl_keepalive_args, KeepaliveProcess,
+    KeepaliveStart, KeepaliveState, WslKeepalive,
 };
 
 fn engine(kind: DockerEngineKind) -> PinnedDockerEngine {
@@ -194,4 +195,82 @@ fn the_listener_address_is_written_where_the_hub_reads_it_and_removed_again() {
     assert_eq!(write_update_listener_host(data_dir.path(), None), Ok(true));
     assert!(!file.exists());
     assert_eq!(write_update_listener_host(data_dir.path(), None), Ok(false));
+}
+
+#[test]
+fn the_engine_runs_in_the_installers_ubuntu_even_when_a_debian_is_listed_first() {
+    assert_eq!(
+        engine_distro_from_listing("Debian\nUbuntu-22.04\n"),
+        Some("Ubuntu-22.04".to_string())
+    );
+    assert_eq!(
+        engine_distro_from_listing("docker-desktop\r\nubuntu\r\n"),
+        Some("ubuntu".to_string())
+    );
+    assert_eq!(engine_distro_from_listing("Debian\ndocker-desktop\n"), None);
+}
+
+/// The logon script the installer's PowerShell writes with `Set-Content`, for `distro`.
+fn installer_logon_script(distro: &str) -> String {
+    let script = wsl2_engine_user_script();
+    let value = script
+        .lines()
+        .find_map(|line| line.strip_prefix("Set-Content -Path $vbs -Value "))
+        .expect("the installer writes the logon script");
+    // A double-quoted PowerShell string: "" is one quote, and $distro expands.
+    let inner = value
+        .trim()
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .expect("a quoted value");
+    format!(
+        "{}\r\n",
+        inner.replace("\"\"", "\"").replace("$distro", distro)
+    )
+}
+
+#[test]
+fn the_logon_script_is_the_one_the_installer_writes() {
+    assert_eq!(
+        wsl_engine_logon_script("Ubuntu"),
+        installer_logon_script("Ubuntu")
+    );
+    assert_eq!(
+        wsl_engine_logon_script("Ubuntu"),
+        "CreateObject(\"Wscript.Shell\").Run \"wsl.exe -d Ubuntu -u root -- sleep infinity\", 0, False\r\n"
+    );
+}
+
+#[test]
+fn a_logon_script_the_uninstaller_removed_is_put_back_and_one_still_there_is_left_alone() {
+    let startup = tempfile::tempdir().expect("Startup folder");
+    let script = startup.path().join("CompanionHub-WSL-Docker.vbs");
+
+    assert_eq!(
+        restore_wsl_engine_logon_script(startup.path(), || Some("Ubuntu".to_string())),
+        Ok(Some(script.clone()))
+    );
+    assert_eq!(
+        std::fs::read_to_string(&script).expect("written"),
+        installer_logon_script("Ubuntu")
+    );
+
+    // Whatever distro a script that is there names, it is not rewritten.
+    std::fs::write(&script, installer_logon_script("Ubuntu-24.04")).expect("installer's script");
+    assert_eq!(
+        restore_wsl_engine_logon_script(startup.path(), || Some("Ubuntu".to_string())),
+        Ok(None)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&script).expect("kept"),
+        installer_logon_script("Ubuntu-24.04")
+    );
+}
+
+#[test]
+fn no_logon_script_is_written_without_the_engines_distro() {
+    let startup = tempfile::tempdir().expect("Startup folder");
+
+    assert!(restore_wsl_engine_logon_script(startup.path(), || None).is_err());
+    assert!(!startup.path().join("CompanionHub-WSL-Docker.vbs").exists());
 }

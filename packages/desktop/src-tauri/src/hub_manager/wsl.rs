@@ -1,5 +1,5 @@
-//! WSL2 Docker Engine backend: distro discovery, keeping the engine running, where the Hub reaches
-//! the update listener, GPU runtime and Ollama reachability.
+//! WSL2 Docker Engine backend: distro discovery, keeping the engine running and its logon script,
+//! where the Hub reaches the update listener, GPU runtime and Ollama reachability.
 
 // Windows-only bodies below need the parent scope; on other hosts this looks unused.
 #[allow(unused_imports)]
@@ -349,6 +349,43 @@ pub(crate) fn wsl_engine_should_revive(
             .is_some_and(|engine| engine.kind == crate::docker_engine::DockerEngineKind::WslEngine)
 }
 
+/// The distro the WSL engine installer set Docker up in, from a `wsl -l -q` listing: the first
+/// `Ubuntu` or `Ubuntu-*`, ignoring case, by the installer's own rule (`wsl2_engine_user_script`).
+/// `find_wsl_distro` also takes a Debian listed first, which would be the wrong distro to start.
+#[cfg(any(test, windows))]
+pub(crate) fn engine_distro_from_listing(listing: &str) -> Option<String> {
+    listing
+        .lines()
+        .map(|line| line.trim().trim_matches('\u{0}').trim())
+        .find(|name| {
+            let lower = name.to_ascii_lowercase();
+            lower == "ubuntu" || lower.starts_with("ubuntu-")
+        })
+        .map(str::to_string)
+}
+
+/// The WSL engine's distro on this computer. Listing distros doesn't start WSL. Remembered once
+/// found; a listing that fails is asked again next time.
+#[cfg(windows)]
+fn wsl_engine_distro() -> Option<String> {
+    static FOUND: Mutex<Option<String>> = Mutex::new(None);
+    let mut found = lock_recovering(&FOUND);
+    if found.is_none() {
+        let mut command = Command::new("wsl.exe");
+        command.creation_flags(CREATE_NO_WINDOW);
+        command.env("WSL_UTF8", "1");
+        *found = command
+            .args(["-l", "-q"])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| {
+                engine_distro_from_listing(&String::from_utf8_lossy(&output.stdout))
+            });
+    }
+    found.clone()
+}
+
 /// `wsl.exe` arguments for the keepalive: the command the installer's logon script runs.
 #[cfg(any(test, windows))]
 pub(crate) fn wsl_keepalive_args(distro: &str) -> [&str; 7] {
@@ -450,9 +487,8 @@ fn start_wsl_keepalive(data_dir: &Path, force: bool) -> Result<KeepaliveStart, S
         if cfg!(test) {
             return Err("Unit tests don't start WSL.".to_string());
         }
-        let distro = find_wsl_distro().ok_or_else(|| {
-            "No Ubuntu or Debian WSL distro was found for the Docker engine.".to_string()
-        })?;
+        let distro = wsl_engine_distro()
+            .ok_or_else(|| "No Ubuntu WSL distro was found for the Docker engine.".to_string())?;
         let mut command = Command::new("wsl.exe");
         command.creation_flags(CREATE_NO_WINDOW);
         command
@@ -673,7 +709,7 @@ pub fn record_update_listener_host(data_dir: &Path) {
         let on_wsl_engine = hub_docker_engine(data_dir)
             .is_some_and(|engine| engine.kind == crate::docker_engine::DockerEngineKind::WslEngine);
         let address = if on_wsl_engine {
-            let Some(table) = find_wsl_distro()
+            let Some(table) = wsl_engine_distro()
                 .and_then(|distro| run_wsl_root_script_capture(&distro, "cat /proc/net/route"))
             else {
                 // The distro didn't answer this time: keep what an earlier start recorded.
@@ -694,6 +730,76 @@ pub fn record_update_listener_host(data_dir: &Path) {
             Err(error) => error,
         };
         let _ = append_desktop_log_for(data_dir, "updater.listener", &message);
+    }
+    #[cfg(not(windows))]
+    let _ = data_dir;
+}
+
+// ─── The logon script ─────────────────────────────────────────────────────────
+//
+// The WSL engine installer puts a script in the user's Startup folder that starts the engine's
+// distro at every logon. When an uninstall removed it, a reinstall that finds the engine already
+// set up doesn't run the installer again, so the engine stayed down after the next logon. Separate
+// from starting the engine when Docker doesn't answer: this is about the next logon.
+
+/// The installer's logon script, in the user's Startup folder (`wsl2_engine_user_script`).
+#[cfg(any(test, windows))]
+pub(crate) const WSL_ENGINE_LOGON_SCRIPT: &str = "CompanionHub-WSL-Docker.vbs";
+
+/// The logon script as the installer writes it with Windows PowerShell's `Set-Content`: a hidden
+/// `wsl.exe` running the keepalive, and a CRLF.
+#[cfg(any(test, windows))]
+pub(crate) fn wsl_engine_logon_script(distro: &str) -> String {
+    format!(
+        "CreateObject(\"Wscript.Shell\").Run \"wsl.exe {}\", 0, False\r\n",
+        wsl_keepalive_args(distro).join(" ")
+    )
+}
+
+/// Writes the logon script into `startup_dir` for the distro `distro` names, unless a script is
+/// there already, and returns where it wrote one.
+#[cfg(any(test, windows))]
+pub(crate) fn restore_wsl_engine_logon_script(
+    startup_dir: &Path,
+    distro: impl FnOnce() -> Option<String>,
+) -> Result<Option<PathBuf>, String> {
+    let path = startup_dir.join(WSL_ENGINE_LOGON_SCRIPT);
+    if path.exists() {
+        return Ok(None);
+    }
+    let distro = distro()
+        .ok_or_else(|| "No Ubuntu WSL distro was found for the Docker engine.".to_string())?;
+    std::fs::create_dir_all(startup_dir)
+        .and_then(|()| std::fs::write(&path, wsl_engine_logon_script(&distro)))
+        .map_err(|error| format!("Couldn't write {}: {error}", path.display()))?;
+    Ok(Some(path))
+}
+
+/// When the Hub runs on the WSL engine, put the logon script back if it's missing, so the engine
+/// starts at the next logon. The Startup folder is the default one under `%APPDATA%`, where
+/// `[Environment]::GetFolderPath('Startup')` puts it unless the user moved it.
+pub fn ensure_wsl_engine_logon_script(data_dir: &Path) {
+    #[cfg(windows)]
+    {
+        let on_wsl_engine = hub_docker_engine(data_dir)
+            .is_some_and(|engine| engine.kind == crate::docker_engine::DockerEngineKind::WslEngine);
+        let Some(startup_dir) = dirs::config_dir()
+            .filter(|_| on_wsl_engine)
+            .map(|roaming| roaming.join(r"Microsoft\Windows\Start Menu\Programs\Startup"))
+        else {
+            return;
+        };
+        let message = match restore_wsl_engine_logon_script(&startup_dir, wsl_engine_distro) {
+            Ok(None) => return,
+            Ok(Some(path)) => format!(
+                "Put back the logon script that starts the WSL engine: {}",
+                path.display()
+            ),
+            Err(error) => {
+                format!("Couldn't put back the logon script that starts the WSL engine: {error}")
+            }
+        };
+        let _ = append_desktop_log_for(data_dir, "wsl.engine", &message);
     }
     #[cfg(not(windows))]
     let _ = data_dir;
