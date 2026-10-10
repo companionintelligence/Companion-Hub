@@ -329,6 +329,12 @@ const WSL_ENGINE_START_TIMEOUT: Duration = Duration::from_secs(90);
 #[cfg(any(test, windows))]
 const WSL_KEEPALIVE_RETRY_AFTER: Duration = Duration::from_secs(30);
 
+/// How many keepalives one start asks for. The keepalive it finds running can be one that
+/// `wsl --terminate` just ended (wsl.exe takes a moment to exit), so a keepalive that ends while
+/// it waits is replaced. Only one that keeps ending means WSL can't run the distro.
+#[cfg(any(test, windows))]
+const WSL_ENGINE_START_ATTEMPTS: u32 = 3;
+
 /// The engine the Hub runs on: the one this process pinned, else the one the last start recorded.
 pub(crate) fn hub_docker_engine(
     data_dir: &Path,
@@ -528,6 +534,47 @@ pub(crate) fn revive_wsl_engine(data_dir: &Path) {
     }
 }
 
+/// How a start that waits for Docker in WSL ended.
+#[cfg(any(test, windows))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EngineWait {
+    Answered,
+    /// Every keepalive ended, the last one with this exit code.
+    KeepaliveEnded(Option<i32>),
+    TimedOut,
+}
+
+/// Starts a keepalive and waits until `probe` says Docker answers, with `pause` between polls,
+/// until `expired`. A keepalive that ends while it waits is started again, up to
+/// [`WSL_ENGINE_START_ATTEMPTS`] in all.
+#[cfg(any(test, windows))]
+pub(crate) fn wait_for_wsl_engine(
+    mut probe: impl FnMut() -> bool,
+    mut start_keepalive: impl FnMut() -> Result<KeepaliveStart, String>,
+    mut keepalive_state: impl FnMut() -> Option<KeepaliveState>,
+    mut expired: impl FnMut() -> bool,
+    mut pause: impl FnMut(),
+) -> Result<EngineWait, String> {
+    start_keepalive()?;
+    let mut attempts = 1;
+    loop {
+        if probe() {
+            return Ok(EngineWait::Answered);
+        }
+        if let Some(KeepaliveState::Exited(code)) = keepalive_state() {
+            if attempts >= WSL_ENGINE_START_ATTEMPTS {
+                return Ok(EngineWait::KeepaliveEnded(code));
+            }
+            start_keepalive()?;
+            attempts += 1;
+        }
+        if expired() {
+            return Ok(EngineWait::TimedOut);
+        }
+        pause();
+    }
+}
+
 /// Start the WSL engine now and wait until Docker answers, for Start engine and for a Hub start
 /// that finds the engine stopped.
 #[cfg(windows)]
@@ -535,35 +582,39 @@ fn start_wsl_engine_and_wait(
     data_dir: &Path,
     engine: &crate::docker_engine::PinnedDockerEngine,
 ) -> Result<(), String> {
-    if crate::docker_engine::probe_docker_host_reachable(&engine.docker_host) {
+    let probe = || crate::docker_engine::probe_docker_host_reachable(&engine.docker_host);
+    if probe() {
         forget_docker_access_check();
         return Ok(());
     }
-    start_wsl_keepalive(data_dir, true)?;
     let deadline = Instant::now() + WSL_ENGINE_START_TIMEOUT;
-    loop {
-        if crate::docker_engine::probe_docker_host_reachable(&engine.docker_host) {
+    let outcome = wait_for_wsl_engine(
+        probe,
+        || start_wsl_keepalive(data_dir, true),
+        || lock_recovering(&WSL_KEEPALIVE).state(),
+        || Instant::now() >= deadline,
+        || std::thread::sleep(Duration::from_secs(1)),
+    )?;
+    match outcome {
+        EngineWait::Answered => {
             forget_docker_access_check();
             let _ = append_desktop_log_for(data_dir, "wsl.engine", "Docker in WSL answers again.");
             record_update_listener_host(data_dir);
-            return Ok(());
+            Ok(())
         }
-        if let Some(KeepaliveState::Exited(code)) = lock_recovering(&WSL_KEEPALIVE).state() {
+        EngineWait::KeepaliveEnded(code) => {
             let ended = code.map_or_else(
                 || "wsl.exe ended".to_string(),
                 |code| format!("wsl.exe ended with exit code {code}"),
             );
-            return Err(format!(
+            Err(format!(
                 "The engine's WSL distro stopped again right away ({ended})."
-            ));
+            ))
         }
-        if Instant::now() >= deadline {
-            return Err(format!(
-                "WSL is running, but Docker inside it didn't answer within {} seconds.",
-                WSL_ENGINE_START_TIMEOUT.as_secs()
-            ));
-        }
-        std::thread::sleep(Duration::from_secs(1));
+        EngineWait::TimedOut => Err(format!(
+            "WSL is running, but Docker inside it didn't answer within {} seconds.",
+            WSL_ENGINE_START_TIMEOUT.as_secs()
+        )),
     }
 }
 

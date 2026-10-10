@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 use crate::docker_engine::{DockerEngineKind, PinnedDockerEngine};
 use crate::hub_manager::{
     default_gateway_from_route_table, engine_distro_from_listing, is_own_address,
-    restore_wsl_engine_logon_script, write_update_listener_host, wsl2_engine_user_script,
-    wsl_engine_logon_script, wsl_engine_should_revive, wsl_keepalive_args, KeepaliveProcess,
-    KeepaliveStart, KeepaliveState, WslKeepalive,
+    restore_wsl_engine_logon_script, wait_for_wsl_engine, write_update_listener_host,
+    wsl2_engine_user_script, wsl_engine_logon_script, wsl_engine_should_revive, wsl_keepalive_args,
+    EngineWait, KeepaliveProcess, KeepaliveStart, KeepaliveState, WslKeepalive,
 };
 
 fn engine(kind: DockerEngineKind) -> PinnedDockerEngine {
@@ -130,6 +130,97 @@ fn a_keepalive_that_cannot_start_is_retried_by_the_polls_only_after_a_pause() {
         .ensure(start + Duration::from_secs(36), false, fail)
         .is_err());
     assert_eq!(attempts.get(), 3);
+}
+
+#[test]
+fn start_engine_replaces_the_keepalive_that_wsl_terminate_just_ended() {
+    // Start engine clicked right after `wsl --terminate`: the app's keepalive still runs, then
+    // ends on the next poll because its distro is gone.
+    let keepalives = RefCell::new(vec![KeepaliveState::Running]);
+    let polls = Cell::new(0);
+    let started_at_poll: Cell<Option<u32>> = Cell::new(None);
+    let outcome = wait_for_wsl_engine(
+        || {
+            polls.set(polls.get() + 1);
+            if polls.get() == 2 {
+                *keepalives.borrow_mut().last_mut().unwrap() = KeepaliveState::Exited(Some(1));
+            }
+            // dockerd answers three polls after a keepalive this start started.
+            started_at_poll
+                .get()
+                .is_some_and(|at| polls.get() >= at + 3)
+        },
+        || {
+            let mut list = keepalives.borrow_mut();
+            if list.last() == Some(&KeepaliveState::Running) {
+                return Ok(KeepaliveStart::AlreadyRunning);
+            }
+            list.push(KeepaliveState::Running);
+            started_at_poll.set(Some(polls.get()));
+            Ok(KeepaliveStart::Started)
+        },
+        || keepalives.borrow().last().copied(),
+        || polls.get() >= 90,
+        || {},
+    );
+
+    assert_eq!(outcome, Ok(EngineWait::Answered));
+    assert_eq!(
+        *keepalives.borrow(),
+        vec![KeepaliveState::Exited(Some(1)), KeepaliveState::Running]
+    );
+}
+
+#[test]
+fn start_engine_gives_up_when_every_keepalive_ends_at_once() {
+    let starts = Cell::new(0);
+    let outcome = wait_for_wsl_engine(
+        || false,
+        || {
+            starts.set(starts.get() + 1);
+            Ok(KeepaliveStart::Started)
+        },
+        || Some(KeepaliveState::Exited(Some(-1))),
+        || false,
+        || {},
+    );
+
+    assert_eq!(outcome, Ok(EngineWait::KeepaliveEnded(Some(-1))));
+    assert_eq!(starts.get(), 3);
+}
+
+#[test]
+fn start_engine_stops_waiting_for_docker_at_the_deadline() {
+    let polls = Cell::new(0);
+    let outcome = wait_for_wsl_engine(
+        || {
+            polls.set(polls.get() + 1);
+            false
+        },
+        || Ok(KeepaliveStart::Started),
+        || Some(KeepaliveState::Running),
+        || polls.get() >= 5,
+        || {},
+    );
+
+    assert_eq!(outcome, Ok(EngineWait::TimedOut));
+    assert_eq!(polls.get(), 5);
+}
+
+#[test]
+fn start_engine_says_why_a_keepalive_could_not_start() {
+    let outcome = wait_for_wsl_engine(
+        || false,
+        || Err("No Ubuntu WSL distro was found for the Docker engine.".to_string()),
+        || None,
+        || false,
+        || {},
+    );
+
+    assert_eq!(
+        outcome,
+        Err("No Ubuntu WSL distro was found for the Docker engine.".to_string())
+    );
 }
 
 /// `/proc/net/route` in the distro behind a Windows Hub on the WSL engine, as `cat` prints it:
