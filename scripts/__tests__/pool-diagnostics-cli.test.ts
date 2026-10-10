@@ -88,6 +88,25 @@ function text(lines: string[]): string {
   return stripAnsi(lines.join('\n'));
 }
 
+/**
+ * The tar archive `docker cp <container>:<dir> -` streams for the folder a command run through the
+ * copy route leaves: its output in `out`, nothing in `err`, and exit status 0 in `status`.
+ */
+function copiedOutput(dir: string, out: string): Buffer {
+  const header = (name: string, size: number, type: string) => {
+    const block = Buffer.alloc(512);
+    block.write(name, 0, 'utf-8');
+    block.write(`${size.toString(8).padStart(11, '0')}\0`, 124, 'ascii');
+    block.write(type, 156, 'ascii');
+    return block;
+  };
+  const file = (name: string, content: string) => {
+    const body = Buffer.from(content, 'utf-8');
+    return [header(`${dir}/${name}`, body.length, '0'), body, Buffer.alloc((512 - (body.length % 512)) % 512)];
+  };
+  return Buffer.concat([header(`${dir}/`, 0, '5'), ...file('out', out), ...file('err', ''), ...file('status', '0\n'), Buffer.alloc(1024)]);
+}
+
 const NO_TAILSCALE = { available: false, backendState: null, dnsName: null };
 // Placeholder tailnet name only — docs/README.md tip-scrub policy.
 const SELF = { available: true, backendState: 'Running', dnsName: 'hub-a.example-tailnet.ts.net' };
@@ -1509,6 +1528,19 @@ describe('D2 backend DNS', () => {
     resolveHubContainerName.mockReturnValue(undefined);
     expect(probeDnsFromContainer(['mtplx'])).toBeNull();
     expect(spawnSync).not.toHaveBeenCalled();
+  });
+
+  // Through the Docker engine the desktop app runs in WSL2, `docker exec` exits 0 and prints nothing
+  // whatever the command did. Read as "no answer", the check fell back to the host and said there was
+  // no Hub container to probe from, with the container running.
+  it('reads the answer back with docker cp when docker exec returns it empty', () => {
+    resolveHubContainerName.mockReturnValue('ci-hub');
+    const answer = JSON.stringify([{ host: 'mtplx', ms: 5010, code: 'EAI_AGAIN' }]);
+    spawnSync.mockImplementation((_command: string, args: string[]) =>
+      args[0] === 'cp' ? { status: 0, stdout: copiedOutput(String(args[1]).split('/').pop() ?? '', answer) } : { status: 0, stdout: '' },
+    );
+
+    expect(probeDnsFromContainer(['mtplx'])).toEqual([{ host: 'mtplx', ms: 5010, code: 'EAI_AGAIN' }]);
   });
 
   // An empty list of backend URLs is two opposite findings wearing the same shape, and reporting

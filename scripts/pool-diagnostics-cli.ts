@@ -31,6 +31,7 @@ import { CONTEXT_CAP_FLEET_COMMAND, type PoolPeerProbeFailure, showContextCap, s
 import { BIND_MOUNT_DIRS } from './lib/bind-mounts';
 import { cliFail, cliOk, colorize, dim, sanitizeForBox, STEP_ICONS, type Tone } from './lib/cli-ui';
 import { allowedEnvs, type HubEnv } from './lib/cli-types';
+import { readContainerOutput } from './lib/docker-exec-output';
 import { resolveHubContext } from './lib/hub-context';
 import { resolveProdApplianceContext } from './lib/paths';
 import { readHubApiKey } from './public-web-cli';
@@ -2252,13 +2253,14 @@ function dnsProbeScript(hosts: string[]): string {
 export function probeDnsFromContainer(hosts: string[]): DnsProbeResult[] | null {
   const container = resolveHubContainerName();
   if (!container) return null;
-  const result = spawnSync('docker', ['exec', container, 'node', '-e', dnsProbeScript(hosts)], {
-    encoding: 'utf8',
-    timeout: DNS_PROBE_TIMEOUT_MS * Math.max(hosts.length, 1) + 10_000,
+  // The probe always prints its JSON, so an empty answer is one `docker exec` lost, which the reader
+  // then copies out of the container instead (see docker-exec-output.ts).
+  const result = readContainerOutput(container, ['node', '-e', dnsProbeScript(hosts)], {
+    timeoutMs: DNS_PROBE_TIMEOUT_MS * Math.max(hosts.length, 1) + 10_000,
   });
   if (result.status !== 0) return null;
   try {
-    const parsed = JSON.parse((result.stdout ?? '').trim()) as DnsProbeResult[];
+    const parsed = JSON.parse(result.stdout) as DnsProbeResult[];
     return Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;

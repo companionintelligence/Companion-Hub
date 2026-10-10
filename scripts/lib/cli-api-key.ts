@@ -6,11 +6,11 @@
  * ApiKeyService and the Drizzle schema; the comments below name each counterpart to keep them
  * in step.
  */
-import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { usageAndExit } from './cli-args.js';
 import { BASE_COMMAND } from './cli-types.js';
 import { bold, printMessageBox, sanitizeForBox } from './cli-ui.js';
+import { type ContainerReader, type ContainerReadOptions, containerReader, describeDockerEndpoint } from './docker-exec-output.js';
 
 const API_KEY_DB_CONTAINER = 'ci-hub-db';
 const API_KEY_DB_PORT = '6543';
@@ -187,13 +187,19 @@ export function buildApiKeyInsertSql(row: {
  * headless key-minting route fails outright on exactly the appliances that most need a
  * CLI, since minting in the browser is what it exists to avoid.
  *
- * Unknown answers are treated as "present": that keeps the modern path first, and a
+ * A failed query is treated as "present": that keeps the modern path first, and a
  * genuinely missing column still surfaces as the same insert error as before.
+ *
+ * The query answers `t` or `f` and never nothing, so an answer that could not be read returns `null`
+ * rather than passing for "no column". It did pass for that on a Windows Hub whose Docker engine runs
+ * in WSL2, and `--capability read` then created a key that can read and write.
  */
-export function apiKeyTableHasCapability(): boolean {
-  const result = psql("SELECT 1 FROM information_schema.columns WHERE table_name='api_key' AND column_name='capability';");
+export function apiKeyTableHasCapability(read: ContainerReader): boolean | null {
+  const result = psql(read, "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='api_key' AND column_name='capability');");
+  if (result.lost) return null;
   if (!result.ok) return true;
-  return result.stdout.split('\n')[0]?.trim() === '1';
+  const answer = result.stdout.split('\n')[0]?.trim();
+  return answer === 't' ? true : answer === 'f' ? false : null;
 }
 
 /**
@@ -244,20 +250,24 @@ export function formatApiKeyRows(json: string, withCapability = true): string[] 
  * Captures stderr as well as stdout — psql reports *every* failure there (container down, missing
  * relation, unique violation), so a stdout-only capture like {@link runCapture} would render a
  * duplicate-key error and a stopped Hub as the same blank "non-zero exit code".
+ *
+ * Every statement this module sends prints at least one row, which is what lets `read` tell output
+ * that never arrived from an empty answer (see docker-exec-output.ts).
  */
-function psql(sql: string): { stdout: string; stderr: string; ok: boolean } {
-  const result = spawnSync(
-    'docker',
-    ['exec', API_KEY_DB_CONTAINER, 'psql', '-U', API_KEY_DB_USER, '-d', API_KEY_DB_NAME, '-p', API_KEY_DB_PORT, '-At', '-c', sql],
-    { encoding: 'utf-8', stdio: 'pipe' },
-  );
+function psql(read: ContainerReader, sql: string, options?: ContainerReadOptions): { stdout: string; stderr: string; ok: boolean; lost: boolean } {
+  const result = read(['psql', '-U', API_KEY_DB_USER, '-d', API_KEY_DB_NAME, '-p', API_KEY_DB_PORT, '-At', '-c', sql], options);
 
-  return {
-    stdout: (result.stdout || '').trim(),
-    // result.error covers docker itself being absent, where there is no stderr to read.
-    stderr: (result.stderr || '').trim() || (result.error ? String(result.error) : ''),
-    ok: result.status === 0,
-  };
+  return { stdout: result.stdout, stderr: result.stderr, ok: result.status === 0, lost: result.lost === true };
+}
+
+/** psql's answer never reached this process: say through which Docker engine, and stop. */
+function exitOnLostAnswer(title: string, advice: string[]): never {
+  printMessageBox(
+    title,
+    ["psql's answer did not come back through", `${describeDockerEndpoint()}, from docker exec or from docker cp.`, ...advice],
+    'red',
+  );
+  process.exit(1);
 }
 
 /** psql's own diagnosis, as box lines. Capped so a stack of NOTICEs can't swamp the message. */
@@ -367,7 +377,30 @@ export function runApiKeyCommand(args: string[]) {
     }
 
     const rawKey = randomBytes(API_KEY_BYTES).toString('hex');
-    const withCapability = apiKeyTableHasCapability();
+    const read = containerReader(API_KEY_DB_CONTAINER);
+    const withCapability = apiKeyTableHasCapability(read);
+    if (withCapability === null) {
+      exitOnLostAnswer('API key not created', [
+        'Without it there is no telling whether this Hub can store a capability.',
+        '',
+        'Create the key in Settings → Security instead.',
+      ]);
+    }
+    // On a Hub with no capability column every key can do everything its scopes allow, so a key
+    // created there for `--capability read` would be the opposite of what was asked for.
+    if (!withCapability && requestedCapability !== undefined) {
+      printMessageBox(
+        'API key not created',
+        [
+          `This Hub predates per-key capability, so it cannot store --capability ${capability}.`,
+          'Every key it holds can do everything its scopes allow.',
+          '',
+          'Update the Hub for capability-limited keys, or leave out --capability.',
+        ],
+        'red',
+      );
+      process.exit(1);
+    }
     const sql = buildApiKeyInsertSql({
       name,
       scopes,
@@ -377,7 +410,11 @@ export function runApiKeyCommand(args: string[]) {
       withCapability,
     });
 
-    const result = psql(sql);
+    // Never run twice: the probe above has already found out whether output comes back.
+    const result = psql(read, sql, { repeatable: false });
+    if (result.lost) {
+      exitOnLostAnswer('API key not confirmed', ['', `The key may have been created anyway. If Settings → Security lists "${name}", revoke it.`]);
+    }
     const { stdout, ok } = result;
     if (!ok) {
       printMessageBox('API key creation failed', [...psqlErrorLines(result), '', `Is the Hub running? Try ${bold(`${BASE_COMMAND} up`)}.`], 'red');
@@ -393,16 +430,15 @@ export function runApiKeyCommand(args: string[]) {
         `${bold('id')}      ${newId}`,
         `${bold('name')}    ${name}`,
         `${bold('scopes')}  ${scopes.join(', ')}`,
-        // Reporting the requested capability on a Hub that cannot store it would be a
-        // plain untruth about how much authority the key just gained.
+        // Reporting a capability on a Hub that cannot store one would be a plain untruth about how
+        // much authority the key just gained. A requested one was refused above.
         ...(withCapability
           ? [`${bold('can')}     ${capability}`]
           : [
               `${bold('can')}     everything its scopes allow`,
               '',
               'This Hub predates per-key capability, so there is no read/write/full',
-              `distinction to apply and ${bold(`--capability ${capability}`)} was not stored.`,
-              'Update the Hub if you need capability-limited keys.',
+              'distinction to apply. Update the Hub if you need capability-limited keys.',
             ]),
         ...(isQaRead ? ['', 'Accepted only on:', ...QA_READ_ROUTES.map((route) => `  ${route}`), 'Every other route refuses it.'] : []),
         // Printed as base URLs because that is the field the operator is about to fill in. As with
@@ -429,15 +465,21 @@ export function runApiKeyCommand(args: string[]) {
     // separator would otherwise split into bogus rows.
     // Same schema split as `create`: selecting a column an older Hub does not have fails the whole
     // query, so `api-key list` was unusable on every published release rather than degrading.
-    const withCapability = apiKeyTableHasCapability();
+    const read = containerReader(API_KEY_DB_CONTAINER);
+    const withCapability = apiKeyTableHasCapability(read);
+    if (withCapability === null) exitOnLostAnswer('Could not read API keys', ['', 'Settings → Security lists them.']);
     const fields = ["'id', id", "'name', name", "'scopes', scopes", ...(withCapability ? ["'capability', capability"] : []), "'prefix', prefix"].join(
       ', ',
     );
-    const result = psql(`SELECT COALESCE(json_agg(json_build_object(${fields}) ORDER BY id)::text, '[]') FROM api_key;`);
+    const result = psql(read, `SELECT COALESCE(json_agg(json_build_object(${fields}) ORDER BY id)::text, '[]') FROM api_key;`);
+    if (result.lost) exitOnLostAnswer('Could not read API keys', ['', 'Settings → Security lists them.']);
     if (!result.ok) {
       printMessageBox('Could not read API keys', [...psqlErrorLines(result), '', `Is the Hub running? Try ${bold(`${BASE_COMMAND} up`)}.`], 'red');
       process.exit(1);
     }
+    // The query prints `[]` when there are no keys, so no answer at all is one that was lost. Read as
+    // "no keys", it told the operator of a Hub holding eight that it had none.
+    if (!result.stdout) exitOnLostAnswer('Could not read API keys', ['', 'Settings → Security lists them.']);
     const rows = formatApiKeyRows(result.stdout, withCapability);
     printMessageBox('API keys', rows.length > 0 ? rows : ['(none — create one with `api-key create --name <label>`)'], 'cyan');
     return;
