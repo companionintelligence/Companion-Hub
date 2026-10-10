@@ -11,6 +11,7 @@ import path from 'node:path';
 import si from 'systeminformation';
 import { parseEnvFile } from './env-file';
 import { isDirectScriptRun } from './lib/is-direct-run';
+import { hostRootFolder } from './lib/paths';
 
 interface HostFirewallInfo {
   kind: 'ufw' | 'firewalld' | 'nftables' | 'iptables' | 'none' | 'unknown';
@@ -43,15 +44,13 @@ function resolveStateDir(): string {
   if (envFile) {
     const fromEnvFile = parseEnvFile(path.resolve(process.cwd(), envFile)).ROOT_FOLDER_HOST;
     if (fromEnvFile) {
-      const rootFolder = path.isAbsolute(fromEnvFile) ? fromEnvFile : path.resolve(process.cwd(), fromEnvFile);
-      return path.join(rootFolder, 'state');
+      return path.join(hostRootFolder(fromEnvFile), 'state');
     }
   }
 
   const rootFromEnv = process.env.ROOT_FOLDER_HOST;
   if (rootFromEnv) {
-    const rootFolder = path.isAbsolute(rootFromEnv) ? rootFromEnv : path.resolve(process.cwd(), rootFromEnv);
-    return path.join(rootFolder, 'state');
+    return path.join(hostRootFolder(rootFromEnv), 'state');
   }
 
   return path.resolve(process.cwd(), '.internal', 'state');

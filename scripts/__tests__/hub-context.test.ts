@@ -11,9 +11,11 @@ import {
   buildComposeBaseArgs,
   composeArgsForContext,
   envOverridesForContext,
+  type HubContext,
   isFirstRun,
   resolveHubContext,
 } from '../lib/hub-context';
+import { hostPathFromDockerPath } from '../lib/paths';
 
 /**
  * `docker-engine` and `seed-appliance` are the appliance path's two side-effecting collaborators:
@@ -25,6 +27,7 @@ import {
  */
 const dockerEngine = vi.hoisted(() => ({
   enumerateDockerEngineCandidates: vi.fn(),
+  pinnedPathStyle: vi.fn(),
   probeReachableEngines: vi.fn(),
   resolveAndPinHubDockerEngine: vi.fn(),
   splitBrainConflict: vi.fn(),
@@ -663,6 +666,8 @@ function stubEngineResolution(engine: PinnedDockerEngine, conflict: string | nul
   dockerEngine.probeReachableEngines.mockReturnValue(REACHABLE);
   dockerEngine.resolveAndPinHubDockerEngine.mockReturnValue(engine);
   dockerEngine.splitBrainConflict.mockReturnValue(conflict);
+  // What the real pin reports once resolveAndPinHubDockerEngine has run, which bind-mount paths follow.
+  dockerEngine.pinnedPathStyle.mockReturnValue(engine.pathStyle ?? null);
 }
 
 describe('applyDockerEnginePin', () => {
@@ -748,8 +753,9 @@ describe('envOverridesForContext', () => {
 
     // ROOT_FOLDER_HOST is what compose interpolates into every bind mount. Left at the checkout
     // default ('.internal', resolved against cwd) the appliance stack would mount the operator's cwd.
-    expect(overrides.ROOT_FOLDER_HOST).toBe(dataDir);
-    expect(overrides.ENV_FILE).toBe(join(dataDir, PRIMARY_ENV_NAME));
+    // On Windows both are in the engine's form of the path, so they are read back before comparing.
+    expect(hostPathFromDockerPath(String(overrides.ROOT_FOLDER_HOST))).toBe(dataDir);
+    expect(hostPathFromDockerPath(String(overrides.ENV_FILE))).toBe(join(dataDir, PRIMARY_ENV_NAME));
     expect(overrides.DOCKER_HOST).toBe(WSL_ENGINE.dockerHost);
     // The engine pin is persisted per data dir; pinning against the cwd would write the wrong state file.
     expect(dockerEngine.resolveAndPinHubDockerEngine).toHaveBeenCalledWith({ dataDir });
@@ -768,6 +774,50 @@ describe('envOverridesForContext', () => {
     expect(overrides.DOCKER_HOST).toBeUndefined();
     expect(overrides.CI_HUB_DOCKER_PATH_STYLE).toBeUndefined();
     expect(dockerEngine.resolveAndPinHubDockerEngine).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Compose reads both from the environment ahead of `--env-file` and hands them to the engine as
+   * bind-mount sources. With the native `C:\...` paths, a Docker engine running inside WSL refused the
+   * `.env` mount ("mount path must be absolute") and `cihub up` could not start the Hub.
+   */
+  describe('on a Windows install', () => {
+    const originalPlatform = process.platform;
+    const DATA_DIR = 'C:\\Users\\hub\\AppData\\Roaming\\companion-hub';
+    const windowsInstall: HubContext = {
+      env: 'prod',
+      appliance: true,
+      envFile: `${DATA_DIR}\\.env`,
+      composeFiles: [`${DATA_DIR}\\docker-compose.prod.yml`],
+      cwd: DATA_DIR,
+      dataDir: DATA_DIR,
+    };
+
+    beforeEach(() => {
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+    });
+
+    afterEach(() => {
+      Object.defineProperty(process, 'platform', { value: originalPlatform });
+    });
+
+    it("hands compose the WSL engine's /mnt/c form of ROOT_FOLDER_HOST and ENV_FILE", () => {
+      stubEngineResolution(WSL_ENGINE);
+
+      const overrides = envOverridesForContext(windowsInstall);
+
+      expect(overrides.ROOT_FOLDER_HOST).toBe('/mnt/c/Users/hub/AppData/Roaming/companion-hub');
+      expect(overrides.ENV_FILE).toBe('/mnt/c/Users/hub/AppData/Roaming/companion-hub/.env');
+    });
+
+    it("hands compose Docker Desktop's /c form, which is what the desktop app passes there", () => {
+      stubEngineResolution({ ...WSL_ENGINE, kind: 'desktop', contextName: 'desktop-linux', pathStyle: 'drive' });
+
+      const overrides = envOverridesForContext(windowsInstall);
+
+      expect(overrides.ROOT_FOLDER_HOST).toBe('/c/Users/hub/AppData/Roaming/companion-hub');
+      expect(overrides.ENV_FILE).toBe('/c/Users/hub/AppData/Roaming/companion-hub/.env');
+    });
   });
 });
 

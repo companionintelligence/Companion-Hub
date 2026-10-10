@@ -172,8 +172,34 @@ export function resolveProdApplianceContext(
 }
 
 /**
+ * Native host path for a `ROOT_FOLDER_HOST` value. On Windows the desktop app writes it in Docker's
+ * form, `/c/Users/...` (Docker Desktop) or `/mnt/c/Users/...` (a WSL2 engine), which Node would
+ * resolve against the current drive (`C:\c\Users\...`), so the tunnel files beside the data dir
+ * would never be found. Mirrors `host_path_from_docker_path` in the desktop app.
+ */
+export function hostPathFromDockerPath(value: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform !== 'win32') return value;
+  const [, drive, rest = ''] = /^\/(?:mnt\/)?([a-zA-Z])(?:\/(.*))?$/.exec(value.trim().replace(/\\/g, '/')) ?? [];
+  if (!drive) return value;
+  return `${drive.toUpperCase()}:\\${rest.replace(/^\/+/, '').replace(/\//g, '\\')}`;
+}
+
+/**
+ * A `ROOT_FOLDER_HOST` value as a folder this process can write to: Docker's form turned back into
+ * the Windows path it names, and a relative value resolved against `cwd`. Windows counts
+ * `/mnt/c/Users/...` as an absolute path on the current drive, so an init script that took the env
+ * file's value as it was wrote a second copy of the data dir under `C:\mnt\c\Users\...`.
+ */
+export function hostRootFolder(value: string, platform: NodeJS.Platform = process.platform, cwd: string = process.cwd()): string {
+  const hostPath = hostPathFromDockerPath(value, platform);
+  const pathFor = platform === 'win32' ? path.win32 : path.posix;
+  return pathFor.isAbsolute(hostPath) ? hostPath : pathFor.resolve(cwd, hostPath);
+}
+
+/**
  * Resolve ROOT_FOLDER_HOST during init scripts (init-hub-data-dirs, init-docker-config).
- * Honors ENV_FILE, process.env.ROOT_FOLDER_HOST, then CI_HUB_STATE_PATH / STATE_PATH.
+ * Honors ENV_FILE, process.env.ROOT_FOLDER_HOST, then CI_HUB_STATE_PATH / STATE_PATH. The first two
+ * may be in Docker's form on Windows, so they go through {@link hostRootFolder}.
  */
 export function resolveRootFolderHostForRuntime(): string {
   const envFile = process.env.ENV_FILE || '.env.dev';
@@ -182,12 +208,12 @@ export function resolveRootFolderHostForRuntime(): string {
     const vars = parseEnvFile(envFile);
     const configured = vars.ROOT_FOLDER_HOST;
     if (configured) {
-      return path.isAbsolute(configured) ? configured : path.resolve(process.cwd(), configured);
+      return hostRootFolder(configured);
     }
   }
   const fromEnv = process.env.ROOT_FOLDER_HOST;
   if (fromEnv) {
-    return path.isAbsolute(fromEnv) ? fromEnv : path.resolve(process.cwd(), fromEnv);
+    return hostRootFolder(fromEnv);
   }
   const internal = process.env.CI_HUB_STATE_PATH || process.env.STATE_PATH || '.internal';
   return path.isAbsolute(internal) ? internal : path.resolve(process.cwd(), internal);

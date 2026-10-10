@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path, { join } from 'node:path';
 import { parseEnvFile } from '../env-file.js';
-import { resolveRootFolderHost } from './paths.js';
+import { hostPathFromDockerPath, resolveRootFolderHost } from './paths.js';
 import { CI_CLOUD_DEFAULT, LOCAL_DEV_BACKEND_PORT, LOCAL_DEV_FRONTEND_PORT, type HubEnv } from './cli-types.js';
 import { bold } from './cli-ui.js';
 
@@ -123,19 +123,6 @@ function isRegularFile(filePath: string): boolean {
   } catch {
     return false;
   }
-}
-
-/**
- * Native host path for a `ROOT_FOLDER_HOST` value. On Windows the desktop app writes it in Docker's
- * form, `/c/Users/...` (Docker Desktop) or `/mnt/c/Users/...` (a WSL2 engine), which Node would
- * resolve against the current drive (`C:\c\Users\...`), so the tunnel files beside the data dir
- * would never be found. Mirrors `host_path_from_docker_path` in the desktop app.
- */
-export function hostPathFromDockerPath(value: string, platform: NodeJS.Platform = process.platform): string {
-  if (platform !== 'win32') return value;
-  const [, drive, rest = ''] = /^\/(?:mnt\/)?([a-zA-Z])(?:\/(.*))?$/.exec(value.trim().replace(/\\/g, '/')) ?? [];
-  if (!drive) return value;
-  return `${drive.toUpperCase()}:\\${rest.replace(/^\/+/, '').replace(/\//g, '\\')}`;
 }
 
 /** Hub data dir named by an env file, in the form this platform's filesystem calls accept. */
