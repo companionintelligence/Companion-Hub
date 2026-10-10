@@ -85,6 +85,22 @@ describe('settingsSchema — Hub Pool tuning (boot read path)', () => {
   });
 });
 
+describe('UserSettingsBody: Default app CPU limit (write path)', () => {
+  it('reads an emptied field as clearing the default: the key stays, without a value, so the save drops it', () => {
+    const result = UserSettingsBody.schema.safeParse({ defaultAppCpuLimit: '' });
+
+    expect(result.success).toBe(true);
+    expect(Object.hasOwn(result.data ?? {}, 'defaultAppCpuLimit')).toBe(true);
+    expect(result.data?.defaultAppCpuLimit).toBeUndefined();
+  });
+
+  it('still trims a limit, and still refuses one that is not a positive number', () => {
+    expect(UserSettingsBody.schema.safeParse({ defaultAppCpuLimit: ' 0.5 ' }).data).toEqual({ defaultAppCpuLimit: '0.5' });
+    expect(UserSettingsBody.schema.safeParse({ defaultAppCpuLimit: '0' }).success).toBe(false);
+    expect(UserSettingsBody.schema.safeParse({ defaultAppCpuLimit: 'abc' }).success).toBe(false);
+  });
+});
+
 describe('UserSettingsBody — Hub Pool tuning (write path)', () => {
   // Tolerance belongs on the read path only. Choosing an out-of-range value must still 400, or the
   // read-path degrade would quietly become the way values are accepted.

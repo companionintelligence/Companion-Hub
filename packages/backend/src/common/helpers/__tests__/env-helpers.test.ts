@@ -65,7 +65,7 @@ describe('env-helpers — resolve() priority chain', () => {
     vi.clearAllMocks();
 
     // Save and set required env vars
-    for (const key of ['ROOT_FOLDER_HOST', 'CI_CLOUD_URL', 'DOMAIN', 'GUEST_DASHBOARD', 'DEMO_MODE', 'JWT_SECRET', 'MCP_API_KEY']) {
+    for (const key of ['ROOT_FOLDER_HOST', 'CI_CLOUD_URL', 'DOMAIN', 'GUEST_DASHBOARD', 'DEMO_MODE', 'JWT_SECRET', 'MCP_API_KEY', 'LOG_LEVEL']) {
       savedEnv[key] = process.env[key];
     }
     process.env.ROOT_FOLDER_HOST = '/home/user/ci-os-hub';
@@ -117,6 +117,22 @@ describe('env-helpers — resolve() priority chain', () => {
     setupMocks({ settingsJson: { guestDashboard: false } });
     const envMap = await generateSystemEnvFile();
     expect(envMap.get('GUEST_DASHBOARD')).toBe('true');
+  });
+
+  it('MUST let the Log level saved in Settings win over the LOG_LEVEL every compose file sets', async () => {
+    process.env.LOG_LEVEL = 'info';
+    setupMocks({ settingsJson: { logLevel: 'debug' } });
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.get('LOG_LEVEL')).toBe('debug');
+    // ConfigurationService and the Hub's logger read process.env, where the compose value would stay.
+    expect(process.env.LOG_LEVEL).toBe('debug');
+  });
+
+  it('MUST keep LOG_LEVEL from the environment when no Log level was saved', async () => {
+    process.env.LOG_LEVEL = 'warn';
+    setupMocks({ settingsJson: {} });
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.get('LOG_LEVEL')).toBe('warn');
   });
 
   it('boolStr() MUST convert settings boolean to string via DEMO_MODE', async () => {
