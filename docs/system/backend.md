@@ -267,6 +267,25 @@ there. Operator-facing walkthrough: [`docs/editor-inference.md`](../editor-infer
 
 RabbitMQ consumers handle long-running install/update operations. Frontend polls + SSE for progress.
 
+An install's progress ticks (`status_change` with `progress`) carry `downloadedBytes` and
+`totalBytes` once Docker has reported layer sizes. `SSEService` keeps the latest tick of each
+install still running and sends it to every new `app` subscriber after the hello, so a page opened
+mid-install shows where the download is instead of waiting for the next tick. `pullImages` logs
+when each image's pull starts, its first event from Docker, and every 30 seconds where the layers
+are.
+
+What cancelling an install (`AppLifecycleService.cancelOperation`) does depends on how far it got:
+
+- `installApp` registers the operation only after the Portal bundle download and the image
+  architecture check. A cancel during those checks is held in `AppOperationRegistry`
+  (`holdPreparingCancel`), and `installApp` stops before its next write, or removes the row it was
+  writing, and sends `install_cancelled`.
+- A queued install's cancel is settled at once. The row is deleted, `install_cancelled` and the
+  install queue go out, and the worker skips the message when it reaches it
+  (`takeSettledBeforeStart`), even if the app has been installed again since.
+- A running install's abort reaches the pull or `compose up`, and the worker compensates and sends
+  `install_cancelled`. From `finalizing` on, the cancel is refused.
+
 ## Install lifecycle recovery
 
 The UI "install queue" is derived from DB rows with `status = 'installing'`, not a durable job table.
@@ -282,7 +301,9 @@ Guards against that:
   skip-forever). Live pulls keep the tracker/registry set, so slow-but-alive pulls are not killed.
 - **pullImages stall/overall timeouts** — inactivity (`DEFAULT_APP_IMAGE_PULL_INACTIVITY_TIMEOUT_MS`)
   and overall (`DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES`) abort a wedged pull as a regular failure
-  (not `AbortError`, which would delete the row as a user cancel).
+  (not `AbortError`, which would delete the row as a user cancel). An image whose pull gets no event
+  at all fails sooner, after `DEFAULT_APP_IMAGE_PULL_FIRST_EVENT_TIMEOUT_MS`, with a message that
+  says its download hasn't started.
 - **Worker catch finalizes** — `invokeCommand`'s catch calls `handleFailedResult` for installs so a
   throw after the publisher RPC timed out still reaches `install_failed`.
 - **Unique `(app_name, app_store_slug)`** — closes the concurrent-install race that used to insert

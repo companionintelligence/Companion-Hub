@@ -181,6 +181,17 @@ const IconActionButton: React.FC<IconBtnProps> = ({ icon: Icon, label, className
 
 const INSTALL_FINALIZING_PROGRESS = 99;
 
+/** "7.2 MB", "412 MB", "1.5 GB": the download under the install progress bar. */
+function formatDownloadSize(bytes: number): string {
+  const megabytes = bytes / (1024 * 1024);
+  if (megabytes < 10) return `${megabytes.toFixed(1)} MB`;
+  if (megabytes < 1024) return `${Math.round(megabytes)} MB`;
+  return `${(megabytes / 1024).toFixed(1)} GB`;
+}
+
+/** Docker often reports a small layer first, so the sizes wait until they add up to a megabyte. */
+const DOWNLOAD_SIZE_SHOWN_FROM_BYTES = 1024 * 1024;
+
 // In-progress statuses that render the LoadingButton, mapped to their status label key.
 const LOADING_STATUS_LABEL_KEYS: Partial<Record<AppStatus, string>> = {
   installing: 'APP_STATUS_INSTALLING',
@@ -238,12 +249,12 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   // fails open, so an unavailable handoff never blocks the open.
   const openExternalUrl = (url: string) => (memory.applicable ? openExternalWithHubSession(url) : openExternal(url));
 
-  // Clear the optimistic "cancelling" flag once the app leaves the installing state (the
-  // install_cancelled SSE flips it to uninstalled/missing), so a later re-install isn't affected.
+  // Clear the optimistic "cancelling" flag whenever the status moves, into `installing` too. A queued
+  // install is cancelled at once, so install_cancelled can land before the reply that sets the flag,
+  // and the app's next install would then start out "Cancelling…" with Cancel disabled.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: app?.status is the trigger, not an input.
   useEffect(() => {
-    if (app?.status !== 'installing') {
-      setIsCancellingInstall(false);
-    }
+    setIsCancellingInstall(false);
   }, [app?.status]);
 
   const urnParts = info.urn.split(':');
@@ -379,7 +390,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   );
   const LoadingButton = (() => {
     const progress = app?.status === 'installing' ? installationProgress : null;
-    const progressValue = progress === null ? 12 : Math.max(8, Math.min(99, progress));
+    const progressValue = progress === null ? 12 : Math.max(8, Math.min(99, progress.percent));
 
     const cancelling = isCancellingInstall && app?.status === 'installing';
     const statusLabel = cancelling ? t('APP_STATUS_CANCELLING') : t((app?.status && LOADING_STATUS_LABEL_KEYS[app.status]) ?? 'COMMON_INSTALLING');
@@ -388,8 +399,10 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     if (cancelling) {
       stageText = t('APP_STATUS_CANCELLING');
     } else if (progress !== null) {
-      if (progress >= INSTALL_FINALIZING_PROGRESS) stageText = t('APP_ACTION_FINALIZING');
-      else if (progress >= 60) stageText = t('APP_ACTION_DOWNLOADING');
+      if (progress.percent >= INSTALL_FINALIZING_PROGRESS) stageText = t('APP_ACTION_FINALIZING');
+      else if (progress.percent >= 60 && (progress.totalBytes ?? 0) >= DOWNLOAD_SIZE_SHOWN_FROM_BYTES)
+        stageText = `${t('APP_ACTION_DOWNLOADING')} ${formatDownloadSize(progress.downloadedBytes ?? 0)} / ${formatDownloadSize(progress.totalBytes ?? 0)}`;
+      else if (progress.percent >= 60) stageText = t('APP_ACTION_DOWNLOADING');
       else stageText = t('APP_ACTION_PREPARING');
     }
 
@@ -402,7 +415,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
           aria-label={statusLabel}
           aria-valuemin={0}
           aria-valuemax={100}
-          aria-valuenow={progress ?? undefined}
+          aria-valuenow={progress?.percent}
           aria-valuetext={stageText}
         >
           <div className="installation-progress-fill" style={{ width: `${progressValue}%` }} />

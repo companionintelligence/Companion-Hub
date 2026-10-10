@@ -1,4 +1,4 @@
-import { render, screen, userEvent, waitFor } from '@/tests/test-utils';
+import { act, render, screen, userEvent, waitFor } from '@/tests/test-utils';
 import { stashPendingInstallIntent } from '@/lib/deep-link-install';
 import type { AppDetails, AppInfo, AppMetadata } from '@/types/app.types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -47,6 +47,10 @@ const hoisted = vi.hoisted(() => ({
    */
   updateSettingsProps: undefined as undefined | Record<string, unknown>,
   installDialogProps: undefined as undefined | Record<string, unknown>,
+  /** What the install progress bar reads, as the SSE progress ticks leave it. */
+  installationProgress: null as null | { percent: number; downloadedBytes?: number; totalBytes?: number },
+  /** Props the cancel-install confirmation was last rendered with. */
+  cancelInstallProps: undefined as undefined | { onCancelStart?: () => void },
 }));
 
 vi.mock('@/modules/app/helpers/use-memory-connection', () => ({
@@ -127,7 +131,7 @@ vi.mock('@/modules/app/helpers/use-app-status', () => ({
 }));
 
 vi.mock('@/modules/app/helpers/use-installation-progress', () => ({
-  useInstallationProgress: () => null,
+  useInstallationProgress: () => hoisted.installationProgress,
 }));
 
 vi.mock('@/context/app-context', () => ({
@@ -179,7 +183,10 @@ vi.mock('../../components/dialogs/install-dialog/install-dialog', () => ({
   },
 }));
 vi.mock('../../components/dialogs/cancel-install-dialog/cancel-install-dialog', () => ({
-  CancelInstallDialog: () => null,
+  CancelInstallDialog: (props: { onCancelStart?: () => void }) => {
+    hoisted.cancelInstallProps = props;
+    return null;
+  },
 }));
 vi.mock('../../components/dialogs/stop-dialog/stop-dialog', () => ({
   StopDialog: () => null,
@@ -306,6 +313,8 @@ describe('AppActions', () => {
     hoisted.forgetInstallIntent.mockReset();
     hoisted.updateSettingsProps = undefined;
     hoisted.installDialogProps = undefined;
+    hoisted.installationProgress = null;
+    hoisted.cancelInstallProps = undefined;
     disclosureOpen.mockReset();
   });
 
@@ -617,6 +626,82 @@ describe('AppActions', () => {
       </MemoryRouter>,
     );
     expect(screen.queryByTestId('icon-action-common_cancel')).not.toBeInTheDocument();
+  });
+
+  describe('the install progress bar', () => {
+    const MB = 1024 * 1024;
+    const renderInstalling = () =>
+      render(
+        <MemoryRouter>
+          <AppActions app={makeApp({ status: 'installing' })} metadata={metadata} info={info} urlAvailability={idleAvailability} />
+        </MemoryRouter>,
+      );
+
+    it('says how much of the download has arrived', () => {
+      hoisted.installationProgress = { percent: 75, downloadedBytes: 412 * MB, totalBytes: 1536 * MB };
+
+      renderInstalling();
+
+      expect(screen.getByText('APP_ACTION_DOWNLOADING 412 MB / 1.5 GB')).toBeInTheDocument();
+      expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '75');
+    });
+
+    it('says only Downloading while Docker has reported no sizes yet', () => {
+      hoisted.installationProgress = { percent: 60 };
+
+      renderInstalling();
+
+      expect(screen.getByText('APP_ACTION_DOWNLOADING')).toBeInTheDocument();
+    });
+
+    // Docker often reports a small layer first; on a live Hub the readout opened as "0 MB / 0 MB".
+    it('waits for a megabyte before it shows sizes', () => {
+      hoisted.installationProgress = { percent: 98, downloadedBytes: 300 * 1024, totalBytes: 400 * 1024 };
+
+      renderInstalling();
+
+      expect(screen.getByText('APP_ACTION_DOWNLOADING')).toBeInTheDocument();
+    });
+
+    it('gives sizes under 10 MB to a tenth of a megabyte', () => {
+      hoisted.installationProgress = { percent: 63, downloadedBytes: 7.2 * MB, totalBytes: 91 * MB };
+
+      renderInstalling();
+
+      expect(screen.getByText('APP_ACTION_DOWNLOADING 7.2 MB / 91 MB')).toBeInTheDocument();
+    });
+  });
+
+  describe('cancelling an install', () => {
+    const renderWithStatus = (status: AppDetails['status']) => (
+      <MemoryRouter>
+        <AppActions app={makeApp({ status })} metadata={metadata} info={info} urlAvailability={idleAvailability} />
+      </MemoryRouter>
+    );
+
+    it('starts the next install without "Cancelling" when the cancel reply came after the install was gone', () => {
+      const { rerender } = render(renderWithStatus('installing'));
+
+      // A queued install is settled at once: install_cancelled can reach the page before the
+      // reply to the cancel request does.
+      rerender(renderWithStatus('missing'));
+      act(() => hoisted.cancelInstallProps?.onCancelStart?.());
+
+      // The operator installs the app again.
+      rerender(renderWithStatus('installing'));
+
+      expect(screen.queryByText('APP_STATUS_CANCELLING')).not.toBeInTheDocument();
+      expect(screen.getByTestId('icon-action-common_cancel')).toBeEnabled();
+    });
+
+    it('shows Cancelling while the install it cancelled winds down', () => {
+      render(renderWithStatus('installing'));
+
+      act(() => hoisted.cancelInstallProps?.onCancelStart?.());
+
+      expect(screen.getAllByText('APP_STATUS_CANCELLING').length).toBeGreaterThan(0);
+      expect(screen.getByTestId('icon-action-common_cancel')).toBeDisabled();
+    });
   });
 
   describe('launch action while the public route is not ready', () => {

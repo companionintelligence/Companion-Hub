@@ -44,6 +44,12 @@ export interface OperationEntry {
   createdAt: number;
 }
 
+/** An install still in the checks `AppLifecycleService.installApp` runs before it registers. */
+export interface PreparingInstall {
+  /** Set by a cancel that arrived during the checks; `installApp` stops before its next write. */
+  cancelRequested: boolean;
+}
+
 /**
  * In-memory registry of active app lifecycle operations, keyed by app URN.
  *
@@ -56,7 +62,57 @@ export interface OperationEntry {
 export class AppOperationRegistry {
   private readonly ops = new Map<AppUrn, OperationEntry>();
 
+  /**
+   * Installs that have not registered yet. The Portal bundle download and the image architecture
+   * check run first and take seconds, while the page already offers Cancel. A cancel then has no
+   * entry to abort, so it is held here for `installApp` to apply.
+   */
+  private readonly preparing = new Map<AppUrn, PreparingInstall>();
+
+  /**
+   * Request ids of queued installs that were cancelled and settled before a worker took them. Kept
+   * apart from `ops`: the app can be installed again, which replaces its entry, before the
+   * cancelled message is dequeued.
+   */
+  private readonly settledBeforeStart = new Set<string>();
+
   constructor(private readonly logger: LoggerService) {}
+
+  /** Mark an install as running its pre-registration checks. */
+  beginPreparingInstall(appUrn: AppUrn): PreparingInstall {
+    const preparing: PreparingInstall = { cancelRequested: false };
+    this.preparing.set(appUrn, preparing);
+    return preparing;
+  }
+
+  /** End the pre-registration window. A later install of the same app that began since keeps its own. */
+  endPreparingInstall(appUrn: AppUrn, preparing: PreparingInstall): void {
+    if (this.preparing.get(appUrn) === preparing) {
+      this.preparing.delete(appUrn);
+    }
+  }
+
+  /** Hold a cancel for an install that has not registered yet. False when no install is preparing. */
+  holdPreparingCancel(appUrn: AppUrn): boolean {
+    const preparing = this.preparing.get(appUrn);
+    if (!preparing) {
+      return false;
+    }
+    preparing.cancelRequested = true;
+    this.logger.info(`[op-registry] cancel held for install ${appUrn}, which has not been queued yet`);
+    return true;
+  }
+
+  /** Drop an aborted, still-queued op whose cancel has been carried out, and remember it for the worker. */
+  settleBeforeStart(appUrn: AppUrn, requestId: string): void {
+    this.settledBeforeStart.add(requestId);
+    this.clear(appUrn, requestId);
+  }
+
+  /** True once for a request settled before it started: the worker skips its message. */
+  takeSettledBeforeStart(requestId: string): boolean {
+    return this.settledBeforeStart.delete(requestId);
+  }
 
   /**
    * Record a new operation for an app. Called by the service immediately before publishing the

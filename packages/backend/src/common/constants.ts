@@ -200,6 +200,8 @@ export const DEFAULT_QUEUE_TIMEOUT_IN_MINUTES = '5';
 export const DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES = 45;
 /** Stall timeout for a hung image pull with no progress events. */
 export const DEFAULT_APP_IMAGE_PULL_INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000;
+/** How long one image's pull may go without its first event from Docker before it fails as never started. */
+export const DEFAULT_APP_IMAGE_PULL_FIRST_EVENT_TIMEOUT_MS = 2 * 60 * 1000;
 /**
  * Ceiling for a per-app `docker compose` subcommand (up/down/pull/stop/...). As generous as the image
  * pull budget because `up`/`pull` can themselves pull images. Without this bound a wedged daemon/volume
