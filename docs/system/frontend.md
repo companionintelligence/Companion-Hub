@@ -5,7 +5,7 @@
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-10-04 (Hub Pool setup guide)
+> **Last updated:** 2026-10-10 (Docker screen on the WSL engine, inlined logo)
 > **Related:** docs/system/desktop.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/system/e2e.md
 
 ---
@@ -63,8 +63,10 @@ Key behaviors agents must preserve:
 - The starting, "hasn't finished starting", stopped and couldn't-start screens are one `StartupScreen` card that must look and read the same as the desktop bootstrap page (`packages/desktop/bootstrap/`), because the app hands over from that page mid-startup. Change both together. `docs/system/desktop.md` describes the data both read from `get_startup_progress_command`.
 - The Hub container can be newer or older than the desktop shell, so `readStartupProgress` treats fields an older shell leaves out as false, null, or (for Docker) available.
 - Restart Hub needs `restart_hub_command` on the desktop IPC allowlist (`packages/desktop/src-tauri/permissions/allow-desktop-ipc.toml`). On an older shell without it, the screen starts the Hub instead.
+- When Docker isn't available and the shell reports `docker_engine: wsl-engine`, the Docker screen says WSL stopped the engine and offers **Start engine** (`start_wsl_engine_command`) instead of Docker Desktop's steps. An older shell reports no engine and gets Docker Desktop's steps, as before.
+- These screens show while the Hub that serves the page may be down, so `SetupPageShell` inlines its logo into the bundle (`src/assets/hub-logo.png?inline`, the file the bootstrap page ships) instead of loading `/hub.png` from the Hub.
 
-Tests: `packages/frontend/src/components/hub-status/hub-status.test.tsx`
+Tests: `packages/frontend/src/components/hub-status/hub-status.test.tsx`, `packages/frontend/src/components/hub-status/__tests__/hub-status-wsl-engine.test.tsx`
 
 ## API client
 
