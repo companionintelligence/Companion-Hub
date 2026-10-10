@@ -17,7 +17,7 @@ export interface ResolvedMemoryProvider {
   appUrn: AppUrn;
   /** Internal address on the shared docker network (server-to-server exchange). */
   internalUrl: string;
-  /** Browser-reachable public URL (base of the consent flow), when resolvable. */
+  /** Browser-reachable public URL (base of the consent flow), when the availability probe found it answering. */
   publicUrl?: string;
 }
 
@@ -235,7 +235,13 @@ export class MemoryProviderResolver {
     if (opts.withPublicUrl) {
       try {
         const availability = await this.appsService.checkAppAvailability(appUrn);
-        publicUrl = availability.appUrl;
+        // Only an address the probe found answering. A failed verdict still names the address, and the
+        // browser sent there landed on a bare 404 while ci-memory's containers were down.
+        if (availability.available) {
+          publicUrl = availability.appUrl;
+        } else {
+          this.logger.info(`[MemoryConnect] ci-memory does not answer at its public address yet (${availability.errorCode ?? 'unavailable'})`);
+        }
       } catch (err) {
         this.logger.warn(`[MemoryConnect] could not resolve ci-memory public URL: ${err instanceof Error ? err.message : String(err)}`);
       }

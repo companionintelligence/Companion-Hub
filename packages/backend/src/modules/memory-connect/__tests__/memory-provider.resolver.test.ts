@@ -216,6 +216,23 @@ describe('MemoryProviderResolver.findProvider', () => {
     expect(provider?.internalUrl).toBe('http://gateway:8642');
   });
 
+  // The probe still names the address when it fails. Right after CI Memory's containers stopped, that address answered
+  // Traefik's 404, and the connect flow sent the browser there.
+  it('withholds the public URL when the availability probe says CI Memory does not answer there', async () => {
+    const { resolver, appsService } = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:ci-marketplace' }) }]);
+    appsService.checkAppAvailability.mockResolvedValue({
+      available: false,
+      appUrl: 'https://ci-memory.example.com',
+      httpStatus: 404,
+      errorCode: 'CF_UPSTREAM_ERROR',
+    });
+
+    const provider = await resolver.findProvider({ withPublicUrl: true });
+
+    expect(provider?.appUrn).toBe('ci-memory:ci-marketplace');
+    expect(provider?.publicUrl).toBeUndefined();
+  });
+
   it('still returns a provider (without publicUrl) when availability resolution fails', async () => {
     const { resolver, appsService } = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:ci-marketplace' }) }]);
     appsService.checkAppAvailability.mockRejectedValue(new Error('not running'));
