@@ -1,5 +1,5 @@
-import type { CuratedModel, ResidencyReport, TrackedModel } from '@ci-hub/common/types';
-import { servedIdForCatalogModel } from './model-availability.util';
+import type { CuratedModel, InferenceBackendType, ResidencyReport, TrackedModel } from '@ci-hub/common/types';
+import { isCatalogModelInstalled, servedIdForCatalogModel } from './model-availability.util';
 
 /**
  * One change to the tracked registry that a residency report justifies.
@@ -62,4 +62,32 @@ export function reconcileTrackedWithResidency(input: {
   }
 
   return changes;
+}
+
+/**
+ * The catalog ids tracked as `pulled` on `backend` that its `inventory` no longer lists: deleted
+ * outside the Hub (`ollama rm`). Nothing else drops such an entry, and the registry is in memory, so
+ * until the Hub restarted the models page showed the model as downloaded.
+ *
+ * `inventory` must be the engine's complete answer, as Ollama's `/api/tags` is (see
+ * `trackedPullCounts`). Only `pulled` entries: `pulling`, `loading` and `error` are the Hub's own
+ * work in progress, `pinned` is the operator's, and a `loaded` one becomes `pulled` first
+ * (`reconcileTrackedWithResidency`) once the engine no longer holds it. Tags match the way the
+ * handout matches them (`isCatalogModelInstalled`), so nothing the handout counts as installed is
+ * dropped.
+ */
+export function trackedPullsNotListed(input: {
+  catalog: readonly CuratedModel[];
+  tracked: readonly TrackedModel[];
+  backend: InferenceBackendType;
+  inventory: readonly string[];
+}): string[] {
+  const pulled = new Set(
+    input.tracked.filter((entry) => entry.state === 'pulled' && entry.backend === input.backend).map((entry) => entry.catalogId),
+  );
+  const catalogBackendModelIds = input.catalog.map((model) => model.backendModelId);
+  return input.catalog
+    .filter((model) => model.backend === input.backend && pulled.has(model.id))
+    .filter((model) => !isCatalogModelInstalled(model, [...input.inventory], false, catalogBackendModelIds))
+    .map((model) => model.id);
 }

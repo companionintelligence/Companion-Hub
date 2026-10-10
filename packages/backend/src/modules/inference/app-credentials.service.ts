@@ -10,7 +10,7 @@ import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaBackend } from './backends/ollama.backend';
 import { InferenceEndpointService } from './inference-endpoint.service';
 import type { CuratedModel, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
-import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
+import { isCatalogModelInstalled, isServedModelForCatalog, trackedPullCounts } from './model-availability.util';
 import { appBearerFor } from './engine-credential-scope';
 import { cloudProviderManagedKeys } from './cloud-provider-env';
 import { appInferenceRequirements, checkModelRequirements, type AppInferenceRequirements } from './app-inference-requirements';
@@ -367,6 +367,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
         profile.tier,
         profile,
         endpointHealth.modelsLoaded,
+        endpointReady,
         backendType,
         slug,
         requirements,
@@ -384,7 +385,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
       // A healthy endpoint with at least one served model is therefore ready even when there is no
       // curated `recommendedLlm` to match (the speculative inference model alias is configured at server startup).
       chatModelReady =
-        (recommendedLlm ? this.isModelPulled(recommendedLlm.id, endpointHealth.modelsLoaded, backendType) : false) ||
+        (recommendedLlm ? this.isModelPulled(recommendedLlm.id, endpointHealth.modelsLoaded, backendType, endpointReady) : false) ||
         (isHostServedBackend(backendType) && endpointReady && endpointHealth.modelsLoaded.length > 0);
       if (!chatModelId && localChat.rejected.length > 0) {
         chatModelError = describeNoSuitableChatModel({ appSlug: slug, requirements, rejected: localChat.rejected, scope: 'local' });
@@ -534,7 +535,9 @@ export class AppCredentialsService implements OnApplicationShutdown {
       ]),
     ];
 
-    const embeddingsReady = embeddings ? this.isModelPulled(embeddings.id, embeddingsServed, embeddingsBackend) : false;
+    const embeddingsReady = embeddings
+      ? this.isModelPulled(embeddings.id, embeddingsServed, embeddingsBackend, embedsOnActive ? endpointReady : ollamaEndpointReady)
+      : false;
     const prePull = [
       decideModelPrePull({
         kind: 'chat',
@@ -542,7 +545,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
         backendType,
         endpointReady,
         cloudPrimary: provider === 'cloud',
-        installedLocally: recommendedLlm ? this.isModelPulled(recommendedLlm.id, endpointHealth.modelsLoaded, backendType) : false,
+        installedLocally: recommendedLlm ? this.isModelPulled(recommendedLlm.id, endpointHealth.modelsLoaded, backendType, endpointReady) : false,
         poolServedBy: poolRouting && recommendedLlm ? nodesServing(poolRouting.inventory, recommendedLlm.backendModelId, recommendedLlm.backend) : [],
         poolHandout: routedThroughPool ? (poolChoice?.engineId ?? null) : null,
         operatorPreferred: Boolean(recommendedLlm && preferredModelId && recommendedLlm.id === preferredModelId),
@@ -637,6 +640,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
     tier: HardwareTier,
     profile: HardwareProfile,
     modelsLoaded: string[],
+    listed: boolean,
     backendType: InferenceBackendType,
     slug: AppSlug,
     requirements: AppInferenceRequirements,
@@ -644,7 +648,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
     const rejected: LocalChatSelection['rejected'] = [];
     const pickIfAvailable = (model: CuratedModel | null | undefined): CuratedModel | null => {
       if (model?.modality !== 'llm') return null;
-      if (!this.isCuratedModelAvailable(model, modelsLoaded, backendType)) return null;
+      if (!this.isCuratedModelAvailable(model, modelsLoaded, backendType, listed)) return null;
       const check = checkModelRequirements(model, requirements);
       if (check.verdict === 'fails') {
         if (!rejected.some((r) => r.engineId === model.backendModelId)) {
@@ -703,8 +707,8 @@ export class AppCredentialsService implements OnApplicationShutdown {
     return checkModelRequirements(row ?? null, requirements).verdict;
   }
 
-  private isCuratedModelAvailable(model: CuratedModel, modelsLoaded: string[], backendType: InferenceBackendType): boolean {
-    if (this.isModelPulled(model.id, modelsLoaded, backendType)) return true;
+  private isCuratedModelAvailable(model: CuratedModel, modelsLoaded: string[], backendType: InferenceBackendType, listed: boolean): boolean {
+    if (this.isModelPulled(model.id, modelsLoaded, backendType, listed)) return true;
     // vLLM and oMLX have no Hub pull registry — "available" means the operator's
     // server is actually reporting this exact id, not that the Hub tracked a pull for it.
     if (isHostServedBackend(backendType)) {
@@ -713,14 +717,14 @@ export class AppCredentialsService implements OnApplicationShutdown {
     return isCatalogModelInstalled(model, modelsLoaded, false, this.modelRegistry.getCatalogBackendModelIds());
   }
 
-  private isModelPulled(catalogId: string, modelsLoaded: string[], backendType: InferenceBackendType): boolean {
+  /** `listed` says `modelsLoaded` is `backendType`'s own answer, which outranks a tracked pull; see {@link trackedPullCounts}. */
+  private isModelPulled(catalogId: string, modelsLoaded: string[], backendType: InferenceBackendType, listed: boolean): boolean {
     const curated = this.modelRegistry.getCuratedModel(catalogId);
     if (isHostServedBackend(backendType)) {
       return curated ? isServedModelForCatalog(curated, modelsLoaded) : modelsLoaded.includes(catalogId);
     }
 
-    const tracked = this.modelRegistry.getTrackedModel(catalogId);
-    if (tracked && (tracked.state === 'pulled' || tracked.state === 'loaded' || tracked.state === 'pinned')) {
+    if (trackedPullCounts(this.modelRegistry.getTrackedModel(catalogId), listed ? backendType : null)) {
       return true;
     }
     return isCatalogModelInstalled(curated, modelsLoaded, false, this.modelRegistry.getCatalogBackendModelIds());

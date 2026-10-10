@@ -7,7 +7,7 @@ import { HardwareInspectorService } from './hardware-inspector.service';
 import { OllamaBackend } from './backends/ollama.backend';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { InferenceEndpointService } from './inference-endpoint.service';
-import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
+import { isCatalogModelInstalled, isServedModelForCatalog, trackedPullCounts } from './model-availability.util';
 import { appInferenceRequirements, checkModelRequirements, type AppInferenceRequirements } from './app-inference-requirements';
 import {
   capHandoutAtServedWindow,
@@ -138,6 +138,8 @@ export class InferenceEnvResolver {
       health: backendHealth,
       ready: backendReady,
     } = await this.endpoints.resolveActiveBackend(preferences.preferredBackend, 'InferenceEnvResolver');
+    // Whose model list `backendHealth` is, when the engine answered: see `trackedPullCounts`.
+    const listedBy = backendReady ? backendType : null;
 
     // Multi-Hub pooling: once any peer is connected, the app's requests go through this Hub's pool
     // proxy, so the chat model comes from what the pool serves — see selectPoolChatModel. Decided
@@ -206,6 +208,7 @@ export class InferenceEnvResolver {
       const local = this.resolveLocalChatModel(
         backendType,
         backendHealth.modelsLoaded ?? [],
+        listedBy,
         preferences.preferredModel,
         profile,
         requirements,
@@ -297,7 +300,7 @@ export class InferenceEnvResolver {
           ? pickUtilityModel({
               chat: chatCurated,
               installed: (this.modelRegistry.getCatalog() ?? []).filter(
-                (m) => m.modality === 'llm' && m.backend === backendType && this.isInstalled(m, backendHealth.modelsLoaded ?? []),
+                (m) => m.modality === 'llm' && m.backend === backendType && this.isInstalled(m, backendHealth.modelsLoaded ?? [], listedBy),
               ),
               profile,
             })
@@ -424,6 +427,7 @@ export class InferenceEnvResolver {
   private resolveLocalChatModel(
     backendType: InferenceBackendType,
     modelsLoaded: string[],
+    listedBy: InferenceBackendType | null,
     preferredId: string | null,
     profile: Awaited<ReturnType<HardwareInspectorService['getProfile']>>,
     requirements: AppInferenceRequirements,
@@ -434,7 +438,7 @@ export class InferenceEnvResolver {
       if (!model) return false;
       const check = checkModelRequirements(model, requirements);
       if (check.verdict === 'fails') {
-        if (this.isInstalled(model, modelsLoaded) && !rejected.some((r) => r.engineId === model.backendModelId)) {
+        if (this.isInstalled(model, modelsLoaded, listedBy) && !rejected.some((r) => r.engineId === model.backendModelId)) {
           rejected.push({ engineId: model.backendModelId, unmet: check.unmet });
         }
         return false;
@@ -458,10 +462,10 @@ export class InferenceEnvResolver {
       .filter((m) => m.modality === 'llm' && m.backend === backendType);
 
     let chatCurated: CuratedModel | undefined;
-    if (backendPreferredCurated && this.isInstalled(backendPreferredCurated, modelsLoaded) && suitable(backendPreferredCurated)) {
+    if (backendPreferredCurated && this.isInstalled(backendPreferredCurated, modelsLoaded, listedBy) && suitable(backendPreferredCurated)) {
       chatCurated = backendPreferredCurated;
     } else {
-      chatCurated = llmCandidates.find((m) => this.isInstalled(m, modelsLoaded) && suitable(m));
+      chatCurated = llmCandidates.find((m) => this.isInstalled(m, modelsLoaded, listedBy) && suitable(m));
     }
     if (!chatCurated) {
       chatCurated = [backendPreferredCurated, ...llmCandidates].find((m) => suitable(m));
@@ -503,10 +507,12 @@ export class InferenceEnvResolver {
     return checkModelRequirements(row ?? null, requirements).verdict;
   }
 
-  /** True when the model is on disk on the active backend or tracked as pulled/loaded/pinned in the registry. */
-  private isInstalled(model: CuratedModel, modelsLoaded: string[]): boolean {
-    const tracked = this.modelRegistry.getTrackedModel(model.id);
-    const trackedPulled = tracked?.state === 'pulled' || tracked?.state === 'loaded' || tracked?.state === 'pinned';
+  /**
+   * True when the model is on disk on the active backend, or tracked as pulled/loaded/pinned where
+   * that still counts: `listedBy` names the engine whose answer `modelsLoaded` is (see `trackedPullCounts`).
+   */
+  private isInstalled(model: CuratedModel, modelsLoaded: string[], listedBy: InferenceBackendType | null): boolean {
+    const trackedPulled = trackedPullCounts(this.modelRegistry.getTrackedModel(model.id), listedBy);
     if (model.backend === 'vllm' || model.backend === 'omlx') {
       return trackedPulled || isServedModelForCatalog(model, modelsLoaded);
     }

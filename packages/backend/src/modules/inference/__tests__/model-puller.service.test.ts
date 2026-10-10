@@ -12,7 +12,7 @@ import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
 import { OmlxBackend } from '../backends/omlx.backend';
-import type { CuratedModel, HardwareProfile } from '@ci-hub/common/types';
+import type { CuratedModel, HardwareProfile, TrackedModel } from '@ci-hub/common/types';
 
 const profile: HardwareProfile = {
   gpu: { available: true, vendor: 'nvidia', model: 'RTX', vramMb: 8192, unifiedMemory: false, driverVersion: '1', runtimeAvailable: true },
@@ -119,6 +119,36 @@ describe('ModelPullerService.evaluatePull', () => {
     const result = await service.evaluatePull('phi-4-mini');
     expect(result.alreadyInstalled).toBe(true);
     expect(result.canPull).toBe(true);
+  });
+
+  // `ollama rm` leaves the registry's entry behind until the Hub restarts. Believed over Ollama's
+  // own list, it answered "already installed", so choosing the model again downloaded nothing.
+  it('downloads a model the registry still lists as pulled once Ollama no longer has it', async () => {
+    modelRegistry.getTrackedModel.mockReturnValue({
+      catalogId: 'phi-4-mini',
+      backend: 'ollama',
+      backendModelId: 'phi4-mini',
+      state: 'pulled',
+    } as TrackedModel);
+
+    const result = await service.evaluatePull('phi-4-mini');
+
+    expect(result.alreadyInstalled).toBe(false);
+    expect(result.canPull).toBe(true);
+  });
+
+  it('still counts the registry entry as installed while Ollama cannot be asked', async () => {
+    modelRegistry.getTrackedModel.mockReturnValue({
+      catalogId: 'phi-4-mini',
+      backend: 'ollama',
+      backendModelId: 'phi4-mini',
+      state: 'pulled',
+    } as TrackedModel);
+    ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+
+    const result = await service.evaluatePull('phi-4-mini');
+
+    expect(result.alreadyInstalled).toBe(true);
   });
 
   it('blocks pull when disk is insufficient', async () => {

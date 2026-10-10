@@ -15,7 +15,7 @@ import { CloudFallbackService } from '../cloud-fallback.service';
 import { OllamaInstallerService } from '../ollama-installer.service';
 import { RocmInstallerService } from '../rocm-installer.service';
 import { AppCredentialsService } from '../app-credentials.service';
-import type { HardwareProfile, InferenceStatus } from '@ci-hub/common/types';
+import type { HardwareProfile, InferenceStatus, TrackedModel } from '@ci-hub/common/types';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { InferenceBackendRegistry } from '../backends/backend-registry';
 import { ModelResidencyService } from '../model-residency.service';
@@ -170,6 +170,27 @@ describe('InferenceController — onboarding-profile', () => {
     expect(result.backends.available).toHaveLength(2);
     expect(result.resourceEstimate.availableMemoryMb).toBeGreaterThanOrEqual(0);
     expect(result.installedCatalogIds).toEqual(['phi-4-mini']);
+  });
+
+  // Settings > AI seeds its ticked models from this list. A model removed with `ollama rm` stayed
+  // ticked while the registry remembered pulling it, and a Save then downloaded it again.
+  it('leaves out a model the registry still lists as pulled once Ollama no longer has it', async () => {
+    hardwareInspector.getProfile.mockResolvedValue(fakeProfile);
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
+    modelRegistry.getModelsForTier.mockReturnValue([]);
+    memoryManager.calculateBudget.mockResolvedValue(fakeStatus.memoryBudget);
+    router.getStatus.mockResolvedValue(fakeStatus);
+    ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
+    modelRegistry.getTrackedModel.mockReturnValue({
+      catalogId: 'phi-4-mini',
+      backend: 'ollama',
+      backendModelId: 'phi4-mini',
+      state: 'pulled',
+    } as TrackedModel);
+
+    const result = await controller.getOnboardingProfile({ backend: 'ollama' });
+
+    expect(result.installedCatalogIds).toEqual([]);
   });
 
   it('maps vLLM served models and Ollama embeddings when backend=vllm', async () => {

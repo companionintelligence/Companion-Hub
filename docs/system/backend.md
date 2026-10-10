@@ -483,6 +483,12 @@ keys `LLM_API_BASE`, `LLM_API_KEY`, `LLM_DEFAULT_CHAT_MODEL`, `LLM_DEFAULT_EMBED
   measured replaces the catalog footprint. A handout for a Lemonade model is never above the `ctx_size` Lemonade serves it
   at (`servedContextLength`). When that window is below the handout, the Hub hands out the saved
   window and logs a warning, naming the app's floor when it is under it.
+- **Installed means on disk.** Once Ollama answers, its `/api/tags` list decides whether an Ollama
+  model is installed. The registry's record of a pull counts only while Ollama cannot be asked: the
+  record is in memory, and nothing dropped it when a model was removed with `ollama rm`, so apps were
+  handed that model until the Hub restarted (`trackedPullCounts`). The handout, the app env, the pull
+  check and the onboarding profile all apply this rule, and `GET /api/inference/models/tracked` drops a
+  `pulled` entry that Ollama no longer lists. Lemonade, vLLM and oMLX keep the old rule.
 - **Pre-pull.** `decideModelPrePull` returns a logged decision for every handout. A credentials GET
   never pulls a model a pool node already serves, nor one the app's requirements rule out. When the
   pool already serves the app a suitable model, it pulls only the operator's preferred model, never
