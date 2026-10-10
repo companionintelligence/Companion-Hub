@@ -41,12 +41,25 @@ function mockDocker(handlers: { inspect?: string; exec?: (script: string) => num
     if (args[0] === 'inspect') return { status: handlers.inspect ? 0 : 1, stdout: handlers.inspect ?? '' };
     if (args[0] === 'exec') {
       const script = String(args[args.length - 1]);
-      // The dns lookup probe prints the gateway; the net.connect probe only exits.
+      // The dns lookup probe prints the gateway; the net.connect probe prints the code it exits with.
       if (script.includes('dns')) return { status: 0, stdout: '172.17.0.1' };
-      return { status: handlers.exec ? handlers.exec(script) : 10, stdout: '' };
+      const code = handlers.exec ? handlers.exec(script) : 10;
+      return { status: code, stdout: String(code) };
     }
     return { status: 1, stdout: '' };
   });
+}
+
+/** What `docker cp <container>:<dir> -` returns for the folder a probe run detached leaves: out, err and its exit status. */
+function copiedProbeFolder(dir: string, code: number): Buffer {
+  const file = (name: string, content: string) => {
+    const header = Buffer.alloc(512);
+    header.write(`${dir}/${name}`, 0, 'utf-8');
+    header.write(`${content.length.toString(8).padStart(11, '0')}\0`, 124, 'ascii');
+    header.write('0', 156, 'ascii');
+    return [header, Buffer.from(content, 'utf-8'), Buffer.alloc((512 - (content.length % 512)) % 512)];
+  };
+  return Buffer.concat([...file('out', String(code)), ...file('err', ''), ...file('status', `${code}\n`), Buffer.alloc(1024)]);
 }
 
 describe('bridge-diagnostics-cli', () => {
@@ -244,6 +257,22 @@ describe('bridge-diagnostics-cli', () => {
       expect(text).toContain('OLLAMA_HOST=0.0.0.0');
       expect(text).not.toContain('A host firewall is dropping these');
       expect(text).not.toContain('sudo ufw allow');
+    });
+
+    // Through the Docker engine the desktop app runs in WSL2, `docker exec` exits 0 and prints nothing
+    // whatever the probe found, so every listening service read as reachable from the container.
+    it('reads the verdict back with docker cp when docker exec loses it, instead of calling the port reachable', async () => {
+      listeningHostPorts = new Set([11434]);
+      spawnSync.mockImplementation((_command: string, args: string[]) => {
+        if (args[0] === 'ps') return { status: 0, stdout: 'ci-os-hub' };
+        if (args[0] === 'inspect') return { status: 0, stdout: '172.18.0.7/16' };
+        if (args[0] === 'cp') return { status: 0, stdout: copiedProbeFolder(String(args[1]).split('/').pop() ?? '', 11) };
+        return { status: 0, stdout: '' };
+      });
+
+      const section = await runBridgeDoctorSection('.env.prod');
+      expect(section.lines[0]).not.toMatch(/\bok\b/);
+      expect(section.lines.join('\n')).toContain('bound to loopback');
     });
 
     it('points at the missing host-gateway mapping when the name does not resolve', async () => {

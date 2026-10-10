@@ -15,6 +15,7 @@
 import { spawnSync } from 'node:child_process';
 import net from 'node:net';
 import { parseEnvFile } from './env-file';
+import { readContainerOutput } from './lib/docker-exec-output';
 
 /** Hub stack container that shares the network the checks must run from. */
 const HUB_CONTAINERS = ['ci-hub', 'ci-os-hub'] as const;
@@ -126,20 +127,21 @@ export function probeHostPort(port: number, host = '127.0.0.1', timeoutMs = PROB
  * The exit code carries WHY it failed, not just that it did. A refusal is an
  * instant RST and proves the bridge works, so collapsing it into the timeout
  * case would blame a firewall for a service that is merely bound to loopback.
+ *
+ * The probe also prints that code, so it always prints something: on the Docker engine the
+ * Windows desktop app runs in WSL2, `docker exec` exits 0 with nothing printed whatever the
+ * probe found, and the reader then copies the real exit status out (see docker-exec-output.ts).
  */
 export function probeFromHubContainer(port: number, timeoutMs = PROBE_TIMEOUT_MS): BridgeVerdict {
   const script =
     `const net=require('net');const s=new net.Socket();s.setTimeout(${timeoutMs});` +
-    'const end=c=>{s.destroy();process.exit(c)};' +
+    'const end=c=>{s.destroy();process.stdout.write(String(c));process.exit(c)};' +
     "s.once('connect',()=>end(0));s.once('timeout',()=>end(10));" +
     "s.once('error',e=>end(e.code==='ECONNREFUSED'||e.code==='ECONNRESET'?11:e.code==='ENOTFOUND'||e.code==='EAI_AGAIN'?12:10));" +
     `s.connect(${port},'host.docker.internal');`;
   const hubContainer = resolveHubContainer();
   if (!hubContainer) return 'absent';
-  const result = spawnSync('docker', ['exec', hubContainer, 'node', '-e', script], {
-    encoding: 'utf8',
-    timeout: timeoutMs + 7000,
-  });
+  const result = readContainerOutput(hubContainer, ['node', '-e', script], { timeoutMs: timeoutMs + 7000 });
   // A killed or failed `docker exec` says nothing about the bridge. Any code the
   // probe did not choose for itself (notably 1) falls through to `unknown`
   // rather than being read as a verdict.
