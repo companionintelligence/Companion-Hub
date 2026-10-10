@@ -1,13 +1,14 @@
-import { appContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
+import { appContextQueryKey, getHardwareOptions } from '@/api-client/@tanstack/react-query.gen';
 import { cloudflareStatusOptions, tailscaleStatusOptions, tailscaleStatusQueryKey } from '@/lib/api-routes/named-status-routes';
 import { disconnect } from '@/api-client/sdk.gen';
 import type { TailscaleStatusDto } from '@/api-client/types.gen';
+import type { HardwareProfile } from '@ci-hub/common/types';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Check, Copy, Globe, Shield } from 'lucide-react';
+import { Check, Copy, Globe, Monitor, Shield } from 'lucide-react';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
 import { toast } from 'sonner';
 import { type CopyOrSelectOutcome, copyOrSelect } from '@/lib/copy-to-clipboard';
@@ -281,8 +282,42 @@ const CloudflareSection = () => {
   );
 };
 
+/**
+ * On the Docker engine inside WSL, WSL forwards the Hub's ports to this PC's loopback address only,
+ * so phones and other computers on the network can't open the Hub or its apps (CI-Hub#1933).
+ * Nothing else on this tab would explain why the PC's address doesn't work from them.
+ */
+const LocalNetworkSection = () => {
+  const { t } = useTranslation();
+  const { data: containerHostKind } = useQuery({
+    ...getHardwareOptions(),
+    select: (payload) => (payload as unknown as Partial<HardwareProfile> | null)?.gpu?.containerHostKind,
+    retry: false,
+  });
+
+  if (containerHostKind !== 'wsl-engine') {
+    return null;
+  }
+
+  return (
+    <Card data-testid="local-network-card">
+      <SectionHeader
+        icon={Monitor}
+        title={t('SETTINGS_NETWORK_LOCAL_TITLE')}
+        badge={<StatusBadge connected={false} label={t('SETTINGS_NETWORK_LOCAL_THIS_PC_ONLY')} />}
+      />
+      <CardContent>
+        <p className="rounded-md border border-warning/30 bg-warning/10 px-2.5 py-2 text-xs text-warning">
+          {t('SETTINGS_NETWORK_LOCAL_WSL_ENGINE_DESC')}
+        </p>
+      </CardContent>
+    </Card>
+  );
+};
+
 export const NetworkSettingsContainer = () => (
   <div className="space-y-6" data-testid="network-settings">
+    <LocalNetworkSection />
     <TailscaleSidecarSection />
     <HubPoolSection />
     <CloudflareSection />

@@ -12,6 +12,7 @@ const fixtures = vi.hoisted(() => ({
   tailscaleStatus: { installed: false, connected: false, ip: null, hostname: null, backendState: null } as Record<string, unknown>,
   tailscaleFails: false,
   cloudflareFails: false,
+  hardware: { gpu: { containerHostKind: 'docker-desktop' } } as Record<string, unknown>,
 }));
 
 vi.mock('react-i18next', () => {
@@ -65,6 +66,7 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
     queryFn: async () => ({ entries: [], summary: { recorded: 0, capacity: 200, served: 0, failed: 0, failovers: 0, lastAt: null } }),
   }),
   updatePoolSettingsMutation: () => ({ mutationFn: vi.fn() }),
+  getHardwareOptions: () => ({ queryKey: ['hardware'], queryFn: async () => fixtures.hardware }),
 }));
 
 const renderContainer = () => {
@@ -105,6 +107,7 @@ describe('NetworkSettingsContainer', () => {
     fixtures.tailscaleStatus = { installed: false, connected: false, ip: null, hostname: null, backendState: null };
     fixtures.tailscaleFails = false;
     fixtures.cloudflareFails = false;
+    fixtures.hardware = { gpu: { containerHostKind: 'docker-desktop' } };
   });
 
   it('renders both cards with status badges and the tunnel id', async () => {
@@ -238,6 +241,27 @@ describe('NetworkSettingsContainer', () => {
 
       await screen.findByTestId('private-vpn-card');
       expect(screen.queryByTestId('tailscale-serve-refused')).toBeNull();
+    });
+  });
+
+  describe('when the Hub runs on the Docker engine inside WSL (CI-Hub#1933)', () => {
+    it('says other devices on the network cannot open the Hub', async () => {
+      // WSL forwards the Hub's ports to this PC's loopback address only, and nothing said so.
+      fixtures.hardware = { gpu: { containerHostKind: 'wsl-engine' } };
+
+      renderContainer();
+
+      const card = await screen.findByTestId('local-network-card');
+      expect(card).toHaveTextContent('SETTINGS_NETWORK_LOCAL_TITLE');
+      expect(card).toHaveTextContent('SETTINGS_NETWORK_LOCAL_THIS_PC_ONLY');
+      expect(card).toHaveTextContent('SETTINGS_NETWORK_LOCAL_WSL_ENGINE_DESC');
+    });
+
+    it('says nothing about it on another engine', async () => {
+      renderContainer();
+
+      await screen.findByTestId('cloudflare-tunnel-card');
+      await waitFor(() => expect(screen.queryByTestId('local-network-card')).toBeNull());
     });
   });
 });
