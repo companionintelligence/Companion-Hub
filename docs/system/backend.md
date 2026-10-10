@@ -52,6 +52,11 @@ named after the bind's **host path**, not its mount point — apps like `fastgpt
 postgres services that both mount `/var/lib/postgresql/data`, and naming by mount point would put
 both servers on one data directory.
 
+The same answer turns off the `a+rwx` sweep `AppFilesManager.setAppDataDirPermissions` runs over an
+app's data folder each time a lifecycle command prepares the app (a restart does it twice). Every
+chmod is discarded on such a mount, and walking a big tree over 9p (OpenClaw's has over 13,000
+files) took minutes on every restart.
+
 The probe reports "supported" on any error **by design** — the opposite would move a working app's
 data directory into an empty named volume over what may be a transient IO failure. For the same
 reason the redirect is keyed off the filesystem rather than applied everywhere: on Linux and macOS

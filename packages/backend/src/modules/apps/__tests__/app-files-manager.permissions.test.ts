@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -8,6 +8,13 @@ import type { AppUrn } from '@ci-hub/common/types';
 
 const execAsyncMock = vi.fn(async () => ({ stdout: '', stderr: '' }));
 vi.mock('@/common/helpers/exec-helpers', () => ({ execAsync: execAsyncMock }));
+
+// Only the probe is stubbed, so each test decides what the app-data mount can carry.
+const posixProbe = vi.fn(async (_dirPath: string) => true);
+vi.mock('@/common/helpers/bind-mount-helpers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/common/helpers/bind-mount-helpers')>()),
+  supportsPosixPermissions: posixProbe,
+}));
 
 const { AppFilesManager, buildPermissionsCommand } = await import('../app-files-manager');
 
@@ -55,6 +62,8 @@ describe('AppFilesManager.setAppDataDirPermissions', () => {
 
   beforeEach(() => {
     execAsyncMock.mockClear();
+    posixProbe.mockReset();
+    posixProbe.mockResolvedValue(true);
     filesystem = { pathExists: vi.fn(async () => true), readJsonFile: vi.fn() };
     const configuration = {
       getConfig: () => ({ directories: { dataDir: '/data', appDataDir: '/app-data', appDir: '/app' } }),
@@ -130,5 +139,54 @@ describe('AppFilesManager.setAppDataDirPermissions', () => {
     chmod.mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
 
     await expect(manager.setAppDataDirPermissions(appUrn)).resolves.toBeUndefined();
+  });
+
+  /*
+   * A Windows drive bind-mounted through WSL2 (drvfs over 9p) discards every chmod, yet the sweep
+   * still stats and chmods each file over 9p. On a Windows Hub that took minutes per restart for an
+   * app with a large data tree. The backend runs in a Linux container there, so the platform alone
+   * cannot tell; the probe the compose builder already asks can.
+   */
+  describe('on the platform the backend runs on', () => {
+    const originalPlatform = process.platform;
+    const setPlatform = (platform: NodeJS.Platform) => Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+
+    afterEach(() => {
+      setPlatform(originalPlatform);
+    });
+
+    it('skips the sweep when the app-data mount cannot carry POSIX permissions', async () => {
+      setPlatform('linux');
+      posixProbe.mockResolvedValue(false);
+      filesystem.readJsonFile.mockResolvedValue(
+        composeWith([{ hostPath: '${APP_DATA_DIR}/data/secrets', containerPath: '/run/secrets', private: true }]),
+      );
+
+      await manager.setAppDataDirPermissions(appUrn);
+
+      expect(execAsyncMock).not.toHaveBeenCalled();
+      expect(chmod).not.toHaveBeenCalled();
+    });
+
+    it('asks about the app-data root, whose answer the compose builder has already cached', async () => {
+      setPlatform('linux');
+      filesystem.readJsonFile.mockResolvedValue(composeWith([]));
+
+      await manager.setAppDataDirPermissions(appUrn);
+
+      expect(posixProbe).toHaveBeenCalledWith('/app-data');
+      expect(posixProbe).not.toHaveBeenCalledWith(appDataDir);
+    });
+
+    it.each(['linux', 'darwin'] as const)('still sweeps on %s when the mount carries POSIX permissions', async (platform) => {
+      setPlatform(platform);
+      filesystem.readJsonFile.mockResolvedValue(composeWith([]));
+
+      await manager.setAppDataDirPermissions(appUrn);
+
+      expect(execAsyncMock).toHaveBeenCalledTimes(1);
+      expect(execAsyncMock.mock.calls[0]?.[0]).toContain(`-path '${path.join(appDataDir, 'app.env')}'`);
+      expect(chmod).toHaveBeenCalledWith(path.join(appDataDir, 'app.env'), 0o600);
+    });
   });
 });
