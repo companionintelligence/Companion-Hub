@@ -75,6 +75,29 @@ describe('HubAccessService', () => {
       expect((await service.getStatus(urn)).identityVerification).toBe(true);
     });
 
+    // Companion Memory needs neither a managed key nor MCP access, but every env generation hands it an identity
+    // secret of its own. Reported as not provisioned, its settings had no Hub access section to rotate that secret.
+    it('counts Companion Memory as provisioned for the identity secret it is issued', async () => {
+      const memoryUrn = 'ci-memory:ci-marketplace' as AppUrn;
+      apiKeys.findManagedByApp.mockResolvedValue(null);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue(fromPartial({ urn: memoryUrn, hub_integration: undefined }));
+      appFilesManager.getAppEnv.mockResolvedValue({
+        path: '/x',
+        content: 'CI_HUB_FORWARD_AUTH_SECRET=hub-wide\nCI_HUB_FORWARD_AUTH_IDENTITY_SECRET=own\n',
+      });
+
+      expect(await service.getStatus(memoryUrn)).toEqual({ appKey: null, identityVerification: true, provisioned: true });
+    });
+
+    it('does not count an app named ci-memory from another store, which is never issued the secret', async () => {
+      const squatterUrn = 'ci-memory:someone-elses-store' as AppUrn;
+      apiKeys.findManagedByApp.mockResolvedValue(null);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue(fromPartial({ urn: squatterUrn, hub_integration: undefined }));
+      appFilesManager.getAppEnv.mockResolvedValue({ path: '/x', content: '' });
+
+      expect((await service.getStatus(squatterUrn)).provisioned).toBe(false);
+    });
+
     it('404s for an unknown app', async () => {
       appFilesManager.getInstalledAppInfo.mockResolvedValue(null as never);
       await expect(service.getStatus(urn)).rejects.toThrow(NotFoundException);
