@@ -150,6 +150,38 @@ describe('useDesktopPortalAuth — wiring', () => {
     });
   });
 
+  it('remembers the account this window is signed in as, so the sign-in screen can name it after sign-out', async () => {
+    api.apiFetch.mockImplementation(async (path: string) => ({
+      ok: true,
+      status: 200,
+      json: async () =>
+        String(path).includes('session-hint')
+          ? { email: 'person@example.com', portalBaseUrl: 'https://portal.example.com', source: 'hub_user', portalReachable: true }
+          : { sessionId: 'sess-1', redirectPath: '/dashboard' },
+    }));
+
+    renderHook(() => useDesktopPortalAuth());
+
+    await waitFor(() => expect(hint.rememberPortalAccountEmail).toHaveBeenCalledWith('person@example.com'));
+  });
+
+  it('does not remember an email the Hub sent about its first operator rather than this window', async () => {
+    api.apiFetch.mockImplementation(async (path: string) => ({
+      ok: true,
+      status: 200,
+      json: async () =>
+        String(path).includes('session-hint')
+          ? { email: 'operator@example.com', portalBaseUrl: 'https://portal.example.com', source: 'hub_operator', portalReachable: true }
+          : { sessionId: 'sess-1', redirectPath: '/dashboard' },
+    }));
+
+    renderHook(() => useDesktopPortalAuth());
+
+    await waitFor(() => expect(api.apiFetch).toHaveBeenCalledWith('/api/auth/portal/session-hint?desktop=1'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(hint.rememberPortalAccountEmail).not.toHaveBeenCalled();
+  });
+
   it('does not heartbeat desktop presence on iOS/Android (remote Hub owns the callback)', async () => {
     runtime.isTauriDesktopApp.mockReturnValue(false);
     runtime.isMobileClient.mockReturnValue(true);
