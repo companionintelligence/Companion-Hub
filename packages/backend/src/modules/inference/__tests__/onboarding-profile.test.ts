@@ -172,6 +172,27 @@ describe('InferenceController — onboarding-profile', () => {
     expect(result.installedCatalogIds).toEqual(['phi-4-mini']);
   });
 
+  it('says how many models each engine has, so setup can start on one that already has some', async () => {
+    hardwareInspector.getProfile.mockResolvedValue(fakeProfile);
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
+    modelRegistry.getModelsForTier.mockReturnValue([]);
+    memoryManager.calculateBudget.mockResolvedValue(fakeStatus.memoryBudget);
+    router.getStatus.mockResolvedValue({
+      ...fakeStatus,
+      backends: [
+        { type: 'ollama', running: true, healthy: true, url: 'http://localhost:11434', modelsLoaded: 4 },
+        { type: 'vllm', running: false, healthy: false, url: 'http://localhost:8000', modelsLoaded: 0 },
+      ],
+    });
+
+    const result = await controller.getOnboardingProfile({ backend: 'ollama' });
+
+    expect(result.backends.available).toEqual([
+      { type: 'ollama', running: true, healthy: true, modelsLoaded: 4 },
+      { type: 'vllm', running: false, healthy: false, modelsLoaded: 0 },
+    ]);
+  });
+
   it('maps vLLM served models and Ollama embeddings when backend=vllm', async () => {
     hardwareInspector.getProfile.mockResolvedValue(fakeProfile);
     modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);

@@ -204,7 +204,8 @@ export const AiSetupStep = ({
       setProfile(data);
       const hiddenBackends = hiddenInferenceBackends(data);
       // A rescan keeps the engine the operator picked. The first load still follows the recommendation.
-      const requestedBackend = backendOverride ?? (isRescan && !hiddenBackends.includes(backend) ? backend : recommendedInferenceBackend(data));
+      const requestedBackend =
+        backendOverride ?? (isRescan && !hiddenBackends.includes(backend) ? backend : recommendedInferenceBackend(data, getTauriInvoke() !== null));
       const resolvedBackend = hiddenBackends.includes(requestedBackend)
         ? (data.backends.available.find(({ type }) => !hiddenBackends.includes(type))?.type ?? 'ollama')
         : requestedBackend;
@@ -703,7 +704,7 @@ export const AiSetupStep = ({
           >
             <div className="border-b border-border pb-5">
               <BackendSelectionCard
-                recommended={recommendedInferenceBackend(profile)}
+                recommended={recommendedInferenceBackend(profile, canAutoInstallRunners)}
                 available={profile.backends.available}
                 selected={selectedBackend}
                 onSelect={handleSelectBackend}

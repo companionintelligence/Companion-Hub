@@ -133,9 +133,10 @@ vi.mock('@/modules/onboarding/components/ai-setup/icons', () => ({
 }));
 
 vi.mock('@/modules/onboarding/components/ai-setup/backend-selection-card', () => ({
-  BackendSelectionCard: ({ selected, onSelect }: any) => (
+  BackendSelectionCard: ({ selected, recommended, onSelect }: any) => (
     <div>
       <div data-testid="selected-backend">{selected}</div>
+      <div data-testid="recommended-backend">{recommended}</div>
       <button type="button" data-testid="select-lemonade" onClick={() => onSelect('lemonade')}>
         select lemonade
       </button>
@@ -266,6 +267,34 @@ describe('AiSettingsContainer', () => {
 
     await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('vllm'));
     expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('vllm');
+  });
+
+  it('shows an engine that answers when nothing is saved and the recommended one does not', async () => {
+    // An NVIDIA PC with Ollama running and no vLLM, on a Hub that never saved an engine.
+    fetchInferencePreferences.mockResolvedValue({});
+    fetchInferenceOnboardingProfile.mockImplementation(async (backend?: string) => ({
+      ...profile,
+      recommendedModels: [llm('m1', 'ollama')],
+      availableModels: [llm('m1', 'ollama')],
+      installedCatalogIds: backend === 'ollama' ? ['m1'] : [],
+      backends: {
+        recommended: 'vllm',
+        available: [
+          { type: 'ollama', running: true, healthy: true, modelsLoaded: 4 },
+          { type: 'vllm', running: false, healthy: false, modelsLoaded: 0 },
+        ],
+      },
+    }));
+
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('ollama'));
+    expect(screen.getByTestId('recommended-backend')).toHaveTextContent('ollama');
+    // Asked about no engine, the endpoint answered for vLLM; the list shown must be Ollama's.
+    expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('ollama');
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-m1')).toBeChecked());
+    await waitFor(() => expect(fetchInferenceRuntimeModels).toHaveBeenCalledWith('ollama'));
+    expect(fetchInferenceRuntimeModels).not.toHaveBeenCalledWith('vllm');
   });
 
   it('persists backend changes on save', async () => {
