@@ -2580,3 +2580,92 @@ describe('InstallForm - Public Web routing drift', () => {
     });
   });
 });
+
+/**
+ * Export config wrote the dialog's access settings, and Import config threw them all
+ * away as fields that "don't apply to this app", so a This Machine Only export came
+ * back as Public Web with an error toast.
+ */
+describe('InstallForm - importing a config it just exported', () => {
+  const adminEmail = { type: 'text', label: 'Admin Email', env_variable: 'ADMIN_EMAIL', required: true } as unknown as FormField;
+  const cyberchef = {
+    id: 'cyberchef',
+    urn: 'cyberchef:ci-marketplace',
+    form_fields: [adminEmail],
+    exposable: true,
+    dynamic_config: true,
+    port: 8000,
+  } as unknown as AppInfo;
+
+  class RecordingBlob {
+    parts: unknown[];
+    constructor(parts: unknown[]) {
+      this.parts = parts;
+    }
+  }
+
+  const renderForm = (formId: string, onSubmit: (values: Record<string, unknown>) => void = vi.fn()) =>
+    render(
+      <MemoryRouter>
+        <InstallForm info={cyberchef} onSubmit={onSubmit} formId={formId} formFields={[adminEmail]} />
+      </MemoryRouter>,
+    );
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    fetchDnsAvailability.mockImplementation(async () => new Response(JSON.stringify({ available: true }), { status: 200 }));
+    vi.mocked(useAppContext).mockReturnValue({
+      userSettings: {
+        ciHubOrganizationSlug: 'bc',
+        ciHubDeviceSlug: 'blaptop',
+        localDomain: 'ci.lan',
+        domain: 'example.com',
+        maxBackups: 5,
+        guestDashboard: false,
+      },
+      user: { advancedMode: false },
+      isProduction: true,
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
+    } as unknown as ReturnType<typeof useAppContext>);
+  });
+
+  afterEach(() => {
+    fetchDnsAvailability.mockReset();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('brings back This Machine Only and says the config was imported', async () => {
+    vi.stubGlobal('Blob', RecordingBlob);
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const createObjectUrl = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:export');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+
+    const exporting = renderForm('export-form');
+    fireEvent.change(await screen.findByLabelText(/Admin Email/), { target: { value: 'ops@example.org' } });
+    fireEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_LOCAL' }));
+    fireEvent.click(screen.getByRole('button', { name: /APP_INSTALL_FORM_EXPORT_CONFIG/ }));
+    const exportedBlob = createObjectUrl.mock.calls[0]?.[0] as unknown as RecordingBlob;
+    const exported = exportedBlob.parts.join('');
+    exporting.unmount();
+
+    const onSubmit = vi.fn();
+    const { container } = renderForm('import-form', onSubmit);
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(fileInput, { target: { files: [{ text: async () => exported }] } });
+    });
+
+    await waitFor(() => expect(vi.mocked(toast.success).mock.calls.length + vi.mocked(toast.error).mock.calls.length).toBeGreaterThan(0));
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS');
+
+    await act(async () => {
+      fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+    });
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ ADMIN_EMAIL: 'ops@example.org', exposureMode: 'local' });
+  });
+});
