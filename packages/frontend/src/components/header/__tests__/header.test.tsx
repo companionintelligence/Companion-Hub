@@ -106,9 +106,26 @@ describe('Header', () => {
       'max-h-[calc(100dvh-var(--header-offset)-1rem)]',
     );
     const scrim = screen.getByTestId('mobile-app-menu-scrim');
-    expect(scrim.style.top).toBe('var(--header-offset)');
+    expect(scrim.style.top).toBe('calc(var(--titlebar-height, 0px) + var(--header-offset))');
     expect(scrim.className).not.toContain('inset-0');
     expect(screen.getByRole('menuitem', { name: /COMMON_SETTINGS|Settings/i })).toBeInTheDocument();
+  });
+
+  it('dims the page from document.body and closes the phone menu when the page is clicked', async () => {
+    renderHeader(true);
+
+    await userEvent.click(screen.getByTestId('mobile-app-menu-btn'));
+    const scrim = screen.getByTestId('mobile-app-menu-scrim');
+    // The header's backdrop blur makes it the containing block of a fixed child. Inside it the
+    // scrim was sized to the bar and came out 0px tall, so a click outside the menu hit the page.
+    expect(screen.getByTestId('app-header')).not.toContainElement(scrim);
+    expect(scrim.parentElement).toBe(document.body);
+    // Outside the menu's `lg:hidden` wrapper now, so it has to hide itself on a wide window.
+    expect(scrim).toHaveClass('lg:hidden');
+
+    await userEvent.click(scrim);
+    expect(screen.queryByTestId('mobile-app-menu')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('mobile-app-menu-scrim')).not.toBeInTheDocument();
   });
 
   it('moves focus into the phone menu, closes it on Escape, and keeps the scrim out of the tab order', async () => {

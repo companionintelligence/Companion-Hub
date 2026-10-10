@@ -11,6 +11,7 @@ import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import { logoutMutation } from '@/api-client/@tanstack/react-query.gen';
 import { useAppStoreState } from '@/stores/app-store';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useAppContext } from '@/context/app-context';
 
 type HeaderProps = {
@@ -201,15 +202,24 @@ function MobileAppMenu({
       </Button>
       {open ? (
         <>
-          <button
-            type="button"
-            aria-label={t('COMMON_CLOSE')}
-            data-testid="mobile-app-menu-scrim"
-            tabIndex={-1}
-            className="fixed inset-x-0 bottom-0 z-40 bg-black/25"
-            style={{ top: 'var(--header-offset)' }}
-            onClick={() => setOpen(false)}
-          />
+          {/*
+           * On document.body, not in the header: the header's backdrop blur makes it the containing
+           * block of a fixed child, which sized the scrim to the bar and left it 0px tall. From the
+           * body it covers the page from the header's bottom edge down. `lg:hidden` matches the menu's
+           * wrapper, which no longer hides it, so widening the window does not leave the page dimmed.
+           */}
+          {createPortal(
+            <button
+              type="button"
+              aria-label={t('COMMON_CLOSE')}
+              data-testid="mobile-app-menu-scrim"
+              tabIndex={-1}
+              className="fixed inset-x-0 bottom-0 z-40 bg-black/25 lg:hidden"
+              style={{ top: 'calc(var(--titlebar-height, 0px) + var(--header-offset))' }}
+              onClick={() => setOpen(false)}
+            />,
+            document.body,
+          )}
           <div
             ref={menuRef}
             role="menu"
