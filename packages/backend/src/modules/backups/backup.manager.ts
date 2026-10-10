@@ -1,7 +1,13 @@
 import path from 'node:path';
 
 import { resolveBackupFilePath } from './backup-path';
-import { UnsafeBackupError, validateRestoreArchiveEntries, validateRestoreDirectory } from './restore-validation';
+import {
+  readVolumeArchiveKeys,
+  UnsafeBackupError,
+  VOLUME_ARCHIVE_NAME,
+  validateRestoreArchiveEntries,
+  validateRestoreDirectory,
+} from './restore-validation';
 import { isAbsoluteHostPath, joinHostPath } from '@/common/helpers/app-data-path.helper';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { ArchiveService } from '@/core/archive/archive.service';
@@ -13,6 +19,7 @@ import { HttpStatus, Injectable, type OnApplicationShutdown } from '@nestjs/comm
 import { TranslatableError } from '@/common/error/translatable-error';
 import type { AppUrn } from '@ci-hub/common/types';
 import { AppFilesManager } from '../apps/app-files-manager';
+import { AppVolumeArchiveService } from '../docker/app-volume-archive.service';
 
 @Injectable()
 export class BackupManager implements OnApplicationShutdown {
@@ -26,6 +33,7 @@ export class BackupManager implements OnApplicationShutdown {
     private readonly config: ConfigurationService,
     private readonly filesystem: FilesystemService,
     private readonly appFilesManager: AppFilesManager,
+    private readonly appVolumes: AppVolumeArchiveService,
   ) {
     this.retentionInterval = setInterval(
       () => this.enforceRetentionAllApps().catch((e) => this.logger.error('Weekly backup retention failed', e)),
@@ -88,6 +96,10 @@ export class BackupManager implements OnApplicationShutdown {
           throw new Error('Failed to copy the app configuration for the backup');
         }
       }
+
+      // Where app-data cannot carry file ownership (a Windows Hub), most apps' databases live in named
+      // Docker volumes instead, outside every folder above.
+      await this.archiveAppVolumes(appUrn, path.join(tempDir, 'volumes'));
 
       this.logger.info('Creating archive...');
 
@@ -175,22 +187,59 @@ export class BackupManager implements OnApplicationShutdown {
       this.logger.debug('stderr:', stderr);
       this.logger.debug('stdout:', stdout);
 
+      let volumeKeys: string[];
+
       try {
         await validateRestoreDirectory(path.join(restoreDir, 'app-data'), { required: true, symlinks: true });
         await validateRestoreDirectory(path.join(restoreDir, 'app'), { required: true });
         await validateRestoreDirectory(path.join(restoreDir, 'user-config'), { required: false });
+        volumeKeys = await readVolumeArchiveKeys(path.join(restoreDir, 'volumes'));
       } catch (error) {
         this.logRejectedBackup(filename, error);
         throw error;
       }
 
+      // Part of the gate as well, so a volume that cannot go back is found out while the app still has
+      // its files. A backup without volumes (made on Linux, or before they were included) never asks Docker.
+      const volumes = volumeKeys.length > 0 ? await this.appVolumes.restoreTargets(appUrn, volumeKeys) : [];
+
       await this.replaceAppFiles(appUrn, restoreDir);
+
+      for (const volume of volumes) {
+        this.logger.info(`Restoring Docker volume ${volume.name}...`);
+        await this.appVolumes.importVolume(appUrn, volume, path.join(restoreDir, 'volumes', `${volume.key}.tar`));
+      }
     } finally {
       // Always, including when validation or extraction threw: an unsafe upload would
       // otherwise leave its extracted contents in the temp folder indefinitely.
       await this.filesystem.removeDirectory(restoreDir);
     }
   };
+
+  /** Write each of the app's named Docker volumes into `dir` as `<key>.tar`. An app with none gets no folder. */
+  private async archiveAppVolumes(appUrn: AppUrn, dir: string) {
+    const volumes = await this.appVolumes.listAppVolumes(appUrn);
+
+    if (volumes.length === 0) {
+      return;
+    }
+
+    await this.filesystem.createDirectory(dir);
+    const files = new Set<string>();
+
+    for (const volume of volumes) {
+      const file = `${volume.key}.tar`;
+
+      // A restore refuses a name outside the pattern, and two volumes under one key would leave one out.
+      if (!VOLUME_ARCHIVE_NAME.test(file) || files.has(file)) {
+        throw new Error(`Volume ${volume.name} cannot go in a backup under the name "${file}"`);
+      }
+
+      files.add(file);
+      this.logger.info(`Including Docker volume ${volume.name} in backup...`);
+      await this.appVolumes.exportVolume(volume.name, path.join(dir, file));
+    }
+  }
 
   /** Say in the log which entry made a backup unusable; the error the caller sees cannot name it. */
   private logRejectedBackup(filename: string, error: unknown) {

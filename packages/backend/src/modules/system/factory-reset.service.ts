@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import { writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR } from '@/common/constants';
+import { TranslatableError } from '@/common/error/translatable-error';
 import { app } from '@/core/database/drizzle/schema';
 import { DATABASE, type Database } from '@/core/database/database.module';
 import { CacheService } from '@/core/cache/cache.service';
@@ -124,6 +125,15 @@ export class FactoryResetService {
     }
   }
 
+  /**
+   * Empty each folder that holds app data, keeping the folder: each is a bind mount, and removing a
+   * mount point fails with EBUSY before anything inside it is touched. That is how a reset used to
+   * report success with every app backup still on disk.
+   *
+   * Throws when a folder still has something in it, before the database and the registration are
+   * wiped, so the operator can still sign in and run the reset again. The page shows that error, so it
+   * says how much is left, names the first few, and points to `cihub reset --yes`.
+   */
   public async wipeDataMounts(): Promise<void> {
     const { dataDir } = this.configuration.get('directories');
     const targets = [
@@ -132,10 +142,23 @@ export class FactoryResetService {
       path.join(dataDir, 'repos'),
       path.join(dataDir, 'media'),
       path.join(dataDir, 'backups'),
+      // Per-app env and compose overrides, which a reinstalled app would pick up again.
+      path.join(dataDir, 'user-config'),
     ];
+    const left: string[] = [];
 
     for (const target of targets) {
-      await this.wipeDirectory(target);
+      const entries = await this.emptyDirectory(target);
+
+      if (entries.length > 0) {
+        this.logger.error(`Factory reset could not empty ${target}; still there: ${entries.slice(0, 10).join(', ')}`);
+        // Named as they sit in the Hub's data folder (`backups/...`), which is where the operator looks.
+        left.push(...entries.map((entry) => `${path.basename(target)}/${entry}`));
+      }
+    }
+
+    if (left.length > 0) {
+      throw new TranslatableError('SETTINGS_FACTORY_RESET_FILES_LEFT', { count: String(left.length), paths: left.slice(0, 3).join(', ') });
     }
   }
 
@@ -157,10 +180,25 @@ export class FactoryResetService {
     await writeSettingsJsonFile(settingsPath, '{}', this.logger);
   }
 
-  private async wipeDirectory(dirPath: string): Promise<void> {
-    if (await this.filesystem.pathExists(dirPath)) {
-      await this.filesystem.removeDirectory(dirPath);
-    }
+  /** Remove everything inside `dirPath`, and return the names of what is still there. */
+  private async emptyDirectory(dirPath: string): Promise<string[]> {
     await this.filesystem.createDirectory(dirPath);
+
+    for (const entry of await this.listDirectory(dirPath)) {
+      await this.filesystem.removeDirectory(path.join(dirPath, entry));
+    }
+
+    return this.listDirectory(dirPath);
+  }
+
+  /** `readdir`, with a missing folder read as empty. Any other error is thrown, never read as empty. */
+  private async listDirectory(dirPath: string): Promise<string[]> {
+    return fs.promises.readdir(dirPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') {
+        return [];
+      }
+
+      throw error;
+    });
   }
 }

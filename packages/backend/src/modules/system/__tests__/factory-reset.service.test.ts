@@ -8,12 +8,14 @@ import { DOCKERODE } from '@/modules/docker/constants';
 import { Test } from '@nestjs/testing';
 import { ModuleRef } from '@nestjs/core';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { FactoryResetService } from '../factory-reset.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { BearerOrgMembershipCache } from '@/modules/auth/bearer-org-membership.cache';
-import { TUNNEL_DIR } from '@/common/constants';
+import { APP_DATA_DIR, TUNNEL_DIR } from '@/common/constants';
+import { TranslatableError } from '@/common/error/translatable-error';
+import fs from 'node:fs';
 import path from 'node:path';
 import { vol } from 'memfs';
 
@@ -171,6 +173,91 @@ describe('FactoryResetService', () => {
 
     expect(db.query.app.findMany).toHaveBeenCalled();
     expect(uninstallExecute).toHaveBeenCalled();
-    expect(filesystem.removeDirectory).toHaveBeenCalled();
+    expect(uninstallExecute.mock.invocationCallOrder[0]).toBeLessThan(filesystem.createDirectory.mock.invocationCallOrder[0] ?? 0);
+  });
+});
+
+describe('FactoryResetService: data folders', () => {
+  // Each data folder is a bind mount in the Hub container, and removing a mount point fails with EBUSY
+  // before anything inside it is touched. That is how a reset said it had deleted everything and left
+  // every app backup on disk.
+  const dataFolders = [APP_DATA_DIR, ...['apps', 'repos', 'media', 'backups', 'user-config'].map((name) => path.join('/data', name))];
+  const mountPoints = new Set(dataFolders.map((folder) => path.resolve(folder)));
+
+  let service: FactoryResetService;
+  let db: { execute: ReturnType<typeof vi.fn>; query: { app: { findMany: ReturnType<typeof vi.fn> } } };
+  /** Paths the Hub may not delete, such as a file an app wrote as root. */
+  let undeletable: Set<string>;
+
+  beforeEach(() => {
+    undeletable = new Set();
+    const rm = fs.promises.rm;
+    vi.spyOn(fs.promises, 'rm').mockImplementation(async (target, options) => {
+      const resolved = path.resolve(String(target));
+      if (mountPoints.has(resolved)) {
+        throw Object.assign(new Error(`EBUSY: resource busy or locked, rmdir '${target}'`), { code: 'EBUSY' });
+      }
+      if (undeletable.has(resolved)) {
+        throw Object.assign(new Error(`EACCES: permission denied, rmdir '${target}'`), { code: 'EACCES' });
+      }
+      return rm(target, options);
+    });
+
+    db = { execute: vi.fn().mockResolvedValue(undefined), query: { app: { findMany: vi.fn().mockResolvedValue([]) } } };
+    const registrationService = mock<RegistrationService>();
+    registrationService.resetRegistration.mockResolvedValue(undefined);
+    const logger = mock<LoggerService>();
+
+    service = new FactoryResetService(
+      db as never,
+      {} as never,
+      mock<ModuleRef>(),
+      new FilesystemService(logger),
+      { get: vi.fn().mockReturnValue({ dataDir: '/data' }) } as never,
+      mock<CacheService>(),
+      new SessionUserCache(),
+      logger,
+      registrationService,
+    );
+
+    for (const file of [
+      path.join(APP_DATA_DIR, 'ci-marketplace', 'uptime-kuma', 'data', 'kuma.db'),
+      path.join('/data', 'apps', 'ci-marketplace', 'wordpress', 'docker-compose.yml'),
+      path.join('/data', 'repos', 'ci-marketplace', 'catalog-index.json'),
+      path.join('/data', 'media', 'photo.jpg'),
+      path.join('/data', 'backups', 'ci-marketplace', 'wordpress', 'wordpress:ci-marketplace-1791551417985.tar.gz'),
+      path.join('/data', 'user-config', 'ci-marketplace', 'wordpress', 'app.env'),
+    ]) {
+      vol.mkdirSync(path.dirname(file), { recursive: true });
+      vol.writeFileSync(file, 'x');
+    }
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('empties every data folder, user-config included, and keeps the folder itself', async () => {
+    await service.wipeDataMounts();
+
+    for (const folder of dataFolders) {
+      expect(vol.readdirSync(folder)).toEqual([]);
+    }
+  });
+
+  it('stops before it wipes the database when a data folder could not be emptied, and says what is left', async () => {
+    undeletable.add(path.resolve('/data', 'backups', 'ci-marketplace'));
+
+    const failure = await service.execute().catch((error: unknown) => error);
+
+    // The page shows this error, so it names what is left as it sits in the Hub's data folder.
+    expect(failure).toBeInstanceOf(TranslatableError);
+    expect((failure as TranslatableError).getResponse()).toEqual({
+      message: 'SETTINGS_FACTORY_RESET_FILES_LEFT',
+      intlParams: { count: '1', paths: 'backups/ci-marketplace' },
+    });
+    expect(db.execute).not.toHaveBeenCalled();
+    // The other folders are still emptied, so a second run has only the leftover to deal with.
+    expect(vol.readdirSync(path.join('/data', 'media'))).toEqual([]);
   });
 });
