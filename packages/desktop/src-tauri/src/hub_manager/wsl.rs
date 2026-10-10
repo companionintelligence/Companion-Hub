@@ -1,4 +1,5 @@
-//! WSL2 Docker Engine backend: distro discovery, GPU runtime and Ollama reachability.
+//! WSL2 Docker Engine backend: distro discovery, keeping the engine running, GPU runtime and
+//! Ollama reachability.
 
 // Windows-only bodies below need the parent scope; on other hosts this looks unused.
 #[allow(unused_imports)]
@@ -309,4 +310,284 @@ pub(crate) fn ensure_wsl_engine_ollama_reachable(data_dir: &Path) {
             "Configured in-distro Ollama to listen on 0.0.0.0:11434 so the Hub container can reach it.",
         );
     }
+}
+
+// ─── Keeping the engine running ───────────────────────────────────────────────
+//
+// WSL stops a distro soon after its last foreground process ends, and systemd services such as
+// dockerd don't count. The installer's logon script runs `sleep infinity` in the distro for that,
+// so after `wsl --shutdown` or `wsl --terminate` nothing started the engine again until the next
+// logon, and the Hub stayed down.
+
+/// How long a start waits for Docker to answer once the distro runs again. systemd boots and
+/// starts dockerd in about 15 seconds.
+#[cfg(windows)]
+const WSL_ENGINE_START_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// The status polls ask every few seconds. A keepalive that ends at once (no distro, a broken WSL)
+/// is not started again sooner than this unless the user asks.
+#[cfg(any(test, windows))]
+const WSL_KEEPALIVE_RETRY_AFTER: Duration = Duration::from_secs(30);
+
+/// The engine the Hub runs on: the one this process pinned, else the one the last start recorded.
+pub(crate) fn hub_docker_engine(
+    data_dir: &Path,
+) -> Option<crate::docker_engine::PinnedDockerEngine> {
+    crate::docker_engine::pinned_engine()
+        .or_else(|| crate::docker_engine::load_persisted_engine(data_dir))
+}
+
+/// Whether Docker not answering should start the WSL engine's distro again: only for a Hub on
+/// that engine, and not while the user has the Hub stopped.
+#[cfg(any(test, windows))]
+pub(crate) fn wsl_engine_should_revive(
+    engine: Option<&crate::docker_engine::PinnedDockerEngine>,
+    user_stopped: bool,
+) -> bool {
+    !user_stopped
+        && engine
+            .is_some_and(|engine| engine.kind == crate::docker_engine::DockerEngineKind::WslEngine)
+}
+
+/// `wsl.exe` arguments for the keepalive: the command the installer's logon script runs.
+#[cfg(any(test, windows))]
+pub(crate) fn wsl_keepalive_args(distro: &str) -> [&str; 7] {
+    ["-d", distro, "-u", "root", "--", "sleep", "infinity"]
+}
+
+#[cfg(any(test, windows))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KeepaliveState {
+    Running,
+    /// Ended, with its exit code when it has one.
+    Exited(Option<i32>),
+}
+
+/// A process that keeps the WSL engine's distro running.
+#[cfg(any(test, windows))]
+pub(crate) trait KeepaliveProcess {
+    fn state(&mut self) -> KeepaliveState;
+}
+
+#[cfg(windows)]
+impl KeepaliveProcess for std::process::Child {
+    fn state(&mut self) -> KeepaliveState {
+        match self.try_wait() {
+            Ok(None) => KeepaliveState::Running,
+            Ok(Some(status)) => KeepaliveState::Exited(status.code()),
+            Err(_) => KeepaliveState::Exited(None),
+        }
+    }
+}
+
+#[cfg(any(test, windows))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KeepaliveStart {
+    Started,
+    /// The keepalive this app started still runs.
+    AlreadyRunning,
+    /// The last attempt was under [`WSL_KEEPALIVE_RETRY_AFTER`] ago.
+    TooSoon,
+}
+
+/// The keepalive this app started, if any, and when it last tried to start one.
+#[cfg(any(test, windows))]
+pub(crate) struct WslKeepalive<P> {
+    process: Option<P>,
+    last_attempt: Option<Instant>,
+}
+
+#[cfg(any(test, windows))]
+impl<P> WslKeepalive<P> {
+    pub(crate) const fn new() -> Self {
+        Self {
+            process: None,
+            last_attempt: None,
+        }
+    }
+}
+
+#[cfg(any(test, windows))]
+impl<P: KeepaliveProcess> WslKeepalive<P> {
+    /// Starts a keepalive with `spawn` unless the one this app started still runs. Within
+    /// [`WSL_KEEPALIVE_RETRY_AFTER`] of the last attempt it waits instead, unless `force`.
+    pub(crate) fn ensure(
+        &mut self,
+        now: Instant,
+        force: bool,
+        spawn: impl FnOnce() -> Result<P, String>,
+    ) -> Result<KeepaliveStart, String> {
+        if self.state() == Some(KeepaliveState::Running) {
+            return Ok(KeepaliveStart::AlreadyRunning);
+        }
+        let recent = self
+            .last_attempt
+            .is_some_and(|at| now.saturating_duration_since(at) < WSL_KEEPALIVE_RETRY_AFTER);
+        if recent && !force {
+            return Ok(KeepaliveStart::TooSoon);
+        }
+        self.last_attempt = Some(now);
+        self.process = Some(spawn()?);
+        Ok(KeepaliveStart::Started)
+    }
+
+    /// The state of the keepalive this app started, or `None` when it never started one.
+    pub(crate) fn state(&mut self) -> Option<KeepaliveState> {
+        self.process.as_mut().map(KeepaliveProcess::state)
+    }
+}
+
+#[cfg(windows)]
+static WSL_KEEPALIVE: Mutex<WslKeepalive<std::process::Child>> = Mutex::new(WslKeepalive::new());
+
+/// Starts the WSL engine's distro with the keepalive, unless the one this app started still
+/// runs. `force` skips the wait between attempts.
+#[cfg(windows)]
+fn start_wsl_keepalive(data_dir: &Path, force: bool) -> Result<KeepaliveStart, String> {
+    let mut started_distro = None;
+    let outcome = lock_recovering(&WSL_KEEPALIVE).ensure(Instant::now(), force, || {
+        // A unit test must never start WSL on the machine running it.
+        if cfg!(test) {
+            return Err("Unit tests don't start WSL.".to_string());
+        }
+        let distro = find_wsl_distro().ok_or_else(|| {
+            "No Ubuntu or Debian WSL distro was found for the Docker engine.".to_string()
+        })?;
+        let mut command = Command::new("wsl.exe");
+        command.creation_flags(CREATE_NO_WINDOW);
+        command
+            .args(wsl_keepalive_args(&distro))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let child = command
+            .spawn()
+            .map_err(|error| format!("Couldn't start WSL distro {distro}: {error}"))?;
+        started_distro = Some(distro);
+        Ok(child)
+    });
+    if let (Ok(KeepaliveStart::Started), Some(distro)) = (&outcome, started_distro) {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "wsl.engine",
+            &format!(
+                "Docker in WSL didn't answer, so the app started WSL distro {distro} again (wsl.exe {}).",
+                wsl_keepalive_args(&distro).join(" ")
+            ),
+        );
+    }
+    outcome
+}
+
+/// When the Hub runs on the WSL engine and Docker doesn't answer, start the engine's distro again.
+/// The status polls call this, so it never waits: they see Docker once it answers. A failure is
+/// left to Start engine to report, rather than logged every 30 seconds.
+#[cfg(windows)]
+pub(crate) fn revive_wsl_engine(data_dir: &Path) {
+    if wsl_engine_should_revive(
+        hub_docker_engine(data_dir).as_ref(),
+        is_user_stopped(data_dir),
+    ) {
+        let _ = start_wsl_keepalive(data_dir, false);
+    }
+}
+
+/// Start the WSL engine now and wait until Docker answers, for Start engine and for a Hub start
+/// that finds the engine stopped.
+#[cfg(windows)]
+fn start_wsl_engine_and_wait(
+    data_dir: &Path,
+    engine: &crate::docker_engine::PinnedDockerEngine,
+) -> Result<(), String> {
+    if crate::docker_engine::probe_docker_host_reachable(&engine.docker_host) {
+        forget_docker_access_check();
+        return Ok(());
+    }
+    start_wsl_keepalive(data_dir, true)?;
+    let deadline = Instant::now() + WSL_ENGINE_START_TIMEOUT;
+    loop {
+        if crate::docker_engine::probe_docker_host_reachable(&engine.docker_host) {
+            forget_docker_access_check();
+            let _ = append_desktop_log_for(data_dir, "wsl.engine", "Docker in WSL answers again.");
+            return Ok(());
+        }
+        if let Some(KeepaliveState::Exited(code)) = lock_recovering(&WSL_KEEPALIVE).state() {
+            let ended = code.map_or_else(
+                || "wsl.exe ended".to_string(),
+                |code| format!("wsl.exe ended with exit code {code}"),
+            );
+            return Err(format!(
+                "The engine's WSL distro stopped again right away ({ended})."
+            ));
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "WSL is running, but Docker inside it didn't answer within {} seconds.",
+                WSL_ENGINE_START_TIMEOUT.as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
+/// For a Hub start: when the Hub runs on the WSL engine and Docker doesn't answer, start the
+/// engine and wait for it. `Ok` when there was nothing to do too.
+#[cfg(windows)]
+pub(crate) fn wake_wsl_engine_for_start(data_dir: &Path) -> Result<(), String> {
+    let Some(engine) = hub_docker_engine(data_dir)
+        .filter(|engine| engine.kind == crate::docker_engine::DockerEngineKind::WslEngine)
+    else {
+        return Ok(());
+    };
+    if crate::docker_engine::probe_docker_host_reachable(&engine.docker_host) {
+        return Ok(());
+    }
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hub.start",
+        "Docker in WSL doesn't answer, so the app is starting it before the Hub.",
+    );
+    start_wsl_engine_and_wait(data_dir, &engine)
+}
+
+/// Start engine on the startup screens: start the WSL engine and wait until Docker answers.
+pub fn start_wsl_engine(data_dir: &Path) -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        let engine = hub_docker_engine(data_dir)
+            .filter(|engine| engine.kind == crate::docker_engine::DockerEngineKind::WslEngine)
+            .ok_or_else(|| "This Hub doesn't run on the Docker engine inside WSL.".to_string())?;
+        start_wsl_engine_and_wait(data_dir, &engine).map_err(|error| {
+            let _ =
+                append_desktop_log_for(data_dir, "wsl.engine", &format!("Start engine: {error}"));
+            error
+        })?;
+        Ok("Docker in WSL is running.".to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = data_dir;
+        Err("Only a Windows Hub runs on the Docker engine inside WSL.".to_string())
+    }
+}
+
+/// Whether Docker answers for the auto-start at launch. A Hub on the WSL engine whose engine
+/// stopped gets it started first, and waited for.
+pub fn docker_available_for_launch(data_dir: &Path) -> bool {
+    if is_docker_available() {
+        return true;
+    }
+    #[cfg(windows)]
+    match wake_wsl_engine_for_start(data_dir) {
+        Ok(()) => return is_docker_available(),
+        Err(error) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "setup",
+                &format!("The Docker engine in WSL didn't start: {error}"),
+            );
+        }
+    }
+    let _ = data_dir;
+    false
 }

@@ -257,6 +257,18 @@ async fn install_docker_engine_alternative_command(
         })?
 }
 
+/// Start the Docker engine inside WSL and wait until it answers (Start engine on the startup
+/// screens of a Hub that runs on it).
+#[tauri::command]
+async fn start_wsl_engine_command(
+    state: tauri::State<'_, hub_manager::HubPaths>,
+) -> Result<String, String> {
+    let data = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || hub_manager::start_wsl_engine(&data))
+        .await
+        .map_err(|e| format!("WSL engine start task failed: {e}"))?
+}
+
 /// Local Hub UI/API origin for the desktop bootstrap (respects API_PORT in .env).
 #[tauri::command]
 fn get_hub_api_url_command(state: tauri::State<'_, hub_manager::HubPaths>) -> String {
@@ -614,6 +626,7 @@ pub fn run() {
             install_rocm_command,
             verify_rocm_command,
             install_docker_engine_alternative_command,
+            start_wsl_engine_command,
             consume_pending_pairing_code,
             consume_pending_portal_auth,
             consume_pending_install_intent,
@@ -812,7 +825,7 @@ pub fn run() {
                     let data_for_decision = data.clone();
 
                     let decision = tokio::task::spawn_blocking(move || {
-                        if !hub_manager::is_docker_available() {
+                        if !hub_manager::docker_available_for_launch(&data_for_decision) {
                             return Ok::<_, String>(None);
                         }
 

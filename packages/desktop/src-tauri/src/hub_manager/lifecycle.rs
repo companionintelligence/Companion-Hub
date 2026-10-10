@@ -164,6 +164,16 @@ fn start_hub_inner(
         ),
     );
 
+    // The WSL engine stops whenever WSL does. Start it before choosing an engine: with no engine
+    // answering, the start would fail with Docker Desktop advice that doesn't apply.
+    #[cfg(target_os = "windows")]
+    wake_wsl_engine_for_start(data_dir).map_err(|error| {
+        let message =
+            format!("Docker is not running: the Docker engine in WSL didn't start. {error}");
+        let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+        with_view_logs_hint(message)
+    })?;
+
     // Re-resolve on every start/retry so affinity tracks the live Hub stack.
     crate::docker_engine::clear_process_pin();
     let engine =

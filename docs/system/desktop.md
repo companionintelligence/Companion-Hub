@@ -5,7 +5,7 @@
 > **Key paths:** `packages/desktop/src-tauri/src/hub_manager.rs`, `packages/desktop/src-tauri/resources/`
 > **Commands:** `pnpm run local:desktop` (Vite :5005), `pnpm run dev:desktop` (appliance :5002), `cd packages/desktop/src-tauri && cargo test`
 > **Owner persona:** maintainability + security
-> **Last updated:** 2026-10-01
+> **Last updated:** 2026-10-10 (the Docker engine inside WSL)
 > **Related:** docs/system/frontend.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/AUTO_HEALING.md
 
 ---
@@ -45,6 +45,8 @@ The startup screen has two halves that look the same: the release bootstrap page
   the Hub is stopped straight away instead of timing out.
 - `start_error` and `start_failed_at_ms`, from the sticky `.start-failed` marker.
 - `docker_access`, `hub_api_live`, image pull counts, and `start_in_progress`.
+- `docker_engine`: the engine the Hub runs on (`wsl-engine`, `desktop`, and so on), from the
+  engine this process pinned or the last start recorded in `state/docker-engine.json`.
 - `progress_pct`: the average of the service states. If a poll during the current start finds an
   image missing, downloads count for half of it until the Hub is ready, so a first start does not
   sit at the services' floor for the whole download.
@@ -53,6 +55,25 @@ The bootstrap page picks one screen from that data: starting, hasn't finished st
 minutes, not while images are still downloading), stopped, couldn't start, or Docker not running.
 Each screen shows one action that fixes it. Pressing **Start Hub** switches to the starting screen
 immediately.
+
+### The Docker engine inside WSL
+
+On Windows the Hub can run on Docker Engine inside a WSL2 distro instead of Docker Desktop
+(`hub_manager/installers/engine_alt.rs`). WSL stops a distro soon after its last foreground process
+ends, and systemd services such as dockerd don't count, so the installer's logon script keeps it up
+with `wsl.exe -d <distro> -u root -- sleep infinity`. After `wsl --shutdown` or `wsl --terminate`,
+the app starts that same command again (`hub_manager/wsl.rs`):
+
+- When a status poll (`get_hub_status_command`, `get_startup_progress_command`, the tray's health
+  check) finds Docker not answering on the WSL engine. It doesn't wait, starts at most one
+  keepalive at a time, waits 30 seconds after an attempt before the next, and does nothing while
+  the user has the Hub stopped.
+- When a Hub start or the auto-start at launch finds the engine stopped. It then waits up to 90
+  seconds for Docker to answer. If Docker still doesn't answer, the start fails with a message that
+  starts with "Docker is not running", so it doesn't stick.
+- On **Start engine** (`start_wsl_engine_command`), which the Docker screen shows instead of Docker
+  Desktop's steps when `docker_engine` is `wsl-engine`. It waits like a start and returns why the
+  engine didn't come back.
 
 ## Native inference runners
 

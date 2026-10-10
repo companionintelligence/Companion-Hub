@@ -55,6 +55,7 @@
     keepWaiting: byId('keep-waiting'),
     tryAgain: byId('try-again'),
     installDocker: byId('install-docker'),
+    startEngine: byId('start-engine'),
     copyError: byId('copy-error'),
     openLogs: byId('open-logs'),
     logsError: byId('logs-error'),
@@ -212,6 +213,10 @@
     installResult: null,
     /** True while Install Docker is running. The status note reports it, not the button label. */
     installRunning: false,
+    /** True while Start engine waits for Docker in WSL. */
+    engineStarting: false,
+    /** Why the last Start engine didn't get Docker in WSL answering. */
+    engineError: null,
     navigating: false,
     /** True while get_startup_progress_command has not come back. */
     pollInFlight: false,
@@ -329,6 +334,8 @@
       page.failedAfterSecs = (now - page.waitStartedAt) / 1000;
     }
     if (view === 'stopped') page.startedHere = false;
+    // Docker answers again: a failed Start engine from before is history.
+    if (previous === 'docker') page.engineError = null;
     page.view = view;
   }
 
@@ -417,7 +424,18 @@
     return node;
   }
 
-  function dockerHead(access) {
+  /** The Hub runs on the Docker engine inside WSL, which stops whenever WSL does. */
+  function onWslEngine(progress) {
+    return progress?.docker_engine === 'wsl-engine';
+  }
+
+  function dockerHead(access, wslEngine) {
+    if (wslEngine && (access?.state === 'daemon_unavailable' || access?.state === 'error')) {
+      return [
+        "Docker in WSL isn't running",
+        'WSL stopped the Docker engine this Hub runs on. CI Hub starts it again by itself unless you stopped the Hub.',
+      ];
+    }
     switch (access?.state) {
       case 'not_installed':
         return ["Docker isn't installed", 'CI Hub runs on Docker. Install it and CI Hub will carry on from here.'];
@@ -440,7 +458,7 @@
       case 'checking':
         return ['Checking CI Hub', "Looking at Docker and the Hub's services…"];
       case 'docker':
-        return dockerHead(progress.docker_access);
+        return dockerHead(progress.docker_access, onWslEngine(progress));
       case 'failed': {
         const failed = failedService(core);
         if (!failed) return ["CI Hub couldn't start", "CI Hub won't retry on its own until you try again."];
@@ -536,6 +554,8 @@
   }
 
   function dockerStatusNote() {
+    if (page.engineStarting) return 'Starting the engine… This can take a minute.';
+    if (page.engineError) return `The engine didn't start. ${page.engineError}`;
     if (page.installRunning) return 'Installing Docker… This can take a few minutes.';
     if (page.installError) return `Docker install didn't finish. ${page.installError}`;
     const result = page.installResult;
@@ -630,12 +650,15 @@
       keepWaiting: view === 'stuck',
       tryAgain: view === 'failed',
       installDocker: view === 'docker' && access === 'not_installed',
+      startEngine: view === 'docker' && onWslEngine(progress),
       copyError: view === 'failed' && Boolean(errorToCopy(progress)),
       openLogs: view === 'stuck' || view === 'failed' || (view === 'starting' && elapsed > LOGS_LINK_AFTER_S),
     };
     for (const [key, visible] of Object.entries(shown)) el[key].hidden = !visible;
     el.installDocker.disabled = page.installRunning;
     el.installDocker.setAttribute('aria-busy', page.installRunning ? 'true' : 'false');
+    el.startEngine.disabled = page.engineStarting;
+    el.startEngine.setAttribute('aria-busy', page.engineStarting ? 'true' : 'false');
     el.actions.hidden = !Object.values(shown).some(Boolean);
     el.aside.hidden = view !== 'stopped';
     el.waiting.hidden = view !== 'docker';
@@ -777,6 +800,23 @@
     }
   }
 
+  /** Start the Docker engine inside WSL now, rather than wait for the app's next try. */
+  async function startEngine() {
+    if (page.engineStarting) return;
+    page.engineStarting = true;
+    page.engineError = null;
+    render();
+    try {
+      await invoke('start_wsl_engine_command');
+    } catch (error) {
+      page.engineError = errorText(error) || 'Try again in a minute.';
+    } finally {
+      page.engineStarting = false;
+      render();
+      void pollProgress();
+    }
+  }
+
   function copyWithTextarea(value) {
     const area = document.createElement('textarea');
     area.value = value;
@@ -820,6 +860,7 @@
     render();
   });
   el.installDocker.addEventListener('click', () => void installDocker());
+  el.startEngine.addEventListener('click', () => void startEngine());
   el.copyError.addEventListener('click', () => void copyText(errorToCopy(page.progress), el.copyError));
   el.commandCopy.addEventListener('click', () => void copyText(el.commandText.textContent, el.commandCopy));
   el.openLogs.addEventListener('click', () => {
