@@ -1,7 +1,11 @@
+import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
+import { AppsRepository } from '@/modules/apps/apps.repository';
+import { ensureCustomAppHostPort } from '@/modules/custom-apps/custom-app-host-port';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
+import { PortManagerService } from '@/modules/network/port-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
@@ -74,6 +78,19 @@ export class StartAppCommand extends AppLifecycleCommand {
       }
 
       logger.info(`Starting app ${appUrn}`);
+
+      // A custom app made before custom apps got a host port of their own still publishes its
+      // internal port on the host. It gets one on this first start, as a new custom app does when
+      // it is created; see `allocateCustomAppHostPort`.
+      if (extractAppUrn(appUrn).appStoreId === '_user' && !form.port && config.port) {
+        form.port = await ensureCustomAppHostPort(
+          this.moduleRef.get(PortManagerService, { strict: false }),
+          this.moduleRef.get(AppsRepository, { strict: false }),
+          appUrn,
+          config.port,
+        );
+        logger.info(`Custom app ${appUrn} now publishes on host port ${form.port}`);
+      }
 
       // Host-device preflight — a device present at install time (e.g. /dev/kfd for ROCm)
       // can be gone by the time the app is started again (driver not loaded yet at boot,

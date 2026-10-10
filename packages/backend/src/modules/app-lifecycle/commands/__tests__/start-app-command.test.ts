@@ -12,6 +12,7 @@ import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
+import { PortManagerService } from '@/modules/network/port-manager.service';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import type { AppUrn } from '@ci-hub/common/types';
 import { parseComposeJson } from '@ci-hub/common/schemas';
@@ -50,6 +51,7 @@ describe('StartAppCommand — pull policy', () => {
   let composeArgs: string[];
   let appFilesManager: any;
   let dockerode: ReturnType<typeof mock<Dockerode>>;
+  let portManager: ReturnType<typeof mock<PortManagerService>>;
   const appUrn = 'urn:store:test-app' as AppUrn;
 
   beforeEach(() => {
@@ -113,8 +115,11 @@ describe('StartAppCommand — pull policy', () => {
     // @ts-expect-error
     dockerode.pruneContainers.mockResolvedValue({ ContainersDeleted: [], SpaceReclaimed: 0 });
 
+    portManager = mock<PortManagerService>();
+
     const moduleRef = {
       get: vi.fn((token: any) => {
+        if (token === PortManagerService) return portManager;
         if (token === LoggerService) return logger;
         if (token === ConfigurationService) return config;
         if (token === AppFilesManager) return appFilesManager;
@@ -289,6 +294,59 @@ describe('StartAppCommand — pull policy', () => {
     expect(result.success).toBe(true);
     expect(isRocmKfdPassthroughAvailable).toHaveBeenCalled();
     expect(dockerService.composeApp).toHaveBeenCalled();
+  });
+
+  /*
+   * A custom app made before custom apps got a host port of their own has none on its row, so its env
+   * fell back to the internal port and the host published that: port 80 never started.
+   */
+  describe('a custom app with no host port yet', () => {
+    const customUrn = 'my-nginx:_user' as AppUrn;
+    const helperOf = <T>(token: unknown) => (command as unknown as { moduleRef: { get: (t: unknown) => T } }).moduleRef.get(token);
+
+    beforeEach(() => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'my-nginx', port: 80, force_pull: false } as any);
+      portManager.getMainPort.mockResolvedValue(null);
+      portManager.allocatePorts.mockResolvedValue([
+        { id: 9, appUrn: customUrn, hostPort: 10000, containerPort: 80, protocol: 'tcp', label: 'main', createdAt: '2026-10-10T00:00:00.000Z' },
+      ]);
+      helperOf<ReturnType<typeof mock<AppsRepository>>>(AppsRepository).getAppByUrn.mockResolvedValue({
+        id: 7,
+        config: { exposureMode: 'local' },
+      } as any);
+    });
+
+    it('gets one on its first start, writes it to the row, and builds its env on it', async () => {
+      const result = await command.execute(customUrn, {});
+
+      expect(result.success).toBe(true);
+      expect(portManager.allocatePorts).toHaveBeenCalledWith(customUrn, [{ containerPort: 80, label: 'main', preferredHostPort: 80 }]);
+      expect(helperOf<ReturnType<typeof mock<AppsRepository>>>(AppsRepository).updateAppById).toHaveBeenCalledWith(7, {
+        config: { exposureMode: 'local', port: 10000 },
+        port: 10000,
+      });
+      expect(helperOf<ReturnType<typeof mock<AppHelpers>>>(AppHelpers).generateEnvFile).toHaveBeenCalledWith(
+        customUrn,
+        expect.objectContaining({ port: 10000 }),
+      );
+    });
+
+    it('keeps the host port a custom app already has', async () => {
+      await command.execute(customUrn, { port: 18080 });
+
+      expect(portManager.allocatePorts).not.toHaveBeenCalled();
+      expect(helperOf<ReturnType<typeof mock<AppHelpers>>>(AppHelpers).generateEnvFile).toHaveBeenCalledWith(
+        customUrn,
+        expect.objectContaining({ port: 18080 }),
+      );
+    });
+
+    it('leaves a store app to the port its install allocated', async () => {
+      await command.execute('wordpress:ci-marketplace' as AppUrn, {});
+
+      expect(portManager.allocatePorts).not.toHaveBeenCalled();
+      expect(portManager.getMainPort).not.toHaveBeenCalled();
+    });
   });
 });
 

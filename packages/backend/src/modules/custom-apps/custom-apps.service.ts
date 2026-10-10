@@ -8,11 +8,47 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { deriveAppSlug, RESERVED_APP_NAMES } from '@ci-hub/common/types';
 import path from 'node:path';
 import { AppsRepository } from '../apps/apps.repository';
+import { PortManagerService } from '../network/port-manager.service';
 import type { CreateCustomAppDto, UpdateCustomAppDto } from './dto/custom-apps.dto';
+import { allocateCustomAppHostPort } from './custom-app-host-port';
 import { getFrontmatter } from '@/utils/frontmatter/frontmatter';
 import { frontmatterSchema, type AppInfo, type ServiceInput } from '@ci-hub/common/schemas';
 
 const APPS_FOLDER = '_user';
+
+/**
+ * The main service's port, which becomes the app's single access port. The create form submits it as
+ * typed, a string; a number only comes from a hand-written config. A value that is not a plain port (an
+ * env reference, a range) leaves it unset.
+ */
+function mainServicePort(config: CreateCustomAppDto['config']): number | undefined {
+  const main = config.services.find((s: ServiceInput) => s.isMain) ?? config.services[0];
+  const rawPort = main?.internalPort;
+  const typedPort = typeof rawPort === 'string' && /^\d{1,5}$/.test(rawPort.trim()) ? Number(rawPort.trim()) : rawPort;
+  return typeof typedPort === 'number' && typedPort >= 1 && typedPort <= 65535 ? typedPort : undefined;
+}
+
+/** The host ports the app's Port Mappings publish, with their protocol. A host port given as an env reference is left out. */
+function mappedHostPorts(config: CreateCustomAppDto['config']): Array<{ hostPort: number; protocol: 'tcp' | 'udp' }> {
+  const ports: Array<{ hostPort: number; protocol: 'tcp' | 'udp' }> = [];
+  for (const service of config.services) {
+    for (const mapping of service.addPorts ?? []) {
+      const raw = typeof mapping.hostPort === 'string' ? mapping.hostPort.trim() : mapping.hostPort;
+      const hostPort = typeof raw === 'number' ? raw : /^\d{1,5}$/.test(raw) ? Number(raw) : Number.NaN;
+      if (!Number.isInteger(hostPort) || hostPort < 1 || hostPort > 65535) {
+        continue;
+      }
+      // As the compose builder publishes them: TCP unless the mapping is UDP only.
+      if (mapping.tcp || !mapping.udp) {
+        ports.push({ hostPort, protocol: 'tcp' });
+      }
+      if (mapping.udp) {
+        ports.push({ hostPort, protocol: 'udp' });
+      }
+    }
+  }
+  return ports;
+}
 
 @Injectable()
 export class CustomAppService {
@@ -21,6 +57,7 @@ export class CustomAppService {
     private readonly filesystem: FilesystemService,
     private readonly configService: ConfigurationService,
     private readonly appsRepository: AppsRepository,
+    private readonly portManager: PortManagerService,
   ) {}
 
   async createCustomApp(dto: CreateCustomAppDto): Promise<{ appUrn: AppUrn; appName: string; storeId: string }> {
@@ -50,15 +87,25 @@ export class CustomAppService {
       throw new TranslatableError('CUSTOM_APP_ERROR_DUPLICATE_NAME', { name: displayName }, HttpStatus.CONFLICT);
     }
 
+    // Before anything is written, so a refusal leaves no files or row behind.
+    await this.assertMappedHostPortsFree(config);
+
     try {
       await this.createAppDirectories(appUrn);
       await this.writeDockerComposeConfig(appUrn, config);
       await this.createAppInfo(appUrn, displayName, config);
 
+      const internalPort = mainServicePort(config);
+      const mappedTcpPorts = new Set(mappedHostPorts(config).flatMap(({ hostPort, protocol }) => (protocol === 'tcp' ? [hostPort] : [])));
+      const hostPort =
+        internalPort === undefined ? undefined : await allocateCustomAppHostPort(this.portManager, appUrn, internalPort, mappedTcpPorts);
+
       await this.appsRepository.createApp({
         appStoreSlug: APPS_FOLDER,
         appName: slug,
-        config: {},
+        // Stored as an install stores the port it allocated: the start publishes `${APP_PORT}` from it.
+        config: hostPort === undefined ? {} : { port: hostPort },
+        port: hostPort,
         // Created but not started yet — same durable status as compose-down stop.
         status: 'stopped',
       });
@@ -75,8 +122,36 @@ export class CustomAppService {
       await this.cleanupAppDirectories(appUrn).catch(() => {
         // Noop
       });
+      await this.portManager.releaseAll(appUrn).catch(() => 0);
       console.error(error);
       throw new TranslatableError('CUSTOM_APP_ERROR_CREATION_FAILED', { name: displayName }, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  /**
+   * Refuse a Port Mappings host port that is already held: one of the Hub's web ports, a port the port
+   * manager keeps for the Hub or gave another app, one another app's row publishes, or one mapped twice.
+   * A privileged port nobody holds (53 for a DNS server) stays allowed. Only the port manager's own
+   * allocations keep out of that range.
+   */
+  private async assertMappedHostPortsFree(config: CreateCustomAppDto['config']): Promise<void> {
+    const settings = this.configService.get('userSettings');
+    const hubWebPorts = [settings?.port, settings?.sslPort];
+    const seen = new Set<string>();
+
+    for (const { hostPort, protocol } of mappedHostPorts(config)) {
+      const key = `${hostPort}/${protocol}`;
+      const held =
+        seen.has(key) ||
+        (protocol === 'tcp' && (hubWebPorts.includes(hostPort) || (await this.appsRepository.getAppsByPort(hostPort)).length > 0)) ||
+        (hostPort >= 1024
+          ? !(await this.portManager.isPortAvailable(hostPort, protocol))
+          : (await this.portManager.getAllAllocations()).some((allocation) => allocation.hostPort === hostPort && allocation.protocol === protocol));
+
+      if (held) {
+        throw new TranslatableError('CUSTOM_APP_ERROR_HOST_PORT_IN_USE', { port: String(hostPort) }, HttpStatus.CONFLICT);
+      }
+      seen.add(key);
     }
   }
 
@@ -150,13 +225,7 @@ export class CustomAppService {
 
     const infoPath = path.join(dataDir, 'apps', appStoreId, appName, 'config.json');
 
-    const main = config.services.find((s: ServiceInput) => s.isMain) ?? config.services[0];
-    // The create form submits the port as typed, a string; a number only comes from a hand-written
-    // config. A value that is not a plain port (an env reference, a range) cannot become the app's
-    // single access port and leaves it unset, as before.
-    const rawPort = main?.internalPort;
-    const typedPort = typeof rawPort === 'string' && /^\d{1,5}$/.test(rawPort.trim()) ? Number(rawPort.trim()) : rawPort;
-    const inferredPort = typeof typedPort === 'number' && typedPort >= 1 && typedPort <= 65535 ? typedPort : undefined;
+    const inferredPort = mainServicePort(config);
 
     // Create a minimal app.info file for custom apps
     const appInfo = {

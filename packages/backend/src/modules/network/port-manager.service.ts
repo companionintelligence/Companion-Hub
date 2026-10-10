@@ -14,6 +14,7 @@ const RESERVED_RANGES: Array<[number, number]> = [
   [6543, 6543], // ci-hub-db mapped port
   [5001, 5001], // ci-hub-queue mapped port
   [5002, 5002], // ci-hub mapped port
+  [8080, 8080], // Traefik dashboard (the default every Hub compose file gives TRAEFIK_DASHBOARD_PORT)
   [9480, 9480], // Traefik HTTP
   [9443, 9443], // Traefik HTTPS
   [3000, 3000], // Hub backend (dev)

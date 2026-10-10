@@ -110,6 +110,16 @@ describe('PortManagerService', () => {
     expect(available).toBe(false);
   });
 
+  it("keeps the Traefik dashboard's default port for the Hub, though the probe cannot see it from inside the Hub container", async () => {
+    // Every Hub compose file publishes `${TRAEFIK_DASHBOARD_PORT:-8080}:8080`. The probe binds inside the
+    // Hub's own container, so it finds 8080 free, and an app given 8080 then fails to bind on the host.
+    vi.spyOn(service as unknown as { probeTcpPort: (port: number) => Promise<boolean> }, 'probeTcpPort').mockResolvedValue(true);
+
+    await expect(service.isPortAvailable(8080)).resolves.toBe(false);
+    const [main] = await service.allocatePorts('custom:_user' as AppUrn, [{ containerPort: 8080, label: 'main', preferredHostPort: 8080 }]);
+    expect(main?.hostPort).not.toBe(8080);
+  });
+
   it('should reject already-allocated ports', async () => {
     await service.allocatePorts('testapp:store' as AppUrn, [{ containerPort: 8080, label: 'main', preferredHostPort: 15000 }]);
 
