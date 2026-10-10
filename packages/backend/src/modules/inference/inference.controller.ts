@@ -656,7 +656,7 @@ export class InferenceController {
   @UseGuards(AuthGuard)
   @Post('cloud-providers')
   async setCloudProvider(@Body() body: { provider: CloudProviderType; apiKey?: string; enabled: boolean; baseUrl?: string; defaultModel?: string }) {
-    this.cloudFallback.setProvider({
+    await this.cloudFallback.setProvider({
       provider: body.provider,
       apiKey: body.apiKey,
       enabled: body.enabled,

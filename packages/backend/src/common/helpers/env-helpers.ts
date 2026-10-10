@@ -504,22 +504,46 @@ async function prepareSettingsJson(settingsFilePath: string): Promise<void> {
   }
 }
 
-/** Writes settings.json with permission recovery for stale root-owned bind mounts. */
+/**
+ * Writes settings.json with permission recovery for stale root-owned bind mounts.
+ *
+ * The content goes to a file of its own beside settings.json, which is then renamed over it, so a
+ * reader, a crash or a full disk finds the old file or the new one and never part of either. Writing
+ * in place truncated the file first, and two such writes that overlapped could both truncate it
+ * before either wrote. When the shorter one landed last, the end of the longer one stayed behind it,
+ * and the next boot could not parse the file. Callers that read the file, merge and write it back
+ * still have to take turns: see `mergeSettingsToDisk`.
+ */
 export async function writeSettingsJsonFile(settingsFilePath: string, content: string, log?: StateFileLog): Promise<void> {
   await ensureSettingsJsonReady(settingsFilePath, log);
 
   try {
-    await fs.promises.writeFile(settingsFilePath, content, { encoding: 'utf8', mode: PRIVATE_STATE_FILE_MODE });
+    await replaceSettingsJson(settingsFilePath, content);
   } catch (error) {
     if (!isFsErrorWithCode(error, 'EACCES')) {
       throw error;
     }
     await retrySettingsJsonPermissions(settingsFilePath, path.dirname(settingsFilePath));
     try {
-      await fs.promises.writeFile(settingsFilePath, content, { encoding: 'utf8', mode: PRIVATE_STATE_FILE_MODE });
+      await replaceSettingsJson(settingsFilePath, content);
     } catch (retryError) {
       throw settingsJsonPermissionError(settingsFilePath, retryError);
     }
+  }
+}
+
+/** Numbers this process's settings.json writes, so two writes never share a temporary file. */
+let settingsJsonWrites = 0;
+
+async function replaceSettingsJson(settingsFilePath: string, content: string): Promise<void> {
+  const temporary = `${settingsFilePath}.${process.pid}-${++settingsJsonWrites}.tmp`;
+  try {
+    await fs.promises.writeFile(temporary, content, { encoding: 'utf8', mode: PRIVATE_STATE_FILE_MODE });
+    await fs.promises.rename(temporary, settingsFilePath);
+  } catch (error) {
+    // It holds the same credentials as settings.json.
+    await fs.promises.unlink(temporary).catch(() => undefined);
+    throw error;
   }
 }
 
@@ -573,6 +597,50 @@ export async function writeResolvedEnvFile(targetPath: string, content: string, 
   }
 }
 
+/**
+ * settings.json for the boot, which must not crash-loop on a file that does not parse.
+ *
+ * Such a file is kept beside it as `settings.json.corrupt-<time>` and then replaced. When it opens
+ * with a complete JSON object, that object replaces it: overlapping saves in older builds left the
+ * last save whole at the start of the file and the end of a longer one after it. Anything else is
+ * replaced with empty settings, which is also how ConfigurationService reads a file it cannot parse.
+ */
+async function readSettingsJsonAtBoot(settingsFilePath: string, log: LoggerService): Promise<unknown> {
+  const text = await fs.promises.readFile(settingsFilePath, 'utf-8');
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    const keptAs = `${settingsFilePath}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    await fs.promises.writeFile(keptAs, text, { encoding: 'utf8', mode: PRIVATE_STATE_FILE_MODE });
+    const lastSave = leadingJsonObject(text, error);
+    await writeSettingsJsonFile(settingsFilePath, JSON.stringify(lastSave ?? {}, null, 2), log);
+    // The position only: the file holds credentials, and V8's message quotes the text around it.
+    const position = error instanceof SyntaxError ? /at position \d+/.exec(error.message)?.[0] : undefined;
+    log.error(
+      `${settingsFilePath} was not valid JSON${position ? ` (${position})` : ''}. Kept it as ${path.basename(keptAs)} and started from ` +
+        `${lastSave ? 'the complete settings object at its start' : 'empty settings'}.`,
+    );
+    return lastSave ?? {};
+  }
+}
+
+/**
+ * The JSON object `text` opens with, when V8 found something after it ("Unexpected non-whitespace
+ * character after JSON at position 1229"). Null for any other parse error.
+ */
+function leadingJsonObject(text: string, error: unknown): Record<string, unknown> | null {
+  const end = error instanceof SyntaxError ? /after JSON at position (\d+)/.exec(error.message)?.[1] : undefined;
+  if (end === undefined) {
+    return null;
+  }
+  try {
+    const value: unknown = JSON.parse(text.slice(0, Number(end)));
+    return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Applies resolved environment without replacing runtime or .env.local values. */
 function applyEnvMapToProcess(envMap: Map<string, string>) {
   for (const [key, value] of envMap.entries()) {
@@ -612,13 +680,12 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
 
   await ensureSettingsJsonReady(settingsFilePath, logger);
 
-  const settingsFile = await fs.promises.readFile(settingsFilePath, 'utf-8');
-
   // One unusable field must not abort the boot. This function runs before Nest exists (main.ts
   // calls it first), so a throw here is a crash loop with no UI to fix it from and no route to the
   // file that caused it — and every field it feeds already has an environment value or a default
-  // behind it. Drop what cannot be read, name it in the log, and carry on with the rest.
-  const settings = parsePersistedSettings(JSON.parse(settingsFile));
+  // behind it. Drop what cannot be read, name it in the log, and carry on with the rest. A file that
+  // is not JSON at all is set aside the same way, by readSettingsJsonAtBoot.
+  const settings = parsePersistedSettings(await readSettingsJsonAtBoot(settingsFilePath, logger));
 
   if (settings.unreadable) {
     logger.warn(

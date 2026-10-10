@@ -9,7 +9,7 @@ import { CacheService } from '@/core/cache/cache.service';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { LoggerService } from '@/core/logger/logger.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
-import { ConfigurationService } from '@/core/config/configuration.service';
+import { ConfigurationService, inSettingsFileTurn } from '@/core/config/configuration.service';
 import { UninstallAppCommand } from '@/modules/app-lifecycle/commands/uninstall-app-command';
 import { clearRegistrationRecoveryArtifacts } from '@/modules/app-lifecycle/registration-recovery-state';
 import { RegistrationService } from '@/modules/registration/registration.service';
@@ -154,7 +154,8 @@ export class FactoryResetService {
 
   public async resetSettings(): Promise<void> {
     const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
-    await writeSettingsJsonFile(settingsPath, '{}', this.logger);
+    // After any save already under way, which would otherwise write the old settings back over `{}`.
+    await inSettingsFileTurn(() => writeSettingsJsonFile(settingsPath, '{}', this.logger));
   }
 
   private async wipeDirectory(dirPath: string): Promise<void> {
