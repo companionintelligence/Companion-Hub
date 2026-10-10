@@ -202,3 +202,73 @@ fn drops_a_proxies_entry_the_docker_cli_cannot_read() {
         Some(&serde_json::json!({ "registry.example": { "auth": "dXNlcjpwYXNz" } }))
     );
 }
+
+/// What a launch writes to the env file before it decides whether to start the Hub, shaped like the
+/// output of `render_runtime_env_content` with its two commented sections and the blank line.
+const RENDERED_ENV: &str = "# Preserved (kept once set, survive upgrades)\n\
+                            ROOT_FOLDER_HOST=/mnt/c/Users/user/AppData/Roaming/companion-hub\n\
+                            DOMAIN=ci0.pw\n\
+                            \n\
+                            # Derived (recomputed every launch from the current binary)\n\
+                            CI_HUB_VERSION=0.3.4\n\
+                            CI_HUB_IMAGE=ghcr.io/companionintelligence/ci-hub:0.3.4\n";
+
+/// The start saves the configuration hash after the port manager has added the ports to the env
+/// file. A launch that dropped them again hashed a different file, so every launch saw a changed
+/// configuration and recreated a healthy stack (Companion-Hub#1931).
+#[test]
+fn a_launch_that_changes_nothing_hashes_the_configuration_the_last_start_saved() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let data_dir = tempdir.path();
+    let compose = data_dir.join(HUB_COMPOSE_FILENAME);
+    let env = data_dir.join(".env");
+    std::fs::write(&compose, "services: {}\n").expect("write compose");
+
+    // A launch writes the env file. Its start adds the ports, and saves the hash after compose up.
+    std::fs::write(&env, launch_env_file_content(RENDERED_ENV, "")).expect("write env");
+    let ports = crate::port_manager::PortResolution {
+        env_vars: [
+            ("HTTP_PORT", 80),
+            ("HTTPS_PORT", 443),
+            ("API_PORT", 5002),
+            ("POSTGRES_PORT", 6543),
+            ("RABBITMQ_PORT", 5001),
+            ("TRAEFIK_DASHBOARD_PORT", 8080),
+        ]
+        .into_iter()
+        .map(|(var, port)| (var.to_string(), port))
+        .collect(),
+        warnings: Vec::new(),
+        info: Vec::new(),
+    };
+    crate::port_manager::write_ports_to_env(&env, &ports).expect("write ports");
+    persist_config_hash(data_dir, &compose, &env);
+
+    // The next launch renders the same env file again.
+    let previous = std::fs::read_to_string(&env).expect("read env");
+    std::fs::write(&env, launch_env_file_content(RENDERED_ENV, &previous)).expect("write env");
+
+    assert_eq!(
+        std::fs::read_to_string(data_dir.join(".config-hash")).expect("saved hash"),
+        compute_config_hash(&compose, &env)
+    );
+}
+
+/// The desktop finds the Hub on the `API_PORT` in the env file, and every compose call against the
+/// stack reads the other ports from it. A launch that leaves the running Hub alone has to leave
+/// them as the last start chose them, fallbacks included.
+#[test]
+fn a_launch_keeps_the_ports_the_last_start_chose() {
+    let previous =
+        "ROOT_FOLDER_HOST=/mnt/c/hub\nCI_HUB_VERSION=0.3.3\nAPI_PORT=5003\nHTTP_PORT=8880\n";
+
+    let content = launch_env_file_content(
+        "ROOT_FOLDER_HOST=/mnt/c/hub\nCI_HUB_VERSION=0.3.4\n",
+        previous,
+    );
+
+    assert_eq!(
+        content,
+        "ROOT_FOLDER_HOST=/mnt/c/hub\nCI_HUB_VERSION=0.3.4\nAPI_PORT=5003\nHTTP_PORT=8880\n"
+    );
+}
