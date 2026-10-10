@@ -11,6 +11,26 @@ interface CachedSize {
 const DEFAULT_REGISTRY = 'registry.hub.docker.com';
 
 /**
+ * Every host name a compose file may give Docker Hub. The lookups below fetch a
+ * token, and send the request to registry-1.docker.io, only for `DEFAULT_REGISTRY`,
+ * so the parser maps the others to it. `docker.io` itself is Docker's website: its
+ * `/v2/` path answers with an HTML page.
+ */
+const DOCKER_HUB_HOSTS = new Set(['docker.io', 'index.docker.io', 'registry-1.docker.io', DEFAULT_REGISTRY]);
+
+/**
+ * Manifest types the registry lookups accept. A registry answers 404 when the
+ * request names none of the types an image was pushed as, which is what ghcr.io
+ * does for an image published as an OCI index.
+ */
+const MANIFEST_ACCEPT = [
+  'application/vnd.docker.distribution.manifest.list.v2+json',
+  'application/vnd.oci.image.index.v1+json',
+  'application/vnd.docker.distribution.manifest.v2+json',
+  'application/vnd.oci.image.manifest.v1+json',
+].join(', ');
+
+/**
  * Parse a Docker/OCI image reference into registry host, repository path, and
  * manifest tag or digest for registry v2 API URLs.
  *
@@ -61,6 +81,11 @@ export function parseDockerImageRef(image: string): { registry: string; reposito
   const head = name.slice(0, firstSlash);
   const tail = name.slice(firstSlash + 1);
   const headIsRegistry = head.includes('.') || head.includes(':') || head === 'localhost';
+
+  if (DOCKER_HUB_HOSTS.has(head)) {
+    // `docker.io/nginx` is the official image, which the registry API calls `library/nginx`.
+    return { registry: DEFAULT_REGISTRY, repository: tail.includes('/') ? tail : `library/${tail}`, tag };
+  }
 
   if (headIsRegistry) {
     return { registry: head, repository: tail, tag };
@@ -187,12 +212,7 @@ export class ImageSizeService {
 
     try {
       const headers: Record<string, string> = {
-        Accept: [
-          'application/vnd.docker.distribution.manifest.list.v2+json',
-          'application/vnd.oci.image.index.v1+json',
-          'application/vnd.docker.distribution.manifest.v2+json',
-          'application/vnd.oci.image.manifest.v1+json',
-        ].join(', '),
+        Accept: MANIFEST_ACCEPT,
       };
 
       const token = await this.getAuthToken(registry, repository);
@@ -262,9 +282,9 @@ export class ImageSizeService {
     const { registry, repository, tag } = this.parseImageRef(image);
 
     try {
-      // Get auth token if needed
+      // Get auth token if needed. The per-platform fetch below sends these headers too.
       const headers: Record<string, string> = {
-        Accept: 'application/vnd.docker.distribution.manifest.v2+json',
+        Accept: MANIFEST_ACCEPT,
       };
 
       const token = await this.getAuthToken(registry, repository);
