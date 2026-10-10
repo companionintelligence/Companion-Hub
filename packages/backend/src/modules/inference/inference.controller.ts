@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   ConflictException,
+  Delete,
   Get,
   Headers,
   HttpCode,
@@ -30,7 +31,7 @@ import { HardwareInspectorService } from './hardware-inspector.service';
 import { MemoryManagerService } from './memory-manager.service';
 import { ModelRegistryService } from './model-registry.service';
 import { ModelResidencyService } from './model-residency.service';
-import { reconcileTrackedWithResidency } from './tracked-residency';
+import { reconcileTrackedWithResidency, trackedPullsNotListed } from './tracked-residency';
 import { ModelPullerService } from './model-puller.service';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaInstallerService } from './ollama-installer.service';
@@ -60,7 +61,12 @@ import { buildLemonadeRemediation, classifyLemonadeFailure } from './backends/le
 import { resolveBridgeTopology, resolveHostPlatform } from './backends/ollama-host-bridge';
 import { buildOmlxRemediation, OMLX_PROBE_API_KEY_HEADER, OmlxBackend, resolveOmlxProbeUrl } from './backends/omlx.backend';
 import { OpenAiCompatibleClient } from './backends/openai-compatible.client';
-import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels, servedIdForCatalogModel } from './model-availability.util';
+import {
+  resolveInstalledCatalogIds,
+  resolveInstalledCatalogIdsFromServedModels,
+  servedIdForCatalogModel,
+  trackedPullCounts,
+} from './model-availability.util';
 import { BackendObserverService } from './supervision/backend-observer.service';
 import { buildTranscriptionForm, MAX_TRANSCRIPTION_BYTES, speechContentType, type UploadedAudio } from './audio-proxy.util';
 import { sendRouteError } from './inference-error-reply';
@@ -504,16 +510,28 @@ export class InferenceController {
   @UseGuards(AuthGuard)
   @Get('models/tracked')
   async getTrackedModels() {
+    // Taken before Ollama is asked, so a download that finishes while it answers is not judged
+    // against a list read before the file landed.
+    const pulledBefore = this.modelRegistry.getTrackedModels().filter((entry) => entry.state === 'pulled');
     // Agree with the engines first: a model Lemonade or Ollama loaded on its own (at boot, or for a
     // request) is resident whether or not this process ever tracked it. See tracked-residency.ts.
-    const residency = await this.residency.getReport(new Date().toISOString());
-    for (const change of reconcileTrackedWithResidency({
-      catalog: this.modelRegistry.getCatalog() ?? [],
-      tracked: this.modelRegistry.getTrackedModels(),
-      residency,
-    })) {
+    const [residency, ollama] = await Promise.all([
+      this.residency.getReport(new Date().toISOString()),
+      this.ollamaBackend.healthCheck().catch(() => null),
+    ]);
+    const catalog = this.modelRegistry.getCatalog() ?? [];
+    for (const change of reconcileTrackedWithResidency({ catalog, tracked: this.modelRegistry.getTrackedModels(), residency })) {
       if (this.modelRegistry.getTrackedModel(change.catalogId)) this.modelRegistry.updateModelState(change.catalogId, change.state);
       else this.modelRegistry.trackModel(change.catalogId, change.state);
+    }
+    // Then drop what was deleted outside the Hub (`ollama rm`). Only Ollama's list is complete
+    // enough to say a model is gone; see `trackedPullCounts`.
+    if (ollama?.running && ollama.healthy) {
+      for (const catalogId of trackedPullsNotListed({ catalog, tracked: pulledBefore, backend: 'ollama', inventory: ollama.modelsLoaded })) {
+        const entry = this.modelRegistry.getTrackedModel(catalogId);
+        // Only the entry read above, and only while it is still `pulled`: a pull or load started since is left alone.
+        if (entry?.state === 'pulled' && pulledBefore.includes(entry)) this.modelRegistry.removeTrackedModel(catalogId);
+      }
     }
     return this.modelRegistry.getTrackedModels();
   }
@@ -667,6 +685,21 @@ export class InferenceController {
     return { success: true };
   }
 
+  /**
+   * Delete a stored cloud key. The POST cannot: a blank `apiKey` there keeps the stored key, which
+   * the masked Settings field relies on. Running AI apps hold the key in their env, so they are
+   * refreshed as they are after a save.
+   */
+  @UseGuards(AuthGuard)
+  @Delete('cloud-providers/:provider')
+  async removeCloudProvider(@Param('provider') provider: CloudProviderType) {
+    const removed = await this.cloudFallback.removeProvider(provider);
+    if (removed) {
+      this.scheduleAiAppRestart(`cloud provider ${provider} removed`);
+    }
+    return { success: true, removed };
+  }
+
   // ─── Onboarding Aggregated Endpoint ───────────────────────────────────
 
   @UseGuards(AuthGuard)
@@ -718,7 +751,13 @@ export class InferenceController {
       healthy: false,
       modelsLoaded: [] as string[],
     }));
-    const ollamaInstalled = resolveInstalledCatalogIds(catalog, ollamaHealth.modelsLoaded ?? [], getTrackedState);
+    // Settings > AI ticks what this lists. Once Ollama answers, its list decides for its own models,
+    // or a model removed with `ollama rm` stays ticked and the next Save downloads it again.
+    const ollamaListedBy = ollamaHealth.running && ollamaHealth.healthy ? 'ollama' : null;
+    const ollamaInstalled = resolveInstalledCatalogIds(catalog, ollamaHealth.modelsLoaded ?? [], (id) => {
+      const tracked = this.modelRegistry.getTrackedModel(id);
+      return trackedPullCounts(tracked, ollamaListedBy) ? tracked?.state : undefined;
+    });
 
     let installedCatalogIds: string[];
     // Lemonade exposes the same model registry surface as its load/pull API, while vLLM and oMLX

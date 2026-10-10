@@ -6,7 +6,7 @@ import { embedderRunsOnCpu } from './embedder-placement';
 import { ModelRegistryService } from './model-registry.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { MemoryManagerService } from './memory-manager.service';
-import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
+import { isCatalogModelInstalled, isServedModelForCatalog, trackedPullCounts } from './model-availability.util';
 import type { PullEvaluation, PullStartResult } from './pull-evaluation.types';
 import { InferenceBackendRegistry } from './backends/backend-registry';
 
@@ -94,10 +94,13 @@ export class ModelPullerService {
     const requiredMemoryMb = curated.runtime.memoryFootprintMb;
 
     const backend = this.backends.get(curated.backend);
-    const backendModels = (await backend.healthCheck().catch(() => ({ modelsLoaded: [] as string[] }))).modelsLoaded ?? [];
+    const health = await backend.healthCheck().catch(() => null);
+    const backendModels = health?.modelsLoaded ?? [];
 
-    const tracked = this.modelRegistry.getTrackedModel(catalogId);
-    const trackedPulled = tracked?.state === 'pulled' || tracked?.state === 'loaded' || tracked?.state === 'pinned';
+    const trackedPulled = trackedPullCounts(
+      this.modelRegistry.getTrackedModel(catalogId),
+      health?.running && health.healthy ? curated.backend : null,
+    );
     const alreadyInstalled =
       trackedPulled ||
       (curated.backend === 'ollama'

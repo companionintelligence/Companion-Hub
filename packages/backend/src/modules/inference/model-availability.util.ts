@@ -1,4 +1,4 @@
-import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
+import type { CuratedModel, InferenceBackendType, TrackedModel } from '@ci-hub/common/types';
 import { canonicalModelId } from '@/common/helpers/hub-pool';
 
 /** True when an Ollama tag name matches a catalog model's native backend id. */
@@ -32,6 +32,24 @@ export function isOllamaTagForCatalogModel(tagName: string, backendModelId: stri
     }
   }
   return true;
+}
+
+/**
+ * Whether the registry's record that the Hub pulled a model still counts it as on disk.
+ *
+ * Not once Ollama has listed what it holds. The record lives in memory and nothing drops it when
+ * the model is deleted outside the Hub (`ollama rm`), so believing it over `/api/tags` handed apps a
+ * model that answered every request with a 404 until the Hub restarted. Ollama's health check is
+ * that `/api/tags` read, so a healthy answer lists everything on disk. Other engines keep the
+ * record: Lemonade answers healthy with an empty list when its model read fails, so a model missing
+ * from that list proves nothing.
+ *
+ * `listedBy` is the engine whose model list the caller holds, or null when that engine could not
+ * be asked.
+ */
+export function trackedPullCounts(tracked: Pick<TrackedModel, 'state' | 'backend'> | undefined, listedBy: InferenceBackendType | null): boolean {
+  if (tracked?.state !== 'pulled' && tracked?.state !== 'loaded' && tracked?.state !== 'pinned') return false;
+  return !(tracked.backend === 'ollama' && listedBy === 'ollama');
 }
 
 /**

@@ -14,7 +14,7 @@ import { OmlxBackend } from '../backends/omlx.backend';
 import { CloudFallbackService } from '../cloud-fallback.service';
 import { InferenceEndpointService } from '../inference-endpoint.service';
 import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
-import type { CloudProviderConfig, CuratedModel, HardwareProfile, InferenceBackendType } from '@ci-hub/common/types';
+import type { CloudProviderConfig, CuratedModel, HardwareProfile, InferenceBackendType, TrackedModel } from '@ci-hub/common/types';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 
 const OLLAMA_BASE_URL = 'http://host.docker.internal:11434';
@@ -321,6 +321,22 @@ describe('InferenceEnvResolver', () => {
 
   it('prefers an installed recommended model over an unpulled higher-ranked one', async () => {
     modelRegistry.getRecommendedModelsForHardware.mockReturnValue([makeLlm('hermes4-70b', 'hermes4:70b'), makeLlm('gemma4-31b', 'gemma4:31b')]);
+    ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma4:31b'] });
+
+    const env = await service.resolve();
+
+    expect(env.CI_CHAT_MODEL).toBe('gemma4:31b');
+  });
+
+  // `ollama rm` leaves the registry's entry behind until the Hub restarts, and app.env named the
+  // removed model.
+  it('names a model Ollama has, not one the registry still lists after ollama rm', async () => {
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([makeLlm('hermes4-70b', 'hermes4:70b'), makeLlm('gemma4-31b', 'gemma4:31b')]);
+    modelRegistry.getTrackedModel.mockImplementation((id) =>
+      id === 'hermes4-70b'
+        ? ({ catalogId: 'hermes4-70b', backend: 'ollama', backendModelId: 'hermes4:70b', state: 'pulled' } as TrackedModel)
+        : undefined,
+    );
     ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma4:31b'] });
 
     const env = await service.resolve();

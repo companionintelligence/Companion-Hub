@@ -3483,6 +3483,29 @@
         }
       }
     },
+    "/api/inference/cloud-providers/{provider}": {
+      "delete": {
+        "operationId": "removeCloudProvider",
+        "parameters": [
+          {
+            "name": "provider",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
     "/api/inference/onboarding-profile": {
       "get": {
         "operationId": "getOnboardingProfile",

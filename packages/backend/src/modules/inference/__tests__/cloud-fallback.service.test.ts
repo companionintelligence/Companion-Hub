@@ -91,6 +91,50 @@ describe('CloudFallbackService.setProvider', () => {
   });
 });
 
+// A blank `apiKey` keeps the stored key (the masked Settings field relies on that), and nothing else
+// could take one away: a cleared field saved as "AI settings saved" while the Hub kept sending
+// unknown models and AI apps to that provider with the old key.
+describe('CloudFallbackService.removeProvider', () => {
+  let service: CloudFallbackService;
+  let configuration: ReturnType<typeof mock<ConfigurationService>>;
+
+  beforeEach(() => {
+    configuration = mock<ConfigurationService>();
+    configuration.getInferenceCloudProviders.mockReturnValue([]);
+    configuration.setInferenceCloudProviders.mockResolvedValue([]);
+    service = new CloudFallbackService(mock<LoggerService>(), configuration);
+    service.onModuleInit();
+  });
+
+  it('deletes the key: no app gets it, no unknown model goes to the provider, and settings no longer hold it', async () => {
+    service.setProvider({ provider: 'openai', apiKey: 'sk-live', enabled: true, defaultModel: 'gpt-4o' });
+
+    await expect(service.removeProvider('openai')).resolves.toBe(true);
+
+    expect(service.getProvider('openai')).toBeUndefined();
+    expect(service.hasCloudFallback()).toBe(false);
+    expect(service.toAppEnv()).toEqual({});
+    expect(service.resolveProvider('no-such-model')).toBeUndefined();
+    expect(configuration.setInferenceCloudProviders).toHaveBeenLastCalledWith([]);
+  });
+
+  it('keeps the other providers', async () => {
+    service.setProvider({ provider: 'openai', apiKey: 'sk-live', enabled: true, defaultModel: 'gpt-4o' });
+    service.setProvider({ provider: 'anthropic', apiKey: 'sk-ant', enabled: true, defaultModel: 'claude-opus-4' });
+
+    await service.removeProvider('openai');
+
+    expect(service.listProviders().map((provider) => provider.provider)).toEqual(['anthropic']);
+    expect(configuration.setInferenceCloudProviders).toHaveBeenLastCalledWith([expect.objectContaining({ provider: 'anthropic', apiKey: 'sk-ant' })]);
+  });
+
+  it('answers false and writes nothing for a provider with nothing stored', async () => {
+    await expect(service.removeProvider('google')).resolves.toBe(false);
+
+    expect(configuration.setInferenceCloudProviders).not.toHaveBeenCalled();
+  });
+});
+
 // ─── How long a cloud request may wait ───────────────
 // Streamed cloud requests had axios's `timeout: 120000`. With axios's default follow-redirects
 // transport that is also a socket idle timeout never cleared after the headers, so a reasoning

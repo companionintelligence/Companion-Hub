@@ -46,6 +46,7 @@ describe('InferenceController — preferences', () => {
   let modelRegistry: MockProxy<ModelRegistryService>;
   let inferenceRefresh: { requestRefresh: ReturnType<typeof vi.fn> };
   let appCredentials: MockProxy<AppCredentialsService>;
+  let cloudFallback: MockProxy<CloudFallbackService>;
 
   beforeEach(async () => {
     inferenceRefresh = { requestRefresh: vi.fn() };
@@ -93,6 +94,7 @@ describe('InferenceController — preferences', () => {
     ollamaBackend = moduleRef.get(OllamaBackend);
     lemonadeBackend = moduleRef.get(LemonadeBackend);
     modelRegistry = moduleRef.get(ModelRegistryService);
+    cloudFallback = moduleRef.get(CloudFallbackService);
   });
 
   it('returns nulls when global preferences are unset', async () => {
@@ -477,5 +479,25 @@ describe('InferenceController — preferences', () => {
   it('rejects a retired backend name', () => {
     expect(inferencePreferencesSchema.safeParse({ backend: 'dspark' }).success).toBe(false);
     expect(inferencePreferencesSchema.safeParse({ backend: 'mtplx' }).success).toBe(false);
+  });
+
+  // Settings > AI deletes a cleared cloud key through this route. Running AI apps hold the key in
+  // their env, so they are refreshed the way a save refreshes them, or they would keep using it.
+  it('removes a stored cloud key and asks for the same AI app refresh a save does', async () => {
+    cloudFallback.removeProvider.mockResolvedValue(true);
+
+    await expect(controller.removeCloudProvider('openai')).resolves.toEqual({ success: true, removed: true });
+
+    expect(cloudFallback.removeProvider).toHaveBeenCalledWith('openai');
+    expect(appCredentials.invalidateCache).toHaveBeenCalled();
+    await vi.waitFor(() => expect(inferenceRefresh.requestRefresh).toHaveBeenCalledWith('cloud provider openai removed'));
+  });
+
+  it('refreshes nothing when the provider had nothing stored', async () => {
+    cloudFallback.removeProvider.mockResolvedValue(false);
+
+    await expect(controller.removeCloudProvider('google')).resolves.toEqual({ success: true, removed: false });
+
+    expect(appCredentials.invalidateCache).not.toHaveBeenCalled();
   });
 });

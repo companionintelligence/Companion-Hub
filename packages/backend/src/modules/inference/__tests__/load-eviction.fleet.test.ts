@@ -320,7 +320,12 @@ describe('load arbitration on the fleet (REQ3, REQ4, R1, R2, R4, R5, R7)', () =>
       ollama.hold('gemma4:e4b', 6_640);
       const w = world(BETA_1, ollama, { 'qwen3-coder-30b': 19_000 });
       w.pulled('qwen3-coder-30b');
-      const controller = Object.assign(Object.create(InferenceController.prototype), { residency: w.residency, modelRegistry: w.registry });
+      // The route also reads Ollama's list, to drop what `ollama rm` removed; here both models are on disk.
+      const controller = Object.assign(Object.create(InferenceController.prototype), {
+        residency: w.residency,
+        modelRegistry: w.registry,
+        ollamaBackend: ollama.backend(),
+      });
 
       const listed = await (controller as InferenceController).getTrackedModels();
 

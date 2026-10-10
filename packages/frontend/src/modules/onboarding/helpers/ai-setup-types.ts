@@ -72,6 +72,8 @@ export interface CloudProviderInput {
   provider: CloudProviderType;
   apiKey: string;
   enabled: boolean;
+  /** The Hub already holds a key for this provider (Settings shows it masked). Cleared and saved, it is deleted. */
+  stored?: boolean;
 }
 
 /**
