@@ -526,6 +526,62 @@ describe('InstallAppCommand — pull policy', () => {
     const result = await command.execute(appUrn, {});
     expect(result.success).toBe(true);
   });
+
+  // ── download size in the progress ticks ─────────────────────────────────────
+  describe('download progress ticks', () => {
+    const MB = 1024 * 1024;
+    const pullTick = (completedBytes: number, totalBytes: number) => ({
+      activeImage: 'ghcr.io/example/app:latest',
+      completedBytes,
+      totalBytes,
+      completedImages: 0,
+      totalImages: 1,
+      stage: 'downloading' as const,
+    });
+    /** The `status_change` ticks the page's progress bar reads, in order. */
+    const progressTicks = () =>
+      vi
+        .mocked((command as any).moduleRef.get(SSEService).emit)
+        .mock.calls.map(([, data]) => data as Record<string, unknown>)
+        .filter((data) => data.event === 'status_change' && typeof data.progress === 'number');
+
+    beforeEach(() => {
+      vi.mocked(parseComposeJson).mockReturnValue({
+        services: [{ name: 'app', image: 'ghcr.io/example/app:latest' }],
+        overrides: [],
+      } as any);
+    });
+
+    it('sends how much of the download has arrived with each tick', async () => {
+      dockerService.pullImages = vi.fn(async (_images: string[], options: { onProgress: (event: unknown) => void }) => {
+        options.onProgress(pullTick(50 * MB, 400 * MB));
+      });
+
+      await command.execute(appUrn, {});
+
+      expect(progressTicks()).toContainEqual(expect.objectContaining({ progress: 64, downloadedBytes: 50 * MB, totalBytes: 400 * MB }));
+    });
+
+    it('sends a new tick when only the downloaded size moves', async () => {
+      const now = vi.spyOn(Date, 'now');
+      dockerService.pullImages = vi.fn(async (_images: string[], options: { onProgress: (event: unknown) => void }) => {
+        now.mockReturnValue(1_000_000);
+        options.onProgress(pullTick(50 * MB, 400 * MB));
+        // One more MB, three seconds later: still 64%.
+        now.mockReturnValue(1_003_000);
+        options.onProgress(pullTick(51 * MB, 400 * MB));
+      });
+
+      try {
+        await command.execute(appUrn, {});
+      } finally {
+        now.mockRestore();
+      }
+
+      const downloadTicks = progressTicks().filter((tick) => tick.progress === 64);
+      expect(downloadTicks.map((tick) => tick.downloadedBytes)).toEqual([50 * MB, 51 * MB]);
+    });
+  });
 });
 
 describe('InstallAppCommand — plan-based pre-flight', () => {

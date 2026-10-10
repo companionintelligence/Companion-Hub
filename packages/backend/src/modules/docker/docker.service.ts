@@ -6,6 +6,7 @@ import { extractAppUrn } from '@/common/helpers/app-helpers';
 import {
   DEFAULT_APP_COMPOSE_INACTIVITY_TIMEOUT_MS,
   DEFAULT_APP_COMPOSE_TIMEOUT_MINUTES,
+  DEFAULT_APP_IMAGE_PULL_FIRST_EVENT_TIMEOUT_MS,
   DEFAULT_APP_IMAGE_PULL_INACTIVITY_TIMEOUT_MS,
   DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES,
   DEFAULT_HUB_CONTAINER_NAME,
@@ -142,6 +143,25 @@ interface DockerPullLayerSnapshot {
   current: number;
   total: number;
   status: string;
+}
+
+/** How often a running pull logs where its layers are, so a stalled one shows in the log. */
+const PULL_STATUS_LOG_INTERVAL_MS = 30_000;
+
+const secondsSince = (startedAt: number) => `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
+const megabytes = (bytes: number) => (bytes / (1024 * 1024)).toFixed(1);
+
+/** Layers seen so far and how many are done. Docker's "Pulling from <repo>" line carries the tag as its id and is not a layer. */
+function countPullLayers(layers: Map<string, DockerPullLayerSnapshot>): { done: number; total: number } {
+  let done = 0;
+  let total = 0;
+  for (const layer of layers.values()) {
+    const status = layer.status.toLowerCase();
+    if (status.startsWith('pulling from')) continue;
+    total += 1;
+    if (status.includes('pull complete') || status.includes('already exists')) done += 1;
+  }
+  return { done, total };
 }
 
 export interface DockerPullProgressEvent {
@@ -668,6 +688,7 @@ export class DockerService {
       onProgress?: (event: DockerPullProgressEvent) => void;
       signal?: AbortSignal;
       inactivityTimeoutMs?: number;
+      firstEventTimeoutMs?: number;
       timeoutMs?: number;
     } = {},
   ): Promise<void> {
@@ -683,10 +704,13 @@ export class DockerService {
     // Report timeouts as ordinary errors so installation records a failure rather
     // than a user cancellation.
     const controller = new AbortController();
-    type PullTimeoutReason = 'inactivity' | 'overall';
+    type PullTimeoutReason = 'inactivity' | 'overall' | 'not-started';
     let timeoutReason: PullTimeoutReason | null = null;
+    // The image whose pull got no event at all, for the `not-started` message.
+    let notStartedImage = '';
 
     const inactivityTimeoutMs = options.inactivityTimeoutMs ?? DEFAULT_APP_IMAGE_PULL_INACTIVITY_TIMEOUT_MS;
+    const firstEventTimeoutMs = options.firstEventTimeoutMs ?? DEFAULT_APP_IMAGE_PULL_FIRST_EVENT_TIMEOUT_MS;
     const overallTimeoutMs = options.timeoutMs ?? DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES * 60 * 1000;
 
     let inactivityTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
@@ -730,6 +754,16 @@ export class DockerService {
     const completedImages = new Set<string>();
     const layerSnapshots = new Map<string, DockerPullLayerSnapshot>();
 
+    const pullStartedAt = Date.now();
+    const statusLogTimer = globalThis.setInterval(() => {
+      const { completedBytes, totalBytes } = this.summarizePullLayers(layerSnapshots);
+      const layers = countPullLayers(layerSnapshots);
+      this.logger.info(
+        `[pull] after ${secondsSince(pullStartedAt)}: ${completedImages.size} of ${uniqueImages.length} images done, ${layers.done} of ${layers.total} layers, ${megabytes(completedBytes)} of ${megabytes(totalBytes)} MB`,
+      );
+    }, PULL_STATUS_LOG_INTERVAL_MS);
+    statusLogTimer.unref?.();
+
     const emitProgress = (activeImage: string, stageOverride?: DockerPullProgressEvent['stage']) => {
       armInactivityTimer();
 
@@ -759,8 +793,30 @@ export class DockerService {
             return;
           }
 
+          // A pull Docker never starts would otherwise wait out the whole inactivity timeout.
+          const imageStartedAt = Date.now();
+          let streamOpened = false;
+          let firstEventSeen = false;
+          this.logger.info(`[pull] ${image}: pull started`);
+          const firstEventTimer = globalThis.setTimeout(() => {
+            if (!controller.signal.aborted) {
+              timeoutReason = 'not-started';
+              notStartedImage = image;
+              this.logger.warn(
+                `[pull-timeout] ${image}: no event from Docker after ${secondsSince(imageStartedAt)} (${streamOpened ? 'it accepted the pull' : 'it never answered the pull request'}), aborting pull`,
+              );
+              controller.abort();
+            }
+          }, firstEventTimeoutMs);
+          firstEventTimer.unref?.();
+
           await new Promise<void>((resolve, reject) => {
+            // Until Docker answers there is no stream to destroy, but a cancel or a timeout must still end the pull.
+            const onAbortBeforeAnswer = () => reject(abortError());
+            pullSignal.addEventListener('abort', onAbortBeforeAnswer, { once: true });
+
             this.docker.pull(image, (pullError: Error | null, stream?: NodeJS.ReadableStream) => {
+              pullSignal.removeEventListener('abort', onAbortBeforeAnswer);
               if (pullError) {
                 reject(pullError);
                 return;
@@ -770,6 +826,7 @@ export class DockerService {
                 reject(new Error(`Docker did not provide a pull stream for ${image}`));
                 return;
               }
+              streamOpened = true;
 
               const onAbort = () => {
                 this.logger.warn(`[pull-cancel] destroying pull stream for ${image}`);
@@ -811,10 +868,17 @@ export class DockerService {
                   }
 
                   completedImages.add(image);
+                  this.logger.info(`[pull] ${image}: done after ${secondsSince(imageStartedAt)}`);
                   emitProgress(image, 'complete');
                   resolve();
                 },
                 (event) => {
+                  if (!firstEventSeen) {
+                    firstEventSeen = true;
+                    globalThis.clearTimeout(firstEventTimer);
+                    this.logger.info(`[pull] ${image}: first event after ${secondsSince(imageStartedAt)} (${event?.status ?? 'no status'})`);
+                  }
+
                   if (event?.id) {
                     const snapshot = layerSnapshots.get(event.id) ?? { current: 0, total: 0, status: '' };
                     const current = Math.max(snapshot.current, event.progressDetail?.current ?? snapshot.current);
@@ -830,15 +894,22 @@ export class DockerService {
                 },
               );
             });
-          }).catch((error) => {
-            if (isAbortError(error)) {
-              throw error;
-            }
-            throw new Error(`Failed to pull image ${image}: ${error instanceof Error ? error.message : String(error)}`);
-          });
+          })
+            .catch((error) => {
+              if (isAbortError(error)) {
+                throw error;
+              }
+              throw new Error(`Failed to pull image ${image}: ${error instanceof Error ? error.message : String(error)}`);
+            })
+            .finally(() => globalThis.clearTimeout(firstEventTimer));
         }),
       );
     } catch (error) {
+      if (timeoutReason === 'not-started') {
+        throw new Error(
+          `The download of ${notStartedImage} hasn't started: Docker sent nothing for ${Math.round(firstEventTimeoutMs / 60000)} minutes after the pull began. Check Docker/registry connectivity and retry.`,
+        );
+      }
       if (timeoutReason === 'inactivity') {
         throw new Error(
           `Image pull stalled with no progress for ${Math.round(inactivityTimeoutMs / 60000)} minutes. Check Docker/registry connectivity and retry.`,
@@ -855,6 +926,7 @@ export class DockerService {
         globalThis.clearTimeout(inactivityTimer);
       }
       globalThis.clearTimeout(overallTimer);
+      globalThis.clearInterval(statusLogTimer);
       signal?.removeEventListener('abort', onCallerAbort);
     }
   }

@@ -47,6 +47,8 @@ const hoisted = vi.hoisted(() => ({
    */
   updateSettingsProps: undefined as undefined | Record<string, unknown>,
   installDialogProps: undefined as undefined | Record<string, unknown>,
+  /** What the install progress bar reads, as the SSE progress ticks leave it. */
+  installationProgress: null as null | { percent: number; downloadedBytes?: number; totalBytes?: number },
 }));
 
 vi.mock('@/modules/app/helpers/use-memory-connection', () => ({
@@ -127,7 +129,7 @@ vi.mock('@/modules/app/helpers/use-app-status', () => ({
 }));
 
 vi.mock('@/modules/app/helpers/use-installation-progress', () => ({
-  useInstallationProgress: () => null,
+  useInstallationProgress: () => hoisted.installationProgress,
 }));
 
 vi.mock('@/context/app-context', () => ({
@@ -306,6 +308,7 @@ describe('AppActions', () => {
     hoisted.forgetInstallIntent.mockReset();
     hoisted.updateSettingsProps = undefined;
     hoisted.installDialogProps = undefined;
+    hoisted.installationProgress = null;
     disclosureOpen.mockReset();
   });
 
@@ -617,6 +620,33 @@ describe('AppActions', () => {
       </MemoryRouter>,
     );
     expect(screen.queryByTestId('icon-action-common_cancel')).not.toBeInTheDocument();
+  });
+
+  describe('the install progress bar', () => {
+    const MB = 1024 * 1024;
+    const renderInstalling = () =>
+      render(
+        <MemoryRouter>
+          <AppActions app={makeApp({ status: 'installing' })} metadata={metadata} info={info} urlAvailability={idleAvailability} />
+        </MemoryRouter>,
+      );
+
+    it('says how much of the download has arrived', () => {
+      hoisted.installationProgress = { percent: 75, downloadedBytes: 412 * MB, totalBytes: 1536 * MB };
+
+      renderInstalling();
+
+      expect(screen.getByText('APP_ACTION_DOWNLOADING 412 MB / 1.5 GB')).toBeInTheDocument();
+      expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '75');
+    });
+
+    it('says only Downloading while Docker has reported no sizes yet', () => {
+      hoisted.installationProgress = { percent: 60 };
+
+      renderInstalling();
+
+      expect(screen.getByText('APP_ACTION_DOWNLOADING')).toBeInTheDocument();
+    });
   });
 
   describe('launch action while the public route is not ready', () => {

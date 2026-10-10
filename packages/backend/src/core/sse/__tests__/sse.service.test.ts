@@ -68,6 +68,34 @@ describe('SSEService app stream', () => {
     expect(service.hasSubscribers('app')).toBe(false);
   });
 
+  describe('a page opened mid-install', () => {
+    const appUrn = 'openclaw:ci-marketplace';
+    const tick = (progress: number, downloadedBytes: number) =>
+      ({ event: 'status_change', appUrn, appStatus: 'installing', progress, downloadedBytes, totalBytes: 1_500 }) as const;
+
+    it('gets the latest progress of the install right after the hello', async () => {
+      service.emit('app', tick(70, 400));
+      service.emit('app', tick(85, 1_000));
+
+      const pending = collect(2);
+      service.emit('app', { event: 'install_queue', active: null, queued: [] });
+      const [, second] = await pending;
+
+      expect(JSON.parse(second.data as string)).toEqual(tick(85, 1_000));
+    });
+
+    it('stops getting it once the install has ended', async () => {
+      service.emit('app', tick(85, 1_000));
+      service.emit('app', { event: 'install_success', appUrn, appStatus: 'running' });
+
+      const pending = collect(2);
+      service.emit('app', { event: 'install_queue', active: null, queued: [] });
+      const [, second] = await pending;
+
+      expect(JSON.parse(second.data as string).event).toBe('install_queue');
+    });
+  });
+
   it('greets a second subscriber independently (a reconnecting tab gets its own hello)', async () => {
     const a = await collect(1);
     const b = await collect(1);
