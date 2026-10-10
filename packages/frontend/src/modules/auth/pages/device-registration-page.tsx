@@ -216,6 +216,8 @@ export default function DeviceRegistrationPage() {
   const pairingInProgressRef = useRef(false);
   const completionStartedRef = useRef(false);
   const lastStatusFetchSucceededRef = useRef(false);
+  /** Status checks still waiting for the Hub. The poll skips its turn while there is one. */
+  const statusChecksInFlightRef = useRef(0);
   const deepLinkPairAttemptRef = useRef<string | null>(null);
   const [pendingDeepLinkCode, setPendingDeepLinkCode] = useState<string | null>(null);
   const [stateDrift, setStateDrift] = useState<RegistrationStateDrift | null>(null);
@@ -284,6 +286,7 @@ export default function DeviceRegistrationPage() {
   }, []);
 
   const refreshRegistrationStatus = useCallback(async () => {
+    statusChecksInFlightRef.current += 1;
     try {
       const statusResult = await fetchRegistrationStatusResult();
       if (!statusResult.ok) {
@@ -367,6 +370,7 @@ export default function DeviceRegistrationPage() {
       });
       return null;
     } finally {
+      statusChecksInFlightRef.current -= 1;
       setIsLoading(false);
     }
   }, [loadDeviceInfo, loadStateDrift, t]);
@@ -463,6 +467,11 @@ export default function DeviceRegistrationPage() {
 
     const intervalMs = isPending ? STATUS_POLL_INTERVAL_MS : HEADLESS_POLL_INTERVAL_MS;
     const intervalId = window.setInterval(() => {
+      // A check that is still running answers for this one. Starting another on every tick stacked
+      // requests onto a Hub that was slow to answer, and made it slower still.
+      if (statusChecksInFlightRef.current > 0) {
+        return;
+      }
       void refreshRegistrationStatus();
     }, intervalMs);
 

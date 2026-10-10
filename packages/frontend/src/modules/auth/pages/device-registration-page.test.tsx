@@ -281,6 +281,39 @@ describe('DeviceRegistrationPage', () => {
     expect(screen.queryByRole('button', { name: 'Retry status check' })).not.toBeInTheDocument();
   });
 
+  it('starts no new status check while the last one is still waiting for the Hub', async () => {
+    vi.useFakeTimers();
+    let answerDriftCheck: (drift: { detected: boolean; signals: never[] }) => void = () => {};
+    fetchRegistrationStateDrift.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answerDriftCheck = resolve;
+        }),
+    );
+
+    render(<DeviceRegistrationPage />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(fetchRegistrationStateDrift).toHaveBeenCalledTimes(1);
+
+    // A Hub slow to answer: three poll intervals go by while the first drift check is open.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000);
+    });
+    expect(fetchRegistrationStatusResult).toHaveBeenCalledTimes(1);
+    expect(fetchRegistrationStateDrift).toHaveBeenCalledTimes(1);
+
+    // Once the Hub answers, polling goes on as before.
+    await act(async () => {
+      answerDriftCheck({ detected: false, signals: [] });
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(screen.getByRole('heading', { name: 'Step 2: Connect this device' })).toBeInTheDocument();
+    expect(fetchRegistrationStatusResult).toHaveBeenCalledTimes(2);
+    expect(fetchRegistrationStateDrift).toHaveBeenCalledTimes(2);
+  });
+
   it('shows the probe status and waits between two ready checks', async () => {
     vi.useFakeTimers();
     fetchRegistrationStatusResult.mockResolvedValueOnce(statusOk('unregistered')).mockResolvedValue(statusOk('locally_ready', true));
