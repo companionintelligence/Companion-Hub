@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import { writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR } from '@/common/constants';
+import { TranslatableError } from '@/common/error/translatable-error';
 import { app } from '@/core/database/drizzle/schema';
 import { DATABASE, type Database } from '@/core/database/database.module';
 import { CacheService } from '@/core/cache/cache.service';
@@ -130,7 +131,8 @@ export class FactoryResetService {
    * report success with every app backup still on disk.
    *
    * Throws when a folder still has something in it, before the database and the registration are
-   * wiped, so the operator can still sign in and run the reset again.
+   * wiped, so the operator can still sign in and run the reset again. The page shows that error, so it
+   * says how much is left, names the first few, and points to `cihub reset --yes`.
    */
   public async wipeDataMounts(): Promise<void> {
     const { dataDir } = this.configuration.get('directories');
@@ -143,19 +145,20 @@ export class FactoryResetService {
       // Per-app env and compose overrides, which a reinstalled app would pick up again.
       path.join(dataDir, 'user-config'),
     ];
-    const notEmptied: string[] = [];
+    const left: string[] = [];
 
     for (const target of targets) {
-      const left = await this.emptyDirectory(target);
+      const entries = await this.emptyDirectory(target);
 
-      if (left.length > 0) {
-        this.logger.error(`Factory reset could not empty ${target}; still there: ${left.slice(0, 10).join(', ')}`);
-        notEmptied.push(target);
+      if (entries.length > 0) {
+        this.logger.error(`Factory reset could not empty ${target}; still there: ${entries.slice(0, 10).join(', ')}`);
+        // Named as they sit in the Hub's data folder (`backups/...`), which is where the operator looks.
+        left.push(...entries.map((entry) => `${path.basename(target)}/${entry}`));
       }
     }
 
-    if (notEmptied.length > 0) {
-      throw new Error(`Factory reset could not empty ${notEmptied.join(', ')}`);
+    if (left.length > 0) {
+      throw new TranslatableError('SETTINGS_FACTORY_RESET_FILES_LEFT', { count: String(left.length), paths: left.slice(0, 3).join(', ') });
     }
   }
 

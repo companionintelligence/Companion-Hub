@@ -891,6 +891,7 @@
   "SETTINGS_FACTORY_RESET_NO_DEVICE_NAME": "This Hub has no device name yet, so factory reset stays locked.",
   "SETTINGS_FACTORY_RESET_SUCCESS": "Factory reset complete. Redirecting to login…",
   "SETTINGS_FACTORY_RESET_ERROR": "Factory reset may have stopped halfway. Running it again is safe. If the Hub is unreachable, try `cihub reset --yes` from the CLI.",
+  "SETTINGS_FACTORY_RESET_FILES_LEFT": "Factory reset stopped because it could not delete everything in the Hub's data folder ({{count}} left, including {{paths}}). Users and pairing are unchanged. To finish, run `cihub reset --yes` from the CLI.",
   "UPDATE_TOAST_AVAILABLE": "CI Hub {{version}} is available.",
   "UPDATE_TOAST_LATER": "Later",
   "UPDATE_TOAST_OPEN_SETTINGS": "Open Settings",

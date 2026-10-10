@@ -15,6 +15,7 @@ import {
 } from '@/lib/update-service';
 import { factoryReset } from '@/api-client/sdk.gen';
 import { resolveStackUpdate } from '@/lib/desktop-stack-session';
+import { TranslatableError } from '@/types/error.types';
 import { sdkFail, sdkOk } from '@/tests/sdk-mock-helpers';
 import { toast } from 'sonner';
 import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
@@ -833,6 +834,34 @@ describe('GeneralActionsContainer', () => {
     await waitFor(() => {
       expect(mockToastError).toHaveBeenCalledWith(
         'Factory reset may have stopped halfway. Running it again is safe. If the Hub is unreachable, try `cihub reset --yes` from the CLI.',
+      );
+    });
+    expect(screen.getByTestId('factory-reset-confirmation-input')).toBeInTheDocument();
+  });
+
+  it('says how many files a factory reset could not delete, which ones, and how to finish', async () => {
+    mockUseAppContext.mockReturnValue({
+      version: { current: '4.7.0', latest: '4.7.0', body: '', releases: [] },
+      refreshAppContext: vi.fn(),
+      userSettings: { ciHubDeviceSlug: 'core' },
+    } as unknown as ReturnType<typeof useAppContext>);
+    // What the API client's response interceptor throws for the Hub's error body.
+    mockFactoryReset.mockRejectedValue(
+      new TranslatableError('SETTINGS_FACTORY_RESET_FILES_LEFT', {
+        count: '4',
+        paths: 'backups/ci-marketplace, media/photo.jpg, repos/ci-marketplace',
+      }),
+    );
+
+    render(<GeneralActionsContainer />);
+
+    await userEvent.click(await screen.findByTestId('factory-reset-btn'));
+    await userEvent.type(screen.getByTestId('factory-reset-confirmation-input'), 'core');
+    await userEvent.click(screen.getByTestId('factory-reset-confirm-btn'));
+
+    await waitFor(() => {
+      expect(mockToastError).toHaveBeenCalledWith(
+        "Factory reset stopped because it could not delete everything in the Hub's data folder (4 left, including backups/ci-marketplace, media/photo.jpg, repos/ci-marketplace). Users and pairing are unchanged. To finish, run `cihub reset --yes` from the CLI.",
       );
     });
     expect(screen.getByTestId('factory-reset-confirmation-input')).toBeInTheDocument();

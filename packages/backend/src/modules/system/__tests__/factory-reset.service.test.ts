@@ -14,6 +14,7 @@ import { FactoryResetService } from '../factory-reset.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { BearerOrgMembershipCache } from '@/modules/auth/bearer-org-membership.cache';
 import { APP_DATA_DIR, TUNNEL_DIR } from '@/common/constants';
+import { TranslatableError } from '@/common/error/translatable-error';
 import fs from 'node:fs';
 import path from 'node:path';
 import { vol } from 'memfs';
@@ -244,11 +245,17 @@ describe('FactoryResetService: data folders', () => {
     }
   });
 
-  it('stops before it wipes the database when a data folder could not be emptied', async () => {
+  it('stops before it wipes the database when a data folder could not be emptied, and says what is left', async () => {
     undeletable.add(path.resolve('/data', 'backups', 'ci-marketplace'));
 
-    await expect(service.execute()).rejects.toThrow(path.join('/data', 'backups'));
+    const failure = await service.execute().catch((error: unknown) => error);
 
+    // The page shows this error, so it names what is left as it sits in the Hub's data folder.
+    expect(failure).toBeInstanceOf(TranslatableError);
+    expect((failure as TranslatableError).getResponse()).toEqual({
+      message: 'SETTINGS_FACTORY_RESET_FILES_LEFT',
+      intlParams: { count: '1', paths: 'backups/ci-marketplace' },
+    });
     expect(db.execute).not.toHaveBeenCalled();
     // The other folders are still emptied, so a second run has only the leftover to deal with.
     expect(vol.readdirSync(path.join('/data', 'media'))).toEqual([]);
