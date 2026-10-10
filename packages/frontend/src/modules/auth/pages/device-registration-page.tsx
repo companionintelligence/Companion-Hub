@@ -205,6 +205,8 @@ export default function DeviceRegistrationPage() {
   const [pairingCode, setPairingCode] = useState('');
   const [isPairing, setIsPairing] = useState(false);
   const [pairingError, setPairingError] = useState<string | null>(null);
+  /** The error under the pairing form, for the status poll, which runs outside render. */
+  const pairingErrorRef = useRef<string | null>(null);
   /** A pairing the Portal will only finish as a move, waiting for the person's yes. */
   const [moveConfirmation, setMoveConfirmation] = useState<{ code: string; organizationName: string | null } | null>(null);
   const [redirectStatusKey, setRedirectStatusKey] = useState('DEVICE_REGISTRATION_SETTING_UP_HUB_ELLIPSIS');
@@ -322,7 +324,9 @@ export default function DeviceRegistrationPage() {
           } else {
             const drift = await loadStateDrift();
             const storedChoice = getStoredDriftChoice();
-            if (drift?.detected && !storedChoice) {
+            // Not over the error a failed pairing left under the form: the dialog hid the only word on
+            // what went wrong. It asks again once the person edits the code or pairs again.
+            if (drift?.detected && !storedChoice && !pairingErrorRef.current) {
               setDriftDialogOpen(true);
             }
           }
@@ -450,6 +454,10 @@ export default function DeviceRegistrationPage() {
   useEffect(() => {
     void refreshRegistrationStatus();
   }, [refreshRegistrationStatus]);
+
+  useEffect(() => {
+    pairingErrorRef.current = pairingError;
+  }, [pairingError]);
 
   useEffect(() => {
     // Poll active provisioning phases at the standard interval. Poll an
