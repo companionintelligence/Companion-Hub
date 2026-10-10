@@ -6,6 +6,8 @@ const USER_STOPPED_MARKER_FILENAME: &str = ".user-stopped";
 const START_FAILED_MARKER_FILENAME: &str = ".start-failed";
 const START_FAILED_MARKER_MAX_BYTES: usize = 4 * 1024;
 const LAUNCH_MODE_FILENAME: &str = ".launch-mode";
+/// The app containers Stop Hub stopped, one ID a line, for the next start to start again.
+const APPS_STOPPED_WITH_HUB_FILENAME: &str = ".apps-stopped-with-hub";
 
 /// How the Hub was last launched — used to relaunch in the same mode after an update.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,6 +271,40 @@ pub fn clear_user_stopped(data_dir: &Path) {
 /// Returns `true` if the user intentionally stopped the Hub on last use.
 pub fn is_user_stopped(data_dir: &Path) -> bool {
     user_stopped_marker_path(data_dir).exists()
+}
+
+fn apps_stopped_with_hub_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(APPS_STOPPED_WITH_HUB_FILENAME)
+}
+
+fn read_apps_stopped_with_hub(data_dir: &Path) -> Vec<String> {
+    std::fs::read_to_string(apps_stopped_with_hub_path(data_dir))
+        .map(|content| parse_container_ids(&content))
+        .unwrap_or_default()
+}
+
+/// Adds the app containers Stop Hub just stopped to the ones the next start starts again, so a
+/// second Stop Hub, which finds none running, keeps the first one's.
+pub(crate) fn remember_apps_stopped_with_hub(data_dir: &Path, container_ids: &[String]) {
+    let mut ids = read_apps_stopped_with_hub(data_dir);
+    for id in container_ids {
+        if !ids.contains(id) {
+            ids.push(id.clone());
+        }
+    }
+    if ids.is_empty() {
+        return;
+    }
+    let content: String = ids.iter().map(|id| format!("{id}\n")).collect();
+    let _ = std::fs::write(apps_stopped_with_hub_path(data_dir), content);
+}
+
+/// The app containers Stop Hub stopped since the Hub last started, which the caller starts again.
+/// Forgets them, so they are started once.
+pub(crate) fn take_apps_stopped_with_hub(data_dir: &Path) -> Vec<String> {
+    let ids = read_apps_stopped_with_hub(data_dir);
+    let _ = std::fs::remove_file(apps_stopped_with_hub_path(data_dir));
+    ids
 }
 
 fn marker_written_at_ms(path: &Path) -> Option<u64> {

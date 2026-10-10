@@ -311,7 +311,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
 
-                    match crate::hub_manager::stop_managed_app_containers() {
+                    match crate::hub_manager::stop_managed_app_containers(&data) {
                         Ok(Some(summary)) => {
                             let _ = crate::hub_manager::append_desktop_log_for(
                                 &data,
@@ -377,7 +377,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                             }
 
                             // 2. Stop any managed app containers (best-effort).
-                            match crate::hub_manager::stop_managed_app_containers() {
+                            match crate::hub_manager::stop_managed_app_containers(&data) {
                                 Ok(Some(summary)) => {
                                     let _ = crate::hub_manager::append_desktop_log_for(
                                         &data,

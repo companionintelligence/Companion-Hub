@@ -257,6 +257,10 @@ Auto-healing never fights the user:
   click **Start Hub** (which clears the marker). The startup screen says so
   when the app opens: "CI Hub is stopped", with when it was stopped and a
   **Start Hub** button, instead of a startup timer.
+- **Stop Hub** in the tray stops the running apps too, and lists their
+  containers in `.apps-stopped-with-hub` in the data dir. **Start Hub**, from
+  the tray or the startup screen, starts those containers again right after
+  `compose up`, before the Hub's first app status sync.
 - `restart: unless-stopped` won't resurrect a container the user stopped
   on purpose.
 - After a failed start (`.start-failed` marker), the startup screen shows the
