@@ -19,11 +19,21 @@
 ; $UpdateMode, which the template only uses to keep shortcuts, the autostart entry and app
 ; data) would still run it. The cleanup purges the database volumes, app data and the
 ; tunnel token, so skip it entirely in update mode.
+;
+; The template checks for a running app only after this hook. Left to that order, the
+; cleanup ran with the app still open: its tray probe created hub_tailscale_state again
+; seconds after the cleanup removed it, it wrote its log and window settings back into the
+; folders just deleted, and cancelling the "is running" prompt stopped the uninstall after
+; the data was gone. So the hook runs the template's own check first. It asks to close the
+; app (or closes it when silent), Cancel ends the uninstall before anything is removed, and
+; the template's check that follows finds nothing running.
 
 !macro NSIS_HOOK_PREUNINSTALL
   Push $0
   Push $1
   StrCmp $UpdateMode "1" ci_hub_skip_cleanup 0
+  ; Overwrites $0-$3 and $R0-$R3, so it comes before the script lookup below sets $0.
+  !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
   DetailPrint "Companion Hub: running uninstall cleanup (Docker resources + app data)..."
   ; Tauri resource bundling can place the script nested (resources\) or flat, so check
   ; both layouts — mirrors the dual-path lookup in hub_manager.rs — and run whichever
