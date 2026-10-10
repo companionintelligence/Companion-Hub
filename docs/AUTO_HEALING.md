@@ -181,9 +181,11 @@ errors and restarts the existing container. A log line that ends in
 groups them by app URN, and reconciles each installed app's DB status against
 reality:
 
-- **`running`** — every container is running, or exited cleanly (`Exited (0)`).
-- **`stopped`** — some containers are not running (mixed state is logged).
-- **`missing`** — no containers exist at all.
+- **`running`**: at least one container is running, and every other one is running or exited
+  cleanly (`Exited (0)`), as a one-shot init service does when it finishes.
+- **`stopped`**: no container is running, or one exited with an error (mixed state is logged).
+  An app whose containers were all stopped with `docker stop`, such as by the desktop's
+  **Stop Hub**, is `stopped`, and so is an installed app with no containers at all.
 
 Guards prevent false alarms:
 

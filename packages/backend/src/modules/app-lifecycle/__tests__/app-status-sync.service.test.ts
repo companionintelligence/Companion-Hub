@@ -330,6 +330,60 @@ describe('AppStatusSyncService', () => {
     );
   });
 
+  /*
+   * The desktop's Stop Hub stops every app container with `docker stop`, so each one exits 0.
+   * Counting a clean exit as healthy, which is there for one-shot init services, kept such an app
+   * `running` with nothing running at all, and nothing offered to start it (Companion-Hub#1938).
+   */
+  it('marks an app stopped when every container exited cleanly', async () => {
+    appRepository.getApps.mockResolvedValue([
+      { id: 10, appName: 'wordpress', appStoreSlug: 'ci-marketplace', status: 'running', updatedAt: new Date().toISOString() },
+    ] as never);
+    docker.listContainers.mockResolvedValue([
+      {
+        Id: 'wp',
+        State: 'exited',
+        Status: 'Exited (0) 6 minutes ago',
+        Labels: { 'ci-hub.appurn': 'wordpress:ci-marketplace' },
+      },
+      {
+        Id: 'db',
+        State: 'exited',
+        Status: 'Exited (0) 6 minutes ago',
+        Labels: { 'ci-hub.appurn': 'wordpress:ci-marketplace' },
+      },
+    ] as never);
+
+    await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(10, 'running', expect.objectContaining({ status: 'stopped' }));
+    expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'status_change', appUrn: 'wordpress:ci-marketplace', appStatus: 'stopped' });
+  });
+
+  it('keeps an app running when only its one-shot init service has exited cleanly', async () => {
+    appRepository.getApps.mockResolvedValue([
+      { id: 11, appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'running', updatedAt: new Date().toISOString() },
+    ] as never);
+    docker.listContainers.mockResolvedValue([
+      {
+        Id: 'api',
+        State: 'running',
+        Status: 'Up 2 hours',
+        Labels: { 'ci-hub.appurn': 'ci-memory:ci-marketplace' },
+      },
+      {
+        Id: 'migrate',
+        State: 'exited',
+        Status: 'Exited (0) 2 hours ago',
+        Labels: { 'ci-hub.appurn': 'ci-memory:ci-marketplace' },
+      },
+    ] as never);
+
+    await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+  });
+
   it('reports top-level sync failures to Sentry so crash detection outages are visible', async () => {
     const boom = new Error('docker list failed');
     appRepository.getApps.mockRejectedValue(boom);

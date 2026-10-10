@@ -213,7 +213,10 @@ export class AppStatusSyncService {
           // not uninstalled. Keep "missing" for install verification / SSE uninstall
           // events — never as the durable status of an installed app.
           newStatus = 'stopped';
-        } else if (dockerStatus.running + dockerStatus.exitZero === dockerStatus.total) {
+        } else if (dockerStatus.running > 0 && dockerStatus.running + dockerStatus.exitZero === dockerStatus.total) {
+          // A clean exit counts only beside a running container: that is a one-shot init service
+          // that finished. Every container exited 0 is an app stopped with `docker stop`, such as
+          // by the desktop's Stop Hub.
           newStatus = 'running';
         } else {
           newStatus = 'stopped';
