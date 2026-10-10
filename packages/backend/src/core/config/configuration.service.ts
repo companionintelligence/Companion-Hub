@@ -102,6 +102,22 @@ function describeSettingsError(error: unknown): string {
   return scrubString(String(error));
 }
 
+/** The end of the line of settings.json writes in this process. See {@link inSettingsFileTurn}. */
+let settingsFileWrites: Promise<unknown> = Promise.resolve();
+
+/**
+ * Runs `task` once every settings.json write queued before it has settled. Every write of the file in
+ * this process goes through here. Two read-modify-writes that overlap both read the file before either
+ * writes, so whichever lands last drops the other's keys, and a factory reset that lands between one's
+ * read and its write is undone by it. Module state rather than a field, because tests build the
+ * service with `Object.create` and every instance writes the same file.
+ */
+export function inSettingsFileTurn<T>(task: () => Promise<T>): Promise<T> {
+  const turn = settingsFileWrites.then(task);
+  settingsFileWrites = turn.catch(() => undefined);
+  return turn;
+}
+
 /** Called after a successful settings write with the settings.json keys it wrote. See `onUserSettingsChanged`. */
 export type UserSettingsListener = (changedKeys: readonly string[]) => void;
 
@@ -578,7 +594,11 @@ export class ConfigurationService {
    *  corrected it — so the only way out was to edit the file by hand. Dropping is safe here because
    *  the boot path already ignores those fields (see {@link parsePersistedSettings}); this just
    *  stops carrying a value nothing can read forward. */
-  private async mergeSettingsToDisk(settings: PersistedSettings): Promise<void> {
+  private mergeSettingsToDisk(settings: PersistedSettings): Promise<void> {
+    return inSettingsFileTurn(() => this.readMergeAndWriteSettings(settings));
+  }
+
+  private async readMergeAndWriteSettings(settings: PersistedSettings): Promise<void> {
     const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
     await ensureSettingsJsonReady(settingsPath, this.logger);
     const fileContent = await fs.promises.readFile(settingsPath, 'utf8');
@@ -804,8 +824,8 @@ export class ConfigurationService {
     if (preferences.poolMdnsEnabled !== undefined) {
       settings.hubPoolMdnsEnabled = preferences.poolMdnsEnabled;
     }
-    // A no-op PATCH must not rewrite settings.json: every write is a read-modify-write of the whole
-    // file with no locking, so an empty one can still clobber a concurrent inference-preferences save.
+    // A no-op PATCH does not rewrite settings.json: it has nothing to save, and every write rewrites
+    // the whole file and holds up the saves queued behind it.
     if (Object.keys(settings).length > 0) {
       await this.setUserSettings(settings);
     }

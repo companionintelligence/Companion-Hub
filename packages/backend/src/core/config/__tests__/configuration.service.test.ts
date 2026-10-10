@@ -266,8 +266,7 @@ describe('ConfigurationService Hub Pool preferences', () => {
   it('does not rewrite settings.json for a PATCH that changes nothing', async () => {
     const svc = makePoolService();
 
-    // Every write is a read-modify-write of the whole file with no locking, so an empty one can
-    // still clobber a concurrent inference-preferences save.
+    // Every write rewrites the whole file and holds up the saves queued behind it, for nothing here.
     await svc.setHubPoolPreferences({});
 
     expect(svc.mergeSettingsToDisk).not.toHaveBeenCalled();
