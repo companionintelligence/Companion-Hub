@@ -1998,22 +1998,116 @@ describe('AuthController', () => {
 
       expect(res.redirect).toHaveBeenCalledWith('cihub://auth?error=not_configured');
     });
+
+    it('returns a browser sign-in on the public address to the browser while the desktop app is waiting', async () => {
+      // A real store, so the PKCE state written by the start is what the callback reads back.
+      const store = new Map<string, string>([['portal_sso_desktop_present', '1']]);
+      cache.get.mockImplementation((key: string) => store.get(key));
+      cache.set.mockImplementation((key: string, value: string) => {
+        store.set(key, value);
+      });
+      cache.del.mockImplementation((key: string) => {
+        store.delete(key);
+      });
+      config.get.mockImplementation((key: string) => {
+        if (key === 'ciCloudUrl') {
+          return 'https://hub.ci.computer';
+        }
+        if (key === 'userSettings') {
+          return { experimental: { insecureCookie: true } };
+        }
+        return '';
+      });
+      vi.mocked(exchangePortalAuthorizationCode).mockResolvedValue({
+        ok: true,
+        accessToken: 'access-token',
+        email: 'person@example.com',
+        emailVerified: true,
+        subject: 'portal-user-2',
+        issuer: 'https://hub.ci.computer',
+      });
+      authService.admitHubPerson.mockResolvedValue({ id: 2, username: 'person@example.com' } as never);
+      sessionManager.createSession.mockResolvedValue('session-456');
+
+      const publicRequest = () =>
+        ({
+          protocol: 'http',
+          headers: { 'x-forwarded-proto': 'https', 'x-forwarded-host': 'hub-device-org.example.com', 'cf-ray': '8c1f2e3d4a5b6c7d-AMS' },
+          get: vi.fn((header: string) => (header === 'host' ? 'hub-device-org.example.com' : undefined)),
+          cookies: {},
+        }) as unknown as Request;
+      const startRes = { redirect: vi.fn() } as unknown as Response;
+
+      await authController.startPortalLogin(publicRequest(), startRes);
+
+      const authorizeUrl = new URL(vi.mocked(startRes.redirect).mock.calls[0]?.[0] as unknown as string);
+      const state = authorizeUrl.searchParams.get('state') ?? '';
+      const callbackRes = {
+        redirect: vi.fn(),
+        cookie: vi.fn(),
+        status: vi.fn().mockReturnThis(),
+        setHeader: vi.fn(),
+        send: vi.fn().mockReturnThis(),
+      } as unknown as Response;
+
+      await authController.portalCallback(publicRequest(), callbackRes, 'auth-code', state);
+
+      expect(callbackRes.send).not.toHaveBeenCalled();
+      expect(callbackRes.redirect).toHaveBeenCalledWith('https://hub-device-org.example.com/home');
+    });
   });
 
   describe('portalSessionHint', () => {
-    it('returns the configured operator email when the hub is already set up', async () => {
+    /** The desktop app's window: served from the Hub's published port on loopback, with no proxy in between. */
+    const desktopWindowRequest = (overrides: Record<string, unknown> = {}) =>
+      ({
+        protocol: 'http',
+        ip: '172.18.0.1',
+        socket: { remoteAddress: '172.18.0.1' },
+        headers: { host: '127.0.0.1:5002' },
+        get: vi.fn((header: string) => (header === 'host' ? '127.0.0.1:5002' : undefined)),
+        ...overrides,
+      }) as unknown as Request;
+
+    /** A visitor on the Hub's public address. The tunnel passes their own X-Forwarded-Host through. */
+    const tunnelVisitorRequest = () =>
+      ({
+        protocol: 'http',
+        ip: '203.0.113.7',
+        socket: { remoteAddress: '10.20.0.2' },
+        headers: {
+          host: 'hub-device-org.example.com',
+          'x-forwarded-host': 'localhost:5002',
+          'x-forwarded-proto': 'http',
+          'x-forwarded-for': '203.0.113.7, 10.128.0.3',
+          'cf-ray': '8c1f2e3d4a5b6c7d-AMS',
+          'cf-connecting-ip': '203.0.113.7',
+        },
+        get: vi.fn((header: string) => (header === 'host' ? 'hub-device-org.example.com' : undefined)),
+      }) as unknown as Request;
+
+    /** Another device on the LAN, reaching the published port by the host's address. */
+    const lanDeviceRequest = () =>
+      ({
+        protocol: 'http',
+        ip: '192.168.1.50',
+        socket: { remoteAddress: '192.168.1.50' },
+        headers: { host: '192.168.1.20:5002' },
+        get: vi.fn((header: string) => (header === 'host' ? '192.168.1.20:5002' : undefined)),
+      }) as unknown as Request;
+
+    it.each([
+      ['a visitor on the public address', tunnelVisitorRequest],
+      ['the desktop window on loopback', () => desktopWindowRequest()],
+    ])('gives %s who is not signed in no email, even when the Hub has an operator', async (_caller, buildRequest) => {
       config.get.mockReturnValue('https://hub.ci.computer');
       vi.mocked(fetchPortalSessionEmail).mockResolvedValue(null);
       userRepository.getFirstOperator.mockResolvedValue({ id: 1, username: 'operator@example.com' } as never);
 
-      await expect(
-        authController.portalSessionHint({
-          headers: {},
-        } as Request),
-      ).resolves.toEqual({
-        email: 'operator@example.com',
+      await expect(authController.portalSessionHint(buildRequest())).resolves.toEqual({
+        email: null,
         portalBaseUrl: 'https://hub.ci.computer',
-        source: 'hub_operator',
+        source: null,
         portalReachable: true,
       });
     });
@@ -2053,13 +2147,32 @@ describe('AuthController', () => {
       });
     });
 
-    it('records that the Tauri desktop app is running when desktop=1', async () => {
+    it('records that the desktop app is waiting for a sign-in when its window sends desktop=1', async () => {
       config.get.mockReturnValue('https://hub.ci.computer');
-      userRepository.getFirstOperator.mockResolvedValue({ id: 1, username: 'operator@example.com' } as never);
 
-      await authController.portalSessionHint({ headers: {} } as Request, '1');
+      await authController.portalSessionHint(desktopWindowRequest(), '1');
 
       expect(cache.set).toHaveBeenCalledWith('portal_sso_desktop_present', '1', 600);
+    });
+
+    it.each([
+      ['through the tunnel, naming a loopback host', tunnelVisitorRequest],
+      ['from another device on the network', lanDeviceRequest],
+    ])('ignores desktop=1 sent %s', async (_caller, buildRequest) => {
+      config.get.mockReturnValue('https://hub.ci.computer');
+
+      await authController.portalSessionHint(buildRequest(), '1');
+
+      expect(cache.set).not.toHaveBeenCalledWith('portal_sso_desktop_present', expect.anything(), expect.anything());
+    });
+
+    it('clears the desktop sign-in flag once the desktop window is signed in', async () => {
+      config.get.mockReturnValue('https://hub.ci.computer');
+
+      await authController.portalSessionHint(desktopWindowRequest({ user: { username: 'person@example.com' } }), '1');
+
+      expect(cache.set).not.toHaveBeenCalledWith('portal_sso_desktop_present', expect.anything(), expect.anything());
+      expect(cache.del).toHaveBeenCalledWith('portal_sso_desktop_present');
     });
 
     it('bootstraps the session hint from Portal cookies when no operator exists yet', async () => {

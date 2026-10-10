@@ -160,7 +160,19 @@ export function useDesktopPortalAuth() {
       if (!policy.announceDesktopPresence) {
         return;
       }
-      void apiFetch('/api/auth/portal/session-hint?desktop=1').catch(() => undefined);
+      void apiFetch('/api/auth/portal/session-hint?desktop=1')
+        .then(async (res) => {
+          if (!res.ok) {
+            return;
+          }
+          // The Hub names an account here only to the window signed in as it. Keeping it lets the
+          // sign-in screen offer the same account after this window signs out.
+          const hint = (await res.json()) as { email?: string | null; source?: string | null };
+          if (hint.email && (hint.source === 'hub_user' || hint.source === 'portal_session')) {
+            rememberPortalAccountEmail(hint.email);
+          }
+        })
+        .catch(() => undefined);
     };
 
     announceDesktopPresence();
