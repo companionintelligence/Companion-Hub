@@ -467,12 +467,12 @@ describe('AppsService', () => {
       expect(result.resolvable).toBe(true);
     });
 
-    it("MUST return errorCode 'PROXY_UPSTREAM_ERROR' for non-Cloudflare 502/503", async () => {
+    it('MUST NOT call an app available when its public route answers a 5xx of its own', async () => {
       setupApp({ exposureMode: 'cloudflare' });
       mockAxiosGet.mockResolvedValue({ status: 502, data: '<html>Bad Gateway</html>' });
       const result = await service.checkAppAvailability(appUrn);
-      // Non-CF 502 is now treated as available (any HTTP response = reachable)
-      expect(result.available).toBe(true);
+      expect(result.available).toBe(false);
+      expect(result.errorCode).toBe('CF_UPSTREAM_ERROR');
       expect(result.httpStatus).toBe(502);
     });
 

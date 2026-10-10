@@ -89,18 +89,38 @@ function dnsNotFoundResult(exposureMode: string, appUrl: string): AppAvailabilit
   };
 }
 
+/** Cloudflare's own error as it answers a client that does not ask for HTML, this probe included. */
+const CLOUDFLARE_PLAIN_ERROR = /^\s*error code:\s*(\d{3,4})\s*$/i;
+
+/** Statuses only Cloudflare's edge answers with. It sends 530 with a 1xxx error, such as 1033 for a tunnel with no connector. */
+function isCloudflareOnlyStatus(status: number): boolean {
+  return status === 530 || (status >= 520 && status <= 527);
+}
+
 /**
- * What an HTTP answer means for this app. A Cloudflare error page is the tunnel, not the app. Any
- * other response means something at that name answered.
+ * What an HTTP answer means for this app.
+ *
+ * Every answer on a Public Web route comes through Cloudflare. An answer its edge made itself means the
+ * tunnel failed, not the app: an HTML error page for a browser, a plain `error code: 1033` for this
+ * probe, or a status only the edge uses. An answer from the Hub counts only when it can be the app's own
+ * page. A 5xx can't (the Hub's "is starting" page is a 503), and neither can a 404, which Traefik
+ * answers when it has no router for the name, as while the app's containers are down. A 401 or 403 can:
+ * an app behind its own sign-in answers a probe without a session that way.
+ *
+ * Over the Private VPN, any answer means something at that name answered.
  */
 function classifyReachedApp(exposureMode: string, appUrl: string, status: number, text: string): AppAvailabilityResult {
-  const isCloudflare = text.includes('Cloudflare Ray ID') || text.includes('cf-error-details');
+  if (exposureMode !== 'cloudflare') {
+    return { available: true, appUrl, httpStatus: status, stage: 'ready' };
+  }
 
-  if (exposureMode === 'cloudflare' && isCloudflare) {
-    const cfErrorMatch = text.match(/Error\s+(\d{3,4})/i);
-    const cfCode = cfErrorMatch ? Number(cfErrorMatch[1]) : status;
+  const isCloudflarePage = text.includes('Cloudflare Ray ID') || text.includes('cf-error-details');
+  const bodyCode = CLOUDFLARE_PLAIN_ERROR.exec(text)?.[1] ?? (isCloudflarePage ? text.match(/Error\s+(\d{3,4})/i)?.[1] : undefined);
 
-    if (cfCode === 1033) {
+  if (isCloudflarePage || bodyCode !== undefined || isCloudflareOnlyStatus(status)) {
+    const cfCode = bodyCode ? Number(bodyCode) : status;
+
+    if (cfCode === 1033 || cfCode === 530) {
       return {
         available: false,
         appUrl,
@@ -154,8 +174,21 @@ function classifyReachedApp(exposureMode: string, appUrl: string, status: number
       stage: 'error',
       reason: 'CLOUDFLARE',
       errorCode: 'CF_UNKNOWN',
-      detail: cfErrorMatch ? `Cloudflare Error ${cfErrorMatch[1]}` : `Cloudflare Error (HTTP ${status})`,
+      detail: bodyCode ? `Cloudflare Error ${bodyCode}` : `Cloudflare Error (HTTP ${status})`,
       resolvable: false,
+    };
+  }
+
+  if (status >= 500 || status === 404) {
+    return {
+      available: false,
+      appUrl,
+      httpStatus: status,
+      stage: 'propagating',
+      reason: 'CLOUDFLARE',
+      errorCode: 'CF_UPSTREAM_ERROR',
+      detail: `The app's public address answered HTTP ${status} through the tunnel. The app may still be starting, or its containers may have stopped.`,
+      resolvable: true,
     };
   }
 
