@@ -95,7 +95,7 @@ describe('installConfigFilename', () => {
 describe('export / import round-trip', () => {
   it('round-trips non-secret values through serialize + parse', () => {
     const json = serializeInstallConfig('nextcloud', VALUES, FORM_FIELDS);
-    const result = parseInstallConfigJson(json, FORM_FIELDS);
+    const result = parseInstallConfigJson(json, FORM_FIELDS, 'nextcloud');
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('expected ok result');
@@ -121,25 +121,26 @@ describe('export / import round-trip', () => {
   });
 
   it('reports keys that do not match the current app form_fields instead of applying them', () => {
+    // Another app's port and exposure mode describe that app, so they are reported, not applied.
     const foreignConfigJson = JSON.stringify({
       schemaVersion: 1,
       appId: 'some-other-app',
       exportedAt: new Date().toISOString(),
-      values: { USERNAME: 'carried-over', SOME_OTHER_APPS_FIELD: 'nope', OTHER_APP_PORT: '9999' },
+      values: { USERNAME: 'carried-over', SOME_OTHER_APPS_FIELD: 'nope', port: '9999', exposureMode: 'cloudflare' },
     });
 
-    const result = parseInstallConfigJson(foreignConfigJson, FORM_FIELDS);
+    const result = parseInstallConfigJson(foreignConfigJson, FORM_FIELDS, 'nextcloud');
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('expected ok result');
 
     expect(result.values).toEqual({ USERNAME: 'carried-over' });
     expect(result.recognizedKeys).toEqual(['USERNAME']);
-    expect(result.unrecognizedKeys.sort()).toEqual(['OTHER_APP_PORT', 'SOME_OTHER_APPS_FIELD']);
+    expect(result.unrecognizedKeys.sort()).toEqual(['SOME_OTHER_APPS_FIELD', 'exposureMode', 'port']);
   });
 
   it('returns an error result for malformed JSON instead of throwing', () => {
-    const result = parseInstallConfigJson('{ not valid json', FORM_FIELDS);
+    const result = parseInstallConfigJson('{ not valid json', FORM_FIELDS, 'nextcloud');
 
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected error result');
@@ -147,7 +148,7 @@ describe('export / import round-trip', () => {
   });
 
   it('returns an error result for a JSON value that is not an object', () => {
-    const result = parseInstallConfigJson('[1,2,3]', FORM_FIELDS);
+    const result = parseInstallConfigJson('[1,2,3]', FORM_FIELDS, 'nextcloud');
 
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected error result');
@@ -173,7 +174,7 @@ describe('access settings in an exported config', () => {
 
   it('round-trips exposure mode, subdomain, public domain, sign-in, local exposure, open port and port', () => {
     const json = serializeInstallConfig('cyberchef', { ...VALUES, ...HUB_SETTINGS }, FORM_FIELDS);
-    const result = parseInstallConfigJson(json, FORM_FIELDS);
+    const result = parseInstallConfigJson(json, FORM_FIELDS, 'cyberchef');
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('expected ok result');
@@ -195,11 +196,39 @@ describe('access settings in an exported config', () => {
       cpuLimit: '1.5',
     };
 
-    const result = parseInstallConfigJson(serializeInstallConfig('cyberchef', dialogValues, FORM_FIELDS), FORM_FIELDS);
+    const result = parseInstallConfigJson(serializeInstallConfig('cyberchef', dialogValues, FORM_FIELDS), FORM_FIELDS, 'cyberchef');
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('expected ok result');
     expect(result.unrecognizedKeys).toEqual([]);
+  });
+
+  it('ignores an access setting whose value the dialog could not hold', () => {
+    // An exposure mode the importer does not know would otherwise fall back to Public Web on submit.
+    const handEdited = JSON.stringify({
+      schemaVersion: 1,
+      appId: 'cyberchef',
+      exportedAt: new Date().toISOString(),
+      values: { exposureMode: 'Local', enableAuth: 'false', openPort: 1, port: { number: 8090 }, localSubdomain: 42, exposedLocal: true },
+    });
+
+    const result = parseInstallConfigJson(handEdited, FORM_FIELDS, 'cyberchef');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok result');
+    expect(result.values).toEqual({ exposedLocal: true });
+    expect(result.unrecognizedKeys.sort()).toEqual(['enableAuth', 'exposureMode', 'localSubdomain', 'openPort', 'port']);
+  });
+
+  it('applies access settings only from a file that names this app', () => {
+    const bareFile = JSON.stringify({ USERNAME: 'admin', exposureMode: 'cloudflare', enableAuth: false });
+
+    const result = parseInstallConfigJson(bareFile, FORM_FIELDS, 'cyberchef');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok result');
+    expect(result.values).toEqual({ USERNAME: 'admin' });
+    expect(result.unrecognizedKeys.sort()).toEqual(['enableAuth', 'exposureMode']);
   });
 
   it('keeps customDomainExpected out of the exported file', () => {
@@ -217,7 +246,7 @@ describe('access settings in an exported config', () => {
       values: { USERNAME: 'admin', customDomainExpected: 'shop.example.org' },
     });
 
-    const result = parseInstallConfigJson(olderExport, FORM_FIELDS);
+    const result = parseInstallConfigJson(olderExport, FORM_FIELDS, 'cyberchef');
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('expected ok result');

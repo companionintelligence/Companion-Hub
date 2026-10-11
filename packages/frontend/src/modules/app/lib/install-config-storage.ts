@@ -43,12 +43,32 @@ export function stripSecretFields(values: Record<string, unknown>, formFields: F
   return result;
 }
 
+const isBoolean = (value: unknown) => typeof value === 'boolean';
+const isString = (value: unknown) => typeof value === 'string';
+
 /**
- * The access settings the install dialog adds to every exposable app's own `form_fields`. They
- * travel in an exported config like the app's fields do. Whether the port or subdomain is still
- * free where the file is imported is for the Hub's install checks to say, not the importer.
+ * The access settings the install dialog adds to every exposable app's own `form_fields`, each with
+ * the kind of value the dialog holds for it. They travel in an exported config like the app's
+ * fields do, but go back only into the app that wrote the file: another app's port and subdomain
+ * describe that app. Whether the port or subdomain is still free where the file is imported is for
+ * the Hub's install checks to say, not the importer.
+ *
+ * The value check matters most for `exposureMode`: the form submits a mode it does not know as the
+ * first one available, which is Public Web on a Hub that has it.
  */
-const ACCESS_SETTING_KEYS: readonly string[] = ['exposureMode', 'localSubdomain', 'publicDomain', 'enableAuth', 'exposedLocal', 'openPort', 'port'];
+const ACCESS_SETTINGS = new Map<string, (value: unknown) => boolean>([
+  ['exposureMode', (value) => value === 'local' || value === 'cloudflare' || value === 'tailscale'],
+  ['localSubdomain', isString],
+  ['publicDomain', isString],
+  ['enableAuth', isBoolean],
+  ['exposedLocal', isBoolean],
+  ['openPort', isBoolean],
+  ['port', (value) => isString(value) || typeof value === 'number'],
+]);
+
+function isAccessSetting(key: string, value: unknown): boolean {
+  return ACCESS_SETTINGS.get(key)?.(value) ?? false;
+}
 
 /**
  * `customDomainExpected` is the custom domain the app was served on when the dialog opened,
@@ -62,9 +82,8 @@ function withoutDialogOnlyKey(values: Record<string, unknown>): Record<string, u
   return rest;
 }
 
-/** The keys an exported config holds and an import applies: the app's own fields plus the access settings. */
-function portableKeys(formFields: FormField[]): Set<string> {
-  return new Set([...formFields.map((field) => field.env_variable), ...ACCESS_SETTING_KEYS]);
+function appFieldKeys(formFields: FormField[]): Set<string> {
+  return new Set(formFields.map((field) => field.env_variable));
 }
 
 export interface InstallConfigExport {
@@ -87,12 +106,14 @@ export function installConfigFilename(appId: string): string {
  * guest dashboard switch) stay out.
  */
 export function buildInstallConfigExport(appId: string, values: Record<string, unknown>, formFields: FormField[]): InstallConfigExport {
-  const portable = portableKeys(formFields);
+  const appFields = appFieldKeys(formFields);
   return {
     schemaVersion: 1,
     appId,
     exportedAt: new Date().toISOString(),
-    values: Object.fromEntries(Object.entries(stripSecretFields(values, formFields)).filter(([key]) => portable.has(key))),
+    values: Object.fromEntries(
+      Object.entries(stripSecretFields(values, formFields)).filter(([key, value]) => appFields.has(key) || isAccessSetting(key, value)),
+    ),
   };
 }
 
@@ -107,13 +128,14 @@ export type ImportInstallConfigResult =
 
 /**
  * Parses a previously-exported install config and restricts it to keys that match the CURRENT
- * app's `form_fields` or one of the `ACCESS_SETTING_KEYS`. Keys that match neither are reported back in
- * `unrecognizedKeys`, not applied — this is what stops an operator who imports a config exported
- * for a different app from silently corrupting unrelated form state.
+ * app's `form_fields`, plus the `ACCESS_SETTINGS` when the file's `appId` is this app's and the
+ * value is one the dialog can hold. Everything else is reported back in `unrecognizedKeys`, not
+ * applied. That is what stops an operator who imports a config exported for a different app from
+ * silently corrupting unrelated form state.
  *
  * `customDomainExpected`, which older exports wrote, is dropped without a report.
  */
-export function parseInstallConfigJson(json: string, formFields: FormField[]): ImportInstallConfigResult {
+export function parseInstallConfigJson(json: string, formFields: FormField[], appId: string): ImportInstallConfigResult {
   let parsed: unknown;
   try {
     parsed = JSON.parse(json);
@@ -133,13 +155,14 @@ export function parseInstallConfigJson(json: string, formFields: FormField[]): I
       ? (rawValues as Record<string, unknown>)
       : (parsed as Record<string, unknown>);
 
-  const knownKeys = portableKeys(formFields);
+  const appFields = appFieldKeys(formFields);
+  const fromThisApp = (parsed as { appId?: unknown }).appId === appId;
   const values: Record<string, unknown> = {};
   const recognizedKeys: string[] = [];
   const unrecognizedKeys: string[] = [];
 
   for (const [key, value] of Object.entries(withoutDialogOnlyKey(candidateValues))) {
-    if (knownKeys.has(key)) {
+    if (appFields.has(key) || (fromThisApp && isAccessSetting(key, value))) {
       values[key] = value;
       recognizedKeys.push(key);
     } else {

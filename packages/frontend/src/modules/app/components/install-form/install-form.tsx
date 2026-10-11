@@ -396,7 +396,7 @@ export const InstallForm: React.FC<IProps> = ({
         return;
       }
 
-      const result = parseInstallConfigJson(text, formFields);
+      const result = parseInstallConfigJson(text, formFields, info.id);
       if (!result.ok) {
         toast.error(t('APP_INSTALL_FORM_IMPORT_CONFIG_ERROR', { defaultValue: 'That file is not a valid install config.' }));
         return;
@@ -416,7 +416,7 @@ export const InstallForm: React.FC<IProps> = ({
         toast.success(t('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS', { defaultValue: 'Config imported.' }));
       }
     },
-    [formFields, applyImportedValues, t],
+    [formFields, info.id, applyImportedValues, t],
   );
 
   const handleApplyRecentConfig = useCallback(
