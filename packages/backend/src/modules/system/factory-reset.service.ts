@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createAppUrn } from '@/common/helpers/app-helpers';
-import { writeSettingsJsonFile } from '@/common/helpers/env-helpers';
+import { removeSettingsJsonCopies, writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR } from '@/common/constants';
 import { app } from '@/core/database/drizzle/schema';
 import { DATABASE, type Database } from '@/core/database/database.module';
@@ -155,7 +155,10 @@ export class FactoryResetService {
   public async resetSettings(): Promise<void> {
     const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
     // After any save already under way, which would otherwise write the old settings back over `{}`.
-    await inSettingsFileTurn(() => writeSettingsJsonFile(settingsPath, '{}', this.logger));
+    await inSettingsFileTurn(async () => {
+      await writeSettingsJsonFile(settingsPath, '{}', this.logger);
+      await removeSettingsJsonCopies(settingsPath);
+    });
   }
 
   private async wipeDirectory(dirPath: string): Promise<void> {

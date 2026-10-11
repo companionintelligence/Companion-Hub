@@ -13,7 +13,7 @@ import { mock, type MockProxy } from 'vitest-mock-extended';
 import { FactoryResetService } from '../factory-reset.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { BearerOrgMembershipCache } from '@/modules/auth/bearer-org-membership.cache';
-import { TUNNEL_DIR } from '@/common/constants';
+import { DATA_DIR, TUNNEL_DIR } from '@/common/constants';
 import path from 'node:path';
 import { vol } from 'memfs';
 
@@ -157,6 +157,21 @@ describe('FactoryResetService', () => {
 
     expect(vol.existsSync(path.join(TUNNEL_DIR, 'token'))).toBe(false);
     expect(vol.existsSync(path.join(TUNNEL_DIR, 'registration.json'))).toBe(false);
+  });
+
+  it('removes the copies of settings.json a boot or a crash left beside it, which hold the credentials it clears', async () => {
+    const stateDir = path.join(DATA_DIR, 'state');
+    const credentials = JSON.stringify({ ciHubApiKey: 'portal-device-key', inferenceCloudProviders: [{ provider: 'openai', apiKey: 'sk-test' }] });
+    vol.writeFileSync(path.join(stateDir, 'settings.json'), credentials);
+    // Kept by a boot that found the file torn, and left by a crash between a write and its rename.
+    vol.writeFileSync(path.join(stateDir, 'settings.json.corrupt-2026-10-10T11-25-42-646Z'), `${credentials}"tail"}`);
+    vol.writeFileSync(path.join(stateDir, 'settings.json.1-3.tmp'), credentials);
+
+    await service.execute();
+
+    expect(vol.readFileSync(path.join(stateDir, 'settings.json'), 'utf8')).toBe('{}');
+    expect(vol.readdirSync(stateDir).filter((name) => String(name).startsWith('settings.json'))).toEqual(['settings.json']);
+    expect(vol.existsSync(path.join(stateDir, 'seed'))).toBe(true);
   });
 
   it('tears down installed apps before wiping data mounts', async () => {

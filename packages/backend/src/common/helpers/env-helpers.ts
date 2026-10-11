@@ -535,6 +535,22 @@ export async function writeSettingsJsonFile(settingsFilePath: string, content: s
 /** Numbers this process's settings.json writes, so two writes never share a temporary file. */
 let settingsJsonWrites = 0;
 
+/**
+ * Deletes what this module leaves beside settings.json: the `.corrupt-<time>` copies a boot keeps of
+ * a file it could not parse (readSettingsJsonAtBoot), and a `.<pid>-<n>.tmp` file a crash left between
+ * its write and its rename (replaceSettingsJson). Both hold the same credentials as settings.json, so
+ * a factory reset that empties settings.json removes them too. Call it only while no settings.json
+ * write is running, or it can take that write's temporary file.
+ */
+export async function removeSettingsJsonCopies(settingsFilePath: string): Promise<void> {
+  const dir = path.dirname(settingsFilePath);
+  const prefix = `${path.basename(settingsFilePath)}.`;
+  const isCopy = (entry: string) =>
+    entry.startsWith(prefix) && (entry.startsWith(`${prefix}corrupt-`) || /^\d+-\d+\.tmp$/.test(entry.slice(prefix.length)));
+  const copies = (await fs.promises.readdir(dir)).filter(isCopy);
+  await Promise.all(copies.map((entry) => fs.promises.rm(path.join(dir, entry), { force: true })));
+}
+
 async function replaceSettingsJson(settingsFilePath: string, content: string): Promise<void> {
   const temporary = `${settingsFilePath}.${process.pid}-${++settingsJsonWrites}.tmp`;
   try {
