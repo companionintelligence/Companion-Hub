@@ -22,6 +22,19 @@ vi.mock('node:fs', () => {
   };
 });
 
+// LoggerService's methods are instance fields, so a prototype spy can't see them. Record the
+// warnings instead; nothing else about the logger changes.
+const { loggedWarnings } = vi.hoisted(() => ({ loggedWarnings: [] as string[] }));
+vi.mock('@/core/logger/logger.service', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/core/logger/logger.service')>();
+  class RecordingLoggerService extends actual.LoggerService {
+    public warn = (...message: unknown[]) => {
+      loggedWarnings.push(message.map(String).join(' '));
+    };
+  }
+  return { ...actual, LoggerService: RecordingLoggerService };
+});
+
 vi.mock('dotenv', () => {
   const config = vi.fn();
   return { default: { config }, config };
@@ -133,6 +146,30 @@ describe('env-helpers — resolve() priority chain', () => {
     setupMocks({ settingsJson: {} });
     const envMap = await generateSystemEnvFile();
     expect(envMap.get('LOG_LEVEL')).toBe('warn');
+  });
+
+  it('MUST say so when LOG_LEVEL asks for more detail than the Log level saved in Settings gives', async () => {
+    // A server operator who sets LOG_LEVEL=debug gets no debug lines once the Settings page has been
+    // saved, since it sends Log level every time. The boot log has to tell them why.
+    loggedWarnings.length = 0;
+    process.env.LOG_LEVEL = 'debug';
+    setupMocks({ settingsJson: { logLevel: 'info' } });
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.get('LOG_LEVEL')).toBe('info');
+    expect(loggedWarnings).toContainEqual(expect.stringMatching(/LOG_LEVEL=debug .*Log level.*info/));
+  });
+
+  it('MUST NOT warn about LOG_LEVEL when the saved Log level gives as much detail or more', async () => {
+    loggedWarnings.length = 0;
+    for (const [env, saved] of [
+      ['info', 'debug'],
+      ['info', 'info'],
+    ]) {
+      process.env.LOG_LEVEL = env;
+      setupMocks({ settingsJson: { logLevel: saved } });
+      await generateSystemEnvFile();
+    }
+    expect(loggedWarnings.filter((line) => line.includes('LOG_LEVEL='))).toEqual([]);
   });
 
   it('boolStr() MUST convert settings boolean to string via DEMO_MODE', async () => {
