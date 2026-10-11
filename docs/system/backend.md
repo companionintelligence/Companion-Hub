@@ -651,8 +651,9 @@ asked of the Portal fresh. When the role can't be read, the change is refused an
 An operator with no linked Portal identity has no role to read, and keeps the member fallback every
 app gives them (`DEFAULT_MEMBER_ACTIONS`: start, stop and restart, never uninstall).
 `PATCH /custom-apps/:urn` (the compose), `POST /custom-apps/:urn/image` and `PATCH /custom-apps/:urn/metadata`
-assert `configure`, so editing a custom app follows the same rule. Creating one, and the port-expose
-routes, still take only a sign-in.
+assert `configure`, so editing a custom app follows the same rule. A port expose has no `configure`, so
+these three refuse one for every session. A port expose changes through `PATCH /custom-apps/port-expose/:urn`.
+Creating a custom app, and the port-expose routes, still take only a sign-in.
 
 Assert over **every** app a request could touch before touching any of them, and include apps the
 caller named even when they turn out to need no work — checking only the apps that do lets an
