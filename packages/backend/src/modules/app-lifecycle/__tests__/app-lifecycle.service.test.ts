@@ -6141,6 +6141,20 @@ describe('AppLifecycleService', () => {
         expect(reply).toHaveBeenCalledWith(expect.objectContaining({ cancelled: true }));
         expect(operationRegistry.get(appUrn)?.requestId).toBe(reinstallRequestId);
       });
+
+      // The failure path reads the app's row by URN, and that row now belongs to the reinstall.
+      it('leaves the reinstall alone when the reply to the skipped message fails', async () => {
+        operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+        await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
+        operationRegistry.register(appUrn, { requestId: '00000000-0000-4000-8000-000000000def', command: 'install', tier: 'safe' });
+        sseService.emit.mockClear();
+        const reply = vi.fn().mockRejectedValue(new Error('reply channel closed'));
+
+        await service.invokeCommand({ appUrn, command: 'install', requestId, form: {} } as any, reply);
+
+        expect(appsRepository.updateAppById).not.toHaveBeenCalledWith(7, expect.objectContaining({ status: 'install_failed' }));
+        expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_error' }));
+      });
     });
 
     it('returns cancelling and aborts when the op is in flight', async () => {

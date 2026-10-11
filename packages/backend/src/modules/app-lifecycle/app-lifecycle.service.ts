@@ -611,13 +611,22 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     try {
       // A queued install whose cancel `cancelOperation` already carried out (row deleted,
-      // install_cancelled sent). Its entry is gone, or belongs to a newer install of the app.
+      // install_cancelled sent). Its entry is gone, or belongs to a newer install of the app. Checked
+      // here, with no await before the entry lookup and `markPhase` below, so a cancel cannot settle
+      // it between the two. A failed reply must not reach the catch below: that path reads the app's
+      // row by URN, which may now belong to the newer install, and would fail it.
       if (this.operationRegistry.takeSettledBeforeStart(data.requestId)) {
         this.logger.info(`[lifecycle] '${data.command}' for ${data.appUrn} was cancelled while queued and is already settled; skipping it`);
         if (job) {
           await this.lifecycleJobService?.cancelJob(job.id, 'Operation cancelled before it started').catch(() => null);
         }
-        await reply({ success: false, cancelled: true, message: 'Operation cancelled before it started' });
+        try {
+          await reply({ success: false, cancelled: true, message: 'Operation cancelled before it started' });
+        } catch (err) {
+          this.logger.warn(
+            `[lifecycle] could not reply to the settled '${data.command}' for ${data.appUrn}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
         return;
       }
 
