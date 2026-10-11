@@ -829,7 +829,16 @@ pub fn run() {
                         let user_stopped = hub_manager::is_user_stopped(&data_for_decision);
                         let start_failed = hub_manager::is_start_failed(&data_for_decision);
                         let needs_runtime_recovery = hub_manager::hub_needs_runtime_recovery();
-                        let stopped_core_services = hub_manager::stopped_core_services();
+                        // Another `docker inspect`, so only when nothing above decided already.
+                        let stopped_core_services = if user_stopped
+                            || start_failed
+                            || !containers_exist
+                            || needs_runtime_recovery
+                        {
+                            Vec::new()
+                        } else {
+                            hub_manager::stopped_core_services()
+                        };
 
                         let should_start = if user_stopped || start_failed {
                             false
