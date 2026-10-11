@@ -264,10 +264,15 @@ Auto-healing never fights the user:
   click **Start Hub** (which clears the marker). The startup screen says so
   when the app opens: "CI Hub is stopped", with when it was stopped and a
   **Start Hub** button, instead of a startup timer.
-- **Stop Hub** in the tray stops the running apps too, and lists their
-  containers in `.apps-stopped-with-hub` in the data dir. **Start Hub**, from
-  the tray or the startup screen, starts those containers again right after
-  `compose up`, before the Hub's first app status sync.
+- **Stop Hub** in the tray, and **Clear Tunnel Token**, stop the running apps
+  too, and list their containers in `.apps-stopped-with-hub` in the data dir.
+  The next start, such as **Start Hub** from the tray or the startup screen,
+  starts those containers again right after `compose up`, before the Hub's
+  first app status sync. One that won't start stays stopped, and
+  `desktop.log` says why. That happens when `ci-hub_network` was removed and
+  created again while the apps were stopped, as a second Stop Hub does: Docker
+  looks the network up by its old ID. The Hub then shows the app **Stopped**,
+  and its **Start** recreates the containers.
 - `restart: unless-stopped` won't resurrect a container the user stopped
   on purpose.
 - After a failed start (`.start-failed` marker), the startup screen shows the
