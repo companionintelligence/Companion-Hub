@@ -34,6 +34,11 @@ export function isOllamaTagForCatalogModel(tagName: string, backendModelId: stri
   return true;
 }
 
+/** Whether a tracked state says the download finished: `pulled`, `loaded` or `pinned`. */
+export function isPulledState(state: string | undefined): boolean {
+  return state === 'pulled' || state === 'loaded' || state === 'pinned';
+}
+
 /**
  * Whether the registry's record that the Hub pulled a model still counts it as on disk.
  *
@@ -48,7 +53,7 @@ export function isOllamaTagForCatalogModel(tagName: string, backendModelId: stri
  * be asked.
  */
 export function trackedPullCounts(tracked: Pick<TrackedModel, 'state' | 'backend'> | undefined, listedBy: InferenceBackendType | null): boolean {
-  if (tracked?.state !== 'pulled' && tracked?.state !== 'loaded' && tracked?.state !== 'pinned') return false;
+  if (!tracked || !isPulledState(tracked.state)) return false;
   return !(tracked.backend === 'ollama' && listedBy === 'ollama');
 }
 
@@ -156,9 +161,7 @@ export function resolveInstalledCatalogIdsFromServedModels(
       continue;
     }
 
-    const trackedState = getTrackedState?.(model.id);
-    const trackedPulled = trackedState === 'pulled' || trackedState === 'loaded' || trackedState === 'pinned';
-    if (trackedPulled || isServedModelForCatalog(model, servedModelIds)) {
+    if (isPulledState(getTrackedState?.(model.id)) || isServedModelForCatalog(model, servedModelIds)) {
       installed.push(model.id);
     }
   }
@@ -178,9 +181,7 @@ export function resolveInstalledCatalogIds(
   const installed: string[] = [];
   const others = Array.from(catalogBackendModelIds);
   for (const model of catalog) {
-    const trackedState = getTrackedState?.(model.id);
-    const trackedPulled = trackedState === 'pulled' || trackedState === 'loaded' || trackedState === 'pinned';
-    if (isCuratedModelInstalled(model, ollamaTags, trackedPulled, others)) {
+    if (isCuratedModelInstalled(model, ollamaTags, isPulledState(getTrackedState?.(model.id)), others)) {
       installed.push(model.id);
     }
   }

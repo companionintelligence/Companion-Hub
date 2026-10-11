@@ -1,7 +1,7 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 import { Test } from '@nestjs/testing';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { HardwareInspectorService } from '../hardware-inspector.service';
 import { MemoryManagerService } from '../memory-manager.service';
@@ -149,6 +149,36 @@ describe('ModelPullerService.evaluatePull', () => {
     const result = await service.evaluatePull('phi-4-mini');
 
     expect(result.alreadyInstalled).toBe(true);
+  });
+
+  // The stale `pulled` entry is still there while the new download waits in the queue. Read as done,
+  // POST /models/pull and MCP hub_pull_model answered "pulled" before anything was downloaded.
+  it('waits for the new download of a model the registry still lists as pulled', async () => {
+    modelRegistry.getTrackedModel.mockReturnValue({
+      catalogId: 'phi-4-mini',
+      backend: 'ollama',
+      backendModelId: 'phi4-mini',
+      state: 'pulled',
+    } as TrackedModel);
+    let finishPull: (() => void) | undefined;
+    ollamaBackend.pullModel.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishPull = resolve;
+        }),
+    );
+
+    await expect(service.startPull('phi-4-mini')).resolves.toMatchObject({ status: 'queued' });
+    let done = false;
+    const waited = service.waitForPullCompletion('phi-4-mini', 5_000).then(() => {
+      done = true;
+    });
+    await vi.waitFor(() => expect(finishPull).toBeDefined());
+    expect(done).toBe(false);
+
+    finishPull?.();
+    await waited;
+    expect(modelRegistry.updateModelState).toHaveBeenCalledWith('phi-4-mini', 'pulled');
   });
 
   it('blocks pull when disk is insufficient', async () => {
