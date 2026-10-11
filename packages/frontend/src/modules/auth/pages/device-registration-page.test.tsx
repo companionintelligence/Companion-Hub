@@ -314,6 +314,29 @@ describe('DeviceRegistrationPage', () => {
     expect(fetchRegistrationStateDrift).toHaveBeenCalledTimes(2);
   });
 
+  it('starts a new status check once the last one has waited a minute, since a lost request never answers', async () => {
+    vi.useFakeTimers();
+    fetchRegistrationStateDrift.mockImplementationOnce(() => new Promise(() => {}));
+
+    render(<DeviceRegistrationPage />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(55_000);
+    });
+    expect(fetchRegistrationStatusResult).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(fetchRegistrationStatusResult).toHaveBeenCalledTimes(2);
+    expect(fetchRegistrationStateDrift).toHaveBeenCalledTimes(2);
+
+    // That check answered, and the lost one no longer holds the poll back: the next comes at the usual pace.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(fetchRegistrationStatusResult).toHaveBeenCalledTimes(3);
+  });
+
   it('shows the probe status and waits between two ready checks', async () => {
     vi.useFakeTimers();
     fetchRegistrationStatusResult.mockResolvedValueOnce(statusOk('unregistered')).mockResolvedValue(statusOk('locally_ready', true));

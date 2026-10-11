@@ -43,6 +43,11 @@ const DEFAULT_PORTAL_URL = (
 ).replace(/\/+$/, '');
 const STATUS_POLL_INTERVAL_MS = 3000;
 const HEADLESS_POLL_INTERVAL_MS = 5000; // Poll less often while waiting for external registration.
+/**
+ * How long the poll waits on a status check before it starts another. The API client sets no timeout,
+ * so a request that never settles would otherwise stop the poll for good.
+ */
+const STATUS_CHECK_GIVE_UP_MS = 60_000;
 const DOMAIN_PROBE_INTERVAL_MS = 5000;
 const MAX_DOMAIN_PROBE_ATTEMPTS = 60;
 const REQUIRED_CONSECUTIVE_PROBES = 2;
@@ -204,9 +209,16 @@ export default function DeviceRegistrationPage() {
   const [registrationStatus, setRegistrationStatus] = useState<RegistrationStatus | null>(null);
   const [pairingCode, setPairingCode] = useState('');
   const [isPairing, setIsPairing] = useState(false);
-  const [pairingError, setPairingError] = useState<string | null>(null);
-  /** The error under the pairing form, for the status poll, which runs outside render. */
+  const [pairingError, setPairingErrorState] = useState<string | null>(null);
+  /**
+   * The error under the pairing form, for the status poll, which runs outside render. Set together with
+   * the state: a poll that lands between a failed attempt and the next render must already see it.
+   */
   const pairingErrorRef = useRef<string | null>(null);
+  const setPairingError = useCallback((message: string | null) => {
+    pairingErrorRef.current = message;
+    setPairingErrorState(message);
+  }, []);
   /** A pairing the Portal will only finish as a move, waiting for the person's yes. */
   const [moveConfirmation, setMoveConfirmation] = useState<{ code: string; organizationName: string | null } | null>(null);
   const [redirectStatusKey, setRedirectStatusKey] = useState('DEVICE_REGISTRATION_SETTING_UP_HUB_ELLIPSIS');
@@ -218,8 +230,11 @@ export default function DeviceRegistrationPage() {
   const pairingInProgressRef = useRef(false);
   const completionStartedRef = useRef(false);
   const lastStatusFetchSucceededRef = useRef(false);
-  /** Status checks still waiting for the Hub. The poll skips its turn while there is one. */
-  const statusChecksInFlightRef = useRef(0);
+  /**
+   * When each status check still waiting for the Hub started. The poll skips its turn while one of them
+   * is younger than STATUS_CHECK_GIVE_UP_MS, so a check that never answers holds it back only that long.
+   */
+  const statusChecksInFlightRef = useRef(new Set<{ startedAt: number }>());
   const deepLinkPairAttemptRef = useRef<string | null>(null);
   const [pendingDeepLinkCode, setPendingDeepLinkCode] = useState<string | null>(null);
   const [stateDrift, setStateDrift] = useState<RegistrationStateDrift | null>(null);
@@ -288,7 +303,8 @@ export default function DeviceRegistrationPage() {
   }, []);
 
   const refreshRegistrationStatus = useCallback(async () => {
-    statusChecksInFlightRef.current += 1;
+    const statusCheck = { startedAt: Date.now() };
+    statusChecksInFlightRef.current.add(statusCheck);
     try {
       const statusResult = await fetchRegistrationStatusResult();
       if (!statusResult.ok) {
@@ -318,8 +334,8 @@ export default function DeviceRegistrationPage() {
 
         if (status.phase === 'unregistered') {
           await loadDeviceInfo();
-          const pairingInProgress = pairingInProgressRef.current || pendingPairTargetRef.current !== null;
-          if (pairingInProgress) {
+          const isPairingUnderway = () => pairingInProgressRef.current || pendingPairTargetRef.current !== null;
+          if (isPairingUnderway()) {
             setDriftDialogOpen(false);
           } else {
             const drift = await loadStateDrift();
@@ -327,8 +343,7 @@ export default function DeviceRegistrationPage() {
             // Not over the error a failed pairing left under the form: the dialog hid the only word on
             // what went wrong. It asks again once the person edits the code or pairs again. Nor during an
             // attempt that started while this check waited, which would leave it over that attempt's error.
-            const pairingStartedSince = pairingInProgressRef.current || pendingPairTargetRef.current !== null;
-            if (drift?.detected && !storedChoice && !pairingErrorRef.current && !pairingStartedSince) {
+            if (drift?.detected && !storedChoice && !pairingErrorRef.current && !isPairingUnderway()) {
               setDriftDialogOpen(true);
             }
           }
@@ -376,7 +391,7 @@ export default function DeviceRegistrationPage() {
       });
       return null;
     } finally {
-      statusChecksInFlightRef.current -= 1;
+      statusChecksInFlightRef.current.delete(statusCheck);
       setIsLoading(false);
     }
   }, [loadDeviceInfo, loadStateDrift, t]);
@@ -458,10 +473,6 @@ export default function DeviceRegistrationPage() {
   }, [refreshRegistrationStatus]);
 
   useEffect(() => {
-    pairingErrorRef.current = pairingError;
-  }, [pairingError]);
-
-  useEffect(() => {
     // Poll active provisioning phases at the standard interval. Poll an
     // unregistered appliance less often so externally completed headless setup
     // still appears without creating unnecessary requests. One failed fetch is a
@@ -479,7 +490,8 @@ export default function DeviceRegistrationPage() {
     const intervalId = window.setInterval(() => {
       // A check that is still running answers for this one. Starting another on every tick stacked
       // requests onto a Hub that was slow to answer, and made it slower still.
-      if (statusChecksInFlightRef.current > 0) {
+      const now = Date.now();
+      if ([...statusChecksInFlightRef.current].some((statusCheck) => now - statusCheck.startedAt < STATUS_CHECK_GIVE_UP_MS)) {
         return;
       }
       void refreshRegistrationStatus();
@@ -577,7 +589,7 @@ export default function DeviceRegistrationPage() {
         setIsPairing(false);
       }
     },
-    [refreshRegistrationStatus, t],
+    [refreshRegistrationStatus, setPairingError, t],
   );
 
   useEffect(() => {
