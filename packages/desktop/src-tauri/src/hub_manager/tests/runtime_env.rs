@@ -862,3 +862,44 @@ fn a_windows_pc_without_a_firmware_uuid_falls_back_to_its_machine_guid() {
         );
     }
 }
+
+/// Windows PowerShell writes warnings to standard output too. A launch keeps the ID it derives, so
+/// a warning taken for the UUID would stay the Hub's device ID for good.
+#[test]
+fn a_powershell_warning_is_not_taken_for_the_smbios_uuid() {
+    for (cim, expected) in [
+        (
+            format!("WARNING: probe\r\n{PAIRED_DEVICE_ID}\r\n"),
+            PAIRED_DEVICE_ID,
+        ),
+        ("WARNING: probe\r\n".to_string(), MACHINE_GUID),
+    ] {
+        let pc = |program: &str, _args: &[&str]| match program {
+            "powershell.exe" => Some(cim.clone()),
+            "reg" => Some(machine_guid_output()),
+            _ => None,
+        };
+
+        assert_eq!(
+            crate::hub_manager::windows_host_device_id(pc),
+            Some(expected.to_string()),
+            "{cim:?}"
+        );
+    }
+}
+
+/// The Hub container writes `state/registered-device-id`, and a launch copies it into the env file
+/// Compose starts the stack with. A line break in it must not add a variable there.
+#[test]
+fn a_registered_device_id_with_a_line_break_is_ignored() {
+    let (_tempdir, data_dir) = portal_test_data_dir();
+    write_registered_device_id(
+        &data_dir,
+        &format!("{PAIRED_DEVICE_ID}\nCI_HUB_IMAGE=registry.example/other:1"),
+    );
+
+    let rendered = render_with_device_id(&data_dir, Some(PAIRED_DEVICE_ID));
+
+    assert_eq!(rendered_device_id(&rendered), Some(PAIRED_DEVICE_ID));
+    assert!(!rendered.contains("registry.example/other"), "{rendered}");
+}

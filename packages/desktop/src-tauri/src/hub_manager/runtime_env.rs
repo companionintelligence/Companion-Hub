@@ -310,8 +310,8 @@ pub(crate) fn windows_host_device_id(
             "(Get-CimInstance Win32_ComputerSystemProduct).UUID",
         ],
     )
-    .map(|output| output.trim().to_string())
-    .filter(|uuid| is_usable_host_device_id(uuid));
+    .as_deref()
+    .and_then(parse_smbios_uuid);
     if smbios_uuid.is_some() {
         return smbios_uuid;
     }
@@ -327,6 +327,28 @@ pub(crate) fn windows_host_device_id(
     )
     .as_deref()
     .and_then(parse_machine_guid)
+}
+
+/// The UUID in the output of `(Get-CimInstance Win32_ComputerSystemProduct).UUID`. Windows
+/// PowerShell writes warnings to standard output too, so only a line shaped like a UUID counts.
+#[cfg(any(test, target_os = "windows"))]
+fn parse_smbios_uuid(output: &str) -> Option<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .find(|line| is_uuid_shaped(line) && is_usable_host_device_id(line))
+        .map(str::to_string)
+}
+
+/// Hex digits in groups of 8, 4, 4, 4 and 12, the way CIM prints a UUID.
+#[cfg(any(test, target_os = "windows"))]
+fn is_uuid_shaped(value: &str) -> bool {
+    let groups: Vec<&str> = value.split('-').collect();
+    groups.len() == 5
+        && groups
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(group, len)| group.len() == len && group.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 /// `MachineGuid` from `reg query HKLM\SOFTWARE\Microsoft\Cryptography /v MachineGuid`.
@@ -364,11 +386,16 @@ fn read_host_device_id_impl() -> Option<String> {
 /// in the backend's `device-id.resolver.ts`).
 const REGISTERED_DEVICE_ID_FILE: &str = "state/registered-device-id";
 
+/// The Hub container writes the file, and a launch copies the ID into the env file Compose starts
+/// the stack with. So the ID counts only as one token: a line break in it would add a variable.
 fn registered_device_id(data_dir: &Path) -> Option<String> {
     std::fs::read_to_string(data_dir.join(REGISTERED_DEVICE_ID_FILE))
         .ok()
         .map(|id| id.trim().to_string())
-        .filter(|id| is_usable_host_device_id(id))
+        .filter(|id| {
+            is_usable_host_device_id(id)
+                && !id.contains(|c: char| c.is_whitespace() || c.is_control())
+        })
 }
 
 fn env_device_id(existing: &std::collections::HashMap<String, String>) -> Option<String> {
