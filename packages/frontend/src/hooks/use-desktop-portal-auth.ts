@@ -1,5 +1,5 @@
 import { client } from '@/api-client/client.gen';
-import { apiFetch, markHubSessionIssuedAt, setTauriSessionId } from '@/lib/api-fetch';
+import { apiFetch, getHubSessionIssuedAt, markHubSessionIssuedAt, setTauriSessionId } from '@/lib/api-fetch';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import { hubAuthFlowPolicy, readHubAuthFlow } from '@/lib/hub-auth-flow';
 import { isTauriDesktopApp } from '@/lib/hub-runtime-mode';
@@ -160,14 +160,20 @@ export function useDesktopPortalAuth() {
       if (!policy.announceDesktopPresence) {
         return;
       }
+      // Sign out clears this record. An answer that lands after that names the person who just
+      // left, so it must not be kept for the next one.
+      const sessionIssuedAt = getHubSessionIssuedAt();
       void apiFetch('/api/auth/portal/session-hint?desktop=1')
         .then(async (res) => {
           if (!res.ok) {
             return;
           }
           // The Hub names an account here only to the window signed in as it. Keeping it lets the
-          // sign-in screen offer the same account after this window signs out.
+          // sign-in screen offer the same account after this window's session ends.
           const hint = (await res.json()) as { email?: string | null; source?: string | null };
+          if (sessionIssuedAt === null || getHubSessionIssuedAt() !== sessionIssuedAt) {
+            return;
+          }
           if (hint.email && (hint.source === 'hub_user' || hint.source === 'portal_session')) {
             rememberPortalAccountEmail(hint.email);
           }

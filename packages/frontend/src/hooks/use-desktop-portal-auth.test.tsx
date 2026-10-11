@@ -13,11 +13,13 @@ const api = vi.hoisted(() => ({
   apiFetch: vi.fn(),
   setTauriSessionId: vi.fn(),
   markHubSessionIssuedAt: vi.fn(),
+  getHubSessionIssuedAt: vi.fn((): number | null => 1_000),
 }));
 vi.mock('@/lib/api-fetch', () => ({
   apiFetch: (...a: unknown[]) => api.apiFetch(...a),
   setTauriSessionId: (...a: unknown[]) => api.setTauriSessionId(...a),
   markHubSessionIssuedAt: (...a: unknown[]) => api.markHubSessionIssuedAt(...a),
+  getHubSessionIssuedAt: () => api.getHubSessionIssuedAt(),
 }));
 
 vi.mock('@/api-client/client.gen', () => ({
@@ -103,6 +105,7 @@ beforeEach(() => {
     },
   });
   api.apiFetch.mockClear();
+  api.getHubSessionIssuedAt.mockReset().mockReturnValue(1_000);
   api.apiFetch.mockImplementation(async (_path: string) => ({
     ok: true,
     status: 200,
@@ -179,6 +182,31 @@ describe('useDesktopPortalAuth — wiring', () => {
 
     await waitFor(() => expect(api.apiFetch).toHaveBeenCalledWith('/api/auth/portal/session-hint?desktop=1'));
     await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(hint.rememberPortalAccountEmail).not.toHaveBeenCalled();
+  });
+
+  it('drops an answer that lands after this window signed out, so the next person is not offered the last one', async () => {
+    let answer: (value: unknown) => void = () => undefined;
+    api.apiFetch.mockImplementation((path: string) =>
+      String(path).includes('session-hint')
+        ? new Promise((resolve) => {
+            answer = resolve;
+          })
+        : Promise.resolve({ ok: true, status: 200, json: async () => ({ sessionId: 'sess-1', redirectPath: '/dashboard' }) }),
+    );
+
+    renderHook(() => useDesktopPortalAuth());
+    await waitFor(() => expect(api.apiFetch).toHaveBeenCalledWith('/api/auth/portal/session-hint?desktop=1'));
+
+    // Sign out clears the window's session record while the heartbeat still waits on the Hub.
+    api.getHubSessionIssuedAt.mockReturnValue(null);
+    answer({
+      ok: true,
+      status: 200,
+      json: async () => ({ email: 'person@example.com', portalBaseUrl: 'https://portal.example.com', source: 'hub_user', portalReachable: true }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
     expect(hint.rememberPortalAccountEmail).not.toHaveBeenCalled();
   });
 
