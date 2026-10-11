@@ -466,20 +466,22 @@ export function runApiKeyCommand(args: string[]) {
     // Same schema split as `create`: selecting a column an older Hub does not have fails the whole
     // query, so `api-key list` was unusable on every published release rather than degrading.
     const read = containerReader(API_KEY_DB_CONTAINER);
+    // The type sits on the name because TypeScript narrows after a `never` call only then.
+    const exitOnLostKeys: () => never = () => exitOnLostAnswer('Could not read API keys', ['', 'Settings → Security lists them.']);
     const withCapability = apiKeyTableHasCapability(read);
-    if (withCapability === null) exitOnLostAnswer('Could not read API keys', ['', 'Settings → Security lists them.']);
+    if (withCapability === null) exitOnLostKeys();
     const fields = ["'id', id", "'name', name", "'scopes', scopes", ...(withCapability ? ["'capability', capability"] : []), "'prefix', prefix"].join(
       ', ',
     );
     const result = psql(read, `SELECT COALESCE(json_agg(json_build_object(${fields}) ORDER BY id)::text, '[]') FROM api_key;`);
-    if (result.lost) exitOnLostAnswer('Could not read API keys', ['', 'Settings → Security lists them.']);
+    if (result.lost) exitOnLostKeys();
     if (!result.ok) {
       printMessageBox('Could not read API keys', [...psqlErrorLines(result), '', `Is the Hub running? Try ${bold(`${BASE_COMMAND} up`)}.`], 'red');
       process.exit(1);
     }
     // The query prints `[]` when there are no keys, so no answer at all is one that was lost. Read as
     // "no keys", it told the operator of a Hub holding eight that it had none.
-    if (!result.stdout) exitOnLostAnswer('Could not read API keys', ['', 'Settings → Security lists them.']);
+    if (!result.stdout) exitOnLostKeys();
     const rows = formatApiKeyRows(result.stdout, withCapability);
     printMessageBox('API keys', rows.length > 0 ? rows : ['(none — create one with `api-key create --name <label>`)'], 'cyan');
     return;

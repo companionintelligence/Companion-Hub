@@ -197,6 +197,27 @@ export function hostRootFolder(value: string, platform: NodeJS.Platform = proces
 }
 
 /**
+ * The `state` folder the hardware probes write to (init-gpu-runtime, init-host-probe):
+ * CI_HUB_STATE_PATH / STATE_PATH, then ROOT_FOLDER_HOST from ENV_FILE, then from the process env,
+ * then `.internal` under the cwd. Both ROOT_FOLDER_HOST sources go through {@link hostRootFolder}.
+ */
+export function resolveStateDirForRuntime(): string {
+  const internalDir = process.env.CI_HUB_STATE_PATH || process.env.STATE_PATH;
+  if (internalDir) return path.join(internalDir, 'state');
+
+  const envFile = process.env.ENV_FILE;
+  if (envFile) {
+    const fromEnvFile = parseEnvFile(path.resolve(process.cwd(), envFile)).ROOT_FOLDER_HOST;
+    if (fromEnvFile) return path.join(hostRootFolder(fromEnvFile), 'state');
+  }
+
+  const rootFromEnv = process.env.ROOT_FOLDER_HOST;
+  if (rootFromEnv) return path.join(hostRootFolder(rootFromEnv), 'state');
+
+  return path.resolve(process.cwd(), '.internal', 'state');
+}
+
+/**
  * Resolve ROOT_FOLDER_HOST during init scripts (init-hub-data-dirs, init-docker-config).
  * Honors ENV_FILE, process.env.ROOT_FOLDER_HOST, then CI_HUB_STATE_PATH / STATE_PATH. The first two
  * may be in Docker's form on Windows, so they go through {@link hostRootFolder}.

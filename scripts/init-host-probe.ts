@@ -9,9 +9,8 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import si from 'systeminformation';
-import { parseEnvFile } from './env-file';
 import { isDirectScriptRun } from './lib/is-direct-run';
-import { hostRootFolder } from './lib/paths';
+import { resolveStateDirForRuntime } from './lib/paths';
 
 interface HostFirewallInfo {
   kind: 'ufw' | 'firewalld' | 'nftables' | 'iptables' | 'none' | 'unknown';
@@ -34,26 +33,6 @@ interface HostMetricsProbeFile {
     diskMount: string;
   };
   firewall?: HostFirewallInfo;
-}
-
-function resolveStateDir(): string {
-  const internalDir = process.env.CI_HUB_STATE_PATH || process.env.STATE_PATH;
-  if (internalDir) return path.join(internalDir, 'state');
-
-  const envFile = process.env.ENV_FILE;
-  if (envFile) {
-    const fromEnvFile = parseEnvFile(path.resolve(process.cwd(), envFile)).ROOT_FOLDER_HOST;
-    if (fromEnvFile) {
-      return path.join(hostRootFolder(fromEnvFile), 'state');
-    }
-  }
-
-  const rootFromEnv = process.env.ROOT_FOLDER_HOST;
-  if (rootFromEnv) {
-    return path.join(hostRootFolder(rootFromEnv), 'state');
-  }
-
-  return path.resolve(process.cwd(), '.internal', 'state');
 }
 
 function normalizePlatform(): HostMetricsProbeFile['platform'] {
@@ -241,7 +220,7 @@ export async function probeHostMetrics(): Promise<HostMetricsProbeFile> {
 }
 
 export async function initHostProbe(): Promise<HostMetricsProbeFile> {
-  const stateDir = resolveStateDir();
+  const stateDir = resolveStateDirForRuntime();
   const outPath = path.join(stateDir, 'hardware', 'host_metrics.json');
   mkdirSync(path.dirname(outPath), { recursive: true });
 
