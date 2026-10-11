@@ -81,6 +81,31 @@ describe('DockerService.pullImages: a pull that never starts', () => {
 
     expect(outcome.error).toBeUndefined();
   });
+
+  it('ends a pull cancelled while it looked for a local copy, without asking Docker for it', async () => {
+    vi.useFakeTimers();
+    const logger = mock<LoggerService>();
+    let missing!: (error: Error) => void;
+    const inspect = vi.fn(
+      () =>
+        new Promise((_resolve, reject) => {
+          missing = reject;
+        }),
+    );
+    const pull = vi.fn(); // Docker never answers
+    const service = new DockerService(logger, mock(), mock(), mock(), mock(), { getImage: () => ({ inspect }), pull } as never, mock());
+    const cancel = new AbortController();
+
+    const outcome = watch(service.pullImages([IMAGE], { signal: cancel.signal }));
+    await vi.advanceTimersByTimeAsync(0);
+    cancel.abort();
+    missing(new Error('No such image'));
+    // Past every pull timeout: an aborted pull disarms them, so only the cancel itself can end it.
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+
+    expect(outcome.error?.name).toBe('AbortError');
+    expect(pull).not.toHaveBeenCalled();
+  });
 });
 
 describe('DockerService.pullImages: what it logs', () => {

@@ -792,6 +792,8 @@ export class DockerService {
             emitProgress(image, 'complete');
             return;
           }
+          // An abort during the lookup above has already fired, so the listener below would never hear it.
+          throwIfAborted(pullSignal);
 
           // A pull Docker never starts would otherwise wait out the whole inactivity timeout.
           const imageStartedAt = Date.now();
