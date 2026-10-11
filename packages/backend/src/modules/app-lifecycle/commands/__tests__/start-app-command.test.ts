@@ -320,7 +320,8 @@ describe('StartAppCommand — pull policy', () => {
       const result = await command.execute(customUrn, {});
 
       expect(result.success).toBe(true);
-      expect(portManager.allocatePorts).toHaveBeenCalledWith(customUrn, [{ containerPort: 80, label: 'main', preferredHostPort: 80 }]);
+      // 80 is the Hub's own HTTP port, so it is not even asked for.
+      expect(portManager.allocatePorts).toHaveBeenCalledWith(customUrn, [{ containerPort: 80, label: 'main', preferredHostPort: undefined }]);
       expect(helperOf<ReturnType<typeof mock<AppsRepository>>>(AppsRepository).updateAppById).toHaveBeenCalledWith(7, {
         config: { exposureMode: 'local', port: 10000 },
         port: 10000,
@@ -339,6 +340,19 @@ describe('StartAppCommand — pull policy', () => {
         customUrn,
         expect.objectContaining({ port: 18080 }),
       );
+    });
+
+    it("keeps it off the host port the desktop app moved the Hub's HTTPS to", async () => {
+      vi.stubEnv('HTTPS_PORT', '8443');
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'my-nginx', port: 8443, force_pull: false } as any);
+
+      try {
+        await command.execute(customUrn, {});
+      } finally {
+        vi.unstubAllEnvs();
+      }
+
+      expect(portManager.allocatePorts).toHaveBeenCalledWith(customUrn, [{ containerPort: 8443, label: 'main', preferredHostPort: undefined }]);
     });
 
     it('leaves a store app to the port its install allocated', async () => {

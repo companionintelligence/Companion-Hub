@@ -153,10 +153,23 @@ describe('CustomAppService', () => {
       });
     });
 
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
     it('gets one from the port manager, asking for its internal port first, and keeps it on the row', async () => {
+      await createWith(webOn('8081'));
+
+      expect(portManager.allocatePorts).toHaveBeenCalledWith('port-probe:_user', [{ containerPort: 8081, label: 'main', preferredHostPort: 8081 }]);
+      expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ config: { port: 10000 }, port: 10000 }));
+    });
+
+    it("does not ask for its internal port when that is the Hub's HTTP port, 80", async () => {
       await createWith(webOn('80'));
 
-      expect(portManager.allocatePorts).toHaveBeenCalledWith('port-probe:_user', [{ containerPort: 80, label: 'main', preferredHostPort: 80 }]);
+      expect(portManager.allocatePorts).toHaveBeenCalledWith('port-probe:_user', [
+        { containerPort: 80, label: 'main', preferredHostPort: undefined },
+      ]);
       expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ config: { port: 10000 }, port: 10000 }));
     });
 
@@ -177,6 +190,7 @@ describe('CustomAppService', () => {
     it.each([
       ['the port the Hub serves HTTP on', () => undefined, 80],
       ['the port the Hub serves HTTPS on', () => undefined, 443],
+      ["the port the desktop app moved the Hub's HTTP to", () => vi.stubEnv('HTTP_PORT', '8880'), 8880],
       ['a port another app publishes', () => appsRepository.getAppsByPort.mockResolvedValue([{ appName: 'wordpress' }] as any), 8213],
       ['a port the port manager keeps for the Hub', () => portManager.isPortAvailable.mockResolvedValue(false), 5002],
       [
@@ -218,6 +232,32 @@ describe('CustomAppService', () => {
 
       expect(portManager.allocatePorts).toHaveBeenCalledWith('port-probe:_user', [
         { containerPort: 9200, label: 'main', preferredHostPort: undefined },
+      ]);
+    });
+
+    /*
+     * The desktop app moves Traefik's host ports when it can't have the defaults. On Linux only root
+     * may open a port below 1024, so HTTP and HTTPS go to 8880 and 8443. The port manager's probe runs
+     * inside the Hub container and sees neither.
+     */
+    it("keeps the main port off the host port the desktop app moved the Hub's HTTPS to", async () => {
+      vi.stubEnv('HTTPS_PORT', '8443');
+
+      await createWith(webOn('8443'));
+
+      expect(portManager.allocatePorts).toHaveBeenCalledWith('port-probe:_user', [
+        { containerPort: 8443, label: 'main', preferredHostPort: undefined },
+      ]);
+    });
+
+    it("keeps the main port off a port another app's row publishes", async () => {
+      // A port-expose app points at a service already running on the host and gets no allocation.
+      appsRepository.getAppsByPort.mockImplementation(async (port) => (port === 8096 ? [{ appName: 'jellyfin' }] : []) as any);
+
+      await createWith(webOn('8096'));
+
+      expect(portManager.allocatePorts).toHaveBeenCalledWith('port-probe:_user', [
+        { containerPort: 8096, label: 'main', preferredHostPort: undefined },
       ]);
     });
   });

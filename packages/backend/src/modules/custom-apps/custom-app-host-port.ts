@@ -41,8 +41,9 @@ export async function ensureCustomAppHostPort(
   appsRepository: Pick<AppsRepository, 'getAppByUrn' | 'updateAppById'>,
   appUrn: AppUrn,
   internalPort: number,
+  avoid: ReadonlySet<number> = new Set(),
 ): Promise<number> {
-  const hostPort = (await portManager.getMainPort(appUrn)) ?? (await allocateCustomAppHostPort(portManager, appUrn, internalPort));
+  const hostPort = (await portManager.getMainPort(appUrn)) ?? (await allocateCustomAppHostPort(portManager, appUrn, internalPort, avoid));
   const app = await appsRepository.getAppByUrn(appUrn);
 
   if (app) {
@@ -50,4 +51,31 @@ export async function ensureCustomAppHostPort(
   }
 
   return hostPort;
+}
+
+/**
+ * The host ports the Hub's own web server publishes, which a custom app's main port and its Port
+ * Mappings must keep off.
+ *
+ * Every Hub compose file publishes Traefik on `${HTTP_PORT:-80}`, `${HTTPS_PORT:-443}` and
+ * `${TRAEFIK_DASHBOARD_PORT:-8080}`, and the desktop app moves them when it can't have those: on
+ * Linux, where only root may open a port below 1024, HTTP and HTTPS go to 8880 and 8443. The values
+ * come from the Hub's env file, which the backend loads into `process.env`. The port manager's probe
+ * runs inside the Hub container and sees none of them. `userSettings.port` and `sslPort`
+ * (`NGINX_PORT` and `NGINX_PORT_SSL`) are kept for a Hub that sets them.
+ */
+export function hubWebHostPorts(userSettings: { port?: number; sslPort?: number } | undefined, env: NodeJS.ProcessEnv = process.env): Set<number> {
+  const envPort = (name: string, fallback: number) => {
+    const raw = env[name]?.trim() ?? '';
+    const value = /^\d{1,5}$/.test(raw) ? Number(raw) : 0;
+    return value >= 1 && value <= 65535 ? value : fallback;
+  };
+  const ports = [
+    envPort('HTTP_PORT', 80),
+    envPort('HTTPS_PORT', 443),
+    envPort('TRAEFIK_DASHBOARD_PORT', 8080),
+    userSettings?.port,
+    userSettings?.sslPort,
+  ];
+  return new Set(ports.filter((port): port is number => typeof port === 'number'));
 }

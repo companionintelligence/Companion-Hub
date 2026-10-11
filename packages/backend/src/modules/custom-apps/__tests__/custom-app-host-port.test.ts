@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AppUrn } from '@ci-hub/common/types';
-import { allocateCustomAppHostPort, ensureCustomAppHostPort } from '../custom-app-host-port';
+import { allocateCustomAppHostPort, ensureCustomAppHostPort, hubWebHostPorts } from '../custom-app-host-port';
 
 const APP_URN = 'my-nginx:_user' as AppUrn;
 
@@ -59,5 +59,25 @@ describe('ensureCustomAppHostPort', () => {
     await expect(ensureCustomAppHostPort(portManager, appsRepository, APP_URN, 80)).resolves.toBe(15000);
     expect(portManager.allocatePorts).not.toHaveBeenCalled();
     expect(appsRepository.updateAppById).toHaveBeenCalledWith(4, { config: { port: 15000 }, port: 15000 });
+  });
+
+  it('keeps a new host port off the ports it is told to avoid', async () => {
+    const portManager = portManagerGiving(10004);
+
+    await ensureCustomAppHostPort(portManager, appsRepositoryWith({}), APP_URN, 8443, new Set([8443]));
+
+    expect(portManager.allocatePorts).toHaveBeenCalledWith(APP_URN, [{ containerPort: 8443, label: 'main', preferredHostPort: undefined }]);
+  });
+});
+
+describe('hubWebHostPorts', () => {
+  it("is Traefik's default host ports when the env file names none", () => {
+    expect(hubWebHostPorts(undefined, {})).toEqual(new Set([80, 443, 8080]));
+  });
+
+  it('follows the ports the desktop app wrote to the env file, and keeps the web port settings', () => {
+    expect(hubWebHostPorts({ port: 8000, sslPort: 8001 }, { HTTP_PORT: '8880', HTTPS_PORT: ' 8443 ', TRAEFIK_DASHBOARD_PORT: 'not-a-port' })).toEqual(
+      new Set([8880, 8443, 8080, 8000, 8001]),
+    );
   });
 });

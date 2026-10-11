@@ -1,9 +1,10 @@
 import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { AppsRepository } from '@/modules/apps/apps.repository';
-import { ensureCustomAppHostPort } from '@/modules/custom-apps/custom-app-host-port';
+import { ensureCustomAppHostPort, hubWebHostPorts } from '@/modules/custom-apps/custom-app-host-port';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
@@ -88,6 +89,7 @@ export class StartAppCommand extends AppLifecycleCommand {
           this.moduleRef.get(AppsRepository, { strict: false }),
           appUrn,
           config.port,
+          hubWebHostPorts(this.moduleRef.get(ConfigurationService, { strict: false })?.get('userSettings')),
         );
         logger.info(`Custom app ${appUrn} now publishes on host port ${form.port}`);
       }

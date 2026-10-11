@@ -10,7 +10,7 @@ import path from 'node:path';
 import { AppsRepository } from '../apps/apps.repository';
 import { PortManagerService } from '../network/port-manager.service';
 import type { CreateCustomAppDto, UpdateCustomAppDto } from './dto/custom-apps.dto';
-import { allocateCustomAppHostPort } from './custom-app-host-port';
+import { allocateCustomAppHostPort, hubWebHostPorts } from './custom-app-host-port';
 import { getFrontmatter } from '@/utils/frontmatter/frontmatter';
 import { frontmatterSchema, type AppInfo, type ServiceInput } from '@ci-hub/common/schemas';
 
@@ -87,8 +87,10 @@ export class CustomAppService {
       throw new TranslatableError('CUSTOM_APP_ERROR_DUPLICATE_NAME', { name: displayName }, HttpStatus.CONFLICT);
     }
 
+    const hubWebPorts = hubWebHostPorts(this.configService.get('userSettings'));
+
     // Before anything is written, so a refusal leaves no files or row behind.
-    await this.assertMappedHostPortsFree(config);
+    await this.assertMappedHostPortsFree(config, hubWebPorts);
 
     try {
       await this.createAppDirectories(appUrn);
@@ -96,9 +98,10 @@ export class CustomAppService {
       await this.createAppInfo(appUrn, displayName, config);
 
       const internalPort = mainServicePort(config);
-      const mappedTcpPorts = new Set(mappedHostPorts(config).flatMap(({ hostPort, protocol }) => (protocol === 'tcp' ? [hostPort] : [])));
       const hostPort =
-        internalPort === undefined ? undefined : await allocateCustomAppHostPort(this.portManager, appUrn, internalPort, mappedTcpPorts);
+        internalPort === undefined
+          ? undefined
+          : await allocateCustomAppHostPort(this.portManager, appUrn, internalPort, await this.mainPortAvoids(config, internalPort, hubWebPorts));
 
       await this.appsRepository.createApp({
         appStoreSlug: APPS_FOLDER,
@@ -129,21 +132,38 @@ export class CustomAppService {
   }
 
   /**
+   * The host ports the main port must keep off although the port manager would hand them out: the
+   * Hub's web ports, the ones the app maps itself, and its internal port when another app's row
+   * publishes it. A port-expose app is such a row: it points at a service already running on the
+   * host and holds no allocation.
+   */
+  private async mainPortAvoids(config: CreateCustomAppDto['config'], internalPort: number, hubWebPorts: ReadonlySet<number>): Promise<Set<number>> {
+    const avoid = new Set(hubWebPorts);
+    for (const { hostPort, protocol } of mappedHostPorts(config)) {
+      if (protocol === 'tcp') {
+        avoid.add(hostPort);
+      }
+    }
+    if ((await this.appsRepository.getAppsByPort(internalPort)).length > 0) {
+      avoid.add(internalPort);
+    }
+    return avoid;
+  }
+
+  /**
    * Refuse a Port Mappings host port that is already held: one of the Hub's web ports, a port the port
    * manager keeps for the Hub or gave another app, one another app's row publishes, or one mapped twice.
    * A privileged port nobody holds (53 for a DNS server) stays allowed. Only the port manager's own
    * allocations keep out of that range.
    */
-  private async assertMappedHostPortsFree(config: CreateCustomAppDto['config']): Promise<void> {
-    const settings = this.configService.get('userSettings');
-    const hubWebPorts = [settings?.port, settings?.sslPort];
+  private async assertMappedHostPortsFree(config: CreateCustomAppDto['config'], hubWebPorts: ReadonlySet<number>): Promise<void> {
     const seen = new Set<string>();
 
     for (const { hostPort, protocol } of mappedHostPorts(config)) {
       const key = `${hostPort}/${protocol}`;
       const held =
         seen.has(key) ||
-        (protocol === 'tcp' && (hubWebPorts.includes(hostPort) || (await this.appsRepository.getAppsByPort(hostPort)).length > 0)) ||
+        (protocol === 'tcp' && (hubWebPorts.has(hostPort) || (await this.appsRepository.getAppsByPort(hostPort)).length > 0)) ||
         (hostPort >= 1024
           ? !(await this.portManager.isPortAvailable(hostPort, protocol))
           : (await this.portManager.getAllAllocations()).some((allocation) => allocation.hostPort === hostPort && allocation.protocol === protocol));
