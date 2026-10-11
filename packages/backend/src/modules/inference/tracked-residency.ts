@@ -86,8 +86,9 @@ export function trackedPullsNotListed(input: {
     input.tracked.filter((entry) => entry.state === 'pulled' && entry.backend === input.backend).map((entry) => entry.catalogId),
   );
   const catalogBackendModelIds = input.catalog.map((model) => model.backendModelId);
+  const inventory = [...input.inventory];
   return input.catalog
     .filter((model) => model.backend === input.backend && pulled.has(model.id))
-    .filter((model) => !isCatalogModelInstalled(model, [...input.inventory], false, catalogBackendModelIds))
+    .filter((model) => !isCatalogModelInstalled(model, inventory, false, catalogBackendModelIds))
     .map((model) => model.id);
 }

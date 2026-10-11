@@ -990,6 +990,11 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     backend: InferenceBackend,
     backendType: InferenceBackendType,
   ): Promise<boolean> {
+    // Only Ollama's own list can overrule the record. A record that counts whatever the engine
+    // answers (any engine but Ollama) needs no engine call, which here would sit under the load lock.
+    if (trackedPullCounts(tracked, backendType)) {
+      return true;
+    }
     const health = await backend.healthCheck().catch(() => null);
     if (trackedPullCounts(tracked, health?.running && health.healthy ? backendType : null)) {
       return true;

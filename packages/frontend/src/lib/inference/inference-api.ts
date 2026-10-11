@@ -173,7 +173,8 @@ export async function saveCloudProviderConfig(body: { provider: CloudProviderTyp
 
 /**
  * Delete the key the Hub holds for `provider`; a save cannot, since a blank key there keeps the
- * stored one. Called through the shared client because the generated SDK predates this route.
+ * stored one. Called through the shared client: swagger.json has the route, but the committed SDK was
+ * generated before it. Switch to the generated `removeCloudProvider` after `pnpm run gen:api-client`.
  */
 export async function removeCloudProviderConfig(provider: CloudProviderType): Promise<void> {
   await unwrap(client.delete({ url: `/api/inference/cloud-providers/${encodeURIComponent(provider)}` }));
