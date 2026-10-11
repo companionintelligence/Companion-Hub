@@ -187,7 +187,22 @@ export async function prepareAppComposeDir(
     // leave uncapped. Only the saved setting: `defaultCpuLimit` above can be the allocator's
     // host-sized recommendation, which #1186 stopped stamping on every service.
     const configuredCpuLimit = (fullConfig.userSettings as Record<string, unknown> | undefined)?.defaultAppCpuLimit;
-    const defaultAppCpuLimit = typeof configuredCpuLimit === 'string' ? configuredCpuLimit.trim() || undefined : undefined;
+    let defaultAppCpuLimit = typeof configuredCpuLimit === 'string' ? configuredCpuLimit.trim() || undefined : undefined;
+    // Docker refuses to create a container capped above the CPUs it has ("range of CPUs is from 0.01
+    // to 16.00"), and a cap that high limits nothing. A default saved on a bigger machine, or before
+    // Docker's VM got fewer CPUs, would otherwise stop every app without a limit of its own.
+    if (defaultAppCpuLimit) {
+      let dockerCpus: number | undefined;
+      try {
+        dockerCpus = (await moduleRef.get(ResourceAllocatorService, { strict: false }).getDockerCapacity())?.cpuCores;
+      } catch {
+        // Count unknown: apply the default as saved.
+      }
+      if (dockerCpus && Number(defaultAppCpuLimit) > dockerCpus) {
+        logger.warn(`[compose] Default app CPU limit ${defaultAppCpuLimit} is more than the ${dockerCpus} CPUs Docker has; ${appUrn} runs without it`);
+        defaultAppCpuLimit = undefined;
+      }
+    }
 
     // The manifest also carries the edge-auth default the route builder falls back to for a stored
     // form that never decided `enableAuth` (see `requiresHubLoginOnPublicRoute`).

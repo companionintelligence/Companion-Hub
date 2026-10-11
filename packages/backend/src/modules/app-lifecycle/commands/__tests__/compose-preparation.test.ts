@@ -166,7 +166,7 @@ interface Stubs {
   logger: { info: Stub; warn: Stub; error: Stub };
   subnetManager: { allocateSubnet: Stub };
   configService: { get: Stub; getConfig: Stub };
-  resourceAllocator: { getEffectiveAppDefaults: Stub };
+  resourceAllocator: { getEffectiveAppDefaults: Stub; getDockerCapacity: Stub };
   registrationService: { getDeviceRegistrationInfo: Stub };
   appsRepository: { getAppCustomDomain: Stub };
   docker: { pruneContainers: Stub };
@@ -201,7 +201,10 @@ const createHarness = () => {
         userSettings: { domain: 'settings.example', localDomain: 'settings.local' },
       })),
     },
-    resourceAllocator: { getEffectiveAppDefaults: vi.fn().mockResolvedValue({ cpuLimit: '4', memoryLimit: '8192M' }) },
+    resourceAllocator: {
+      getEffectiveAppDefaults: vi.fn().mockResolvedValue({ cpuLimit: '4', memoryLimit: '8192M' }),
+      getDockerCapacity: vi.fn().mockResolvedValue({ cpuCores: 16, memTotalMb: 32768 }),
+    },
     registrationService: { getDeviceRegistrationInfo: vi.fn().mockResolvedValue({ hubSubdomain: 'hub-desk-acme', slug: 'acme' }) },
     appsRepository: { getAppCustomDomain: vi.fn().mockResolvedValue(null) },
     docker: { pruneContainers: vi.fn().mockResolvedValue({ ContainersDeleted: [], SpaceReclaimed: 0 }) },
@@ -788,6 +791,38 @@ describe('prepareAppComposeDir', () => {
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
 
       expect(lastConstruction().options?.defaultAppCpuLimit).toBeUndefined();
+    });
+
+    it('leaves out a Default app CPU limit above the CPUs Docker has, and says why', async () => {
+      // Docker refuses to create such a container ("range of CPUs is from 0.01 to 16.00"), so every
+      // app without a limit of its own would fail to start, including on the boot after an upgrade.
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.configService.getConfig.mockReturnValue({
+        domain: 'config.example',
+        localDomain: 'config.local',
+        userSettings: { defaultAppCpuLimit: '32' },
+      });
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+      expect(lastConstruction().options?.defaultAppCpuLimit).toBeUndefined();
+      expect(stubs.logger.warn).toHaveBeenCalledWith(expect.stringMatching(/Default app CPU limit 32 .*16 CPUs/));
+    });
+
+    it("still applies a default of exactly Docker's CPU count, and any default when the count is unknown", async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.configService.getConfig.mockReturnValue({
+        domain: 'config.example',
+        localDomain: 'config.local',
+        userSettings: { defaultAppCpuLimit: '16' },
+      });
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+      expect(lastConstruction().options?.defaultAppCpuLimit).toBe('16');
+
+      stubs.resourceAllocator.getDockerCapacity.mockResolvedValue(null);
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+      expect(lastConstruction().options?.defaultAppCpuLimit).toBe('16');
     });
   });
 
