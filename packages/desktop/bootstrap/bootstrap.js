@@ -27,6 +27,11 @@
    */
   const NOT_RUNNING_GRACE_MS = 15 * 1000;
   /**
+   * Once Start engine gets Docker answering, the next poll moves the page on. Until then, for at
+   * most this long, the page keeps saying the engine is starting, as the in-app screen does.
+   */
+  const ENGINE_STARTED_GRACE_MS = 15 * 1000;
+  /**
    * A Docker check that never returns used to leave "Checking CI Hub" up forever.
    * After this, say Docker didn't answer instead of spinning.
    */
@@ -217,6 +222,8 @@
     engineStarting: false,
     /** Why the last Start engine didn't get Docker in WSL answering. */
     engineError: null,
+    /** When Start engine last got Docker in WSL answering. */
+    engineStartedAt: 0,
     navigating: false,
     /** True while get_startup_progress_command has not come back. */
     pollInFlight: false,
@@ -334,8 +341,11 @@
       page.failedAfterSecs = (now - page.waitStartedAt) / 1000;
     }
     if (view === 'stopped') page.startedHere = false;
-    // Docker answers again: a failed Start engine from before is history.
-    if (previous === 'docker') page.engineError = null;
+    // Docker answers again: a Start engine from before is history.
+    if (previous === 'docker') {
+      page.engineError = null;
+      page.engineStartedAt = 0;
+    }
     page.view = view;
   }
 
@@ -553,8 +563,13 @@
     return row;
   }
 
+  /** Start engine is running, or got Docker answering and the page hasn't moved on yet. */
+  function engineStarting() {
+    return page.engineStarting || Date.now() - page.engineStartedAt < ENGINE_STARTED_GRACE_MS;
+  }
+
   function dockerStatusNote() {
-    if (page.engineStarting) return 'Starting the engine… This can take a minute.';
+    if (engineStarting()) return 'Starting the engine… This can take a minute.';
     if (page.engineError) return `The engine didn't start. ${page.engineError}`;
     if (page.installRunning) return 'Installing Docker… This can take a few minutes.';
     if (page.installError) return `Docker install didn't finish. ${page.installError}`;
@@ -657,8 +672,9 @@
     for (const [key, visible] of Object.entries(shown)) el[key].hidden = !visible;
     el.installDocker.disabled = page.installRunning;
     el.installDocker.setAttribute('aria-busy', page.installRunning ? 'true' : 'false');
-    el.startEngine.disabled = page.engineStarting;
-    el.startEngine.setAttribute('aria-busy', page.engineStarting ? 'true' : 'false');
+    const starting = engineStarting();
+    el.startEngine.disabled = starting;
+    el.startEngine.setAttribute('aria-busy', starting ? 'true' : 'false');
     el.actions.hidden = !Object.values(shown).some(Boolean);
     el.aside.hidden = view !== 'stopped';
     el.waiting.hidden = view !== 'docker';
@@ -802,12 +818,13 @@
 
   /** Start the Docker engine inside WSL now, rather than wait for the app's next try. */
   async function startEngine() {
-    if (page.engineStarting) return;
+    if (engineStarting()) return;
     page.engineStarting = true;
     page.engineError = null;
     render();
     try {
       await invoke('start_wsl_engine_command');
+      page.engineStartedAt = Date.now();
     } catch (error) {
       page.engineError = errorText(error) || 'Try again in a minute.';
     } finally {
