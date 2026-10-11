@@ -53,6 +53,7 @@ export function speaksOpenAiCompletions(provider: CloudProviderType): boolean {
 @Injectable()
 export class CloudFallbackService implements OnModuleInit {
   private providers = new Map<CloudProviderType, CloudProviderConfig>();
+  private persistChain: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly logger: LoggerService,
@@ -118,11 +119,20 @@ export class CloudFallbackService implements OnModuleInit {
    * keeps the stored key when `apiKey` is blank. Resolves false when nothing was stored for it.
    */
   async removeProvider(provider: CloudProviderType): Promise<boolean> {
-    if (!this.providers.delete(provider)) {
+    const removed = this.providers.get(provider);
+    if (!removed) {
       return false;
     }
+    this.providers.delete(provider);
+    try {
+      await this.persist();
+    } catch (error) {
+      // settings.json still holds the key, so memory keeps it too: otherwise a retry finds nothing to
+      // remove and the key comes back with the next restart.
+      if (!this.providers.has(provider)) this.providers.set(provider, removed);
+      throw error;
+    }
     this.logger.info(`[CloudFallback] Removed provider: ${provider}`);
-    await this.persist();
     return true;
   }
 
@@ -395,7 +405,15 @@ export class CloudFallbackService implements OnModuleInit {
     };
   }
 
-  private async persist(): Promise<void> {
-    await this.configuration.setInferenceCloudProviders(this.listProviders());
+  /**
+   * Write the providers to settings.json, one write at a time and each with the list as it is when
+   * the write starts. `setProvider` does not wait for its write, and settings writes are not
+   * serialized, so a save's write could otherwise land after a later removal's and put the removed
+   * key back on disk.
+   */
+  private persist(): Promise<void> {
+    const write = this.persistChain.then(() => this.configuration.setInferenceCloudProviders(this.listProviders()));
+    this.persistChain = write.catch(() => undefined);
+    return write.then(() => undefined);
   }
 }

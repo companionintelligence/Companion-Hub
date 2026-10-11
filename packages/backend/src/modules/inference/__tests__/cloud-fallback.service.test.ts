@@ -133,6 +133,49 @@ describe('CloudFallbackService.removeProvider', () => {
 
     expect(configuration.setInferenceCloudProviders).not.toHaveBeenCalled();
   });
+
+  // Forgotten in memory first, the key stayed in settings.json after a failed write, and a second
+  // DELETE found nothing to remove: the key came back with the next restart.
+  it('keeps the key when settings.json cannot be written, so removing it again works', async () => {
+    configuration.getInferenceCloudProviders.mockReturnValue([{ provider: 'openai', apiKey: 'sk-live', enabled: true, defaultModel: 'gpt-4o' }]);
+    const booted = new CloudFallbackService(mock<LoggerService>(), configuration);
+    booted.onModuleInit();
+    configuration.setInferenceCloudProviders.mockRejectedValueOnce(new Error('EROFS: read-only file system'));
+
+    await expect(booted.removeProvider('openai')).rejects.toThrow('EROFS');
+    expect(booted.getProvider('openai')?.apiKey).toBe('sk-live');
+
+    await expect(booted.removeProvider('openai')).resolves.toBe(true);
+    expect(configuration.setInferenceCloudProviders).toHaveBeenLastCalledWith([]);
+  });
+
+  // Settings saves the providers in order and a save does not wait for its write. A save's write that
+  // finished after the removal's put the removed key back in settings.json.
+  it('leaves the removal on disk when a save was still writing', async () => {
+    let disk: CloudProviderConfig[] = [];
+    let finishSlowWrite: (() => void) | undefined;
+    configuration.setInferenceCloudProviders.mockImplementationOnce(
+      (providers) =>
+        new Promise((resolve) => {
+          finishSlowWrite = () => {
+            disk = providers;
+            resolve(providers);
+          };
+        }),
+    );
+    configuration.setInferenceCloudProviders.mockImplementation(async (providers) => {
+      disk = providers;
+      return providers;
+    });
+
+    service.setProvider({ provider: 'openai', apiKey: 'sk-live', enabled: true, defaultModel: 'gpt-4o' });
+    const removal = service.removeProvider('openai');
+    await vi.waitFor(() => expect(finishSlowWrite).toBeDefined());
+    finishSlowWrite?.();
+    await removal;
+
+    expect(disk).toEqual([]);
+  });
 });
 
 // ─── How long a cloud request may wait ───────────────
