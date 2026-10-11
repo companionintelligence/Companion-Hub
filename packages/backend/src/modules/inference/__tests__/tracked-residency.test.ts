@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import type { BackendHealthStatus, CuratedModel, ResidencyReport, TrackedModel } from '@ci-hub/common/types';
 import { LoggerService } from '@/core/logger/logger.service';
+import { CURATED_MODELS } from '../catalog/curated-models';
 import { InferenceController } from '../inference.controller';
 import { ModelRegistryService } from '../model-registry.service';
 import { ModelResidencyService } from '../model-residency.service';
@@ -85,6 +86,35 @@ describe('trackedPullsNotListed', () => {
         tracked: [onOllama(qwen.id, 'pulling'), onOllama(nomic.id, 'pinned'), tracked(chat.id, 'pulled')],
         backend: 'ollama',
         inventory: [],
+      }),
+    ).toEqual([]);
+  });
+
+  // Dropping an entry for a model that is still on disk would take it away from the apps using it.
+  // The catalog holds near-duplicate tags on purpose (`qwen3.8:27b` beside its MTP build), and
+  // `/api/tags` adds `:latest` to an untagged pull, so check every real Ollama row under the name
+  // Ollama lists it by.
+  it('keeps every Ollama catalog row while Ollama lists the tag the Hub pulled for it', () => {
+    const rows = CURATED_MODELS.filter((row) => row.backend === 'ollama');
+    const listedAs = (id: string) => (id.slice(id.lastIndexOf('/') + 1).includes(':') ? id : `${id}:latest`);
+
+    for (const row of rows) {
+      expect(
+        trackedPullsNotListed({
+          catalog: CURATED_MODELS,
+          tracked: [onOllama(row.id, 'pulled')],
+          backend: 'ollama',
+          inventory: [listedAs(row.backendModelId)],
+        }),
+        row.id,
+      ).toEqual([]);
+    }
+    expect(
+      trackedPullsNotListed({
+        catalog: CURATED_MODELS,
+        tracked: rows.map((row) => onOllama(row.id, 'pulled')),
+        backend: 'ollama',
+        inventory: rows.map((row) => listedAs(row.backendModelId)),
       }),
     ).toEqual([]);
   });
