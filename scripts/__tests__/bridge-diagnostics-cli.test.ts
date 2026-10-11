@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { copiedCommandFolder } from './docker-cp-archive';
 
 const spawnSync = vi.fn();
 const parseEnvFile = vi.fn();
@@ -51,15 +52,8 @@ function mockDocker(handlers: { inspect?: string; exec?: (script: string) => num
 }
 
 /** What `docker cp <container>:<dir> -` returns for the folder a probe run detached leaves: out, err and its exit status. */
-function copiedProbeFolder(dir: string, code: number): Buffer {
-  const file = (name: string, content: string) => {
-    const header = Buffer.alloc(512);
-    header.write(`${dir}/${name}`, 0, 'utf-8');
-    header.write(`${content.length.toString(8).padStart(11, '0')}\0`, 124, 'ascii');
-    header.write('0', 156, 'ascii');
-    return [header, Buffer.from(content, 'utf-8'), Buffer.alloc((512 - (content.length % 512)) % 512)];
-  };
-  return Buffer.concat([...file('out', String(code)), ...file('err', ''), ...file('status', `${code}\n`), Buffer.alloc(1024)]);
+function copiedProbeFolder(dir: string, code: number, out = String(code)): Buffer {
+  return copiedCommandFolder(dir, out, code);
 }
 
 describe('bridge-diagnostics-cli', () => {
@@ -273,6 +267,38 @@ describe('bridge-diagnostics-cli', () => {
       const section = await runBridgeDoctorSection('.env.prod');
       expect(section.lines[0]).not.toMatch(/\bok\b/);
       expect(section.lines.join('\n')).toContain('bound to loopback');
+    });
+
+    it('sends the later probes and the gateway lookup straight to docker cp once docker exec lost one answer', async () => {
+      listeningHostPorts = new Set([11434, 13305]);
+      const scriptByDir = new Map<string, string>();
+      spawnSync.mockImplementation((_command: string, args: string[]) => {
+        if (args[0] === 'ps') return { status: 0, stdout: 'ci-os-hub' };
+        if (args[0] === 'inspect') return { status: 0, stdout: '172.18.0.7/16' };
+        if (args[0] === 'exec' && args[1] === '-d' && args[3] === 'sh') scriptByDir.set(String(args[7]), String(args.at(-1)));
+        if (args[0] === 'cp') {
+          const dir = String(args[1]).slice(String(args[1]).indexOf(':') + 1);
+          const name = dir.split('/').pop() ?? '';
+          // The gateway lookup prints the address; both ports time out from the container.
+          return {
+            status: 0,
+            stdout: scriptByDir.get(dir)?.includes('dns') ? copiedProbeFolder(name, 0, '172.17.0.1\n') : copiedProbeFolder(name, 10),
+          };
+        }
+        return { status: 0, stdout: '' };
+      });
+
+      const section = await runBridgeDoctorSection('.env.prod');
+
+      expect(section.remediationCommands).toEqual([
+        'sudo ufw allow from 172.18.0.0/16 to 172.17.0.1 port 11434 proto tcp',
+        'sudo ufw allow from 172.18.0.0/16 to 172.17.0.1 port 13305 proto tcp',
+      ]);
+      // Only the first probe tried a plain docker exec.
+      const plainExecs = (spawnSync.mock.calls as unknown[][]).filter(
+        ([, args]) => (args as string[])[0] === 'exec' && (args as string[])[1] !== '-d',
+      );
+      expect(plainExecs).toHaveLength(1);
     });
 
     it('points at the missing host-gateway mapping when the name does not resolve', async () => {
