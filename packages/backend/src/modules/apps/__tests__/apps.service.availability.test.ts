@@ -483,6 +483,22 @@ describe('AppsService.checkAppAvailability', () => {
     expect(result.appUrl).toBe('https://hub-tailscale-1.example.ts.net:8080');
   });
 
+  // The Cloudflare rules read an answer that came through the tunnel. Nothing sits between the probe and a
+  // Private VPN app, so any answer still means something at that name answered.
+  it.each([
+    [404, '404 page not found\n'],
+    [502, 'Bad Gateway'],
+    [503, '<h1>Test App is starting…</h1>'],
+    [530, 'error code: 1033'],
+  ])('tailscale mode → an HTTP %i still counts as the app answering', async (status, data) => {
+    ctx.mockApp.exposureMode = 'tailscale';
+    mockedAxiosGet.mockResolvedValue({ status, data } as never);
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result).toMatchObject({ available: true, httpStatus: status, stage: 'ready' });
+  });
+
   // Test 10: connection refused = CONNECTION_REFUSED
   it('cloudflare mode → ECONNREFUSED = CONNECTION_REFUSED, resolvable, includes appUrl', async () => {
     ctx.mockApp.exposureMode = 'cloudflare';
