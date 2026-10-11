@@ -89,12 +89,14 @@ describe('custom app edit', () => {
 
   it('names the refused action when the Hub turns the save down', () => {
     composeCurrent.value = undefined;
+    toastError.mockClear();
 
     render(
       <MemoryRouter>
         <EditPageContent {...pageProps(undefined)} />
       </MemoryRouter>,
     );
+    expect(mutationOptions.current?.onError).toBeTypeOf('function');
     mutationOptions.current?.onError?.({ message: 'APP_ACTION_GRANT_DENIED', intlParams: { action: 'configure', app: 'my-app' } });
 
     expect(toastError).toHaveBeenCalledWith('You are not allowed to configure this app.');

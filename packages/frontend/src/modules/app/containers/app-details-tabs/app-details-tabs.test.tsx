@@ -1,6 +1,15 @@
 import { render, screen } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 
+const { saveNotesOptions, toastError } = vi.hoisted(() => ({
+  saveNotesOptions: { current: undefined as { onError?: (error: { message: string; intlParams?: Record<string, string> }) => void } | undefined },
+  toastError: vi.fn(),
+}));
+
+vi.mock('sonner', () => ({
+  toast: { error: toastError, success: vi.fn() },
+}));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, params?: Record<string, string>) => {
@@ -11,10 +20,13 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('@tanstack/react-query', () => ({
-  useMutation: () => ({
-    mutate: vi.fn(),
-    isPending: false,
-  }),
+  useMutation: (options: typeof saveNotesOptions.current) => {
+    saveNotesOptions.current = options;
+    return {
+      mutate: vi.fn(),
+      isPending: false,
+    };
+  },
 }));
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
@@ -128,5 +140,26 @@ describe('AppDetailsTabs — compatibility surfacing', () => {
     render(<AppDetailsTabs info={makeInfo({ gpu_requirements: undefined })} metadata={defaultMetadata} />);
 
     expect(screen.queryByTestId('app-gpu-requirements')).not.toBeInTheDocument();
+  });
+});
+
+describe('AppDetailsTabs: saving custom app notes', () => {
+  it('names the refused action when the Hub turns the save down', () => {
+    toastError.mockClear();
+
+    render(<AppDetailsTabs info={makeInfo({ urn: 'my-compose:_user' })} metadata={defaultMetadata} />);
+    expect(saveNotesOptions.current?.onError).toBeTypeOf('function');
+    saveNotesOptions.current?.onError?.({ message: 'APP_ACTION_GRANT_DENIED', intlParams: { action: 'configure', app: 'my-compose' } });
+
+    expect(toastError).toHaveBeenCalledWith('APP_ACTION_GRANT_DENIED:{"action":"configure","app":"my-compose"}');
+  });
+
+  it('keeps the generic message for any other failure', () => {
+    toastError.mockClear();
+
+    render(<AppDetailsTabs info={makeInfo({ urn: 'my-compose:_user' })} metadata={defaultMetadata} />);
+    saveNotesOptions.current?.onError?.({ message: 'COMMON_AN_ERROR_OCCURRED' });
+
+    expect(toastError).toHaveBeenCalledWith('APP_ERROR_SAVE_NOTES');
   });
 });

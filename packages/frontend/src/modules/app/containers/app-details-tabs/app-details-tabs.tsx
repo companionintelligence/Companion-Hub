@@ -2,6 +2,7 @@ import { updateAppMetadataMutation } from '@/api-client/@tanstack/react-query.ge
 import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
 import { Button } from '@/components/ui/Button';
 import type { AppDetails, AppInfo, AppMetadata } from '@/types/app.types';
+import type { TranslatableError } from '@/types/error.types';
 import { extractAppUrn } from '@/utils/app-helpers';
 import type { AppUrn } from '@ci-hub/common/types';
 import { CURRENT_SCHEMA_VERSION, appPrivacyState } from '@ci-hub/common/schemas';
@@ -52,7 +53,12 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
       setIsEditing(false);
       toast.success(t('APP_NOTES_SAVE_SUCCESS'));
     },
-    onError: () => {
+    onError: (error: TranslatableError) => {
+      // A member may open a custom app's notes but not save them; say so rather than "could not save".
+      if (error?.message === 'APP_ACTION_GRANT_DENIED') {
+        toast.error(t(error.message, { ...error.intlParams }));
+        return;
+      }
       toast.error(t('APP_ERROR_SAVE_NOTES'));
     },
   });
