@@ -389,16 +389,21 @@ queue, `inSettingsFileTurn` in `configuration.service.ts`. `mergeSettingsToDisk`
 writes inside a turn, and so does the factory reset's `{}`. Two saves that overlapped used to drop
 each other's keys, or leave the file as one object followed by the end of a longer one.
 
-A write goes to `settings.json.<pid>-<n>.tmp` beside the file and is renamed over it, so a crash or a
-full disk leaves the old file or the new one. The rename needs write access to `state/` itself.
+A write goes to `settings.json.<pid>-<n>.tmp` beside the file, is flushed to disk, and is renamed over
+it, so a crash, a power cut or a full disk leaves the old file or the new one. The rename needs write
+access to `state/` itself.
 `POST /api/inference/cloud-providers` answers once the provider is on disk, so the preferences save
 that Settings > AI sends next can't overlap it.
 
-At boot, `generateSystemEnvFile` copies a `settings.json` that doesn't parse to
-`settings.json.corrupt-<time>` and replaces it. If the file opens with a complete JSON object, which
-is what overlapping saves in older builds left, the Hub keeps that object. Anything else becomes
-`{}`. The log names the copy and the parse position, never the content. A factory reset deletes the
-copies and any temporary file a crash left, since they hold the same credentials.
+At boot, `generateSystemEnvFile` drops a byte order mark from the start of `settings.json`, which
+Notepad's "UTF-8 with BOM" and PowerShell 5 add, and writes the file back without it. It copies a
+`settings.json` that still doesn't parse to `settings.json.corrupt-<time>` and replaces it. If the
+file opens with a complete JSON object, which is what overlapping saves in older builds left, the Hub
+keeps that object. Anything else becomes `{}`. Either way, an `"allowErrorMonitoring": false` left in
+the lost part is kept, so error reporting stays off. When the copy can't be written, the file stays
+as it is and the Hub boots on what it recovered. The log names the copy and the parse position, never
+the content. A factory reset deletes the copies and any temporary file a crash left, since they hold
+the same credentials.
 
 On a Windows data folder (a bind mount through WSL), a read from outside the queue that overlaps the
 rename can get `ENOENT` for a file that is there. Once `readUserConsentFrom` has read the file, it

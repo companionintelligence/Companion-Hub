@@ -99,4 +99,43 @@ describe('generateSystemEnvFile with a settings.json that does not parse', () =>
     expect(keptCopies()).toHaveLength(1);
     expect(fs.readFileSync(path.join(STATE_DIR, keptCopies()[0]), 'utf8')).toBe(cutOff);
   });
+
+  it('boots on a settings.json saved with a byte order mark, and writes it back without one', async () => {
+    // What Notepad's "UTF-8 with BOM" and PowerShell 5's Set-Content -Encoding UTF8 write.
+    const saved = asWritten({ ciHubApiKey: 'portal-device-key', portalDomain: 'ci0.pw' });
+    fs.writeFileSync(SETTINGS_PATH, `${String.fromCharCode(0xfeff)}${saved}`);
+
+    const env = await generateSystemEnvFile();
+
+    expect(env.get('DOMAIN')).toBe('ci0.pw');
+    expect(fs.readFileSync(SETTINGS_PATH, 'utf8')).toBe(saved);
+    expect(keptCopies()).toHaveLength(0);
+  });
+
+  it('keeps error reporting off when the opt-out is in the part of the file that was lost', async () => {
+    const cutOff = '{\n  "allowErrorMonitoring": false,\n  "ciHubApiKey": "portal-dev';
+    fs.writeFileSync(SETTINGS_PATH, cutOff);
+
+    await generateSystemEnvFile();
+
+    expect(JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'))).toEqual({ allowErrorMonitoring: false });
+  });
+
+  it('boots, and leaves the file in place, when it cannot keep a copy of it', async () => {
+    const cutOff = '{\n  "ciHubApiKey": "portal-dev';
+    fs.writeFileSync(SETTINGS_PATH, cutOff);
+    // A full disk is a likely reason the file was cut off in the first place.
+    const writeFile = fs.promises.writeFile.bind(fs.promises);
+    vi.spyOn(fs.promises, 'writeFile').mockImplementation(async (file, ...rest) => {
+      if (String(file).includes('.corrupt-')) {
+        throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
+      }
+      return writeFile(file, ...rest);
+    });
+
+    await expect(generateSystemEnvFile()).resolves.toBeInstanceOf(Map);
+
+    expect(fs.readFileSync(SETTINGS_PATH, 'utf8')).toBe(cutOff);
+    expect(keptCopies()).toHaveLength(0);
+  });
 });

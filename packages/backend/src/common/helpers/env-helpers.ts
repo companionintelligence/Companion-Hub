@@ -548,18 +548,44 @@ export async function removeSettingsJsonCopies(settingsFilePath: string): Promis
   const isCopy = (entry: string) =>
     entry.startsWith(prefix) && (entry.startsWith(`${prefix}corrupt-`) || /^\d+-\d+\.tmp$/.test(entry.slice(prefix.length)));
   const copies = (await fs.promises.readdir(dir)).filter(isCopy);
-  await Promise.all(copies.map((entry) => fs.promises.rm(path.join(dir, entry), { force: true })));
+  // Every copy gets its try before a failure is reported.
+  const failed = (await Promise.allSettled(copies.map((entry) => fs.promises.rm(path.join(dir, entry), { force: true })))).find(
+    (result) => result.status === 'rejected',
+  );
+  if (failed) {
+    throw failed.reason;
+  }
 }
 
 async function replaceSettingsJson(settingsFilePath: string, content: string): Promise<void> {
   const temporary = `${settingsFilePath}.${process.pid}-${++settingsJsonWrites}.tmp`;
   try {
     await fs.promises.writeFile(temporary, content, { encoding: 'utf8', mode: PRIVATE_STATE_FILE_MODE });
+    await flushToDisk(temporary);
     await fs.promises.rename(temporary, settingsFilePath);
   } catch (error) {
     // It holds the same credentials as settings.json.
     await fs.promises.unlink(temporary).catch(() => undefined);
     throw error;
+  }
+}
+
+/**
+ * fsync before the rename. Without it, a power cut or a killed VM (`wsl --shutdown`) can keep the
+ * rename and lose the bytes on a filesystem that does not flush on rename by itself, which leaves an
+ * empty settings.json for the next boot to replace with empty settings.
+ */
+async function flushToDisk(filePath: string): Promise<void> {
+  const handle = await fs.promises.open(filePath, 'r+');
+  try {
+    await handle.sync();
+  } catch (error) {
+    // Some mounts cannot fsync at all. The rename still keeps a crashed process from tearing the file.
+    if (!['EINVAL', 'ENOTSUP', 'ENOSYS'].some((code) => isFsErrorWithCode(error, code))) {
+      throw error;
+    }
+  } finally {
+    await handle.close();
   }
 }
 
@@ -613,31 +639,68 @@ export async function writeResolvedEnvFile(targetPath: string, content: string, 
   }
 }
 
+/** What Windows editors and PowerShell 5 put in front of UTF-8 text. JSON.parse rejects it. */
+const BYTE_ORDER_MARK = String.fromCharCode(0xfeff);
+
 /**
  * settings.json for the boot, which must not crash-loop on a file that does not parse.
  *
- * Such a file is kept beside it as `settings.json.corrupt-<time>` and then replaced. When it opens
- * with a complete JSON object, that object replaces it: overlapping saves in older builds left the
- * last save whole at the start of the file and the end of a longer one after it. Anything else is
- * replaced with empty settings, which is also how ConfigurationService reads a file it cannot parse.
+ * A byte order mark in front of the JSON is dropped, and the file written back without it, because
+ * every later read parses the raw text too. Any other file that does not parse is kept beside it as
+ * `settings.json.corrupt-<time>` and then replaced. When it opens with a complete JSON object, that
+ * object replaces it: overlapping saves in older builds left the last save whole at the start of the
+ * file and the end of a longer one after it. Anything else is replaced with empty settings, which is
+ * also how ConfigurationService reads a file it cannot parse. When the copy or the replacement cannot
+ * be written, this boot goes on with what was recovered and the file stays as it is.
  */
 async function readSettingsJsonAtBoot(settingsFilePath: string, log: LoggerService): Promise<unknown> {
-  const text = await fs.promises.readFile(settingsFilePath, 'utf-8');
+  const raw = await fs.promises.readFile(settingsFilePath, 'utf-8');
+  const text = raw.startsWith(BYTE_ORDER_MARK) ? raw.slice(BYTE_ORDER_MARK.length) : raw;
+  let parseError: unknown;
   try {
-    return JSON.parse(text);
+    const settings: unknown = JSON.parse(text);
+    if (text !== raw) {
+      await writeSettingsJsonFile(settingsFilePath, text, log).then(
+        () => log.warn(`Removed a byte order mark from the start of ${settingsFilePath}.`),
+        (error: unknown) => log.warn(`${settingsFilePath} starts with a byte order mark, and it could not be removed (${fsErrorCode(error)}).`),
+      );
+    }
+    return settings;
   } catch (error) {
-    const keptAs = `${settingsFilePath}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`;
-    await fs.promises.writeFile(keptAs, text, { encoding: 'utf8', mode: PRIVATE_STATE_FILE_MODE });
-    const lastSave = leadingJsonObject(text, error);
-    await writeSettingsJsonFile(settingsFilePath, JSON.stringify(lastSave ?? {}, null, 2), log);
-    // The position only: the file holds credentials, and V8's message quotes the text around it.
-    const position = error instanceof SyntaxError ? /at position \d+/.exec(error.message)?.[0] : undefined;
-    log.error(
-      `${settingsFilePath} was not valid JSON${position ? ` (${position})` : ''}. Kept it as ${path.basename(keptAs)} and started from ` +
-        `${lastSave ? 'the complete settings object at its start' : 'empty settings'}.`,
-    );
-    return lastSave ?? {};
+    parseError = error;
   }
+
+  const lastSave = leadingJsonObject(text, parseError);
+  const recovered: Record<string, unknown> = { ...lastSave };
+  // Error reporting fails closed on a file it cannot parse (telemetry-consent.ts). The recovered file
+  // must not turn it back on for a user whose opt-out is in the part that was lost.
+  if (typeof recovered.allowErrorMonitoring !== 'boolean' && /"allowErrorMonitoring"\s*:\s*false\b/.test(text)) {
+    recovered.allowErrorMonitoring = false;
+  }
+  // The position only: the file holds credentials, and V8's message quotes the text around it.
+  const position = parseError instanceof SyntaxError ? /at position \d+/.exec(parseError.message)?.[0] : undefined;
+  const problem = `${settingsFilePath} was not valid JSON${position ? ` (${position})` : ''}`;
+  const startedFrom = lastSave ? 'the complete settings object at its start' : 'empty settings';
+
+  const keptAs = `${settingsFilePath}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+  try {
+    await fs.promises.writeFile(keptAs, raw, { encoding: 'utf8', mode: PRIVATE_STATE_FILE_MODE });
+  } catch (error) {
+    await fs.promises.unlink(keptAs).catch(() => undefined);
+    // Replacing the file without a copy would lose the only record of its credentials.
+    log.error(`${problem}. Could not keep a copy of it (${fsErrorCode(error)}), so left it in place and started this boot from ${startedFrom}.`);
+    return recovered;
+  }
+  try {
+    await writeSettingsJsonFile(settingsFilePath, JSON.stringify(recovered, null, 2), log);
+  } catch (error) {
+    log.error(
+      `${problem}. Kept it as ${path.basename(keptAs)}, could not replace it (${fsErrorCode(error)}), and started this boot from ${startedFrom}.`,
+    );
+    return recovered;
+  }
+  log.error(`${problem}. Kept it as ${path.basename(keptAs)} and started from ${startedFrom}.`);
+  return recovered;
 }
 
 /**

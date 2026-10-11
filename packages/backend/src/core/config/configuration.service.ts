@@ -113,7 +113,7 @@ let settingsFileWrites: Promise<unknown> = Promise.resolve();
  * service with `Object.create` and every instance writes the same file.
  */
 export function inSettingsFileTurn<T>(task: () => Promise<T>): Promise<T> {
-  const turn = settingsFileWrites.then(task);
+  const turn = settingsFileWrites.then(() => task());
   settingsFileWrites = turn.catch(() => undefined);
   return turn;
 }
