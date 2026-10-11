@@ -93,6 +93,18 @@ describe('HubAccess', () => {
     expect(screen.getByText('APP_SETTINGS_HUB_ACCESS_IDENTITY_OFF')).toBeTruthy();
   });
 
+  // CI Memory's shape: no app key, only an identity secret of its own, and the backend counts it as provisioned.
+  it('shows the section with Rotate for a provisioned app that holds no app key', async () => {
+    h.get.mockResolvedValue({ data: { appKey: null, identityVerification: true, provisioned: true } });
+
+    renderHubAccess();
+
+    await waitFor(() => expect(screen.getByTestId('hub-access')).toBeTruthy());
+    expect(screen.queryByTestId('hub-access-key')).toBeNull();
+    expect(screen.getByText('APP_SETTINGS_HUB_ACCESS_IDENTITY_ON')).toBeTruthy();
+    expect(screen.getByTestId('hub-access-rotate')).toBeTruthy();
+  });
+
   it('never renders a submit button — it lives inside the settings form', async () => {
     const user = userEvent.setup();
     h.get.mockResolvedValue({ data: WITH_KEY });
