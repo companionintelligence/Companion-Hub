@@ -128,6 +128,17 @@ describe('Header', () => {
     expect(screen.queryByTestId('mobile-app-menu-scrim')).not.toBeInTheDocument();
   });
 
+  it('puts focus back on the menu button when the page behind the menu is clicked, as Escape does', async () => {
+    renderHeader(true);
+
+    await userEvent.click(screen.getByTestId('mobile-app-menu-btn'));
+    await userEvent.click(screen.getByTestId('mobile-app-menu-scrim'));
+
+    expect(screen.queryByTestId('mobile-app-menu')).not.toBeInTheDocument();
+    // The scrim had focus and is gone, so without this focus falls to <body> and the next Tab starts at the top.
+    expect(screen.getByTestId('mobile-app-menu-btn')).toHaveFocus();
+  });
+
   it('moves focus into the phone menu, closes it on Escape, and keeps the scrim out of the tab order', async () => {
     renderHeader(true);
 
