@@ -16,5 +16,6 @@ describe('managed-app-containers', () => {
     expect(managedAppStatusFromSummary({ total: 2, running: 2, exitZero: 0 })).toBe('running');
     expect(managedAppStatusFromSummary({ total: 2, running: 1, exitZero: 1 })).toBe('running');
     expect(managedAppStatusFromSummary({ total: 2, running: 1, exitZero: 0 })).toBe('stopped');
+    expect(managedAppStatusFromSummary({ total: 2, running: 0, exitZero: 2 })).toBe('stopped');
   });
 });
