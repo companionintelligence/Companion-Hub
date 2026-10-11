@@ -58,6 +58,7 @@ export class AppVolumeArchiveService {
 
   /** Write the volume's contents to `file` as a tar archive. */
   public async exportVolume(volume: string, file: string): Promise<void> {
+    await this.assertNotMounted(volume);
     await this.runHelper(volume, ['tar', '-c', '-f', '-', '-C', VOLUME_MOUNT, '.'], { readOnly: true, stdout: file });
 
     // The archive holds at least the volume's root folder, so an empty file means the stream never
@@ -70,7 +71,8 @@ export class AppVolumeArchiveService {
   /**
    * Where each volume archived under `keys` goes back: the app's own volume with that key, or a new
    * one named as compose names it. Throws, before a restore changes anything, when that name belongs to
-   * a volume that is not this app's, or when there is no image to run the copy in.
+   * a volume that is not this app's, when a running container still has the volume mounted, or when
+   * there is no image to run the copy in.
    */
   public async restoreTargets(appUrn: AppUrn, keys: string[]): Promise<VolumeRestoreTarget[]> {
     const project = this.dockerRead.getComposeProjectName(appUrn);
@@ -81,6 +83,7 @@ export class AppVolumeArchiveService {
       const existing = own.find((volume) => volume.key === key);
 
       if (existing) {
+        await this.assertNotMounted(existing.name);
         targets.push({ ...existing, create: false });
         continue;
       }
@@ -109,6 +112,21 @@ export class AppVolumeArchiveService {
     // Emptied first: files the backup does not have (newer redo logs, say) would sit beside the restored ones.
     await this.runHelper(target.name, ['find', VOLUME_MOUNT, '-mindepth', '1', '-delete']);
     await this.runHelper(target.name, ['tar', '--numeric-owner', '-x', '-f', '-', '-C', VOLUME_MOUNT], { stdin: file });
+  }
+
+  /**
+   * Throws when a running container has the volume mounted. A backup and a restore stop the app first,
+   * but both carry on when that stop fails. A database copied while its server writes may not start from
+   * the copy, and a restore would then put that copy in place of the working one. Emptying a volume under
+   * a running server loses it, and the server can write its old pages back over the restored files.
+   */
+  private async assertNotMounted(volume: string): Promise<void> {
+    const running = await this.docker.listContainers({ filters: { volume: [volume] } });
+
+    if (running.length > 0) {
+      const names = running.map((container) => container.Names?.[0]?.replace(/^\//, '') ?? container.Id).join(', ');
+      throw new Error(`Volume ${volume} is in use by ${names}, which is still running; stop the app and try again`);
+    }
   }
 
   private async volumeExists(name: string): Promise<boolean> {

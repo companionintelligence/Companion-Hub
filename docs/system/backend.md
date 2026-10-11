@@ -64,7 +64,10 @@ empties the app's volume with that key and unpacks the archive into it. When a r
 volume, the restore creates it with compose's project and volume labels, so `up` adopts it.
 `AppVolumeArchiveService` does the copying with busybox `tar` in a short-lived container of the
 Hub's own image (the image ID of the container it runs in), as root, with no network and no log
-driver, so nothing is pulled and the stream is not also written to a container log. An app without
+driver, so nothing is pulled and the stream is not also written to a container log. A backup or
+restore stops the app first and carries on if that stop fails, so the service refuses a volume
+that a running container still has mounted: a database copied mid-write may not start from the
+copy, and one emptied under a running server is lost. An app without
 named volumes gets the same archive as before, and restoring a backup without a `volumes` folder
 does not ask Docker anything. A backup made where the database is in a volume and restored where it
 is a folder (Windows to Linux) still comes back without it, because nothing maps a volume key back

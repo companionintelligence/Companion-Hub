@@ -55,6 +55,8 @@ describe('AppVolumeArchiveService', () => {
       inspect: id === 'ci-hub' ? vi.fn().mockResolvedValue({ Image: 'sha256:hub' }) : vi.fn().mockRejectedValue(notFound()),
     })) as never);
     docker.listVolumes.mockResolvedValue({ Volumes: [{ Name: database, Labels: composeLabels }], Warnings: [] } as never);
+    // The app is stopped: no running container has any of its volumes mounted.
+    docker.listContainers.mockResolvedValue([]);
 
     const logger = mock<LoggerService>();
     service = new AppVolumeArchiveService(docker, new DockerReadFacade(logger, docker), logger);
@@ -79,6 +81,18 @@ describe('AppVolumeArchiveService', () => {
       ['run', '--rm', ...helperFlags, '-v', `${database}:/volume:ro`, '--entrypoint', 'tar', 'sha256:hub', '-c', '-f', '-', '-C', '/volume', '.'],
       expect.anything(),
     );
+  });
+
+  it('will not copy a volume that a running container still has mounted', async () => {
+    // A backup stops the app first but carries on when the stop fails, and a database copied while its
+    // server writes may not start again from the copy.
+    docker.listContainers.mockResolvedValue([{ Id: 'abc', Names: ['/wordpress_ci-marketplace-mariadb-1'] }] as never);
+    dockerRuns(([, stdout]) => fs.writeSync(stdout as number, 'volume as tar'));
+
+    await expect(service.exportVolume(database, archive)).rejects.toThrow('wordpress_ci-marketplace-mariadb-1');
+
+    expect(docker.listContainers).toHaveBeenCalledWith({ filters: { volume: [database] } });
+    expect(spawn).not.toHaveBeenCalled();
   });
 
   it('fails when docker hands back nothing, since a tar of a volume always holds its root folder', async () => {
@@ -161,6 +175,16 @@ describe('AppVolumeArchiveService', () => {
       docker.getVolume.mockReturnValue({ inspect: vi.fn().mockRejectedValue(notFound()) } as never);
 
       await expect(service.restoreTargets(appUrn, ['data-mariadb'])).resolves.toEqual([{ name: database, key: 'data-mariadb', create: true }]);
+    });
+
+    it('refuses, before the restore changes anything, a volume that a running container still has mounted', async () => {
+      // Emptying a database volume under a running server loses it, and the server can write its old
+      // pages back over the restored files when it stops.
+      docker.listContainers.mockResolvedValue([{ Id: 'abc', Names: ['/wordpress_ci-marketplace-mariadb-1'] }] as never);
+
+      await expect(service.restoreTargets(appUrn, ['data-mariadb'])).rejects.toThrow('wordpress_ci-marketplace-mariadb-1');
+
+      expect(docker.listContainers).toHaveBeenCalledWith({ filters: { volume: [database] } });
     });
 
     it('refuses a volume name that something other than this app already has', async () => {
