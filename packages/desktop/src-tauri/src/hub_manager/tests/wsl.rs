@@ -7,10 +7,11 @@ use std::time::{Duration, Instant};
 
 use crate::docker_engine::{DockerEngineKind, PinnedDockerEngine};
 use crate::hub_manager::{
-    default_gateway_from_route_table, engine_distro_from_listing, is_own_address,
-    restore_wsl_engine_logon_script, wait_for_wsl_engine, write_update_listener_host,
-    wsl2_engine_user_script, wsl_engine_logon_script, wsl_engine_should_revive, wsl_keepalive_args,
-    EngineWait, KeepaliveProcess, KeepaliveStart, KeepaliveState, WslKeepalive,
+    default_gateway_from_route_table, docker_answers_for_launch, engine_distro_from_listing,
+    is_own_address, restore_wsl_engine_logon_script, wait_for_wsl_engine,
+    write_update_listener_host, wsl2_engine_user_script, wsl_engine_logon_script,
+    wsl_engine_should_revive, wsl_keepalive_args, EngineWait, KeepaliveProcess, KeepaliveStart,
+    KeepaliveState, WslKeepalive,
 };
 
 fn engine(kind: DockerEngineKind) -> PinnedDockerEngine {
@@ -35,6 +36,65 @@ fn a_stopped_wsl_engine_is_started_again_unless_the_user_stopped_the_hub() {
         false
     ));
     assert!(!wsl_engine_should_revive(None, false));
+}
+
+#[test]
+fn a_launch_starts_a_stopped_wsl_engine_and_asks_docker_again() {
+    let answers = Cell::new(false);
+    let woken = Cell::new(0);
+
+    assert_eq!(
+        docker_answers_for_launch(
+            || answers.get(),
+            false,
+            || {
+                woken.set(woken.get() + 1);
+                answers.set(true);
+                Ok(())
+            }
+        ),
+        Ok(true)
+    );
+    assert_eq!(woken.get(), 1);
+
+    // Docker answers already: nothing to start.
+    assert_eq!(
+        docker_answers_for_launch(
+            || true,
+            false,
+            || {
+                woken.set(woken.get() + 1);
+                Ok(())
+            }
+        ),
+        Ok(true)
+    );
+    assert_eq!(woken.get(), 1);
+
+    assert_eq!(
+        docker_answers_for_launch(|| false, false, || Err("timed out".to_string())),
+        Err("timed out".to_string())
+    );
+}
+
+/// The user stopped the Hub, then ran `wsl --shutdown`. The launch won't start that Hub, and the
+/// status polls leave the engine down for it, so the launch must not boot WSL again either.
+#[test]
+fn a_launch_leaves_the_wsl_engine_down_while_the_user_has_the_hub_stopped() {
+    let woken = Cell::new(false);
+
+    assert_eq!(
+        docker_answers_for_launch(
+            || false,
+            true,
+            || {
+                woken.set(true);
+                Ok(())
+            }
+        ),
+        Ok(false)
+    );
+    assert!(!woken.get(), "the launch started the WSL engine");
 }
 
 #[test]

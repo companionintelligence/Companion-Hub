@@ -659,25 +659,48 @@ pub fn start_wsl_engine(data_dir: &Path) -> Result<String, String> {
     }
 }
 
-/// Whether Docker answers for the auto-start at launch. A Hub on the WSL engine whose engine
-/// stopped gets it started first, and waited for.
-pub fn docker_available_for_launch(data_dir: &Path) -> bool {
-    if is_docker_available() {
-        return true;
+/// Whether Docker answers for the auto-start at launch, asking `docker_answers`. When it doesn't,
+/// `wake` starts a stopped WSL engine and waits for it, and Docker is asked again. Not while the
+/// user has the Hub stopped: the launch won't start that Hub, and like the status polls it leaves
+/// the engine as `wsl --shutdown` left it.
+#[cfg(any(test, windows))]
+pub(crate) fn docker_answers_for_launch(
+    mut docker_answers: impl FnMut() -> bool,
+    user_stopped: bool,
+    wake: impl FnOnce() -> Result<(), String>,
+) -> Result<bool, String> {
+    if docker_answers() {
+        return Ok(true);
     }
+    if user_stopped {
+        return Ok(false);
+    }
+    wake()?;
+    Ok(docker_answers())
+}
+
+/// Whether Docker answers for the auto-start at launch. A Hub on the WSL engine whose engine
+/// stopped gets it started first, and waited for, unless the user stopped the Hub.
+pub fn docker_available_for_launch(data_dir: &Path) -> bool {
     #[cfg(windows)]
-    match wake_wsl_engine_for_start(data_dir) {
-        Ok(()) => return is_docker_available(),
-        Err(error) => {
+    {
+        docker_answers_for_launch(is_docker_available, is_user_stopped(data_dir), || {
+            wake_wsl_engine_for_start(data_dir)
+        })
+        .unwrap_or_else(|error| {
             let _ = append_desktop_log_for(
                 data_dir,
                 "setup",
                 &format!("The Docker engine in WSL didn't start: {error}"),
             );
-        }
+            false
+        })
     }
-    let _ = data_dir;
-    false
+    #[cfg(not(windows))]
+    {
+        let _ = data_dir;
+        is_docker_available()
+    }
 }
 
 // ─── Where the Hub reaches the update listener ────────────────────────────────

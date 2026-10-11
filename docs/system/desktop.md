@@ -70,7 +70,8 @@ the app starts that same command again (`hub_manager/wsl.rs`):
   the user has the Hub stopped.
 - When a Hub start or the auto-start at launch finds the engine stopped. It then waits up to 90
   seconds for Docker to answer. If Docker still doesn't answer, the start fails with a message that
-  starts with "Docker is not running", so it doesn't stick.
+  starts with "Docker is not running", so it doesn't stick. The launch leaves the engine alone
+  while the user has the Hub stopped, since it won't start that Hub.
 - On **Start engine** (`start_wsl_engine_command`), which the Docker screen shows instead of Docker
   Desktop's steps when `docker_engine` is `wsl-engine`. It waits like a start and returns why the
   engine didn't come back.
