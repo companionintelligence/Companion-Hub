@@ -79,7 +79,7 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
       navigate(`/apps/${appName}`);
     },
     onError: (error: TranslatableError) => {
-      toast.error(t(error.message || 'CUSTOM_APP_UPDATE_ERROR'));
+      toast.error(t(error.message || 'CUSTOM_APP_UPDATE_ERROR', { ...error.intlParams }));
     },
   });
 

@@ -3,9 +3,15 @@ import type { ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 
-const { mockNavigate, composeCurrent } = vi.hoisted(() => ({
+const { mockNavigate, composeCurrent, mutationOptions, toastError } = vi.hoisted(() => ({
   mockNavigate: vi.fn(),
   composeCurrent: { value: '{' as string | undefined },
+  mutationOptions: { current: undefined as { onError?: (error: { message: string; intlParams?: Record<string, string> }) => void } | undefined },
+  toastError: vi.fn(),
+}));
+
+vi.mock('sonner', () => ({
+  toast: { error: toastError, success: vi.fn() },
 }));
 
 vi.mock('react-router', async () => {
@@ -19,7 +25,10 @@ vi.mock('react-router', async () => {
 
 vi.mock('@tanstack/react-query', () => ({
   useQuery: () => ({ data: composeCurrent.value ? { current: composeCurrent.value } : undefined }),
-  useMutation: () => ({ mutate: vi.fn(), isPending: false }),
+  useMutation: (options: typeof mutationOptions.current) => {
+    mutationOptions.current = options;
+    return { mutate: vi.fn(), isPending: false };
+  },
 }));
 
 vi.mock('@/components/multi-service-form/multi-service-form', () => ({
@@ -76,5 +85,18 @@ describe('custom app edit', () => {
 
     expect(screen.getByText('Loading')).toBeInTheDocument();
     expect(screen.queryByText('LOADING')).not.toBeInTheDocument();
+  });
+
+  it('names the refused action when the Hub turns the save down', () => {
+    composeCurrent.value = undefined;
+
+    render(
+      <MemoryRouter>
+        <EditPageContent {...pageProps(undefined)} />
+      </MemoryRouter>,
+    );
+    mutationOptions.current?.onError?.({ message: 'APP_ACTION_GRANT_DENIED', intlParams: { action: 'configure', app: 'my-app' } });
+
+    expect(toastError).toHaveBeenCalledWith('You are not allowed to configure this app.');
   });
 });
