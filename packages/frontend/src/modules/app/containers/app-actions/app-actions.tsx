@@ -58,6 +58,7 @@ import {
 import type { AppUrlAvailability, AppUrlProbeResult } from '../../helpers/use-app-url-availability';
 import { checkAvailability } from '@/api-client/sdk.gen';
 import { useAppContext } from '@/context/app-context';
+import { humanBytes } from '@/components/ui/dense/dense';
 
 function isArchitectureSupported(supported: string[] | undefined, hostArch: string | undefined): boolean {
   if (!hostArch || !supported?.length) return true;
@@ -180,14 +181,6 @@ const IconActionButton: React.FC<IconBtnProps> = ({ icon: Icon, label, className
 );
 
 const INSTALL_FINALIZING_PROGRESS = 99;
-
-/** "7.2 MB", "412 MB", "1.5 GB": the download under the install progress bar. */
-function formatDownloadSize(bytes: number): string {
-  const megabytes = bytes / (1024 * 1024);
-  if (megabytes < 10) return `${megabytes.toFixed(1)} MB`;
-  if (megabytes < 1024) return `${Math.round(megabytes)} MB`;
-  return `${(megabytes / 1024).toFixed(1)} GB`;
-}
 
 /** Docker often reports a small layer first, so the sizes wait until they add up to a megabyte. */
 const DOWNLOAD_SIZE_SHOWN_FROM_BYTES = 1024 * 1024;
@@ -401,7 +394,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     } else if (progress !== null) {
       if (progress.percent >= INSTALL_FINALIZING_PROGRESS) stageText = t('APP_ACTION_FINALIZING');
       else if (progress.percent >= 60 && (progress.totalBytes ?? 0) >= DOWNLOAD_SIZE_SHOWN_FROM_BYTES)
-        stageText = `${t('APP_ACTION_DOWNLOADING')} ${formatDownloadSize(progress.downloadedBytes ?? 0)} / ${formatDownloadSize(progress.totalBytes ?? 0)}`;
+        stageText = `${t('APP_ACTION_DOWNLOADING')} ${humanBytes(progress.downloadedBytes ?? 0)} / ${humanBytes(progress.totalBytes ?? 0)}`;
       else if (progress.percent >= 60) stageText = t('APP_ACTION_DOWNLOADING');
       else stageText = t('APP_ACTION_PREPARING');
     }
