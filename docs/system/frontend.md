@@ -144,8 +144,10 @@ that). This keeps oMLX on an Apple Silicon Mac. In a browser tab, in the phone a
 engine the desktop app can't install, the step starts on an engine that answers. One that already
 has models (`backends.available[].modelsLoaded`) comes first, the hardware's pick ahead of the
 rest. With no models anywhere it takes the hardware's pick if that answers, else any engine that
-answers, and with nothing answering the hardware's pick stands. The **Recommended** badge goes with
-the choice, and Settings > AI uses the same rule when no engine is saved.
+answers. With nothing answering the hardware's pick stands, except vLLM in the Windows desktop
+window, which starts on Ollama because that is the engine the app installs there. The
+**Recommended** badge goes with the choice, and Settings > AI uses the same rule when no engine is
+saved.
 
 `InstallStep` runs in this order: runners, cloud keys, the preference save, the app install
 requests, then the wait for model downloads and the pins. The preferences go before the installs

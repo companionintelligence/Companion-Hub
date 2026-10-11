@@ -59,6 +59,10 @@ export function localEngineBlocksFinish(input: {
   return input.engineReady !== true;
 }
 
+function hostIsWindows(profile: HardwareProfileResponse): boolean {
+  return profile.hardware.os?.platform?.toLowerCase() === 'win32';
+}
+
 /**
  * Whether the desktop app installs `engine` itself when setup finishes: it is on the runner path
  * `InstallStep` takes (`automaticRunnersForBackend`). The native installer skips vLLM on Windows
@@ -67,7 +71,7 @@ export function localEngineBlocksFinish(input: {
  */
 function desktopInstallsEngine(profile: HardwareProfileResponse, engine: InferenceBackendType, canAutoInstall: boolean): boolean {
   if (!canAutoInstall || !automaticRunnersForBackend(engine).some((runner) => runner === engine)) return false;
-  return !(engine === 'vllm' && profile.hardware.os?.platform?.toLowerCase() === 'win32');
+  return !(engine === 'vllm' && hostIsWindows(profile));
 }
 
 /**
@@ -79,7 +83,8 @@ function desktopInstallsEngine(profile: HardwareProfileResponse, engine: Inferen
  * the pick wins while it answers, unless it has no models and another engine that answers has some.
  * When it does not answer, an engine that does is used, one with models first. An NVIDIA PC running
  * Ollama and no vLLM used to start on vLLM and then refuse to finish (#1927). With nothing answering
- * the pick stands, and the setup card says how to start it.
+ * the pick stands and the setup card says how to start it, except vLLM in the Windows desktop
+ * window: the app installs Ollama there and skips vLLM, so setup starts on Ollama.
  */
 export function recommendedInferenceBackend(profile: HardwareProfileResponse, canAutoInstall: boolean): InferenceBackendType {
   const hidden = new Set(hiddenInferenceBackends(profile));
@@ -90,7 +95,9 @@ export function recommendedInferenceBackend(profile: HardwareProfileResponse, ca
     .filter((engine) => engine.running && engine.healthy && !hidden.has(engine.type))
     .sort((a, b) => Number(b.type === pick) - Number(a.type === pick));
   const withModels = answering.find((engine) => (engine.modelsLoaded ?? 0) > 0);
-  return (withModels ?? answering[0])?.type ?? pick;
+  const live = (withModels ?? answering[0])?.type;
+  if (live) return live;
+  return canAutoInstall && pick === 'vllm' && hostIsWindows(profile) ? 'ollama' : pick;
 }
 
 export function isHostServedBackend(backend: InferenceBackendType | undefined): boolean {

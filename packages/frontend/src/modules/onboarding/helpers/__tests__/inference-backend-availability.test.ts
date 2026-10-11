@@ -131,6 +131,12 @@ describe('inference-backend-availability', () => {
         expect(recommendedInferenceBackend(withEngines(windowsNvidiaProfile, [up('ollama', 4), down('vllm')]), true)).toBe('ollama');
       });
 
+      it('starts on Ollama on a Windows PC with no engine yet, because the app installs Ollama and skips vLLM', () => {
+        expect(recommendedInferenceBackend(withEngines(windowsNvidiaProfile, [down('ollama'), down('vllm')]), true)).toBe('ollama');
+        // A browser tab installs nothing, so there the hardware's pick stands and its setup card says how to start it.
+        expect(recommendedInferenceBackend(withEngines(windowsNvidiaProfile, [down('ollama'), down('vllm')]), false)).toBe('vllm');
+      });
+
       it('starts on an engine that answers when the app does not install the pick, as Lemonade', () => {
         expect(recommendedInferenceBackend(lemonadePick([up('ollama', 2), down('lemonade')]), true)).toBe('ollama');
       });
