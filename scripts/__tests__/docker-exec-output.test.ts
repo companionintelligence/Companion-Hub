@@ -2,30 +2,12 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { dockerCpArchive } from './docker-cp-archive';
 
 const spawnSync = vi.fn();
 vi.mock('node:child_process', () => ({ spawnSync: (...args: unknown[]) => spawnSync(...args) }));
 
 const { containerReader, describeDockerEndpoint, readContainerOutput } = await import('../lib/docker-exec-output');
-
-/** A tar archive shaped like the one `docker cp <container>:<dir> -` streams: the folder, then its files. */
-function tarOf(dir: string, files: Record<string, string>): Buffer {
-  const header = (name: string, size: number, type: string) => {
-    const block = Buffer.alloc(512);
-    block.write(name, 0, 'utf-8');
-    block.write(`${size.toString(8).padStart(11, '0')}\0`, 124, 'ascii');
-    block.write(type, 156, 'ascii');
-    block.write('ustar\0', 257, 'ascii');
-    return block;
-  };
-  const blocks = [header(`${dir}/`, 0, '5')];
-  for (const [name, content] of Object.entries(files)) {
-    const body = Buffer.from(content, 'utf-8');
-    blocks.push(header(`${dir}/${name}`, body.length, '0'), body, Buffer.alloc((512 - (body.length % 512)) % 512));
-  }
-  blocks.push(Buffer.alloc(1024));
-  return Buffer.concat(blocks);
-}
 
 const dockerCalls = (): string[][] => spawnSync.mock.calls.map(([, args]) => args as string[]);
 /** The folder the copy route used, read back from the detached `sh -c` that started the command. */
@@ -42,7 +24,7 @@ function engineThatLosesExecOutput(...copies: Record<string, string>[]) {
     if (args[0] === 'cp') {
       const files = copies[Math.min(copy, copies.length - 1)] ?? {};
       copy += 1;
-      return { status: 0, stdout: tarOf(String(args[1]).split('/').pop() ?? '', files), stderr: Buffer.alloc(0) };
+      return { status: 0, stdout: dockerCpArchive(String(args[1]).split('/').pop() ?? '', files), stderr: Buffer.alloc(0) };
     }
     return { status: 0, stdout: '', stderr: '' };
   });
@@ -99,6 +81,26 @@ describe('readContainerOutput', () => {
 
     expect(result).toEqual({ status: null, stdout: '', stderr: '', lost: true });
     expect(dockerCalls().at(-1)).toEqual(['exec', '-d', 'ci-hub-db', 'rm', '-rf', copyDir()]);
+  });
+
+  it('gives each docker cp only the time left before the deadline, so a slow engine cannot double the wait', () => {
+    engineThatLosesExecOutput({});
+    let now = 1_000_000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => {
+      now += 12_000;
+      return now;
+    });
+    try {
+      readContainerOutput('ci-hub-db', ['psql', '-At', '-c', 'SELECT 1'], { timeoutMs: 30_000 });
+    } finally {
+      clock.mockRestore();
+    }
+
+    const copyTimeouts = (spawnSync.mock.calls as unknown[][])
+      .filter(([, args]) => (args as string[])[0] === 'cp')
+      .map(([, , options]) => (options as { timeout: number }).timeout);
+    expect(copyTimeouts.length).toBeGreaterThan(0);
+    for (const timeout of copyTimeouts) expect(timeout).toBeLessThanOrEqual(18_000);
   });
 
   it('returns what docker said when the detached command could not start, without waiting for it', () => {
@@ -162,6 +164,21 @@ describe('containerReader', () => {
     // id, and running it again to read the id would insert a second row.
     expect(dockerCalls().filter((args) => args.includes('INSERT INTO api_key DEFAULT VALUES RETURNING id'))).toHaveLength(1);
     expect(dockerCalls()[0]?.slice(0, 2)).toEqual(['exec', '-d']);
+  });
+
+  // Killing the docker CLI does not stop psql in the container, so a timed-out INSERT can still commit.
+  it('marks a command lost when docker exec times out, instead of reporting that it failed', () => {
+    spawnSync.mockReturnValue({
+      status: null,
+      stdout: '',
+      stderr: '',
+      error: Object.assign(new Error('spawnSync docker ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+    });
+
+    const result = containerReader('ci-hub-db')(['psql', '-At', '-c', 'INSERT INTO api_key DEFAULT VALUES RETURNING id'], { repeatable: false });
+
+    expect(result).toMatchObject({ status: null, lost: true });
+    expect(dockerCalls()).toHaveLength(1);
   });
 
   it('does not run a command twice to read its output when it must run only once', () => {

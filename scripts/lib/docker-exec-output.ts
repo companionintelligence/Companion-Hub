@@ -13,7 +13,7 @@
  * all), writing its output and then its exit status to files in the container, and the files are
  * copied out once the status is there.
  */
-import { spawnSync } from 'node:child_process';
+import { type SpawnSyncReturns, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { currentDockerContextName } from './docker-engine.js';
 
@@ -41,6 +41,8 @@ export type ContainerReader = (command: string[], options?: ContainerReadOptions
 const DEFAULT_TIMEOUT_MS = 30_000;
 /** Pause between looks for the exit status of a command run through the copy route. */
 const POLL_INTERVAL_MS = 150;
+/** The least time one `docker cp` gets, so the last look before the deadline can still finish. */
+const MIN_COPY_TIMEOUT_MS = 1_000;
 /** Copied output larger than this is a fault on its own; every caller reads a few lines of text. */
 const COPY_MAX_BYTES = 32 * 1024 * 1024;
 /**
@@ -99,7 +101,16 @@ function execDirect(container: string, command: string[], timeoutMs: number): Co
     stdout: (result.stdout ?? '').trim(),
     // result.error covers docker itself being absent, where there is no stderr to read.
     stderr: (result.stderr ?? '').trim() || (result.error ? String(result.error) : ''),
+    ...lostOnTimeout(result),
   };
+}
+
+/**
+ * Killing the docker CLI at the timeout leaves the command running in the container, where an INSERT
+ * can still commit. Its result is then unknown, not a failure.
+ */
+function lostOnTimeout(result: SpawnSyncReturns<unknown>): { lost?: true } {
+  return (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT' ? { lost: true } : {};
 }
 
 /**
@@ -113,15 +124,25 @@ function execThroughCopy(container: string, command: string[], timeoutMs: number
     stdio: 'pipe',
     timeout: timeoutMs,
   });
-  // Nothing ran, and docker said why: a stopped container, or no docker at all.
+  // Nothing ran, and docker said why: a stopped container, or no docker at all. A start that timed
+  // out may have run all the same.
   if (started.status !== 0) {
-    return { status: started.status, stdout: '', stderr: (started.stderr ?? '').trim() || (started.error ? String(started.error) : '') };
+    return {
+      status: started.status,
+      stdout: '',
+      stderr: (started.stderr ?? '').trim() || (started.error ? String(started.error) : ''),
+      ...lostOnTimeout(started),
+    };
   }
 
   const deadline = Date.now() + timeoutMs;
   let files: Map<string, string> | undefined;
   for (;;) {
-    const copy = spawnSync('docker', ['cp', `${container}:${dir}`, '-'], { stdio: 'pipe', timeout: timeoutMs, maxBuffer: COPY_MAX_BYTES });
+    const copy = spawnSync('docker', ['cp', `${container}:${dir}`, '-'], {
+      stdio: 'pipe',
+      timeout: Math.max(deadline - Date.now(), MIN_COPY_TIMEOUT_MS),
+      maxBuffer: COPY_MAX_BYTES,
+    });
     const copied = copy.status === 0 && Buffer.isBuffer(copy.stdout) ? filesInTar(copy.stdout) : undefined;
     if (copied?.has('status')) {
       files = copied;
