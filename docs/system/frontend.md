@@ -136,15 +136,16 @@ is selected. Apple Silicon offers Ollama and oMLX. NVIDIA offers Ollama and vLLM
 operator confirms “Install & Finish”, `InstallStep` asks the desktop shell to install the chosen runner. oMLX is Homebrew. vLLM pairs with Ollama for embeddings. A plain browser build does not
 have a native process boundary, so it retains the manual setup and re-check flow.
 
-`recommendedInferenceBackend` decides where the step starts. In the desktop window the hardware's
-pick (`backends.recommended`) stands whenever the app installs that engine itself, which means
+`recommendedInferenceBackend` decides where the step starts. In the desktop window
+(`isTauriDesktopApp`, which leaves out the iOS and Android app) the hardware's pick
+(`backends.recommended`) stands whenever the app installs that engine itself, which means
 `automaticRunnersForBackend` lists it and it isn't vLLM on Windows (the native installer skips
-that). This keeps oMLX on an Apple Silicon Mac. In a browser tab, or for an engine the app can't
-install, the step starts on an engine that answers. One that already has models
-(`backends.available[].modelsLoaded`) comes first, the hardware's pick ahead of the rest. With no
-models anywhere it takes the hardware's pick if that answers, else any engine that answers, and
-with nothing answering the hardware's pick stands. The **Recommended** badge goes with the
-choice, and Settings > AI uses the same rule when no engine is saved.
+that). This keeps oMLX on an Apple Silicon Mac. In a browser tab, in the phone app, or for an
+engine the desktop app can't install, the step starts on an engine that answers. One that already
+has models (`backends.available[].modelsLoaded`) comes first, the hardware's pick ahead of the
+rest. With no models anywhere it takes the hardware's pick if that answers, else any engine that
+answers, and with nothing answering the hardware's pick stands. The **Recommended** badge goes with
+the choice, and Settings > AI uses the same rule when no engine is saved.
 
 `InstallStep` runs in this order: runners, cloud keys, the preference save, the app install
 requests, then the wait for model downloads and the pins. The preferences go before the installs

@@ -17,7 +17,7 @@ import {
   unpinInferenceModel,
 } from '@/lib/inference/inference-api';
 import { POLLING } from '@/lib/polling-budget';
-import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
+import { isTauriDesktopApp } from '@/lib/hub-runtime-mode';
 import { ensurePullsStarted, waitForModelPulls } from '@/lib/inference/tracked-models';
 import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
@@ -225,7 +225,7 @@ export const AiSettingsContainer = () => {
       let data = await fetchInferenceOnboardingProfile(requestedBackend);
       // Nothing saved: show the engine setup would start on. Asked about no engine, the endpoint
       // described the hardware's pick, so ask again when the one shown is different.
-      const preferredBackend = requestedBackend ?? recommendedInferenceBackend(data, getTauriInvoke() !== null);
+      const preferredBackend = requestedBackend ?? recommendedInferenceBackend(data, isTauriDesktopApp());
       if (!requestedBackend && preferredBackend !== data.backends.recommended) {
         data = await fetchInferenceOnboardingProfile(preferredBackend);
       }
@@ -854,7 +854,7 @@ export const AiSettingsContainer = () => {
           </section>
 
           <BackendSelectionCard
-            recommended={recommendedInferenceBackend(profile, getTauriInvoke() !== null)}
+            recommended={recommendedInferenceBackend(profile, isTauriDesktopApp())}
             available={profile.backends.available}
             selected={selectedBackend}
             onSelect={setSelectedBackend}

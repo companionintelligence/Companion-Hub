@@ -1,6 +1,7 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { resetMobileClientCacheForTests } from '@/lib/mobile-connection';
 import { AiSetupStep } from '../ai-setup-step';
 import type { HardwareProfileResponse } from '../../helpers/ai-setup-types';
 
@@ -969,6 +970,36 @@ describe('AiSetupStep', () => {
       await waitFor(() => expect(onConfigChange).toHaveBeenLastCalledWith(expect.objectContaining({ backend: 'omlx' })));
     } finally {
       delete tauriWindow.__TAURI_INTERNALS__;
+    }
+  });
+
+  it('starts on an engine that answers in the phone app, which cannot install one on the Hub', async () => {
+    // The iOS and Android app is a Tauri webview as well, but it has no runner installer.
+    const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<unknown> } };
+    resetMobileClientCacheForTests();
+    Object.defineProperty(window.navigator, 'userAgent', { configurable: true, value: 'Mozilla/5.0 (Linux; Android 14; Pixel 8)' });
+    tauriWindow.__TAURI_INTERNALS__ = { invoke: vi.fn().mockResolvedValue(undefined) };
+    try {
+      api.profile = {
+        ...highTierProfile,
+        backends: {
+          recommended: 'vllm',
+          available: [
+            { type: 'ollama', running: true, healthy: true, modelsLoaded: 4 },
+            { type: 'vllm', running: false, healthy: false, modelsLoaded: 0 },
+          ],
+        },
+      };
+      const onConfigChange = vi.fn();
+      renderStep({ embedded: true, onConfigChange });
+
+      await waitFor(() => expect(screen.getByText('Ollama detected')).toBeInTheDocument());
+      expect(screen.getByTestId('backend-option-ollama').querySelector('input')).toBeChecked();
+      expect(screen.getByTestId('backend-option-ollama')).toHaveTextContent('Recommended');
+      await waitFor(() => expect(onConfigChange).toHaveBeenLastCalledWith(expect.objectContaining({ backend: 'ollama' })));
+    } finally {
+      delete tauriWindow.__TAURI_INTERNALS__;
+      resetMobileClientCacheForTests();
     }
   });
 

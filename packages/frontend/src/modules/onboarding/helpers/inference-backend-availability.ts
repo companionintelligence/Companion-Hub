@@ -71,12 +71,15 @@ function desktopInstallsEngine(profile: HardwareProfileResponse, engine: Inferen
 }
 
 /**
- * The engine setup starts on. In the desktop window the hardware's pick stands when the app
- * installs that engine itself, as oMLX on an Apple Silicon Mac. Otherwise (a browser tab, or an
- * engine the app cannot install here) the pick wins while it answers, unless it has no models and
- * another engine that answers has some. When it does not answer, an engine that does is used, one
- * with models first. An NVIDIA PC running Ollama and no vLLM used to start on vLLM and then refuse
- * to finish (#1927). With nothing answering the pick stands, and the setup card says how to start it.
+ * The engine setup starts on. `canAutoInstall` is true only in the desktop window
+ * (`isTauriDesktopApp`); the phone app is a Tauri webview too, but it installs nothing.
+ *
+ * In the desktop window the hardware's pick stands when the app installs that engine itself, as
+ * oMLX on an Apple Silicon Mac. Otherwise (a browser tab, or an engine the app cannot install here)
+ * the pick wins while it answers, unless it has no models and another engine that answers has some.
+ * When it does not answer, an engine that does is used, one with models first. An NVIDIA PC running
+ * Ollama and no vLLM used to start on vLLM and then refuse to finish (#1927). With nothing answering
+ * the pick stands, and the setup card says how to start it.
  */
 export function recommendedInferenceBackend(profile: HardwareProfileResponse, canAutoInstall: boolean): InferenceBackendType {
   const hidden = new Set(hiddenInferenceBackends(profile));
