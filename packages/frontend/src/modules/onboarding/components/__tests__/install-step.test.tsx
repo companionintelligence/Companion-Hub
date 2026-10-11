@@ -516,6 +516,48 @@ describe('InstallStep', () => {
     expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ backend: 'ollama' }));
   });
 
+  it('asks for each app once when the step closes and comes back before the request goes out', async () => {
+    let finishRunners: ((results: unknown) => void) | undefined;
+    (window as TauriWindow).__TAURI_INTERNALS__ = {
+      invoke: vi.fn(
+        () =>
+          new Promise((resolve) => {
+            finishRunners = resolve;
+          }),
+      ),
+    };
+    const excalidraw = makeApp('excalidraw', 'Excalidraw', 'excalidraw:store1');
+    const config = {
+      agentFrameworks: [],
+      remoteAccess: [],
+      selectedModels: [],
+      installedCatalogIds: [],
+      backend: 'ollama' as const,
+      cloudProviders: [],
+      skipped: false,
+    };
+
+    const first = render(<InstallStep apps={[excalidraw]} onComplete={onComplete} aiSetupConfig={config} />);
+    await waitFor(() => expect(finishRunners).toBeDefined());
+    // Back and Forward in the browser: the wizard comes back from the saved session while the first
+    // pass still waits on the engine, and that pass still sends its request afterwards.
+    first.unmount();
+    render(<InstallStep apps={[excalidraw]} onComplete={onComplete} aiSetupConfig={config} resume />);
+    expect(await screen.findByTestId('status-installing')).toBeInTheDocument();
+
+    await act(async () => {
+      finishRunners?.([{ runner: 'ollama', state: 'already_running', endpointUrl: 'http://127.0.0.1:11434' }]);
+    });
+    // Each pass saves the preferences once; the first pass's save comes right before its request.
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(installApp).toHaveBeenCalledTimes(1);
+    expect(installApp).toHaveBeenCalledWith(expect.objectContaining({ path: { urn: 'excalidraw:store1' } }));
+  });
+
   it('does not ask again for an install this tab already started', async () => {
     claimOnboardingInstallUrn('plane:store1');
     getInstalledApps.mockResolvedValue(
