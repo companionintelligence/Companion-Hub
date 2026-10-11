@@ -61,9 +61,9 @@ impl HostPorts {
     /// Check if a port is available by attempting a TCP bind, OR held by our own containers.
     ///
     /// Any failed bind makes the port unavailable, including Linux refusing a normal
-    /// user a port below 1024 whether or not anything listens there. The app picks its
-    /// ports again on every launch, so taking a free 80/443 would move every existing
-    /// Linux desktop Hub off 8880/8443.
+    /// user a port below 1024 whether or not anything listens there. The app picks all
+    /// its ports again whenever the env file has none, so taking a free 80/443 there
+    /// would move an existing Linux desktop Hub off 8880/8443.
     fn is_available_or_ours(&self, port: u16) -> bool {
         self.ours.contains(&port) || (self.bind)(port).is_ok()
     }
