@@ -278,8 +278,12 @@ What cancelling an install (`AppLifecycleService.cancelOperation`) does depends 
 
 - `installApp` registers the operation only after the Portal bundle download and the image
   architecture check. A cancel during those checks is held in `AppOperationRegistry`
-  (`holdPreparingCancel`), and `installApp` stops before its next write, or removes the row it was
-  writing, and sends `install_cancelled`.
+  (`holdPreparingCancel`), and `installApp` stops before it queues anything and sends
+  `install_cancelled`. A fresh install's row goes if it had written one. A retry of a failed
+  install stays `install_failed`, since nothing cleaned up after the failed attempt and its row is
+  what **Remove** works through. Reinstalling an app that is already installed restarts it and
+  can't be cancelled: its window ends once `installApp` has read the row, and a cancel held before
+  that is dropped.
 - A queued install's cancel is settled at once. The row is deleted, `install_cancelled` and the
   install queue go out, and the worker skips the message when it reaches it
   (`takeSettledBeforeStart`), even if the app has been installed again since.

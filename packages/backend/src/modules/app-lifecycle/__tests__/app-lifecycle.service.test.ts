@@ -1714,6 +1714,67 @@ describe('AppLifecycleService', () => {
 
         expect(cancel.outcome).toBe('cancelled_queued');
       });
+
+      // The app is still installed, so `install_cancelled` would tell every tab it is gone.
+      it('is not held for a reinstall of an installed app, which goes ahead', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 3, status: 'running', config: {} } as any);
+        const startApp = vi.spyOn(service, 'startApp').mockResolvedValue({ requestId: 'start-1' });
+        const archCheck = held<null>();
+        imageSizeService.verifyAppArchitecture.mockReturnValue(archCheck.promise);
+
+        const install = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+        await settle();
+        const cancel = await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
+        archCheck.release(null);
+        await install;
+
+        expect(cancel.outcome).toBe('not_found');
+        expect(startApp).toHaveBeenCalled();
+        expect(appsRepository.deleteAppById).not.toHaveBeenCalled();
+        expect(cancelledEvents()).toEqual([]);
+      });
+
+      /*
+       * Nothing compensates here, so deleting the failed row would leave the failed attempt's files,
+       * port allocations and containers with no app to remove them through.
+       */
+      it('leaves a failed install it was retrying as it was', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 4, status: 'install_failed', config: {} } as any);
+        const archCheck = held<null>();
+        imageSizeService.verifyAppArchitecture.mockReturnValue(archCheck.promise);
+
+        const install = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+        await settle();
+        const cancel = await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
+        archCheck.release(null);
+        await install;
+
+        expect(cancel.outcome).toBe('cancelling');
+        expect(appsRepository.deleteAppById).not.toHaveBeenCalled();
+        expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        expect(cancelledEvents()).toEqual([['app', expect.objectContaining({ event: 'install_cancelled', appUrn, appStatus: 'install_failed' })]]);
+      });
+
+      it('puts a retried install back to failed when the cancel lands while its row is rewritten', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 4, status: 'install_failed', port: 8080, exposedLocal: true, config: {} } as any);
+        const rewrite = held<unknown>();
+        appsRepository.updateAppById.mockReturnValueOnce(rewrite.promise as any).mockResolvedValue(undefined as any);
+
+        const install = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+        await settle();
+        const cancel = await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
+        rewrite.release(undefined);
+        await install;
+
+        expect(cancel.outcome).toBe('cancelling');
+        expect(appsRepository.updateAppById).toHaveBeenNthCalledWith(1, 4, expect.objectContaining({ status: 'installing' }));
+        expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(4, { status: 'install_failed' });
+        expect(appsRepository.deleteAppById).not.toHaveBeenCalled();
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        expect(operationRegistry.get(appUrn)).toBeUndefined();
+        expect(cancelledEvents()).toEqual([['app', expect.objectContaining({ event: 'install_cancelled', appUrn, appStatus: 'install_failed' })]]);
+      });
     });
 
     // ── production port fallback ──────────────────────────────────────────
