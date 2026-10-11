@@ -829,12 +829,15 @@ pub fn run() {
                         let user_stopped = hub_manager::is_user_stopped(&data_for_decision);
                         let start_failed = hub_manager::is_start_failed(&data_for_decision);
                         let needs_runtime_recovery = hub_manager::hub_needs_runtime_recovery();
+                        let stopped_core_services = hub_manager::stopped_core_services();
 
                         let should_start = if user_stopped || start_failed {
                             false
                         } else if !containers_exist {
                             true
                         } else if needs_runtime_recovery {
+                            true
+                        } else if !stopped_core_services.is_empty() {
                             true
                         } else if traefik_recreate_required {
                             true
@@ -855,6 +858,11 @@ pub fn run() {
                         } else if needs_runtime_recovery {
                             "containers exist but hub API is not healthy — attempting recovery"
                                 .to_string()
+                        } else if !stopped_core_services.is_empty() {
+                            format!(
+                                "the Hub is up, but not every service it needs is running ({})",
+                                stopped_core_services.join(", ")
+                            )
                         } else if traefik_recreate_required {
                             "Traefik runtime preflight changed mounted state and requires container recreation"
                                 .to_string()

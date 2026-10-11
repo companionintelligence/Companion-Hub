@@ -74,6 +74,8 @@ compares it to `.config-hash` in the data dir.
 |-----------|----------|-----|
 | User explicitly stopped the Hub (`.user-stopped` marker) | **don't start** | Honour the user's "Stop Hub" decision across relaunches |
 | Containers missing | **start** | First launch, or containers were removed |
+| Hub container stopped, missing or restart-looping | **start** | `hub_needs_runtime_recovery` |
+| Database, queue or Traefik stopped or missing beside a running Hub | **start** | Such as a Traefik that lost port 80 at boot (`stopped_core_services`) |
 | Traefik recreate required (preflight changed mounted state) | **start** | Runtime state changed; Traefik must be recreated before reuse |
 | Config hash changed | **start** | Upgrade, env fix, or compose change |
 | Otherwise | **do nothing** | Containers exist, config unchanged, no repair pending |
