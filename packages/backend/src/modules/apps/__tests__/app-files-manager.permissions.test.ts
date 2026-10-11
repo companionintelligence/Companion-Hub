@@ -142,8 +142,8 @@ describe('AppFilesManager.setAppDataDirPermissions', () => {
   });
 
   /*
-   * A Windows drive bind-mounted through WSL2 (drvfs over 9p) discards every chmod, yet the sweep
-   * still stats and chmods each file over 9p. On a Windows Hub that took minutes per restart for an
+   * A Windows drive bind-mounted through WSL2 (drvfs over 9p) keeps no mode a chmod sets (only the
+   * read-only attribute follows the write bits), yet the sweep still stats and chmods each file over 9p. On a Windows Hub that took minutes per restart for an
    * app with a large data tree. The backend runs in a Linux container there, so the platform alone
    * cannot tell; the probe the compose builder already asks can.
    */

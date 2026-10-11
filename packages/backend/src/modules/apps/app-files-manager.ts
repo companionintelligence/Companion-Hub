@@ -261,9 +261,13 @@ export class AppFilesManager {
    * See {@link buildPermissionsCommand} for the exact shell.
    *
    * Skipped when the app-data mount cannot carry POSIX permissions (a Windows
-   * drive under WSL2). Every chmod is discarded there, yet the sweep still
-   * stats and chmods each file over 9p, which took minutes on every restart of
-   * an app with a large data tree. The answer is the one the compose builder
+   * drive under WSL2). The mount sets every mode there (0777 for every uid on
+   * a default WSL2 drive), so the sweep has nothing to grant, and it cost a
+   * stat and a chmod per file over 9p: minutes on every restart of an app with
+   * a large data tree. Its one effect on drvfs was clearing the Windows
+   * read-only attribute, which drvfs shows as a file with no write bits. A
+   * file a container makes read-only there now stays read-only, to root too,
+   * until something chmods it back. The answer is the one the compose builder
    * asks for, cached per folder.
    */
   public async setAppDataDirPermissions(appUrn: AppUrn) {

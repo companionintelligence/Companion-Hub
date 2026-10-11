@@ -53,9 +53,12 @@ postgres services that both mount `/var/lib/postgresql/data`, and naming by moun
 both servers on one data directory.
 
 The same answer turns off the `a+rwx` sweep `AppFilesManager.setAppDataDirPermissions` runs over an
-app's data folder each time a lifecycle command prepares the app (a restart does it twice). Every
-chmod is discarded on such a mount, and walking a big tree over 9p (OpenClaw's has over 13,000
-files) took minutes on every restart.
+app's data folder each time a lifecycle command prepares the app (a restart does it twice). The
+mount sets every mode there (0777 for every uid on a default WSL2 drive), so the sweep has nothing to
+grant, and walking a big tree over 9p (OpenClaw's has over 13,000 files) took minutes on every
+restart. The one thing a chmod still does on drvfs is set or clear the Windows read-only attribute,
+which shows as a file with no write bits. The sweep used to clear it on every prepare; now a file a
+container makes read-only stays read-only, to root as well, until something chmods it back.
 
 The probe reports "supported" on any error **by design** — the opposite would move a working app's
 data directory into an empty named volume over what may be a transient IO failure. For the same
