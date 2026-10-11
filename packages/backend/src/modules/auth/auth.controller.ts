@@ -901,8 +901,8 @@ export class AuthController {
       );
     }
 
-    // No fallback to the operator's address for a caller who is not signed in. This route answers on
-    // the Hub's public address, and the sign-in page every visitor sees renders what it returns.
+    // A caller the Hub cannot identify gets no account name. This route takes no session, so it must
+    // never fall back to an operator's.
     return PortalSessionHintDto.parse({ email: null, portalBaseUrl, source: null, portalReachable }, { reportOnly: true });
   }
 
