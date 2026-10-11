@@ -89,6 +89,15 @@ describe('HubAccessService', () => {
       expect(await service.getStatus(memoryUrn)).toEqual({ appKey: null, identityVerification: true, provisioned: true });
     });
 
+    it('counts Companion Memory as provisioned before its first env generation, from the install URN alone', async () => {
+      const memoryUrn = 'ci-memory:ci-marketplace' as AppUrn;
+      apiKeys.findManagedByApp.mockResolvedValue(null);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue(fromPartial({ urn: memoryUrn, hub_integration: undefined }));
+      appFilesManager.getAppEnv.mockResolvedValue({ path: '/x', content: '' });
+
+      expect(await service.getStatus(memoryUrn)).toEqual({ appKey: null, identityVerification: false, provisioned: true });
+    });
+
     it('does not count an app named ci-memory from another store, which is never issued the secret', async () => {
       const squatterUrn = 'ci-memory:someone-elses-store' as AppUrn;
       apiKeys.findManagedByApp.mockResolvedValue(null);
