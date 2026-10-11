@@ -1,3 +1,6 @@
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const spawnSync = vi.fn();
@@ -111,6 +114,39 @@ describe('readContainerOutput', () => {
       stderr: 'Error response from daemon: container ci-hub-db is not running',
     });
     expect(dockerCalls().some((args) => args[0] === 'cp')).toBe(false);
+  });
+});
+
+/**
+ * The copy route hands the command to `sh -c` inside the container as positional arguments. Run here
+ * by a real shell, the script the reader sends must pass each argument through whole (a key name with a
+ * space, SQL with quotes) without expanding any of it, and must write the exit status only after the
+ * output is complete.
+ */
+const sh = ['/bin/sh', '/usr/bin/sh'].find((candidate) => existsSync(candidate));
+describe.skipIf(!sh)('the copy-route script, run by a real shell', () => {
+  it('passes every argument through unchanged, and writes the exit status after the output', async () => {
+    const { spawnSync: runForReal } = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+    engineThatLosesExecOutput({});
+    readContainerOutput('ci-hub-db', ['true'], { timeoutMs: 1 });
+    const script = String(dockerCalls().find((args) => args[1] === '-d' && args[3] === 'sh')?.[5]);
+
+    const root = mkdtempSync(join(tmpdir(), 'cihub-copy-route-'));
+    try {
+      const dir = join(root, 'cihub-exec-test');
+      const args = ['a b', "it's", '"quoted"', '$(touch pwned)', '`touch pwned`', '; touch pwned', '$HOME', '*'];
+      const command = ['sh', '-c', 'printf "%s|" "$@"; echo oops >&2; exit 3', 'sh', ...args];
+      const started = runForReal(sh as string, ['-c', script, 'sh', dir, ...command], { cwd: root, encoding: 'utf-8' });
+
+      expect(started.status).toBe(0);
+      expect(readFileSync(join(dir, 'out'), 'utf-8')).toBe(`${args.join('|')}|`);
+      expect(readFileSync(join(dir, 'err'), 'utf-8')).toBe('oops\n');
+      expect(readFileSync(join(dir, 'status'), 'utf-8')).toBe('3\n');
+      expect(existsSync(join(dir, 'status.tmp'))).toBe(false);
+      expect(existsSync(join(root, 'pwned'))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
