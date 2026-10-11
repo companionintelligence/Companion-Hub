@@ -30,6 +30,7 @@ pub(crate) fn clear_tunnel_token_result(problems: &[String]) -> String {
 /// What saving the window geometry reads from the window, so a test can stand in for one.
 pub(crate) trait GeometrySource {
     fn is_maximized(&self) -> bool;
+    fn is_minimized(&self) -> bool;
     fn outer_position(&self) -> Option<tauri::PhysicalPosition<i32>>;
     fn inner_size(&self) -> Option<tauri::PhysicalSize<u32>>;
 }
@@ -37,6 +38,10 @@ pub(crate) trait GeometrySource {
 impl<R: tauri::Runtime> GeometrySource for tauri::WebviewWindow<R> {
     fn is_maximized(&self) -> bool {
         tauri::WebviewWindow::is_maximized(self).unwrap_or(false)
+    }
+
+    fn is_minimized(&self) -> bool {
+        tauri::WebviewWindow::is_minimized(self).unwrap_or(false)
     }
 
     fn outer_position(&self) -> Option<tauri::PhysicalPosition<i32>> {
@@ -53,15 +58,16 @@ pub(crate) struct SavedGeometry {
     pub size: Option<tauri::PhysicalSize<u32>>,
 }
 
-/// The position and size the next launch restores, or `None` for a maximized window.
+/// The position and size the next launch restores, or `None` for a maximized or minimized window.
 ///
 /// The size is the inner one, because the restore in `main.rs` passes it to `set_size`, which sets
 /// the inner size. The outer size also counts the invisible resize borders Windows keeps around the
 /// undecorated window, so saving it made the window bigger on every launch (Companion-Hub#1932).
 pub(crate) fn window_geometry_to_save(window: &impl GeometrySource) -> Option<SavedGeometry> {
-    // A maximized window would bake the full screen size into the store;
-    // keep the last normal geometry instead.
-    if window.is_maximized() {
+    // A maximized window would bake the full screen size into the store, and a minimized one
+    // reports Windows' parking spot (-32000, -32000) with an empty client area, which would open
+    // the next launch off screen. Keep the last normal geometry instead.
+    if window.is_maximized() || window.is_minimized() {
         return None;
     }
     Some(SavedGeometry {
@@ -705,6 +711,10 @@ mod tests {
             false
         }
 
+        fn is_minimized(&self) -> bool {
+            false
+        }
+
         fn outer_position(&self) -> Option<PhysicalPosition<i32>> {
             Some(self.position)
         }
@@ -712,6 +722,34 @@ mod tests {
         fn inner_size(&self) -> Option<PhysicalSize<u32>> {
             Some(self.visible_size())
         }
+    }
+
+    /// A minimized window as Windows reports it: parked at (-32000, -32000) with no client area.
+    struct MinimizedWindow;
+
+    impl GeometrySource for MinimizedWindow {
+        fn is_maximized(&self) -> bool {
+            false
+        }
+
+        fn is_minimized(&self) -> bool {
+            true
+        }
+
+        fn outer_position(&self) -> Option<PhysicalPosition<i32>> {
+            Some(PhysicalPosition::new(-32000, -32000))
+        }
+
+        fn inner_size(&self) -> Option<PhysicalSize<u32>> {
+            Some(PhysicalSize::new(0, 0))
+        }
+    }
+
+    /// Quit from the tray while the window is minimized must not save the parking spot, or the next
+    /// launch opens the window off screen.
+    #[test]
+    fn a_minimized_window_keeps_the_geometry_saved_before() {
+        assert!(window_geometry_to_save(&MinimizedWindow).is_none());
     }
 
     /// The window grew by its invisible borders on every launch: 960×700, then 978×710, then
