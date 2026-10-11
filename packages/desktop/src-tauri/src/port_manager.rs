@@ -23,6 +23,11 @@ const DYNAMIC_PORTS: &[(u16, &str)] = &[
     (8080, "TRAEFIK_DASHBOARD_PORT"),
 ];
 
+/// Every env var the port manager writes to the env file, fixed ports first.
+pub(crate) fn port_env_vars() -> impl Iterator<Item = &'static str> {
+    FIXED_PORTS.iter().chain(DYNAMIC_PORTS).map(|&(_, var)| var)
+}
+
 /// Container names managed by our compose stack (used as docker ps filters).
 const OUR_CONTAINERS: &[&str] = &[
     HUB_CONTAINER,

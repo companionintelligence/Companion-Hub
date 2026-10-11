@@ -473,20 +473,12 @@ pub(crate) fn generate_container_docker_config(
     Ok(())
 }
 
-/// The env file lines the port manager owns. It writes them when it starts the Hub.
-const PORT_VAR_PREFIXES: [&str; 6] = [
-    "API_PORT=",
-    "POSTGRES_PORT=",
-    "RABBITMQ_PORT=",
-    "TRAEFIK_DASHBOARD_PORT=",
-    "HTTP_PORT=",
-    "HTTPS_PORT=",
-];
-
+/// Whether `line` is one the port manager owns. It writes them when it starts the Hub.
 fn is_port_var_line(line: &str) -> bool {
-    PORT_VAR_PREFIXES
-        .iter()
-        .any(|prefix| line.starts_with(prefix))
+    crate::port_manager::port_env_vars().any(|var| {
+        line.strip_prefix(var)
+            .is_some_and(|rest| rest.starts_with('='))
+    })
 }
 
 /// The env file a launch writes: `rendered`, then the port lines of `previous`. Only a start writes
@@ -506,7 +498,7 @@ pub(crate) fn launch_env_file_content(rendered: &str, previous: &str) -> String 
 }
 
 /// Strip dynamic port variables from .env content for comparison purposes.
-/// Port manager owns these vars (see [`PORT_VAR_PREFIXES`]).
+/// Port manager owns these vars (see [`crate::port_manager::port_env_vars`]).
 pub(crate) fn strip_port_vars(content: &str) -> String {
     content
         .lines()
