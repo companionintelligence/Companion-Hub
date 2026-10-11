@@ -168,10 +168,11 @@ once the `ci-hub` container that joins them is gone. It removes containers with
 `docker rm -f -v` and then any anonymous volume they mounted that is still there: when Compose
 recreates a container it mounts the old anonymous volume by name, and `rm -v` keeps those. It
 takes the `Companion Hub\bin` folder off the user PATH, and deletes the
-`CompanionHub-WSL-Docker.vbs` logon script that keeps the Docker Engine's WSL2 distro running. Run it with `-DryRun` to list what it would remove
-without removing anything. It must work under Windows PowerShell 5.1, which the installers
-use: keep double quotes out of any `--format` template it passes to docker, because 5.1
-drops them.
+`CompanionHub-WSL-Docker.vbs` logon script that keeps the Docker Engine's WSL2 distro
+running. Run it with `-DryRun` to list what it would remove without removing anything.
+It must work under Windows PowerShell 5.1, which the installers use: keep double quotes out
+of any `--format` template it passes to docker, because 5.1 drops them, and name a label
+with a Go raw string in backticks instead.
 
 **The Cloudflare tunnel token is removed too.** The desktop keeps it in a folder named
 `tunnel` *beside* its data folder (`~/.local/share/tunnel`, `%APPDATA%\tunnel`,

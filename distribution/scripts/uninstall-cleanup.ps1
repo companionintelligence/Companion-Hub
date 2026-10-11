@@ -217,19 +217,16 @@ function Get-ProjectImageIds {
     return $ids | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
 }
 
-# Compose projects of the containers that carry $Label, read from the full label list
-# ('{{.Labels}}', comma-separated key=value pairs). The NSIS hook, the .msi and Chocolatey
+# Compose projects of the containers that carry $Label. The NSIS hook, the .msi and Chocolatey
 # run this script with Windows PowerShell 5.1, which drops the inner double quotes of an
 # argument it passes to docker: '{{.Label "com.docker.compose.project"}}' arrived as
 # {{.Label com.docker.compose.project}}, docker failed with 'function "com" not defined',
-# and no app was removed. Keep double quotes out of every template passed to docker.
+# and no app was removed. Keep double quotes out of every template passed to docker; a Go raw
+# string in backticks names the label without them. Splitting '{{.Labels}}' on commas instead
+# would also pick up a project named inside another label's value ("x,com.docker.compose.project=y").
 function Get-ComposeProjectsByLabel {
     param([string]$Label)
-    foreach ($labels in (docker ps -a --filter "label=$Label" --format '{{.Labels}}' 2>$null)) {
-        foreach ($pair in ($labels -split ',')) {
-            if ($pair -like 'com.docker.compose.project=*') { ($pair -split '=', 2)[1] }
-        }
-    }
+    docker ps -a --filter "label=$Label" --format '{{.Label `com.docker.compose.project`}}' 2>$null
 }
 
 # Anonymous volumes the given containers mount. `docker rm -v` removes a container's anonymous

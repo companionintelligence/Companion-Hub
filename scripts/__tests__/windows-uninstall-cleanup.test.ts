@@ -142,8 +142,14 @@ const FIXTURE: FakeEngine = {
       id: 'a99000000001',
       name: 'wordpress_ci-marketplace-wordpress-1',
       image: 'sha256:wordpress',
-      // A label value with commas in it, as compose writes depends_on.
-      labels: { ...wordpressProject, 'com.docker.compose.depends_on': 'wordpress-db:service_started:false,mail:service_started:false' },
+      labels: {
+        ...wordpressProject,
+        // A label value with commas in it, as compose writes depends_on.
+        'com.docker.compose.depends_on': 'wordpress-db:service_started:false,mail:service_started:false',
+        // An app's own label whose value holds what looks like another project's label. Split on commas, `{{.Labels}}`
+        // would offer `myproject` for removal.
+        'org.example.note': 'see,com.docker.compose.project=myproject',
+      },
       networks: ['wordpress_ci-marketplace_network', 'ci-hub_network'],
       mounts: [{ name: WORDPRESS_ANONYMOUS_VOLUME }],
     },
@@ -249,8 +255,9 @@ function matches(item, filter) {
 }
 
 function render(template, item) {
-  const label = /^\{\{\.Label "([^"]+)"\}\}$/.exec(template);
-  if (label) return item.labels[label[1]] ?? '';
+  // The label name as a quoted string or as a raw string in backticks.
+  const label = /^\{\{\.Label (?:"([^"]+)"|\x60([^\x60]+)\x60)\}\}$/.exec(template);
+  if (label) return item.labels[label[1] ?? label[2]] ?? '';
   if (template === '{{range .Mounts}}{{.Name}} {{end}}') return mounts(item).map((m) => m.name + ' ').join('');
   const fields = {
     ID: item.id,
