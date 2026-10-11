@@ -582,32 +582,6 @@ fn start_hub_inner(
     Err(with_view_logs_hint(failure))
 }
 
-/// Starts the app containers Stop Hub stopped (see [`stop_managed_app_containers`]). Best effort:
-/// an app that doesn't come back shows as stopped in the Hub, with a Start button.
-fn start_apps_stopped_with_hub(data_dir: &Path) {
-    let ids = take_apps_stopped_with_hub(data_dir);
-    if ids.is_empty() {
-        return;
-    }
-
-    let message = match docker_command().arg("start").args(&ids).output() {
-        Ok(output) if output.status.success() => format!(
-            "Started {} app container(s) that Stop Hub stopped.",
-            ids.len()
-        ),
-        Ok(output) => format!(
-            "Starting the {} app container(s) that Stop Hub stopped failed. {}",
-            ids.len(),
-            format_command_output(
-                &String::from_utf8_lossy(&output.stdout),
-                &String::from_utf8_lossy(&output.stderr),
-            )
-        ),
-        Err(error) => format!("Failed to start the app containers that Stop Hub stopped: {error}"),
-    };
-    let _ = append_desktop_log_for(data_dir, "hub.start", &message);
-}
-
 /// Best-effort write of the current compose/env fingerprint after startup.
 ///
 /// Called from `start_hub_inner` so manual/tray starts persist the hash that
