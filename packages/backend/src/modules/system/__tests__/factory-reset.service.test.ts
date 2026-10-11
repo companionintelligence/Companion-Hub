@@ -13,7 +13,7 @@ import { mock, type MockProxy } from 'vitest-mock-extended';
 import { FactoryResetService } from '../factory-reset.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { BearerOrgMembershipCache } from '@/modules/auth/bearer-org-membership.cache';
-import { DATA_DIR, TUNNEL_DIR } from '@/common/constants';
+import { TUNNEL_DIR } from '@/common/constants';
 import path from 'node:path';
 import { vol } from 'memfs';
 
@@ -160,7 +160,8 @@ describe('FactoryResetService', () => {
   });
 
   it('removes the copies of settings.json a boot or a crash left beside it, which hold the credentials it clears', async () => {
-    const stateDir = path.join(DATA_DIR, 'state');
+    // The suite pins the data folder to /data (vitest.config.ts), as the configuration mock above does.
+    const stateDir = path.join('/data', 'state');
     const credentials = JSON.stringify({ ciHubApiKey: 'portal-device-key', inferenceCloudProviders: [{ provider: 'openai', apiKey: 'sk-test' }] });
     vol.writeFileSync(path.join(stateDir, 'settings.json'), credentials);
     // Kept by a boot that found the file torn, and left by a crash between a write and its rename.
