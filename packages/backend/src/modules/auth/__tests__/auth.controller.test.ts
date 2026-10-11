@@ -2069,11 +2069,15 @@ describe('AuthController', () => {
         ...overrides,
       }) as unknown as Request;
 
-    /** A visitor on the Hub's public address. The tunnel passes their own X-Forwarded-Host through. */
+    /**
+     * A visitor on the Hub's public address. The tunnel passes their own X-Forwarded-Host through.
+     * `ip` is a private bridge address. Requests for the Hub's own hostname arrive through the host,
+     * which is not a trusted hop, so Express reports the bridge and only the tunnel's headers refuse them.
+     */
     const tunnelVisitorRequest = () =>
       ({
         protocol: 'http',
-        ip: '203.0.113.7',
+        ip: '10.20.0.2',
         socket: { remoteAddress: '10.20.0.2' },
         headers: {
           host: 'hub-device-org.example.com',
@@ -2110,6 +2114,7 @@ describe('AuthController', () => {
         source: null,
         portalReachable: true,
       });
+      expect(userRepository.getFirstOperator).not.toHaveBeenCalled();
     });
 
     it('prefers a live Portal session over the Hub operator', async () => {
