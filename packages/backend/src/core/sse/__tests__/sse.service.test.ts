@@ -84,6 +84,17 @@ describe('SSEService app stream', () => {
       expect(JSON.parse(second.data as string)).toEqual(tick(85, 1_000));
     });
 
+    it('stops getting it once the worker is done with the install, even with no event for the app', async () => {
+      service.emit('app', tick(85, 1_000));
+      service.forgetInstallProgress(appUrn);
+
+      const pending = collect(2);
+      service.emit('app', { event: 'install_queue', active: null, queued: [] });
+      const [, second] = await pending;
+
+      expect(JSON.parse(second.data as string).event).toBe('install_queue');
+    });
+
     it('stops getting it once the install has ended', async () => {
       service.emit('app', tick(85, 1_000));
       service.emit('app', { event: 'install_success', appUrn, appStatus: 'running' });

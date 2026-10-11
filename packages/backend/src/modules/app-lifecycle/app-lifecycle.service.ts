@@ -721,6 +721,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       // still lose the claim when a newer op replaced the registry entry.
       release();
       if (isInstall) {
+        // Whatever the install's last event was, a new tab must not be told it is still installing.
+        this.sseService.forgetInstallProgress(data.appUrn);
         this.installPipelineTracker.setActive(null);
         releasePipeline?.();
         void this.emitInstallQueueUpdate();

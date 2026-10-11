@@ -55,12 +55,14 @@ export class SSEService implements OnApplicationShutdown {
   emit<T extends Topic>(topic: T, data: Extract<SSE, { topic: T }>['data'], appUrn?: AppUrn) {
     let formattedTopic = topic;
 
+    const event: MessageEvent = { type: 'message', data: JSON.stringify(data) };
+
     if (appUrn) {
       // We want to use this topic for a specific app
       formattedTopic = `${topic}:${appUrn}` as T;
     } else if (topic === 'app' && 'appUrn' in data) {
       if (data.event === 'status_change' && data.appStatus === 'installing' && typeof data.progress === 'number') {
-        this.installProgress.set(data.appUrn, { type: 'message', data: JSON.stringify(data) });
+        this.installProgress.set(data.appUrn, event);
       } else {
         this.installProgress.delete(data.appUrn);
       }
@@ -72,9 +74,16 @@ export class SSEService implements OnApplicationShutdown {
       this.topics.set(formattedTopic, currentTopic);
     }
 
-    const event: MessageEvent = { type: 'message', data: JSON.stringify(data) };
-
     currentTopic.next(event);
+  }
+
+  /**
+   * Drop an app's replayed progress tick once its install has ended. The worker calls this however
+   * the install ended, since not every ending sends an event for the app (a success whose row had
+   * already left `installing`, a failure whose row was gone).
+   */
+  forgetInstallProgress(appUrn: string): void {
+    this.installProgress.delete(appUrn);
   }
 
   /**
