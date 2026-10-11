@@ -581,6 +581,57 @@ describe('InstallAppCommand — pull policy', () => {
       const downloadTicks = progressTicks().filter((tick) => tick.progress === 64);
       expect(downloadTicks.map((tick) => tick.downloadedBytes)).toEqual([50 * MB, 51 * MB]);
     });
+
+    /*
+     * The pull's ticks are not awaited. When each one waited on the job write before it went out,
+     * the last download tick could reach the page after "Finalizing", and stay there through
+     * `compose up`.
+     */
+    it('sends each tick before the job write, so a slow write cannot reorder them', async () => {
+      const writes: Array<() => void> = [];
+      const updateProgress = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            writes.push(resolve);
+          }),
+      );
+      dockerService.pullImages = vi.fn(async (_images: string[], options: { onProgress: (event: unknown) => void }) => {
+        options.onProgress(pullTick(400 * MB, 400 * MB));
+      });
+
+      const install = command.execute(appUrn, {}, { signal: new AbortController().signal, setPhase: vi.fn(), updateProgress } as any);
+      // Let the held writes go newest first, as a pool can finish them, until the install is done.
+      const releaseWrites = setInterval(() => writes.pop()?.(), 0);
+      try {
+        await install;
+      } finally {
+        clearInterval(releaseWrites);
+        for (const release of writes.splice(0)) release();
+      }
+
+      const percents = progressTicks().map((tick) => tick.progress);
+      expect(percents).toContain(98);
+      expect(percents.lastIndexOf(98)).toBeLessThan(percents.indexOf(99));
+    });
+
+    it('does not rewrite the job when only the downloaded size moved', async () => {
+      const now = vi.spyOn(Date, 'now');
+      const updateProgress = vi.fn().mockResolvedValue(undefined);
+      dockerService.pullImages = vi.fn(async (_images: string[], options: { onProgress: (event: unknown) => void }) => {
+        now.mockReturnValue(1_000_000);
+        options.onProgress(pullTick(50 * MB, 400 * MB));
+        now.mockReturnValue(1_003_000);
+        options.onProgress(pullTick(51 * MB, 400 * MB));
+      });
+
+      try {
+        await command.execute(appUrn, {}, { signal: new AbortController().signal, setPhase: vi.fn(), updateProgress } as any);
+      } finally {
+        now.mockRestore();
+      }
+
+      expect(updateProgress.mock.calls.filter(([percent]) => percent === 64)).toHaveLength(1);
+    });
   });
 });
 

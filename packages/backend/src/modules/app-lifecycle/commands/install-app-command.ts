@@ -78,16 +78,21 @@ export class InstallAppCommand extends AppLifecycleCommand {
     const sseService = this.moduleRef.get(SSEService, { strict: false });
     const appsRepository = this.moduleRef.get(AppsRepository, { strict: false });
 
+    // The job's last recorded percent. A tick that only moves the download size leaves it alone.
+    let jobProgress: number | undefined;
     const emitProgress = async (progress: number, download?: { downloadedBytes: number; totalBytes: number }) => {
-      if (ctx?.updateProgress) {
-        await ctx.updateProgress(progress).catch(() => null);
-      }
+      // Sent before the writes below: the pull's ticks are not awaited, and a tick that waited on
+      // a write could reach the page after a later one, or after the install's last event.
       if (sseService) {
         // No `appUrn` third argument: that publishes to the `app:<urn>` topic, which
         // nothing subscribes to (`sse.controller.ts` opens `getTopicObservable('app')`
         // with no urn), so every install-progress tick was dropped before it reached
         // the progress bar in `app-sse-cache.ts`.
         sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'installing', progress, ...download });
+      }
+      if (ctx?.updateProgress && progress !== jobProgress) {
+        jobProgress = progress;
+        await ctx.updateProgress(progress).catch(() => null);
       }
       if (appsRepository) {
         const app = await appsRepository.getAppByUrn(appUrn);
