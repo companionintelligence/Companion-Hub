@@ -325,8 +325,10 @@ export default function DeviceRegistrationPage() {
             const drift = await loadStateDrift();
             const storedChoice = getStoredDriftChoice();
             // Not over the error a failed pairing left under the form: the dialog hid the only word on
-            // what went wrong. It asks again once the person edits the code or pairs again.
-            if (drift?.detected && !storedChoice && !pairingErrorRef.current) {
+            // what went wrong. It asks again once the person edits the code or pairs again. Nor during an
+            // attempt that started while this check waited, which would leave it over that attempt's error.
+            const pairingStartedSince = pairingInProgressRef.current || pendingPairTargetRef.current !== null;
+            if (drift?.detected && !storedChoice && !pairingErrorRef.current && !pairingStartedSince) {
               setDriftDialogOpen(true);
             }
           }

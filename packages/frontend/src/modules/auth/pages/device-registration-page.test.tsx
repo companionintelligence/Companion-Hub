@@ -466,6 +466,52 @@ describe('DeviceRegistrationPage', () => {
     expect(screen.getByRole('heading', { name: 'Reconnect this Hub' })).toBeInTheDocument();
   });
 
+  it('leaves Reconnect this Hub closed when a drift check started before Register answers during the attempt', async () => {
+    vi.useFakeTimers();
+    const portalTimeout =
+      'CI Portal did not answer in time. It may still be provisioning this Hub, or this machine may not be reaching it. Get a new pairing code before trying again.';
+    let answerPairing: (result: { ok: boolean; status: number; data: { success: boolean; message: string } }) => void = () => {};
+    pairWithCode.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          answerPairing = resolve;
+        }),
+    );
+
+    render(<DeviceRegistrationPage />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    // The next poll's drift check is still waiting for the Portal when the person presses Register.
+    let answerDriftCheck: (drift: typeof PORTAL_ACCEPTS_KEY_DRIFT) => void = () => {};
+    fetchRegistrationStateDrift.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answerDriftCheck = resolve;
+        }),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(fetchRegistrationStateDrift).toHaveBeenCalledTimes(2);
+    fireEvent.change(screen.getByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+
+    // It answers mid-attempt: the attempt reached the Portal, so it finds the device there.
+    await act(async () => {
+      answerDriftCheck({ ...PORTAL_ACCEPTS_KEY_DRIFT });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      answerPairing({ ok: true, status: 200, data: { success: false, message: portalTimeout } });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(screen.getByText(portalTimeout)).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Reconnect this Hub' })).not.toBeInTheDocument();
+  });
+
   it('shows the state drift dialog when local and portal registration disagree', async () => {
     fetchRegistrationStateDrift.mockResolvedValue({
       detected: true,
