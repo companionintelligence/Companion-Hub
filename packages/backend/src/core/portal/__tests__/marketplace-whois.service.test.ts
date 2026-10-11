@@ -197,6 +197,23 @@ describe('MarketplaceWhoIsService', () => {
       expect(cacheRows).toEqual([]);
     });
 
+    it('decides a batch of custom apps and a port expose with one role read', async () => {
+      portExposeRows = [
+        { appName: 'my-compose', config: {} },
+        { appName: 'other-compose', config: {} },
+        { appName: 'qa-probe', config: { kind: 'port-expose' } },
+      ];
+      portal.whoisApps.mockResolvedValue(roleAnswer('member'));
+      const urns = [CUSTOM_URN, 'other-compose:_user', 'qa-probe:_user'] as AppUrn[];
+
+      await expect(service.filterSessionByAction(sessionReq(), urns, 'stop')).resolves.toEqual(['qa-probe:_user']);
+      await expect(service.assertSessionActions(sessionReq(), urns, 'stop')).rejects.toMatchObject({ message: 'APP_ACTION_GRANT_DENIED' });
+      // One role question per call, and the identity read once for it.
+      expect(portal.whoisApps).toHaveBeenCalledTimes(2);
+      expect(federatedIdentities.findByUserId).toHaveBeenCalledTimes(2);
+      expect(cacheRows).toEqual([]);
+    });
+
     it('can be seen, but not started or changed, by a member without a managing role', async () => {
       portal.whoisApps.mockResolvedValue(roleAnswer('member'));
 

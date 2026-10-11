@@ -249,13 +249,18 @@ export class MarketplaceWhoIsService {
   /**
    * The role question both ask, and a change to a custom app (`localAppGrants`), about `appUrn` or, when
    * it is `null`, about no app: fresh, from this device's own organization, and `false` whenever it
-   * cannot be answered.
+   * cannot be answered. `knownSubject` is a Portal subject the caller already read, so it is not read twice.
    */
-  private async readManagingRole(userId: number, appUrn: AppUrn | null, purpose: 'custom_domain' | 'api_key_full' | 'custom_app'): Promise<boolean> {
+  private async readManagingRole(
+    userId: number,
+    appUrn: AppUrn | null,
+    purpose: 'custom_domain' | 'api_key_full' | 'custom_app',
+    knownSubject?: string,
+  ): Promise<boolean> {
     // The identity read and the urn split inside the `try` too: a database error, or a urn
     // `extractAppUrn` rejects, is another way of not knowing, not a 500.
     try {
-      const subject = await this.portalSubject(userId);
+      const subject = knownSubject ?? (await this.portalSubject(userId));
 
       if (!subject) {
         this.logUnlinked(userId);
@@ -416,12 +421,11 @@ export class MarketplaceWhoIsService {
       return out;
     }
 
+    const viewOnly = () => new Map<AppUrn, HubAction[]>(local.map((urn) => [urn, ['view']]));
+
     // A view of any `_user` app needs neither the row nor a role, so the lists the UI polls cost nothing here.
     if (action === 'view') {
-      for (const urn of local) {
-        out.set(urn, ['view']);
-      }
-      return out;
+      return viewOnly();
     }
 
     const names = [...new Set(local.map((urn) => extractAppUrn(urn).appName))];
@@ -433,10 +437,7 @@ export class MarketplaceWhoIsService {
         .where(and(eq(app.appStoreSlug, '_user'), inArray(app.appName, names)));
     } catch (error) {
       this.logger.warn(`local_app_grant_lookup_failed: ${describeNetworkError(error)}`);
-      for (const urn of local) {
-        out.set(urn, ['view']);
-      }
-      return out;
+      return viewOnly();
     }
 
     const portExposeNames = new Set(rows.filter((row) => storedConfigIsPortExpose(row.config)).map((row) => row.appName));
@@ -458,15 +459,21 @@ export class MarketplaceWhoIsService {
    * here, so they can still start, stop and restart one but not remove or reconfigure it.
    */
   private async customAppGrant(userId: number, appUrn: AppUrn): Promise<HubAction[]> {
-    // A failed identity read is `undefined`, not "unlinked": `readManagingRole` reads it again and refuses.
-    const subject = await this.portalSubject(userId).catch(() => undefined);
+    let subject: string | null;
+    try {
+      subject = await this.portalSubject(userId);
+    } catch (error) {
+      // A failed identity read is not knowing who this is, not "unlinked", so the change is refused.
+      this.logger.warn(`Could not read the organization role (custom_app): ${describeNetworkError(error)}`);
+      return ['view'];
+    }
 
-    if (subject !== undefined && !subject) {
+    if (!subject) {
       this.logUnlinked(userId);
       return [...DEFAULT_MEMBER_ACTIONS];
     }
 
-    return (await this.readManagingRole(userId, appUrn, 'custom_app')) ? [...HUB_ACTIONS] : ['view'];
+    return (await this.readManagingRole(userId, appUrn, 'custom_app', subject)) ? [...HUB_ACTIONS] : ['view'];
   }
 
   private async portalSubject(userId: number): Promise<string | null> {
