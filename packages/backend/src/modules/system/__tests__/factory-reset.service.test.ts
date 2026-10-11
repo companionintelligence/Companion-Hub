@@ -175,6 +175,21 @@ describe('FactoryResetService', () => {
     expect(vol.existsSync(path.join(stateDir, 'seed'))).toBe(true);
   });
 
+  it('finishes the reset when a copy of settings.json cannot be removed', async () => {
+    const stateDir = path.join('/data', 'state');
+    // A folder where a copy would be, which rm without `recursive` refuses.
+    vol.mkdirSync(path.join(stateDir, 'settings.json.corrupt-2026-10-10T11-25-42-646Z', 'inside'), { recursive: true });
+    vol.writeFileSync(path.join(stateDir, 'settings.json.1-3.tmp'), '{"ciHubApiKey":"portal-device-key"}');
+    bearerOrgMembership.set('portal-subject', true);
+
+    await expect(service.execute()).resolves.toMatchObject({ success: true });
+
+    // The steps after the settings reset still ran, and the other copy went.
+    expect(cache.clear).toHaveBeenCalled();
+    expect(bearerOrgMembership.get('portal-subject')).toBeUndefined();
+    expect(vol.existsSync(path.join(stateDir, 'settings.json.1-3.tmp'))).toBe(false);
+  });
+
   it('tears down installed apps before wiping data mounts', async () => {
     db.query.app.findMany.mockResolvedValue([
       {

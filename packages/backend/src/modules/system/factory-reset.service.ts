@@ -157,7 +157,12 @@ export class FactoryResetService {
     // After any save already under way, which would otherwise write the old settings back over `{}`.
     await inSettingsFileTurn(async () => {
       await writeSettingsJsonFile(settingsPath, '{}', this.logger);
-      await removeSettingsJsonCopies(settingsPath);
+      // Not allowed to fail the reset: the cache and Bearer verdicts after this must still be cleared.
+      await removeSettingsJsonCopies(settingsPath).catch((error: unknown) => {
+        this.logger.warn(
+          `Factory reset could not remove the copies of settings.json in ${path.dirname(settingsPath)}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
     });
   }
 
