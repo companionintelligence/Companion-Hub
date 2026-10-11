@@ -151,19 +151,6 @@ const PULL_STATUS_LOG_INTERVAL_MS = 30_000;
 const secondsSince = (startedAt: number) => `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
 const megabytes = (bytes: number) => (bytes / (1024 * 1024)).toFixed(1);
 
-/** Layers seen so far and how many are done. Docker's "Pulling from <repo>" line carries the tag as its id and is not a layer. */
-function countPullLayers(layers: Map<string, DockerPullLayerSnapshot>): { done: number; total: number } {
-  let done = 0;
-  let total = 0;
-  for (const layer of layers.values()) {
-    const status = layer.status.toLowerCase();
-    if (status.startsWith('pulling from')) continue;
-    total += 1;
-    if (status.includes('pull complete') || status.includes('already exists')) done += 1;
-  }
-  return { done, total };
-}
-
 export interface DockerPullProgressEvent {
   activeImage: string;
   completedBytes: number;
@@ -652,11 +639,16 @@ export class DockerService {
     completedBytes: number;
     totalBytes: number;
     stage: DockerPullProgressEvent['stage'];
+    /** Layers seen so far and how many are done, for the pull's status log. */
+    layersSeen: number;
+    layersDone: number;
   } {
     let completedBytes = 0;
     let totalBytes = 0;
     let hasExtractingLayer = false;
     let hasActiveLayer = false;
+    let layersSeen = 0;
+    let layersDone = 0;
 
     for (const layer of layers.values()) {
       const total = Math.max(layer.total, layer.current);
@@ -665,6 +657,12 @@ export class DockerService {
       const normalizedStatus = layer.status.toLowerCase();
       const isComplete = normalizedStatus.includes('pull complete') || normalizedStatus.includes('already exists');
       const isExtracting = normalizedStatus.includes('extract');
+
+      // Docker's "Pulling from <repo>" line carries the tag as its id and is not a layer.
+      if (!normalizedStatus.startsWith('pulling from')) {
+        layersSeen += 1;
+        if (isComplete) layersDone += 1;
+      }
 
       if (isExtracting) {
         hasExtractingLayer = true;
@@ -678,7 +676,7 @@ export class DockerService {
     }
 
     const stage: DockerPullProgressEvent['stage'] = hasActiveLayer ? (hasExtractingLayer ? 'extracting' : 'downloading') : 'complete';
-    return { completedBytes, totalBytes, stage };
+    return { completedBytes, totalBytes, stage, layersSeen, layersDone };
   }
 
   public async pullImages(
@@ -753,13 +751,15 @@ export class DockerService {
 
     const completedImages = new Set<string>();
     const layerSnapshots = new Map<string, DockerPullLayerSnapshot>();
+    // Set once this call has returned or thrown. When one image fails the others are not aborted,
+    // and one still waiting on Docker must not later report a timeout for a pull that is over.
+    let pullEnded = false;
 
     const pullStartedAt = Date.now();
     const statusLogTimer = globalThis.setInterval(() => {
-      const { completedBytes, totalBytes } = this.summarizePullLayers(layerSnapshots);
-      const layers = countPullLayers(layerSnapshots);
+      const { completedBytes, totalBytes, layersDone, layersSeen } = this.summarizePullLayers(layerSnapshots);
       this.logger.info(
-        `[pull] after ${secondsSince(pullStartedAt)}: ${completedImages.size} of ${uniqueImages.length} images done, ${layers.done} of ${layers.total} layers, ${megabytes(completedBytes)} of ${megabytes(totalBytes)} MB`,
+        `[pull] after ${secondsSince(pullStartedAt)}: ${completedImages.size} of ${uniqueImages.length} images done, ${layersDone} of ${layersSeen} layers, ${megabytes(completedBytes)} of ${megabytes(totalBytes)} MB`,
       );
     }, PULL_STATUS_LOG_INTERVAL_MS);
     statusLogTimer.unref?.();
@@ -801,7 +801,7 @@ export class DockerService {
           let firstEventSeen = false;
           this.logger.info(`[pull] ${image}: pull started`);
           const firstEventTimer = globalThis.setTimeout(() => {
-            if (!controller.signal.aborted) {
+            if (!controller.signal.aborted && !pullEnded) {
               timeoutReason = 'not-started';
               notStartedImage = image;
               this.logger.warn(
@@ -929,6 +929,7 @@ export class DockerService {
       }
       globalThis.clearTimeout(overallTimer);
       globalThis.clearInterval(statusLogTimer);
+      pullEnded = true;
       signal?.removeEventListener('abort', onCallerAbort);
     }
   }

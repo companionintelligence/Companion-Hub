@@ -82,6 +82,23 @@ describe('DockerService.pullImages: a pull that never starts', () => {
     expect(outcome.error).toBeUndefined();
   });
 
+  it('does not report a timeout for another image once the pull has already failed', async () => {
+    vi.useFakeTimers();
+    const logger = mock<LoggerService>();
+    const OTHER = 'ghcr.io/example/sidecar:1';
+    // The sidecar's pull fails at once; Docker never answers the main image's.
+    const pull = vi.fn((image: string, callback: (error: Error | null) => void) => {
+      if (image === OTHER) callback(new Error('manifest unknown'));
+    });
+    const service = new DockerService(logger, mock(), mock(), mock(), mock(), { pull, modem: { followProgress: vi.fn() } } as never, mock());
+
+    const outcome = watch(service.pullImages([IMAGE, OTHER], { forcePull: true }));
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+
+    expect(outcome.error?.message).toContain('manifest unknown');
+    expect(logger.warn.mock.calls.map(([line]) => String(line))).not.toContainEqual(expect.stringContaining('[pull-timeout]'));
+  });
+
   it('ends a pull cancelled while it looked for a local copy, without asking Docker for it', async () => {
     vi.useFakeTimers();
     const logger = mock<LoggerService>();
