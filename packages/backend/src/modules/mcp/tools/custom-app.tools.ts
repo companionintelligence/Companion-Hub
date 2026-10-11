@@ -66,8 +66,8 @@ export class CustomAppTools implements OnModuleInit {
 
   /*
    * A change to an existing app asks the lifecycle's actor gate for `configure` first
-   * (`assertMcpCallerMay`). `CustomAppService` serves `/api/custom-apps` routes that assert no grant of
-   * their own, so a required actor there would change what those routes allow (CI-Hub#1397).
+   * (`assertMcpCallerMay`). `CustomAppService` takes no actor: its `/api/custom-apps` routes assert the
+   * session's grant in the controller, and creating an app asserts none (CI-Hub#1397).
    */
   async updateCustomApp(params: { appUrn: string; config: Record<string, unknown> }) {
     const appUrn = castAppUrn(params.appUrn);
