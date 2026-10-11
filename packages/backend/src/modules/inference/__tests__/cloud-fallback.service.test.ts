@@ -92,6 +92,19 @@ describe('CloudFallbackService.setProvider', () => {
     await expect(service.setProvider({ provider: 'openai', apiKey: 'sk-live', enabled: true, defaultModel: 'gpt-4o' })).rejects.toThrow(
       'Failed to set user settings',
     );
+    // Not handed to apps either, after a request that reported it was not saved.
+    expect(service.getProvider('openai')).toBeUndefined();
+  });
+
+  it('keeps the provider it had when a change to it could not be saved', async () => {
+    await service.setProvider({ provider: 'openai', apiKey: 'sk-live', enabled: true, defaultModel: 'gpt-4o' });
+    configuration.setInferenceCloudProviders.mockRejectedValue(new InternalServerErrorException('Failed to set user settings'));
+
+    await expect(service.setProvider({ provider: 'openai', apiKey: 'sk-other', enabled: false, defaultModel: 'gpt-4o' })).rejects.toThrow(
+      'Failed to set user settings',
+    );
+
+    expect(service.getProvider('openai')).toMatchObject({ apiKey: 'sk-live', enabled: true });
   });
 
   it('reloads persisted providers on boot', () => {
