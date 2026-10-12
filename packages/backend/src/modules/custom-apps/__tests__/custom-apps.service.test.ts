@@ -144,6 +144,10 @@ describe('CustomAppService', () => {
     const webOn = (internalPort: string, addPorts?: unknown[]) => [{ name: 'web', image: 'nginx:alpine', isMain: true, internalPort, addPorts }];
 
     beforeEach(() => {
+      // The Hub's web ports come from the env, so a developer's own HTTP_PORT must not leak in.
+      vi.stubEnv('HTTP_PORT', '');
+      vi.stubEnv('HTTPS_PORT', '');
+      vi.stubEnv('TRAEFIK_DASHBOARD_PORT', '');
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
       configService.get.mockImplementation((key) => {
         if (key === 'directories') return { dataDir: '/data', appDataDir: '/app-data' } as any;
@@ -184,7 +188,24 @@ describe('CustomAppService', () => {
       appsRepository.createApp.mockRejectedValue(new Error('db down'));
 
       await expect(createWith(webOn('80'))).rejects.toThrow('CUSTOM_APP_ERROR_CREATION_FAILED');
+      expect(portManager.releaseAll).toHaveBeenLastCalledWith('port-probe:_user');
+      expect(portManager.releaseAll.mock.invocationCallOrder.at(-1)).toBeGreaterThan(portManager.allocatePorts.mock.invocationCallOrder[0] ?? 0);
+    });
+
+    it('clears an allocation an earlier app of the same name left behind before allocating', async () => {
+      await createWith(webOn('8081'));
+
       expect(portManager.releaseAll).toHaveBeenCalledWith('port-probe:_user');
+      expect(portManager.releaseAll.mock.invocationCallOrder[0]).toBeLessThan(portManager.allocatePorts.mock.invocationCallOrder[0] ?? 0);
+    });
+
+    it('holds the Port Mappings of an edit to the same rule', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 3 } as any);
+
+      await expect(
+        service.updateCustomApp('port-probe:_user' as any, { services: webOn('8081', [{ containerPort: 80, hostPort: 80 }]) } as any),
+      ).rejects.toThrow('CUSTOM_APP_ERROR_HOST_PORT_IN_USE');
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -192,7 +213,13 @@ describe('CustomAppService', () => {
       ['the port the Hub serves HTTPS on', () => undefined, 443],
       ["the port the desktop app moved the Hub's HTTP to", () => vi.stubEnv('HTTP_PORT', '8880'), 8880],
       ['a port another app publishes', () => appsRepository.getAppsByPort.mockResolvedValue([{ appName: 'wordpress' }] as any), 8213],
-      ['a port the port manager keeps for the Hub', () => portManager.isPortAvailable.mockResolvedValue(false), 5002],
+      ["the port the Hub's API publishes", () => undefined, 5002],
+      ["the port the Hub's database publishes on 127.0.0.1", () => undefined, 6543],
+      [
+        'a port the port manager gave another app',
+        () => portManager.getAllAllocations.mockResolvedValue([{ hostPort: 15000, protocol: 'tcp', appUrn: 'grafana:ci-marketplace' }] as any),
+        15000,
+      ],
       [
         'a privileged port another app was given',
         () => portManager.getAllAllocations.mockResolvedValue([{ hostPort: 53, protocol: 'tcp', appUrn: 'adguard:ci-marketplace' }] as any),
@@ -219,6 +246,26 @@ describe('CustomAppService', () => {
           ]),
         ),
       ).resolves.toMatchObject({ response: { message: 'CUSTOM_APP_ERROR_HOST_PORT_IN_USE', intlParams: { port: '9100' } } });
+    });
+
+    /*
+     * The port manager keeps a list of ports it never hands out, but most of them (3000, 5432, 5672,
+     * 9091) are the Hub's development ports, not ports a running Hub publishes. A Port Mapping is
+     * published exactly as given, so one there was accepted before and still works.
+     */
+    it("allows a Port Mapping on a port the port manager won't hand out but the Hub doesn't publish, such as 5432", async () => {
+      portManager.isPortAvailable.mockResolvedValue(false);
+
+      await expect(createWith(webOn('8081', [{ containerPort: 5432, hostPort: 5432 }]))).resolves.toMatchObject({ appUrn: 'port-probe:_user' });
+    });
+
+    it('lets an edit keep a Port Mapping on such a port', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 3 } as any);
+      portManager.isPortAvailable.mockResolvedValue(false);
+
+      await service.updateCustomApp('port-probe:_user' as any, { services: webOn('8081', [{ containerPort: 3000, hostPort: 3000 }]) } as any);
+
+      expect(filesystem.writeTextFile).toHaveBeenCalledWith(expect.stringContaining('docker-compose.json'), expect.any(String));
     });
 
     it('allows a privileged Port Mapping nobody holds, such as 53 for a DNS server', async () => {

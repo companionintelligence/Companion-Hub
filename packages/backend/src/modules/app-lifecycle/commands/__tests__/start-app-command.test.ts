@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mock, mockDeep } from 'vitest-mock-extended';
 import { removeRestartingAppContainers, StartAppCommand, startComposeCommand } from '../start-app-command';
 import type { ModuleRef } from '@nestjs/core';
@@ -305,15 +305,25 @@ describe('StartAppCommand — pull policy', () => {
     const helperOf = <T>(token: unknown) => (command as unknown as { moduleRef: { get: (t: unknown) => T } }).moduleRef.get(token);
 
     beforeEach(() => {
+      // The Hub's web ports come from the env, so a developer's own HTTP_PORT must not leak in.
+      vi.stubEnv('HTTP_PORT', '');
+      vi.stubEnv('HTTPS_PORT', '');
+      vi.stubEnv('TRAEFIK_DASHBOARD_PORT', '');
       appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'my-nginx', port: 80, force_pull: false } as any);
       portManager.getMainPort.mockResolvedValue(null);
+      portManager.releaseAll.mockResolvedValue(1);
       portManager.allocatePorts.mockResolvedValue([
         { id: 9, appUrn: customUrn, hostPort: 10000, containerPort: 80, protocol: 'tcp', label: 'main', createdAt: '2026-10-10T00:00:00.000Z' },
       ]);
+      helperOf<ReturnType<typeof mock<AppsRepository>>>(AppsRepository).getAppsByPort.mockResolvedValue([]);
       helperOf<ReturnType<typeof mock<AppsRepository>>>(AppsRepository).getAppByUrn.mockResolvedValue({
         id: 7,
         config: { exposureMode: 'local' },
       } as any);
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
     });
 
     it('gets one on its first start, writes it to the row, and builds its env on it', async () => {
@@ -346,13 +356,62 @@ describe('StartAppCommand — pull policy', () => {
       vi.stubEnv('HTTPS_PORT', '8443');
       appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'my-nginx', port: 8443, force_pull: false } as any);
 
-      try {
-        await command.execute(customUrn, {});
-      } finally {
-        vi.unstubAllEnvs();
-      }
+      await command.execute(customUrn, {});
 
       expect(portManager.allocatePorts).toHaveBeenCalledWith(customUrn, [{ containerPort: 8443, label: 'main', preferredHostPort: undefined }]);
+    });
+
+    /*
+     * The settings dialog fills its port field from config.json, which holds a custom app's internal
+     * port, so a save stored 8080 on the row (80 can't be saved: the form takes 1024 and up). The boot
+     * backfill then recorded 8080 as the app's main allocation, and Traefik's dashboard holds it.
+     */
+    it('replaces a Hub port a settings save stored, and the allocation the boot backfill made of it', async () => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'my-nginx', port: 8080, force_pull: false } as any);
+      portManager.getMainPort.mockResolvedValue(8080);
+
+      const result = await command.execute(customUrn, { port: 8080 });
+
+      expect(result.success).toBe(true);
+      expect(portManager.releaseAll).toHaveBeenCalledWith(customUrn);
+      expect(portManager.allocatePorts).toHaveBeenCalledWith(customUrn, [{ containerPort: 8080, label: 'main', preferredHostPort: undefined }]);
+      expect(helperOf<ReturnType<typeof mock<AppHelpers>>>(AppHelpers).generateEnvFile).toHaveBeenCalledWith(
+        customUrn,
+        expect.objectContaining({ port: 10000 }),
+      );
+    });
+
+    it('keeps the internal port a settings save stored when it is free to bind', async () => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'my-nginx', port: 8081, force_pull: false } as any);
+
+      await command.execute(customUrn, { port: 8081 });
+
+      expect(portManager.getMainPort).not.toHaveBeenCalled();
+      expect(portManager.allocatePorts).not.toHaveBeenCalled();
+    });
+
+    it('keeps it off a host port its own Port Mappings publish', async () => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'my-nginx', port: 9200, force_pull: false } as any);
+      appFilesManager.getDockerComposeJson.mockResolvedValue({
+        path: '/tmp',
+        content: {
+          services: [{ name: 'web', image: 'nginx', isMain: true, internalPort: 9200, addPorts: [{ containerPort: 9300, hostPort: 9200 }] }],
+        },
+      });
+
+      await command.execute(customUrn, {});
+
+      expect(portManager.allocatePorts).toHaveBeenCalledWith(customUrn, [{ containerPort: 9200, label: 'main', preferredHostPort: undefined }]);
+    });
+
+    it('still starts on what it published before when no host port can be allocated', async () => {
+      portManager.allocatePorts.mockRejectedValue(new Error('NETWORK_ERROR_NO_AVAILABLE_PORTS'));
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'my-nginx', port: 8081, force_pull: false } as any);
+
+      const result = await command.execute(customUrn, {});
+
+      expect(result.success).toBe(true);
+      expect(dockerService.composeApp).toHaveBeenCalled();
     });
 
     it('leaves a store app to the port its install allocated', async () => {

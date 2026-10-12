@@ -8,9 +8,16 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { deriveAppSlug, RESERVED_APP_NAMES } from '@ci-hub/common/types';
 import path from 'node:path';
 import { AppsRepository } from '../apps/apps.repository';
-import { PortManagerService } from '../network/port-manager.service';
+import { PortManagerService, type PortAllocation } from '../network/port-manager.service';
 import type { CreateCustomAppDto, UpdateCustomAppDto } from './dto/custom-apps.dto';
-import { allocateCustomAppHostPort, hubWebHostPorts } from './custom-app-host-port';
+import {
+  allocateCustomAppHostPort,
+  customAppMainPortAvoids,
+  hubHostPorts,
+  mappedHostPorts,
+  parsePort,
+  type MappedHostPort,
+} from './custom-app-host-port';
 import { getFrontmatter } from '@/utils/frontmatter/frontmatter';
 import { frontmatterSchema, type AppInfo, type ServiceInput } from '@ci-hub/common/schemas';
 
@@ -23,31 +30,7 @@ const APPS_FOLDER = '_user';
  */
 function mainServicePort(config: CreateCustomAppDto['config']): number | undefined {
   const main = config.services.find((s: ServiceInput) => s.isMain) ?? config.services[0];
-  const rawPort = main?.internalPort;
-  const typedPort = typeof rawPort === 'string' && /^\d{1,5}$/.test(rawPort.trim()) ? Number(rawPort.trim()) : rawPort;
-  return typeof typedPort === 'number' && typedPort >= 1 && typedPort <= 65535 ? typedPort : undefined;
-}
-
-/** The host ports the app's Port Mappings publish, with their protocol. A host port given as an env reference is left out. */
-function mappedHostPorts(config: CreateCustomAppDto['config']): Array<{ hostPort: number; protocol: 'tcp' | 'udp' }> {
-  const ports: Array<{ hostPort: number; protocol: 'tcp' | 'udp' }> = [];
-  for (const service of config.services) {
-    for (const mapping of service.addPorts ?? []) {
-      const raw = typeof mapping.hostPort === 'string' ? mapping.hostPort.trim() : mapping.hostPort;
-      const hostPort = typeof raw === 'number' ? raw : /^\d{1,5}$/.test(raw) ? Number(raw) : Number.NaN;
-      if (!Number.isInteger(hostPort) || hostPort < 1 || hostPort > 65535) {
-        continue;
-      }
-      // As the compose builder publishes them: TCP unless the mapping is UDP only.
-      if (mapping.tcp || !mapping.udp) {
-        ports.push({ hostPort, protocol: 'tcp' });
-      }
-      if (mapping.udp) {
-        ports.push({ hostPort, protocol: 'udp' });
-      }
-    }
-  }
-  return ports;
+  return parsePort(main?.internalPort);
 }
 
 @Injectable()
@@ -87,10 +70,11 @@ export class CustomAppService {
       throw new TranslatableError('CUSTOM_APP_ERROR_DUPLICATE_NAME', { name: displayName }, HttpStatus.CONFLICT);
     }
 
-    const hubWebPorts = hubWebHostPorts(this.configService.get('userSettings'));
+    const hubPorts = hubHostPorts(this.configService.get('userSettings'));
+    const mappings = mappedHostPorts(config.services);
 
     // Before anything is written, so a refusal leaves no files or row behind.
-    await this.assertMappedHostPortsFree(config, hubWebPorts);
+    await this.assertMappedHostPortsFree(mappings, hubPorts);
 
     try {
       await this.createAppDirectories(appUrn);
@@ -98,10 +82,14 @@ export class CustomAppService {
       await this.createAppInfo(appUrn, displayName, config);
 
       const internalPort = mainServicePort(config);
-      const hostPort =
-        internalPort === undefined
-          ? undefined
-          : await allocateCustomAppHostPort(this.portManager, appUrn, internalPort, await this.mainPortAvoids(config, internalPort, hubWebPorts));
+      let hostPort: number | undefined;
+      if (internalPort !== undefined) {
+        // No row holds this URN, so any allocation under it was left by an app of the same name whose
+        // removal could not give its ports back. Install clears them the same way.
+        await this.portManager.releaseAll(appUrn);
+        const avoid = await customAppMainPortAvoids(this.appsRepository, appUrn, mappings, internalPort, hubPorts);
+        hostPort = await allocateCustomAppHostPort(this.portManager, appUrn, internalPort, avoid);
+      }
 
       await this.appsRepository.createApp({
         appStoreSlug: APPS_FOLDER,
@@ -132,41 +120,26 @@ export class CustomAppService {
   }
 
   /**
-   * The host ports the main port must keep off although the port manager would hand them out: the
-   * Hub's web ports, the ones the app maps itself, and its internal port when another app's row
-   * publishes it. A port-expose app is such a row: it points at a service already running on the
-   * host and holds no allocation.
+   * Refuse a Port Mappings host port that is already held: one the Hub's own containers publish, one the
+   * port manager gave an app, one an app's row publishes, or one mapped twice. On an edit, the app's own
+   * row counts too: its main port is published on the same host. A port nobody holds stays allowed, even
+   * one the port manager won't hand out itself (53 for a DNS server, 5432 for a database), because a
+   * mapping is published exactly as given.
    */
-  private async mainPortAvoids(config: CreateCustomAppDto['config'], internalPort: number, hubWebPorts: ReadonlySet<number>): Promise<Set<number>> {
-    const avoid = new Set(hubWebPorts);
-    for (const { hostPort, protocol } of mappedHostPorts(config)) {
-      if (protocol === 'tcp') {
-        avoid.add(hostPort);
-      }
-    }
-    if ((await this.appsRepository.getAppsByPort(internalPort)).length > 0) {
-      avoid.add(internalPort);
-    }
-    return avoid;
-  }
-
-  /**
-   * Refuse a Port Mappings host port that is already held: one of the Hub's web ports, a port the port
-   * manager keeps for the Hub or gave another app, one another app's row publishes, or one mapped twice.
-   * A privileged port nobody holds (53 for a DNS server) stays allowed. Only the port manager's own
-   * allocations keep out of that range.
-   */
-  private async assertMappedHostPortsFree(config: CreateCustomAppDto['config'], hubWebPorts: ReadonlySet<number>): Promise<void> {
+  private async assertMappedHostPortsFree(mappings: ReadonlyArray<MappedHostPort>, hubPorts: ReadonlySet<number>): Promise<void> {
     const seen = new Set<string>();
+    let allocations: Promise<PortAllocation[]> | undefined;
+    const allocated = async (hostPort: number, protocol: 'tcp' | 'udp') => {
+      allocations ??= this.portManager.getAllAllocations();
+      return (await allocations).some((allocation) => allocation.hostPort === hostPort && allocation.protocol === protocol);
+    };
 
-    for (const { hostPort, protocol } of mappedHostPorts(config)) {
+    for (const { hostPort, protocol } of mappings) {
       const key = `${hostPort}/${protocol}`;
       const held =
         seen.has(key) ||
-        (protocol === 'tcp' && (hubWebPorts.has(hostPort) || (await this.appsRepository.getAppsByPort(hostPort)).length > 0)) ||
-        (hostPort >= 1024
-          ? !(await this.portManager.isPortAvailable(hostPort, protocol))
-          : (await this.portManager.getAllAllocations()).some((allocation) => allocation.hostPort === hostPort && allocation.protocol === protocol));
+        (protocol === 'tcp' && (hubPorts.has(hostPort) || (await this.appsRepository.getAppsByPort(hostPort)).length > 0)) ||
+        (await allocated(hostPort, protocol));
 
       if (held) {
         throw new TranslatableError('CUSTOM_APP_ERROR_HOST_PORT_IN_USE', { port: String(hostPort) }, HttpStatus.CONFLICT);
@@ -201,6 +174,9 @@ export class CustomAppService {
     if (!existingApp) {
       throw new TranslatableError('CUSTOM_APP_ERROR_NOT_FOUND', { urn: appUrn }, HttpStatus.NOT_FOUND);
     }
+
+    // An edit can add Port Mappings too, and they are held to the same rule as on creation.
+    await this.assertMappedHostPortsFree(mappedHostPorts(config.services), hubHostPorts(this.configService.get('userSettings')));
 
     try {
       await this.writeDockerComposeConfig(appUrn, config);

@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AppUrn } from '@ci-hub/common/types';
-import { allocateCustomAppHostPort, ensureCustomAppHostPort, hubWebHostPorts } from '../custom-app-host-port';
+import {
+  allocateCustomAppHostPort,
+  customAppMainPortAvoids,
+  ensureCustomAppHostPort,
+  hubHostPorts,
+  mappedHostPorts,
+  parsePort,
+} from '../custom-app-host-port';
 
 const APP_URN = 'my-nginx:_user' as AppUrn;
 
@@ -18,6 +25,7 @@ const portManagerGiving = (hostPort: number, mainPort: number | null = null) => 
     })),
   ),
   getMainPort: vi.fn(async (_appUrn: AppUrn) => mainPort),
+  releaseAll: vi.fn(async (_appUrn: AppUrn) => (mainPort === null ? 0 : 1)),
 });
 
 describe('allocateCustomAppHostPort', () => {
@@ -68,16 +76,95 @@ describe('ensureCustomAppHostPort', () => {
 
     expect(portManager.allocatePorts).toHaveBeenCalledWith(APP_URN, [{ containerPort: 8443, label: 'main', preferredHostPort: undefined }]);
   });
+
+  // The boot backfill records a row's port as its main allocation, and a settings save had copied the internal port there.
+  it('gives back a main port it already holds when that is one to avoid, and allocates another', async () => {
+    const portManager = portManagerGiving(10005, 80);
+    const appsRepository = appsRepositoryWith({ port: 80 });
+
+    await expect(ensureCustomAppHostPort(portManager, appsRepository, APP_URN, 80, new Set([80, 443, 8080]))).resolves.toBe(10005);
+    expect(portManager.releaseAll).toHaveBeenCalledWith(APP_URN);
+    expect(appsRepository.updateAppById).toHaveBeenCalledWith(4, { config: { port: 10005 }, port: 10005 });
+  });
+
+  it('writes nothing when the row already carries the port', async () => {
+    const portManager = portManagerGiving(10006, 15000);
+    const appsRepository = {
+      getAppByUrn: vi.fn(async () => ({ id: 4, port: 15000, config: { port: 15000 } }) as never),
+      updateAppById: vi.fn(async () => undefined as never),
+    };
+
+    await ensureCustomAppHostPort(portManager, appsRepository, APP_URN, 80);
+
+    expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+  });
 });
 
-describe('hubWebHostPorts', () => {
-  it("is Traefik's default host ports when the env file names none", () => {
-    expect(hubWebHostPorts(undefined, {})).toEqual(new Set([80, 443, 8080]));
+describe('customAppMainPortAvoids', () => {
+  const publishing = (rows: Array<{ appName: string; appStoreSlug: string }>) => ({ getAppsByPort: vi.fn(async () => rows as never) });
+
+  it("adds the app's own TCP mappings and an internal port another app's row publishes to the Hub's web ports", async () => {
+    const avoid = await customAppMainPortAvoids(
+      publishing([{ appName: 'jellyfin', appStoreSlug: '_user' }]),
+      APP_URN,
+      [
+        { hostPort: 9100, protocol: 'tcp' },
+        { hostPort: 5353, protocol: 'udp' },
+      ],
+      8096,
+      new Set([80]),
+    );
+
+    expect(avoid).toEqual(new Set([80, 9100, 8096]));
+  });
+
+  it("does not count the app's own row as another app publishing its internal port", async () => {
+    const avoid = await customAppMainPortAvoids(publishing([{ appName: 'my-nginx', appStoreSlug: '_user' }]), APP_URN, [], 8081, new Set());
+
+    expect(avoid.has(8081)).toBe(false);
+  });
+});
+
+describe('parsePort and mappedHostPorts', () => {
+  it.each([
+    [8080, 8080],
+    ['8080', 8080],
+    [' 3000 ', 3000],
+    ['${APP_PORT}', undefined],
+    ['8000-8010', undefined],
+    [0, undefined],
+    [80.5, undefined],
+    [70000, undefined],
+    [undefined, undefined],
+  ])('reads %j as %j', (input, expected) => {
+    expect(parsePort(input)).toBe(expected);
+  });
+
+  it('publishes a mapping on TCP unless it is UDP only, and skips one it cannot read', () => {
+    expect(
+      mappedHostPorts([
+        { addPorts: [{ hostPort: '9100' }, { hostPort: 53, udp: true }, { hostPort: 5000, tcp: true, udp: true }, { hostPort: '${PORT}' }, null] },
+        null,
+        {},
+      ]),
+    ).toEqual([
+      { hostPort: 9100, protocol: 'tcp' },
+      { hostPort: 53, protocol: 'udp' },
+      { hostPort: 5000, protocol: 'tcp' },
+      { hostPort: 5000, protocol: 'udp' },
+    ]);
+    expect(mappedHostPorts(undefined)).toEqual([]);
+  });
+});
+
+describe('hubHostPorts', () => {
+  it("is Traefik's default host ports and the Hub's API, database and queue ports when the env file names none", () => {
+    expect(hubHostPorts(undefined, {})).toEqual(new Set([80, 443, 8080, 5002, 6543, 5001]));
   });
 
   it('follows the ports the desktop app wrote to the env file, and keeps the web port settings', () => {
-    expect(hubWebHostPorts({ port: 8000, sslPort: 8001 }, { HTTP_PORT: '8880', HTTPS_PORT: ' 8443 ', TRAEFIK_DASHBOARD_PORT: 'not-a-port' })).toEqual(
-      new Set([8880, 8443, 8080, 8000, 8001]),
+    expect(hubHostPorts({ port: 8000, sslPort: 8001 }, { HTTP_PORT: '8880', HTTPS_PORT: ' 8443 ', TRAEFIK_DASHBOARD_PORT: 'not-a-port' })).toEqual(
+      new Set([8880, 8443, 8080, 5002, 6543, 5001, 8000, 8001]),
     );
   });
 });

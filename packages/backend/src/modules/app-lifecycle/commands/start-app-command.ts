@@ -4,7 +4,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { AppsRepository } from '@/modules/apps/apps.repository';
-import { ensureCustomAppHostPort, hubWebHostPorts } from '@/modules/custom-apps/custom-app-host-port';
+import { customAppMainPortAvoids, ensureCustomAppHostPort, hubHostPorts, mappedHostPorts } from '@/modules/custom-apps/custom-app-host-port';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
@@ -80,18 +80,8 @@ export class StartAppCommand extends AppLifecycleCommand {
 
       logger.info(`Starting app ${appUrn}`);
 
-      // A custom app made before custom apps got a host port of their own still publishes its
-      // internal port on the host. It gets one on this first start, as a new custom app does when
-      // it is created; see `allocateCustomAppHostPort`.
-      if (extractAppUrn(appUrn).appStoreId === '_user' && !form.port && config.port) {
-        form.port = await ensureCustomAppHostPort(
-          this.moduleRef.get(PortManagerService, { strict: false }),
-          this.moduleRef.get(AppsRepository, { strict: false }),
-          appUrn,
-          config.port,
-          hubWebHostPorts(this.moduleRef.get(ConfigurationService, { strict: false })?.get('userSettings')),
-        );
-        logger.info(`Custom app ${appUrn} now publishes on host port ${form.port}`);
+      if (extractAppUrn(appUrn).appStoreId === '_user' && config.port) {
+        await this.assignCustomAppHostPort(appUrn, form, config.port, logger);
       }
 
       // Host-device preflight — a device present at install time (e.g. /dev/kfd for ROCm)
@@ -134,6 +124,42 @@ export class StartAppCommand extends AppLifecycleCommand {
       return { success: true, message: `App ${appUrn} started successfully` };
     } catch (err) {
       return this.handleAppError(err, appUrn, 'start');
+    }
+  }
+
+  /**
+   * Give a custom app made before custom apps got a host port of their own one now, as a new custom
+   * app gets one when it is created; see `allocateCustomAppHostPort`.
+   *
+   * Such an app has no port on its row, or has its internal port there: the settings dialog fills the
+   * port field from config.json, which holds the internal port, and a save stores it. That port is
+   * left alone unless it is one of the Hub's own ports, which it can never bind. The ports avoided are
+   * the ones a creation avoids. If none can be found or recorded, the app publishes what it did before.
+   */
+  private async assignCustomAppHostPort(appUrn: AppUrn, form: AppEventFormInput, internalPort: number, logger: LoggerService): Promise<void> {
+    const hubPorts = hubHostPorts(this.moduleRef.get(ConfigurationService, { strict: false })?.get('userSettings'));
+    if (form.port && !hubPorts.has(form.port)) {
+      return;
+    }
+
+    try {
+      const appsRepository = this.moduleRef.get(AppsRepository, { strict: false });
+      const compose = await this.moduleRef.get(AppFilesManager, { strict: false }).getDockerComposeJson(appUrn);
+      const services = (compose.content as { services?: Parameters<typeof mappedHostPorts>[0] } | null)?.services;
+      const avoid = await customAppMainPortAvoids(appsRepository, appUrn, mappedHostPorts(services), internalPort, hubPorts);
+
+      form.port = await ensureCustomAppHostPort(
+        this.moduleRef.get(PortManagerService, { strict: false }),
+        appsRepository,
+        appUrn,
+        internalPort,
+        avoid,
+      );
+      logger.info(`Custom app ${appUrn} now publishes on host port ${form.port}`);
+    } catch (error) {
+      logger.warn(
+        `Could not give custom app ${appUrn} a host port of its own, so it publishes ${form.port ?? internalPort} as before: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 }
