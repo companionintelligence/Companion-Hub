@@ -2668,4 +2668,59 @@ describe('InstallForm - importing a config it just exported', () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
     expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ ADMIN_EMAIL: 'ops@example.org', exposureMode: 'local' });
   });
+
+  it('leaves out Private VPN on a Hub without Tailscale instead of submitting it as Public Web', async () => {
+    const fromTailscaleHub = JSON.stringify({
+      schemaVersion: 1,
+      appId: 'cyberchef',
+      exportedAt: '2026-10-01T10:00:00.000Z',
+      values: { ADMIN_EMAIL: 'ops@example.org', exposureMode: 'tailscale' },
+    });
+
+    const onSubmit = vi.fn();
+    const { container } = renderForm('import-form', onSubmit);
+    fireEvent.click(await screen.findByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_LOCAL' }));
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(fileInput, { target: { files: [{ text: async () => fromTailscaleHub }] } });
+    });
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_UNRECOGNIZED'));
+
+    await act(async () => {
+      fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+    });
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ ADMIN_EMAIL: 'ops@example.org', exposureMode: 'local' });
+  });
+
+  it('leaves out a public domain this Hub is not offered and keeps the one Companion Portal preselects', async () => {
+    MOCK_AVAILABLE_DOMAINS.domains = [{ id: 'd1', domain: 'acme.example.net', isDefault: true, offered: true }];
+    try {
+      const fromAnotherOrg = JSON.stringify({
+        schemaVersion: 1,
+        appId: 'cyberchef',
+        exportedAt: '2026-10-01T10:00:00.000Z',
+        values: { ADMIN_EMAIL: 'ops@example.org', exposureMode: 'cloudflare', publicDomain: 'other-org.example.com' },
+      });
+
+      const onSubmit = vi.fn();
+      const { container } = renderForm('import-form', onSubmit);
+      await screen.findByLabelText(/Admin Email/);
+      const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+      await act(async () => {
+        fireEvent.change(fileInput, { target: { files: [{ text: async () => fromAnotherOrg }] } });
+      });
+
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_UNRECOGNIZED'));
+
+      await act(async () => {
+        fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+      });
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+      expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ exposureMode: 'cloudflare', publicDomain: 'acme.example.net' });
+    } finally {
+      MOCK_AVAILABLE_DOMAINS.domains = [];
+    }
+  });
 });
