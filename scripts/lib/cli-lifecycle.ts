@@ -165,23 +165,21 @@ export async function startHub(mode: StartMode, env: HubEnv) {
 async function startApplianceHub(ctx: HubContext, detachedMode: 'attached' | 'detached') {
   const dataDir = ctx.dataDir as string;
   const envOverrides = envOverridesForContext(ctx);
+  // envOverrides carries the two paths in the form the engine mounts, which is not a folder this
+  // process can write to on Windows. The init scripts write files there, so they get the native ones.
+  const initEnv = { ...envOverrides, ENV_FILE: ctx.envFile, ROOT_FOLDER_HOST: dataDir };
   // On the engine the Hub is pinned to, which envOverrides names, before anything is set up.
   requireDockerForHubStack(envOverrides);
 
-  await runScript(
-    'scripts/init-hub-data-dirs.ts',
-    () => initHubDataDirs(),
-    { ENV_FILE: ctx.envFile, ROOT_FOLDER_HOST: dataDir, ...envOverrides },
-    dataDir,
-  );
+  await runScript('scripts/init-hub-data-dirs.ts', () => initHubDataDirs(), initEnv, dataDir);
   // `state/traefik/config/traefik.yml` and `acme_storage.json` are FILE bind mounts, so on a data dir
   // that has never had them compose stops at "bind source path does not exist" before `ci-hub`
   // starts. The checkout path has always run this (see startHub); the appliance path never did,
   // which is why a fresh headless `cihub up` could not bring traefik up — measured 2026-09-18 on
   // fifteen fleet nodes reinstalled from scratch, every one of them.
-  await runScript('scripts/init-traefik.ts', () => initTraefik(), { ENV_FILE: ctx.envFile, ROOT_FOLDER_HOST: dataDir, ...envOverrides }, dataDir);
-  await runScript('scripts/init-gpu-runtime.ts', () => initGpuRuntime(), envOverrides);
-  await runScript('scripts/init-host-probe.ts', () => initHostProbe(), { ENV_FILE: ctx.envFile, ...envOverrides }, dataDir);
+  await runScript('scripts/init-traefik.ts', () => initTraefik(), initEnv, dataDir);
+  await runScript('scripts/init-gpu-runtime.ts', () => initGpuRuntime(), initEnv);
+  await runScript('scripts/init-host-probe.ts', () => initHostProbe(), initEnv, dataDir);
 
   try {
     const portHeal = healHubPortsBeforeStartup(ctx.envFile, (message) => {

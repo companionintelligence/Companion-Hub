@@ -7,7 +7,7 @@ import {
   rescanInferenceHardware,
 } from '@/lib/inference/inference-api';
 import { openExternal } from '@/lib/helpers/open-external';
-import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
+import { isTauriDesktopApp } from '@/lib/hub-runtime-mode';
 import { installAndStartInferenceRunners, type AutomaticInferenceRunner } from '@/lib/inference/auto-inference-runners';
 import { Button } from '@/components/ui/Button';
 import { useEffect, useRef, useState } from 'react';
@@ -198,16 +198,23 @@ export const AiSetupStep = ({
     const requestId = ++profileRequestId.current;
     try {
       const backend = backendOverride ?? selectedBackend;
-      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, omlxUrl);
+      let data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, omlxUrl);
       // Ignore superseded rescans so they cannot restore an earlier backend and its defaults.
       if (profileRequestId.current !== requestId) return;
-      setProfile(data);
       const hiddenBackends = hiddenInferenceBackends(data);
       // A rescan keeps the engine the operator picked. The first load still follows the recommendation.
-      const requestedBackend = backendOverride ?? (isRescan && !hiddenBackends.includes(backend) ? backend : recommendedInferenceBackend(data));
+      const requestedBackend =
+        backendOverride ?? (isRescan && !hiddenBackends.includes(backend) ? backend : recommendedInferenceBackend(data, isTauriDesktopApp()));
       const resolvedBackend = hiddenBackends.includes(requestedBackend)
         ? (data.backends.available.find(({ type }) => !hiddenBackends.includes(type))?.type ?? 'ollama')
         : requestedBackend;
+      if (resolvedBackend !== backend) {
+        // `installedCatalogIds` describes the engine the request named. The first load names
+        // Ollama, so starting anywhere else needs that engine's list, or its models show as missing.
+        data = await fetchInferenceOnboardingProfile(resolvedBackend, vllmUrl, resolvedBackend === 'vllm' ? vllmApiKey : undefined, omlxUrl);
+        if (profileRequestId.current !== requestId) return;
+      }
+      setProfile(data);
       setSelectedBackend(resolvedBackend);
 
       const modelStillListed = (id: string) => {
@@ -538,7 +545,7 @@ export const AiSetupStep = ({
       ...(localEngineBlocksFinish({
         tier: profile.tier,
         backend: selectedBackend,
-        canAutoInstall: getTauriInvoke() !== null,
+        canAutoInstall: isTauriDesktopApp(),
         engineReady:
           selectedBackend === 'vllm'
             ? (vllmStatus?.ready ?? null)
@@ -662,7 +669,7 @@ export const AiSetupStep = ({
   const availableDiskMb = profile.resourceEstimate.availableDiskMb;
   const diskTotalMb = profile.resourceEstimate.diskTotalMb;
   const inferenceMemory = inferenceMemoryMb(profile);
-  const canAutoInstallRunners = getTauriInvoke() !== null;
+  const canAutoInstallRunners = isTauriDesktopApp();
   const engineBlocked = buildConfig()?.engineBlocked === true;
   const memoryStep = isInsufficient ? 3 : 5;
   const appsStep = isInsufficient ? 4 : 6;
@@ -703,7 +710,7 @@ export const AiSetupStep = ({
           >
             <div className="border-b border-border pb-5">
               <BackendSelectionCard
-                recommended={recommendedInferenceBackend(profile)}
+                recommended={recommendedInferenceBackend(profile, isTauriDesktopApp())}
                 available={profile.backends.available}
                 selected={selectedBackend}
                 onSelect={handleSelectBackend}
