@@ -407,9 +407,9 @@ export class CloudFallbackService implements OnModuleInit {
 
   /**
    * Write the providers to settings.json, one write at a time and each with the list as it is when
-   * the write starts. `setProvider` does not wait for its write, and settings writes are not
-   * serialized, so a save's write could otherwise land after a later removal's and put the removed
-   * key back on disk.
+   * the write starts. Calls can overlap (a save, then a removal), and a write that lands after a
+   * later one would put the removed key back on disk. Ordering them here keeps the last write the
+   * newest list whether or not settings.json writes are also queued elsewhere.
    */
   private persist(): Promise<void> {
     const write = this.persistChain.then(() => this.configuration.setInferenceCloudProviders(this.listProviders()));
