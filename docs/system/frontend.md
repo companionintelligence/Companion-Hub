@@ -152,8 +152,10 @@ saved.
 `InstallStep` runs in this order: runners, cloud keys, the preference save, the app install
 requests, then the wait for model downloads and the pins. The preferences go before the installs
 because an AI app gets its inference config when its install starts. The installs go before the
-downloads so that **Continue** cannot drop them: closing the step stops the waiting, the pins and
-the progress polling, never a request that has not been sent yet.
+downloads so that **Continue** cannot drop them: closing the step stops the waiting, the pins, and
+the progress polling, never a request that has not been sent yet. The Hub tracks a queued download
+only once its turn comes, so the first save leaves out a chosen model still in the queue. When the
+wait ends with a different answer, the step saves the model defaults again.
 
 `RecommendationsStep` uses the Alternatives chart treatment for its optional app discovery section:
 it shows a curated 20-app shortlist across ten categories, grouped in compact paired comparison rows. Category

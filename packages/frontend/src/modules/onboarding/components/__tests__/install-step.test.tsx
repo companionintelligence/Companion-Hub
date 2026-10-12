@@ -79,6 +79,8 @@ describe('InstallStep', () => {
   });
 
   afterEach(() => {
+    // A fake-timer test that fails before its own useRealTimers must not stall the ones after it.
+    vi.useRealTimers();
     delete (window as TauriWindow).__TAURI_INTERNALS__;
   });
 
@@ -439,6 +441,112 @@ describe('InstallStep', () => {
     });
   });
 
+  it('saves the chat model again once it leaves the download queue behind the embedder', async () => {
+    vi.useFakeTimers();
+    // The Hub pulls one model at a time, and a queued one has no tracked row until its turn.
+    fetchTrackedModels.mockResolvedValueOnce([{ catalogId: 'nomic-embed-text', state: 'pulling', pullProgress: 50 }] as never).mockResolvedValue([
+      { catalogId: 'nomic-embed-text', state: 'pulled' },
+      { catalogId: 'llama3-3-70b', state: 'pulling', pullProgress: 5 },
+    ] as never);
+
+    render(
+      <InstallStep
+        apps={[]}
+        onComplete={onComplete}
+        aiSetupConfig={{
+          agentFrameworks: ['openclaw'],
+          remoteAccess: [],
+          selectedModels: ['nomic-embed-text', 'llama3-3-70b'],
+          installedCatalogIds: [],
+          backend: 'ollama',
+          cloudProviders: [],
+          preferredModelId: 'llama3-3-70b',
+          preferredEmbeddingModelId: 'nomic-embed-text',
+          skipped: false,
+        }}
+      />,
+    );
+
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    vi.useRealTimers();
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledTimes(2));
+    expect(saveInferencePreferences.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ model: null, embeddingModel: 'nomic-embed-text' }));
+    // Only the defaults: the URLs and keys the first save stored stay as they are.
+    expect(saveInferencePreferences.mock.calls[1]?.[0]).toEqual({
+      backend: 'ollama',
+      model: 'llama3-3-70b',
+      embeddingModel: 'nomic-embed-text',
+      visionModel: null,
+    });
+  });
+
+  it('keeps the first save when Continue is pressed before the queued model is tracked', async () => {
+    vi.useFakeTimers();
+    fetchTrackedModels.mockResolvedValueOnce([{ catalogId: 'nomic-embed-text', state: 'pulling', pullProgress: 50 }] as never).mockResolvedValue([
+      { catalogId: 'nomic-embed-text', state: 'pulled' },
+      { catalogId: 'llama3-3-70b', state: 'pulling', pullProgress: 5 },
+    ] as never);
+
+    const { unmount } = render(
+      <InstallStep
+        apps={[]}
+        onComplete={onComplete}
+        aiSetupConfig={{
+          agentFrameworks: ['openclaw'],
+          remoteAccess: [],
+          selectedModels: ['nomic-embed-text', 'llama3-3-70b'],
+          installedCatalogIds: [],
+          backend: 'ollama',
+          cloudProviders: [],
+          preferredModelId: 'llama3-3-70b',
+          preferredEmbeddingModelId: 'nomic-embed-text',
+          skipped: false,
+        }}
+      />,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(saveInferencePreferences).toHaveBeenCalledTimes(1);
+
+    // Continue takes the wizard to Home. The wait stops there, so nothing writes the defaults again.
+    unmount();
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    vi.useRealTimers();
+
+    expect(saveInferencePreferences).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps following the apps when a prop changes while the install runs', async () => {
+    getInstalledApps
+      .mockResolvedValueOnce(sdkOk({ installed: [] }))
+      .mockResolvedValue(sdkOk({ installed: [{ info: { urn: 'app1:store1' }, app: { status: 'running' } }] }));
+    let finishInstall: ((value: unknown) => void) | undefined;
+    installApp.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishInstall = resolve;
+        }),
+    );
+    const apps = [makeApp('app1', 'App One', 'app1:store1')];
+
+    const { rerender } = render(<InstallStep apps={apps} onComplete={onComplete} defaultExposureMode="local" />);
+    await waitFor(() => expect(finishInstall).toBeDefined());
+    // Cloudflare comes up mid-install, so the wizard passes a new exposure mode.
+    rerender(<InstallStep apps={apps} onComplete={onComplete} defaultExposureMode="cloudflare" />);
+    await act(async () => {
+      finishInstall?.(sdkOk({}));
+    });
+
+    expect(await screen.findByTestId('status-running', {}, { timeout: 5000 })).toBeInTheDocument();
+    expect(installApp).toHaveBeenCalledTimes(1);
+  });
+
   describe('a model that is still downloading', () => {
     const downloadingConfig = {
       agentFrameworks: [],
@@ -464,6 +572,20 @@ describe('InstallStep', () => {
       // An AI app gets its inference config when its install starts, so the choice is saved first.
       expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ backend: 'ollama', model: 'gemma3-270m' }));
       expect(saveInferencePreferences.mock.invocationCallOrder[0]).toBeLessThan(installApp.mock.invocationCallOrder[0] ?? 0);
+    });
+
+    it('still follows the apps to the end when the download wait cannot reach the Hub', async () => {
+      getInstalledApps
+        .mockResolvedValueOnce(sdkOk({ installed: [] }))
+        .mockResolvedValue(sdkOk({ installed: [{ info: { urn: 'excalidraw:store1' }, app: { status: 'running' } }] }));
+      fetchTrackedModels
+        .mockResolvedValueOnce([{ catalogId: 'gemma3-270m', state: 'pulling', pullProgress: 10 }] as never)
+        .mockRejectedValue(new Error('Network error'));
+
+      render(<InstallStep apps={[excalidraw]} onComplete={onComplete} aiSetupConfig={downloadingConfig} />);
+
+      expect(await screen.findByTestId('status-running', {}, { timeout: 5000 })).toBeInTheDocument();
+      expect(screen.getByTestId('install-continue-btn')).not.toHaveTextContent(/background/i);
     });
 
     it('still installs the apps when Continue is pressed during the download', async () => {
