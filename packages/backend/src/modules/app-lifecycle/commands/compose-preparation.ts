@@ -92,6 +92,8 @@ export async function prepareAppComposeDir(
 
     const domain = envMap.get('DOMAIN') || fullConfig.userSettings?.domain || fullConfig.domain;
     const localDomain = envMap.get('LOCAL_DOMAIN') || fullConfig.userSettings?.localDomain || fullConfig.localDomain;
+    const configuredCpuLimit = (fullConfig.userSettings as Record<string, unknown> | undefined)?.defaultAppCpuLimit;
+    const savedDefaultCpuLimit = typeof configuredCpuLimit === 'string' ? configuredCpuLimit.trim() || undefined : undefined;
     let defaultCpuLimit: string | undefined;
     let defaultMemoryLimit: string | undefined;
     try {
@@ -102,10 +104,7 @@ export async function prepareAppComposeDir(
     } catch (resourceError) {
       // Fall back to the user-configured CPU limit if the allocator is unavailable
       logger.warn(`Resource allocator unavailable, skipping auto resource limits: ${resourceError}`);
-      defaultCpuLimit =
-        typeof (fullConfig.userSettings as Record<string, unknown> | undefined)?.defaultAppCpuLimit === 'string'
-          ? ((fullConfig.userSettings as Record<string, unknown>).defaultAppCpuLimit as string).trim() || undefined
-          : undefined;
+      defaultCpuLimit = savedDefaultCpuLimit;
     }
 
     let cloudflareOriginHostname: string | undefined;
@@ -185,9 +184,9 @@ export async function prepareAppComposeDir(
 
     // The builder applies the operator's Default app CPU limit to services the form and the manifest
     // leave uncapped. Only the saved setting: `defaultCpuLimit` above can be the allocator's
-    // host-sized recommendation, which #1186 stopped stamping on every service.
-    const configuredCpuLimit = (fullConfig.userSettings as Record<string, unknown> | undefined)?.defaultAppCpuLimit;
-    let defaultAppCpuLimit = typeof configuredCpuLimit === 'string' ? configuredCpuLimit.trim() || undefined : undefined;
+    // host-sized recommendation, which #1186 stopped stamping on every service. A limit in the form
+    // caps every service, so the default is never used and the checks below would only mislead.
+    let defaultAppCpuLimit = form.cpuLimit?.trim() ? undefined : savedDefaultCpuLimit;
     // Docker refuses to create a container capped above the CPUs it has ("range of CPUs is from 0.01
     // to 16.00"), and a cap that high limits nothing. A default saved on a bigger machine, or before
     // Docker's VM got fewer CPUs, would otherwise stop every app without a limit of its own.
@@ -199,7 +198,9 @@ export async function prepareAppComposeDir(
         // Count unknown: apply the default as saved.
       }
       if (dockerCpus && Number(defaultAppCpuLimit) > dockerCpus) {
-        logger.warn(`[compose] Default app CPU limit ${defaultAppCpuLimit} is more than the ${dockerCpus} CPUs Docker has; ${appUrn} runs without it`);
+        logger.warn(
+          `[compose] Default app CPU limit ${defaultAppCpuLimit} is more than the ${dockerCpus} CPUs Docker has; ${appUrn} runs without it`,
+        );
         defaultAppCpuLimit = undefined;
       }
     }

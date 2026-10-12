@@ -809,6 +809,20 @@ describe('prepareAppComposeDir', () => {
       expect(stubs.logger.warn).toHaveBeenCalledWith(expect.stringMatching(/Default app CPU limit 32 .*16 CPUs/));
     });
 
+    it('neither checks nor blames the default for an app whose form sets its own CPU limit', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.configService.getConfig.mockReturnValue({
+        domain: 'config.example',
+        localDomain: 'config.local',
+        userSettings: { defaultAppCpuLimit: '32' },
+      });
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm({ cpuLimit: '2' }));
+
+      expect(stubs.resourceAllocator.getDockerCapacity).not.toHaveBeenCalled();
+      expect(stubs.logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('Default app CPU limit'));
+    });
+
     it("still applies a default of exactly Docker's CPU count, and any default when the count is unknown", async () => {
       const { stubs, moduleRef, docker } = createHarness();
       stubs.configService.getConfig.mockReturnValue({
