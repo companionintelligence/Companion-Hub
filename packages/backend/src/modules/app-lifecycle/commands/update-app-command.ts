@@ -16,6 +16,15 @@ import type Dockerode from 'dockerode';
 import { AppLifecycleCommand } from './command';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 
+/**
+ * How long the post-update health probe waits, at most, for a healthcheck that is still `starting`.
+ * The probe waits only as long as the healthcheck's own window (start_period plus retries × (interval
+ * + timeout)); this caps it. 15 min covers the slow-booting catalog apps (docassemble and gitlab both
+ * declare a 600 s start_period) and leaves the rest of the app-events RPC timeout (at least
+ * DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES = 45 min) to the pull, backup and restart around it.
+ */
+const POST_UPDATE_HEALTH_STARTING_WAIT_MS = 15 * 60_000;
+
 export class UpdateAppCommand extends AppLifecycleCommand {
   /**
    * @param performBackup back the app up (which stops it) before replacing its files
@@ -118,7 +127,13 @@ export class UpdateAppCommand extends AppLifecycleCommand {
         startedNewVersion = true;
         await dockerService.composeApp(appUrn, 'up --detach --force-recreate --remove-orphans');
 
-        const probeResult = await dockerService.verifyContainerHealthProbe(appUrn, { maxAttempts: 5, delayMs: 2000 });
+        // A healthcheck still inside its start_period has not failed: wait for it (bounded) instead of
+        // rolling back an app that was seconds or minutes from healthy.
+        const probeResult = await dockerService.verifyContainerHealthProbe(appUrn, {
+          maxAttempts: 5,
+          delayMs: 2000,
+          maxStartingWaitMs: POST_UPDATE_HEALTH_STARTING_WAIT_MS,
+        });
         if (!probeResult.healthy) {
           logger.error(`Post-update health check failed for app ${appUrn}: ${probeResult.message}. Initiating auto-rollback...`);
           throw new Error(`Update failed health probe: ${probeResult.message}`);

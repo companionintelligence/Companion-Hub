@@ -1449,5 +1449,137 @@ describe('DockerService', () => {
       expect(result.healthy).toBe(false);
       expect(result.message).toContain('Health probe failed');
     });
+
+    describe('healthchecks that are still starting', () => {
+      const SECOND_NS = 1_000_000_000;
+      // docassemble's manifest healthcheck: 600 s start_period, then 5 × (30 s + 10 s) to unhealthy.
+      const docassembleHealthcheck = {
+        Test: ['CMD-SHELL', 'curl -fsS http://127.0.0.1/health_check?ready=1'],
+        Interval: 30 * SECOND_NS,
+        Timeout: 10 * SECOND_NS,
+        StartPeriod: 600 * SECOND_NS,
+        Retries: 5,
+      };
+
+      const inspectOf = (
+        health: string,
+        opts: { startedSecondsAgo?: number; restartCount?: number; healthcheck?: Record<string, unknown> } = {},
+      ) => ({
+        RestartCount: opts.restartCount ?? 0,
+        Config: { Healthcheck: opts.healthcheck ?? docassembleHealthcheck },
+        State: {
+          Status: 'running',
+          Running: true,
+          StartedAt: new Date(Date.now() - (opts.startedSecondsAgo ?? 5) * 1000).toISOString(),
+          Health: { Status: health, FailingStreak: 0, Log: [] },
+        },
+      });
+
+      /** One running container whose successive inspects return `inspects` (the last one repeats). */
+      const probeSequence = (inspects: ReturnType<typeof inspectOf>[]) => {
+        dockerode.listContainers.mockResolvedValue([
+          { Id: 'web', Names: ['/test-app-web'], State: 'running', Status: 'Up 5 seconds (health: starting)' } as any,
+        ]);
+        const inspect = vi.fn();
+        for (const value of inspects) inspect.mockResolvedValueOnce(value);
+        inspect.mockResolvedValue(inspects[inspects.length - 1]);
+        dockerode.getContainer.mockReturnValue({ inspect } as any);
+        return inspect;
+      };
+
+      it('waits through a start_period instead of failing a container that is about to be healthy', async () => {
+        const inspect = probeSequence([inspectOf('starting'), inspectOf('starting'), inspectOf('starting'), inspectOf('healthy')]);
+
+        const result = await service.verifyContainerHealthProbe(testUrn, { maxAttempts: 2, delayMs: 1, maxStartingWaitMs: 60_000 });
+
+        expect(result.healthy).toBe(true);
+        // Three `starting` polls on a budget of two attempts: none of them counted.
+        expect(inspect).toHaveBeenCalledTimes(4);
+        expect(loggerService.info).toHaveBeenCalledWith(expect.stringContaining('still starting'));
+      });
+
+      it('keeps the old fail-after-maxAttempts behaviour when maxStartingWaitMs is not given', async () => {
+        const inspect = probeSequence([inspectOf('starting'), inspectOf('starting'), inspectOf('healthy')]);
+
+        const result = await service.verifyContainerHealthProbe(testUrn, { maxAttempts: 2, delayMs: 1 });
+
+        expect(result.healthy).toBe(false);
+        expect(result.message).toContain('test-app-web (starting)');
+        expect(inspect).toHaveBeenCalledTimes(2);
+      });
+
+      it('does not wait once the healthcheck window has passed (Docker should already have said unhealthy)', async () => {
+        // 600 s start_period + 5 × (30 s + 10 s) = 800 s, and the container started 1000 s ago.
+        const inspect = probeSequence([inspectOf('starting', { startedSecondsAgo: 1000 })]);
+
+        const result = await service.verifyContainerHealthProbe(testUrn, { maxAttempts: 2, delayMs: 1, maxStartingWaitMs: 60_000 });
+
+        expect(result.healthy).toBe(false);
+        expect(inspect).toHaveBeenCalledTimes(2);
+      });
+
+      it.each([
+        { startedSecondsAgo: 170, waits: true },
+        { startedSecondsAgo: 190, waits: false },
+      ])(
+        'takes Docker defaults for unset fields: window 3 × (30 s + 30 s) = 180 s, started $startedSecondsAgo s ago → waits: $waits',
+        async ({ startedSecondsAgo, waits }) => {
+          // An image HEALTHCHECK with only a command: Docker stores 0 for every duration and for retries.
+          const healthcheck = { Test: ['CMD-SHELL', 'true'], Interval: 0, Timeout: 0, StartPeriod: 0, Retries: 0 };
+          probeSequence([inspectOf('starting', { startedSecondsAgo, healthcheck }), inspectOf('healthy', { startedSecondsAgo, healthcheck })]);
+
+          const result = await service.verifyContainerHealthProbe(testUrn, { maxAttempts: 1, delayMs: 1, maxStartingWaitMs: 60_000 });
+
+          expect(result.healthy).toBe(waits);
+        },
+      );
+
+      it('stops waiting at maxStartingWaitMs and says how long it waited', async () => {
+        probeSequence([inspectOf('starting')]);
+
+        const result = await service.verifyContainerHealthProbe(testUrn, { maxAttempts: 2, delayMs: 5, maxStartingWaitMs: 40 });
+
+        expect(result.healthy).toBe(false);
+        expect(result.message).toMatch(/test-app-web \(starting\) after waiting \d+s for healthchecks to settle/);
+      });
+
+      it('stops waiting when the healthcheck turns unhealthy', async () => {
+        const inspect = probeSequence([inspectOf('starting'), inspectOf('unhealthy')]);
+
+        const result = await service.verifyContainerHealthProbe(testUrn, { maxAttempts: 2, delayMs: 1, maxStartingWaitMs: 60_000 });
+
+        expect(result.healthy).toBe(false);
+        expect(result.message).toContain('test-app-web (unhealthy)');
+        // One free `starting` poll, then the two attempts.
+        expect(inspect).toHaveBeenCalledTimes(3);
+      });
+
+      it('does not wait for a container that restarted during the probe (a crash loop reads `starting` after every restart)', async () => {
+        const inspect = probeSequence([inspectOf('starting', { restartCount: 0 }), inspectOf('starting', { restartCount: 1, startedSecondsAgo: 0 })]);
+
+        const result = await service.verifyContainerHealthProbe(testUrn, { maxAttempts: 2, delayMs: 1, maxStartingWaitMs: 60_000 });
+
+        expect(result.healthy).toBe(false);
+        expect(inspect).toHaveBeenCalledTimes(3);
+      });
+
+      it('does not wait while another container of the app has already failed', async () => {
+        dockerode.listContainers.mockResolvedValue([
+          { Id: 'web', Names: ['/test-app-web'], State: 'running', Status: 'Up 5 seconds (health: starting)' } as any,
+          { Id: 'worker', Names: ['/test-app-worker'], State: 'exited', Status: 'Exited (1) 2 seconds ago' } as any,
+        ]);
+        const inspects = {
+          web: vi.fn().mockResolvedValue(inspectOf('starting')),
+          worker: vi.fn().mockResolvedValue({ State: { Status: 'exited', Running: false, ExitCode: 1 } }),
+        };
+        dockerode.getContainer.mockImplementation((id: string) => ({ inspect: inspects[id as 'web' | 'worker'] }) as any);
+
+        const result = await service.verifyContainerHealthProbe(testUrn, { maxAttempts: 2, delayMs: 1, maxStartingWaitMs: 60_000 });
+
+        expect(result.healthy).toBe(false);
+        expect(result.message).toContain('test-app-worker (exited)');
+        expect(inspects.web).toHaveBeenCalledTimes(2);
+      });
+    });
   });
 });

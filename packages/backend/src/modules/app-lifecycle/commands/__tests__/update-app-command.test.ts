@@ -114,7 +114,9 @@ describe('UpdateAppCommand', () => {
     expect(dockerService.createPreUpdateVolumeSnapshot).toHaveBeenCalledWith(appUrn, { includeData: false });
     expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'pull');
     expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'up --detach --force-recreate --remove-orphans');
-    expect(dockerService.verifyContainerHealthProbe).toHaveBeenCalledWith(appUrn, { maxAttempts: 5, delayMs: 2000 });
+    // A healthcheck that is still `starting` (inside its start_period) is waited for, up to 15 min,
+    // rather than read as a failed update and rolled back after the ~10 s of retries.
+    expect(dockerService.verifyContainerHealthProbe).toHaveBeenCalledWith(appUrn, { maxAttempts: 5, delayMs: 2000, maxStartingWaitMs: 15 * 60_000 });
   });
 
   it('triggers auto-rollback using backup when post-update health probe fails', async () => {

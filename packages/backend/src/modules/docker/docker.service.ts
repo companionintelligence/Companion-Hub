@@ -2028,17 +2028,36 @@ export class DockerService {
    * Containers with a health check defined in Docker/Compose must be in 'healthy' status.
    * Containers without a health check must be in a 'running' status.
    *
+   * ⚠ A `starting` HEALTHCHECK HAS NOT FAILED YET. Docker reports `starting` until the first probe
+   * passes and does not count failures at all during the healthcheck's start_period. A probe of
+   * `maxAttempts × delayMs` alone (a few seconds) therefore failed every app whose healthcheck needs
+   * longer than that, however healthy it was about to become (docassemble declares a 600 s
+   * start_period and boots in 80 s to 5+ min, gitlab 600 s). With `maxStartingWaitMs`, a poll whose
+   * only failures are running containers still `starting` inside their own healthcheck window (see
+   * healthCheckSettledBy) does not use up an attempt. The wait ends when they turn healthy, when Docker
+   * marks one unhealthy or its window closes, when one restarts, or after `maxStartingWaitMs`.
+   *
    * @param appUrn App URN.
-   * @param options Optional retry options (maxAttempts, delayMs).
+   * @param options Optional retry options (maxAttempts, delayMs) and the cap on waiting for healthchecks
+   *   that are still `starting` (maxStartingWaitMs; 0 or unset = do not wait for them).
    */
-  public async verifyContainerHealthProbe(appUrn: AppUrn, options?: { maxAttempts?: number; delayMs?: number }): Promise<ContainerHealthProbeResult> {
+  public async verifyContainerHealthProbe(
+    appUrn: AppUrn,
+    options?: { maxAttempts?: number; delayMs?: number; maxStartingWaitMs?: number },
+  ): Promise<ContainerHealthProbeResult> {
     const projectName = this.getComposeProjectName(appUrn);
     const maxAttempts = options?.maxAttempts ?? 1;
     const delayMs = options?.delayMs ?? 1000;
+    const probeStartedAt = Date.now();
+    const startingWaitEndsAt = probeStartedAt + Math.max(0, options?.maxStartingWaitMs ?? 0);
+    // Each container's RestartCount when the probe first saw it. A container that restarts while we
+    // wait is crash-looping, and its healthcheck reads `starting` again after every restart.
+    const firstRestartCount = new Map<string, number>();
+    let startingWaitLogged = false;
 
     let lastResult: ContainerHealthProbeResult | undefined;
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    for (let attempt = 1; attempt <= maxAttempts; ) {
       let containers = await this.docker
         .listContainers({
           all: true,
@@ -2061,6 +2080,7 @@ export class DockerService {
           message: `No containers found for app ${appUrn}`,
         };
         if (attempt < maxAttempts) {
+          attempt++;
           await new Promise((resolve) => setTimeout(resolve, delayMs));
           continue;
         }
@@ -2068,6 +2088,8 @@ export class DockerService {
       }
 
       const containerDetails: ContainerHealthProbeDetail[] = [];
+      // Containers whose healthcheck is `starting` and still inside its own window: not failed yet.
+      const stillStarting = new Map<string, number>();
 
       for (const container of containers) {
         const dockerContainer = this.docker.getContainer(container.Id);
@@ -2087,6 +2109,17 @@ export class DockerService {
         const log = health?.Log?.map((entry) => entry.Output || '').filter(Boolean);
         const status = container.Status || state;
         const exitCode = inspect?.State?.Running ? null : (inspect?.State?.ExitCode ?? (/Exited \(0\)/.test(status) ? 0 : null));
+
+        const restartCount = inspect?.RestartCount ?? 0;
+        if (!firstRestartCount.has(container.Id)) {
+          firstRestartCount.set(container.Id, restartCount);
+        }
+        if (inspect && state === 'running' && healthStatus === 'starting' && restartCount === firstRestartCount.get(container.Id)) {
+          const settledBy = DockerService.healthCheckSettledBy(inspect, probeStartedAt);
+          if (Date.now() < settledBy) {
+            stillStarting.set(container.Id, settledBy);
+          }
+        }
 
         containerDetails.push({
           id: container.Id,
@@ -2123,11 +2156,29 @@ export class DockerService {
         containers: containerDetails,
         message: allHealthy
           ? `All containers for ${appUrn} passed health probes`
-          : `Health probe failed for ${appUrn}: ${unhealthyContainers.map((c) => `${c.name} (${c.healthStatus || c.state})`).join(', ')}`,
+          : `Health probe failed for ${appUrn}: ${unhealthyContainers.map((c) => `${c.name} (${c.healthStatus || c.state})`).join(', ')}${
+              startingWaitLogged ? ` after waiting ${Math.round((Date.now() - probeStartedAt) / 1000)}s for healthchecks to settle` : ''
+            }`,
       };
 
-      if (allHealthy || attempt >= maxAttempts) {
+      if (allHealthy) {
         return lastResult;
+      }
+
+      // Nothing has failed yet, only not finished starting: this poll does not count as an attempt.
+      const waitingOnStart = Date.now() < startingWaitEndsAt && unhealthyContainers.every((c) => stillStarting.has(c.id));
+      if (waitingOnStart) {
+        if (!startingWaitLogged) {
+          startingWaitLogged = true;
+          const waitS = Math.ceil((Math.min(startingWaitEndsAt, ...stillStarting.values()) - Date.now()) / 1000);
+          this.logger.info(
+            `Health probe for ${appUrn}: ${unhealthyContainers.map((c) => c.name).join(', ')} still starting; waiting up to ${waitS}s for the healthcheck to settle`,
+          );
+        }
+      } else if (attempt >= maxAttempts) {
+        return lastResult;
+      } else {
+        attempt++;
       }
 
       await new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -2141,5 +2192,25 @@ export class DockerService {
         message: `Health probe timed out for ${appUrn}`,
       }
     );
+  }
+
+  /**
+   * When Docker will have settled a `starting` healthcheck one way or the other (epoch ms). Failures
+   * do not count until StartPeriod has passed since the container started; after that, Retries
+   * consecutive failures, each probe at most Interval + Timeout after the last, make it `unhealthy`.
+   * Fields left at 0 take Docker's defaults: interval 30 s, timeout 30 s, retries 3, no start period.
+   * An unreadable StartedAt counts from `fallbackStartedAt` (when the probe began, so after the real
+   * start): the window can only come out longer, and the caller's maxStartingWaitMs still bounds it.
+   */
+  private static healthCheckSettledBy(inspect: Dockerode.ContainerInspectInfo, fallbackStartedAt: number): number {
+    const healthCheck = inspect.Config?.Healthcheck;
+    const nsToMs = (ns: number | undefined, fallbackMs: number) => (ns && ns > 0 ? ns / 1_000_000 : fallbackMs);
+    const startPeriodMs = nsToMs(healthCheck?.StartPeriod, 0);
+    const intervalMs = nsToMs(healthCheck?.Interval, 30_000);
+    const timeoutMs = nsToMs(healthCheck?.Timeout, 30_000);
+    const retries = healthCheck?.Retries && healthCheck.Retries > 0 ? healthCheck.Retries : 3;
+    const startedAt = Date.parse(inspect.State?.StartedAt ?? '');
+
+    return (Number.isNaN(startedAt) ? fallbackStartedAt : startedAt) + startPeriodMs + retries * (intervalMs + timeoutMs);
   }
 }
