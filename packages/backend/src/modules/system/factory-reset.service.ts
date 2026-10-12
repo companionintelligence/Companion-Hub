@@ -20,7 +20,7 @@ import { DOCKERODE } from '@/modules/docker/constants';
 import { Inject, Injectable } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type Dockerode from 'dockerode';
-import { asc, sql } from 'drizzle-orm';
+import { asc, eq, sql } from 'drizzle-orm';
 
 @Injectable()
 export class FactoryResetService {
@@ -85,7 +85,11 @@ export class FactoryResetService {
       const appUrn = createAppUrn(installedApp.appName, installedApp.appStoreSlug);
       try {
         const result = await uninstallCommand.execute(appUrn);
-        if (!result.success) {
+        if (result.success) {
+          // As an ordinary uninstall does once its command succeeds. The TRUNCATE below would take the
+          // row anyway, but a reset that stops first (data left behind) must not list apps that are gone.
+          await this.db.delete(app).where(eq(app.id, installedApp.id));
+        } else {
           this.logger.warn(`Factory reset: app teardown reported failure for ${appUrn}: ${result.message}`);
         }
       } catch (error) {

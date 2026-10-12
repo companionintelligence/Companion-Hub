@@ -7,6 +7,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { DOCKERODE } from '@/modules/docker/constants';
 import { Test } from '@nestjs/testing';
 import { ModuleRef } from '@nestjs/core';
+import type { SQLWrapper } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
@@ -15,6 +16,7 @@ import { RegistrationService } from '@/modules/registration/registration.service
 import { BearerOrgMembershipCache } from '@/modules/auth/bearer-org-membership.cache';
 import { APP_DATA_DIR, TUNNEL_DIR } from '@/common/constants';
 import { TranslatableError } from '@/common/error/translatable-error';
+import { app } from '@/core/database/drizzle/schema';
 import fs from 'node:fs';
 import path from 'node:path';
 import { vol } from 'memfs';
@@ -29,7 +31,7 @@ vi.mock('@/modules/app-lifecycle/commands/uninstall-app-command', () => ({
 
 describe('FactoryResetService', () => {
   let service: FactoryResetService;
-  let db: { execute: ReturnType<typeof vi.fn>; query: { app: { findMany: ReturnType<typeof vi.fn> } } };
+  let db: { execute: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn>; query: { app: { findMany: ReturnType<typeof vi.fn> } } };
   let filesystem: MockProxy<FilesystemService>;
   let cache: MockProxy<CacheService>;
   let sessionUserCache: SessionUserCache;
@@ -40,6 +42,7 @@ describe('FactoryResetService', () => {
     uninstallExecute.mockClear();
     db = {
       execute: vi.fn().mockResolvedValue(undefined),
+      delete: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
       query: { app: { findMany: vi.fn().mockResolvedValue([]) } },
     };
     filesystem = mock<FilesystemService>();
@@ -185,7 +188,13 @@ describe('FactoryResetService: data folders', () => {
   const mountPoints = new Set(dataFolders.map((folder) => path.resolve(folder)));
 
   let service: FactoryResetService;
-  let db: { execute: ReturnType<typeof vi.fn>; query: { app: { findMany: ReturnType<typeof vi.fn> } } };
+  let db: {
+    execute: ReturnType<typeof vi.fn>;
+    delete: ReturnType<typeof vi.fn>;
+    query: { app: { findMany: ReturnType<typeof vi.fn> } };
+  };
+  /** The `where` of each row delete, rendered as SQL with its parameters. */
+  let deletedRows: Array<{ table: unknown; sql: string; params: unknown[] }>;
   /** Paths the Hub may not delete, such as a file an app wrote as root. */
   let undeletable: Set<string>;
 
@@ -203,7 +212,17 @@ describe('FactoryResetService: data folders', () => {
       return rm(target, options);
     });
 
-    db = { execute: vi.fn().mockResolvedValue(undefined), query: { app: { findMany: vi.fn().mockResolvedValue([]) } } };
+    deletedRows = [];
+    db = {
+      execute: vi.fn().mockResolvedValue(undefined),
+      delete: vi.fn((table: unknown) => ({
+        where: vi.fn(async (condition: SQLWrapper) => {
+          const { sql, params } = new PgDialect().sqlToQuery(condition.getSQL());
+          deletedRows.push({ table, sql, params });
+        }),
+      })),
+      query: { app: { findMany: vi.fn().mockResolvedValue([]) } },
+    };
     const registrationService = mock<RegistrationService>();
     registrationService.resetRegistration.mockResolvedValue(undefined);
     const logger = mock<LoggerService>();
@@ -259,5 +278,23 @@ describe('FactoryResetService: data folders', () => {
     expect(db.execute).not.toHaveBeenCalled();
     // The other folders are still emptied, so a second run has only the leftover to deal with.
     expect(vol.readdirSync(path.join('/data', 'media'))).toEqual([]);
+  });
+
+  it('drops the row of each app it tore down, so a reset that stops on leftovers does not list apps that are gone', async () => {
+    // The uninstall removed the containers and files of the first app. The second one's teardown failed,
+    // so it may still be there and keeps its row, as an ordinary uninstall that fails would.
+    db.query.app.findMany.mockResolvedValue([
+      { id: 7, appName: 'wordpress', appStoreSlug: 'ci-marketplace' },
+      { id: 9, appName: 'stuck', appStoreSlug: 'ci-marketplace' },
+    ]);
+    uninstallExecute
+      .mockResolvedValueOnce({ success: true, message: 'ok' })
+      .mockResolvedValueOnce({ success: false, message: 'compose down failed' });
+    undeletable.add(path.resolve('/data', 'backups', 'ci-marketplace'));
+
+    await expect(service.execute()).rejects.toBeInstanceOf(TranslatableError);
+
+    expect(deletedRows).toEqual([{ table: app, sql: '"app"."id" = $1', params: [7] }]);
+    expect(db.execute).not.toHaveBeenCalled();
   });
 });
