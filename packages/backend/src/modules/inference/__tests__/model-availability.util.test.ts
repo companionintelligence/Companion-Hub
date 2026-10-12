@@ -9,6 +9,7 @@ import {
   resolveInstalledCatalogIds,
   resolveInstalledCatalogIdsFromServedModels,
   servedIdForCatalogModel,
+  trackedPullCounts,
 } from '../model-availability.util';
 
 const model = {
@@ -73,6 +74,33 @@ describe('model-availability.util', () => {
 
     it('still honours a tracked pull regardless of tag shape', () => {
       expect(isCuratedModelInstalled(plain, [], true, ids)).toBe(true);
+    });
+  });
+  // A model removed with `ollama rm` stayed on the registry as pulled, and the handout believed it.
+  // Only Ollama's own answer outranks the record: Lemonade answers healthy with an empty list when
+  // its model read fails, so the record must keep counting there.
+  describe('trackedPullCounts', () => {
+    it("lets Ollama's own list decide for an Ollama pull once Ollama has answered", () => {
+      expect(trackedPullCounts({ state: 'pulled', backend: 'ollama' }, 'ollama')).toBe(false);
+      expect(trackedPullCounts({ state: 'pinned', backend: 'ollama' }, 'ollama')).toBe(false);
+    });
+
+    it('keeps counting the record while Ollama cannot be asked', () => {
+      expect(trackedPullCounts({ state: 'pulled', backend: 'ollama' }, null)).toBe(true);
+      expect(trackedPullCounts({ state: 'loaded', backend: 'ollama' }, null)).toBe(true);
+    });
+
+    it("keeps counting a Lemonade, vLLM or oMLX pull whatever that engine lists, and an Ollama pull against another engine's list", () => {
+      expect(trackedPullCounts({ state: 'pulled', backend: 'lemonade' }, 'lemonade')).toBe(true);
+      expect(trackedPullCounts({ state: 'pulled', backend: 'vllm' }, 'vllm')).toBe(true);
+      expect(trackedPullCounts({ state: 'pinned', backend: 'omlx' }, 'omlx')).toBe(true);
+      expect(trackedPullCounts({ state: 'pulled', backend: 'ollama' }, 'lemonade')).toBe(true);
+    });
+
+    it('never counts a download in progress, a failed one, or no record', () => {
+      expect(trackedPullCounts({ state: 'pulling', backend: 'lemonade' }, null)).toBe(false);
+      expect(trackedPullCounts({ state: 'error', backend: 'lemonade' }, null)).toBe(false);
+      expect(trackedPullCounts(undefined, null)).toBe(false);
     });
   });
   // Lemonade 10.2.0, the fleet's apt package, lists a model the Hub registered only as `user.<id>`.

@@ -120,7 +120,7 @@ export const RecommendedModels = ({
         ? t('ONBOARDING_MODELS_VLLM_INSTALL_HINT')
         : chatBackend === 'lemonade'
           ? t('ONBOARDING_MODELS_LEMONADE_INSTALL_HINT')
-          : t('ONBOARDING_MODELS_INSTALL_AFTER_DOWNLOAD');
+          : t('ONBOARDING_MODELS_INSTALL_DURING_DOWNLOAD');
 
   return (
     <StepSection number={4} badge="recommended" title={t('ONBOARDING_MODELS_TITLE')}>
