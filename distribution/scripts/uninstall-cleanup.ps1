@@ -13,18 +13,21 @@ function Write-CleanupLog {
     Write-Host "[cleanup][$Level] $Message"
 }
 
+# Runs docker with $Arguments. Each element reaches docker as one argument, so a name docker
+# printed can't add a second command, which a command string run by Invoke-Expression would allow.
 function Invoke-CleanupCommand {
-    param([string]$Command)
+    param([string[]]$Arguments)
+    $command = "docker $($Arguments -join ' ')"
     if ($DryRun) {
-        Write-CleanupLog 'DRYRUN' "Would run: $Command"
+        Write-CleanupLog 'DRYRUN' "Would run: $command"
         return $true
     }
     try {
-        Invoke-Expression $Command | Out-Null
+        & docker @Arguments | Out-Null
         return $true
     }
     catch {
-        Write-CleanupLog 'WARN' "Command failed: $Command"
+        Write-CleanupLog 'WARN' "Command failed: $command"
         return $false
     }
 }
@@ -249,7 +252,7 @@ function Remove-AnonymousVolumes {
     if (-not $Names) { return }
     $left = @(docker volume ls -q --filter label=com.docker.volume.anonymous 2>$null)
     foreach ($name in ($Names | Select-Object -Unique)) {
-        if ($name -in $left) { Invoke-CleanupCommand "docker volume rm $name" }
+        if ($name -in $left) { Invoke-CleanupCommand @('volume', 'rm', $name) }
     }
 }
 
@@ -287,20 +290,20 @@ function Remove-MarketplaceApps {
         $containerIds = docker ps -a --filter "label=com.docker.compose.project=$project" --format '{{.ID}}' 2>$null
         $appAnonymousVolumes = Get-AnonymousVolumes $containerIds
         # -v takes the container's anonymous volumes with it.
-        foreach ($cid in $containerIds) { if ($cid) { Invoke-CleanupCommand "docker rm -f -v $cid" } }
+        foreach ($cid in $containerIds) { if ($cid) { Invoke-CleanupCommand @('rm', '-f', '-v', $cid) } }
 
         $appNetworks = docker network ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>$null
         foreach ($net in $appNetworks) {
-            if ($net -and $net -notin @('bridge', 'host', 'none', 'ci_hub_network', 'ci-hub_network', 'ci_os_hub_network', 'ci-os-hub_network')) {
-                Invoke-CleanupCommand "docker network rm $net"
+            if ($net -match '^[A-Za-z0-9][A-Za-z0-9_.-]*$' -and $net -notin @('bridge', 'host', 'none', 'ci_hub_network', 'ci-hub_network', 'ci_os_hub_network', 'ci-os-hub_network')) {
+                Invoke-CleanupCommand @('network', 'rm', $net)
             }
         }
 
         $appVolumes = docker volume ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>$null
-        foreach ($vol in $appVolumes) { if ($vol) { Invoke-CleanupCommand "docker volume rm $vol" } }
+        foreach ($vol in $appVolumes) { if ($vol) { Invoke-CleanupCommand @('volume', 'rm', $vol) } }
         Remove-AnonymousVolumes $appAnonymousVolumes
 
-        foreach ($img in $projectImages) { if ($img) { Invoke-CleanupCommand "docker image rm -f $img" } }
+        foreach ($img in $projectImages) { if ($img) { Invoke-CleanupCommand @('image', 'rm', '-f', $img) } }
     }
 }
 
@@ -322,7 +325,7 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
     $hubAnonymousVolumes = Get-AnonymousVolumes $containerNames
     foreach ($name in $containerNames) {
         # -v takes anonymous volumes (RabbitMQ's data) with the container.
-        Invoke-CleanupCommand "docker rm -f -v $name"
+        Invoke-CleanupCommand @('rm', '-f', '-v', $name)
     }
 
     # The network names older installs used, plus every network and volume the Hub's compose
@@ -331,11 +334,14 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
     # one while the Hub still runs.
     $hubProjects = @('ci-os-hub', 'ci-hub')
     $networks = @('ci_hub_network', 'ci-hub_network', 'ci_os_hub_network', 'ci-os-hub_network')
-    foreach ($label in @('com.docker.compose.project=ci-os-hub', 'com.docker.compose.project=ci-hub', 'ci-hub.managed=true', 'ci-os-hub.managed=true')) {
+    $networkLabels = @($hubProjects | ForEach-Object { "com.docker.compose.project=$_" }) + @('ci-hub.managed=true', 'ci-os-hub.managed=true')
+    foreach ($label in $networkLabels) {
         $networks += docker network ls --filter "label=$label" --format '{{.Name}}' 2>$null
     }
-    foreach ($network in ($networks | Where-Object { $_ } | Select-Object -Unique)) {
-        Invoke-CleanupCommand "docker network rm $network"
+    # Docker lets a network be called almost anything ('a b', 'x;y'). Neither the Hub nor Compose
+    # names one like that, so skip such names, as the app pass skips such projects.
+    foreach ($network in ($networks | Where-Object { $_ -match '^[A-Za-z0-9][A-Za-z0-9_.-]*$' } | Select-Object -Unique)) {
+        Invoke-CleanupCommand @('network', 'rm', $network)
     }
 
     $volumes = @()
@@ -352,11 +358,11 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
     }
 
     foreach ($volume in ($volumes | Where-Object { $_ } | Select-Object -Unique)) {
-        Invoke-CleanupCommand "docker volume rm $volume"
+        Invoke-CleanupCommand @('volume', 'rm', $volume)
     }
     Remove-AnonymousVolumes $hubAnonymousVolumes
 
-    foreach ($img in $hubImages) { if ($img) { Invoke-CleanupCommand "docker image rm -f $img" } }
+    foreach ($img in $hubImages) { if ($img) { Invoke-CleanupCommand @('image', 'rm', '-f', $img) } }
 } else {
     Write-CleanupLog 'INFO' 'Docker is not available; skipping Docker cleanup'
 }
@@ -414,16 +420,18 @@ foreach ($profilePath in $profilePaths) {
 }
 
 $registryPath = 'HKLM:\SOFTWARE\Classes\cihub'
-if ($DryRun -and (Test-Path $registryPath)) {
-    Write-CleanupLog 'DRYRUN' "Would remove $registryPath"
-}
-elseif (Test-Path $registryPath) {
-    try {
-        Remove-Item -Path $registryPath -Recurse -Force -ErrorAction Stop
-        Write-CleanupLog 'INFO' 'Removed cihub protocol registry key'
+if (Test-Path $registryPath) {
+    if ($DryRun) {
+        Write-CleanupLog 'DRYRUN' "Would remove $registryPath"
     }
-    catch {
-        Write-CleanupLog 'WARN' 'Could not remove cihub protocol registry key'
+    else {
+        try {
+            Remove-Item -Path $registryPath -Recurse -Force -ErrorAction Stop
+            Write-CleanupLog 'INFO' 'Removed cihub protocol registry key'
+        }
+        catch {
+            Write-CleanupLog 'WARN' 'Could not remove cihub protocol registry key'
+        }
     }
 }
 

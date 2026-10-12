@@ -102,6 +102,16 @@ const RABBITMQ_VOLUME = '3a347be0ac1d86f306c799093a7e7e01756bf37cbf0d6502c93e58e
 const WORDPRESS_ANONYMOUS_VOLUME = '6ac4dec8eac8c88d081e12c0c5f7289813cf40829498ff8f9e4b8d9ffac493e2';
 /** Left by an earlier uninstall: no container mounts it and nothing ties it to the Hub. */
 const ORPHANED_VOLUME = '512303c264585eba54d38783f0eaa650700800989d35a81e13dc688666e74483';
+/**
+ * Docker lets a network be called almost anything (Docker 27 takes `x;y`, `a b` and `x$(y)`). Read into a command
+ * string, this name would run a second command that removes a volume of the user's own.
+ */
+const INJECTED_NETWORK = 'x;docker volume rm myproject_pgdata';
+/**
+ * The local volume driver refuses a name like this, but a volume plugin decides for itself. It matches the Hub's
+ * volume name pattern, so the cleanup removes it, and read into a command string it would also remove the user's.
+ */
+const ODD_VOLUME = 'hub_tailscale_state;docker volume rm myproject_pgdata';
 
 /** A Windows Hub with WordPress installed, as the manual test left it, plus a compose project of the user's own. */
 const FIXTURE: FakeEngine = {
@@ -180,6 +190,7 @@ const FIXTURE: FakeEngine = {
     { name: 'ci-os-hub_network', labels: hubProject },
     { name: 'wordpress_ci-marketplace_network', labels: wordpressProject },
     { name: 'myproject_default', labels: { 'com.docker.compose.project': 'myproject' } },
+    { name: INJECTED_NETWORK, labels: managed },
   ],
   volumes: [
     { name: 'ci_hub_pgdata', labels: hubProject },
@@ -189,6 +200,7 @@ const FIXTURE: FakeEngine = {
     { name: RABBITMQ_VOLUME, labels: anonymous },
     { name: WORDPRESS_ANONYMOUS_VOLUME, labels: anonymous },
     { name: ORPHANED_VOLUME, labels: anonymous },
+    { name: ODD_VOLUME, labels: {} },
   ],
 };
 
@@ -420,6 +432,7 @@ const DOCKER_BLOCK = () => extractBlock(read(PS_SCRIPT), '# BEGIN docker cleanup
 
 describeEachShell('uninstall-cleanup.ps1 Docker cleanup under %s', (_name, shell) => {
   let removed: string[];
+  let removedArgs: string[][];
   let left: FakeEngine;
   let dryRunRemoved: string[];
   let dryRunOutput: string;
@@ -427,7 +440,8 @@ describeEachShell('uninstall-cleanup.ps1 Docker cleanup under %s', (_name, shell
   beforeAll(() => {
     const sandbox = makeSandbox();
     runPowerShell(shell, sandbox, harness(DOCKER_BLOCK(), { importFunctions: true }));
-    removed = removals(sandbox);
+    removedArgs = dockerCalls(sandbox).filter(isRemoval);
+    removed = removedArgs.map((args) => args.join(' '));
     left = engineAfter(sandbox);
 
     const drySandbox = makeSandbox();
@@ -472,7 +486,12 @@ describeEachShell('uninstall-cleanup.ps1 Docker cleanup under %s', (_name, shell
   });
 
   it('leaves a compose project the Hub did not create, and unlabelled anonymous volumes, alone', () => {
-    expect(removed.filter((call) => NOT_THE_HUBS.some((name) => call.includes(name)))).toEqual([]);
+    expect(removedArgs.filter((args) => args.some((arg) => NOT_THE_HUBS.includes(arg))).map((args) => args.join(' '))).toEqual([]);
+  });
+
+  it('passes a name to docker as one argument, so a name with a command in it removes nothing else', () => {
+    expect(removedArgs).toContainEqual(['volume', 'rm', ODD_VOLUME]);
+    expect(names(left.volumes)).toContain('myproject_pgdata');
   });
 
   it('removes an app network once the ci-hub container that was attached to it is gone', () => {
@@ -486,8 +505,13 @@ describeEachShell('uninstall-cleanup.ps1 Docker cleanup under %s', (_name, shell
 
   it('leaves nothing of the Hub or WordPress in the engine, and everything else as it was', () => {
     expect(names(left.containers)).toEqual(['devdb']);
-    expect(names(left.networks)).toEqual(['bridge', 'host', 'myproject_default', 'none']);
+    expect(names(left.networks)).toEqual(['bridge', 'host', 'myproject_default', 'none', INJECTED_NETWORK].sort());
     expect(names(left.volumes)).toEqual([ORPHANED_VOLUME, 'myproject_pgdata'].sort());
+  });
+
+  it('skips a labelled network whose name is not a plain Docker name', () => {
+    expect(removedArgs.filter(([command, , name]) => command === 'network' && name === INJECTED_NETWORK)).toEqual([]);
+    expect(names(left.networks)).toContain(INJECTED_NETWORK);
   });
 
   it('with -DryRun lists the removals and runs none of them', () => {

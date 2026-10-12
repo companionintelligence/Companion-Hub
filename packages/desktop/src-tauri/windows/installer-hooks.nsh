@@ -11,8 +11,9 @@
 ; via a custom action — see windows/cleanup-on-uninstall.wxs.
 ;
 ; Runs in NSIS_HOOK_PREUNINSTALL — *before* Tauri deletes $INSTDIR — so the bundled
-; script is still present on disk when we call it. Best-effort and non-interactive:
-; failures never block the uninstall. See distribution/scripts/uninstall-cleanup.ps1.
+; script is still present on disk when we call it. Best-effort: a failed cleanup never
+; blocks the uninstall. The one prompt is the running-app check below, and its Cancel stops
+; the uninstall before anything is removed. See distribution/scripts/uninstall-cleanup.ps1.
 ;
 ; Tauri's NSIS template inserts this hook at the top of `Section Uninstall`, before any
 ; update-mode check: an uninstaller launched with /UPDATE (un.onInit turns that flag into
