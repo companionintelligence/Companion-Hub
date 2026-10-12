@@ -1,4 +1,4 @@
-import { render, screen, userEvent, waitFor } from '@/tests/test-utils';
+import { act, render, screen, userEvent, waitFor } from '@/tests/test-utils';
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import { Header } from '../header';
@@ -106,9 +106,77 @@ describe('Header', () => {
       'max-h-[calc(100dvh-var(--header-offset)-1rem)]',
     );
     const scrim = screen.getByTestId('mobile-app-menu-scrim');
-    expect(scrim.style.top).toBe('var(--header-offset)');
+    expect(scrim.style.top).toBe('calc(var(--titlebar-height, 0px) + var(--header-offset))');
     expect(scrim.className).not.toContain('inset-0');
     expect(screen.getByRole('menuitem', { name: /COMMON_SETTINGS|Settings/i })).toBeInTheDocument();
+  });
+
+  it('dims the page from document.body and closes the phone menu when the page is clicked', async () => {
+    renderHeader(true);
+
+    await userEvent.click(screen.getByTestId('mobile-app-menu-btn'));
+    const scrim = screen.getByTestId('mobile-app-menu-scrim');
+    // The header's backdrop blur makes it the containing block of a fixed child. Inside it the
+    // scrim was sized to the bar and came out 0px tall, so a click outside the menu hit the page.
+    expect(screen.getByTestId('app-header')).not.toContainElement(scrim);
+    expect(scrim.parentElement).toBe(document.body);
+    expect(scrim).toHaveClass('bg-black/25');
+    // Outside the menu's `lg:hidden` wrapper now, so it has to hide itself on a wide window.
+    expect(scrim).toHaveClass('lg:hidden');
+
+    await userEvent.click(scrim);
+    expect(screen.queryByTestId('mobile-app-menu')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('mobile-app-menu-scrim')).not.toBeInTheDocument();
+  });
+
+  it('puts focus back on the menu button when the page behind the menu is clicked, as Escape does', async () => {
+    renderHeader(true);
+
+    await userEvent.click(screen.getByTestId('mobile-app-menu-btn'));
+    await userEvent.click(screen.getByTestId('mobile-app-menu-scrim'));
+
+    expect(screen.queryByTestId('mobile-app-menu')).not.toBeInTheDocument();
+    // The scrim had focus and is gone, so without this focus falls to <body> and the next Tab starts at the top.
+    expect(screen.getByTestId('mobile-app-menu-btn')).toHaveFocus();
+  });
+
+  it('closes the phone menu when the route changes under it', async () => {
+    renderHeader(true);
+
+    await userEvent.click(screen.getByTestId('mobile-app-menu-btn'));
+    const logoLink = screen.getByAltText('CI Logo Icon').closest('a');
+    expect(logoLink).not.toBeNull();
+    await userEvent.click(logoLink as HTMLAnchorElement);
+
+    expect(screen.queryByTestId('mobile-app-menu')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('mobile-app-menu-scrim')).not.toBeInTheDocument();
+  });
+
+  it('closes the phone menu when the window widens to the full header, so it does not come back on narrowing', async () => {
+    const listeners = new Set<(event: { matches: boolean }) => void>();
+    const fullHeader = {
+      matches: false,
+      addEventListener: (_type: string, listener: (event: { matches: boolean }) => void) => listeners.add(listener),
+      removeEventListener: (_type: string, listener: (event: { matches: boolean }) => void) => listeners.delete(listener),
+    };
+    const matchMedia = vi.fn((_query: string) => fullHeader);
+    vi.stubGlobal('matchMedia', matchMedia);
+    try {
+      renderHeader(true);
+      await userEvent.click(screen.getByTestId('mobile-app-menu-btn'));
+      // Tailwind's `lg`, where the menu's wrapper and the scrim are `lg:hidden`.
+      expect(matchMedia).toHaveBeenCalledWith('(min-width: 64rem)');
+
+      act(() => {
+        for (const listener of [...listeners]) listener({ matches: true });
+      });
+
+      expect(screen.queryByTestId('mobile-app-menu')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('mobile-app-menu-scrim')).not.toBeInTheDocument();
+      expect(listeners.size).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('moves focus into the phone menu, closes it on Escape, and keeps the scrim out of the tab order', async () => {
