@@ -159,11 +159,25 @@ describe('env-helpers — resolve() priority chain', () => {
     expect(loggedWarnings).toContainEqual(expect.stringMatching(/LOG_LEVEL=debug .*Log level.*info/));
   });
 
-  it('MUST NOT warn about LOG_LEVEL when the saved Log level gives as much detail or more', async () => {
+  it('MUST say so when LOG_LEVEL asks for less detail than the Log level saved in Settings gives', async () => {
+    loggedWarnings.length = 0;
+    process.env.LOG_LEVEL = 'warn';
+    setupMocks({ settingsJson: { logLevel: 'info' } });
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.get('LOG_LEVEL')).toBe('info');
+    expect(loggedWarnings).toContainEqual(expect.stringMatching(/LOG_LEVEL=warn .*Log level.*info/));
+  });
+
+  it("MUST NOT warn about the compose file's LOG_LEVEL=info, or one that matches the saved Log level", async () => {
+    // Both compose files set LOG_LEVEL=info when the operator chose nothing, so a Hub whose Log level
+    // was set to warn in Settings would otherwise blame an environment value nobody set on every boot.
     loggedWarnings.length = 0;
     for (const [env, saved] of [
       ['info', 'debug'],
       ['info', 'info'],
+      ['info', 'warn'],
+      ['info', 'error'],
+      ['debug', 'debug'],
     ]) {
       process.env.LOG_LEVEL = env;
       setupMocks({ settingsJson: { logLevel: saved } });

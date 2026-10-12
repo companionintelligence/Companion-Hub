@@ -802,11 +802,11 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   // it too: ConfigurationService and the Hub's logger read it there, where the compose value stays.
   const envLogLevel = resolve('LOG_LEVEL', { envMap, fallback: DEFAULT_LOG_LEVEL });
   const logLevel = settingsData.logLevel ?? envLogLevel;
-  // The Settings page sends Log level with every save, so on a server where it was saved once,
-  // LOG_LEVEL=debug in the env file gives no debug lines. Say why in the boot log, which this logger
-  // still writes at the environment's level.
-  const levelsByDetail = ['error', 'warn', 'info', 'debug'];
-  if (levelsByDetail.indexOf(envLogLevel) > levelsByDetail.indexOf(logLevel)) {
+  // The Settings page sends Log level with every save, so on a server where it was saved once, an
+  // operator's LOG_LEVEL in the env file does nothing. Say why in the boot log, which this logger
+  // still writes at the environment's level. A LOG_LEVEL of info is left out: the compose files set
+  // that when nobody chose a level, and an operator who picked warn in Settings never set it.
+  if (envLogLevel !== DEFAULT_LOG_LEVEL && envLogLevel !== logLevel) {
     logger.warn(
       `LOG_LEVEL=${envLogLevel} from the environment is ignored because Settings has Log level ${logLevel}. ` +
         'Change Log level in Settings, or remove logLevel from state/settings.json and restart the Hub.',
