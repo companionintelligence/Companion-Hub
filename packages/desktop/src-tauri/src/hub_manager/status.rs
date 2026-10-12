@@ -406,7 +406,9 @@ pub fn get_startup_progress() -> StartupProgress {
     let docker_access = check_docker_access();
     let docker_available = matches!(docker_access.state, DockerAccessState::Available);
     #[cfg(target_os = "windows")]
-    if !docker_available {
+    if docker_available {
+        refresh_update_listener_host_after_revive(&data_dir);
+    } else {
         revive_wsl_engine(&data_dir);
     }
     let ctx = CoreServiceContext {
@@ -563,6 +565,8 @@ pub fn get_hub_status() -> HubStatus {
         revive_wsl_engine(&data_dir);
         return HubStatus::DockerNotAvailable;
     }
+    #[cfg(target_os = "windows")]
+    refresh_update_listener_host_after_revive(&data_dir);
 
     // Check the Hub container (canonical name first, then the legacy alias).
     let hub_name = hub_container_name();

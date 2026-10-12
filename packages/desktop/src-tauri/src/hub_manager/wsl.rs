@@ -83,16 +83,8 @@ pub(crate) fn find_wsl_distro() -> Option<String> {
 
 #[cfg(windows)]
 fn compute_wsl_distro() -> Option<String> {
-    let mut command = Command::new("wsl.exe");
-    command.creation_flags(CREATE_NO_WINDOW);
-    command.env("WSL_UTF8", "1");
-    let output = command.args(["-l", "-q"]).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    text.lines()
-        .map(|line| line.trim().trim_matches('\u{0}').trim().to_string())
+    let listing = wsl_distro_listing()?;
+    let distro = wsl_listing_names(&listing)
         .filter(|line| !line.is_empty())
         .find(|d| {
             let lower = d.to_ascii_lowercase();
@@ -102,6 +94,29 @@ fn compute_wsl_distro() -> Option<String> {
                     || lower == "debian"
                     || lower.starts_with("debian-"))
         })
+        .map(str::to_string);
+    distro
+}
+
+/// `wsl -l -q` as UTF-8, or `None` when it fails. Listing distros doesn't start WSL.
+#[cfg(windows)]
+fn wsl_distro_listing() -> Option<String> {
+    let mut command = Command::new("wsl.exe");
+    command.creation_flags(CREATE_NO_WINDOW);
+    command.env("WSL_UTF8", "1");
+    let output = command.args(["-l", "-q"]).output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// The distro names in a `wsl -l -q` listing, trimmed of spaces and of NULs at either end.
+#[cfg(any(test, windows))]
+fn wsl_listing_names(listing: &str) -> impl Iterator<Item = &str> {
+    listing
+        .lines()
+        .map(|line| line.trim().trim_matches('\u{0}').trim())
 }
 
 /// Run a shell script as root inside a WSL2 distro (`wsl -d <distro> -u root -- sh -lc`).
@@ -360,9 +375,7 @@ pub(crate) fn wsl_engine_should_revive(
 /// `find_wsl_distro` also takes a Debian listed first, which would be the wrong distro to start.
 #[cfg(any(test, windows))]
 pub(crate) fn engine_distro_from_listing(listing: &str) -> Option<String> {
-    listing
-        .lines()
-        .map(|line| line.trim().trim_matches('\u{0}').trim())
+    wsl_listing_names(listing)
         .find(|name| {
             let lower = name.to_ascii_lowercase();
             lower == "ubuntu" || lower.starts_with("ubuntu-")
@@ -377,19 +390,16 @@ fn wsl_engine_distro() -> Option<String> {
     static FOUND: Mutex<Option<String>> = Mutex::new(None);
     let mut found = lock_recovering(&FOUND);
     if found.is_none() {
-        let mut command = Command::new("wsl.exe");
-        command.creation_flags(CREATE_NO_WINDOW);
-        command.env("WSL_UTF8", "1");
-        *found = command
-            .args(["-l", "-q"])
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .and_then(|output| {
-                engine_distro_from_listing(&String::from_utf8_lossy(&output.stdout))
-            });
+        *found = wsl_distro_listing().and_then(|listing| engine_distro_from_listing(&listing));
     }
     found.clone()
+}
+
+/// The engine the Hub runs on, when that is the Docker engine inside WSL.
+#[cfg(windows)]
+fn hub_wsl_engine(data_dir: &Path) -> Option<crate::docker_engine::PinnedDockerEngine> {
+    hub_docker_engine(data_dir)
+        .filter(|engine| engine.kind == crate::docker_engine::DockerEngineKind::WslEngine)
 }
 
 /// `wsl.exe` arguments for the keepalive: the command the installer's logon script runs.
@@ -509,6 +519,8 @@ fn start_wsl_keepalive(data_dir: &Path, force: bool) -> Result<KeepaliveStart, S
         Ok(child)
     });
     if let (Ok(KeepaliveStart::Started), Some(distro)) = (&outcome, started_distro) {
+        // The distro boots again, and its gateway (the listener's address) can change with it.
+        UPDATE_LISTENER_HOST_STALE.store(true, Ordering::SeqCst);
         let _ = append_desktop_log_for(
             data_dir,
             "wsl.engine",
@@ -522,15 +534,50 @@ fn start_wsl_keepalive(data_dir: &Path, force: bool) -> Result<KeepaliveStart, S
 }
 
 /// When the Hub runs on the WSL engine and Docker doesn't answer, start the engine's distro again.
-/// The status polls call this, so it never waits: they see Docker once it answers. A failure is
-/// left to Start engine to report, rather than logged every 30 seconds.
+/// The status polls call this, so it never waits: they see Docker once it answers. Finding the
+/// distro runs wsl.exe, which can hang while WSL itself starts or updates, so the start happens on
+/// a thread of its own, one at a time. A failure is left to Start engine to report, rather than
+/// logged every 30 seconds.
 #[cfg(windows)]
 pub(crate) fn revive_wsl_engine(data_dir: &Path) {
-    if wsl_engine_should_revive(
+    static REVIVING: AtomicBool = AtomicBool::new(false);
+    if !wsl_engine_should_revive(
         hub_docker_engine(data_dir).as_ref(),
         is_user_stopped(data_dir),
-    ) {
-        let _ = start_wsl_keepalive(data_dir, false);
+    ) || REVIVING.swap(true, Ordering::SeqCst)
+    {
+        return;
+    }
+    let data_dir = data_dir.to_path_buf();
+    let spawned = std::thread::Builder::new()
+        .name("wsl-engine-revive".to_string())
+        .spawn(move || {
+            let _ = start_wsl_keepalive(&data_dir, false);
+            REVIVING.store(false, Ordering::SeqCst);
+        });
+    if spawned.is_err() {
+        REVIVING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Set when this app starts the engine's distro again. Until the address is recorded once more,
+/// the one the Hub has may be the gateway of the WSL network from before.
+#[cfg(windows)]
+static UPDATE_LISTENER_HOST_STALE: AtomicBool = AtomicBool::new(false);
+
+/// For the status polls once Docker answers: record the listener's address again after the app
+/// started the engine's distro, on a thread of its own, since asking the distro runs wsl.exe.
+#[cfg(windows)]
+pub(crate) fn refresh_update_listener_host_after_revive(data_dir: &Path) {
+    if !UPDATE_LISTENER_HOST_STALE.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    let data_dir = data_dir.to_path_buf();
+    let spawned = std::thread::Builder::new()
+        .name("update-listener-host".to_string())
+        .spawn(move || record_update_listener_host(&data_dir));
+    if spawned.is_err() {
+        UPDATE_LISTENER_HOST_STALE.store(true, Ordering::SeqCst);
     }
 }
 
@@ -599,7 +646,6 @@ fn start_wsl_engine_and_wait(
         EngineWait::Answered => {
             forget_docker_access_check();
             let _ = append_desktop_log_for(data_dir, "wsl.engine", "Docker in WSL answers again.");
-            record_update_listener_host(data_dir);
             Ok(())
         }
         EngineWait::KeepaliveEnded(code) => {
@@ -622,12 +668,13 @@ fn start_wsl_engine_and_wait(
 /// engine and wait for it. `Ok` when there was nothing to do too.
 #[cfg(windows)]
 pub(crate) fn wake_wsl_engine_for_start(data_dir: &Path) -> Result<(), String> {
-    let Some(engine) = hub_docker_engine(data_dir)
-        .filter(|engine| engine.kind == crate::docker_engine::DockerEngineKind::WslEngine)
-    else {
+    let Some(engine) = hub_wsl_engine(data_dir) else {
         return Ok(());
     };
     if crate::docker_engine::probe_docker_host_reachable(&engine.docker_host) {
+        // It may have come up seconds after a status poll cached "not running", which the start
+        // (or the launch, asking again) would otherwise still read.
+        forget_docker_access_check();
         return Ok(());
     }
     let _ = append_desktop_log_for(
@@ -642,14 +689,15 @@ pub(crate) fn wake_wsl_engine_for_start(data_dir: &Path) -> Result<(), String> {
 pub fn start_wsl_engine(data_dir: &Path) -> Result<String, String> {
     #[cfg(windows)]
     {
-        let engine = hub_docker_engine(data_dir)
-            .filter(|engine| engine.kind == crate::docker_engine::DockerEngineKind::WslEngine)
+        let engine = hub_wsl_engine(data_dir)
             .ok_or_else(|| "This Hub doesn't run on the Docker engine inside WSL.".to_string())?;
         start_wsl_engine_and_wait(data_dir, &engine).map_err(|error| {
             let _ =
                 append_desktop_log_for(data_dir, "wsl.engine", &format!("Start engine: {error}"));
             error
         })?;
+        // A Hub start and the launch record it themselves; nothing else follows Start engine.
+        record_update_listener_host(data_dir);
         Ok("Docker in WSL is running.".to_string())
     }
     #[cfg(not(windows))]
@@ -780,9 +828,8 @@ pub(crate) fn write_update_listener_host(
 pub fn record_update_listener_host(data_dir: &Path) {
     #[cfg(windows)]
     {
-        let on_wsl_engine = hub_docker_engine(data_dir)
-            .is_some_and(|engine| engine.kind == crate::docker_engine::DockerEngineKind::WslEngine);
-        let address = if on_wsl_engine {
+        UPDATE_LISTENER_HOST_STALE.store(false, Ordering::SeqCst);
+        let address = if hub_wsl_engine(data_dir).is_some() {
             let Some(table) = wsl_engine_distro()
                 .and_then(|distro| run_wsl_root_script_capture(&distro, "cat /proc/net/route"))
             else {
@@ -855,8 +902,7 @@ pub(crate) fn restore_wsl_engine_logon_script(
 pub fn ensure_wsl_engine_logon_script(data_dir: &Path) {
     #[cfg(windows)]
     {
-        let on_wsl_engine = hub_docker_engine(data_dir)
-            .is_some_and(|engine| engine.kind == crate::docker_engine::DockerEngineKind::WslEngine);
+        let on_wsl_engine = hub_wsl_engine(data_dir).is_some();
         let Some(startup_dir) = dirs::config_dir()
             .filter(|_| on_wsl_engine)
             .map(|roaming| roaming.join(r"Microsoft\Windows\Start Menu\Programs\Startup"))
