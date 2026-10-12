@@ -195,6 +195,18 @@ function MobileAppMenu({
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [open, closeAndRefocus]);
 
+  // At Tailwind's `lg` the wrapper and the scrim are hidden by CSS, but the menu would stay open
+  // and come back over a dimmed page when the window narrows again. Close it there.
+  useEffect(() => {
+    if (!open || typeof window.matchMedia !== 'function') return;
+    const fullHeader = window.matchMedia('(min-width: 64rem)');
+    const onChange = (event: { matches: boolean }) => {
+      if (event.matches) setOpen(false);
+    };
+    fullHeader.addEventListener('change', onChange);
+    return () => fullHeader.removeEventListener('change', onChange);
+  }, [open]);
+
   return (
     <div className="relative ml-auto flex justify-end lg:hidden">
       <Button

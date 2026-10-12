@@ -1,4 +1,4 @@
-import { render, screen, userEvent, waitFor } from '@/tests/test-utils';
+import { act, render, screen, userEvent, waitFor } from '@/tests/test-utils';
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import { Header } from '../header';
@@ -150,6 +150,33 @@ describe('Header', () => {
 
     expect(screen.queryByTestId('mobile-app-menu')).not.toBeInTheDocument();
     expect(screen.queryByTestId('mobile-app-menu-scrim')).not.toBeInTheDocument();
+  });
+
+  it('closes the phone menu when the window widens to the full header, so it does not come back on narrowing', async () => {
+    const listeners = new Set<(event: { matches: boolean }) => void>();
+    const fullHeader = {
+      matches: false,
+      addEventListener: (_type: string, listener: (event: { matches: boolean }) => void) => listeners.add(listener),
+      removeEventListener: (_type: string, listener: (event: { matches: boolean }) => void) => listeners.delete(listener),
+    };
+    const matchMedia = vi.fn((_query: string) => fullHeader);
+    vi.stubGlobal('matchMedia', matchMedia);
+    try {
+      renderHeader(true);
+      await userEvent.click(screen.getByTestId('mobile-app-menu-btn'));
+      // Tailwind's `lg`, where the menu's wrapper and the scrim are `lg:hidden`.
+      expect(matchMedia).toHaveBeenCalledWith('(min-width: 64rem)');
+
+      act(() => {
+        for (const listener of [...listeners]) listener({ matches: true });
+      });
+
+      expect(screen.queryByTestId('mobile-app-menu')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('mobile-app-menu-scrim')).not.toBeInTheDocument();
+      expect(listeners.size).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('moves focus into the phone menu, closes it on Escape, and keeps the scrim out of the tab order', async () => {
