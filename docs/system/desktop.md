@@ -78,7 +78,7 @@ the app starts that same command again (`hub_manager/wsl.rs`):
 
 All of these run the keepalive in the installer's distro: the first `Ubuntu` or `Ubuntu-*` that
 `wsl -l -q` lists. Separately, each launch on the WSL engine puts the logon script
-(`Startup\CompanionHub-WSL-Docker.vbs`, same content as the installer's) back when it's missing:
+(`Startup\CompanionHub-WSL-Docker.vbs`, same content as the installer's, in `hub_manager/wsl_engine_files.rs`) back when it's missing:
 after an uninstall removed it, a reinstall over an engine that is already set up doesn't run the
 installer that writes it. A script that is there is left alone.
 
@@ -212,7 +212,7 @@ The Hub's own Docker calls (its self-update, every app install and start) read `
 
 `companion-hub --update-listener` (`updater.rs`) listens on `0.0.0.0:17400`, so the Hub container can hand a desktop update to the host. The Hub hands over updates started from Settings or the MCP tool `hub_perform_update`, never its daily auto-update, which updates the stack image only. The updater keeps the Hub running until the new version is installed (on Windows, until it hands over to the installer), and starts the Hub again if the update fails after the stop. See [Install flow](../DESKTOP-AUTO-UPDATE.md#install-flow-per-platform). Requests need the token in `<data dir>/state/update-listener.token`, which the Hub reads as `/data/state/update-listener.token`. The listener writes a new token each time it starts, and trusts the file only while it is private to the desktop user. Compose mounts `state/` and other subfolders into the Hub, never the data dir itself, so a file the desktop writes for the Hub to read belongs in one of them. See [The listener token](../DESKTOP-AUTO-UPDATE.md#the-listener-token).
 
-The Hub calls the listener at `host.docker.internal`, which on the Docker engine inside WSL is the WSL VM, not the Windows host the listener runs on. On that engine the app writes the Windows host's address on the WSL adapter (the distro's default gateway, which the container reaches through the VM) to `state/update-listener.host`, and the Hub calls the listener there. The app writes it at each launch while Docker answers, at each Hub start, and once Docker answers again after the app started the engine, in case the WSL network came back with a new gateway. On any other engine it removes the file. The Hub uses the file only when it holds one private IPv4 address, and the app writes only an address that belongs to this PC, so with WSL's mirrored networking, where the gateway is the router, nothing is written.
+The Hub calls the listener at `host.docker.internal`, which on the Docker engine inside WSL is the WSL VM, not the Windows host the listener runs on. On that engine the app writes the Windows host's address on the WSL adapter (the distro's default gateway, which the container reaches through the VM) to `state/update-listener.host` (`hub_manager/wsl_engine_files.rs`), and the Hub calls the listener there. The app writes it at each launch while Docker answers, at each Hub start, and once Docker answers again after the app started the engine, in case the WSL network came back with a new gateway. On any other engine it removes the file. The Hub uses the file only when it holds one private IPv4 address, and the app writes only an address that belongs to this PC, so with WSL's mirrored networking, where the gateway is the router, nothing is written.
 
 ## Testing
 

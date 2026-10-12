@@ -36,6 +36,7 @@ mod runtime_state;
 mod status;
 mod windows_paths;
 mod wsl;
+mod wsl_engine_files;
 
 #[cfg(test)]
 mod tests;
@@ -60,6 +61,8 @@ pub(crate) use windows_paths::*;
 // resolves to nothing and rustc flags it. It is load-bearing on Windows.
 #[allow(unused_imports)]
 pub(crate) use wsl::*;
+#[allow(unused_imports)]
+pub(crate) use wsl_engine_files::*;
 
 #[cfg(target_os = "windows")]
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x08000000;
