@@ -2,6 +2,8 @@ import { appContextOptions, checkAvailabilityOptions, getAppOptions, getServeSta
 import { AppLogo } from '@/components/app-logo/app-logo';
 import { PageLoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 import { useUserContext } from '@/context/user-context';
+import { openExternal } from '@/lib/helpers/open-external';
+import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import { buildAppAccessPoints, buildTailscaleServedPortSet } from '@/modules/app/components/app-access-points/app-access-points';
 import type { AppStatus } from '@/types/app.types';
 import { useQuery } from '@tanstack/react-query';
@@ -196,6 +198,29 @@ export function resolveSafeTarget(
   return active?.url ?? null;
 }
 
+/**
+ * Leave this interstitial for the connected app.
+ *
+ * A browser tab is already the Hub, so it navigates in place. The desktop
+ * window is also the Hub: replacing it with the app (FreeCut, and every other
+ * app this page forwards to) leaves no way back. There the system browser
+ * gets the app and the webview returns to the dashboard.
+ */
+export function handOffToApp(target: string, navigateHome: () => void, history: 'replace' | 'assign'): void {
+  if (getTauriInvoke()) {
+    void openExternal(target);
+    navigateHome();
+    return;
+  }
+
+  if (history === 'replace') {
+    window.location.replace(target);
+    return;
+  }
+
+  window.location.assign(target);
+}
+
 const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string | null }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -335,18 +360,19 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
   }, [phase]);
 
   // Timer-with-cleanup (StrictMode-safe): the double mount clears and
-  // reschedules; navigation fires once, after the grace beat. `replace`, not
-  // `assign`: the interstitial must not stay in history, or Back from the app
-  // lands here and immediately re-forwards — an unescapable loop.
+  // reschedules; the hop fires once, after the grace beat. In a browser,
+  // `replace` so Back from the app does not re-enter this page and immediately
+  // forward again. In the desktop shell, the hop leaves the webview on the
+  // dashboard and opens the app in the system browser.
   useEffect(() => {
     if (phase !== 'ready' || !target) {
       return;
     }
 
-    const id = window.setTimeout(() => window.location.replace(target), OPEN_APP_GRACE_MS);
+    const id = window.setTimeout(() => handOffToApp(target, () => navigate('/home'), 'replace'), OPEN_APP_GRACE_MS);
 
     return () => window.clearTimeout(id);
-  }, [phase, target]);
+  }, [navigate, phase, target]);
 
   const failed = phase === 'error' || phase === 'timeout';
   const failedTitleRef = useRef<HTMLHeadingElement>(null);
@@ -369,12 +395,6 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
     failedTitleRef.current?.focus();
   }, [failed]);
 
-  // In-place SPA navigation on purpose — never window.open/a new tab. When the
-  // connect flow was started from the Tauri desktop app, this page is running
-  // inside its webview (at the Hub's public origin, where no Tauri APIs are
-  // injected to even detect the shell): an in-place navigate keeps the user in
-  // that same window, whereas a popup would be blocked or orphan a chromeless
-  // webview. In a regular browser it is simply the dashboard route.
   const dashboardButton = (
     <button type="button" className="mcf-btn mcf-btn-secondary" onClick={() => navigate('/home')}>
       {t('MEMORY_CONNECT_FINISHING_BACK_TO_DASHBOARD')}
@@ -450,7 +470,7 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
             </p>
             <div className="mcf-actions">
               {target && (
-                <button type="button" className="mcf-btn mcf-btn-primary" onClick={() => window.location.assign(target)}>
+                <button type="button" className="mcf-btn mcf-btn-primary" onClick={() => handOffToApp(target, () => navigate('/home'), 'assign')}>
                   {t('APP_ACTION_OPEN_ANYWAY')}
                 </button>
               )}
