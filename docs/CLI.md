@@ -496,7 +496,14 @@ authenticates nothing with it. See [Use your Hub from your editor](editor-infere
 
 `create` also accepts `--capability read|write|full`, which decides what the key may do on the
 surfaces its scopes opened — `write` is the default. Raise or lower an existing key's capability in
-**Settings → Security**; the CLI has `create` and `list` only.
+**Settings → Security**; the CLI has `create` and `list` only. A Hub released before per-key
+capability cannot store one, so on such a Hub `create` refuses `--capability` instead of creating a
+key that can do everything its scopes allow.
+
+Both commands run `psql` in the `ci-hub-db` container. Through the Docker engine the Windows desktop
+app runs in WSL2, `docker exec` returns nothing the command printed, so the CLI runs the query again
+detached and copies its answer out with `docker cp`. When neither way returns an answer, the command
+exits `1` and names the Docker context it used.
 
 A key you create with the CLI records no creator, because nobody is signed in. It keeps its per-app
 reach on every app, and it can't change an app's custom domain. **Settings → Security** marks it

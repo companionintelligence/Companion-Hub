@@ -32,43 +32,54 @@ export interface RegistrationStateDrift {
 const HUB_DEVICE_ID_KEY = 'HUB_DEVICE_ID';
 const HUB_API_KEY_KEY = 'HUB_API_KEY';
 
-/** Parse HUB_DEVICE_ID values from app.env files under app-data. */
-export function collectStaleHubDeviceIds(appDataDir: string, currentHardwareId: string): string[] {
+/**
+ * The `app.env` path of every app folder under app-data, whether or not the file exists.
+ *
+ * The Hub writes each app's env file at `<store>/<app>/app.env` (`AppFilesManager.writeAppEnv`), so
+ * listing app-data and each store folder finds them all. Everything below an app folder is the app's
+ * own data, and walking it went through every file an app keeps. On a Windows Hub, app-data is on
+ * `/mnt/c` and each lookup is a round trip to Windows: one app with 13,328 cache files made a single
+ * drift check take 27 s.
+ */
+async function listAppEnvPaths(appDataDir: string): Promise<string[]> {
+  const envPaths: string[] = [];
+
+  for (const store of await listSubdirectories(appDataDir)) {
+    const storeDir = path.join(appDataDir, store);
+    for (const app of await listSubdirectories(storeDir)) {
+      envPaths.push(path.join(storeDir, app, 'app.env'));
+    }
+  }
+
+  return envPaths;
+}
+
+async function listSubdirectories(dir: string): Promise<string[]> {
+  try {
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+}
+
+/** Parse HUB_DEVICE_ID values from the app.env of each app under app-data. */
+export async function collectStaleHubDeviceIds(appDataDir: string, currentHardwareId: string): Promise<string[]> {
   const stale = new Set<string>();
 
-  const walk = (dir: string) => {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
+  for (const envPath of await listAppEnvPaths(appDataDir)) {
+    const deviceId = await readEnvValue(envPath, HUB_DEVICE_ID_KEY);
+    if (deviceId && deviceId !== currentHardwareId) {
+      stale.add(deviceId);
     }
+  }
 
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(fullPath);
-        continue;
-      }
-
-      if (entry.name !== 'app.env') {
-        continue;
-      }
-
-      const deviceId = readEnvValue(fullPath, HUB_DEVICE_ID_KEY);
-      if (deviceId && deviceId !== currentHardwareId) {
-        stale.add(deviceId);
-      }
-    }
-  };
-
-  walk(appDataDir);
   return [...stale];
 }
 
-function readEnvValue(filePath: string, key: string): string | null {
+async function readEnvValue(filePath: string, key: string): Promise<string | null> {
   try {
-    const content = fs.readFileSync(filePath, 'utf-8');
+    const content = await fs.promises.readFile(filePath, 'utf-8');
     for (const line of content.split('\n')) {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith('#')) {
@@ -94,37 +105,16 @@ function readEnvValue(filePath: string, key: string): string | null {
   return null;
 }
 
-/** Remove registration-related keys from every app.env under app-data. */
+/** Remove registration-related keys from the app.env of each app under app-data. */
 export async function clearRegistrationKeysFromAppData(appDataDir: string): Promise<number> {
   let updated = 0;
 
-  const walk = async (dir: string) => {
-    let entries: fs.Dirent[];
-    try {
-      entries = await fs.promises.readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
+  for (const envPath of await listAppEnvPaths(appDataDir)) {
+    if (await stripRegistrationKeysFromEnvFile(envPath)) {
+      updated += 1;
     }
+  }
 
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(fullPath);
-        continue;
-      }
-
-      if (entry.name !== 'app.env') {
-        continue;
-      }
-
-      const changed = await stripRegistrationKeysFromEnvFile(fullPath);
-      if (changed) {
-        updated += 1;
-      }
-    }
-  };
-
-  await walk(appDataDir);
   return updated;
 }
 

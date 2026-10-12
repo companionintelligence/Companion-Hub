@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { copiedCommandFolder } from './docker-cp-archive';
 
 const spawnSync = vi.fn();
 const parseEnvFile = vi.fn();
@@ -1509,6 +1510,19 @@ describe('D2 backend DNS', () => {
     resolveHubContainerName.mockReturnValue(undefined);
     expect(probeDnsFromContainer(['mtplx'])).toBeNull();
     expect(spawnSync).not.toHaveBeenCalled();
+  });
+
+  // Through the Docker engine the desktop app runs in WSL2, `docker exec` exits 0 and prints nothing
+  // whatever the command did. Read as "no answer", the check fell back to the host and said there was
+  // no Hub container to probe from, with the container running.
+  it('reads the answer back with docker cp when docker exec returns it empty', () => {
+    resolveHubContainerName.mockReturnValue('ci-hub');
+    const answer = JSON.stringify([{ host: 'mtplx', ms: 5010, code: 'EAI_AGAIN' }]);
+    spawnSync.mockImplementation((_command: string, args: string[]) =>
+      args[0] === 'cp' ? { status: 0, stdout: copiedCommandFolder(String(args[1]).split('/').pop() ?? '', answer) } : { status: 0, stdout: '' },
+    );
+
+    expect(probeDnsFromContainer(['mtplx'])).toEqual([{ host: 'mtplx', ms: 5010, code: 'EAI_AGAIN' }]);
   });
 
   // An empty list of backend URLs is two opposite findings wearing the same shape, and reporting
