@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import type { AppUrn } from '@ci-hub/common/types';
+import type { ConfigurationService } from '@/core/config/configuration.service';
 import type { LoggerService } from '@/core/logger/logger.service';
 import type { MarketplaceService } from '../marketplace.service';
 
@@ -132,10 +133,12 @@ function fakeRegistries(manifests: Record<string, StoredManifest>) {
   });
 }
 
-function sizeServiceFor(image: string) {
+function sizeServiceFor(image: string, architecture: 'amd64' | 'arm64' = 'amd64') {
   const marketplace = mock<MarketplaceService>();
   marketplace.getDockerComposeJson.mockResolvedValue({ content: { schemaVersion: 2, services: [{ name: 'main', image }] } } as never);
-  return new ImageSizeService(mock<LoggerService>(), marketplace);
+  const configuration = mock<ConfigurationService>();
+  configuration.getConfig.mockReturnValue({ architecture } as never);
+  return new ImageSizeService(mock<LoggerService>(), marketplace, configuration);
 }
 
 const singleManifest = (mediaType: string, layerSizes: number[]): StoredManifest => ({
@@ -177,7 +180,7 @@ describe('ImageSizeService.getAppImageSize', () => {
     expect(size.totalBytes).toBe(40_001_000);
   });
 
-  it('sizes a ghcr.io image published as an OCI index, down to its per-platform manifest', async () => {
+  it("sizes a ghcr.io image published as an OCI index, down to the Hub's own platform manifest", async () => {
     const ghcr = 'https://ghcr.io/v2/gchq/cyberchef/manifests';
     vi.stubGlobal(
       'fetch',
@@ -198,8 +201,38 @@ describe('ImageSizeService.getAppImageSize', () => {
       }),
     );
 
-    const size = await sizeServiceFor('ghcr.io/gchq/cyberchef:latest@sha256:f04a').getAppImageSize('cyberchef:ci-marketplace' as AppUrn);
+    const onAmd64 = await sizeServiceFor('ghcr.io/gchq/cyberchef:latest@sha256:f04a').getAppImageSize('cyberchef:ci-marketplace' as AppUrn);
+    const onArm64 = await sizeServiceFor('ghcr.io/gchq/cyberchef:latest@sha256:f04a', 'arm64').getAppImageSize('cyberchef:ci-marketplace' as AppUrn);
 
-    expect(size.totalBytes).toBe(31_001_000);
+    expect(onAmd64.totalBytes).toBe(30_001_000);
+    expect(onArm64.totalBytes).toBe(31_001_000);
+  });
+
+  it('skips attestation and Windows entries in an index', async () => {
+    const hub = 'https://registry-1.docker.io/v2/library/app/manifests';
+    vi.stubGlobal(
+      'fetch',
+      fakeRegistries({
+        [`${hub}/1.0`]: {
+          mediaType: OCI_INDEX,
+          body: {
+            schemaVersion: 2,
+            mediaType: OCI_INDEX,
+            manifests: [
+              { digest: 'sha256:win', platform: { architecture: 'amd64', os: 'windows' } },
+              { digest: 'sha256:att', platform: { architecture: 'unknown', os: 'unknown' } },
+              { digest: 'sha256:amd', platform: { architecture: 'amd64', os: 'linux' } },
+            ],
+          },
+        },
+        [`${hub}/sha256:win`]: singleManifest(OCI_MANIFEST, [900_000_000]),
+        [`${hub}/sha256:att`]: singleManifest(OCI_MANIFEST, [1_000]),
+        [`${hub}/sha256:amd`]: singleManifest(OCI_MANIFEST, [30_000_000]),
+      }),
+    );
+
+    const size = await sizeServiceFor('app:1.0').getAppImageSize('app:ci-marketplace' as AppUrn);
+
+    expect(size.totalBytes).toBe(30_001_000);
   });
 });

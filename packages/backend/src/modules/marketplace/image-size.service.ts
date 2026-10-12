@@ -1,3 +1,4 @@
+import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -94,6 +95,10 @@ export function parseDockerImageRef(image: string): { registry: string; reposito
   return { registry: DEFAULT_REGISTRY, repository: name, tag };
 }
 
+function registryBaseUrl(registry: string): string {
+  return registry === DEFAULT_REGISTRY ? 'https://registry-1.docker.io' : `https://${registry}`;
+}
+
 @Injectable()
 export class ImageSizeService {
   private cache = new Map<string, CachedSize>();
@@ -102,6 +107,7 @@ export class ImageSizeService {
   constructor(
     private readonly logger: LoggerService,
     private readonly marketplaceService: MarketplaceService,
+    private readonly configuration: ConfigurationService,
   ) {}
 
   /**
@@ -220,7 +226,7 @@ export class ImageSizeService {
         headers.Authorization = `Bearer ${token}`;
       }
 
-      const registryUrl = registry === 'registry.hub.docker.com' ? 'https://registry-1.docker.io' : `https://${registry}`;
+      const registryUrl = registryBaseUrl(registry);
 
       const manifestUrl = `${registryUrl}/v2/${repository}/manifests/${tag}`;
       const response = await fetch(manifestUrl, { headers, signal: AbortSignal.timeout(10000) });
@@ -292,7 +298,7 @@ export class ImageSizeService {
         headers.Authorization = `Bearer ${token}`;
       }
 
-      const registryUrl = registry === 'registry.hub.docker.com' ? 'https://registry-1.docker.io' : `https://${registry}`;
+      const registryUrl = registryBaseUrl(registry);
 
       const manifestUrl = `${registryUrl}/v2/${repository}/manifests/${tag}`;
       const response = await fetch(manifestUrl, { headers, signal: AbortSignal.timeout(10000) });
@@ -306,14 +312,20 @@ export class ImageSizeService {
         schemaVersion?: number;
         config?: { size?: number };
         layers?: Array<{ size?: number }>;
-        manifests?: Array<{ digest?: string; platform?: { architecture?: string } }>;
+        manifests?: Array<{ digest?: string; platform?: { architecture?: string; os?: string } }>;
       };
 
-      // Handle manifest list (multi-arch) - pick arm64 first, then amd64
+      // Manifest list / OCI index: size the image this Hub pulls, its own architecture on Linux. An
+      // arm64 Hub runs an amd64-only image under emulation, so amd64 comes next. Attestation entries
+      // carry os `unknown` and fall out here.
       if (manifest.manifests) {
-        const arm64 = manifest.manifests.find((m) => m.platform?.architecture === 'arm64');
-        const amd64 = manifest.manifests.find((m) => m.platform?.architecture === 'amd64');
-        const target = arm64 || amd64 || manifest.manifests[0];
+        const { architecture } = this.configuration.getConfig();
+        const linux = manifest.manifests.filter((m) => (m.platform?.os ?? 'linux') === 'linux');
+        const target =
+          linux.find((m) => m.platform?.architecture === architecture) ??
+          linux.find((m) => m.platform?.architecture === 'amd64') ??
+          linux[0] ??
+          manifest.manifests[0];
         if (target?.digest) {
           const subManifestUrl = `${registryUrl}/v2/${repository}/manifests/${target.digest}`;
           const subResponse = await fetch(subManifestUrl, { headers, signal: AbortSignal.timeout(10000) });
@@ -347,7 +359,7 @@ export class ImageSizeService {
    */
   private async getAuthToken(registry: string, repository: string): Promise<string | null> {
     try {
-      if (registry === 'registry.hub.docker.com') {
+      if (registry === DEFAULT_REGISTRY) {
         const response = await fetch(`https://auth.docker.io/token?service=registry.docker.io&scope=repository:${repository}:pull`, {
           signal: AbortSignal.timeout(10000),
         });
