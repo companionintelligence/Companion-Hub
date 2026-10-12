@@ -1,6 +1,9 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const openExternal = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/helpers/open-external', () => ({ openExternal }));
+
 const { useQuery, useUserContext, useNavigate, searchParams, buildAppAccessPoints, appResult, contextResult, availabilityResult } = vi.hoisted(
   () => ({
     useQuery: vi.fn(),
@@ -129,6 +132,7 @@ describe('MemoryConnectFinishingPage', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.useRealTimers();
+    Reflect.deleteProperty(window, '__TAURI_INTERNALS__');
   });
 
   it('shows the connecting card (logo pair + spinner) while the app restarts', () => {
@@ -157,6 +161,22 @@ describe('MemoryConnectFinishingPage', () => {
     // replace, not assign: Back from the app must not re-enter the interstitial.
     expect(window.location.replace).toHaveBeenCalledWith(APP_URL);
     expect(window.location.assign).not.toHaveBeenCalled();
+  });
+
+  it('desktop: opens the app in the system browser and puts the Hub window back on the dashboard', () => {
+    vi.useFakeTimers();
+    Object.assign(window, { __TAURI_INTERNALS__: { invoke: () => undefined } });
+    appResult.current = appData('running');
+
+    render(<MemoryConnectFinishingPage />);
+
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+
+    expect(openExternal).toHaveBeenCalledWith(APP_URL);
+    expect(useNavigate).toHaveBeenCalledWith('/home');
+    expect(window.location.replace).not.toHaveBeenCalled();
   });
 
   it('falls back to the derived app URL when next points at a foreign origin', () => {

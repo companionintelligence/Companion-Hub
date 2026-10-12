@@ -24,6 +24,7 @@ mod portal_url;
 mod sentry_scrubber;
 mod tray;
 mod updater;
+mod webview_navigation;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -588,6 +589,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(webview_navigation::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
