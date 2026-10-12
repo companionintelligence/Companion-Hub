@@ -2,6 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
+import { resetMobileClientCacheForTests } from '@/lib/mobile-connection';
 import { AiSettingsContainer } from '../ai-settings';
 import { toast } from 'sonner';
 
@@ -136,9 +137,10 @@ vi.mock('@/modules/onboarding/components/ai-setup/icons', () => ({
 }));
 
 vi.mock('@/modules/onboarding/components/ai-setup/backend-selection-card', () => ({
-  BackendSelectionCard: ({ selected, onSelect }: any) => (
+  BackendSelectionCard: ({ selected, recommended, onSelect }: any) => (
     <div>
       <div data-testid="selected-backend">{selected}</div>
+      <div data-testid="recommended-backend">{recommended}</div>
       <button type="button" data-testid="select-lemonade" onClick={() => onSelect('lemonade')}>
         select lemonade
       </button>
@@ -283,6 +285,96 @@ describe('AiSettingsContainer', () => {
 
     await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('vllm'));
     expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('vllm');
+  });
+
+  it('shows an engine that answers when nothing is saved and the recommended one does not', async () => {
+    // An NVIDIA PC with Ollama running and no vLLM, on a Hub that never saved an engine.
+    fetchInferencePreferences.mockResolvedValue({});
+    fetchInferenceOnboardingProfile.mockImplementation(async (backend?: string) => ({
+      ...profile,
+      recommendedModels: [llm('m1', 'ollama')],
+      availableModels: [llm('m1', 'ollama')],
+      installedCatalogIds: backend === 'ollama' ? ['m1'] : [],
+      backends: {
+        recommended: 'vllm',
+        available: [
+          { type: 'ollama', running: true, healthy: true, modelsLoaded: 4 },
+          { type: 'vllm', running: false, healthy: false, modelsLoaded: 0 },
+        ],
+      },
+    }));
+
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('ollama'));
+    expect(screen.getByTestId('recommended-backend')).toHaveTextContent('ollama');
+    // Asked about no engine, the endpoint answered for vLLM; the list shown must be Ollama's.
+    expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('ollama');
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-m1')).toBeChecked());
+    await waitFor(() => expect(fetchInferenceRuntimeModels).toHaveBeenCalledWith('ollama'));
+    expect(fetchInferenceRuntimeModels).not.toHaveBeenCalledWith('vllm');
+  });
+
+  it('shows an engine that answers in the phone app too, which installs none itself', async () => {
+    // The iOS and Android app is a Tauri webview as well, so a Tauri check alone would treat it as the desktop app.
+    const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: () => Promise<unknown> } };
+    const userAgent = navigator.userAgent;
+    resetMobileClientCacheForTests();
+    Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)' });
+    tauriWindow.__TAURI_INTERNALS__ = { invoke: vi.fn().mockResolvedValue(undefined) };
+    try {
+      fetchInferencePreferences.mockResolvedValue({});
+      fetchInferenceOnboardingProfile.mockResolvedValue({
+        ...profile,
+        backends: {
+          recommended: 'vllm',
+          available: [
+            { type: 'ollama', running: true, healthy: true, modelsLoaded: 4 },
+            { type: 'vllm', running: false, healthy: false, modelsLoaded: 0 },
+          ],
+        },
+      });
+
+      renderAiSettings();
+
+      await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('ollama'));
+      expect(screen.getByTestId('recommended-backend')).toHaveTextContent('ollama');
+    } finally {
+      delete tauriWindow.__TAURI_INTERNALS__;
+      Object.defineProperty(navigator, 'userAgent', { configurable: true, value: userAgent });
+      resetMobileClientCacheForTests();
+    }
+  });
+
+  it('shows an engine that answers in the desktop window too, because Settings installs none', async () => {
+    // The desktop window keeps the hardware's pick in setup, where it installs that engine. Settings never does.
+    const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: () => Promise<unknown> } };
+    const userAgent = navigator.userAgent;
+    resetMobileClientCacheForTests();
+    Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'Mozilla/5.0 (X11; Linux x86_64)' });
+    tauriWindow.__TAURI_INTERNALS__ = { invoke: vi.fn().mockResolvedValue(undefined) };
+    try {
+      fetchInferencePreferences.mockResolvedValue({});
+      fetchInferenceOnboardingProfile.mockResolvedValue({
+        ...profile,
+        backends: {
+          recommended: 'vllm',
+          available: [
+            { type: 'ollama', running: true, healthy: true, modelsLoaded: 4 },
+            { type: 'vllm', running: false, healthy: false, modelsLoaded: 0 },
+          ],
+        },
+      });
+
+      renderAiSettings();
+
+      await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('ollama'));
+      expect(screen.getByTestId('recommended-backend')).toHaveTextContent('ollama');
+    } finally {
+      delete tauriWindow.__TAURI_INTERNALS__;
+      Object.defineProperty(navigator, 'userAgent', { configurable: true, value: userAgent });
+      resetMobileClientCacheForTests();
+    }
   });
 
   it('persists backend changes on save', async () => {

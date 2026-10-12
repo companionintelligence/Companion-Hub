@@ -48,6 +48,7 @@ import {
   hubLoadableSelection,
   isHubLoadableBackend,
   hiddenInferenceBackends,
+  recommendedInferenceBackend,
   unavailableInferenceBackends,
 } from '@/modules/onboarding/helpers/inference-backend-availability';
 import { useTranslation } from 'react-i18next';
@@ -221,10 +222,16 @@ export const AiSettingsContainer = () => {
         setEncodeEndpoint(prefData.preferredEncodeEndpoint);
       }
       const requestedBackend = backendOverride ?? prefData?.preferredBackend ?? undefined;
-      const data = await fetchInferenceOnboardingProfile(requestedBackend);
+      let data = await fetchInferenceOnboardingProfile(requestedBackend);
+      // Nothing saved: show an engine that answers. Asked about no engine, the endpoint described
+      // the hardware's pick, so ask again when the one shown is different. Settings installs no
+      // runner, even in the desktop window, so the desktop's keep-the-pick rule does not apply here.
+      const preferredBackend = requestedBackend ?? recommendedInferenceBackend(data, false);
+      if (!requestedBackend && preferredBackend !== data.backends.recommended) {
+        data = await fetchInferenceOnboardingProfile(preferredBackend);
+      }
       setProfile(data);
 
-      const preferredBackend = requestedBackend ?? data.backends.recommended;
       // fetchProfile handles initial runtime model fetch to avoid duplicate effect calls.
       lastHandledBackendRef.current = preferredBackend;
       setSelectedBackend(preferredBackend);
@@ -853,7 +860,7 @@ export const AiSettingsContainer = () => {
           </section>
 
           <BackendSelectionCard
-            recommended={profile.backends.recommended}
+            recommended={recommendedInferenceBackend(profile, false)}
             available={profile.backends.available}
             selected={selectedBackend}
             onSelect={setSelectedBackend}
