@@ -60,7 +60,17 @@ describe('AppFilesManager.setAppDataDirPermissions', () => {
     services: [{ name: 'setup-secrets', image: 'ghcr.io/x/setup-secrets:1', volumes }],
   });
 
+  // The method returns early on win32, so a Windows dev box would otherwise skip every
+  // assertion below (and pass the SECURITY one vacuously). Pin the backend's real platform.
+  const originalPlatform = process.platform;
+  const setPlatform = (platform: NodeJS.Platform) => Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+
+  afterEach(() => {
+    setPlatform(originalPlatform);
+  });
+
   beforeEach(() => {
+    setPlatform('linux');
     execAsyncMock.mockClear();
     posixProbe.mockReset();
     posixProbe.mockResolvedValue(true);
@@ -142,21 +152,12 @@ describe('AppFilesManager.setAppDataDirPermissions', () => {
   });
 
   /*
-   * A Windows drive bind-mounted through WSL2 (drvfs over 9p) keeps no mode a chmod sets (only the
-   * read-only attribute follows the write bits), yet the sweep still stats and chmods each file over 9p. On a Windows Hub that took minutes per restart for an
-   * app with a large data tree. The backend runs in a Linux container there, so the platform alone
-   * cannot tell; the probe the compose builder already asks can.
+   * On a Windows Hub the backend runs in a Linux container, so the platform cannot tell a drvfs
+   * mount (which keeps no mode a chmod sets, only the read-only bit) from a real one. The probe
+   * the compose builder already asks can.
    */
-  describe('on the platform the backend runs on', () => {
-    const originalPlatform = process.platform;
-    const setPlatform = (platform: NodeJS.Platform) => Object.defineProperty(process, 'platform', { value: platform, configurable: true });
-
-    afterEach(() => {
-      setPlatform(originalPlatform);
-    });
-
+  describe('on the mount the app data lives on', () => {
     it('skips the sweep when the app-data mount cannot carry POSIX permissions', async () => {
-      setPlatform('linux');
       posixProbe.mockResolvedValue(false);
       filesystem.readJsonFile.mockResolvedValue(
         composeWith([{ hostPath: '${APP_DATA_DIR}/data/secrets', containerPath: '/run/secrets', private: true }]),
@@ -168,8 +169,7 @@ describe('AppFilesManager.setAppDataDirPermissions', () => {
       expect(chmod).not.toHaveBeenCalled();
     });
 
-    it('asks about the app-data root, whose answer the compose builder has already cached', async () => {
-      setPlatform('linux');
+    it('asks about the app-data root, the folder the compose builder probes', async () => {
       filesystem.readJsonFile.mockResolvedValue(composeWith([]));
 
       await manager.setAppDataDirPermissions(appUrn);
