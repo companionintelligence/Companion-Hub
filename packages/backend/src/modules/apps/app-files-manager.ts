@@ -261,14 +261,12 @@ export class AppFilesManager {
    * See {@link buildPermissionsCommand} for the exact shell.
    *
    * Skipped when the app-data mount cannot carry POSIX permissions (a Windows
-   * drive under WSL2). The mount sets every mode there (0777 for every uid on
-   * a default WSL2 drive), so the sweep has nothing to grant, and it cost a
-   * stat and a chmod per file over 9p: minutes on every restart of an app with
-   * a large data tree. Its one effect on drvfs was clearing the Windows
-   * read-only attribute, which drvfs shows as a file with no write bits. A
-   * file a container makes read-only there now stays read-only, to root too,
-   * until something chmods it back. The answer is the one the compose builder
-   * asks for, cached per folder.
+   * drive under WSL2), where every uid already has full access and walking a
+   * large tree over 9p took minutes per prepare. The sweep's one effect there
+   * was clearing the Windows read-only attribute, so a file a container makes
+   * read-only now stays read-only, to root too. The probe asks about the
+   * app-data root, the folder the compose builder already probes, so the
+   * answer comes from its cache.
    */
   public async setAppDataDirPermissions(appUrn: AppUrn) {
     const { appDataDir } = this.getAppPaths(appUrn);
@@ -278,6 +276,7 @@ export class AppFilesManager {
     }
 
     if (!(await supportsPosixPermissions(this.configuration.getConfig().directories.appDataDir))) {
+      this.logger.debug(`Skipped the permission sweep for ${appUrn}: the app-data mount cannot carry POSIX permissions`);
       return;
     }
 
