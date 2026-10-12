@@ -1,4 +1,4 @@
-import { Link, NavLink, useNavigate } from 'react-router';
+import { Link, NavLink, useLocation, useNavigate } from 'react-router';
 import { LogOut, Home, Settings, Store, Menu, LogIn, Sun, Moon, Activity, Loader2 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { useTranslation } from 'react-i18next';
@@ -171,17 +171,29 @@ function MobileAppMenu({
   const menuRef = useRef<HTMLDivElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
 
+  // The header outlives the page. Without this, the logo link or a back gesture loads the next
+  // page dimmed under a menu nobody asked for.
+  const { pathname } = useLocation();
+  const [menuPath, setMenuPath] = useState(pathname);
+  if (menuPath !== pathname) {
+    setMenuPath(pathname);
+    setOpen(false);
+  }
+
+  const closeAndRefocus = useCallback(() => {
+    setOpen(false);
+    toggleRef.current?.focus();
+  }, []);
+
   useEffect(() => {
     if (!open) return;
     menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      setOpen(false);
-      toggleRef.current?.focus();
+      if (event.key === 'Escape') closeAndRefocus();
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [open]);
+  }, [open, closeAndRefocus]);
 
   return (
     <div className="relative ml-auto flex justify-end lg:hidden">
@@ -216,10 +228,7 @@ function MobileAppMenu({
               tabIndex={-1}
               className="fixed inset-x-0 bottom-0 z-40 bg-black/25 lg:hidden"
               style={{ top: 'calc(var(--titlebar-height, 0px) + var(--header-offset))' }}
-              onClick={() => {
-                setOpen(false);
-                toggleRef.current?.focus();
-              }}
+              onClick={closeAndRefocus}
             />,
             document.body,
           )}

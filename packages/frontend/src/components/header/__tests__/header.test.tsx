@@ -120,6 +120,7 @@ describe('Header', () => {
     // scrim was sized to the bar and came out 0px tall, so a click outside the menu hit the page.
     expect(screen.getByTestId('app-header')).not.toContainElement(scrim);
     expect(scrim.parentElement).toBe(document.body);
+    expect(scrim).toHaveClass('bg-black/25');
     // Outside the menu's `lg:hidden` wrapper now, so it has to hide itself on a wide window.
     expect(scrim).toHaveClass('lg:hidden');
 
@@ -137,6 +138,18 @@ describe('Header', () => {
     expect(screen.queryByTestId('mobile-app-menu')).not.toBeInTheDocument();
     // The scrim had focus and is gone, so without this focus falls to <body> and the next Tab starts at the top.
     expect(screen.getByTestId('mobile-app-menu-btn')).toHaveFocus();
+  });
+
+  it('closes the phone menu when the route changes under it', async () => {
+    renderHeader(true);
+
+    await userEvent.click(screen.getByTestId('mobile-app-menu-btn'));
+    const logoLink = screen.getByAltText('CI Logo Icon').closest('a');
+    expect(logoLink).not.toBeNull();
+    await userEvent.click(logoLink as HTMLAnchorElement);
+
+    expect(screen.queryByTestId('mobile-app-menu')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('mobile-app-menu-scrim')).not.toBeInTheDocument();
   });
 
   it('moves focus into the phone menu, closes it on Escape, and keeps the scrim out of the tab order', async () => {
