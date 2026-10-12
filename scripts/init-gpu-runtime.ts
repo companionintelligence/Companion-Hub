@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { isDirectScriptRun } from './lib/is-direct-run';
-import { parseEnvFile } from './env-file';
+import { resolveStateDirForRuntime } from './lib/paths';
 
 type OsFamily = 'debian' | 'rpm' | 'arch' | 'unknown';
 
@@ -207,30 +207,8 @@ function parseOsRelease(): Record<string, string> {
   return values;
 }
 
-function resolveStateDir(): string {
-  const internalDir = process.env.CI_HUB_STATE_PATH || process.env.STATE_PATH;
-  if (internalDir) return path.join(internalDir, 'state');
-
-  const envFile = process.env.ENV_FILE;
-  if (envFile) {
-    const fromEnvFile = parseEnvFile(path.resolve(process.cwd(), envFile)).ROOT_FOLDER_HOST;
-    if (fromEnvFile) {
-      const rootFolder = path.isAbsolute(fromEnvFile) ? fromEnvFile : path.resolve(process.cwd(), fromEnvFile);
-      return path.join(rootFolder, 'state');
-    }
-  }
-
-  const rootFromEnv = process.env.ROOT_FOLDER_HOST;
-  if (rootFromEnv) {
-    const rootFolder = path.isAbsolute(rootFromEnv) ? rootFromEnv : path.resolve(process.cwd(), rootFromEnv);
-    return path.join(rootFolder, 'state');
-  }
-
-  return path.resolve(process.cwd(), '.internal', 'state');
-}
-
 function nvidiaProbePath(): string {
-  return path.join(resolveStateDir(), 'hardware', 'nvidia.json');
+  return path.join(resolveStateDirForRuntime(), 'hardware', 'nvidia.json');
 }
 
 type RocmProbe = {
@@ -240,7 +218,7 @@ type RocmProbe = {
 };
 
 function rocmProbePath(): string {
-  return path.join(resolveStateDir(), 'hardware', 'rocm.json');
+  return path.join(resolveStateDirForRuntime(), 'hardware', 'rocm.json');
 }
 
 function writeRocmProbe(probe: RocmProbe): void {

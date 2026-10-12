@@ -79,9 +79,22 @@ describe('handleAppSseEvent', () => {
       progress: 42,
     });
 
-    expect(updateInstallationProgress).toHaveBeenCalledWith('plane:ci-marketplace', 42);
+    expect(updateInstallationProgress).toHaveBeenCalledWith('plane:ci-marketplace', { percent: 42 });
     expect(queryClient.setQueryData).toHaveBeenCalledWith(['getApp', 'plane:ci-marketplace'], expect.any(Function));
     expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
+  });
+
+  it('passes the download size along with the progress', () => {
+    handleAppSseEvent(queryClient as unknown as QueryClient, {
+      event: 'status_change',
+      appUrn: 'plane:ci-marketplace',
+      appStatus: 'installing',
+      progress: 70,
+      downloadedBytes: 400,
+      totalBytes: 1_500,
+    });
+
+    expect(updateInstallationProgress).toHaveBeenCalledWith('plane:ci-marketplace', { percent: 70, downloadedBytes: 400, totalBytes: 1_500 });
   });
 
   it('invalidates installed and app queries on status transition without progress', () => {

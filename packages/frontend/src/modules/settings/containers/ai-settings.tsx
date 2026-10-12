@@ -10,6 +10,7 @@ import {
   fetchVllmInstallStatus,
   loadInferenceModel,
   pinInferenceModel,
+  removeCloudProviderConfig,
   rescanInferenceHardware,
   saveCloudProviderConfig,
   saveInferencePreferences,
@@ -47,6 +48,7 @@ import {
   hubLoadableSelection,
   isHubLoadableBackend,
   hiddenInferenceBackends,
+  recommendedInferenceBackend,
   unavailableInferenceBackends,
 } from '@/modules/onboarding/helpers/inference-backend-availability';
 import { useTranslation } from 'react-i18next';
@@ -220,10 +222,16 @@ export const AiSettingsContainer = () => {
         setEncodeEndpoint(prefData.preferredEncodeEndpoint);
       }
       const requestedBackend = backendOverride ?? prefData?.preferredBackend ?? undefined;
-      const data = await fetchInferenceOnboardingProfile(requestedBackend);
+      let data = await fetchInferenceOnboardingProfile(requestedBackend);
+      // Nothing saved: show an engine that answers. Asked about no engine, the endpoint described
+      // the hardware's pick, so ask again when the one shown is different. Settings installs no
+      // runner, even in the desktop window, so the desktop's keep-the-pick rule does not apply here.
+      const preferredBackend = requestedBackend ?? recommendedInferenceBackend(data, false);
+      if (!requestedBackend && preferredBackend !== data.backends.recommended) {
+        data = await fetchInferenceOnboardingProfile(preferredBackend);
+      }
       setProfile(data);
 
-      const preferredBackend = requestedBackend ?? data.backends.recommended;
       // fetchProfile handles initial runtime model fetch to avoid duplicate effect calls.
       lastHandledBackendRef.current = preferredBackend;
       setSelectedBackend(preferredBackend);
@@ -547,9 +555,14 @@ export const AiSettingsContainer = () => {
       const preferredVisionModel = resolvePreferredModelId(profile, selectedBackend, isVisionModel, compatibleSelectedModelIds);
 
       // Cloud keys first so the debounced AI-app restart (from preferences) sees them.
-      // Masked keys (`••••`) omit apiKey so the Hub keeps the stored secret.
+      // Masked keys (`••••`) omit apiKey so the Hub keeps the stored secret. A stored key whose field
+      // was cleared is deleted: sent as a blank key, the Hub would keep it.
       for (const cp of cloudProviders) {
-        if (cp.apiKey.trim() && !cp.apiKey.startsWith('••')) {
+        if (cp.stored && !cp.apiKey.trim()) {
+          await removeCloudProviderConfig(cp.provider);
+          // The refetch after the save keeps the old list when no provider is left, so drop it here.
+          setCloudProviders((prev) => prev.filter((other) => other.provider !== cp.provider));
+        } else if (cp.apiKey.trim() && !cp.apiKey.startsWith('••')) {
           await saveCloudProviderConfig({ provider: cp.provider, apiKey: cp.apiKey, enabled: cp.enabled });
         } else if (cp.apiKey.startsWith('••')) {
           await saveCloudProviderConfig({ provider: cp.provider, enabled: cp.enabled });
@@ -847,7 +860,7 @@ export const AiSettingsContainer = () => {
           </section>
 
           <BackendSelectionCard
-            recommended={profile.backends.recommended}
+            recommended={recommendedInferenceBackend(profile, false)}
             available={profile.backends.available}
             selected={selectedBackend}
             onSelect={setSelectedBackend}

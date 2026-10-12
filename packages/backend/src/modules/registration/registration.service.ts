@@ -1539,7 +1539,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
     const localRegistered = status.registered;
 
-    const staleAppEnvDeviceIds = collectStaleHubDeviceIds(APP_DATA_DIR, hardwareDeviceId);
+    const staleAppEnvDeviceIds = await collectStaleHubDeviceIds(APP_DATA_DIR, hardwareDeviceId);
     // Boot removes a leftover token and records it in `leftover.json`, which must
     // still offer to reconnect this Hub.
     const hasStaleTunnelToken = !localRegistered && (this.hasTunnelToken() || hasTunnelLeftoverMarker());
