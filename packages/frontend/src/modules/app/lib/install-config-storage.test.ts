@@ -237,13 +237,13 @@ describe('access settings in an exported config', () => {
     expect(exported.values).not.toHaveProperty('customDomainExpected');
   });
 
-  it('never applies customDomainExpected from a file, and does not call it foreign', () => {
-    // A file exported before this fix carries the guard.
+  it('never applies customDomainExpected or customDomainTakeover from a file, and does not call them foreign', () => {
+    // A file exported before this fix carries the guard and the takeover answer.
     const olderExport = JSON.stringify({
       schemaVersion: 1,
       appId: 'cyberchef',
       exportedAt: new Date().toISOString(),
-      values: { USERNAME: 'admin', customDomainExpected: 'shop.example.org' },
+      values: { USERNAME: 'admin', customDomainExpected: 'shop.example.org', customDomainTakeover: true },
     });
 
     const result = parseInstallConfigJson(olderExport, FORM_FIELDS, 'cyberchef');
@@ -254,17 +254,39 @@ describe('access settings in an exported config', () => {
     expect(result.unrecognizedKeys).toEqual([]);
   });
 
-  it('keeps customDomainExpected out of the recently used list', () => {
-    const stored = recordLastUsedConfig('cyberchef', { ...VALUES, customDomainExpected: '' }, FORM_FIELDS);
+  it('never applies a generated credential from a file', () => {
+    // Export never writes DB_PASSWORD, so only a hand-edited file holds one. On Edit Settings it
+    // would replace the password the app's database was created with.
+    const handEdited = JSON.stringify({ schemaVersion: 1, appId: 'cyberchef', values: { USERNAME: 'admin', DB_PASSWORD: 'from-a-file' } });
 
-    expect(stored[0]?.values).not.toHaveProperty('customDomainExpected');
-    expect(localStorage.getItem('ci-hub:last-install-configs:cyberchef')).not.toContain('customDomainExpected');
+    const result = parseInstallConfigJson(handEdited, FORM_FIELDS, 'cyberchef');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok result');
+    expect(result.values).toEqual({ USERNAME: 'admin' });
+    expect(result.unrecognizedKeys).toEqual(['DB_PASSWORD']);
   });
 
-  it('drops customDomainExpected from a recently used entry saved before this fix', () => {
+  it('keeps customDomainExpected and customDomainTakeover out of the recently used list', () => {
+    const stored = recordLastUsedConfig('cyberchef', { ...VALUES, customDomainExpected: '', customDomainTakeover: true }, FORM_FIELDS);
+
+    expect(stored[0]?.values).not.toHaveProperty('customDomainExpected');
+    expect(stored[0]?.values).not.toHaveProperty('customDomainTakeover');
+    const raw = localStorage.getItem('ci-hub:last-install-configs:cyberchef');
+    expect(raw).not.toContain('customDomainExpected');
+    expect(raw).not.toContain('customDomainTakeover');
+  });
+
+  it('drops customDomainExpected and customDomainTakeover from a recently used entry saved before this fix', () => {
     localStorage.setItem(
       'ci-hub:last-install-configs:cyberchef',
-      JSON.stringify([{ id: 'older', savedAt: '2026-10-01T10:00:00.000Z', values: { USERNAME: 'admin', customDomainExpected: 'shop.example.org' } }]),
+      JSON.stringify([
+        {
+          id: 'older',
+          savedAt: '2026-10-01T10:00:00.000Z',
+          values: { USERNAME: 'admin', customDomainExpected: 'shop.example.org', customDomainTakeover: true },
+        },
+      ]),
     );
 
     expect(readLastUsedConfigs('cyberchef')[0]?.values).toEqual({ USERNAME: 'admin' });

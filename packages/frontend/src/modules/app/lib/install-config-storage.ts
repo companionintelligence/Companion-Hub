@@ -71,19 +71,27 @@ function isAccessSetting(key: string, value: unknown): boolean {
 }
 
 /**
- * `customDomainExpected` is the custom domain the app was served on when the dialog opened,
- * seeded from the installed app so the Hub can refuse a save made against a stale view. Carried
- * in from a file or an earlier install, it would describe some other moment.
+ * Values that hold only for the dialog they were drawn in. `customDomainExpected` is the custom
+ * domain the app was served on when the dialog opened, seeded from the installed app so the Hub can
+ * refuse a save made against a stale view. `customDomainTakeover` is the operator's answer to the
+ * picker's "move this domain here?", which the Hub spends on one move. Carried in from a file or an
+ * earlier install, either would describe some other moment, and a stale takeover would move a
+ * domain off another app without asking.
  */
-const DIALOG_ONLY_KEY = 'customDomainExpected';
+const DIALOG_ONLY_KEYS = new Set(['customDomainExpected', 'customDomainTakeover']);
 
-function withoutDialogOnlyKey(values: Record<string, unknown>): Record<string, unknown> {
-  const { [DIALOG_ONLY_KEY]: _dialogOnly, ...rest } = values;
-  return rest;
+function withoutDialogOnlyKeys(values: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(values).filter(([key]) => !DIALOG_ONLY_KEYS.has(key)));
 }
 
+/**
+ * The app's own fields a config file may set. Hidden types (`random`, the generated credentials)
+ * are left out: the form never shows or edits them, and on Edit Settings a value from a file would
+ * replace the secret the app's data was created with.
+ */
 function appFieldKeys(formFields: FormField[]): Set<string> {
-  return new Set(formFields.map((field) => field.env_variable));
+  const hidden: readonly string[] = hiddenTypes;
+  return new Set(formFields.filter((field) => !hidden.includes(field.type)).map((field) => field.env_variable));
 }
 
 export interface InstallConfigExport {
@@ -133,7 +141,8 @@ export type ImportInstallConfigResult =
  * applied. That is what stops an operator who imports a config exported for a different app from
  * silently corrupting unrelated form state.
  *
- * `customDomainExpected`, which older exports wrote, is dropped without a report.
+ * `customDomainExpected` and `customDomainTakeover`, which older exports wrote, are dropped
+ * without a report.
  */
 export function parseInstallConfigJson(json: string, formFields: FormField[], appId: string): ImportInstallConfigResult {
   let parsed: unknown;
@@ -161,7 +170,7 @@ export function parseInstallConfigJson(json: string, formFields: FormField[], ap
   const recognizedKeys: string[] = [];
   const unrecognizedKeys: string[] = [];
 
-  for (const [key, value] of Object.entries(withoutDialogOnlyKey(candidateValues))) {
+  for (const [key, value] of Object.entries(withoutDialogOnlyKeys(candidateValues))) {
     if (appFields.has(key) || (fromThisApp && isAccessSetting(key, value))) {
       values[key] = value;
       recognizedKeys.push(key);
@@ -208,8 +217,8 @@ export function readLastUsedConfigs(appStoreSlug: string, storage?: Storage): La
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    // Entries saved before `recordLastUsedConfig` dropped the dialog-only key still hold it.
-    return parsed.filter(isLastUsedInstallConfig).map((entry) => ({ ...entry, values: withoutDialogOnlyKey(entry.values) }));
+    // Entries saved before `recordLastUsedConfig` dropped the dialog-only keys still hold them.
+    return parsed.filter(isLastUsedInstallConfig).map((entry) => ({ ...entry, values: withoutDialogOnlyKeys(entry.values) }));
   } catch {
     return [];
   }
@@ -231,7 +240,7 @@ export function recordLastUsedConfig(
   const entry: LastUsedInstallConfig = {
     id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
     savedAt: new Date().toISOString(),
-    values: withoutDialogOnlyKey(stripSecretFields(values, formFields)),
+    values: withoutDialogOnlyKeys(stripSecretFields(values, formFields)),
   };
 
   const next = [entry, ...readLastUsedConfigs(appStoreSlug, storage)].slice(0, MAX_LAST_USED_CONFIGS);
