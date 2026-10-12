@@ -21,7 +21,6 @@ import {
   UPDATE_LISTENER_TOKEN_FILENAME,
   hubContainerName,
 } from '@/common/constants';
-import { isPrivateOrLocalIp } from '@/common/helpers/ip-address';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { RegistryService } from '@/utils/registry/registry.service';
@@ -89,11 +88,22 @@ export function resolveHostListenerBaseUrl(inContainer: boolean = detectHubConta
 
 /**
  * The listener address the desktop app recorded, or null. Whatever answers there gets the listener
- * token, so it is read like the token, and only a private IPv4 address counts.
+ * token, so it is read like the token, and only a private (RFC 1918) IPv4 address counts.
  */
 function readRecordedListenerHost(): string | null {
   const address = readListenerTokenFile(path.join(DATA_DIR, 'state', UPDATE_LISTENER_HOST_FILENAME));
-  return address && isIPv4(address) && isPrivateOrLocalIp(address) ? address : null;
+  return address && isRfc1918Ipv4(address) ? address : null;
+}
+
+/**
+ * The Windows host's address on the WSL adapter is one of these. `isPrivateOrLocalIp` also takes
+ * loopback, link-local (the cloud metadata address among them) and CGNAT (every tailnet peer),
+ * none of which is where the listener runs.
+ */
+function isRfc1918Ipv4(address: string): boolean {
+  if (!isIPv4(address)) return false;
+  const [a, b = -1] = address.split('.').map(Number);
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
 }
 
 /** The desktop app writes a 48-character token; anything much bigger in its place is not one. */

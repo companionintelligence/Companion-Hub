@@ -664,6 +664,9 @@ describe('SystemUpdateService', () => {
         ['a host name', 'listener.example.com\n'],
         ['an address and port', '172.27.96.1:80\n'],
         ['a public address', '8.8.8.8\n'],
+        ['the cloud metadata address', '169.254.169.254\n'],
+        ['a tailnet address', '100.100.1.1\n'],
+        ['a loopback address', '127.0.0.1\n'],
         ['a symlink', SYMLINK],
       ])('sends the token to host.docker.internal, not to %s in the address file', async (_name, entry) => {
         withFiles({ [STATE_TOKEN]: 'state-token\n', [STATE_HOST]: entry });
