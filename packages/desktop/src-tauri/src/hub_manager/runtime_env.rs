@@ -194,6 +194,17 @@ const INVALID_HOST_DEVICE_IDS: &[&str] = &[
 ];
 
 pub(crate) fn is_usable_host_device_id(id: &str) -> bool {
+    // All F: what firmware reports when it never set a UUID.
+    is_usable_device_id(id)
+        && !id
+            .trim()
+            .eq_ignore_ascii_case("ffffffff-ffff-ffff-ffff-ffffffffffff")
+}
+
+/// Whether `id` can name a device at all. It lets an all-F UUID through, unlike
+/// [`is_usable_host_device_id`]: earlier builds read one through `wmic` and wrote it as
+/// `DEVICE_ID`, so a Hub may have registered under it.
+fn is_usable_device_id(id: &str) -> bool {
     let trimmed = id.trim();
     if trimmed.is_empty() {
         return false;
@@ -202,9 +213,7 @@ pub(crate) fn is_usable_host_device_id(id: &str) -> bool {
     if INVALID_HOST_DEVICE_IDS.contains(&lower.as_str()) {
         return false;
     }
-    // All zeros, or all F: what firmware reports when it never set a UUID.
     lower != "00000000-0000-0000-0000-000000000000"
-        && lower != "ffffffff-ffff-ffff-ffff-ffffffffffff"
 }
 
 pub(crate) fn extract_ioreg_platform_uuid(output: &str) -> Option<String> {
@@ -387,21 +396,37 @@ fn read_host_device_id_impl() -> Option<String> {
 const REGISTERED_DEVICE_ID_FILE: &str = "state/registered-device-id";
 
 /// The Hub container writes the file, and a launch copies the ID into the env file Compose starts
-/// the stack with. So the ID counts only as one token: a line break in it would add a variable.
+/// the stack with. So the ID counts only as one plain token: a line break in it would add a
+/// variable, a quote makes Compose read on past the line, `$` interpolates, and `#` starts a
+/// comment. An all-F UUID is kept here, because Portal knows a Hub that registered under one by it.
 fn registered_device_id(data_dir: &Path) -> Option<String> {
     std::fs::read_to_string(data_dir.join(REGISTERED_DEVICE_ID_FILE))
         .ok()
         .map(|id| id.trim().to_string())
         .filter(|id| {
-            is_usable_host_device_id(id)
-                && !id.contains(|c: char| c.is_whitespace() || c.is_control())
+            is_usable_device_id(id)
+                && id.chars().all(|c| {
+                    c.is_ascii_graphic() && !matches!(c, '"' | '\'' | '`' | '$' | '#' | '\\')
+                })
         })
 }
 
+/// The env file's `DEVICE_ID`. An all-F UUID counts, like a registered one: a Hub that paired
+/// before the backend kept a registration record has only this copy of its ID.
 fn env_device_id(existing: &std::collections::HashMap<String, String>) -> Option<String> {
     get_non_empty_env_value(existing, "DEVICE_ID")
         .map(|id| unquote_env_value(&id).trim().to_string())
-        .filter(|id| is_usable_host_device_id(id))
+        .filter(|id| is_usable_device_id(id))
+}
+
+/// The end of a device ID, enough to tell two apart in a `desktop.log` that people share.
+fn masked_device_id(id: &str) -> String {
+    let chars: Vec<char> = id.chars().collect();
+    let shown = (chars.len() / 3).min(6);
+    format!(
+        "…{}",
+        chars[chars.len() - shown..].iter().collect::<String>()
+    )
 }
 
 /// What [`read_host_device_id`] returns under `cargo test`.
@@ -488,6 +513,16 @@ pub(crate) fn render_runtime_env_content_for_portal(
     } else {
         ""
     };
+    // The operator's "keep this machine-ID-shaped DEVICE_ID from another machine" switch (see
+    // `device-id-host-check.ts` in the backend). A launch keeps such an ID now, so it keeps this too.
+    let allow_foreign_device_id_line = if existing
+        .get("HUB_ALLOW_FOREIGN_DEVICE_ID")
+        .is_some_and(|value| unquote_env_value(value).eq_ignore_ascii_case("true"))
+    {
+        "HUB_ALLOW_FOREIGN_DEVICE_ID=true\n"
+    } else {
+        ""
+    };
     let compose_profiles = merge_compose_profiles(existing, vpn_on);
     // Omit when empty: Compose treats unset COMPOSE_PROFILES like "", but a bare `COMPOSE_PROFILES=`
     // line is noisy and can unintentionally override a user-defined shell value with emptiness.
@@ -501,8 +536,25 @@ pub(crate) fn render_runtime_env_content_for_portal(
     // with it. What the Hub registered as comes first, so a launch also puts back an ID an older
     // build wrote over it, then the ID already in the env file. Deriving it again on every launch
     // changed it when Windows removed `wmic` (Companion-Hub#1953).
-    let device_id_line = registered_device_id(data_dir)
-        .or_else(|| env_device_id(existing))
+    let registered_id = registered_device_id(data_dir);
+    let env_id = env_device_id(existing);
+    // The Hub's identity changes here, so desktop.log says so: Portal refuses check-ins under the
+    // ID the env file had.
+    if let (Some(registered), Some(env)) = (&registered_id, &env_id) {
+        if registered != env {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hub.start",
+                &format!(
+                    "Restoring the device ID this Hub registered as ({}); the env file had {}.",
+                    masked_device_id(registered),
+                    masked_device_id(env)
+                ),
+            );
+        }
+    }
+    let device_id_line = registered_id
+        .or(env_id)
         .or_else(read_host_device_id)
         .map(|id| format!("DEVICE_ID={id}\n"))
         .unwrap_or_default();
@@ -586,6 +638,7 @@ pub(crate) fn render_runtime_env_content_for_portal(
          RABBITMQ_PASSWORD={rabbitmq_password}\n\
          DOMAIN={domain}\n\
          {device_id_line}\
+         {allow_foreign_device_id_line}\
          {tailscale_auth_key_lines}\
          {tailscale_serve_user_disabled_line}\
          \n\
@@ -609,6 +662,7 @@ pub(crate) fn render_runtime_env_content_for_portal(
         postgres_password = postgres_password,
         domain = domain,
         tailscale_auth_key_lines = tailscale_auth_key_lines,
+        allow_foreign_device_id_line = allow_foreign_device_id_line,
         tailscale_serve_user_disabled_line = tailscale_serve_user_disabled_line,
         cloud_url = cloud_url,
         hub_version = hub_version,

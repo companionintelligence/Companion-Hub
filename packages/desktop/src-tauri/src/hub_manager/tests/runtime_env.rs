@@ -790,6 +790,65 @@ fn a_launch_puts_the_registered_device_id_back_into_a_rewritten_env_file() {
     assert!(changed);
     let env = std::fs::read_to_string(&env_path).expect("read env");
     assert_eq!(rendered_device_id(&env), Some(PAIRED_DEVICE_ID), "{env}");
+    // desktop.log says which ID won, by the ends of the two IDs only: people share that log.
+    let log = read_desktop_log(&data_dir);
+    assert!(
+        log.contains("Restoring the device ID")
+            && log.contains("…4F1A60")
+            && log.contains("…9d8e24"),
+        "{log}"
+    );
+    assert!(
+        !log.contains(PAIRED_DEVICE_ID) && !log.contains(MACHINE_GUID),
+        "{log}"
+    );
+}
+
+/// Builds that read the SMBIOS UUID through `wmic` wrote an all-F one as `DEVICE_ID`, and a Hub
+/// paired under it. A host read now skips an all-F UUID, but the ID the Hub has stays: the one it
+/// registered as, or the env file's on a Hub that paired before the backend kept that record.
+#[test]
+fn a_hub_paired_under_an_all_f_uuid_keeps_it() {
+    let all_f = "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF";
+    // Registered under it, and an older launch on a PC without `wmic` wrote the MachineGuid over it.
+    // Paired before the record existed: the env file holds the only copy.
+    for (registered, env) in [(Some(all_f), MACHINE_GUID), (None, all_f)] {
+        let (_tempdir, data_dir) = portal_test_data_dir();
+        if let Some(registered) = registered {
+            write_registered_device_id(&data_dir, registered);
+        }
+
+        let rendered = render_with_device_id(&data_dir, Some(env));
+
+        assert_eq!(
+            rendered_device_id(&rendered),
+            Some(all_f),
+            "registered: {registered:?}"
+        );
+    }
+}
+
+/// The backend refuses to pair under a machine-ID-shaped `DEVICE_ID` from another machine unless
+/// the operator sets this (see `device-id-host-check.ts`). A launch now keeps such an ID, so it
+/// must keep the opt-out too.
+#[test]
+fn runtime_env_keeps_an_operators_foreign_device_id_opt_out() {
+    for value in ["true", "\"true\"", "TRUE"] {
+        let (_tempdir, _first, relaunched) =
+            launch_twice_with(&format!("HUB_ALLOW_FOREIGN_DEVICE_ID={value}\n"));
+        assert!(
+            relaunched
+                .lines()
+                .any(|line| line == "HUB_ALLOW_FOREIGN_DEVICE_ID=true"),
+            "{value}: {relaunched}"
+        );
+    }
+
+    let (_tempdir, _first, relaunched) = launch_twice_with("HUB_ALLOW_FOREIGN_DEVICE_ID=1\n");
+    assert!(
+        !relaunched.contains("HUB_ALLOW_FOREIGN_DEVICE_ID"),
+        "{relaunched}"
+    );
 }
 
 #[test]
@@ -808,7 +867,7 @@ fn a_hub_with_no_device_id_yet_derives_one_from_the_host() {
 fn a_placeholder_device_id_is_derived_again() {
     let (_tempdir, data_dir) = portal_test_data_dir();
 
-    for placeholder in ["FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF", "Not Specified", "0"] {
+    for placeholder in ["00000000-0000-0000-0000-000000000000", "Not Specified", "0"] {
         let rendered = render_with_device_id(&data_dir, Some(placeholder));
         assert_eq!(
             rendered_device_id(&rendered),
@@ -889,17 +948,26 @@ fn a_powershell_warning_is_not_taken_for_the_smbios_uuid() {
 }
 
 /// The Hub container writes `state/registered-device-id`, and a launch copies it into the env file
-/// Compose starts the stack with. A line break in it must not add a variable there.
+/// Compose starts the stack with. A line break in it must not add a variable there, and a quote,
+/// `$` or `#` must not change how Compose reads the line.
 #[test]
-fn a_registered_device_id_with_a_line_break_is_ignored() {
-    let (_tempdir, data_dir) = portal_test_data_dir();
-    write_registered_device_id(
-        &data_dir,
-        &format!("{PAIRED_DEVICE_ID}\nCI_HUB_IMAGE=registry.example/other:1"),
-    );
+fn a_registered_device_id_that_is_not_one_plain_token_is_ignored() {
+    for registered in [
+        format!("{PAIRED_DEVICE_ID}\nCI_HUB_IMAGE=registry.example/other:1"),
+        format!("\"{PAIRED_DEVICE_ID}"),
+        format!("{PAIRED_DEVICE_ID}${{CI_HUB_IMAGE}}"),
+        format!("{PAIRED_DEVICE_ID}#registry.example/other"),
+    ] {
+        let (_tempdir, data_dir) = portal_test_data_dir();
+        write_registered_device_id(&data_dir, &registered);
 
-    let rendered = render_with_device_id(&data_dir, Some(PAIRED_DEVICE_ID));
+        let rendered = render_with_device_id(&data_dir, Some(MACHINE_GUID));
 
-    assert_eq!(rendered_device_id(&rendered), Some(PAIRED_DEVICE_ID));
-    assert!(!rendered.contains("registry.example/other"), "{rendered}");
+        assert_eq!(
+            rendered_device_id(&rendered),
+            Some(MACHINE_GUID),
+            "{registered:?}"
+        );
+        assert!(!rendered.contains("registry.example/other"), "{rendered}");
+    }
 }
