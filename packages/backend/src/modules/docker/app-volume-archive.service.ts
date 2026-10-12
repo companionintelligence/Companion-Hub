@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
-import { hubContainerName } from '@/common/constants';
+import { selfContainerCandidates } from '@/common/constants';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Inject, Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -151,7 +150,7 @@ export class AppVolumeArchiveService {
       return this.ownImage;
     }
 
-    for (const candidate of new Set([os.hostname(), hubContainerName(), 'ci-hub', 'ci-os-hub'])) {
+    for (const candidate of selfContainerCandidates()) {
       const image = await this.docker
         .getContainer(candidate)
         .inspect()
