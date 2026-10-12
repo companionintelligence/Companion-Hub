@@ -59,8 +59,10 @@ bind mounts keep working and existing data stays exactly where it is.
 
 Backups carry the named volumes. `BackupManager` asks Docker for the volumes compose created for
 the app's project and puts each in the archive as `volumes/<key>.tar`, next to `app-data`, `app`
-and `user-config`. A restore checks that every volume can go back before it replaces any file, then
-empties the app's volume with that key and unpacks the archive into it. When a reset removed the
+and `user-config`. A restore checks that every volume can go back, and reads each archive through
+with `tar -tf -`, before it replaces any file, then empties the app's volume with that key and
+unpacks the archive into it. The check reads from stdin because busybox, handed a file by name,
+seeks over each entry and takes an archive cut short inside one for a complete one. When a reset removed the
 volume, the restore creates it with compose's project and volume labels, so `up` adopts it.
 `AppVolumeArchiveService` does the copying with busybox `tar` in a short-lived container of the
 Hub's own image (the image ID of the container it runs in), as root, with no network and no log

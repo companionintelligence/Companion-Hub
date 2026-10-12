@@ -186,6 +186,7 @@ describe('BackupManager: named Docker volumes', () => {
   const backupDir = path.join('/data', 'backups', 'ci-marketplace', 'wordpress');
 
   let manager: BackupManager;
+  let archive: MockProxy<ArchiveService>;
   let appVolumes: MockProxy<AppVolumeArchiveService>;
   /** The Docker volumes on the engine, by name: the key compose gave each one, and its files. */
   let engine: Map<string, { key: string; files: Record<string, string> }>;
@@ -248,7 +249,7 @@ describe('BackupManager: named Docker volumes', () => {
 
     // `tar` writes the folder it is given as JSON, so the archive holds exactly what the folder did.
     archived = {};
-    const archive = mock<ArchiveService>();
+    archive = mock<ArchiveService>();
     archive.createTarGz.mockImplementation(async (sourceDir, destinationFile) => {
       archived = await readTree(sourceDir);
       await fs.promises.writeFile(destinationFile, JSON.stringify(archived));
@@ -264,6 +265,10 @@ describe('BackupManager: named Docker volumes', () => {
     archive.extractTarGz.mockImplementation(async (file, destinationDir) => {
       await writeTree(destinationDir, JSON.parse(await fs.promises.readFile(file, 'utf8')));
       return { stdout: '', stderr: '', exitCode: 0 };
+    });
+    // A volume's archive is its files as JSON, so one that does not parse is one tar cannot read.
+    archive.verifyPlainTar.mockImplementation(async (file) => {
+      JSON.parse(await fs.promises.readFile(file, 'utf8'));
     });
 
     // Docker keeps volumes in a map, and a volume's archive is its files as JSON.
@@ -339,6 +344,21 @@ describe('BackupManager: named Docker volumes', () => {
 
     await expect(fs.promises.readFile(path.join(appDataDir, 'app.env'), 'utf8')).resolves.toBe('DB_PASSWORD=changed');
     expect(appVolumes.importVolume).not.toHaveBeenCalled();
+  });
+
+  it('refuses a volume archive cut short before it empties the volume or touches the app files', async () => {
+    engine.set(database, { key: 'data-mariadb', files: { ibdata1: 'live' } });
+    appVolumes.exportVolume.mockImplementation(async (_name, file) => {
+      await fs.promises.writeFile(file, '{"ibdata1": "posts an');
+    });
+    const { filename } = await manager.backupApp(appUrn);
+    await fs.promises.writeFile(path.join(appDataDir, 'app.env'), 'DB_PASSWORD=changed');
+
+    await expect(manager.restoreApp(appUrn, filename)).rejects.toThrow();
+
+    await expect(fs.promises.readFile(path.join(appDataDir, 'app.env'), 'utf8')).resolves.toBe('DB_PASSWORD=changed');
+    expect(appVolumes.importVolume).not.toHaveBeenCalled();
+    expect(engine.get(database)?.files).toEqual({ ibdata1: 'live' });
   });
 
   it('restores a backup that has no volumes without asking Docker about them', async () => {

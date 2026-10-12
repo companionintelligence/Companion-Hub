@@ -194,6 +194,12 @@ export class BackupManager implements OnApplicationShutdown {
         await validateRestoreDirectory(path.join(restoreDir, 'app'), { required: true });
         await validateRestoreDirectory(path.join(restoreDir, 'user-config'), { required: false });
         volumeKeys = await readVolumeArchiveKeys(path.join(restoreDir, 'volumes'));
+
+        // A restore empties each volume before it unpacks the archive into it, so an archive that tar
+        // cannot read to the end (cut short, or not a tar at all) would cost the app its database.
+        for (const key of volumeKeys) {
+          await this.archiveManager.verifyPlainTar(path.join(restoreDir, 'volumes', `${key}.tar`));
+        }
       } catch (error) {
         this.logRejectedBackup(filename, error);
         throw error;
