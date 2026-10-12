@@ -104,7 +104,9 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
 
       const { appName, appStoreId } = extractAppUrn(appUrn as AppUrn);
 
-      if (appStoreId === '_user' && (event === 'uninstall_success' || event === 'install_cancelled')) {
+      // A cancelled retry of a failed install leaves the app there, failed, so its page stays.
+      const appGone = event === 'uninstall_success' || (event === 'install_cancelled' && payload.appStatus !== 'install_failed');
+      if (appStoreId === '_user' && appGone) {
         navigate('/store', { replace: true });
       }
 
