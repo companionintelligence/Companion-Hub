@@ -28,7 +28,7 @@ const originalUserAgent = navigator.userAgent;
 const SCREEN_TIMEOUT = { timeout: 5000 };
 
 /** The desktop app as a Windows Hub sees it while Docker doesn't answer, on the engine `dockerEngine`. */
-function renderDockerDown(dockerEngine: string, startEngine: () => Promise<unknown> = async () => 'started') {
+function renderDockerDown(dockerEngine: string, startEngine: () => Promise<unknown> = async () => 'started', dockerAccess = 'daemon_unavailable') {
   const invoke = vi.fn<(cmd: string) => Promise<unknown>>(async (cmd: string) => {
     switch (cmd) {
       case 'get_hub_status_command':
@@ -45,7 +45,7 @@ function renderDockerDown(dockerEngine: string, startEngine: () => Promise<unkno
           image_total: 4,
           image_pull_pct: 0,
           all_ready: false,
-          docker_access: { state: 'daemon_unavailable', detail: null },
+          docker_access: { state: dockerAccess, detail: null },
           docker_engine: dockerEngine,
         };
       case 'start_wsl_engine_command':
@@ -153,6 +153,14 @@ describe('HubStatus when Docker in WSL stops (CI-Hub#1935)', () => {
       vi.advanceTimersByTime(15_000);
     });
     expect(screen.getByRole('button', { name: 'Start engine' })).toBeInTheDocument();
+  });
+
+  // Start engine would wait 90 s and blame Docker inside WSL for a docker.exe that isn't there.
+  it('does not offer Start engine when the Docker CLI is missing', async () => {
+    renderDockerDown('wsl-engine', undefined, 'not_installed');
+
+    expect(await screen.findByRole('heading', { name: 'Docker Required' }, SCREEN_TIMEOUT)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start engine' })).not.toBeInTheDocument();
   });
 
   it('keeps the Docker Desktop guide on Docker Desktop', async () => {

@@ -567,13 +567,17 @@ function WslEngineGuide() {
   );
 }
 
+/** Docker states Start engine can't fix: the Docker CLI is missing, or Docker refuses this user. */
+const NOT_AN_ENGINE_STOP: ReadonlySet<DockerAccessState> = new Set<DockerAccessState>(['not_installed', 'permission_denied']);
+
 /**
- * The engine the desktop app runs the Hub on (`docker_engine` in its startup progress), or null
- * while unknown and from an older shell that doesn't say. Read when the gate mounts, so it is
- * usually known before Docker stops answering, and again when it does.
+ * Whether the Hub runs on the Docker engine inside WSL (`docker_engine` in the desktop app's startup
+ * progress) and that engine stopped. False while the engine is unknown and from an older shell that
+ * doesn't say. Read when the gate mounts, so the engine is usually known before Docker stops
+ * answering, and again when it does.
  */
-function useHubDockerEngine(dockerUnavailable: boolean): string | null {
-  const [engine, setEngine] = useState<string | null>(null);
+function useWslEngineStopped(dockerUnavailable: boolean): boolean {
+  const [progress, setProgress] = useState<Pick<StartupProgress, 'docker_engine' | 'docker_access'> | null>(null);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: dockerUnavailable only triggers the re-read
   useEffect(() => {
@@ -582,7 +586,8 @@ function useHubDockerEngine(dockerUnavailable: boolean): string | null {
     let active = true;
     invoke('get_startup_progress_command')
       .then((raw) => {
-        if (active) setEngine(readStartupProgress(raw)?.docker_engine ?? null);
+        const read = readStartupProgress(raw);
+        if (active) setProgress(read && { docker_engine: read.docker_engine, docker_access: read.docker_access });
       })
       .catch(() => {
         // Keep what the last read said.
@@ -592,14 +597,14 @@ function useHubDockerEngine(dockerUnavailable: boolean): string | null {
     };
   }, [dockerUnavailable]);
 
-  return engine;
+  return progress?.docker_engine === 'wsl-engine' && !NOT_AN_ENGINE_STOP.has(progress.docker_access);
 }
 
-function DockerInstallGuide({ dockerEngine }: { dockerEngine: string | null }) {
+function DockerInstallGuide({ wslEngineStopped }: { wslEngineStopped: boolean }) {
   const platform = detectPlatform();
 
   if (platform === 'windows') {
-    if (dockerEngine === 'wsl-engine') {
+    if (wslEngineStopped) {
       return <WslEngineGuide />;
     }
     const guide = getDockerDesktopGuideContent('windows', false);
@@ -1314,7 +1319,7 @@ export function HubStatus({ children }: HubStatusProps) {
   const [failedAfterSeconds, setFailedAfterSeconds] = useState<number | null>(null);
   const [logs, setLogs] = useState<string | null>(null);
   const [showLogs, setShowLogs] = useState(false);
-  const dockerEngine = useHubDockerEngine(status === 'DockerNotAvailable');
+  const wslEngineStopped = useWslEngineStopped(status === 'DockerNotAvailable');
   const resolvedTheme = useResolvedTheme();
   const renderedLogs = useMemo(() => {
     if (!logs) {
@@ -1665,7 +1670,7 @@ export function HubStatus({ children }: HubStatusProps) {
   }
 
   // A Hub on the WSL engine is set up already: only its engine stopped.
-  const gateTitle = status === 'DockerNotAvailable' && dockerEngine !== 'wsl-engine' ? t('COMMON_SET_UP_YOUR_HUB') : t('APP_NAME');
+  const gateTitle = status === 'DockerNotAvailable' && !wslEngineStopped ? t('COMMON_SET_UP_YOUR_HUB') : t('APP_NAME');
   let screenStatus: StartupScreenStatus = 'starting';
   if (status === 'Stopped') {
     screenStatus = 'stopped';
@@ -1678,7 +1683,7 @@ export function HubStatus({ children }: HubStatusProps) {
     <SetupPageShell title={gateTitle} className="bg-transparent" contentClassName="items-center" fitShortWindows>
       <div className="flex flex-col items-center gap-6 w-full max-w-3xl px-4">
         {status === 'DockerNotAvailable' ? (
-          <DockerInstallGuide dockerEngine={dockerEngine} />
+          <DockerInstallGuide wslEngineStopped={wslEngineStopped} />
         ) : (
           <StartupScreen
             status={screenStatus}

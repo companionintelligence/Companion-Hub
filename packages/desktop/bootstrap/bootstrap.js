@@ -434,13 +434,17 @@
     return node;
   }
 
-  /** The Hub runs on the Docker engine inside WSL, which stops whenever WSL does. */
-  function onWslEngine(progress) {
-    return progress?.docker_engine === 'wsl-engine';
+  /**
+   * The Hub runs on the Docker engine inside WSL, which stops whenever WSL does, and that engine
+   * doesn't answer. A missing Docker CLI or a refused permission is not something Start engine fixes.
+   */
+  function wslEngineStopped(progress) {
+    const state = progress?.docker_access?.state;
+    return progress?.docker_engine === 'wsl-engine' && (state === 'daemon_unavailable' || state === 'error');
   }
 
-  function dockerHead(access, wslEngine) {
-    if (wslEngine && (access?.state === 'daemon_unavailable' || access?.state === 'error')) {
+  function dockerHead(access, wslEngineDown) {
+    if (wslEngineDown) {
       return [
         "Docker in WSL isn't running",
         'WSL stopped the Docker engine this Hub runs on. CI Hub starts it again by itself unless you stopped the Hub.',
@@ -468,7 +472,7 @@
       case 'checking':
         return ['Checking CI Hub', "Looking at Docker and the Hub's services…"];
       case 'docker':
-        return dockerHead(progress.docker_access, onWslEngine(progress));
+        return dockerHead(progress.docker_access, wslEngineStopped(progress));
       case 'failed': {
         const failed = failedService(core);
         if (!failed) return ["CI Hub couldn't start", "CI Hub won't retry on its own until you try again."];
@@ -665,7 +669,7 @@
       keepWaiting: view === 'stuck',
       tryAgain: view === 'failed',
       installDocker: view === 'docker' && access === 'not_installed',
-      startEngine: view === 'docker' && onWslEngine(progress),
+      startEngine: view === 'docker' && wslEngineStopped(progress),
       copyError: view === 'failed' && Boolean(errorToCopy(progress)),
       openLogs: view === 'stuck' || view === 'failed' || (view === 'starting' && elapsed > LOGS_LINK_AFTER_S),
     };
@@ -824,7 +828,9 @@
     render();
     try {
       await invoke('start_wsl_engine_command');
-      page.engineStartedAt = Date.now();
+      // Only while the Docker screen is still up. Set after a poll moved the page on, it would make
+      // a later return to that screen say the engine is starting while nothing runs.
+      if (page.view === 'docker') page.engineStartedAt = Date.now();
     } catch (error) {
       page.engineError = errorText(error) || 'Try again in a minute.';
     } finally {
