@@ -4,7 +4,7 @@ import { AppActions } from '../containers/app-actions/app-actions';
 import { AppStatus } from '../components/app-status/app-status';
 import { CustomAppLogo } from '@/components/custom-app-logo/custom-app-logo';
 import { VersionChip } from '@/modules/app/components/version-chip';
-import { Card, CardHeader } from '@/components/ui/Card';
+import { Card, CardContent, CardHeader } from '@/components/ui/Card';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { uploadAppImageMutation } from '@/api-client/@tanstack/react-query.gen';
 import { useAppContext } from '@/context/app-context';
@@ -117,7 +117,10 @@ export const CustomAppDetailsPageContent = ({ appId, info, app, metadata }: Prop
             </div>
           </div>
         </CardHeader>
-        <AppDetailsTabs info={info} app={app} metadata={metadata} />
+        {/* Inset like the header above. The store page puts these tabs outside its card, so they bring no padding of their own. */}
+        <CardContent>
+          <AppDetailsTabs info={info} app={app} metadata={metadata} />
+        </CardContent>
       </Card>
       {app ? (
         <div className="mt-4">
