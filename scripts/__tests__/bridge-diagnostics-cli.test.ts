@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { copiedCommandFolder } from './docker-cp-archive';
 
 const spawnSync = vi.fn();
 const parseEnvFile = vi.fn();
@@ -41,12 +42,18 @@ function mockDocker(handlers: { inspect?: string; exec?: (script: string) => num
     if (args[0] === 'inspect') return { status: handlers.inspect ? 0 : 1, stdout: handlers.inspect ?? '' };
     if (args[0] === 'exec') {
       const script = String(args[args.length - 1]);
-      // The dns lookup probe prints the gateway; the net.connect probe only exits.
+      // The dns lookup probe prints the gateway; the net.connect probe prints the code it exits with.
       if (script.includes('dns')) return { status: 0, stdout: '172.17.0.1' };
-      return { status: handlers.exec ? handlers.exec(script) : 10, stdout: '' };
+      const code = handlers.exec ? handlers.exec(script) : 10;
+      return { status: code, stdout: String(code) };
     }
     return { status: 1, stdout: '' };
   });
+}
+
+/** What `docker cp <container>:<dir> -` returns for the folder a probe run detached leaves: out, err and its exit status. */
+function copiedProbeFolder(dir: string, code: number, out = String(code)): Buffer {
+  return copiedCommandFolder(dir, out, code);
 }
 
 describe('bridge-diagnostics-cli', () => {
@@ -244,6 +251,54 @@ describe('bridge-diagnostics-cli', () => {
       expect(text).toContain('OLLAMA_HOST=0.0.0.0');
       expect(text).not.toContain('A host firewall is dropping these');
       expect(text).not.toContain('sudo ufw allow');
+    });
+
+    // Through the Docker engine the desktop app runs in WSL2, `docker exec` exits 0 and prints nothing
+    // whatever the probe found, so every listening service read as reachable from the container.
+    it('reads the verdict back with docker cp when docker exec loses it, instead of calling the port reachable', async () => {
+      listeningHostPorts = new Set([11434]);
+      spawnSync.mockImplementation((_command: string, args: string[]) => {
+        if (args[0] === 'ps') return { status: 0, stdout: 'ci-os-hub' };
+        if (args[0] === 'inspect') return { status: 0, stdout: '172.18.0.7/16' };
+        if (args[0] === 'cp') return { status: 0, stdout: copiedProbeFolder(String(args[1]).split('/').pop() ?? '', 11) };
+        return { status: 0, stdout: '' };
+      });
+
+      const section = await runBridgeDoctorSection('.env.prod');
+      expect(section.lines[0]).not.toMatch(/\bok\b/);
+      expect(section.lines.join('\n')).toContain('bound to loopback');
+    });
+
+    it('sends the later probes and the gateway lookup straight to docker cp once docker exec lost one answer', async () => {
+      listeningHostPorts = new Set([11434, 13305]);
+      const scriptByDir = new Map<string, string>();
+      spawnSync.mockImplementation((_command: string, args: string[]) => {
+        if (args[0] === 'ps') return { status: 0, stdout: 'ci-os-hub' };
+        if (args[0] === 'inspect') return { status: 0, stdout: '172.18.0.7/16' };
+        if (args[0] === 'exec' && args[1] === '-d' && args[3] === 'sh') scriptByDir.set(String(args[7]), String(args.at(-1)));
+        if (args[0] === 'cp') {
+          const dir = String(args[1]).slice(String(args[1]).indexOf(':') + 1);
+          const name = dir.split('/').pop() ?? '';
+          // The gateway lookup prints the address; both ports time out from the container.
+          return {
+            status: 0,
+            stdout: scriptByDir.get(dir)?.includes('dns') ? copiedProbeFolder(name, 0, '172.17.0.1\n') : copiedProbeFolder(name, 10),
+          };
+        }
+        return { status: 0, stdout: '' };
+      });
+
+      const section = await runBridgeDoctorSection('.env.prod');
+
+      expect(section.remediationCommands).toEqual([
+        'sudo ufw allow from 172.18.0.0/16 to 172.17.0.1 port 11434 proto tcp',
+        'sudo ufw allow from 172.18.0.0/16 to 172.17.0.1 port 13305 proto tcp',
+      ]);
+      // Only the first probe tried a plain docker exec.
+      const plainExecs = (spawnSync.mock.calls as unknown[][]).filter(
+        ([, args]) => (args as string[])[0] === 'exec' && (args as string[])[1] !== '-d',
+      );
+      expect(plainExecs).toHaveLength(1);
     });
 
     it('points at the missing host-gateway mapping when the name does not resolve', async () => {

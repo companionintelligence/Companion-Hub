@@ -15,6 +15,7 @@
 import { spawnSync } from 'node:child_process';
 import net from 'node:net';
 import { parseEnvFile } from './env-file';
+import { type ContainerReader, containerReader } from './lib/docker-exec-output';
 
 /** Hub stack container that shares the network the checks must run from. */
 const HUB_CONTAINERS = ['ci-hub', 'ci-os-hub'] as const;
@@ -126,20 +127,22 @@ export function probeHostPort(port: number, host = '127.0.0.1', timeoutMs = PROB
  * The exit code carries WHY it failed, not just that it did. A refusal is an
  * instant RST and proves the bridge works, so collapsing it into the timeout
  * case would blame a firewall for a service that is merely bound to loopback.
+ *
+ * The probe also prints that code, so it always prints something: on the Docker engine the
+ * Windows desktop app runs in WSL2, `docker exec` exits 0 with nothing printed whatever the
+ * probe found, and the reader then copies the real exit status out (see docker-exec-output.ts).
+ * Pass one reader for every port, so the ports after the first go straight to that copy.
  */
-export function probeFromHubContainer(port: number, timeoutMs = PROBE_TIMEOUT_MS): BridgeVerdict {
+export function probeFromHubContainer(port: number, timeoutMs = PROBE_TIMEOUT_MS, read?: ContainerReader): BridgeVerdict {
   const script =
     `const net=require('net');const s=new net.Socket();s.setTimeout(${timeoutMs});` +
-    'const end=c=>{s.destroy();process.exit(c)};' +
+    'const end=c=>{s.destroy();process.stdout.write(String(c));process.exit(c)};' +
     "s.once('connect',()=>end(0));s.once('timeout',()=>end(10));" +
     "s.once('error',e=>end(e.code==='ECONNREFUSED'||e.code==='ECONNRESET'?11:e.code==='ENOTFOUND'||e.code==='EAI_AGAIN'?12:10));" +
     `s.connect(${port},'host.docker.internal');`;
-  const hubContainer = resolveHubContainer();
-  if (!hubContainer) return 'absent';
-  const result = spawnSync('docker', ['exec', hubContainer, 'node', '-e', script], {
-    encoding: 'utf8',
-    timeout: timeoutMs + 7000,
-  });
+  const reader = read ?? hubContainerReader();
+  if (!reader) return 'absent';
+  const result = reader(['node', '-e', script], { timeoutMs: timeoutMs + 7000 });
   // A killed or failed `docker exec` says nothing about the bridge. Any code the
   // probe did not choose for itself (notably 1) falls through to `unknown`
   // rather than being read as a verdict.
@@ -149,6 +152,12 @@ export function probeFromHubContainer(port: number, timeoutMs = PROBE_TIMEOUT_MS
 
 export function isHubContainerRunning(): boolean {
   return resolveHubContainer() !== undefined;
+}
+
+/** A reader for the running Hub container, or undefined when there is none. */
+function hubContainerReader(): ContainerReader | undefined {
+  const hubContainer = resolveHubContainer();
+  return hubContainer ? containerReader(hubContainer) : undefined;
 }
 
 /**
@@ -183,22 +192,16 @@ export function resolveHubContainerCidr(): string | undefined {
   return `${network}/${bits}`;
 }
 
-/** The host-gateway address the container resolves `host.docker.internal` to. */
-export function resolveHostGatewayIp(): string | undefined {
-  const result = spawnSync(
-    'docker',
-    [
-      'exec',
-      resolveHubContainer() ?? 'ci-hub',
-      'node',
-      '-e',
-      "require('dns').lookup('host.docker.internal',{family:4},(e,a)=>{if(e)process.exit(1);console.log(a)})",
-    ],
-    { encoding: 'utf8', timeout: 10_000 },
-  );
+/**
+ * The host-gateway address the container resolves `host.docker.internal` to. The lookup prints the
+ * address whenever it succeeds, so it goes through the same reader as the probe.
+ */
+export function resolveHostGatewayIp(read: ContainerReader = containerReader(resolveHubContainer() ?? 'ci-hub')): string | undefined {
+  const result = read(['node', '-e', "require('dns').lookup('host.docker.internal',{family:4},(e,a)=>{if(e)process.exit(1);console.log(a)})"], {
+    timeoutMs: 10_000,
+  });
   if (result.status !== 0) return undefined;
-  const address = (result.stdout ?? '').trim();
-  return /^\d{1,3}(\.\d{1,3}){3}$/.test(address) ? address : undefined;
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(result.stdout) ? result.stdout : undefined;
 }
 
 /**
@@ -278,7 +281,8 @@ export async function runBridgeDoctorSection(envFileName: string): Promise<Bridg
 }
 
 async function collectBridgeDoctorSection(envFileName: string): Promise<BridgeDoctorSection> {
-  if (!isHubContainerRunning()) {
+  const read = hubContainerReader();
+  if (!read) {
     return {
       lines: ['Docker bridge            skipped (Hub container not running — start the stack first)'],
       issueCount: 0,
@@ -296,7 +300,7 @@ async function collectBridgeDoctorSection(envFileName: string): Promise<BridgeDo
     // reach. Reporting this as a firewall problem would be a false alarm.
     if (!hostReachable[index]) return { ...spec, hostReachable: false, containerReachable: false, verdict: 'absent' };
     // spawnSync blocks the event loop, so these stay sequential.
-    const verdict = probeFromHubContainer(spec.port);
+    const verdict = probeFromHubContainer(spec.port, PROBE_TIMEOUT_MS, read);
     return { ...spec, hostReachable: true, containerReachable: verdict === 'ok', verdict };
   });
 
@@ -330,7 +334,7 @@ async function collectBridgeDoctorSection(envFileName: string): Promise<BridgeDo
   let remediationCommands: string[] = [];
   if (blocked.length > 0) {
     const cidr = resolveHubContainerCidr();
-    const gateway = resolveHostGatewayIp();
+    const gateway = resolveHostGatewayIp(read);
     remediationCommands = cidr && gateway ? blocked.map((result) => `sudo ufw allow from ${cidr} to ${gateway} port ${result.port} proto tcp`) : [];
 
     lines.push(
