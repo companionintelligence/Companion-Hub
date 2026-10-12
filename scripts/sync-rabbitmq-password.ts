@@ -7,6 +7,7 @@
  * or recreate the queue container.
  */
 import { spawnSync } from 'node:child_process';
+import { readContainerOutput } from './lib/docker-exec-output';
 import { isDirectScriptRun } from './lib/is-direct-run';
 import { parseEnvFile } from './env-file';
 
@@ -50,24 +51,23 @@ async function waitForContainerHealthy(name: string): Promise<boolean> {
   return false;
 }
 
+/**
+ * Both rabbitmqctl commands print a banner line, and running either twice is harmless, so they go
+ * through the reader: through the Docker engine the Windows desktop app runs in WSL2, a plain
+ * `docker exec` exits 0 whatever rabbitmqctl did, and a wrong password read as a working one.
+ */
+const RABBITMQCTL_TIMEOUT_MS = 60_000;
+
 function rabbitmqAuthWorks(password: string): boolean {
   const queue = resolveQueueContainer();
   if (!queue) return false;
-  const result = spawnSync('docker', ['exec', queue, 'rabbitmqctl', 'authenticate_user', 'companion', password], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-  });
-  return result.status === 0;
+  return readContainerOutput(queue, ['rabbitmqctl', 'authenticate_user', 'companion', password], { timeoutMs: RABBITMQCTL_TIMEOUT_MS }).status === 0;
 }
 
 function changeRabbitmqPassword(password: string): boolean {
   const queue = resolveQueueContainer();
   if (!queue) return false;
-  const result = spawnSync('docker', ['exec', queue, 'rabbitmqctl', 'change_password', 'companion', password], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-  });
-  return result.status === 0;
+  return readContainerOutput(queue, ['rabbitmqctl', 'change_password', 'companion', password], { timeoutMs: RABBITMQCTL_TIMEOUT_MS }).status === 0;
 }
 
 function recreateQueue(envFile: string): boolean {

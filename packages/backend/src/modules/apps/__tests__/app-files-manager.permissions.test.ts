@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -8,6 +8,13 @@ import type { AppUrn } from '@ci-hub/common/types';
 
 const execAsyncMock = vi.fn(async () => ({ stdout: '', stderr: '' }));
 vi.mock('@/common/helpers/exec-helpers', () => ({ execAsync: execAsyncMock }));
+
+// Only the probe is stubbed, so each test decides what the app-data mount can carry.
+const posixProbe = vi.fn(async (_dirPath: string) => true);
+vi.mock('@/common/helpers/bind-mount-helpers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/common/helpers/bind-mount-helpers')>()),
+  supportsPosixPermissions: posixProbe,
+}));
 
 const { AppFilesManager, buildPermissionsCommand } = await import('../app-files-manager');
 
@@ -53,8 +60,20 @@ describe('AppFilesManager.setAppDataDirPermissions', () => {
     services: [{ name: 'setup-secrets', image: 'ghcr.io/x/setup-secrets:1', volumes }],
   });
 
+  // The method returns early on win32, so a Windows dev box would otherwise skip every
+  // assertion below (and pass the SECURITY one vacuously). Pin the backend's real platform.
+  const originalPlatform = process.platform;
+  const setPlatform = (platform: NodeJS.Platform) => Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+
+  afterEach(() => {
+    setPlatform(originalPlatform);
+  });
+
   beforeEach(() => {
+    setPlatform('linux');
     execAsyncMock.mockClear();
+    posixProbe.mockReset();
+    posixProbe.mockResolvedValue(true);
     filesystem = { pathExists: vi.fn(async () => true), readJsonFile: vi.fn() };
     const configuration = {
       getConfig: () => ({ directories: { dataDir: '/data', appDataDir: '/app-data', appDir: '/app' } }),
@@ -130,5 +149,44 @@ describe('AppFilesManager.setAppDataDirPermissions', () => {
     chmod.mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
 
     await expect(manager.setAppDataDirPermissions(appUrn)).resolves.toBeUndefined();
+  });
+
+  /*
+   * On a Windows Hub the backend runs in a Linux container, so the platform cannot tell a drvfs
+   * mount (which keeps no mode a chmod sets, only the read-only bit) from a real one. The probe
+   * the compose builder already asks can.
+   */
+  describe('on the mount the app data lives on', () => {
+    it('skips the sweep when the app-data mount cannot carry POSIX permissions', async () => {
+      posixProbe.mockResolvedValue(false);
+      filesystem.readJsonFile.mockResolvedValue(
+        composeWith([{ hostPath: '${APP_DATA_DIR}/data/secrets', containerPath: '/run/secrets', private: true }]),
+      );
+
+      await manager.setAppDataDirPermissions(appUrn);
+
+      expect(execAsyncMock).not.toHaveBeenCalled();
+      expect(chmod).not.toHaveBeenCalled();
+    });
+
+    it('asks about the app-data root, the folder the compose builder probes', async () => {
+      filesystem.readJsonFile.mockResolvedValue(composeWith([]));
+
+      await manager.setAppDataDirPermissions(appUrn);
+
+      expect(posixProbe).toHaveBeenCalledWith('/app-data');
+      expect(posixProbe).not.toHaveBeenCalledWith(appDataDir);
+    });
+
+    it.each(['linux', 'darwin'] as const)('still sweeps on %s when the mount carries POSIX permissions', async (platform) => {
+      setPlatform(platform);
+      filesystem.readJsonFile.mockResolvedValue(composeWith([]));
+
+      await manager.setAppDataDirPermissions(appUrn);
+
+      expect(execAsyncMock).toHaveBeenCalledTimes(1);
+      expect(execAsyncMock.mock.calls[0]?.[0]).toContain(`-path '${path.join(appDataDir, 'app.env')}'`);
+      expect(chmod).toHaveBeenCalledWith(path.join(appDataDir, 'app.env'), 0o600);
+    });
   });
 });
