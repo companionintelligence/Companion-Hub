@@ -1,12 +1,14 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path, { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   CANONICAL_DATA_DIR_NAME,
+  hostRootFolder,
   resolveCanonicalDataDir,
   resolveInvokingUserHome,
   resolveProdApplianceContext,
+  resolveRootFolderHostForRuntime,
   settingsCandidatesFrom,
   usableXdgDataHome,
 } from '../lib/paths';
@@ -183,5 +185,72 @@ describe('settingsCandidatesFrom', () => {
     const canonical = join('/home/ci', '.local', 'share', CANONICAL_DATA_DIR_NAME);
     const candidates = settingsCandidatesFrom(canonical, {}, 'linux', '/home/ci', always);
     expect(candidates).toEqual([join(canonical, 'state', 'settings.json')]);
+  });
+});
+
+/**
+ * On Windows the desktop app stores ROOT_FOLDER_HOST in Docker's form: `/mnt/c/Users/...` for the
+ * WSL engine, `/c/Users/...` for Docker Desktop. Node reads either as an absolute path on the current
+ * drive, so `cihub up` wrote a second, unused copy of the data dir under `C:\mnt\c\Users\...`.
+ */
+describe('hostRootFolder', () => {
+  const WINDOWS_DATA_DIR = String.raw`C:\Users\hub\AppData\Roaming\companion-hub`;
+  const WINDOWS_CWD = String.raw`D:\work`;
+
+  it("turns Docker's form of a Windows path back into the folder it names", () => {
+    expect(hostRootFolder('/mnt/c/Users/hub/AppData/Roaming/companion-hub', 'win32', WINDOWS_CWD)).toBe(WINDOWS_DATA_DIR);
+    expect(hostRootFolder('/c/Users/hub/AppData/Roaming/companion-hub', 'win32', WINDOWS_CWD)).toBe(WINDOWS_DATA_DIR);
+  });
+
+  it('keeps a native Windows path, and resolves a relative one against the cwd', () => {
+    expect(hostRootFolder(WINDOWS_DATA_DIR, 'win32', WINDOWS_CWD)).toBe(WINDOWS_DATA_DIR);
+    expect(hostRootFolder('.internal', 'win32', WINDOWS_CWD)).toBe(String.raw`D:\work\.internal`);
+  });
+
+  it('leaves a Linux or macOS path alone, where /mnt/c is a real folder', () => {
+    expect(hostRootFolder('/mnt/c/hub', 'linux', '/srv')).toBe('/mnt/c/hub');
+    expect(hostRootFolder('.internal', 'darwin', '/srv')).toBe('/srv/.internal');
+  });
+});
+
+describe('resolveRootFolderHostForRuntime on Windows', () => {
+  const ENV_KEYS = ['ENV_FILE', 'ROOT_FOLDER_HOST', 'CI_HUB_STATE_PATH', 'STATE_PATH'] as const;
+  const saved = new Map<string, string | undefined>();
+  const originalPlatform = process.platform;
+  let dir: string;
+
+  beforeEach(() => {
+    for (const key of ENV_KEYS) {
+      saved.set(key, process.env[key]);
+      delete process.env[key];
+    }
+    dir = mkdtempSync(join(tmpdir(), 'cihub-root-folder-'));
+    // Faked on every host, so CI on Linux runs the Windows branch too.
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform });
+    for (const key of ENV_KEYS) {
+      const value = saved.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("reads the WSL engine's /mnt/c value in the env file as the data dir, not a folder under C:\\mnt", () => {
+    const envFile = join(dir, '.env');
+    writeFileSync(envFile, 'ROOT_FOLDER_HOST=/mnt/c/Users/hub/AppData/Roaming/companion-hub\n');
+    process.env.ENV_FILE = envFile;
+
+    expect(resolveRootFolderHostForRuntime()).toBe(String.raw`C:\Users\hub\AppData\Roaming\companion-hub`);
+  });
+
+  it('reads a ROOT_FOLDER_HOST from the environment the same way when the env file names none', () => {
+    process.env.ENV_FILE = join(dir, 'missing.env');
+    process.env.ROOT_FOLDER_HOST = '/c/Users/hub/AppData/Roaming/companion-hub';
+
+    expect(resolveRootFolderHostForRuntime()).toBe(String.raw`C:\Users\hub\AppData\Roaming\companion-hub`);
   });
 });
