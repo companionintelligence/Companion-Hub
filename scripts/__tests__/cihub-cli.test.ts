@@ -46,12 +46,12 @@ import {
   hasCloudflareTunnelToken,
   hasRegisteredCloudflareTunnel,
   hasRegisteredCloudflareTunnelAtDataDir,
-  hostPathFromDockerPath,
   setTailscalePersistedStateProbeForTests,
   tailscaledStateLooksLoggedIn,
   TUNNEL_REGISTRATION_MARKER,
 } from '../lib/cli-compose-env';
 import { parseContextCapArg, parseOllamaSlotsArg, parsePromptCeilingArg } from '../lib/cli-pool';
+import { hostPathFromDockerPath } from '../lib/paths';
 
 /**
  * Pool HTTP is stubbed at the `hub-pool-cli` boundary so these tests exercise the parts that live in
