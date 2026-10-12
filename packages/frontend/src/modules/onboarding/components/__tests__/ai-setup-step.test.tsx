@@ -1046,6 +1046,13 @@ describe('AiSetupStep', () => {
     expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('vllm', '', '', '');
   });
 
+  it('says the apps install while the models download, which is the order the install step runs in', async () => {
+    renderStep();
+
+    expect(await screen.findByText('Apps install while your selected models download.')).toBeInTheDocument();
+    expect(screen.queryByText(/after your selected models finish downloading/i)).not.toBeInTheDocument();
+  });
+
   it('gives model tiles and access options a visible focus ring without showing the checkbox', async () => {
     renderStep();
     await waitFor(() => expect(screen.getByTestId('model-row-phi-4-mini')).toBeInTheDocument());
