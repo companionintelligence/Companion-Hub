@@ -224,26 +224,30 @@ export class BackupManager implements OnApplicationShutdown {
 
   /** Write each of the app's named Docker volumes into `dir` as `<key>.tar`. An app with none gets no folder. */
   private async archiveAppVolumes(appUrn: AppUrn, dir: string) {
-    const volumes = await this.appVolumes.listAppVolumes(appUrn);
+    const volumes = (await this.appVolumes.listAppVolumes(appUrn)).map((volume) => ({ ...volume, file: `${volume.key}.tar` }));
 
     if (volumes.length === 0) {
       return;
     }
 
-    await this.filesystem.createDirectory(dir);
+    // Every name is checked before any volume is copied, so a bad one does not cost a full copy of the
+    // others first. A restore refuses a name outside the pattern, and two volumes under one key would
+    // leave one out.
     const files = new Set<string>();
 
-    for (const volume of volumes) {
-      const file = `${volume.key}.tar`;
-
-      // A restore refuses a name outside the pattern, and two volumes under one key would leave one out.
+    for (const { name, file } of volumes) {
       if (!VOLUME_ARCHIVE_NAME.test(file) || files.has(file)) {
-        throw new Error(`Volume ${volume.name} cannot go in a backup under the name "${file}"`);
+        throw new Error(`Volume ${name} cannot go in a backup under the name "${file}"`);
       }
 
       files.add(file);
-      this.logger.info(`Including Docker volume ${volume.name} in backup...`);
-      await this.appVolumes.exportVolume(volume.name, path.join(dir, file));
+    }
+
+    await this.filesystem.createDirectory(dir);
+
+    for (const { name, file } of volumes) {
+      this.logger.info(`Including Docker volume ${name} in backup...`);
+      await this.appVolumes.exportVolume(name, path.join(dir, file));
     }
   }
 
