@@ -18,6 +18,7 @@ const {
   rescanInferenceHardware,
   pinInferenceModel,
   saveCloudProviderConfig,
+  removeCloudProviderConfig,
   ensurePullsStarted,
   unpinInferenceModel,
   unloadInferenceModel,
@@ -35,6 +36,7 @@ const {
   rescanInferenceHardware: vi.fn(),
   pinInferenceModel: vi.fn(),
   saveCloudProviderConfig: vi.fn(),
+  removeCloudProviderConfig: vi.fn(),
   ensurePullsStarted: vi.fn(),
   unpinInferenceModel: vi.fn(),
   unloadInferenceModel: vi.fn(),
@@ -54,6 +56,7 @@ vi.mock('@/lib/inference/inference-api', () => ({
   rescanInferenceHardware,
   pinInferenceModel,
   saveCloudProviderConfig,
+  removeCloudProviderConfig,
   // ai-settings imports and calls this on the deselection path; without it here that path throws
   // `unpinInferenceModel is not a function` into handleSave's catch and reports a failed save.
   unpinInferenceModel,
@@ -144,7 +147,20 @@ vi.mock('@/modules/onboarding/components/ai-setup/backend-selection-card', () =>
 }));
 
 vi.mock('@/modules/onboarding/components/ai-setup/cloud-provider-card', () => ({
-  CloudProviderCard: () => <div data-testid="cloud-provider-card" />,
+  // Clearing a field is the card's own job (cloud-provider-card.test.tsx); this double only hands
+  // the container what a cleared field reports.
+  CloudProviderCard: ({ providers, onUpdate }: any) => (
+    <div data-testid="cloud-provider-card">
+      <span data-testid="cloud-providers-held">{providers.map((provider: any) => provider.provider).join(',')}</span>
+      <button
+        type="button"
+        data-testid="clear-cloud-keys"
+        onClick={() => onUpdate(providers.map((provider: any) => ({ ...provider, apiKey: '', enabled: false })))}
+      >
+        clear
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock('@/modules/onboarding/components/ai-setup/resource-summary-bar', () => ({
@@ -244,6 +260,7 @@ describe('AiSettingsContainer', () => {
     fetchLemonadeInstallStatus.mockResolvedValue({ ready: true, running: true, endpointUrl: 'http://localhost:13305' });
     saveInferencePreferences.mockResolvedValue(undefined);
     rescanInferenceHardware.mockResolvedValue(undefined);
+    removeCloudProviderConfig.mockResolvedValue(undefined);
     ensurePullsStarted.mockResolvedValue({});
   });
 
@@ -679,6 +696,41 @@ describe('AiSettingsContainer', () => {
     await user.click(screen.getByTestId('ai-settings-save-btn'));
 
     expect(screen.getByTestId('ai-settings-confirm-description')).toHaveTextContent(/restart your apps that use AI models/);
+  });
+
+  // Clearing a saved key sent nothing for it: the save said "AI settings saved" and the Hub kept the
+  // key, still enabled, so unknown models and AI apps went on using that provider.
+  it('deletes a saved cloud key whose field was cleared, before the save restarts AI apps', async () => {
+    fetchConfiguredCloudProviders.mockResolvedValue([{ provider: 'openai', apiKey: '••••••••', enabled: true, stored: true }]);
+
+    const user = userEvent.setup();
+    renderAiSettings();
+    await waitFor(() => expect(screen.getByTestId('cloud-providers-held')).toHaveTextContent('openai'));
+
+    await user.click(screen.getByTestId('clear-cloud-keys'));
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+    expect(removeCloudProviderConfig).toHaveBeenCalledWith('openai');
+    expect(saveCloudProviderConfig).not.toHaveBeenCalled();
+    // First, as the other cloud saves are: the preferences save is what restarts AI apps.
+    expect(removeCloudProviderConfig.mock.invocationCallOrder[0]).toBeLessThan(saveInferencePreferences.mock.invocationCallOrder[0] ?? 0);
+  });
+
+  it('keeps a saved cloud key whose field was left alone', async () => {
+    fetchConfiguredCloudProviders.mockResolvedValue([{ provider: 'openai', apiKey: '••••••••', enabled: true, stored: true }]);
+
+    const user = userEvent.setup();
+    renderAiSettings();
+    await waitFor(() => expect(screen.getByTestId('cloud-providers-held')).toHaveTextContent('openai'));
+
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+    expect(saveCloudProviderConfig).toHaveBeenCalledWith({ provider: 'openai', enabled: true });
+    expect(removeCloudProviderConfig).not.toHaveBeenCalled();
   });
 
   it('shows rescan error toast and skips profile refresh when rescan returns non-OK', async () => {

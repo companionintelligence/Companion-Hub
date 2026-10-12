@@ -10,6 +10,7 @@ import {
   fetchVllmInstallStatus,
   loadInferenceModel,
   pinInferenceModel,
+  removeCloudProviderConfig,
   rescanInferenceHardware,
   saveCloudProviderConfig,
   saveInferencePreferences,
@@ -547,9 +548,14 @@ export const AiSettingsContainer = () => {
       const preferredVisionModel = resolvePreferredModelId(profile, selectedBackend, isVisionModel, compatibleSelectedModelIds);
 
       // Cloud keys first so the debounced AI-app restart (from preferences) sees them.
-      // Masked keys (`••••`) omit apiKey so the Hub keeps the stored secret.
+      // Masked keys (`••••`) omit apiKey so the Hub keeps the stored secret. A stored key whose field
+      // was cleared is deleted: sent as a blank key, the Hub would keep it.
       for (const cp of cloudProviders) {
-        if (cp.apiKey.trim() && !cp.apiKey.startsWith('••')) {
+        if (cp.stored && !cp.apiKey.trim()) {
+          await removeCloudProviderConfig(cp.provider);
+          // The refetch after the save keeps the old list when no provider is left, so drop it here.
+          setCloudProviders((prev) => prev.filter((other) => other.provider !== cp.provider));
+        } else if (cp.apiKey.trim() && !cp.apiKey.startsWith('••')) {
           await saveCloudProviderConfig({ provider: cp.provider, apiKey: cp.apiKey, enabled: cp.enabled });
         } else if (cp.apiKey.startsWith('••')) {
           await saveCloudProviderConfig({ provider: cp.provider, enabled: cp.enabled });
