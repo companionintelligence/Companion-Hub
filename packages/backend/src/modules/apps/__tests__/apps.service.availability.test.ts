@@ -393,8 +393,34 @@ describe('AppsService.checkAppAvailability', () => {
       expect(result).toMatchObject({ available: false, httpStatus: 404, stage: 'propagating', resolvable: true });
     });
 
+    // cloudflared's catch-all ingress rule answers a host it does not list with a bodyless 404.
+    it('does not call an app available when the tunnel answers an empty 404 for its name', async () => {
+      mockedAxiosGet.mockResolvedValue({ status: 404, data: '' });
+
+      const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+      expect(result).toMatchObject({ available: false, httpStatus: 404, resolvable: true });
+    });
+
+    // An API-only app (a FastAPI service, a model server) has no page at `/` and says so itself.
+    it('counts an app that answers its own 404 at its root as available', async () => {
+      mockedAxiosGet.mockResolvedValue({ status: 404, data: { detail: 'Not Found' } });
+
+      const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+      expect(result).toMatchObject({ available: true, httpStatus: 404, stage: 'ready' });
+    });
+
     it('does not mistake an app page that mentions a Cloudflare error code for the error itself', async () => {
       mockedAxiosGet.mockResolvedValue({ status: 200, data: 'Troubleshooting: error code: 1033 means the tunnel is down.' });
+
+      const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+      expect(result).toMatchObject({ available: true, httpStatus: 200, stage: 'ready' });
+    });
+
+    it('does not read a successful answer whose whole body is "error code: 1033" as Cloudflare, which only sends it with a failing status', async () => {
+      mockedAxiosGet.mockResolvedValue({ status: 200, data: 'error code: 1033' });
 
       const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
 
@@ -483,14 +509,16 @@ describe('AppsService.checkAppAvailability', () => {
     expect(result.appUrl).toBe('https://hub-tailscale-1.example.ts.net:8080');
   });
 
-  // The Cloudflare rules read an answer that came through the tunnel. Nothing sits between the probe and a
-  // Private VPN app, so any answer still means something at that name answered.
+  // The rules above read answers that came through the Cloudflare tunnel, and the Private VPN probe keeps the
+  // rule it had: any HTTP answer counts. That is not proof the app is up. `tailscale serve` is a proxy too and
+  // answers 502 itself when the app behind it is down. Reading its answers like the tunnel's would change what
+  // every Private VPN app shows, so these pin the old rule until someone decides to.
   it.each([
     [404, '404 page not found\n'],
     [502, 'Bad Gateway'],
     [503, '<h1>Test App is starting…</h1>'],
     [530, 'error code: 1033'],
-  ])('tailscale mode → an HTTP %i still counts as the app answering', async (status, data) => {
+  ])('in tailscale mode, an HTTP %i still counts as the app answering', async (status, data) => {
     ctx.mockApp.exposureMode = 'tailscale';
     mockedAxiosGet.mockResolvedValue({ status, data } as never);
 

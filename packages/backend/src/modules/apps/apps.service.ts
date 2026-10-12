@@ -98,16 +98,30 @@ function isCloudflareOnlyStatus(status: number): boolean {
 }
 
 /**
+ * A 404 nothing behind the name wrote: Traefik's own body when it has no router for the host, as while
+ * the app's containers are down, or the empty one cloudflared's catch-all rule sends for a host its
+ * ingress does not list. An app's own 404 has a body of its own, and an API-only app answers `/` that way.
+ */
+function isRouteMissing(status: number, text: string): boolean {
+  if (status !== 404) {
+    return false;
+  }
+  const body = text.trim();
+  return body === '' || body === '404 page not found';
+}
+
+/**
  * What an HTTP answer means for this app.
  *
  * Every answer on a Public Web route comes through Cloudflare. An answer its edge made itself means the
  * tunnel failed, not the app: an HTML error page for a browser, a plain `error code: 1033` for this
  * probe, or a status only the edge uses. An answer from the Hub counts only when it can be the app's own
- * page. A 5xx can't (the Hub's "is starting" page is a 503), and neither can a 404, which Traefik
- * answers when it has no router for the name, as while the app's containers are down. A 401 or 403 can:
- * an app behind its own sign-in answers a probe without a session that way.
+ * page. A 5xx can't (the Hub's "is starting" page is a 503), and neither can a 404 for a route nobody
+ * serves (see {@link isRouteMissing}). A 401 or 403 can: an app behind its own sign-in answers a probe
+ * without a session that way.
  *
- * Over the Private VPN, any answer means something at that name answered.
+ * Over the Private VPN any answer still counts, as it always has, although `tailscale serve` answers 502
+ * itself when the app behind it is down.
  */
 function classifyReachedApp(exposureMode: string, appUrl: string, status: number, text: string): AppAvailabilityResult {
   if (exposureMode !== 'cloudflare') {
@@ -115,7 +129,9 @@ function classifyReachedApp(exposureMode: string, appUrl: string, status: number
   }
 
   const isCloudflarePage = text.includes('Cloudflare Ray ID') || text.includes('cf-error-details');
-  const bodyCode = CLOUDFLARE_PLAIN_ERROR.exec(text)?.[1] ?? (isCloudflarePage ? text.match(/Error\s+(\d{3,4})/i)?.[1] : undefined);
+  // The edge only sends its plain error with a failing status, so an app that answers 200 with that text is still the app.
+  const plainCode = status >= 400 ? CLOUDFLARE_PLAIN_ERROR.exec(text)?.[1] : undefined;
+  const bodyCode = plainCode ?? (isCloudflarePage ? text.match(/Error\s+(\d{3,4})/i)?.[1] : undefined);
 
   if (isCloudflarePage || bodyCode !== undefined || isCloudflareOnlyStatus(status)) {
     const cfCode = bodyCode ? Number(bodyCode) : status;
@@ -179,7 +195,7 @@ function classifyReachedApp(exposureMode: string, appUrl: string, status: number
     };
   }
 
-  if (status >= 500 || status === 404) {
+  if (status >= 500 || isRouteMissing(status, text)) {
     return {
       available: false,
       appUrl,
