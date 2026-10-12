@@ -94,8 +94,12 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       logger.info(`Updating app ${appUrn}`);
       // From here on the previous files and app.env are being replaced.
       replacingFiles = true;
+      // The previous version's compose file and env, which the `down` below runs against.
       await this.ensureAppDir(appUrn, form);
       await appHelpers.generateEnvFile(appUrn, form);
+      // With no app.env before the update, the one just made from the previous config is what the
+      // previous files go back with if the update fails before the new version is started.
+      previousEnv ||= (await appFilesManager.getAppEnv(appUrn))?.content;
 
       tookDown = true;
       try {
@@ -108,6 +112,13 @@ export class UpdateAppCommand extends AppLifecycleCommand {
         throw new Error(`Could not remove the previous files of ${appUrn}`);
       }
       await marketplaceService.copyAppFromRepoToInstalled(appUrn);
+
+      // ⚠ THE NEW VERSION'S ENV COMES FROM ITS OWN CONFIG, MADE ONCE IT IS INSTALLED AND BEFORE IT STARTS.
+      // The env above is the previous config's, so a field this version adds (a random database
+      // password) was "" on its first boot, and its database initialised without that user. Values
+      // already in app.env are kept. A required field with no value is left unset, because the
+      // settings cannot show it until the update is done, and the next start asks for it.
+      await appHelpers.generateEnvFile(appUrn, form, { allowMissingRequired: true });
 
       await this.ensureAppDir(appUrn, form);
 

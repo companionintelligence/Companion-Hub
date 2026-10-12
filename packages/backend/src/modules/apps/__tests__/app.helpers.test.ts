@@ -1,6 +1,7 @@
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
+import type { LoggerService } from '@/core/logger/logger.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { ModuleRef } from '@nestjs/core';
@@ -1082,6 +1083,28 @@ describe('AppHelpers', () => {
 
       // Act & Assert
       await expect(appHelpers.generateEnvFile(testAppUrn, {})).rejects.toThrow('Variable Required Variable is required');
+    });
+
+    it("leaves a required field with no value out, with a warning, when the caller allows it (an update's first boot)", async () => {
+      const envMap = new Map<string, string>();
+      envUtils.envStringToMap.mockReturnValue(envMap);
+      const logger = (appHelpers as unknown as { logger: MockProxy<LoggerService> }).logger;
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({
+        ...mockAppInfo,
+        form_fields: [
+          { env_variable: 'LICENSE_KEY', label: 'License key', required: true, type: 'text' as const },
+          { env_variable: 'SMTP_PORT', label: 'SMTP port', required: true, type: 'number' as const, default: 587 },
+          { env_variable: 'ADMIN_EMAIL', label: 'Admin email', required: true, type: 'email' as const },
+        ],
+      });
+
+      await appHelpers.generateEnvFile(testAppUrn, { ADMIN_EMAIL: 'admin@example.com' }, { allowMissingRequired: true });
+
+      expect(envMap.has('LICENSE_KEY')).toBe(false);
+      expect(envMap.get('SMTP_PORT')).toBe('587');
+      expect(envMap.get('ADMIN_EMAIL')).toBe('admin@example.com');
+      expect(appFilesManager.writeAppEnv).toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('License key (LICENSE_KEY)'));
     });
 
     it('should handle random type form fields', async () => {
