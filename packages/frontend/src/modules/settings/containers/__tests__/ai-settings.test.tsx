@@ -329,6 +329,37 @@ describe('AiSettingsContainer', () => {
     }
   });
 
+  it('shows an engine that answers in the desktop window too, because Settings installs none', async () => {
+    // The desktop window keeps the hardware's pick in setup, where it installs that engine. Settings never does.
+    const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: () => Promise<unknown> } };
+    const userAgent = navigator.userAgent;
+    resetMobileClientCacheForTests();
+    Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'Mozilla/5.0 (X11; Linux x86_64)' });
+    tauriWindow.__TAURI_INTERNALS__ = { invoke: vi.fn().mockResolvedValue(undefined) };
+    try {
+      fetchInferencePreferences.mockResolvedValue({});
+      fetchInferenceOnboardingProfile.mockResolvedValue({
+        ...profile,
+        backends: {
+          recommended: 'vllm',
+          available: [
+            { type: 'ollama', running: true, healthy: true, modelsLoaded: 4 },
+            { type: 'vllm', running: false, healthy: false, modelsLoaded: 0 },
+          ],
+        },
+      });
+
+      renderAiSettings();
+
+      await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('ollama'));
+      expect(screen.getByTestId('recommended-backend')).toHaveTextContent('ollama');
+    } finally {
+      delete tauriWindow.__TAURI_INTERNALS__;
+      Object.defineProperty(navigator, 'userAgent', { configurable: true, value: userAgent });
+      resetMobileClientCacheForTests();
+    }
+  });
+
   it('persists backend changes on save', async () => {
     const user = userEvent.setup();
     renderAiSettings();

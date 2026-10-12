@@ -11,9 +11,12 @@ export function unavailableInferenceBackends(_profile: HardwareProfileResponse):
   return [];
 }
 
+function hostPlatform(profile: HardwareProfileResponse): string | undefined {
+  return profile.hardware.os?.platform?.toLowerCase();
+}
+
 export function isAppleSiliconMacProfile(profile: HardwareProfileResponse): boolean {
-  const platform = profile.hardware.os?.platform?.toLowerCase();
-  return platform === 'darwin' && (profile.hardware.gpu.vendor === 'apple' || profile.hardware.cpu.arch === 'arm64');
+  return hostPlatform(profile) === 'darwin' && (profile.hardware.gpu.vendor === 'apple' || profile.hardware.cpu.arch === 'arm64');
 }
 
 function isNvidiaProfile(profile: HardwareProfileResponse): boolean {
@@ -29,7 +32,7 @@ function isAmdOrNpuProfile(profile: HardwareProfileResponse): boolean {
  * oMLX is Apple Silicon only. vLLM is NVIDIA only. Lemonade is AMD or NPU, and never macOS.
  */
 export function hiddenInferenceBackends(profile: HardwareProfileResponse): InferenceBackendType[] {
-  const platform = profile.hardware.os?.platform?.toLowerCase();
+  const platform = hostPlatform(profile);
   if (!platform) return [];
   const hidden: InferenceBackendType[] = [];
   if (!isAppleSiliconMacProfile(profile)) hidden.push('omlx');
@@ -59,8 +62,10 @@ export function localEngineBlocksFinish(input: {
   return input.engineReady !== true;
 }
 
+/** `win32` from the desktop's host probe; a Hub running on Windows itself reports systeminformation's `Windows`. */
 function hostIsWindows(profile: HardwareProfileResponse): boolean {
-  return profile.hardware.os?.platform?.toLowerCase() === 'win32';
+  const platform = hostPlatform(profile);
+  return platform === 'win32' || platform === 'windows';
 }
 
 /**

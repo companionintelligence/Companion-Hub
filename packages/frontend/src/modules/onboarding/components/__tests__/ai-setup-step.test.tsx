@@ -681,6 +681,8 @@ describe('AiSetupStep', () => {
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
     const first = () => screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm') as HTMLInputElement;
     await waitFor(() => expect(first().checked).toBe(true));
+    // The load asks for Ollama's list, then for vLLM's once setup starts on vLLM.
+    const loadFetches = fetchInferenceOnboardingProfile.mock.calls.length;
 
     // Hold the refresh open so the operator's click lands while the fetch is still running.
     let release: (() => void) | undefined;
@@ -699,7 +701,7 @@ describe('AiSetupStep', () => {
     release?.();
 
     // The refresh must merge onto the live selection, not the snapshot taken when it started.
-    await waitFor(() => expect(fetchInferenceOnboardingProfile).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(fetchInferenceOnboardingProfile).toHaveBeenCalledTimes(loadFetches + 1));
     expect(first().checked).toBe(false);
   });
 
@@ -712,6 +714,7 @@ describe('AiSetupStep', () => {
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
     const checkbox = () => screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm') as HTMLInputElement;
     await waitFor(() => expect(checkbox().checked).toBe(true));
+    const loadFetches = fetchInferenceOnboardingProfile.mock.calls.length;
 
     // The operator restarts the host vLLM server and re-checks while it is still booting. The
     // profile endpoint swallows its own health-check failure and answers 200 with nothing served.
@@ -723,7 +726,7 @@ describe('AiSetupStep', () => {
     // Adopting that answer would drop the card back into the "open Hugging Face" branch this
     // feature exists to leave, so an unreachable probe must not trigger the refresh at all.
     expect(checkbox().checked).toBe(true);
-    expect(fetchInferenceOnboardingProfile).toHaveBeenCalledTimes(1);
+    expect(fetchInferenceOnboardingProfile).toHaveBeenCalledTimes(loadFetches);
   });
 
   it('keeps the step usable when the profile refresh fails during a re-check', async () => {
@@ -1001,6 +1004,46 @@ describe('AiSetupStep', () => {
       delete tauriWindow.__TAURI_INTERNALS__;
       resetMobileClientCacheForTests();
     }
+  });
+
+  it('waits for a ready engine in the phone app, which cannot install one', async () => {
+    const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<unknown> } };
+    resetMobileClientCacheForTests();
+    Object.defineProperty(window.navigator, 'userAgent', { configurable: true, value: 'Mozilla/5.0 (Linux; Android 14; Pixel 8)' });
+    tauriWindow.__TAURI_INTERNALS__ = { invoke: vi.fn().mockResolvedValue(undefined) };
+    try {
+      api.profile = {
+        ...highTierProfile,
+        backends: {
+          recommended: 'vllm',
+          available: [
+            { type: 'ollama', running: false, healthy: false, modelsLoaded: 0 },
+            { type: 'vllm', running: false, healthy: false, modelsLoaded: 0 },
+          ],
+        },
+      };
+      api.ollama = ollamaMissing;
+      api.vllm = vllmMissing;
+      const onConfigChange = vi.fn();
+      renderStep({ embedded: true, onConfigChange });
+
+      await waitFor(() => expect(onConfigChange).toHaveBeenLastCalledWith(expect.objectContaining({ backend: 'vllm', engineBlocked: true })));
+    } finally {
+      delete tauriWindow.__TAURI_INTERNALS__;
+      resetMobileClientCacheForTests();
+    }
+  });
+
+  it('reads the installed models of the engine it starts on, not of the one the first request named', async () => {
+    // The first request names Ollama. Setup then starts on vLLM, which serves the model.
+    api.vllm = vllmReady;
+    fetchInferenceOnboardingProfile.mockImplementation((backend?: string) =>
+      Promise.resolve(vllmProfile(backend === 'vllm' ? ['qwen3-4b-instruct-vllm'] : [])),
+    );
+    renderStep();
+
+    await waitFor(() => expect((screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm') as HTMLInputElement).checked).toBe(true));
+    expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('vllm', '', '', '');
   });
 
   it('gives model tiles and access options a visible focus ring without showing the checkbox', async () => {

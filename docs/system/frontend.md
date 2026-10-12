@@ -146,8 +146,10 @@ has models (`backends.available[].modelsLoaded`) comes first, the hardware's pic
 rest. With no models anywhere it takes the hardware's pick if that answers, else any engine that
 answers. With nothing answering the hardware's pick stands, except vLLM in the Windows desktop
 window, which starts on Ollama because that is the engine the app installs there. The
-**Recommended** badge goes with the choice, and Settings > AI uses the same rule when no engine is
-saved.
+**Recommended** badge goes with the choice. Settings > AI uses the browser-tab rule when no engine
+is saved, even in the desktop window, because Settings installs no engine. The finish gate and the
+runner install use the same desktop check, so the phone app waits for a ready engine like a
+browser tab does.
 
 `InstallStep` runs in this order: runners, cloud keys, the preference save, the app install
 requests, then the wait for model downloads and the pins. The preferences go before the installs

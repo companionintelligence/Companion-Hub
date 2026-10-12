@@ -137,6 +137,15 @@ describe('inference-backend-availability', () => {
         expect(recommendedInferenceBackend(withEngines(windowsNvidiaProfile, [down('ollama'), down('vllm')]), false)).toBe('vllm');
       });
 
+      it('treats a Hub that runs on Windows itself as Windows', () => {
+        // systeminformation says `Windows`, not `win32`, when the backend runs on the host.
+        const nativeWindows = {
+          ...nvidiaProfile,
+          hardware: { ...nvidiaProfile.hardware, os: { platform: 'Windows', name: 'Microsoft Windows 11 Pro', version: '' } },
+        } as HardwareProfileResponse;
+        expect(recommendedInferenceBackend(withEngines(nativeWindows, [down('ollama'), down('vllm')]), true)).toBe('ollama');
+      });
+
       it('starts on an engine that answers when the app does not install the pick, as Lemonade', () => {
         expect(recommendedInferenceBackend(lemonadePick([up('ollama', 2), down('lemonade')]), true)).toBe('ollama');
       });
