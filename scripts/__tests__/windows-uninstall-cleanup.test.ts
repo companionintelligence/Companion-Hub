@@ -643,15 +643,18 @@ describeEachShell('uninstall-cleanup.ps1 -DryRun on files under %s', (_name, she
 describeEachShell('Scoop uninstaller under %s', (_name, shell) => {
   // The publish copy carries the same script; the generator test below checks that.
   it(
-    "removes every marketplace app's containers and keeps all volumes and images",
+    "removes every marketplace app's containers and networks and keeps all volumes and images",
     () => {
       const script = (JSON.parse(read(SCOOP_MANIFEST)) as { uninstaller: { script: string[] } }).uninstaller.script.join('\n');
       const sandbox = makeSandbox();
       runPowerShell(shell, sandbox, harness(script, { importFunctions: false }));
       const removed = removals(sandbox);
-      expect(removed).toEqual(expect.arrayContaining(['rm -f a99000000002', 'network rm wordpress_ci-marketplace_network']));
+      expect(removed).toContain('rm -f a99000000002');
+      // The app network goes once the ci-hub container attached to it is gone, and so do ci-hub_edge and ci-hub_internal.
+      expect(names(engineAfter(sandbox).networks)).toEqual(['bridge', 'host', 'myproject_default', 'none', INJECTED_NETWORK].sort());
       // `scoop update` runs this uninstaller too, so it must never touch data or images.
       expect(removed.filter((call) => call.startsWith('volume rm') || call.startsWith('image rm'))).toEqual([]);
+      expect(names(engineAfter(sandbox).volumes)).toEqual(names(FIXTURE.volumes));
       expect(removed.filter((call) => NOT_THE_HUBS.some((name) => call.includes(name)))).toEqual([]);
     },
     PS_TIMEOUT,
