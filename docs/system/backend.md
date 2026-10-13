@@ -433,6 +433,34 @@ The install dialog offers the organization's connected domains (`GET /api/cloudf
   `supported: false` on the Hub's own endpoint means "could not ask", which the dialog must not
   render as "you have none".
 
+## settings.json writes
+
+`state/settings.json` holds the user settings and the Hub's credentials: the Portal device key, the
+host-local key, and stored cloud provider keys. Every write in the Hub process takes its turn in one
+queue, `inSettingsFileTurn` in `configuration.service.ts`. `mergeSettingsToDisk` reads, merges, and
+writes inside a turn, and so does the factory reset's `{}`. Two saves that overlapped used to drop
+each other's keys, or leave the file as one object followed by the end of a longer one.
+
+A write goes to `settings.json.<pid>-<n>.tmp` beside the file, is flushed to disk, and is renamed over
+it, so a crash, a power cut or a full disk leaves the old file or the new one. The rename needs write
+access to `state/` itself.
+`POST /api/inference/cloud-providers` answers once the provider is on disk, so the preferences save
+that Settings > AI sends next can't overlap it.
+
+At boot, `generateSystemEnvFile` drops a byte order mark from the start of `settings.json`, which
+Notepad's "UTF-8 with BOM" and PowerShell 5 add, and writes the file back without it. It copies a
+`settings.json` that still doesn't parse to `settings.json.corrupt-<time>` and replaces it. If the
+file opens with a complete JSON object, which is what overlapping saves in older builds left, the Hub
+keeps that object. Anything else becomes `{}`. Either way, an `"allowErrorMonitoring": false` left in
+the lost part is kept, so error reporting stays off. When the copy can't be written, the file stays
+as it is and the Hub boots on what it recovered. The log names the copy and the parse position, never
+the content. A factory reset deletes the copies and any temporary file a crash left, since they hold
+the same credentials.
+
+On a Windows data folder (a bind mount through WSL), a read from outside the queue that overlaps the
+rename can get `ENOENT` for a file that is there. Once `readUserConsentFrom` has read the file, it
+counts a missing file as unreadable, so error reporting stays off for a user who turned it off.
+
 ## The four engines, or two endpoints
 
 Setup offers Ollama, oMLX, vLLM, or Lemonade, and only the ones the detected machine can run. The other path is a decode endpoint and an encode endpoint. Either URL may be set alone. From inside Docker the probe uses `host.docker.internal`, and the card shows that URL.
