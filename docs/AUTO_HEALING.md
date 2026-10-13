@@ -26,7 +26,9 @@ is the most healing-heavy path the app ever runs:
    creates the Hub data directory, seeds `docker-compose.prod.yml` and `.env`,
    and runs the **Traefik runtime preflight** (`prepare_traefik_runtime_state`),
    which seeds `state/traefik/config/traefik.yml`, `dynamic/dynamic.yml`, the
-   `tls/` directory, and `acme_storage.json` if any are missing.
+   `tls/` directory, and `acme_storage.json` if any are missing. It leaves a
+   Traefik file the Hub wrote alone, even one from another release after the
+   Hub's own update: the Hub writes both from its assets on every boot.
    (`main.rs` setup hook, ~L190–207)
 
 2. **Decide to start.** The hash-based reconciliation block sees that no

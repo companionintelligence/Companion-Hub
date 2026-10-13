@@ -225,13 +225,37 @@ fn a_launch_leaves_traefik_files_alone_that_differ_only_in_line_endings() {
     }
 }
 
+/// The Hub's own update moves only its image, so it can run a release whose `dynamic.yml` differs
+/// from the one compiled into this build, and it writes its own on every boot. Putting this build's
+/// seed back over it recreated Traefik and the whole stack at every launch, and the Hub then wrote
+/// its file again (Companion-Hub#1931). The file the Hub wrote is the one Traefik should read.
 #[test]
-fn a_launch_still_replaces_a_traefik_file_whose_content_differs() {
+fn a_launch_leaves_a_traefik_file_alone_that_another_hub_release_wrote() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let data_dir = tempdir.path();
     prepare_traefik_runtime_state(data_dir).expect("first launch");
     let dynamic = data_dir.join(TRAEFIK_DYNAMIC_FILE);
-    std::fs::write(&dynamic, "http: {}\n").expect("write an older dynamic.yml");
+    // As a release that sends the app-starting page as a 503 writes it.
+    let from_another_release = TRAEFIK_DYNAMIC_CONFIG_SEED.replace("{status}", "{originalStatus}");
+    assert_ne!(from_another_release, TRAEFIK_DYNAMIC_CONFIG_SEED);
+    std::fs::write(&dynamic, &from_another_release).expect("write the Hub's dynamic.yml");
+
+    let result = prepare_traefik_runtime_state(data_dir).expect("next launch");
+
+    assert!(!result.changed, "nothing to recreate");
+    assert_eq!(
+        std::fs::read_to_string(&dynamic).expect("read"),
+        from_another_release
+    );
+}
+
+#[test]
+fn a_launch_still_seeds_a_traefik_file_that_is_empty() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let data_dir = tempdir.path();
+    prepare_traefik_runtime_state(data_dir).expect("first launch");
+    let dynamic = data_dir.join(TRAEFIK_DYNAMIC_FILE);
+    std::fs::write(&dynamic, "\r\n").expect("empty the dynamic.yml");
 
     let result = prepare_traefik_runtime_state(data_dir).expect("next launch");
 

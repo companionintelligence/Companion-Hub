@@ -182,15 +182,3 @@ pub(crate) fn seeded_traefik_config_contents() -> String {
         std::env::var("ACME_EMAIL").unwrap_or_else(|_| DEFAULT_TRAEFIK_ACME_EMAIL.to_string());
     TRAEFIK_CONFIG_SEED.replace("{{ACME_EMAIL}}", &acme_email)
 }
-
-/// Whether `existing` says what `seed` says, line endings and trailing whitespace aside. The Hub
-/// rewrites the seeded Traefik files on every boot with LF line endings and one more newline at the
-/// end (`AppService.copyAssets`), and a Windows build embeds the seeds with the CRLF line endings
-/// of its checkout. A byte compare took either for a change and recreated the stack on every
-/// launch (Companion-Hub#1931).
-pub(crate) fn same_seeded_text(existing: &[u8], seed: &str) -> bool {
-    fn normalized(text: &str) -> String {
-        text.replace("\r\n", "\n").trim_end().to_string()
-    }
-    std::str::from_utf8(existing).is_ok_and(|existing| normalized(existing) == normalized(seed))
-}
