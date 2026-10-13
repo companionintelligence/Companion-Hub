@@ -17,6 +17,7 @@ import {
   type UpdateInfo,
 } from '@/lib/update-service';
 import { sdkFail, sdkOk } from '@/tests/sdk-mock-helpers';
+import { TranslatableError } from '@/types/error.types';
 
 const { mockSdkPerformUpdate, mockGetDesktopRelease, mockProbeHealthyHubApiPort } = vi.hoisted(() => ({
   mockSdkPerformUpdate: vi.fn(),
@@ -767,6 +768,28 @@ describe('update-service', () => {
       mockSdkPerformUpdate.mockResolvedValue(sdkOk({ success: true, stack: 'updating', host }));
 
       await expect(performStackUpdate('1.1.0')).resolves.toMatchObject({ ok: true, messageKey: 'SETTINGS_ACTIONS_UPDATE_STACK_DESKTOP_SEPARATE' });
+    });
+
+    // The app's response interceptor turns a 409 body into a TranslatableError whose message is the
+    // Hub's own sentence. The card used to throw that away and say "Update failed. Check logs".
+    it('says why when the Hub refuses the update', async () => {
+      const reason = 'This Hub was started on Windows (compose ran from C:\\Users\\ci), and the updater container cannot reach Windows paths.';
+      mockSdkPerformUpdate.mockResolvedValue({
+        response: new Response(null, { status: 409 }),
+        error: new TranslatableError(reason, {}, { status: 409, url: '/api/system/update' }),
+      });
+
+      await expect(performStackUpdate('1.1.0')).resolves.toEqual({
+        ok: false,
+        messageKey: 'SETTINGS_ACTIONS_UPDATE_REFUSED',
+        messageParams: { reason },
+      });
+    });
+
+    it('keeps the generic failure for anything that is not a refusal', async () => {
+      mockSdkPerformUpdate.mockResolvedValue(sdkFail(500, { message: 'boom' }));
+
+      await expect(performStackUpdate('1.1.0')).resolves.toEqual({ ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_FAILED' });
     });
   });
 });
