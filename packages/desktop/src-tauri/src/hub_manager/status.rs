@@ -326,6 +326,37 @@ pub(crate) fn startup_service_definitions(
     (core, optional)
 }
 
+/// The required services that are missing or stopped beside a Hub container that is up, by label.
+///
+/// A launch that finds the Hub up leaves the stack alone, so it has to look for these itself: a
+/// Traefik that lost port 80 to another program at boot stays down while the Hub answers.
+pub fn stopped_core_services() -> Vec<&'static str> {
+    let (core, _) = startup_service_definitions(false);
+    let mut names: Vec<&str> = core.iter().map(|(container, _, _)| *container).collect();
+    names.extend([LEGACY_HUB_CONTAINER, LEGACY_HUB_QUEUE]);
+    stopped_core_services_in(&inspect_containers(&names))
+}
+
+/// [`stopped_core_services`] for what `docker inspect` found. A `restarting` container counts as
+/// up, because Docker is already bringing it back.
+pub(crate) fn stopped_core_services_in(
+    containers: &HashMap<String, ContainerInspect>,
+) -> Vec<&'static str> {
+    // No Hub container in the answer means the inspect failed, which says nothing about the rest.
+    if service_inspect(containers, HUB_CONTAINER).is_none() {
+        return Vec::new();
+    }
+    let (core, _) = startup_service_definitions(false);
+    core.into_iter()
+        .filter(|(container, _, _)| *container != HUB_CONTAINER)
+        .filter(|(container, _, _)| {
+            service_inspect(containers, container)
+                .is_none_or(|found| matches!(found.status.as_str(), "created" | "exited" | "dead"))
+        })
+        .map(|(_, label, _)| label)
+        .collect()
+}
+
 /// True when the host Ollama API responds on localhost (same target the Hub backend uses).
 fn probe_host_ollama() -> bool {
     {

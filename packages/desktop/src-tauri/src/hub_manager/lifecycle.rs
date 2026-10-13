@@ -470,6 +470,8 @@ fn start_hub_inner(
             // Persist after compose up (even if health check fails later) so retries
             // and subsequent launches do not repeatedly pull/recreate unchanged stacks.
             persist_config_hash(data_dir, compose_path, env_path);
+            // Before the Hub is up, so its first status sync finds them running.
+            start_apps_stopped_with_hub(data_dir);
             let _ = append_desktop_log_for(
                 data_dir,
                 "hub.start",
@@ -816,7 +818,10 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
     }
 }
 
-pub fn stop_managed_app_containers() -> Result<Option<String>, String> {
+/// Stops the running app containers along with the Hub and remembers them for the next start.
+/// `restart: unless-stopped` leaves a container stopped by hand stopped, so nothing else starts
+/// them again.
+pub fn stop_managed_app_containers(data_dir: &Path) -> Result<Option<String>, String> {
     if !is_docker_available() {
         return Ok(None);
     }
@@ -825,6 +830,7 @@ pub fn stop_managed_app_containers() -> Result<Option<String>, String> {
     if ids.is_empty() {
         return Ok(None);
     }
+    remember_apps_stopped_with_hub(data_dir, &ids);
 
     let mut command = docker_command();
     command.arg("stop");

@@ -26,7 +26,9 @@ is the most healing-heavy path the app ever runs:
    creates the Hub data directory, seeds `docker-compose.prod.yml` and `.env`,
    and runs the **Traefik runtime preflight** (`prepare_traefik_runtime_state`),
    which seeds `state/traefik/config/traefik.yml`, `dynamic/dynamic.yml`, the
-   `tls/` directory, and `acme_storage.json` if any are missing.
+   `tls/` directory, and `acme_storage.json` if any are missing. It leaves a
+   Traefik file the Hub wrote alone, even one from another release after the
+   Hub's own update: the Hub writes both from its assets on every boot.
    (`main.rs` setup hook, ~L190–207)
 
 2. **Decide to start.** The hash-based reconciliation block sees that no
@@ -74,6 +76,8 @@ compares it to `.config-hash` in the data dir.
 |-----------|----------|-----|
 | User explicitly stopped the Hub (`.user-stopped` marker) | **don't start** | Honour the user's "Stop Hub" decision across relaunches |
 | Containers missing | **start** | First launch, or containers were removed |
+| Hub container stopped, missing or restart-looping | **start** | `hub_needs_runtime_recovery` |
+| Database, queue or Traefik stopped or missing beside a running Hub | **start** | Such as a Traefik that lost port 80 at boot (`stopped_core_services`) |
 | Traefik recreate required (preflight changed mounted state) | **start** | Runtime state changed; Traefik must be recreated before reuse |
 | Config hash changed | **start** | Upgrade, env fix, or compose change |
 | Otherwise | **do nothing** | Containers exist, config unchanged, no repair pending |
@@ -181,9 +185,11 @@ errors and restarts the existing container. A log line that ends in
 groups them by app URN, and reconciles each installed app's DB status against
 reality:
 
-- **`running`** — every container is running, or exited cleanly (`Exited (0)`).
-- **`stopped`** — some containers are not running (mixed state is logged).
-- **`missing`** — no containers exist at all.
+- **`running`**: at least one container is running, and every other one is running or exited
+  cleanly (`Exited (0)`), as a one-shot init service does when it finishes.
+- **`stopped`**: no container is running, or one exited with an error (mixed state is logged).
+  An app whose containers were all stopped with `docker stop`, such as by the desktop's
+  **Stop Hub**, is `stopped`, and so is an installed app with no containers at all.
 
 Guards prevent false alarms:
 
@@ -201,6 +207,9 @@ When a status actually changes, it is written to the DB and broadcast over SSE
 (`status_change`). **Crash detection:** a `running → stopped` or
 `running → missing` transition fires an `app.crashed` agent notification at
 **high** urgency, so the agent layer can react.
+An app turned `stopped` because every container exited 0 is the exception. It
+was stopped on purpose, so it gets no notification and no crash report, the
+same as a stop from the Hub.
 
 > Related: `agent-health-check.service.ts` notifies the agent on high disk usage
 > (high urgency), high memory (medium), and health-check failures (low).
@@ -257,6 +266,15 @@ Auto-healing never fights the user:
   click **Start Hub** (which clears the marker). The startup screen says so
   when the app opens: "CI Hub is stopped", with when it was stopped and a
   **Start Hub** button, instead of a startup timer.
+- **Stop Hub** in the tray, and **Clear Tunnel Token**, stop the running apps
+  too, and list their containers in `.apps-stopped-with-hub` in the data dir.
+  The next start, such as **Start Hub** from the tray or the startup screen,
+  starts those containers again right after `compose up`, before the Hub's
+  first app status sync. One that won't start stays stopped, and
+  `desktop.log` says why. That happens when `ci-hub_network` was removed and
+  created again while the apps were stopped, as a second Stop Hub does: Docker
+  looks the network up by its old ID. The Hub then shows the app **Stopped**,
+  and its **Start** recreates the containers.
 - `restart: unless-stopped` won't resurrect a container the user stopped
   on purpose.
 - After a failed start (`.start-failed` marker), the startup screen shows the
