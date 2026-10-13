@@ -2993,6 +2993,74 @@ describe('RegistrationService', () => {
     });
   });
 
+  describe('the registration record (state/registered-device-id)', () => {
+    const RECORD_PATH = '/data/state/registered-device-id';
+    // Placeholders: the SMBIOS UUID a Windows Hub paired under, and the registry MachineGuid desktop
+    // 0.3.4 wrote over DEVICE_ID once Windows removed wmic.
+    const REGISTERED = '4c4c4544-0042-3510-8052-b4c04f4d3232';
+    const MACHINE_GUID = '9e1f0c2a-7d3b-4e6a-8f00-2b5c6d7e9d8e';
+    let savedDeviceId: string | undefined;
+
+    beforeEach(() => {
+      savedDeviceId = process.env.DEVICE_ID;
+      deviceRegistrationRepository.deleteAll.mockResolvedValue(undefined);
+      vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      if (savedDeviceId === undefined) {
+        delete process.env.DEVICE_ID;
+      } else {
+        process.env.DEVICE_ID = savedDeviceId;
+      }
+    });
+
+    it('checks in under the ID the Hub registered as, not a different DEVICE_ID from the env file', async () => {
+      process.env.DEVICE_ID = MACHINE_GUID;
+      vol.writeFileSync(RECORD_PATH, `${REGISTERED}\n`);
+
+      await expect(service.getDeviceId()).resolves.toBe(REGISTERED);
+    });
+
+    it.each(['manual', 'portal_rejected'] as const)('removes the record on a %s reset, so the next pairing takes DEVICE_ID', async (reason) => {
+      // `manual` is Settings > Reset registration and the factory reset; `portal_rejected` is Portal's DEVICE_NOT_ACTIVE.
+      process.env.DEVICE_ID = MACHINE_GUID;
+      vol.writeFileSync(RECORD_PATH, `${REGISTERED}\n`);
+      await expect(service.getDeviceId()).resolves.toBe(REGISTERED);
+
+      await service.resetRegistration({ reason });
+
+      expect(vol.existsSync(RECORD_PATH)).toBe(false);
+      await expect(service.getDeviceId()).resolves.toBe(MACHINE_GUID);
+    });
+
+    it('refuses to pair under a record copied from another machine, and judges again once a reset removes it', async () => {
+      const hostMachineId = '5eed5eed5eed5eed5eed5eed5eed5eed';
+      const copied = 'c0ffee00c0ffee00c0ffee00c0ffee00';
+      // DEVICE_ID is this host's own, as the Linux desktop writes it; the record came with a copied data folder.
+      process.env.DEVICE_ID = hostMachineId;
+      vol.mkdirSync('/etc', { recursive: true });
+      vol.writeFileSync('/etc/machine-id', `${hostMachineId}\n`);
+      vol.writeFileSync(RECORD_PATH, `${copied}\n`);
+      configService.getOutboundCiCloudUrl.mockReturnValue('http://cloud.api');
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+
+      const refused = await service.pairDevice('ABC123');
+
+      expect(refused.success).toBe(false);
+      expect(refused.message).toContain('state/registered-device-id');
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+
+      await service.resetRegistration();
+      mockedAxios.post.mockResolvedValue({ status: 400, data: { error: 'Invalid pairing code' } } as any);
+
+      await service.pairDevice('ABC123');
+
+      expect(mockedAxios.post).toHaveBeenCalledWith('http://cloud.api/api/devices/pair', expect.anything(), expect.anything());
+    });
+  });
+
   describe('checkForRemoval', () => {
     const DEVICE_NOT_ACTIVE = { status: 400, data: { error: 'Device not active', code: 'DEVICE_NOT_ACTIVE' } };
 

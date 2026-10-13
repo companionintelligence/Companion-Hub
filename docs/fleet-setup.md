@@ -89,6 +89,24 @@ whether another Hub carries the same ID:
 If you moved a Hub to new hardware on purpose and it must keep its Portal device, set
 `HUB_ALLOW_FOREIGN_DEVICE_ID=true` as well.
 
+When a Hub pairs, it writes the device ID it paired under to `state/registered-device-id` in its data
+folder, and from then on that record wins over `DEVICE_ID`. Changing `DEVICE_ID` later, by hand or
+through an older desktop app, doesn't change the ID the Hub checks in with. The Hub logs a warning
+with the last characters of both IDs instead. Windows desktop 0.3.4 wrote the registry `MachineGuid`
+into `DEVICE_ID` once Windows removed `wmic`, and Portal refused those Hubs until the record won.
+
+Every registration reset removes the record: **Settings > Reset registration**, a removal in Portal,
+a factory reset, and Start fresh. To change a registered Hub's device ID on purpose:
+
+1. Reset its registration from **Settings**.
+2. Set `DEVICE_ID` in the env file and recreate the Hub container (`cihub up <env>`, or quit and
+   reopen the desktop app).
+3. Pair it again. Portal sees it as a new device.
+
+The copied-ID check judges the record as well as `DEVICE_ID`, because a data folder copied from
+another node brings its record with it. If the record is the copy, `cihub register --fresh --code <code>`
+removes it before pairing.
+
 ## Operators and accounts: three identity planes
 
 These are separate, and conflating them is the most common setup mistake. A person can hold all

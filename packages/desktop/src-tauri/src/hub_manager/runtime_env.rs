@@ -391,7 +391,7 @@ fn read_host_device_id_impl() -> Option<String> {
 }
 
 /// Where the backend records the device ID the Hub registered with Portal under. It writes the
-/// file when the Hub pairs and removes it when the Hub is set up fresh (`registeredDeviceIdPath`
+/// file when the Hub pairs and removes it when its registration is reset (`registeredDeviceIdPath`
 /// in the backend's `device-id.resolver.ts`).
 const REGISTERED_DEVICE_ID_FILE: &str = "state/registered-device-id";
 

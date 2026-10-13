@@ -54,7 +54,7 @@ const KERNEL_RELEASE_FILE = '/proc/sys/kernel/osrelease';
 const VM_KERNEL_RELEASE = /linuxkit|microsoft/i;
 
 export type DeviceIdHostBinding =
-  /** No `DEVICE_ID` in the environment. The Hub derives one from this machine, so there is nothing to compare. */
+  /** No registration record and no `DEVICE_ID`. The Hub derives one from this machine, so there is nothing to compare. */
   | { status: 'not_set' }
   | { status: 'not_checkable'; deviceId: string; reason: string }
   | { status: 'matches_host'; deviceId: string }
@@ -64,6 +64,11 @@ export type DeviceIdHostBinding =
 
 export interface DeviceIdHostCheckInput {
   envDeviceId: string | undefined;
+  /**
+   * `state/registered-device-id`. The Hub pairs and checks in under it ahead of `DEVICE_ID`, and a data
+   * folder copied from another machine brings it along, so it gets the same check.
+   */
+  registeredDeviceId?: string | null;
   allowForeign?: string | undefined;
   /**
    * Returns a file's contents, or `null` when it cannot be read. Injected so both the Hub and the host-side CLI can run this.
@@ -104,8 +109,45 @@ export function foreignDeviceIdMessage(deviceId: string): string {
   );
 }
 
+/**
+ * The remedy for a registration record from another machine that differs from `DEVICE_ID`. The
+ * record wins over `DEVICE_ID`, so editing the env file alone changes nothing; only a reset removes
+ * the record.
+ */
+export function foreignRegisteredDeviceIdMessage(deviceId: string): string {
+  return (
+    `This Hub's registration record (state/registered-device-id) holds ${deviceId}, which was not generated on this machine: it is not this host's /etc/machine-id or DMI identity, so this Hub most likely paired under an ID copied from another Hub, or its data folder was copied from one. ` +
+    "Portal knows a Hub only by its device ID, so two Hubs with one ID are one device, and whichever pairs second takes over the other one's registration or is refused. " +
+    'The Hub uses the record ahead of DEVICE_ID, so changing DEVICE_ID alone does not help. To give this Hub its own ID, make sure DEVICE_ID in its env file is the output of `cat /etc/machine-id`, then reset the registration from Settings, or run `cihub register --fresh --code <code>` on a Hub that is not registered. ' +
+    `If no other Hub uses this ID, or the Hub was moved to new hardware on purpose, set ${ALLOW_FOREIGN_DEVICE_ID_ENV}=true instead, because changing a registered Hub's device ID means registering it again as a new device.`
+  );
+}
+
+/**
+ * Judges the registration record, which is the ID the Hub pairs and checks in under when it has one,
+ * and `DEVICE_ID` as well, which it pairs under once a reset removes the record. A foreign record
+ * comes first, because it is the ID in use. A record equal to `DEVICE_ID` was written from it at
+ * pairing, so the env file is what came from another machine, and its message applies.
+ */
 export function checkDeviceIdHostBinding(input: DeviceIdHostCheckInput): DeviceIdHostBinding {
-  const deviceId = normalizeDeviceIdCandidate(input.envDeviceId);
+  const envBinding = judgeDeviceId(input.envDeviceId, input, foreignDeviceIdMessage);
+  const registered = normalizeDeviceIdCandidate(input.registeredDeviceId);
+  if (!registered || registered === normalizeDeviceIdCandidate(input.envDeviceId)) {
+    return envBinding;
+  }
+  const recordBinding = judgeDeviceId(registered, input, foreignRegisteredDeviceIdMessage);
+  if (recordBinding.status === 'foreign' || envBinding.status !== 'foreign') {
+    return recordBinding;
+  }
+  return envBinding;
+}
+
+function judgeDeviceId(
+  candidate: string | undefined,
+  input: DeviceIdHostCheckInput,
+  foreignMessage: (deviceId: string) => string,
+): DeviceIdHostBinding {
+  const deviceId = normalizeDeviceIdCandidate(candidate);
   if (!deviceId) {
     return { status: 'not_set' };
   }
@@ -134,5 +176,5 @@ export function checkDeviceIdHostBinding(input: DeviceIdHostCheckInput): DeviceI
   if (input.allowForeign?.trim().toLowerCase() === 'true') {
     return { status: 'allowed_foreign', deviceId };
   }
-  return { status: 'foreign', deviceId, message: foreignDeviceIdMessage(deviceId) };
+  return { status: 'foreign', deviceId, message: foreignMessage(deviceId) };
 }
