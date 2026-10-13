@@ -4,6 +4,8 @@ import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { toast } from 'sonner';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import en from '@ci-hub/common/i18n/translations/en.json';
+import enUS from '@ci-hub/common/i18n/translations/en-US.json';
 import { HubAccess } from './hub-access';
 
 // "Hub access" section of the app settings dialog: Hub-provisioned trust material (app key +
@@ -93,6 +95,18 @@ describe('HubAccess', () => {
     expect(screen.getByText('APP_SETTINGS_HUB_ACCESS_IDENTITY_OFF')).toBeTruthy();
   });
 
+  // CI Memory's shape: no app key, only an identity secret of its own, and the backend counts it as provisioned.
+  it('shows the section with Rotate for a provisioned app that holds no app key', async () => {
+    h.get.mockResolvedValue({ data: { appKey: null, identityVerification: true, provisioned: true } });
+
+    renderHubAccess();
+
+    await waitFor(() => expect(screen.getByTestId('hub-access')).toBeTruthy());
+    expect(screen.queryByTestId('hub-access-key')).toBeNull();
+    expect(screen.getByText('APP_SETTINGS_HUB_ACCESS_IDENTITY_ON')).toBeTruthy();
+    expect(screen.getByTestId('hub-access-rotate')).toBeTruthy();
+  });
+
   it('never renders a submit button — it lives inside the settings form', async () => {
     const user = userEvent.setup();
     h.get.mockResolvedValue({ data: WITH_KEY });
@@ -138,6 +152,17 @@ describe('HubAccess', () => {
     await waitFor(() => expect(h.get.mock.calls.length).toBeGreaterThan(getCalls));
     // Confirm dismissed after rotating.
     expect(screen.queryByTestId('hub-access-confirm')).toBeNull();
+  });
+
+  // Every app gets the same confirm, so it may promise only what holds for all of them. CI Memory has no app key
+  // and keeps the secrets it shares with the whole Hub, and an MCP client has no identity key. "Fresh values"
+  // promised that everything changes.
+  it('says in both English files that only keys of the app alone are replaced', () => {
+    const text =
+      "Rotate this app's Hub credentials? Any app key or identity key issued to this app alone is replaced, and the app restarts. Secrets it shares with the whole Hub stay the same.";
+
+    expect(en.APP_SETTINGS_HUB_ACCESS_ROTATE_CONFIRM).toBe(text);
+    expect(enUS.APP_SETTINGS_HUB_ACCESS_ROTATE_CONFIRM).toBe(text);
   });
 
   it('abandons the rotate when the confirm is cancelled', async () => {

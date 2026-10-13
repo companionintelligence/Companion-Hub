@@ -118,7 +118,7 @@
   "APP_SETTINGS_HUB_ACCESS_IDENTITY_ON": "Identity verification enabled",
   "APP_SETTINGS_HUB_ACCESS_IDENTITY_OFF": "Identity verification not provisioned",
   "APP_SETTINGS_HUB_ACCESS_ROTATE": "Rotate",
-  "APP_SETTINGS_HUB_ACCESS_ROTATE_CONFIRM": "Rotate this app's Hub credentials? The app will restart and receive fresh values.",
+  "APP_SETTINGS_HUB_ACCESS_ROTATE_CONFIRM": "Rotate this app's Hub credentials? Any app key or identity key issued to this app alone is replaced, and the app restarts. Secrets it shares with the whole Hub stay the same.",
   "APP_SETTINGS_HUB_ACCESS_ROTATED": "Hub credentials rotated",
   "APP_SETTINGS_HUB_ACCESS_ROTATE_ERROR": "Failed to rotate Hub credentials",
   "APP_SETTINGS_HUB_ACCESS_UNSAVED": "Save or discard your changes before rotating.",

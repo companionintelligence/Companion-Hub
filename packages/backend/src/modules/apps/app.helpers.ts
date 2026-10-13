@@ -232,9 +232,12 @@ export function receivesPortalDeviceKey(config: Pick<AppInfo, 'id' | 'source'>):
  * Returns the scopes for an app's Hub-managed key.
  *
  * The `mcp` scope serves an MCP tools consumer, and the `app` scope serves a
- * provenance-gated first-party consumer. An empty array grants no trust material.
- * Both `generateEnvFile` and `HubAccessService` use this gate so the operator-facing
- * report cannot drift from the actual grant.
+ * provenance-gated first-party consumer. An empty array grants no managed key and no
+ * per-app forward-auth secret. Both `generateEnvFile` and `HubAccessService` use this
+ * gate so the operator-facing report cannot drift from the actual grant. It is not the
+ * only grant: Companion Memory (`isMemoryProviderApp`) gets a forward-auth identity
+ * secret with no key scope, and `HubAccessService` counts that gate too. A new kind of
+ * trust material has to be added in both places.
  */
 export function hubTrustMaterialScopes(config: Pick<AppInfo, 'urn' | 'hub_integration'>): ApiKeyScope[] {
   const scopes: ApiKeyScope[] = [];
