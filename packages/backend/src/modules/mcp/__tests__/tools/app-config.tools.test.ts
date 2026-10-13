@@ -52,6 +52,15 @@ describe('AppConfigTools', () => {
       expect(result.appEnv).toBe('KEY=val');
       expect(result.isEnabled).toBe(true);
     });
+
+    // A custom app's env values are for whoever may change its settings.
+    it('asks for configure on a custom app', async () => {
+      userConfigService.getUserConfig.mockResolvedValue({ dockerCompose: '', appEnv: 'KEY=val', isEnabled: true });
+
+      await asGrantedOperator(() => tools.getUserConfig({ appUrn: 'my-compose:_user' }));
+
+      expect(gateChecks(lifecycle.assertActorMay)).toEqual([[GRANTED_ACTOR, 'my-compose:_user', 'configure', undefined]]);
+    });
   });
 
   describe('hub_update_user_config', () => {

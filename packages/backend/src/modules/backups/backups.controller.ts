@@ -20,6 +20,7 @@ import { ApiBody, ApiConsumes, ApiResponse } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
 import { AuthGuard } from '../auth/auth.guard';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
+import { backupsReadAction } from '@/core/portal/local-app-reads';
 import { BackupsService } from './backups.service';
 import { BackupRequestDto, DeleteAppBackupBodyDto, GetAppBackupsDto, GetAppBackupsQueryDto, RestoreAppBackupDto } from './dto/backups.dto';
 
@@ -61,12 +62,14 @@ export class BackupsController {
   @ApiResponse({ type: GetAppBackupsDto })
   async getAppBackups(@Param('urn') urn: string, @Query() query: GetAppBackupsQueryDto, @Req() req: Request) {
     const appUrn = castAppUrn(urn);
-    await this.whois.assertSessionAction(req, appUrn, 'view');
+    // A custom app's backups are its owner's and admins' (`backupsReadAction`); a catalog app's are anyone's who may view it.
+    const action = backupsReadAction(appUrn);
+    await this.whois.assertSessionAction(req, appUrn, action);
     const backups = await this.backupsService.getAppBackups({
       appUrn,
       page: query.page ?? 1,
       pageSize: query.pageSize ?? 10,
-      actor: this.whois.lifecycleActor(req, 'view'),
+      actor: this.whois.lifecycleActor(req, action),
     });
 
     return GetAppBackupsDto.parse(backups, { reportOnly: true });
@@ -83,7 +86,7 @@ export class BackupsController {
   @ApiResponse({ status: 200, description: 'Backup file download' })
   async downloadBackup(@Param('urn') urn: string, @Param('filename') filename: string, @Res() res: Response, @Req() req: Request) {
     const appUrn = castAppUrn(urn);
-    await this.whois.assertSessionAction(req, appUrn, 'view');
+    await this.whois.assertSessionAction(req, appUrn, backupsReadAction(appUrn));
     const filePath = await this.backupsService.getBackupFilePath({ appUrn, filename });
 
     // The name is interpolated into a quoted header parameter, so a `"` or `\` in it

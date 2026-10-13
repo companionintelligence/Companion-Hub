@@ -2,6 +2,7 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
+import { backupsReadAction } from '@/core/portal/local-app-reads';
 import { SSEService } from '@/core/sse/sse.service';
 import { Injectable, Optional } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -160,7 +161,8 @@ export class BackupsService {
   public async getAppBackups(params: { appUrn: AppUrn; page: number; pageSize: number; actor: LifecycleActor }) {
     const { appUrn, page, pageSize } = params;
 
-    await this.appLifecycle.assertActorMay(params.actor, appUrn, 'view');
+    // A custom app's backups are its owner's and admins'; MCP reaches this too (`backupsReadAction`).
+    await this.appLifecycle.assertActorMay(params.actor, appUrn, backupsReadAction(appUrn));
 
     const backups = await this.backupManager.listBackupsByAppId(appUrn);
 

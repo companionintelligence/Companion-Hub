@@ -4,6 +4,7 @@ import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.servi
 import { AppsService } from '@/modules/apps/apps.service';
 import { DockerService } from '@/modules/docker/docker.service';
 import { castAppUrn } from '@/common/helpers/app-helpers';
+import { settingsReadAction } from '@/core/portal/local-app-reads';
 import { assertMcpCallerMay } from '../mcp-tool-call';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 
@@ -180,7 +181,8 @@ export class AppDiscoveryTools implements OnModuleInit {
 
   async getComposeDiff(params: { appUrn: string }) {
     const appUrn = castAppUrn(params.appUrn);
-    await assertMcpCallerMay(this.appLifecycleService, appUrn, 'view');
+    // A custom app's compose holds its env values, which are its owner's and admins' (`settingsReadAction`).
+    await assertMcpCallerMay(this.appLifecycleService, appUrn, settingsReadAction(appUrn));
     return this.appsService.getAppComposeDiff(appUrn);
   }
 

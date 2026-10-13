@@ -297,6 +297,17 @@ describe('BackupsService', () => {
       expect(appEventsQueue.publish).not.toHaveBeenCalled();
     });
   });
+  // A custom app's backups are for whoever may take one; MCP lists them through here too.
+  describe('getAppBackups on a custom app', () => {
+    it('asks the actor gate for backup rather than view', async () => {
+      appLifecycle.assertActorMay.mockResolvedValue(undefined);
+      backupManager.listBackupsByAppId.mockResolvedValue([]);
+
+      await service.getAppBackups({ appUrn: 'my-compose:_user' as AppUrn, page: 1, pageSize: 10, actor: GRANTED_ACTOR });
+
+      expect(gateChecks(appLifecycle.assertActorMay)).toEqual([[GRANTED_ACTOR, 'my-compose:_user', 'backup', undefined]]);
+    });
+  });
   describe('getAppBackups paging', () => {
     const appUrn = 'immich:ci-marketplace' as AppUrn;
     const makeBackups = (count: number) =>

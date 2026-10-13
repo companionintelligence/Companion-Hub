@@ -128,6 +128,15 @@ describe('AppDiscoveryTools', () => {
       expect(result.current).toBeNull();
       expect(result.new).toBeNull();
     });
+
+    // A custom app's compose holds its env values, which are for whoever may change its settings.
+    it('asks for configure on a custom app', async () => {
+      appsService.getAppComposeDiff.mockResolvedValue({ current: '{}', new: null });
+
+      await asGrantedOperator(() => tools.getComposeDiff({ appUrn: 'my-compose:_user' }));
+
+      expect(gateChecks(lifecycle.assertActorMay)).toEqual([[GRANTED_ACTOR, 'my-compose:_user', 'configure', undefined]]);
+    });
   });
 
   describe('hub_get_config_diff', () => {

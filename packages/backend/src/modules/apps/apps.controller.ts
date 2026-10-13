@@ -3,6 +3,7 @@ import { Controller, Get, Param, Patch, Post, Req, Res, UseGuards } from '@nestj
 import type { Request, Response } from 'express';
 import { ModuleRef } from '@nestjs/core';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
+import { settingsReadAction } from '@/core/portal/local-app-reads';
 import { AuthGuard } from '../auth/auth.guard';
 import { ObservabilityRead, ObservabilityReadGuard } from '../auth/observability-read.guard';
 import { AppRuntimeMonitorService } from './app-runtime-monitor.service';
@@ -188,7 +189,8 @@ export class AppsController {
   @ApiResponse({ type: GetComposeDiffDto })
   async getAppComposeDiff(@Param('urn') urn: string, @Req() req: Request) {
     const appUrn = castAppUrn(urn);
-    await this.whois.assertSessionAction(req, appUrn, 'view');
+    // A custom app's compose holds its env values, which are its owner's and admins' (`settingsReadAction`).
+    await this.whois.assertSessionAction(req, appUrn, settingsReadAction(appUrn));
     const res = await this.appsReadService.getAppComposeDiff(appUrn);
     return GetComposeDiffDto.parse(res, { reportOnly: true });
   }
