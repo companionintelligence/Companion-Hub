@@ -170,6 +170,7 @@ export class AppStatusSyncService {
 
         const dockerStatus = dockerStatusMap.get(appUrn);
         let newStatus: AppStatus;
+        let everyContainerExitedCleanly = false;
 
         if (!dockerStatus || dockerStatus.total === 0) {
           if (app.status === 'install_failed') {
@@ -213,10 +214,14 @@ export class AppStatusSyncService {
           // not uninstalled. Keep "missing" for install verification / SSE uninstall
           // events — never as the durable status of an installed app.
           newStatus = 'stopped';
-        } else if (dockerStatus.running + dockerStatus.exitZero === dockerStatus.total) {
+        } else if (dockerStatus.running > 0 && dockerStatus.running + dockerStatus.exitZero === dockerStatus.total) {
+          // A clean exit counts only beside a running container: that is a one-shot init service
+          // that finished. Every container exited 0 is an app stopped with `docker stop`, such as
+          // by the desktop's Stop Hub.
           newStatus = 'running';
         } else {
           newStatus = 'stopped';
+          everyContainerExitedCleanly = dockerStatus.exitZero === dockerStatus.total;
           if (dockerStatus.running > 0) {
             this.logger.warn(`App ${appUrn} has mixed container states: ${dockerStatus.running}/${dockerStatus.total} running`);
             this.errorReportingService?.captureWarning(
@@ -239,7 +244,9 @@ export class AppStatusSyncService {
           this.logger.info(`Synced ${appUrn}: '${app.status}' -> '${newStatus}'`);
 
           // Detect crash: running → stopped (containers gone or unhealthy)
-          if (app.status === 'running' && newStatus === 'stopped') {
+          // Not when every container exited 0: something stopped the app on purpose, such as
+          // `docker stop` or the desktop's Stop Hub, and a stop from the Hub reports no crash either.
+          if (app.status === 'running' && newStatus === 'stopped' && !everyContainerExitedCleanly) {
             this.agentNotifyService?.notify('app.crashed', { appUrn, previousStatus: app.status, newStatus }, 'high');
             await this.reportAppCrash(appUrn, app.status, newStatus);
           }

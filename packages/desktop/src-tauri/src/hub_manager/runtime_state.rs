@@ -752,6 +752,10 @@ fn ensure_runtime_directory(path: &Path) -> Result<TraefikRuntimePreflight, Stri
     Ok(result)
 }
 
+/// Writes `contents` to `path` when the file is missing, empty or a directory. A file with anything
+/// in it is left alone: the Hub writes both Traefik files from its own assets on every boot, and it
+/// can run another release than this build after its own update. Replacing its copy recreated the
+/// stack at every launch, and the Hub then wrote its own again (Companion-Hub#1931).
 fn ensure_seeded_text_file(path: &Path, contents: &str) -> Result<TraefikRuntimePreflight, String> {
     let mut result = TraefikRuntimePreflight::default();
 
@@ -773,7 +777,7 @@ fn ensure_seeded_text_file(path: &Path, contents: &str) -> Result<TraefikRuntime
         } else {
             let existing = std::fs::read(path)
                 .map_err(|error| format!("Failed to read {}: {}", path.display(), error))?;
-            if existing == contents.as_bytes() {
+            if !existing.trim_ascii().is_empty() {
                 return Ok(result);
             }
         }

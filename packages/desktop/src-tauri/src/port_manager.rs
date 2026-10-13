@@ -23,6 +23,11 @@ const DYNAMIC_PORTS: &[(u16, &str)] = &[
     (8080, "TRAEFIK_DASHBOARD_PORT"),
 ];
 
+/// Every env var the port manager writes to the env file, fixed ports first.
+pub(crate) fn port_env_vars() -> impl Iterator<Item = &'static str> {
+    FIXED_PORTS.iter().chain(DYNAMIC_PORTS).map(|&(_, var)| var)
+}
+
 /// Container names managed by our compose stack (used as docker ps filters).
 const OUR_CONTAINERS: &[&str] = &[
     HUB_CONTAINER,
@@ -61,9 +66,9 @@ impl HostPorts {
     /// Check if a port is available by attempting a TCP bind, OR held by our own containers.
     ///
     /// Any failed bind makes the port unavailable, including Linux refusing a normal
-    /// user a port below 1024 whether or not anything listens there. The app picks its
-    /// ports again on every launch, so taking a free 80/443 would move every existing
-    /// Linux desktop Hub off 8880/8443.
+    /// user a port below 1024 whether or not anything listens there. The app picks all
+    /// its ports again whenever the env file has none, so taking a free 80/443 there
+    /// would move an existing Linux desktop Hub off 8880/8443.
     fn is_available_or_ours(&self, port: u16) -> bool {
         self.ours.contains(&port) || (self.bind)(port).is_ok()
     }
@@ -521,10 +526,11 @@ mod tests {
         assert!(changed);
     }
 
-    /// The desktop app picks its ports again on every launch (`initialize_hub`
-    /// rewrites the env file without them), so a port Linux refuses must never
-    /// read as free here, or every Linux desktop Hub moves off 8880/8443 to
-    /// 80/443 at its next start. Checked against the real kernel.
+    /// The desktop app picks all its ports again whenever the env file has none
+    /// (a new install, or a start whose env file `ensure_runtime_env_state` had
+    /// to render again), so a port Linux refuses must never read as free here,
+    /// or a Linux desktop Hub moves off 8880/8443 to 80/443 at that start.
+    /// Checked against the real kernel.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_port_linux_refuses_is_never_free_to_the_desktop_app() {
