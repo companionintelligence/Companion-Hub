@@ -2129,6 +2129,12 @@ export type UpdateAppMetadataDto = {
     data: string;
 };
 
+export type UpdateBlocksDto = {
+    updateBlockedReason: string;
+    autoUpdateBlockedReason: string;
+    desktopAppUpdatesHub: boolean;
+};
+
 export type DesktopReleaseDto = {
     latestVersion: string;
     downloadUrl: string;
@@ -5875,6 +5881,19 @@ export type SetAutoUpdatesData = {
 export type SetAutoUpdatesResponses = {
     201: unknown;
 };
+
+export type GetUpdateBlocksData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system/update/blocked';
+};
+
+export type GetUpdateBlocksResponses = {
+    default: UpdateBlocksDto;
+};
+
+export type GetUpdateBlocksResponse = GetUpdateBlocksResponses[keyof GetUpdateBlocksResponses];
 
 export type GetHostListenerStatusData = {
     body?: never;
