@@ -65,6 +65,12 @@ export interface ComposeBuilderOptions {
    * is read, by `requiresHubLoginOnPublicRoute`, for a stored form that never decided `enableAuth`.
    */
   manifest?: Parameters<typeof requiresHubLoginOnPublicRoute>[1];
+  /**
+   * The operator's Default app CPU limit from Settings, for services the install form and the
+   * manifest leave uncapped. Only that setting belongs here, never the resource allocator's
+   * host-sized recommendation: see the limits in `buildService`.
+   */
+  defaultAppCpuLimit?: string;
 }
 
 interface Network {
@@ -151,6 +157,7 @@ export class DockerComposeBuilder {
   private securityOptions?: string[];
   private loopbackHostPort = false;
   private manifest?: Parameters<typeof requiresHubLoginOnPublicRoute>[1];
+  private defaultAppCpuLimit?: string;
 
   /**
    * @param posixPermissionsSupported Whether the app-data filesystem can carry POSIX
@@ -229,6 +236,9 @@ export class DockerComposeBuilder {
     }
     if (options.manifest !== undefined) {
       this.manifest = options.manifest;
+    }
+    if (options.defaultAppCpuLimit !== undefined) {
+      this.defaultAppCpuLimit = options.defaultAppCpuLimit.trim() || undefined;
     }
     return this;
   }
@@ -388,12 +398,12 @@ export class DockerComposeBuilder {
       }
     }
 
-    // User-set form limits and app-manifest limits only. Auto-allocated
-    // per-app defaults (50% RAM / 75% CPUs) must not be copied onto every
+    // User-set form limits, the operator's Default app CPU limit, and app-manifest limits only.
+    // Auto-allocated per-app defaults (50% RAM / 75% CPUs) must not be copied onto every
     // service — that cgroup-kills one container at half the host while the
     // rest of RAM is free, and it does not reserve anything for inference
     // (vLLM/Ollama live outside these compose files).
-    const effectiveCpuLimit = form.cpuLimit?.trim() || undefined;
+    const effectiveCpuLimit = form.cpuLimit?.trim() || this.defaultAppCpuLimit;
     const effectiveMemoryLimit = typeof form.memoryLimit === 'string' ? form.memoryLimit.trim() || undefined : undefined;
     // App-provided limits always win; form limits only fill the gaps
     const applyCpuLimit = Boolean(effectiveCpuLimit && !params.deploy?.resources?.limits?.cpus);
@@ -538,7 +548,8 @@ export class DockerComposeBuilder {
     envFile?: string,
     cloudflareOriginHostname?: string,
     cloudflarePublicHostname?: string,
-    // Kept so callers can still pass UI recommendations; they are not applied.
+    // Kept so callers can still pass UI recommendations; they are not applied. The operator's own
+    // Default app CPU limit comes in through `ComposeBuilderOptions.defaultAppCpuLimit`.
     _defaultCpuLimit?: string,
     _defaultMemoryLimit?: string,
     options?: ComposeBuilderOptions,
