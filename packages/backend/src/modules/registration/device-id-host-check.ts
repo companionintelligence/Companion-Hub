@@ -29,8 +29,8 @@ import { normalizeDeviceIdCandidate } from './device-id.resolver';
  * hex digits that belong to no machine anyone configured. Measured on 2026-09-17 on Docker Desktop
  * for Mac, where `-v /etc/machine-id:/etc/machine-id:ro` handed an Alpine container a machine ID the
  * Mac does not even have, on kernel `7.0.12-linuxkit`. The Linux desktop app on Docker Desktop writes
- * the real host's machine ID as `DEVICE_ID`, so the two never match. It also rewrites `.env` on every
- * launch, which drops `HUB_ALLOW_FOREIGN_DEVICE_ID`, so that Hub could never register at all. A
+ * the real host's machine ID as `DEVICE_ID`, so the two never match. It also rewrote `.env` on every
+ * launch and dropped `HUB_ALLOW_FOREIGN_DEVICE_ID`, so that Hub could never register at all. A
  * LinuxKit or WSL kernel therefore means "not checkable". The fleet's native engines report
  * `7.0.0-31-generic`, so the case this check exists for still gets judged.
  */
