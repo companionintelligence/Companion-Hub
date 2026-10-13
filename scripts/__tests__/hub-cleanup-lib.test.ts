@@ -3,18 +3,93 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  findManagedAppProjects,
   HUB_STACK_PROJECT_NAMES,
   getDesktopTunnelDir,
   getHubStateDirs,
   isCloudflaredTunnelToken,
   isRelatedVolume,
   isWithinPath,
-  managedAppProjectsFromLabelLines,
   parseNames,
   planAppTeardown,
   removeManagedAppProjects,
   runHubCleanup,
 } from '../hub-cleanup-lib';
+
+type FakeDockerObject = { name: string; labels: Record<string, string>; networks?: string[] };
+
+/**
+ * A Docker engine the cleanup code can list from and remove from. Filters and `--format` templates
+ * behave as Docker's do for the cases used here: every `label=` filter must match, any one
+ * `network=` filter may, and `{{.Labels}}` joins each `key=value` with a comma without escaping a
+ * comma inside a value. A container's ID is its name.
+ */
+function fakeDockerEngine(world: { containers: FakeDockerObject[]; networks?: FakeDockerObject[]; volumes?: FakeDockerObject[] }) {
+  const calls: string[] = [];
+  const filtersOf = (args: string[]) => args.filter((_arg, index) => args[index - 1] === '--filter');
+  const formatOf = (args: string[]) => (args.includes('--format') ? args[args.indexOf('--format') + 1] : undefined);
+  const hasLabel = (labels: Record<string, string>, filter: string) => {
+    const eq = filter.indexOf('=');
+    return eq === -1 ? filter in labels : labels[filter.slice(0, eq)] === filter.slice(eq + 1);
+  };
+  const matches = (item: FakeDockerObject, filters: string[]) => {
+    const values = (key: string) => filters.filter((filter) => filter.startsWith(`${key}=`)).map((filter) => filter.slice(key.length + 1));
+    const networks = values('network');
+    return (
+      values('label').every((label) => hasLabel(item.labels, label)) &&
+      values('name').every((part) => item.name.includes(part)) &&
+      (networks.length === 0 || networks.some((network) => item.networks?.includes(network)))
+    );
+  };
+  const render = (template: string, item: FakeDockerObject) =>
+    template
+      .replaceAll('{{.Names}}', item.name)
+      .replaceAll('{{.Name}}', item.name)
+      .replaceAll('{{.ID}}', item.name)
+      .replaceAll(
+        '{{.Labels}}',
+        Object.entries(item.labels)
+          .map(([key, value]) => `${key}=${value}`)
+          .join(','),
+      )
+      .replace(/\{\{\.Label "([^"]+)"\}\}/g, (_match, key: string) => item.labels[key] ?? '');
+  const list = (items: FakeDockerObject[], args: string[], quiet: string) =>
+    items
+      .filter((item) => matches(item, filtersOf(args)))
+      .map((item) => render(formatOf(args) ?? quiet, item))
+      .join('\n');
+
+  const docker = (args: string[]) => {
+    calls.push(args.join(' '));
+    const [command, sub] = args;
+    if (command === 'ps') return { ok: true, stdout: list(world.containers, args, '{{.ID}}') };
+    if (command === 'network' && sub === 'ls') return { ok: true, stdout: list(world.networks ?? [], args, '{{.Name}}') };
+    if (command === 'volume' && sub === 'ls') return { ok: true, stdout: list(world.volumes ?? [], args, '{{.Name}}') };
+    if (command === 'inspect' && formatOf(args) === '{{.Image}}') return { ok: true, stdout: `sha256:image-of-${args[args.length - 1]}` };
+    return { ok: true, stdout: '' };
+  };
+  const removals = () => calls.filter((call) => /^(rm |network rm |volume rm |image rm )/.test(call));
+  return { docker, calls, removals };
+}
+
+function withXdgHome<T>(home: string, run: () => T): T {
+  const saved = {
+    XDG_DATA_HOME: process.env.XDG_DATA_HOME,
+    XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+    XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
+  };
+  process.env.XDG_DATA_HOME = `${home}/.local/share`;
+  process.env.XDG_CONFIG_HOME = `${home}/.config`;
+  process.env.XDG_CACHE_HOME = `${home}/.cache`;
+  try {
+    return run();
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
 
 describe('hub-cleanup-lib', () => {
   it('isWithinPath handles trailing separators on basePath and targetPath', () => {
@@ -45,13 +120,11 @@ describe('hub-cleanup-lib', () => {
   });
 
   it('treats runtipi and runcihub as Hub stack projects, not marketplace apps', () => {
-    const lines = [
-      'ci-os-hub.managed=true,com.docker.compose.project=runtipi',
-      'ci-os-hub.managed=true,com.docker.compose.project=runcihub',
-      'ci-os-hub.managed=true,com.docker.compose.project=ci-memory_ci-marketplace',
-    ];
+    const projects = findManagedAppProjects((args) =>
+      args.includes('label=ci-os-hub.managed=true') ? ['runtipi', 'runcihub', 'ci-memory_ci-marketplace'] : [],
+    );
 
-    expect(managedAppProjectsFromLabelLines(lines)).toEqual(['ci-memory_ci-marketplace']);
+    expect([...projects.keys()]).toEqual(['ci-memory_ci-marketplace']);
   });
 
   it('cleans up every compose project name the Hub stack has ever used', () => {
@@ -62,34 +135,41 @@ describe('hub-cleanup-lib', () => {
     expect(parseNames('one\n\n two \n')).toEqual(['one', 'two']);
   });
 
-  it('reads app projects from {{.Labels}} lines without mistaking the Hub stack or a config_files label for an app', () => {
-    const lines = [
-      // core-2's Hub container: both managed labels, and a config_files value that itself contains a comma.
-      'ci-hub.managed=true,ci-os-hub.managed=true,com.docker.compose.project=ci-hub,com.docker.compose.project.config_files=/x/docker-compose.prod.yml,/x/docker-compose.dev-image.yml',
-      'ci-os-hub.appurn=ci-memory:ci-marketplace,ci-os-hub.managed=true,com.docker.compose.project=ci-memory_ci-marketplace',
-      'com.docker.compose.project=ci-memory_ci-marketplace,ci-os-hub.managed=true',
-      'ci-os-hub.managed=true,com.docker.compose.project=runcihub',
-      'ci-hub.managed=true,com.docker.compose.project=$(touch /tmp/x)',
-    ];
+  it('reads each managed container project label once, keeps the filters it was found under, and drops names Docker would not accept', () => {
+    const calls: string[] = [];
+    const projects = findManagedAppProjects((args) => {
+      calls.push(args.join(' '));
+      return args.includes('label=ci-hub.managed=true')
+        ? ['ci-hub', 'ci-memory_ci-marketplace', 'ci-memory_ci-marketplace', '$(touch /tmp/x)']
+        : ['ci-memory_ci-marketplace', 'ci-openclaw_ci-marketplace', 'runcihub', ''];
+    });
 
-    expect(managedAppProjectsFromLabelLines(lines)).toEqual(['ci-memory_ci-marketplace']);
+    expect(calls).toEqual([
+      'ps -a --filter label=ci-hub.managed=true --format {{.Label "com.docker.compose.project"}}',
+      'ps -a --filter label=ci-os-hub.managed=true --format {{.Label "com.docker.compose.project"}}',
+    ]);
+    expect([...projects]).toEqual([
+      ['ci-memory_ci-marketplace', ['label=ci-hub.managed=true', 'label=ci-os-hub.managed=true']],
+      ['ci-openclaw_ci-marketplace', ['label=ci-os-hub.managed=true']],
+    ]);
   });
 
   describe('planAppTeardown and removeManagedAppProjects (cihub reset)', () => {
     const HUB_NETWORK_FILTERS =
-      'ps -a --filter network=ci-hub_network --filter network=ci_hub_network --filter network=ci-os-hub_network --filter network=ci_os_hub_network --format {{.Names}} {{.Labels}}';
+      'ps -a --filter network=ci-hub_network --filter network=ci_hub_network --filter network=ci-os-hub_network --filter network=ci_os_hub_network --format {{.Names}} {{.Label "com.docker.compose.project"}}';
 
     // What beta-max had attached to ci-hub_network on 2026-09-26: the Hub stack, and four
-    // containers named like Hub apps that `docker run` had started with no labels at all.
+    // containers named like Hub apps that `docker run` had started with no labels at all, so
+    // nothing follows their names.
     const BETA_MAX_HUB_NETWORK = [
-      'ci-hub ci-hub.managed=true,com.docker.compose.project=ci-hub,com.docker.compose.service=ci-hub',
-      'ci-hub-db com.docker.compose.project=ci-hub,com.docker.compose.service=ci-hub-db',
-      'traefik ci-hub.managed=true,com.docker.compose.project=ci-hub',
-      'cloudflared com.docker.compose.project=ci-hub',
-      'opencode-web_ci-marketplace-opencode-web-1 org.opencontainers.image.description=Docker image for OpenCode AI coding assistant,org.opencontainers.image.version=1.18.32',
-      'ci-openclaw_ci-marketplace-ci-openclaw-1 org.opencontainers.image.revision=abc',
-      'ci-hermes_ci-marketplace-ci-hermes-gateway-1 org.opencontainers.image.revision=345cd2b',
-      'ci-hermes_ci-marketplace-ci-hermes-1 org.opencontainers.image.revision=345cd2b',
+      'ci-hub ci-hub',
+      'ci-hub-db ci-hub',
+      'traefik ci-hub',
+      'cloudflared ci-hub',
+      'opencode-web_ci-marketplace-opencode-web-1 ',
+      'ci-openclaw_ci-marketplace-ci-openclaw-1 ',
+      'ci-hermes_ci-marketplace-ci-hermes-gateway-1 ',
+      'ci-hermes_ci-marketplace-ci-hermes-1 ',
     ].join('\n');
 
     const fakeDocker = (hubNetwork = '') => {
@@ -97,19 +177,22 @@ describe('hub-cleanup-lib', () => {
       const docker = (args: string[]) => {
         const command = args.join(' ');
         calls.push(command);
-        if (command === 'ps -a --filter label=ci-hub.managed=true --format {{.Labels}}') {
-          return {
-            ok: true,
-            stdout: 'ci-hub.managed=true,com.docker.compose.project=ci-hub\nci-hub.managed=true,com.docker.compose.project=ci-hermes_ci-marketplace',
-          };
+        if (command === 'ps -a --filter label=ci-hub.managed=true --format {{.Label "com.docker.compose.project"}}') {
+          return { ok: true, stdout: 'ci-hub\nci-hermes_ci-marketplace' };
         }
-        if (command === 'ps -a --filter label=ci-os-hub.managed=true --format {{.Labels}}') {
-          return { ok: true, stdout: 'ci-os-hub.managed=true,com.docker.compose.project=ci-openclaw_ci-marketplace' };
+        if (command === 'ps -a --filter label=ci-os-hub.managed=true --format {{.Label "com.docker.compose.project"}}') {
+          return { ok: true, stdout: 'ci-openclaw_ci-marketplace' };
         }
-        if (command === 'ps -a --filter label=com.docker.compose.project=ci-hermes_ci-marketplace --format {{.Names}}') {
+        if (
+          command ===
+          'ps -a --filter label=com.docker.compose.project=ci-hermes_ci-marketplace --filter label=ci-hub.managed=true --format {{.Names}}'
+        ) {
           return { ok: true, stdout: 'hermes-1\nhermes-gateway-1' };
         }
-        if (command === 'ps -a --filter label=com.docker.compose.project=ci-openclaw_ci-marketplace --format {{.Names}}') {
+        if (
+          command ===
+          'ps -a --filter label=com.docker.compose.project=ci-openclaw_ci-marketplace --filter label=ci-os-hub.managed=true --format {{.Names}}'
+        ) {
           return { ok: true, stdout: 'openclaw-1' };
         }
         if (command === 'network ls --filter label=com.docker.compose.project=ci-hermes_ci-marketplace --format {{.Name}}') {
@@ -167,14 +250,7 @@ describe('hub-cleanup-lib', () => {
     });
 
     it('does not list an installed app twice when its main service is also on the Hub network', () => {
-      const { docker } = fakeDocker(
-        [
-          'hermes-1 ci-hub.managed=true,com.docker.compose.project=ci-hermes_ci-marketplace',
-          'legacy-hub com.docker.compose.project=runtipi',
-          'stray-1,other/alias com.example=1',
-          '--privileged com.example=1',
-        ].join('\n'),
-      );
+      const { docker } = fakeDocker(['hermes-1 ci-hermes_ci-marketplace', 'legacy-hub runtipi', 'stray-1,other/alias ', '--privileged '].join('\n'));
 
       const plan = planAppTeardown(docker, { removeVolumes: false });
 
@@ -205,6 +281,142 @@ describe('hub-cleanup-lib', () => {
         removeVolumes: true,
       });
       expect(plan.listed).toBe(false);
+    });
+  });
+
+  describe('which compose projects count as Hub apps', () => {
+    // The Hub's own stack, one installed app, and a compose project the Hub never installed. The
+    // app sets one of its own labels to a value with a comma in it.
+    const engine = () =>
+      fakeDockerEngine({
+        containers: [
+          {
+            name: 'ci-hub',
+            labels: {
+              'ci-hub.managed': 'true',
+              'com.docker.compose.project': 'ci-hub',
+              'com.docker.compose.project.config_files': '/x/docker-compose.prod.yml,/x/docker-compose.dev-image.yml',
+            },
+            networks: ['ci-hub_network'],
+          },
+          {
+            name: 'whoami_custom-whoami-1',
+            labels: {
+              'ci-hub.managed': 'true',
+              'ci-os-hub.managed': 'true',
+              'com.example.note': 'x,com.docker.compose.project=photos',
+              'com.docker.compose.project': 'whoami_custom',
+            },
+            networks: ['ci-hub_network', 'whoami_custom_default'],
+          },
+          { name: 'photos-app-1', labels: { 'com.docker.compose.project': 'photos' }, networks: ['photos_default'] },
+          { name: 'photos-db-1', labels: { 'com.docker.compose.project': 'photos' }, networks: ['photos_default'] },
+        ],
+        networks: [
+          { name: 'whoami_custom_default', labels: { 'com.docker.compose.project': 'whoami_custom' } },
+          { name: 'photos_default', labels: { 'com.docker.compose.project': 'photos' } },
+        ],
+        volumes: [
+          { name: 'whoami_custom_state', labels: { 'com.docker.compose.project': 'whoami_custom' } },
+          { name: 'photos_data', labels: { 'com.docker.compose.project': 'photos' } },
+        ],
+      });
+
+    it('reads the compose project label itself, not a project named inside another label (cihub reset, cihub clean)', () => {
+      const { docker, removals } = engine();
+
+      const plan = removeManagedAppProjects(docker, { removeVolumes: true });
+
+      expect(plan.projects).toEqual([
+        { project: 'whoami_custom', containers: ['whoami_custom-whoami-1'], networks: ['whoami_custom_default'], volumes: ['whoami_custom_state'] },
+      ]);
+      expect(removals().filter((command) => command.includes('photos'))).toEqual([]);
+      expect(removals()).toEqual(['rm -f whoami_custom-whoami-1', 'network rm whoami_custom_default', 'volume rm whoami_custom_state']);
+    });
+
+    it('reads the compose project label itself in the uninstall cleanup too (cihub uninstall)', () => {
+      const { docker, removals } = engine();
+
+      withXdgHome('/home/dev', () =>
+        runHubCleanup({
+          cwd: '/home/dev/ci-hub',
+          homeDir: '/home/dev',
+          platform: 'linux',
+          execFile: (_file, args) => docker(args),
+          exists: () => false,
+          removeDir: () => {},
+          logger: { info: () => {}, warn: () => {}, error: () => {} },
+        }),
+      );
+
+      expect(removals().filter((command) => command.includes('photos'))).toEqual([]);
+      expect(removals()).toEqual(
+        expect.arrayContaining([
+          'rm -f whoami_custom-whoami-1',
+          'network rm whoami_custom_default',
+          'volume rm whoami_custom_state',
+          'image rm -f sha256:image-of-whoami_custom-whoami-1',
+        ]),
+      );
+    });
+
+    it('finds apps whose labels hold commas, and apps carrying only the legacy label', () => {
+      const { docker } = fakeDockerEngine({
+        containers: [
+          {
+            name: 'ci-memory_ci-marketplace-api-1',
+            labels: {
+              'ci-hub.appurn': 'ci-memory:ci-marketplace',
+              'ci-hub.managed': 'true',
+              'ci-os-hub.managed': 'true',
+              'com.docker.compose.project': 'ci-memory_ci-marketplace',
+              'com.docker.compose.project.config_files': '/data/apps/ci-memory/docker-compose.yml,/data/apps/ci-memory/override.yml',
+              'com.docker.compose.service': 'api',
+              'traefik.http.routers.ci-memory.middlewares': 'hub-auth@file,ci-memory-headers',
+            },
+          },
+          {
+            name: 'ci-memory_ci-marketplace-db-1',
+            labels: { 'ci-hub.managed': 'true', 'ci-os-hub.managed': 'true', 'com.docker.compose.project': 'ci-memory_ci-marketplace' },
+          },
+          {
+            name: 'ci-openclaw_ci-marketplace-ci-openclaw-1',
+            labels: { 'ci-os-hub.managed': 'true', 'com.docker.compose.project': 'ci-openclaw_ci-marketplace' },
+          },
+          { name: 'legacy-hub', labels: { 'ci-os-hub.managed': 'true', 'com.docker.compose.project': 'runtipi' } },
+        ],
+        volumes: [{ name: 'ci-openclaw_ci-marketplace_state', labels: { 'com.docker.compose.project': 'ci-openclaw_ci-marketplace' } }],
+      });
+
+      const plan = planAppTeardown(docker, { removeVolumes: true });
+
+      expect(plan.projects).toEqual([
+        {
+          project: 'ci-memory_ci-marketplace',
+          containers: ['ci-memory_ci-marketplace-api-1', 'ci-memory_ci-marketplace-db-1'],
+          networks: [],
+          volumes: [],
+        },
+        {
+          project: 'ci-openclaw_ci-marketplace',
+          containers: ['ci-openclaw_ci-marketplace-ci-openclaw-1'],
+          networks: [],
+          volumes: ['ci-openclaw_ci-marketplace_state'],
+        },
+      ]);
+    });
+
+    it('removes only the containers in an app project that carry the managed label', () => {
+      const { docker } = fakeDockerEngine({
+        containers: [
+          { name: 'hermes-1', labels: { 'ci-hub.managed': 'true', 'com.docker.compose.project': 'ci-hermes_ci-marketplace' } },
+          { name: 'not-the-hubs', labels: { 'com.docker.compose.project': 'ci-hermes_ci-marketplace' } },
+        ],
+      });
+
+      expect(planAppTeardown(docker, { removeVolumes: false }).projects).toEqual([
+        { project: 'ci-hermes_ci-marketplace', containers: ['hermes-1'], networks: [], volumes: [] },
+      ]);
     });
   });
 
@@ -293,7 +505,8 @@ describe('hub-cleanup-lib', () => {
         homeDir: '/home/dev',
         platform: 'linux',
         dryRun: true,
-        execCommand: (command) => {
+        execFile: (file, args) => {
+          const command = [file, ...args].join(' ');
           commands.push(command);
           if (command.includes('docker volume ls')) {
             return { ok: true, stdout: 'ci_hub_pgdata\npostgres_data' };
@@ -354,27 +567,22 @@ describe('hub-cleanup-lib', () => {
         cwd: '/home/dev/ci-hub',
         homeDir: '/home/dev',
         platform: 'linux',
-        execCommand: (command) => {
+        execFile: (file, args) => {
+          const command = [file, ...args].join(' ');
           commands.push(command);
-          if (command.includes('label=ci-os-hub.managed=true')) {
-            // `--format "{{.Labels}}"` returns a comma-joined key=value list per container.
-            // Includes a Hub-stack project (ci-os-hub) — which also carries this label in
-            // docker-compose.prod.yml — to prove the app loop excludes it.
-            return {
-              ok: true,
-              stdout:
-                'ci-os-hub.managed=true,com.docker.compose.project=ci-hermes_ci-marketplace,foo=bar\ncom.docker.compose.project=foo_ci-marketplace,ci-os-hub.managed=true\nci-os-hub.managed=true,com.docker.compose.project=ci-os-hub',
-            };
+          if (command === 'docker ps -a --filter label=ci-os-hub.managed=true --format {{.Label "com.docker.compose.project"}}') {
+            // One compose project per container. Includes a Hub-stack project (ci-os-hub), which
+            // also carries this label in docker-compose.prod.yml, to prove the app loop excludes it.
+            return { ok: true, stdout: 'ci-hermes_ci-marketplace\nfoo_ci-marketplace\nci-os-hub' };
           }
-          // Image snapshot: container IDs for the app project (note the `-q` form).
-          if (command.includes('docker ps -a --filter label=com.docker.compose.project=ci-hermes_ci-marketplace -q')) {
+          // The app's containers that carry the label it was found under.
+          if (
+            command === 'docker ps -a --filter label=com.docker.compose.project=ci-hermes_ci-marketplace --filter label=ci-os-hub.managed=true -q'
+          ) {
             return { ok: true, stdout: 'cid-hermes' };
           }
-          if (command.includes(`docker inspect --format "{{.Image}}" cid-hermes`)) {
+          if (command === 'docker inspect --format {{.Image}} cid-hermes') {
             return { ok: true, stdout: 'sha256:appimage' };
-          }
-          if (command.includes('label=com.docker.compose.project=ci-hermes_ci-marketplace --format "{{.ID}}"')) {
-            return { ok: true, stdout: 'abc123' };
           }
           if (command.includes('docker network ls --filter label=com.docker.compose.project=ci-hermes_ci-marketplace')) {
             // Includes the shared hub network to prove the app loop skips it.
@@ -394,12 +602,15 @@ describe('hub-cleanup-lib', () => {
       expect(commands.some((command) => command.includes('label=ci-os-hub.managed=true'))).toBe(true);
       expect(commands.some((command) => command.includes('label=com.docker.compose.project=foo_ci-marketplace'))).toBe(true);
       // Removed the app's container (by id), its own network, its volume, and its image.
-      expect(commands).toContain('docker rm -f abc123');
+      expect(commands).toContain('docker rm -f cid-hermes');
       expect(commands).toContain('docker network rm ci-hermes_ci-marketplace_network');
       expect(commands).toContain('docker volume rm ci-hermes_ci-marketplace_data');
       expect(commands).toContain('docker image rm -f sha256:appimage');
       // The Hub-stack project is excluded from the marketplace loop (handled by Hub teardown).
-      expect(commands).not.toContain('docker ps -a --filter label=com.docker.compose.project=ci-os-hub --format "{{.ID}}"');
+      expect(commands.some((command) => command.startsWith('docker ps -a --filter label=com.docker.compose.project=ci-os-hub --filter '))).toBe(
+        false,
+      );
+      expect(commands.some((command) => command.startsWith('docker network ls --filter label=com.docker.compose.project=ci-os-hub'))).toBe(false);
     } finally {
       if (prevDataHome === undefined) delete process.env.XDG_DATA_HOME;
       else process.env.XDG_DATA_HOME = prevDataHome;
@@ -426,7 +637,7 @@ describe('hub-cleanup-lib', () => {
         homeDir: '/home/dev',
         platform: 'linux',
         dryRun: false,
-        execCommand: () => ({ ok: true, stdout: '' }),
+        execFile: () => ({ ok: true, stdout: '' }),
         exists: () => true,
         removeDir: () => {},
         logger: {
@@ -475,7 +686,7 @@ describe('hub-cleanup-lib', () => {
         homeDir: '/home/dev',
         platform: 'linux',
         dryRun: false,
-        execCommand: () => ({ ok: true, stdout: '' }),
+        execFile: () => ({ ok: true, stdout: '' }),
         exists: () => true,
         removeDir: () => {},
         logger: {
@@ -650,7 +861,7 @@ describe.skipIf(process.platform === 'win32')('runHubCleanup tunnel files', () =
         platform: 'linux',
         dryRun,
         // Nothing reaches a shell or Docker, and nothing outside the temp home is deleted.
-        execCommand: () => ({ ok: true, stdout: '' }),
+        execFile: () => ({ ok: true, stdout: '' }),
         removeDir: (target) => {
           if (!isWithinPath(target, home, 'linux')) throw new Error(`refusing to remove ${target}`);
           fs.rmSync(target, { recursive: true, force: true });

@@ -320,12 +320,12 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('cihub
       '-a',
       ...HUB_NETWORK_NAMES.flatMap((network) => ['--filter', `network=${network}`]),
       '--format',
-      '{{.Names}} {{.Labels}}',
+      '{{.Names}} {{.Label "com.docker.compose.project"}}',
     ];
     state.listings = {
-      'ps -a --filter label=ci-hub.managed=true --format {{.Labels}}': listed('com.docker.compose.project=ci-hermes,ci-hub.managed=true'),
-      'ps -a --filter label=com.docker.compose.project=ci-hermes --format {{.Names}}': listed('ci-hermes-1'),
-      [onHubNetwork.join(' ')]: listed('stray-app org.opencontainers.image.revision=1'),
+      'ps -a --filter label=ci-hub.managed=true --format {{.Label "com.docker.compose.project"}}': listed('ci-hermes'),
+      'ps -a --filter label=com.docker.compose.project=ci-hermes --filter label=ci-hub.managed=true --format {{.Names}}': listed('ci-hermes-1'),
+      [onHubNetwork.join(' ')]: listed('stray-app '),
       // What is still there after the teardown; `unrelated` was never reset's to remove.
       'ps -a --format {{.Names}}': listed('ci-hermes-1\nstray-app\nci-hub\nunrelated'),
       'ps -a --filter label=com.docker.compose.project=ci-hub --format {{.Names}}': listed('ci-hub'),
