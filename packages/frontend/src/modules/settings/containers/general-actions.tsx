@@ -48,6 +48,16 @@ import {
   type UpdateInfo,
 } from '@/lib/update-service';
 
+/** What `GET /api/system/update/check` answers. The generated client leaves the body untyped. */
+type HubUpdateCheck = {
+  updateAvailable?: boolean;
+  latest?: string;
+  /** Why the Hub will refuse an update started here, even when a newer release exists. */
+  updateBlockedReason?: string | null;
+  /** Why the daily auto-update cannot move this Hub. */
+  autoUpdateBlockedReason?: string | null;
+};
+
 /** The one-click desktop app update, in the desktop window. */
 type ShellInstallState =
   | { state: 'idle' }
@@ -100,6 +110,11 @@ export const GeneralActionsContainer = () => {
   const [restartingShell, setRestartingShell] = useState(false);
   const [shellInstall, setShellInstall] = useState<ShellInstallState>({ state: 'idle' });
   const [hostListenerReachable, setHostListenerReachable] = useState<boolean | null>(null);
+  // The app context offers a stack update whenever the registry has a newer tag. Only the update
+  // check knows whether this Hub will take it (a Windows desktop install, a node whose compose env
+  // file isn't the one it mounts). Without its answer the button ends in "Update failed".
+  const [stackBlock, setStackBlock] = useState<{ update: string | null; auto: string | null }>({ update: null, auto: null });
+  const autoUpdatesBlockedId = `${autoUpdatesId}-blocked`;
   const [switchHubOpen, setSwitchHubOpen] = useState(false);
 
   const desktop = isTauri();
@@ -209,6 +224,14 @@ export const GeneralActionsContainer = () => {
     void refreshHostListenerStatus();
   }, [refreshHostListenerStatus]);
 
+  const applyStackBlock = useCallback((check: HubUpdateCheck | null) => {
+    setStackBlock({ update: check?.updateBlockedReason ?? null, auto: check?.autoUpdateBlockedReason ?? null });
+  }, []);
+
+  useEffect(() => {
+    void unwrapSdkOrNull(checkHubForUpdates()).then((data) => applyStackBlock(data as HubUpdateCheck | null));
+  }, [applyStackBlock]);
+
   useEffect(() => {
     void unwrapSdkOrNull(getAutoUpdates()).then((data) => {
       const enabled = (data as { enabled?: boolean } | null)?.enabled;
@@ -222,7 +245,8 @@ export const GeneralActionsContainer = () => {
     try {
       const result = await sdkResult(checkHubForUpdates());
       if (!result.ok) throw new Error(`HTTP ${result.status}`);
-      const data = (result.data ?? {}) as { updateAvailable?: boolean; latest?: string };
+      const data = (result.data ?? {}) as HubUpdateCheck;
+      applyStackBlock(data);
       await refreshAppContext();
       await refreshShellUpdateState();
       await refreshHostListenerStatus();
@@ -236,7 +260,7 @@ export const GeneralActionsContainer = () => {
     } finally {
       setChecking(false);
     }
-  }, [refreshAppContext, refreshHostListenerStatus, refreshShellUpdateState, t, version.latest]);
+  }, [applyStackBlock, refreshAppContext, refreshHostListenerStatus, refreshShellUpdateState, t, version.latest]);
 
   const handleUpdate = useCallback(async () => {
     setUpdating(true);
@@ -521,6 +545,15 @@ export const GeneralActionsContainer = () => {
       );
     }
 
+    if (stackUpdateAvailable && stackBlock.update) {
+      return (
+        <div className="space-y-1 rounded-md bg-muted p-3 text-sm" data-testid="hub-update-blocked">
+          <p>{t(desktopWindow ? 'SETTINGS_ACTIONS_STACK_UPDATE_BLOCKED_DESKTOP' : 'SETTINGS_ACTIONS_STACK_UPDATE_BLOCKED')}</p>
+          <p className="text-xs text-muted-foreground">{stackBlock.update}</p>
+        </div>
+      );
+    }
+
     if (stackUpdateAvailable) {
       const release = version.releases?.find((r) => r.version === latestVersion) ?? version.releases?.[0];
       const releaseBody = release?.body?.trim() ?? '';
@@ -597,13 +630,18 @@ export const GeneralActionsContainer = () => {
                 <p id={autoUpdatesDescriptionId} className="text-sm text-muted-foreground">
                   {t('SETTINGS_ACTIONS_AUTO_UPDATE_STACK_DESCRIPTION')}
                 </p>
+                {stackBlock.auto ? (
+                  <p id={autoUpdatesBlockedId} className="mt-1 text-sm text-muted-foreground" data-testid="auto-update-blocked">
+                    {t('SETTINGS_ACTIONS_AUTO_UPDATE_STACK_BLOCKED')}
+                  </p>
+                ) : null}
               </div>
               <button
                 type="button"
                 role="switch"
                 aria-checked={autoUpdates}
                 aria-labelledby={autoUpdatesTitleId}
-                aria-describedby={autoUpdatesDescriptionId}
+                aria-describedby={stackBlock.auto ? `${autoUpdatesDescriptionId} ${autoUpdatesBlockedId}` : autoUpdatesDescriptionId}
                 aria-disabled={autoUpdatesLoading}
                 aria-busy={autoUpdatesLoading}
                 onClick={handleAutoUpdatesToggle}

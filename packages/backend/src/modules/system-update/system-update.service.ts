@@ -160,6 +160,11 @@ export type UpdateCheckResult = {
   build: { reference: string; version: string | null; revision: string | null; channel: RunningHubBuild['channel']['kind'] } | null;
   /** Why this node will not be updated by the Hub, even when a newer release exists. */
   updateBlockedReason: string | null;
+  /**
+   * Why the daily auto-update cannot move this node. It never hands the update to the desktop app, so
+   * this can be set while `updateBlockedReason` is not: on a Windows desktop install, for one.
+   */
+  autoUpdateBlockedReason: string | null;
 };
 
 @Injectable()
@@ -199,20 +204,32 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
       running = await this.inspectRunningHub();
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      return { current: 'unknown', latest: 'unknown', releases: [], updateAvailable: false, build: null, updateBlockedReason: reason };
+      return {
+        current: 'unknown',
+        latest: 'unknown',
+        releases: [],
+        updateAvailable: false,
+        build: null,
+        updateBlockedReason: reason,
+        autoUpdateBlockedReason: reason,
+      };
     }
 
     const { build } = running;
     const current = describeRunningBuild(build);
     let updateBlockedReason = channelUpdateRefusal(build, this.readDeclaredHubImage());
+    let autoUpdateBlockedReason = updateBlockedReason;
     // performUpdate refuses a stack it cannot reproduce unless the desktop listener takes the update,
     // which the daily check never lets it do. Without this the daily timer and Settings would offer it
     // on core-3 and beta-3-glass (compose read `.env`, the Hub mounts `.env.dev`) and every attempt
     // would end in a 409.
     if (updateBlockedReason === null) {
       const plan = resolveComposeUpdatePlan(running.container, this.composeMountTargets());
-      if (!plan.ok && !(includeDesktopApp && (await this.probeHostListener()))) {
-        updateBlockedReason = plan.reason;
+      if (!plan.ok) {
+        autoUpdateBlockedReason = plan.reason;
+        if (!(includeDesktopApp && (await this.probeHostListener()))) {
+          updateBlockedReason = plan.reason;
+        }
       }
     }
     const tags = build.version ? await this.registryService.getTagsSinceWithHubFallback(HUB_STACK_REGISTRY_REPO, build.version) : [];
@@ -231,6 +248,7 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
       updateAvailable,
       build: { reference: build.reference, version: build.version, revision: build.revision, channel: build.channel.kind },
       updateBlockedReason,
+      autoUpdateBlockedReason,
     };
   }
 

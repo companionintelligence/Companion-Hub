@@ -4,7 +4,13 @@ import { HUB_STACK_IMAGE_REPO, HUB_STACK_REGISTRY_REPO } from '@/common/constant
 import { resolveHostListenerBaseUrl, SystemUpdateService } from '../system-update.service';
 import { ENV_RESTORE_VARIABLE } from '../stack-updater';
 import type { DockerContainerInspect } from '../hub-deployment';
-import { core14HybridCheckout, core3EnvLabelDiffersFromMount, core4SourceCheckout, core6Appliance } from './fleet-hub-inspect.fixtures';
+import {
+  core14HybridCheckout,
+  core3EnvLabelDiffersFromMount,
+  core4SourceCheckout,
+  core6Appliance,
+  windowsDesktopWslEngine,
+} from './fleet-hub-inspect.fixtures';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import axios from 'axios';
@@ -170,6 +176,45 @@ describe('SystemUpdateService', () => {
       const result = await service.checkForUpdates();
 
       expect(result).toMatchObject({ latest: '0.2.71', updateAvailable: true, updateBlockedReason: null });
+    });
+
+    // The daily check never hands the update to the desktop app, so on a Windows desktop install it
+    // skips every day. Settings needs that answer too, or the Auto-update switch looks like it works.
+    it('says the daily auto-update cannot move a Windows desktop install, even when the desktop app will', async () => {
+      insideHubContainer(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:0.3.4\nCI_HUB_VERSION=0.3.4\n`);
+      withListenerToken();
+      vi.mocked(fs.readFileSync).mockImplementation(((target: unknown) =>
+        String(target) === '/data/.env' ? `CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:0.3.4\n` : 'listener-token\n') as never);
+      vi.mocked(axios.get).mockResolvedValue({ status: 200 });
+      await installDocker(windowsDesktopWslEngine());
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.3.5']);
+
+      const result = await service.checkForUpdates();
+
+      expect(result).toMatchObject({ latest: '0.3.5', updateAvailable: true, updateBlockedReason: null });
+      expect(result.autoUpdateBlockedReason).toContain('started on Windows');
+    });
+
+    it('blocks both when the desktop listener does not answer', async () => {
+      insideHubContainer(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:0.3.4\nCI_HUB_VERSION=0.3.4\n`);
+      await installDocker(windowsDesktopWslEngine());
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.3.5']);
+
+      const result = await service.checkForUpdates();
+
+      expect(result.updateAvailable).toBe(false);
+      expect(result.updateBlockedReason).toContain('started on Windows');
+      expect(result.autoUpdateBlockedReason).toBe(result.updateBlockedReason);
+    });
+
+    it('leaves the auto-update unblocked where the updater container can reproduce the stack', async () => {
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core6Appliance(RELEASE_PIN));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+
+      const result = await service.checkForUpdates();
+
+      expect(result).toMatchObject({ updateBlockedReason: null, autoUpdateBlockedReason: null });
     });
 
     it('says the build is unknown outside a container instead of reporting CI_HUB_VERSION', async () => {

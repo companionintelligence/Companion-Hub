@@ -743,6 +743,74 @@ describe('GeneralActionsContainer', () => {
     expect(await screen.findByTestId('hub-update-btn')).toHaveTextContent('Update stack to 0.2.46');
   });
 
+  // A Windows desktop install on 0.3.4: the app context saw 0.3.5 in the registry, the check had
+  // already said the Hub would refuse it, and the button ended in "Update failed. Check logs".
+  describe('when the Hub will refuse the stack update', () => {
+    const WINDOWS_REFUSAL =
+      'This Hub was started on Windows (compose ran from C:\\Users\\ci\\AppData\\Roaming\\companion-hub), and the updater container cannot reach Windows paths.';
+
+    beforeEach(() => {
+      mockUseAppContext.mockReturnValue({
+        version: { current: '0.3.4', latest: '0.3.5', body: '', releases: [{ version: '0.3.5', body: 'Release 0.3.5' }] },
+        refreshAppContext: vi.fn(),
+      } as unknown as ReturnType<typeof useAppContext>);
+      mockCheckHubForUpdatesApi.mockResolvedValue(
+        sdkOk({ updateAvailable: false, latest: '0.3.5', updateBlockedReason: WINDOWS_REFUSAL, autoUpdateBlockedReason: WINDOWS_REFUSAL }),
+      );
+    });
+
+    it('says why in a browser instead of offering the button', async () => {
+      render(<GeneralActionsContainer />);
+
+      const blocked = await screen.findByTestId('hub-update-blocked');
+      expect(blocked).toHaveTextContent("This Hub can't update itself from here. Update it on the computer that runs it.");
+      expect(blocked).toHaveTextContent(WINDOWS_REFUSAL);
+      expect(screen.queryByTestId('hub-update-btn')).not.toBeInTheDocument();
+      expect(screen.getByText('A new Hub stack version (0.3.5) is available')).toBeInTheDocument();
+    });
+
+    it('points at the Desktop app card in the desktop window', async () => {
+      mockIsTauri.mockReturnValue(true);
+
+      render(<GeneralActionsContainer />);
+
+      expect(await screen.findByTestId('hub-update-blocked')).toHaveTextContent(
+        'The Companion Hub desktop app updates this Hub. Update the app in the Desktop app card below.',
+      );
+      expect(screen.queryByTestId('hub-update-btn')).not.toBeInTheDocument();
+    });
+
+    it('keeps the button when only the daily auto-update is blocked, and says the switch does nothing here', async () => {
+      mockCheckHubForUpdatesApi.mockResolvedValue(
+        sdkOk({ updateAvailable: true, latest: '0.3.5', updateBlockedReason: null, autoUpdateBlockedReason: WINDOWS_REFUSAL }),
+      );
+
+      render(<GeneralActionsContainer />);
+
+      const toggle = await screen.findByRole('switch', { name: 'Auto-update stack' });
+      await waitFor(() =>
+        expect(toggle).toHaveAccessibleDescription(
+          "Automatically pull and restart Docker stack images when updates are available Automatic updates can't run on this Hub, so this switch has no effect here.",
+        ),
+      );
+      expect(screen.getByTestId('hub-update-btn')).toHaveTextContent('Update stack to 0.3.5');
+      expect(screen.queryByTestId('hub-update-blocked')).not.toBeInTheDocument();
+    });
+
+    it('picks up a refusal that the Check for updates button finds', async () => {
+      mockUseAppContext.mockReturnValue({
+        version: { current: '0.3.4', latest: '0.3.4', body: '', releases: [] },
+        refreshAppContext: vi.fn(),
+      } as unknown as ReturnType<typeof useAppContext>);
+      mockCheckHubForUpdatesApi.mockResolvedValueOnce(sdkOk({ updateAvailable: false, latest: '0.3.4', updateBlockedReason: null }));
+
+      render(<GeneralActionsContainer />);
+      await userEvent.click(await screen.findByTestId('hub-check-updates-btn'));
+
+      expect(await screen.findByTestId('auto-update-blocked')).toBeInTheDocument();
+    });
+  });
+
   it('shows only the latest release card when multiple versions are available', async () => {
     mockIsTauri.mockReturnValue(false);
     mockUseAppContext.mockReturnValue({
