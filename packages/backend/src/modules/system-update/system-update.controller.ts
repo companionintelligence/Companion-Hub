@@ -3,6 +3,7 @@ import { ApiResponse } from '@nestjs/swagger';
 import { AuthGuard } from '../auth/auth.guard';
 import { DesktopReleaseService } from './desktop-release.service';
 import { DesktopReleaseDto, DesktopReleaseQueryDto } from './dto/desktop-release.dto';
+import { UpdateBlocksDto } from './dto/update-blocks.dto';
 import { HUB_VERSION_TAG_MESSAGE, isHubVersionTag } from './hub-deployment';
 import { SystemUpdateService } from './system-update.service';
 
@@ -42,6 +43,14 @@ export class SystemUpdateController {
   async setAutoUpdates(@Body() body: { enabled: boolean }) {
     await this.systemUpdateService.setAutoUpdatesEnabled(body.enabled);
     return { enabled: body.enabled };
+  }
+
+  /** Whether this Hub would refuse an update, and why. Unlike `check`: no registry lookup, no agent wake. */
+  @Get('blocked')
+  @UseGuards(AuthGuard)
+  @ApiResponse({ type: UpdateBlocksDto })
+  async getUpdateBlocks() {
+    return this.systemUpdateService.getUpdateBlocks();
   }
 
   @Get('host-listener')
