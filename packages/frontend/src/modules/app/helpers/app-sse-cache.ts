@@ -51,6 +51,9 @@ export type AppSsePayload = {
   /** Optional detail for the caveat (e.g. the host path of an uninstall remnant) used to render an actionable message. */
   warningDetail?: string;
   progress?: number;
+  /** Install ticks only, once Docker has reported layer sizes: the image download so far. */
+  downloadedBytes?: number;
+  totalBytes?: number;
   active?: InstallQueueState['active'];
   queued?: InstallQueueState['queued'];
 };
@@ -312,7 +315,8 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
 
   if (appStatus === 'installing' && typeof progress === 'number') {
     setCachedAppStatus(queryClient, appUrn, appStatus);
-    updateInstallationProgress(urn, progress);
+    const { downloadedBytes, totalBytes } = data;
+    updateInstallationProgress(urn, typeof totalBytes === 'number' ? { percent: progress, downloadedBytes, totalBytes } : { percent: progress });
     return;
   }
 

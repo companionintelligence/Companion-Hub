@@ -42,14 +42,30 @@ export class SSEService implements OnApplicationShutdown {
   private topics: Map<Topic, Subject<MessageEvent>> = new Map();
 
   /**
+   * The latest progress tick of each install that is still running, by app. A page opened
+   * mid-install has no tick of its own until the next one, which on a long download can be
+   * minutes away, so every new `app` subscriber gets these after the hello. Any other event
+   * for the app (success, error, cancel, a new attempt) ends the install's entry.
+   */
+  private readonly installProgress = new Map<string, MessageEvent>();
+
+  /**
    * Emits an event to the specified topic.
    */
   emit<T extends Topic>(topic: T, data: Extract<SSE, { topic: T }>['data'], appUrn?: AppUrn) {
     let formattedTopic = topic;
 
+    const event: MessageEvent = { type: 'message', data: JSON.stringify(data) };
+
     if (appUrn) {
       // We want to use this topic for a specific app
       formattedTopic = `${topic}:${appUrn}` as T;
+    } else if (topic === 'app' && 'appUrn' in data) {
+      if (data.event === 'status_change' && data.appStatus === 'installing' && typeof data.progress === 'number') {
+        this.installProgress.set(data.appUrn, event);
+      } else {
+        this.installProgress.delete(data.appUrn);
+      }
     }
 
     let currentTopic = this.topics.get(formattedTopic);
@@ -58,9 +74,16 @@ export class SSEService implements OnApplicationShutdown {
       this.topics.set(formattedTopic, currentTopic);
     }
 
-    const event: MessageEvent = { type: 'message', data: JSON.stringify(data) };
-
     currentTopic.next(event);
+  }
+
+  /**
+   * Drop an app's replayed progress tick once its install has ended. The worker calls this however
+   * the install ended, since not every ending sends an event for the app (a success whose row had
+   * already left `installing`, a failure whose row was gone).
+   */
+  forgetInstallProgress(appUrn: string): void {
+    this.installProgress.delete(appUrn);
   }
 
   /**
@@ -100,6 +123,7 @@ export class SSEService implements OnApplicationShutdown {
    * is this Hub's version. See `hubHelloEventSchema` in `@ci-hub/common/schemas` for why
    * it exists. It is built per subscription, not emitted on the topic, because a Hub
    * that has just started has no subscribers to emit to — the clients are all mid-reconnect.
+   * The latest tick of any install still running follows the hello (`installProgress`).
    */
   getAppEventsObservable(): Observable<MessageEvent> {
     // `buildVersion` is the image stamp `GET /api/hub/build` serves, which image builds set to the
@@ -113,7 +137,7 @@ export class SSEService implements OnApplicationShutdown {
         ...(this.buildVersion ? { buildVersion: this.buildVersion } : {}),
       } satisfies Extract<SSE, { topic: 'app' }>['data']),
     };
-    return this.getTopicObservable('app').pipe(startWith(hello));
+    return this.getTopicObservable('app').pipe(startWith(hello, ...this.installProgress.values()));
   }
 
   /**

@@ -29,7 +29,7 @@ import { AppStoreService } from '../app-stores/app-store.service';
 import { AppEventsQueue, appEventResultSchema, appEventSchema } from '../queue/entities/app-events';
 import { QUEUE_UNAVAILABLE_CODE } from '../queue/queue.constants';
 import { AppLifecycleCommandFactory } from './app-lifecycle-command.factory';
-import { AppOperationRegistry, type CancellabilityTier, type OperationCommand } from './app-operation-registry';
+import { AppOperationRegistry, type CancellabilityTier, type OperationCommand, type PreparingInstall } from './app-operation-registry';
 import type { AppStatus, LifecycleJob } from '@/core/database/drizzle/types';
 import { LifecycleJobService } from './lifecycle-job.service';
 import { toAppCommandFailureResult } from './commands/app-lifecycle-errors';
@@ -610,6 +610,26 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     try {
+      // A queued install whose cancel `cancelOperation` already carried out (row deleted,
+      // install_cancelled sent). Its entry is gone, or belongs to a newer install of the app. Checked
+      // here, with no await before the entry lookup and `markPhase` below, so a cancel cannot settle
+      // it between the two. A failed reply must not reach the catch below: that path reads the app's
+      // row by URN, which may now belong to the newer install, and would fail it.
+      if (this.operationRegistry.takeSettledBeforeStart(data.requestId)) {
+        this.logger.info(`[lifecycle] '${data.command}' for ${data.appUrn} was cancelled while queued and is already settled; skipping it`);
+        if (job) {
+          await this.lifecycleJobService?.cancelJob(job.id, 'Operation cancelled before it started').catch(() => null);
+        }
+        try {
+          await reply({ success: false, cancelled: true, message: 'Operation cancelled before it started' });
+        } catch (err) {
+          this.logger.warn(
+            `[lifecycle] could not reply to the settled '${data.command}' for ${data.appUrn}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        return;
+      }
+
       // Only treat the registry entry as ours when its requestId matches this message. A stale queued
       // message dequeued after a newer op replaced the entry must NOT wire the newer op's AbortSignal
       // into this command or mutate the newer entry's phase.
@@ -710,6 +730,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       // still lose the claim when a newer op replaced the registry entry.
       release();
       if (isInstall) {
+        // Whatever the install's last event was, a new tab must not be told it is still installing.
+        this.sseService.forgetInstallProgress(data.appUrn);
         this.installPipelineTracker.setActive(null);
         releasePipeline?.();
         void this.emitInstallQueueUpdate();
@@ -847,15 +869,47 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   }
 
   /**
+   * Ends an install cancelled before it was queued. A fresh install ends the way a queued install's
+   * cancel does: the row goes if it wrote one, and the page gets `install_cancelled` and the install
+   * queue. A retry of a failed install goes back to `install_failed` instead. Nothing ran to
+   * compensate, so deleting its row would leave the failed attempt's files, port allocations and
+   * containers behind with no app to remove them through.
+   */
+  private async endInstallCancelledBeforeQueue(
+    appUrn: AppUrn,
+    retry: { rowId: number; rewritten: boolean } | null,
+    requestId: string = crypto.randomUUID(),
+  ): Promise<{ requestId: string }> {
+    if (!retry) {
+      await this.handleCancelledResult('install', appUrn, { success: false, cancelled: true, message: 'Install cancelled before it was queued' });
+      return { requestId };
+    }
+
+    if (retry.rewritten) {
+      await this.appRepository.updateAppById(retry.rowId, { status: 'install_failed' }).catch((err) => {
+        this.logger.error(
+          `Failed to put ${appUrn} back to install_failed after its retry was cancelled: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    }
+    this.logger.info(`[lifecycle] retry of ${appUrn} cancelled before it was queued; it stays install_failed`);
+    this.sseService.emit('app', { event: 'install_cancelled', appUrn, appStatus: 'install_failed' });
+    void this.emitInstallQueueUpdate();
+    return { requestId };
+  }
+
+  /**
    * Request cancellation of the in-flight (or queued) operation for an app.
    *
    * Looks up the live registry entry and decides the outcome by cancellability tier and phase:
-   * - no entry / stale requestId → `not_found`
+   * - no entry / stale requestId → `not_found`, unless an install is still in its pre-queue checks
+   *   (`installApp` holds the cancel and applies it → `cancelling`)
    * - non-cancellable, or past the point of no return → `refused`
    * - otherwise abort the controller → `cancelled_queued` (was still queued) or `cancelling` (in flight)
    *
-   * Returns immediately; the actual `*_cancelled` SSE event arrives once the worker finishes
-   * compensation. In Phase 1 only `install` registers, so other ops return `not_found`.
+   * A queued install's cancel is settled before this returns (row deleted, `install_cancelled`
+   * sent). Otherwise it returns at once and the `*_cancelled` SSE event arrives once the worker
+   * finishes compensation. In Phase 1 only `install` registers, so other ops return `not_found`.
    */
   async cancelOperation(params: {
     appUrn: AppUrn;
@@ -871,6 +925,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     await this.assertActorMay(params.actor, appUrn, 'stop');
     const entry = this.operationRegistry.get(appUrn);
     if (!entry) {
+      // An install still in its checks has not registered; `installApp` applies the cancel before writing anything.
+      if (!requestId && this.operationRegistry.holdPreparingCancel(appUrn)) {
+        return { outcome: 'cancelling', message: 'Cancellation requested' };
+      }
       return { outcome: 'not_found', message: 'No operation in progress for this app' };
     }
     if (requestId && entry.requestId !== requestId) {
@@ -895,6 +953,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
     const wasQueued = aborted.phase === 'queued';
     this.logger.info(`[lifecycle] cancel requested for ${aborted.command} ${appUrn} (phase=${aborted.phase})`);
+    if (wasQueued && aborted.command === 'install') {
+      // The worker reaches a queued install only once the install ahead of it is done, which can be
+      // many minutes. Settle it now so it leaves the queue and the app page at once; the worker skips
+      // the message when it gets to it.
+      this.operationRegistry.settleBeforeStart(appUrn, aborted.requestId);
+      await this.handleCancelledResult('install', appUrn, { success: false, cancelled: true, message: 'Operation cancelled before it started' });
+    }
     return wasQueued
       ? { outcome: 'cancelled_queued', message: 'Operation cancelled before it started' }
       : { outcome: 'cancelling', message: 'Cancellation requested' };
@@ -1203,6 +1268,20 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   }
 
   async installApp(params: { appUrn: AppUrn; form: unknown; skipRun?: boolean; actor: LifecycleActor }) {
+    // The page offers Cancel as soon as Install is clicked, but the operation registers only after
+    // the checks below, which take seconds. A cancel in that window is held and applied here.
+    const preparing = this.operationRegistry.beginPreparingInstall(params.appUrn);
+    try {
+      return await this.installAppWhilePreparing(params, preparing);
+    } finally {
+      this.operationRegistry.endPreparingInstall(params.appUrn, preparing);
+    }
+  }
+
+  private async installAppWhilePreparing(
+    params: { appUrn: AppUrn; form: unknown; skipRun?: boolean; actor: LifecycleActor },
+    preparing: PreparingInstall,
+  ) {
     const { appUrn, form, skipRun } = params;
 
     // Before anything is fetched, written or queued — see `assertActorMay`.
@@ -1231,6 +1310,24 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     const existingApp = await this.appRepository.getAppByUrn(appUrn);
+
+    // Reinstalling an app that is already there restarts it below, which nothing can cancel. Its
+    // window ends here, and a cancel held for it is dropped: applying it would send
+    // `install_cancelled` for an app that is still installed.
+    const reinstall = !!existingApp && existingApp.status !== 'install_failed';
+    if (reinstall) {
+      this.operationRegistry.endPreparingInstall(appUrn, preparing);
+      if (preparing.cancelRequested) {
+        this.logger.info(`[lifecycle] cancel held for ${appUrn} dropped: it is a reinstall of an installed app, which cannot be cancelled`);
+      }
+    }
+    const cancelHeld = () => preparing.cancelRequested && !reinstall;
+    // A retry of a failed install, which a cancel puts back to failed rather than deleting.
+    const retriedRow = existingApp?.status === 'install_failed' ? { rowId: existingApp.id, rewritten: false } : null;
+
+    if (cancelHeld()) {
+      return this.endInstallCancelledBeforeQueue(appUrn, retriedRow);
+    }
 
     const parsedFormResult = appFormSchema.safeParse(form);
     if (!parsedFormResult.success) {
@@ -1361,6 +1458,11 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       }
     }
 
+    // The last point before anything is written.
+    if (cancelHeld()) {
+      return this.endInstallCancelledBeforeQueue(appUrn, retriedRow);
+    }
+
     /*
      * ── THE RELEASE APPLIES HERE TOO, OR IT IS A LIE IN ONE DIALOG OUT OF TWO ─
      *
@@ -1441,6 +1543,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         }
 
         if (raced.status !== 'install_failed') {
+          // A reinstall after all, which nothing can cancel (see `reinstall` above).
+          this.operationRegistry.endPreparingInstall(appUrn, preparing);
           await this.appRepository.updateAppById(raced.id, buildInstallRowPatch(parsedForm));
           await this.claimCustomDomainIntent(raced.id, parsedForm.customDomain);
           return this.startApp({ appUrn, actor: { kind: 'system', reason: 'reinstall-start' } });
@@ -1489,6 +1593,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     const requestId = crypto.randomUUID();
     const appId = installRecord.id;
     const recordExposedLocal = exposedLocal ?? installRecord.exposedLocal ?? !!appInfo.exposable;
+
+    // A cancel that came while the row was being written. Nothing is queued yet, so settle it here.
+    if (cancelHeld()) {
+      // `installRecord.status` is the row's status from before this install rewrote it.
+      const retry = installRecord.status === 'install_failed' ? { rowId: installRecord.id, rewritten: true } : null;
+      return this.endInstallCancelledBeforeQueue(appUrn, retry, requestId);
+    }
 
     // Register the operation BEFORE publishing so a cancel arriving during the publish->dequeue
     // window (tier-A) can be honoured. Cleared in invokeCommand's finally.

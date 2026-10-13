@@ -5,7 +5,7 @@
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-10-04 (Hub Pool setup guide)
+> **Last updated:** 2026-10-10 (onboarding engine choice and install order)
 > **Related:** docs/system/desktop.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/system/e2e.md
 
 ---
@@ -135,6 +135,29 @@ the selected backend's readiness check, and the Ollama embeddings check when a h
 is selected. Apple Silicon offers Ollama and oMLX. NVIDIA offers Ollama and vLLM. AMD or NPU offers Ollama and Lemonade. Manual mode is a decode endpoint and an encode endpoint. When the
 operator confirms “Install & Finish”, `InstallStep` asks the desktop shell to install the chosen runner. oMLX is Homebrew. vLLM pairs with Ollama for embeddings. A plain browser build does not
 have a native process boundary, so it retains the manual setup and re-check flow.
+
+`recommendedInferenceBackend` decides where the step starts. In the desktop window
+(`isTauriDesktopApp`, which leaves out the iOS and Android app) the hardware's pick
+(`backends.recommended`) stands whenever the app installs that engine itself, which means
+`automaticRunnersForBackend` lists it and it isn't vLLM on Windows (the native installer skips
+that). This keeps oMLX on an Apple Silicon Mac. In a browser tab, in the phone app, or for an
+engine the desktop app can't install, the step starts on an engine that answers. One that already
+has models (`backends.available[].modelsLoaded`) comes first, the hardware's pick ahead of the
+rest. With no models anywhere it takes the hardware's pick if that answers, else any engine that
+answers. With nothing answering the hardware's pick stands, except vLLM in the Windows desktop
+window, which starts on Ollama because that is the engine the app installs there. The
+**Recommended** badge goes with the choice. Settings > AI uses the browser-tab rule when no engine
+is saved, even in the desktop window, because Settings installs no engine. The finish gate and the
+runner install use the same desktop check, so the phone app waits for a ready engine like a
+browser tab does.
+
+`InstallStep` runs in this order: runners, cloud keys, the preference save, the app install
+requests, then the wait for model downloads and the pins. The preferences go before the installs
+because an AI app gets its inference config when its install starts. The installs go before the
+downloads so that **Continue** cannot drop them: closing the step stops the waiting, the pins, and
+the progress polling, never a request that has not been sent yet. The Hub tracks a queued download
+only once its turn comes, so the first save leaves out a chosen model still in the queue. When the
+wait ends with a different answer, the step saves the model defaults again.
 
 `RecommendationsStep` uses the Alternatives chart treatment for its optional app discovery section:
 it shows a curated 20-app shortlist across ten categories, grouped in compact paired comparison rows. Category
