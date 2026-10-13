@@ -6,10 +6,11 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { UserRepository } from '@/modules/user/user.repository';
 import { Body, Controller, Get, Patch, Query, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
-import { AcknowledgeWelcomeBody, AppContextDto, UserSettingsBody, UserContextDto, appContextSettings } from './app.dto';
+import { AcknowledgeWelcomeBody, AppContextDto, HubAccessDto, UserSettingsBody, UserContextDto, appContextSettings } from './app.dto';
 import { AppService } from './app.service';
 import { AppsReadService } from './modules/apps/apps-read.service';
 import { AuthGuard } from './modules/auth/auth.guard';
+import { HubManagerGuard } from './modules/auth/hub-manager.guard';
 import { SESSION_REFRESH_AFTER_SECONDS, SESSION_TTL_SECONDS, SessionManager } from './modules/auth/session.manager';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import type { UserDto } from './modules/user/dto/user.dto';
@@ -21,6 +22,7 @@ import { TailscaleService } from './modules/tailscale/tailscale.service';
 import { AppStoreService } from './modules/app-stores/app-store.service';
 import { buildTailscaleNodeFqdn } from '@ci-hub/common/types';
 import { AiAppInferenceRefreshService, changedInferenceEnvSettings } from './modules/app-lifecycle/ai-app-inference-refresh.service';
+import { MarketplaceWhoIsService } from './core/portal/marketplace-whois.service';
 
 @Controller()
 export class AppController {
@@ -36,6 +38,7 @@ export class AppController {
     private readonly appStoreService: AppStoreService,
     private readonly sessionManager: SessionManager,
     private readonly inferenceRefresh: AiAppInferenceRefreshService,
+    private readonly whois: MarketplaceWhoIsService,
   ) {}
 
   private getSessionMetadata(req: Request): { sessionExpiresAt?: number; sessionRefreshRecommendedAt?: number } {
@@ -313,8 +316,20 @@ export class AppController {
     );
   }
 
-  @Patch('/user-settings')
+  /**
+   * Whether the signed-in person may change what applies to the whole Hub, so the UI offers those
+   * controls and the Logs tab only to someone who may use them. It answers from the role stored at
+   * sign-in (`hubManageHint`); every Hub-wide route asks the Portal fresh and decides.
+   */
+  @Get('/hub-access')
   @UseGuards(AuthGuard)
+  @ApiResponse({ type: HubAccessDto })
+  async hubAccess(@Req() req: Request) {
+    return HubAccessDto.parse({ manageHub: await this.whois.hubManageHint(req) }, { reportOnly: true });
+  }
+
+  @Patch('/user-settings')
+  @UseGuards(AuthGuard, HubManagerGuard)
   async updateUserSettings(@Body() body: UserSettingsBody) {
     // Read before the write: `setUserSettings` replaces the object, so this keeps the old values.
     const before = this.configuration.get('userSettings');
@@ -338,7 +353,7 @@ export class AppController {
   }
 
   @Patch('/acknowledge-welcome')
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   async acknowledgeWelcome(@Req() req: Request, @Body() body: AcknowledgeWelcomeBody) {
     if (!req.user) {
       return;

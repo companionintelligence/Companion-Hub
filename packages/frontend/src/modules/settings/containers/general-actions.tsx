@@ -70,7 +70,12 @@ const SHELL_INSTALL_PHASE_KEYS: Record<string, string> = {
   relaunch: 'SETTINGS_ACTIONS_SHELL_INSTALL_RESTARTING_APP',
 };
 
-export const GeneralActionsContainer = () => {
+/**
+ * `manageHub`: whether this person may change the whole Hub (`useHubAccess`). A member doesn't see the
+ * Hub update, auto-updates, app store repository, setup wizard or factory reset; the desktop app's own
+ * update and the phone app's Hub switch act on this device, so they stay.
+ */
+export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: boolean } = {}) => {
   const { t } = useTranslation();
   const { version, refreshAppContext, userSettings } = useAppContext();
   const deviceName = userSettings?.ciHubDeviceSlug?.trim() ?? '';
@@ -574,49 +579,51 @@ export const GeneralActionsContainer = () => {
 
   return (
     <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <ArrowUpCircle className="h-5 w-5 shrink-0 text-muted-foreground" />
-            <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_HUB_STACK_TITLE')}</CardTitle>
-          </div>
-          <CardDescription>{t('SETTINGS_ACTIONS_CURRENT_VERSION', { version: displayVersion })}</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground mb-4">
-            {stackUpdateAvailable ? t('SETTINGS_ACTIONS_NEW_VERSION', { version: latestVersion }) : t('SETTINGS_ACTIONS_STAY_UP_TO_DATE')}
-          </p>
-          {renderUpdateButton()}
-
-          <div className="mt-6 pt-6 border-t">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <h3 id={autoUpdatesTitleId} className="text-sm font-medium">
-                  {t('SETTINGS_ACTIONS_AUTO_UPDATE_STACK_TITLE')}
-                </h3>
-                <p id={autoUpdatesDescriptionId} className="text-sm text-muted-foreground">
-                  {t('SETTINGS_ACTIONS_AUTO_UPDATE_STACK_DESCRIPTION')}
-                </p>
-              </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={autoUpdates}
-                aria-labelledby={autoUpdatesTitleId}
-                aria-describedby={autoUpdatesDescriptionId}
-                aria-disabled={autoUpdatesLoading}
-                aria-busy={autoUpdatesLoading}
-                onClick={handleAutoUpdatesToggle}
-                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background ${autoUpdates ? 'bg-primary' : 'bg-foreground/50'} ${autoUpdatesLoading ? 'cursor-wait opacity-50' : ''}`}
-              >
-                <span
-                  className={`inline-block h-4 w-4 transform rounded-full bg-background transition-transform ${autoUpdates ? 'translate-x-6' : 'translate-x-1'}`}
-                />
-              </button>
+      {manageHub && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <ArrowUpCircle className="h-5 w-5 shrink-0 text-muted-foreground" />
+              <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_HUB_STACK_TITLE')}</CardTitle>
             </div>
-          </div>
-        </CardContent>
-      </Card>
+            <CardDescription>{t('SETTINGS_ACTIONS_CURRENT_VERSION', { version: displayVersion })}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-muted-foreground mb-4">
+              {stackUpdateAvailable ? t('SETTINGS_ACTIONS_NEW_VERSION', { version: latestVersion }) : t('SETTINGS_ACTIONS_STAY_UP_TO_DATE')}
+            </p>
+            {renderUpdateButton()}
+
+            <div className="mt-6 pt-6 border-t">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h3 id={autoUpdatesTitleId} className="text-sm font-medium">
+                    {t('SETTINGS_ACTIONS_AUTO_UPDATE_STACK_TITLE')}
+                  </h3>
+                  <p id={autoUpdatesDescriptionId} className="text-sm text-muted-foreground">
+                    {t('SETTINGS_ACTIONS_AUTO_UPDATE_STACK_DESCRIPTION')}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={autoUpdates}
+                  aria-labelledby={autoUpdatesTitleId}
+                  aria-describedby={autoUpdatesDescriptionId}
+                  aria-disabled={autoUpdatesLoading}
+                  aria-busy={autoUpdatesLoading}
+                  onClick={handleAutoUpdatesToggle}
+                  className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background ${autoUpdates ? 'bg-primary' : 'bg-foreground/50'} ${autoUpdatesLoading ? 'cursor-wait opacity-50' : ''}`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-background transition-transform ${autoUpdates ? 'translate-x-6' : 'translate-x-1'}`}
+                  />
+                </button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Card data-testid="desktop-shell-update-card">
         <CardHeader>
@@ -690,102 +697,106 @@ export const GeneralActionsContainer = () => {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_UPDATE_REPO_TITLE')}</CardTitle>
-          <CardDescription>{t('SETTINGS_ACTIONS_UPDATE_REPO_SUBTITLE')}</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <UpdateRepoModal />
-        </CardContent>
-      </Card>
+      {manageHub && (
+        <>
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_UPDATE_REPO_TITLE')}</CardTitle>
+              <CardDescription>{t('SETTINGS_ACTIONS_UPDATE_REPO_SUBTITLE')}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <UpdateRepoModal />
+            </CardContent>
+          </Card>
 
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <Wand2 className="h-5 w-5 shrink-0 text-muted-foreground" />
-            <CardTitle className="text-xl">{t('SETTINGS_WIZARD_TITLE')}</CardTitle>
-          </div>
-          <CardDescription>{t('SETTINGS_WIZARD_SUBTITLE')}</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Button onClick={handleRestartWizard} disabled={demoMode || restartingWizard} data-testid="restart-wizard-btn">
-            {restartingWizard ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                {t('SETTINGS_WIZARD_RESTARTING')}
-              </>
-            ) : (
-              t('SETTINGS_WIZARD_RESTART_BUTTON')
-            )}
-          </Button>
-        </CardContent>
-      </Card>
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <Wand2 className="h-5 w-5 shrink-0 text-muted-foreground" />
+                <CardTitle className="text-xl">{t('SETTINGS_WIZARD_TITLE')}</CardTitle>
+              </div>
+              <CardDescription>{t('SETTINGS_WIZARD_SUBTITLE')}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button onClick={handleRestartWizard} disabled={demoMode || restartingWizard} data-testid="restart-wizard-btn">
+                {restartingWizard ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                    {t('SETTINGS_WIZARD_RESTARTING')}
+                  </>
+                ) : (
+                  t('SETTINGS_WIZARD_RESTART_BUTTON')
+                )}
+              </Button>
+            </CardContent>
+          </Card>
 
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <TriangleAlert className="h-5 w-5 shrink-0 text-destructive" />
-            <CardTitle className="text-xl">{t('SETTINGS_FACTORY_RESET_TITLE')}</CardTitle>
-          </div>
-          <CardDescription>{t('SETTINGS_FACTORY_RESET_SUBTITLE')}</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground mb-4">{t('SETTINGS_FACTORY_RESET_DESCRIPTION')}</p>
-          <Button
-            intent="danger"
-            variant="outline"
-            disabled={demoMode}
-            onClick={() => setFactoryResetDialogOpen(true)}
-            data-testid="factory-reset-btn"
-          >
-            {t('SETTINGS_FACTORY_RESET_BUTTON')}
-          </Button>
-        </CardContent>
-      </Card>
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <TriangleAlert className="h-5 w-5 shrink-0 text-destructive" />
+                <CardTitle className="text-xl">{t('SETTINGS_FACTORY_RESET_TITLE')}</CardTitle>
+              </div>
+              <CardDescription>{t('SETTINGS_FACTORY_RESET_SUBTITLE')}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground mb-4">{t('SETTINGS_FACTORY_RESET_DESCRIPTION')}</p>
+              <Button
+                intent="danger"
+                variant="outline"
+                disabled={demoMode}
+                onClick={() => setFactoryResetDialogOpen(true)}
+                data-testid="factory-reset-btn"
+              >
+                {t('SETTINGS_FACTORY_RESET_BUTTON')}
+              </Button>
+            </CardContent>
+          </Card>
 
-      <Dialog open={factoryResetOpen} onOpenChange={setFactoryResetDialogOpen}>
-        <DialogContent type="danger" size="sm">
-          <DialogHeader>
-            <DialogTitle>{t('SETTINGS_FACTORY_RESET_DIALOG_TITLE')}</DialogTitle>
-          </DialogHeader>
-          <DialogDescription className="space-y-4 py-2">
-            <p>{t('SETTINGS_FACTORY_RESET_DIALOG_BODY')}</p>
-            <div className="space-y-3 text-left">
-              {deviceName ? (
-                <>
-                  <label htmlFor="factory-reset-confirmation" className="block text-sm font-medium">
-                    {t('SETTINGS_FACTORY_RESET_CONFIRMATION_LABEL', { phrase: deviceName })}
-                  </label>
-                  <Input
-                    id="factory-reset-confirmation"
-                    value={factoryResetPhrase}
-                    onChange={(event) => setFactoryResetPhrase(event.target.value)}
-                    autoComplete="off"
-                    data-testid="factory-reset-confirmation-input"
-                  />
-                </>
-              ) : (
-                <p data-testid="factory-reset-no-device-name">{t('SETTINGS_FACTORY_RESET_NO_DEVICE_NAME')}</p>
-              )}
-            </div>
-          </DialogDescription>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setFactoryResetDialogOpen(false)} disabled={factoryResetting}>
-              {t('COMMON_CANCEL')}
-            </Button>
-            <Button
-              intent="danger"
-              loading={factoryResetting}
-              disabled={!deviceName || factoryResetPhrase.trim() !== deviceName}
-              onClick={handleFactoryReset}
-              data-testid="factory-reset-confirm-btn"
-            >
-              {t('SETTINGS_FACTORY_RESET_BUTTON')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          <Dialog open={factoryResetOpen} onOpenChange={setFactoryResetDialogOpen}>
+            <DialogContent type="danger" size="sm">
+              <DialogHeader>
+                <DialogTitle>{t('SETTINGS_FACTORY_RESET_DIALOG_TITLE')}</DialogTitle>
+              </DialogHeader>
+              <DialogDescription className="space-y-4 py-2">
+                <p>{t('SETTINGS_FACTORY_RESET_DIALOG_BODY')}</p>
+                <div className="space-y-3 text-left">
+                  {deviceName ? (
+                    <>
+                      <label htmlFor="factory-reset-confirmation" className="block text-sm font-medium">
+                        {t('SETTINGS_FACTORY_RESET_CONFIRMATION_LABEL', { phrase: deviceName })}
+                      </label>
+                      <Input
+                        id="factory-reset-confirmation"
+                        value={factoryResetPhrase}
+                        onChange={(event) => setFactoryResetPhrase(event.target.value)}
+                        autoComplete="off"
+                        data-testid="factory-reset-confirmation-input"
+                      />
+                    </>
+                  ) : (
+                    <p data-testid="factory-reset-no-device-name">{t('SETTINGS_FACTORY_RESET_NO_DEVICE_NAME')}</p>
+                  )}
+                </div>
+              </DialogDescription>
+              <DialogFooter>
+                <Button variant="ghost" onClick={() => setFactoryResetDialogOpen(false)} disabled={factoryResetting}>
+                  {t('COMMON_CANCEL')}
+                </Button>
+                <Button
+                  intent="danger"
+                  loading={factoryResetting}
+                  disabled={!deviceName || factoryResetPhrase.trim() !== deviceName}
+                  onClick={handleFactoryReset}
+                  data-testid="factory-reset-confirm-btn"
+                >
+                  {t('SETTINGS_FACTORY_RESET_BUTTON')}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </>
+      )}
 
       {usesCloudConnect() && (
         <Card>

@@ -66,6 +66,7 @@ describe('GET /api/app-context', () => {
       unused(),
       unused(),
       unused(),
+      unused(),
     );
   });
 

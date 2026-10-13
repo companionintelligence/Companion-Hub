@@ -5,6 +5,7 @@ import { DatabaseService } from '@/core/database/database.service';
 import { app, whoisCache } from '@/core/database/drizzle/schema';
 import { LoggerService } from '@/core/logger/logger.service';
 import { FederatedIdentityRepository } from '@/modules/user/federated-identity.repository';
+import { UserRepository } from '@/modules/user/user.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { PORT_EXPOSE_KIND } from '@ci-hub/common/schemas';
@@ -51,6 +52,19 @@ type CachedWhoIs = {
 };
 
 /**
+ * What a role lookup found. `unlinked` (no Portal identity) and `no-organization` (this Hub isn't
+ * paired, or its registration can't be read) mean there was no role to ask about; `unknown` means
+ * the Portal was asked and couldn't answer.
+ */
+type ManagingRoleVerdict = 'manager' | 'not-manager' | 'unlinked' | 'no-organization' | 'unknown';
+
+/**
+ * Whether a request may change what applies to the whole Hub or read its own log. `unknown` is a
+ * refusal too, but one the person can retry: the Portal couldn't say what their role is.
+ */
+export type HubManageVerdict = 'allowed' | 'refused' | 'unknown';
+
+/**
  * Hub UX cache of Portal org app grants (WhoIs / CapMap).
  *
  * Not commerce. A modified Hub can skip this. Portal POST install and
@@ -74,6 +88,7 @@ export class MarketplaceWhoIsService {
     private readonly logger: LoggerService,
     private readonly federatedIdentities: FederatedIdentityRepository,
     private readonly registration: RegistrationService,
+    private readonly users: UserRepository,
   ) {}
 
   async assertSessionAction(req: Request, appUrn: AppUrn, action: HubAction, surface: GrantSurface = 'hub'): Promise<void> {
@@ -257,6 +272,16 @@ export class MarketplaceWhoIsService {
     purpose: 'custom_domain' | 'api_key_full' | 'custom_app',
     knownSubject?: string,
   ): Promise<boolean> {
+    return (await this.managingRoleVerdict(userId, appUrn, purpose, knownSubject)) === 'manager';
+  }
+
+  /** {@link readManagingRole}, saying why the answer isn't "manager". */
+  private async managingRoleVerdict(
+    userId: number,
+    appUrn: AppUrn | null,
+    purpose: 'custom_domain' | 'api_key_full' | 'custom_app' | 'hub_manage',
+    knownSubject?: string,
+  ): Promise<ManagingRoleVerdict> {
     // The identity read and the urn split inside the `try` too: a database error, or a urn
     // `extractAppUrn` rejects, is another way of not knowing, not a 500.
     try {
@@ -264,7 +289,7 @@ export class MarketplaceWhoIsService {
 
       if (!subject) {
         this.logUnlinked(userId);
-        return false;
+        return 'unlinked';
       }
 
       const appIds = appUrn === null ? [] : [extractAppUrn(appUrn).appName];
@@ -272,8 +297,11 @@ export class MarketplaceWhoIsService {
 
       // With no organization of our own there is no answer a role could be read from, so the Portal is not asked.
       if (!organizationId) {
-        this.logger.warn(`${purpose}_role_unverified userId=${userId} status=no-organization`);
-        return false;
+        // An unpaired Hub is set up through the Hub-wide routes, which decide this case without a role; no warning there.
+        if (purpose !== 'hub_manage') {
+          this.logger.warn(`${purpose}_role_unverified userId=${userId} status=no-organization`);
+        }
+        return 'no-organization';
       }
 
       const response = await this.portal.whoisApps({ subject, appIds, surface: 'hub', organizationId });
@@ -281,14 +309,109 @@ export class MarketplaceWhoIsService {
       if (!response?.body || response.status < 200 || response.status >= 300) {
         // Refused all the same, but an owner turned away by an outage reads "owner or admin only", so the log says why.
         this.logger.warn(`${purpose}_role_unverified userId=${userId} status=${response ? response.status : 'no-portal'}`);
-        return false;
+        return 'unknown';
       }
 
       const role = this.pickOrg(response.body, organizationId)?.user?.role;
 
-      return role === 'owner' || role === 'admin';
+      return role === 'owner' || role === 'admin' ? 'manager' : 'not-manager';
     } catch (error) {
       this.logger.warn(`Could not read the organization role (${purpose}): ${describeNetworkError(error)}`);
+      return 'unknown';
+    }
+  }
+
+  /**
+   * Whether the person behind a request may change what applies to the whole Hub (its settings, keys,
+   * AI providers, updates, pool, app stores, registration and factory reset) or read the Hub's own
+   * log. An organization owner or admin may, asked of the Portal fresh each time, never from the role
+   * stored at sign-in. A member may not. A role that can't be read is `unknown`, and refuses.
+   *
+   * When there is no role to ask about, because this Hub isn't paired yet or the person has no linked
+   * Portal identity, the operator who claimed this Hub (the oldest operator row, the one the CLI acts
+   * as) keeps these rights, so setup and a local-account dev Hub keep working. Any other operator is
+   * refused, as `customAppGrant` gives an unlinked operator no role-gated right.
+   *
+   * The CLI and the host-local key are admitted by name: both prove access to the box. Every other
+   * principal is refused, the Portal push included, which only brokers app installs.
+   */
+  async hubManageVerdict(req: HubPrincipalFields): Promise<HubManageVerdict> {
+    switch (req.hubPrincipal) {
+      case 'cli':
+      case 'host-local':
+        return 'allowed';
+      case 'session':
+        break;
+      default:
+        // All the caller sees is a 403, so the log names the principal that was turned away.
+        this.logger.warn(`hub_manage_refused principal=${req.hubPrincipal ?? 'none'}`);
+        return 'refused';
+    }
+
+    const userId = hubSessionOperatorUserId(req);
+    if (userId == null) {
+      return 'refused';
+    }
+
+    const verdict = await this.managingRoleVerdict(userId, null, 'hub_manage');
+    switch (verdict) {
+      case 'manager':
+        return 'allowed';
+      case 'not-manager':
+        return 'refused';
+      case 'unknown':
+        return 'unknown';
+      case 'unlinked':
+      case 'no-organization':
+        return (await this.isClaimingOperator(userId)) ? 'allowed' : 'refused';
+    }
+  }
+
+  /** Refuse a request {@link hubManageVerdict} doesn't allow: 403 for a no, 503 when the Portal couldn't say. */
+  async assertSessionMayManageHub(req: HubPrincipalFields): Promise<void> {
+    const verdict = await this.hubManageVerdict(req);
+
+    if (verdict === 'unknown') {
+      throw new TranslatableError('HUB_MANAGE_ROLE_UNVERIFIED', {}, HttpStatus.SERVICE_UNAVAILABLE);
+    }
+
+    if (verdict !== 'allowed') {
+      throw new TranslatableError('HUB_MANAGE_ROLE_REQUIRED', {}, HttpStatus.FORBIDDEN);
+    }
+  }
+
+  /**
+   * {@link hubManageVerdict} for the UI, answered without a Portal call when it can be: a linked
+   * operator's role is the one the Hub stored at sign-in (`user.orgRole`), as for
+   * {@link customAppActionsHint}. With no role stored, the Portal is asked now. Only the UI reads this;
+   * every route that changes the Hub still asks the Portal fresh.
+   */
+  async hubManageHint(req: HubPrincipalFields): Promise<boolean> {
+    const userId = hubSessionOperatorUserId(req);
+
+    if (userId == null || (req.user?.orgRole !== 'owner' && req.user?.orgRole !== 'admin' && req.user?.orgRole !== 'member')) {
+      return (await this.hubManageVerdict(req)) === 'allowed';
+    }
+
+    try {
+      const subject = await this.portalSubject(userId);
+      if (!subject || !(await this.deviceOrganizationId())) {
+        return await this.isClaimingOperator(userId);
+      }
+    } catch (error) {
+      this.logger.warn(`Could not read the organization role (hub_manage): ${describeNetworkError(error)}`);
+      return false;
+    }
+
+    return req.user.orgRole !== 'member';
+  }
+
+  /** Whether this person claimed the Hub: the oldest operator row, the one the CLI and the host-local key act as. */
+  private async isClaimingOperator(userId: number): Promise<boolean> {
+    try {
+      return (await this.users.getFirstOperator())?.id === userId;
+    } catch (error) {
+      this.logger.warn(`Could not read this Hub's first operator: ${describeNetworkError(error)}`);
       return false;
     }
   }

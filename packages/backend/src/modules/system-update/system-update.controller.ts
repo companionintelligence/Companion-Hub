@@ -1,6 +1,7 @@
 import { BadRequestException, Controller, Get, Post, Query, UseGuards, Body } from '@nestjs/common';
 import { ApiResponse } from '@nestjs/swagger';
 import { AuthGuard } from '../auth/auth.guard';
+import { HubManagerGuard } from '../auth/hub-manager.guard';
 import { DesktopReleaseService } from './desktop-release.service';
 import { DesktopReleaseDto, DesktopReleaseQueryDto } from './dto/desktop-release.dto';
 import { HUB_VERSION_TAG_MESSAGE, isHubVersionTag } from './hub-deployment';
@@ -20,7 +21,7 @@ export class SystemUpdateController {
   }
 
   @Post()
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   async performUpdate(@Body() body?: { targetVersion?: string }) {
     const targetVersion: unknown = body?.targetVersion;
     // The service checks again for its other callers (MCP, auto-update). Refusing here keeps a
@@ -38,7 +39,7 @@ export class SystemUpdateController {
   }
 
   @Post('auto-updates')
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   async setAutoUpdates(@Body() body: { enabled: boolean }) {
     await this.systemUpdateService.setAutoUpdatesEnabled(body.enabled);
     return { enabled: body.enabled };

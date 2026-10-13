@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { useRegistrationStatus, reconnectTunnel, resetRegistrationForRePair, navigate, invalidateQueries, toast } = vi.hoisted(() => ({
+const { useRegistrationStatus, reconnectTunnel, resetRegistrationForRePair, navigate, invalidateQueries, toast, hubAccess } = vi.hoisted(() => ({
+  hubAccess: { manageHub: true, isPending: false },
   useRegistrationStatus: vi.fn(),
   reconnectTunnel: vi.fn(),
   resetRegistrationForRePair: vi.fn(),
@@ -12,6 +13,10 @@ const { useRegistrationStatus, reconnectTunnel, resetRegistrationForRePair, navi
 
 vi.mock('@/lib/hooks/use-registration-status', () => ({
   useRegistrationStatus: () => useRegistrationStatus(),
+}));
+
+vi.mock('@/lib/hooks/use-hub-access', () => ({
+  useHubAccess: () => hubAccess,
 }));
 
 vi.mock('@/lib/registration-api', () => ({
@@ -47,6 +52,18 @@ describe('TunnelStatusBanner', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.spyOn(window, 'confirm').mockReturnValue(true);
+    hubAccess.manageHub = true;
+  });
+
+  // Reconnecting or re-pairing changes the whole Hub, an owner's or admin's to do.
+  it('tells a member about the outage without offering the reconnect', () => {
+    hubAccess.manageHub = false;
+    useRegistrationStatus.mockReturnValue(degraded);
+
+    render(<TunnelStatusBanner />);
+
+    expect(screen.getByText('TUNNEL_DEGRADED_BANNER_TITLE')).toBeInTheDocument();
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 
   it('renders a reconnect banner when the public tunnel is degraded', () => {

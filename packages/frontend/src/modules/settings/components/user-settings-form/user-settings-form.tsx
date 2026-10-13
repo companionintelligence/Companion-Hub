@@ -99,10 +99,15 @@ interface IProps {
   submitErrors?: Record<string, string>;
   /** Read-only hub-{device}-{org}.{domain} from app context */
   publicHubHostname?: string;
+  /**
+   * Whether this person may change the Hub's settings (`useHubAccess`). A member gets only their own
+   * language; the theme and every setting below it apply to the whole Hub.
+   */
+  manageHub?: boolean;
 }
 
 export const UserSettingsForm = (props: IProps) => {
-  const { onSubmit, initialValues, loading, currentLocale = 'en-US', submitErrors, publicHubHostname } = props;
+  const { onSubmit, initialValues, loading, currentLocale = 'en-US', submitErrors, publicHubHostname, manageHub = true } = props;
   const { t } = useTranslation();
   const advancedSettingsDisclosure = useDisclosure();
 
@@ -185,6 +190,22 @@ export const UserSettingsForm = (props: IProps) => {
       <Copy className="h-4 w-4" />
     </Button>
   );
+
+  if (!manageHub) {
+    return (
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <User className="h-5 w-5 shrink-0 text-muted-foreground" />
+            <CardTitle className="text-xl">{t('SETTINGS_GENERAL_USER_SETTINGS')}</CardTitle>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <LanguageSelector showLabel locale={currentLocale} />
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <div className="space-y-6">

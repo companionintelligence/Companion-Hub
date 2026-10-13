@@ -726,6 +726,25 @@ describe('GeneralActionsContainer', () => {
     expect(commandsIn(instructions)).toEqual([]);
   });
 
+  // A member is view-only across the Hub; the desktop app's own update acts on this computer, so it stays.
+  it('shows a member no Hub update, auto-update, app store repository, setup wizard or factory reset', async () => {
+    mockUseAppContext.mockReturnValue({
+      version: { current: '0.2.44', latest: '0.2.46', body: '', releases: [{ version: '0.2.46', body: 'Release 0.2.46' }] },
+      refreshAppContext: vi.fn(),
+    } as unknown as ReturnType<typeof useAppContext>);
+
+    render(<GeneralActionsContainer manageHub={false} />);
+
+    expect(await screen.findByTestId('desktop-shell-update-card')).toBeInTheDocument();
+    expect(screen.queryByTestId('hub-update-btn')).not.toBeInTheDocument();
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('restart-wizard-btn')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('factory-reset-btn')).not.toBeInTheDocument();
+    expect(screen.queryByText('Current version: 0.2.44')).not.toBeInTheDocument();
+    expect(screen.queryByText('Update App Stores')).not.toBeInTheDocument();
+    expect(screen.queryByText('Factory reset')).not.toBeInTheDocument();
+  });
+
   it('labels the stack button as a stack-only update', async () => {
     mockIsTauri.mockReturnValue(false);
     mockUseAppContext.mockReturnValue({

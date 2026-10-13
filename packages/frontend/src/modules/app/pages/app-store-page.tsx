@@ -18,6 +18,7 @@ import { AppCard } from '@/modules/app/components/app-card/app-card';
 import { getCategoryLabel } from '@/modules/app/helpers/category-label';
 import { iconForCategory } from '@/modules/app/helpers/table-helpers';
 import { useCustomAppAccess } from '@/modules/app/helpers/use-custom-app-access';
+import { useHubAccess } from '@/lib/hooks/use-hub-access';
 import { filterAlternativesBySearch } from '@/lib/store-search';
 import { useAppStoreState } from '@/stores/app-store';
 import { keepPreviousData, useInfiniteQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -51,6 +52,7 @@ export default () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const customAppAccess = useCustomAppAccess();
+  const { manageHub } = useHubAccess();
   const params = useParams<{ storeId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const { setCategory, category, storeId, setStoreId, search, setSearch, setSearchImmediate } = useAppStoreState();
@@ -301,10 +303,13 @@ export default () => {
               {t('APP_STORE_CREATE_CUSTOM_APP')}
             </Button>
           ) : null}
-          <Button onClick={() => pullApps()} disabled={isPulling} variant="outline" size="sm" className="w-full gap-2 sm:w-auto">
-            <RefreshCw className={clsx('h-4 w-4', isPulling && 'animate-spin')} />
-            {isPulling ? t('APP_STORE_SYNCING') : t('APP_STORE_CHECK_FOR_UPDATES')}
-          </Button>
+          {/* Pulling the app stores refreshes them for the whole Hub, an owner's or admin's to do. */}
+          {manageHub ? (
+            <Button onClick={() => pullApps()} disabled={isPulling} variant="outline" size="sm" className="w-full gap-2 sm:w-auto">
+              <RefreshCw className={clsx('h-4 w-4', isPulling && 'animate-spin')} />
+              {isPulling ? t('APP_STORE_SYNCING') : t('APP_STORE_CHECK_FOR_UPDATES')}
+            </Button>
+          ) : null}
         </div>
       </div>
 

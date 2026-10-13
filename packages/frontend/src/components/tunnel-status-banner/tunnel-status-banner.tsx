@@ -1,4 +1,5 @@
 import { getStatusQueryKey } from '@/api-client/@tanstack/react-query.gen';
+import { useHubAccess } from '@/lib/hooks/use-hub-access';
 import { useRegistrationStatus } from '@/lib/hooks/use-registration-status';
 import { reconnectTunnel, resetRegistrationForRePair } from '@/lib/registration-api';
 import { requiresPortalRePairing } from '@/lib/registration-status';
@@ -24,6 +25,8 @@ export function TunnelStatusBanner() {
   const queryClient = useQueryClient();
   const { data: status } = useRegistrationStatus();
   const [isReconnecting, setIsReconnecting] = useState(false);
+  // Reconnecting or re-pairing changes the whole Hub, an owner's or admin's to do. A member sees the notice only.
+  const { manageHub } = useHubAccess();
 
   if (!status || !requiresPortalRePairing(status)) {
     return null;
@@ -80,14 +83,16 @@ export function TunnelStatusBanner() {
           <span className="text-muted-foreground"> {t('TUNNEL_DEGRADED_BANNER_MESSAGE')}</span>
         </span>
       </div>
-      <button
-        type="button"
-        onClick={() => void handleReconnect()}
-        disabled={isReconnecting}
-        className="shrink-0 self-start rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-50 md:self-auto"
-      >
-        {isReconnecting ? t('TUNNEL_DEGRADED_BANNER_ACTION_PENDING') : t('TUNNEL_DEGRADED_BANNER_ACTION')}
-      </button>
+      {manageHub && (
+        <button
+          type="button"
+          onClick={() => void handleReconnect()}
+          disabled={isReconnecting}
+          className="shrink-0 self-start rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-50 md:self-auto"
+        >
+          {isReconnecting ? t('TUNNEL_DEGRADED_BANNER_ACTION_PENDING') : t('TUNNEL_DEGRADED_BANNER_ACTION')}
+        </button>
+      )}
     </div>
   );
 }

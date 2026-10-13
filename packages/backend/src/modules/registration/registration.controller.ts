@@ -10,6 +10,7 @@ import { ApiTags, ApiOperation, ApiQuery, ApiResponse } from '@nestjs/swagger';
 import { isLocalHostname, isPrivateOrLocalIp } from '@/common/helpers/ip-address';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { HubSessionGuard } from '@/modules/auth/hub-session.guard';
+import { HubManagerGuard } from '@/modules/auth/hub-manager.guard';
 import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
 
 interface RegisterDeviceDto {
@@ -56,7 +57,7 @@ export class RegistrationController {
    * and the CLI JWT and app keys because none of them is a person deciding to unpair this Hub.
    */
   @Post('reset')
-  @UseGuards(AuthGuard, HubSessionGuard, DemoModeGuard)
+  @UseGuards(AuthGuard, HubSessionGuard, HubManagerGuard, DemoModeGuard)
   @ApiOperation({ summary: 'Reset device registration to allow re-pairing' })
   @ApiResponse({ status: 200, description: 'Registration reset successfully' })
   @ApiResponse({ status: 403, description: 'Only a person signed in to this Hub may reset its registration' })
@@ -71,7 +72,7 @@ export class RegistrationController {
    * `DEVICE_NOT_ACTIVE`.
    */
   @Post('removal-check')
-  @UseGuards(AuthGuard, HubSessionGuard, DemoModeGuard)
+  @UseGuards(AuthGuard, HubSessionGuard, HubManagerGuard, DemoModeGuard)
   @ApiOperation({ summary: 'Check whether this Hub was removed from its account in the Portal' })
   @ApiResponse({
     status: 200,
@@ -104,7 +105,7 @@ export class RegistrationController {
   }
 
   @Post('reconnect-tunnel')
-  @UseGuards(AuthGuard, DemoModeGuard)
+  @UseGuards(AuthGuard, HubManagerGuard, DemoModeGuard)
   @ApiOperation({ summary: 'Recover public/remote access for a registered but tunnel-degraded Hub' })
   @ApiResponse({ status: 200, description: 'Returns the reconnect outcome (recovered, or an action the client should take)' })
   async reconnectTunnel() {

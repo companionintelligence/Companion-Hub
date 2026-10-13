@@ -1394,6 +1394,8 @@
   "APP_ACTION_GRANT_DENIED": "You are not allowed to {{action}} this app.",
   "CUSTOM_DOMAIN_ROLE_REQUIRED": "Only an organization owner or admin can change which custom domain an app uses.",
   "CUSTOM_APP_CREATE_ROLE_REQUIRED": "Only an organization owner or admin can create a custom app.",
+  "HUB_MANAGE_ROLE_REQUIRED": "Only an organization owner or admin can do this on this Hub.",
+  "HUB_MANAGE_ROLE_UNVERIFIED": "Could not reach CI Portal to confirm your organization role. Please try again in a moment.",
   "TIMEZONE_SELECTOR_LABEL": "Timezone",
   "TIMEZONE_SELECTOR_PLACEHOLDER": "Select a timezone",
   "YES": "Yes",

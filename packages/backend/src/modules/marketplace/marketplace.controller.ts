@@ -22,6 +22,7 @@ import { pipeline } from 'node:stream/promises';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppStoreService } from '../app-stores/app-store.service';
 import { AuthGuard } from '../auth/auth.guard';
+import { HubManagerGuard } from '../auth/hub-manager.guard';
 import { RegistrationGuard } from '../registration/registration.guard';
 import { parseByteRange } from './app-media.helpers';
 import {
@@ -240,7 +241,7 @@ export class MarketplaceController {
   }
 
   @Post('pull')
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @ApiResponse({ type: PullDto })
   async pullAppStores() {
     const res = await this.appStoreService.pullRepositories();
@@ -250,7 +251,7 @@ export class MarketplaceController {
   }
 
   @Post('create')
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @ApiResponse({ type: AppStoreDto })
   async createAppStore(@Body() body: CreateAppStoreBodyDto) {
     const appStore = await this.appStoreService.createAppStore(body);
@@ -278,7 +279,7 @@ export class MarketplaceController {
   }
 
   @Patch(':id')
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @ApiResponse({ type: UpdateAppStoreDto })
   async updateAppStore(@Param('id') id: string, @Body() body: UpdateAppStoreBodyDto) {
     await this.appStoreService.updateAppStore(id, body);
@@ -288,7 +289,7 @@ export class MarketplaceController {
   }
 
   @Delete(':id')
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   async deleteAppStore(@Param('id') id: string) {
     await this.appStoreService.deleteAppStore(id);
     await this.marketplaceService.initialize();

@@ -1,11 +1,17 @@
 import { render, screen } from '@/tests/test-utils';
 import { useAppContext } from '@/context/app-context';
 import { MemoryRouter } from 'react-router';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import SettingsPage from './settings-page';
 
 vi.mock('@/context/app-context', () => ({
   useAppContext: vi.fn(),
+}));
+
+const { hubAccess } = vi.hoisted(() => ({ hubAccess: { manageHub: true, isPending: false } }));
+
+vi.mock('@/lib/hooks/use-hub-access', () => ({
+  useHubAccess: () => hubAccess,
 }));
 
 vi.mock('react-i18next', () => ({
@@ -15,11 +21,11 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('../containers/user-settings', () => ({
-  UserSettingsContainer: () => <div>User settings</div>,
+  UserSettingsContainer: ({ manageHub }: { manageHub?: boolean }) => <div>User settings{manageHub ? '' : ' (own only)'}</div>,
 }));
 
 vi.mock('../containers/security', () => ({
-  SecurityContainer: () => <div>Security</div>,
+  SecurityContainer: ({ manageHub }: { manageHub?: boolean }) => <div>Security{manageHub ? '' : ' (own only)'}</div>,
 }));
 
 vi.mock('../containers/logs', () => ({
@@ -35,7 +41,7 @@ vi.mock('../containers/system-inspector', () => ({
 }));
 
 vi.mock('../containers/general-actions', () => ({
-  GeneralActionsContainer: () => <div>General actions</div>,
+  GeneralActionsContainer: ({ manageHub }: { manageHub?: boolean }) => <div>General actions{manageHub ? '' : ' (this device only)'}</div>,
 }));
 
 vi.mock('../containers/app-stores-container', () => ({
@@ -58,6 +64,11 @@ function renderSettingsPage(initialEntry: string) {
 }
 
 describe('SettingsPage', () => {
+  beforeEach(() => {
+    hubAccess.manageHub = true;
+    hubAccess.isPending = false;
+  });
+
   it('uses the default constrained layout for non-log settings tabs', async () => {
     renderSettingsPage('/settings');
 
@@ -102,5 +113,55 @@ describe('SettingsPage', () => {
     expect(innerWrapper).toHaveClass('h-full');
     expect(innerWrapper).toHaveClass('max-w-none');
     expect(innerWrapper).not.toHaveClass('max-w-5xl');
+  });
+
+  // A member is view-only across the Hub: the tabs that change the whole Hub, and its log, are not theirs.
+  describe('for a member', () => {
+    beforeEach(() => {
+      hubAccess.manageHub = false;
+    });
+
+    it('shows only Settings, Security and System', async () => {
+      renderSettingsPage('/settings');
+
+      expect(await screen.findByText('User settings (own only)')).toBeInTheDocument();
+      expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['COMMON_SETTINGS', 'COMMON_SECURITY', 'COMMON_SYSTEM']);
+    });
+
+    it.each(['logs', 'ai', 'network', 'appstores', 'mcp'])('opens Settings for an old link to the %s tab', async (tab) => {
+      renderSettingsPage(`/settings?tab=${tab}`);
+
+      expect(await screen.findByText('User settings (own only)')).toBeInTheDocument();
+      expect(screen.queryByText('Logs')).not.toBeInTheDocument();
+      expect(screen.queryByText('Network')).not.toBeInTheDocument();
+    });
+
+    it('keeps their own account on Security', async () => {
+      renderSettingsPage('/settings?tab=security');
+      expect(await screen.findByText('Security (own only)')).toBeInTheDocument();
+    });
+
+    it('keeps this device and the read-only inspector on System', async () => {
+      renderSettingsPage('/settings?tab=system');
+
+      expect(await screen.findByText('General actions (this device only)')).toBeInTheDocument();
+      expect(screen.getByText('System inspector')).toBeInTheDocument();
+    });
+  });
+
+  it('shows every tab to an owner or admin', async () => {
+    renderSettingsPage('/settings');
+
+    expect(await screen.findByText('User settings')).toBeInTheDocument();
+    expect(screen.getAllByRole('tab')).toHaveLength(8);
+  });
+
+  it('shows no tab until the Hub says who may manage it', () => {
+    hubAccess.isPending = true;
+
+    renderSettingsPage('/settings?tab=logs');
+
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+    expect(screen.queryByText('Logs')).not.toBeInTheDocument();
   });
 });

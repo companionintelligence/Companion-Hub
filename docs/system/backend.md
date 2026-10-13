@@ -789,6 +789,10 @@ The port-expose routes still take only a sign-in.
 `/user-config/:urn` (GET, PUT, enable, disable) asserts the same verbs as its MCP tools for every app:
 reading takes `view` (`configure` on a `_user` app), and every change takes `configure`.
 
+An app's log stream (`/api/sse/app-logs`) takes the verb reading its settings takes (`settingsReadAction`),
+since a container prints its env values at start. A stream sends at most 1000 lines at the start
+(`logStreamLines`), as the `hub_get_app_logs` MCP tool does.
+
 Assert over **every** app a request could touch before touching any of them, and include apps the
 caller named even when they turn out to need no work — checking only the apps that do lets an
 unauthorized caller read an app's state out of the 403-vs-200 answer.
@@ -819,6 +823,38 @@ Leave the marker off every other call, so a `write` managed key is refused it on
 When you add an MCP tool that acts on one app, pass `mcpCallerLifecycleActor(action)` to a service that
 takes an actor, or call `assertMcpCallerMay` before the tool reads or changes anything. Give an internal
 caller a `{ kind: 'system', reason }` actor, with a reason named in `SystemLifecycleReason`.
+
+## Hub-wide changes
+
+A member of the organization is view-only across the Hub. Every route that changes what applies to the
+whole Hub, or reads the Hub's own log, carries `HubManagerGuard` after `AuthGuard`: user settings and
+`acknowledge-welcome`, inference preferences, cloud providers, model pulls, loads and pins, hardware
+rescan, ROCm state and the Ollama install, Hub Pool settings, pins, pairing and peers, app stores
+(add, change, delete, pull), Tailscale connect, sync and disconnect, the Docker network repair, the
+registration reset, removal check and tunnel reconnect, the Hub update and auto-updates, the factory
+reset, API keys (create, change, revoke), the MCP tool runner, `GET /system/logs/download` and
+`/api/sse/ci-hub-logs`. `hub-manager.guard.test.ts` lists them; add a new Hub-wide route there too.
+
+The guard asks `MarketplaceWhoIsService.hubManageVerdict`:
+
+- An organization owner or admin passes, asked of the Portal fresh with a role-only WhoIs, never from
+  the role stored at sign-in. A member gets 403 `HUB_MANAGE_ROLE_REQUIRED`.
+- A role the Portal can't confirm (down, unreachable, an error answer) gets 503 `HUB_MANAGE_ROLE_UNVERIFIED`.
+- With no role to ask about, because the Hub isn't paired yet or the person has no linked Portal
+  identity, the operator who claimed the Hub (the oldest operator row, the one the CLI acts as) passes,
+  so setup and a local-account dev Hub keep working. Any other operator gets 403.
+- The CLI and the host-local key pass by name. The Portal push key, which only brokers app installs,
+  and every other principal get 403.
+
+`GET /api/hub-access` tells the UI whether to show these controls (`hubManageHint`), from the role
+stored at sign-in, as `GET /custom-apps/access` does for custom apps. Settings hides the App stores,
+Network, AI, MCP and Logs tabs from a member, and the Hub-wide controls on Settings, Security and System.
+
+`GET /api/app-context` reports the settings named in `APP_CONTEXT_SETTINGS` (`app.dto.ts`) and nothing
+else, so no key reaches it: not the Portal device or move key, the vLLM key or the cloud provider keys.
+`setUserSettings` keeps the device and move keys out of `config.userSettings`; code reads them from the
+top-level config. `GET /api/inference/preferences` reports a stored vLLM key as `••••••••`, and a save
+that sends the mask back keeps the stored key, as cloud provider saves do.
 
 ## API client generation
 

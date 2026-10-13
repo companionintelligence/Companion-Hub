@@ -3,6 +3,7 @@ import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { extractDeviceSlug } from '@ci-hub/common/types';
 import type { Request } from 'express';
 import { AuthGuard } from '@/modules/auth/auth.guard';
+import { HubManagerGuard } from '@/modules/auth/hub-manager.guard';
 import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { FactoryResetDto } from './dto/factory-reset.dto';
@@ -17,7 +18,7 @@ export class FactoryResetController {
   ) {}
 
   @Post('factory-reset')
-  @UseGuards(AuthGuard, DemoModeGuard)
+  @UseGuards(AuthGuard, HubManagerGuard, DemoModeGuard)
   @ApiOperation({ summary: 'Wipe all Hub state and return to first-operator setup' })
   @ApiResponse({ status: 200, description: 'Factory reset completed' })
   @ApiResponse({ status: 400, description: 'Confirmation does not match this device name' })
