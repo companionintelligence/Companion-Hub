@@ -84,6 +84,7 @@ If you cannot delete one of the Hub's files as your user, reset prints a command
 - Requires typing the confirmation phrase: `factory-reset`
 - Calls `POST /api/system/factory-reset`
 - Tears down installed apps, wipes Postgres tables (including `user` and every API key, so agents and `cihub api-key` users need new keys afterwards), clears `settings.json` and registration artifacts, and empties the `app-data`, `apps`, `repos`, `backups`, and `user-config` folders
+- Clears the cloud provider keys and the other settings the running Hub still held from `settings.json`, so apps installed afterwards get none of them
 - `user-config` holds each app's env and compose overrides, and also the Hub's own compose override (`hub-compose.yml`) and the Hub process's home folder (its `.gitconfig`). All of it goes, as with `cihub reset`
 - Leaves `media` alone, files and folders: it is the shared media library (books, films, music and downloads that media apps use). `cihub reset` still deletes it with the rest of the data folder
 - Leaves a folder alone when it is a link (a symlink, or a junction on Windows) to a folder with another name, which puts its contents outside the Hub's data folder. The Hub reads where each folder is mounted from in `/proc/self/mountinfo` and names that folder, as `backups/`, with the files it could not delete. A link to a folder with the same name can't be told apart and is emptied

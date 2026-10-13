@@ -17,6 +17,7 @@ import { clearRegistrationRecoveryArtifacts } from '@/modules/app-lifecycle/regi
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { removeTunnelRegistrationMarker } from '@/modules/registration/tunnel-markers';
 import { BearerOrgMembershipCache } from '@/modules/auth/bearer-org-membership.cache';
+import { CloudFallbackService } from '@/modules/inference/cloud-fallback.service';
 import { DOCKERODE } from '@/modules/docker/constants';
 import { Inject, Injectable } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
@@ -54,6 +55,23 @@ export class FactoryResetService {
     }
   }
 
+  /**
+   * settings.json is `{}` now, but what was in it is still in memory: the cloud provider keys in
+   * `CloudFallbackService`, and the user settings in `ConfigurationService`. Until a restart, apps
+   * were handed the old keys, and the next provider saved wrote them all back to the file.
+   *
+   * Resolved through `ModuleRef`, as the Bearer verdicts are, because `SystemModule` does not import
+   * `InferenceModule`.
+   */
+  private forgetSettingsInMemory(): void {
+    this.configuration.forgetPersistedUserSettings();
+    try {
+      this.moduleRef.get(CloudFallbackService, { strict: false })?.forgetProviders();
+    } catch (error) {
+      this.logger.warn(`Factory reset could not clear the cloud provider keys in memory: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   public async execute(): Promise<{ success: true; message: string }> {
     this.logger.warn('Factory reset requested — tearing down apps, wiping data mounts, and clearing Hub state');
 
@@ -63,6 +81,7 @@ export class FactoryResetService {
     await this.clearRegistrationArtifacts();
     await this.registrationService.resetRegistration({ reason: 'manual' });
     await this.resetSettings();
+    this.forgetSettingsInMemory();
     this.cache.clear();
     this.clearBearerOrgMembership();
 

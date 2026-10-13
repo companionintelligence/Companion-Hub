@@ -221,6 +221,58 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   hubPoolMdnsEnabled: undefined,
 };
 
+/**
+ * The user settings boot takes from settings.json and nowhere else. A factory reset puts them back
+ * to what they are for an empty file (`forgetPersistedUserSettings`).
+ */
+function userSettingsFromFile(settingsValues: PersistedSettingsValues) {
+  return {
+    defaultAppCpuLimit: settingsValues.defaultAppCpuLimit,
+    defaultAppMemoryLimit: settingsValues.defaultAppMemoryLimit,
+    // Auto resource allocation is opt-out: undefined means enabled
+    autoAllocateAppResources: settingsValues.autoAllocateAppResources ?? true,
+    inferenceBackend: settingsValues.inferenceBackend,
+    inferenceModel: settingsValues.inferenceModel,
+    inferenceEmbeddingModel: settingsValues.inferenceEmbeddingModel,
+    inferenceVisionModel: settingsValues.inferenceVisionModel,
+    inferenceVllmApiKey: settingsValues.inferenceVllmApiKey,
+    inferenceVllmUrl: settingsValues.inferenceVllmUrl,
+    inferenceOmlxUrl: settingsValues.inferenceOmlxUrl,
+    inferenceDecodeEndpoint: settingsValues.inferenceDecodeEndpoint,
+    inferenceEncodeEndpoint: settingsValues.inferenceEncodeEndpoint,
+    inferenceMaxNumCtx: settingsValues.inferenceMaxNumCtx,
+    inferenceOllamaSlots: settingsValues.inferenceOllamaSlots,
+    inferenceCloudProviders: settingsValues.inferenceCloudProviders,
+    // Left tri-state on purpose: `undefined` (never touched) and `false` (operator turned it
+    // off) mean the same thing to routing but different things to the UI, which distinguishes
+    // "on by default" from "you disabled this here".
+    hubPoolEnabled: settingsValues.hubPoolEnabled,
+    hubPoolOutboundEnabled: settingsValues.hubPoolOutboundEnabled,
+    hubPoolInboundEnabled: settingsValues.hubPoolInboundEnabled,
+    hubPoolLocalAffinity: settingsValues.hubPoolLocalAffinity,
+    hubPoolHealthPollSeconds: settingsValues.hubPoolHealthPollSeconds,
+    hubPoolRequireSignedPeers: settingsValues.hubPoolRequireSignedPeers,
+    hubPoolShareContainerStats: settingsValues.hubPoolShareContainerStats,
+    hubPoolPressureWeight: settingsValues.hubPoolPressureWeight,
+    hubPoolMaxPromptTokens: settingsValues.hubPoolMaxPromptTokens,
+    hubPoolProbeSnapshotTtlMs: settingsValues.hubPoolProbeSnapshotTtlMs,
+    hubPoolPrefixAffinityMaxInFlight: settingsValues.hubPoolPrefixAffinityMaxInFlight,
+    hubPoolPrefixAffinityMargin: settingsValues.hubPoolPrefixAffinityMargin,
+    hubPoolSlotAwareness: settingsValues.hubPoolSlotAwareness,
+    inferenceSupervisionMode: settingsValues.inferenceSupervisionMode,
+    inferenceSupervisionPollSeconds: settingsValues.inferenceSupervisionPollSeconds,
+    hubPoolPins: settingsValues.hubPoolPins,
+    hubPoolRouteAppsAlways: settingsValues.hubPoolRouteAppsAlways,
+    hubPoolMdnsEnabled: settingsValues.hubPoolMdnsEnabled,
+  };
+}
+
+/**
+ * Credentials the pairing callback saves through `setUserSettings`, which copies every key it saves
+ * into `userSettings`. Boot never puts them there.
+ */
+const PAIRING_KEYS_IN_USER_SETTINGS = ['ciHubApiKey', 'ciHubMoveKey', 'ciHubOrganizationId'];
+
 @Injectable()
 export class ConfigurationService {
   private config: ReturnType<typeof this.configure>;
@@ -387,10 +439,7 @@ export class ConfigurationService {
         // shared resolver rather than being restated here — `generateSystemEnvFile` had
         // written the opposite order into the resolved env.
         allowErrorMonitoring: resolveAllowErrorMonitoring({ setting: settingsValues.allowErrorMonitoring, env: env.data.ALLOW_ERROR_MONITORING }),
-        defaultAppCpuLimit: settingsValues.defaultAppCpuLimit,
-        defaultAppMemoryLimit: settingsValues.defaultAppMemoryLimit,
-        // Auto resource allocation is opt-out: undefined means enabled
-        autoAllocateAppResources: settingsValues.autoAllocateAppResources ?? true,
+        ...userSettingsFromFile(settingsValues),
         demoMode: env.data.DEMO_MODE,
         disablePasswordReset: env.data.DISABLE_PASSWORD_RESET,
         guestDashboard: env.data.GUEST_DASHBOARD,
@@ -412,39 +461,6 @@ export class ConfigurationService {
         maxBackups: env.data.MAX_BACKUPS,
         themeBase: env.data.THEME_BASE,
         themeColor: env.data.THEME_COLOR,
-        inferenceBackend: settingsValues.inferenceBackend,
-        inferenceModel: settingsValues.inferenceModel,
-        inferenceEmbeddingModel: settingsValues.inferenceEmbeddingModel,
-        inferenceVisionModel: settingsValues.inferenceVisionModel,
-        inferenceVllmApiKey: settingsValues.inferenceVllmApiKey,
-        inferenceVllmUrl: settingsValues.inferenceVllmUrl,
-        inferenceOmlxUrl: settingsValues.inferenceOmlxUrl,
-        inferenceDecodeEndpoint: settingsValues.inferenceDecodeEndpoint,
-        inferenceEncodeEndpoint: settingsValues.inferenceEncodeEndpoint,
-        inferenceMaxNumCtx: settingsValues.inferenceMaxNumCtx,
-        inferenceOllamaSlots: settingsValues.inferenceOllamaSlots,
-        inferenceCloudProviders: settingsValues.inferenceCloudProviders,
-        // Left tri-state on purpose: `undefined` (never touched) and `false` (operator turned it
-        // off) mean the same thing to routing but different things to the UI, which distinguishes
-        // "on by default" from "you disabled this here".
-        hubPoolEnabled: settingsValues.hubPoolEnabled,
-        hubPoolOutboundEnabled: settingsValues.hubPoolOutboundEnabled,
-        hubPoolInboundEnabled: settingsValues.hubPoolInboundEnabled,
-        hubPoolLocalAffinity: settingsValues.hubPoolLocalAffinity,
-        hubPoolHealthPollSeconds: settingsValues.hubPoolHealthPollSeconds,
-        hubPoolRequireSignedPeers: settingsValues.hubPoolRequireSignedPeers,
-        hubPoolShareContainerStats: settingsValues.hubPoolShareContainerStats,
-        hubPoolPressureWeight: settingsValues.hubPoolPressureWeight,
-        hubPoolMaxPromptTokens: settingsValues.hubPoolMaxPromptTokens,
-        hubPoolProbeSnapshotTtlMs: settingsValues.hubPoolProbeSnapshotTtlMs,
-        hubPoolPrefixAffinityMaxInFlight: settingsValues.hubPoolPrefixAffinityMaxInFlight,
-        hubPoolPrefixAffinityMargin: settingsValues.hubPoolPrefixAffinityMargin,
-        hubPoolSlotAwareness: settingsValues.hubPoolSlotAwareness,
-        inferenceSupervisionMode: settingsValues.inferenceSupervisionMode,
-        inferenceSupervisionPollSeconds: settingsValues.inferenceSupervisionPollSeconds,
-        hubPoolPins: settingsValues.hubPoolPins,
-        hubPoolRouteAppsAlways: settingsValues.hubPoolRouteAppsAlways,
-        hubPoolMdnsEnabled: settingsValues.hubPoolMdnsEnabled,
         experimental: {
           insecureCookie: env.data.EXPERIMENTAL_INSECURE_COOKIE,
         },
@@ -542,6 +558,25 @@ export class ConfigurationService {
     return () => {
       this.userSettingsListeners?.delete(listener);
     };
+  }
+
+  /**
+   * Forget the user settings this process has from settings.json, for a factory reset that has just
+   * written `{}` there. They go back to what boot makes of an empty file: no cloud provider keys and
+   * no inference, pool or resource settings. The ones the environment supplies stay. So does the
+   * error-reporting switch, which is no secret and which the reporting gate holds too (`setUserConsent`).
+   * The copies of the pairing credentials in `userSettings` go; the config's own (`ciHubApiKey` and
+   * the rest) are untouched.
+   *
+   * Listeners hear about every key it reset, as after a save, so the mDNS socket closes when the old
+   * settings had it open.
+   */
+  public forgetPersistedUserSettings(): void {
+    const reset = userSettingsFromFile(EMPTY_PERSISTED_SETTINGS);
+    const kept = Object.entries(this.config.userSettings).filter(([key]) => !PAIRING_KEYS_IN_USER_SETTINGS.includes(key));
+
+    this.config.userSettings = { ...(Object.fromEntries(kept) as typeof this.config.userSettings), ...reset };
+    this.notifyUserSettingsListeners([...Object.keys(reset), ...PAIRING_KEYS_IN_USER_SETTINGS]);
   }
 
   private notifyUserSettingsListeners(changedKeys: string[]): void {

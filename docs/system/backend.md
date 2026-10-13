@@ -483,6 +483,12 @@ If anything is left or left alone, the reset throws `SETTINGS_FACTORY_RESET_FILE
 wipes the database, so the operator can still sign in. Each app it tore down has already lost its
 row by then, as an ordinary uninstall does.
 
+Once settings.json is `{}`, the reset also drops what the running Hub still holds from it:
+`CloudFallbackService.forgetProviders()` empties the cloud provider keys, and
+`ConfigurationService.forgetPersistedUserSettings()` puts `userSettings` back to what boot makes of
+an empty file. Without that, apps were handed the old keys until a restart, and the next provider
+saved wrote them all back to the file.
+
 ## The four engines, or two endpoints
 
 Setup offers Ollama, oMLX, vLLM, or Lemonade, and only the ones the detected machine can run. The other path is a decode endpoint and an encode endpoint. Either URL may be set alone. From inside Docker the probe uses `host.docker.internal`, and the card shows that URL.

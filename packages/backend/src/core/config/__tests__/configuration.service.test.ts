@@ -809,3 +809,50 @@ describe('ConfigurationService.setDomain', () => {
     expect(svc.logger.error).toHaveBeenCalled();
   });
 });
+
+describe('ConfigurationService.forgetPersistedUserSettings', () => {
+  /** The service as boot leaves it with `settings` in settings.json, from the same environment each time. */
+  function bootWith(settings: Record<string, unknown>) {
+    const svc = Object.create(ConfigurationService.prototype) as ConfigurationService & {
+      getEnvMap: () => Map<string, string>;
+      readPersistedSettings: () => Record<string, unknown>;
+      configure: () => { userSettings: Record<string, unknown> };
+      config: { userSettings: Record<string, unknown> };
+    };
+    svc.getEnvMap = () => new Map(Object.entries({ ...APPLIANCE_ENV, ALLOW_ERROR_MONITORING: 'false' }));
+    svc.readPersistedSettings = () => settings;
+    svc.config = svc.configure();
+    return svc;
+  }
+
+  it('leaves the user settings as a boot with an empty settings.json has them', () => {
+    const svc = bootWith({
+      defaultAppCpuLimit: '2',
+      autoAllocateAppResources: false,
+      inferenceBackend: 'vllm',
+      inferenceVllmApiKey: 'vllm-key',
+      inferenceCloudProviders: [{ provider: 'openai', apiKey: 'sk-test', enabled: true, defaultModel: 'gpt-4o' }],
+      hubPoolMdnsEnabled: true,
+      hubPoolPins: [{ scope: 'all', targetKind: 'local' }],
+      inferenceSupervisionMode: 'observe',
+    });
+    // As the pairing callback leaves it: `setUserSettings` copies what it saves into `userSettings`.
+    svc.config.userSettings = { ...svc.config.userSettings, ciHubApiKey: 'device-key', ciHubMoveKey: 'move-key', ciHubOrganizationId: 'org-1' };
+
+    svc.forgetPersistedUserSettings();
+
+    expect(svc.get('userSettings')).toEqual(bootWith({}).get('userSettings'));
+  });
+
+  it('tells settings-change listeners, so the mDNS socket closes when the old settings had it open', () => {
+    const svc = bootWith({ hubPoolMdnsEnabled: true });
+    const seen: Array<{ mdnsKey: boolean; mdns: boolean }> = [];
+    svc.onUserSettingsChanged((keys) =>
+      seen.push({ mdnsKey: keys.includes('hubPoolMdnsEnabled'), mdns: svc.getHubPoolPreferences().poolMdnsEnabled }),
+    );
+
+    svc.forgetPersistedUserSettings();
+
+    expect(seen).toEqual([{ mdnsKey: true, mdns: false }]);
+  });
+});

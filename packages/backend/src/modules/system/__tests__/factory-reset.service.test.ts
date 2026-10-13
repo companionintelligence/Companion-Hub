@@ -17,6 +17,8 @@ import { BearerOrgMembershipCache } from '@/modules/auth/bearer-org-membership.c
 import { APP_DATA_DIR, TUNNEL_DIR } from '@/common/constants';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { app } from '@/core/database/drizzle/schema';
+import { CloudFallbackService } from '@/modules/inference/cloud-fallback.service';
+import type { CloudProviderConfig } from '@ci-hub/common/types';
 import fs from 'node:fs';
 import path from 'node:path';
 import { vol } from 'memfs';
@@ -64,6 +66,7 @@ describe('FactoryResetService', () => {
           provide: ConfigurationService,
           useValue: {
             get: vi.fn().mockReturnValue({ dataDir: '/data' }),
+            forgetPersistedUserSettings: vi.fn(),
           },
         },
         { provide: CacheService, useValue: cache },
@@ -387,5 +390,119 @@ describe('FactoryResetService: data folders', () => {
 
     expect(deletedRows).toEqual([{ table: app, sql: '"app"."id" = $1', params: [7] }]);
     expect(db.execute).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A reset on the suite's memfs disk, with a real `FilesystemService` and a real `ConfigurationService`
+ * (built without its constructor, which wants the whole appliance env). `moduleRef` hands out the
+ * services the reset reaches that way.
+ */
+function resetOnDisk(options: { userSettings?: Record<string, unknown>; moduleRef?: ModuleRef } = {}) {
+  const logger = mock<LoggerService>();
+  const configuration = Object.assign(Object.create(ConfigurationService.prototype) as ConfigurationService, {
+    logger,
+    config: {
+      demoMode: false,
+      directories: { dataDir: '/data' },
+      userSettings: { ...options.userSettings },
+    },
+  });
+  const db = {
+    execute: vi.fn().mockResolvedValue(undefined),
+    delete: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+    query: { app: { findMany: vi.fn().mockResolvedValue([]) } },
+  };
+  const registrationService = mock<RegistrationService>();
+  registrationService.resetRegistration.mockResolvedValue(undefined);
+  const service = new FactoryResetService(
+    db as never,
+    {} as never,
+    options.moduleRef ?? mock<ModuleRef>(),
+    new FilesystemService(logger),
+    configuration,
+    mock<CacheService>(),
+    new SessionUserCache(),
+    logger,
+    registrationService,
+  );
+
+  return { service, configuration };
+}
+
+const SETTINGS_PATH = path.join('/data', 'state', 'settings.json');
+
+const onDisk = () => JSON.parse(String(vol.readFileSync(SETTINGS_PATH, 'utf8')));
+
+describe('FactoryResetService: settings the Hub holds in memory', () => {
+  const OPENAI: CloudProviderConfig = { provider: 'openai', apiKey: 'sk-before-the-reset', enabled: true, defaultModel: 'gpt-4o' };
+  const GOOGLE: CloudProviderConfig = { provider: 'google', apiKey: 'key-after-the-reset', enabled: true, defaultModel: 'gemini-2.5-pro' };
+
+  let cloudFallback: CloudFallbackService;
+  let configuration: ConfigurationService;
+  let service: FactoryResetService;
+
+  const setUp = (userSettings: Record<string, unknown> = {}) => {
+    const moduleRef = mock<ModuleRef>();
+    moduleRef.get.mockImplementation((token: unknown) => (token === CloudFallbackService ? cloudFallback : undefined) as never);
+    ({ service, configuration } = resetOnDisk({ moduleRef, userSettings }));
+    cloudFallback = new CloudFallbackService(mock<LoggerService>(), configuration);
+    cloudFallback.onModuleInit();
+  };
+
+  beforeEach(() => {
+    vol.writeFileSync(SETTINGS_PATH, '{}');
+  });
+
+  it('forgets the cloud provider keys, so the next provider saved is the only one in settings.json', async () => {
+    setUp();
+    await cloudFallback.setProvider(OPENAI);
+    expect(onDisk().inferenceCloudProviders).toEqual([expect.objectContaining({ provider: 'openai' })]);
+
+    await service.execute();
+    await cloudFallback.setProvider(GOOGLE);
+
+    expect(onDisk()).toEqual({
+      inferenceCloudProviders: [{ ...GOOGLE, baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai' }],
+    });
+  });
+
+  it('hands apps no cloud key, and lists no provider, once the reset is done', async () => {
+    setUp();
+    await cloudFallback.setProvider(OPENAI);
+
+    await service.execute();
+
+    expect(cloudFallback.toAppEnv()).toEqual({});
+    expect(cloudFallback.listProviders()).toEqual([]);
+    expect(configuration.getInferenceCloudProviders()).toEqual([]);
+  });
+
+  it('puts the settings it read from settings.json back to their defaults, and keeps the ones from the environment', async () => {
+    // As boot leaves them on a Hub that was then paired, and set up in Settings, in this process.
+    setUp({
+      timeZone: 'Europe/Berlin',
+      maxBackups: 7,
+      inferenceBackend: 'vllm',
+      inferenceVllmApiKey: 'vllm-key-before-the-reset',
+      defaultAppCpuLimit: '2',
+      autoAllocateAppResources: false,
+      hubPoolMdnsEnabled: true,
+      hubPoolPins: [{ scope: 'all', targetKind: 'local' }],
+      // The pairing callback saves these through setUserSettings, which merges them in here too.
+      ciHubApiKey: 'portal-device-key',
+      ciHubMoveKey: 'portal-move-key',
+      ciHubOrganizationId: 'org-1',
+    });
+
+    await service.execute();
+
+    expect(JSON.parse(JSON.stringify(configuration.get('userSettings')))).toEqual({
+      timeZone: 'Europe/Berlin',
+      maxBackups: 7,
+      autoAllocateAppResources: true,
+    });
+    expect(configuration.getInferencePreferences()).toMatchObject({ preferredBackend: null, preferredVllmApiKey: null });
+    expect(configuration.getHubPoolPreferences()).toMatchObject({ poolMdnsEnabled: false, poolPins: [] });
   });
 });
