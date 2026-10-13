@@ -496,7 +496,10 @@ export class ConfigurationService {
     try {
       await this.mergeSettingsToDisk(settings);
 
-      this.config.userSettings = { ...this.config.userSettings, ...settings };
+      // The Portal device key and move key are read from the top-level config below, never from
+      // `userSettings`, which the UI's context is built from. The pairing callback passes both through here.
+      const { ciHubApiKey: _deviceKey, ciHubMoveKey: _moveKey, ...visible } = settings;
+      this.config.userSettings = { ...this.config.userSettings, ...visible };
 
       // Publish error-reporting consent to the `beforeSend` gate so flipping the
       // switch takes effect on the very next capture rather than after the

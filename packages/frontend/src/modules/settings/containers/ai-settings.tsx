@@ -17,6 +17,7 @@ import {
   unloadInferenceModel,
   unpinInferenceModel,
 } from '@/lib/inference/inference-api';
+import { isMaskedKey } from '@/lib/inference/masked-key';
 import { POLLING } from '@/lib/polling-budget';
 import { ensurePullsStarted, waitForModelPulls } from '@/lib/inference/tracked-models';
 import { Button } from '@/components/ui/Button';
@@ -574,7 +575,8 @@ export const AiSettingsContainer = () => {
         model: preferredModel,
         embeddingModel: preferredEmbeddingModel,
         visionModel: preferredVisionModel,
-        vllmApiKey: selectedBackend === 'vllm' ? vllmApiKey.trim() || null : null,
+        // A field still showing the mask is left out, and the Hub keeps the key it has stored.
+        vllmApiKey: selectedBackend === 'vllm' ? (isMaskedKey(vllmApiKey) ? undefined : vllmApiKey.trim() || null) : null,
         vllmUrl: selectedBackend === 'vllm' ? vllmUrl.trim() || null : null,
         omlxUrl: selectedBackend === 'omlx' ? omlxUrl.trim() || null : null,
         decodeEndpoint: decodeEndpoint.trim() || null,

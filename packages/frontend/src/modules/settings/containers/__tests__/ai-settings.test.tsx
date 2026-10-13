@@ -406,6 +406,24 @@ describe('AiSettingsContainer', () => {
     });
   });
 
+  // The Hub reports a stored vLLM key as the mask. Saving with the field untouched keeps that key.
+  it('keeps the stored vLLM key when its masked field is saved untouched', async () => {
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'vllm', preferredVllmApiKey: '••••••••' });
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('vllm'));
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+    const body = saveInferencePreferences.mock.calls[0]?.[0] as { backend: string; vllmApiKey?: string | null };
+    expect(body.backend).toBe('vllm');
+    // Left out, not null: null would clear the key.
+    expect(body).not.toHaveProperty('vllmApiKey', null);
+    expect(body.vllmApiKey).toBeUndefined();
+  });
+
   // #1109: the backend-switch effect listed `profile` in its dependency array while writing it
   // with a freshly-fetched object, so every switch started an unbounded refetch loop (165 requests
   // in 400ms). The shared-fixture mock used elsewhere hides this — React bails out on identical

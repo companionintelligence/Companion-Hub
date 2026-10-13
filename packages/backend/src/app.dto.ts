@@ -383,9 +383,92 @@ const versionSchema = z.object({
   releases: z.array(z.object({ version: z.string(), body: z.string() })),
 });
 
+/**
+ * The settings `GET /api/app-context` reports, named one by one. Everyone signed in reads the
+ * context, members included, so a setting reaches it only by being listed here. The Portal device
+ * key and move key, the vLLM key and the cloud provider list (which holds the provider keys) are left
+ * out, and so is any credential `settingsSchema` gains later. Settings > AI learns which keys are set
+ * from `GET /api/inference/cloud-providers` and `GET /api/inference/preferences`, which mask them.
+ */
+const APP_CONTEXT_SETTINGS = {
+  advancedSettings: true,
+  allowAutoThemes: true,
+  allowErrorMonitoring: true,
+  appDataPath: true,
+  appsRepoUrl: true,
+  defaultAppCpuLimit: true,
+  defaultAppMemoryLimit: true,
+  autoAllocateAppResources: true,
+  autoUpdates: true,
+  demoMode: true,
+  disablePasswordReset: true,
+  dnsIp: true,
+  domain: true,
+  eventsTimeout: true,
+  forwardAuthUrl: true,
+  guestDashboard: true,
+  internalIp: true,
+  listenIp: true,
+  localDomain: true,
+  logLevel: true,
+  maxBackups: true,
+  persistTraefikConfig: true,
+  port: true,
+  postgresPort: true,
+  sslPort: true,
+  timeZone: true,
+  experimental_insecureCookie: true,
+  themeBase: true,
+  themeColor: true,
+  ciHubOrganizationId: true,
+  ciHubOrganizationSlug: true,
+  ciHubOrganizationLabel: true,
+  ciHubDeviceSlug: true,
+  ciHubHubSubdomain: true,
+  inferenceBackend: true,
+  inferenceModel: true,
+  inferenceEmbeddingModel: true,
+  inferenceVisionModel: true,
+  inferenceVllmUrl: true,
+  inferenceOmlxUrl: true,
+  inferenceDecodeEndpoint: true,
+  inferenceEncodeEndpoint: true,
+  inferenceMaxNumCtx: true,
+  inferenceOllamaSlots: true,
+  hubPoolEnabled: true,
+  hubPoolOutboundEnabled: true,
+  hubPoolInboundEnabled: true,
+  hubPoolLocalAffinity: true,
+  hubPoolHealthPollSeconds: true,
+  hubPoolRequireSignedPeers: true,
+  hubPoolShareContainerStats: true,
+  hubPoolPressureWeight: true,
+  hubPoolMaxPromptTokens: true,
+  hubPoolProbeSnapshotTtlMs: true,
+  hubPoolPrefixAffinityMaxInFlight: true,
+  hubPoolPrefixAffinityMargin: true,
+  hubPoolSlotAwareness: true,
+  hubPoolRouteAppsAlways: true,
+  hubPoolMdnsEnabled: true,
+  inferenceSupervisionMode: true,
+  inferenceSupervisionPollSeconds: true,
+  hubPoolPins: true,
+} as const;
+
+/** The listed settings from `settings`, and nothing else, whatever `settings` holds. */
+export function appContextSettings(settings: Record<string, unknown>): Record<string, unknown> {
+  const listed: Record<string, unknown> = {};
+  for (const key of Object.keys(APP_CONTEXT_SETTINGS)) {
+    if (key in settings) {
+      listed[key] = settings[key];
+    }
+  }
+  return listed;
+}
+
 const appContextSchema = z.object({
   version: versionSchema,
-  userSettings: settingsSchema,
+  userSettings: settingsSchema.pick(APP_CONTEXT_SETTINGS),
   // Absolute host path of the root app-data folder (parent of every app's data).
   // Used by the Settings "Open app data folder" button; null when unresolved.
   appDataRootHostPath: z.string().nullable().optional(),

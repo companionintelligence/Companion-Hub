@@ -58,6 +58,17 @@ describe('ConfigurationService.setUserSettings', () => {
     expect(svc.config.userSettings.themeColor).toBe('green');
     expect(svc.logger.warn).not.toHaveBeenCalled();
   });
+
+  it('writes the Portal device key and move key to disk and the top-level config, never to userSettings', async () => {
+    // The pairing callback saves both through here, and the UI's context is built from userSettings.
+    await svc.setUserSettings({ ciHubApiKey: 'device-key', ciHubMoveKey: 'move-key', ciHubOrganizationId: 'org-1' });
+
+    expect(svc.mergeSettingsToDisk.mock.calls[0][0]).toEqual({ ciHubApiKey: 'device-key', ciHubMoveKey: 'move-key', ciHubOrganizationId: 'org-1' });
+    expect(svc.config).toMatchObject({ ciHubApiKey: 'device-key', ciHubMoveKey: 'move-key', ciHubOrganizationId: 'org-1' });
+    expect(svc.config.userSettings).not.toHaveProperty('ciHubApiKey');
+    expect(svc.config.userSettings).not.toHaveProperty('ciHubMoveKey');
+    expect(svc.config.userSettings).toMatchObject({ ciHubOrganizationId: 'org-1', themeColor: 'red' });
+  });
 });
 
 describe('settingsSchema — retired MCP fields', () => {

@@ -6,7 +6,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { UserRepository } from '@/modules/user/user.repository';
 import { Body, Controller, Get, Patch, Query, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
-import { AcknowledgeWelcomeBody, AppContextDto, UserSettingsBody, UserContextDto } from './app.dto';
+import { AcknowledgeWelcomeBody, AppContextDto, UserSettingsBody, UserContextDto, appContextSettings } from './app.dto';
 import { AppService } from './app.service';
 import { AppsReadService } from './modules/apps/apps-read.service';
 import { AuthGuard } from './modules/auth/auth.guard';
@@ -291,7 +291,7 @@ export class AppController {
       {
         version,
         userSettings: {
-          ...userSettings,
+          ...appContextSettings(userSettings),
           ciHubOrganizationSlug: orgSlug,
           ciHubOrganizationLabel: orgLabel,
           ciHubDeviceSlug: deviceSlug,

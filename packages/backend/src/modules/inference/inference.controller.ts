@@ -52,6 +52,8 @@ import {
   VllmStatusQueryDto,
   OmlxStatusQueryDto,
   ManualEndpointStatusQueryDto,
+  isMaskedVllmApiKey,
+  maskInferencePreferences,
 } from './inference.dto';
 import { InferenceBackendRegistry } from './backends/backend-registry';
 import { OllamaBackend } from './backends/ollama.backend';
@@ -342,12 +344,14 @@ export class InferenceController {
 
   // ─── Management Endpoints ─────────────────────────────────────────────
 
+  /** The vLLM key is reported masked, as `cloud-providers` reports a provider key (`configured`). */
   @UseGuards(AuthGuard)
   @Get('preferences')
   async getPreferences() {
-    return this.configurationService.getInferencePreferences();
+    return maskInferencePreferences(this.configurationService.getInferencePreferences());
   }
 
+  /** A vLLM key that comes back as the mask is left as stored; `null` or an empty one still clears it. */
   @UseGuards(AuthGuard)
   @Patch('preferences')
   async updatePreferences(@Body() body: UpdateInferencePreferencesBody) {
@@ -356,7 +360,7 @@ export class InferenceController {
       body.model,
       body.embeddingModel,
       body.visionModel,
-      body.vllmApiKey,
+      isMaskedVllmApiKey(body.vllmApiKey) ? undefined : body.vllmApiKey,
       body.vllmUrl,
       body.omlxUrl,
       body.decodeEndpoint,
@@ -367,7 +371,7 @@ export class InferenceController {
 
     this.scheduleAiAppRestart('inference preferences changed');
 
-    return result;
+    return maskInferencePreferences(result);
   }
 
   /**

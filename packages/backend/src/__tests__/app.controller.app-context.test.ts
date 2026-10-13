@@ -27,18 +27,19 @@ const CONNECTED: TailscaleStatus = {
   authUrl: null,
 };
 
-describe('GET /api/app-context — whether Private VPN is offered', () => {
+describe('GET /api/app-context', () => {
   const savedEnv = {
     PRIVATE_VPN_USER_DISABLED: process.env.PRIVATE_VPN_USER_DISABLED,
     TAILSCALE_SERVE_USER_DISABLED: process.env.TAILSCALE_SERVE_USER_DISABLED,
   };
   let controller: AppController;
+  let configuration: ReturnType<typeof mock<ConfigurationService>>;
 
   beforeEach(() => {
     delete process.env.PRIVATE_VPN_USER_DISABLED;
     delete process.env.TAILSCALE_SERVE_USER_DISABLED;
 
-    const configuration = mock<ConfigurationService>();
+    configuration = mock<ConfigurationService>();
     configuration.getConfig.mockReturnValue({ userSettings: {}, isProduction: true, rootFolderHost: '/opt/ci-hub', architecture: 'amd64' } as never);
     const appService = mock<AppService>();
     appService.getVersion.mockResolvedValue({ current: '1.0.0', latest: '1.0.0', body: '', releases: [] } as never);
@@ -76,6 +77,34 @@ describe('GET /api/app-context — whether Private VPN is offered', () => {
   });
 
   const appContext = () => controller.appContext({ user: { id: 1 } } as unknown as Request);
+
+  it('sends no key, whatever settings.json and the in-memory settings hold', async () => {
+    configuration.getConfig.mockReturnValue({
+      userSettings: {
+        domain: 'ci0.pw',
+        sslPort: 443,
+        inferenceVllmUrl: 'http://host.docker.internal:8000',
+        ciHubApiKey: 'device-key-secret',
+        ciHubMoveKey: 'move-key-secret',
+        inferenceVllmApiKey: 'vllm-key-secret',
+        inferenceCloudProviders: [{ provider: 'openai', apiKey: 'sk-cloud-secret', defaultModel: 'gpt-4o', enabled: true }],
+        // A credential a later build adds to settings.json, which no list here names yet.
+        someFutureToken: 'future-secret',
+      },
+      isProduction: true,
+      rootFolderHost: '/opt/ci-hub',
+      architecture: 'amd64',
+    } as never);
+
+    const context = await appContext();
+
+    expect(JSON.stringify(context)).not.toMatch(/secret/);
+    expect(context.userSettings).not.toHaveProperty('ciHubApiKey');
+    expect(context.userSettings).not.toHaveProperty('ciHubMoveKey');
+    expect(context.userSettings).not.toHaveProperty('inferenceVllmApiKey');
+    expect(context.userSettings).not.toHaveProperty('inferenceCloudProviders');
+    expect(context.userSettings).toMatchObject({ domain: 'ci0.pw', sslPort: 443, inferenceVllmUrl: 'http://host.docker.internal:8000' });
+  });
 
   it('offers Private VPN on a Hub whose tailnet is connected', async () => {
     await expect(appContext()).resolves.toMatchObject({ tailscaleAvailable: true, tailscaleNodeFqdn: 'laptop.tailxyz.ts.net' });
