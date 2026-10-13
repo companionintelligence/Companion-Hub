@@ -20,8 +20,6 @@ import { isPortExposeApp } from '@ci-hub/common/schemas';
 import { AppOperationRegistry } from './app-operation-registry';
 import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 
-const LONG_RUNNING_TRANSITIONAL_STATES: AppStatus[] = ['installing', 'updating'];
-
 const TRANSITIONAL_STATES: AppStatus[] = [
   'installing',
   'uninstalling',
@@ -132,8 +130,15 @@ export class AppStatusSyncService {
         const appUrn: AppUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
 
         const isTransitional = TRANSITIONAL_STATES.includes(app.status);
-        const transitionalGraceMs = this.getTransitionalGraceMs(app.status);
+        const transitionalGraceMs = this.getTransitionalGraceMs();
         if (isTransitional) {
+          // A restart, backup or restore takes the containers down before it brings them back, so
+          // Docker cannot say whether one is still running. The registry can, however long it takes.
+          if (this.operationRegistry.get(appUrn)) {
+            this.logger.debug(`Skipping ${appUrn} - '${app.status}' operation still in progress`);
+            skippedCount++;
+            continue;
+          }
           const timeSinceUpdate = Date.now() - parseDbTimestampMs(app.updatedAt);
           if (timeSinceUpdate < transitionalGraceMs) {
             this.logger.debug(`Skipping ${appUrn} - in recent transitional state '${app.status}'`);
@@ -348,11 +353,14 @@ export class AppStatusSyncService {
     });
   }
 
-  private getTransitionalGraceMs(status: AppStatus): number {
+  /**
+   * How long an app in a transitional state that the registry does not list is left alone. The
+   * registry lives in memory, so a backend restart empties it while RabbitMQ hands the unfinished
+   * command to the new process. Every state gets the app-events queue's own timeout for that
+   * command to finish (see QueueModule).
+   */
+  private getTransitionalGraceMs(): number {
     const eventsTimeoutMinutes = this.configuration.get('userSettings').eventsTimeout;
-    const minutes = LONG_RUNNING_TRANSITIONAL_STATES.includes(status)
-      ? Math.max(eventsTimeoutMinutes, Number(DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES))
-      : eventsTimeoutMinutes;
-    return minutes * 60 * 1000;
+    return Math.max(eventsTimeoutMinutes, Number(DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES)) * 60 * 1000;
   }
 }

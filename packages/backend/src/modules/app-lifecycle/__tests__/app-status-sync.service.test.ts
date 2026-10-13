@@ -222,7 +222,7 @@ describe('AppStatusSyncService', () => {
         appName: 'demo',
         appStoreSlug: 'ci-marketplace',
         status: 'restarting',
-        updatedAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+        updatedAt: new Date(Date.now() - 50 * 60 * 1000).toISOString(),
       },
     ] as never);
 
@@ -233,6 +233,69 @@ describe('AppStatusSyncService', () => {
       expect.objectContaining({ appUrn: 'demo:ci-marketplace', status: 'restarting' }),
       expect.objectContaining({ debounceKey: 'app-status-sync:stuck:demo:ci-marketplace:restarting' }),
     );
+  });
+
+  /*
+   * A restart, backup or restore takes the app's containers down before it brings them back, and can
+   * run as long as the queue allows. Five minutes in, the sync read the missing containers as a stopped
+   * app (Companion-Hub#1985). A boot start that pulls the images an uninstall removed is the same case
+   * (Companion-Hub#1980).
+   */
+  it.each([
+    ['restarting', 'restart'],
+    ['backing_up', 'backup'],
+    ['starting', 'start'],
+  ] as const)('leaves a %s app with no containers alone while its operation is in the registry', async (status, command) => {
+    appRepository.getApps.mockResolvedValue([
+      { id: 14, appName: 'wordpress', appStoreSlug: 'ci-marketplace', status, updatedAt: new Date(Date.now() - 10 * 60 * 1000).toISOString() },
+    ] as never);
+    operationRegistry.register('wordpress:ci-marketplace' as never, { requestId: 'req-14', command, tier: 'safe' });
+
+    const result = await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    expect(sseService.emit).not.toHaveBeenCalled();
+    expect(errorReportingService.captureWarning).not.toHaveBeenCalled();
+    expect(errorReportingService.reportAppFailure).not.toHaveBeenCalled();
+    expect(result.skippedCount).toBe(1);
+  });
+
+  /*
+   * The registry lives in memory, so a backend restart empties it while RabbitMQ hands the unfinished
+   * command to the new process. The sync waits as long as the queue would for that command to finish.
+   */
+  it('gives a restarting app the registry no longer lists the queue timeout before reading Docker', async () => {
+    appRepository.getApps.mockResolvedValue([
+      {
+        id: 15,
+        appName: 'wordpress',
+        appStoreSlug: 'ci-marketplace',
+        status: 'restarting',
+        updatedAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+      },
+    ] as never);
+
+    const result = await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    expect(result.skippedCount).toBe(1);
+  });
+
+  it('settles a restarting app the registry no longer lists from Docker once the queue timeout has passed', async () => {
+    appRepository.getApps.mockResolvedValue([
+      {
+        id: 15,
+        appName: 'wordpress',
+        appStoreSlug: 'ci-marketplace',
+        status: 'restarting',
+        updatedAt: new Date(Date.now() - 50 * 60 * 1000).toISOString(),
+      },
+    ] as never);
+
+    await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(15, 'restarting', { status: 'stopped' });
+    expect(errorReportingService.reportAppFailure).not.toHaveBeenCalled();
   });
 
   /*
