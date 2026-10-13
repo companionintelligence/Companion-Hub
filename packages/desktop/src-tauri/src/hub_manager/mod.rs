@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -101,6 +101,48 @@ static START_BEGAN_AT_MS: AtomicU64 = AtomicU64::new(0);
 /// True once a startup-progress poll during the current start found an image still missing.
 /// Download progress then counts toward the startup percentage until the Hub is ready.
 static START_IMAGE_DOWNLOADS_SEEN: AtomicBool = AtomicBool::new(false);
+
+/// How many [`StackChange`] guards are alive. A count, not a flag: the launch check holds one while
+/// the `stop_hub_for_update` it may call holds another, and the inner one ending must not end both.
+static STACK_CHANGES: AtomicUsize = AtomicUsize::new(0);
+
+/// Marks the desktop app as about to remove or recreate the Hub's containers, until it is dropped
+/// (panics included).
+///
+/// The launch check, a stop and the stop half of a restart all remove the running Hub container
+/// before `start_hub` sets `START_IN_PROGRESS`, if it runs at all. A Hub that answers then may be
+/// gone a second later, so the startup page waits for this as well before it opens the Hub (see
+/// [`stack_change_state`]).
+#[must_use = "the stack change ends when this is dropped"]
+pub struct StackChange(());
+
+impl StackChange {
+    pub fn begin() -> Self {
+        STACK_CHANGES.fetch_add(1, Ordering::SeqCst);
+        Self(())
+    }
+}
+
+impl Drop for StackChange {
+    fn drop(&mut self) {
+        STACK_CHANGES.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Whether the desktop app may still remove or recreate the Hub's containers. Two atomics and no
+/// Docker call, so the startup page can ask on every poll without waiting on a slow engine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct StackChangeState {
+    pub stack_change_pending: bool,
+    pub start_in_progress: bool,
+}
+
+pub fn stack_change_state() -> StackChangeState {
+    StackChangeState {
+        stack_change_pending: STACK_CHANGES.load(Ordering::SeqCst) > 0,
+        start_in_progress: START_IN_PROGRESS.load(Ordering::SeqCst),
+    }
+}
 
 /// True while the current start still has to run its final `compose up --force-recreate`.
 /// The database and queue it brings up first are replaced then, so they are not ready yet.

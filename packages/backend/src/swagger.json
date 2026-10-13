@@ -6399,6 +6399,27 @@
         }
       }
     },
+    "/api/system/update/blocked": {
+      "get": {
+        "operationId": "getUpdateBlocks",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateBlocksDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "SystemUpdate"
+        ]
+      }
+    },
     "/api/system/update/host-listener": {
       "get": {
         "operationId": "getHostListenerStatus",
@@ -16574,6 +16595,28 @@
         },
         "required": [
           "data"
+        ],
+        "additionalProperties": false
+      },
+      "UpdateBlocksDto": {
+        "type": "object",
+        "properties": {
+          "updateBlockedReason": {
+            "nullable": true,
+            "type": "string"
+          },
+          "autoUpdateBlockedReason": {
+            "nullable": true,
+            "type": "string"
+          },
+          "desktopAppUpdatesHub": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "updateBlockedReason",
+          "autoUpdateBlockedReason",
+          "desktopAppUpdatesHub"
         ],
         "additionalProperties": false
       },
