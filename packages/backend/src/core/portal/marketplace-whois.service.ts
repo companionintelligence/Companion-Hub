@@ -324,12 +324,13 @@ export class MarketplaceWhoIsService {
   /**
    * Whether the person behind a request may change what applies to the whole Hub (its settings, keys,
    * AI providers, updates, pool, app stores, registration and factory reset) or read the Hub's own
-   * log. An organization owner or admin may, asked of the Portal fresh each time, never from the role
-   * stored at sign-in. A member may not. A role that can't be read is `unknown`, and refuses.
+   * log.
    *
-   * When there is no role to ask about, because this Hub isn't paired yet or the person has no linked
-   * Portal identity, the operator who claimed this Hub (the oldest operator row, the one the CLI acts
-   * as) keeps these rights, so setup and a local-account dev Hub keep working. Any other operator is
+   * The operator who claimed this Hub may, whatever their organization role, without asking the
+   * Portal: the person who set the Hub up keeps it (`isClaimingOperator`). Anyone else follows their
+   * role, asked of the Portal fresh each time, never from the role stored at sign-in: an owner or
+   * admin may, a member may not, and a role that can't be read is `unknown`, which refuses. Someone
+   * with no role to ask about (this Hub isn't paired, or they have no linked Portal identity) is
    * refused, as `customAppGrant` gives an unlinked operator no role-gated right.
    *
    * The CLI and the host-local key are admitted by name: both prove access to the box. Every other
@@ -353,17 +354,23 @@ export class MarketplaceWhoIsService {
       return 'refused';
     }
 
-    const verdict = await this.managingRoleVerdict(userId, null, 'hub_manage');
-    switch (verdict) {
+    if (await this.isClaimingOperator(userId)) {
+      return 'allowed';
+    }
+
+    return this.hubManageRoleVerdict(userId);
+  }
+
+  /** The organization-role half of {@link hubManageVerdict}, for anyone but the claiming operator. */
+  private async hubManageRoleVerdict(userId: number): Promise<HubManageVerdict> {
+    switch (await this.managingRoleVerdict(userId, null, 'hub_manage')) {
       case 'manager':
         return 'allowed';
-      case 'not-manager':
-        return 'refused';
       case 'unknown':
         return 'unknown';
-      case 'unlinked':
-      case 'no-organization':
-        return (await this.isClaimingOperator(userId)) ? 'allowed' : 'refused';
+      default:
+        // A member, or nobody whose role could be read.
+        return 'refused';
     }
   }
 
@@ -381,32 +388,46 @@ export class MarketplaceWhoIsService {
   }
 
   /**
-   * {@link hubManageVerdict} for the UI, answered without a Portal call when it can be: a linked
-   * operator's role is the one the Hub stored at sign-in (`user.orgRole`), as for
-   * {@link customAppActionsHint}. With no role stored, the Portal is asked now. Only the UI reads this;
-   * every route that changes the Hub still asks the Portal fresh.
+   * {@link hubManageVerdict} for the UI, answered without a Portal call when it can be. The claiming
+   * operator is read from the database, and anyone else's role is the one the Hub stored at sign-in
+   * (`user.orgRole`), as for {@link customAppActionsHint}. With no role stored, the Portal is asked
+   * now. Only the UI reads this; every route that changes the Hub still asks the Portal fresh.
    */
   async hubManageHint(req: HubPrincipalFields): Promise<boolean> {
     const userId = hubSessionOperatorUserId(req);
 
-    if (userId == null || (req.user?.orgRole !== 'owner' && req.user?.orgRole !== 'admin' && req.user?.orgRole !== 'member')) {
+    if (userId == null) {
       return (await this.hubManageVerdict(req)) === 'allowed';
     }
 
+    if (await this.isClaimingOperator(userId)) {
+      return true;
+    }
+
+    const role = req.user?.orgRole;
+    if (role === 'member') {
+      return false;
+    }
+    if (role !== 'owner' && role !== 'admin') {
+      return (await this.hubManageRoleVerdict(userId)) === 'allowed';
+    }
+
+    // A stored owner or admin role counts only where the routes can read one: a linked person on a paired Hub.
     try {
-      const subject = await this.portalSubject(userId);
-      if (!subject || !(await this.deviceOrganizationId())) {
-        return await this.isClaimingOperator(userId);
-      }
+      return Boolean(await this.portalSubject(userId)) && Boolean(await this.deviceOrganizationId());
     } catch (error) {
       this.logger.warn(`Could not read the organization role (hub_manage): ${describeNetworkError(error)}`);
       return false;
     }
-
-    return req.user.orgRole !== 'member';
   }
 
-  /** Whether this person claimed the Hub: the oldest operator row, the one the CLI and the host-local key act as. */
+  /**
+   * Whether this person claimed the Hub: the oldest operator row (`UserRepository.getFirstOperator`),
+   * the one `createFirstOperator` writes when the Hub is claimed and the CLI and host-local key act as.
+   * A factory reset truncates the user table and every session with it, and only a Hub with no
+   * operator can be claimed, so the next claimer takes this over and the old one, signing in again,
+   * gets a new row like anyone else.
+   */
   private async isClaimingOperator(userId: number): Promise<boolean> {
     try {
       return (await this.users.getFirstOperator())?.id === userId;

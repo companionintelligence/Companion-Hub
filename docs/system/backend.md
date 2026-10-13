@@ -837,12 +837,14 @@ reset, API keys (create, change, revoke), the MCP tool runner, `GET /system/logs
 
 The guard asks `MarketplaceWhoIsService.hubManageVerdict`:
 
-- An organization owner or admin passes, asked of the Portal fresh with a role-only WhoIs, never from
-  the role stored at sign-in. A member gets 403 `HUB_MANAGE_ROLE_REQUIRED`.
+- The operator who claimed the Hub passes whatever their organization role, and the Portal is not
+  asked: the person who set the Hub up keeps it. That is the oldest operator row
+  (`UserRepository.getFirstOperator`), the one `createFirstOperator` writes and the CLI acts as. A
+  factory reset truncates the user table and its sessions, so the next claimer takes it over.
+- Anyone else follows their role, asked of the Portal fresh with a role-only WhoIs, never from the role
+  stored at sign-in. An owner or admin passes, and a member gets 403 `HUB_MANAGE_ROLE_REQUIRED`.
 - A role the Portal can't confirm (down, unreachable, an error answer) gets 503 `HUB_MANAGE_ROLE_UNVERIFIED`.
-- With no role to ask about, because the Hub isn't paired yet or the person has no linked Portal
-  identity, the operator who claimed the Hub (the oldest operator row, the one the CLI acts as) passes,
-  so setup and a local-account dev Hub keep working. Any other operator gets 403.
+- Someone else with no role to ask about (the Hub isn't paired, or no linked Portal identity) gets 403.
 - The CLI and the host-local key pass by name. The Portal push key, which only brokers app installs,
   and every other principal get 403.
 

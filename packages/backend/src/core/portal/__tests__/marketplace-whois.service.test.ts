@@ -949,8 +949,7 @@ describe('MarketplaceWhoIsService', () => {
       await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('refused');
     });
 
-    it('refuses with 503 and says why when the Portal cannot answer, even for the operator who claimed the Hub', async () => {
-      users.getFirstOperator.mockResolvedValue({ id: USER_ID } as never);
+    it('refuses with 503 and says why when the Portal cannot answer', async () => {
       portal.whoisApps.mockResolvedValue(roleAnswer('owner', 503));
 
       await expect(service.assertSessionMayManageHub(sessionReq())).rejects.toMatchObject({
@@ -971,6 +970,70 @@ describe('MarketplaceWhoIsService', () => {
       portal.whoisApps.mockResolvedValue(roleAnswer('member'));
 
       await expect(service.hubManageVerdict(storedOwner)).resolves.toBe('refused');
+    });
+
+    /*
+     * The person who set the Hub up keeps it: the claiming operator passes whatever the Portal says
+     * their role is, and the Portal is not asked.
+     */
+    describe('the operator who claimed the Hub', () => {
+      const memberReq = (userId: number) =>
+        ({ hubSessionId: `sess-${userId}`, user: { id: userId, orgRole: 'member' }, hubPrincipal: 'session' }) as unknown as Request;
+
+      it('keeps Hub-wide writes as a member, and the Portal is not asked', async () => {
+        users.getFirstOperator.mockResolvedValue({ id: USER_ID } as never);
+        portal.whoisApps.mockResolvedValue(roleAnswer('member'));
+
+        await expect(service.assertSessionMayManageHub(memberReq(USER_ID))).resolves.toBeUndefined();
+        await expect(service.hubManageHint(memberReq(USER_ID))).resolves.toBe(true);
+        expect(portal.whoisApps).not.toHaveBeenCalled();
+      });
+
+      it('keeps them while the Portal is down', async () => {
+        users.getFirstOperator.mockResolvedValue({ id: USER_ID } as never);
+        portal.whoisApps.mockRejectedValue(new Error('ECONNREFUSED'));
+
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('allowed');
+      });
+
+      it('gives another member nothing: 403', async () => {
+        users.getFirstOperator.mockResolvedValue({ id: 1 } as never);
+        portal.whoisApps.mockResolvedValue(roleAnswer('member'));
+
+        await expect(service.assertSessionMayManageHub(memberReq(USER_ID))).rejects.toMatchObject({
+          message: 'HUB_MANAGE_ROLE_REQUIRED',
+          status: HttpStatus.FORBIDDEN,
+        });
+        await expect(service.hubManageHint(memberReq(USER_ID))).resolves.toBe(false);
+      });
+
+      /*
+       * A factory reset truncates the user table with RESTART IDENTITY and drops every session
+       * (factory-reset.service.test.ts), and only a Hub with no operator can be claimed. So the next
+       * claimer gets the first row, and the old claimer, signing in again, gets a new one.
+       */
+      it('moves to whoever claims the Hub after a factory reset, and the old claimer is a member like any other', async () => {
+        let operators: Array<{ id: number }> = [{ id: 1 }];
+        users.getFirstOperator.mockImplementation(async () => [...operators].sort((a, b) => a.id - b.id)[0] as never);
+        portal.whoisApps.mockResolvedValue(roleAnswer('member'));
+        const oldClaimer = 1;
+
+        await expect(service.hubManageVerdict(memberReq(oldClaimer))).resolves.toBe('allowed');
+
+        // The reset empties the table, someone else claims the Hub, and the old claimer signs in again.
+        operators = [];
+        const newClaimer = 1;
+        operators.push({ id: newClaimer });
+        const oldClaimerAgain = 2;
+        operators.push({ id: oldClaimerAgain });
+
+        await expect(service.hubManageVerdict(memberReq(newClaimer))).resolves.toBe('allowed');
+        await expect(service.assertSessionMayManageHub(memberReq(oldClaimerAgain))).rejects.toMatchObject({
+          message: 'HUB_MANAGE_ROLE_REQUIRED',
+          status: HttpStatus.FORBIDDEN,
+        });
+        await expect(service.hubManageHint(memberReq(oldClaimerAgain))).resolves.toBe(false);
+      });
     });
 
     describe('with no role to ask about', () => {
