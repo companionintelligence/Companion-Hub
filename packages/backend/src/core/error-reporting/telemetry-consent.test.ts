@@ -83,6 +83,15 @@ describe('readUserConsentFrom', () => {
     expect(readUserConsentFrom(writeSettings(null))).toBe('unset');
   });
 
+  it('fails closed when a settings.json it has read before is missing, as during a save on a Windows data folder', () => {
+    // A save renames a new settings.json over the old one. On a Windows data folder a read that
+    // overlaps the rename can get ENOENT, and reading that as a fresh appliance turned reporting
+    // back on for a user who had turned it off.
+    expect(readUserConsentFrom(writeSettings('{"allowErrorMonitoring": false}'))).toBe(false);
+
+    expect(readUserConsentFrom(writeSettings(null))).toBe('unreadable');
+  });
+
   it('treats an absent key as "no preference yet"', () => {
     expect(readUserConsentFrom(writeSettings('{"themeColor": "blue"}'))).toBe('unset');
     expect(readUserConsentFrom(writeSettings('{"allowErrorMonitoring": null}'))).toBe('unset');
