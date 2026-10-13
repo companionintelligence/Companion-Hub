@@ -163,6 +163,8 @@ async fn restart_hub_command(
     let env = state.env_path.clone();
     let data = state.data_dir.clone();
     tokio::task::spawn_blocking(move || {
+        // Across both halves, so nothing reads the gap between the stop and the start as settled.
+        let _stack_change = hub_manager::StackChange::begin();
         let _ = hub_manager::stop_hub_for_update(&compose, &env);
         hub_manager::start_hub(&compose, &env, &data)
     })
@@ -298,6 +300,13 @@ async fn get_hub_status_command() -> hub_manager::HubStatus {
     tokio::task::spawn_blocking(hub_manager::get_hub_status)
         .await
         .unwrap_or_else(|err| panic!("hub status task failed: {err}"))
+}
+
+/// Whether the launch check, a stop, a restart or a start may still remove the containers that
+/// answer now. The startup page waits for all of them to finish before it opens the Hub.
+#[tauri::command]
+fn get_stack_change_state_command() -> hub_manager::StackChangeState {
+    hub_manager::stack_change_state()
 }
 
 /// Get per-service startup progress for the frontend loading screen.
@@ -632,6 +641,7 @@ pub fn run() {
             get_hub_api_url_command,
             announce_desktop_sign_in_wait_command,
             get_hub_status_command,
+            get_stack_change_state_command,
             get_startup_progress_command,
             read_desktop_logs_command,
             open_logs_dir_command,
@@ -837,7 +847,12 @@ pub fn run() {
                 let compose = compose_path.clone();
                 let env = env_path.clone();
                 let data = data_dir.clone();
+                // Taken here, before the startup page can ask: Tauri runs setup inside the event
+                // loop's Ready handler, so the window's IPC waits until it returns. The task holds
+                // it to the end, through every early return below.
+                let launch_check = hub_manager::StackChange::begin();
                 tauri::async_runtime::spawn(async move {
+                    let _launch_check = launch_check;
                     let compose_for_decision = compose.clone();
                     let env_for_decision = env.clone();
                     let data_for_decision = data.clone();
