@@ -29,6 +29,7 @@ commands.allow = [
   "install_rocm_command",
   "verify_rocm_command",
   "install_docker_engine_alternative_command",
+  "start_wsl_engine_command",
   "consume_pending_pairing_code",
   "consume_pending_portal_auth",
   "consume_pending_install_intent",

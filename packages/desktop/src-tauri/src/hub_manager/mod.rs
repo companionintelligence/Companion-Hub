@@ -36,6 +36,7 @@ mod runtime_state;
 mod status;
 mod windows_paths;
 mod wsl;
+mod wsl_engine_files;
 
 #[cfg(test)]
 mod tests;
@@ -60,6 +61,8 @@ pub(crate) use windows_paths::*;
 // resolves to nothing and rustc flags it. It is load-bearing on Windows.
 #[allow(unused_imports)]
 pub(crate) use wsl::*;
+#[allow(unused_imports)]
+pub(crate) use wsl_engine_files::*;
 
 #[cfg(target_os = "windows")]
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -492,6 +495,9 @@ pub struct StartupProgress {
     pub docker_access: DockerAccessCheck,
     /// The Hub API answers its liveness check.
     pub hub_api_live: bool,
+    /// The engine the Hub runs on (`wsl-engine`, `desktop`, ...), when known. The startup
+    /// screens explain the WSL engine stopping instead of offering Docker Desktop's steps.
+    pub docker_engine: Option<String>,
 }
 
 /// Get the Hub data directory (platform-specific)

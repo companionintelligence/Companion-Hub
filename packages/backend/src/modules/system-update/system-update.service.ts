@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { isIPv4 } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -12,7 +13,14 @@ import {
   type OnApplicationShutdown,
   Optional,
 } from '@nestjs/common';
-import { DATA_DIR, HUB_STACK_IMAGE_REPO, HUB_STACK_REGISTRY_REPO, UPDATE_LISTENER_TOKEN_FILENAME, hubContainerName } from '@/common/constants';
+import {
+  DATA_DIR,
+  HUB_STACK_IMAGE_REPO,
+  HUB_STACK_REGISTRY_REPO,
+  UPDATE_LISTENER_HOST_FILENAME,
+  UPDATE_LISTENER_TOKEN_FILENAME,
+  hubContainerName,
+} from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { RegistryService } from '@/utils/registry/registry.service';
@@ -67,10 +75,35 @@ export function detectHubContainer(): boolean {
   }
 }
 
-/** From inside Docker, the desktop listener is on the host — not this container's loopback. */
+/**
+ * From inside Docker, the desktop listener is on the host, not this container's loopback. That is
+ * host.docker.internal, except on the Docker engine inside WSL, where host.docker.internal is the WSL
+ * VM and the listener runs on Windows. There the desktop app records the Windows host's address on
+ * the WSL adapter in `state/` (CI-Hub#1934).
+ */
 export function resolveHostListenerBaseUrl(inContainer: boolean = detectHubContainer()): string {
-  const host = inContainer ? 'host.docker.internal' : '127.0.0.1';
+  const host = inContainer ? (readRecordedListenerHost() ?? 'host.docker.internal') : '127.0.0.1';
   return `http://${host}:${HOST_LISTENER_PORT}`;
+}
+
+/**
+ * The listener address the desktop app recorded, or null. Whatever answers there gets the listener
+ * token, so it is read like the token, and only a private (RFC 1918) IPv4 address counts.
+ */
+function readRecordedListenerHost(): string | null {
+  const address = readListenerTokenFile(path.join(DATA_DIR, 'state', UPDATE_LISTENER_HOST_FILENAME));
+  return address && isRfc1918Ipv4(address) ? address : null;
+}
+
+/**
+ * The Windows host's address on the WSL adapter is one of these. `isPrivateOrLocalIp` also takes
+ * loopback, link-local (the cloud metadata address among them) and CGNAT (every tailnet peer),
+ * none of which is where the listener runs.
+ */
+function isRfc1918Ipv4(address: string): boolean {
+  if (!isIPv4(address)) return false;
+  const [a, b = -1] = address.split('.').map(Number);
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
 }
 
 /** The desktop app writes a 48-character token; anything much bigger in its place is not one. */

@@ -9,7 +9,9 @@ The desktop app uses a custom updater (`packages/desktop/src-tauri/src/updater.r
 not `tauri-plugin-updater`. It ships full installers from the production CDN and
 verifies them by size + SHA-256 from the release manifest. The host listener binds
 `0.0.0.0:17400` (token-authed) so the Hub container can reach it at
-`host.docker.internal:17400`.
+`host.docker.internal:17400`, or, on the Docker engine inside WSL, at the Windows host's
+address on the WSL adapter, which the app records in `state/update-listener.host`
+(see [Host update listener](system/desktop.md#host-update-listener)).
 
 ```
 dl.ci.computer/latest.json            → {"version":"v0.2.16", ...}

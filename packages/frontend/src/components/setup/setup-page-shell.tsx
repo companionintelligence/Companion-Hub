@@ -1,4 +1,6 @@
-import { getLogo } from '@/lib/theme/theme';
+// Inlined into the bundle: these screens show while the Hub that serves the page is down, so a logo
+// loaded from it would be a broken image. The desktop bootstrap page ships the same file.
+import hubLogo from '@/assets/hub-logo.png?inline';
 import { cn } from '@/lib/utils';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -56,7 +58,7 @@ export function SetupPageShell({
             {showLogo && (
               <img
                 alt="CI Hub logo"
-                src={getLogo(true)}
+                src={hubLogo}
                 height={64}
                 width={64}
                 className={cn(

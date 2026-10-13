@@ -18,6 +18,7 @@ mod runtime_env;
 mod runtime_state;
 mod status;
 mod windows_paths;
+mod wsl;
 
 #[cfg(target_os = "linux")]
 use super::current_docker_context_name;

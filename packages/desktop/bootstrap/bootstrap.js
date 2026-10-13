@@ -27,6 +27,11 @@
    */
   const NOT_RUNNING_GRACE_MS = 15 * 1000;
   /**
+   * Once Start engine gets Docker answering, the next poll moves the page on. Until then, for at
+   * most this long, the page keeps saying the engine is starting, as the in-app screen does.
+   */
+  const ENGINE_STARTED_GRACE_MS = 15 * 1000;
+  /**
    * A Docker check that never returns used to leave "Checking CI Hub" up forever.
    * After this, say Docker didn't answer instead of spinning.
    */
@@ -55,6 +60,7 @@
     keepWaiting: byId('keep-waiting'),
     tryAgain: byId('try-again'),
     installDocker: byId('install-docker'),
+    startEngine: byId('start-engine'),
     copyError: byId('copy-error'),
     openLogs: byId('open-logs'),
     logsError: byId('logs-error'),
@@ -212,6 +218,12 @@
     installResult: null,
     /** True while Install Docker is running. The status note reports it, not the button label. */
     installRunning: false,
+    /** True while Start engine waits for Docker in WSL. */
+    engineStarting: false,
+    /** Why the last Start engine didn't get Docker in WSL answering. */
+    engineError: null,
+    /** When Start engine last got Docker in WSL answering. */
+    engineStartedAt: 0,
     navigating: false,
     /** True while get_startup_progress_command has not come back. */
     pollInFlight: false,
@@ -329,6 +341,11 @@
       page.failedAfterSecs = (now - page.waitStartedAt) / 1000;
     }
     if (view === 'stopped') page.startedHere = false;
+    // Docker answers again: a Start engine from before is history.
+    if (previous === 'docker') {
+      page.engineError = null;
+      page.engineStartedAt = 0;
+    }
     page.view = view;
   }
 
@@ -417,7 +434,22 @@
     return node;
   }
 
-  function dockerHead(access) {
+  /**
+   * The Hub runs on the Docker engine inside WSL, which stops whenever WSL does, and that engine
+   * doesn't answer. A missing Docker CLI or a refused permission is not something Start engine fixes.
+   */
+  function wslEngineStopped(progress) {
+    const state = progress?.docker_access?.state;
+    return progress?.docker_engine === 'wsl-engine' && (state === 'daemon_unavailable' || state === 'error');
+  }
+
+  function dockerHead(access, wslEngineDown) {
+    if (wslEngineDown) {
+      return [
+        "Docker in WSL isn't running",
+        'WSL stopped the Docker engine this Hub runs on. CI Hub starts it again by itself unless you stopped the Hub.',
+      ];
+    }
     switch (access?.state) {
       case 'not_installed':
         return ["Docker isn't installed", 'CI Hub runs on Docker. Install it and CI Hub will carry on from here.'];
@@ -440,7 +472,7 @@
       case 'checking':
         return ['Checking CI Hub', "Looking at Docker and the Hub's services…"];
       case 'docker':
-        return dockerHead(progress.docker_access);
+        return dockerHead(progress.docker_access, wslEngineStopped(progress));
       case 'failed': {
         const failed = failedService(core);
         if (!failed) return ["CI Hub couldn't start", "CI Hub won't retry on its own until you try again."];
@@ -535,7 +567,14 @@
     return row;
   }
 
+  /** Start engine is running, or got Docker answering and the page hasn't moved on yet. */
+  function engineStarting() {
+    return page.engineStarting || Date.now() - page.engineStartedAt < ENGINE_STARTED_GRACE_MS;
+  }
+
   function dockerStatusNote() {
+    if (engineStarting()) return 'Starting the engine… This can take a minute.';
+    if (page.engineError) return `The engine didn't start. ${page.engineError}`;
     if (page.installRunning) return 'Installing Docker… This can take a few minutes.';
     if (page.installError) return `Docker install didn't finish. ${page.installError}`;
     const result = page.installResult;
@@ -630,12 +669,16 @@
       keepWaiting: view === 'stuck',
       tryAgain: view === 'failed',
       installDocker: view === 'docker' && access === 'not_installed',
+      startEngine: view === 'docker' && wslEngineStopped(progress),
       copyError: view === 'failed' && Boolean(errorToCopy(progress)),
       openLogs: view === 'stuck' || view === 'failed' || (view === 'starting' && elapsed > LOGS_LINK_AFTER_S),
     };
     for (const [key, visible] of Object.entries(shown)) el[key].hidden = !visible;
     el.installDocker.disabled = page.installRunning;
     el.installDocker.setAttribute('aria-busy', page.installRunning ? 'true' : 'false');
+    const starting = engineStarting();
+    el.startEngine.disabled = starting;
+    el.startEngine.setAttribute('aria-busy', starting ? 'true' : 'false');
     el.actions.hidden = !Object.values(shown).some(Boolean);
     el.aside.hidden = view !== 'stopped';
     el.waiting.hidden = view !== 'docker';
@@ -777,6 +820,26 @@
     }
   }
 
+  /** Start the Docker engine inside WSL now, rather than wait for the app's next try. */
+  async function startEngine() {
+    if (engineStarting()) return;
+    page.engineStarting = true;
+    page.engineError = null;
+    render();
+    try {
+      await invoke('start_wsl_engine_command');
+      // Only while the Docker screen is still up. Set after a poll moved the page on, it would make
+      // a later return to that screen say the engine is starting while nothing runs.
+      if (page.view === 'docker') page.engineStartedAt = Date.now();
+    } catch (error) {
+      page.engineError = errorText(error) || 'Try again in a minute.';
+    } finally {
+      page.engineStarting = false;
+      render();
+      void pollProgress();
+    }
+  }
+
   function copyWithTextarea(value) {
     const area = document.createElement('textarea');
     area.value = value;
@@ -820,6 +883,7 @@
     render();
   });
   el.installDocker.addEventListener('click', () => void installDocker());
+  el.startEngine.addEventListener('click', () => void startEngine());
   el.copyError.addEventListener('click', () => void copyText(errorToCopy(page.progress), el.copyError));
   el.commandCopy.addEventListener('click', () => void copyText(el.commandText.textContent, el.commandCopy));
   el.openLogs.addEventListener('click', () => {
