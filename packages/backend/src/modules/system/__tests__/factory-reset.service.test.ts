@@ -25,6 +25,9 @@ import { vol } from 'memfs';
 
 const uninstallExecute = vi.fn().mockResolvedValue({ success: true, message: 'ok' });
 
+/** `ConfigurationService.get` on a Hub whose data folder is `/data`, mounted from an ordinary ROOT_FOLDER_HOST. */
+const configurationValue = (key: string) => (key === 'rootFolderHost' ? '/opt/ci-hub' : { dataDir: '/data' });
+
 vi.mock('@/modules/app-lifecycle/commands/uninstall-app-command', () => ({
   UninstallAppCommand: class {
     execute = uninstallExecute;
@@ -65,7 +68,7 @@ describe('FactoryResetService', () => {
         {
           provide: ConfigurationService,
           useValue: {
-            get: vi.fn().mockReturnValue({ dataDir: '/data' }),
+            get: vi.fn(configurationValue),
             forgetPersistedUserSettings: vi.fn(),
           },
         },
@@ -292,7 +295,7 @@ describe('FactoryResetService: data folders', () => {
       {} as never,
       mock<ModuleRef>(),
       new FilesystemService(logger),
-      { get: vi.fn().mockReturnValue({ dataDir: '/data' }) } as never,
+      { get: vi.fn(configurationValue) } as never,
       mock<CacheService>(),
       new SessionUserCache(),
       logger,
@@ -398,12 +401,13 @@ describe('FactoryResetService: data folders', () => {
  * (built without its constructor, which wants the whole appliance env). `moduleRef` hands out the
  * services the reset reaches that way.
  */
-function resetOnDisk(options: { userSettings?: Record<string, unknown>; moduleRef?: ModuleRef } = {}) {
+function resetOnDisk(options: { rootFolderHost?: string; userSettings?: Record<string, unknown>; moduleRef?: ModuleRef } = {}) {
   const logger = mock<LoggerService>();
   const configuration = Object.assign(Object.create(ConfigurationService.prototype) as ConfigurationService, {
     logger,
     config: {
       demoMode: false,
+      rootFolderHost: options.rootFolderHost ?? '/opt/ci-hub',
       directories: { dataDir: '/data' },
       userSettings: { ...options.userSettings },
     },
@@ -427,7 +431,7 @@ function resetOnDisk(options: { userSettings?: Record<string, unknown>; moduleRe
     registrationService,
   );
 
-  return { service, configuration };
+  return { service, configuration, db, registrationService };
 }
 
 const SETTINGS_PATH = path.join('/data', 'state', 'settings.json');
@@ -504,5 +508,111 @@ describe('FactoryResetService: settings the Hub holds in memory', () => {
     });
     expect(configuration.getInferencePreferences()).toMatchObject({ preferredBackend: null, preferredVllmApiKey: null });
     expect(configuration.getHubPoolPreferences()).toMatchObject({ poolMdnsEnabled: false, poolPins: [] });
+  });
+});
+
+describe('FactoryResetService: a data folder that is a home folder', () => {
+  const folders = ['app-data', 'apps', 'repos', 'backups', 'user-config'];
+  const ownFile = path.join('/data', 'repos', 'notes', 'todo.txt');
+
+  /** `/proc/self/mountinfo` with each data folder mounted from `<root>/<name>`, as compose mounts them, through drvfs. */
+  const mountEachFrom = (root: string, sources: Record<string, string> = {}) => {
+    vol.mkdirSync('/proc/self', { recursive: true });
+    vol.writeFileSync(
+      '/proc/self/mountinfo',
+      [
+        '836 506 0:104 / / rw,relatime - overlay overlay rw,lowerdir=/var/lib/docker/overlay2/l/ABC',
+        ...folders.map((name, index) => {
+          const mountPoint = name === 'app-data' ? '/app-data' : `/data/${name}`;
+          return `${861 + index} 836 0:69 ${sources[name] ?? `${root}/${name}`} ${mountPoint} rw,noatime - 9p C:\\134 rw,aname=drvfs;path=C:\\`;
+        }),
+      ].join('\n'),
+    );
+  };
+
+  beforeEach(() => {
+    uninstallExecute.mockClear();
+    vol.mkdirSync(path.dirname(ownFile), { recursive: true });
+    vol.writeFileSync(ownFile, 'x');
+    vol.writeFileSync(SETTINGS_PATH, '{"ciHubApiKey":"portal-device-key"}');
+  });
+
+  it.each(['/', '/root', '/home/ci', '/home/ci/', '/var/home/ci', '/Users/ci', 'C:\\Users\\ci', 'c:/users/ci', '/mnt/c/Users/ci', '/c/Users/ci'])(
+    'refuses ROOT_FOLDER_HOST=%s before it touches an app, a file, the registration or the database',
+    async (rootFolderHost) => {
+      const { service, db, registrationService } = resetOnDisk({ rootFolderHost });
+      db.query.app.findMany.mockResolvedValue([{ id: 7, appName: 'wordpress', appStoreSlug: 'ci-marketplace' }]);
+
+      const failure = await service.execute().catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(TranslatableError);
+      expect((failure as TranslatableError).getResponse()).toEqual({
+        message: 'SETTINGS_FACTORY_RESET_DATA_ROOT_REFUSED',
+        intlParams: { root: rootFolderHost },
+      });
+      expect(uninstallExecute).not.toHaveBeenCalled();
+      expect(vol.readFileSync(ownFile, 'utf8')).toBe('x');
+      expect(registrationService.resetRegistration).not.toHaveBeenCalled();
+      expect(db.execute).not.toHaveBeenCalled();
+      expect(onDisk()).toEqual({ ciHubApiKey: 'portal-device-key' });
+    },
+  );
+
+  it('refuses when the folders are mounted from a home folder, as when ROOT_FOLDER_HOST is a link to one', async () => {
+    mountEachFrom('/home/ci');
+    const { service, db } = resetOnDisk({ rootFolderHost: '/srv/hub' });
+
+    const failure = await service.execute().catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(TranslatableError);
+    expect((failure as TranslatableError).getResponse()).toEqual({
+      message: 'SETTINGS_FACTORY_RESET_DATA_ROOT_REFUSED',
+      intlParams: { root: '/home/ci' },
+    });
+    expect(vol.readFileSync(ownFile, 'utf8')).toBe('x');
+    expect(db.execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'C:\\Users\\ci\\AppData\\Roaming\\companion-hub',
+    '/mnt/c/Users/ci/AppData/Roaming/companion-hub',
+    '/c/Users/ci/AppData/Roaming/companion-hub',
+    '/home/ci/.local/share/companion-hub',
+    '/Users/ci/Library/Application Support/companion-hub',
+    '/home/ci/CI-Hub/.internal',
+    '/opt/ci-hub',
+    '/srv/hub',
+  ])('runs with ROOT_FOLDER_HOST=%s', async (rootFolderHost) => {
+    const { service } = resetOnDisk({ rootFolderHost });
+
+    await expect(service.execute()).resolves.toMatchObject({ success: true });
+
+    expect(vol.readdirSync(path.join('/data', 'repos'))).toEqual([]);
+  });
+
+  it('runs on a Windows install, with each folder mounted from %APPDATA%\\companion-hub', async () => {
+    mountEachFrom('/Users/ci/AppData/Roaming/companion-hub');
+    const { service } = resetOnDisk({ rootFolderHost: '/mnt/c/Users/ci/AppData/Roaming/companion-hub' });
+
+    await expect(service.execute()).resolves.toMatchObject({ success: true });
+
+    expect(vol.readdirSync(path.join('/data', 'repos'))).toEqual([]);
+  });
+
+  it('still leaves a folder linked to a home folder alone, and still empties one linked to a folder of the same name', async () => {
+    // `backups` is a junction to the user's home folder itself, `repos` one to a `repos` folder in it.
+    // Neither says where ROOT_FOLDER_HOST is, so neither is refused: the first is left alone and
+    // named, and the second can't be told apart from the folder itself, as before.
+    mountEachFrom('/Users/ci/AppData/Roaming/companion-hub', { backups: '/Users/ci', repos: '/Users/ci/repos' });
+    const { service } = resetOnDisk({ rootFolderHost: '/mnt/c/Users/ci/AppData/Roaming/companion-hub' });
+
+    const failure = await service.execute().catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(TranslatableError);
+    expect((failure as TranslatableError).getResponse()).toEqual({
+      message: 'SETTINGS_FACTORY_RESET_FILES_LEFT',
+      intlParams: { count: '1', paths: 'backups/' },
+    });
+    expect(vol.readdirSync(path.join('/data', 'repos'))).toEqual([]);
   });
 });

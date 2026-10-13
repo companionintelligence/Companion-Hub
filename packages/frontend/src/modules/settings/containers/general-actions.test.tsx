@@ -867,6 +867,28 @@ describe('GeneralActionsContainer', () => {
     expect(screen.getByTestId('factory-reset-confirmation-input')).toBeInTheDocument();
   });
 
+  it('names the data folder when a factory reset refuses it as a home folder', async () => {
+    mockUseAppContext.mockReturnValue({
+      version: { current: '4.7.0', latest: '4.7.0', body: '', releases: [] },
+      refreshAppContext: vi.fn(),
+      userSettings: { ciHubDeviceSlug: 'core' },
+    } as unknown as ReturnType<typeof useAppContext>);
+    mockFactoryReset.mockRejectedValue(new TranslatableError('SETTINGS_FACTORY_RESET_DATA_ROOT_REFUSED', { root: '/home/ci' }));
+
+    render(<GeneralActionsContainer />);
+
+    await userEvent.click(await screen.findByTestId('factory-reset-btn'));
+    await userEvent.type(screen.getByTestId('factory-reset-confirmation-input'), 'core');
+    await userEvent.click(screen.getByTestId('factory-reset-confirm-btn'));
+
+    await waitFor(() => {
+      expect(mockToastError).toHaveBeenCalledWith(
+        "Factory reset did not run because the Hub's data folder (/home/ci) is a home folder or the top of the disk, and the reset would empty folders in it. Nothing was changed. Point ROOT_FOLDER_HOST at a folder just for the Hub, or reset from the CLI with `cihub reset`.",
+      );
+    });
+    expect(screen.getByTestId('factory-reset-confirmation-input')).toBeInTheDocument();
+  });
+
   it('requires the device name again after the factory-reset dialog closes', async () => {
     mockUseAppContext.mockReturnValue({
       version: { current: '4.7.0', latest: '4.7.0', body: '', releases: [] },

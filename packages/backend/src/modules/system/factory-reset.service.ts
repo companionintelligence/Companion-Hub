@@ -4,7 +4,8 @@ import { createAppUrn } from '@/common/helpers/app-helpers';
 import { removeSettingsJsonCopies, writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR } from '@/common/constants';
 import { TranslatableError } from '@/common/error/translatable-error';
-import { linkedMountSource, parseMountInfo } from '@/common/helpers/mount-source';
+import { isHomeFolder, isTopOrHomeFolder } from '@/common/helpers/home-folder';
+import { linkedMountSource, type MountInfoEntry, mountedDataRoot, parseMountInfo } from '@/common/helpers/mount-source';
 import { app } from '@/core/database/drizzle/schema';
 import { DATABASE, type Database } from '@/core/database/database.module';
 import { CacheService } from '@/core/cache/cache.service';
@@ -72,7 +73,34 @@ export class FactoryResetService {
     }
   }
 
+  /**
+   * Refuse to run when the Hub's data folder is `/` or a home folder. The reset empties `app-data`,
+   * `apps`, `repos`, `backups` and `user-config` in it, so with `ROOT_FOLDER_HOST=/home/<user>` it
+   * emptied `~/repos` and the rest. `cihub reset` refuses a root like that too.
+   *
+   * The container sees neither that folder nor the host's home, so this goes by the shape of the path
+   * (`isHomeFolder`): `ROOT_FOLDER_HOST` as compose passed it in, and the folder the data folders'
+   * mounts come from, which names a home folder that `ROOT_FOLDER_HOST` is a link to. Data folders
+   * mounted from the top of their filesystem are as likely to be on a data disk of their own as on
+   * `/`, so `/` counts only when `ROOT_FOLDER_HOST` says it.
+   */
+  private async refuseHomeFolderRoot(): Promise<void> {
+    const configured = this.configuration.get('rootFolderHost');
+    const mounted = mountedDataRoot(
+      await readMounts(),
+      this.dataFolders().map(({ dir, name }) => ({ mountPoint: toMountPoint(dir), names: [name, path.basename(dir)] })),
+    );
+    const root = isTopOrHomeFolder(configured) ? configured : mounted && isHomeFolder(mounted) ? mounted : undefined;
+
+    if (root) {
+      this.logger.error(`Factory reset refused: the Hub's data folder ${root} is / or a home folder, and the reset would empty folders in it`);
+      throw new TranslatableError('SETTINGS_FACTORY_RESET_DATA_ROOT_REFUSED', { root }, 409);
+    }
+  }
+
   public async execute(): Promise<{ success: true; message: string }> {
+    await this.refuseHomeFolderRoot();
+
     this.logger.warn('Factory reset requested — tearing down apps, wiping data mounts, and clearing Hub state');
 
     await this.tearDownApps();
@@ -166,21 +194,11 @@ export class FactoryResetService {
    * shows that error, so it says how much is left, names the first few, and points to `cihub reset --yes`.
    */
   public async wipeDataMounts(): Promise<void> {
-    const { dataDir } = this.configuration.get('directories');
-    // `name` is the folder the compose files mount here, `<ROOT_FOLDER_HOST>/<name>`.
-    const targets = [
-      { dir: APP_DATA_DIR, name: 'app-data' },
-      { dir: path.join(dataDir, 'apps'), name: 'apps' },
-      { dir: path.join(dataDir, 'repos'), name: 'repos' },
-      { dir: path.join(dataDir, 'backups'), name: 'backups' },
-      // Per-app env and compose overrides, which a reinstalled app would pick up again.
-      { dir: path.join(dataDir, 'user-config'), name: 'user-config' },
-    ];
-    // Unreadable or missing (outside a container, or not Linux) reads as no mounts, and every folder is emptied.
-    const mounts = parseMountInfo(await fs.promises.readFile('/proc/self/mountinfo', 'utf8').catch(() => ''));
+    // No mounts (outside a container, or not Linux) means every folder is emptied.
+    const mounts = await readMounts();
     const left: string[] = [];
 
-    for (const { dir: target, name } of targets) {
+    for (const { dir: target, name } of this.dataFolders()) {
       const linkedTo = linkedMountSource(mounts, toMountPoint(target), [name, path.basename(target)]);
 
       if (linkedTo) {
@@ -203,6 +221,20 @@ export class FactoryResetService {
     if (left.length > 0) {
       throw new TranslatableError('SETTINGS_FACTORY_RESET_FILES_LEFT', { count: String(left.length), paths: left.slice(0, 3).join(', ') });
     }
+  }
+
+  /** The folders the reset empties. `name` is the folder the compose files mount there, `<ROOT_FOLDER_HOST>/<name>`. */
+  private dataFolders(): Array<{ dir: string; name: string }> {
+    const { dataDir } = this.configuration.get('directories');
+
+    return [
+      { dir: APP_DATA_DIR, name: 'app-data' },
+      { dir: path.join(dataDir, 'apps'), name: 'apps' },
+      { dir: path.join(dataDir, 'repos'), name: 'repos' },
+      { dir: path.join(dataDir, 'backups'), name: 'backups' },
+      // Per-app env and compose overrides, which a reinstalled app would pick up again.
+      { dir: path.join(dataDir, 'user-config'), name: 'user-config' },
+    ];
   }
 
   public async clearRegistrationArtifacts(): Promise<void> {
@@ -253,6 +285,11 @@ export class FactoryResetService {
       throw error;
     });
   }
+}
+
+/** This process's mounts. Unreadable or missing mountinfo reads as none. */
+async function readMounts(): Promise<MountInfoEntry[]> {
+  return parseMountInfo(await fs.promises.readFile('/proc/self/mountinfo', 'utf8').catch(() => ''));
 }
 
 /** `dir` as mountinfo writes a mount point: absolute, with forward slashes and no drive letter. */

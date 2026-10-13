@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { linkedMountSource, parseMountInfo } from '../mount-source';
+import { linkedMountSource, mountedDataRoot, parseMountInfo } from '../mount-source';
 
 /**
  * `/proc/self/mountinfo` lines from a Hub container, one shape per engine. The WSL engine lines and
@@ -133,5 +133,48 @@ describe('linkedMountSource', () => {
       expect(linkedFolders(container(own, linked))).toEqual(['repos <- /Users/ci/Videos/library']);
       expect(linkedFolders(container(linked, own))).toEqual([]);
     });
+  });
+});
+
+describe('mountedDataRoot', () => {
+  const dataRoot = (text: string) =>
+    mountedDataRoot(
+      parseMountInfo(text),
+      folders.map((name) => ({ mountPoint: mountPointOf(name), names: [name] })),
+    );
+
+  it.each([
+    ['Docker Engine in WSL2', install(P, DRVFS), P],
+    [
+      'Linux, the data folder on the root filesystem',
+      install('/home/ci/.local/share/companion-hub', 'ext4 /dev/sda1 rw'),
+      '/home/ci/.local/share/companion-hub',
+    ],
+    ['Linux, /home on its own partition', install('/ci/.local/share/companion-hub', 'ext4 /dev/sda3 rw'), '/ci/.local/share/companion-hub'],
+    ['a home folder, or a link to one', install('/home/ci', 'ext4 /dev/sda1 rw'), '/home/ci'],
+    ['a Windows home folder, through drvfs', install('/Users/ci', DRVFS), '/Users/ci'],
+    ['a data disk with the folders at its top', install('', 'ext4 /dev/sdb1 rw'), '/'],
+  ])('%s', (_shape, text, root) => {
+    expect(dataRoot(text)).toBe(root);
+  });
+
+  it('leaves out a folder that is a link to one with another name', () => {
+    const text = install(P, DRVFS).replace(`${P}/repos /data/repos`, '/Users/ci/Videos/library /data/repos');
+
+    expect(dataRoot(text)).toBe(P);
+  });
+
+  it('gives no answer when a folder is a link to one of the same name somewhere else', () => {
+    const text = install(P, DRVFS).replace(`${P}/repos /data/repos`, '/Users/ci/repos /data/repos');
+
+    expect(dataRoot(text)).toBeUndefined();
+  });
+
+  it('gives no answer with no mounts of their own, or only volumes', () => {
+    expect(dataRoot('')).toBeUndefined();
+    expect(dataRoot(container('845 836 8:48 /var/lib/docker/volumes/hub_data/_data /data rw,relatime - ext4 /dev/sdd rw'))).toBeUndefined();
+    expect(
+      dataRoot(container('845 836 8:48 /var/lib/docker/volumes/c486/_data /app-data rw,relatime master:224 - ext4 /dev/sdd rw')),
+    ).toBeUndefined();
   });
 });

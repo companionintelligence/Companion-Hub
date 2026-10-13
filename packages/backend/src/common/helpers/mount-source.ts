@@ -42,6 +42,53 @@ export function parseMountInfo(text: string): MountInfoEntry[] {
  * macOS file sharing ignore it. A link to a folder with the same name looks like the folder itself.
  */
 export function linkedMountSource(entries: MountInfoEntry[], mountPoint: string, names: string[]): string | undefined {
+  const root = mountRootAt(entries, mountPoint);
+
+  if (root === undefined) {
+    return undefined;
+  }
+
+  const segments = root.split(/[\\/]/).filter(Boolean);
+  const last = segments.at(-1);
+
+  if (!last || (last === '_data' && segments.at(-3) === 'volumes')) {
+    return undefined;
+  }
+
+  return names.some((name) => name.toLowerCase() === last.toLowerCase()) ? undefined : root;
+}
+
+/**
+ * The folder that holds the folders mounted at `mounts`, as their mount roots name it: the parent of
+ * each one that comes from a folder with its own name (see {@link linkedMountSource}), when they all
+ * have the same parent. With `ROOT_FOLDER_HOST` a symlink, Docker follows it, so this names the
+ * folder it points to.
+ *
+ * Undefined when none of them has a mount of its own, or when their parents differ, as they do when
+ * one of them is a link to a folder of the same name somewhere else.
+ *
+ * A mount's root is a path inside the filesystem it comes from. That is the host's path on the root
+ * filesystem and through drvfs (where `C:\Users\<name>` reads `/Users/<name>`), but not on a
+ * filesystem of its own: with `/home` on its own partition, `/home/<name>` reads `/<name>`.
+ */
+export function mountedDataRoot(entries: MountInfoEntry[], mounts: Array<{ mountPoint: string; names: string[] }>): string | undefined {
+  const parents = new Map<string, string>();
+
+  for (const { mountPoint, names } of mounts) {
+    const segments = mountRootAt(entries, mountPoint)?.split(/[\\/]/).filter(Boolean) ?? [];
+    const last = segments.at(-1);
+
+    if (last && names.some((name) => name.toLowerCase() === last.toLowerCase())) {
+      const parent = `/${segments.slice(0, -1).join('/')}`;
+      parents.set(parent.toLowerCase(), parent);
+    }
+  }
+
+  return parents.size === 1 ? [...parents.values()][0] : undefined;
+}
+
+/** The root of the mount at `mountPoint`, or undefined when nothing is mounted there. */
+function mountRootAt(entries: MountInfoEntry[], mountPoint: string): string | undefined {
   let mount: MountInfoEntry | undefined;
 
   // The last one wins: a later mount on the same point hides the earlier ones.
@@ -51,18 +98,6 @@ export function linkedMountSource(entries: MountInfoEntry[], mountPoint: string,
     }
   }
 
-  if (!mount) {
-    return undefined;
-  }
-
   // A source folder deleted after it was mounted reads `<path>//deleted`.
-  const root = mount.root.replace(/\/\/deleted$/, '');
-  const segments = root.split(/[\\/]/).filter(Boolean);
-  const last = segments.at(-1);
-
-  if (!last || (last === '_data' && segments.at(-3) === 'volumes')) {
-    return undefined;
-  }
-
-  return names.some((name) => name.toLowerCase() === last.toLowerCase()) ? undefined : root;
+  return mount?.root.replace(/\/\/deleted$/, '');
 }
