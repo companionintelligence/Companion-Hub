@@ -5,6 +5,7 @@ import { PageLoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinn
 import { isPortExposeApp } from '@ci-hub/common/schemas';
 import { useTranslation } from 'react-i18next';
 import { PortExposeDetailsView } from '../components/port-expose-details-view/port-expose-details-view';
+import { useCustomAppAccess } from '../helpers/use-custom-app-access';
 import { CustomAppDetailsPageContent } from './custom-app-details-page-content';
 
 export const CustomAppDetailsPage = () => {
@@ -18,6 +19,9 @@ export const CustomAppDetailsPage = () => {
     staleTime: 30_000,
     enabled: Boolean(appId),
   });
+  // Ask what this person may do while the app loads, not after: the page's controls wait on the answer,
+  // and asked from the content alone it queued behind the page's other requests for seconds.
+  useCustomAppAccess();
 
   if (!appId || getApp.isLoading) {
     return <PageLoadingSpinner />;
