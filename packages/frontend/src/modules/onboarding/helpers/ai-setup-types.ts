@@ -72,6 +72,8 @@ export interface CloudProviderInput {
   provider: CloudProviderType;
   apiKey: string;
   enabled: boolean;
+  /** The Hub already holds a key for this provider (Settings shows it masked). Cleared and saved, it is deleted. */
+  stored?: boolean;
 }
 
 /**
@@ -161,8 +163,10 @@ export interface HardwareProfileResponse {
   installedCatalogIds: string[];
   memoryBudget: MemoryBudget;
   backends: {
+    /** The hardware's pick, whether or not it answers. Choose with `recommendedInferenceBackend`, which checks. */
     recommended: InferenceBackendType;
-    available: Array<{ type: InferenceBackendType; running: boolean; healthy: boolean }>;
+    /** `modelsLoaded` counts the models the engine has. A Hub older than that field leaves it out. */
+    available: Array<{ type: InferenceBackendType; running: boolean; healthy: boolean; modelsLoaded?: number }>;
   };
   resourceEstimate: {
     totalDiskMb: number;
