@@ -235,8 +235,8 @@ fn a_launch_leaves_a_traefik_file_alone_that_another_hub_release_wrote() {
     let data_dir = tempdir.path();
     prepare_traefik_runtime_state(data_dir).expect("first launch");
     let dynamic = data_dir.join(TRAEFIK_DYNAMIC_FILE);
-    // As a release that sends the app-starting page as a 503 writes it.
-    let from_another_release = TRAEFIK_DYNAMIC_CONFIG_SEED.replace("{status}", "{originalStatus}");
+    // Built here rather than from the seed, so it differs from the seed whatever the seed says.
+    let from_another_release = "http:\n  middlewares:\n    from-another-release:\n      headers:\n        customResponseHeaders:\n          X-Hub-Release: \"another\"\n";
     assert_ne!(from_another_release, TRAEFIK_DYNAMIC_CONFIG_SEED);
     std::fs::write(&dynamic, &from_another_release).expect("write the Hub's dynamic.yml");
 
