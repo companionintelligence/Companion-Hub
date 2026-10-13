@@ -863,6 +863,7 @@
   "SETTINGS_ACTIONS_UPDATE_STOP_WAITING": "Stop waiting",
   "SETTINGS_ACTIONS_UPDATE_DISMISS": "Dismiss",
   "SETTINGS_ACTIONS_UPDATE_FAILED": "Update failed. Check logs for details.",
+  "SETTINGS_ACTIONS_UPDATE_REFUSED": "The Hub refused the update: {{reason}}",
   "SETTINGS_ACTIONS_UPDATE_REQUEST_FAILED": "Update request failed. The hub may already be restarting.",
   "SETTINGS_ACTIONS_UPDATE_TO_VERSION": "Update to {{version}}",
   "SETTINGS_ACTIONS_UPDATING": "Updating…",
