@@ -16,7 +16,7 @@ import { InferenceEndpointService } from '../inference-endpoint.service';
 import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
-import type { CloudProviderConfig, CuratedModel, HardwareProfile, InferenceBackendType } from '@ci-hub/common/types';
+import type { CloudProviderConfig, CuratedModel, HardwareProfile, InferenceBackendType, TrackedModel } from '@ci-hub/common/types';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { cloudProviderManagedKeys } from '../cloud-provider-env';
 import { differingHandoutKeys, HANDOUT_RECORDS_PATH, type RecordedHandout } from '../app-handout-record';
@@ -1481,13 +1481,40 @@ describe('AppCredentialsService', () => {
       expect(modelPuller.startPull).not.toHaveBeenCalled();
     });
 
-    it('does not pull when registry reports state=pulled for the catalog id', async () => {
-      modelRegistry.getTrackedModel.mockReturnValue({ catalogId: 'hermes4-70b', state: 'pulled' } as any);
+    // `ollama rm` leaves the registry's entry behind until the Hub restarts. Believed over Ollama's
+    // own list, it handed OpenClaw the removed model (every request a 404) and logged it as
+    // "already installed on this node".
+    it('hands out a model Ollama has, not one the registry still lists after ollama rm', async () => {
+      modelRegistry.getTrackedModel.mockImplementation((id) =>
+        id === 'hermes4-70b'
+          ? ({ catalogId: 'hermes4-70b', backend: 'ollama', backendModelId: 'hermes4:70b', state: 'pulled' } as TrackedModel)
+          : undefined,
+      );
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['hermes4:8b'] });
       service.invalidateCache();
+
       const config = await service.getCredentials('openclaw');
       await new Promise((resolve) => setImmediate(resolve));
+
+      expect(config.env.DEFAULT_MODEL).toBe('hermes4:8b');
+      expect(config.prePull.find((decision) => decision.kind === 'chat')).toMatchObject({ catalogId: 'hermes4-70b', pull: true });
+      expect(modelPuller.startPull).toHaveBeenCalledWith('hermes4-70b', { bestEffort: true });
+    });
+
+    it('still counts a model the registry has as pulled while Ollama cannot be asked', async () => {
+      modelRegistry.getTrackedModel.mockReturnValue({
+        catalogId: 'hermes4-70b',
+        backend: 'ollama',
+        backendModelId: 'hermes4:70b',
+        state: 'pulled',
+      } as TrackedModel);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.chatModelId).toBe('hermes4:70b');
       expect(config.chatModelReady).toBe(true);
-      expect(modelPuller.startPull).not.toHaveBeenCalled();
     });
 
     it('de-dupes concurrent pre-pull requests for the same model via startPull in_progress', async () => {

@@ -53,6 +53,7 @@ export function speaksOpenAiCompletions(provider: CloudProviderType): boolean {
 @Injectable()
 export class CloudFallbackService implements OnModuleInit {
   private providers = new Map<CloudProviderType, CloudProviderConfig>();
+  private persistChain: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly logger: LoggerService,
@@ -126,6 +127,28 @@ export class CloudFallbackService implements OnModuleInit {
   /** List all configured providers */
   listProviders(): CloudProviderConfig[] {
     return Array.from(this.providers.values());
+  }
+
+  /**
+   * Forget a provider and its key, in memory and in settings.json. {@link setProvider} cannot: it
+   * keeps the stored key when `apiKey` is blank. Resolves false when nothing was stored for it.
+   */
+  async removeProvider(provider: CloudProviderType): Promise<boolean> {
+    const removed = this.providers.get(provider);
+    if (!removed) {
+      return false;
+    }
+    this.providers.delete(provider);
+    try {
+      await this.persist();
+    } catch (error) {
+      // settings.json still holds the key, so memory keeps it too: otherwise a retry finds nothing to
+      // remove and the key comes back with the next restart.
+      if (!this.providers.has(provider)) this.providers.set(provider, removed);
+      throw error;
+    }
+    this.logger.info(`[CloudFallback] Removed provider: ${provider}`);
+    return true;
   }
 
   /** Get enabled providers */
@@ -397,7 +420,15 @@ export class CloudFallbackService implements OnModuleInit {
     };
   }
 
-  private async persist(): Promise<void> {
-    await this.configuration.setInferenceCloudProviders(this.listProviders());
+  /**
+   * Write the providers to settings.json, one write at a time and each with the list as it is when
+   * the write starts. Calls can overlap (a save, then a removal), and a write that lands after a
+   * later one would put the removed key back on disk. Ordering them here keeps the last write the
+   * newest list whether or not settings.json writes are also queued elsewhere.
+   */
+  private persist(): Promise<void> {
+    const write = this.persistChain.then(() => this.configuration.setInferenceCloudProviders(this.listProviders()));
+    this.persistChain = write.catch(() => undefined);
+    return write.then(() => undefined);
   }
 }

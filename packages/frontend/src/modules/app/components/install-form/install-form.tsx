@@ -357,6 +357,35 @@ export const InstallForm: React.FC<IProps> = ({
     [setValue],
   );
 
+  /**
+   * Leaves out the access settings this Hub does not offer. An exposure mode it lacks would be
+   * submitted as the next mode `resolveExposureMode` finds, so a Private VPN config brought to a Hub
+   * without Tailscale would go out on Public Web. A public domain Companion Portal does not list
+   * for this Hub would stop the form from taking the one it preselects, and an app already on the
+   * Web would save it as is.
+   */
+  const withoutUnofferedAccessSettings = useCallback(
+    (values: Record<string, unknown>): { values: Record<string, unknown>; dropped: string[] } => {
+      const { exposureMode, publicDomain } = values;
+      const dropped: string[] = [];
+      if (
+        exposureMode !== undefined &&
+        resolveExposureMode(exposureMode as FormValues['exposureMode'], { cloudflareAvailable, tailscaleAvailable }) !== exposureMode
+      ) {
+        dropped.push('exposureMode');
+      }
+      if (
+        typeof publicDomain === 'string' &&
+        availableDomains.length > 0 &&
+        !availableDomains.some((entry) => entry.domain.toLowerCase() === publicDomain.trim().toLowerCase())
+      ) {
+        dropped.push('publicDomain');
+      }
+      return { values: Object.fromEntries(Object.entries(values).filter(([key]) => !dropped.includes(key))), dropped };
+    },
+    [cloudflareAvailable, tailscaleAvailable, availableDomains],
+  );
+
   const handleExportConfig = useCallback(async () => {
     const json = serializeInstallConfig(info.id, getValues(), formFields);
     const blob = new Blob([json], { type: 'application/json' });
@@ -396,35 +425,37 @@ export const InstallForm: React.FC<IProps> = ({
         return;
       }
 
-      const result = parseInstallConfigJson(text, formFields);
+      const result = parseInstallConfigJson(text, formFields, info.id);
       if (!result.ok) {
         toast.error(t('APP_INSTALL_FORM_IMPORT_CONFIG_ERROR', { defaultValue: 'That file is not a valid install config.' }));
         return;
       }
 
-      applyImportedValues(result.values);
+      const { values, dropped } = withoutUnofferedAccessSettings(result.values);
+      applyImportedValues(values);
 
-      if (result.unrecognizedKeys.length > 0) {
+      const unrecognizedKeys = [...result.unrecognizedKeys, ...dropped];
+      if (unrecognizedKeys.length > 0) {
         toast.error(
           t('APP_INSTALL_FORM_IMPORT_CONFIG_UNRECOGNIZED', {
-            defaultValue: `Ignored ${result.unrecognizedKeys.length} field(s) that don't apply to this app: ${result.unrecognizedKeys.join(', ')}`,
-            count: result.unrecognizedKeys.length,
-            fields: result.unrecognizedKeys.join(', '),
+            defaultValue: `Ignored ${unrecognizedKeys.length} field(s) that don't apply to this app: ${unrecognizedKeys.join(', ')}`,
+            count: unrecognizedKeys.length,
+            fields: unrecognizedKeys.join(', '),
           }),
         );
       } else {
         toast.success(t('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS', { defaultValue: 'Config imported.' }));
       }
     },
-    [formFields, applyImportedValues, t],
+    [formFields, info.id, withoutUnofferedAccessSettings, applyImportedValues, t],
   );
 
   const handleApplyRecentConfig = useCallback(
     (entry: LastUsedInstallConfig) => {
-      applyImportedValues(entry.values);
+      applyImportedValues(withoutUnofferedAccessSettings(entry.values).values);
       toast.success(t('APP_INSTALL_FORM_RECENTLY_USED_APPLIED', { defaultValue: 'Applied recently used config.' }));
     },
-    [applyImportedValues, t],
+    [withoutUnofferedAccessSettings, applyImportedValues, t],
   );
 
   const checkDnsAvailability = useCallback(
