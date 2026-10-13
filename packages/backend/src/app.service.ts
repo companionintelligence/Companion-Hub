@@ -2,7 +2,9 @@ import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Inject, Injectable, type OnApplicationShutdown } from '@nestjs/common';
-import { APP_DATA_DIR, DATA_DIR, HUB_MANAGED_LABEL, HUB_STACK_REGISTRY_REPO } from './common/constants';
+import { isPortExposeApp } from '@ci-hub/common/schemas';
+import { APP_DATA_DIR, appUrnFromLabels, DATA_DIR, HUB_MANAGED_LABEL, HUB_STACK_REGISTRY_REPO } from './common/constants';
+import { createAppUrn } from './common/helpers/app-helpers';
 import { redactSecretsForLog } from './common/helpers/log-privacy';
 import { fillHubContainerName } from './common/helpers/traefik-hub-address';
 import { withTimeout } from './common/helpers/with-timeout';
@@ -18,6 +20,7 @@ import { MarketplaceService } from './modules/marketplace/marketplace.service';
 import { RepoEventsQueue } from './modules/queue/entities/repo-events';
 import { SystemEventsQueue } from './modules/queue/entities/system-events';
 import { DOCKERODE } from './modules/docker/docker.module';
+import { listContainersMatchingAnyLabelSets, managedAppLabelSets } from './modules/docker/hub-container-query';
 import Dockerode from 'dockerode';
 import { RegistryService } from './utils/registry/registry.service';
 import { PortManagerService } from './modules/network/port-manager.service';
@@ -185,10 +188,6 @@ export class AppService implements OnApplicationShutdown {
         this.repoQueue.publishRepeatable({ command: 'update_all' }, '*/15 * * * *');
         this.logger.info('Repo update job scheduled');
       }
-      this.logger.info('Setting up repeatable app status sync job...');
-      this.systemEventsQueue.publishRepeatable({ command: 'sync_app_statuses' }, '*/5 * * * *');
-      this.logger.info('App status sync job scheduled');
-
       this.logger.info('Setting up repeatable orphan network reconcile job...');
       this.systemEventsQueue.publishRepeatable({ command: 'reconcile_orphan_networks' }, '*/30 * * * *');
       this.logger.info('Orphan network reconcile job scheduled');
@@ -213,7 +212,15 @@ export class AppService implements OnApplicationShutdown {
         this.logger.info('Restarting running apps...');
         await this.appLifecycleService.restartRunningApps();
         this.logger.info('Finished restarting running apps');
+      } else if (__prod__) {
+        await this.startRunningAppsWithoutContainers();
       }
+
+      // Only now, so the first sync finds an app started above `starting`, not `running` with no
+      // containers, which it reports as a crash.
+      this.logger.info('Setting up repeatable app status sync job...');
+      this.systemEventsQueue.publishRepeatable({ command: 'sync_app_statuses' }, '*/5 * * * *');
+      this.logger.info('App status sync job scheduled');
 
       this.logger.info('Bootstrap completed successfully');
     } catch (e) {
@@ -564,6 +571,48 @@ export class AppService implements OnApplicationShutdown {
       }
     } catch (err) {
       this.logger.warn(`Port allocation migration failed (non-fatal): ${err}`);
+    }
+  }
+
+  /**
+   * Starts each app whose row says `running` but that has no container at all, on a boot that keeps
+   * the version and so skips `restartRunningApps`. Uninstalling the desktop app with its data kept
+   * removes every app container and leaves the cache, so after a reinstall of the same version those
+   * apps stayed down and the first status sync reported each one as a crash.
+   *
+   * A stopped app stays stopped. So does an app with any container left, running or not: the
+   * desktop's Stop Hub leaves exited containers, and the status sync reads what they say. A start
+   * that fails settles the app as `stopped`, so the next boot does not try it again.
+   */
+  private async startRunningAppsWithoutContainers() {
+    let containers: Dockerode.ContainerInfo[];
+    let running: Awaited<ReturnType<AppsRepository['getApps']>>;
+    try {
+      running = (await this.appsRepository.getApps()).filter((app) => app.status === 'running' && !isPortExposeApp(app.config));
+      if (running.length === 0) return;
+      containers = await listContainersMatchingAnyLabelSets(this.docker, managedAppLabelSets());
+    } catch (error) {
+      this.logger.warn(`Could not look for running apps without containers: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+
+    const withContainers = new Set(containers.map((container) => appUrnFromLabels(container.Labels)));
+    for (const app of running) {
+      const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+      if (withContainers.has(appUrn)) continue;
+
+      this.logger.warn(`App ${appUrn} is marked running but has no containers; starting it so compose creates them again`);
+      try {
+        await this.appLifecycleService.startApp({
+          appUrn,
+          skipPull: true,
+          onlyRecreateChanged: true,
+          actor: { kind: 'system', reason: 'bootstrap-recreate' },
+        });
+      } catch (error) {
+        this.logger.error(`Could not start ${appUrn}; it stays stopped: ${error instanceof Error ? error.message : String(error)}`);
+        await this.appsRepository.updateAppByIdIfStatus(app.id, 'running', { status: 'stopped' }).catch(() => false);
+      }
     }
   }
 }

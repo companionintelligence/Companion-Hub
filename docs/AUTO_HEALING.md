@@ -155,6 +155,13 @@ nothing: ci-memory's long-running services and OpenClaw stayed `Running`, and on
 exited init services started. Compose does not see a changed
 bind-mounted file, but this path rewrites only the compose file and `app.env`.
 
+On a boot that keeps the version, the Hub starts only the apps whose row says `running`
+but that have no container at all, and schedules the first app status sync after that.
+Uninstalling the desktop app with its data kept leaves exactly this: every app container
+is gone, and the cache still holds the old version. A stopped app stays stopped. An app
+with any container left, running or not, is left to the status sync. If the start fails,
+the app is marked `stopped`, so the next boot doesn't try it again.
+
 ### Tunnel sidecar (`cloudflared`)
 
 On boot the Hub leaves a `running` cloudflared alone. A missing, exited, or crash-looping

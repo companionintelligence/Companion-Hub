@@ -22,6 +22,7 @@ import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.servi
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import { APP_SESSION_KEY_PREFIX, SESSION_KEY_PREFIX } from '@/modules/auth/session.manager';
+import { SystemEventsQueue } from '@/modules/queue/entities/system-events';
 
 describe('AppService', () => {
   let appService: AppService;
@@ -36,6 +37,7 @@ describe('AppService', () => {
   let appLifecycleService = mock<AppLifecycleService>();
   let appsRepository = mock<AppsRepository>();
   let portManagerService = mock<PortManagerService>();
+  let systemEventsQueue = mock<SystemEventsQueue>();
 
   beforeEach(async () => {
     dockerode = mock<Dockerode>();
@@ -63,6 +65,7 @@ describe('AppService', () => {
     appLifecycleService = moduleRef.get(AppLifecycleService);
     appsRepository = moduleRef.get(AppsRepository);
     portManagerService = moduleRef.get(PortManagerService);
+    systemEventsQueue = moduleRef.get(SystemEventsQueue);
 
     databaseService.waitUntilReady.mockResolvedValue(undefined);
     databaseService.migrate.mockResolvedValue(undefined);
@@ -426,6 +429,94 @@ describe('AppService', () => {
         forwardAuthSecret: '[redacted]',
         __prod__: false,
       });
+    });
+  });
+
+  /*
+   * An uninstall of the desktop app that keeps its data removes every app container but keeps the
+   * cache, so a reinstall of the same version skipped the version-change restart. The apps stayed
+   * down and the status sync reported each one as a crash (Companion-Hub#1980).
+   */
+  describe('bootstrap on the version the cache already holds', () => {
+    const wordpress = { id: 1, appName: 'wordpress', appStoreSlug: 'ci-marketplace', status: 'running', config: {} };
+
+    beforeEach(() => {
+      configurationService.getConfig.mockReturnValue(
+        fromPartial({
+          version: '1.0.0',
+          __prod__: true,
+          directories: { appDir: APP_DIR, dataDir: DATA_DIR, appDataDir: APP_DATA_DIR },
+          userSettings: { logLevel: 'info', persistTraefikConfig: false },
+        }),
+      );
+      cacheService.get.mockImplementation((key: string) => (key === 'buster' ? '1.0.0' : undefined));
+      dockerode.listContainers.mockResolvedValue([]);
+      appLifecycleService.startApp.mockResolvedValue({ requestId: 'req-1' });
+    });
+
+    it('starts a running app that has no containers before it schedules the status sync', async () => {
+      appsRepository.getApps.mockResolvedValue([wordpress] as never);
+
+      await appService.bootstrap();
+
+      expect(appLifecycleService.restartRunningApps).not.toHaveBeenCalled();
+      expect(appLifecycleService.startApp).toHaveBeenCalledTimes(1);
+      expect(appLifecycleService.startApp).toHaveBeenCalledWith({
+        appUrn: 'wordpress:ci-marketplace',
+        skipPull: true,
+        onlyRecreateChanged: true,
+        actor: { kind: 'system', reason: 'bootstrap-recreate' },
+      });
+      // The start moves the row to `starting`, so the first sync cannot read it as a crash.
+      const syncCall = systemEventsQueue.publishRepeatable.mock.calls.findIndex(([event]) => event.command === 'sync_app_statuses');
+      expect(syncCall).toBeGreaterThanOrEqual(0);
+      expect(appLifecycleService.startApp.mock.invocationCallOrder[0]).toBeLessThan(
+        systemEventsQueue.publishRepeatable.mock.invocationCallOrder[syncCall],
+      );
+    });
+
+    it('leaves stopped apps, apps with containers and port-expose apps alone', async () => {
+      appsRepository.getApps.mockResolvedValue([
+        { id: 2, appName: 'plane', appStoreSlug: 'ci-marketplace', status: 'stopped', config: {} },
+        { id: 3, appName: 'flatnotes', appStoreSlug: 'ci-marketplace', status: 'running', config: {} },
+        { id: 4, appName: 'ggs', appStoreSlug: '_user', status: 'running', config: { kind: 'port-expose', port: 3000 } },
+      ] as never);
+      // Stopped with `docker stop`, as the desktop's Stop Hub leaves it: the status sync reads it.
+      dockerode.listContainers.mockImplementation((async (options?: Dockerode.ContainerListOptions) =>
+        options?.filters && JSON.stringify(options.filters).includes('ci-hub.managed=true')
+          ? [
+              {
+                Id: 'f1',
+                State: 'exited',
+                Status: 'Exited (0) 1 hour ago',
+                Labels: { 'ci-hub.managed': 'true', 'ci-hub.appurn': 'flatnotes:ci-marketplace' },
+              },
+            ]
+          : []) as never);
+
+      await appService.bootstrap();
+
+      expect(appLifecycleService.startApp).not.toHaveBeenCalled();
+    });
+
+    it('marks an app stopped when its start is refused, so no later boot or sync keeps at it', async () => {
+      appsRepository.getApps.mockResolvedValue([wordpress] as never);
+      appsRepository.updateAppByIdIfStatus.mockResolvedValue(true);
+      appLifecycleService.startApp.mockRejectedValue(new Error("Queue 'app-events-queue' is unavailable while RabbitMQ is reconnecting."));
+
+      await expect(appService.bootstrap()).resolves.toBeUndefined();
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(1, 'running', { status: 'stopped' });
+    });
+
+    it('leaves the apps to the version-change restart on an upgrade', async () => {
+      appsRepository.getApps.mockResolvedValue([wordpress] as never);
+      cacheService.get.mockReturnValue('0.9.0');
+
+      await appService.bootstrap();
+
+      expect(appLifecycleService.restartRunningApps).toHaveBeenCalledTimes(1);
+      expect(appLifecycleService.startApp).not.toHaveBeenCalled();
     });
   });
 });
