@@ -34,6 +34,11 @@
  * real one downloads the newest release and installs it with pkexec or sudo (#1739). And the
  * developer's own XDG folders and Hub folder are dropped from the environment the binary gets, so
  * it can only find the throwaway ones under HOME.
+ *
+ * Two checks keep it that way when the stubs aren't found. Before anything is built, the suite
+ * fails unless the PATH it hands the binary finds the stubs first. And the binary
+ * always gets DOCKER_HOST pointed at a closed port, so a real `docker` that slips through has no
+ * engine to talk to.
  */
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -61,14 +66,28 @@ const SCRIPT_ENTRY_OUTPUT = /sync-(?:rabbitmq|postgres)-password:/;
 /** The names `resolveCompanionHubBinary` (cli-update.ts) looks up on PATH for the desktop app. */
 const DESKTOP_APP_NAMES = ['companion-hub', 'Companion Hub'];
 
+/** Port 9 (discard) has no listener, so a docker that reads this fails to connect. */
+const CLOSED_DOCKER_HOST = 'tcp://127.0.0.1:9';
+
+/**
+ * Windows can't run this suite yet. The stubs are extensionless `#!/bin/sh` files, which Windows
+ * won't execute, and `cliPath` joins PATH with `:`. So `docker` resolves to the real docker.exe,
+ * and `pool update` finds the running Hub through `docker inspect` and pulls and redeploys it
+ * (#1988). It needs `.cmd` stubs and `path.delimiter` before it can run there.
+ */
+const onWindows = process.platform === 'win32';
+const WINDOWS_SKIP_NOTE =
+  'cli-binary-smoke: skipped on Windows. The stub docker and git are #!/bin/sh files Windows does not run, so the tests would use the real docker.exe and the Hub on it (#1988).';
+if (onWindows) console.warn(WINDOWS_SKIP_NOTE);
+
 const hasBun = spawnSync('bun', ['--version'], { encoding: 'utf-8' }).status === 0;
 
 /**
  * Bun is what compiles the shipped binary, so without it there is nothing to smoke-test. Locally
  * that is a skip; in CI it is a failure (beforeAll throws), because a gate that quietly passes when
- * its tool is missing is the gate that let v0.2.67 out.
+ * its tool is missing is the gate that let v0.2.67 out. Windows is a skip either way, see above.
  */
-const skipSuite = !hasBun && !process.env.CI;
+const skipSuite = onWindows || (!hasBun && !process.env.CI);
 
 let binary = '';
 let workspace = '';
@@ -102,6 +121,17 @@ function pathTo(name: string, path: string): string {
   return spawnSync('sh', ['-c', 'command -v "$1"', 'sh', name], { encoding: 'utf-8', env: { ...process.env, PATH: path } }).stdout?.trim() ?? '';
 }
 
+/**
+ * Throws unless `path` finds `name` in `stubDir`. Anything else is a real binary, and a real
+ * `docker` acts on whatever engine this machine runs.
+ */
+function assertStubOnPath(name: string, stubDir: string, path: string): void {
+  const found = pathTo(name, path);
+  if (found !== join(stubDir, name)) {
+    throw new Error(`\`${name}\` on the test PATH is ${found || 'not found'}, not the stub in ${stubDir}. Stopping before the binary can run it.`);
+  }
+}
+
 function desktopAppCalls(): string[] {
   return existsSync(desktopAppLog) ? readFileSync(desktopAppLog, 'utf-8').split('\n').filter(Boolean) : [];
 }
@@ -131,6 +161,7 @@ function runCli(
       PATH: options.path ?? cliPath(options.stubDir ?? stubBin),
       HOME: fakeHome,
       CI_HUB_DATA_DIR: fakeDataDir,
+      DOCKER_HOST: CLOSED_DOCKER_HOST,
       CI: '1',
       TERM: 'dumb',
       NO_COLOR: '1',
@@ -231,6 +262,13 @@ describe('compiled cihub binary', () => {
     symlinkSync(join(stubBin, 'git'), join(noDesktopBin, 'git'));
     const which = pathTo('which', process.env.PATH ?? '');
     if (which) symlinkSync(which, join(noDesktopBin, 'which'));
+
+    // The stub folders sit in front of the developer's own PATH, so make sure they win before
+    // anything is built or run. The no-desktop-app PATH is its one folder and nothing else, so
+    // there is no real binary it could find.
+    for (const dir of [stubBin, queueStubBin]) {
+      for (const name of ['docker', 'git', ...DESKTOP_APP_NAMES]) assertStubOnPath(name, dir, cliPath(dir));
+    }
 
     binary = buildStandaloneCli({ outdir: join(workspace, 'dist') }).outfile;
   }, 180_000);
