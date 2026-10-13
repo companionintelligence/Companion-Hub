@@ -612,6 +612,12 @@ keys `LLM_API_BASE`, `LLM_API_KEY`, `LLM_DEFAULT_CHAT_MODEL`, `LLM_DEFAULT_EMBED
   sweep restarts only stale apps. An automatic sweep also skips an app whose regeneration would
   remove its endpoint or its chat model, and restarts an app at most once per 10 minutes, checking
   again when that window ends. The Hub-upgrade sync still restarts every AI app unconditionally.
+  An operator's sweep also restarts OpenClaw when its env is current but its model picker holds a
+  downloaded model (`ollama/<tag>` in `/data/.openclaw/openclaw.json`), so OpenClaw's reconciler
+  puts it back on Hub Auto. The Hub reads that file out of the running container through Docker's
+  archive API, since where `/data` is a named volume (see [App volumes](#app-volumes)) the app-data
+  folder never gets it. When that read fails, the sweep leaves OpenClaw running and its log line says
+  the picker could not be checked.
 
 ## Model loads
 
