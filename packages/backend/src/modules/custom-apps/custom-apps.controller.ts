@@ -41,16 +41,17 @@ export class CustomAppController {
   }
 
   /**
-   * What the signed-in person may do to a custom app: every Hub verb for an organization owner or
-   * admin, the member fallback for an operator with no linked Portal identity, and only `view` for
-   * anyone else. The UI hides what this leaves out; the routes still decide. Answering it asks the
-   * Portal, so it is a request of its own rather than part of the app's.
+   * What the UI should offer the signed-in person on a custom app: every Hub verb for an organization
+   * owner or admin, the member fallback for an operator with no linked Portal identity, and only `view`
+   * for anyone else. It reads the role the Hub stored at sign-in rather than asking the Portal, so the
+   * page shows its controls at once (`customAppActionsHint`). The routes still ask the Portal fresh and
+   * decide.
    */
   @Get('access')
   @UseGuards(AuthGuard)
   @ApiResponse({ type: CustomAppAccessDto })
   async getCustomAppAccess(@Req() req: Request) {
-    return CustomAppAccessDto.parse({ actions: await this.whois.customAppActions(req) }, { reportOnly: true });
+    return CustomAppAccessDto.parse({ actions: await this.whois.customAppActionsHint(req) }, { reportOnly: true });
   }
 
   @Post()

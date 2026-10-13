@@ -740,8 +740,11 @@ Creating a custom app takes an organization owner or admin too: `POST /custom-ap
 Both read the role with a role-only WhoIs (no app named), refuse when it can't be read, and refuse an
 operator with no linked Portal identity, whose fallback has no `install`. An MCP key answers to its
 creator's role; a managed key, or one nobody is recorded as creating, is refused. `GET /custom-apps/access`
-tells the UI what the session may do to a custom app (`customAppActions`), so it shows only those
-controls. The port-expose routes still take only a sign-in.
+tells the UI what to offer on a custom app (`customAppActionsHint`), so it shows only those controls. It
+answers from the role stored at sign-in and refreshed by the hourly membership check (`user.orgRole`),
+without a Portal call, and asks the Portal only when no role is stored. Every action still asks fresh,
+so a role changed within the hour, or a Portal outage, can leave the UI offering what the Hub refuses.
+The port-expose routes still take only a sign-in.
 
 `/user-config/:urn` (GET, PUT, enable, disable) asserts the same verbs as its MCP tools for every app:
 reading takes `view` (`configure` on a `_user` app), and every change takes `configure`.

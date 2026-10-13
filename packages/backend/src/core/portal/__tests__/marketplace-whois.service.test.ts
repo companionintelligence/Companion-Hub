@@ -310,6 +310,50 @@ describe('MarketplaceWhoIsService', () => {
         await expect(service.assertSessionMayCreateCustomApp(sessionReq())).rejects.toMatchObject({ message: 'CUSTOM_APP_CREATE_ROLE_REQUIRED' });
       });
 
+      /*
+       * The UI's question. Asking the Portal took seconds, and the page waited on it, so the answer comes
+       * from the role stored at sign-in. Every action still asks the Portal fresh.
+       */
+      describe('what the UI offers', () => {
+        const withStoredRole = (orgRole: 'owner' | 'admin' | 'member' | null) =>
+          ({ hubSessionId: 'sess-1', user: { id: USER_ID, orgRole }, hubPrincipal: 'session' }) as unknown as Request;
+
+        it.each(['owner', 'admin'] as const)('offers a stored %s every verb without asking the Portal', async (role) => {
+          await expect(service.customAppActionsHint(withStoredRole(role))).resolves.toEqual([...HUB_ACTIONS]);
+          expect(portal.whoisApps).not.toHaveBeenCalled();
+        });
+
+        it('offers a stored member the view only, without asking the Portal', async () => {
+          await expect(service.customAppActionsHint(withStoredRole('member'))).resolves.toEqual(['view']);
+          expect(portal.whoisApps).not.toHaveBeenCalled();
+        });
+
+        it('asks the Portal when no role is stored', async () => {
+          portal.whoisApps.mockResolvedValue(roleAnswer('admin'));
+
+          await expect(service.customAppActionsHint(withStoredRole(null))).resolves.toEqual([...HUB_ACTIONS]);
+          expect(portal.whoisApps).toHaveBeenCalledWith({ subject: SUBJECT, appIds: [], surface: 'hub', organizationId: 'org-hub' });
+        });
+
+        it('offers an operator with no linked Portal identity the member fallback, whatever role the row says', async () => {
+          federatedIdentities.findByUserId.mockResolvedValue([] as never);
+
+          await expect(service.customAppActionsHint(withStoredRole('owner'))).resolves.toEqual([...DEFAULT_MEMBER_ACTIONS]);
+          expect(portal.whoisApps).not.toHaveBeenCalled();
+        });
+
+        it('offers the view only when the identity cannot be read', async () => {
+          federatedIdentities.findByUserId.mockRejectedValue(new Error('db down'));
+
+          await expect(service.customAppActionsHint(withStoredRole('owner'))).resolves.toEqual(['view']);
+        });
+
+        it('offers a named exempt principal everything', async () => {
+          await expect(service.customAppActionsHint(cliReq())).resolves.toEqual([...HUB_ACTIONS]);
+          expect(portal.whoisApps).not.toHaveBeenCalled();
+        });
+      });
+
       it('lets a named exempt principal do everything without asking the Portal, and an unnamed one nothing', async () => {
         await expect(service.customAppActions(cliReq())).resolves.toEqual([...HUB_ACTIONS]);
         await expect(service.assertSessionMayCreateCustomApp(portalPushReq())).resolves.toBeUndefined();

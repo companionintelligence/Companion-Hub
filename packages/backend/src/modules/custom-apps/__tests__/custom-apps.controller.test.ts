@@ -82,10 +82,11 @@ describe('CustomAppController: creating a custom app, and what the session may d
     expect(customApps.createCustomApp).not.toHaveBeenCalled();
   });
 
-  it('answers the access question with what the grant service says this session may do', async () => {
-    whois.customAppActions.mockResolvedValue(['view']);
+  it('answers the access question from the stored role, which the grant service reads without the Portal', async () => {
+    whois.customAppActionsHint.mockResolvedValue(['view']);
 
     await expect(controller.getCustomAppAccess(req)).resolves.toEqual({ actions: ['view'] });
-    expect(whois.customAppActions).toHaveBeenCalledWith(req);
+    expect(whois.customAppActionsHint).toHaveBeenCalledWith(req);
+    expect(whois.customAppActions).not.toHaveBeenCalled();
   });
 });

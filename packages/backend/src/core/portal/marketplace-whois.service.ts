@@ -505,6 +505,46 @@ export class MarketplaceWhoIsService {
   }
 
   /**
+   * What the UI should offer the person behind a request on a custom app, answered without a Portal
+   * call. A linked operator's role is the one the Hub stored at sign-in and refreshes with the hourly
+   * membership check (`user.orgRole`); asking the Portal fresh took one to five seconds, and the custom
+   * app page waited on it. When no role is stored, the Portal is asked now ({@link customAppActions}).
+   *
+   * Only the UI reads this. Every action still asks the Portal fresh (`localAppGrants`), so a role
+   * changed in the last hour, or a Portal outage, can leave a button here that the Hub then refuses.
+   */
+  async customAppActionsHint(req: HubPrincipalFields): Promise<HubAction[]> {
+    const userId = hubSessionOperatorUserId(req);
+
+    if (userId == null) {
+      return this.customAppActions(req);
+    }
+
+    let subject: string | null;
+    try {
+      subject = await this.portalSubject(userId);
+    } catch (error) {
+      this.logger.warn(`Could not read the organization role (custom_app): ${describeNetworkError(error)}`);
+      return ['view'];
+    }
+
+    if (!subject) {
+      this.logUnlinked(userId);
+      return [...DEFAULT_MEMBER_ACTIONS];
+    }
+
+    switch (req.user?.orgRole) {
+      case 'owner':
+      case 'admin':
+        return [...HUB_ACTIONS];
+      case 'member':
+        return ['view'];
+      default:
+        return this.customAppActionsFor(userId);
+    }
+  }
+
+  /**
    * Refuse a request to create a custom app unless {@link customAppActions} grants `install`: only an
    * organization owner or admin may, and a role that can't be read is a refusal, as it is for a change.
    */

@@ -32,9 +32,9 @@ const fetchCustomAppAccess = async (): Promise<readonly CustomAppAction[]> => {
  * Creating a custom app takes `install`. The custom app page and the App Store offer only these, so a
  * member meets no button the Hub would refuse; the Hub still decides every call.
  *
- * Answering asks the Portal for the role, so it is its own request, kept for a minute. Until it
- * arrives, and when it fails, nothing beyond the view is offered: the Hub refuses changes too while
- * it cannot read the role.
+ * The Hub answers from the role it stored at sign-in, without a Portal call, so the page's controls
+ * show at once; each action still asks the Portal. The answer is kept for a minute. Until it arrives,
+ * and when it fails, nothing beyond the view is offered.
  */
 export function useCustomAppAccess() {
   const query = useQuery({
