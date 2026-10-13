@@ -67,6 +67,18 @@ describe('buildRoutes', () => {
       assert.ok(body.organizations?.[0]?.apps?.[0]?.can?.includes('view'));
     });
 
+    // Creating a custom app asks the role alone, naming no app. The e2e operator has to come back an owner.
+    it('answers a role-only WhoIs with the owner role in the seeded org', () => {
+      const handler = routes['POST /api/whois'];
+      assert.ok(handler);
+      const result = handler(dummyUrl, { subject: 'test-portal-user', organizationId: 'test-org-id', appIds: [] });
+      assert.strictEqual(result.status, 200);
+      const body = result.body as { organizations?: Array<{ organizationId?: string; user?: { role?: string }; apps?: unknown[] }> };
+      assert.strictEqual(body.organizations?.[0]?.organizationId, 'test-org-id');
+      assert.strictEqual(body.organizations?.[0]?.user?.role, 'owner');
+      assert.deepStrictEqual(body.organizations?.[0]?.apps, []);
+    });
+
     it('reports device as registered', () => {
       const handler = routes['GET /api/devices/registration-status'];
       assert.ok(handler);
