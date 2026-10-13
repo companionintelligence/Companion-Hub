@@ -324,20 +324,43 @@ describe('portal-sso helpers', () => {
   });
 
   it('derives the desktop proof the way the desktop shell does', () => {
-    // The same key and proof are asserted in desktop_sign_in_wait.rs, so the two halves cannot drift.
-    expect(desktopSignInWaitProof('3f'.repeat(32))).toBe('508600150d97db091ee116f7e70b8fcf75a73221c045ff87f6b0f967f8e1acb6');
+    // The same key, time and proof are asserted in desktop_sign_in_wait.rs, so the two halves cannot drift.
+    expect(desktopSignInWaitProof('3f'.repeat(32), 1_700_000_000)).toBe('473cb939a946a7a8cf6db763a0f053a86c5251e0b4a53cd1e10eb18829f8bb5c');
   });
 
-  it.each([
-    ['the proof for this key', desktopSignInWaitProof('3f'.repeat(32)), '3f'.repeat(32), true],
-    ['the proof with stray whitespace', ` ${desktopSignInWaitProof('3f'.repeat(32))}\n`, '3f'.repeat(32), false],
-    ['a proof for another key', desktopSignInWaitProof('a'.repeat(64)), '3f'.repeat(32), false],
-    ['the key itself', '3f'.repeat(32), '3f'.repeat(32), false],
-    ['a repeated header', [desktopSignInWaitProof('3f'.repeat(32))], '3f'.repeat(32), false],
-    ['no header', undefined, '3f'.repeat(32), false],
-    ['any proof while the Hub has no key', desktopSignInWaitProof(''), null, false],
-  ])('isDesktopSignInWaitProof: %s -> %s', (_case, presented, hubLocalKey, expected) => {
-    expect(isDesktopSignInWaitProof(presented, hubLocalKey)).toBe(expected);
+  describe('isDesktopSignInWaitProof', () => {
+    const KEY = '3f'.repeat(32);
+    const NOW_MS = 1_700_000_000_500;
+    const NOW = 1_700_000_000;
+    const at = (seconds: number) => ({ proof: desktopSignInWaitProof(KEY, seconds), time: String(seconds) });
+
+    it.each([
+      ['a fresh proof', true, at(NOW)],
+      ['a proof made 120 s ago', true, at(NOW - 120)],
+      ['a proof stamped 120 s ahead', true, at(NOW + 120)],
+      ['a proof made 121 s ago', false, at(NOW - 121)],
+      ['a proof stamped 121 s ahead', false, at(NOW + 121)],
+      ['a copied proof an hour later', false, at(NOW - 3_600)],
+      ['a proof sent with another time', false, { proof: at(NOW - 600).proof, time: String(NOW) }],
+      ['a proof for another key', false, { proof: desktopSignInWaitProof('a'.repeat(64), NOW), time: String(NOW) }],
+      ['the key itself', false, { proof: KEY, time: String(NOW) }],
+      ['a proof of the wrong length', false, { proof: at(NOW).proof.slice(0, 10), time: String(NOW) }],
+      ['a proof with stray whitespace', false, { proof: ` ${at(NOW).proof}\n`, time: String(NOW) }],
+      ['a repeated proof header', false, { proof: [at(NOW).proof], time: String(NOW) }],
+      ['a time that is not whole seconds', false, { proof: at(NOW).proof, time: `${NOW}.0` }],
+      ['no time', false, { proof: at(NOW).proof, time: undefined }],
+      ['no proof', false, { proof: undefined, time: String(NOW) }],
+    ])('%s -> %s', (_case, expected, presented: { proof: unknown; time: unknown }) => {
+      expect(isDesktopSignInWaitProof(presented.proof, presented.time, KEY, NOW_MS)).toBe(expected);
+    });
+
+    it('refuses every proof while the Hub has no key', () => {
+      expect(isDesktopSignInWaitProof(desktopSignInWaitProof('', NOW), String(NOW), null, NOW_MS)).toBe(false);
+    });
+
+    it('refuses a wrong-length proof without throwing', () => {
+      expect(() => isDesktopSignInWaitProof('ab', String(NOW), KEY, NOW_MS)).not.toThrow();
+    });
   });
 
   it('exchanges authorization codes for user email via Portal OAuth endpoints', async () => {

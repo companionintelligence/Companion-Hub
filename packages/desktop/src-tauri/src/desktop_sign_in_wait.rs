@@ -3,19 +3,19 @@
 //! While the Hub holds that flag, a Companion Account sign-in started in a browser on this
 //! machine's loopback address hands off to the desktop app. Only the desktop app may set it, so
 //! the request carries a proof that only something able to read the Hub's `state/settings.json`
-//! can make: an HMAC of a fixed label under the host-local key. The key itself is never sent,
-//! since this runs every minute against whatever answers on the API port, and the proof is good
-//! for nothing but this flag. The backend checks the same HMAC (`desktopSignInWaitProof` in
+//! can make: an HMAC of `desktop-waiting:<unix seconds>` under the host-local key, sent with those
+//! seconds. The key itself is never sent, since this runs every minute against whatever answers
+//! on the API port. The Hub accepts the proof only within 120 s of its own clock, so a copy stops
+//! working within minutes. The backend checks the same HMAC (`desktopSignInWaitProof` in
 //! `packages/backend/src/modules/auth/portal-sso.ts`).
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 
 const PROOF_HEADER: &str = "x-ci-hub-desktop-proof";
-/// What the proof signs. The backend signs the same text.
-const PROOF_LABEL: &[u8] = b"ci-hub desktop sign-in wait";
+const PROOF_TIME_HEADER: &str = "x-ci-hub-desktop-proof-time";
 const WAITING_PATH: &str = "/api/auth/portal/desktop-waiting";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -40,8 +40,10 @@ fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
     outer.finalize().into()
 }
 
-fn sign_in_wait_proof(hub_local_key: &str) -> String {
-    crate::digest_hex::lower_hex(&hmac_sha256(hub_local_key.as_bytes(), PROOF_LABEL))
+/// The backend signs the same text.
+fn sign_in_wait_proof(hub_local_key: &str, unix_seconds: u64) -> String {
+    let message = format!("desktop-waiting:{unix_seconds}");
+    crate::digest_hex::lower_hex(&hmac_sha256(hub_local_key.as_bytes(), message.as_bytes()))
 }
 
 /// The settings file this Hub reads. Compose mounts `${ROOT_FOLDER_HOST}/state` into the Hub, so
@@ -67,6 +69,11 @@ pub(crate) async fn announce(api_base_url: &str, settings_path: &Path) -> Result
         return Ok(false);
     };
 
+    let unix_seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_secs();
+
     // Straight to loopback, never through a proxy from the environment.
     let client = reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
@@ -75,7 +82,8 @@ pub(crate) async fn announce(api_base_url: &str, settings_path: &Path) -> Result
         .map_err(|error| error.to_string())?;
     let response = client
         .post(format!("{api_base_url}{WAITING_PATH}"))
-        .header(PROOF_HEADER, sign_in_wait_proof(&key))
+        .header(PROOF_HEADER, sign_in_wait_proof(&key, unix_seconds))
+        .header(PROOF_TIME_HEADER, unix_seconds.to_string())
         .send()
         .await
         .map_err(|error| error.to_string())?;
@@ -154,10 +162,18 @@ mod tests {
 
     #[test]
     fn proof_matches_the_backend() {
-        // The same key and proof are asserted in the backend's portal-sso.test.ts.
+        // The same key, time and proof are asserted in the backend's portal-sso.test.ts.
         assert_eq!(
-            sign_in_wait_proof(KEY),
-            "508600150d97db091ee116f7e70b8fcf75a73221c045ff87f6b0f967f8e1acb6"
+            sign_in_wait_proof(KEY, 1_700_000_000),
+            "473cb939a946a7a8cf6db763a0f053a86c5251e0b4a53cd1e10eb18829f8bb5c"
+        );
+    }
+
+    #[test]
+    fn proof_changes_with_the_time() {
+        assert_ne!(
+            sign_in_wait_proof(KEY, 1_700_000_000),
+            sign_in_wait_proof(KEY, 1_700_000_001)
         );
     }
 
@@ -211,9 +227,13 @@ mod tests {
     }
 
     #[test]
-    fn sends_the_proof_and_never_the_key() {
+    fn sends_a_fresh_proof_and_never_the_key() {
         let data_dir = settings_with(&format!(r#"{{"hubLocalKey":"{KEY}"}}"#));
         let (base_url, received) = one_shot_hub("HTTP/1.1 204 No Content");
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_secs();
 
         let accepted = block_on(announce(
             &base_url,
@@ -228,8 +248,21 @@ mod tests {
             request.starts_with("POST /api/auth/portal/desktop-waiting HTTP/1.1\r\n"),
             "{request}"
         );
-        assert!(
-            request.contains(&format!("{PROOF_HEADER}: {}\r\n", sign_in_wait_proof(KEY))),
+        let header = |name: &str| {
+            let prefix = format!("{name}: ");
+            request
+                .lines()
+                .find_map(|line| line.strip_prefix(prefix.as_str()))
+                .map(str::to_string)
+        };
+        let signed_at: u64 = header(PROOF_TIME_HEADER)
+            .expect("time header")
+            .parse()
+            .expect("unix seconds");
+        assert!(signed_at.abs_diff(now) <= 5, "{signed_at} vs {now}");
+        assert_eq!(
+            header(PROOF_HEADER),
+            Some(sign_in_wait_proof(KEY, signed_at)),
             "{request}"
         );
         assert!(!request.contains(KEY), "{request}");

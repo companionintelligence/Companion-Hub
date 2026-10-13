@@ -88,6 +88,7 @@ import {
   exchangePortalAuthorizationCode,
   fetchPortalSessionEmail,
   DESKTOP_SIGN_IN_WAIT_PROOF_HEADER,
+  DESKTOP_SIGN_IN_WAIT_PROOF_TIME_HEADER,
   isDesktopSignInWaitProof,
   isDirectLoopbackRequest,
   probePortalReachable,
@@ -854,14 +855,16 @@ export class AuthController {
   /**
    * The desktop app on this machine is signed out and waiting for a sign-in, so a browser sign-in on
    * the loopback address hands off to it (shouldHandoffPortalLoginToDesktop). The desktop shell sends
-   * this from Rust every 60 s while its window is signed out, with `desktopSignInWaitProof`. Left out
+   * this from Rust every 60 s while its window is signed out, with a fresh `desktopSignInWaitProof`. Left out
    * of the API client because the frontend never calls it.
    */
   @Post('/portal/desktop-waiting')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiExcludeEndpoint()
   desktopSignInWait(@Req() req: Request) {
-    if (!isDesktopSignInWaitProof(req.headers[DESKTOP_SIGN_IN_WAIT_PROOF_HEADER], this.config.get('hubLocalKey'))) {
+    const proof = req.headers[DESKTOP_SIGN_IN_WAIT_PROOF_HEADER];
+    const signedAt = req.headers[DESKTOP_SIGN_IN_WAIT_PROOF_TIME_HEADER];
+    if (!isDesktopSignInWaitProof(proof, signedAt, this.config.get('hubLocalKey'))) {
       throw new UnauthorizedException();
     }
     this.cache.set(PORTAL_DESKTOP_PRESENCE_CACHE_KEY, '1', PORTAL_DESKTOP_PRESENCE_TTL_SECONDS);

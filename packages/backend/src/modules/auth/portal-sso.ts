@@ -155,30 +155,45 @@ export function resolvePortalDesktopHandoffState(input: { claimed: boolean; pend
 export const PORTAL_DESKTOP_PRESENCE_CACHE_KEY = 'portal_sso_desktop_present';
 export const PORTAL_DESKTOP_PRESENCE_TTL_SECONDS = 10 * 60;
 
-/** The header the desktop shell sends `desktopSignInWaitProof` in. */
+/** The headers the desktop shell sends `desktopSignInWaitProof` and the time it signed in. */
 export const DESKTOP_SIGN_IN_WAIT_PROOF_HEADER = 'x-ci-hub-desktop-proof';
+export const DESKTOP_SIGN_IN_WAIT_PROOF_TIME_HEADER = 'x-ci-hub-desktop-proof-time';
 
-/** What the proof signs. `desktop_sign_in_wait.rs` in the desktop app signs the same text. */
-const DESKTOP_SIGN_IN_WAIT_PROOF_LABEL = 'ci-hub desktop sign-in wait';
+/** How far the signed time may be from the Hub's clock, either way. */
+export const DESKTOP_SIGN_IN_WAIT_PROOF_WINDOW_SECONDS = 120;
 
 /**
- * What the desktop app shows to set the presence flag, which nothing else may set: an HMAC of a
- * fixed label under the host-local key. The desktop shell reads the key from `state/settings.json`,
- * which app containers can't read, and sends this from Rust, so no page script holds it. The key
- * itself never goes on the wire, since the shell repeats the request every minute to whatever
- * answers on the API port, and the proof is good for nothing but this flag.
+ * What the desktop app shows to set the presence flag, which nothing else may set: an HMAC of
+ * `desktop-waiting:<unix seconds>` under the host-local key. `desktop_sign_in_wait.rs` signs the
+ * same text. The desktop shell reads the key from `state/settings.json`, which app containers can't
+ * read, and sends this from Rust, so no page script holds it. The key itself never goes on the wire,
+ * since the shell repeats the request every minute to whatever answers on the API port, and a
+ * proof stops working once its time is out of the window.
  */
-export function desktopSignInWaitProof(hubLocalKey: string): string {
-  return crypto.createHmac('sha256', hubLocalKey).update(DESKTOP_SIGN_IN_WAIT_PROOF_LABEL).digest('hex');
+export function desktopSignInWaitProof(hubLocalKey: string, unixSeconds: number): string {
+  return crypto.createHmac('sha256', hubLocalKey).update(`desktop-waiting:${unixSeconds}`).digest('hex');
 }
 
-/** Constant-time check of the header value against the proof for this Hub's host-local key. */
-export function isDesktopSignInWaitProof(presented: unknown, hubLocalKey: string | null | undefined): boolean {
-  if (!hubLocalKey || typeof presented !== 'string') {
+/**
+ * Whether the headers carry a proof made with this Hub's host-local key, signed within
+ * DESKTOP_SIGN_IN_WAIT_PROOF_WINDOW_SECONDS of `nowMs`. Compared in constant time, after a length
+ * check so a value of the wrong length is refused rather than thrown on.
+ */
+export function isDesktopSignInWaitProof(
+  presentedProof: unknown,
+  presentedTime: unknown,
+  hubLocalKey: string | null | undefined,
+  nowMs = Date.now(),
+): boolean {
+  if (!hubLocalKey || typeof presentedProof !== 'string' || typeof presentedTime !== 'string' || !/^\d{1,12}$/.test(presentedTime)) {
     return false;
   }
-  const expected = Buffer.from(desktopSignInWaitProof(hubLocalKey));
-  const actual = Buffer.from(presented);
+  const signedAt = Number(presentedTime);
+  if (Math.abs(Math.floor(nowMs / 1000) - signedAt) > DESKTOP_SIGN_IN_WAIT_PROOF_WINDOW_SECONDS) {
+    return false;
+  }
+  const expected = Buffer.from(desktopSignInWaitProof(hubLocalKey, signedAt));
+  const actual = Buffer.from(presentedProof);
   return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
 }
 

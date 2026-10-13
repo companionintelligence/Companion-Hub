@@ -2420,29 +2420,38 @@ describe('AuthController', () => {
         get: vi.fn((header: string) => (header === 'host' ? '127.0.0.1:5002' : undefined)),
       }) as unknown as Request;
 
+    /** The two headers the shell sends, for a proof made `offsetSeconds` from now with `key`. */
+    const proofHeaders = (key: string, offsetSeconds = 0) => {
+      const seconds = Math.floor(Date.now() / 1000) + offsetSeconds;
+      return { 'x-ci-hub-desktop-proof': desktopSignInWaitProof(key, seconds), 'x-ci-hub-desktop-proof-time': String(seconds) };
+    };
+
     beforeEach(() => {
       config.get.mockImplementation(((key: string) => (key === 'hubLocalKey' ? HUB_LOCAL_KEY : undefined)) as never);
     });
 
-    it('records that the desktop app is waiting for a sign-in when it proves it holds the host-local key', () => {
-      authController.desktopSignInWait(shellRequest({ 'x-ci-hub-desktop-proof': desktopSignInWaitProof(HUB_LOCAL_KEY) }));
+    it('records that the desktop app is waiting for a sign-in when it sends a fresh proof made with the host-local key', () => {
+      authController.desktopSignInWait(shellRequest(proofHeaders(HUB_LOCAL_KEY)));
 
       expect(cache.set).toHaveBeenCalledWith('portal_sso_desktop_present', '1', 600);
     });
 
     it.each([
-      ['no proof', {}],
-      ['a proof made with another key', { 'x-ci-hub-desktop-proof': desktopSignInWaitProof('a'.repeat(64)) }],
-      ['the host-local key itself in place of the proof', { 'x-ci-hub-desktop-proof': HUB_LOCAL_KEY }],
-      ['the host-local key as a bearer token', { authorization: `Bearer ${HUB_LOCAL_KEY}` }],
-    ])('refuses a request with %s', (_case, headers) => {
-      expect(() => authController.desktopSignInWait(shellRequest(headers))).toThrow(UnauthorizedException);
+      ['no proof', () => ({})],
+      ['a proof made 10 minutes ago', () => proofHeaders(HUB_LOCAL_KEY, -600)],
+      ['a proof stamped 10 minutes ahead', () => proofHeaders(HUB_LOCAL_KEY, 600)],
+      ['a proof made with another key', () => proofHeaders('a'.repeat(64))],
+      ['a proof of the wrong length', () => ({ ...proofHeaders(HUB_LOCAL_KEY), 'x-ci-hub-desktop-proof': 'abc' })],
+      ['the host-local key itself in place of the proof', () => ({ ...proofHeaders(HUB_LOCAL_KEY), 'x-ci-hub-desktop-proof': HUB_LOCAL_KEY })],
+      ['the host-local key as a bearer token', () => ({ authorization: `Bearer ${HUB_LOCAL_KEY}` })],
+    ])('refuses a request with %s', (_case, headers: () => Record<string, string>) => {
+      expect(() => authController.desktopSignInWait(shellRequest(headers()))).toThrow(UnauthorizedException);
       expect(cache.set).not.toHaveBeenCalled();
     });
 
     it('refuses every proof while the Hub has no host-local key', () => {
       config.get.mockReturnValue(null as never);
-      const request = shellRequest({ 'x-ci-hub-desktop-proof': desktopSignInWaitProof('') });
+      const request = shellRequest(proofHeaders(''));
 
       expect(() => authController.desktopSignInWait(request)).toThrow(UnauthorizedException);
       expect(cache.set).not.toHaveBeenCalled();
@@ -2900,10 +2909,11 @@ describe('AuthController — POST /api/auth/portal/desktop-waiting, real HTTP di
     cache.set.mockClear();
   });
 
-  it('answers 204 to the path and header the desktop shell sends', async () => {
+  it('answers 204 to the path and headers the desktop shell sends', async () => {
+    const now = Math.floor(Date.now() / 1000);
     const res = await fetch(`${baseUrl}/api/auth/portal/desktop-waiting`, {
       method: 'POST',
-      headers: { 'X-CI-Hub-Desktop-Proof': desktopSignInWaitProof(HUB_LOCAL_KEY) },
+      headers: { 'X-CI-Hub-Desktop-Proof': desktopSignInWaitProof(HUB_LOCAL_KEY, now), 'X-CI-Hub-Desktop-Proof-Time': String(now) },
     });
 
     expect(res.status).toBe(204);
