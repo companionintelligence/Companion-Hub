@@ -354,6 +354,7 @@ describe('the inference route table', () => {
       'InferenceController.unpinModel': 'POST models/unpin → AuthGuard',
       'InferenceController.getCloudProviders': 'GET cloud-providers → AuthGuard',
       'InferenceController.setCloudProvider': 'POST cloud-providers → AuthGuard',
+      'InferenceController.removeCloudProvider': 'DELETE cloud-providers/:provider → AuthGuard',
       'InferenceController.getOnboardingProfile': 'GET onboarding-profile → AuthGuard',
       'InferenceController.getOllamaStatus': 'GET ollama/status → AuthGuard',
       'InferenceController.getLemonadeStatus': 'GET lemonade/status → AuthGuard',

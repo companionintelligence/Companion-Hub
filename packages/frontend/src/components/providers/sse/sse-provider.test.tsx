@@ -1,7 +1,7 @@
 import { render, screen, userEvent } from '@/tests/test-utils';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, type ReactNode } from 'react';
-import { MemoryRouter } from 'react-router';
+import { MemoryRouter, useLocation } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { isStackUpdatePending, markStackUpdatePending, subscribeStackUpdate } from '@/lib/desktop-stack-session';
 import { SSEProvider } from './sse-provider';
@@ -304,5 +304,48 @@ describe('SSEProvider', () => {
       expect(invalidate).not.toHaveBeenCalled();
       expect(mockHandleAppSseEvent).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('SSEProvider: a cancelled install of a custom app', () => {
+  const Where = () => <span data-testid="where">{useLocation().pathname}</span>;
+
+  const renderOnAppPage = () => {
+    let onEvent: ((data: unknown) => void) | undefined;
+    mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
+      onEvent = config.onEvent;
+    });
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={['/apps/my-tool']}>
+          <SSEProvider>
+            <Where />
+          </SSEProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    return (data: unknown) => act(() => onEvent?.(data));
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('leaves the app page when the app is gone', () => {
+    const send = renderOnAppPage();
+
+    send({ event: 'install_cancelled', appUrn: 'my-tool:_user', appStatus: 'missing' });
+
+    expect(screen.getByTestId('where')).toHaveTextContent('/store');
+  });
+
+  // A retry of a failed install that is cancelled before it is queued stays install_failed.
+  it('stays on the app page when the app is still there, failed', () => {
+    const send = renderOnAppPage();
+
+    send({ event: 'install_cancelled', appUrn: 'my-tool:_user', appStatus: 'install_failed' });
+
+    expect(screen.getByTestId('where')).toHaveTextContent('/apps/my-tool');
+    expect(mockToastSuccess).toHaveBeenCalledTimes(1);
   });
 });
