@@ -253,6 +253,20 @@ describe('settings.json round trip', () => {
     expect(written).toEqual(rest);
   });
 
+  it('MUST keep a stored Listen IP, and every other key, through a Settings save that leaves it out', async () => {
+    // The Settings page no longer shows or sends Listen IP; a value saved by an older build stays put.
+    const stored = { ...ONE_OF_EVERY_KEY, listenIp: '192.168.1.50' };
+    await fs.promises.writeFile(SETTINGS_PATH, JSON.stringify(stored, null, 2));
+    const writers = makeWriters();
+
+    await writers.configuration.setUserSettings(
+      UserSettingsBody.schema.parse({ internalIp: '10.0.0.2', logLevel: 'info', timeZone: 'Europe/Berlin' }),
+    );
+
+    const written = JSON.parse(await fs.promises.readFile(SETTINGS_PATH, 'utf8')) as Record<string, unknown>;
+    expect(written).toEqual({ ...stored, logLevel: 'info' });
+  });
+
   it('MUST NOT erase the Portal credential, or log its text, when the auto-update switch meets a file it cannot parse', async () => {
     // The switch's old private writer answered an unparseable file by writing back only
     // `{"autoUpdates": ...}`, which erased `ciHubApiKey` and left the Hub looking unregistered. An
