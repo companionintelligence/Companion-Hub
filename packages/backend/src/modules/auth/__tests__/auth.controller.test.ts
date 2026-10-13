@@ -2409,6 +2409,7 @@ describe('AuthController', () => {
 
   describe('POST /auth/portal/desktop-waiting', () => {
     const HUB_LOCAL_KEY = '3f'.repeat(32);
+    const UNISSUED = 'ab'.repeat(32);
 
     /** The desktop shell's request from Rust: loopback through the published port, carrying `headers`. */
     const shellRequest = (headers: Record<string, string> = {}) =>
@@ -2420,29 +2421,51 @@ describe('AuthController', () => {
         get: vi.fn((header: string) => (header === 'host' ? '127.0.0.1:5002' : undefined)),
       }) as unknown as Request;
 
-    /** The two headers the shell sends, for a proof made `offsetSeconds` from now with `key`. */
-    const proofHeaders = (key: string, offsetSeconds = 0) => {
-      const seconds = Math.floor(Date.now() / 1000) + offsetSeconds;
-      return { 'x-ci-hub-desktop-proof': desktopSignInWaitProof(key, seconds), 'x-ci-hub-desktop-proof-time': String(seconds) };
+    /** A fresh challenge from the Hub, then the headers that answer it with a proof made with `key`. */
+    const answeredChallenge = (key = HUB_LOCAL_KEY) => {
+      const { nonce } = authController.desktopSignInWaitChallenge(shellRequest());
+      return { 'x-ci-hub-desktop-nonce': nonce, 'x-ci-hub-desktop-proof': desktopSignInWaitProof(key, nonce) };
     };
 
     beforeEach(() => {
       config.get.mockImplementation(((key: string) => (key === 'hubLocalKey' ? HUB_LOCAL_KEY : undefined)) as never);
     });
 
-    it('records that the desktop app is waiting for a sign-in when it sends a fresh proof made with the host-local key', () => {
-      authController.desktopSignInWait(shellRequest(proofHeaders(HUB_LOCAL_KEY)));
+    it('records that the desktop app is waiting for a sign-in when it answers a fresh challenge with the host-local key', () => {
+      authController.desktopSignInWait(shellRequest(answeredChallenge()));
 
       expect(cache.set).toHaveBeenCalledWith('portal_sso_desktop_present', '1', 600);
     });
 
+    it('refuses the same nonce the second time', () => {
+      const headers = answeredChallenge();
+      authController.desktopSignInWait(shellRequest(headers));
+      cache.set.mockClear();
+
+      expect(() => authController.desktopSignInWait(shellRequest(headers))).toThrow(UnauthorizedException);
+      expect(cache.set).not.toHaveBeenCalled();
+    });
+
+    it('burns the nonce on a wrong proof, so the right one cannot follow it', () => {
+      const headers = answeredChallenge();
+
+      expect(() => authController.desktopSignInWait(shellRequest({ ...headers, 'x-ci-hub-desktop-proof': 'f'.repeat(64) }))).toThrow(
+        UnauthorizedException,
+      );
+      expect(() => authController.desktopSignInWait(shellRequest(headers))).toThrow(UnauthorizedException);
+      expect(cache.set).not.toHaveBeenCalled();
+    });
+
     it.each([
-      ['no proof', () => ({})],
-      ['a proof made 10 minutes ago', () => proofHeaders(HUB_LOCAL_KEY, -600)],
-      ['a proof stamped 10 minutes ahead', () => proofHeaders(HUB_LOCAL_KEY, 600)],
-      ['a proof made with another key', () => proofHeaders('a'.repeat(64))],
-      ['a proof of the wrong length', () => ({ ...proofHeaders(HUB_LOCAL_KEY), 'x-ci-hub-desktop-proof': 'abc' })],
-      ['the host-local key itself in place of the proof', () => ({ ...proofHeaders(HUB_LOCAL_KEY), 'x-ci-hub-desktop-proof': HUB_LOCAL_KEY })],
+      ['no nonce or proof', () => ({})],
+      [
+        'a nonce the Hub never issued',
+        () => ({ 'x-ci-hub-desktop-nonce': UNISSUED, 'x-ci-hub-desktop-proof': desktopSignInWaitProof(HUB_LOCAL_KEY, UNISSUED) }),
+      ],
+      ['no proof', () => ({ 'x-ci-hub-desktop-nonce': authController.desktopSignInWaitChallenge(shellRequest()).nonce })],
+      ['a proof made with another key', () => answeredChallenge('a'.repeat(64))],
+      ['a proof of the wrong length', () => ({ ...answeredChallenge(), 'x-ci-hub-desktop-proof': 'abc' })],
+      ['the host-local key itself in place of the proof', () => ({ ...answeredChallenge(), 'x-ci-hub-desktop-proof': HUB_LOCAL_KEY })],
       ['the host-local key as a bearer token', () => ({ authorization: `Bearer ${HUB_LOCAL_KEY}` })],
     ])('refuses a request with %s', (_case, headers: () => Record<string, string>) => {
       expect(() => authController.desktopSignInWait(shellRequest(headers()))).toThrow(UnauthorizedException);
@@ -2451,10 +2474,18 @@ describe('AuthController', () => {
 
     it('refuses every proof while the Hub has no host-local key', () => {
       config.get.mockReturnValue(null as never);
-      const request = shellRequest(proofHeaders(''));
+      const request = shellRequest(answeredChallenge(''));
 
       expect(() => authController.desktopSignInWait(request)).toThrow(UnauthorizedException);
       expect(cache.set).not.toHaveBeenCalled();
+    });
+
+    it('rate-limits the challenge like the other unauthenticated auth routes', () => {
+      for (let i = 0; i < 10; i += 1) {
+        authController.desktopSignInWaitChallenge(shellRequest());
+      }
+
+      expect(() => authController.desktopSignInWaitChallenge(shellRequest())).toThrow('AUTH_ERROR_RATE_LIMITED');
     });
   });
 
@@ -2909,11 +2940,14 @@ describe('AuthController — POST /api/auth/portal/desktop-waiting, real HTTP di
     cache.set.mockClear();
   });
 
-  it('answers 204 to the path and headers the desktop shell sends', async () => {
-    const now = Math.floor(Date.now() / 1000);
+  it('answers 204 to the challenge, path and headers the desktop shell sends', async () => {
+    const challenge = await fetch(`${baseUrl}/api/auth/portal/desktop-waiting/challenge`, { method: 'POST' });
+    expect(challenge.status).toBe(200);
+    const { nonce } = (await challenge.json()) as { nonce: string };
+
     const res = await fetch(`${baseUrl}/api/auth/portal/desktop-waiting`, {
       method: 'POST',
-      headers: { 'X-CI-Hub-Desktop-Proof': desktopSignInWaitProof(HUB_LOCAL_KEY, now), 'X-CI-Hub-Desktop-Proof-Time': String(now) },
+      headers: { 'X-CI-Hub-Desktop-Nonce': nonce, 'X-CI-Hub-Desktop-Proof': desktopSignInWaitProof(HUB_LOCAL_KEY, nonce) },
     });
 
     expect(res.status).toBe(204);

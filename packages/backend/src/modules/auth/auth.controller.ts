@@ -40,6 +40,7 @@ import { UserRepository } from '@/modules/user/user.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { SessionManager } from './session.manager';
+import { DesktopWaitingChallenges } from './desktop-waiting-challenges';
 import {
   BrowserHandoffMintBody,
   BrowserHandoffMintDto,
@@ -87,8 +88,8 @@ import {
   shouldHandoffPortalLoginToDesktop,
   exchangePortalAuthorizationCode,
   fetchPortalSessionEmail,
+  DESKTOP_SIGN_IN_WAIT_NONCE_HEADER,
   DESKTOP_SIGN_IN_WAIT_PROOF_HEADER,
-  DESKTOP_SIGN_IN_WAIT_PROOF_TIME_HEADER,
   isDesktopSignInWaitProof,
   isDirectLoopbackRequest,
   probePortalReachable,
@@ -187,6 +188,8 @@ export class AuthController {
     private readonly forwardAuthIdentities: ForwardAuthIdentityResolver,
     private readonly rateLimiter: AuthRateLimiter,
   ) {}
+
+  private readonly desktopWaitingChallenges = new DesktopWaitingChallenges();
 
   /**
    * Run an unauthenticated auth step under {@link AuthRateLimiter}: refuse if this client has
@@ -853,18 +856,32 @@ export class AuthController {
   }
 
   /**
+   * A nonce for the desktop shell to sign before `POST /portal/desktop-waiting`. Unauthenticated
+   * because a nonce grants nothing until it comes back signed with the host-local key; rate-limited
+   * like the other unauthenticated auth routes. Left out of the API client because the frontend
+   * never calls it.
+   */
+  @Post('/portal/desktop-waiting/challenge')
+  @HttpCode(HttpStatus.OK)
+  @ApiExcludeEndpoint()
+  desktopSignInWaitChallenge(@Req() req: Request) {
+    this.rateLimiter.admit('desktopWaitingChallenge', authClientKey(req));
+    return { nonce: this.desktopWaitingChallenges.issue() };
+  }
+
+  /**
    * The desktop app on this machine is signed out and waiting for a sign-in, so a browser sign-in on
    * the loopback address hands off to it (shouldHandoffPortalLoginToDesktop). The desktop shell sends
-   * this from Rust every 60 s while its window is signed out, with a fresh `desktopSignInWaitProof`. Left out
-   * of the API client because the frontend never calls it.
+   * this from Rust every 60 s while its window is signed out, with a challenge's nonce and its
+   * `desktopSignInWaitProof`. The nonce is spent here whether or not the proof matches.
    */
   @Post('/portal/desktop-waiting')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiExcludeEndpoint()
   desktopSignInWait(@Req() req: Request) {
+    const nonce = req.headers[DESKTOP_SIGN_IN_WAIT_NONCE_HEADER];
     const proof = req.headers[DESKTOP_SIGN_IN_WAIT_PROOF_HEADER];
-    const signedAt = req.headers[DESKTOP_SIGN_IN_WAIT_PROOF_TIME_HEADER];
-    if (!isDesktopSignInWaitProof(proof, signedAt, this.config.get('hubLocalKey'))) {
+    if (!this.desktopWaitingChallenges.take(nonce) || !isDesktopSignInWaitProof(proof, nonce, this.config.get('hubLocalKey'))) {
       throw new UnauthorizedException();
     }
     this.cache.set(PORTAL_DESKTOP_PRESENCE_CACHE_KEY, '1', PORTAL_DESKTOP_PRESENCE_TTL_SECONDS);

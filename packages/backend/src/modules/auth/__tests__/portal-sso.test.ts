@@ -324,42 +324,36 @@ describe('portal-sso helpers', () => {
   });
 
   it('derives the desktop proof the way the desktop shell does', () => {
-    // The same key, time and proof are asserted in desktop_sign_in_wait.rs, so the two halves cannot drift.
-    expect(desktopSignInWaitProof('3f'.repeat(32), 1_700_000_000)).toBe('473cb939a946a7a8cf6db763a0f053a86c5251e0b4a53cd1e10eb18829f8bb5c');
+    // The same key, nonce and proof are asserted in desktop_sign_in_wait.rs, so the two halves cannot drift.
+    expect(desktopSignInWaitProof('3f'.repeat(32), '00112233445566778899aabbccddeeff'.repeat(2))).toBe(
+      '7a460e26999017e65eaa1c282c52201b9b79bb408fdbd2e0893b1af334e84bc2',
+    );
   });
 
   describe('isDesktopSignInWaitProof', () => {
     const KEY = '3f'.repeat(32);
-    const NOW_MS = 1_700_000_000_500;
-    const NOW = 1_700_000_000;
-    const at = (seconds: number) => ({ proof: desktopSignInWaitProof(KEY, seconds), time: String(seconds) });
+    const NONCE = 'ab'.repeat(32);
+    const proof = desktopSignInWaitProof(KEY, NONCE);
 
     it.each([
-      ['a fresh proof', true, at(NOW)],
-      ['a proof made 120 s ago', true, at(NOW - 120)],
-      ['a proof stamped 120 s ahead', true, at(NOW + 120)],
-      ['a proof made 121 s ago', false, at(NOW - 121)],
-      ['a proof stamped 121 s ahead', false, at(NOW + 121)],
-      ['a copied proof an hour later', false, at(NOW - 3_600)],
-      ['a proof sent with another time', false, { proof: at(NOW - 600).proof, time: String(NOW) }],
-      ['a proof for another key', false, { proof: desktopSignInWaitProof('a'.repeat(64), NOW), time: String(NOW) }],
-      ['the key itself', false, { proof: KEY, time: String(NOW) }],
-      ['a proof of the wrong length', false, { proof: at(NOW).proof.slice(0, 10), time: String(NOW) }],
-      ['a proof with stray whitespace', false, { proof: ` ${at(NOW).proof}\n`, time: String(NOW) }],
-      ['a repeated proof header', false, { proof: [at(NOW).proof], time: String(NOW) }],
-      ['a time that is not whole seconds', false, { proof: at(NOW).proof, time: `${NOW}.0` }],
-      ['no time', false, { proof: at(NOW).proof, time: undefined }],
-      ['no proof', false, { proof: undefined, time: String(NOW) }],
-    ])('%s -> %s', (_case, expected, presented: { proof: unknown; time: unknown }) => {
-      expect(isDesktopSignInWaitProof(presented.proof, presented.time, KEY, NOW_MS)).toBe(expected);
+      ['the proof for this nonce', true, proof],
+      ['the proof for another nonce', false, desktopSignInWaitProof(KEY, 'cd'.repeat(32))],
+      ['a proof made with another key', false, desktopSignInWaitProof('a'.repeat(64), NONCE)],
+      ['the key itself', false, KEY],
+      ['a proof of the wrong length', false, proof.slice(0, 10)],
+      ['a proof with stray whitespace', false, ` ${proof}\n`],
+      ['a repeated proof header', false, [proof]],
+      ['no proof', false, undefined],
+    ])('%s -> %s', (_case, expected, presented: unknown) => {
+      expect(isDesktopSignInWaitProof(presented, NONCE, KEY)).toBe(expected);
     });
 
     it('refuses every proof while the Hub has no key', () => {
-      expect(isDesktopSignInWaitProof(desktopSignInWaitProof('', NOW), String(NOW), null, NOW_MS)).toBe(false);
+      expect(isDesktopSignInWaitProof(desktopSignInWaitProof('', NONCE), NONCE, null)).toBe(false);
     });
 
     it('refuses a wrong-length proof without throwing', () => {
-      expect(() => isDesktopSignInWaitProof('ab', String(NOW), KEY, NOW_MS)).not.toThrow();
+      expect(() => isDesktopSignInWaitProof('ab', NONCE, KEY)).not.toThrow();
     });
   });
 
