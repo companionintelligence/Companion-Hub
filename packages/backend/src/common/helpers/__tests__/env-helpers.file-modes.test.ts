@@ -157,7 +157,9 @@ describe('restrictStateFileMode', () => {
     await expect(writeSettingsJsonFile(settingsPath, '{"themeColor":"blue"}', log)).resolves.toBeUndefined();
 
     expect(fs.readFileSync(settingsPath, 'utf8')).toBe('{"themeColor":"blue"}');
-    expect(modeOf(settingsPath)).toBe(0o666);
+    // The write renames the Hub's own owner-only file over the one it could not chmod, which is
+    // the state the warning below tells the operator to reach by hand.
+    expect(modeOf(settingsPath)).toBe(0o600);
     // Once per file per process: a settings write every few seconds must not repeat it.
     expect(log.warns).toHaveLength(1);
     expect(log.warns[0]).toContain(settingsPath);
