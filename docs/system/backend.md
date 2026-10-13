@@ -65,6 +65,24 @@ restart. The one thing a chmod still does on drvfs is set or clear the Windows r
 which shows as a file with no write bits. The sweep used to clear it on every prepare; now a file a
 container makes read-only stays read-only, to root as well, until something chmods it back.
 
+Backups carry the named volumes. `BackupManager` asks Docker for the volumes compose created for
+the app's project and puts each in the archive as `volumes/<key>.tar`, next to `app-data`, `app`
+and `user-config`. A restore checks that every volume can go back, and reads each archive through
+with `tar -tf -`, before it replaces any file, then empties the app's volume with that key and
+unpacks the archive into it. The check reads from stdin because busybox, handed a file by name,
+seeks over each entry and takes an archive cut short inside one for a complete one. When a reset
+removed the volume, the restore creates it with compose's project and volume labels, so `up` adopts it.
+`AppVolumeArchiveService` does the copying with busybox `tar` in a short-lived container of the
+Hub's own image (the image ID of the container it runs in), as root, with no network and no log
+driver, so nothing is pulled and the stream is not also written to a container log. A backup or
+restore stops the app first and carries on if that stop fails, so the service refuses a volume
+that a running container still has mounted: a database copied mid-write may not start from the
+copy, and one emptied under a running server is lost. An app without
+named volumes gets the same archive as before, and restoring a backup without a `volumes` folder
+does not ask Docker anything. A backup made where the database is in a volume and restored where it
+is a folder (Windows to Linux) still comes back without it, because nothing maps a volume key back
+to a path.
+
 ## App lifecycle command structure
 
 `AppLifecycleCommandFactory` builds one command object per operation (`commands/install-app-command.ts`,
@@ -442,6 +460,28 @@ the same credentials.
 On a Windows data folder (a bind mount through WSL), a read from outside the queue that overlaps the
 rename can get `ENOENT` for a file that is there. Once `readUserConsentFrom` has read the file, it
 counts a missing file as unreadable, so error reporting stays off for a user who turned it off.
+
+## Factory reset data folders
+
+`FactoryResetService.wipeDataMounts` empties `/app-data`, `/data/apps`, `/data/repos`, `/data/backups`
+and `/data/user-config` entry by entry and keeps each folder: they are bind mounts, and removing a
+mount point fails with `EBUSY` before anything inside it goes. It leaves `/data/media` alone, because
+that is the user's media library (the books, films, music and downloads media apps share), and
+`cihub reset` still deletes it with the rest of the data folder.
+
+Before it empties a folder it reads `/proc/self/mountinfo` (`common/helpers/mount-source.ts`). The
+compose files mount `<ROOT_FOLDER_HOST>/<name>` at each of them, and when that host folder is a
+symlink, or a junction on Windows, Docker mounts the link's target, so the mount's root names the
+target. A root whose last folder has another name than `<name>` (letter case aside) is a folder
+outside the Hub's data folder, and the reset leaves it alone and names it with the files it could
+not delete. Everything else is emptied as before: no mount of its own at that path (one volume for
+all of `/data`, or a backend run outside a container), no readable mountinfo, the root of a whole
+filesystem, or a Docker or Podman volume (`.../volumes/<name>/_data`). A link to a folder with the
+same name looks like the folder itself and is emptied.
+
+If anything is left or left alone, the reset throws `SETTINGS_FACTORY_RESET_FILES_LEFT` before it
+wipes the database, so the operator can still sign in. Each app it tore down has already lost its
+row by then, as an ordinary uninstall does.
 
 ## The four engines, or two endpoints
 

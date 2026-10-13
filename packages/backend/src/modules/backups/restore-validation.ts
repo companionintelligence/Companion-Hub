@@ -6,15 +6,23 @@ import type { ArchiveEntry } from '@/core/archive/archive.service';
 /**
  * What a restore will accept from a backup archive.
  *
- * A backup is produced by this system (`BackupManager.backupApp`) as exactly three
- * top-level folders of plain files and directories, but a restore also takes archives
- * a user UPLOADED, so nothing about the archive is trusted. Every rule here is checked
+ * A backup is produced by this system (`BackupManager.backupApp`) as three top-level
+ * folders of plain files and directories (four with `volumes`, for an app's named Docker
+ * volumes), but a restore also takes archives a user UPLOADED, so nothing about the
+ * archive is trusted. Every rule here is checked
  * before any live app file is touched; a restore deletes the app's existing data first,
  * so the order — validate, then replace — is the whole point.
  */
 
 /** The folders a backup archive may contain. Anything else at the top level is not ours. */
-export const BACKUP_ROOT_FOLDERS = ['app-data', 'app', 'user-config'] as const;
+export const BACKUP_ROOT_FOLDERS = ['app-data', 'app', 'user-config', 'volumes'] as const;
+
+/**
+ * A file in `volumes`: one named Docker volume as a tar archive, named after the volume's key in the
+ * app's compose file, which follows the rule a manifest's `volumeName` does. The restore streams the
+ * file into a container unread, so that folder holds these files and nothing else.
+ */
+export const VOLUME_ARCHIVE_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*\.tar$/;
 
 /** One message for every rejected shape: the caller is told the backup is unusable, not how to tailor the next attempt. */
 export const UNSAFE_BACKUP_MESSAGE = 'Backup contains unsupported file types';
@@ -84,6 +92,10 @@ export function validateRestoreArchiveEntries(entries: ArchiveEntry[]): void {
       throw unsafe(`${entry.path}: not inside ${BACKUP_ROOT_FOLDERS.join(', ')}`);
     }
 
+    if (rootFolder === 'volumes' && entryPath !== 'volumes' && !(entry.type === '-' && isVolumeArchive(entryPath))) {
+      throw unsafe(`${entry.path}: the volumes folder holds only <volume>.tar files`);
+    }
+
     if (entry.type === 'l') {
       if (!mayHoldSymlink(entryPath)) {
         throw unsafe(`${entry.path}: symbolic links are only restored inside the app's data folder`);
@@ -110,6 +122,13 @@ export function validateRestoreArchiveEntries(entries: ArchiveEntry[]): void {
   }
 }
 
+/** `volumes/<name>.tar`, directly in the folder. */
+function isVolumeArchive(entryPath: string): boolean {
+  const segments = entryPath.split('/');
+
+  return segments.length === 2 && VOLUME_ARCHIVE_NAME.test(segments[1] ?? '');
+}
+
 function normalizeArchiveEntryPath(entryPath: string): string {
   if (entryPath.includes('\0') || path.posix.isAbsolute(entryPath)) {
     throw unsafe(`${entryPath.replaceAll('\0', '\\0')}: absolute or containing a NUL byte`);
@@ -122,6 +141,40 @@ function normalizeArchiveEntryPath(entryPath: string): string {
   }
 
   return normalized === '.' ? normalized : normalized.replace(/\/+$/, '');
+}
+
+/**
+ * The volume keys in an EXTRACTED backup's `volumes` folder, from its `<key>.tar` files. A backup
+ * without the folder has none. Anything else in the folder is refused, including a hard link.
+ */
+export async function readVolumeArchiveKeys(directory: string): Promise<string[]> {
+  await validateRestoreDirectory(directory, { required: false });
+
+  const entries = await fs.promises.readdir(directory, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') {
+      return [];
+    }
+
+    throw error;
+  });
+
+  const keys: string[] = [];
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !VOLUME_ARCHIVE_NAME.test(entry.name)) {
+      throw unsafe(`volumes/${entry.name}: not a volume archive`);
+    }
+
+    // A tar of a volume holds at least its root folder. Busybox tar reads an empty file as an
+    // empty archive, so the restore would empty the volume and put nothing back.
+    if ((await fs.promises.lstat(path.join(directory, entry.name))).size === 0) {
+      throw unsafe(`volumes/${entry.name}: empty`);
+    }
+
+    keys.push(entry.name.slice(0, -'.tar'.length));
+  }
+
+  return keys;
 }
 
 /**

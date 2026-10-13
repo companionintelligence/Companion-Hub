@@ -26,6 +26,7 @@ import {
   markStackUpdatePending,
   subscribeStackUpdate,
 } from '@/lib/desktop-stack-session';
+import { TranslatableError } from '@/types/error.types';
 import { toast } from 'sonner';
 import {
   checkForUpdates,
@@ -153,9 +154,15 @@ export const GeneralActionsContainer = () => {
       clearClientHubState();
       toast.success(t('SETTINGS_FACTORY_RESET_SUCCESS'));
       window.location.href = '/login';
-    } catch {
+    } catch (error) {
       setFactoryResetting(false);
-      toast.error(t('SETTINGS_FACTORY_RESET_ERROR'));
+      // A reset that stopped on files it could not delete says how many, which, and how to finish.
+      // Anything else may have stopped anywhere, and running it again is the advice.
+      toast.error(
+        error instanceof TranslatableError && error.message === 'SETTINGS_FACTORY_RESET_FILES_LEFT'
+          ? t(error.message, error.intlParams)
+          : t('SETTINGS_FACTORY_RESET_ERROR'),
+      );
     }
   }, [demoMode, deviceName, factoryResetPhrase, t]);
 

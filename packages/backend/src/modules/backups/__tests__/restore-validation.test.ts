@@ -7,7 +7,9 @@ vi.unmock('node:fs');
 vi.unmock('fs');
 
 const fs = (await import('node:fs')).default;
-const { validateRestoreArchiveEntries, validateRestoreDirectory, UNSAFE_BACKUP_MESSAGE } = await import('../restore-validation');
+const { readVolumeArchiveKeys, validateRestoreArchiveEntries, validateRestoreDirectory, UNSAFE_BACKUP_MESSAGE } = await import(
+  '../restore-validation'
+);
 
 const file = (p: string) => ({ path: p, type: '-' });
 const dir = (p: string) => ({ path: p, type: 'd' });
@@ -53,12 +55,36 @@ describe('validateRestoreArchiveEntries', () => {
     expect(() => validateRestoreArchiveEntries([file(entryPath)])).toThrow(UNSAFE_BACKUP_MESSAGE);
   });
 
-  it.each(['.env', 'etc/passwd', 'app-data-evil/x', 'apps/x', 'user-config.bak/x'])(
-    'rejects the top-level name %j, which is not one of the three backup folders',
+  it.each(['.env', 'etc/passwd', 'app-data-evil/x', 'apps/x', 'user-config.bak/x', 'volumes.tar'])(
+    'rejects the top-level name %j, which is not a backup folder',
     (entryPath) => {
       expect(() => validateRestoreArchiveEntries([file(entryPath)])).toThrow(UNSAFE_BACKUP_MESSAGE);
     },
   );
+
+  it("accepts the app's named Docker volumes, one tar archive each", () => {
+    expect(() =>
+      validateRestoreArchiveEntries([
+        dir('./'),
+        dir('./app-data/'),
+        dir('./app/'),
+        dir('./volumes/'),
+        file('./volumes/data-mariadb.tar'),
+        file('./volumes/db_2.tar'),
+      ]),
+    ).not.toThrow();
+  });
+
+  it.each([
+    ['a folder', dir('./volumes/data-mariadb/')],
+    ['a file inside a folder', file('./volumes/sub/data-mariadb.tar')],
+    ['a name that does not end in .tar', file('./volumes/data-mariadb.tar.gz')],
+    ['a name no Docker volume can have', file('./volumes/.data.tar')],
+    ['a symbolic link', { path: './volumes/data-mariadb.tar', type: 'l' }],
+    ['a hard link', { path: './volumes/data-mariadb.tar', type: 'h' }],
+  ])('rejects %s in the volumes folder', (_name, entry) => {
+    expect(() => validateRestoreArchiveEntries([dir('./app-data/'), dir('./app/'), dir('./volumes/'), entry])).toThrow(UNSAFE_BACKUP_MESSAGE);
+  });
 
   it('rejects an entry that is only reached through a folder it climbs out of', () => {
     // Normalises to `evil`, not `app-data/...`: the allowlist must see the normalised path.
@@ -266,5 +292,40 @@ describe('validateRestoreDirectory', () => {
 
       await expect(validateRestoreDirectory(root, { required: true, symlinks: true })).rejects.toThrow(UNSAFE_BACKUP_MESSAGE);
     });
+  });
+});
+
+describe('readVolumeArchiveKeys', () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'restore-volumes-'));
+  });
+
+  afterEach(async () => {
+    await fs.promises.rm(root, { recursive: true, force: true });
+  });
+
+  it('reads each volume key from its <key>.tar file', async () => {
+    await fs.promises.writeFile(path.join(root, 'data-mariadb.tar'), 'x');
+    await fs.promises.writeFile(path.join(root, 'db_2.tar'), 'x');
+
+    await expect(readVolumeArchiveKeys(root).then((keys) => keys.sort())).resolves.toEqual(['data-mariadb', 'db_2']);
+  });
+
+  it('finds none in a backup without a volumes folder', async () => {
+    await expect(readVolumeArchiveKeys(path.join(root, 'volumes'))).resolves.toEqual([]);
+  });
+
+  it('refuses an empty archive, which would empty the volume and put nothing back', async () => {
+    await fs.promises.writeFile(path.join(root, 'data-mariadb.tar'), '');
+
+    await expect(readVolumeArchiveKeys(root)).rejects.toThrow(UNSAFE_BACKUP_MESSAGE);
+  });
+
+  it('refuses a folder in place of an archive', async () => {
+    await fs.promises.mkdir(path.join(root, 'data-mariadb.tar'));
+
+    await expect(readVolumeArchiveKeys(root)).rejects.toThrow(UNSAFE_BACKUP_MESSAGE);
   });
 });

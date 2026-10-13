@@ -115,6 +115,15 @@ export function hubContainerName(env: NodeJS.ProcessEnv = process.env): string {
   return env.RABBITMQ_HOST === LEGACY_RABBITMQ_HOST ? LEGACY_HUB_CONTAINER_NAME : DEFAULT_HUB_CONTAINER_NAME;
 }
 
+/**
+ * Where to look for this Hub's own container. The hostname is the container ID unless compose sets
+ * `hostname:`, which makes it the one lookup that cannot find a different container; the names cover
+ * the rest, legacy topology included.
+ */
+export function selfContainerCandidates(): string[] {
+  return [...new Set([os.hostname(), hubContainerName(), ...HUB_CONTAINER_NAMES].filter(Boolean))];
+}
+
 export function hubNetworkName(env: NodeJS.ProcessEnv = process.env): string {
   return `${hubContainerName(env)}_network`;
 }

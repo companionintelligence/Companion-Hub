@@ -3,6 +3,8 @@ import path from 'node:path';
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import { removeSettingsJsonCopies, writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR } from '@/common/constants';
+import { TranslatableError } from '@/common/error/translatable-error';
+import { linkedMountSource, parseMountInfo } from '@/common/helpers/mount-source';
 import { app } from '@/core/database/drizzle/schema';
 import { DATABASE, type Database } from '@/core/database/database.module';
 import { CacheService } from '@/core/cache/cache.service';
@@ -19,7 +21,7 @@ import { DOCKERODE } from '@/modules/docker/constants';
 import { Inject, Injectable } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type Dockerode from 'dockerode';
-import { asc, sql } from 'drizzle-orm';
+import { asc, eq, sql } from 'drizzle-orm';
 
 @Injectable()
 export class FactoryResetService {
@@ -84,7 +86,11 @@ export class FactoryResetService {
       const appUrn = createAppUrn(installedApp.appName, installedApp.appStoreSlug);
       try {
         const result = await uninstallCommand.execute(appUrn);
-        if (!result.success) {
+        if (result.success) {
+          // As an ordinary uninstall does once its command succeeds. The TRUNCATE below would take the
+          // row anyway, but a reset that stops first (data left behind) must not list apps that are gone.
+          await this.db.delete(app).where(eq(app.id, installedApp.id));
+        } else {
           this.logger.warn(`Factory reset: app teardown reported failure for ${appUrn}: ${result.message}`);
         }
       } catch (error) {
@@ -124,18 +130,59 @@ export class FactoryResetService {
     }
   }
 
+  /**
+   * Empty each folder that holds app data, keeping the folder: each is a bind mount, and removing a
+   * mount point fails with EBUSY before anything inside it is touched. That is how a reset used to
+   * report success with every app backup still on disk.
+   *
+   * `media` is not one of them. It holds the user's library (books, films, music and downloads that
+   * media apps read and write), so a reset leaves it alone; `cihub reset` deletes it with the rest.
+   *
+   * A folder whose mount comes from a folder with another name is left alone too: on the host it is a
+   * link (a symlink, or a junction on Windows) to a folder outside the Hub's data folder, which
+   * Docker followed. See `linkedMountSource`.
+   *
+   * Throws when a folder still has something in it, or was left alone, before the database and the
+   * registration are wiped, so the operator can still sign in and run the reset again. The page
+   * shows that error, so it says how much is left, names the first few, and points to `cihub reset --yes`.
+   */
   public async wipeDataMounts(): Promise<void> {
     const { dataDir } = this.configuration.get('directories');
+    // `name` is the folder the compose files mount here, `<ROOT_FOLDER_HOST>/<name>`.
     const targets = [
-      APP_DATA_DIR,
-      path.join(dataDir, 'apps'),
-      path.join(dataDir, 'repos'),
-      path.join(dataDir, 'media'),
-      path.join(dataDir, 'backups'),
+      { dir: APP_DATA_DIR, name: 'app-data' },
+      { dir: path.join(dataDir, 'apps'), name: 'apps' },
+      { dir: path.join(dataDir, 'repos'), name: 'repos' },
+      { dir: path.join(dataDir, 'backups'), name: 'backups' },
+      // Per-app env and compose overrides, which a reinstalled app would pick up again.
+      { dir: path.join(dataDir, 'user-config'), name: 'user-config' },
     ];
+    // Unreadable or missing (outside a container, or not Linux) reads as no mounts, and every folder is emptied.
+    const mounts = parseMountInfo(await fs.promises.readFile('/proc/self/mountinfo', 'utf8').catch(() => ''));
+    const left: string[] = [];
 
-    for (const target of targets) {
-      await this.wipeDirectory(target);
+    for (const { dir: target, name } of targets) {
+      const linkedTo = linkedMountSource(mounts, toMountPoint(target), [name, path.basename(target)]);
+
+      if (linkedTo) {
+        this.logger.error(
+          `Factory reset left ${target} alone: it is mounted from ${linkedTo}, not from a folder named ${name}, so it is a link to a folder outside the Hub's data folder`,
+        );
+        left.push(`${path.basename(target)}/`);
+        continue;
+      }
+
+      const entries = await this.emptyDirectory(target);
+
+      if (entries.length > 0) {
+        this.logger.error(`Factory reset could not empty ${target}; still there: ${entries.slice(0, 10).join(', ')}`);
+        // Named as they sit in the Hub's data folder (`backups/...`), which is where the operator looks.
+        left.push(...entries.map((entry) => `${path.basename(target)}/${entry}`));
+      }
+    }
+
+    if (left.length > 0) {
+      throw new TranslatableError('SETTINGS_FACTORY_RESET_FILES_LEFT', { count: String(left.length), paths: left.slice(0, 3).join(', ') });
     }
   }
 
@@ -166,10 +213,34 @@ export class FactoryResetService {
     });
   }
 
-  private async wipeDirectory(dirPath: string): Promise<void> {
-    if (await this.filesystem.pathExists(dirPath)) {
-      await this.filesystem.removeDirectory(dirPath);
-    }
+  /** Remove everything inside `dirPath`, and return the names of what is still there. */
+  private async emptyDirectory(dirPath: string): Promise<string[]> {
     await this.filesystem.createDirectory(dirPath);
+
+    for (const entry of await this.listDirectory(dirPath)) {
+      await this.filesystem.removeDirectory(path.join(dirPath, entry));
+    }
+
+    return this.listDirectory(dirPath);
   }
+
+  /** `readdir`, with a missing folder read as empty. Any other error is thrown, never read as empty. */
+  private async listDirectory(dirPath: string): Promise<string[]> {
+    return fs.promises.readdir(dirPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') {
+        return [];
+      }
+
+      throw error;
+    });
+  }
+}
+
+/** `dir` as mountinfo writes a mount point: absolute, with forward slashes and no drive letter. */
+function toMountPoint(dir: string): string {
+  return path
+    .resolve(dir)
+    .replace(/^[A-Za-z]:/, '')
+    .split(path.sep)
+    .join('/');
 }

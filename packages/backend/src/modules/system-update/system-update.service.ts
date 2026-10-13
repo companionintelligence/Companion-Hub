@@ -1,6 +1,5 @@
 import { spawn } from 'node:child_process';
 import { isIPv4 } from 'node:net';
-import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import axios from 'axios';
@@ -19,7 +18,7 @@ import {
   HUB_STACK_REGISTRY_REPO,
   UPDATE_LISTENER_HOST_FILENAME,
   UPDATE_LISTENER_TOKEN_FILENAME,
-  hubContainerName,
+  selfContainerCandidates,
 } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -142,15 +141,6 @@ function normalizeHubVersionTag(version: string): string {
     throw new BadRequestException(HUB_VERSION_TAG_MESSAGE);
   }
   return tag.replace(/^v/i, '');
-}
-
-/**
- * Where to look for this Hub's own container. The hostname is the container ID unless compose sets
- * `hostname:`, which makes it the one lookup that cannot find a different container; the names cover
- * the rest, legacy topology included.
- */
-function selfContainerCandidates(): string[] {
-  return [...new Set([os.hostname(), hubContainerName(), 'ci-hub', 'ci-os-hub'].filter(Boolean))];
 }
 
 const NOT_IN_CONTAINER_MESSAGE =
