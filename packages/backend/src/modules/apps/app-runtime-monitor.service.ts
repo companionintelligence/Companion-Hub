@@ -565,10 +565,15 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
     }
 
     const availability = await this.appsService.checkAppAvailability(appUrn);
+    // The probe reads the app's public route. A verdict read from an answer that came back through the
+    // tunnel (a Cloudflare error, the Hub's "is starting" page, the app's own 5xx) arrived in time, and
+    // says as much about the tunnel or a model still loading as about a hung app. Only a probe that got
+    // no answer at all counts against the app here.
+    const responsive = availability.available || availability.reason === 'CLOUDFLARE';
     const nextEntry: AvailabilityProbeCacheEntry = {
       sampledAtMs: Date.now(),
-      responsive: availability.available,
-      reason: availability.available ? null : availability.detail || availability.errorCode || 'App availability probe failed',
+      responsive,
+      reason: responsive ? null : availability.detail || availability.errorCode || 'App availability probe failed',
     };
     this.availabilityProbeCache.set(appUrn, nextEntry);
     return nextEntry;

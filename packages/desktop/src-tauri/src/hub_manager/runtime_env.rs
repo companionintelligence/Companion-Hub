@@ -194,6 +194,17 @@ const INVALID_HOST_DEVICE_IDS: &[&str] = &[
 ];
 
 pub(crate) fn is_usable_host_device_id(id: &str) -> bool {
+    // All F: what firmware reports when it never set a UUID.
+    is_usable_device_id(id)
+        && !id
+            .trim()
+            .eq_ignore_ascii_case("ffffffff-ffff-ffff-ffff-ffffffffffff")
+}
+
+/// Whether `id` can name a device at all. It lets an all-F UUID through, unlike
+/// [`is_usable_host_device_id`]: earlier builds read one through `wmic` and wrote it as
+/// `DEVICE_ID`, so a Hub may have registered under it.
+fn is_usable_device_id(id: &str) -> bool {
     let trimmed = id.trim();
     if trimmed.is_empty() {
         return false;
@@ -289,48 +300,89 @@ fn read_host_device_id_impl() -> Option<String> {
         })
 }
 
-#[cfg(target_os = "windows")]
-fn read_host_device_id_impl() -> Option<String> {
-    if let Ok(output) = Command::new("wmic")
-        .args(["csproduct", "get", "uuid", "/value"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-    {
-        if output.status.success() {
-            for line in String::from_utf8_lossy(&output.stdout).lines() {
-                if let Some(uuid) = line.strip_prefix("UUID=") {
-                    let uuid = uuid.trim();
-                    if is_usable_host_device_id(uuid) {
-                        return Some(uuid.to_string());
-                    }
-                }
-            }
-        }
+/// The Windows host's device ID, from the output of the commands `run` starts: `None` when one
+/// could not run. Split out so a test can stand in for a PC.
+///
+/// The SMBIOS UUID comes first, read through CIM. It is what `wmic csproduct get uuid` printed, and
+/// Windows Hubs paired under it, but current Windows 11 builds no longer ship `wmic` and the
+/// `MachineGuid` it fell back to is a different ID (Companion-Hub#1953).
+#[cfg(any(test, target_os = "windows"))]
+pub(crate) fn windows_host_device_id(
+    run: impl Fn(&str, &[&str]) -> Option<String>,
+) -> Option<String> {
+    let smbios_uuid = run(
+        "powershell.exe",
+        &[
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "(Get-CimInstance Win32_ComputerSystemProduct).UUID",
+        ],
+    )
+    .as_deref()
+    .and_then(parse_smbios_uuid);
+    if smbios_uuid.is_some() {
+        return smbios_uuid;
     }
 
-    if let Ok(output) = Command::new("reg")
-        .args([
+    run(
+        "reg",
+        &[
             "query",
             r"HKLM\SOFTWARE\Microsoft\Cryptography",
             "/v",
             "MachineGuid",
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-    {
-        if output.status.success() {
-            for line in String::from_utf8_lossy(&output.stdout).lines() {
-                if line.contains("MachineGuid") {
-                    let guid = line.split_whitespace().last()?.trim();
-                    if is_usable_host_device_id(guid) {
-                        return Some(guid.to_string());
-                    }
-                }
-            }
-        }
-    }
+        ],
+    )
+    .as_deref()
+    .and_then(parse_machine_guid)
+}
 
-    None
+/// The UUID in the output of `(Get-CimInstance Win32_ComputerSystemProduct).UUID`. Windows
+/// PowerShell writes warnings to standard output too, so only a line shaped like a UUID counts.
+#[cfg(any(test, target_os = "windows"))]
+fn parse_smbios_uuid(output: &str) -> Option<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .find(|line| is_uuid_shaped(line) && is_usable_host_device_id(line))
+        .map(str::to_string)
+}
+
+/// Hex digits in groups of 8, 4, 4, 4 and 12, the way CIM prints a UUID.
+#[cfg(any(test, target_os = "windows"))]
+fn is_uuid_shaped(value: &str) -> bool {
+    let groups: Vec<&str> = value.split('-').collect();
+    groups.len() == 5
+        && groups
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(group, len)| group.len() == len && group.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// `MachineGuid` from `reg query HKLM\SOFTWARE\Microsoft\Cryptography /v MachineGuid`.
+#[cfg(any(test, target_os = "windows"))]
+fn parse_machine_guid(output: &str) -> Option<String> {
+    output
+        .lines()
+        .filter(|line| line.contains("MachineGuid"))
+        .filter_map(|line| line.split_whitespace().last())
+        .map(str::trim)
+        .find(|guid| is_usable_host_device_id(guid))
+        .map(str::to_string)
+}
+
+#[cfg(target_os = "windows")]
+fn read_host_device_id_impl() -> Option<String> {
+    windows_host_device_id(|program, args| {
+        Command::new(program)
+            .args(args)
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+    })
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -338,7 +390,54 @@ fn read_host_device_id_impl() -> Option<String> {
     None
 }
 
+/// Where the backend records the device ID the Hub registered with Portal under. It writes the
+/// file when the Hub pairs and removes it when the Hub is set up fresh (`registeredDeviceIdPath`
+/// in the backend's `device-id.resolver.ts`).
+const REGISTERED_DEVICE_ID_FILE: &str = "state/registered-device-id";
+
+/// The Hub container writes the file, and a launch copies the ID into the env file Compose starts
+/// the stack with. So the ID counts only as one plain token: a line break in it would add a
+/// variable, a quote makes Compose read on past the line, `$` interpolates, and `#` starts a
+/// comment. An all-F UUID is kept here, because Portal knows a Hub that registered under one by it.
+fn registered_device_id(data_dir: &Path) -> Option<String> {
+    std::fs::read_to_string(data_dir.join(REGISTERED_DEVICE_ID_FILE))
+        .ok()
+        .map(|id| id.trim().to_string())
+        .filter(|id| {
+            is_usable_device_id(id)
+                && id.chars().all(|c| {
+                    c.is_ascii_graphic() && !matches!(c, '"' | '\'' | '`' | '$' | '#' | '\\')
+                })
+        })
+}
+
+/// The env file's `DEVICE_ID`. An all-F UUID counts, like a registered one: a Hub that paired
+/// before the backend kept a registration record has only this copy of its ID.
+fn env_device_id(existing: &std::collections::HashMap<String, String>) -> Option<String> {
+    get_non_empty_env_value(existing, "DEVICE_ID")
+        .map(|id| unquote_env_value(&id).trim().to_string())
+        .filter(|id| is_usable_device_id(id))
+}
+
+/// The end of a device ID, enough to tell two apart in a `desktop.log` that people share.
+fn masked_device_id(id: &str) -> String {
+    let chars: Vec<char> = id.chars().collect();
+    let shown = (chars.len() / 3).min(6);
+    format!(
+        "…{}",
+        chars[chars.len() - shown..].iter().collect::<String>()
+    )
+}
+
+/// What [`read_host_device_id`] returns under `cargo test`.
+pub(crate) const TEST_HOST_DEVICE_ID: &str = "test-host-device-id";
+
 fn read_host_device_id() -> Option<String> {
+    // Unit tests run on developer machines and CI runners. The machine's own ID would make every
+    // rendered env file depend on the machine, and on Windows reading it starts PowerShell.
+    if cfg!(test) {
+        return Some(TEST_HOST_DEVICE_ID.to_string());
+    }
     read_host_device_id_impl()
 }
 
@@ -414,6 +513,16 @@ pub(crate) fn render_runtime_env_content_for_portal(
     } else {
         ""
     };
+    // The operator's "keep this machine-ID-shaped DEVICE_ID from another machine" switch (see
+    // `device-id-host-check.ts` in the backend). A launch keeps such an ID now, so it keeps this too.
+    let allow_foreign_device_id_line = if existing
+        .get("HUB_ALLOW_FOREIGN_DEVICE_ID")
+        .is_some_and(|value| unquote_env_value(value).eq_ignore_ascii_case("true"))
+    {
+        "HUB_ALLOW_FOREIGN_DEVICE_ID=true\n"
+    } else {
+        ""
+    };
     let compose_profiles = merge_compose_profiles(existing, vpn_on);
     // Omit when empty: Compose treats unset COMPOSE_PROFILES like "", but a bare `COMPOSE_PROFILES=`
     // line is noisy and can unintentionally override a user-defined shell value with emptiness.
@@ -423,9 +532,30 @@ pub(crate) fn render_runtime_env_content_for_portal(
         format!("COMPOSE_PROFILES={compose_profiles}\n")
     };
 
-    // Inject a stable device ID from the host so the backend container always uses
-    // the same host-level identity regardless of container restarts or recreation.
-    let device_id_line = read_host_device_id()
+    // Kept once the Hub has one: Portal knows the Hub by this ID, and the Hub's device key works only
+    // with it. What the Hub registered as comes first, so a launch also puts back an ID an older
+    // build wrote over it, then the ID already in the env file. Deriving it again on every launch
+    // changed it when Windows removed `wmic` (Companion-Hub#1953).
+    let registered_id = registered_device_id(data_dir);
+    let env_id = env_device_id(existing);
+    // The Hub's identity changes here, so desktop.log says so: Portal refuses check-ins under the
+    // ID the env file had.
+    if let (Some(registered), Some(env)) = (&registered_id, &env_id) {
+        if registered != env {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hub.start",
+                &format!(
+                    "Restoring the device ID this Hub registered as ({}); the env file had {}.",
+                    masked_device_id(registered),
+                    masked_device_id(env)
+                ),
+            );
+        }
+    }
+    let device_id_line = registered_id
+        .or(env_id)
+        .or_else(read_host_device_id)
         .map(|id| format!("DEVICE_ID={id}\n"))
         .unwrap_or_default();
 
@@ -507,6 +637,8 @@ pub(crate) fn render_runtime_env_content_for_portal(
          POSTGRES_PASSWORD={postgres_password}\n\
          RABBITMQ_PASSWORD={rabbitmq_password}\n\
          DOMAIN={domain}\n\
+         {device_id_line}\
+         {allow_foreign_device_id_line}\
          {tailscale_auth_key_lines}\
          {tailscale_serve_user_disabled_line}\
          \n\
@@ -523,7 +655,6 @@ pub(crate) fn render_runtime_env_content_for_portal(
          CI_HUB_CONTAINER_UID={container_uid}\n\
          CI_HUB_CONTAINER_GID={container_gid}\n\
          {compose_profiles_line}\
-         {device_id_line}\
          {sentry_desktop_dsn_line}\
          {sentry_dsn_line}",
         root_folder_host = root_folder_host,
@@ -531,6 +662,7 @@ pub(crate) fn render_runtime_env_content_for_portal(
         postgres_password = postgres_password,
         domain = domain,
         tailscale_auth_key_lines = tailscale_auth_key_lines,
+        allow_foreign_device_id_line = allow_foreign_device_id_line,
         tailscale_serve_user_disabled_line = tailscale_serve_user_disabled_line,
         cloud_url = cloud_url,
         hub_version = hub_version,
