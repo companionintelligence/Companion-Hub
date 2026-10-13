@@ -329,6 +329,105 @@ describe('AppsService.checkAppAvailability', () => {
     expect(result.stage).toBe('propagating');
   });
 
+  describe('cloudflare mode, an answer that did not come from a working app', () => {
+    beforeEach(() => {
+      ctx.mockApp.exposureMode = 'cloudflare';
+    });
+
+    // What the probe got with cloudflared stopped. Cloudflare answers a client that does not ask for HTML in plain text,
+    // so the HTML markers never match.
+    it('reads a 530 with a plain "error code: 1033" as the tunnel being down, and offers the repair', async () => {
+      mockedAxiosGet.mockResolvedValue({ status: 530, data: 'error code: 1033' });
+
+      const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+      expect(result).toMatchObject({ available: false, errorCode: 'CF_TUNNEL_NOT_FOUND', stage: 'propagating', resolvable: true });
+    });
+
+    it('reads a 530 as the tunnel even without a body it recognizes, since only Cloudflare answers with it', async () => {
+      mockedAxiosGet.mockResolvedValue({ status: 530, data: '' });
+
+      const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+      expect(result).toMatchObject({ available: false, errorCode: 'CF_TUNNEL_NOT_FOUND', resolvable: true });
+    });
+
+    it.each([
+      [502, 'CF_UPSTREAM_ERROR'],
+      [504, 'CF_UPSTREAM_ERROR'],
+      [521, 'CF_ORIGIN_DOWN'],
+      [522, 'CF_TIMEOUT'],
+      [524, 'CF_TIMEOUT'],
+    ])('reads Cloudflare\'s plain "error code: %i" as its HTML page would be read', async (code, errorCode) => {
+      mockedAxiosGet.mockResolvedValue({ status: code, data: `error code: ${code}` });
+
+      const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+      expect(result.available).toBe(false);
+      expect(result.errorCode).toBe(errorCode);
+    });
+
+    // Traefik sends the Hub's page as a 503 so that Cloudflare passes it on. The app behind it is not up yet.
+    it('does not call an app available while the tunnel shows the Hub\'s "is starting" page', async () => {
+      mockedAxiosGet.mockResolvedValue({ status: 503, data: '<!doctype html><html><body><h1>Test App is starting…</h1></body></html>' });
+
+      const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+      expect(result).toMatchObject({ available: false, httpStatus: 503, errorCode: 'CF_UPSTREAM_ERROR', stage: 'propagating', resolvable: true });
+    });
+
+    it('does not call an app available when it answers a server error through the tunnel', async () => {
+      mockedAxiosGet.mockResolvedValue({ status: 500, data: '<html>Internal Server Error</html>' });
+
+      const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+      expect(result).toMatchObject({ available: false, httpStatus: 500 });
+    });
+
+    // What the probe got right after CI Memory's containers stopped: Traefik had no router left for the name.
+    it('does not call an app available when Traefik answers 404 for its name because no router serves it', async () => {
+      mockedAxiosGet.mockResolvedValue({ status: 404, data: '404 page not found\n' });
+
+      const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+      expect(result).toMatchObject({ available: false, httpStatus: 404, stage: 'propagating', resolvable: true });
+    });
+
+    // cloudflared's catch-all ingress rule answers a host it does not list with a bodyless 404.
+    it('does not call an app available when the tunnel answers an empty 404 for its name', async () => {
+      mockedAxiosGet.mockResolvedValue({ status: 404, data: '' });
+
+      const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+      expect(result).toMatchObject({ available: false, httpStatus: 404, resolvable: true });
+    });
+
+    // An API-only app (a FastAPI service, a model server) has no page at `/` and says so itself.
+    it('counts an app that answers its own 404 at its root as available', async () => {
+      mockedAxiosGet.mockResolvedValue({ status: 404, data: { detail: 'Not Found' } });
+
+      const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+      expect(result).toMatchObject({ available: true, httpStatus: 404, stage: 'ready' });
+    });
+
+    it('does not mistake an app page that mentions a Cloudflare error code for the error itself', async () => {
+      mockedAxiosGet.mockResolvedValue({ status: 200, data: 'Troubleshooting: error code: 1033 means the tunnel is down.' });
+
+      const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+      expect(result).toMatchObject({ available: true, httpStatus: 200, stage: 'ready' });
+    });
+
+    it('does not read a successful answer whose whole body is "error code: 1033" as Cloudflare, which only sends it with a failing status', async () => {
+      mockedAxiosGet.mockResolvedValue({ status: 200, data: 'error code: 1033' });
+
+      const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+      expect(result).toMatchObject({ available: true, httpStatus: 200, stage: 'ready' });
+    });
+  });
+
   // Test 9: DNS ENOTFOUND = DNS_NOT_FOUND
   it('cloudflare mode → an unpublished name is not looked up here, so the miss is not cached for half an hour', async () => {
     ctx.mockApp.exposureMode = 'cloudflare';
@@ -408,6 +507,24 @@ describe('AppsService.checkAppAvailability', () => {
     expect(ctx.tailscaleService.getStatus).toHaveBeenCalled();
     expect(result.available).toBe(true);
     expect(result.appUrl).toBe('https://hub-tailscale-1.example.ts.net:8080');
+  });
+
+  // The rules above read answers that came through the Cloudflare tunnel, and the Private VPN probe keeps the
+  // rule it had: any HTTP answer counts. That is not proof the app is up. `tailscale serve` is a proxy too and
+  // answers 502 itself when the app behind it is down. Reading its answers like the tunnel's would change what
+  // every Private VPN app shows, so these pin the old rule until someone decides to.
+  it.each([
+    [404, '404 page not found\n'],
+    [502, 'Bad Gateway'],
+    [503, '<h1>Test App is starting…</h1>'],
+    [530, 'error code: 1033'],
+  ])('in tailscale mode, an HTTP %i still counts as the app answering', async (status, data) => {
+    ctx.mockApp.exposureMode = 'tailscale';
+    mockedAxiosGet.mockResolvedValue({ status, data } as never);
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result).toMatchObject({ available: true, httpStatus: status, stage: 'ready' });
   });
 
   // Test 10: connection refused = CONNECTION_REFUSED
