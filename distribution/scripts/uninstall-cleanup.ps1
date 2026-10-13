@@ -453,6 +453,28 @@ foreach ($profilePath in $profilePaths) {
     Remove-HubUserFiles (Join-Path $profilePath 'AppData\Roaming') (Join-Path $profilePath 'AppData\Local') (Join-Path $profilePath 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup')
 }
 
+# The inbound rule the WSL engine install adds so the Hub can reach the desktop app's update
+# listener (engine_alt.rs). Removing a firewall rule needs admin rights: Chocolatey runs this
+# script elevated, while the per-user NSIS uninstaller doesn't, so there it only logs a warning.
+function Remove-UpdateListenerFirewallRule {
+    $name = 'CompanionHub-UpdateListener-WSL'
+    if (-not (Get-Command Get-NetFirewallRule -ErrorAction SilentlyContinue)) { return }
+    if (-not (Get-NetFirewallRule -Name $name -ErrorAction SilentlyContinue)) { return }
+    if ($DryRun) {
+        Write-CleanupLog 'DRYRUN' "Would remove the firewall rule $name"
+        return
+    }
+    try {
+        Remove-NetFirewallRule -Name $name -ErrorAction Stop
+        Write-CleanupLog 'INFO' "Removed the firewall rule $name"
+    }
+    catch {
+        Write-CleanupLog 'WARN' "Could not remove the firewall rule $name"
+    }
+}
+
+Remove-UpdateListenerFirewallRule
+
 $registryPath = 'HKLM:\SOFTWARE\Classes\cihub'
 if (Test-Path $registryPath) {
     if ($DryRun) {

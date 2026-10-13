@@ -123,7 +123,7 @@ fn wsl2_engine_elevated_script_only_does_admin_work() {
     assert!(script.contains("aarch64"));
     assert!(script.contains("docker.exe"));
     assert!(script.contains("Import-Module Microsoft.PowerShell.Security -ErrorAction Stop"));
-    assert!(script.contains("Get-CompanionHubAuthenticodeSignature $extractedExe"));
+    assert!(script.contains("Get-CompanionHubAuthenticodeSignature $exe"));
 
     // Per-user state must NOT be created in the elevated phase — that is the
     // core fix (it would otherwise land in the wrong profile under
@@ -131,6 +131,327 @@ fn wsl2_engine_elevated_script_only_does_admin_work() {
     assert!(!script.contains("context create wsl-engine"));
     assert!(!script.contains("GetFolderPath('Startup')"));
     assert!(!script.contains("--install -d Ubuntu"));
+}
+
+#[test]
+fn wsl2_engine_elevated_script_installs_the_pinned_docker_cli() {
+    let script = wsl2_engine_elevated_script();
+
+    // Docker's static Windows builds are unsigned and the index lists no
+    // checksums, so setup downloads one pinned zip and checks its SHA-256
+    // instead of taking the newest zip in the index.
+    assert!(script.contains(&format!(
+        "$dockerCliVersion = '{WINDOWS_STATIC_DOCKER_CLI_VERSION}'"
+    )));
+    assert!(script.contains(&format!("'x86_64' = '{WINDOWS_STATIC_DOCKER_CLI_SHA256}'")));
+    assert!(script.contains("/win/static/stable/$arch/$zipName"));
+    assert!(script.contains(
+        "Expand-CompanionHubDockerCli -ZipPath $zipPath -ExpectedSha256 $dockerCliSha256[$arch]"
+    ));
+    assert!(!script.contains("Sort-Object"));
+    assert!(!script.contains("$zips[-1]"));
+}
+
+#[test]
+fn pinned_docker_cli_sha256_is_a_full_hex_digest() {
+    assert_eq!(WINDOWS_STATIC_DOCKER_CLI_SHA256.len(), 64);
+    assert!(WINDOWS_STATIC_DOCKER_CLI_SHA256
+        .chars()
+        .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)));
+}
+
+#[test]
+fn wsl2_engine_elevated_script_reports_its_error_to_the_app() {
+    let script = wsl2_engine_elevated_script();
+
+    // Start-Process -Verb RunAs hands back only the exit code, so the script
+    // takes a file to write its error to, and the trap must come first.
+    assert!(script.starts_with(wsl2_engine_elevated_script_prelude()));
+    assert!(wsl2_engine_elevated_script_prelude()
+        .starts_with("param([string]$Program, [string]$ErrorFile)"));
+    assert!(wsl2_engine_elevated_script_prelude()
+        .contains("[System.IO.File]::WriteAllText($ErrorFile, \"$_\")"));
+}
+
+#[test]
+fn wsl2_engine_elevated_failure_shows_the_script_error_over_the_exit_code() {
+    let reason = "Downloaded docker CLI docker-29.9.0.zip has SHA-256 ABC, expected def.";
+    assert_eq!(
+        wsl2_engine_elevated_failure(Some(1), &format!("{reason}\r\n"), ""),
+        format!("WSL2 Docker Engine installation failed: {reason}")
+    );
+    assert_eq!(
+        wsl2_engine_elevated_failure(Some(1), "", "Start-Process: boom"),
+        "WSL2 Docker Engine installation failed: Start-Process: boom"
+    );
+    assert_eq!(
+        wsl2_engine_elevated_failure(Some(1), "  ", ""),
+        "WSL2 Docker Engine installation failed with exit code Some(1)."
+    );
+}
+
+#[test]
+fn wsl2_engine_elevated_launch_passes_the_program_and_error_file_quoted() {
+    let cmd = wsl2_engine_elevated_launch_command(
+        r"C:\Users\o'neil\AppData\Local\Temp\.tmp1.ps1",
+        &[
+            (
+                "-Program",
+                r"C:\Users\o'neil\AppData\Local\Companion Hub\companion-hub.exe",
+            ),
+            (
+                "-ErrorFile",
+                r"C:\Users\o'neil\AppData\Local\Temp\companionhub-wsl-engine-1.txt",
+            ),
+        ],
+    );
+
+    assert!(cmd.starts_with("$ErrorActionPreference = 'Stop';"));
+    assert!(cmd.contains("-Verb RunAs -Wait -PassThru"));
+    assert!(cmd.contains(
+        r#"-ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','"C:\Users\o''neil\AppData\Local\Temp\.tmp1.ps1"','-Program','"C:\Users\o''neil\AppData\Local\Companion Hub\companion-hub.exe"','-ErrorFile','"C:\Users\o''neil\AppData\Local\Temp\companionhub-wsl-engine-1.txt"')"#
+    ));
+    assert!(cmd.ends_with("exit $process.ExitCode"));
+}
+
+#[test]
+fn wsl2_engine_elevated_script_lets_the_hub_reach_the_update_listener() {
+    let script = wsl2_engine_elevated_script();
+
+    assert!(script.contains(update_listener_firewall_function()));
+    assert!(script.contains("Set-CompanionHubUpdateListenerFirewall -Program $Program"));
+    // The rule must stay narrow: one port, one program, the WSL range only.
+    let function = update_listener_firewall_function();
+    assert!(function.contains("$name = 'CompanionHub-UpdateListener-WSL'"));
+    assert!(function.contains("LocalPort = '17400'"));
+    assert!(function.contains("Program = $Program"));
+    assert!(function.contains("LocalAddress = '172.16.0.0/12'"));
+    assert!(function.contains("RemoteAddress = '172.16.0.0/12'"));
+}
+
+/// Runs `script` under Windows PowerShell 5.1, which runs the elevated script
+/// on every Windows PC, with `args` after `-File`. PSModulePath is dropped:
+/// UAC starts the elevated script with a fresh environment, and a value
+/// inherited from PowerShell 7 (cargo run from pwsh) makes Windows PowerShell
+/// load 7's Microsoft.PowerShell.Security.
+#[cfg(target_os = "windows")]
+fn run_windows_powershell(dir: &Path, script: &str, args: &[&str]) -> std::process::Output {
+    let path = dir.join(format!("test-{}.ps1", std::process::id()));
+    std::fs::write(&path, script).expect("write test script");
+    std::process::Command::new("powershell.exe")
+        .env_remove("PSModulePath")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+        ])
+        .arg(&path)
+        .args(args)
+        .output()
+        .expect("run powershell.exe")
+}
+
+/// Zips `exe` as docker\docker.exe, the layout of Docker's static zip, and runs
+/// the elevated script's check on it. An `exe` of None is an unsigned program
+/// that Add-Type builds, which reads as NotSigned like Docker's static builds;
+/// arbitrary bytes would read as UnknownError. `expected_sha256` of None means
+/// the zip's own hash. Prints `accepted=<path>` when the check passes.
+#[cfg(target_os = "windows")]
+fn run_docker_cli_check(exe: Option<&[u8]>, expected_sha256: Option<&str>) -> std::process::Output {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let source = dir.path().join("src").join("docker");
+    std::fs::create_dir_all(&source).expect("create source dir");
+    if let Some(exe) = exe {
+        std::fs::write(source.join("docker.exe"), exe).expect("write docker.exe");
+    }
+    let script = format!(
+        r#"$ErrorActionPreference = 'Stop'
+{helper}{check}
+$root = '{root}'
+$fixture = Join-Path $root 'src\docker\docker.exe'
+if (-not (Test-Path $fixture)) {{
+  Add-Type -TypeDefinition 'public static class P {{ public static void Main() {{ }} }}' -OutputAssembly $fixture -OutputType ConsoleApplication
+}}
+Compress-Archive -Path (Join-Path $root 'src\docker') -DestinationPath (Join-Path $root 'docker.zip')
+$expected = '{expected}'
+if (-not $expected) {{
+  $stream = [System.IO.File]::OpenRead((Join-Path $root 'docker.zip'))
+  try {{ $expected = [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash($stream)) -replace '-', '' }} finally {{ $stream.Dispose() }}
+  $expected = $expected.ToLowerInvariant()
+}}
+$exe = Expand-CompanionHubDockerCli -ZipPath (Join-Path $root 'docker.zip') -ExpectedSha256 $expected -Destination (Join-Path $root 'out')
+"accepted=$exe"
+"#,
+        helper = powershell_authenticode_helper(),
+        check = windows_docker_cli_check_function(),
+        root = dir.path().display(),
+        expected = expected_sha256.unwrap_or(""),
+    );
+    let output = run_windows_powershell(dir.path(), &script, &[]);
+    drop(dir);
+    output
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn docker_cli_check_accepts_an_unsigned_docker_exe_when_the_zip_hash_matches() {
+    let output = run_docker_cli_check(None, None);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("accepted=") && stdout.trim_end().ends_with(r"out\docker\docker.exe"),
+        "stdout: {stdout}"
+    );
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn docker_cli_check_rejects_a_zip_with_another_hash() {
+    let output = run_docker_cli_check(None, Some(WINDOWS_STATIC_DOCKER_CLI_SHA256));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(!output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("accepted="));
+    assert!(
+        stderr.contains(&format!("expected {WINDOWS_STATIC_DOCKER_CLI_SHA256}")),
+        "stderr: {stderr}"
+    );
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn docker_cli_check_rejects_a_docker_exe_signed_by_someone_else() {
+    // whoami.exe is signed by Microsoft through a catalog, and a copy still
+    // reads as Valid, so it stands in for a file with another signer.
+    let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+    let signed = std::fs::read(Path::new(&system_root).join(r"System32\whoami.exe"))
+        .expect("read whoami.exe");
+    let output = run_docker_cli_check(Some(&signed), None);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(!output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("accepted="));
+    assert!(
+        stderr.contains("signer was not recognized as Docker"),
+        "stderr: {stderr}"
+    );
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn elevated_script_trap_writes_the_error_for_the_app_and_exits_1() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let error_file = dir.path().join("error.txt");
+    let script = format!(
+        "{}$ErrorActionPreference = 'Stop'\nthrow 'Downloaded docker CLI signer was not recognized as Docker.'\n",
+        wsl2_engine_elevated_script_prelude()
+    );
+    let output = run_windows_powershell(
+        dir.path(),
+        &script,
+        &[
+            "-Program",
+            r"C:\Program Files\Companion Hub\companion-hub.exe",
+            "-ErrorFile",
+            &error_file.to_string_lossy(),
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        std::fs::read_to_string(&error_file).expect("error file"),
+        "Downloaded docker CLI signer was not recognized as Docker."
+    );
+}
+
+/// Runs the firewall function against stand-ins for the NetSecurity cmdlets
+/// that hold the rules below and record each change, then prints the changes
+/// as one JSON line each.
+#[cfg(target_os = "windows")]
+fn run_update_listener_firewall(program: &str) -> Vec<serde_json::Value> {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = format!(
+        r#"$ErrorActionPreference = 'Stop'
+$hub = 'c:\users\u\appdata\local\companion hub\companion-hub.exe'
+$rules = @(
+  # What the first-run prompt leaves when only Private networks is ticked.
+  [pscustomobject]@{{ Name = "TCP Query User{{1}}$hub"; Direction = 'Inbound'; Action = 'Block'; Program = $hub; Protocol = 'TCP'; LocalPort = 'Any' }}
+  [pscustomobject]@{{ Name = "UDP Query User{{2}}$hub"; Direction = 'Inbound'; Action = 'Block'; Program = $hub; Protocol = 'UDP'; LocalPort = 'Any' }}
+  [pscustomobject]@{{ Name = "TCP Query User{{3}}$hub"; Direction = 'Inbound'; Action = 'Allow'; Program = $hub; Protocol = 'TCP'; LocalPort = 'Any' }}
+  # A rule the user made, and the prompt's rule for another program.
+  [pscustomobject]@{{ Name = 'Block Companion Hub'; Direction = 'Inbound'; Action = 'Block'; Program = $hub; Protocol = 'TCP'; LocalPort = 'Any' }}
+  [pscustomobject]@{{ Name = 'TCP Query User{{4}}c:\tools\other.exe'; Direction = 'Inbound'; Action = 'Block'; Program = 'c:\tools\other.exe'; Protocol = 'TCP'; LocalPort = 'Any' }}
+  # The prompt's rule after an earlier run took 17400 out of it.
+  [pscustomobject]@{{ Name = "TCP Query User{{5}}$hub"; Direction = 'Inbound'; Action = 'Block'; Program = $hub; Protocol = 'TCP'; LocalPort = @('1-17399', '17401-65535') }}
+)
+$calls = New-Object System.Collections.ArrayList
+function Record($call) {{ [void]$calls.Add((ConvertTo-Json -Compress $call)) }}
+function Remove-NetFirewallRule {{ [CmdletBinding()] param([string]$Name) Record @{{ call = 'Remove-NetFirewallRule'; name = $Name }} }}
+function New-NetFirewallRule {{
+  [CmdletBinding()] param([string]$Name, [string]$DisplayName, [string]$Description, [string]$Direction, [string]$Action, [string]$Protocol, [string[]]$LocalPort, [string]$Program, [string[]]$LocalAddress, [string[]]$RemoteAddress, [string[]]$Profile)
+  Record @{{ call = 'New-NetFirewallRule'; name = $Name; direction = $Direction; action = $Action; protocol = $Protocol; localPort = $LocalPort; program = $Program; localAddress = $LocalAddress; remoteAddress = $RemoteAddress; profile = $Profile }}
+}}
+function Get-NetFirewallApplicationFilter {{ [CmdletBinding()] param([string]$Program) $rules | Where-Object {{ $_.Program -eq $Program }} }}
+function Get-NetFirewallRule {{ [CmdletBinding()] param([Parameter(ValueFromPipeline = $true)]$InputObject) process {{ $InputObject }} }}
+function Get-NetFirewallPortFilter {{ [CmdletBinding()] param([Parameter(ValueFromPipeline = $true)]$InputObject) process {{ [pscustomobject]@{{ Protocol = $InputObject.Protocol; LocalPort = $InputObject.LocalPort }} }} }}
+function Set-NetFirewallRule {{ [CmdletBinding()] param([string]$Name, [string[]]$LocalPort) Record @{{ call = 'Set-NetFirewallRule'; name = $Name; localPort = $LocalPort }} }}
+{function}
+Set-CompanionHubUpdateListenerFirewall -Program '{program}'
+$calls
+"#,
+        function = update_listener_firewall_function(),
+        program = program.replace('\'', "''"),
+    );
+    let output = run_windows_powershell(dir.path(), &script, &[]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("one JSON call per line"))
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn update_listener_firewall_allows_17400_from_wsl_and_takes_it_out_of_the_prompts_block_rule() {
+    // The app passes its own path, in whatever case Windows reports it.
+    let calls =
+        run_update_listener_firewall(r"C:\Users\u\AppData\Local\Companion Hub\companion-hub.exe");
+
+    assert_eq!(
+        calls,
+        vec![
+            serde_json::json!({ "call": "Remove-NetFirewallRule", "name": "CompanionHub-UpdateListener-WSL" }),
+            serde_json::json!({
+                "call": "New-NetFirewallRule",
+                "name": "CompanionHub-UpdateListener-WSL",
+                "direction": "Inbound",
+                "action": "Allow",
+                "protocol": "TCP",
+                "localPort": ["17400"],
+                "program": r"C:\Users\u\AppData\Local\Companion Hub\companion-hub.exe",
+                "localAddress": ["172.16.0.0/12"],
+                "remoteAddress": ["172.16.0.0/12"],
+                "profile": ["Any"],
+            }),
+            serde_json::json!({
+                "call": "Set-NetFirewallRule",
+                "name": r"TCP Query User{1}c:\users\u\appdata\local\companion hub\companion-hub.exe",
+                "localPort": ["1-17399", "17401-65535"],
+            }),
+        ]
+    );
 }
 
 #[cfg(any(test, target_os = "windows"))]
