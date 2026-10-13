@@ -168,6 +168,15 @@ describe('CustomAppService', () => {
       expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ config: { port: 10000 }, port: 10000 }));
     });
 
+    // New custom apps behave like installs: 3000 is reserved by the port manager, so it hands out another.
+    it('asks the port manager for a new app on 3000 and keeps what it hands out', async () => {
+      await createWith(webOn('3000'));
+
+      expect(portManager.allocatePorts).toHaveBeenCalledWith('port-probe:_user', [{ containerPort: 3000, label: 'main', preferredHostPort: 3000 }]);
+      expect(portManager.migrateExistingApp).not.toHaveBeenCalled();
+      expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ config: { port: 10000 }, port: 10000 }));
+    });
+
     it("does not ask for its internal port when that is the Hub's HTTP port, 80", async () => {
       await createWith(webOn('80'));
 

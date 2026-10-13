@@ -87,7 +87,7 @@ export class CustomAppService {
         // No row holds this URN, so any allocation under it was left by an app of the same name whose
         // removal could not give its ports back. Install clears them the same way.
         await this.portManager.releaseAll(appUrn);
-        const avoid = await customAppMainPortAvoids(this.appsRepository, appUrn, mappings, internalPort, hubPorts);
+        const avoid = await customAppMainPortAvoids(this.appsRepository, appUrn, mappings, [internalPort], hubPorts);
         hostPort = await allocateCustomAppHostPort(this.portManager, appUrn, internalPort, avoid);
       }
 

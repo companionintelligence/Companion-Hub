@@ -46,15 +46,16 @@ export function mappedHostPorts(
 
 /**
  * The host ports a custom app's main port must keep off although the port manager would hand them out:
- * the Hub's own ports, the ones the app maps itself, and its internal port when another app's row
- * publishes it. A port-expose app is such a row: it points at a service already running on the host and
- * holds no allocation. The app's own row is not "another app", which matters on a start, where it exists.
+ * the Hub's own ports, the ones the app maps itself, and any of `candidates` (the internal port, and on a
+ * start the port the app publishes now) that another app's row publishes. A port-expose app is such a
+ * row: it points at a service already running on the host and holds no allocation. The app's own row is
+ * not "another app", which matters on a start, where it exists.
  */
 export async function customAppMainPortAvoids(
   appsRepository: Pick<AppsRepository, 'getAppsByPort'>,
   appUrn: AppUrn,
   mappings: ReadonlyArray<MappedHostPort>,
-  internalPort: number,
+  candidates: ReadonlyArray<number>,
   hubPorts: ReadonlySet<number>,
 ): Promise<Set<number>> {
   const avoid = new Set(hubPorts);
@@ -63,9 +64,11 @@ export async function customAppMainPortAvoids(
       avoid.add(hostPort);
     }
   }
-  const publishers = await appsRepository.getAppsByPort(internalPort);
-  if (publishers.some((row) => createAppUrn(row.appName, row.appStoreSlug) !== appUrn)) {
-    avoid.add(internalPort);
+  for (const port of new Set(candidates)) {
+    const publishers = await appsRepository.getAppsByPort(port);
+    if (publishers.some((row) => createAppUrn(row.appName, row.appStoreSlug) !== appUrn)) {
+      avoid.add(port);
+    }
   }
   return avoid;
 }
@@ -100,32 +103,48 @@ export async function allocateCustomAppHostPort(
 }
 
 /**
- * The host port of a custom app made before custom apps were given one, found or allocated on its
+ * The host port of a custom app made before custom apps were given one, found, kept or allocated on its
  * first start. It is written to the app's row (`config.port` and `port`), which every later start,
  * the Open link and the port conflict checks read.
  *
+ * Such an app keeps the port it publishes now (`currentPort`, else its internal port) unless that port
+ * is one of the ports in `avoid` or the port manager gave it to another app. The kept port is recorded
+ * exactly, the way the boot backfill (`migrateExistingPortAllocations`) records an install made before
+ * the port manager existed, so an app on a port the port manager won't hand out itself (53, or 3000,
+ * which it keeps for the Hub's development server) stays where it is. Otherwise it gets a new port,
+ * as a new custom app does.
+ *
  * A main allocation the app already holds is kept unless it is one of the ports in `avoid`. Such an
  * allocation exists for an app whose settings were saved before this change: the settings dialog
- * copied the internal port into the row, and the boot backfill (`migrateExistingPortAllocations`)
- * recorded that row port as the app's main allocation. A custom app holds no allocation besides its
- * main one, so releasing all of them gives back only that.
+ * copied the internal port into the row, and the boot backfill recorded that row port as the app's
+ * main allocation. A custom app holds no allocation besides its main one, so releasing all of them
+ * gives back only that.
  */
 export async function ensureCustomAppHostPort(
-  portManager: Pick<PortManagerService, 'allocatePorts' | 'getMainPort' | 'releaseAll'>,
+  portManager: Pick<PortManagerService, 'allocatePorts' | 'getMainPort' | 'releaseAll' | 'getAllAllocations' | 'migrateExistingApp'>,
   appsRepository: Pick<AppsRepository, 'getAppByUrn' | 'updateAppById'>,
   appUrn: AppUrn,
   internalPort: number,
   avoid: ReadonlySet<number> = new Set(),
+  currentPort: number = internalPort,
 ): Promise<number> {
   const existing = await portManager.getMainPort(appUrn);
   let hostPort: number;
-  if (existing !== null && !avoid.has(existing)) {
-    hostPort = existing;
-  } else {
-    if (existing !== null) {
-      await portManager.releaseAll(appUrn);
+  if (existing === null) {
+    const givenToAnotherApp = (await portManager.getAllAllocations()).some(
+      (allocation) => allocation.hostPort === currentPort && allocation.protocol === 'tcp' && allocation.appUrn !== appUrn,
+    );
+    if (avoid.has(currentPort) || givenToAnotherApp) {
+      hostPort = await allocateCustomAppHostPort(portManager, appUrn, internalPort, new Set([...avoid, currentPort]));
+    } else {
+      await portManager.migrateExistingApp(appUrn, currentPort, internalPort);
+      hostPort = currentPort;
     }
+  } else if (avoid.has(existing)) {
+    await portManager.releaseAll(appUrn);
     hostPort = await allocateCustomAppHostPort(portManager, appUrn, internalPort, avoid);
+  } else {
+    hostPort = existing;
   }
 
   const app = await appsRepository.getAppByUrn(appUrn);

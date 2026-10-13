@@ -128,33 +128,31 @@ export class StartAppCommand extends AppLifecycleCommand {
   }
 
   /**
-   * Give a custom app made before custom apps got a host port of their own one now, as a new custom
-   * app gets one when it is created; see `allocateCustomAppHostPort`.
+   * Give a custom app made before custom apps got a host port of their own one now; see
+   * `ensureCustomAppHostPort`. It keeps the port it publishes unless the Hub or another app holds it.
    *
-   * Such an app has no port on its row, or has its internal port there: the settings dialog fills the
-   * port field from config.json, which holds the internal port, and a save stores it. That port is
-   * left alone unless it is one of the Hub's own ports, which it can never bind. The ports avoided are
-   * the ones a creation avoids. If none can be found or recorded, the app publishes what it did before.
+   * Such an app holds no port allocation. It has no port on its row, or has its internal port there:
+   * the settings dialog fills the port field from config.json, which holds the internal port, and a
+   * save stores it. An app that holds an allocation is left alone unless its port is one of the Hub's
+   * own ports, which it can never bind. The ports avoided are the ones a creation avoids. If none can
+   * be found or recorded, the app publishes what it did before.
    */
   private async assignCustomAppHostPort(appUrn: AppUrn, form: AppEventFormInput, internalPort: number, logger: LoggerService): Promise<void> {
     const hubPorts = hubHostPorts(this.moduleRef.get(ConfigurationService, { strict: false })?.get('userSettings'));
-    if (form.port && !hubPorts.has(form.port)) {
-      return;
-    }
 
     try {
+      const portManager = this.moduleRef.get(PortManagerService, { strict: false });
+      if (form.port && !hubPorts.has(form.port) && (await portManager.getMainPort(appUrn)) !== null) {
+        return;
+      }
+
       const appsRepository = this.moduleRef.get(AppsRepository, { strict: false });
       const compose = await this.moduleRef.get(AppFilesManager, { strict: false }).getDockerComposeJson(appUrn);
       const services = (compose.content as { services?: Parameters<typeof mappedHostPorts>[0] } | null)?.services;
-      const avoid = await customAppMainPortAvoids(appsRepository, appUrn, mappedHostPorts(services), internalPort, hubPorts);
+      const currentPort = form.port ?? internalPort;
+      const avoid = await customAppMainPortAvoids(appsRepository, appUrn, mappedHostPorts(services), [internalPort, currentPort], hubPorts);
 
-      form.port = await ensureCustomAppHostPort(
-        this.moduleRef.get(PortManagerService, { strict: false }),
-        appsRepository,
-        appUrn,
-        internalPort,
-        avoid,
-      );
+      form.port = await ensureCustomAppHostPort(portManager, appsRepository, appUrn, internalPort, avoid, currentPort);
       logger.info(`Custom app ${appUrn} now publishes on host port ${form.port}`);
     } catch (error) {
       logger.warn(

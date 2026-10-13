@@ -11,8 +11,10 @@ import {
 
 const APP_URN = 'my-nginx:_user' as AppUrn;
 
+type Allocation = { appUrn: string; hostPort: number; protocol: 'tcp' | 'udp' };
+
 /** A port manager that hands out `hostPort` for whatever it is asked, and records what it was asked. */
-const portManagerGiving = (hostPort: number, mainPort: number | null = null) => ({
+const portManagerGiving = (hostPort: number, mainPort: number | null = null, allocations: Allocation[] = []) => ({
   allocatePorts: vi.fn(async (_appUrn: AppUrn, requests: Array<{ containerPort: number; label: string; preferredHostPort?: number }>) =>
     requests.map((request, index) => ({
       id: index + 1,
@@ -26,6 +28,8 @@ const portManagerGiving = (hostPort: number, mainPort: number | null = null) => 
   ),
   getMainPort: vi.fn(async (_appUrn: AppUrn) => mainPort),
   releaseAll: vi.fn(async (_appUrn: AppUrn) => (mainPort === null ? 0 : 1)),
+  getAllAllocations: vi.fn(async () => allocations as never),
+  migrateExistingApp: vi.fn(async (_appUrn: AppUrn, _hostPort: number, _containerPort: number) => undefined),
 });
 
 describe('allocateCustomAppHostPort', () => {
@@ -51,13 +55,39 @@ describe('ensureCustomAppHostPort', () => {
     updateAppById: vi.fn(async () => undefined as never),
   });
 
-  it('allocates a host port for a custom app that has none, and writes it to the row with the rest of its config', async () => {
+  it('allocates a host port for a custom app that has none when its own is one to avoid, and writes it to the row', async () => {
     const portManager = portManagerGiving(10002);
     const appsRepository = appsRepositoryWith({ exposureMode: 'local' });
 
-    await expect(ensureCustomAppHostPort(portManager, appsRepository, APP_URN, 80)).resolves.toBe(10002);
-    expect(portManager.allocatePorts).toHaveBeenCalledWith(APP_URN, [{ containerPort: 80, label: 'main', preferredHostPort: 80 }]);
+    await expect(ensureCustomAppHostPort(portManager, appsRepository, APP_URN, 80, new Set([80]))).resolves.toBe(10002);
+    expect(portManager.migrateExistingApp).not.toHaveBeenCalled();
+    expect(portManager.allocatePorts).toHaveBeenCalledWith(APP_URN, [{ containerPort: 80, label: 'main', preferredHostPort: undefined }]);
     expect(appsRepository.updateAppById).toHaveBeenCalledWith(4, { config: { exposureMode: 'local', port: 10002 }, port: 10002 });
+  });
+
+  it('keeps the port an app made before host ports publishes when nothing holds it, and records it as the boot backfill does', async () => {
+    const portManager = portManagerGiving(10002);
+    const appsRepository = appsRepositoryWith({});
+
+    await expect(ensureCustomAppHostPort(portManager, appsRepository, APP_URN, 3000)).resolves.toBe(3000);
+    expect(portManager.migrateExistingApp).toHaveBeenCalledWith(APP_URN, 3000, 3000);
+    expect(portManager.allocatePorts).not.toHaveBeenCalled();
+    expect(appsRepository.updateAppById).toHaveBeenCalledWith(4, { config: { port: 3000 }, port: 3000 });
+  });
+
+  it('allocates another when a different app was given that port', async () => {
+    const portManager = portManagerGiving(10007, null, [{ appUrn: 'grafana:ci-marketplace', hostPort: 3000, protocol: 'tcp' }]);
+
+    await expect(ensureCustomAppHostPort(portManager, appsRepositoryWith({}), APP_URN, 3000)).resolves.toBe(10007);
+    expect(portManager.migrateExistingApp).not.toHaveBeenCalled();
+    expect(portManager.allocatePorts).toHaveBeenCalledWith(APP_URN, [{ containerPort: 3000, label: 'main', preferredHostPort: undefined }]);
+  });
+
+  it('records the port a settings save stored, which can differ from the internal port', async () => {
+    const portManager = portManagerGiving(10008);
+
+    await expect(ensureCustomAppHostPort(portManager, appsRepositoryWith({ port: 9000 }), APP_URN, 8081, new Set(), 9000)).resolves.toBe(9000);
+    expect(portManager.migrateExistingApp).toHaveBeenCalledWith(APP_URN, 9000, 8081);
   });
 
   it('reuses a main port the app was already given rather than allocating a second one', async () => {
@@ -111,7 +141,7 @@ describe('customAppMainPortAvoids', () => {
         { hostPort: 9100, protocol: 'tcp' },
         { hostPort: 5353, protocol: 'udp' },
       ],
-      8096,
+      [8096],
       new Set([80]),
     );
 
@@ -119,9 +149,19 @@ describe('customAppMainPortAvoids', () => {
   });
 
   it("does not count the app's own row as another app publishing its internal port", async () => {
-    const avoid = await customAppMainPortAvoids(publishing([{ appName: 'my-nginx', appStoreSlug: '_user' }]), APP_URN, [], 8081, new Set());
+    const avoid = await customAppMainPortAvoids(publishing([{ appName: 'my-nginx', appStoreSlug: '_user' }]), APP_URN, [], [8081], new Set());
 
     expect(avoid.has(8081)).toBe(false);
+  });
+
+  it("checks each port it is given against the other apps' rows", async () => {
+    const appsRepository = {
+      getAppsByPort: vi.fn(async (port: number) => (port === 9000 ? [{ appName: 'jellyfin', appStoreSlug: '_user' }] : []) as never),
+    };
+
+    const avoid = await customAppMainPortAvoids(appsRepository, APP_URN, [], [8081, 9000], new Set());
+
+    expect([...avoid]).toEqual([9000]);
   });
 });
 
