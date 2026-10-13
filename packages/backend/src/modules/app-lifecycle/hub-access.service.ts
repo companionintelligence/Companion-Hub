@@ -7,6 +7,7 @@ import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { hubTrustMaterialScopes } from '@/modules/apps/app.helpers';
 import { FORWARD_AUTH_IDENTITY_SECRET_ENV, FORWARD_AUTH_SECRET_ENV, ForwardAuthSecretResolver } from '@/modules/auth/forward-auth-secret.resolver';
 import { EnvUtils } from '@/modules/env/env.utils';
+import { isMemoryProviderApp } from '@/modules/memory-connect/memory-provider.predicate';
 import { AppLifecycleService } from './app-lifecycle.service';
 
 /** Operator-facing view of one app's Hub-provisioned trust material. Never carries raw values. */
@@ -58,8 +59,9 @@ export class HubAccessService {
     return {
       appKey: managed ? { prefix: managed.prefix, scopes: managed.scopes, lastUsedAt: managed.lastUsedAt, createdAt: managed.createdAt } : null,
       identityVerification: [FORWARD_AUTH_SECRET_ENV, FORWARD_AUTH_IDENTITY_SECRET_ENV].some((key) => (envMap.get(key) ?? '').trim().length > 0),
-      // Same gate generateEnvFile provisions from — never a restatement of it.
-      provisioned: hubTrustMaterialScopes(info).length > 0,
+      // The gates generateEnvFile provisions from, never a restatement of them. Companion Memory gets its own identity
+      // secret from the second one and holds neither key scope.
+      provisioned: hubTrustMaterialScopes(info).length > 0 || isMemoryProviderApp(info),
     };
   }
 
