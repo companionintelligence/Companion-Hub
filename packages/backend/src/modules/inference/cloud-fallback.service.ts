@@ -87,8 +87,13 @@ export class CloudFallbackService implements OnModuleInit {
    *
    * An omitted / blank `apiKey` keeps the previously stored key so a Settings save of a masked
    * field (`••••`) can toggle `enabled` without wiping the secret.
+   *
+   * Resolves once the provider is in settings.json, and rejects when it could not be saved. The
+   * Settings > AI tab sends its next save as soon as this answers, and a write still running then
+   * overlapped that save. A provider that could not be saved is taken back out of memory, so apps
+   * are not handed a key the request reported as not saved.
    */
-  setProvider(config: CloudProviderConfig): void {
+  async setProvider(config: CloudProviderConfig): Promise<void> {
     const existing = this.providers.get(config.provider);
     const resolved = this.resolveConfig({
       ...existing,
@@ -98,10 +103,20 @@ export class CloudFallbackService implements OnModuleInit {
       defaultModel: config.defaultModel || existing?.defaultModel || this.getDefaultModel(config.provider),
     });
     this.providers.set(resolved.provider, resolved);
+    try {
+      await this.persist();
+    } catch (error) {
+      // Unless a later call has replaced it in the meantime.
+      if (this.providers.get(resolved.provider) === resolved) {
+        if (existing) {
+          this.providers.set(resolved.provider, existing);
+        } else {
+          this.providers.delete(resolved.provider);
+        }
+      }
+      throw error;
+    }
     this.logger.info(`[CloudFallback] Configured provider: ${resolved.provider} (enabled: ${resolved.enabled}, baseUrl: ${resolved.baseUrl})`);
-    void this.persist().catch((error) => {
-      this.logger.error(`[CloudFallback] Failed to persist ${resolved.provider}`, error);
-    });
   }
 
   /** Get a provider config */

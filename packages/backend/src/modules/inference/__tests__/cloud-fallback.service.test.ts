@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { PassThrough } from 'node:stream';
+import { InternalServerErrorException } from '@nestjs/common';
 import axios from 'axios';
 import type { CloudProviderConfig } from '@ci-hub/common/types';
 import { CloudFallbackService } from '../cloud-fallback.service';
@@ -61,6 +62,49 @@ describe('CloudFallbackService.setProvider', () => {
 
     expect(service.getProvider('openai')?.apiKey).toBe('sk-live');
     expect(service.getProvider('openai')?.enabled).toBe(false);
+  });
+
+  it('answers only once the provider is in settings.json', async () => {
+    // Settings > AI sends the preferences as soon as this answers, and both rewrite settings.json.
+    let finishWrite = () => {};
+    configuration.setInferenceCloudProviders.mockReturnValue(
+      new Promise<CloudProviderConfig[]>((resolve) => {
+        finishWrite = () => resolve([]);
+      }),
+    );
+    let answered = false;
+
+    const saving = (async () => {
+      await service.setProvider({ provider: 'openai', enabled: true, defaultModel: 'gpt-4o' });
+      answered = true;
+    })();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(answered).toBe(false);
+
+    finishWrite();
+    await saving;
+    expect(answered).toBe(true);
+  });
+
+  it('fails when the provider could not be saved, instead of answering as if it had been', async () => {
+    configuration.setInferenceCloudProviders.mockRejectedValue(new InternalServerErrorException('Failed to set user settings'));
+
+    await expect(service.setProvider({ provider: 'openai', apiKey: 'sk-live', enabled: true, defaultModel: 'gpt-4o' })).rejects.toThrow(
+      'Failed to set user settings',
+    );
+    // Not handed to apps either, after a request that reported it was not saved.
+    expect(service.getProvider('openai')).toBeUndefined();
+  });
+
+  it('keeps the provider it had when a change to it could not be saved', async () => {
+    await service.setProvider({ provider: 'openai', apiKey: 'sk-live', enabled: true, defaultModel: 'gpt-4o' });
+    configuration.setInferenceCloudProviders.mockRejectedValue(new InternalServerErrorException('Failed to set user settings'));
+
+    await expect(service.setProvider({ provider: 'openai', apiKey: 'sk-other', enabled: false, defaultModel: 'gpt-4o' })).rejects.toThrow(
+      'Failed to set user settings',
+    );
+
+    expect(service.getProvider('openai')).toMatchObject({ apiKey: 'sk-live', enabled: true });
   });
 
   it('reloads persisted providers on boot', () => {
