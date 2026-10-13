@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createAppUrn } from '@/common/helpers/app-helpers';
-import { writeSettingsJsonFile } from '@/common/helpers/env-helpers';
+import { removeSettingsJsonCopies, writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR } from '@/common/constants';
 import { app } from '@/core/database/drizzle/schema';
 import { DATABASE, type Database } from '@/core/database/database.module';
@@ -9,7 +9,7 @@ import { CacheService } from '@/core/cache/cache.service';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { LoggerService } from '@/core/logger/logger.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
-import { ConfigurationService } from '@/core/config/configuration.service';
+import { ConfigurationService, inSettingsFileTurn } from '@/core/config/configuration.service';
 import { UninstallAppCommand } from '@/modules/app-lifecycle/commands/uninstall-app-command';
 import { clearRegistrationRecoveryArtifacts } from '@/modules/app-lifecycle/registration-recovery-state';
 import { RegistrationService } from '@/modules/registration/registration.service';
@@ -154,7 +154,16 @@ export class FactoryResetService {
 
   public async resetSettings(): Promise<void> {
     const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
-    await writeSettingsJsonFile(settingsPath, '{}', this.logger);
+    // After any save already under way, which would otherwise write the old settings back over `{}`.
+    await inSettingsFileTurn(async () => {
+      await writeSettingsJsonFile(settingsPath, '{}', this.logger);
+      // Not allowed to fail the reset: the cache and Bearer verdicts after this must still be cleared.
+      await removeSettingsJsonCopies(settingsPath).catch((error: unknown) => {
+        this.logger.warn(
+          `Factory reset could not remove the copies of settings.json in ${path.dirname(settingsPath)}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    });
   }
 
   private async wipeDirectory(dirPath: string): Promise<void> {
