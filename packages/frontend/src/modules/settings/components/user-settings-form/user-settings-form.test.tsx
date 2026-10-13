@@ -19,7 +19,6 @@ const newHubSettings: SettingsFormValues = {
   timeZone: 'Etc/GMT',
   domain: 'example.com',
   internalIp: '192.168.1.10',
-  listenIp: '0.0.0.0',
   port: 80,
   sslPort: 443,
   eventsTimeout: 5,
@@ -103,6 +102,45 @@ describe('UserSettingsForm Local domain check', () => {
 
     expect(await screen.findByText('Invalid domain')).toBeInTheDocument();
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+});
+
+describe('UserSettingsForm Default app CPU limit', () => {
+  it('sends an emptied field, so the saved default is cleared rather than kept', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={{ ...newHubSettings, defaultAppCpuLimit: '0.5' }} onSubmit={onSubmit} />);
+
+    await userEvent.clear(screen.getByLabelText(/^default app cpu limit/i));
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ defaultAppCpuLimit: '' }));
+  });
+});
+
+describe('UserSettingsForm Listen IP', () => {
+  // The Hub still reports a Listen IP with its settings, whether or not the page shows one.
+  const withStoredListenIp = { ...newHubSettings, advancedSettings: true, listenIp: '10.0.0.5' };
+
+  it('has no Listen IP field, even with Advanced settings on', () => {
+    render(<UserSettingsForm initialValues={withStoredListenIp} onSubmit={vi.fn()} />);
+
+    expect(screen.getByLabelText(/^internal ip/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/listen ip/i)).not.toBeInTheDocument();
+    // By name as well, so the check doesn't hang on the label's string.
+    expect(document.querySelector('[name="listenIp"]')).toBeNull();
+  });
+
+  it('saves every other value as it was, and leaves a stored Listen IP out of the request', async () => {
+    const onSubmit = vi.fn();
+    render(<UserSettingsForm initialValues={withStoredListenIp} onSubmit={onSubmit} />);
+
+    await submit();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const { listenIp: _notSent, ...shown } = withStoredListenIp;
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining(shown));
+    expect(onSubmit).toHaveBeenCalledWith(expect.not.objectContaining({ listenIp: expect.anything() }));
   });
 });
 

@@ -22,6 +22,19 @@ vi.mock('node:fs', () => {
   };
 });
 
+// LoggerService's methods are instance fields, so a prototype spy can't see them. Record the
+// warnings instead; nothing else about the logger changes.
+const { loggedWarnings } = vi.hoisted(() => ({ loggedWarnings: [] as string[] }));
+vi.mock('@/core/logger/logger.service', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/core/logger/logger.service')>();
+  class RecordingLoggerService extends actual.LoggerService {
+    public warn = (...message: unknown[]) => {
+      loggedWarnings.push(message.map(String).join(' '));
+    };
+  }
+  return { ...actual, LoggerService: RecordingLoggerService };
+});
+
 vi.mock('dotenv', () => {
   const config = vi.fn();
   return { default: { config }, config };
@@ -65,7 +78,7 @@ describe('env-helpers — resolve() priority chain', () => {
     vi.clearAllMocks();
 
     // Save and set required env vars
-    for (const key of ['ROOT_FOLDER_HOST', 'CI_CLOUD_URL', 'DOMAIN', 'GUEST_DASHBOARD', 'DEMO_MODE', 'JWT_SECRET', 'MCP_API_KEY']) {
+    for (const key of ['ROOT_FOLDER_HOST', 'CI_CLOUD_URL', 'DOMAIN', 'GUEST_DASHBOARD', 'DEMO_MODE', 'JWT_SECRET', 'MCP_API_KEY', 'LOG_LEVEL']) {
       savedEnv[key] = process.env[key];
     }
     process.env.ROOT_FOLDER_HOST = '/home/user/ci-os-hub';
@@ -117,6 +130,60 @@ describe('env-helpers — resolve() priority chain', () => {
     setupMocks({ settingsJson: { guestDashboard: false } });
     const envMap = await generateSystemEnvFile();
     expect(envMap.get('GUEST_DASHBOARD')).toBe('true');
+  });
+
+  it('MUST let the Log level saved in Settings win over the LOG_LEVEL every compose file sets', async () => {
+    process.env.LOG_LEVEL = 'info';
+    setupMocks({ settingsJson: { logLevel: 'debug' } });
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.get('LOG_LEVEL')).toBe('debug');
+    // ConfigurationService and the Hub's logger read process.env, where the compose value would stay.
+    expect(process.env.LOG_LEVEL).toBe('debug');
+  });
+
+  it('MUST keep LOG_LEVEL from the environment when no Log level was saved', async () => {
+    process.env.LOG_LEVEL = 'warn';
+    setupMocks({ settingsJson: {} });
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.get('LOG_LEVEL')).toBe('warn');
+  });
+
+  it('MUST say so when LOG_LEVEL asks for more detail than the Log level saved in Settings gives', async () => {
+    // A server operator who sets LOG_LEVEL=debug gets no debug lines once the Settings page has been
+    // saved, since it sends Log level every time. The boot log has to tell them why.
+    loggedWarnings.length = 0;
+    process.env.LOG_LEVEL = 'debug';
+    setupMocks({ settingsJson: { logLevel: 'info' } });
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.get('LOG_LEVEL')).toBe('info');
+    expect(loggedWarnings).toContainEqual(expect.stringMatching(/LOG_LEVEL=debug .*Log level.*info/));
+  });
+
+  it('MUST say so when LOG_LEVEL asks for less detail than the Log level saved in Settings gives', async () => {
+    loggedWarnings.length = 0;
+    process.env.LOG_LEVEL = 'warn';
+    setupMocks({ settingsJson: { logLevel: 'info' } });
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.get('LOG_LEVEL')).toBe('info');
+    expect(loggedWarnings).toContainEqual(expect.stringMatching(/LOG_LEVEL=warn .*Log level.*info/));
+  });
+
+  it("MUST NOT warn about the compose file's LOG_LEVEL=info, or one that matches the saved Log level", async () => {
+    // Both compose files set LOG_LEVEL=info when the operator chose nothing, so a Hub whose Log level
+    // was set to warn in Settings would otherwise blame an environment value nobody set on every boot.
+    loggedWarnings.length = 0;
+    for (const [env, saved] of [
+      ['info', 'debug'],
+      ['info', 'info'],
+      ['info', 'warn'],
+      ['info', 'error'],
+      ['debug', 'debug'],
+    ]) {
+      process.env.LOG_LEVEL = env;
+      setupMocks({ settingsJson: { logLevel: saved } });
+      await generateSystemEnvFile();
+    }
+    expect(loggedWarnings.filter((line) => line.includes('LOG_LEVEL='))).toEqual([]);
   });
 
   it('boolStr() MUST convert settings boolean to string via DEMO_MODE', async () => {

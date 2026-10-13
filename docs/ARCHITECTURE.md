@@ -876,7 +876,7 @@ See [`e2e/README.md`](../e2e/README.md) for full lane documentation.
 | `CI_HUB_VERSION` | `0.2.27` | Hub version string |
 | `API_PORT` | `5002` (prod) / `3000` (dev) | Backend listen port |
 | `NODE_ENV` | `production` | Node.js environment |
-| `LOG_LEVEL` | `info` | Winston log level |
+| `LOG_LEVEL` | `info` | Winston log level. A Log level saved in Settings takes its place |
 | `QUEUE_TIMEOUT_IN_MINUTES` | `5` | Max time for async queue jobs |
 | `ARCHITECTURE` | auto-detected | CPU architecture (amd64/arm64) |
 

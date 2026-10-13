@@ -1118,6 +1118,26 @@ describe('DockerComposeBuilder resource limits', () => {
 
     expect(parsed.services.nginx.deploy).toBeUndefined();
   });
+
+  it('caps a service that sets no CPU limit at the Default app CPU limit from Settings', async () => {
+    builder = new DockerComposeBuilder('example.com', 'ci.lan', true, { defaultAppCpuLimit: '0.5' });
+
+    const parsed = yaml.parse(await build({}));
+
+    expect(parsed.services.nginx.deploy.resources.limits).toEqual({ cpus: '0.5' });
+  });
+
+  it('lets the install form and the app manifest beat the Default app CPU limit', async () => {
+    const cappedByManifest: ServiceInput = { ...service, deploy: { resources: { limits: { cpus: '0.25' } } } };
+
+    builder = new DockerComposeBuilder('example.com', 'ci.lan', true, { defaultAppCpuLimit: '0.5' });
+    const fromForm = yaml.parse(await build({ cpuLimit: '2' }));
+    builder = new DockerComposeBuilder('example.com', 'ci.lan', true, { defaultAppCpuLimit: '0.5' });
+    const fromManifest = yaml.parse(await build({}, [cappedByManifest]));
+
+    expect(fromForm.services.nginx.deploy.resources.limits).toEqual({ cpus: '2' });
+    expect(fromManifest.services.nginx.deploy.resources.limits).toEqual({ cpus: '0.25' });
+  });
 });
 
 describe('DockerComposeBuilder network sandboxing and defense-in-depth', () => {

@@ -51,7 +51,9 @@ const settingsSchema = z.object({
   timeZone: z.string().optional(),
   advancedSettings: z.boolean().optional(),
   internalIp: z.ipv4().optional(),
-  listenIp: z.ipv4().optional(),
+  // No Listen IP. The compose files always set INTERNAL_IP, so a saved one never applied, and the
+  // value only feeds the host in app links. Leaving it out of this schema also leaves it out of the
+  // request, so a value an older build stored stays as it is.
   port: z.number().min(1).max(65535).optional(),
   sslPort: z.number().min(1).max(65535).optional(),
   eventsTimeout: z.coerce.number().int().min(1).optional(),
@@ -75,7 +77,6 @@ export type SettingsFormValues = {
   timeZone?: string;
   advancedSettings?: boolean;
   internalIp?: string;
-  listenIp?: string;
   port?: number;
   sslPort?: number;
   eventsTimeout?: number;
@@ -275,7 +276,9 @@ export const UserSettingsForm = (props: IProps) => {
                 step="0.1"
                 min="0.1"
                 {...register('defaultAppCpuLimit', {
-                  setValueAs: (value) => (value === '' || value === null ? undefined : String(value)),
+                  // An emptied field is sent as '', which the Hub reads as "no default". Dropping it
+                  // left the saved default in place.
+                  setValueAs: (value) => (value === null || value === undefined ? undefined : String(value)),
                 })}
                 label={t('SETTINGS_GENERAL_DEFAULT_APP_CPU_LIMIT')}
                 error={errors.defaultAppCpuLimit?.message}
@@ -467,19 +470,6 @@ export const UserSettingsForm = (props: IProps) => {
                     }
                     error={errors.internalIp?.message}
                     placeholder="192.168.1.1"
-                  />
-                </div>
-                <div className="mb-3">
-                  <Input
-                    {...register('listenIp')}
-                    label={
-                      <>
-                        {t('SETTINGS_GENERAL_LISTEN_IP')}
-                        <SettingsHint className="listen-ip-hint" hint={t('SETTINGS_GENERAL_LISTEN_IP_HINT')} />
-                      </>
-                    }
-                    error={errors.listenIp?.message}
-                    placeholder="0.0.0.0"
                   />
                 </div>
                 <div className="mb-3">

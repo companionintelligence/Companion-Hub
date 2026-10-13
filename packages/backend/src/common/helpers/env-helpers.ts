@@ -942,7 +942,24 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     'ADVANCED_SETTINGS',
     resolve('ADVANCED_SETTINGS', { envMap, settingsVal: boolStr(settingsData.advancedSettings), fallback: DEFAULT_ADVANCED_SETTINGS }),
   );
-  envMap.set('LOG_LEVEL', resolve('LOG_LEVEL', { envMap, settingsVal: settingsData.logLevel, fallback: DEFAULT_LOG_LEVEL }));
+  // The Log level saved in Settings first, then the environment. The compose files always set
+  // LOG_LEVEL (info unless the env file says otherwise) and CI-OS writes LOG_LEVEL=info into its env
+  // file, so in resolve()'s env-first order a saved level never applied. As for TZ, process.env gets
+  // it too: ConfigurationService and the Hub's logger read it there, where the compose value stays.
+  const envLogLevel = resolve('LOG_LEVEL', { envMap, fallback: DEFAULT_LOG_LEVEL });
+  const logLevel = settingsData.logLevel ?? envLogLevel;
+  // The Settings page sends Log level with every save, so on a server where it was saved once, an
+  // operator's LOG_LEVEL in the env file does nothing. Say why in the boot log, which this logger
+  // still writes at the environment's level. A LOG_LEVEL of info is left out: the compose files set
+  // that when nobody chose a level, and an operator who picked warn in Settings never set it.
+  if (envLogLevel !== DEFAULT_LOG_LEVEL && envLogLevel !== logLevel) {
+    logger.warn(
+      `LOG_LEVEL=${envLogLevel} from the environment is ignored because Settings has Log level ${logLevel}. ` +
+        'Change Log level in Settings, or remove logLevel from state/settings.json and restart the Hub.',
+    );
+  }
+  envMap.set('LOG_LEVEL', logLevel);
+  process.env.LOG_LEVEL = logLevel;
   envMap.set(
     'EXPERIMENTAL_INSECURE_COOKIE',
     resolve('EXPERIMENTAL_INSECURE_COOKIE', {
