@@ -85,6 +85,18 @@ describe('SystemUpdateController', () => {
     });
   });
 
+  describe('getUpdateBlocks', () => {
+    it('answers with the service blocks, for a signed-in user only', async () => {
+      const blocks = { updateBlockedReason: 'started on Windows', autoUpdateBlockedReason: 'started on Windows', desktopAppUpdatesHub: true };
+      updateService.getUpdateBlocks.mockResolvedValue(blocks);
+
+      await expect(controller.getUpdateBlocks()).resolves.toEqual(blocks);
+      expect(updateService.checkForUpdates).not.toHaveBeenCalled();
+      const guards = (Reflect.getMetadata('__guards__', SystemUpdateController.prototype.getUpdateBlocks) ?? []) as unknown[];
+      expect(guards).toContain(AuthGuard);
+    });
+  });
+
   describe('getHostListenerStatus', () => {
     it('returns whether the desktop listener is reachable', async () => {
       updateService.getHostListenerStatus.mockResolvedValue({ reachable: false });
