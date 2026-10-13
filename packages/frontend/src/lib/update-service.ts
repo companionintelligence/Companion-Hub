@@ -571,7 +571,7 @@ export async function installDesktopUpdate(info: UpdateInfo, callbacks: DesktopU
 export async function performStackUpdate(targetVersion?: string): Promise<UpdateActionResult> {
   try {
     const { performUpdate } = await import('@/api-client/sdk.gen');
-    const { sdkResult } = await import('@/lib/sdk-unwrap');
+    const { sdkErrorMessage, sdkResult } = await import('@/lib/sdk-unwrap');
     const result = await sdkResult(performUpdate({ body: { targetVersion } } as Parameters<typeof performUpdate>[0]));
     if (result.ok) {
       const data = (result.data ?? {}) as { stack?: UpdateActionResult['stack']; host?: UpdateActionResult['host'] };
@@ -588,6 +588,12 @@ export async function performStackUpdate(targetVersion?: string): Promise<Update
           isTauri() && !isTauriMobileSync() ? 'SETTINGS_ACTIONS_UPDATE_STACK_DESKTOP_SEPARATE' : 'SETTINGS_ACTIONS_UPDATE_STACK_HOST_UNAVAILABLE';
       }
       return { ok: true, messageKey, stack, host };
+    }
+    // A 409 is the Hub refusing, and its body says why: the desktop listener went away after the
+    // check, or the refusal is one the page did not know about yet. Its words beat "Check logs".
+    const reason = result.status === 409 && result.error ? sdkErrorMessage(result.error).trim() : '';
+    if (reason) {
+      return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_REFUSED', messageParams: { reason } };
     }
     return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_FAILED' };
   } catch {
