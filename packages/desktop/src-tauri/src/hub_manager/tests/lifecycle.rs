@@ -31,3 +31,22 @@ fn persist_config_hash_writes_compose_env_fingerprint() {
     let expected = crate::hub_manager::compute_config_hash(&compose, &env);
     assert_eq!(saved, expected);
 }
+
+// The startup page opens the Hub only once this reads false. A launch check that panics must not
+// leave it true, or the window stays on the startup page for good.
+#[test]
+fn launch_check_is_pending_until_dropped_even_by_a_panic() {
+    assert!(!crate::hub_manager::launch_state().launch_check_pending);
+
+    let check = crate::hub_manager::LaunchCheck::begin();
+    assert!(crate::hub_manager::launch_state().launch_check_pending);
+    drop(check);
+    assert!(!crate::hub_manager::launch_state().launch_check_pending);
+
+    let panicked = std::panic::catch_unwind(|| {
+        let _check = crate::hub_manager::LaunchCheck::begin();
+        panic!("launch check failed");
+    });
+    assert!(panicked.is_err());
+    assert!(!crate::hub_manager::launch_state().launch_check_pending);
+}

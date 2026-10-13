@@ -102,6 +102,46 @@ static START_BEGAN_AT_MS: AtomicU64 = AtomicU64::new(0);
 /// Download progress then counts toward the startup percentage until the Hub is ready.
 static START_IMAGE_DOWNLOADS_SEEN: AtomicBool = AtomicBool::new(false);
 
+/// True while the launch check runs: deciding whether to start the Hub, then the cleanup and start
+/// it may lead to. Held by a [`LaunchCheck`].
+static LAUNCH_CHECK_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Marks the launch check as running until it is dropped, panics included.
+///
+/// The cleanup before a start removes the running Hub container, and it runs before `start_hub`
+/// sets `START_IN_PROGRESS`. A Hub that answers during the check may be gone a second later, so the
+/// startup page waits for this as well before it opens the Hub (see [`launch_state`]).
+#[must_use = "the launch check ends when this is dropped"]
+pub struct LaunchCheck(());
+
+impl LaunchCheck {
+    pub fn begin() -> Self {
+        LAUNCH_CHECK_PENDING.store(true, Ordering::SeqCst);
+        Self(())
+    }
+}
+
+impl Drop for LaunchCheck {
+    fn drop(&mut self) {
+        LAUNCH_CHECK_PENDING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Whether the desktop app may still remove or recreate the Hub's containers. Two atomics and no
+/// Docker call, so the startup page can ask on every poll without waiting on a slow engine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct LaunchState {
+    pub launch_check_pending: bool,
+    pub start_in_progress: bool,
+}
+
+pub fn launch_state() -> LaunchState {
+    LaunchState {
+        launch_check_pending: LAUNCH_CHECK_PENDING.load(Ordering::SeqCst),
+        start_in_progress: START_IN_PROGRESS.load(Ordering::SeqCst),
+    }
+}
+
 /// True while the current start still has to run its final `compose up --force-recreate`.
 /// The database and queue it brings up first are replaced then, so they are not ready yet.
 static START_RECREATE_PENDING: AtomicBool = AtomicBool::new(false);

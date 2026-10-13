@@ -285,6 +285,13 @@ async fn get_hub_status_command() -> hub_manager::HubStatus {
         .unwrap_or_else(|err| panic!("hub status task failed: {err}"))
 }
 
+/// Whether the launch check or a start may still remove the containers that answer now. The startup
+/// page waits for both to finish before it opens the Hub.
+#[tauri::command]
+fn get_launch_state_command() -> hub_manager::LaunchState {
+    hub_manager::launch_state()
+}
+
 /// Get per-service startup progress for the frontend loading screen.
 #[tauri::command]
 async fn get_startup_progress_command() -> hub_manager::StartupProgress {
@@ -616,6 +623,7 @@ pub fn run() {
             check_docker_access_command,
             get_hub_api_url_command,
             get_hub_status_command,
+            get_launch_state_command,
             get_startup_progress_command,
             read_desktop_logs_command,
             open_logs_dir_command,
@@ -821,7 +829,12 @@ pub fn run() {
                 let compose = compose_path.clone();
                 let env = env_path.clone();
                 let data = data_dir.clone();
+                // Taken here, before the startup page can ask: Tauri runs setup inside the event
+                // loop's Ready handler, so the window's IPC waits until it returns. The task holds
+                // it to the end, through every early return below.
+                let launch_check = hub_manager::LaunchCheck::begin();
                 tauri::async_runtime::spawn(async move {
+                    let _launch_check = launch_check;
                     let compose_for_decision = compose.clone();
                     let env_for_decision = env.clone();
                     let data_for_decision = data.clone();
