@@ -2408,6 +2408,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
     }
 
+    // A custom app's config.json keeps its internal port, and the host port the Hub gave it lives on
+    // the row (see `allocateCustomAppHostPort`). A save that leaves the port out would fall back to
+    // config.json below and publish the internal port again, which for port 80 can never bind.
+    if (parsedForm.port === undefined && extractAppUrn(appUrn).appStoreId === '_user' && app.port) {
+      parsedForm.port = app.port;
+    }
+
     // Manifest edge-auth default (CI-Engineering#74): when this update does not carry an
     // enableAuth decision, inherit the app's STORED choice first, and only fall to the manifest
     // default when the app never had one (an onboarding-era install). "Explicit operator choice

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mock, mockDeep } from 'vitest-mock-extended';
 import { removeRestartingAppContainers, StartAppCommand, startComposeCommand } from '../start-app-command';
 import type { ModuleRef } from '@nestjs/core';
@@ -12,6 +12,7 @@ import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
+import { PortManagerService } from '@/modules/network/port-manager.service';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import type { AppUrn } from '@ci-hub/common/types';
 import { parseComposeJson } from '@ci-hub/common/schemas';
@@ -50,6 +51,7 @@ describe('StartAppCommand — pull policy', () => {
   let composeArgs: string[];
   let appFilesManager: any;
   let dockerode: ReturnType<typeof mock<Dockerode>>;
+  let portManager: ReturnType<typeof mock<PortManagerService>>;
   const appUrn = 'urn:store:test-app' as AppUrn;
 
   beforeEach(() => {
@@ -113,8 +115,11 @@ describe('StartAppCommand — pull policy', () => {
     // @ts-expect-error
     dockerode.pruneContainers.mockResolvedValue({ ContainersDeleted: [], SpaceReclaimed: 0 });
 
+    portManager = mock<PortManagerService>();
+
     const moduleRef = {
       get: vi.fn((token: any) => {
+        if (token === PortManagerService) return portManager;
         if (token === LoggerService) return logger;
         if (token === ConfigurationService) return config;
         if (token === AppFilesManager) return appFilesManager;
@@ -289,6 +294,192 @@ describe('StartAppCommand — pull policy', () => {
     expect(result.success).toBe(true);
     expect(isRocmKfdPassthroughAvailable).toHaveBeenCalled();
     expect(dockerService.composeApp).toHaveBeenCalled();
+  });
+
+  /*
+   * A custom app made before custom apps got a host port of their own has none on its row, so its env
+   * fell back to the internal port and the host published that: port 80 never started.
+   */
+  describe('a custom app with no host port yet', () => {
+    const customUrn = 'my-nginx:_user' as AppUrn;
+    const helperOf = <T>(token: unknown) => (command as unknown as { moduleRef: { get: (t: unknown) => T } }).moduleRef.get(token);
+
+    beforeEach(() => {
+      // The Hub's web ports come from the env, so a developer's own HTTP_PORT must not leak in.
+      vi.stubEnv('HTTP_PORT', '');
+      vi.stubEnv('HTTPS_PORT', '');
+      vi.stubEnv('TRAEFIK_DASHBOARD_PORT', '');
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'my-nginx', port: 80, force_pull: false } as any);
+      portManager.getMainPort.mockResolvedValue(null);
+      portManager.getAllAllocations.mockResolvedValue([]);
+      portManager.migrateExistingApp.mockResolvedValue();
+      portManager.releaseAll.mockResolvedValue(1);
+      portManager.allocatePorts.mockResolvedValue([
+        { id: 9, appUrn: customUrn, hostPort: 10000, containerPort: 80, protocol: 'tcp', label: 'main', createdAt: '2026-10-10T00:00:00.000Z' },
+      ]);
+      helperOf<ReturnType<typeof mock<AppsRepository>>>(AppsRepository).getAppsByPort.mockResolvedValue([]);
+      helperOf<ReturnType<typeof mock<AppsRepository>>>(AppsRepository).getAppByUrn.mockResolvedValue({
+        id: 7,
+        config: { exposureMode: 'local' },
+      } as any);
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('gets one on its first start, writes it to the row, and builds its env on it', async () => {
+      const result = await command.execute(customUrn, {});
+
+      expect(result.success).toBe(true);
+      // 80 is the Hub's own HTTP port, so the app can't keep it and it is not even asked for.
+      expect(portManager.migrateExistingApp).not.toHaveBeenCalled();
+      expect(portManager.allocatePorts).toHaveBeenCalledWith(customUrn, [{ containerPort: 80, label: 'main', preferredHostPort: undefined }]);
+      expect(helperOf<ReturnType<typeof mock<AppsRepository>>>(AppsRepository).updateAppById).toHaveBeenCalledWith(7, {
+        config: { exposureMode: 'local', port: 10000 },
+        port: 10000,
+      });
+      expect(helperOf<ReturnType<typeof mock<AppHelpers>>>(AppHelpers).generateEnvFile).toHaveBeenCalledWith(
+        customUrn,
+        expect.objectContaining({ port: 10000 }),
+      );
+    });
+
+    it('keeps the host port a custom app already has', async () => {
+      portManager.getMainPort.mockResolvedValue(18080);
+
+      await command.execute(customUrn, { port: 18080 });
+
+      expect(portManager.allocatePorts).not.toHaveBeenCalled();
+      expect(portManager.migrateExistingApp).not.toHaveBeenCalled();
+      expect(helperOf<ReturnType<typeof mock<AppHelpers>>>(AppHelpers).generateEnvFile).toHaveBeenCalledWith(
+        customUrn,
+        expect.objectContaining({ port: 18080 }),
+      );
+    });
+
+    it("keeps it off the host port the desktop app moved the Hub's HTTPS to", async () => {
+      vi.stubEnv('HTTPS_PORT', '8443');
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'my-nginx', port: 8443, force_pull: false } as any);
+
+      await command.execute(customUrn, {});
+
+      expect(portManager.allocatePorts).toHaveBeenCalledWith(customUrn, [{ containerPort: 8443, label: 'main', preferredHostPort: undefined }]);
+    });
+
+    /*
+     * The settings dialog fills its port field from config.json, which holds a custom app's internal
+     * port, so a save stored 8080 on the row (80 can't be saved: the form takes 1024 and up). The boot
+     * backfill then recorded 8080 as the app's main allocation, and Traefik's dashboard holds it.
+     */
+    it('replaces a Hub port a settings save stored, and the allocation the boot backfill made of it', async () => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'my-nginx', port: 8080, force_pull: false } as any);
+      portManager.getMainPort.mockResolvedValue(8080);
+
+      const result = await command.execute(customUrn, { port: 8080 });
+
+      expect(result.success).toBe(true);
+      expect(portManager.releaseAll).toHaveBeenCalledWith(customUrn);
+      expect(portManager.allocatePorts).toHaveBeenCalledWith(customUrn, [{ containerPort: 8080, label: 'main', preferredHostPort: undefined }]);
+      expect(helperOf<ReturnType<typeof mock<AppHelpers>>>(AppHelpers).generateEnvFile).toHaveBeenCalledWith(
+        customUrn,
+        expect.objectContaining({ port: 10000 }),
+      );
+    });
+
+    it('keeps the port a settings save stored when nothing else holds it, and records it', async () => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'my-nginx', port: 8081, force_pull: false } as any);
+
+      await command.execute(customUrn, { port: 8081 });
+
+      expect(portManager.migrateExistingApp).toHaveBeenCalledWith(customUrn, 8081, 8081);
+      expect(portManager.allocatePorts).not.toHaveBeenCalled();
+    });
+
+    /*
+     * An app made before this change keeps the port it published unless the Hub or another app holds it,
+     * and that port is recorded the way the boot backfill records an old install's. 3000 is on the port
+     * manager's reserved list (the Hub's development port), but a running Hub doesn't publish it.
+     */
+    it('keeps the port an older app published on 3000, which nothing holds, and records it', async () => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'my-grafana', port: 3000, force_pull: false } as any);
+
+      await command.execute(customUrn, {});
+
+      expect(portManager.migrateExistingApp).toHaveBeenCalledWith(customUrn, 3000, 3000);
+      expect(portManager.allocatePorts).not.toHaveBeenCalled();
+      expect(helperOf<ReturnType<typeof mock<AppsRepository>>>(AppsRepository).updateAppById).toHaveBeenCalledWith(7, {
+        config: { exposureMode: 'local', port: 3000 },
+        port: 3000,
+      });
+      expect(helperOf<ReturnType<typeof mock<AppHelpers>>>(AppHelpers).generateEnvFile).toHaveBeenCalledWith(
+        customUrn,
+        expect.objectContaining({ port: 3000 }),
+      );
+    });
+
+    it('moves an older app off a port another app was given', async () => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'my-grafana', port: 3000, force_pull: false } as any);
+      portManager.getAllAllocations.mockResolvedValue([
+        {
+          id: 2,
+          appUrn: 'grafana:ci-marketplace',
+          hostPort: 3000,
+          containerPort: 3000,
+          protocol: 'tcp',
+          label: 'main',
+          createdAt: '2026-10-10T00:00:00.000Z',
+        },
+      ]);
+
+      await command.execute(customUrn, {});
+
+      expect(portManager.migrateExistingApp).not.toHaveBeenCalled();
+      expect(portManager.allocatePorts).toHaveBeenCalledWith(customUrn, [{ containerPort: 3000, label: 'main', preferredHostPort: undefined }]);
+    });
+
+    it("moves an older app off a port another app's row publishes", async () => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'my-grafana', port: 3000, force_pull: false } as any);
+      helperOf<ReturnType<typeof mock<AppsRepository>>>(AppsRepository).getAppsByPort.mockImplementation(
+        async (port: number) => (port === 3000 ? [{ appName: 'grafana-host', appStoreSlug: '_user' }] : []) as any,
+      );
+
+      await command.execute(customUrn, {});
+
+      expect(portManager.migrateExistingApp).not.toHaveBeenCalled();
+      expect(portManager.allocatePorts).toHaveBeenCalledWith(customUrn, [{ containerPort: 3000, label: 'main', preferredHostPort: undefined }]);
+    });
+
+    it('keeps it off a host port its own Port Mappings publish', async () => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: 'my-nginx', port: 9200, force_pull: false } as any);
+      appFilesManager.getDockerComposeJson.mockResolvedValue({
+        path: '/tmp',
+        content: {
+          services: [{ name: 'web', image: 'nginx', isMain: true, internalPort: 9200, addPorts: [{ containerPort: 9300, hostPort: 9200 }] }],
+        },
+      });
+
+      await command.execute(customUrn, {});
+
+      expect(portManager.allocatePorts).toHaveBeenCalledWith(customUrn, [{ containerPort: 9200, label: 'main', preferredHostPort: undefined }]);
+    });
+
+    it('still starts on what it published before when no host port can be allocated', async () => {
+      portManager.allocatePorts.mockRejectedValue(new Error('NETWORK_ERROR_NO_AVAILABLE_PORTS'));
+
+      const result = await command.execute(customUrn, {});
+
+      expect(portManager.allocatePorts).toHaveBeenCalled();
+      expect(result.success).toBe(true);
+      expect(dockerService.composeApp).toHaveBeenCalled();
+    });
+
+    it('leaves a store app to the port its install allocated', async () => {
+      await command.execute('wordpress:ci-marketplace' as AppUrn, {});
+
+      expect(portManager.allocatePorts).not.toHaveBeenCalled();
+      expect(portManager.getMainPort).not.toHaveBeenCalled();
+    });
   });
 });
 

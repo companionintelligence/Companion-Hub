@@ -4,6 +4,7 @@ import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { LoggerService } from '@/core/logger/logger.service';
+import { PortManagerService } from '@/modules/network/port-manager.service';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
@@ -13,12 +14,14 @@ describe('CustomAppService', () => {
   let configService: MockProxy<ConfigurationService>;
   let appsRepository: MockProxy<AppsRepository>;
   let logger: MockProxy<LoggerService>;
+  let portManager: MockProxy<PortManagerService>;
 
   beforeEach(async () => {
     filesystem = mock<FilesystemService>();
     configService = mock<ConfigurationService>();
     appsRepository = mock<AppsRepository>();
     logger = mock<LoggerService>();
+    portManager = mock<PortManagerService>();
 
     configService.get.mockImplementation((key) => {
       if (key === 'directories') return { dataDir: '/data', appDataDir: '/app-data' } as any;
@@ -32,6 +35,23 @@ describe('CustomAppService', () => {
     filesystem.writeTextFile.mockResolvedValue(true);
     filesystem.writeBinaryFile.mockResolvedValue(true);
 
+    // Nothing holds a port, and the port manager hands out 10000 for whatever it is asked.
+    appsRepository.getAppsByPort.mockResolvedValue([] as any);
+    portManager.isPortAvailable.mockResolvedValue(true);
+    portManager.getAllAllocations.mockResolvedValue([]);
+    portManager.releaseAll.mockResolvedValue(0);
+    portManager.allocatePorts.mockImplementation(async (appUrn, requests) =>
+      requests.map((request, index) => ({
+        id: index + 1,
+        appUrn,
+        hostPort: 10000,
+        containerPort: request.containerPort,
+        protocol: 'tcp' as const,
+        label: request.label,
+        createdAt: '2026-10-10T00:00:00.000Z',
+      })),
+    );
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         CustomAppService,
@@ -39,6 +59,7 @@ describe('CustomAppService', () => {
         { provide: ConfigurationService, useValue: configService },
         { provide: AppsRepository, useValue: appsRepository },
         { provide: LoggerService, useValue: logger },
+        { provide: PortManagerService, useValue: portManager },
       ],
     }).compile();
 
@@ -103,6 +124,197 @@ describe('CustomAppService', () => {
     it('should throw if duplicate', async () => {
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
       await expect(service.createCustomApp({ name: 'myapp', config: '' as any as any })).rejects.toThrow('CUSTOM_APP_ERROR_DUPLICATE_NAME');
+    });
+  });
+
+  /*
+   * A custom app is created, not installed, so it never got the host port an install allocates: its
+   * main service was published on the host at its own internal port. One on port 80, which the Hub's
+   * Traefik holds, could never start ("Bind for 0.0.0.0:80 failed: port is already allocated").
+   */
+  describe('the host port a custom app publishes on', () => {
+    const createWith = (services: unknown[]) => service.createCustomApp({ name: 'Port Probe', config: { services } as any });
+    const refusalOf = (services: unknown[]) =>
+      createWith(services).then(
+        () => {
+          throw new Error('expected the create to be refused');
+        },
+        (error: { getResponse: () => unknown; getStatus: () => number }) => ({ response: error.getResponse(), status: error.getStatus() }),
+      );
+    const webOn = (internalPort: string, addPorts?: unknown[]) => [{ name: 'web', image: 'nginx:alpine', isMain: true, internalPort, addPorts }];
+
+    beforeEach(() => {
+      // The Hub's web ports come from the env, so a developer's own HTTP_PORT must not leak in.
+      vi.stubEnv('HTTP_PORT', '');
+      vi.stubEnv('HTTPS_PORT', '');
+      vi.stubEnv('TRAEFIK_DASHBOARD_PORT', '');
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      configService.get.mockImplementation((key) => {
+        if (key === 'directories') return { dataDir: '/data', appDataDir: '/app-data' } as any;
+        if (key === 'demoMode') return false;
+        if (key === 'userSettings') return { port: 80, sslPort: 443 } as any;
+        return null;
+      });
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('gets one from the port manager, asking for its internal port first, and keeps it on the row', async () => {
+      await createWith(webOn('8081'));
+
+      expect(portManager.allocatePorts).toHaveBeenCalledWith('port-probe:_user', [{ containerPort: 8081, label: 'main', preferredHostPort: 8081 }]);
+      expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ config: { port: 10000 }, port: 10000 }));
+    });
+
+    // New custom apps behave like installs: 3000 is reserved by the port manager, so it hands out another.
+    it('asks the port manager for a new app on 3000 and keeps what it hands out', async () => {
+      await createWith(webOn('3000'));
+
+      expect(portManager.allocatePorts).toHaveBeenCalledWith('port-probe:_user', [{ containerPort: 3000, label: 'main', preferredHostPort: 3000 }]);
+      expect(portManager.migrateExistingApp).not.toHaveBeenCalled();
+      expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ config: { port: 10000 }, port: 10000 }));
+    });
+
+    it("does not ask for its internal port when that is the Hub's HTTP port, 80", async () => {
+      await createWith(webOn('80'));
+
+      expect(portManager.allocatePorts).toHaveBeenCalledWith('port-probe:_user', [
+        { containerPort: 80, label: 'main', preferredHostPort: undefined },
+      ]);
+      expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ config: { port: 10000 }, port: 10000 }));
+    });
+
+    it('allocates none for an app with no single access port', async () => {
+      await createWith(webOn('${PORT}'));
+
+      expect(portManager.allocatePorts).not.toHaveBeenCalled();
+      expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ config: {} }));
+    });
+
+    it('gives the allocation back when the app cannot be created after it', async () => {
+      appsRepository.createApp.mockRejectedValue(new Error('db down'));
+
+      await expect(createWith(webOn('80'))).rejects.toThrow('CUSTOM_APP_ERROR_CREATION_FAILED');
+      expect(portManager.releaseAll).toHaveBeenLastCalledWith('port-probe:_user');
+      expect(portManager.releaseAll.mock.invocationCallOrder.at(-1)).toBeGreaterThan(portManager.allocatePorts.mock.invocationCallOrder[0] ?? 0);
+    });
+
+    it('clears an allocation an earlier app of the same name left behind before allocating', async () => {
+      await createWith(webOn('8081'));
+
+      expect(portManager.releaseAll).toHaveBeenCalledWith('port-probe:_user');
+      expect(portManager.releaseAll.mock.invocationCallOrder[0]).toBeLessThan(portManager.allocatePorts.mock.invocationCallOrder[0] ?? 0);
+    });
+
+    it('holds the Port Mappings of an edit to the same rule', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 3 } as any);
+
+      await expect(
+        service.updateCustomApp('port-probe:_user' as any, { services: webOn('8081', [{ containerPort: 80, hostPort: 80 }]) } as any),
+      ).rejects.toThrow('CUSTOM_APP_ERROR_HOST_PORT_IN_USE');
+      expect(filesystem.writeTextFile).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['the port the Hub serves HTTP on', () => undefined, 80],
+      ['the port the Hub serves HTTPS on', () => undefined, 443],
+      ["the port the desktop app moved the Hub's HTTP to", () => vi.stubEnv('HTTP_PORT', '8880'), 8880],
+      ['a port another app publishes', () => appsRepository.getAppsByPort.mockResolvedValue([{ appName: 'wordpress' }] as any), 8213],
+      ["the port the Hub's API publishes", () => undefined, 5002],
+      ["the port the Hub's database publishes on 127.0.0.1", () => undefined, 6543],
+      [
+        'a port the port manager gave another app',
+        () => portManager.getAllAllocations.mockResolvedValue([{ hostPort: 15000, protocol: 'tcp', appUrn: 'grafana:ci-marketplace' }] as any),
+        15000,
+      ],
+      [
+        'a privileged port another app was given',
+        () => portManager.getAllAllocations.mockResolvedValue([{ hostPort: 53, protocol: 'tcp', appUrn: 'adguard:ci-marketplace' }] as any),
+        53,
+      ],
+    ])('refuses a Port Mapping on %s, naming it, before anything is written', async (_label, arrange, hostPort) => {
+      arrange();
+
+      await expect(refusalOf(webOn('8081', [{ containerPort: 80, hostPort }]))).resolves.toEqual({
+        response: { message: 'CUSTOM_APP_ERROR_HOST_PORT_IN_USE', intlParams: { port: String(hostPort) } },
+        status: 409,
+      });
+      expect(filesystem.createDirectories).not.toHaveBeenCalled();
+      expect(portManager.allocatePorts).not.toHaveBeenCalled();
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
+    });
+
+    it('refuses the same host port mapped twice', async () => {
+      await expect(
+        refusalOf(
+          webOn('8081', [
+            { containerPort: 80, hostPort: '9100' },
+            { containerPort: 81, hostPort: 9100 },
+          ]),
+        ),
+      ).resolves.toMatchObject({ response: { message: 'CUSTOM_APP_ERROR_HOST_PORT_IN_USE', intlParams: { port: '9100' } } });
+    });
+
+    /*
+     * The port manager keeps a list of ports it never hands out, but most of them (3000, 5432, 5672,
+     * 9091) are the Hub's development ports, not ports a running Hub publishes. A Port Mapping is
+     * published exactly as given, so one there was accepted before and still works.
+     */
+    it("allows a Port Mapping on a port the port manager won't hand out but the Hub doesn't publish, such as 5432", async () => {
+      portManager.isPortAvailable.mockResolvedValue(false);
+
+      await expect(createWith(webOn('8081', [{ containerPort: 5432, hostPort: 5432 }]))).resolves.toMatchObject({ appUrn: 'port-probe:_user' });
+    });
+
+    it('lets an edit keep a Port Mapping on such a port', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 3 } as any);
+      portManager.isPortAvailable.mockResolvedValue(false);
+
+      await service.updateCustomApp('port-probe:_user' as any, { services: webOn('8081', [{ containerPort: 3000, hostPort: 3000 }]) } as any);
+
+      expect(filesystem.writeTextFile).toHaveBeenCalledWith(expect.stringContaining('docker-compose.json'), expect.any(String));
+    });
+
+    it('allows a privileged Port Mapping nobody holds, such as 53 for a DNS server', async () => {
+      await expect(createWith(webOn('8081', [{ containerPort: 53, hostPort: 53, udp: true }]))).resolves.toMatchObject({
+        appUrn: 'port-probe:_user',
+      });
+    });
+
+    it('keeps the main port off a host port the app maps itself', async () => {
+      await createWith(webOn('9200', [{ containerPort: 9200, hostPort: 9200 }]));
+
+      expect(portManager.allocatePorts).toHaveBeenCalledWith('port-probe:_user', [
+        { containerPort: 9200, label: 'main', preferredHostPort: undefined },
+      ]);
+    });
+
+    /*
+     * The desktop app moves Traefik's host ports when it can't have the defaults. On Linux only root
+     * may open a port below 1024, so HTTP and HTTPS go to 8880 and 8443. The port manager's probe runs
+     * inside the Hub container and sees neither.
+     */
+    it("keeps the main port off the host port the desktop app moved the Hub's HTTPS to", async () => {
+      vi.stubEnv('HTTPS_PORT', '8443');
+
+      await createWith(webOn('8443'));
+
+      expect(portManager.allocatePorts).toHaveBeenCalledWith('port-probe:_user', [
+        { containerPort: 8443, label: 'main', preferredHostPort: undefined },
+      ]);
+    });
+
+    it("keeps the main port off a port another app's row publishes", async () => {
+      // A port-expose app points at a service already running on the host and gets no allocation.
+      appsRepository.getAppsByPort.mockImplementation(async (port) => (port === 8096 ? [{ appName: 'jellyfin' }] : []) as any);
+
+      await createWith(webOn('8096'));
+
+      expect(portManager.allocatePorts).toHaveBeenCalledWith('port-probe:_user', [
+        { containerPort: 8096, label: 'main', preferredHostPort: undefined },
+      ]);
     });
   });
 

@@ -1,7 +1,12 @@
+import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
+import { AppsRepository } from '@/modules/apps/apps.repository';
+import { customAppMainPortAvoids, ensureCustomAppHostPort, hubHostPorts, mappedHostPorts } from '@/modules/custom-apps/custom-app-host-port';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
+import { PortManagerService } from '@/modules/network/port-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
@@ -75,6 +80,10 @@ export class StartAppCommand extends AppLifecycleCommand {
 
       logger.info(`Starting app ${appUrn}`);
 
+      if (extractAppUrn(appUrn).appStoreId === '_user' && config.port) {
+        await this.assignCustomAppHostPort(appUrn, form, config.port, logger);
+      }
+
       // Host-device preflight — a device present at install time (e.g. /dev/kfd for ROCm)
       // can be gone by the time the app is started again (driver not loaded yet at boot,
       // host reconfigured). Catch that here with friendly guidance instead of letting
@@ -115,6 +124,40 @@ export class StartAppCommand extends AppLifecycleCommand {
       return { success: true, message: `App ${appUrn} started successfully` };
     } catch (err) {
       return this.handleAppError(err, appUrn, 'start');
+    }
+  }
+
+  /**
+   * Give a custom app made before custom apps got a host port of their own one now; see
+   * `ensureCustomAppHostPort`. It keeps the port it publishes unless the Hub or another app holds it.
+   *
+   * Such an app holds no port allocation. It has no port on its row, or has its internal port there:
+   * the settings dialog fills the port field from config.json, which holds the internal port, and a
+   * save stores it. An app that holds an allocation is left alone unless its port is one of the Hub's
+   * own ports, which it can never bind. The ports avoided are the ones a creation avoids. If none can
+   * be found or recorded, the app publishes what it did before.
+   */
+  private async assignCustomAppHostPort(appUrn: AppUrn, form: AppEventFormInput, internalPort: number, logger: LoggerService): Promise<void> {
+    const hubPorts = hubHostPorts(this.moduleRef.get(ConfigurationService, { strict: false })?.get('userSettings'));
+
+    try {
+      const portManager = this.moduleRef.get(PortManagerService, { strict: false });
+      if (form.port && !hubPorts.has(form.port) && (await portManager.getMainPort(appUrn)) !== null) {
+        return;
+      }
+
+      const appsRepository = this.moduleRef.get(AppsRepository, { strict: false });
+      const compose = await this.moduleRef.get(AppFilesManager, { strict: false }).getDockerComposeJson(appUrn);
+      const services = (compose.content as { services?: Parameters<typeof mappedHostPorts>[0] } | null)?.services;
+      const currentPort = form.port ?? internalPort;
+      const avoid = await customAppMainPortAvoids(appsRepository, appUrn, mappedHostPorts(services), [internalPort, currentPort], hubPorts);
+
+      form.port = await ensureCustomAppHostPort(portManager, appsRepository, appUrn, internalPort, avoid, currentPort);
+      logger.info(`Custom app ${appUrn} now publishes on host port ${form.port}`);
+    } catch (error) {
+      logger.warn(
+        `Could not give custom app ${appUrn} a host port of its own, so it publishes ${form.port ?? internalPort} as before: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 }

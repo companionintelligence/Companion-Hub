@@ -6,6 +6,7 @@ import { PortExposeService } from './port-expose.service';
 import { AppsModule } from '../apps/apps.module';
 import { AppLifecycleModule } from '../app-lifecycle/app-lifecycle.module';
 import { DockerModule } from '../docker/docker.module';
+import { NetworkModule } from '../network/network.module';
 import { RegistrationModule } from '../registration/registration.module';
 import { PortalModule } from '@/core/portal/portal.module';
 
@@ -14,6 +15,7 @@ import { PortalModule } from '@/core/portal/portal.module';
     EnvModule,
     forwardRef(() => AppsModule),
     forwardRef(() => DockerModule),
+    NetworkModule,
     RegistrationModule,
     PortalModule,
     forwardRef(() => AppLifecycleModule),

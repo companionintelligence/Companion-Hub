@@ -5125,6 +5125,49 @@ describe('AppLifecycleService', () => {
       );
     });
 
+    /*
+     * A custom app's config.json keeps its internal port, and the host port the Hub gave it lives on the
+     * row. A save that leaves `port` out (a partial update through the API or MCP) fell back to config.json
+     * and wrote the internal port back: 80, which Traefik holds, for the app this host port exists for.
+     */
+    it('keeps a custom app on the host port its row holds when a save leaves the port out', async () => {
+      const customUrn = 'my-nginx:_user' as any;
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, id: 'my-nginx', port: 80 } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'stopped',
+        port: 10000,
+        config: { port: 10000 },
+        appName: 'my-nginx',
+        appStoreSlug: '_user',
+      } as any);
+
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn: customUrn, form: { exposureMode: 'cloudflare', exposedLocal: true } });
+
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(
+        expect.objectContaining({ command: 'generate_env', form: expect.objectContaining({ port: 10000 }) }),
+      );
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ port: 10000, config: expect.objectContaining({ port: 10000 }) }),
+      );
+    });
+
+    it('still falls back to the manifest port for a store app saved without one', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'stopped',
+        port: 10007,
+        config: { port: 10007 },
+        appName: 'myapp',
+        appStoreSlug: 'ci-marketplace',
+      } as any);
+
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true } });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ port: 8080 }));
+    });
+
     it('releases previous public DNS before syncing a subdomain change', async () => {
       appsRepository.getAppByUrn.mockResolvedValue({
         id: 1,
