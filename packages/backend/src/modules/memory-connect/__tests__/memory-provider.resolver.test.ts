@@ -216,6 +216,50 @@ describe('MemoryProviderResolver.findProvider', () => {
     expect(provider?.internalUrl).toBe('http://gateway:8642');
   });
 
+  // The probe still names the address when it fails. Right after CI Memory's containers stopped, that address answered
+  // Traefik's 404, and the connect flow sent the browser there.
+  it('withholds the public URL when the availability probe says CI Memory does not answer there', async () => {
+    const { resolver, appsService } = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:ci-marketplace' }) }]);
+    appsService.checkAppAvailability.mockResolvedValue({
+      available: false,
+      appUrl: 'https://ci-memory.example.com',
+      httpStatus: 404,
+      errorCode: 'CF_UPSTREAM_ERROR',
+    });
+
+    const provider = await resolver.findProvider({ withPublicUrl: true });
+
+    expect(provider?.appUrn).toBe('ci-memory:ci-marketplace');
+    expect(provider?.publicUrl).toBeUndefined();
+  });
+
+  it('withholds the public URL when the tunnel itself says CI Memory has no connector', async () => {
+    const { resolver, appsService } = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:ci-marketplace' }) }]);
+    appsService.checkAppAvailability.mockResolvedValue({
+      available: false,
+      appUrl: 'https://ci-memory.example.com',
+      errorCode: 'CF_TUNNEL_NOT_FOUND',
+    });
+
+    const provider = await resolver.findProvider({ withPublicUrl: true });
+
+    expect(provider?.publicUrl).toBeUndefined();
+  });
+
+  // A probe that got no answer says more about the Hub's own network than about CI Memory: a slow lookup from
+  // inside the container, or a Private VPN address the Hub cannot route to. The browser may well reach it.
+  it.each(['CONNECTION_TIMEOUT', 'DNS_NOT_FOUND', 'CONNECTION_REFUSED', 'CF_TIMEOUT'])(
+    'still sends the browser to the public URL when the probe failed with %s',
+    async (errorCode) => {
+      const { resolver, appsService } = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:ci-marketplace' }) }]);
+      appsService.checkAppAvailability.mockResolvedValue({ available: false, appUrl: 'https://ci-memory.example.com', errorCode });
+
+      const provider = await resolver.findProvider({ withPublicUrl: true });
+
+      expect(provider?.publicUrl).toBe('https://ci-memory.example.com');
+    },
+  );
+
   it('still returns a provider (without publicUrl) when availability resolution fails', async () => {
     const { resolver, appsService } = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:ci-marketplace' }) }]);
     appsService.checkAppAvailability.mockRejectedValue(new Error('not running'));
