@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import type { Request } from 'express';
 import axios from 'axios';
 import { describeNetworkError } from '@/common/helpers/network-error';
@@ -153,6 +154,33 @@ export function resolvePortalDesktopHandoffState(input: { claimed: boolean; pend
 
 export const PORTAL_DESKTOP_PRESENCE_CACHE_KEY = 'portal_sso_desktop_present';
 export const PORTAL_DESKTOP_PRESENCE_TTL_SECONDS = 10 * 60;
+
+/** The header the desktop shell sends `desktopSignInWaitProof` in. */
+export const DESKTOP_SIGN_IN_WAIT_PROOF_HEADER = 'x-ci-hub-desktop-proof';
+
+/** What the proof signs. `desktop_sign_in_wait.rs` in the desktop app signs the same text. */
+const DESKTOP_SIGN_IN_WAIT_PROOF_LABEL = 'ci-hub desktop sign-in wait';
+
+/**
+ * What the desktop app shows to set the presence flag, which nothing else may set: an HMAC of a
+ * fixed label under the host-local key. The desktop shell reads the key from `state/settings.json`,
+ * which app containers can't read, and sends this from Rust, so no page script holds it. The key
+ * itself never goes on the wire, since the shell repeats the request every minute to whatever
+ * answers on the API port, and the proof is good for nothing but this flag.
+ */
+export function desktopSignInWaitProof(hubLocalKey: string): string {
+  return crypto.createHmac('sha256', hubLocalKey).update(DESKTOP_SIGN_IN_WAIT_PROOF_LABEL).digest('hex');
+}
+
+/** Constant-time check of the header value against the proof for this Hub's host-local key. */
+export function isDesktopSignInWaitProof(presented: unknown, hubLocalKey: string | null | undefined): boolean {
+  if (!hubLocalKey || typeof presented !== 'string') {
+    return false;
+  }
+  const expected = Buffer.from(desktopSignInWaitProof(hubLocalKey));
+  const actual = Buffer.from(presented);
+  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+}
 
 /** The desktop app on this machine is waiting for a sign-in, so a loopback browser sign-in hands off into it. */
 export function shouldHandoffPortalLoginToDesktop(input: { desktop: boolean; hubOrigin: string; desktopAppPresent: boolean }): boolean {

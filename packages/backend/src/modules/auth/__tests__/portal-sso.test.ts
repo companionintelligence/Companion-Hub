@@ -9,6 +9,8 @@ import {
   exchangePortalAuthorizationCode,
   fetchPortalSessionEmail,
   buildPortalDesktopHandoffHtml,
+  desktopSignInWaitProof,
+  isDesktopSignInWaitProof,
   isDirectLoopbackRequest,
   resolvePortalDesktopHandoffState,
   shouldHandoffPortalLoginToDesktop,
@@ -319,6 +321,23 @@ describe('portal-sso helpers', () => {
     } as unknown as Request;
 
     expect(isDirectLoopbackRequest(req)).toBe(expected);
+  });
+
+  it('derives the desktop proof the way the desktop shell does', () => {
+    // The same key and proof are asserted in desktop_sign_in_wait.rs, so the two halves cannot drift.
+    expect(desktopSignInWaitProof('3f'.repeat(32))).toBe('508600150d97db091ee116f7e70b8fcf75a73221c045ff87f6b0f967f8e1acb6');
+  });
+
+  it.each([
+    ['the proof for this key', desktopSignInWaitProof('3f'.repeat(32)), '3f'.repeat(32), true],
+    ['the proof with stray whitespace', ` ${desktopSignInWaitProof('3f'.repeat(32))}\n`, '3f'.repeat(32), false],
+    ['a proof for another key', desktopSignInWaitProof('a'.repeat(64)), '3f'.repeat(32), false],
+    ['the key itself', '3f'.repeat(32), '3f'.repeat(32), false],
+    ['a repeated header', [desktopSignInWaitProof('3f'.repeat(32))], '3f'.repeat(32), false],
+    ['no header', undefined, '3f'.repeat(32), false],
+    ['any proof while the Hub has no key', desktopSignInWaitProof(''), null, false],
+  ])('isDesktopSignInWaitProof: %s -> %s', (_case, presented, hubLocalKey, expected) => {
+    expect(isDesktopSignInWaitProof(presented, hubLocalKey)).toBe(expected);
   });
 
   it('exchanges authorization codes for user email via Portal OAuth endpoints', async () => {

@@ -27,7 +27,7 @@ const DESKTOP_PORTAL_EXCHANGE_TOAST_ID = 'desktop-portal-exchange';
 
 /** Listen for cihub:// / cihub-dev:// portal SSO handoffs and exchange the one-time token. */
 export function useDesktopPortalAuth() {
-  const { setUserContext, isLoggedIn } = useUserContext();
+  const { setUserContext, isLoggedIn, isLoading } = useUserContext();
   const { t } = useTranslation();
   // Read on every render: a phone that picks its Hub on /connect moves from cloud connect to Hub
   // sign-in without a reload, and has to start listening then.
@@ -232,4 +232,24 @@ export function useDesktopPortalAuth() {
       void unlisten?.();
     };
   }, [authFlow, completeDesktopPortalLogin]);
+
+  // While this window is signed out, the desktop shell tells the Hub it is waiting for a sign-in, so
+  // a browser sign-in on loopback hands off here. The shell sends it from Rust with a proof derived
+  // from the host-local key, which this page never sees, and always to this machine's Hub, so a
+  // window showing another Hub stays out of it. An older shell has no such command, and the
+  // browser sign-in then stays in the browser.
+  useEffect(() => {
+    const invoke = getTauriInvoke();
+    const { hostname } = window.location;
+    const onThisMachinesHub = hostname === '127.0.0.1' || hostname === 'localhost';
+    if (!invoke || !hubAuthFlowPolicy(authFlow).announceDesktopPresence || !onThisMachinesHub || isLoading || isLoggedIn) {
+      return;
+    }
+    const announceSignInWait = () => {
+      void invoke('announce_desktop_sign_in_wait_command').catch(() => undefined);
+    };
+    announceSignInWait();
+    const timer = setInterval(announceSignInWait, 60_000);
+    return () => clearInterval(timer);
+  }, [authFlow, isLoading, isLoggedIn]);
 }

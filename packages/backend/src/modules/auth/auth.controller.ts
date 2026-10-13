@@ -16,6 +16,7 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
   HttpStatus,
   Patch,
   Post,
@@ -86,6 +87,8 @@ import {
   shouldHandoffPortalLoginToDesktop,
   exchangePortalAuthorizationCode,
   fetchPortalSessionEmail,
+  DESKTOP_SIGN_IN_WAIT_PROOF_HEADER,
+  isDesktopSignInWaitProof,
   isDirectLoopbackRequest,
   probePortalReachable,
   type PortalDesktopExchange,
@@ -848,18 +851,29 @@ export class AuthController {
     }
   }
 
+  /**
+   * The desktop app on this machine is signed out and waiting for a sign-in, so a browser sign-in on
+   * the loopback address hands off to it (shouldHandoffPortalLoginToDesktop). The desktop shell sends
+   * this from Rust every 60 s while its window is signed out, with `desktopSignInWaitProof`. Left out
+   * of the API client because the frontend never calls it.
+   */
+  @Post('/portal/desktop-waiting')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiExcludeEndpoint()
+  desktopSignInWait(@Req() req: Request) {
+    if (!isDesktopSignInWaitProof(req.headers[DESKTOP_SIGN_IN_WAIT_PROOF_HEADER], this.config.get('hubLocalKey'))) {
+      throw new UnauthorizedException();
+    }
+    this.cache.set(PORTAL_DESKTOP_PRESENCE_CACHE_KEY, '1', PORTAL_DESKTOP_PRESENCE_TTL_SECONDS);
+  }
+
   @Get('/portal/session-hint')
   @ApiResponse({ type: PortalSessionHintDto })
   async portalSessionHint(@Req() req: Request, @Query('desktop') desktop?: string) {
-    // The flag hands sign-ins started on this machine's loopback address to the desktop app, so only
-    // a request sent straight to that address may set it. A signed-in window is not waiting for a
-    // sign-in, so its heartbeat clears the flag instead.
-    if ((desktop === '1' || desktop === 'true') && isDirectLoopbackRequest(req)) {
-      if (req.user) {
-        this.cache.del(PORTAL_DESKTOP_PRESENCE_CACHE_KEY);
-      } else {
-        this.cache.set(PORTAL_DESKTOP_PRESENCE_CACHE_KEY, '1', PORTAL_DESKTOP_PRESENCE_TTL_SECONDS);
-      }
+    // A signed-in desktop window is not waiting for a sign-in, so its heartbeat clears the flag.
+    // Only the desktop app sets it, through POST /portal/desktop-waiting.
+    if ((desktop === '1' || desktop === 'true') && req.user && isDirectLoopbackRequest(req)) {
+      this.cache.del(PORTAL_DESKTOP_PRESENCE_CACHE_KEY);
     }
     const portalBaseUrl = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '') || null;
 
