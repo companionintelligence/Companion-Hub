@@ -48,3 +48,44 @@ describe('CustomAppController: a change to a custom app asks for configure first
     expect(customApps[method]).not.toHaveBeenCalled();
   });
 });
+
+/*
+ * Creating a custom app takes an organization owner or admin too. The route asks before the service
+ * writes a file, and the UI reads what the session may do from `GET /custom-apps/access`.
+ */
+describe('CustomAppController: creating a custom app, and what the session may do', () => {
+  const req = { hubPrincipal: 'session', user: { id: 7 } } as unknown as Request;
+  const body = { name: 'Whoami Check', config: { schemaVersion: 2, services: [{ name: 'web', image: 'traefik/whoami', isMain: true }] } } as never;
+
+  let customApps: MockProxy<CustomAppService>;
+  let whois: MockProxy<MarketplaceWhoIsService>;
+  let controller: CustomAppController;
+
+  beforeEach(() => {
+    customApps = mock<CustomAppService>();
+    customApps.createCustomApp.mockResolvedValue({ appUrn: 'whoami-check:_user', appName: 'whoami-check', storeId: '_user' } as never);
+    whois = mock<MarketplaceWhoIsService>();
+    controller = new CustomAppController(customApps, mock<PortExposeService>(), whois);
+  });
+
+  it('asks whether this session may create one before anything is written', async () => {
+    await controller.createCustomApp(body, req);
+
+    expect(whois.assertSessionMayCreateCustomApp).toHaveBeenCalledWith(req);
+    expect(customApps.createCustomApp).toHaveBeenCalledWith(body);
+  });
+
+  it('writes nothing when the session may not', async () => {
+    whois.assertSessionMayCreateCustomApp.mockRejectedValue(new TranslatableError('CUSTOM_APP_CREATE_ROLE_REQUIRED', {}, 403));
+
+    await expect(controller.createCustomApp(body, req)).rejects.toMatchObject({ message: 'CUSTOM_APP_CREATE_ROLE_REQUIRED' });
+    expect(customApps.createCustomApp).not.toHaveBeenCalled();
+  });
+
+  it('answers the access question with what the grant service says this session may do', async () => {
+    whois.customAppActions.mockResolvedValue(['view']);
+
+    await expect(controller.getCustomAppAccess(req)).resolves.toEqual({ actions: ['view'] });
+    expect(whois.customAppActions).toHaveBeenCalledWith(req);
+  });
+});

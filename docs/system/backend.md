@@ -728,7 +728,23 @@ app gives them (`DEFAULT_MEMBER_ACTIONS`: start, stop and restart, never uninsta
 `PATCH /custom-apps/:urn` (the compose), `POST /custom-apps/:urn/image` and `PATCH /custom-apps/:urn/metadata`
 assert `configure`, so editing a custom app follows the same rule. A port expose has no `configure`, so
 these three refuse one for every session. A port expose changes through `PATCH /custom-apps/port-expose/:urn`.
-Creating a custom app, and the port-expose routes, still take only a sign-in.
+
+Reading a `_user` app's settings or backups takes the verb that changes them (`local-app-reads.ts`):
+`GET /apps/:urn/compose-diff` and `GET /user-config/:urn`, where a custom app keeps its env values, take
+`configure`; listing and downloading its backups take `backup`. The MCP tools for the same reads ask the
+same. A member keeps the app in lists, its page, its status and Open. A catalog app keeps `view` for
+these reads, since an owner narrows who may see it in the Portal.
+
+Creating a custom app takes an organization owner or admin too: `POST /custom-apps` asks
+`assertSessionMayCreateCustomApp`, and MCP's `hub_create_custom_app` asks `assertActorMayCreateCustomApp`.
+Both read the role with a role-only WhoIs (no app named), refuse when it can't be read, and refuse an
+operator with no linked Portal identity, whose fallback has no `install`. An MCP key answers to its
+creator's role; a managed key, or one nobody is recorded as creating, is refused. `GET /custom-apps/access`
+tells the UI what the session may do to a custom app (`customAppActions`), so it shows only those
+controls. The port-expose routes still take only a sign-in.
+
+`/user-config/:urn` (GET, PUT, enable, disable) asserts the same verbs as its MCP tools for every app:
+reading takes `view` (`configure` on a `_user` app), and every change takes `configure`.
 
 Assert over **every** app a request could touch before touching any of them, and include apps the
 caller named even when they turn out to need no work — checking only the apps that do lets an

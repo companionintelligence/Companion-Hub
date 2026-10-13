@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { createZodDto } from '@/common/zod-dto';
 import { dynamicComposeSchema } from '@ci-hub/common/schemas';
+import { HUB_ACTIONS } from '@/core/portal/hub-actions';
 
 // Free-form display name shared by the custom-app and port-expose create
 // flows. A URL-safe slug is derived from it server-side (see
@@ -58,3 +59,13 @@ const updateAppMetadataDto = z.object({
 });
 
 export class UpdateAppMetadataDto extends createZodDto(updateAppMetadataDto) {}
+
+/**
+ * What the signed-in person may do to a custom app (`MarketplaceWhoIsService.customAppActions`).
+ * The UI shows a custom app's controls, and Create a custom app, from it; the routes still decide.
+ */
+const customAppAccessSchema = z.object({
+  actions: z.array(z.enum(HUB_ACTIONS)),
+});
+
+export class CustomAppAccessDto extends createZodDto(customAppAccessSchema) {}

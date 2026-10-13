@@ -3,7 +3,7 @@ import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.servi
 import { CustomAppService } from '@/modules/custom-apps/custom-apps.service';
 import { castAppUrn } from '@/common/helpers/app-helpers';
 import type { CreateCustomAppDto, UpdateCustomAppDto } from '@/modules/custom-apps/dto/custom-apps.dto';
-import { assertMcpCallerMay } from '../mcp-tool-call';
+import { assertMcpCallerMay, mcpCallerLifecycleActor } from '../mcp-tool-call';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 
 const urnProp = { type: 'string', description: 'App identifier in appName:storeSlug format' } as const;
@@ -59,7 +59,9 @@ export class CustomAppTools implements OnModuleInit {
     });
   }
 
+  /** Creating one takes an organization owner or admin behind the call, as the HTTP route does. */
   async createCustomApp(params: { name: string; config: Record<string, unknown> }) {
+    await this.appLifecycleService.assertActorMayCreateCustomApp(mcpCallerLifecycleActor('install'));
     const dto = { name: params.name, config: params.config } as CreateCustomAppDto;
     return this.customAppService.createCustomApp(dto);
   }

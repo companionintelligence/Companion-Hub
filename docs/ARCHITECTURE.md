@@ -261,7 +261,8 @@ Backups
   DELETE /backups/:urn/:backupId            Delete a backup
 
 Custom Apps
-  POST /custom-apps                         Create a custom app
+  GET  /custom-apps/access                  What the session may do to a custom app
+  POST /custom-apps                         Create a custom app (owner or admin)
   PATCH /custom-apps/:urn                   Update a custom app
   DELETE /custom-apps/:urn                  Delete a custom app
 

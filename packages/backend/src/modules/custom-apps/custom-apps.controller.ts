@@ -1,4 +1,4 @@
-import { Body, Controller, Param, Patch, Post, Req, UploadedFile, UseGuards, UseInterceptors, BadRequestException } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Req, UploadedFile, UseGuards, UseInterceptors, BadRequestException } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Request } from 'express';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
@@ -8,6 +8,7 @@ import { PortExposeService } from './port-expose.service';
 import {
   CreateCustomAppDto,
   CreateCustomAppResponseDto,
+  CustomAppAccessDto,
   CreatePortExposeAppDto,
   UpdateAppMetadataDto,
   UpdateCustomAppDto,
@@ -39,10 +40,25 @@ export class CustomAppController {
     );
   }
 
+  /**
+   * What the signed-in person may do to a custom app: every Hub verb for an organization owner or
+   * admin, the member fallback for an operator with no linked Portal identity, and only `view` for
+   * anyone else. The UI hides what this leaves out; the routes still decide. Answering it asks the
+   * Portal, so it is a request of its own rather than part of the app's.
+   */
+  @Get('access')
+  @UseGuards(AuthGuard)
+  @ApiResponse({ type: CustomAppAccessDto })
+  async getCustomAppAccess(@Req() req: Request) {
+    return CustomAppAccessDto.parse({ actions: await this.whois.customAppActions(req) }, { reportOnly: true });
+  }
+
   @Post()
   @UseGuards(AuthGuard)
   @ApiResponse({ type: CreateCustomAppResponseDto })
-  async createCustomApp(@Body() body: CreateCustomAppDto) {
+  async createCustomApp(@Body() body: CreateCustomAppDto, @Req() req: Request) {
+    // Only an organization owner or admin may create a custom app; a role that can't be read refuses it.
+    await this.whois.assertSessionMayCreateCustomApp(req);
     const result = await this.customAppService.createCustomApp(body);
     return CreateCustomAppResponseDto.parse(
       {

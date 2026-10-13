@@ -1242,6 +1242,27 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     throw new TranslatableError('CUSTOM_DOMAIN_ROLE_REQUIRED', {}, HttpStatus.FORBIDDEN);
   }
 
+  /**
+   * Who may create a custom app: an organization owner or admin, the rule a custom app's `install`
+   * follows (`MarketplaceWhoIsService.customAppActionsFor`), asked of the Portal fresh and refused
+   * when the role can't be read. As for a custom-domain change, that is the operator for a session
+   * and, for an unmanaged MCP key, the person who created it. A managed app key, and a key nobody is
+   * recorded as creating, has no person whose role could be asked, so it is refused whatever its
+   * capability. A named exempt principal and the Hub itself are admitted.
+   */
+  async assertActorMayCreateCustomApp(actor: LifecycleActor): Promise<void> {
+    if (actor.kind === 'exempt' || actor.kind === 'system') {
+      return;
+    }
+
+    const person = actor.kind === 'operator' ? actor.userId : actor.ownerAppUrn === null ? actor.createdByUserId : null;
+    const actions = person === null ? [] : ((await this.resolveWhois()?.customAppActionsFor(person)) ?? []);
+
+    if (!actions.includes('install')) {
+      throw new TranslatableError('CUSTOM_APP_CREATE_ROLE_REQUIRED', {}, HttpStatus.FORBIDDEN);
+    }
+  }
+
   /** What {@link requestsCustomDomainChange} compares a save against; `null` for an app not installed. */
   private async customDomainState(appUrn: AppUrn, wanted: string | null): Promise<CustomDomainState | null> {
     const app = await this.appRepository.getAppByUrn(appUrn);

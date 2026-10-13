@@ -270,6 +270,56 @@ describe('MarketplaceWhoIsService', () => {
       expect(portal.whoisApps).not.toHaveBeenCalled();
       expect(cacheRows).toEqual([]);
     });
+
+    /*
+     * Custom apps in general, with no app to ask about: what the UI shows, and who may create one.
+     * The role is asked about no app (a role-only WhoIs), and nothing is cached.
+     */
+    describe('in general, and creating one', () => {
+      it.each(['owner', 'admin'])('gives an organization %s every verb, and lets them create one', async (role) => {
+        portal.whoisApps.mockResolvedValue(roleAnswer(role));
+
+        await expect(service.customAppActions(sessionReq())).resolves.toEqual([...HUB_ACTIONS]);
+        await expect(service.assertSessionMayCreateCustomApp(sessionReq())).resolves.toBeUndefined();
+        expect(portal.whoisApps).toHaveBeenCalledWith({ subject: SUBJECT, appIds: [], surface: 'hub', organizationId: 'org-hub' });
+        expect(cacheRows).toEqual([]);
+      });
+
+      it('gives a member the view only, and refuses them a new custom app', async () => {
+        portal.whoisApps.mockResolvedValue(roleAnswer('member'));
+
+        await expect(service.customAppActions(sessionReq())).resolves.toEqual(['view']);
+        await expect(service.assertSessionMayCreateCustomApp(sessionReq())).rejects.toMatchObject({
+          message: 'CUSTOM_APP_CREATE_ROLE_REQUIRED',
+          status: HttpStatus.FORBIDDEN,
+        });
+      });
+
+      it('keeps the member fallback for an operator with no linked Portal identity, which creates nothing', async () => {
+        federatedIdentities.findByUserId.mockResolvedValue([] as never);
+
+        await expect(service.customAppActions(sessionReq())).resolves.toEqual([...DEFAULT_MEMBER_ACTIONS]);
+        await expect(service.assertSessionMayCreateCustomApp(sessionReq())).rejects.toMatchObject({ message: 'CUSTOM_APP_CREATE_ROLE_REQUIRED' });
+        expect(portal.whoisApps).not.toHaveBeenCalled();
+      });
+
+      it('refuses a new custom app when the role cannot be read', async () => {
+        portal.whoisApps.mockResolvedValue(roleAnswer('owner', 503));
+
+        await expect(service.customAppActions(sessionReq())).resolves.toEqual(['view']);
+        await expect(service.assertSessionMayCreateCustomApp(sessionReq())).rejects.toMatchObject({ message: 'CUSTOM_APP_CREATE_ROLE_REQUIRED' });
+      });
+
+      it('lets a named exempt principal do everything without asking the Portal, and an unnamed one nothing', async () => {
+        await expect(service.customAppActions(cliReq())).resolves.toEqual([...HUB_ACTIONS]);
+        await expect(service.assertSessionMayCreateCustomApp(portalPushReq())).resolves.toBeUndefined();
+        await expect(service.customAppActions(unknownPrincipalReq())).resolves.toEqual([]);
+        await expect(service.assertSessionMayCreateCustomApp(unknownPrincipalReq())).rejects.toMatchObject({
+          message: 'CUSTOM_APP_CREATE_ROLE_REQUIRED',
+        });
+        expect(portal.whoisApps).not.toHaveBeenCalled();
+      });
+    });
   });
 
   it('uses WhoIs can[] for a linked operator', async () => {

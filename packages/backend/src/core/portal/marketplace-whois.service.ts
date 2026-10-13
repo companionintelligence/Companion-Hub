@@ -457,8 +457,11 @@ export class MarketplaceWhoIsService {
    * An operator with no linked Portal identity has no role to read. They keep the member fallback
    * every app gives them (`DEFAULT_MEMBER_ACTIONS`), as they had before custom apps were decided
    * here, so they can still start, stop and restart one but not remove or reconfigure it.
+   *
+   * `appUrn` only names the app in the role question. `null` asks about no app at all (a role-only
+   * WhoIs), for a decision about custom apps in general, such as creating one.
    */
-  private async customAppGrant(userId: number, appUrn: AppUrn): Promise<HubAction[]> {
+  private async customAppGrant(userId: number, appUrn: AppUrn | null): Promise<HubAction[]> {
     let subject: string | null;
     try {
       subject = await this.portalSubject(userId);
@@ -474,6 +477,47 @@ export class MarketplaceWhoIsService {
     }
 
     return (await this.readManagingRole(userId, appUrn, 'custom_app', subject)) ? [...HUB_ACTIONS] : ['view'];
+  }
+
+  /**
+   * What this person may do to custom apps in general, decided as `localAppGrants` decides one app:
+   * every Hub verb for an organization owner or admin, the member fallback for an operator with no
+   * linked Portal identity, and only `view` for anyone else or when the role can't be read. Creating
+   * a custom app takes `install` from this answer.
+   */
+  async customAppActionsFor(userId: number): Promise<HubAction[]> {
+    return this.customAppGrant(userId, null);
+  }
+
+  /**
+   * {@link customAppActionsFor} for the person behind a request. A named exempt principal (the CLI,
+   * the host-local key, the Portal push) may do everything, as every grant gate lets it; a caller
+   * that names no principal gets nothing.
+   */
+  async customAppActions(req: HubPrincipalFields): Promise<HubAction[]> {
+    const userId = hubSessionOperatorUserId(req);
+
+    if (userId == null) {
+      return isGrantExemptPrincipal(req) ? [...HUB_ACTIONS] : [];
+    }
+
+    return this.customAppActionsFor(userId);
+  }
+
+  /**
+   * Refuse a request to create a custom app unless {@link customAppActions} grants `install`: only an
+   * organization owner or admin may, and a role that can't be read is a refusal, as it is for a change.
+   */
+  async assertSessionMayCreateCustomApp(req: HubPrincipalFields): Promise<void> {
+    if ((await this.customAppActions(req)).includes('install')) {
+      return;
+    }
+
+    if (hubSessionOperatorUserId(req) == null) {
+      this.logUnrecognisedPrincipal(req, 'install');
+    }
+
+    throw new TranslatableError('CUSTOM_APP_CREATE_ROLE_REQUIRED', {}, HttpStatus.FORBIDDEN);
   }
 
   private async portalSubject(userId: number): Promise<string | null> {

@@ -1185,6 +1185,62 @@ describe('AppLifecycleService', () => {
         });
       });
 
+      /*
+       * Creating a custom app takes an organization owner or admin, the rule a custom app's `install`
+       * follows. HTTP and MCP both ask here, so a key answers to its creator's role, and a key with no
+       * person behind it gets nothing that takes one.
+       */
+      describe('creating a custom app', () => {
+        const people = { customAppActionsFor: vi.fn() };
+        const OWNER_ACTIONS = ['view', 'start', 'stop', 'restart', 'install', 'update', 'uninstall', 'reset', 'backup', 'restore', 'configure'];
+
+        beforeEach(() => {
+          people.customAppActionsFor.mockReset();
+          vi.mocked((service as any).moduleRef.get).mockImplementation((token: unknown) => (token === MarketplaceWhoIsService ? people : undefined));
+        });
+
+        it('lets an organization owner or admin create one', async () => {
+          people.customAppActionsFor.mockResolvedValue(OWNER_ACTIONS);
+
+          await expect(service.assertActorMayCreateCustomApp(OPERATOR)).resolves.toBeUndefined();
+          expect(people.customAppActionsFor).toHaveBeenCalledWith(7);
+        });
+
+        it.each([
+          ['a member', ['view']],
+          ['an operator with no linked Portal identity', ['view', 'start', 'stop', 'restart']],
+          ['anyone whose role could not be read', ['view']],
+        ])('refuses %s', async (_label, actions) => {
+          people.customAppActionsFor.mockResolvedValue(actions);
+
+          await expect(service.assertActorMayCreateCustomApp(OPERATOR)).rejects.toThrow('CUSTOM_APP_CREATE_ROLE_REQUIRED');
+        });
+
+        it("decides a key created by a person on its creator's role", async () => {
+          people.customAppActionsFor.mockResolvedValue(OWNER_ACTIONS);
+
+          await service.assertActorMayCreateCustomApp({ kind: 'mcp', ownerAppUrn: null, createdByUserId: 9, capability: 'write' });
+
+          expect(people.customAppActionsFor).toHaveBeenCalledWith(9);
+        });
+
+        it.each([
+          ['a key nobody is recorded as creating', { kind: 'mcp', ownerAppUrn: null, createdByUserId: null, capability: 'full' }],
+          ['a managed app key at full', { kind: 'mcp', ownerAppUrn: 'importer:ci-marketplace', createdByUserId: 9, capability: 'full' }],
+        ] as Array<[string, LifecycleActor]>)('refuses %s, with no person to ask', async (_label, actor) => {
+          await expect(service.assertActorMayCreateCustomApp(actor)).rejects.toThrow('CUSTOM_APP_CREATE_ROLE_REQUIRED');
+          expect(people.customAppActionsFor).not.toHaveBeenCalled();
+        });
+
+        it.each([
+          ['a grant-exempt principal', { kind: 'exempt', principal: 'cli' }],
+          ['the Hub itself', { kind: 'system', reason: 'debug-seed' }],
+        ] as Array<[string, LifecycleActor]>)('admits %s by name', async (_label, actor) => {
+          await expect(service.assertActorMayCreateCustomApp(actor)).resolves.toBeUndefined();
+          expect(people.customAppActionsFor).not.toHaveBeenCalled();
+        });
+      });
+
       describe('the sweeps', () => {
         const IMPORTER = 'importer:ci-marketplace';
         const importerKeyAt = (capability: 'read' | 'write' | 'full'): LifecycleActor => ({

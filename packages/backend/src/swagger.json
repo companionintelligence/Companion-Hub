@@ -6124,6 +6124,27 @@
         ]
       }
     },
+    "/api/custom-apps/access": {
+      "get": {
+        "operationId": "getCustomAppAccess",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomAppAccessDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "CustomApp"
+        ]
+      }
+    },
     "/api/custom-apps": {
       "post": {
         "operationId": "createCustomApp",
@@ -14130,6 +14151,34 @@
           "appUrn",
           "appName",
           "storeId"
+        ],
+        "additionalProperties": false
+      },
+      "CustomAppAccessDto": {
+        "type": "object",
+        "properties": {
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "view",
+                "start",
+                "stop",
+                "restart",
+                "install",
+                "update",
+                "uninstall",
+                "reset",
+                "backup",
+                "restore",
+                "configure"
+              ]
+            }
+          }
+        },
+        "required": [
+          "actions"
         ],
         "additionalProperties": false
       },

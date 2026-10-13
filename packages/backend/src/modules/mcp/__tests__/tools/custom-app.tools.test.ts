@@ -42,9 +42,30 @@ describe('CustomAppTools', () => {
   describe('hub_create_custom_app', () => {
     it('should create a custom app and return appUrn, appName, storeId', async () => {
       customAppService.createCustomApp.mockResolvedValue({ appUrn: 'custom:myapp', appName: 'myapp', storeId: 'custom' } as any);
-      const result = await tools.createCustomApp({ name: 'myapp', config: { services: {} } });
+      const result = await asGrantedOperator(() => tools.createCustomApp({ name: 'myapp', config: { services: {} } }));
       expect(customAppService.createCustomApp).toHaveBeenCalled();
       expect(result).toEqual({ appUrn: 'custom:myapp', appName: 'myapp', storeId: 'custom' });
+    });
+
+    // Creating one takes an organization owner or admin; the lifecycle decides it for the caller's actor.
+    it('asks the lifecycle whether the caller may create one, before the service writes anything', async () => {
+      await asGrantedOperator(() => tools.createCustomApp({ name: 'myapp', config: { services: {} } }));
+
+      expect(lifecycle.assertActorMayCreateCustomApp).toHaveBeenCalledWith(GRANTED_ACTOR);
+    });
+
+    it('writes nothing when the caller may not', async () => {
+      lifecycle.assertActorMayCreateCustomApp.mockRejectedValue(new Error('CUSTOM_APP_CREATE_ROLE_REQUIRED'));
+
+      await expect(asGrantedOperator(() => tools.createCustomApp({ name: 'myapp', config: { services: {} } }))).rejects.toThrow(
+        'CUSTOM_APP_CREATE_ROLE_REQUIRED',
+      );
+      expect(customAppService.createCustomApp).not.toHaveBeenCalled();
+    });
+
+    it('refuses a call that names no caller', async () => {
+      await expect(tools.createCustomApp({ name: 'myapp', config: { services: {} } })).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+      expect(customAppService.createCustomApp).not.toHaveBeenCalled();
     });
   });
 
