@@ -93,6 +93,7 @@ import { McpInstallSchemaDto, McpProbeResultDto, ValidateConfigResultDto } from 
 import { FactoryResetDto } from './modules/system/dto/factory-reset.dto';
 import { LoadDto, SystemResourcesDto } from './modules/system/dto/system.dto';
 import { DesktopReleaseDto } from './modules/system-update/dto/desktop-release.dto';
+import { UpdateBlocksDto } from './modules/system-update/dto/update-blocks.dto';
 import { GetUserConfigDto, UpdateUserConfigDto } from './modules/user-config/dto/user-config.dto';
 import { PublicWebRepairBody } from './modules/public-web/public-web.dto';
 import { TailscaleStatusDto } from './modules/tailscale/tailscale.dto';
@@ -193,6 +194,7 @@ export const SWAGGER_ZOD_DTOS: ZodDto[] = [
   LoadDto,
   SystemResourcesDto,
   DesktopReleaseDto,
+  UpdateBlocksDto,
   GetUserConfigDto,
   UpdateUserConfigDto,
   PublicWebRepairBody,

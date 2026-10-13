@@ -689,6 +689,7 @@ pub fn pull_stack_images(
 
 /// Stop Hub containers without marking user-stopped (for updates).
 pub fn stop_hub_for_update(compose_path: &Path, env_path: &Path) -> Result<String, String> {
+    let _stack_change = StackChange::begin();
     let data_dir = get_hub_data_dir();
 
     // If Docker is not available there are no containers to tear down.
@@ -744,6 +745,7 @@ pub fn stop_hub_for_update(compose_path: &Path, env_path: &Path) -> Result<Strin
 
 /// Stop Hub containers
 pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> {
+    let _stack_change = StackChange::begin();
     let data_dir = get_hub_data_dir();
     // Record that the user intentionally stopped the Hub so the next launch
     // does not auto-restart it.

@@ -765,10 +765,27 @@
     }
   }
 
+  /**
+   * True while the app is deciding whether to start the Hub at launch, or stopping, restarting or
+   * starting it. Each can remove the container that answers right now: one launch opened the Hub a
+   * second before its cleanup removed it, and the window sat on a dead page for a minute and a
+   * half. An app that can't answer is treated as settled, as before this check existed.
+   */
+  async function hubMayGoAway() {
+    // A start or restart from this page counts from the click, before the app has marked anything.
+    if (page.commandRunning) return true;
+    try {
+      const state = await invoke('get_stack_change_state_command');
+      return Boolean(state?.stack_change_pending || state?.start_in_progress);
+    } catch {
+      return false;
+    }
+  }
+
   async function watchHub() {
     const baseUrl = await resolveHubUrl();
     for (;;) {
-      if (await isHubLive(baseUrl)) {
+      if (!(await hubMayGoAway()) && (await isHubLive(baseUrl))) {
         // The in-app StartupScreen picks the story up from here.
         page.navigating = true;
         el.title.textContent = 'CI Hub is ready';

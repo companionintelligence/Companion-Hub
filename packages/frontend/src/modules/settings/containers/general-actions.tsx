@@ -2,6 +2,7 @@ import {
   checkForUpdates as checkHubForUpdates,
   factoryReset,
   getAutoUpdates,
+  getUpdateBlocks,
   restartOnboarding,
   setAutoUpdates as updateAutoUpdatesSetting,
 } from '@/api-client/sdk.gen';
@@ -17,7 +18,7 @@ import { ArrowUpCircle, Loader2, Smartphone, Star, TriangleAlert, Wand2 } from '
 import { clearHubConnection, getHubBaseUrlSync, isTauriMobileSync, usesCloudConnect } from '@/lib/mobile-connection';
 import { Trans, useTranslation } from 'react-i18next';
 import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-modal';
-import { useState, useEffect, useCallback, useId } from 'react';
+import { useState, useEffect, useCallback, useId, useRef } from 'react';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import {
   clearHubSteadySession,
@@ -47,6 +48,21 @@ import {
   type UpdateActionResult,
   type UpdateInfo,
 } from '@/lib/update-service';
+
+/**
+ * Why the Hub would refuse an update, from `GET /api/system/update/blocked` or the same fields of
+ * `GET /api/system/update/check`, whose body the generated client leaves untyped.
+ */
+type HubUpdateBlocks = {
+  /** Why the Hub will refuse an update started here, even when a newer release exists. */
+  updateBlockedReason?: string | null;
+  /** Why the daily auto-update cannot move this Hub. */
+  autoUpdateBlockedReason?: string | null;
+  /** The desktop app on the Hub's computer is what updates it. */
+  desktopAppUpdatesHub?: boolean;
+};
+
+type HubUpdateCheck = HubUpdateBlocks & { updateAvailable?: boolean; latest?: string };
 
 /** The one-click desktop app update, in the desktop window. */
 type ShellInstallState =
@@ -100,6 +116,17 @@ export const GeneralActionsContainer = () => {
   const [restartingShell, setRestartingShell] = useState(false);
   const [shellInstall, setShellInstall] = useState<ShellInstallState>({ state: 'idle' });
   const [hostListenerReachable, setHostListenerReachable] = useState<boolean | null>(null);
+  // The app context offers a stack update whenever the registry has a newer tag. Only the Hub knows
+  // whether it will take it (a Windows desktop install, a node whose compose env file isn't the one
+  // it mounts). Without its answer the button ends in "Update failed".
+  const [stackBlock, setStackBlock] = useState<{ update: string | null; auto: string | null; desktopApp: boolean }>({
+    update: null,
+    auto: null,
+    desktopApp: false,
+  });
+  // Bumped when a newer update check starts, so the slower answer of an older one is dropped.
+  const stackCheckSeq = useRef(0);
+  const autoUpdatesBlockedId = `${autoUpdatesId}-blocked`;
   const [switchHubOpen, setSwitchHubOpen] = useState(false);
 
   const desktop = isTauri();
@@ -211,6 +238,29 @@ export const GeneralActionsContainer = () => {
     void refreshHostListenerStatus();
   }, [refreshHostListenerStatus]);
 
+  const applyStackBlock = useCallback((blocks: HubUpdateBlocks | null) => {
+    setStackBlock({
+      update: blocks?.updateBlockedReason ?? null,
+      auto: blocks?.autoUpdateBlockedReason ?? null,
+      desktopApp: blocks?.desktopAppUpdatesHub === true,
+    });
+  }, []);
+
+  // `blocked`, not `check`: this runs on every visit, and `check` also looks up the registry and wakes
+  // every connected agent when an update is available.
+  useEffect(() => {
+    const seq = ++stackCheckSeq.current;
+    unwrapSdkOrNull(getUpdateBlocks())
+      .then((data) => {
+        if (seq === stackCheckSeq.current) applyStackBlock(data as HubUpdateBlocks | null);
+      })
+      // A Hub that is restarting doesn't answer. The update button then shows as it did before.
+      .catch(() => undefined);
+    return () => {
+      stackCheckSeq.current += 1;
+    };
+  }, [applyStackBlock]);
+
   useEffect(() => {
     void unwrapSdkOrNull(getAutoUpdates()).then((data) => {
       const enabled = (data as { enabled?: boolean } | null)?.enabled;
@@ -221,10 +271,12 @@ export const GeneralActionsContainer = () => {
   const handleCheckForUpdates = useCallback(async () => {
     setChecking(true);
     setStackMessage(null);
+    stackCheckSeq.current += 1;
     try {
       const result = await sdkResult(checkHubForUpdates());
       if (!result.ok) throw new Error(`HTTP ${result.status}`);
-      const data = (result.data ?? {}) as { updateAvailable?: boolean; latest?: string };
+      const data = (result.data ?? {}) as HubUpdateCheck;
+      applyStackBlock(data);
       await refreshAppContext();
       await refreshShellUpdateState();
       await refreshHostListenerStatus();
@@ -238,7 +290,7 @@ export const GeneralActionsContainer = () => {
     } finally {
       setChecking(false);
     }
-  }, [refreshAppContext, refreshHostListenerStatus, refreshShellUpdateState, t, version.latest]);
+  }, [applyStackBlock, refreshAppContext, refreshHostListenerStatus, refreshShellUpdateState, t, version.latest]);
 
   const handleUpdate = useCallback(async () => {
     setUpdating(true);
@@ -523,6 +575,19 @@ export const GeneralActionsContainer = () => {
       );
     }
 
+    if (stackUpdateAvailable && stackBlock.update) {
+      return (
+        <div className="space-y-1 rounded-md bg-muted p-3 text-sm" data-testid="hub-update-blocked">
+          {/* Only a refusal that names the desktop app sends people to its card: a dev-channel pin or a
+              source Hub outside a container is not fixed by updating the app. */}
+          <p>
+            {t(desktopWindow && stackBlock.desktopApp ? 'SETTINGS_ACTIONS_STACK_UPDATE_BLOCKED_DESKTOP' : 'SETTINGS_ACTIONS_STACK_UPDATE_BLOCKED')}
+          </p>
+          <p className="text-xs text-muted-foreground">{stackBlock.update}</p>
+        </div>
+      );
+    }
+
     if (stackUpdateAvailable) {
       const release = version.releases?.find((r) => r.version === latestVersion) ?? version.releases?.[0];
       const releaseBody = release?.body?.trim() ?? '';
@@ -599,13 +664,18 @@ export const GeneralActionsContainer = () => {
                 <p id={autoUpdatesDescriptionId} className="text-sm text-muted-foreground">
                   {t('SETTINGS_ACTIONS_AUTO_UPDATE_STACK_DESCRIPTION')}
                 </p>
+                {stackBlock.auto ? (
+                  <p id={autoUpdatesBlockedId} className="mt-1 text-sm text-muted-foreground" data-testid="auto-update-blocked">
+                    {t('SETTINGS_ACTIONS_AUTO_UPDATE_STACK_BLOCKED')}
+                  </p>
+                ) : null}
               </div>
               <button
                 type="button"
                 role="switch"
                 aria-checked={autoUpdates}
                 aria-labelledby={autoUpdatesTitleId}
-                aria-describedby={autoUpdatesDescriptionId}
+                aria-describedby={stackBlock.auto ? `${autoUpdatesDescriptionId} ${autoUpdatesBlockedId}` : autoUpdatesDescriptionId}
                 aria-disabled={autoUpdatesLoading}
                 aria-busy={autoUpdatesLoading}
                 onClick={handleAutoUpdatesToggle}
