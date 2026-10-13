@@ -11,13 +11,20 @@ import { isMemoryProviderApp } from './memory-provider.predicate';
 const DEFAULT_PROVIDER_SERVICE = 'gateway';
 const DEFAULT_PROVIDER_PORT = 8642;
 
+/**
+ * Verdicts of `checkAppAvailability` that mean the public route answered and said ci-memory is not behind
+ * it: the tunnel has no connector, Cloudflare reached no origin, or the Hub's side answered a 5xx or a
+ * missing-route 404. Sending the browser there only shows it that error.
+ */
+const ROUTE_DOWN_ERROR_CODES: ReadonlySet<string> = new Set(['CF_TUNNEL_NOT_FOUND', 'CF_ORIGIN_DOWN', 'CF_UPSTREAM_ERROR']);
+
 /** Where the Hub can reach an installed Companion Memory, both internally and for the browser. */
 export interface ResolvedMemoryProvider {
   /** URN of the installed ci-memory app. */
   appUrn: AppUrn;
   /** Internal address on the shared docker network (server-to-server exchange). */
   internalUrl: string;
-  /** Browser-reachable public URL (base of the consent flow), when resolvable. */
+  /** Browser-reachable public URL (base of the consent flow), unless the probe saw that route answer without ci-memory. */
   publicUrl?: string;
 }
 
@@ -235,7 +242,15 @@ export class MemoryProviderResolver {
     if (opts.withPublicUrl) {
       try {
         const availability = await this.appsService.checkAppAvailability(appUrn);
-        publicUrl = availability.appUrl;
+        // Not an address the tunnel said ci-memory does not answer at. A failed verdict still names the
+        // address, and the browser sent there landed on a bare 404 while ci-memory's containers were down.
+        // Any other failure keeps the address, as before: a probe that got no answer at all says more about
+        // the Hub's own network than about what the browser will reach.
+        if (availability.errorCode && ROUTE_DOWN_ERROR_CODES.has(availability.errorCode)) {
+          this.logger.info(`[MemoryConnect] ci-memory does not answer at its public address yet (${availability.errorCode})`);
+        } else {
+          publicUrl = availability.appUrl;
+        }
       } catch (err) {
         this.logger.warn(`[MemoryConnect] could not resolve ci-memory public URL: ${err instanceof Error ? err.message : String(err)}`);
       }
