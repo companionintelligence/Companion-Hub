@@ -17,6 +17,7 @@ import { useRegistrationStatus } from '@/lib/hooks/use-registration-status';
 import { AppCard } from '@/modules/app/components/app-card/app-card';
 import { getCategoryLabel } from '@/modules/app/helpers/category-label';
 import { iconForCategory } from '@/modules/app/helpers/table-helpers';
+import { useCustomAppAccess } from '@/modules/app/helpers/use-custom-app-access';
 import { filterAlternativesBySearch } from '@/lib/store-search';
 import { useAppStoreState } from '@/stores/app-store';
 import { keepPreviousData, useInfiniteQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -49,6 +50,7 @@ export const AppStorePageSuspense = () => {
 export default () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const customAppAccess = useCustomAppAccess();
   const params = useParams<{ storeId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const { setCategory, category, storeId, setStoreId, search, setSearch, setSearchImmediate } = useAppStoreState();
@@ -293,9 +295,12 @@ export default () => {
           <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => navigate('/apps/expose')}>
             {t('PORT_EXPOSE_SIDEBAR_LINK')}
           </Button>
-          <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => navigate('/apps/create')}>
-            {t('APP_STORE_CREATE_CUSTOM_APP')}
-          </Button>
+          {/* Only an organization owner or admin may create a custom app. */}
+          {customAppAccess.may('install') ? (
+            <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => navigate('/apps/create')}>
+              {t('APP_STORE_CREATE_CUSTOM_APP')}
+            </Button>
+          ) : null}
           <Button onClick={() => pullApps()} disabled={isPulling} variant="outline" size="sm" className="w-full gap-2 sm:w-auto">
             <RefreshCw className={clsx('h-4 w-4', isPulling && 'animate-spin')} />
             {isPulling ? t('APP_STORE_SYNCING') : t('APP_STORE_CHECK_FOR_UPDATES')}

@@ -18,6 +18,7 @@ import { AppBackupsCard } from '../components/app-backups-card/app-backups-card'
 import { AppRuntimeDegradedBanner } from '../components/app-runtime-degraded-banner';
 import type { AppDetails, AppInfo, AppMetadata } from '@/types/app.types';
 import { useAppUrlAvailability } from '../helpers/use-app-url-availability';
+import { useCustomAppAccess } from '../helpers/use-custom-app-access';
 
 interface Props {
   appId: string;
@@ -28,6 +29,8 @@ interface Props {
 
 export const CustomAppDetailsPageContent = ({ appId, info, app, metadata }: Props) => {
   const { t } = useTranslation();
+  // A member sees the app, its status and Open; its settings, backups and lifecycle are an owner's or admin's.
+  const access = useCustomAppAccess();
   const runtimeHealthEnabled = Boolean(app && app.status !== 'uninstalling');
 
   const { userSettings } = useAppContext();
@@ -84,7 +87,7 @@ export const CustomAppDetailsPageContent = ({ appId, info, app, metadata }: Prop
             url={imageUrl.toString()}
             size={130}
             alt={info?.name}
-            onImageUpload={handleImageUpload}
+            onImageUpload={access.may('configure') ? handleImageUpload : undefined}
             isUploading={uploadImage.isPending}
           />
           <div className="w-full flex flex-col md:ml-3 items-center md:items-start">
@@ -112,6 +115,7 @@ export const CustomAppDetailsPageContent = ({ appId, info, app, metadata }: Prop
                   runtimeHealth={runtimeHealth.data}
                   urlAvailability={urlAvailability}
                   layout="hero"
+                  allowedActions={access.actions}
                 />
               </div>
             </div>
@@ -119,10 +123,10 @@ export const CustomAppDetailsPageContent = ({ appId, info, app, metadata }: Prop
         </CardHeader>
         {/* Inset like the header above. The store page puts these tabs outside its card, so they bring no padding of their own. */}
         <CardContent>
-          <AppDetailsTabs info={info} app={app} metadata={metadata} />
+          <AppDetailsTabs info={info} app={app} metadata={metadata} canEditNotes={access.may('configure')} />
         </CardContent>
       </Card>
-      {app ? (
+      {app && access.may('backup') ? (
         <div className="mt-4">
           <AppBackupsCard appUrn={`${appId}:_user`} appName={info?.name ?? appId} status={app.status} />
         </div>

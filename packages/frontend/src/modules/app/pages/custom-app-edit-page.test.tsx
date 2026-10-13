@@ -52,7 +52,8 @@ vi.mock('./+types/custom-app-edit-page', () => ({
   Route: {},
 }));
 
-import EditPageContent from './custom-app-edit-page';
+import EditPageContent, { clientLoader } from './custom-app-edit-page';
+import { getAppComposeDiff } from '@/api-client';
 
 function pageProps(loaderData: { composeDiff: { current: string } } | undefined): ComponentProps<typeof EditPageContent> {
   return { loaderData } as ComponentProps<typeof EditPageContent>;
@@ -100,5 +101,16 @@ describe('custom app edit', () => {
     mutationOptions.current?.onError?.({ message: 'APP_ACTION_GRANT_DENIED', intlParams: { action: 'configure', app: 'my-app' } });
 
     expect(toastError).toHaveBeenCalledWith('You are not allowed to configure this app.');
+  });
+
+  // The compose holds the app's env values, so a member is refused it. A member who follows an old link
+  // to the editor lands on the app's page instead of an error.
+  it('sends someone refused the compose to the app page', async () => {
+    vi.mocked(getAppComposeDiff).mockRejectedValue(new Error('APP_ACTION_GRANT_DENIED'));
+
+    const result = await clientLoader({ params: { appId: 'my-app' } } as never);
+
+    expect(result).toBeInstanceOf(Response);
+    expect((result as Response).headers.get('Location')).toBe('/apps/my-app');
   });
 });

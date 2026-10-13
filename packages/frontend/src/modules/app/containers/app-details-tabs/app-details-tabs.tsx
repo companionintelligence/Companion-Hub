@@ -28,9 +28,11 @@ interface IProps {
   metadata?: AppMetadata;
   imageSizeFormatted?: string | null;
   imageSizeLoading?: boolean;
+  /** Whether this person may edit a custom app's notes; a member may read them but not change them. */
+  canEditNotes?: boolean;
 }
 
-export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, imageSizeLoading }: IProps) => {
+export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, imageSizeLoading, canEditNotes = true }: IProps) => {
   const { t } = useTranslation();
 
   const urn = extractAppUrn(info.urn as AppUrn);
@@ -102,7 +104,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
             {isUserApp && (
               <div className="flex justify-between items-center mb-3">
                 <h2 className="text-lg font-semibold">{t('APP_DETAILS_NOTES')}</h2>
-                {!isEditing && (
+                {!isEditing && canEditNotes && (
                   <Button variant="outline" size="sm" onClick={() => setIsEditing(!isEditing)}>
                     {t('COMMON_EDIT')}
                   </Button>

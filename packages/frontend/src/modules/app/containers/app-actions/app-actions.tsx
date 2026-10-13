@@ -137,7 +137,31 @@ interface IProps {
    */
   urlAvailability: AppUrlAvailability;
   layout?: 'default' | 'hero';
+  /**
+   * The Hub verbs this person holds on the app, when the page knows them (a custom app's page reads
+   * them from `useCustomAppAccess`). An action whose verb is missing is left out rather than shown and
+   * refused. Unset, every action shows, and the Hub decides when it is used.
+   */
+  allowedActions?: readonly string[];
 }
+
+/** The verb each action asks the Hub for. One not listed (Open, the data folder, Companion Memory) only reads. */
+const ACTION_VERBS: Record<string, string> = {
+  start: 'start',
+  install: 'install',
+  'retry-install': 'install',
+  stop: 'stop',
+  'force-stop': 'stop',
+  cancel: 'stop',
+  restart: 'restart',
+  settings: 'configure',
+  'edit-config': 'configure',
+  reset: 'reset',
+  remove: 'uninstall',
+  update: 'update',
+  'ignore-version': 'configure',
+  'unignore-version': 'configure',
+};
 
 interface BtnProps extends ButtonProps {
   IconComponent?: typeof Download;
@@ -198,7 +222,7 @@ const LOADING_STATUS_LABEL_KEYS: Partial<Record<AppStatus, string>> = {
   restoring: 'APP_STATUS_RESTORING',
 };
 
-export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth, urlAvailability, layout = 'default' }: IProps) => {
+export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth, urlAvailability, layout = 'default', allowedActions }: IProps) => {
   const installDisclosure = useDisclosure();
   const cancelInstallDisclosure = useDisclosure();
   const stopDisclosure = useDisclosure();
@@ -983,6 +1007,13 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       break;
   }
 
+  const permitted = (action: React.JSX.Element) => {
+    const verb = ACTION_VERBS[String(action.key)];
+    return allowedActions === undefined || verb === undefined || allowedActions.includes(verb);
+  };
+  const shownButtons = buttons.filter(permitted);
+  const shownSecondaryActions = secondaryActions.filter(permitted);
+
   return (
     <>
       <InstallDialog isOpen={installDisclosure.isOpen} onClose={installDisclosure.close} info={info} boundCustomDomain={app?.customDomain ?? null} />
@@ -1060,8 +1091,8 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       <div className={clsx('space-y-1', layout === 'default' && 'mt-1')}>
         <div className={clsx('flex flex-wrap items-start gap-2', layout === 'hero' && 'hero-actions-layout')}>
           {layout === 'hero' ? InstallErrorMessage : null}
-          {secondaryActions.length > 0 ? <div className="hero-action-bar">{secondaryActions}</div> : null}
-          {buttons.map((button) => {
+          {shownSecondaryActions.length > 0 ? <div className="hero-action-bar">{shownSecondaryActions}</div> : null}
+          {shownButtons.map((button) => {
             return createElement(button.type, {
               ...button.props,
               key: button.key,

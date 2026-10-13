@@ -672,6 +672,72 @@ describe('AppActions', () => {
     });
   });
 
+  /*
+   * A custom app's page passes the verbs this person holds. A member gets the app and Open only; an
+   * account with no linked Portal identity also gets start, stop and restart. Nothing is shown that the
+   * Hub would refuse.
+   */
+  describe('the actions a person may use', () => {
+    const customInfo = makeInfo({ urn: 'whoami-check:_user', id: 'whoami-check', no_gui: false });
+    const renderCustom = (status: AppDetails['status'], allowedActions?: readonly string[]) =>
+      render(
+        <MemoryRouter>
+          <AppActions
+            app={makeApp({ status })}
+            metadata={metadata}
+            info={customInfo}
+            urlAvailability={idleAvailability}
+            allowedActions={allowedActions}
+          />
+        </MemoryRouter>,
+      );
+    const CHANGES = [
+      'icon-action-common_settings',
+      'icon-action-app_install_form_reset',
+      'icon-action-common_remove',
+      'icon-action-custom_app_edit_config',
+    ];
+
+    it('shows a member a stopped custom app with no Start and no change', () => {
+      renderCustom('stopped', ['view']);
+
+      expect(screen.queryByTestId('action-app_action_start')).not.toBeInTheDocument();
+      for (const testId of CHANGES) {
+        expect(screen.queryByTestId(testId)).not.toBeInTheDocument();
+      }
+    });
+
+    it('shows a member a running custom app with Open, and no Stop, Restart or change', () => {
+      renderCustom('running', ['view']);
+
+      expect(screen.getByTestId('action-app_action_open')).toBeInTheDocument();
+      expect(screen.queryByTestId('icon-action-common_stop')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('icon-action-common_restart')).not.toBeInTheDocument();
+      for (const testId of CHANGES) {
+        expect(screen.queryByTestId(testId)).not.toBeInTheDocument();
+      }
+    });
+
+    it('offers an account with no linked Portal identity start, stop and restart, and no change', () => {
+      renderCustom('running', ['view', 'start', 'stop', 'restart']);
+
+      expect(screen.getByTestId('icon-action-common_stop')).toBeInTheDocument();
+      expect(screen.getByTestId('icon-action-common_restart')).toBeInTheDocument();
+      for (const testId of CHANGES) {
+        expect(screen.queryByTestId(testId)).not.toBeInTheDocument();
+      }
+    });
+
+    it('shows an organization owner or admin everything, as when the page passes nothing', () => {
+      renderCustom('stopped', ['view', 'start', 'stop', 'restart', 'install', 'update', 'uninstall', 'reset', 'backup', 'restore', 'configure']);
+
+      expect(screen.getByTestId('action-app_action_start')).toBeInTheDocument();
+      for (const testId of CHANGES) {
+        expect(screen.getByTestId(testId)).toBeInTheDocument();
+      }
+    });
+  });
+
   describe('cancelling an install', () => {
     const renderWithStatus = (status: AppDetails['status']) => (
       <MemoryRouter>

@@ -140,8 +140,15 @@ const mockUseParams = vi.mocked(useParams);
 const STORE_A = { slug: 'ci-apps', name: 'CI Apps', enabled: true, url: '', hash: '', branch: 'main' };
 const STORE_B = { slug: 'community', name: 'Community', enabled: true, url: '', hash: '', branch: 'main' };
 
+const OWNER_ACTIONS = ['view', 'start', 'stop', 'restart', 'install', 'update', 'uninstall', 'reset', 'backup', 'restore', 'configure'];
+/** What `GET /api/custom-apps/access` answers: an organization owner or admin unless a test says otherwise. */
+let customAppActions: string[] = OWNER_ACTIONS;
+
 function setupQueries(stores = [STORE_A, STORE_B]) {
   mockUseQuery.mockImplementation((opts: { queryKey: readonly unknown[] }) => {
+    if (opts.queryKey[0] === 'custom-app-access') {
+      return { data: customAppActions, isLoading: false } as ReturnType<typeof useQuery>;
+    }
     if (opts.queryKey[0] === 'enabledStores') {
       return { data: { appStores: stores }, isLoading: false } as ReturnType<typeof useQuery>;
     }
@@ -158,6 +165,7 @@ function setupQueries(stores = [STORE_A, STORE_B]) {
 describe('AppStorePage — multi-store UX', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    customAppActions = OWNER_ACTIONS;
     mockUseParams.mockReturnValue({});
     capturedSearchParams = new URLSearchParams();
     mockStoreState.category = undefined;
@@ -186,6 +194,24 @@ describe('AppStorePage — multi-store UX', () => {
 
     expect(mockNavigate).toHaveBeenCalledWith('/apps/expose');
     expect(mockNavigate).toHaveBeenCalledWith('/apps/create');
+  });
+
+  // Only an organization owner or admin may create a custom app, so a member is not offered the button.
+  it.each([
+    ['a member', ['view']],
+    ['an account with no linked Portal identity', ['view', 'start', 'stop', 'restart']],
+  ])('does not offer %s Create a custom app', (_label, actions) => {
+    customAppActions = actions;
+    setupQueries();
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole('button', { name: 'PORT_EXPOSE_SIDEBAR_LINK' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'APP_STORE_CREATE_CUSTOM_APP' })).not.toBeInTheDocument();
   });
 
   it('renders store switcher buttons when multiple stores are enabled', () => {

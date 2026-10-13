@@ -163,3 +163,19 @@ describe('AppDetailsTabs: saving custom app notes', () => {
     expect(toastError).toHaveBeenCalledWith('APP_ERROR_SAVE_NOTES');
   });
 });
+
+describe('AppDetailsTabs: who may edit custom app notes', () => {
+  it('offers Edit on the notes to someone who may change the app', () => {
+    render(<AppDetailsTabs info={makeInfo({ urn: 'my-compose:_user' })} metadata={defaultMetadata} canEditNotes />);
+
+    expect(screen.getByRole('button', { name: 'COMMON_EDIT' })).toBeInTheDocument();
+  });
+
+  // A member may read a custom app's notes but not change them, so there is no Edit to be refused.
+  it('shows a member the notes without Edit', () => {
+    render(<AppDetailsTabs info={makeInfo({ urn: 'my-compose:_user' })} metadata={defaultMetadata} canEditNotes={false} />);
+
+    expect(screen.getByText('APP_DETAILS_NOTES')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'COMMON_EDIT' })).not.toBeInTheDocument();
+  });
+});

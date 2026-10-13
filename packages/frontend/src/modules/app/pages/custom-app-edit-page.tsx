@@ -20,7 +20,13 @@ export async function clientLoader({ params }: Route.ActionArgs) {
     return redirect('/apps');
   }
 
-  const composeDiff = await getAppComposeDiff({ path: { urn: `${params.appId}:_user` } });
+  // The compose holds the app's env values, so reading it takes an owner or admin. Anyone else lands on
+  // the app's page rather than on an error.
+  const composeDiff = await getAppComposeDiff({ path: { urn: `${params.appId}:_user` } }).catch(() => null);
+
+  if (!composeDiff) {
+    return redirect(`/apps/${encodeURIComponent(params.appId)}`);
+  }
 
   if (!composeDiff.data?.current) {
     return redirect('/apps');
