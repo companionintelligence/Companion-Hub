@@ -154,6 +154,45 @@ describe('AppRuntimeMonitorService', () => {
     expect(appsService.checkAppAvailability).toHaveBeenCalledTimes(1);
   });
 
+  /*
+   * The availability probe reads the app's public route, and it now reads a down tunnel, the Hub's
+   * "is starting" page and the app's own 5xx as unavailable. Each of those came back in time, and a busy
+   * model server that answers 503 while it loads a model is not hung, so none of them may turn into
+   * "Needs attention", the degraded banner or Force stop.
+   */
+  it.each([
+    ['a down tunnel', { available: false, reason: 'CLOUDFLARE', errorCode: 'CF_TUNNEL_NOT_FOUND' }],
+    ['a 503 through the tunnel', { available: false, reason: 'CLOUDFLARE', errorCode: 'CF_UPSTREAM_ERROR', httpStatus: 503 }],
+  ])('does not call a busy app unresponsive when its public route answered with %s', async (_label, verdict) => {
+    appsRepository.getAppByUrn.mockResolvedValue({
+      id: 1,
+      appName: 'test-app',
+      appStoreSlug: 'store',
+      status: 'running',
+      config: {},
+      updatedAt: new Date().toISOString(),
+    } as any);
+    dockerReadFacade.getAppRuntimeStats.mockResolvedValue([
+      {
+        containerId: 'abc',
+        name: 'svc',
+        state: 'running',
+        status: 'Up',
+        health: 'healthy',
+        exitCode: null,
+        cpuPercent: 95,
+        memoryUsageBytes: 100,
+        memoryLimitBytes: 1000,
+      },
+    ]);
+    appsService.checkAppAvailability.mockResolvedValue(verdict as any);
+
+    const result = await service.getAppRuntimeHealth('test-app:store' as any);
+
+    expect(appsService.checkAppAvailability).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ responsive: true, reason: null, degraded: false, forceStopEligible: false });
+  });
+
   it('returns not found when the app record is gone', async () => {
     appsRepository.getAppByUrn.mockResolvedValue(null);
 
