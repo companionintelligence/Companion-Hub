@@ -888,15 +888,28 @@ fn windows_update_script(installer: &Path, app_exe: &Path, relaunch_args: &[Stri
         .iter()
         .map(|a| format!(" {a}"))
         .collect::<String>();
+    // The staging folder holds only the installer and this script, so it is empty once both are
+    // deleted. `rmdir` without `/s` leaves it alone if anything else is in there.
+    let remove_staging_dir = installer_str
+        .rsplit_once('\\')
+        .map(|(dir, _)| dir)
+        .filter(|dir| !dir.is_empty())
+        .map(|dir| format!(" & rmdir \"{dir}\" >nul 2>&1"))
+        .unwrap_or_default();
+    // The script is written as UTF-8, but cmd reads it in the console's OEM code page (437 or 850
+    // on most machines), so a user name such as `José` in either path names a folder that does not
+    // exist: the install line fails and the relaunch line starts nothing. `chcp 65001` switches
+    // cmd to UTF-8 for the lines after it.
     // `ping` as sleep: `timeout` requires an interactive console and fails in a
     // detached process. The final line is the canonical batch self-delete.
     format!(
         "@echo off\r\n\
+         chcp 65001 >nul\r\n\
          ping -n 3 127.0.0.1 >nul\r\n\
          {install_line}\r\n\
          start \"\" \"{exe_str}\"{args}\r\n\
          del \"{installer_str}\" >nul 2>&1\r\n\
-         (goto) 2>nul & del \"%~f0\"\r\n"
+         (goto) 2>nul & del \"%~f0\"{remove_staging_dir}\r\n"
     )
 }
 
@@ -1114,19 +1127,27 @@ fn spawn_detached_respawn(exe: &Path, args: &[String], delay_secs: u64) -> Resul
     Ok(())
 }
 
-#[cfg(windows)]
-fn spawn_detached_respawn(exe: &Path, args: &[String], delay_secs: u64) -> Result<(), String> {
-    use std::io::Write as _;
+/// Batch script that waits, starts `exe` again and deletes itself. The path gets the same care as in
+/// [`windows_update_script`]: `%` doubled, and `chcp 65001` so a non-ASCII user name reads right.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_respawn_script(exe: &Path, args: &[String], delay_secs: u64) -> String {
     let arg_str = args.iter().map(|a| format!(" {a}")).collect::<String>();
-    let script = format!(
+    format!(
         "@echo off\r\n\
+         chcp 65001 >nul\r\n\
          ping -n {} 127.0.0.1 >nul\r\n\
          start \"\" \"{}\"{}\r\n\
          (goto) 2>nul & del \"%~f0\"\r\n",
         delay_secs + 1,
-        exe.display(),
+        exe.display().to_string().replace('%', "%%"),
         arg_str
-    );
+    )
+}
+
+#[cfg(windows)]
+fn spawn_detached_respawn(exe: &Path, args: &[String], delay_secs: u64) -> Result<(), String> {
+    use std::io::Write as _;
+    let script = windows_respawn_script(exe, args, delay_secs);
     let mut file = tempfile::Builder::new()
         .prefix("companion-hub-respawn-")
         .suffix(".cmd")
@@ -2579,6 +2600,35 @@ mod tests {
         ));
         assert!(script.contains(
             r#"del "C:\Users\a%%20b\AppData\Local\Temp\companion-hub-update-x\setup.exe""#
+        ));
+        assert!(script.contains(r#"del "%~f0""#));
+    }
+
+    // cmd reads a batch file in the OEM code page. Without `chcp 65001` first, the UTF-8 bytes of
+    // `José` read as `JosÃ©` and neither the installer nor the relaunched app is found.
+    #[test]
+    fn windows_update_script_reads_a_non_ascii_user_name_as_utf8() {
+        let script = windows_update_script(
+            Path::new(r"C:\Users\José\AppData\Local\Temp\companion-hub-update-x\setup.exe"),
+            Path::new(r"C:\Users\José\AppData\Local\Companion Hub\companion-hub.exe"),
+            &relaunch_args(PersistedLaunchMode::Desktop),
+        );
+        assert!(script.starts_with("@echo off\r\nchcp 65001 >nul\r\n"));
+        assert!(script.contains(
+            r#"(goto) 2>nul & del "%~f0" & rmdir "C:\Users\José\AppData\Local\Temp\companion-hub-update-x" >nul 2>&1"#
+        ));
+    }
+
+    #[test]
+    fn windows_respawn_script_keeps_the_path_literal() {
+        let script = windows_respawn_script(
+            Path::new(r"C:\Users\José 100%\AppData\Local\Companion Hub\companion-hub.exe"),
+            &relaunch_args(PersistedLaunchMode::Desktop),
+            2,
+        );
+        assert!(script.starts_with("@echo off\r\nchcp 65001 >nul\r\nping -n 3 127.0.0.1 >nul\r\n"));
+        assert!(script.contains(
+            r#"start "" "C:\Users\José 100%%\AppData\Local\Companion Hub\companion-hub.exe" --relaunch-after-update"#
         ));
         assert!(script.contains(r#"del "%~f0""#));
     }
