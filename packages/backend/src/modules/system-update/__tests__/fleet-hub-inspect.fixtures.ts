@@ -190,6 +190,46 @@ export function core3EnvLabelDiffersFromMount(image = 'ghcr.io/companionintellig
   };
 }
 
+/**
+ * The Windows desktop app on the WSL engine (0.3.4, 2026-10-13; user name replaced): compose ran on
+ * Windows, so the labels hold `C:\…` paths, while the engine reports the same files as `/mnt/c/…`.
+ */
+export function windowsDesktopWslEngine(image = 'ghcr.io/companionintelligence/ci-hub:0.3.4'): DockerContainerInspect {
+  const root = 'C:\\Users\\ci\\AppData\\Roaming\\companion-hub';
+  const mounted = '/mnt/c/Users/ci/AppData/Roaming/companion-hub';
+  return {
+    Name: '/ci-hub',
+    Image: 'sha256:ddfdad034d0a08d5f6771482555e71705c883304417fa1deeada33b2f97a59d4',
+    Config: {
+      Image: image,
+      Labels: {
+        'com.docker.compose.project': 'ci-hub',
+        'com.docker.compose.project.config_files': `${root}\\docker-compose.prod.yml`,
+        'com.docker.compose.project.environment_file': `${root}\\.env`,
+        'com.docker.compose.project.working_dir': root,
+        'com.docker.compose.service': 'ci-hub',
+        'com.docker.compose.version': '5.6.0',
+      },
+    },
+    Mounts: binds([
+      [`${mounted}/app-data`, '/app-data'],
+      ['/mnt/c/Users/ci/AppData/Roaming/tunnel', '/app/tunnel'],
+      [`${mounted}/.docker`, '/data/.docker'],
+      [`${mounted}/.env`, '/data/.env'],
+      [`${mounted}/apps`, '/data/apps'],
+      [`${mounted}/backups`, '/data/backups'],
+      [`${mounted}/cache`, '/data/cache'],
+      [`${mounted}/docker-compose.prod.yml`, '/data/docker-compose.yml'],
+      [`${mounted}/logs`, '/data/logs'],
+      [`${mounted}/media`, '/data/media'],
+      [`${mounted}/repos`, '/data/repos'],
+      [`${mounted}/state`, '/data/state'],
+      [`${mounted}/user-config`, '/data/user-config'],
+      ...HOST_SYSTEM_BINDS,
+    ]),
+  };
+}
+
 /** Labels of the published `ci-hub:0.2.71` image (GHCR, 2026-09-17): the version label says `latest`. */
 export const RELEASE_0_2_71_IMAGE_LABELS = {
   'org.opencontainers.image.created': '2026-09-16T12:39:10.154Z',
