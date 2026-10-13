@@ -1,3 +1,13 @@
+param(
+    # Print what the cleanup would remove and remove nothing.
+    [switch]$DryRun,
+    # Also delete the Hub's data: its data folder and tunnel token, the desktop app's own folders,
+    # and the Hub's and the apps' Docker volumes. The NSIS uninstaller passes this when "Delete the
+    # application data" is ticked. Without it the data stays, so a reinstall comes back paired,
+    # with its apps and their data.
+    [switch]$DeleteAppData
+)
+
 $ErrorActionPreference = 'Continue'
 
 function Write-CleanupLog {
@@ -8,14 +18,21 @@ function Write-CleanupLog {
     Write-Host "[cleanup][$Level] $Message"
 }
 
+# Runs docker with $Arguments. Each element reaches docker as one argument, so a name docker
+# printed can't add a second command, which a command string run by Invoke-Expression would allow.
 function Invoke-CleanupCommand {
-    param([string]$Command)
+    param([string[]]$Arguments)
+    $command = "docker $($Arguments -join ' ')"
+    if ($DryRun) {
+        Write-CleanupLog 'DRYRUN' "Would run: $command"
+        return $true
+    }
     try {
-        Invoke-Expression $Command | Out-Null
+        & docker @Arguments | Out-Null
         return $true
     }
     catch {
-        Write-CleanupLog 'WARN' "Command failed: $Command"
+        Write-CleanupLog 'WARN' "Command failed: $command"
         return $false
     }
 }
@@ -25,6 +42,10 @@ function Remove-IfExists {
     # SilentlyContinue: when cleaning other users' profiles the existence check can hit
     # a locked-down AppData; stay quiet here (removal failures still log via WARN below).
     if (Test-Path $PathToDelete -ErrorAction SilentlyContinue) {
+        if ($DryRun) {
+            Write-CleanupLog 'DRYRUN' "Would remove $PathToDelete"
+            return
+        }
         try {
             Remove-Item -Path $PathToDelete -Recurse -Force -ErrorAction Stop
             Write-CleanupLog 'INFO' "Removed $PathToDelete"
@@ -102,6 +123,11 @@ function Remove-HubTunnelFiles {
     $clearedMarker = Join-Path $dir.FullName '.user-cleared-token'
     if (Test-Path -LiteralPath $clearedMarker -PathType Leaf -ErrorAction SilentlyContinue) { $toRemove += $clearedMarker }
 
+    if ($DryRun) {
+        foreach ($path in $toRemove) { Write-CleanupLog 'DRYRUN' "Would remove $path" }
+        return
+    }
+
     foreach ($path in $toRemove) {
         try {
             Remove-Item -LiteralPath $path -Force -ErrorAction Stop
@@ -126,6 +152,79 @@ function Remove-HubTunnelFiles {
 }
 # END hub tunnel folder cleanup
 
+# The desktop app puts its cihub CLI folder on the user PATH (cli_install.rs). Returns
+# $PathValue without $Entry, or $null when $Entry isn't in it. Entries are compared expanded
+# and case-insensitively; the others are kept exactly as written.
+function Remove-PathListEntry {
+    param([string]$PathValue, [string]$Entry)
+    $target = $Entry.TrimEnd('\')
+    $entries = @($PathValue -split ';')
+    $kept = @($entries | Where-Object { [Environment]::ExpandEnvironmentVariables($_).Trim().TrimEnd('\') -ne $target })
+    if ($kept.Count -eq $entries.Count) { return $null }
+    return ($kept -join ';')
+}
+
+# Removes $Entry from the Path value under HKCU\$EnvironmentKey and returns whether it did.
+# The raw value is read and written back with its own type: an expanded read would turn
+# entries like %USERPROFILE%\... into fixed paths, and a plain string type would stop the
+# rest from expanding at all.
+function Remove-UserPathEntry {
+    param([string]$Entry, [string]$EnvironmentKey = 'Environment')
+    try {
+        $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($EnvironmentKey, -not $DryRun)
+        if ($null -eq $key) { return $false }
+        try {
+            $value = $key.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            if ([string]::IsNullOrEmpty($value)) { return $false }
+            $updated = Remove-PathListEntry $value $Entry
+            if ($null -eq $updated) { return $false }
+            if ($DryRun) {
+                Write-CleanupLog 'DRYRUN' "Would remove $Entry from the user PATH"
+                return $false
+            }
+            $key.SetValue('Path', $updated, $key.GetValueKind('Path'))
+            Write-CleanupLog 'INFO' "Removed $Entry from the user PATH"
+            return $true
+        }
+        finally {
+            $key.Close()
+        }
+    }
+    catch {
+        Write-CleanupLog 'WARN' "Failed to remove $Entry from the user PATH"
+        return $false
+    }
+}
+
+# The Hub's files in one user's AppData. The CLI folder the desktop app puts on the user PATH
+# (cli_install.rs) and the logon script that keeps the Docker Engine's WSL2 distro running
+# (engine_alt.rs) go either way. The rest goes only with -DeleteAppData: the data folder holds
+# the Hub's identity (.env, state\registered-device-id), its settings, the apps' data and
+# backups, and the database password that matches ci_hub_pgdata; the tunnel token beside it
+# reconnects the Hub's public address; computer.ci.app.hub holds the desktop app's own settings
+# and WebView2 data, which the template's "Delete the application data" box covers too.
+function Remove-HubUserFiles {
+    param([string]$RoamingAppData, [string]$LocalAppData, [string]$Startup)
+    Remove-IfExists (Join-Path $LocalAppData 'Companion Hub')
+    Remove-IfExists (Join-Path $Startup 'CompanionHub-WSL-Docker.vbs')
+    if (-not $DeleteAppData) { return }
+    # Mirror the Debian postrm name list exactly (note the lowercase 'ci-hub').
+    foreach ($name in @('Companion Hub', 'companion-hub', 'ci-hub', 'CI-Hub', 'computer.ci.app.hub')) {
+        Remove-IfExists (Join-Path $RoamingAppData $name)
+        Remove-IfExists (Join-Path $LocalAppData $name)
+    }
+    # The desktop's data folder is %APPDATA%\companion-hub, so its tunnel folder is %APPDATA%\tunnel.
+    Remove-HubTunnelFiles (Join-Path $RoamingAppData 'tunnel')
+}
+
+if ($DeleteAppData) {
+    Write-CleanupLog 'INFO' "Deleting the Hub's data and Docker volumes too (-DeleteAppData)"
+}
+else {
+    Write-CleanupLog 'INFO' "Keeping the Hub's data folder, tunnel token and Docker volumes; -DeleteAppData removes them"
+}
+
+# BEGIN docker cleanup
 function Get-ContainerNamesByFilter {
     param([string]$Filter)
     if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
@@ -154,6 +253,42 @@ function Get-ProjectImageIds {
     return $ids | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
 }
 
+# Compose projects of the containers that carry $Label. The NSIS hook, the .msi and Chocolatey
+# run this script with Windows PowerShell 5.1, which drops the inner double quotes of an
+# argument it passes to docker: '{{.Label "com.docker.compose.project"}}' arrived as
+# {{.Label com.docker.compose.project}}, docker failed with 'function "com" not defined',
+# and no app was removed. Keep double quotes out of every template passed to docker; a Go raw
+# string in backticks names the label without them. Splitting '{{.Labels}}' on commas instead
+# would also pick up a project named inside another label's value ("x,com.docker.compose.project=y").
+function Get-ComposeProjectsByLabel {
+    param([string]$Label)
+    docker ps -a --filter "label=$Label" --format '{{.Label `com.docker.compose.project`}}' 2>$null
+}
+
+# Anonymous volumes the given containers mount. `docker rm -v` removes a container's anonymous
+# volume only when the engine made it with that container. When Compose recreates a container it
+# mounts the old anonymous volume into the new one by name, and `rm -v` then leaves it behind:
+# RabbitMQ's data outlived an uninstall that way after a desktop launch had recreated the stack.
+function Get-AnonymousVolumes {
+    param([string[]]$Containers)
+    $Containers = @($Containers | Where-Object { $_ })
+    if (-not $Containers) { return }
+    $anonymous = @(docker volume ls -q --filter label=com.docker.volume.anonymous 2>$null)
+    $mounted = (docker inspect --format '{{range .Mounts}}{{.Name}} {{end}}' $Containers 2>$null) -join ' '
+    $mounted -split '\s+' | Where-Object { $_ -and $_ -in $anonymous } | Select-Object -Unique
+}
+
+# Removes those of $Names that are still there once their containers are gone.
+function Remove-AnonymousVolumes {
+    param([string[]]$Names)
+    $Names = @($Names | Where-Object { $_ })
+    if (-not $Names) { return }
+    $left = @(docker volume ls -q --filter label=com.docker.volume.anonymous 2>$null)
+    foreach ($name in ($Names | Select-Object -Unique)) {
+        if ($name -in $left) { Invoke-CleanupCommand @('volume', 'rm', $name) }
+    }
+}
+
 # Marketplace apps run as their own compose projects (<app>_<store>), separate from
 # the Hub stack. New apps carry `ci-hub.managed=true`; pre-rename apps carry
 # `ci-os-hub.managed=true`. Discover the union, then remove each project's
@@ -164,8 +299,8 @@ function Remove-MarketplaceApps {
     $managedProjects = @()
     try {
         $managedProjects = @(
-            docker ps -a --filter 'label=ci-hub.managed=true' --format '{{.Label "com.docker.compose.project"}}' 2>$null
-            docker ps -a --filter 'label=ci-os-hub.managed=true' --format '{{.Label "com.docker.compose.project"}}' 2>$null
+            Get-ComposeProjectsByLabel 'ci-hub.managed=true'
+            Get-ComposeProjectsByLabel 'ci-os-hub.managed=true'
         ) |
             Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
     }
@@ -186,19 +321,30 @@ function Remove-MarketplaceApps {
         $projectImages = Get-ProjectImageIds $project
 
         $containerIds = docker ps -a --filter "label=com.docker.compose.project=$project" --format '{{.ID}}' 2>$null
-        foreach ($cid in $containerIds) { if ($cid) { Invoke-CleanupCommand "docker rm -f $cid" } }
+        # Volumes are data, so they go only with -DeleteAppData. -v takes a container's anonymous
+        # volumes with it.
+        $appAnonymousVolumes = @()
+        $removeContainer = @('rm', '-f')
+        if ($DeleteAppData) {
+            $appAnonymousVolumes = Get-AnonymousVolumes $containerIds
+            $removeContainer = @('rm', '-f', '-v')
+        }
+        foreach ($cid in $containerIds) { if ($cid) { Invoke-CleanupCommand ($removeContainer + $cid) } }
 
         $appNetworks = docker network ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>$null
         foreach ($net in $appNetworks) {
-            if ($net -and $net -notin @('bridge', 'host', 'none', 'ci_hub_network', 'ci-hub_network', 'ci_os_hub_network', 'ci-os-hub_network')) {
-                Invoke-CleanupCommand "docker network rm $net"
+            if ($net -match '^[A-Za-z0-9][A-Za-z0-9_.-]*$' -and $net -notin @('bridge', 'host', 'none', 'ci_hub_network', 'ci-hub_network', 'ci_os_hub_network', 'ci-os-hub_network')) {
+                Invoke-CleanupCommand @('network', 'rm', $net)
             }
         }
 
-        $appVolumes = docker volume ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>$null
-        foreach ($vol in $appVolumes) { if ($vol) { Invoke-CleanupCommand "docker volume rm $vol" } }
+        if ($DeleteAppData) {
+            $appVolumes = docker volume ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>$null
+            foreach ($vol in $appVolumes) { if ($vol) { Invoke-CleanupCommand @('volume', 'rm', $vol) } }
+            Remove-AnonymousVolumes $appAnonymousVolumes
+        }
 
-        foreach ($img in $projectImages) { if ($img) { Invoke-CleanupCommand "docker image rm -f $img" } }
+        foreach ($img in $projectImages) { if ($img) { Invoke-CleanupCommand @('image', 'rm', '-f', $img) } }
     }
 }
 
@@ -217,46 +363,73 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
     $containerNames += Get-ContainerNamesByFilter 'network=ci-os-hub_network'
 
     $containerNames = $containerNames | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+    # As in the app pass, volumes go only with -DeleteAppData; -v takes anonymous volumes
+    # (RabbitMQ's data) with the container.
+    $hubAnonymousVolumes = @()
+    $removeContainer = @('rm', '-f')
+    if ($DeleteAppData) {
+        $hubAnonymousVolumes = Get-AnonymousVolumes $containerNames
+        $removeContainer = @('rm', '-f', '-v')
+    }
     foreach ($name in $containerNames) {
-        Invoke-CleanupCommand "docker rm -f $name"
+        Invoke-CleanupCommand ($removeContainer + $name)
     }
 
+    # The network names older installs used, plus every network and volume the Hub's compose
+    # projects created, whatever its name (ci-hub_edge and ci-hub_internal among them). Also
+    # every app network: the ci-hub container joins them, so the app pass above can't remove
+    # one while the Hub still runs.
+    $hubProjects = @('ci-os-hub', 'ci-hub')
     $networks = @('ci_hub_network', 'ci-hub_network', 'ci_os_hub_network', 'ci-os-hub_network')
-    foreach ($network in $networks) {
-        Invoke-CleanupCommand "docker network rm $network"
+    $networkLabels = @($hubProjects | ForEach-Object { "com.docker.compose.project=$_" }) + @('ci-hub.managed=true', 'ci-os-hub.managed=true')
+    foreach ($label in $networkLabels) {
+        $networks += docker network ls --filter "label=$label" --format '{{.Name}}' 2>$null
+    }
+    # Docker lets a network be called almost anything ('a b', 'x;y'). Neither the Hub nor Compose
+    # names one like that, so skip such names, as the app pass skips such projects.
+    foreach ($network in ($networks | Where-Object { $_ -match '^[A-Za-z0-9][A-Za-z0-9_.-]*$' } | Select-Object -Unique)) {
+        Invoke-CleanupCommand @('network', 'rm', $network)
     }
 
-    $volumes = @()
-    try {
-        $volumes = docker volume ls --format '{{.Name}}' 2>$null
-    }
-    catch {
-        Write-CleanupLog 'WARN' 'Unable to enumerate Docker volumes'
-    }
-
-    foreach ($volume in $volumes) {
-        if ($volume -match 'ci_os_hub|ci-os-hub|ci_hub_pgdata|ci_hub_app_data|hub_tailscale_state') {
-            Invoke-CleanupCommand "docker volume rm $volume"
+    if ($DeleteAppData) {
+        $volumes = @()
+        try {
+            # hub_tailscale_state has no compose label, so volumes are matched by name too.
+            $volumes += docker volume ls --format '{{.Name}}' 2>$null |
+                Where-Object { $_ -match 'ci_os_hub|ci-os-hub|ci_hub_pgdata|ci_hub_app_data|hub_tailscale_state' }
+            foreach ($project in $hubProjects) {
+                $volumes += docker volume ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>$null
+            }
         }
+        catch {
+            Write-CleanupLog 'WARN' 'Unable to enumerate Docker volumes'
+        }
+
+        foreach ($volume in ($volumes | Where-Object { $_ } | Select-Object -Unique)) {
+            Invoke-CleanupCommand @('volume', 'rm', $volume)
+        }
+        Remove-AnonymousVolumes $hubAnonymousVolumes
     }
 
-    foreach ($img in $hubImages) { if ($img) { Invoke-CleanupCommand "docker image rm -f $img" } }
+    foreach ($img in $hubImages) { if ($img) { Invoke-CleanupCommand @('image', 'rm', '-f', $img) } }
 } else {
     Write-CleanupLog 'INFO' 'Docker is not available; skipping Docker cleanup'
 }
+# END docker cleanup
 
 $appData = [Environment]::GetFolderPath('ApplicationData')
 $localAppData = [Environment]::GetFolderPath('LocalApplicationData')
-# Mirror the Debian postrm name list exactly (note the lowercase 'ci-hub').
-$stateNames = @('Companion Hub', 'companion-hub', 'ci-hub', 'CI-Hub', 'computer.ci.app.hub')
 
-# Current user — GetFolderPath honors relocated/roaming AppData.
-foreach ($name in $stateNames) {
-    Remove-IfExists (Join-Path $appData $name)
-    Remove-IfExists (Join-Path $localAppData $name)
+# Current user. GetFolderPath honors relocated/roaming AppData.
+Remove-HubUserFiles $appData $localAppData ([Environment]::GetFolderPath('Startup'))
+
+# The CLI folder the desktop app put on the user PATH (cli_install.rs) goes either way.
+if (Remove-UserPathEntry (Join-Path $localAppData 'Companion Hub\bin')) {
+    # Tell running programs, Explorer above all, that the environment changed. Otherwise an app
+    # started from Explorer after a reinstall still sees the old entry and doesn't add it back.
+    # Clearing a variable that isn't set changes nothing and sends that notice.
+    [Environment]::SetEnvironmentVariable('CompanionHubUninstall', $null, 'User')
 }
-# The desktop's data folder is %APPDATA%\companion-hub, so its tunnel folder is %APPDATA%\tunnel.
-Remove-HubTunnelFiles (Join-Path $appData 'tunnel')
 
 # All user profiles — parity with the Debian postrm, which cleans every user's home
 # (root + uid>=1000), not just the one running the uninstall. Profile paths come from
@@ -277,21 +450,22 @@ catch {
 }
 
 foreach ($profilePath in $profilePaths) {
-    foreach ($name in $stateNames) {
-        Remove-IfExists (Join-Path $profilePath "AppData\Roaming\$name")
-        Remove-IfExists (Join-Path $profilePath "AppData\Local\$name")
-    }
-    Remove-HubTunnelFiles (Join-Path $profilePath 'AppData\Roaming\tunnel')
+    Remove-HubUserFiles (Join-Path $profilePath 'AppData\Roaming') (Join-Path $profilePath 'AppData\Local') (Join-Path $profilePath 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup')
 }
 
 $registryPath = 'HKLM:\SOFTWARE\Classes\cihub'
 if (Test-Path $registryPath) {
-    try {
-        Remove-Item -Path $registryPath -Recurse -Force -ErrorAction Stop
-        Write-CleanupLog 'INFO' 'Removed cihub protocol registry key'
+    if ($DryRun) {
+        Write-CleanupLog 'DRYRUN' "Would remove $registryPath"
     }
-    catch {
-        Write-CleanupLog 'WARN' 'Could not remove cihub protocol registry key'
+    else {
+        try {
+            Remove-Item -Path $registryPath -Recurse -Force -ErrorAction Stop
+            Write-CleanupLog 'INFO' 'Removed cihub protocol registry key'
+        }
+        catch {
+            Write-CleanupLog 'WARN' 'Could not remove cihub protocol registry key'
+        }
     }
 }
 
