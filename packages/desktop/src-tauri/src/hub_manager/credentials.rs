@@ -5,6 +5,10 @@ use super::*;
 const POSTGRES_DB_CONTAINER: &str = "ci-hub-db";
 const POSTGRES_TCP_PROBE_RETRIES: u32 = 5;
 const POSTGRES_TCP_PROBE_RETRY_DELAY_MS: u64 = 400;
+/// How long a psql command run through the copy route may take.
+const POSTGRES_EXEC_TIMEOUT: Duration = Duration::from_secs(30);
+/// rabbitmqctl starts an Erlang VM for every call, so it gets longer than psql.
+const RABBITMQCTL_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn escape_sql_literal(value: &str) -> String {
     value.replace('\'', "''")
@@ -22,62 +26,100 @@ struct PostgresTcpProbeResult {
 }
 
 /// Probe Postgres TCP auth from inside the DB container (same engine, no second image).
-fn postgres_tcp_auth_probe(password: &str) -> PostgresTcpProbeResult {
-    let pgpassword = escape_shell_single_quoted(password);
-    let script = format!(
-        "PGPASSWORD='{pgpassword}' psql -h 127.0.0.1 -p 6543 -U companion -d companiondb -qt -c 'SELECT 1'"
-    );
-    match docker_command()
-        .args(["exec", POSTGRES_DB_CONTAINER, "bash", "-lc", &script])
-        .output()
-    {
-        Ok(out) => PostgresTcpProbeResult {
-            ok: out.status.success(),
-            stdout: String::from_utf8_lossy(&out.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&out.stderr).to_string(),
-        },
-        Err(error) => PostgresTcpProbeResult {
-            ok: false,
-            stdout: String::new(),
-            stderr: format!("Failed to exec into {POSTGRES_DB_CONTAINER}: {error}"),
-        },
-    }
-}
-
-/// Secondary probe via a network-attached client (kept for engines where exec TCP differs).
-fn postgres_tcp_auth_probe_via_network(password: &str) -> PostgresTcpProbeResult {
+///
+/// It connects to the container's own name, not to 127.0.0.1: the postgres image trusts loopback
+/// connections (`host all all 127.0.0.1/32 trust` in pg_hba.conf), so a loopback probe signs in
+/// whatever the password. `psql -qt -c 'SELECT 1'` prints `1` once it has signed in.
+fn postgres_tcp_auth_probe(db: &ContainerReader, password: &str) -> PostgresTcpProbeResult {
     let pgpassword = escape_shell_single_quoted(password);
     let script = format!(
         "PGPASSWORD='{pgpassword}' psql -h {POSTGRES_DB_CONTAINER} -p 6543 -U companion -d companiondb -qt -c 'SELECT 1'"
     );
-    match docker_command()
-        .args([
+    let out = db.run(&["bash", "-lc", &script]);
+    PostgresTcpProbeResult {
+        ok: out.succeeded() && out.stdout.lines().any(|line| line.trim() == "1"),
+        stdout: out.stdout,
+        stderr: out.stderr,
+    }
+}
+
+/// The networks `ci-hub-db` is attached to, or the Hub's network names when Docker can't say.
+/// The database sits on `ci-hub_internal` only, where a client on `ci-hub_network` can't resolve it.
+fn postgres_probe_networks(docker: DockerCli) -> Vec<String> {
+    let attached: Vec<String> = docker(&[
+        "inspect",
+        "-f",
+        "{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}",
+        POSTGRES_DB_CONTAINER,
+    ])
+    .ok()
+    .filter(|output| output.status.success())
+    .map(|output| {
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .collect()
+    })
+    .unwrap_or_default();
+    if attached.is_empty() {
+        HUB_NETWORK_NAMES
+            .iter()
+            .map(|name| name.to_string())
+            .collect()
+    } else {
+        attached
+    }
+}
+
+/// Secondary probe via a network-attached client (kept for engines where exec TCP differs). The WSL
+/// engine drops what `docker run` prints but keeps its exit status, so the status is the answer.
+fn postgres_tcp_auth_probe_via_network(
+    docker: DockerCli,
+    password: &str,
+) -> PostgresTcpProbeResult {
+    let pgpassword = escape_shell_single_quoted(password);
+    let script = format!(
+        "PGPASSWORD='{pgpassword}' psql -h {POSTGRES_DB_CONTAINER} -p 6543 -U companion -d companiondb -qt -c 'SELECT 1'"
+    );
+    let mut first_failure: Option<PostgresTcpProbeResult> = None;
+    for network in postgres_probe_networks(docker) {
+        let result = match docker(&[
             "run",
             "--rm",
             "--network",
-            postgres_docker_network(),
+            &network,
             "postgres:14",
             "bash",
             "-lc",
             &script,
-        ])
-        .output()
-    {
-        Ok(out) => PostgresTcpProbeResult {
-            ok: out.status.success(),
-            stdout: String::from_utf8_lossy(&out.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&out.stderr).to_string(),
-        },
-        Err(error) => PostgresTcpProbeResult {
-            ok: false,
-            stdout: String::new(),
-            stderr: format!("Failed to run network Postgres probe: {error}"),
-        },
+        ]) {
+            Ok(out) => PostgresTcpProbeResult {
+                ok: out.status.success(),
+                stdout: String::from_utf8_lossy(&out.stdout).to_string(),
+                stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+            },
+            Err(error) => PostgresTcpProbeResult {
+                ok: false,
+                stdout: String::new(),
+                stderr: format!("Failed to run network Postgres probe: {error}"),
+            },
+        };
+        if result.ok {
+            return result;
+        }
+        first_failure.get_or_insert(result);
     }
+    first_failure.unwrap_or(PostgresTcpProbeResult {
+        ok: false,
+        stdout: String::new(),
+        stderr: format!("{POSTGRES_DB_CONTAINER} is on no network to probe from."),
+    })
 }
 
-fn postgres_tcp_auth_works(password: &str) -> bool {
-    let primary = postgres_tcp_auth_probe(password);
+fn postgres_tcp_auth_works(db: &ContainerReader, docker: DockerCli, password: &str) -> bool {
+    let primary = postgres_tcp_auth_probe(db, password);
     if primary.ok {
         return true;
     }
@@ -87,13 +129,15 @@ fn postgres_tcp_auth_works(password: &str) -> bool {
     if kind == crate::docker_engine::PostgresProbeFailureKind::Auth {
         return false;
     }
-    postgres_tcp_auth_probe_via_network(password).ok
+    postgres_tcp_auth_probe_via_network(docker, password).ok
 }
 
 fn postgres_tcp_auth_works_with_retries(
+    db: &ContainerReader,
+    docker: DockerCli,
     password: &str,
 ) -> Result<(), (crate::docker_engine::PostgresProbeFailureKind, String)> {
-    let mut last = postgres_tcp_auth_probe(password);
+    let mut last = postgres_tcp_auth_probe(db, password);
     if last.ok {
         return Ok(());
     }
@@ -101,7 +145,7 @@ fn postgres_tcp_auth_works_with_retries(
         std::thread::sleep(std::time::Duration::from_millis(
             POSTGRES_TCP_PROBE_RETRY_DELAY_MS,
         ));
-        last = postgres_tcp_auth_probe(password);
+        last = postgres_tcp_auth_probe(db, password);
         if last.ok {
             return Ok(());
         }
@@ -114,7 +158,7 @@ fn postgres_tcp_auth_works_with_retries(
     // One network-attached attempt if exec still looks like network/unknown.
     let kind = crate::docker_engine::classify_postgres_probe_output(&last.stdout, &last.stderr);
     if kind != crate::docker_engine::PostgresProbeFailureKind::Auth {
-        let network = postgres_tcp_auth_probe_via_network(password);
+        let network = postgres_tcp_auth_probe_via_network(docker, password);
         if network.ok {
             return Ok(());
         }
@@ -126,15 +170,18 @@ fn postgres_tcp_auth_works_with_retries(
     Err((kind, detail))
 }
 
-fn sync_postgres_password(password: &str, data_dir: &Path) -> Result<(), String> {
+/// `ALTER USER` prints `ALTER ROLE`, and setting the same password twice is harmless, so it can go
+/// through the reader.
+fn sync_postgres_password(
+    db: &ContainerReader,
+    password: &str,
+    data_dir: &Path,
+) -> Result<(), String> {
     let sql = format!(
         "ALTER USER companion WITH PASSWORD '{}';",
         escape_sql_literal(password)
     );
-    let mut cmd = docker_command();
-    cmd.args([
-        "exec",
-        POSTGRES_DB_CONTAINER,
+    let output = db.run(&[
         "psql",
         "-U",
         "companion",
@@ -145,15 +192,9 @@ fn sync_postgres_password(password: &str, data_dir: &Path) -> Result<(), String>
         "-c",
         &sql,
     ]);
-    let output = cmd
-        .output()
-        .map_err(|error| format!("Failed to sync Postgres password: {}", error))?;
 
-    if !output.status.success() {
-        let combined = format_command_output(
-            &String::from_utf8_lossy(&output.stdout),
-            &String::from_utf8_lossy(&output.stderr),
-        );
+    if !output.succeeded() {
+        let combined = format_command_output(&output.stdout, &output.stderr);
         return Err(format!("Postgres password sync failed. {}", combined));
     }
 
@@ -174,7 +215,17 @@ pub(crate) fn ensure_postgres_password_matches_env(
         return Ok(());
     };
 
-    if postgres_tcp_auth_works(&password) {
+    ensure_postgres_password_matches(&run_docker_cli, &password, data_dir)
+}
+
+/// Checks that `password` signs in as `companion`, and sets the role's password to it when not.
+pub(crate) fn ensure_postgres_password_matches(
+    docker: DockerCli,
+    password: &str,
+    data_dir: &Path,
+) -> Result<(), String> {
+    let db = ContainerReader::new(docker, POSTGRES_DB_CONTAINER, POSTGRES_EXEC_TIMEOUT);
+    if postgres_tcp_auth_works(&db, docker, password) {
         return Ok(());
     }
 
@@ -184,9 +235,9 @@ pub(crate) fn ensure_postgres_password_matches_env(
         "Postgres TCP auth failed for configured password; syncing role password.",
     );
 
-    sync_postgres_password(&password, data_dir)?;
+    sync_postgres_password(&db, password, data_dir)?;
 
-    if let Err((kind, detail)) = postgres_tcp_auth_works_with_retries(&password) {
+    if let Err((kind, detail)) = postgres_tcp_auth_works_with_retries(&db, docker, password) {
         let engine = crate::docker_engine::pinned_engine();
         return Err(crate::docker_engine::format_postgres_probe_failure(
             kind,
@@ -198,36 +249,27 @@ pub(crate) fn ensure_postgres_password_matches_env(
     Ok(())
 }
 
-fn rabbitmq_auth_works(password: &str) -> bool {
-    docker_command()
-        .args([
-            "exec",
-            hub_queue_name(),
-            "rabbitmqctl",
-            "authenticate_user",
-            "companion",
-            password,
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+/// Both rabbitmqctl commands print a banner line, and running either twice is harmless, so they go
+/// through the reader.
+pub(crate) fn rabbitmq_auth_works(docker: DockerCli, queue: &str, password: &str) -> bool {
+    ContainerReader::new(docker, queue, RABBITMQCTL_TIMEOUT)
+        .run(&["rabbitmqctl", "authenticate_user", "companion", password])
+        .succeeded()
 }
 
-fn sync_rabbitmq_password(password: &str, data_dir: &Path) -> Result<(), String> {
-    let output = docker_command()
-        .args([
-            "exec",
-            hub_queue_name(),
-            "rabbitmqctl",
-            "change_password",
-            "companion",
-            password,
-        ])
-        .output()
-        .map_err(|error| format!("Failed to change RabbitMQ password: {error}"))?;
-    if output.status.success() {
+pub(crate) fn sync_rabbitmq_password(
+    docker: DockerCli,
+    queue: &str,
+    password: &str,
+    data_dir: &Path,
+) -> Result<(), String> {
+    let output = ContainerReader::new(docker, queue, RABBITMQCTL_TIMEOUT).run(&[
+        "rabbitmqctl",
+        "change_password",
+        "companion",
+        password,
+    ]);
+    if output.succeeded() {
         let _ = append_desktop_log_for(
             data_dir,
             "hub.start",
@@ -237,7 +279,7 @@ fn sync_rabbitmq_password(password: &str, data_dir: &Path) -> Result<(), String>
     }
     Err(format!(
         "rabbitmqctl change_password failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        output.stderr
     ))
 }
 
@@ -303,7 +345,7 @@ pub(crate) fn ensure_rabbitmq_password_matches_env(
         return Ok(());
     }
 
-    if rabbitmq_auth_works(&password) {
+    if rabbitmq_auth_works(&run_docker_cli, hub_queue_name(), &password) {
         return Ok(());
     }
 
@@ -313,12 +355,14 @@ pub(crate) fn ensure_rabbitmq_password_matches_env(
         "RabbitMQ auth failed for configured password; syncing broker password.",
     );
 
-    if sync_rabbitmq_password(&password, data_dir).is_ok() && rabbitmq_auth_works(&password) {
+    if sync_rabbitmq_password(&run_docker_cli, hub_queue_name(), &password, data_dir).is_ok()
+        && rabbitmq_auth_works(&run_docker_cli, hub_queue_name(), &password)
+    {
         return Ok(());
     }
 
     recreate_rabbitmq_queue(compose_path, env_path, data_dir)?;
-    if !rabbitmq_auth_works(&password) {
+    if !rabbitmq_auth_works(&run_docker_cli, hub_queue_name(), &password) {
         return Err(
             "RabbitMQ password sync/recreate did not restore authentication for user companion."
                 .to_string(),
