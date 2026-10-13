@@ -38,6 +38,7 @@ import {
   type RunningHubBuild,
   selectReleaseTarget,
 } from './hub-deployment';
+import type { UpdateBlocks } from './dto/update-blocks.dto';
 import { buildStackUpdaterRunArgs, buildStackUpdaterScript, ENV_RESTORE_VARIABLE, stackUpdaterContainerName } from './stack-updater';
 
 export const HOST_LISTENER_PORT = 17400;
@@ -151,21 +152,25 @@ const HELPER_START_DELAY_SECONDS = 3;
 
 type RunningHub = { container: DockerContainerInspect; image: DockerImageInspect | null; build: RunningHubBuild };
 
-export type UpdateCheckResult = {
+/**
+ * `updateBlockedReason` is why this node will not be updated by the Hub, even when a newer release
+ * exists. `autoUpdateBlockedReason` is the same answer for the daily auto-update, which never hands
+ * the update to the desktop app, so it can be set while the other is not: on a Windows desktop
+ * install, for one.
+ */
+export type UpdateCheckResult = UpdateBlocks & {
   current: string;
   latest: string;
   releases: { version: string; body: string }[];
   updateAvailable: boolean;
   /** The image, release and commit this Hub is running, read from Docker. Null when it could not be read. */
   build: { reference: string; version: string | null; revision: string | null; channel: RunningHubBuild['channel']['kind'] } | null;
-  /** Why this node will not be updated by the Hub, even when a newer release exists. */
-  updateBlockedReason: string | null;
-  /**
-   * Why the daily auto-update cannot move this node. It never hands the update to the desktop app, so
-   * this can be set while `updateBlockedReason` is not: on a Windows desktop install, for one.
-   */
-  autoUpdateBlockedReason: string | null;
 };
+
+/** Every answer is a refusal when the Hub cannot read its own container. */
+function blockedEverywhere(reason: string): UpdateBlocks {
+  return { updateBlockedReason: reason, autoUpdateBlockedReason: reason, desktopAppUpdatesHub: false };
+}
 
 @Injectable()
 export class SystemUpdateService implements OnApplicationBootstrap, OnApplicationShutdown {
@@ -204,38 +209,16 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
       running = await this.inspectRunningHub();
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      return {
-        current: 'unknown',
-        latest: 'unknown',
-        releases: [],
-        updateAvailable: false,
-        build: null,
-        updateBlockedReason: reason,
-        autoUpdateBlockedReason: reason,
-      };
+      return { current: 'unknown', latest: 'unknown', releases: [], updateAvailable: false, build: null, ...blockedEverywhere(reason) };
     }
 
     const { build } = running;
     const current = describeRunningBuild(build);
-    let updateBlockedReason = channelUpdateRefusal(build, this.readDeclaredHubImage());
-    let autoUpdateBlockedReason = updateBlockedReason;
-    // performUpdate refuses a stack it cannot reproduce unless the desktop listener takes the update,
-    // which the daily check never lets it do. Without this the daily timer and Settings would offer it
-    // on core-3 and beta-3-glass (compose read `.env`, the Hub mounts `.env.dev`) and every attempt
-    // would end in a 409.
-    if (updateBlockedReason === null) {
-      const plan = resolveComposeUpdatePlan(running.container, this.composeMountTargets());
-      if (!plan.ok) {
-        autoUpdateBlockedReason = plan.reason;
-        if (!(includeDesktopApp && (await this.probeHostListener()))) {
-          updateBlockedReason = plan.reason;
-        }
-      }
-    }
+    const blocks = await this.resolveUpdateBlocks(running, includeDesktopApp);
     const tags = build.version ? await this.registryService.getTagsSinceWithHubFallback(HUB_STACK_REGISTRY_REPO, build.version) : [];
     const releases = tags.map((tag) => ({ version: tag, body: `Release ${tag}` }));
     const target = build.version ? selectReleaseTarget(build.version, tags) : null;
-    const updateAvailable = target !== null && updateBlockedReason === null;
+    const updateAvailable = target !== null && blocks.updateBlockedReason === null;
 
     if (updateAvailable) {
       this.agentNotifyService?.notify('system.update_available', { current, latest: target }, 'low');
@@ -247,8 +230,43 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
       releases,
       updateAvailable,
       build: { reference: build.reference, version: build.version, revision: build.revision, channel: build.channel.kind },
-      updateBlockedReason,
-      autoUpdateBlockedReason,
+      ...blocks,
+    };
+  }
+
+  /**
+   * Whether an update would be refused here, and why. Settings asks every time it opens, so this skips
+   * what `checkForUpdates` adds on top: the registry lookup and the `system.update_available` wake,
+   * which would otherwise reach every connected agent on each visit.
+   */
+  async getUpdateBlocks(): Promise<UpdateBlocks> {
+    let running: RunningHub;
+    try {
+      running = await this.inspectRunningHub();
+    } catch (error) {
+      return blockedEverywhere(error instanceof Error ? error.message : String(error));
+    }
+    return this.resolveUpdateBlocks(running, true);
+  }
+
+  // performUpdate refuses a stack it cannot reproduce unless the desktop listener takes the update,
+  // which the daily check never lets it do. Without this the daily timer and Settings would offer it
+  // on core-3 and beta-3-glass (compose read `.env`, the Hub mounts `.env.dev`) and every attempt
+  // would end in a 409.
+  private async resolveUpdateBlocks(running: RunningHub, includeDesktopApp: boolean): Promise<UpdateBlocks> {
+    const channelRefusal = channelUpdateRefusal(running.build, this.readDeclaredHubImage());
+    if (channelRefusal !== null) {
+      return { updateBlockedReason: channelRefusal, autoUpdateBlockedReason: channelRefusal, desktopAppUpdatesHub: false };
+    }
+    const plan = resolveComposeUpdatePlan(running.container, this.composeMountTargets());
+    if (plan.ok) {
+      return { updateBlockedReason: null, autoUpdateBlockedReason: null, desktopAppUpdatesHub: false };
+    }
+    const desktopAppTakesIt = includeDesktopApp && (await this.probeHostListener());
+    return {
+      updateBlockedReason: desktopAppTakesIt ? null : plan.reason,
+      autoUpdateBlockedReason: plan.reason,
+      desktopAppUpdatesHub: plan.updatedByDesktopApp === true,
     };
   }
 

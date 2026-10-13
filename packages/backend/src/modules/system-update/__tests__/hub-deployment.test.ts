@@ -215,6 +215,7 @@ describe('compose identity (c) and absolute env files (e), from the recorded fle
     const result = resolveComposeUpdatePlan(core3EnvLabelDiffersFromMount(), MOUNT_TARGETS);
     expect(result.ok).toBe(false);
     expect(!result.ok && result.reason).toContain('/home/ci/.local/share/companion-hub/.env.dev');
+    expect(!result.ok && result.updatedByDesktopApp).toBeUndefined();
   });
 
   it('refuses when compose interpolates from a different env file than the one the Hub can pin', () => {
@@ -236,6 +237,7 @@ describe('compose identity (c) and absolute env files (e), from the recorded fle
     expect(!result.ok && result.reason).toContain('started on Windows');
     expect(!result.ok && result.reason).toContain('desktop app');
     expect(!result.ok && result.reason).not.toContain('--env-file');
+    expect(!result.ok && result.updatedByDesktopApp).toBe(true);
   });
 
   it('refuses a Hub with no /data/.env bind', () => {

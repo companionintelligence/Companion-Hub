@@ -2,6 +2,7 @@ import {
   checkForUpdates as checkHubForUpdates,
   factoryReset,
   getAutoUpdates,
+  getUpdateBlocks,
   restartOnboarding,
   setAutoUpdates as updateAutoUpdatesSetting,
 } from '@/api-client/sdk.gen';
@@ -17,7 +18,7 @@ import { ArrowUpCircle, Loader2, Smartphone, Star, TriangleAlert, Wand2 } from '
 import { clearHubConnection, getHubBaseUrlSync, isTauriMobileSync, usesCloudConnect } from '@/lib/mobile-connection';
 import { Trans, useTranslation } from 'react-i18next';
 import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-modal';
-import { useState, useEffect, useCallback, useId } from 'react';
+import { useState, useEffect, useCallback, useId, useRef } from 'react';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import {
   clearHubSteadySession,
@@ -48,15 +49,20 @@ import {
   type UpdateInfo,
 } from '@/lib/update-service';
 
-/** What `GET /api/system/update/check` answers. The generated client leaves the body untyped. */
-type HubUpdateCheck = {
-  updateAvailable?: boolean;
-  latest?: string;
+/**
+ * Why the Hub would refuse an update, from `GET /api/system/update/blocked` or the same fields of
+ * `GET /api/system/update/check`, whose body the generated client leaves untyped.
+ */
+type HubUpdateBlocks = {
   /** Why the Hub will refuse an update started here, even when a newer release exists. */
   updateBlockedReason?: string | null;
   /** Why the daily auto-update cannot move this Hub. */
   autoUpdateBlockedReason?: string | null;
+  /** The desktop app on the Hub's computer is what updates it. */
+  desktopAppUpdatesHub?: boolean;
 };
+
+type HubUpdateCheck = HubUpdateBlocks & { updateAvailable?: boolean; latest?: string };
 
 /** The one-click desktop app update, in the desktop window. */
 type ShellInstallState =
@@ -110,10 +116,16 @@ export const GeneralActionsContainer = () => {
   const [restartingShell, setRestartingShell] = useState(false);
   const [shellInstall, setShellInstall] = useState<ShellInstallState>({ state: 'idle' });
   const [hostListenerReachable, setHostListenerReachable] = useState<boolean | null>(null);
-  // The app context offers a stack update whenever the registry has a newer tag. Only the update
-  // check knows whether this Hub will take it (a Windows desktop install, a node whose compose env
-  // file isn't the one it mounts). Without its answer the button ends in "Update failed".
-  const [stackBlock, setStackBlock] = useState<{ update: string | null; auto: string | null }>({ update: null, auto: null });
+  // The app context offers a stack update whenever the registry has a newer tag. Only the Hub knows
+  // whether it will take it (a Windows desktop install, a node whose compose env file isn't the one
+  // it mounts). Without its answer the button ends in "Update failed".
+  const [stackBlock, setStackBlock] = useState<{ update: string | null; auto: string | null; desktopApp: boolean }>({
+    update: null,
+    auto: null,
+    desktopApp: false,
+  });
+  // Bumped when a newer update check starts, so the slower answer of an older one is dropped.
+  const stackCheckSeq = useRef(0);
   const autoUpdatesBlockedId = `${autoUpdatesId}-blocked`;
   const [switchHubOpen, setSwitchHubOpen] = useState(false);
 
@@ -224,12 +236,27 @@ export const GeneralActionsContainer = () => {
     void refreshHostListenerStatus();
   }, [refreshHostListenerStatus]);
 
-  const applyStackBlock = useCallback((check: HubUpdateCheck | null) => {
-    setStackBlock({ update: check?.updateBlockedReason ?? null, auto: check?.autoUpdateBlockedReason ?? null });
+  const applyStackBlock = useCallback((blocks: HubUpdateBlocks | null) => {
+    setStackBlock({
+      update: blocks?.updateBlockedReason ?? null,
+      auto: blocks?.autoUpdateBlockedReason ?? null,
+      desktopApp: blocks?.desktopAppUpdatesHub === true,
+    });
   }, []);
 
+  // `blocked`, not `check`: this runs on every visit, and `check` also looks up the registry and wakes
+  // every connected agent when an update is available.
   useEffect(() => {
-    void unwrapSdkOrNull(checkHubForUpdates()).then((data) => applyStackBlock(data as HubUpdateCheck | null));
+    const seq = ++stackCheckSeq.current;
+    unwrapSdkOrNull(getUpdateBlocks())
+      .then((data) => {
+        if (seq === stackCheckSeq.current) applyStackBlock(data as HubUpdateBlocks | null);
+      })
+      // A Hub that is restarting doesn't answer. The update button then shows as it did before.
+      .catch(() => undefined);
+    return () => {
+      stackCheckSeq.current += 1;
+    };
   }, [applyStackBlock]);
 
   useEffect(() => {
@@ -242,6 +269,7 @@ export const GeneralActionsContainer = () => {
   const handleCheckForUpdates = useCallback(async () => {
     setChecking(true);
     setStackMessage(null);
+    stackCheckSeq.current += 1;
     try {
       const result = await sdkResult(checkHubForUpdates());
       if (!result.ok) throw new Error(`HTTP ${result.status}`);
@@ -548,7 +576,11 @@ export const GeneralActionsContainer = () => {
     if (stackUpdateAvailable && stackBlock.update) {
       return (
         <div className="space-y-1 rounded-md bg-muted p-3 text-sm" data-testid="hub-update-blocked">
-          <p>{t(desktopWindow ? 'SETTINGS_ACTIONS_STACK_UPDATE_BLOCKED_DESKTOP' : 'SETTINGS_ACTIONS_STACK_UPDATE_BLOCKED')}</p>
+          {/* Only a refusal that names the desktop app sends people to its card: a dev-channel pin or a
+              source Hub outside a container is not fixed by updating the app. */}
+          <p>
+            {t(desktopWindow && stackBlock.desktopApp ? 'SETTINGS_ACTIONS_STACK_UPDATE_BLOCKED_DESKTOP' : 'SETTINGS_ACTIONS_STACK_UPDATE_BLOCKED')}
+          </p>
           <p className="text-xs text-muted-foreground">{stackBlock.update}</p>
         </div>
       );

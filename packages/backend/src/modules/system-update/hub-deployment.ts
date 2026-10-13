@@ -246,7 +246,10 @@ export interface ComposeUpdatePlan {
   mirrorPaths: string[];
 }
 
-export type ComposeUpdatePlanResult = { ok: true; plan: ComposeUpdatePlan } | { ok: false; reason: string };
+export type ComposeUpdatePlanResult =
+  | { ok: true; plan: ComposeUpdatePlan }
+  /** `updatedByDesktopApp`: a Windows desktop install, which its desktop app updates instead. */
+  | { ok: false; reason: string; updatedByDesktopApp?: true };
 
 const COMPOSE_LABEL = {
   project: 'com.docker.compose.project',
@@ -331,6 +334,7 @@ export function resolveComposeUpdatePlan(
     return {
       ok: false,
       reason: `This Hub was started on Windows (compose ran from ${windowsPath}), and the updater container cannot reach Windows paths. The Companion Hub desktop app updates it: install the new desktop app version on that computer, from Settings or the installer.`,
+      updatedByDesktopApp: true,
     };
   }
 

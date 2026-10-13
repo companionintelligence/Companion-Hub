@@ -797,7 +797,7 @@
   "SETTINGS_ACTIONS_MAINTENANCE_TITLE": "Maintenance",
   "SETTINGS_ACTIONS_HUB_STACK_TITLE": "Hub stack",
   "SETTINGS_ACTIONS_NEW_VERSION": "A new Hub stack version ({{version}}) is available",
-  "SETTINGS_ACTIONS_STACK_UPDATE_BLOCKED": "This Hub can't update itself from here. Update it on the computer that runs it.",
+  "SETTINGS_ACTIONS_STACK_UPDATE_BLOCKED": "This Hub can't update itself from Settings.",
   "SETTINGS_ACTIONS_STACK_UPDATE_BLOCKED_DESKTOP": "The Companion Hub desktop app updates this Hub. Update the app in the Desktop app card below. If the app is already up to date, restart it and the Hub moves to the same version.",
   "SETTINGS_ACTIONS_STAY_UP_TO_DATE": "Stay up to date with the latest Hub stack",
   "SETTINGS_ACTIONS_UPDATE_STACK_TO_VERSION": "Update stack to {{version}}",
