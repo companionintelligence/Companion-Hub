@@ -273,6 +273,11 @@ function isWithin(child: string, parent: string): boolean {
   return child === parent || child.startsWith(parent === '/' ? '/' : `${parent}/`);
 }
 
+/** `C:\…`, `C:/…` or a UNC `\\server\share` path: what compose records when it runs on Windows. */
+function isWindowsHostPath(value: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\');
+}
+
 /**
  * The compose invocation that created this Hub, in host paths, or the reason it cannot be reproduced.
  *
@@ -315,6 +320,19 @@ export function resolveComposeUpdatePlan(
   }
   const workingDirLabel = labels[COMPOSE_LABEL.workingDir]?.trim();
   const workingDir = workingDirLabel ? toHostPath(workingDirLabel) : path.posix.dirname(firstConfigFile);
+  const labelEnvFiles = splitPathLabel(labels[COMPOSE_LABEL.envFile]).map(toHostPath);
+
+  // Said first, because every check below would blame something else. Compose on Windows records
+  // `C:\…\.env` while the Hub's bind says `/mnt/c/…/.env` on the WSL engine: one file under two
+  // names, which the env file check reads as two files. No Windows path can be mirrored into the
+  // Linux updater container anyway. The desktop app's update listener updates these installs.
+  const windowsPath = [workingDir, ...configFiles, ...labelEnvFiles].find(isWindowsHostPath);
+  if (windowsPath !== undefined) {
+    return {
+      ok: false,
+      reason: `This Hub was started on Windows (compose ran from ${windowsPath}), and the updater container cannot reach Windows paths. The Companion Hub desktop app updates it: install the new desktop app version on that computer, from Settings or the installer.`,
+    };
+  }
 
   const envBind = binds.find((bind) => bind.Destination === mountTargets.envFile);
   if (!envBind) {
@@ -323,7 +341,6 @@ export function resolveComposeUpdatePlan(
       reason: `The Hub container ${name} has no bind mount at ${mountTargets.envFile}, so the updater cannot record the new version in the env file compose reads.`,
     };
   }
-  const labelEnvFiles = splitPathLabel(labels[COMPOSE_LABEL.envFile]).map(toHostPath);
   const envFiles = labelEnvFiles.length > 0 ? labelEnvFiles : [envBind.Source];
   // The new pin is written through the Hub's own /data/.env. If compose interpolates from a different
   // file, the recreate would run on the new image while that file still names the old one, and the
