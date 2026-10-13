@@ -215,8 +215,34 @@ describe('FactoryResetService: data folders', () => {
   // Each data folder is a bind mount in the Hub container, and removing a mount point fails with EBUSY
   // before anything inside it is touched. That is how a reset said it had deleted everything and left
   // every app backup on disk.
-  const dataFolders = [APP_DATA_DIR, ...['apps', 'repos', 'media', 'backups', 'user-config'].map((name) => path.join('/data', name))];
-  const mountPoints = new Set(dataFolders.map((folder) => path.resolve(folder)));
+  const dataFolders = [APP_DATA_DIR, ...['apps', 'repos', 'backups', 'user-config'].map((name) => path.join('/data', name))];
+  const mediaFolder = path.join('/data', 'media');
+  const mountPoints = new Set([...dataFolders, mediaFolder].map((folder) => path.resolve(folder)));
+
+  /**
+   * `/proc/self/mountinfo` for this container on Docker Engine in WSL2, as read there: each folder is
+   * mounted from the folder of the same name under `%APPDATA%/companion-hub`, through drvfs. `sources`
+   * replaces the folder a mount point comes from.
+   */
+  const writeMountInfo = (sources: Record<string, string> = {}) => {
+    const hub = '/Users/ci/AppData/Roaming/companion-hub';
+    const mounts = {
+      '/app-data': `${hub}/app-data`,
+      ...Object.fromEntries(['apps', 'repos', 'media', 'backups', 'user-config'].map((name) => [`/data/${name}`, `${hub}/${name}`])),
+      ...sources,
+    };
+    vol.mkdirSync('/proc/self', { recursive: true });
+    vol.writeFileSync(
+      '/proc/self/mountinfo',
+      [
+        '836 506 0:104 / / rw,relatime - overlay overlay rw,lowerdir=/var/lib/docker/overlay2/l/ABC',
+        ...Object.entries(mounts).map(
+          ([mountPoint, root], index) =>
+            `${861 + index} 836 0:69 ${root} ${mountPoint} rw,noatime - 9p C:\\134 rw,aname=drvfs;path=C:\\;symlinkroot=/mnt/`,
+        ),
+      ].join('\n'),
+    );
+  };
 
   let service: FactoryResetService;
   let db: {
@@ -274,13 +300,15 @@ describe('FactoryResetService: data folders', () => {
       path.join(APP_DATA_DIR, 'ci-marketplace', 'uptime-kuma', 'data', 'kuma.db'),
       path.join('/data', 'apps', 'ci-marketplace', 'wordpress', 'docker-compose.yml'),
       path.join('/data', 'repos', 'ci-marketplace', 'catalog-index.json'),
-      path.join('/data', 'media', 'photo.jpg'),
+      path.join('/data', 'media', 'data', 'movies', 'home-video.mkv'),
       path.join('/data', 'backups', 'ci-marketplace', 'wordpress', 'wordpress:ci-marketplace-1791551417985.tar.gz'),
       path.join('/data', 'user-config', 'ci-marketplace', 'wordpress', 'app.env'),
     ]) {
       vol.mkdirSync(path.dirname(file), { recursive: true });
       vol.writeFileSync(file, 'x');
     }
+    // Part of the media library skeleton the Hub creates at boot.
+    vol.mkdirSync(path.join(mediaFolder, 'downloads', 'complete'), { recursive: true });
   });
 
   afterEach(() => {
@@ -293,6 +321,38 @@ describe('FactoryResetService: data folders', () => {
     for (const folder of dataFolders) {
       expect(vol.readdirSync(folder)).toEqual([]);
     }
+  });
+
+  it('leaves the media library alone, its files and the folders the Hub made for it', async () => {
+    await service.wipeDataMounts();
+
+    expect(vol.readFileSync(path.join(mediaFolder, 'data', 'movies', 'home-video.mkv'), 'utf8')).toBe('x');
+    expect(vol.existsSync(path.join(mediaFolder, 'downloads', 'complete'))).toBe(true);
+  });
+
+  it('empties every folder of a normal install on Docker Engine in WSL2, read from mountinfo', async () => {
+    writeMountInfo();
+
+    await service.wipeDataMounts();
+
+    for (const folder of dataFolders) {
+      expect(vol.readdirSync(folder)).toEqual([]);
+    }
+  });
+
+  it('leaves a data folder that is a link to a folder with another name alone, and stops before the database', async () => {
+    // `backups` is a junction to an archive folder elsewhere: Docker mounted the archive.
+    writeMountInfo({ '/data/backups': '/Users/ci/Documents/Hub\\040Archive' });
+
+    const failure = await service.execute().catch((error: unknown) => error);
+
+    expect((failure as TranslatableError).getResponse()).toEqual({
+      message: 'SETTINGS_FACTORY_RESET_FILES_LEFT',
+      intlParams: { count: '1', paths: 'backups/' },
+    });
+    expect(vol.readdirSync(path.join('/data', 'backups', 'ci-marketplace', 'wordpress'))).toEqual(['wordpress:ci-marketplace-1791551417985.tar.gz']);
+    expect(vol.readdirSync(path.join('/data', 'repos'))).toEqual([]);
+    expect(db.execute).not.toHaveBeenCalled();
   });
 
   it('stops before it wipes the database when a data folder could not be emptied, and says what is left', async () => {
@@ -308,7 +368,7 @@ describe('FactoryResetService: data folders', () => {
     });
     expect(db.execute).not.toHaveBeenCalled();
     // The other folders are still emptied, so a second run has only the leftover to deal with.
-    expect(vol.readdirSync(path.join('/data', 'media'))).toEqual([]);
+    expect(vol.readdirSync(path.join('/data', 'repos'))).toEqual([]);
   });
 
   it('drops the row of each app it tore down, so a reset that stops on leftovers does not list apps that are gone', async () => {

@@ -849,7 +849,7 @@ describe('GeneralActionsContainer', () => {
     mockFactoryReset.mockRejectedValue(
       new TranslatableError('SETTINGS_FACTORY_RESET_FILES_LEFT', {
         count: '4',
-        paths: 'backups/ci-marketplace, media/photo.jpg, repos/ci-marketplace',
+        paths: 'backups/ci-marketplace, repos/ci-marketplace, user-config/ci-marketplace',
       }),
     );
 
@@ -861,7 +861,7 @@ describe('GeneralActionsContainer', () => {
 
     await waitFor(() => {
       expect(mockToastError).toHaveBeenCalledWith(
-        "Factory reset stopped because it could not delete everything in the Hub's data folder (4 left, including backups/ci-marketplace, media/photo.jpg, repos/ci-marketplace). Users and pairing are unchanged. To finish, run `cihub reset --yes` from the CLI.",
+        "Factory reset stopped because it could not delete everything in the Hub's data folder (4 left, including backups/ci-marketplace, repos/ci-marketplace, user-config/ci-marketplace). Users and pairing are unchanged. To finish, run `cihub reset --yes` from the CLI.",
       );
     });
     expect(screen.getByTestId('factory-reset-confirmation-input')).toBeInTheDocument();

@@ -83,8 +83,10 @@ If you cannot delete one of the Hub's files as your user, reset prints a command
 - Requires an **operator** login
 - Requires typing the confirmation phrase: `factory-reset`
 - Calls `POST /api/system/factory-reset`
-- Tears down installed apps, wipes Postgres tables (including `user` and every API key, so agents and `cihub api-key` users need new keys afterwards), clears `settings.json` and registration artifacts, and empties the `app-data`, `apps`, `repos`, `media`, `backups`, and `user-config` folders
+- Tears down installed apps, wipes Postgres tables (including `user` and every API key, so agents and `cihub api-key` users need new keys afterwards), clears `settings.json` and registration artifacts, and empties the `app-data`, `apps`, `repos`, `backups`, and `user-config` folders
 - `user-config` holds each app's env and compose overrides, and also the Hub's own compose override (`hub-compose.yml`) and the Hub process's home folder (its `.gitconfig`). All of it goes, as with `cihub reset`
+- Leaves `media` alone, files and folders: it is the shared media library (books, films, music and downloads that media apps use). `cihub reset` still deletes it with the rest of the data folder
+- Leaves a folder alone when it is a link (a symlink, or a junction on Windows) to a folder with another name, which puts its contents outside the Hub's data folder. The Hub reads where each folder is mounted from in `/proc/self/mountinfo` and names that folder, as `backups/`, with the files it could not delete. A link to a folder with the same name can't be told apart and is emptied
 - Those folders are bind mounts, so each one is emptied and kept. If anything is left in one, the reset stops before it touches Postgres, and the page says how many files or folders are left, names the first three, and points to `cihub reset --yes`. The apps are already uninstalled by then, and each one whose teardown worked is gone from the app list. The Hub log lists up to ten per folder. Running the reset again is safe
 - Does **not** remove Docker named volumes — use `cihub reset --yes` if you also need `ci_hub_pgdata` removed while containers are stopped
 

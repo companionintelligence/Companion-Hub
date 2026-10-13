@@ -4,6 +4,7 @@ import { createAppUrn } from '@/common/helpers/app-helpers';
 import { removeSettingsJsonCopies, writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR } from '@/common/constants';
 import { TranslatableError } from '@/common/error/translatable-error';
+import { linkedMountSource, parseMountInfo } from '@/common/helpers/mount-source';
 import { app } from '@/core/database/drizzle/schema';
 import { DATABASE, type Database } from '@/core/database/database.module';
 import { CacheService } from '@/core/cache/cache.service';
@@ -134,24 +135,43 @@ export class FactoryResetService {
    * mount point fails with EBUSY before anything inside it is touched. That is how a reset used to
    * report success with every app backup still on disk.
    *
-   * Throws when a folder still has something in it, before the database and the registration are
-   * wiped, so the operator can still sign in and run the reset again. The page shows that error, so it
-   * says how much is left, names the first few, and points to `cihub reset --yes`.
+   * `media` is not one of them. It holds the user's library (books, films, music and downloads that
+   * media apps read and write), so a reset leaves it alone; `cihub reset` deletes it with the rest.
+   *
+   * A folder whose mount comes from a folder with another name is left alone too: on the host it is a
+   * link (a symlink, or a junction on Windows) to a folder outside the Hub's data folder, which
+   * Docker followed. See `linkedMountSource`.
+   *
+   * Throws when a folder still has something in it, or was left alone, before the database and the
+   * registration are wiped, so the operator can still sign in and run the reset again. The page
+   * shows that error, so it says how much is left, names the first few, and points to `cihub reset --yes`.
    */
   public async wipeDataMounts(): Promise<void> {
     const { dataDir } = this.configuration.get('directories');
+    // `name` is the folder the compose files mount here, `<ROOT_FOLDER_HOST>/<name>`.
     const targets = [
-      APP_DATA_DIR,
-      path.join(dataDir, 'apps'),
-      path.join(dataDir, 'repos'),
-      path.join(dataDir, 'media'),
-      path.join(dataDir, 'backups'),
+      { dir: APP_DATA_DIR, name: 'app-data' },
+      { dir: path.join(dataDir, 'apps'), name: 'apps' },
+      { dir: path.join(dataDir, 'repos'), name: 'repos' },
+      { dir: path.join(dataDir, 'backups'), name: 'backups' },
       // Per-app env and compose overrides, which a reinstalled app would pick up again.
-      path.join(dataDir, 'user-config'),
+      { dir: path.join(dataDir, 'user-config'), name: 'user-config' },
     ];
+    // Unreadable or missing (outside a container, or not Linux) reads as no mounts, and every folder is emptied.
+    const mounts = parseMountInfo(await fs.promises.readFile('/proc/self/mountinfo', 'utf8').catch(() => ''));
     const left: string[] = [];
 
-    for (const target of targets) {
+    for (const { dir: target, name } of targets) {
+      const linkedTo = linkedMountSource(mounts, toMountPoint(target), [name, path.basename(target)]);
+
+      if (linkedTo) {
+        this.logger.error(
+          `Factory reset left ${target} alone: it is mounted from ${linkedTo}, not from a folder named ${name}, so it is a link to a folder outside the Hub's data folder`,
+        );
+        left.push(`${path.basename(target)}/`);
+        continue;
+      }
+
       const entries = await this.emptyDirectory(target);
 
       if (entries.length > 0) {
@@ -214,4 +234,13 @@ export class FactoryResetService {
       throw error;
     });
   }
+}
+
+/** `dir` as mountinfo writes a mount point: absolute, with forward slashes and no drive letter. */
+function toMountPoint(dir: string): string {
+  return path
+    .resolve(dir)
+    .replace(/^[A-Za-z]:/, '')
+    .split(path.sep)
+    .join('/');
 }
