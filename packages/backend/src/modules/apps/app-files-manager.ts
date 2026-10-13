@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { supportsPosixPermissions } from '@/common/helpers/bind-mount-helpers';
 import { execAsync } from '@/common/helpers/exec-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
@@ -258,11 +259,24 @@ export class AppFilesManager {
    *    created.
    *
    * See {@link buildPermissionsCommand} for the exact shell.
+   *
+   * Skipped when the app-data mount cannot carry POSIX permissions (a Windows
+   * drive under WSL2), where every uid already has full access and walking a
+   * large tree over 9p took minutes per prepare. The sweep's one effect there
+   * was clearing the Windows read-only attribute, so a file a container makes
+   * read-only now stays read-only, to root too. The probe asks about the
+   * app-data root, the folder the compose builder already probes, so the
+   * answer comes from its cache.
    */
   public async setAppDataDirPermissions(appUrn: AppUrn) {
     const { appDataDir } = this.getAppPaths(appUrn);
 
     if (process.platform === 'win32') {
+      return;
+    }
+
+    if (!(await supportsPosixPermissions(this.configuration.getConfig().directories.appDataDir))) {
+      this.logger.debug(`Skipped the permission sweep for ${appUrn}: the app-data mount cannot carry POSIX permissions`);
       return;
     }
 

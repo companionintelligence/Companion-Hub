@@ -1,4 +1,4 @@
-import { Link, NavLink, useNavigate } from 'react-router';
+import { Link, NavLink, useLocation, useNavigate } from 'react-router';
 import { LogOut, Home, Settings, Store, Menu, LogIn, Sun, Moon, Activity, Loader2 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { useTranslation } from 'react-i18next';
@@ -11,6 +11,7 @@ import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import { logoutMutation } from '@/api-client/@tanstack/react-query.gen';
 import { useAppStoreState } from '@/stores/app-store';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useAppContext } from '@/context/app-context';
 
 type HeaderProps = {
@@ -170,16 +171,40 @@ function MobileAppMenu({
   const menuRef = useRef<HTMLDivElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
 
+  // The header outlives the page. Without this, the logo link or a back gesture loads the next
+  // page dimmed under a menu nobody asked for.
+  const { pathname } = useLocation();
+  const [menuPath, setMenuPath] = useState(pathname);
+  if (menuPath !== pathname) {
+    setMenuPath(pathname);
+    setOpen(false);
+  }
+
+  const closeAndRefocus = useCallback(() => {
+    setOpen(false);
+    toggleRef.current?.focus();
+  }, []);
+
   useEffect(() => {
     if (!open) return;
     menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      setOpen(false);
-      toggleRef.current?.focus();
+      if (event.key === 'Escape') closeAndRefocus();
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
+  }, [open, closeAndRefocus]);
+
+  // At Tailwind's `lg` the wrapper and the scrim are hidden by CSS, but the menu would stay open
+  // and come back over a dimmed page when the window narrows again. Close it there.
+  useEffect(() => {
+    if (!open || typeof window.matchMedia !== 'function') return;
+    const fullHeader = window.matchMedia('(min-width: 64rem)');
+    const onChange = (event: { matches: boolean }) => {
+      if (event.matches) setOpen(false);
+    };
+    fullHeader.addEventListener('change', onChange);
+    return () => fullHeader.removeEventListener('change', onChange);
   }, [open]);
 
   return (
@@ -201,15 +226,24 @@ function MobileAppMenu({
       </Button>
       {open ? (
         <>
-          <button
-            type="button"
-            aria-label={t('COMMON_CLOSE')}
-            data-testid="mobile-app-menu-scrim"
-            tabIndex={-1}
-            className="fixed inset-x-0 bottom-0 z-40 bg-black/25"
-            style={{ top: 'var(--header-offset)' }}
-            onClick={() => setOpen(false)}
-          />
+          {/*
+           * On document.body, not in the header: the header's backdrop blur makes it the containing
+           * block of a fixed child, which sized the scrim to the bar and left it 0px tall. From the
+           * body it covers the page from the header's bottom edge down. `lg:hidden` matches the menu's
+           * wrapper, which no longer hides it, so widening the window does not leave the page dimmed.
+           */}
+          {createPortal(
+            <button
+              type="button"
+              aria-label={t('COMMON_CLOSE')}
+              data-testid="mobile-app-menu-scrim"
+              tabIndex={-1}
+              className="fixed inset-x-0 bottom-0 z-40 bg-black/25 lg:hidden"
+              style={{ top: 'calc(var(--titlebar-height, 0px) + var(--header-offset))' }}
+              onClick={closeAndRefocus}
+            />,
+            document.body,
+          )}
           <div
             ref={menuRef}
             role="menu"

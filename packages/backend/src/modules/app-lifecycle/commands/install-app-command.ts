@@ -29,6 +29,11 @@ const DOWNLOAD_PROGRESS_START = 60;
 const DOWNLOAD_PROGRESS_END = 99;
 const DOWNLOAD_PROGRESS_MAX_DURING_PULL = 98;
 const DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS = 250;
+/**
+ * The bar moves in whole percents, so a large download can sit on one for minutes. The size
+ * under it still moves, but no more often than this.
+ */
+const DOWNLOAD_SIZE_EMIT_INTERVAL_MS = 2_000;
 
 export function extractComposeImages(composeContent: unknown): string[] {
   const { services } = parseComposeJson(composeContent);
@@ -73,16 +78,21 @@ export class InstallAppCommand extends AppLifecycleCommand {
     const sseService = this.moduleRef.get(SSEService, { strict: false });
     const appsRepository = this.moduleRef.get(AppsRepository, { strict: false });
 
-    const emitProgress = async (progress: number) => {
-      if (ctx?.updateProgress) {
-        await ctx.updateProgress(progress).catch(() => null);
-      }
+    // The job's last recorded percent. A tick that only moves the download size leaves it alone.
+    let jobProgress: number | undefined;
+    const emitProgress = async (progress: number, download?: { downloadedBytes: number; totalBytes: number }) => {
+      // Sent before the writes below: the pull's ticks are not awaited, and a tick that waited on
+      // a write could reach the page after a later one, or after the install's last event.
       if (sseService) {
         // No `appUrn` third argument: that publishes to the `app:<urn>` topic, which
         // nothing subscribes to (`sse.controller.ts` opens `getTopicObservable('app')`
         // with no urn), so every install-progress tick was dropped before it reached
         // the progress bar in `app-sse-cache.ts`.
-        sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'installing', progress });
+        sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'installing', progress, ...download });
+      }
+      if (ctx?.updateProgress && progress !== jobProgress) {
+        jobProgress = progress;
+        await ctx.updateProgress(progress).catch(() => null);
       }
       if (appsRepository) {
         const app = await appsRepository.getAppByUrn(appUrn);
@@ -383,6 +393,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
       if (appImages.length > 0) {
         let lastPullProgress = DOWNLOAD_PROGRESS_START;
         let lastPullProgressAt = 0;
+        let lastPullBytes = 0;
         dockerService.pullImages
           ? await dockerService.pullImages(appImages, {
               forcePull,
@@ -395,15 +406,18 @@ export class InstallAppCommand extends AppLifecycleCommand {
                       ? mapPullProgressToInstallProgress(completedImages, totalImages)
                       : DOWNLOAD_PROGRESS_START;
                 const now = Date.now();
-                if (
+                const percentRose =
                   nextProgress > lastPullProgress &&
                   (nextProgress - lastPullProgress >= 2 ||
                     now - lastPullProgressAt >= DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS ||
-                    nextProgress >= DOWNLOAD_PROGRESS_MAX_DURING_PULL)
-                ) {
-                  lastPullProgress = nextProgress;
+                    nextProgress >= DOWNLOAD_PROGRESS_MAX_DURING_PULL);
+                const sizeMoved = completedBytes !== lastPullBytes && now - lastPullProgressAt >= DOWNLOAD_SIZE_EMIT_INTERVAL_MS;
+                if (percentRose || sizeMoved) {
+                  // The total grows as Docker reports more layers, so the percentage can dip; the bar never goes back.
+                  lastPullProgress = Math.max(lastPullProgress, nextProgress);
                   lastPullProgressAt = now;
-                  void emitProgress(nextProgress);
+                  lastPullBytes = completedBytes;
+                  void emitProgress(lastPullProgress, totalBytes > 0 ? { downloadedBytes: completedBytes, totalBytes } : undefined);
                 }
               },
             })

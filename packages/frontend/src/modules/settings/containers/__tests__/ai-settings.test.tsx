@@ -2,6 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
+import { resetMobileClientCacheForTests } from '@/lib/mobile-connection';
 import { AiSettingsContainer } from '../ai-settings';
 import { toast } from 'sonner';
 
@@ -18,6 +19,7 @@ const {
   rescanInferenceHardware,
   pinInferenceModel,
   saveCloudProviderConfig,
+  removeCloudProviderConfig,
   ensurePullsStarted,
   unpinInferenceModel,
   unloadInferenceModel,
@@ -35,6 +37,7 @@ const {
   rescanInferenceHardware: vi.fn(),
   pinInferenceModel: vi.fn(),
   saveCloudProviderConfig: vi.fn(),
+  removeCloudProviderConfig: vi.fn(),
   ensurePullsStarted: vi.fn(),
   unpinInferenceModel: vi.fn(),
   unloadInferenceModel: vi.fn(),
@@ -54,6 +57,7 @@ vi.mock('@/lib/inference/inference-api', () => ({
   rescanInferenceHardware,
   pinInferenceModel,
   saveCloudProviderConfig,
+  removeCloudProviderConfig,
   // ai-settings imports and calls this on the deselection path; without it here that path throws
   // `unpinInferenceModel is not a function` into handleSave's catch and reports a failed save.
   unpinInferenceModel,
@@ -133,9 +137,10 @@ vi.mock('@/modules/onboarding/components/ai-setup/icons', () => ({
 }));
 
 vi.mock('@/modules/onboarding/components/ai-setup/backend-selection-card', () => ({
-  BackendSelectionCard: ({ selected, onSelect }: any) => (
+  BackendSelectionCard: ({ selected, recommended, onSelect }: any) => (
     <div>
       <div data-testid="selected-backend">{selected}</div>
+      <div data-testid="recommended-backend">{recommended}</div>
       <button type="button" data-testid="select-lemonade" onClick={() => onSelect('lemonade')}>
         select lemonade
       </button>
@@ -144,7 +149,20 @@ vi.mock('@/modules/onboarding/components/ai-setup/backend-selection-card', () =>
 }));
 
 vi.mock('@/modules/onboarding/components/ai-setup/cloud-provider-card', () => ({
-  CloudProviderCard: () => <div data-testid="cloud-provider-card" />,
+  // Clearing a field is the card's own job (cloud-provider-card.test.tsx); this double only hands
+  // the container what a cleared field reports.
+  CloudProviderCard: ({ providers, onUpdate }: any) => (
+    <div data-testid="cloud-provider-card">
+      <span data-testid="cloud-providers-held">{providers.map((provider: any) => provider.provider).join(',')}</span>
+      <button
+        type="button"
+        data-testid="clear-cloud-keys"
+        onClick={() => onUpdate(providers.map((provider: any) => ({ ...provider, apiKey: '', enabled: false })))}
+      >
+        clear
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock('@/modules/onboarding/components/ai-setup/resource-summary-bar', () => ({
@@ -244,6 +262,7 @@ describe('AiSettingsContainer', () => {
     fetchLemonadeInstallStatus.mockResolvedValue({ ready: true, running: true, endpointUrl: 'http://localhost:13305' });
     saveInferencePreferences.mockResolvedValue(undefined);
     rescanInferenceHardware.mockResolvedValue(undefined);
+    removeCloudProviderConfig.mockResolvedValue(undefined);
     ensurePullsStarted.mockResolvedValue({});
   });
 
@@ -266,6 +285,96 @@ describe('AiSettingsContainer', () => {
 
     await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('vllm'));
     expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('vllm');
+  });
+
+  it('shows an engine that answers when nothing is saved and the recommended one does not', async () => {
+    // An NVIDIA PC with Ollama running and no vLLM, on a Hub that never saved an engine.
+    fetchInferencePreferences.mockResolvedValue({});
+    fetchInferenceOnboardingProfile.mockImplementation(async (backend?: string) => ({
+      ...profile,
+      recommendedModels: [llm('m1', 'ollama')],
+      availableModels: [llm('m1', 'ollama')],
+      installedCatalogIds: backend === 'ollama' ? ['m1'] : [],
+      backends: {
+        recommended: 'vllm',
+        available: [
+          { type: 'ollama', running: true, healthy: true, modelsLoaded: 4 },
+          { type: 'vllm', running: false, healthy: false, modelsLoaded: 0 },
+        ],
+      },
+    }));
+
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('ollama'));
+    expect(screen.getByTestId('recommended-backend')).toHaveTextContent('ollama');
+    // Asked about no engine, the endpoint answered for vLLM; the list shown must be Ollama's.
+    expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('ollama');
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-m1')).toBeChecked());
+    await waitFor(() => expect(fetchInferenceRuntimeModels).toHaveBeenCalledWith('ollama'));
+    expect(fetchInferenceRuntimeModels).not.toHaveBeenCalledWith('vllm');
+  });
+
+  it('shows an engine that answers in the phone app too, which installs none itself', async () => {
+    // The iOS and Android app is a Tauri webview as well, so a Tauri check alone would treat it as the desktop app.
+    const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: () => Promise<unknown> } };
+    const userAgent = navigator.userAgent;
+    resetMobileClientCacheForTests();
+    Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)' });
+    tauriWindow.__TAURI_INTERNALS__ = { invoke: vi.fn().mockResolvedValue(undefined) };
+    try {
+      fetchInferencePreferences.mockResolvedValue({});
+      fetchInferenceOnboardingProfile.mockResolvedValue({
+        ...profile,
+        backends: {
+          recommended: 'vllm',
+          available: [
+            { type: 'ollama', running: true, healthy: true, modelsLoaded: 4 },
+            { type: 'vllm', running: false, healthy: false, modelsLoaded: 0 },
+          ],
+        },
+      });
+
+      renderAiSettings();
+
+      await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('ollama'));
+      expect(screen.getByTestId('recommended-backend')).toHaveTextContent('ollama');
+    } finally {
+      delete tauriWindow.__TAURI_INTERNALS__;
+      Object.defineProperty(navigator, 'userAgent', { configurable: true, value: userAgent });
+      resetMobileClientCacheForTests();
+    }
+  });
+
+  it('shows an engine that answers in the desktop window too, because Settings installs none', async () => {
+    // The desktop window keeps the hardware's pick in setup, where it installs that engine. Settings never does.
+    const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: () => Promise<unknown> } };
+    const userAgent = navigator.userAgent;
+    resetMobileClientCacheForTests();
+    Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'Mozilla/5.0 (X11; Linux x86_64)' });
+    tauriWindow.__TAURI_INTERNALS__ = { invoke: vi.fn().mockResolvedValue(undefined) };
+    try {
+      fetchInferencePreferences.mockResolvedValue({});
+      fetchInferenceOnboardingProfile.mockResolvedValue({
+        ...profile,
+        backends: {
+          recommended: 'vllm',
+          available: [
+            { type: 'ollama', running: true, healthy: true, modelsLoaded: 4 },
+            { type: 'vllm', running: false, healthy: false, modelsLoaded: 0 },
+          ],
+        },
+      });
+
+      renderAiSettings();
+
+      await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('ollama'));
+      expect(screen.getByTestId('recommended-backend')).toHaveTextContent('ollama');
+    } finally {
+      delete tauriWindow.__TAURI_INTERNALS__;
+      Object.defineProperty(navigator, 'userAgent', { configurable: true, value: userAgent });
+      resetMobileClientCacheForTests();
+    }
   });
 
   it('persists backend changes on save', async () => {
@@ -679,6 +788,41 @@ describe('AiSettingsContainer', () => {
     await user.click(screen.getByTestId('ai-settings-save-btn'));
 
     expect(screen.getByTestId('ai-settings-confirm-description')).toHaveTextContent(/restart your apps that use AI models/);
+  });
+
+  // Clearing a saved key sent nothing for it: the save said "AI settings saved" and the Hub kept the
+  // key, still enabled, so unknown models and AI apps went on using that provider.
+  it('deletes a saved cloud key whose field was cleared, before the save restarts AI apps', async () => {
+    fetchConfiguredCloudProviders.mockResolvedValue([{ provider: 'openai', apiKey: '••••••••', enabled: true, stored: true }]);
+
+    const user = userEvent.setup();
+    renderAiSettings();
+    await waitFor(() => expect(screen.getByTestId('cloud-providers-held')).toHaveTextContent('openai'));
+
+    await user.click(screen.getByTestId('clear-cloud-keys'));
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+    expect(removeCloudProviderConfig).toHaveBeenCalledWith('openai');
+    expect(saveCloudProviderConfig).not.toHaveBeenCalled();
+    // First, as the other cloud saves are: the preferences save is what restarts AI apps.
+    expect(removeCloudProviderConfig.mock.invocationCallOrder[0]).toBeLessThan(saveInferencePreferences.mock.invocationCallOrder[0] ?? 0);
+  });
+
+  it('keeps a saved cloud key whose field was left alone', async () => {
+    fetchConfiguredCloudProviders.mockResolvedValue([{ provider: 'openai', apiKey: '••••••••', enabled: true, stored: true }]);
+
+    const user = userEvent.setup();
+    renderAiSettings();
+    await waitFor(() => expect(screen.getByTestId('cloud-providers-held')).toHaveTextContent('openai'));
+
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+    expect(saveCloudProviderConfig).toHaveBeenCalledWith({ provider: 'openai', enabled: true });
+    expect(removeCloudProviderConfig).not.toHaveBeenCalled();
   });
 
   it('shows rescan error toast and skips profile refresh when rescan returns non-OK', async () => {

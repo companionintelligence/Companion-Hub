@@ -91,6 +91,93 @@ describe('CloudFallbackService.setProvider', () => {
   });
 });
 
+// A blank `apiKey` keeps the stored key (the masked Settings field relies on that), and nothing else
+// could take one away: a cleared field saved as "AI settings saved" while the Hub kept sending
+// unknown models and AI apps to that provider with the old key.
+describe('CloudFallbackService.removeProvider', () => {
+  let service: CloudFallbackService;
+  let configuration: ReturnType<typeof mock<ConfigurationService>>;
+
+  beforeEach(() => {
+    configuration = mock<ConfigurationService>();
+    configuration.getInferenceCloudProviders.mockReturnValue([]);
+    configuration.setInferenceCloudProviders.mockResolvedValue([]);
+    service = new CloudFallbackService(mock<LoggerService>(), configuration);
+    service.onModuleInit();
+  });
+
+  it('deletes the key: no app gets it, no unknown model goes to the provider, and settings no longer hold it', async () => {
+    service.setProvider({ provider: 'openai', apiKey: 'sk-live', enabled: true, defaultModel: 'gpt-4o' });
+
+    await expect(service.removeProvider('openai')).resolves.toBe(true);
+
+    expect(service.getProvider('openai')).toBeUndefined();
+    expect(service.hasCloudFallback()).toBe(false);
+    expect(service.toAppEnv()).toEqual({});
+    expect(service.resolveProvider('no-such-model')).toBeUndefined();
+    expect(configuration.setInferenceCloudProviders).toHaveBeenLastCalledWith([]);
+  });
+
+  it('keeps the other providers', async () => {
+    service.setProvider({ provider: 'openai', apiKey: 'sk-live', enabled: true, defaultModel: 'gpt-4o' });
+    service.setProvider({ provider: 'anthropic', apiKey: 'sk-ant', enabled: true, defaultModel: 'claude-opus-4' });
+
+    await service.removeProvider('openai');
+
+    expect(service.listProviders().map((provider) => provider.provider)).toEqual(['anthropic']);
+    expect(configuration.setInferenceCloudProviders).toHaveBeenLastCalledWith([expect.objectContaining({ provider: 'anthropic', apiKey: 'sk-ant' })]);
+  });
+
+  it('answers false and writes nothing for a provider with nothing stored', async () => {
+    await expect(service.removeProvider('google')).resolves.toBe(false);
+
+    expect(configuration.setInferenceCloudProviders).not.toHaveBeenCalled();
+  });
+
+  // Forgotten in memory first, the key stayed in settings.json after a failed write, and a second
+  // DELETE found nothing to remove: the key came back with the next restart.
+  it('keeps the key when settings.json cannot be written, so removing it again works', async () => {
+    configuration.getInferenceCloudProviders.mockReturnValue([{ provider: 'openai', apiKey: 'sk-live', enabled: true, defaultModel: 'gpt-4o' }]);
+    const booted = new CloudFallbackService(mock<LoggerService>(), configuration);
+    booted.onModuleInit();
+    configuration.setInferenceCloudProviders.mockRejectedValueOnce(new Error('EROFS: read-only file system'));
+
+    await expect(booted.removeProvider('openai')).rejects.toThrow('EROFS');
+    expect(booted.getProvider('openai')?.apiKey).toBe('sk-live');
+
+    await expect(booted.removeProvider('openai')).resolves.toBe(true);
+    expect(configuration.setInferenceCloudProviders).toHaveBeenLastCalledWith([]);
+  });
+
+  // Settings saves the providers in order and a save does not wait for its write. A save's write that
+  // finished after the removal's put the removed key back in settings.json.
+  it('leaves the removal on disk when a save was still writing', async () => {
+    let disk: CloudProviderConfig[] = [];
+    let finishSlowWrite: (() => void) | undefined;
+    configuration.setInferenceCloudProviders.mockImplementationOnce(
+      (providers) =>
+        new Promise((resolve) => {
+          finishSlowWrite = () => {
+            disk = providers;
+            resolve(providers);
+          };
+        }),
+    );
+    configuration.setInferenceCloudProviders.mockImplementation(async (providers) => {
+      disk = providers;
+      return providers;
+    });
+
+    service.setProvider({ provider: 'openai', apiKey: 'sk-live', enabled: true, defaultModel: 'gpt-4o' });
+    const removal = service.removeProvider('openai');
+    await vi.waitFor(() => expect(finishSlowWrite).toBeDefined());
+    finishSlowWrite?.();
+    await removal;
+
+    expect(disk).toEqual([]);
+  });
+});
+
 // ─── How long a cloud request may wait ───────────────
 // Streamed cloud requests had axios's `timeout: 120000`. With axios's default follow-redirects
 // transport that is also a socket idle timeout never cleared after the headers, so a reasoning
