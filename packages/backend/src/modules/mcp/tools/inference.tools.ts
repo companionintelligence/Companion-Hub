@@ -281,7 +281,7 @@ export class InferenceTools implements OnModuleInit {
         required: ['provider', 'apiKey', 'enabled'],
       },
       handler: async (params) => {
-        this.cloudFallback.setProvider({
+        await this.cloudFallback.setProvider({
           provider: params.provider as CloudProviderType,
           apiKey: params.apiKey as string,
           enabled: params.enabled as boolean,
