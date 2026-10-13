@@ -74,6 +74,9 @@ const appScopedEventSchema = z.object({
   settingsPath: z.string().optional(),
   hostname: z.string().optional(),
   progress: z.number().min(0).max(99).optional(),
+  // An install's image download so far, beside `progress`, once Docker has reported layer sizes.
+  downloadedBytes: z.number().nonnegative().optional(),
+  totalBytes: z.number().nonnegative().optional(),
   // Identifier for a non-fatal caveat on an otherwise-successful op (e.g. uninstall
   // completed but a root-owned path could not be fully removed). The client maps it
   // to a warning toast — a discriminator like errorCode, not rendered as a raw key.

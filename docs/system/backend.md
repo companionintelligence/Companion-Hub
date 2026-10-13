@@ -163,7 +163,8 @@ Both scopes share these rules:
   refuses stops the plan at once, so the models after it stay loaded, and the load goes ahead only
   if what was already freed shows up in the re-measure.
 - **A model that is not downloaded is refused first.** The check runs before any fit check or
-  eviction.
+  eviction. Once Ollama answers, its own list decides, so a model removed with `ollama rm` is refused
+  here even while the registry still has it as pulled.
 - **Loads are serialized per node.** Fit, eviction, and load run under one lock, and so do a
   never-measured model's trial load and the measurement after it. A pin holds the lock from its
   budget check to the pin itself: between the load and the pin the model is an idle Hub load, which
@@ -275,6 +276,29 @@ there. Operator-facing walkthrough: [`docs/editor-inference.md`](../editor-infer
 
 RabbitMQ consumers handle long-running install/update operations. Frontend polls + SSE for progress.
 
+An install's progress ticks (`status_change` with `progress`) carry `downloadedBytes` and
+`totalBytes` once Docker has reported layer sizes. `SSEService` keeps the latest tick of each
+install still running and sends it to every new `app` subscriber after the hello, so a page opened
+mid-install shows where the download is instead of waiting for the next tick. `pullImages` logs
+when each image's pull starts, its first event from Docker, and every 30 seconds where the layers
+are.
+
+What cancelling an install (`AppLifecycleService.cancelOperation`) does depends on how far it got:
+
+- `installApp` registers the operation only after the Portal bundle download and the image
+  architecture check. A cancel during those checks is held in `AppOperationRegistry`
+  (`holdPreparingCancel`), and `installApp` stops before it queues anything and sends
+  `install_cancelled`. A fresh install's row goes if it had written one. A retry of a failed
+  install stays `install_failed`, since nothing cleaned up after the failed attempt and its row is
+  what **Remove** works through. Reinstalling an app that is already installed restarts it and
+  can't be cancelled: its window ends once `installApp` has read the row, and a cancel held before
+  that is dropped.
+- A queued install's cancel is settled at once. The row is deleted, `install_cancelled` and the
+  install queue go out, and the worker skips the message when it reaches it
+  (`takeSettledBeforeStart`), even if the app has been installed again since.
+- A running install's abort reaches the pull or `compose up`, and the worker compensates and sends
+  `install_cancelled`. From `finalizing` on, the cancel is refused.
+
 ## Install lifecycle recovery
 
 The UI "install queue" is derived from DB rows with `status = 'installing'`, not a durable job table.
@@ -290,7 +314,9 @@ Guards against that:
   skip-forever). Live pulls keep the tracker/registry set, so slow-but-alive pulls are not killed.
 - **pullImages stall/overall timeouts** — inactivity (`DEFAULT_APP_IMAGE_PULL_INACTIVITY_TIMEOUT_MS`)
   and overall (`DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES`) abort a wedged pull as a regular failure
-  (not `AbortError`, which would delete the row as a user cancel).
+  (not `AbortError`, which would delete the row as a user cancel). An image whose pull gets no event
+  at all fails sooner, after `DEFAULT_APP_IMAGE_PULL_FIRST_EVENT_TIMEOUT_MS`, with a message that
+  says its download hasn't started.
 - **Worker catch finalizes** — `invokeCommand`'s catch calls `handleFailedResult` for installs so a
   throw after the publisher RPC timed out still reaches `install_failed`.
 - **Unique `(app_name, app_store_slug)`** — closes the concurrent-install race that used to insert
@@ -423,6 +449,12 @@ On save the Hub:
 AI apps that want these tokens must read the `CI_CLOUD_*` contract (or `hub_integration.inference`
 plus the extra env). See the tracking issue on marketplace / OpenClaw / Hermes.
 
+A blank key in the POST keeps the stored one, so a key is removed with
+`DELETE /api/inference/cloud-providers/:provider`. It forgets the provider, key included, in memory
+and in `settings.json`, and requests the same AI app refresh as a save. Settings > AI calls it on
+save for a provider whose stored key was cleared, by hand or with its **Remove** button. The card
+shows **On** or **Off** for a provider that holds a key.
+
 ## App inference handout
 
 Installed apps get inference config two ways, and both choose the model through the same rules:
@@ -485,6 +517,13 @@ keys `LLM_API_BASE`, `LLM_API_KEY`, `LLM_DEFAULT_CHAT_MODEL`, `LLM_DEFAULT_EMBED
   measured replaces the catalog footprint. A handout for a Lemonade model is never above the `ctx_size` Lemonade serves it
   at (`servedContextLength`). When that window is below the handout, the Hub hands out the saved
   window and logs a warning, naming the app's floor when it is under it.
+- **Installed means on disk.** Once Ollama answers, its `/api/tags` list decides whether an Ollama
+  model is installed. The registry's record of a pull counts only while Ollama cannot be asked: the
+  record is in memory, and nothing dropped it when a model was removed with `ollama rm`, so apps were
+  handed that model until the Hub restarted (`trackedPullCounts`). The handout, the app env, the pull
+  check, the onboarding profile and the load path's not-downloaded check all apply this rule, and
+  `GET /api/inference/models/tracked` drops a `pulled` entry that Ollama no longer lists. Lemonade,
+  vLLM and oMLX keep the old rule.
 - **Pre-pull.** `decideModelPrePull` returns a logged decision for every handout. A credentials GET
   never pulls a model a pool node already serves, nor one the app's requirements rule out. When the
   pool already serves the app a suitable model, it pulls only the operator's preferred model, never
@@ -498,7 +537,7 @@ keys `LLM_API_BASE`, `LLM_API_KEY`, `LLM_DEFAULT_CHAT_MODEL`, `LLM_DEFAULT_EMBED
   handout per app is kept in `state/inference-handouts.json` as SHA-256 digests of its values, so
   apps that keep running through a Hub restart are not read as stale.
 - **Refresh.** `AiAppInferenceRefreshService` is the one path that restarts AI apps for inference
-  changes. `PATCH /api/inference/preferences`, `POST /api/inference/cloud-providers`,
+  changes. `PATCH /api/inference/preferences`, `POST` and `DELETE /api/inference/cloud-providers`,
   `PATCH /api/user-settings` (when a write changes an inference or pool-switch value), and
   `PATCH /api/inference/pool/settings` (when the master or outbound switch moves) all request a
   sweep. A watcher also requests one when pool membership holds a new value for two health polls. A

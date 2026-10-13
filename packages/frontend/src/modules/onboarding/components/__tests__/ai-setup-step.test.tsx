@@ -1,6 +1,7 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { resetMobileClientCacheForTests } from '@/lib/mobile-connection';
 import { AiSetupStep } from '../ai-setup-step';
 import type { HardwareProfileResponse } from '../../helpers/ai-setup-types';
 
@@ -187,11 +188,17 @@ const vllmModel = {
   tiers: { high: 'recommended', medium: 'available', low: 'not-recommended', cpuOnly: 'not-recommended' },
 };
 
-/** A vLLM-recommended profile whose catalog is the host-served model above. */
+/** A vLLM-recommended profile, with vLLM answering, whose catalog is the host-served model above. */
 const vllmProfile = (installedCatalogIds: string[] = []): HardwareProfileResponse =>
   ({
     ...highTierProfile,
-    backends: { ...highTierProfile.backends, recommended: 'vllm' },
+    backends: {
+      recommended: 'vllm',
+      available: [
+        { type: 'ollama', running: true, healthy: true },
+        { type: 'vllm', running: true, healthy: true },
+      ],
+    },
     recommendedModels: [vllmModel],
     availableModels: [vllmModel],
     installedCatalogIds,
@@ -493,7 +500,7 @@ describe('AiSetupStep', () => {
           { type: 'ollama', running: true, healthy: true },
           { type: 'vllm', running: false, healthy: false },
           { type: 'lemonade', running: false, healthy: false },
-          { type: 'omlx', running: false, healthy: false },
+          { type: 'omlx', running: true, healthy: true },
         ],
       },
     };
@@ -674,6 +681,8 @@ describe('AiSetupStep', () => {
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
     const first = () => screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm') as HTMLInputElement;
     await waitFor(() => expect(first().checked).toBe(true));
+    // The load asks for Ollama's list, then for vLLM's once setup starts on vLLM.
+    const loadFetches = fetchInferenceOnboardingProfile.mock.calls.length;
 
     // Hold the refresh open so the operator's click lands while the fetch is still running.
     let release: (() => void) | undefined;
@@ -692,7 +701,7 @@ describe('AiSetupStep', () => {
     release?.();
 
     // The refresh must merge onto the live selection, not the snapshot taken when it started.
-    await waitFor(() => expect(fetchInferenceOnboardingProfile).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(fetchInferenceOnboardingProfile).toHaveBeenCalledTimes(loadFetches + 1));
     expect(first().checked).toBe(false);
   });
 
@@ -705,6 +714,7 @@ describe('AiSetupStep', () => {
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
     const checkbox = () => screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm') as HTMLInputElement;
     await waitFor(() => expect(checkbox().checked).toBe(true));
+    const loadFetches = fetchInferenceOnboardingProfile.mock.calls.length;
 
     // The operator restarts the host vLLM server and re-checks while it is still booting. The
     // profile endpoint swallows its own health-check failure and answers 200 with nothing served.
@@ -716,7 +726,7 @@ describe('AiSetupStep', () => {
     // Adopting that answer would drop the card back into the "open Hugging Face" branch this
     // feature exists to leave, so an unreachable probe must not trigger the refresh at all.
     expect(checkbox().checked).toBe(true);
-    expect(fetchInferenceOnboardingProfile).toHaveBeenCalledTimes(1);
+    expect(fetchInferenceOnboardingProfile).toHaveBeenCalledTimes(loadFetches);
   });
 
   it('keeps the step usable when the profile refresh fails during a re-check', async () => {
@@ -900,6 +910,147 @@ describe('AiSetupStep', () => {
     await waitFor(() => expect(onConfigChange).toHaveBeenCalled());
     const latest = onConfigChange.mock.calls.at(-1)?.[0] as { engineBlocked?: boolean };
     expect(latest.engineBlocked).toBeUndefined();
+  });
+
+  it('starts on Ollama and lets you finish when vLLM is recommended but does not answer', async () => {
+    // An NVIDIA PC with Ollama running and no vLLM: the hardware suggests vLLM, nothing serves it.
+    api.profile = {
+      ...highTierProfile,
+      backends: {
+        recommended: 'vllm',
+        available: [
+          { type: 'ollama', running: true, healthy: true, modelsLoaded: 4 },
+          { type: 'vllm', running: false, healthy: false, modelsLoaded: 0 },
+        ],
+      },
+    };
+    api.ollama = ollamaReady;
+    api.vllm = vllmMissing;
+    const onConfigChange = vi.fn();
+    renderStep({ embedded: true, onConfigChange });
+
+    await waitFor(() => expect(screen.getByText('Ollama detected')).toBeInTheDocument());
+    expect(screen.getByTestId('backend-option-ollama').querySelector('input')).toBeChecked();
+    expect(screen.getByTestId('backend-option-ollama')).toHaveTextContent('Recommended');
+    expect(screen.getByTestId('backend-option-vllm')).not.toHaveTextContent('Recommended');
+    expect(screen.queryByText('vLLM not detected')).not.toBeInTheDocument();
+    // The models already in Ollama are the ones ticked, not just its embedder.
+    expect((screen.getByTestId('model-checkbox-phi-4-mini') as HTMLInputElement).checked).toBe(true);
+    await waitFor(() =>
+      expect(onConfigChange).toHaveBeenLastCalledWith(expect.objectContaining({ backend: 'ollama', selectedModels: ['phi-4-mini'] })),
+    );
+    expect(onConfigChange.mock.lastCall?.[0]).not.toHaveProperty('engineBlocked');
+  });
+
+  it('keeps oMLX in the Mac desktop app, which installs it itself, even with Ollama answering', async () => {
+    // The desktop window installs oMLX with Homebrew when setup finishes, so its pick stands.
+    const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<unknown> } };
+    tauriWindow.__TAURI_INTERNALS__ = { invoke: vi.fn().mockResolvedValue(undefined) };
+    try {
+      api.profile = {
+        ...highTierProfile,
+        hardware: {
+          ...highTierProfile.hardware,
+          gpu: { ...highTierProfile.hardware.gpu, vendor: 'apple', model: 'Apple M2 Max', unifiedMemory: true },
+          cpu: { ...highTierProfile.hardware.cpu, arch: 'arm64', model: 'Apple M2 Max' },
+          os: { platform: 'darwin', name: 'macOS', version: '15.6' },
+        },
+        backends: {
+          recommended: 'omlx',
+          available: [
+            { type: 'ollama', running: true, healthy: true, modelsLoaded: 3 },
+            { type: 'omlx', running: false, healthy: false, modelsLoaded: 0 },
+          ],
+        },
+      };
+      const onConfigChange = vi.fn();
+      renderStep({ embedded: true, onConfigChange });
+
+      await waitFor(() => expect(screen.getByTestId('backend-option-omlx')).toBeInTheDocument());
+      expect(screen.getByTestId('backend-option-omlx').querySelector('input')).toBeChecked();
+      expect(screen.getByTestId('backend-option-omlx')).toHaveTextContent('Recommended');
+      expect(screen.getByTestId('backend-option-ollama')).not.toHaveTextContent('Recommended');
+      await waitFor(() => expect(onConfigChange).toHaveBeenLastCalledWith(expect.objectContaining({ backend: 'omlx' })));
+    } finally {
+      delete tauriWindow.__TAURI_INTERNALS__;
+    }
+  });
+
+  it('starts on an engine that answers in the phone app, which cannot install one on the Hub', async () => {
+    // The iOS and Android app is a Tauri webview as well, but it has no runner installer.
+    const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<unknown> } };
+    resetMobileClientCacheForTests();
+    Object.defineProperty(window.navigator, 'userAgent', { configurable: true, value: 'Mozilla/5.0 (Linux; Android 14; Pixel 8)' });
+    tauriWindow.__TAURI_INTERNALS__ = { invoke: vi.fn().mockResolvedValue(undefined) };
+    try {
+      api.profile = {
+        ...highTierProfile,
+        backends: {
+          recommended: 'vllm',
+          available: [
+            { type: 'ollama', running: true, healthy: true, modelsLoaded: 4 },
+            { type: 'vllm', running: false, healthy: false, modelsLoaded: 0 },
+          ],
+        },
+      };
+      const onConfigChange = vi.fn();
+      renderStep({ embedded: true, onConfigChange });
+
+      await waitFor(() => expect(screen.getByText('Ollama detected')).toBeInTheDocument());
+      expect(screen.getByTestId('backend-option-ollama').querySelector('input')).toBeChecked();
+      expect(screen.getByTestId('backend-option-ollama')).toHaveTextContent('Recommended');
+      await waitFor(() => expect(onConfigChange).toHaveBeenLastCalledWith(expect.objectContaining({ backend: 'ollama' })));
+    } finally {
+      delete tauriWindow.__TAURI_INTERNALS__;
+      resetMobileClientCacheForTests();
+    }
+  });
+
+  it('waits for a ready engine in the phone app, which cannot install one', async () => {
+    const tauriWindow = window as Window & { __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<unknown> } };
+    resetMobileClientCacheForTests();
+    Object.defineProperty(window.navigator, 'userAgent', { configurable: true, value: 'Mozilla/5.0 (Linux; Android 14; Pixel 8)' });
+    tauriWindow.__TAURI_INTERNALS__ = { invoke: vi.fn().mockResolvedValue(undefined) };
+    try {
+      api.profile = {
+        ...highTierProfile,
+        backends: {
+          recommended: 'vllm',
+          available: [
+            { type: 'ollama', running: false, healthy: false, modelsLoaded: 0 },
+            { type: 'vllm', running: false, healthy: false, modelsLoaded: 0 },
+          ],
+        },
+      };
+      api.ollama = ollamaMissing;
+      api.vllm = vllmMissing;
+      const onConfigChange = vi.fn();
+      renderStep({ embedded: true, onConfigChange });
+
+      await waitFor(() => expect(onConfigChange).toHaveBeenLastCalledWith(expect.objectContaining({ backend: 'vllm', engineBlocked: true })));
+    } finally {
+      delete tauriWindow.__TAURI_INTERNALS__;
+      resetMobileClientCacheForTests();
+    }
+  });
+
+  it('reads the installed models of the engine it starts on, not of the one the first request named', async () => {
+    // The first request names Ollama. Setup then starts on vLLM, which serves the model.
+    api.vllm = vllmReady;
+    fetchInferenceOnboardingProfile.mockImplementation((backend?: string) =>
+      Promise.resolve(vllmProfile(backend === 'vllm' ? ['qwen3-4b-instruct-vllm'] : [])),
+    );
+    renderStep();
+
+    await waitFor(() => expect((screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm') as HTMLInputElement).checked).toBe(true));
+    expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('vllm', '', '', '');
+  });
+
+  it('says the apps install while the models download, which is the order the install step runs in', async () => {
+    renderStep();
+
+    expect(await screen.findByText('Apps install while your selected models download.')).toBeInTheDocument();
+    expect(screen.queryByText(/after your selected models finish downloading/i)).not.toBeInTheDocument();
   });
 
   it('gives model tiles and access options a visible focus ring without showing the checkbox', async () => {

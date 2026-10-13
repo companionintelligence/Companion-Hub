@@ -6,7 +6,7 @@ import { embedderRunsOnCpu } from './embedder-placement';
 import { ModelRegistryService } from './model-registry.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { MemoryManagerService } from './memory-manager.service';
-import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
+import { isCatalogModelInstalled, isPulledState, isServedModelForCatalog, trackedPullCounts } from './model-availability.util';
 import type { PullEvaluation, PullStartResult } from './pull-evaluation.types';
 import { InferenceBackendRegistry } from './backends/backend-registry';
 
@@ -94,10 +94,13 @@ export class ModelPullerService {
     const requiredMemoryMb = curated.runtime.memoryFootprintMb;
 
     const backend = this.backends.get(curated.backend);
-    const backendModels = (await backend.healthCheck().catch(() => ({ modelsLoaded: [] as string[] }))).modelsLoaded ?? [];
+    const health = await backend.healthCheck().catch(() => null);
+    const backendModels = health?.modelsLoaded ?? [];
 
-    const tracked = this.modelRegistry.getTrackedModel(catalogId);
-    const trackedPulled = tracked?.state === 'pulled' || tracked?.state === 'loaded' || tracked?.state === 'pinned';
+    const trackedPulled = trackedPullCounts(
+      this.modelRegistry.getTrackedModel(catalogId),
+      health?.running && health.healthy ? curated.backend : null,
+    );
     const alreadyInstalled =
       trackedPulled ||
       (curated.backend === 'ollama'
@@ -300,20 +303,26 @@ export class ModelPullerService {
     return this.pullWorkerPromise;
   }
 
-  /** Wait until a queued or in-flight pull reaches a terminal tracked state. */
+  /**
+   * Wait until a queued or in-flight pull reaches a terminal tracked state.
+   *
+   * The state is read only once the pull is no longer queued or running. Until then the entry can
+   * be the one from before: a model removed with `ollama rm` is still tracked `pulled` while its new
+   * download waits in the queue, and reading that as done answered "pulled" before anything landed.
+   */
   async waitForPullCompletion(catalogId: string, timeoutMs = 600_000): Promise<void> {
     const deadline = Date.now() + timeoutMs;
 
     while (Date.now() < deadline) {
       const tracked = this.modelRegistry.getTrackedModel(catalogId);
-      if (tracked?.state === 'pulled' || tracked?.state === 'loaded' || tracked?.state === 'pinned') {
+      const pending = this.pullActiveIds.has(catalogId) || this.pullQueue.includes(catalogId);
+      if (!pending && isPulledState(tracked?.state)) {
         return;
       }
-      if (tracked?.state === 'error') {
+      if (!pending && tracked?.state === 'error') {
         throw new Error(tracked.errorMessage ?? `Pull failed for ${catalogId}`);
       }
 
-      const pending = this.pullActiveIds.has(catalogId) || this.pullQueue.includes(catalogId);
       if (!pending && !tracked) {
         const evaluation = await this.evaluatePull(catalogId);
         if (evaluation.alreadyInstalled) {
