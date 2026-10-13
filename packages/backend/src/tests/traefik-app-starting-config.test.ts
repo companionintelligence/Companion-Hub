@@ -34,8 +34,17 @@ describe('traefik ci-hub-app-starting middleware config', () => {
     const errors = dynamic.http.middlewares[name as string].errors;
 
     expect(errors.status).toEqual(['502', '504']);
-    // No statusRewrites: the visitor, an API client or a health check must still see the failure.
-    expect(errors).not.toHaveProperty('statusRewrites');
+  });
+
+  /*
+   * Cloudflare puts its own "Bad gateway" page in place of an origin 502 or 504, so a Public Web
+   * visitor never saw the Hub's page. It passes an origin 503 through. A 503 is still a failure for
+   * an API client or a health check.
+   */
+  it('sends the page as a 503, which Cloudflare passes through to a Public Web visitor', () => {
+    const { statusRewrites } = dynamic.http.middlewares[name as string].errors;
+
+    expect(statusRewrites).toEqual({ '502': 503, '504': 503 });
   });
 
   /*
@@ -58,7 +67,8 @@ describe('traefik ci-hub-app-starting middleware config', () => {
   it('asks the Hub for the page at the path its controller serves, without the visitor’s URL', () => {
     const { query, service } = dynamic.http.middlewares[name as string].errors;
 
-    expect(query).toBe(`${APP_STARTING_PAGE_PATH}?status={status}`);
+    // The status the app answered with, before the rewrite above.
+    expect(query).toBe(`${APP_STARTING_PAGE_PATH}?status={originalStatus}`);
     // `{url}` would put the visitor's full URL, tokens in its query string and all, on the Hub's
     // request line. The Host header already says which app it is.
     expect(query).not.toContain('{url}');
