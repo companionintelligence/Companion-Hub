@@ -1,6 +1,7 @@
 import type { Request } from 'express';
 import axios from 'axios';
 import { describeNetworkError } from '@/common/helpers/network-error';
+import { internalOriginRefusal } from '@/common/helpers/request-origin';
 import {
   buildPortalAxiosConfig,
   readPortalInternalUrlOverride,
@@ -80,6 +81,26 @@ export function isLoopbackHubOrigin(hubOrigin: string): boolean {
 }
 
 /**
+ * Whether a request was sent straight to this Hub on a loopback address, the way the desktop app's
+ * window reaches it (its UI is served from http://127.0.0.1:<apiPort>).
+ *
+ * The host name alone proves nothing: the tunnel passes a visitor's own X-Forwarded-Host through,
+ * so a request from the internet can name `localhost`. `internalOriginRefusal` rules out anything
+ * the tunnel or a public hop carried here.
+ */
+export function isDirectLoopbackRequest(req: Request): boolean {
+  if (internalOriginRefusal(req) !== null) {
+    return false;
+  }
+
+  try {
+    return isLoopbackHubOrigin(resolveHubRequestOrigin(req));
+  } catch {
+    return false;
+  }
+}
+
+/**
  * How long the desktop handoff token stays spendable.
  *
  * Short on purpose — it is a bearer credential sitting in a URL the OS hands
@@ -133,7 +154,7 @@ export function resolvePortalDesktopHandoffState(input: { claimed: boolean; pend
 export const PORTAL_DESKTOP_PRESENCE_CACHE_KEY = 'portal_sso_desktop_present';
 export const PORTAL_DESKTOP_PRESENCE_TTL_SECONDS = 10 * 60;
 
-/** The local Tauri window is alive — loopback browser SSO should hand off into it. */
+/** The desktop app on this machine is waiting for a sign-in, so a loopback browser sign-in hands off into it. */
 export function shouldHandoffPortalLoginToDesktop(input: { desktop: boolean; hubOrigin: string; desktopAppPresent: boolean }): boolean {
   if (input.desktop) {
     return true;

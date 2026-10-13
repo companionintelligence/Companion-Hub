@@ -99,6 +99,8 @@ type Resident = { id: string; ctx: number; psMb: number; processMb: number; gpuM
 class FakeOllama {
   readonly type = 'ollama' as const;
   resident = new Map<string, Resident>();
+  /** What `/api/tags` lists: on disk, loaded or not. */
+  readonly installed = new Set(Object.keys(OLLAMA_MODELS));
   loads: { id: string; ctx: number }[] = [];
 
   constructor(
@@ -138,7 +140,7 @@ class FakeOllama {
     return {
       type: this.type,
       getBaseUrl: () => 'http://fake-ollama:11434',
-      healthCheck: async () => ({ running: true, healthy: true, modelsLoaded: [...Object.keys(OLLAMA_MODELS)] }),
+      healthCheck: async () => ({ running: true, healthy: true, modelsLoaded: [...this.installed] }),
       isModelLoaded: async (id: string) => this.resident.has(id),
       loadModel: async (id: string, options?: { contextLength?: number }) => this.load(id, options?.contextLength ?? this.defaultWindow),
       unloadModel: async (id: string) => {
@@ -827,8 +829,10 @@ describe('the load window on the fleet', () => {
       tier: 'high',
     };
     const { router, registry, engines } = world({ profile: cpu, ollama, freeWithNothingLoadedMb: 20_000 + 17_406 });
-    // Pulled by the Hub, so the load gets past the not-downloaded refusal that comes before any eviction.
+    // Pulled by the Hub, and so on Ollama's disk: the load gets past the not-downloaded refusal that
+    // comes before any eviction.
     registry.trackModel('qwen3-coder-30b', 'pulled');
+    ollama.installed.add('qwen3-coder:30b');
 
     // qwen3-coder-30b: 20,951 MB, no geometry here (the ladder), text only. The qwen3.8:27b it evicts
     // was loaded by an app, which only an operator's load may unload.

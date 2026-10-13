@@ -5,7 +5,7 @@
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-10-04 (Hub Pool setup guide)
+> **Last updated:** 2026-10-10 (onboarding engine choice and install order)
 > **Related:** docs/system/desktop.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/system/e2e.md
 
 ---
@@ -76,8 +76,8 @@ Tests: `packages/frontend/src/components/hub-status/hub-status.test.tsx`
 - Companion Account flows (`packages/frontend/src/lib/hub-auth-flow.ts` — do not mix):
   - **`mobile-cloud-connect`** — iOS/Android `/connect` only. Portal PKCE (`oidc.ts`) → `openAuthSession` (iOS in-app `ASWebAuthenticationSession` sheet, Android system browser) → `cihub://auth/callback` → `deep-link-oidc`. Not Hub `/portal/start`.
   - **`mobile-hub-sso`** — iOS/Android `/login` after a Hub is chosen. `{remoteHub}/api/auth/portal/start?desktop=1` via `openAuthSession` → `cihub://auth?token=…` → `deep-link-auth`. Never localhost. Button + `openAuthSession` so WKWebView stays mounted and iOS never jumps out to Safari.
-  - **`desktop-hub-sso`** — Mac / Linux / Windows Tauri while the Hub is running. Same-origin (Vite `:5005` or packaged `:5002`) `/portal/start?desktop=1` in the system browser → `cihub-dev://` / `cihub://` → desktop-exchange on that Hub. Button + `openAuthInSystemBrowser`, never an `<a href>`: a same-origin anchor is left alone by the Providers link interceptor, so it navigates the app's own webview and unmounts `useDesktopPortalAuth` — the only code that exchanges the one-time token. Heartbeat `session-hint?desktop=1` so a Chrome loopback callback can hand off into Tauri.
-  - **`browser-hub-sso`** — any browser on a Hub (including a phone browser). Same-origin `/portal/start` with no `desktop=1`; cookie session. On **loopback**, this is stolen into `desktop-hub-sso` while Tauri is announcing presence (10 min). Stop the desktop shell to test a real browser cookie session. Product origin is **`:5002`**; `:5005` is source-dev only — see `docs/system/desktop.md` ("Two stacks — do not mix").
+  - **`desktop-hub-sso`** — Mac / Linux / Windows Tauri while the Hub is running. Same-origin (Vite `:5005` or packaged `:5002`) `/portal/start?desktop=1` in the system browser → `cihub-dev://` / `cihub://` → desktop-exchange on that Hub. Button + `openAuthInSystemBrowser`, never an `<a href>`: a same-origin anchor is left alone by the Providers link interceptor, so it navigates the app's own webview and unmounts `useDesktopPortalAuth` — the only code that exchanges the one-time token. Heartbeat `session-hint?desktop=1` so a Chrome loopback callback can hand off into Tauri. The Hub ignores that flag when it arrives through the tunnel or from a public address, and a signed-in window's heartbeat clears it. `session-hint` names an account only to a signed-in caller, so the heartbeat keeps the window's own account in `ci-hub.portalAccountEmail` for the sign-in screen.
+  - **`browser-hub-sso`** — any browser on a Hub (including a phone browser). Same-origin `/portal/start` with no `desktop=1`; cookie session. On **loopback**, this is handed to `desktop-hub-sso` while the desktop app is open and signed out (10 min). A sign-in on any other address stays in the browser. Sign the desktop app in, or stop it, to test a real browser cookie session on loopback. Product origin is **`:5002`**; `:5005` is source-dev only — see `docs/system/desktop.md` ("Two stacks — do not mix").
 
 ## Desktop app release
 
@@ -123,7 +123,7 @@ The iOS/Android thin client signs into the Portal with PKCE and a `cihub://auth/
 - After a Hub is chosen, go to `/login` (not `/`). Root must not wait on the remote Hub's registration API on any mobile route.
 - `I18nProvider` must not fetch `/api/i18n` on a phone — that `window.fetch` to the remote Hub never settles and leaves the exact "Loading…" screen. Use bundled `en`.
 - Hub `/login` Portal SSO on iOS/Android uses the chosen Hub URL (not `localhost:5002`) with `desktop=1`, opened via `openAuthSession` (iOS in-app Safari sheet, Android system browser), so the phone returns via `cihub://auth?token=…` instead of navigating the WKWebView away from `/login`.
-- The SSO button email is the **Portal user** from the OIDC `id_token` (or email/password), stored in `ci-hub.portalAccountEmail`. On a phone, that wins over the Hub operator (`hub_operator` is often `support@…` on a shared appliance).
+- The SSO button email is the **Portal user** from the OIDC `id_token` (or email/password), stored in `ci-hub.portalAccountEmail`. On a phone, that wins over the Hub's own `session-hint` answer.
 - Hung Hub calls must not spin forever. I18n never gates on "Loading…". Root loader, `/home` session/app-context, and a 6s DOM watchdog all end in Retry + Switch Hub. The HTML boot strip also grows Reload / Connect if React never paints. Do not send a failed app-context load into onboarding.
 
 Tests: `packages/frontend/src/modules/mobile-connect/oidc.test.ts`, `connect-page.test.tsx`
@@ -135,6 +135,29 @@ the selected backend's readiness check, and the Ollama embeddings check when a h
 is selected. Apple Silicon offers Ollama and oMLX. NVIDIA offers Ollama and vLLM. AMD or NPU offers Ollama and Lemonade. Manual mode is a decode endpoint and an encode endpoint. When the
 operator confirms “Install & Finish”, `InstallStep` asks the desktop shell to install the chosen runner. oMLX is Homebrew. vLLM pairs with Ollama for embeddings. A plain browser build does not
 have a native process boundary, so it retains the manual setup and re-check flow.
+
+`recommendedInferenceBackend` decides where the step starts. In the desktop window
+(`isTauriDesktopApp`, which leaves out the iOS and Android app) the hardware's pick
+(`backends.recommended`) stands whenever the app installs that engine itself, which means
+`automaticRunnersForBackend` lists it and it isn't vLLM on Windows (the native installer skips
+that). This keeps oMLX on an Apple Silicon Mac. In a browser tab, in the phone app, or for an
+engine the desktop app can't install, the step starts on an engine that answers. One that already
+has models (`backends.available[].modelsLoaded`) comes first, the hardware's pick ahead of the
+rest. With no models anywhere it takes the hardware's pick if that answers, else any engine that
+answers. With nothing answering the hardware's pick stands, except vLLM in the Windows desktop
+window, which starts on Ollama because that is the engine the app installs there. The
+**Recommended** badge goes with the choice. Settings > AI uses the browser-tab rule when no engine
+is saved, even in the desktop window, because Settings installs no engine. The finish gate and the
+runner install use the same desktop check, so the phone app waits for a ready engine like a
+browser tab does.
+
+`InstallStep` runs in this order: runners, cloud keys, the preference save, the app install
+requests, then the wait for model downloads and the pins. The preferences go before the installs
+because an AI app gets its inference config when its install starts. The installs go before the
+downloads so that **Continue** cannot drop them: closing the step stops the waiting, the pins, and
+the progress polling, never a request that has not been sent yet. The Hub tracks a queued download
+only once its turn comes, so the first save leaves out a chosen model still in the queue. When the
+wait ends with a different answer, the step saves the model defaults again.
 
 `RecommendationsStep` uses the Alternatives chart treatment for its optional app discovery section:
 it shows a curated 20-app shortlist across ten categories, grouped in compact paired comparison rows. Category
