@@ -348,13 +348,24 @@ export const InstallForm: React.FC<IProps> = ({
     setRecentConfigs(readLastUsedConfigs(info.id));
   }, [info.id]);
 
+  /**
+   * Returns true when the values turn the app's Hub login off while the "Enable authentication"
+   * switch is hidden behind "Show advanced settings". That setting is then opened, so the switch is
+   * on screen and off before anyone saves, and the caller says so in its toast (#1984).
+   */
   const applyImportedValues = useCallback(
-    (values: Record<string, unknown>) => {
+    (values: Record<string, unknown>): boolean => {
+      const authSwitchHidden = Boolean(info.exposable && info.dynamic_config) && !isAdvancedMode && !showAdvancedSettings;
+      const turnsLoginOff = authSwitchHidden && values.enableAuth === false && (getValues('enableAuth') ?? enableAuthFallback) !== false;
       for (const [key, value] of Object.entries(values)) {
         setValue(key, value as string, { shouldDirty: true, shouldValidate: true });
       }
+      if (turnsLoginOff) {
+        setShowAdvancedSettings(true);
+      }
+      return turnsLoginOff;
     },
-    [setValue],
+    [setValue, getValues, enableAuthFallback, info.exposable, info.dynamic_config, isAdvancedMode, showAdvancedSettings],
   );
 
   /**
@@ -432,7 +443,7 @@ export const InstallForm: React.FC<IProps> = ({
       }
 
       const { values, dropped } = withoutUnofferedAccessSettings(result.values);
-      applyImportedValues(values);
+      const turnsLoginOff = applyImportedValues(values);
 
       const unrecognizedKeys = [...result.unrecognizedKeys, ...dropped];
       if (unrecognizedKeys.length > 0) {
@@ -443,8 +454,11 @@ export const InstallForm: React.FC<IProps> = ({
             fields: unrecognizedKeys.join(', '),
           }),
         );
-      } else {
+      } else if (!turnsLoginOff) {
         toast.success(t('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS', { defaultValue: 'Config imported.' }));
+      }
+      if (turnsLoginOff) {
+        toast.warning(t('APP_INSTALL_FORM_IMPORT_CONFIG_AUTH_OFF'), { duration: 8000 });
       }
     },
     [formFields, info.id, withoutUnofferedAccessSettings, applyImportedValues, t],
@@ -452,8 +466,11 @@ export const InstallForm: React.FC<IProps> = ({
 
   const handleApplyRecentConfig = useCallback(
     (entry: LastUsedInstallConfig) => {
-      applyImportedValues(withoutUnofferedAccessSettings(entry.values).values);
-      toast.success(t('APP_INSTALL_FORM_RECENTLY_USED_APPLIED', { defaultValue: 'Applied recently used config.' }));
+      if (applyImportedValues(withoutUnofferedAccessSettings(entry.values).values)) {
+        toast.warning(t('APP_INSTALL_FORM_RECENTLY_USED_APPLIED_AUTH_OFF'), { duration: 8000 });
+      } else {
+        toast.success(t('APP_INSTALL_FORM_RECENTLY_USED_APPLIED', { defaultValue: 'Applied recently used config.' }));
+      }
     },
     [withoutUnofferedAccessSettings, applyImportedValues, t],
   );
