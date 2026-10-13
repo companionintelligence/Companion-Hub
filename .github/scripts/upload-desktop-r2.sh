@@ -21,6 +21,21 @@ upload() {
   wrangler r2 object put --remote "${R2_BUCKET}/$1" --file "$2"
 }
 
+# Windows installers also go up under a name without spaces, GitHub's own spelling
+# ("Companion.Hub_…"), and the manifest points at that copy. The desktop app's Windows updater up to
+# 0.3.5 saves the installer under the URL's last segment, still percent-encoded, and runs it from a
+# .cmd script where the `%2` of `%20` reads as a batch argument, so a URL with a space never
+# installs. The original names stay for the links on the website and in the docs.
+upload_windows() {
+  local name cdn_name
+  name="$(basename "$2")"
+  cdn_name="${name// /.}"
+  upload "$1/${name}" "$2"
+  if [ "$cdn_name" != "$name" ]; then
+    upload "$1/${cdn_name}" "$2"
+  fi
+}
+
 echo "Uploading desktop release ${VERSION} to R2 bucket ${R2_BUCKET} (CDN ${DOWNLOAD_BASE_URL})"
 
 # macOS
@@ -33,18 +48,18 @@ done
 
 # Windows x64
 for f in artifacts/release-x86_64-pc-windows-msvc/*.msi; do
-  [ -f "$f" ] && upload "${VERSION}/windows/x64/$(basename "$f")" "$f"
+  [ -f "$f" ] && upload_windows "${VERSION}/windows/x64" "$f"
 done
 for f in artifacts/release-x86_64-pc-windows-msvc/*-setup.exe; do
-  [ -f "$f" ] && upload "${VERSION}/windows/x64/$(basename "$f")" "$f"
+  [ -f "$f" ] && upload_windows "${VERSION}/windows/x64" "$f"
 done
 
 # Windows ARM64
 for f in artifacts/release-aarch64-pc-windows-msvc/*.msi; do
-  [ -f "$f" ] && upload "${VERSION}/windows/arm64/$(basename "$f")" "$f"
+  [ -f "$f" ] && upload_windows "${VERSION}/windows/arm64" "$f"
 done
 for f in artifacts/release-aarch64-pc-windows-msvc/*-setup.exe; do
-  [ -f "$f" ] && upload "${VERSION}/windows/arm64/$(basename "$f")" "$f"
+  [ -f "$f" ] && upload_windows "${VERSION}/windows/arm64" "$f"
 done
 
 # Linux x64
@@ -96,7 +111,12 @@ for (const [platform, artifactDir, formats] of mappings) {
     const filePath = path.join(dir, file);
     const stat = fs.statSync(filePath);
     const sha256 = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
-    const encodedFile = encodeURIComponent(file);
+    // Windows points at the space-free copy upload_windows put up (see there for why).
+    const windows = platform.startsWith('windows');
+    const encodedFile = encodeURIComponent(windows ? file.replace(/ /g, '.') : file);
+    if (windows && encodedFile.includes('%')) {
+      throw new Error(`${file}: a % in a Windows installer URL stops the desktop app's updater from running it`);
+    }
     let r2Path;
     if (platform === 'windows-aarch64') r2Path = 'windows/arm64';
     else if (platform.startsWith('windows')) r2Path = 'windows/x64';
