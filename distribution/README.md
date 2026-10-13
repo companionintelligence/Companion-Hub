@@ -153,28 +153,50 @@ Both Windows packaged installers run the bundled cleanup script before removing 
 
 The NSIS hook closes the app first if it is running, with the same prompt Tauri's template shows. The template's own check only comes after the hook, and an open app put back part of what the cleanup had just deleted.
 
-Unlike Scoop, both only run on a real uninstall — in-place updates reuse the install (NSIS, and the hook also skips cleanup when the uninstaller is launched with `/UPDATE`) or set `UPGRADINGPRODUCTCODE` during the major-upgrade removal pass (MSI), so they perform the **full purge** (volumes and images included) only on a genuine removal. WinGet inherits whichever of the two its manifest installs. Running a newer interactive `-setup.exe` and keeping its default "Uninstall before installing" choice is a genuine removal and purges too.
+Unlike Scoop, both only run on a real uninstall. In-place updates reuse the install (NSIS, and the hook also skips cleanup when the uninstaller is launched with `/UPDATE`) or set `UPGRADINGPRODUCTCODE` during the major-upgrade removal pass (MSI). WinGet inherits whichever of the two its manifest installs. Running a newer interactive `-setup.exe` and choosing "Uninstall before installing" runs the installed version's uninstaller, confirm page included.
 
-**Uninstall is a full purge, not a `remove`.** Cleanup deletes Hub-related state in user
-config/cache/data directories **and the Hub Docker data volumes** (`ci_hub_pgdata`,
-`ci_hub_app_data`, `hub_tailscale_state`) — i.e. the database and all app data. This is
+**On Windows the uninstall keeps the Hub's data unless you ask for it to go.** The NSIS
+uninstaller's confirm page has Tauri's "Delete the application data" box, unticked by default,
+and the hook passes it on to `uninstall-cleanup.ps1` as `-DeleteAppData`.
+
+- Unticked: the uninstall removes the program, the Hub's and every app's containers and
+  networks, their images, the `Companion Hub\bin` entry on the user PATH and the
+  `CompanionHub-WSL-Docker.vbs` logon script that keeps the Docker Engine's WSL2 distro
+  running. It keeps `%APPDATA%\companion-hub` (the `.env` with the Hub's identity, `state\`,
+  app data, backups, media, settings), the tunnel token beside it, the desktop app's own
+  `computer.ci.app.hub` folders, and every Docker volume: `ci_hub_pgdata`,
+  `hub_tailscale_state`, and each app's named and anonymous volumes. A reinstall comes back
+  paired, with its apps and their data. The apps' containers are gone, so the apps show as
+  stopped until you start them, unless the reinstall is a newer version: the Hub restarts
+  running apps when it boots on a new version. Anonymous volumes can't be attached to the new
+  containers, so they stay behind unused.
+- Ticked: all of that goes too.
+
+A silent (`/S`) or passive (`/P`) uninstall skips the confirm page, so it keeps the data; that
+covers Chocolatey and WinGet. The `.msi` has no such box and runs the script without
+`-DeleteAppData`, so it keeps the data as well. To delete it afterwards, run
+`uninstall-cleanup.ps1 -DeleteAppData` from this repository; the installed copy goes with the
+program.
+
+**On Linux the uninstall is a full purge, not a `remove`.** Cleanup deletes Hub-related state
+in user config/cache/data directories **and the Hub Docker data volumes** (`ci_hub_pgdata`,
+`ci_hub_app_data`, `hub_tailscale_state`), that is the database and all app data. This is
 intentional ([#566](https://github.com/companionintelligence/CI-Hub/issues/566)); there is
 no `remove`-vs-`purge` distinction and no confirmation prompt. Users must back up before
 uninstalling.
 
-On Windows, `uninstall-cleanup.ps1` also removes every network and volume labelled with the
-Hub's compose project (`ci-hub_edge` and `ci-hub_internal` included), and every app network
-once the `ci-hub` container that joins them is gone. It removes containers with
-`docker rm -f -v` and then any anonymous volume they mounted that is still there: when Compose
-recreates a container it mounts the old anonymous volume by name, and `rm -v` keeps those. It
-takes the `Companion Hub\bin` folder off the user PATH, and deletes the
-`CompanionHub-WSL-Docker.vbs` logon script that keeps the Docker Engine's WSL2 distro
-running. Run it with `-DryRun` to list what it would remove without removing anything.
+On Windows, `uninstall-cleanup.ps1` also removes every network labelled with the Hub's compose
+project (`ci-hub_edge` and `ci-hub_internal` included), and every app network once the `ci-hub`
+container that joins them is gone. With `-DeleteAppData` it removes every volume labelled with
+the Hub's compose project too, removes containers with `docker rm -f -v`, and then removes any
+anonymous volume they mounted that is still there: when Compose recreates a container it mounts
+the old anonymous volume by name, and `rm -v` keeps those. Run it with `-DryRun` to list what
+it would remove without removing anything.
 It must work under Windows PowerShell 5.1, which the installers use: keep double quotes out
 of any `--format` template it passes to docker, because 5.1 drops them, and name a label
 with a Go raw string in backticks instead.
 
-**The Cloudflare tunnel token is removed too.** The desktop keeps it in a folder named
+**The Cloudflare tunnel token is removed too** (on Windows only with `-DeleteAppData`). The desktop keeps it in a folder named
 `tunnel` *beside* its data folder (`~/.local/share/tunnel`, `%APPDATA%\tunnel`,
 `~/Library/Application Support/tunnel`; compose mounts `${ROOT_FOLDER_HOST}/../tunnel`), so
 deleting the named Hub folders alone left it behind and a reinstall reconnected the old
@@ -190,7 +212,8 @@ the app to the Trash run no cleanup at all.
 Each app Hub installs runs as its own Compose project (`<app>_<store>`) rather than as part
 of the Hub stack, so the uninstallers discover them via the `ci-os-hub.managed=true` label
 that Hub stamps on every managed app container (store-agnostic) and remove each app's
-containers, networks, and volumes. Without this, app containers such as
+containers, networks, and volumes (on Windows the volumes only with `-DeleteAppData`).
+Without this, app containers such as
 `ci-hermes_ci-marketplace-…` keep running after Hub is gone.
 
 **Docker images are removed too**, for both the Hub stack and every managed app. Image IDs

@@ -380,7 +380,7 @@ function makeSandbox(extraEnv: Record<string, string> = {}): Sandbox {
  */
 function harness(body: string, { importFunctions }: { importFunctions: boolean }): string {
   return [
-    'param([string]$CleanupScript, [switch]$DryRun)',
+    'param([string]$CleanupScript, [switch]$DryRun, [switch]$DeleteAppData)',
     "$ErrorActionPreference = 'Continue'",
     // pwsh 7.3+ on Windows passes arguments to a .cmd file with the old rules, even in its default mode, and to
     // docker.exe with the standard ones. The fake is a .cmd file, so ask for what the real docker gets.
@@ -430,7 +430,8 @@ const names = (items: { name: string }[]) => items.map((item) => item.name).sort
 
 const DOCKER_BLOCK = () => extractBlock(read(PS_SCRIPT), '# BEGIN docker cleanup', '# END docker cleanup');
 
-describeEachShell('uninstall-cleanup.ps1 Docker cleanup under %s', (_name, shell) => {
+// The NSIS uninstaller passes -DeleteAppData when "Delete the application data" is ticked.
+describeEachShell('uninstall-cleanup.ps1 Docker cleanup with -DeleteAppData under %s', (_name, shell) => {
   let removed: string[];
   let removedArgs: string[][];
   let left: FakeEngine;
@@ -439,13 +440,13 @@ describeEachShell('uninstall-cleanup.ps1 Docker cleanup under %s', (_name, shell
 
   beforeAll(() => {
     const sandbox = makeSandbox();
-    runPowerShell(shell, sandbox, harness(DOCKER_BLOCK(), { importFunctions: true }));
+    runPowerShell(shell, sandbox, harness(DOCKER_BLOCK(), { importFunctions: true }), ['-DeleteAppData']);
     removedArgs = dockerCalls(sandbox).filter(isRemoval);
     removed = removedArgs.map((args) => args.join(' '));
     left = engineAfter(sandbox);
 
     const drySandbox = makeSandbox();
-    const dry = runPowerShell(shell, drySandbox, harness(DOCKER_BLOCK(), { importFunctions: true }), ['-DryRun']);
+    const dry = runPowerShell(shell, drySandbox, harness(DOCKER_BLOCK(), { importFunctions: true }), ['-DryRun', '-DeleteAppData']);
     dryRunRemoved = removals(drySandbox);
     dryRunOutput = dry.stdout;
   }, 2 * PS_TIMEOUT);
@@ -520,6 +521,59 @@ describeEachShell('uninstall-cleanup.ps1 Docker cleanup under %s', (_name, shell
     expect(dryRunOutput).toContain('[cleanup][DRYRUN] Would run: docker volume rm wordpress_ci-marketplace_data-mariadb');
     expect(dryRunOutput).toContain('[cleanup][DRYRUN] Would run: docker network rm ci-hub_edge');
     expect(dryRunOutput).toContain(`[cleanup][DRYRUN] Would run: docker volume rm ${RABBITMQ_VOLUME}`);
+  });
+});
+
+// Without -DeleteAppData, as when the box is left unticked (the default, and what a silent or passive uninstall, the
+// .msi and Chocolatey get), the uninstall keeps every volume, so a reinstall finds the Hub's database and the apps'
+// data where they were.
+describeEachShell('uninstall-cleanup.ps1 Docker cleanup that keeps the data under %s', (_name, shell) => {
+  let removed: string[];
+  let left: FakeEngine;
+  let dryRunOutput: string;
+
+  beforeAll(() => {
+    const sandbox = makeSandbox();
+    runPowerShell(shell, sandbox, harness(DOCKER_BLOCK(), { importFunctions: true }));
+    removed = removals(sandbox);
+    left = engineAfter(sandbox);
+
+    const drySandbox = makeSandbox();
+    dryRunOutput = runPowerShell(shell, drySandbox, harness(DOCKER_BLOCK(), { importFunctions: true }), ['-DryRun']).stdout;
+  }, 2 * PS_TIMEOUT);
+
+  it("removes the Hub's and the apps' containers, without their anonymous volumes", () => {
+    for (const container of ['a99000000001', 'a99000000002', 'ci-hub', 'ci-hub-db', 'ci-hub-queue', 'traefik', 'cloudflared']) {
+      expect(removed).toContain(`rm -f ${container}`);
+    }
+    expect(removed.filter((call) => call.startsWith('rm -f -v'))).toEqual([]);
+  });
+
+  it("removes the Hub's and the apps' networks and images", () => {
+    expect(removed).toEqual(
+      expect.arrayContaining([
+        'network rm ci-hub_edge',
+        'network rm ci-hub_internal',
+        'network rm ci-hub_network',
+        'network rm wordpress_ci-marketplace_network',
+        'image rm -f sha256:hub',
+        'image rm -f sha256:postgres',
+        'image rm -f sha256:mariadb',
+        'image rm -f sha256:wordpress',
+      ]),
+    );
+    expect(names(left.containers)).toEqual(['devdb']);
+    expect(names(left.networks)).toEqual(['bridge', 'host', 'myproject_default', 'none', INJECTED_NETWORK].sort());
+  });
+
+  it("keeps every volume: the Hub's database and VPN state, the apps' data and the anonymous ones", () => {
+    expect(removed.filter((call) => call.startsWith('volume rm'))).toEqual([]);
+    expect(names(left.volumes)).toEqual(names(FIXTURE.volumes));
+  });
+
+  it('with -DryRun lists the containers and no volume', () => {
+    expect(dryRunOutput).toContain('[cleanup][DRYRUN] Would run: docker rm -f a99000000002');
+    expect(dryRunOutput).not.toContain('docker volume rm');
   });
 });
 
@@ -640,6 +694,71 @@ describeEachShell('uninstall-cleanup.ps1 -DryRun on files under %s', (_name, she
   );
 });
 
+describeEachShell('uninstall-cleanup.ps1 user files under %s', (_name, shell) => {
+  // One user's AppData in a sandbox: the Hub's data folder and tunnel token, the desktop app's own folders, the CLI
+  // folder the app puts on the PATH, the WSL engine's logon script, and a folder of another program.
+  function userFilesLeft(args: string[]): Record<string, boolean> {
+    const sandbox = makeSandbox();
+    const roaming = path.join(sandbox.root, 'Roaming');
+    const local = path.join(sandbox.root, 'Local');
+    const startup = path.join(roaming, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
+    const files: Record<string, string> = {
+      hubEnv: path.join(roaming, 'companion-hub', '.env'),
+      hubSettings: path.join(roaming, 'companion-hub', 'state', 'settings.json'),
+      desktopSettings: path.join(roaming, 'computer.ci.app.hub', 'settings.json'),
+      webview: path.join(local, 'computer.ci.app.hub', 'EBWebView', 'Local State'),
+      tunnelToken: path.join(roaming, 'tunnel', 'token'),
+      cli: path.join(local, 'Companion Hub', 'bin', 'cihub.exe'),
+      logonScript: path.join(startup, 'CompanionHub-WSL-Docker.vbs'),
+      otherProgram: path.join(roaming, 'other-program', 'settings.json'),
+    };
+    for (const file of Object.values(files)) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, 'x');
+    }
+    fs.writeFileSync(
+      path.join(roaming, 'tunnel', 'token'),
+      Buffer.from(JSON.stringify({ a: 'account', t: 'tunnel', s: 'secret' })).toString('base64'),
+    );
+    runPowerShell(shell, sandbox, harness(`Remove-HubUserFiles '${roaming}' '${local}' '${startup}'`, { importFunctions: true }), args);
+    return Object.fromEntries(Object.entries(files).map(([key, file]) => [key, fs.existsSync(file)]));
+  }
+
+  it(
+    'keeps the data folders and the tunnel token, and removes the CLI folder and the logon script, without -DeleteAppData',
+    () => {
+      expect(userFilesLeft([])).toEqual({
+        hubEnv: true,
+        hubSettings: true,
+        desktopSettings: true,
+        webview: true,
+        tunnelToken: true,
+        cli: false,
+        logonScript: false,
+        otherProgram: true,
+      });
+    },
+    PS_TIMEOUT,
+  );
+
+  it(
+    'removes the data folders and the tunnel token too with -DeleteAppData',
+    () => {
+      expect(userFilesLeft(['-DeleteAppData'])).toEqual({
+        hubEnv: false,
+        hubSettings: false,
+        desktopSettings: false,
+        webview: false,
+        tunnelToken: false,
+        cli: false,
+        logonScript: false,
+        otherProgram: true,
+      });
+    },
+    PS_TIMEOUT,
+  );
+});
+
 describeEachShell('Scoop uninstaller under %s', (_name, shell) => {
   // The publish copy carries the same script; the generator test below checks that.
   it(
@@ -697,8 +816,11 @@ describe('Windows uninstall scripts', () => {
     const engine = read('packages/desktop/src-tauri/src/hub_manager/installers/engine_alt.rs');
     const vbs = /Join-Path \$startup '([^']+\.vbs)'/.exec(engine)?.[1];
     expect(vbs).toBe('CompanionHub-WSL-Docker.vbs');
-    expect(ps).toContain(`Remove-IfExists (Join-Path ([Environment]::GetFolderPath('Startup')) '${vbs}')`);
-    expect(ps).toContain(`Remove-IfExists (Join-Path $profilePath 'AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\${vbs}')`);
+    expect(ps).toContain(`Remove-IfExists (Join-Path $Startup '${vbs}')`);
+    expect(ps).toContain("Remove-HubUserFiles $appData $localAppData ([Environment]::GetFolderPath('Startup'))");
+    expect(ps).toContain(
+      "Remove-HubUserFiles (Join-Path $profilePath 'AppData\\Roaming') (Join-Path $profilePath 'AppData\\Local') (Join-Path $profilePath 'AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup')",
+    );
   });
 
   it('removes the folder the desktop app adds to the user PATH', () => {
@@ -716,5 +838,14 @@ describe('Windows uninstall scripts', () => {
     expect(updateGuard, 'update-mode guard missing').toBeGreaterThanOrEqual(0);
     expect(closeApp, 'running-app check missing or before the update-mode guard').toBeGreaterThan(updateGuard);
     expect(cleanup, 'cleanup runs before the running-app check').toBeGreaterThan(closeApp);
+  });
+
+  it('NSIS hook passes -DeleteAppData only when "Delete the application data" is ticked', () => {
+    const hooks = read('packages/desktop/src-tauri/windows/installer-hooks.nsh');
+    const macro = extractBlock(hooks, '!macro NSIS_HOOK_PREUNINSTALL', '!macroend');
+    // The template sets the box's state on its confirm page. Silent and passive uninstalls skip that page, so the
+    // state stays empty there, which counts as unticked.
+    expect(macro).toMatch(/StrCpy \$1 ""\s+StrCmp \$DeleteAppDataCheckboxState "1" 0 \+2\s+StrCpy \$1 " -DeleteAppData"/);
+    expect(macro).toMatch(/nsExec::ExecToLog '"\$SYSDIR\\WindowsPowerShell\\v1\.0\\powershell\.exe" [^']*-File "\$0"\$1'/);
   });
 });
