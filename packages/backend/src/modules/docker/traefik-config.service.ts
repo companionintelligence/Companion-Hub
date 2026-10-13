@@ -21,6 +21,7 @@ interface TraefikRouter {
   entryPoints: string[];
   middlewares?: string[];
   tls?: boolean;
+  priority?: number;
 }
 
 interface TraefikService {
@@ -58,6 +59,46 @@ function setNestedValue(obj: Record<string, unknown>, path: string[], value: str
   if (lastKey) {
     current[lastKey] = value;
   }
+}
+
+/** Suffix of the router {@link appDownRouter} adds next to each app router in apps.yml. */
+export const APP_DOWN_ROUTER_SUFFIX = '-down';
+
+/**
+ * The service those routers send to: Traefik's own loopback, where nothing listens. Every request
+ * fails at once with a 502, which `ci-hub-app-starting` turns into the Hub's page. Never the app's
+ * old address: Docker gives a freed address to the next container that joins the network.
+ */
+export const APP_DOWN_SERVICE = 'ci-hub-app-down';
+const APP_DOWN_SERVICE_URL = 'http://127.0.0.1:9';
+
+/**
+ * A copy of an app router that still answers while the app's containers are gone (CI-Hub#1944).
+ *
+ * A restart runs `compose down` before `compose up`. Traefik drops the app's Docker routers with
+ * the containers, and drops their copies in apps.yml too, because a copy names the app's
+ * public-host middleware the way its labels do (`<app>-public-host@docker`). With no router left,
+ * visitors got Traefik's `404 page not found` instead of "<app> is starting…". The same happens while
+ * a container with a health check starts: Traefik's Docker provider skips it until it is healthy.
+ *
+ * Same rule, entry points and middleware chain as the app's router, so forward auth still answers
+ * first and a visitor who is not signed in gets the login. The container's own middlewares are named
+ * by their copies in this file instead of `@docker`. Priority 1, below the default (the rule's
+ * length), so it only answers once the app's own routers are gone. A stopped or removed app loses it
+ * with the rest of its routes when the Hub regenerates this file.
+ */
+function appDownRouter(router: TraefikRouter, ownMiddlewares: ReadonlySet<string>): TraefikRouter {
+  const chain = (router.middlewares ?? []).map((name) => {
+    const trimmed = name.trim();
+    const base = trimmed.endsWith('@docker') ? trimmed.slice(0, -'@docker'.length) : null;
+    return base !== null && ownMiddlewares.has(base) ? base : trimmed;
+  });
+  const middlewares = [...new Set(chain)];
+  if (!middlewares.includes(APP_STARTING_MIDDLEWARE)) {
+    middlewares.push(APP_STARTING_MIDDLEWARE);
+  }
+  // A copy of the entry points, or the YAML writer prints an alias to the app router's list.
+  return { rule: router.rule, service: APP_DOWN_SERVICE, entryPoints: [...router.entryPoints], middlewares, priority: 1 };
 }
 
 @Injectable()
@@ -304,6 +345,8 @@ export class TraefikConfigService {
             // Note: Traefik's file provider automatically adds @file suffix, so we don't add it here
             if (router.entryPoints.includes('web')) {
               config.http.routers[routerName] = router;
+              config.http.routers[`${routerName}${APP_DOWN_ROUTER_SUFFIX}`] = appDownRouter(router, new Set(middlewareNames));
+              config.http.services[APP_DOWN_SERVICE] = { loadBalancer: { servers: [{ url: APP_DOWN_SERVICE_URL }] } };
             }
           }
         }

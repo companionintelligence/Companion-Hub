@@ -265,6 +265,15 @@ Public Web visitor see the page. It runs after forward auth, so a visitor who is
 still gets the login page, and it is on no route of the Hub's own. Apps opened on their own port
 or over the Private VPN do not pass through Traefik and do not get the page.
 
+The page also covers the seconds of a restart or an update when an app has no containers at all.
+Traefik drops an app's Docker routers with its containers, so the `apps.yml` the Hub writes for the
+file provider keeps a second copy of each app router: the same rule and middleware chain, forward
+auth included, at priority 1 and pointed at Traefik's own loopback, where every request fails with
+a 502 that the middleware turns into the page. It answers only while the app's own routers are
+gone, which also covers a container whose Docker health check has not passed yet. Stop and
+Uninstall rewrite `apps.yml` once the containers are down, so a stopped or removed app's address
+answers Traefik's `404 page not found`.
+
 The Hub's own rule is the exception: Portal always rebuilds it as
 `host.docker.internal:{hubListenPort}`, whatever the Hub's entry says. `cloudflared` reaches that
 through the host's published port (its `extra_hosts` entry is load-bearing), so the Hub sees those

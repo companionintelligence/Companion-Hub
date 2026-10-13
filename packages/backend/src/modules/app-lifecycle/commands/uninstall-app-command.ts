@@ -2,6 +2,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
 import { DockerService } from '@/modules/docker/docker.service';
+import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
@@ -60,6 +61,11 @@ export class UninstallAppCommand extends AppLifecycleCommand {
         // Explicit post-down cleanup is a safety net for partial teardown states.
         await dockerService.removeAppImages(appUrn, snapshotImageIds);
         await dockerService.removeAppNetworks(appUrn);
+
+        // apps.yml keeps a route to the starting page for each app router while its containers are
+        // gone (CI-Hub#1944), so rebuild it now, as Stop does; until then the removed app's address
+        // would still answer with that page instead of a 404. Never throws.
+        await this.moduleRef.get(TraefikConfigService, { strict: false })?.regenerateTraefikConfig(1000);
       }
 
       // Sync Cloudflare state (app removal will be reflected)
