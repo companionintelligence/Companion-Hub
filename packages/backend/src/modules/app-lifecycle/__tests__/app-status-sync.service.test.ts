@@ -222,7 +222,7 @@ describe('AppStatusSyncService', () => {
         appName: 'demo',
         appStoreSlug: 'ci-marketplace',
         status: 'restarting',
-        updatedAt: new Date(Date.now() - 50 * 60 * 1000).toISOString(),
+        updatedAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
       },
     ] as never);
 
@@ -289,16 +289,35 @@ describe('AppStatusSyncService', () => {
   });
 
   /*
-   * The registry lives in memory, so a backend restart empties it while RabbitMQ hands the unfinished
-   * command to the new process. The sync waits as long as the queue would for that command to finish.
+   * A backend restart empties the registry. A command RabbitMQ hands to the new process writes no
+   * status when it ends, so this sync is what settles the row. With the queue's 45 minutes as the
+   * window, an in-app update that restarted the backend during a restart left the app on Restarting
+   * that long. A row the registry does not list keeps the window it always had.
    */
-  it('gives a restarting app the registry no longer lists the queue timeout before reading Docker', async () => {
+  it('settles a restarting app the registry does not list from Docker once eventsTimeout has passed', async () => {
     appRepository.getApps.mockResolvedValue([
       {
         id: 15,
         appName: 'wordpress',
         appStoreSlug: 'ci-marketplace',
         status: 'restarting',
+        updatedAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+      },
+    ] as never);
+
+    await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(15, 'restarting', { status: 'stopped' });
+    expect(errorReportingService.reportAppFailure).not.toHaveBeenCalled();
+  });
+
+  it('leaves an updating app the registry does not list alone while its image pull may still run', async () => {
+    appRepository.getApps.mockResolvedValue([
+      {
+        id: 15,
+        appName: 'wordpress',
+        appStoreSlug: 'ci-marketplace',
+        status: 'updating',
         updatedAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
       },
     ] as never);
@@ -307,23 +326,6 @@ describe('AppStatusSyncService', () => {
 
     expect(appRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
     expect(result.skippedCount).toBe(1);
-  });
-
-  it('settles a restarting app the registry no longer lists from Docker once the queue timeout has passed', async () => {
-    appRepository.getApps.mockResolvedValue([
-      {
-        id: 15,
-        appName: 'wordpress',
-        appStoreSlug: 'ci-marketplace',
-        status: 'restarting',
-        updatedAt: new Date(Date.now() - 50 * 60 * 1000).toISOString(),
-      },
-    ] as never);
-
-    await service.syncAllAppStatuses();
-
-    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(15, 'restarting', { status: 'stopped' });
-    expect(errorReportingService.reportAppFailure).not.toHaveBeenCalled();
   });
 
   /*

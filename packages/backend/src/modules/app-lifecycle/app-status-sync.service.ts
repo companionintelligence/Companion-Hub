@@ -20,6 +20,8 @@ import { isPortExposeApp } from '@ci-hub/common/schemas';
 import { AppOperationRegistry } from './app-operation-registry';
 import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 
+const LONG_RUNNING_TRANSITIONAL_STATES: AppStatus[] = ['installing', 'updating'];
+
 const TRANSITIONAL_STATES: AppStatus[] = [
   'installing',
   'uninstalling',
@@ -125,19 +127,20 @@ export class AppStatusSyncService {
 
       let syncedCount = 0;
       let skippedCount = 0;
-      const transitionalGraceMs = this.getTransitionalGraceMs();
+      const { eventsTimeoutMs, queueTimeoutMs } = this.getGraceWindowsMs();
 
       for (const app of apps) {
         const appUrn: AppUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
 
         const isTransitional = TRANSITIONAL_STATES.includes(app.status);
+        const transitionalGraceMs = LONG_RUNNING_TRANSITIONAL_STATES.includes(app.status) ? queueTimeoutMs : eventsTimeoutMs;
         if (isTransitional) {
           // A restart, backup, or restore takes the containers down before it brings them back, so
           // Docker cannot say whether one is still running. The registry can, for as long as the queue
           // waits for the command. Past that the caller has given up on it, and an entry that never
           // clears, such as a force stop hung on Docker, must not hold the app forever.
           const operation = this.operationRegistry.get(appUrn);
-          if (operation && Date.now() - operation.createdAt < transitionalGraceMs) {
+          if (operation && Date.now() - operation.createdAt < queueTimeoutMs) {
             this.logger.debug(`Skipping ${appUrn} - '${app.status}' operation still in progress`);
             skippedCount++;
             continue;
@@ -357,14 +360,18 @@ export class AppStatusSyncService {
   }
 
   /**
-   * How long an app in a transitional state is left alone: the app-events queue's own timeout for
-   * a command to finish (see QueueModule), for every state. It counts from the registry entry's
-   * creation while the registry lists the operation, and from the row's last update when it does
-   * not. The registry lives in memory, so a backend restart empties it while RabbitMQ hands the
-   * unfinished command to the new process.
+   * How long an app in a transitional state is left alone. While the registry lists its operation,
+   * the app-events queue's own timeout for a command (see QueueModule), counted from the entry's
+   * creation. A row the registry does not list, as after a backend restart, gets `eventsTimeout`
+   * from its last update, or the queue timeout for `installing` and `updating`, whose image pulls
+   * take longer. Apart from an install, a command RabbitMQ hands to the new process writes no status
+   * when it ends, so this sync is what settles that row, and a longer window only keeps it spinning.
    */
-  private getTransitionalGraceMs(): number {
+  private getGraceWindowsMs(): { eventsTimeoutMs: number; queueTimeoutMs: number } {
     const eventsTimeoutMinutes = this.configuration.get('userSettings').eventsTimeout;
-    return Math.max(eventsTimeoutMinutes, Number(DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES)) * 60 * 1000;
+    return {
+      eventsTimeoutMs: eventsTimeoutMinutes * 60 * 1000,
+      queueTimeoutMs: Math.max(eventsTimeoutMinutes, Number(DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES)) * 60 * 1000,
+    };
   }
 }

@@ -208,10 +208,15 @@ Guards prevent false alarms:
   long as the app-events queue waits for a command, `max(eventsTimeout, image-pull-timeout)`
   (45 minutes by default), counted from when the operation was registered. By
   then the caller has given up on the command, and an entry that never clears,
-  such as a force stop hung on Docker, can't hold the app forever. The registry
-  lives in memory and a backend restart empties it, so a row it doesn't list
-  gets the same window, counted from the row's last update, for every state.
-  Apps stuck past that window are logged as stuck.
+  such as a force stop hung on Docker, can't hold the app forever. A row the
+  registry doesn't list is skipped for `eventsTimeout` after its last update, or
+  for that same queue timeout in the long-running `installing` / `updating` states
+  so big image pulls aren't mistaken for failures. The registry lives in memory,
+  so after a backend restart every row is in this case. Apart from an install, a
+  command RabbitMQ hands to the new process writes no status when it finishes,
+  so the sync is what settles the row, and a longer window would only keep it
+  spinning. Apps stuck
+  past their window are logged as stuck.
 - **Mid-install protection.** An `installing` / `install_failed` app with no
   containers is **not** marked `missing` (the pull may simply be slow).
 
