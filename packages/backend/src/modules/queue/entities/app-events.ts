@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { optionalCpuLimitSchema } from '@/common/validation/cpu-limit';
 import { optionalMemoryLimitSchema } from '@/common/validation/memory-limit';
+import { STORED_FORM_OPEN_PORT_DEFAULT } from '@ci-hub/common/schemas';
 import { zodAppUrn } from '@ci-hub/common/types';
 import { z } from 'zod';
 import isFQDN from 'validator/lib/isFQDN';
@@ -11,7 +12,9 @@ const queueAppFormSchema = z
     port: z.number().min(1024).max(65535).optional(),
     exposed: z.boolean().optional(),
     exposedLocal: z.boolean().optional(),
-    openPort: z.boolean().default(true),
+    // The default is shared with the settings dialog (`servedOpenPort`), which shows a stored form
+    // with no `openPort` key as this.
+    openPort: z.boolean().default(STORED_FORM_OPEN_PORT_DEFAULT),
     domain: z.string().optional(),
     isVisibleOnGuestDashboard: z.boolean().optional(),
     enableAuth: z.boolean().optional(),

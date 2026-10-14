@@ -33,7 +33,7 @@ import type { AvailableDomain } from '@ci-hub/common/types';
 import { buildPublicWebIdentity, sanitizeAppSubdomain, selectOfferedDomains } from '@ci-hub/common/types';
 import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
 import { saveBlobAsFile, splitSavedPath } from '@/lib/save-file';
-import { manifestDefaultsEdgeAuthOn } from '@ci-hub/common/schemas';
+import { requiresHubLoginOnPublicRoute, servedOpenPort } from '@ci-hub/common/schemas';
 import { isMcpOptionalOnlyInstall } from '@ci-hub/common/validation';
 import {
   type LastUsedInstallConfig,
@@ -333,10 +333,23 @@ export const InstallForm: React.FC<IProps> = ({
   const mcpOptionalOnly = useMemo(() => isMcpOptionalOnlyInstall(info), [info]);
   // What the enable-auth switch shows, and submits, when the form holds no value. A fresh install
   // starts protected. An EDIT shows what the Hub actually serves for a stored form that never
-  // decided: the manifest's `hub_integration.edge_auth.default`, else off. The switch used to show
-  // `?? true` on an edit while the backend persisted `?? false` and built the route without the
-  // login, so an install that never decided looked protected and was not (OpenClaw, 2026-09-28).
-  const enableAuthFallback = useMemo(() => (isEdit ? manifestDefaultsEdgeAuthOn(info) : true), [isEdit, info]);
+  // decided, by the rule the route builder uses (`requiresHubLoginOnPublicRoute`): the manifest's
+  // `hub_integration.edge_auth.default`, else the login while the host port is open, else off. The
+  // switch used to show `?? true` on an edit while the backend persisted `?? false` and built the
+  // route without the login, so an install that never decided looked protected and was not
+  // (OpenClaw, 2026-09-28). Then it showed the manifest default alone, which is OFF for a stored
+  // form on an open host port that the Hub serves WITH the login, and a save wrote that OFF over it.
+  //
+  // "Open host port" is `servedOpenPort`, not `Boolean(openPort)`: a stored form with NO `openPort`
+  // key (an API, MCP or onboarding install) is replayed through the queue schema, which defaults it
+  // to open, so the Hub serves it with the login. Reading the missing key as closed showed OFF for
+  // exactly the installs that never decided. An app with no public route (not exposable) has no
+  // login to show.
+  const storedOpenPort = servedOpenPort(initialValues);
+  const enableAuthFallback = useMemo(
+    () => (isEdit ? Boolean(info.exposable) && requiresHubLoginOnPublicRoute({ openPort: storedOpenPort }, info) : true),
+    [isEdit, info, storedOpenPort],
+  );
   const hasAuthSwitch = Boolean(info.exposable && info.dynamic_config);
   // The app goes on Public Web with the Hub login off. Simple mode shows the "Enable authentication"
   // switch for this too, however the form got here (an import, a recently used config, the exposure
@@ -668,8 +681,11 @@ export const InstallForm: React.FC<IProps> = ({
       // which is what `initialValues?.X === undefined` still guards. `shouldSeed` covers the other
       // half: without it this effect re-asserted the default the moment the form went dirty, so a
       // first attempt to turn auth off, or to set a custom port, appeared to bounce back.
+      // On an EDIT the form the Hub is serving has no `openPort` key, so it is served open (see
+      // `servedOpenPort`); writing the install default (closed unless local) would close the port
+      // on the first save that touched anything else.
       if (shouldSeed && initialValues?.openPort === undefined) {
-        setValue('openPort', defaultMode === 'local');
+        setValue('openPort', isEdit ? storedOpenPort : defaultMode === 'local');
       }
       if (shouldSeed && initialValues?.enableAuth === undefined) {
         setValue('enableAuth', enableAuthFallback);
@@ -710,6 +726,8 @@ export const InstallForm: React.FC<IProps> = ({
     domain,
     tailscaleAvailable,
     enableAuthFallback,
+    isEdit,
+    storedOpenPort,
   ]);
 
   // Separate effect: only responsible for setting the default localSubdomain.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hostPortStaysOnLoopback, manifestDefaultsEdgeAuthOn, hubIntegrationSchema } from '../app-info';
+import { hostPortStaysOnLoopback, manifestDefaultsEdgeAuthOn, hubIntegrationSchema, requiresHubLoginOnPublicRoute } from '../app-info';
 import { appInfoSchema } from '../app-info';
 
 describe('hubIntegrationSchema', () => {
@@ -425,6 +425,26 @@ describe('hubIntegrationSchema', () => {
         expect(manifestDefaultsEdgeAuthOn({ exposable: true, hub_integration: {} })).toBe(false);
         expect(manifestDefaultsEdgeAuthOn({ exposable: true, hub_integration: { edge_auth: {} } })).toBe(false);
         expect(manifestDefaultsEdgeAuthOn({ exposable: true, hub_integration: { edge_auth: { default: false } } })).toBe(false);
+      });
+    });
+
+    // One rule for the backend's route builder and the install form's edit dialog. The dialog once
+    // fell back to the manifest default alone, so a stored form on an open host port showed OFF while
+    // the Hub served it WITH the login, and a save wrote `enableAuth: false` over it.
+    describe('requiresHubLoginOnPublicRoute', () => {
+      const edgeAuthOn = { exposable: true, hub_integration: { edge_auth: { default: true } } };
+
+      it('takes an explicit enableAuth over everything else, in both directions', () => {
+        expect(requiresHubLoginOnPublicRoute({ enableAuth: false, openPort: true }, edgeAuthOn)).toBe(false);
+        expect(requiresHubLoginOnPublicRoute({ enableAuth: true, openPort: false }, { exposable: true })).toBe(true);
+      });
+
+      it('falls back to the manifest default, then to an open host port, and otherwise stays off', () => {
+        expect(requiresHubLoginOnPublicRoute({ openPort: false }, edgeAuthOn)).toBe(true);
+        expect(requiresHubLoginOnPublicRoute({ openPort: true }, { exposable: true })).toBe(true);
+        expect(requiresHubLoginOnPublicRoute({ openPort: true })).toBe(true);
+        expect(requiresHubLoginOnPublicRoute({ openPort: false }, { exposable: true })).toBe(false);
+        expect(requiresHubLoginOnPublicRoute({})).toBe(false);
       });
     });
   });
