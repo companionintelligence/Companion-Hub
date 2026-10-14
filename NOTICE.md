@@ -9,12 +9,13 @@ for acknowledgements.
 
 ## Upstream derivation
 
-> **⚠️ UNRESOLVED LICENCE QUESTION — do not publish this repository until settled.**
->
-> CI-Hub was licensed GPL-3.0 from 2022-04-22 until 2026-09-03, when commit 3dfd6e469 replaced it with PolyForm Noncommercial. 481 files added before 2026 remain live at HEAD, and 71 distinct authors contributed across 6,109 commits during the GPL-3.0 window. GPL-3.0 s10 forbids imposing further restrictions, so this relicense is not effective without permission from those copyright holders. Pending legal review — do not publish CI-Hub until resolved.
+The derivation recorded here was reviewed and cleared before this repository was
+made public (October 2026). This section is the provenance record; it is not a
+statement of the licence terms, which are in [LICENSE.md](LICENSE.md).
 
-**CI-Hub** is derived from **[Runtipi](https://github.com/runtipi/runtipi)**, used under the
-GPL-3.0 licence.
+**Companion Hub** (formerly CI-Hub) is derived from
+**[Runtipi](https://github.com/runtipi/runtipi)**, which was licensed GPL-3.0 at the
+time the code was taken.
 
     Copyright (c) 2022 Nicolas Meienberger and the Runtipi contributors
 
