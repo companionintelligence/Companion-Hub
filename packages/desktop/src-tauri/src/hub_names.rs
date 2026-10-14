@@ -10,6 +10,8 @@ pub const HUB_QUEUE: &str = "ci-hub-queue";
 pub const LEGACY_HUB_QUEUE: &str = "ci-os-hub-queue";
 pub const HUB_NETWORK: &str = "ci-hub_network";
 pub const LEGACY_HUB_NETWORK: &str = "ci-os-hub_network";
+/// Postgres and RabbitMQ sit on this network only, with the Hub.
+pub const HUB_INTERNAL_NETWORK: &str = "ci-hub_internal";
 
 pub const HUB_CONTAINER_NAMES: &[&str] = &[HUB_CONTAINER, LEGACY_HUB_CONTAINER];
 pub const HUB_QUEUE_NAMES: &[&str] = &[HUB_QUEUE, LEGACY_HUB_QUEUE];

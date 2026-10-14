@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::hub_manager::{
-    ensure_postgres_password_matches, rabbitmq_auth_works, sync_rabbitmq_password,
+    ensure_postgres_password_matches, rabbitmq_auth_works, rabbitmq_reader, sync_rabbitmq_password,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -45,6 +45,10 @@ struct FakeEngine {
     password_changes_fail: bool,
     /// psql inside `ci-hub-db` can't resolve the container's own name.
     name_lookup_fails_inside: bool,
+    /// `docker inspect ci-hub-db` fails, so nothing says which networks the database is on.
+    inspect_fails: bool,
+    /// psql in a `docker run` client can't resolve `ci-hub-db` on any network.
+    name_lookup_fails_outside: bool,
     db_password: RefCell<String>,
     queue_password: RefCell<String>,
     /// Folders the detached route left in a container, with what the command did.
@@ -58,6 +62,8 @@ impl FakeEngine {
             streams_output,
             password_changes_fail: false,
             name_lookup_fails_inside: false,
+            inspect_fails: false,
+            name_lookup_fails_outside: false,
             db_password: RefCell::new(password.to_string()),
             queue_password: RefCell::new(password.to_string()),
             container_dirs: RefCell::new(HashMap::new()),
@@ -119,13 +125,16 @@ impl FakeEngine {
                 std::fs::write(target.join("status"), format!("{code}\n"))?;
                 Ok(output(0, "", ""))
             }
-            ["inspect", "-f", _, "ci-hub-db"] => Ok(output(0, "ci-hub_internal\n", "")),
+            ["inspect", "-f", _, "ci-hub-db"] if !self.inspect_fails => {
+                Ok(output(0, "ci-hub_internal\n", ""))
+            }
             ["run", "--rm", "--network", network, "postgres:14", "bash", "-lc", script] => {
-                let (code, stdout, stderr) = if *network == "ci-hub_internal" {
-                    self.psql_select_one(script)
-                } else {
-                    (2, String::new(), NAME_LOOKUP_FAILED.to_string())
-                };
+                let (code, stdout, stderr) =
+                    if *network == "ci-hub_internal" && !self.name_lookup_fails_outside {
+                        self.psql_select_one(script)
+                    } else {
+                        (2, String::new(), NAME_LOOKUP_FAILED.to_string())
+                    };
                 if self.streams_output {
                     Ok(output(code, &stdout, &stderr))
                 } else {
@@ -305,9 +314,17 @@ fn postgres_check_leaves_a_matching_password_alone() {
 fn rabbitmq_check_rejects_a_wrong_password_on_an_engine_that_drops_exec_output() {
     let engine = FakeEngine::wsl_engine("old-secret");
     let docker = |args: &[&str]| engine.docker(args);
+    let queue = rabbitmq_reader(&docker, "ci-hub-queue");
 
-    assert!(!rabbitmq_auth_works(&docker, "ci-hub-queue", "new-secret"));
-    assert!(rabbitmq_auth_works(&docker, "ci-hub-queue", "old-secret"));
+    assert!(!rabbitmq_auth_works(&queue, "new-secret"));
+    assert!(rabbitmq_auth_works(&queue, "old-secret"));
+    let direct_execs = engine
+        .calls
+        .borrow()
+        .iter()
+        .filter(|call| call.starts_with("exec ci-hub-queue "))
+        .count();
+    assert_eq!(direct_execs, 1, "calls: {:?}", engine.calls.borrow());
 }
 
 #[test]
@@ -316,9 +333,9 @@ fn rabbitmq_sync_reports_a_failed_change_password_on_an_engine_that_drops_exec_o
     engine.password_changes_fail = true;
     let data_dir = tempfile::tempdir().expect("tempdir");
 
+    let docker = |args: &[&str]| engine.docker(args);
     let result = sync_rabbitmq_password(
-        &|args: &[&str]| engine.docker(args),
-        "ci-hub-queue",
+        &rabbitmq_reader(&docker, "ci-hub-queue"),
         "new-secret",
         data_dir.path(),
     );
@@ -353,6 +370,47 @@ fn postgres_check_probes_from_the_network_the_database_is_on() {
         .borrow()
         .iter()
         .any(|call| call.starts_with("run --rm --network ci-hub_internal ")));
+}
+
+#[test]
+fn postgres_check_probes_from_the_internal_network_when_docker_inspect_fails() {
+    let mut engine = FakeEngine::wsl_engine("same-secret");
+    engine.name_lookup_fails_inside = true;
+    engine.inspect_fails = true;
+    let data_dir = tempfile::tempdir().expect("tempdir");
+
+    let result = ensure_postgres_password_matches(
+        &|args: &[&str]| engine.docker(args),
+        "same-secret",
+        data_dir.path(),
+    );
+
+    assert_eq!(result, Ok(()));
+    assert!(
+        !engine.ran_alter_user(),
+        "calls: {:?}",
+        engine.calls.borrow()
+    );
+}
+
+#[test]
+fn postgres_check_keeps_the_exec_probe_error_when_docker_run_prints_nothing() {
+    let mut engine = FakeEngine::wsl_engine("same-secret");
+    engine.name_lookup_fails_inside = true;
+    engine.name_lookup_fails_outside = true;
+    let data_dir = tempfile::tempdir().expect("tempdir");
+
+    let result = ensure_postgres_password_matches(
+        &|args: &[&str]| engine.docker(args),
+        "same-secret",
+        data_dir.path(),
+    );
+
+    let error = result.expect_err("no probe could connect");
+    assert!(
+        error.contains("could not translate host name"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]

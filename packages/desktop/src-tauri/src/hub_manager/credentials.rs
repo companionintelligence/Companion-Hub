@@ -25,16 +25,22 @@ struct PostgresTcpProbeResult {
     stderr: String,
 }
 
-/// Probe Postgres TCP auth from inside the DB container (same engine, no second image).
+/// Signs in to `ci-hub-db` by name with `password` and prints `1`, for `bash -lc`.
 ///
-/// It connects to the container's own name, not to 127.0.0.1: the postgres image trusts loopback
+/// It connects to the container's name, not to 127.0.0.1: the postgres image trusts loopback
 /// connections (`host all all 127.0.0.1/32 trust` in pg_hba.conf), so a loopback probe signs in
-/// whatever the password. `psql -qt -c 'SELECT 1'` prints `1` once it has signed in.
-fn postgres_tcp_auth_probe(db: &ContainerReader, password: &str) -> PostgresTcpProbeResult {
+/// whatever the password.
+fn postgres_probe_script(password: &str) -> String {
     let pgpassword = escape_shell_single_quoted(password);
-    let script = format!(
+    format!(
         "PGPASSWORD='{pgpassword}' psql -h {POSTGRES_DB_CONTAINER} -p 6543 -U companion -d companiondb -qt -c 'SELECT 1'"
-    );
+    )
+}
+
+/// Probe Postgres TCP auth from inside the DB container (same engine, no second image).
+/// `psql -qt -c 'SELECT 1'` prints `1` once it has signed in.
+fn postgres_tcp_auth_probe(db: &ContainerReader, password: &str) -> PostgresTcpProbeResult {
+    let script = postgres_probe_script(password);
     let out = db.run(&["bash", "-lc", &script]);
     PostgresTcpProbeResult {
         ok: out.succeeded() && out.stdout.lines().any(|line| line.trim() == "1"),
@@ -43,8 +49,9 @@ fn postgres_tcp_auth_probe(db: &ContainerReader, password: &str) -> PostgresTcpP
     }
 }
 
-/// The networks `ci-hub-db` is attached to, or the Hub's network names when Docker can't say.
-/// The database sits on `ci-hub_internal` only, where a client on `ci-hub_network` can't resolve it.
+/// The networks `ci-hub-db` is attached to. When Docker can't say, `ci-hub_internal`, where compose
+/// puts the database, then the Hub's shared networks. A client on `ci-hub_network` alone can't
+/// resolve `ci-hub-db`.
 fn postgres_probe_networks(docker: DockerCli) -> Vec<String> {
     let attached: Vec<String> = docker(&[
         "inspect",
@@ -64,9 +71,9 @@ fn postgres_probe_networks(docker: DockerCli) -> Vec<String> {
     })
     .unwrap_or_default();
     if attached.is_empty() {
-        HUB_NETWORK_NAMES
-            .iter()
-            .map(|name| name.to_string())
+        std::iter::once(HUB_INTERNAL_NETWORK)
+            .chain(HUB_NETWORK_NAMES.iter().copied())
+            .map(str::to_string)
             .collect()
     } else {
         attached
@@ -79,10 +86,7 @@ fn postgres_tcp_auth_probe_via_network(
     docker: DockerCli,
     password: &str,
 ) -> PostgresTcpProbeResult {
-    let pgpassword = escape_shell_single_quoted(password);
-    let script = format!(
-        "PGPASSWORD='{pgpassword}' psql -h {POSTGRES_DB_CONTAINER} -p 6543 -U companion -d companiondb -qt -c 'SELECT 1'"
-    );
+    let script = postgres_probe_script(password);
     let mut first_failure: Option<PostgresTcpProbeResult> = None;
     for network in postgres_probe_networks(docker) {
         let result = match docker(&[
@@ -118,7 +122,7 @@ fn postgres_tcp_auth_probe_via_network(
     })
 }
 
-fn postgres_tcp_auth_works(db: &ContainerReader, docker: DockerCli, password: &str) -> bool {
+fn postgres_tcp_auth_works(db: &ContainerReader, password: &str) -> bool {
     let primary = postgres_tcp_auth_probe(db, password);
     if primary.ok {
         return true;
@@ -129,12 +133,11 @@ fn postgres_tcp_auth_works(db: &ContainerReader, docker: DockerCli, password: &s
     if kind == crate::docker_engine::PostgresProbeFailureKind::Auth {
         return false;
     }
-    postgres_tcp_auth_probe_via_network(docker, password).ok
+    postgres_tcp_auth_probe_via_network(db.docker(), password).ok
 }
 
 fn postgres_tcp_auth_works_with_retries(
     db: &ContainerReader,
-    docker: DockerCli,
     password: &str,
 ) -> Result<(), (crate::docker_engine::PostgresProbeFailureKind, String)> {
     let mut last = postgres_tcp_auth_probe(db, password);
@@ -158,9 +161,17 @@ fn postgres_tcp_auth_works_with_retries(
     // One network-attached attempt if exec still looks like network/unknown.
     let kind = crate::docker_engine::classify_postgres_probe_output(&last.stdout, &last.stderr);
     if kind != crate::docker_engine::PostgresProbeFailureKind::Auth {
-        let network = postgres_tcp_auth_probe_via_network(docker, password);
+        let network = postgres_tcp_auth_probe_via_network(db.docker(), password);
         if network.ok {
             return Ok(());
+        }
+        if network.stdout.trim().is_empty() && network.stderr.trim().is_empty() {
+            // The WSL engine drops what `docker run` prints, so its failure says nothing about
+            // the cause. Report the exec probe's output instead, without claiming a cause.
+            return Err((
+                crate::docker_engine::PostgresProbeFailureKind::Unknown,
+                format_command_output(&last.stdout, &last.stderr),
+            ));
         }
         last = network;
     }
@@ -225,7 +236,7 @@ pub(crate) fn ensure_postgres_password_matches(
     data_dir: &Path,
 ) -> Result<(), String> {
     let db = ContainerReader::new(docker, POSTGRES_DB_CONTAINER, POSTGRES_EXEC_TIMEOUT);
-    if postgres_tcp_auth_works(&db, docker, password) {
+    if postgres_tcp_auth_works(&db, password) {
         return Ok(());
     }
 
@@ -237,7 +248,7 @@ pub(crate) fn ensure_postgres_password_matches(
 
     sync_postgres_password(&db, password, data_dir)?;
 
-    if let Err((kind, detail)) = postgres_tcp_auth_works_with_retries(&db, docker, password) {
+    if let Err((kind, detail)) = postgres_tcp_auth_works_with_retries(&db, password) {
         let engine = crate::docker_engine::pinned_engine();
         return Err(crate::docker_engine::format_postgres_probe_failure(
             kind,
@@ -249,26 +260,26 @@ pub(crate) fn ensure_postgres_password_matches(
     Ok(())
 }
 
-/// Both rabbitmqctl commands print a banner line, and running either twice is harmless, so they go
-/// through the reader.
-pub(crate) fn rabbitmq_auth_works(docker: DockerCli, queue: &str, password: &str) -> bool {
+/// Runs rabbitmqctl in `queue`. Both rabbitmqctl commands print a banner line, and running either
+/// twice is harmless, so they go through the reader. Share one between calls: each new reader on
+/// the WSL engine spends a direct `docker exec`, and an Erlang VM start, finding out it needs the
+/// copy route.
+pub(crate) fn rabbitmq_reader<'a>(docker: DockerCli<'a>, queue: &'a str) -> ContainerReader<'a> {
     ContainerReader::new(docker, queue, RABBITMQCTL_TIMEOUT)
+}
+
+pub(crate) fn rabbitmq_auth_works(queue: &ContainerReader, password: &str) -> bool {
+    queue
         .run(&["rabbitmqctl", "authenticate_user", "companion", password])
         .succeeded()
 }
 
 pub(crate) fn sync_rabbitmq_password(
-    docker: DockerCli,
-    queue: &str,
+    queue: &ContainerReader,
     password: &str,
     data_dir: &Path,
 ) -> Result<(), String> {
-    let output = ContainerReader::new(docker, queue, RABBITMQCTL_TIMEOUT).run(&[
-        "rabbitmqctl",
-        "change_password",
-        "companion",
-        password,
-    ]);
+    let output = queue.run(&["rabbitmqctl", "change_password", "companion", password]);
     if output.succeeded() {
         let _ = append_desktop_log_for(
             data_dir,
@@ -345,7 +356,8 @@ pub(crate) fn ensure_rabbitmq_password_matches_env(
         return Ok(());
     }
 
-    if rabbitmq_auth_works(&run_docker_cli, hub_queue_name(), &password) {
+    let queue = rabbitmq_reader(&run_docker_cli, hub_queue_name());
+    if rabbitmq_auth_works(&queue, &password) {
         return Ok(());
     }
 
@@ -355,14 +367,21 @@ pub(crate) fn ensure_rabbitmq_password_matches_env(
         "RabbitMQ auth failed for configured password; syncing broker password.",
     );
 
-    if sync_rabbitmq_password(&run_docker_cli, hub_queue_name(), &password, data_dir).is_ok()
-        && rabbitmq_auth_works(&run_docker_cli, hub_queue_name(), &password)
-    {
-        return Ok(());
+    match sync_rabbitmq_password(&queue, &password, data_dir) {
+        Ok(()) if rabbitmq_auth_works(&queue, &password) => return Ok(()),
+        Ok(()) => {}
+        // Logged, since the queue is recreated next and nothing else says why.
+        Err(error) => {
+            let _ = append_desktop_log_for(data_dir, "hub.start", &error);
+        }
     }
 
     recreate_rabbitmq_queue(compose_path, env_path, data_dir)?;
-    if !rabbitmq_auth_works(&run_docker_cli, hub_queue_name(), &password) {
+    // A new reader: the recreated queue may go by another name than the one checked above.
+    if !rabbitmq_auth_works(
+        &rabbitmq_reader(&run_docker_cli, hub_queue_name()),
+        &password,
+    ) {
         return Err(
             "RabbitMQ password sync/recreate did not restore authentication for user companion."
                 .to_string(),

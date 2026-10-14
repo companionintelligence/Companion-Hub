@@ -61,6 +61,11 @@ impl<'a> ContainerReader<'a> {
         }
     }
 
+    /// The docker CLI this reader runs.
+    pub(crate) fn docker(&self) -> DockerCli<'a> {
+        self.docker
+    }
+
     pub(crate) fn run(&self, command: &[&str]) -> ContainerOutput {
         if !self.copy_out.get() {
             let direct = self.exec_direct(command);
@@ -125,48 +130,52 @@ impl<'a> ContainerReader<'a> {
 
         let result = self.copy_result_out(&dir);
         let _ = (self.docker)(&["exec", "-d", self.container, "rm", "-rf", &dir]);
-        result.unwrap_or_else(|| ContainerOutput {
+        result.unwrap_or_else(|reason| ContainerOutput {
             status: None,
             stdout: String::new(),
-            stderr: format!(
-                "No result came back from {} within {} s.",
-                self.container,
-                self.timeout.as_secs()
-            ),
+            stderr: reason,
         })
     }
 
     /// Copies `dir` out of the container until it holds `status`, or the timeout passes.
-    fn copy_result_out(&self, dir: &str) -> Option<ContainerOutput> {
-        let local = tempfile::tempdir().ok()?;
-        let target = local.path().join("result");
-        let target_arg = target.to_string_lossy().to_string();
+    fn copy_result_out(&self, dir: &str) -> Result<ContainerOutput, String> {
+        let local = tempfile::tempdir()
+            .map_err(|error| format!("No local folder to copy the result into: {error}"))?;
         let source = format!("{}:{dir}", self.container);
         let deadline = Instant::now() + self.timeout;
-        loop {
-            // `docker cp` into an existing folder nests the copy, so each look starts clean.
-            let _ = std::fs::remove_dir_all(&target);
+        for look in 0u32.. {
+            // `docker cp` into an existing folder nests the copy, so each look gets a new one.
+            // A folder Windows could not remove yet would otherwise hide `status` one level down.
+            let target = local.path().join(format!("result-{look}"));
+            let target_arg = target.to_string_lossy().to_string();
             let copied = (self.docker)(&["cp", &source, &target_arg])
                 .map(|output| output.status.success())
                 .unwrap_or(false);
             if copied {
                 if let Ok(status) = std::fs::read_to_string(target.join("status")) {
+                    // Lossy, as for `docker exec` output, so one stray byte doesn't empty a file.
                     let read = |name: &str| {
-                        std::fs::read_to_string(target.join(name))
-                            .map(|text| text.trim().to_string())
+                        std::fs::read(target.join(name))
+                            .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string())
                             .unwrap_or_default()
                     };
-                    return Some(ContainerOutput {
+                    return Ok(ContainerOutput {
                         status: status.trim().parse().ok(),
                         stdout: read("out"),
                         stderr: read("err"),
                     });
                 }
             }
+            let _ = std::fs::remove_dir_all(&target);
             if Instant::now() >= deadline {
-                return None;
+                break;
             }
             std::thread::sleep(COPY_ROUTE_POLL_INTERVAL);
         }
+        Err(format!(
+            "No result came back from {} within {} s.",
+            self.container,
+            self.timeout.as_secs()
+        ))
     }
 }
