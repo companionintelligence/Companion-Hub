@@ -1,11 +1,16 @@
 import { ConfigurationService } from '@/core/config/configuration.service';
+import type { AppStatus } from '@/core/database/drizzle/types';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { LEGACY_NETWORK_NAME, hubContainerName, hubNetworkName, isHubApplianceContainerName } from '@/common/constants';
+import { createAppUrn } from '@/common/helpers/app-helpers';
 import { writeHealableTextFile } from '@/common/helpers/bind-mount-helpers';
+import { storedExposureForm } from '@ci-hub/common/types';
 import { Injectable, Inject } from '@nestjs/common';
 import Dockerode from 'dockerode';
 import * as yaml from 'yaml';
+import { COMING_BACK_STATUSES } from '../apps/app-starting-page';
+import { AppsRepository } from '../apps/apps.repository';
 import { APP_STARTING_MIDDLEWARE } from './builders/traefik-labels.builder';
 import { DOCKERODE } from './constants';
 
@@ -65,12 +70,23 @@ function setNestedValue(obj: Record<string, unknown>, path: string[], value: str
 export const APP_DOWN_ROUTER_SUFFIX = '-down';
 
 /**
- * The service those routers send to: Traefik's own loopback, where nothing listens. Every request
- * fails at once with a 502, which `ci-hub-app-starting` turns into the Hub's page. Never the app's
- * old address: Docker gives a freed address to the next container that joins the network.
+ * The services those routers send to, one per app, all on Traefik's own loopback, where nothing
+ * listens. Every request fails at once with a 502, which `ci-hub-app-starting` turns into the Hub's
+ * page. Never the app's old address: Docker gives a freed address to the next container that joins
+ * the network. The rest of the name is the app's compose project, which is how a later rebuild
+ * tells whose a down router is once the app's containers are gone.
  */
-const APP_DOWN_SERVICE = 'ci-hub-app-down';
+const APP_DOWN_SERVICE_PREFIX = 'ci-hub-app-down-';
 const APP_DOWN_SERVICE_URL = 'http://127.0.0.1:9';
+
+const COMPOSE_PROJECT_LABEL = 'com.docker.compose.project';
+
+/**
+ * While its containers are gone, an app keeps its down routers in these states: running, or coming
+ * back by itself, which the page calls starting. Stop and Uninstall mark the app `stopping` and
+ * `uninstalling` before they take it down, so a stopped or removed app keeps none.
+ */
+const APP_DOWN_KEPT_STATUSES: ReadonlySet<AppStatus> = new Set<AppStatus>(['running', ...COMING_BACK_STATUSES]);
 
 /**
  * A copy of an app router that still answers while the app's containers are gone (CI-Hub#1944).
@@ -82,16 +98,15 @@ const APP_DOWN_SERVICE_URL = 'http://127.0.0.1:9';
  * a container with a health check starts: Traefik's Docker provider skips it until it is healthy.
  *
  * Same rule, entry points and middleware chain as the app's router, so forward auth still answers
- * first and a visitor who is not signed in gets the login. The container's own middlewares are named
- * by their copies in this file instead of `@docker`. Priority 1, below the default (the rule's
- * length), so it only answers once the app's own routers are gone. A stopped or removed app loses it
- * with the rest of its routes when the Hub regenerates this file.
+ * first and a visitor who is not signed in gets the login. The middlewares the app's containers
+ * define are named by their copies in this file instead of `@docker`. Its `priority` is low enough
+ * that it only answers once the app's own routers are gone; see {@link TraefikConfigService.generateTraefikConfig}.
  */
-function appDownRouter(router: TraefikRouter, ownMiddlewares: ReadonlySet<string>): TraefikRouter {
+function appDownRouter(router: TraefikRouter, appMiddlewares: ReadonlySet<string>, service: string, priority: number): TraefikRouter {
   const chain = (router.middlewares ?? []).map((name) => {
     const trimmed = name.trim();
     const base = trimmed.endsWith('@docker') ? trimmed.slice(0, -'@docker'.length) : null;
-    return base !== null && ownMiddlewares.has(base) ? base : trimmed;
+    return base !== null && appMiddlewares.has(base) ? base : trimmed;
   });
   const middlewares = [...new Set(chain)];
   if (!middlewares.includes(APP_STARTING_MIDDLEWARE)) {
@@ -102,12 +117,35 @@ function appDownRouter(router: TraefikRouter, ownMiddlewares: ReadonlySet<string
   // would answer plain HTTP on that host while the app is up.
   return {
     rule: router.rule,
-    service: APP_DOWN_SERVICE,
+    service,
     entryPoints: [...router.entryPoints],
     middlewares,
     ...(router.tls !== undefined && { tls: router.tls }),
-    priority: 1,
+    priority,
   };
+}
+
+/** A down router as an earlier rebuild wrote it to apps.yml. */
+function isAppDownRouter(value: unknown): value is TraefikRouter {
+  const router = value as Partial<TraefikRouter> | null;
+  return (
+    typeof router?.rule === 'string' &&
+    typeof router.service === 'string' &&
+    router.service.startsWith(APP_DOWN_SERVICE_PREFIX) &&
+    Array.isArray(router.entryPoints) &&
+    (router.middlewares === undefined || (Array.isArray(router.middlewares) && router.middlewares.every((name) => typeof name === 'string')))
+  );
+}
+
+/** The app's compose project, the name DockerReadFacade.getComposeProjectName gives it. */
+function composeProjectOf(app: { appName: string; appStoreSlug: string }): string {
+  return createAppUrn(app.appName, app.appStoreSlug).replace(':', '_');
+}
+
+/** Whether the app goes out through Traefik at all: on Public Web or the Private VPN, by its stored form. */
+function isExposedThroughTraefik(app: Parameters<typeof storedExposureForm>[0]): boolean {
+  const { exposureMode, exposedLocal } = storedExposureForm(app);
+  return (exposureMode || (exposedLocal ? 'cloudflare' : 'local')) !== 'local';
 }
 
 @Injectable()
@@ -119,6 +157,7 @@ export class TraefikConfigService {
     private readonly config: ConfigurationService,
     private readonly filesystem: FilesystemService,
     @Inject(DOCKERODE) private readonly docker: Dockerode,
+    private readonly appsRepository: AppsRepository,
   ) {
     this.mainNetworkName = hubNetworkName();
   }
@@ -186,13 +225,15 @@ export class TraefikConfigService {
 
       // Check if there's an existing invalid config file and remove it first
       // This prevents Traefik from trying to parse invalid YAML
+      // A valid one is kept for the down routers of apps whose containers are gone right now.
+      let previous: unknown = null;
       if (await this.filesystem.pathExists(configPath)) {
         try {
           const existingContent = await this.filesystem.readTextFile(configPath);
           if (existingContent) {
             // Try to parse it to see if it's valid
             try {
-              yaml.parse(existingContent);
+              previous = yaml.parse(existingContent);
             } catch {
               // Invalid YAML - delete it
               this.logger.debug(`Removing invalid Traefik config file at ${configPath}`);
@@ -217,7 +258,11 @@ export class TraefikConfigService {
           services: {},
         },
       };
-      let hasAppDownRouter = false;
+      /**
+       * By compose project, every app with a container below: its routers on the web entry point, each
+       * with the priority Traefik gives it, and the middlewares any of its containers define.
+       */
+      const apps = new Map<string, { routers: Array<{ name: string; router: TraefikRouter; priority: number }>; middlewares: Set<string> }>();
 
       // Process each container
       for (const containerInfo of containers) {
@@ -240,12 +285,20 @@ export class TraefikConfigService {
 
         const containerIP = networkSettings.IPAddress;
         const labels = inspect.Config?.Labels || {};
+        const project = labels[COMPOSE_PROJECT_LABEL];
+        let app = project ? apps.get(project) : undefined;
+        if (project && !app) {
+          app = { routers: [], middlewares: new Set() };
+          apps.set(project, app);
+        }
 
         // Extract Traefik routing information from labels
         const routers: Record<string, TraefikRouter> = {};
         const services: Record<string, TraefikService> = {};
         const middlewares: Record<string, Record<string, unknown>> = {};
         const serviceSchemes: Record<string, string> = {};
+        // Only to rank the down routers: the copies keep Traefik's default, as they always have.
+        const routerPriorities: Record<string, number> = {};
 
         // Find all router labels
         for (const [key, value] of Object.entries(labels)) {
@@ -281,6 +334,9 @@ export class TraefikConfigService {
                 break;
               case 'tls':
                 routers[routerName].tls = String(value) === 'true';
+                break;
+              case 'priority':
+                routerPriorities[routerName] = Number.parseInt(String(value), 10);
                 break;
             }
           }
@@ -339,7 +395,9 @@ export class TraefikConfigService {
 
         // Only add routers that have valid rules and services
         const middlewareNames = Object.keys(middlewares);
-        const ownMiddlewares = new Set(middlewareNames);
+        for (const name of middlewareNames) {
+          app?.middlewares.add(name);
+        }
         for (const [routerName, router] of Object.entries(routers)) {
           if (router.rule && router.service && router.entryPoints.length > 0) {
             // Auto-attach middleware definitions from this container to its routers
@@ -356,8 +414,10 @@ export class TraefikConfigService {
             // Note: Traefik's file provider automatically adds @file suffix, so we don't add it here
             if (router.entryPoints.includes('web')) {
               config.http.routers[routerName] = router;
-              config.http.routers[`${routerName}${APP_DOWN_ROUTER_SUFFIX}`] = appDownRouter(router, ownMiddlewares);
-              hasAppDownRouter = true;
+              // Traefik's own ranking: the priority the labels set, or else the length of the rule.
+              const explicitPriority = routerPriorities[routerName];
+              const priority = explicitPriority !== undefined && explicitPriority > 0 ? explicitPriority : router.rule.length;
+              app?.routers.push({ name: routerName, router, priority });
             }
           }
         }
@@ -374,10 +434,34 @@ export class TraefikConfigService {
         }
       }
 
+      const appsWithDownRouters = new Set<string>();
+      for (const [project, app] of apps) {
+        // Numbered from 1 in the order Traefik ranks the app's own routers, so a request that two of
+        // them match gets the same one's chain while the app is down as while it is up (one with Hub
+        // sign-in over one without, say). Far below the length of any Host rule, which is where the
+        // app's own routers start, so those always win while they exist.
+        const ranks = [...new Set(app.routers.map(({ priority }) => priority))].sort((a, b) => a - b);
+        for (const { name, router, priority } of app.routers) {
+          const downName = `${name}${APP_DOWN_ROUTER_SUFFIX}`;
+          // An app router of that name keeps it.
+          if (!(downName in config.http.routers)) {
+            config.http.routers[downName] = appDownRouter(
+              router,
+              app.middlewares,
+              `${APP_DOWN_SERVICE_PREFIX}${project}`,
+              ranks.indexOf(priority) + 1,
+            );
+            appsWithDownRouters.add(project);
+          }
+        }
+      }
+      for (const project of await this.keepDownRoutersOfAppsComingBack(previous, config, new Set(apps.keys()))) {
+        appsWithDownRouters.add(project);
+      }
       // After every container's services, so an app service that happens to share the name cannot
       // point the down routers at a container address.
-      if (hasAppDownRouter) {
-        config.http.services[APP_DOWN_SERVICE] = { loadBalancer: { servers: [{ url: APP_DOWN_SERVICE_URL }] } };
+      for (const project of appsWithDownRouters) {
+        config.http.services[`${APP_DOWN_SERVICE_PREFIX}${project}`] = { loadBalancer: { servers: [{ url: APP_DOWN_SERVICE_URL }] } };
       }
 
       // Write the configuration file
@@ -444,6 +528,60 @@ export class TraefikConfigService {
       this.logger.error('Error generating Traefik config:', error);
       throw error;
     }
+  }
+
+  /**
+   * The down routers of apps with no container in this rebuild, carried over from the apps.yml it
+   * replaces while the Hub still expects the app back (CI-Hub#1944).
+   *
+   * apps.yml is rebuilt from the containers running at that moment, and many things rebuild it:
+   * another app's Start, Stop, Install or Uninstall, the next app of a batch restart, the Hub's own
+   * start. One that ran while an app was between its compose down and compose up used to drop that
+   * app's down routers with its containers, and the 404 was back. They stay while the app is running
+   * or coming back and still goes out through Traefik; an app switched to local only has no routes.
+   *
+   * @returns the compose projects of the apps whose down routers it kept
+   */
+  private async keepDownRoutersOfAppsComingBack(previous: unknown, config: TraefikConfig, seenProjects: ReadonlySet<string>): Promise<string[]> {
+    const previousHttp = (previous as Partial<TraefikConfig> | null)?.http;
+    const candidates = Object.entries(previousHttp?.routers ?? {}).flatMap(([name, router]) => {
+      if (!name.endsWith(APP_DOWN_ROUTER_SUFFIX) || name in config.http.routers || !isAppDownRouter(router)) {
+        return [];
+      }
+      const project = router.service.slice(APP_DOWN_SERVICE_PREFIX.length);
+      return seenProjects.has(project) ? [] : [{ name, router, project }];
+    });
+    if (candidates.length === 0) {
+      return [];
+    }
+
+    let expected: Set<string>;
+    try {
+      const installed = await this.appsRepository.getApps();
+      expected = new Set(installed.filter((app) => APP_DOWN_KEPT_STATUSES.has(app.status) && isExposedThroughTraefik(app)).map(composeProjectOf));
+    } catch (error) {
+      this.logger.warn(
+        `Could not read the apps' status; apps.yml keeps no route to the starting page for an app whose containers are gone: ${error}`,
+      );
+      return [];
+    }
+
+    const kept = new Set<string>();
+    for (const { name, router, project } of candidates) {
+      if (!expected.has(project)) {
+        continue;
+      }
+      config.http.routers[name] = router;
+      // The copies of the app's own middlewares, which its chain names without a provider.
+      for (const middleware of router.middlewares ?? []) {
+        const definition = previousHttp?.middlewares?.[middleware];
+        if (!middleware.includes('@') && definition && typeof definition === 'object' && !config.http.middlewares?.[middleware]) {
+          config.http.middlewares = { ...config.http.middlewares, [middleware]: definition };
+        }
+      }
+      kept.add(project);
+    }
+    return [...kept];
   }
 
   /**

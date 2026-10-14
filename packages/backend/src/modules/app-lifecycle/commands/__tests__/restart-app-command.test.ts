@@ -51,6 +51,7 @@ describe('RestartAppCommand — pull policy', () => {
   let composeArgs: string[];
   let appFilesManager: any;
   let entitlements: ReturnType<typeof mock<MarketplaceEntitlementService>>;
+  let traefikConfigService: ReturnType<typeof mock<TraefikConfigService>>;
   const appUrn = 'urn:store:test-app' as AppUrn;
 
   beforeEach(() => {
@@ -90,7 +91,7 @@ describe('RestartAppCommand — pull policy', () => {
     const appHelpers = mock<AppHelpers>();
     appHelpers.generateEnvFile.mockResolvedValue();
 
-    const traefikConfigService = mock<TraefikConfigService>();
+    traefikConfigService = mock<TraefikConfigService>();
     traefikConfigService.regenerateTraefikConfig.mockResolvedValue();
 
     const marketplaceService = mock<MarketplaceService>();
@@ -180,5 +181,27 @@ describe('RestartAppCommand — pull policy', () => {
 
     expect(result.success).toBe(true);
     expect(composeArgs.some((args) => args.startsWith('up'))).toBe(true);
+  });
+
+  // apps.yml still sends the app's routes to its old containers' addresses until it is rebuilt, and
+  // Docker can hand a freed address to another app's container (CI-Hub#1944).
+  it('rebuilds the Traefik routes between compose down and compose up', async () => {
+    const order: string[] = [];
+    dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+      order.push(args.split(' ')[0] ?? args);
+    });
+    traefikConfigService.regenerateTraefikConfig.mockImplementation(async (delayMs?: number) => {
+      order.push(`traefik:${delayMs}`);
+    });
+
+    await command.execute(appUrn, { exposedLocal: true });
+
+    expect(order).toEqual(['down', 'traefik:0', 'up', 'traefik:5000']);
+  });
+
+  it('leaves the Traefik routes alone for an app that does not go out through Traefik', async () => {
+    await command.execute(appUrn, {});
+
+    expect(traefikConfigService.regenerateTraefikConfig).not.toHaveBeenCalled();
   });
 });

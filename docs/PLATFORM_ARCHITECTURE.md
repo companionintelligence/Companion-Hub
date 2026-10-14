@@ -267,12 +267,22 @@ or over the Private VPN do not pass through Traefik and do not get the page.
 
 The page also covers the seconds of a restart or an update when an app has no containers at all.
 Traefik drops an app's Docker routers with its containers, so the `apps.yml` the Hub writes for the
-file provider keeps a second copy of each app router: the same rule and middleware chain, forward
-auth included, at priority 1 and pointed at Traefik's own loopback, where every request fails with
-a 502 that the middleware turns into the page. It answers only while the app's own routers are
-gone, which also covers a container whose Docker health check has not passed yet. Stop and
-Uninstall rewrite `apps.yml` once the containers are down, so a stopped or removed app's address
-answers Traefik's `404 page not found`.
+file provider keeps a second copy of each app router, `<router>-down`: the same rule and middleware
+chain, forward auth included, pointed at a service of the app's own on Traefik's loopback, where
+every request fails with a 502 that the middleware turns into the page. Its priority is 1, 2 and so
+on, in the order Traefik ranks the app's own routers, so it answers only while those are gone, which
+also covers a container whose Docker health check has not passed yet.
+
+The Hub rebuilds `apps.yml` from the containers running at that moment: on the Start, Stop, Restart
+and Install of an app that goes out through Traefik, on every Uninstall, and when it starts itself.
+A rebuild keeps the down routes of an app
+with no container from the `apps.yml` it replaces, as long as the database says the app is running
+or coming back (starting, restarting, updating, resetting, backing up, restoring) and the app still
+goes out through Traefik. Stop and Uninstall mark the app stopping or uninstalling before they take
+it down and rebuild `apps.yml` after, so a stopped or removed app's address answers Traefik's
+`404 page not found`. A restart rebuilds it right after `compose down` as well, so no route keeps an
+address the old containers had. An app that crashed or was stopped outside the Hub keeps its down
+routes until the status sync marks it stopped and the next rebuild runs.
 
 The Hub's own rule is the exception: Portal always rebuilds it as
 `host.docker.internal:{hubListenPort}`, whatever the Hub's entry says. `cloudflared` reaches that

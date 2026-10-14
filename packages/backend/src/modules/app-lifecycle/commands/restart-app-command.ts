@@ -35,6 +35,14 @@ export class RestartAppCommand extends AppLifecycleCommand {
       await dockerService.composeApp(appUrn, 'down --remove-orphans').catch((err) => {
         logger.error(`Failed to stop app ${appUrn}:`, err);
       });
+
+      // TODO(#244): revisit on next Traefik upgrade
+      // apps.yml still sends the app's routes to the addresses its old containers had, and a route
+      // whose middlewares all live in the file provider (a Private VPN one, say) outlives them. Rebuilt
+      // now, only the app's routes to the starting page stay (CI-Hub#1944) until compose up is done.
+      if (form.exposedLocal) {
+        await traefikConfigService.regenerateTraefikConfig(0);
+      }
       await this.ensureAppDir(appUrn, form);
 
       if (!form.skipEnv) {

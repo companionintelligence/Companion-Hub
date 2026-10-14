@@ -35,7 +35,7 @@ const GATEWAY_ERROR_STATUSES: ReadonlySet<number> = new Set([502, 504]);
 const DEFAULT_PAGE_STATUS = 502;
 
 /** States the app comes back from by itself, without anyone pressing Start. */
-const COMING_BACK_STATUSES: ReadonlySet<AppStatus> = new Set([
+export const COMING_BACK_STATUSES: ReadonlySet<AppStatus> = new Set([
   'installing',
   'starting',
   'restarting',
