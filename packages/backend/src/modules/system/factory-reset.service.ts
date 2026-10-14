@@ -75,7 +75,7 @@ export class FactoryResetService {
 
   /**
    * Refuse to run when the Hub's data folder is `/` or a home folder. The reset empties `app-data`,
-   * `apps`, `repos`, `backups` and `user-config` in it, so with `ROOT_FOLDER_HOST=/home/<user>` it
+   * `apps`, `repos`, `backups`, and `user-config` in it, so with `ROOT_FOLDER_HOST=/home/<user>` it
    * emptied `~/repos` and the rest. `cihub reset` refuses a root like that too.
    *
    * The container sees neither that folder nor the host's home, so this goes by the shape of the path
@@ -86,10 +86,7 @@ export class FactoryResetService {
    */
   private async refuseHomeFolderRoot(): Promise<void> {
     const configured = this.configuration.get('rootFolderHost');
-    const mounted = mountedDataRoot(
-      await readMounts(),
-      this.dataFolders().map(({ dir, name }) => ({ mountPoint: toMountPoint(dir), names: [name, path.basename(dir)] })),
-    );
+    const mounted = mountedDataRoot(await readMounts(), this.dataFolders());
     const root = isTopOrHomeFolder(configured) ? configured : mounted && isHomeFolder(mounted) ? mounted : undefined;
 
     if (root) {
@@ -198,8 +195,8 @@ export class FactoryResetService {
     const mounts = await readMounts();
     const left: string[] = [];
 
-    for (const { dir: target, name } of this.dataFolders()) {
-      const linkedTo = linkedMountSource(mounts, toMountPoint(target), [name, path.basename(target)]);
+    for (const { dir: target, name, mountPoint, names } of this.dataFolders()) {
+      const linkedTo = linkedMountSource(mounts, mountPoint, names);
 
       if (linkedTo) {
         this.logger.error(
@@ -223,8 +220,11 @@ export class FactoryResetService {
     }
   }
 
-  /** The folders the reset empties. `name` is the folder the compose files mount there, `<ROOT_FOLDER_HOST>/<name>`. */
-  private dataFolders(): Array<{ dir: string; name: string }> {
+  /**
+   * The folders the reset empties. `name` is the folder the compose files mount there,
+   * `<ROOT_FOLDER_HOST>/<name>`, and `names` are the names its mount root may end in.
+   */
+  private dataFolders(): Array<{ dir: string; name: string; mountPoint: string; names: string[] }> {
     const { dataDir } = this.configuration.get('directories');
 
     return [
@@ -234,7 +234,7 @@ export class FactoryResetService {
       { dir: path.join(dataDir, 'backups'), name: 'backups' },
       // Per-app env and compose overrides, which a reinstalled app would pick up again.
       { dir: path.join(dataDir, 'user-config'), name: 'user-config' },
-    ];
+    ].map((folder) => ({ ...folder, mountPoint: toMountPoint(folder.dir), names: [folder.name, path.basename(folder.dir)] }));
   }
 
   public async clearRegistrationArtifacts(): Promise<void> {

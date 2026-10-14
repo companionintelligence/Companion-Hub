@@ -563,7 +563,7 @@ export class ConfigurationService {
   /**
    * Forget the user settings this process has from settings.json, for a factory reset that has just
    * written `{}` there. They go back to what boot makes of an empty file: no cloud provider keys and
-   * no inference, pool or resource settings. The ones the environment supplies stay. So does the
+   * no inference, pool, or resource settings. The ones the environment supplies stay. So does the
    * error-reporting switch, which is no secret and which the reporting gate holds too (`setUserConsent`).
    * The copies of the pairing credentials in `userSettings` go; the config's own (`ciHubApiKey` and
    * the rest) are untouched.

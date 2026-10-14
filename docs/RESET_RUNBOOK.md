@@ -83,7 +83,7 @@ If you cannot delete one of the Hub's files as your user, reset prints a command
 - Requires an **operator** login
 - Requires typing the confirmation phrase: `factory-reset`
 - Calls `POST /api/system/factory-reset`
-- Refuses to run, and changes nothing, when the Hub's data folder (`ROOT_FOLDER_HOST`) is `/` or a home folder such as `/home/<user>`, `/Users/<user>` or `C:\Users\<user>`, and names the folder. The Hub container can't see the host's home, so this goes by the shape of the path
+- Refuses to run, and changes nothing, when the Hub's data folder (`ROOT_FOLDER_HOST`) is `/` or a home folder such as `/home/<user>`, `/Users/<user>`, or `C:\Users\<user>`, and names the folder. The Hub container can't see the host's home, so this goes by the shape of the path
 - Tears down installed apps, wipes Postgres tables (including `user` and every API key, so agents and `cihub api-key` users need new keys afterwards), clears `settings.json` and registration artifacts, and empties the `app-data`, `apps`, `repos`, `backups`, and `user-config` folders
 - Clears the cloud provider keys and the other settings the running Hub still held from `settings.json`, so apps installed afterwards get none of them
 - `user-config` holds each app's env and compose overrides, and also the Hub's own compose override (`hub-compose.yml`) and the Hub process's home folder (its `.gitconfig`). All of it goes, as with `cihub reset`

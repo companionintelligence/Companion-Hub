@@ -487,7 +487,7 @@ Before it tears down a single app, the reset refuses to run when the data folder
 folder, where it would empty `~/repos` and the rest. The container sees neither that folder nor the
 host's home, so `common/helpers/home-folder.ts` goes by the shape of the path: `/root`,
 `/home/<name>`, `/var/home/<name>`, `/Users/<name>`, `<drive>:\Users\<name>`,
-`/mnt/<drive>/Users/<name>` and `/<drive>/Users/<name>`, in any letter case. It checks
+`/mnt/<drive>/Users/<name>`, and `/<drive>/Users/<name>`, in any letter case. It checks
 `ROOT_FOLDER_HOST`, where `/` counts too, and the folder the data folders are mounted from when
 mountinfo shows them all in one (`mountedDataRoot`), which is where a `ROOT_FOLDER_HOST` that is a
 symlink to a home folder shows. It throws `SETTINGS_FACTORY_RESET_DATA_ROOT_REFUSED` with the folder
