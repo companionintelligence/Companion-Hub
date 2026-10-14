@@ -9,7 +9,7 @@ import { RegistryService } from '@/utils/registry/registry.service';
 import { faker } from '@faker-js/faker';
 import { Test } from '@nestjs/testing';
 import { fromPartial } from '@total-typescript/shoehorn';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { DOCKERODE } from '@/modules/docker/docker.module';
 import Dockerode from 'dockerode';
@@ -22,6 +22,8 @@ import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.servi
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import { APP_SESSION_KEY_PREFIX, SESSION_KEY_PREFIX } from '@/modules/auth/session.manager';
+import { SystemEventsQueue } from '@/modules/queue/entities/system-events';
+import { TranslatableError } from '@/common/error/translatable-error';
 
 describe('AppService', () => {
   let appService: AppService;
@@ -36,9 +38,14 @@ describe('AppService', () => {
   let appLifecycleService = mock<AppLifecycleService>();
   let appsRepository = mock<AppsRepository>();
   let portManagerService = mock<PortManagerService>();
+  let systemEventsQueue = mock<SystemEventsQueue>();
 
   beforeEach(async () => {
     dockerode = mock<Dockerode>();
+    // One fresh mock per token. `useMocker(mock)` hands the class itself to `mock()` as the mock's
+    // implementation, so the mock functions were stored on the class and every test wrapped the last
+    // test's: setups leaked from test to test, and the module took twice as long to build each time.
+    const mocks = new Map<unknown, unknown>();
     const moduleRef = await Test.createTestingModule({
       providers: [
         AppService,
@@ -49,7 +56,10 @@ describe('AppService', () => {
         },
       ],
     })
-      .useMocker(mock)
+      .useMocker((token) => {
+        if (!mocks.has(token)) mocks.set(token, mock());
+        return mocks.get(token);
+      })
       .compile();
 
     appService = moduleRef.get(AppService);
@@ -63,6 +73,7 @@ describe('AppService', () => {
     appLifecycleService = moduleRef.get(AppLifecycleService);
     appsRepository = moduleRef.get(AppsRepository);
     portManagerService = moduleRef.get(PortManagerService);
+    systemEventsQueue = moduleRef.get(SystemEventsQueue);
 
     databaseService.waitUntilReady.mockResolvedValue(undefined);
     databaseService.migrate.mockResolvedValue(undefined);
@@ -426,6 +437,169 @@ describe('AppService', () => {
         forwardAuthSecret: '[redacted]',
         __prod__: false,
       });
+    });
+  });
+
+  /*
+   * An uninstall of the desktop app that keeps its data removes every app container but keeps the
+   * cache, so a reinstall of the same version skipped the version-change restart. The apps stayed
+   * down and the status sync reported each one as a crash (Companion-Hub#1980).
+   */
+  describe('bootstrap on the version the cache already holds', () => {
+    const wordpress = { id: 1, appName: 'wordpress', appStoreSlug: 'ci-marketplace', status: 'running', config: {} };
+
+    beforeEach(() => {
+      configurationService.getConfig.mockReturnValue(
+        fromPartial({
+          version: '1.0.0',
+          __prod__: true,
+          directories: { appDir: APP_DIR, dataDir: DATA_DIR, appDataDir: APP_DATA_DIR },
+          userSettings: { logLevel: 'info', persistTraefikConfig: false },
+        }),
+      );
+      cacheService.get.mockImplementation((key: string) => (key === 'buster' ? '1.0.0' : undefined));
+      dockerode.listContainers.mockResolvedValue([]);
+      appsRepository.updateAppByIdIfStatus.mockResolvedValue(true);
+      appLifecycleService.startApp.mockResolvedValue({ requestId: 'req-1' });
+    });
+
+    it('starts a running app that has no containers before it schedules the status sync', async () => {
+      appsRepository.getApps.mockResolvedValue([wordpress] as never);
+
+      await appService.bootstrap();
+
+      expect(appLifecycleService.restartRunningApps).not.toHaveBeenCalled();
+      expect(appLifecycleService.startApp).toHaveBeenCalledTimes(1);
+      expect(appLifecycleService.startApp).toHaveBeenCalledWith({
+        appUrn: 'wordpress:ci-marketplace',
+        skipPull: true,
+        onlyRecreateChanged: true,
+        actor: { kind: 'system', reason: 'bootstrap-recreate' },
+      });
+      // The start moves the row to `starting`, so the first sync cannot read it as a crash.
+      const syncCall = systemEventsQueue.publishRepeatable.mock.calls.findIndex(([event]) => event.command === 'sync_app_statuses');
+      expect(syncCall).toBeGreaterThanOrEqual(0);
+      expect(appLifecycleService.startApp.mock.invocationCallOrder[0]).toBeLessThan(
+        systemEventsQueue.publishRepeatable.mock.invocationCallOrder[syncCall],
+      );
+    });
+
+    it('leaves stopped apps, apps with containers, and port-expose apps alone', async () => {
+      appsRepository.getApps.mockResolvedValue([
+        { id: 2, appName: 'plane', appStoreSlug: 'ci-marketplace', status: 'stopped', config: {} },
+        { id: 3, appName: 'flatnotes', appStoreSlug: 'ci-marketplace', status: 'running', config: {} },
+        { id: 4, appName: 'ggs', appStoreSlug: '_user', status: 'running', config: { kind: 'port-expose', port: 3000 } },
+      ] as never);
+      // Stopped with `docker stop`, as the desktop's Stop Hub leaves it: the status sync reads it.
+      dockerode.listContainers.mockImplementation((async (options?: Dockerode.ContainerListOptions) =>
+        options?.filters && JSON.stringify(options.filters).includes('ci-hub.managed=true')
+          ? [
+              {
+                Id: 'f1',
+                State: 'exited',
+                Status: 'Exited (0) 1 hour ago',
+                Labels: { 'ci-hub.managed': 'true', 'ci-hub.appurn': 'flatnotes:ci-marketplace' },
+              },
+            ]
+          : []) as never);
+
+      await appService.bootstrap();
+
+      expect(appLifecycleService.startApp).not.toHaveBeenCalled();
+    });
+
+    /*
+     * A start the queue never took puts back the status it read. Left `running` with no containers,
+     * the app was what the first status sync reports as a crash.
+     */
+    it('moves the app to starting before it starts it', async () => {
+      appsRepository.getApps.mockResolvedValue([wordpress] as never);
+
+      await appService.bootstrap();
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(1, 'running', { status: 'starting' });
+      expect(appsRepository.updateAppByIdIfStatus.mock.invocationCallOrder[0]).toBeLessThan(appLifecycleService.startApp.mock.invocationCallOrder[0]);
+    });
+
+    describe('when the queue is not up yet', () => {
+      const refusal = () => new TranslatableError('APP_ERROR_QUEUE_UNAVAILABLE', { command: 'start' }, 503);
+
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        appsRepository.getApps.mockResolvedValue([wordpress] as never);
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('starts the app once the queue is up, and leaves it starting meanwhile', async () => {
+        appLifecycleService.startApp.mockRejectedValueOnce(refusal());
+        systemEventsQueue.unavailableReason.mockReturnValueOnce("Queue 'system-events-queue' is unavailable while RabbitMQ is connecting.");
+
+        await appService.bootstrap();
+        expect(appLifecycleService.startApp).toHaveBeenCalledTimes(1);
+
+        await vi.advanceTimersByTimeAsync(2_000);
+
+        await vi.waitFor(() => expect(appLifecycleService.startApp).toHaveBeenCalledTimes(2));
+        expect(appLifecycleService.startApp).toHaveBeenLastCalledWith(expect.objectContaining({ appUrn: 'wordpress:ci-marketplace' }));
+        expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalledWith(1, expect.anything(), { status: 'stopped' });
+      });
+
+      it('marks the app stopped when the queue refuses it again', async () => {
+        appLifecycleService.startApp.mockRejectedValue(refusal());
+        systemEventsQueue.unavailableReason.mockReturnValue("Queue 'system-events-queue' is unavailable while RabbitMQ is connecting.");
+
+        await appService.bootstrap();
+        await vi.advanceTimersByTimeAsync(10 * 60_000);
+
+        await vi.waitFor(() => expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(1, 'starting', { status: 'stopped' }));
+        expect(appLifecycleService.startApp).toHaveBeenCalledTimes(2);
+      });
+    });
+
+    it('marks an app stopped at once when its start fails for another reason', async () => {
+      appsRepository.getApps.mockResolvedValue([wordpress] as never);
+      appLifecycleService.startApp.mockRejectedValue(new Error('connection to the database was lost'));
+
+      await expect(appService.bootstrap()).resolves.toBeUndefined();
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(1, 'starting', { status: 'stopped' });
+      expect(appLifecycleService.startApp).toHaveBeenCalledTimes(1);
+    });
+
+    // The boot waits on this listing before the Hub listens, so a Docker that never answers must not hold it.
+    it('finishes the boot without starting anything when Docker does not list the containers', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        appsRepository.getApps.mockResolvedValue([wordpress] as never);
+        dockerode.listContainers.mockReturnValue(new Promise(() => undefined) as never);
+
+        let settled = false;
+        const booting = appService.bootstrap().finally(() => {
+          settled = true;
+        });
+        for (let tick = 0; tick < 40 && !settled; tick++) {
+          await vi.advanceTimersByTimeAsync(1_000);
+        }
+
+        await expect(booting).resolves.toBeUndefined();
+        expect(appLifecycleService.startApp).not.toHaveBeenCalled();
+        expect(systemEventsQueue.publishRepeatable).toHaveBeenCalledWith({ command: 'sync_app_statuses' }, '*/5 * * * *');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('leaves the apps to the version-change restart on an upgrade', async () => {
+      appsRepository.getApps.mockResolvedValue([wordpress] as never);
+      cacheService.get.mockReturnValue('0.9.0');
+
+      await appService.bootstrap();
+
+      expect(appLifecycleService.restartRunningApps).toHaveBeenCalledTimes(1);
+      expect(appLifecycleService.startApp).not.toHaveBeenCalled();
     });
   });
 });
