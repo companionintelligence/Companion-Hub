@@ -231,4 +231,30 @@ describe('UninstallAppCommand', () => {
 
     expect(traefikConfigService.regenerateTraefikConfig).toHaveBeenCalledTimes(1);
   });
+
+  it('rebuilds the Traefik routes before the image and network cleanup, which can throw', async () => {
+    dockerService.removeAppImages.mockRejectedValueOnce(new Error('image in use'));
+
+    await command.execute(appUrn);
+
+    expect(traefikConfigService.regenerateTraefikConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it('still uninstalls when the Traefik routes cannot be rebuilt', async () => {
+    // ModuleRef.get throws for a provider it cannot resolve.
+    const moduleRef = makeModuleRef();
+    const resolve = moduleRef.get as unknown as ReturnType<typeof vi.fn>;
+    const fallback = resolve.getMockImplementation();
+    resolve.mockImplementation((token: unknown) => {
+      if (token === TraefikConfigService) throw new Error('Nest could not find TraefikConfigService element');
+      return fallback?.(token);
+    });
+    command = new UninstallAppCommand(moduleRef, mock<Dockerode>());
+
+    const result = await command.execute(appUrn);
+
+    expect(result).toEqual({ success: true, message: `App ${appUrn} uninstalled successfully` });
+    expect(dockerService.removeAppNetworks).toHaveBeenCalledWith(appUrn);
+    expect(appFilesManager.deleteAppFolder).toHaveBeenCalledWith(appUrn);
+  });
 });

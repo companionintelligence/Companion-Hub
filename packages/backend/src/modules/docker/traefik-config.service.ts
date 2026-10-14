@@ -69,7 +69,7 @@ export const APP_DOWN_ROUTER_SUFFIX = '-down';
  * fails at once with a 502, which `ci-hub-app-starting` turns into the Hub's page. Never the app's
  * old address: Docker gives a freed address to the next container that joins the network.
  */
-export const APP_DOWN_SERVICE = 'ci-hub-app-down';
+const APP_DOWN_SERVICE = 'ci-hub-app-down';
 const APP_DOWN_SERVICE_URL = 'http://127.0.0.1:9';
 
 /**
@@ -97,8 +97,17 @@ function appDownRouter(router: TraefikRouter, ownMiddlewares: ReadonlySet<string
   if (!middlewares.includes(APP_STARTING_MIDDLEWARE)) {
     middlewares.push(APP_STARTING_MIDDLEWARE);
   }
-  // A copy of the entry points, or the YAML writer prints an alias to the app router's list.
-  return { rule: router.rule, service: APP_DOWN_SERVICE, entryPoints: [...router.entryPoints], middlewares, priority: 1 };
+  // A copy of the entry points, or the YAML writer prints an alias to the app router's list. `tls` is
+  // kept so the copy matches the same requests as the router: without it, a TLS-only router's copy
+  // would answer plain HTTP on that host while the app is up.
+  return {
+    rule: router.rule,
+    service: APP_DOWN_SERVICE,
+    entryPoints: [...router.entryPoints],
+    middlewares,
+    ...(router.tls !== undefined && { tls: router.tls }),
+    priority: 1,
+  };
 }
 
 @Injectable()
@@ -208,6 +217,7 @@ export class TraefikConfigService {
           services: {},
         },
       };
+      let hasAppDownRouter = false;
 
       // Process each container
       for (const containerInfo of containers) {
@@ -329,6 +339,7 @@ export class TraefikConfigService {
 
         // Only add routers that have valid rules and services
         const middlewareNames = Object.keys(middlewares);
+        const ownMiddlewares = new Set(middlewareNames);
         for (const [routerName, router] of Object.entries(routers)) {
           if (router.rule && router.service && router.entryPoints.length > 0) {
             // Auto-attach middleware definitions from this container to its routers
@@ -345,8 +356,8 @@ export class TraefikConfigService {
             // Note: Traefik's file provider automatically adds @file suffix, so we don't add it here
             if (router.entryPoints.includes('web')) {
               config.http.routers[routerName] = router;
-              config.http.routers[`${routerName}${APP_DOWN_ROUTER_SUFFIX}`] = appDownRouter(router, new Set(middlewareNames));
-              config.http.services[APP_DOWN_SERVICE] = { loadBalancer: { servers: [{ url: APP_DOWN_SERVICE_URL }] } };
+              config.http.routers[`${routerName}${APP_DOWN_ROUTER_SUFFIX}`] = appDownRouter(router, ownMiddlewares);
+              hasAppDownRouter = true;
             }
           }
         }
@@ -361,6 +372,12 @@ export class TraefikConfigService {
           }
           Object.assign(config.http.middlewares, middlewares);
         }
+      }
+
+      // After every container's services, so an app service that happens to share the name cannot
+      // point the down routers at a container address.
+      if (hasAppDownRouter) {
+        config.http.services[APP_DOWN_SERVICE] = { loadBalancer: { servers: [{ url: APP_DOWN_SERVICE_URL }] } };
       }
 
       // Write the configuration file

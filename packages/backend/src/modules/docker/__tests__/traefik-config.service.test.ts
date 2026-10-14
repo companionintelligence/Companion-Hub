@@ -249,6 +249,26 @@ describe('TraefikConfigService — routes while an app restarts', () => {
     expect(await fileOnlyRoutersFor(ORIGIN_HOST)).toEqual([]);
   });
 
+  it('matches only the requests the app router matches, TLS included', async () => {
+    // Without `tls`, the copy of a TLS-only router would answer plain HTTP on that host while the
+    // app is up, which the app's own router never does.
+    runningContainers({ ...publicWebLabels(), 'traefik.http.routers.wordpress-ci-marketplace-insecure.tls': 'true' });
+    await service.generateTraefikConfig();
+
+    const { routers } = parsed('apps.yml').http;
+
+    expect(routers[`wordpress-ci-marketplace-insecure${APP_DOWN_ROUTER_SUFFIX}`].tls).toBe(true);
+  });
+
+  it("still sends it to Traefik's loopback when an app names a service of its own like that one", async () => {
+    runningContainers({ ...publicWebLabels(), 'traefik.http.services.ci-hub-app-down.loadbalancer.server.port': '8080' });
+    await service.generateTraefikConfig();
+
+    const [kept] = await fileOnlyRoutersFor(ORIGIN_HOST);
+
+    expect(kept?.servers).toEqual([{ url: 'http://127.0.0.1:9' }]);
+  });
+
   it('drops every route of an app that is no longer running, the kept one included', async () => {
     runningContainers(publicWebLabels());
     await service.generateTraefikConfig();
