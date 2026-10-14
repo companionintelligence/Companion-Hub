@@ -74,7 +74,7 @@ export class FactoryResetService {
   }
 
   /**
-   * Refuse to run when the Hub's data folder is `/` or a home folder. The reset empties `app-data`,
+   * Refuse to run when the Hub's data folder is the top of a disk or a home folder. The reset empties `app-data`,
    * `apps`, `repos`, `backups`, and `user-config` in it, so with `ROOT_FOLDER_HOST=/home/<user>` it
    * emptied `~/repos` and the rest. `cihub reset` refuses a root like that too.
    *
@@ -90,7 +90,9 @@ export class FactoryResetService {
     const root = isTopOrHomeFolder(configured) ? configured : mounted && isHomeFolder(mounted) ? mounted : undefined;
 
     if (root) {
-      this.logger.error(`Factory reset refused: the Hub's data folder ${root} is / or a home folder, and the reset would empty folders in it`);
+      this.logger.error(
+        `Factory reset refused: the Hub's data folder ${root} is the top of a disk or a home folder, and the reset would empty folders in it`,
+      );
       throw new TranslatableError('SETTINGS_FACTORY_RESET_DATA_ROOT_REFUSED', { root }, 409);
     }
   }

@@ -41,11 +41,14 @@ describe('isHomeFolder', () => {
 });
 
 describe('isTopOrHomeFolder', () => {
-  it.each(['/', '//', '/home/ci', 'C:\\Users\\ci'])('%s', (folder) => {
+  // Drive C holds Windows and its users' folders, so its top is never a folder just for the Hub, in
+  // any of the forms Windows, a WSL2 engine, and Docker Desktop give it. Another drive's top may be a
+  // disk the user gave the Hub.
+  it.each(['/', '//', '/home/ci', 'C:\\Users\\ci', 'C:\\', 'c:/', 'C:', '/mnt/c', '/mnt/c/', '/c'])('%s', (folder) => {
     expect(isTopOrHomeFolder(folder)).toBe(true);
   });
 
-  it.each(['/opt/ci-hub', 'C:\\Users\\ci\\AppData\\Roaming\\companion-hub', '/mnt/c', 'C:\\'])('not %s', (folder) => {
+  it.each(['/opt/ci-hub', 'C:\\Users\\ci\\AppData\\Roaming\\companion-hub', 'C:\\hub', '/mnt/c/hub', 'D:\\', '/mnt/d', '/d'])('not %s', (folder) => {
     expect(isTopOrHomeFolder(folder)).toBe(false);
   });
 });

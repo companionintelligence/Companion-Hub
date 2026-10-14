@@ -537,26 +537,37 @@ describe('FactoryResetService: a data folder that is a home folder', () => {
     vol.writeFileSync(SETTINGS_PATH, '{"ciHubApiKey":"portal-device-key"}');
   });
 
-  it.each(['/', '/root', '/home/ci', '/home/ci/', '/var/home/ci', '/Users/ci', 'C:\\Users\\ci', 'c:/users/ci', '/mnt/c/Users/ci', '/c/Users/ci'])(
-    'refuses ROOT_FOLDER_HOST=%s before it touches an app, a file, the registration or the database',
-    async (rootFolderHost) => {
-      const { service, db, registrationService } = resetOnDisk({ rootFolderHost });
-      db.query.app.findMany.mockResolvedValue([{ id: 7, appName: 'wordpress', appStoreSlug: 'ci-marketplace' }]);
+  it.each([
+    '/',
+    '/root',
+    '/home/ci',
+    '/home/ci/',
+    '/var/home/ci',
+    '/Users/ci',
+    'C:\\Users\\ci',
+    'c:/users/ci',
+    '/mnt/c/Users/ci',
+    '/c/Users/ci',
+    'C:\\',
+    '/mnt/c',
+    '/c',
+  ])('refuses ROOT_FOLDER_HOST=%s before it touches an app, a file, the registration or the database', async (rootFolderHost) => {
+    const { service, db, registrationService } = resetOnDisk({ rootFolderHost });
+    db.query.app.findMany.mockResolvedValue([{ id: 7, appName: 'wordpress', appStoreSlug: 'ci-marketplace' }]);
 
-      const failure = await service.execute().catch((error: unknown) => error);
+    const failure = await service.execute().catch((error: unknown) => error);
 
-      expect(failure).toBeInstanceOf(TranslatableError);
-      expect((failure as TranslatableError).getResponse()).toEqual({
-        message: 'SETTINGS_FACTORY_RESET_DATA_ROOT_REFUSED',
-        intlParams: { root: rootFolderHost },
-      });
-      expect(uninstallExecute).not.toHaveBeenCalled();
-      expect(vol.readFileSync(ownFile, 'utf8')).toBe('x');
-      expect(registrationService.resetRegistration).not.toHaveBeenCalled();
-      expect(db.execute).not.toHaveBeenCalled();
-      expect(onDisk()).toEqual({ ciHubApiKey: 'portal-device-key' });
-    },
-  );
+    expect(failure).toBeInstanceOf(TranslatableError);
+    expect((failure as TranslatableError).getResponse()).toEqual({
+      message: 'SETTINGS_FACTORY_RESET_DATA_ROOT_REFUSED',
+      intlParams: { root: rootFolderHost },
+    });
+    expect(uninstallExecute).not.toHaveBeenCalled();
+    expect(vol.readFileSync(ownFile, 'utf8')).toBe('x');
+    expect(registrationService.resetRegistration).not.toHaveBeenCalled();
+    expect(db.execute).not.toHaveBeenCalled();
+    expect(onDisk()).toEqual({ ciHubApiKey: 'portal-device-key' });
+  });
 
   it('refuses when the folders are mounted from a home folder, as when ROOT_FOLDER_HOST is a link to one', async () => {
     mountEachFrom('/home/ci');
@@ -582,6 +593,8 @@ describe('FactoryResetService: a data folder that is a home folder', () => {
     '/home/ci/CI-Hub/.internal',
     '/opt/ci-hub',
     '/srv/hub',
+    'D:\\',
+    '/mnt/d',
   ])('runs with ROOT_FOLDER_HOST=%s', async (rootFolderHost) => {
     const { service } = resetOnDisk({ rootFolderHost });
 

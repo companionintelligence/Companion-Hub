@@ -28,7 +28,14 @@ export function isHomeFolder(folder: string): boolean {
   return HOME_FOLDER_SHAPES.some((shape) => shape.test(normalized));
 }
 
-/** Whether `folder` is `/` or a user's home folder (see {@link isHomeFolder}). */
+/**
+ * The tops of disks, normalized: `/`, and drive C as Windows, a WSL2 engine, and Docker Desktop name
+ * it. Drive C holds Windows and its users' folders, so its top is never a folder just for the Hub. The
+ * top of another drive may be a disk the user gave the Hub.
+ */
+const TOP_FOLDERS = new Set(['/', 'c:', '/mnt/c', '/c']);
+
+/** Whether `folder` is the top of a disk (see {@link TOP_FOLDERS}) or a user's home folder (see {@link isHomeFolder}). */
 export function isTopOrHomeFolder(folder: string): boolean {
-  return normalizeFolder(folder) === '/' || isHomeFolder(folder);
+  return TOP_FOLDERS.has(normalizeFolder(folder)) || isHomeFolder(folder);
 }
