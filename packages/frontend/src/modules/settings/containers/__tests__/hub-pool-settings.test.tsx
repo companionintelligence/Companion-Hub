@@ -904,16 +904,39 @@ describe('HubPoolSection', () => {
     });
 
     it('takes the digits off the screen once the PIN has expired', async () => {
-      fixtures.status = baseStatus();
-      fixtures.pinMint.mockImplementation(async () => ({
-        data: { pin: '481502', expiresAt: new Date(Date.now() + 150).toISOString() },
-      }));
-      renderSection();
+      // The clock is faked so the PIN's lifetime is measured in test time, not wall time. A short real
+      // expiry (it was 150 ms) is gone before a loaded machine renders the digits, so the test never saw
+      // them. `shouldAdvanceTime` keeps Testing Library's polling and user-event moving, but the fake
+      // clock never outpaces the wall clock, so a 60 s lifetime cannot lapse inside the 15 s test timeout:
+      // it only lapses when this test advances it.
+      const PIN_LIFETIME_MS = 60_000;
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+        fixtures.status = baseStatus();
+        fixtures.pinMint.mockImplementation(async () => ({
+          data: { pin: '481502', expiresAt: new Date(Date.now() + PIN_LIFETIME_MS).toISOString() },
+        }));
+        renderSection();
 
-      await userEvent.click(await screen.findByTestId('hub-pool-mint-pin-btn'));
+        await user.click(await screen.findByTestId('hub-pool-mint-pin-btn'));
 
-      expect(await screen.findByTestId('hub-pool-minted-pin')).toHaveTextContent('481502');
-      await waitFor(() => expect(screen.queryByTestId('hub-pool-minted-pin')).not.toBeInTheDocument(), { timeout: 2000 });
+        expect(await screen.findByTestId('hub-pool-minted-pin')).toHaveTextContent('481502');
+
+        // Still live halfway through its lifetime: the digits must not be cleared early.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(PIN_LIFETIME_MS / 2);
+        });
+        expect(screen.getByTestId('hub-pool-minted-pin')).toHaveTextContent('481502');
+
+        // Past its expiry: the digits are gone.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(PIN_LIFETIME_MS / 2 + 1_000);
+        });
+        expect(screen.queryByTestId('hub-pool-minted-pin')).not.toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('says a PIN is outstanding without ever re-showing it, which is what status reports', async () => {
