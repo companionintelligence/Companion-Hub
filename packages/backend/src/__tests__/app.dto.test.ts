@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { UserSettingsBody, parsePersistedSettings, settingsSchema } from '../app.dto';
+import { AppContextDto, UserSettingsBody, parsePersistedSettings, settingsSchema } from '../app.dto';
 
 describe('UserSettingsBody — timeZone validation (write path)', () => {
   it.each([
@@ -187,5 +187,16 @@ describe('parsePersistedSettings', () => {
     const { settings } = parsePersistedSettings({ dnsIp: 'not-an-ip' });
 
     expect(Object.keys(settings)).toEqual([]);
+  });
+});
+
+describe('AppContextDto: the settings it reports', () => {
+  // Everyone signed in reads the app context, and a setting reaches it only by being listed. Adding a
+  // setting means deciding which side it goes on: listed for the UI, or named here as kept out.
+  it('reports every setting except the credentials and the auto-update switch', () => {
+    const reported = Object.keys(AppContextDto.schema.shape.userSettings.shape);
+    const keptOut = Object.keys(settingsSchema.shape).filter((key) => !reported.includes(key));
+
+    expect(keptOut.sort()).toEqual(['autoUpdates', 'ciHubApiKey', 'ciHubMoveKey', 'inferenceCloudProviders', 'inferenceVllmApiKey']);
   });
 });

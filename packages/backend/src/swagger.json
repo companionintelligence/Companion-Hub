@@ -7096,9 +7096,6 @@
               "autoAllocateAppResources": {
                 "type": "boolean"
               },
-              "autoUpdates": {
-                "type": "boolean"
-              },
               "demoMode": {
                 "type": "boolean"
               },

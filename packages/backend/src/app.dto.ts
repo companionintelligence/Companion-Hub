@@ -399,7 +399,6 @@ const APP_CONTEXT_SETTINGS = {
   defaultAppCpuLimit: true,
   defaultAppMemoryLimit: true,
   autoAllocateAppResources: true,
-  autoUpdates: true,
   demoMode: true,
   disablePasswordReset: true,
   dnsIp: true,
