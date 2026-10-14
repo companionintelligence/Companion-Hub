@@ -427,8 +427,10 @@ export class MarketplaceWhoIsService {
    * A factory reset truncates the user table and every session with it, and only a Hub with no
    * operator can be claimed, so the next claimer takes this over and the old one, signing in again,
    * gets a new row like anyone else.
+   *
+   * `false` when the operator rows can't be read. Also asked by who may give an API key full capability.
    */
-  private async isClaimingOperator(userId: number): Promise<boolean> {
+  async isClaimingOperator(userId: number): Promise<boolean> {
     try {
       return (await this.users.getFirstOperator())?.id === userId;
     } catch (error) {
