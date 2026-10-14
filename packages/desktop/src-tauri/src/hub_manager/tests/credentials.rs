@@ -52,6 +52,10 @@ struct FakeEngine {
     inspect_fails: bool,
     /// psql in a `docker run` client can't resolve `ci-hub-db` on any network.
     name_lookup_fails_outside: bool,
+    /// ALTER USER prints `ALTER ROLE` but the role keeps its old password.
+    alter_user_changes_nothing: bool,
+    /// Once ALTER USER has run, no psql client can resolve `ci-hub-db`.
+    name_lookup_fails_after_alter_user: bool,
     db_password: RefCell<String>,
     queue_password: RefCell<String>,
     /// Folders the detached route left in a container, with what the command did.
@@ -68,6 +72,8 @@ impl FakeEngine {
             name_lookup_fails_inside: false,
             inspect_fails: false,
             name_lookup_fails_outside: false,
+            alter_user_changes_nothing: false,
+            name_lookup_fails_after_alter_user: false,
             db_password: RefCell::new(password.to_string()),
             queue_password: RefCell::new(password.to_string()),
             container_dirs: RefCell::new(HashMap::new()),
@@ -88,6 +94,10 @@ impl FakeEngine {
             .borrow()
             .iter()
             .any(|call| call.contains("ALTER USER"))
+    }
+
+    fn name_lookup_broken_by_alter_user(&self) -> bool {
+        self.name_lookup_fails_after_alter_user && self.ran_alter_user()
     }
 
     fn docker(&self, args: &[&str]) -> std::io::Result<Output> {
@@ -136,12 +146,14 @@ impl FakeEngine {
                 Ok(output(0, "ci-hub_internal\n", ""))
             }
             ["run", "--rm", "--network", network, "postgres:14", "bash", "-lc", script] => {
-                let (code, stdout, stderr) =
-                    if *network == "ci-hub_internal" && !self.name_lookup_fails_outside {
-                        self.psql_select_one(script)
-                    } else {
-                        (2, String::new(), NAME_LOOKUP_FAILED.to_string())
-                    };
+                let (code, stdout, stderr) = if *network == "ci-hub_internal"
+                    && !self.name_lookup_fails_outside
+                    && !self.name_lookup_broken_by_alter_user()
+                {
+                    self.psql_select_one(script)
+                } else {
+                    (2, String::new(), NAME_LOOKUP_FAILED.to_string())
+                };
                 if self.streams_output {
                     Ok(output(code, &stdout, &stderr))
                 } else {
@@ -159,7 +171,9 @@ impl FakeEngine {
     fn run_in_container(&self, command: &[&str]) -> Ran {
         match command {
             ["bash", "-lc", script] => {
-                if self.name_lookup_fails_inside && !script.contains(" -h 127.0.0.1 ") {
+                if (self.name_lookup_fails_inside || self.name_lookup_broken_by_alter_user())
+                    && !script.contains(" -h 127.0.0.1 ")
+                {
                     return (2, String::new(), NAME_LOOKUP_FAILED.to_string());
                 }
                 self.psql_select_one(script)
@@ -176,7 +190,9 @@ impl FakeEngine {
                     .strip_prefix("ALTER USER companion WITH PASSWORD '")
                     .and_then(|rest| rest.strip_suffix("';"))
                     .expect("ALTER USER statement");
-                *self.db_password.borrow_mut() = password.to_string();
+                if !self.alter_user_changes_nothing {
+                    *self.db_password.borrow_mut() = password.to_string();
+                }
                 (0, "ALTER ROLE\n".to_string(), String::new())
             }
             ["rabbitmqctl", "authenticate_user", "companion", password] => {
@@ -401,7 +417,7 @@ fn postgres_check_probes_from_the_internal_network_when_docker_inspect_fails() {
 }
 
 #[test]
-fn postgres_check_keeps_the_exec_probe_error_when_docker_run_prints_nothing() {
+fn postgres_check_logs_the_exec_probe_error_when_docker_run_prints_nothing() {
     let mut engine = FakeEngine::wsl_engine("same-secret");
     engine.name_lookup_fails_inside = true;
     engine.name_lookup_fails_outside = true;
@@ -413,10 +429,11 @@ fn postgres_check_keeps_the_exec_probe_error_when_docker_run_prints_nothing() {
         data_dir.path(),
     );
 
-    let error = result.expect_err("no probe could connect");
+    assert_eq!(result, Ok(()));
+    let log = desktop_log(data_dir.path());
     assert!(
-        error.contains("could not translate host name"),
-        "unexpected error: {error}"
+        log.contains("could not translate host name") && log.contains("Starting the Hub anyway."),
+        "log: {log}"
     );
 }
 
@@ -505,5 +522,46 @@ fn postgres_check_skips_the_copy_route_on_an_engine_that_streams_exec_output() {
             .any(|call| call.starts_with("exec -d ")),
         "calls: {:?}",
         engine.calls.borrow()
+    );
+}
+
+#[test]
+fn postgres_check_continues_when_the_probe_after_a_sync_cannot_connect() {
+    let mut engine = FakeEngine::wsl_engine("old-secret");
+    engine.name_lookup_fails_after_alter_user = true;
+    let data_dir = tempfile::tempdir().expect("tempdir");
+
+    let result = ensure_postgres_password_matches(
+        &|args: &[&str]| engine.docker(args),
+        "new-secret",
+        data_dir.path(),
+    );
+
+    assert_eq!(result, Ok(()));
+    assert_eq!(engine.db_password.borrow().as_str(), "new-secret");
+    let log = desktop_log(data_dir.path());
+    assert!(
+        log.contains("Synced Postgres role password to match env."),
+        "log: {log}"
+    );
+    assert!(log.contains("could not translate host name"), "log: {log}");
+}
+
+#[test]
+fn postgres_check_fails_when_the_synced_password_still_does_not_sign_in() {
+    let mut engine = FakeEngine::wsl_engine("old-secret");
+    engine.alter_user_changes_nothing = true;
+    let data_dir = tempfile::tempdir().expect("tempdir");
+
+    let result = ensure_postgres_password_matches(
+        &|args: &[&str]| engine.docker(args),
+        "new-secret",
+        data_dir.path(),
+    );
+
+    let error = result.expect_err("a password that still fails after the sync must stop the start");
+    assert!(
+        error.contains("password authentication failed"),
+        "unexpected error: {error}"
     );
 }

@@ -233,6 +233,7 @@ pub(crate) fn ensure_postgres_password_matches_env(
 }
 
 /// Checks that `password` signs in as `companion`, and sets the role's password to it when not.
+/// Fails when the change fails, or when the password is still refused after it.
 pub(crate) fn ensure_postgres_password_matches(
     docker: DockerCli,
     password: &str,
@@ -251,15 +252,22 @@ pub(crate) fn ensure_postgres_password_matches(
 
     sync_postgres_password(&db, password, data_dir)?;
 
-    if let Err((kind, detail)) = postgres_tcp_auth_works_with_retries(&db, password) {
-        let engine = crate::docker_engine::pinned_engine();
-        return Err(crate::docker_engine::format_postgres_probe_failure(
-            kind,
-            engine.as_ref(),
-            &detail,
-        ));
+    let Err((kind, detail)) = postgres_tcp_auth_works_with_retries(&db, password) else {
+        return Ok(());
+    };
+    let engine = crate::docker_engine::pinned_engine();
+    let message =
+        crate::docker_engine::format_postgres_probe_failure(kind, engine.as_ref(), &detail);
+    if kind == crate::docker_engine::PostgresProbeFailureKind::Auth {
+        return Err(message);
     }
-
+    // The role now has the password from .env, and the backend tries it for itself. A probe that
+    // could not connect says nothing against that, so it doesn't stop the start.
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hub.start",
+        &format!("{message} Starting the Hub anyway."),
+    );
     Ok(())
 }
 
