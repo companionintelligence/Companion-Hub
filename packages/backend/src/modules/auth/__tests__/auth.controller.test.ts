@@ -5,7 +5,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { UserRepository } from '@/modules/user/user.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
-import { HttpStatus, UnauthorizedException, type INestApplication } from '@nestjs/common';
+import { ForbiddenException, HttpStatus, UnauthorizedException, type INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import type { Request, Response } from 'express';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -2478,6 +2478,37 @@ describe('AuthController', () => {
 
       expect(() => authController.desktopSignInWait(request)).toThrow(UnauthorizedException);
       expect(cache.set).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['the bridge gateway, as a published port forwards it on Linux and the WSL engine', '172.17.0.1'],
+      ['the Docker Desktop VM', '192.168.65.1'],
+      ['loopback, for a Hub running on the host itself', '127.0.0.1'],
+      ['IPv4-mapped loopback', '::ffff:127.0.0.1'],
+    ])('hands the shell a challenge when its request arrives from %s', (_source, address) => {
+      const request = { ...shellRequest(), ip: address, socket: { remoteAddress: address } } as unknown as Request;
+
+      expect(authController.desktopSignInWaitChallenge(request).nonce).toMatch(/^[0-9a-f]{64}$/);
+    });
+
+    it.each([
+      [
+        'a caller through the tunnel',
+        {
+          ip: '10.20.0.2',
+          socket: { remoteAddress: '10.20.0.2' },
+          headers: { host: 'hub-device-org.example.com', 'x-forwarded-host': 'localhost:5002', 'cf-ray': '8c1f2e3d4a5b6c7d-AMS' },
+          host: 'hub-device-org.example.com',
+        },
+      ],
+      [
+        'another device on the LAN, by the host address',
+        { ip: '192.168.1.50', socket: { remoteAddress: '192.168.1.50' }, headers: { host: '192.168.1.20:5002' }, host: '192.168.1.20:5002' },
+      ],
+    ])('hands no challenge to %s, so it cannot push the shell nonce out', (_caller, { host, ...rest }) => {
+      const request = { protocol: 'http', ...rest, get: vi.fn((header: string) => (header === 'host' ? host : undefined)) } as unknown as Request;
+
+      expect(() => authController.desktopSignInWaitChallenge(request)).toThrow(ForbiddenException);
     });
 
     it('rate-limits the challenge like the other unauthenticated auth routes', () => {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DESKTOP_WAITING_CHALLENGE_CAP, DESKTOP_WAITING_CHALLENGE_TTL_MS, DesktopWaitingChallenges } from '../desktop-waiting-challenges';
 
 function challengesAt(start = 1_000_000) {
@@ -9,6 +9,10 @@ function challengesAt(start = 1_000_000) {
 }
 
 describe('DesktopWaitingChallenges', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('hands out a different 32-byte nonce each time', () => {
     const { challenges } = challengesAt();
     const first = challenges.issue();
@@ -52,6 +56,17 @@ describe('DesktopWaitingChallenges', () => {
     const nonce = challenges.issue();
 
     clock.now += DESKTOP_WAITING_CHALLENGE_TTL_MS;
+
+    expect(challenges.take(nonce)).toBe(true);
+  });
+
+  it('ignores the wall clock, which a WSL VM steps forward when it catches up after sleep', () => {
+    let wall = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => wall);
+    const challenges = new DesktopWaitingChallenges();
+    const nonce = challenges.issue();
+
+    wall += 2 * 60 * 60 * 1000;
 
     expect(challenges.take(nonce)).toBe(true);
   });

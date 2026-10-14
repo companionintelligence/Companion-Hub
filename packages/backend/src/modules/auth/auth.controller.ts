@@ -15,6 +15,7 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   HttpCode,
   HttpStatus,
@@ -858,13 +859,17 @@ export class AuthController {
   /**
    * A nonce for the desktop shell to sign before `POST /portal/desktop-waiting`. Unauthenticated
    * because a nonce grants nothing until it comes back signed with the host-local key; rate-limited
-   * like the other unauthenticated auth routes. Left out of the API client because the frontend
-   * never calls it.
+   * like the other unauthenticated auth routes. Only a caller on the loopback address gets one. The
+   * shell is always there, and a caller through the tunnel could fill the open set and push its nonce out.
+   * Left out of the API client because the frontend never calls it.
    */
   @Post('/portal/desktop-waiting/challenge')
   @HttpCode(HttpStatus.OK)
   @ApiExcludeEndpoint()
   desktopSignInWaitChallenge(@Req() req: Request) {
+    if (!isDirectLoopbackRequest(req)) {
+      throw new ForbiddenException();
+    }
     this.rateLimiter.admit('desktopWaitingChallenge', authClientKey(req));
     return { nonce: this.desktopWaitingChallenges.issue() };
   }
@@ -881,7 +886,11 @@ export class AuthController {
   desktopSignInWait(@Req() req: Request) {
     const nonce = req.headers[DESKTOP_SIGN_IN_WAIT_NONCE_HEADER];
     const proof = req.headers[DESKTOP_SIGN_IN_WAIT_PROOF_HEADER];
-    if (!this.desktopWaitingChallenges.take(nonce) || !isDesktopSignInWaitProof(proof, nonce, this.config.get('hubLocalKey'))) {
+    if (
+      typeof nonce !== 'string' ||
+      !this.desktopWaitingChallenges.take(nonce) ||
+      !isDesktopSignInWaitProof(proof, nonce, this.config.get('hubLocalKey'))
+    ) {
       throw new UnauthorizedException();
     }
     this.cache.set(PORTAL_DESKTOP_PRESENCE_CACHE_KEY, '1', PORTAL_DESKTOP_PRESENCE_TTL_SECONDS);

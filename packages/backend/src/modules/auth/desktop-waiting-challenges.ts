@@ -16,8 +16,11 @@ export class DesktopWaitingChallenges {
   /** Insertion order is issue order, which is what the cap drops by. */
   private readonly open = new Map<string, number>();
 
-  /** The clock. A field rather than a constructor argument, as in AuthRateLimiter; tests replace it. */
-  public now: () => number = Date.now;
+  /**
+   * The clock. A field rather than a constructor argument, as in AuthRateLimiter; tests replace it.
+   * Monotonic, so the WSL VM's clock catching up after sleep can't expire a nonce mid-answer.
+   */
+  public now: () => number = () => performance.now();
 
   public issue(): string {
     this.dropExpired();
@@ -33,8 +36,11 @@ export class DesktopWaitingChallenges {
     return nonce;
   }
 
-  /** Whether `nonce` was open and still live. It is closed afterwards either way. */
-  public take(nonce: unknown): nonce is string {
+  /**
+   * Whether `nonce` was open and still live. It is closed afterwards either way. A plain boolean,
+   * not a type guard: `false` comes back for strings too, and a guard would narrow them away.
+   */
+  public take(nonce: unknown): boolean {
     if (typeof nonce !== 'string') {
       return false;
     }
