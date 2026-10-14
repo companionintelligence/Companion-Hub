@@ -258,6 +258,19 @@ describe('AiAppInferenceRefreshService', () => {
         expect(restarted).toEqual([]);
         expect(dockerRead.readRunningAppFile).not.toHaveBeenCalled();
       });
+
+      it('keeps the text of an openclaw.json that is not valid JSON out of the log line', async () => {
+        // openclaw.json holds the gateway token, and V8's parse error quotes the text around the fault.
+        dockerRead.readRunningAppFile.mockResolvedValue('{"gateway":{"auth":{"token":tok_0123456789abcdef}}}');
+
+        service.requestRefresh('inference preferences changed');
+        const decisions = await service.flush();
+
+        const why = decisions.find((decision) => decision.appUrn === CI_OPENCLAW)?.why;
+        expect(why).toContain("OpenClaw's model picker could not be checked (openclaw.json is not valid JSON)");
+        expect(why).not.toContain('tok_');
+        expect(restarted).toEqual([CI_OPENCLAW]);
+      });
     });
 
     it('restarts on a failed staleness check only when an operator changed a setting', async () => {

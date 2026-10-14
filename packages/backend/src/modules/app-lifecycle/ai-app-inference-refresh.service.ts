@@ -271,22 +271,28 @@ export class AiAppInferenceRefreshService implements OnModuleInit, OnModuleDestr
     if (extractAppUrn(appUrn).appName !== 'ci-openclaw') {
       return null;
     }
-    let primary: unknown;
+    const unchecked = (message: string) => ({
+      restart: true,
+      why: `its inference env is current, but OpenClaw's model picker could not be checked (${message}); restarting in case it holds a downloaded model`,
+    });
+    let raw: string | null;
     try {
-      const raw = await this.dockerRead.readRunningAppFile(appUrn, '/data', '/data/.openclaw/openclaw.json');
-      // Not running, or no config written yet: there is no pick to take back.
-      if (raw === null) {
-        return null;
-      }
-      const config = JSON.parse(raw) as { agents?: { defaults?: { model?: { primary?: unknown } } } };
-      primary = config.agents?.defaults?.model?.primary;
+      raw = await this.dockerRead.readRunningAppFile(appUrn, '/data', '/data/.openclaw/openclaw.json');
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return {
-        restart: true,
-        why: `its inference env is current, but OpenClaw's model picker could not be checked (${message}); restarting in case it holds a downloaded model`,
-      };
+      return unchecked(err instanceof Error ? err.message : String(err));
     }
+    // Not running, or no config written yet: there is no pick to take back.
+    if (raw === null) {
+      return null;
+    }
+    let config: { agents?: { defaults?: { model?: { primary?: unknown } } } } | null;
+    try {
+      config = JSON.parse(raw);
+    } catch {
+      // Not the parser's message: V8 quotes the text around the fault, and this file holds OpenClaw's gateway token.
+      return unchecked('openclaw.json is not valid JSON');
+    }
+    const primary = config?.agents?.defaults?.model?.primary;
     if (typeof primary === 'string' && primary.startsWith('ollama/')) {
       return { restart: true, why: `chat default left the Hub model (${primary}); returning it to Hub Auto` };
     }
