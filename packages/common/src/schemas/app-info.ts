@@ -289,6 +289,57 @@ export function manifestDefaultsEdgeAuthOn(info: { exposable?: boolean; hub_inte
   return Boolean(info.exposable) && info.hub_integration?.edge_auth?.default === true;
 }
 
+/**
+ * What a stored install form with no `openPort` key is served as: open.
+ *
+ * Every start, restart and update replays the stored form through the queue's form schema
+ * (`queueAppFormSchema`), which defaults a missing `openPort` to this value. An install that sent
+ * no `openPort` (an API or MCP install, the onboarding path) is therefore served on an open host
+ * port, and with the Hub login in front of its public route (`requiresHubLoginOnPublicRoute`). The
+ * queue schema takes its default from here so the settings dialog cannot read the same form
+ * differently.
+ */
+export const STORED_FORM_OPEN_PORT_DEFAULT = true;
+
+/**
+ * Whether the Hub serves a stored install form on an open host port: the form's own boolean, else
+ * {@link STORED_FORM_OPEN_PORT_DEFAULT}. Anything that is not a boolean counts as absent, so a
+ * damaged value fails toward the login, not away from it.
+ */
+export function servedOpenPort(form: { openPort?: unknown } | null | undefined): boolean {
+  return typeof form?.openPort === 'boolean' ? form.openPort : STORED_FORM_OPEN_PORT_DEFAULT;
+}
+
+/**
+ * Whether the tunnel route puts the Hub login (`ci-hub@file`) in front of the app.
+ *
+ * The form's `enableAuth` when it holds one. When it does not, the manifest's
+ * `hub_integration.edge_auth.default` decides, and failing that an open host port turns the login
+ * on. Compose once skipped the tunnel route for apps on an open host port (#678's gate), and most
+ * of them never chose a login, because the queue sets `openPort` to true for any API or MCP install
+ * that left it out. Without this default, the next Hub upgrade (`restartRunningApps`) would put
+ * those apps on the internet with no login, CI-OpenClaw among them, whose `/` hands out a gateway
+ * token.
+ *
+ * The manifest default is read here, at route-build time, and not only when a form is saved
+ * (`app-lifecycle.service.ts` self-heals a stored form there): an install that never decided —
+ * `openPort: false`, no `enableAuth` key — is otherwise served with no login until someone re-saves
+ * its settings, while the settings dialog showed the toggle as on. That was the live OpenClaw
+ * exposure found 2026-09-28. `manifest` is optional because a compose rebuild can run without a
+ * resolvable manifest; then only the form and the port decide, as before.
+ *
+ * Shared by the backend route builder and the install form's edit dialog, so the switch shows what
+ * the Hub serves. They disagreed once: the dialog fell back to the manifest default alone, showed OFF
+ * for a stored form on an open host port, and a save wrote `enableAuth: false` over a login that was
+ * in front of the app.
+ */
+export function requiresHubLoginOnPublicRoute(
+  form: { enableAuth?: boolean; openPort?: boolean },
+  manifest?: { exposable?: boolean; hub_integration?: HubIntegration },
+): boolean {
+  return form.enableAuth ?? ((manifest !== undefined && manifestDefaultsEdgeAuthOn(manifest)) || Boolean(form.openPort));
+}
+
 /** The only interface a {@link hostPortStaysOnLoopback} app's host port is published on. */
 export const LOOPBACK_HOST_PORT_INTERFACE = '127.0.0.1';
 
