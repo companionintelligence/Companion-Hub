@@ -14,6 +14,7 @@ import { TailscaleService } from '../../tailscale/tailscale.service';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as si from 'systeminformation';
+import fs from 'node:fs';
 import path from 'node:path';
 import { vol } from 'memfs';
 import { TUNNEL_DIR } from '@/common/constants';
@@ -2990,6 +2991,195 @@ describe('RegistrationService', () => {
 
       expect(deleteGrants).toHaveBeenCalled();
       expect(loggerService.info).toHaveBeenCalledWith('Cleared cached app grants');
+    });
+  });
+
+  describe('the registration record (state/registered-device-id)', () => {
+    const RECORD_PATH = '/data/state/registered-device-id';
+    // Placeholders: the SMBIOS UUID a Windows Hub paired under, and the registry MachineGuid desktop
+    // 0.3.4 wrote over DEVICE_ID once Windows removed wmic.
+    const REGISTERED = '4c4c4544-0042-3510-8052-b4c04f4d3232';
+    const MACHINE_GUID = '9e1f0c2a-7d3b-4e6a-8f00-2b5c6d7e9d8e';
+    let savedDeviceId: string | undefined;
+
+    beforeEach(() => {
+      savedDeviceId = process.env.DEVICE_ID;
+      deviceRegistrationRepository.deleteAll.mockResolvedValue(undefined);
+      vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      if (savedDeviceId === undefined) {
+        delete process.env.DEVICE_ID;
+      } else {
+        process.env.DEVICE_ID = savedDeviceId;
+      }
+    });
+
+    it('checks in under the ID the Hub registered as, not a different DEVICE_ID from the env file', async () => {
+      process.env.DEVICE_ID = MACHINE_GUID;
+      vol.writeFileSync(RECORD_PATH, `${REGISTERED}\n`);
+
+      await expect(service.getDeviceId()).resolves.toBe(REGISTERED);
+    });
+
+    /** A Hub that is not registered, as after a reset, so `pairDevice` and Start fresh go through. */
+    const asUnregistered = () => {
+      configService.getOutboundCiCloudUrl.mockReturnValue('http://cloud.api');
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+    };
+
+    it('keeps the record through Settings > Reset registration, so the Hub pairs again under the ID Portal knows', async () => {
+      // The factory reset makes the same call. The device key survives a reset so that the Hub reconnects
+      // to its Portal device, and that works only under the ID the key belongs to.
+      process.env.DEVICE_ID = MACHINE_GUID;
+      vol.writeFileSync(RECORD_PATH, `${REGISTERED}\n`);
+      asUnregistered();
+
+      await service.resetRegistration();
+
+      expect(vol.readFileSync(RECORD_PATH, 'utf-8')).toBe(`${REGISTERED}\n`);
+      mockedAxios.post.mockResolvedValue({ status: 400, data: { error: 'Invalid pairing code' } } as any);
+      await service.pairDevice('ABC123');
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        'http://cloud.api/api/devices/pair',
+        expect.objectContaining({ device_id: REGISTERED }),
+        expect.anything(),
+      );
+    });
+
+    it('keeps the record when Portal answers a check-in with DEVICE_NOT_ACTIVE', async () => {
+      process.env.DEVICE_ID = MACHINE_GUID;
+      vol.writeFileSync(RECORD_PATH, `${REGISTERED}\n`);
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      configService.getConfig.mockReturnValue({ ciCloudUrl: 'http://cloud.api', ciHubApiKey: 'test-api-key', domain: 'example.com' } as any);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+      deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+      mockedAxios.post.mockResolvedValue({ status: 400, data: { error: 'Device not active', code: 'DEVICE_NOT_ACTIVE' } } as any);
+
+      try {
+        await expect(service.checkForRemoval()).resolves.toBe('removed');
+      } finally {
+        service.onApplicationShutdown();
+      }
+
+      expect(mockedAxios.post).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ device_id: REGISTERED }), expect.anything());
+      expect(service.getRegistrationStatus().phase).toBe('unregistered');
+      expect(vol.readFileSync(RECORD_PATH, 'utf-8')).toBe(`${REGISTERED}\n`);
+      await expect(service.getDeviceId()).resolves.toBe(REGISTERED);
+    });
+
+    it('removes the record on Start fresh, so the Hub pairs as a new device under DEVICE_ID', async () => {
+      process.env.DEVICE_ID = MACHINE_GUID;
+      vol.writeFileSync(RECORD_PATH, `${REGISTERED}\n`);
+      asUnregistered();
+      await expect(service.getDeviceId()).resolves.toBe(REGISTERED);
+
+      await expect(service.prepareFreshSetup()).resolves.toMatchObject({ success: true });
+
+      expect(vol.existsSync(RECORD_PATH)).toBe(false);
+      await expect(service.getDeviceId()).resolves.toBe(MACHINE_GUID);
+    });
+
+    it('fails Start fresh when the record cannot be removed, rather than pair the old ID as a new device', async () => {
+      process.env.DEVICE_ID = MACHINE_GUID;
+      vol.writeFileSync(RECORD_PATH, `${REGISTERED}\n`);
+      asUnregistered();
+      const rmSync = fs.rmSync;
+      const denied = vi.spyOn(fs, 'rmSync').mockImplementation((target, options) => {
+        // By name: the resolver builds the path with `path.join`, which uses backslashes on Windows.
+        if (path.basename(String(target)) === path.basename(RECORD_PATH)) {
+          throw Object.assign(new Error(`EACCES: permission denied, unlink '${RECORD_PATH}'`), { code: 'EACCES' });
+        }
+        rmSync(target, options);
+      });
+
+      try {
+        await expect(service.prepareFreshSetup()).rejects.toThrow('EACCES');
+      } finally {
+        denied.mockRestore();
+      }
+
+      expect(vol.existsSync(RECORD_PATH)).toBe(true);
+    });
+
+    it('refuses to pair under a record copied from another machine until Start fresh removes it', async () => {
+      const hostMachineId = '5eed5eed5eed5eed5eed5eed5eed5eed';
+      const copied = 'c0ffee00c0ffee00c0ffee00c0ffee00';
+      // DEVICE_ID is this host's own; the record came with a data folder copied from another node.
+      process.env.DEVICE_ID = hostMachineId;
+      vol.mkdirSync('/etc', { recursive: true });
+      vol.writeFileSync('/etc/machine-id', `${hostMachineId}\n`);
+      vol.writeFileSync(RECORD_PATH, `${copied}\n`);
+      asUnregistered();
+
+      const refused = await service.pairDevice('ABC123');
+
+      expect(refused.success).toBe(false);
+      expect(refused.message).toContain('state/registered-device-id');
+      expect(refused.message).toContain('Start fresh');
+
+      // A reset keeps the record, so the Hub would still pair under the copied ID.
+      await service.resetRegistration();
+      await expect(service.pairDevice('ABC123')).resolves.toMatchObject({ success: false, message: refused.message });
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+
+      await service.prepareFreshSetup();
+      mockedAxios.post.mockResolvedValue({ status: 400, data: { error: 'Invalid pairing code' } } as any);
+
+      await service.pairDevice('ABC123');
+
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        'http://cloud.api/api/devices/pair',
+        expect.objectContaining({ device_id: hostMachineId }),
+        expect.anything(),
+      );
+    });
+
+    it('records the ID a registration through the form used, so check-ins send that ID and not an older record', async () => {
+      // The record outlives a reset, so one left from an earlier pairing would otherwise win over the ID
+      // the operator just registered this Hub under.
+      process.env.DEVICE_ID = MACHINE_GUID;
+      vol.writeFileSync(RECORD_PATH, `${REGISTERED}\n`);
+      await expect(service.getDeviceId()).resolves.toBe(REGISTERED);
+      configService.getOutboundCiCloudUrl.mockReturnValue('http://cloud.api');
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      mockedAxios.post.mockResolvedValue({ status: 200, data: { tunnel_id: 't', tunnel_token: 'tok', subdomain: 'hub-org' } } as any);
+      vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+
+      await expect(service.initiateRegistration('org-1', 'My Org', MACHINE_GUID)).resolves.toMatchObject({ success: true });
+
+      expect(vol.readFileSync(RECORD_PATH, 'utf-8')).toBe(`${MACHINE_GUID}\n`);
+      await expect(service.getDeviceId()).resolves.toBe(MACHINE_GUID);
+    });
+
+    it('judges the record a pairing writes, where before there was only a host-derived ID to judge', async () => {
+      const hostMachineId = '5eed5eed5eed5eed5eed5eed5eed5eed';
+      delete process.env.DEVICE_ID;
+      vol.mkdirSync('/etc', { recursive: true });
+      vol.writeFileSync('/etc/machine-id', `${hostMachineId}\n`);
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue(hostMachineId);
+      vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+      deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      expect(service.getDeviceIdHostBinding()).toEqual({ status: 'not_set' });
+
+      await service.completeRegistrationFromCallback({
+        deviceId: hostMachineId,
+        organizationId: 'org-cb',
+        organizationName: 'Callback Org',
+        slug: 'cb-org',
+        subdomain: 'hub-cb-org',
+        tunnelId: 'tunnel-cb',
+        tunnelToken: 'token-cb',
+      });
+
+      expect(vol.readFileSync(RECORD_PATH, 'utf-8')).toBe(`${hostMachineId}\n`);
+      expect(service.getDeviceIdHostBinding()).toEqual({ status: 'matches_host', deviceId: hostMachineId });
     });
   });
 

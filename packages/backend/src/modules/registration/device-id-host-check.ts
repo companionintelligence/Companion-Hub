@@ -54,7 +54,7 @@ const KERNEL_RELEASE_FILE = '/proc/sys/kernel/osrelease';
 const VM_KERNEL_RELEASE = /linuxkit|microsoft/i;
 
 export type DeviceIdHostBinding =
-  /** No `DEVICE_ID` in the environment. The Hub derives one from this machine, so there is nothing to compare. */
+  /** No registration record and no `DEVICE_ID`. The Hub derives one from this machine, so there is nothing to compare. */
   | { status: 'not_set' }
   | { status: 'not_checkable'; deviceId: string; reason: string }
   | { status: 'matches_host'; deviceId: string }
@@ -64,6 +64,11 @@ export type DeviceIdHostBinding =
 
 export interface DeviceIdHostCheckInput {
   envDeviceId: string | undefined;
+  /**
+   * `state/registered-device-id`. The Hub pairs and checks in under it ahead of `DEVICE_ID`, and a data
+   * folder copied from another machine brings it along, so it gets the same check in `DEVICE_ID`'s place.
+   */
+  registeredDeviceId?: string | null;
   allowForeign?: string | undefined;
   /**
    * Returns a file's contents, or `null` when it cannot be read. Injected so both the Hub and the host-side CLI can run this.
@@ -104,8 +109,43 @@ export function foreignDeviceIdMessage(deviceId: string): string {
   );
 }
 
+/**
+ * The remedy for a registration record from another machine. The record wins over `DEVICE_ID` and
+ * survives a registration reset, so editing the env file changes nothing until Start fresh removes
+ * the record. On the desktop app, a launch also copies the record into `DEVICE_ID`, which is why Start
+ * fresh comes before the edit.
+ */
+export function foreignRegisteredDeviceIdMessage(deviceId: string): string {
+  return (
+    `This Hub's registration record (state/registered-device-id) holds ${deviceId}, which was not generated on this machine: it is not this host's /etc/machine-id or DMI identity, so this Hub most likely paired under an ID copied from another Hub, or its data folder was copied from one. ` +
+    "Portal knows a Hub only by its device ID, so two Hubs with one ID are one device, and whichever pairs second takes over the other one's registration or is refused. " +
+    'The Hub uses the record ahead of DEVICE_ID, and a registration reset keeps it, so only Start fresh gives this Hub its own ID. ' +
+    'If the Hub is registered, reset its registration from Settings first. Then choose Start fresh on the pairing page, set DEVICE_ID in its env file to the output of `cat /etc/machine-id`, recreate the Hub container, and pair it again. ' +
+    'Without the desktop app, you can instead set DEVICE_ID, recreate the Hub container, and run `cihub register --fresh --code <code>`, which does Start fresh before it pairs. ' +
+    `If no other Hub uses this ID, or the Hub was moved to new hardware on purpose, set ${ALLOW_FOREIGN_DEVICE_ID_ENV}=true instead, because changing a registered Hub's device ID means registering it again as a new device.`
+  );
+}
+
+/**
+ * Judges the device ID this Hub pairs and checks in under: its registration record when it has one,
+ * else `DEVICE_ID`. A registration reset keeps the record, so `DEVICE_ID` matters only once Start
+ * fresh has removed it, and the Hub judges again then. A record equal to `DEVICE_ID` still gets the
+ * record's remedy, because editing `DEVICE_ID` alone would not change the ID the Hub sends.
+ */
 export function checkDeviceIdHostBinding(input: DeviceIdHostCheckInput): DeviceIdHostBinding {
-  const deviceId = normalizeDeviceIdCandidate(input.envDeviceId);
+  const registered = normalizeDeviceIdCandidate(input.registeredDeviceId);
+  if (registered) {
+    return judgeDeviceId(registered, input, foreignRegisteredDeviceIdMessage);
+  }
+  return judgeDeviceId(input.envDeviceId, input, foreignDeviceIdMessage);
+}
+
+function judgeDeviceId(
+  candidate: string | undefined,
+  input: DeviceIdHostCheckInput,
+  foreignMessage: (deviceId: string) => string,
+): DeviceIdHostBinding {
+  const deviceId = normalizeDeviceIdCandidate(candidate);
   if (!deviceId) {
     return { status: 'not_set' };
   }
@@ -134,5 +174,5 @@ export function checkDeviceIdHostBinding(input: DeviceIdHostCheckInput): DeviceI
   if (input.allowForeign?.trim().toLowerCase() === 'true') {
     return { status: 'allowed_foreign', deviceId };
   }
-  return { status: 'foreign', deviceId, message: foreignDeviceIdMessage(deviceId) };
+  return { status: 'foreign', deviceId, message: foreignMessage(deviceId) };
 }

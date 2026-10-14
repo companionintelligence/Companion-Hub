@@ -55,10 +55,42 @@ describe('device-id.resolver', () => {
       await expect(resolveDeviceId({ dataDir, execCommand: execCommand as never })).resolves.toBe('HW-SERIAL-AFTER-UPGRADE');
     });
 
-    it('still lets an explicit DEVICE_ID win over the registration record', async () => {
-      process.env.DEVICE_ID = 'env-device-id';
+    it('keeps the registered ID when the env file has another DEVICE_ID, and logs the last characters of both', async () => {
+      // Windows desktop 0.3.4 wrote the registry MachineGuid over DEVICE_ID once wmic was gone, and
+      // Portal refused every check-in although the record still held the ID it knew.
+      const registered = '4c4c4544-0042-3510-8052-b4c04f4d3232';
+      const machineGuid = '9e1f0c2a-7d3b-4e6a-8f00-2b5c6d7e9d8e';
+      process.env.DEVICE_ID = machineGuid;
+      persistRegisteredDeviceId(dataDir, registered);
+      const logger = { debug: vi.fn(), warn: vi.fn() };
+
+      await expect(resolveDeviceId({ dataDir, logger })).resolves.toBe(registered);
+
+      expect(logger.warn).toHaveBeenCalledOnce();
+      const line = String(logger.warn.mock.calls[0]?.[0]);
+      expect(line).toContain('…4d3232');
+      expect(line).toContain('…7e9d8e');
+      expect(line).not.toContain(registered);
+      expect(line).not.toContain(machineGuid);
+      // A registration reset keeps the record, so the way to a new ID is Start fresh.
+      expect(line).toContain('Start fresh removes the record, and a registration reset does not');
+    });
+
+    it('logs nothing when DEVICE_ID and the registered ID agree', async () => {
+      process.env.DEVICE_ID = 'same-device-id';
+      persistRegisteredDeviceId(dataDir, 'same-device-id');
+      const logger = { debug: vi.fn(), warn: vi.fn() };
+
+      await expect(resolveDeviceId({ dataDir, logger })).resolves.toBe('same-device-id');
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
+    it('takes DEVICE_ID again once the registration record is gone', async () => {
+      process.env.DEVICE_ID = 'operator-set-device-id';
       persistRegisteredDeviceId(dataDir, 'registered-id');
-      await expect(resolveDeviceId({ dataDir })).resolves.toBe('env-device-id');
+      clearRegisteredDeviceId(dataDir);
+
+      await expect(resolveDeviceId({ dataDir })).resolves.toBe('operator-set-device-id');
     });
 
     it('falls back to dmidecode serial when env is unset', async () => {

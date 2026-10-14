@@ -83,11 +83,36 @@ whether another Hub carries the same ID:
 - If no other Hub does, keep the ID: set `HUB_ALLOW_FOREIGN_DEVICE_ID=true` in the same env file and
   recreate the Hub container. `cihub doctor` then reports the ID as kept from another machine and does
   not fail.
-- If another Hub does, decide which one keeps the Portal device. Give the other one its own ID with the
-  steps above, and reset its registration from **Settings** before you pair it again.
+- If another Hub does, decide which one keeps the Portal device. Give the other one its own ID as
+  described in [Changing a registered Hub's device ID](#changing-a-registered-hubs-device-id).
 
 If you moved a Hub to new hardware on purpose and it must keep its Portal device, set
 `HUB_ALLOW_FOREIGN_DEVICE_ID=true` as well.
+
+### Changing a registered Hub's device ID
+
+When a Hub pairs, it writes the device ID it paired under to `state/registered-device-id` in its data
+folder, and from then on that record wins over `DEVICE_ID`. Changing `DEVICE_ID` later, by hand or
+through an older desktop app, doesn't change the ID the Hub checks in with. The Hub logs a warning
+with the last characters of both IDs instead. Windows desktop 0.3.4 wrote the registry `MachineGuid`
+into `DEVICE_ID` once Windows removed `wmic`, and Portal refused those Hubs until the record won.
+
+A registration reset keeps the record, whether it comes from **Settings > Reset registration**, from
+Portal reporting the device removed, or from a factory reset, so the Hub pairs again under the ID
+Portal knows. Only Start fresh ("Set up as new device" on the pairing page, or
+`cihub register --fresh`) removes it. To change a registered Hub's device ID on purpose:
+
+1. Reset its registration from **Settings**. `cihub register` stops at "Already registered" on a
+   registered Hub, so this comes first.
+2. Set `DEVICE_ID` in the env file and recreate the Hub container: `cihub up <env>`.
+3. Pair it as a new device: `cihub register --fresh --code <code>`. Portal sees it as a new device.
+
+With the desktop app, the order changes, because every launch copies the record into `DEVICE_ID`.
+After the reset, choose **Start fresh** on the pairing page, then quit the app, set `DEVICE_ID`,
+reopen the app, and pair.
+
+The copied-ID check judges the record when there is one, because that is the ID the Hub pairs under,
+and a data folder copied from another node brings it along. The same steps give such a Hub its own ID.
 
 ## Operators and accounts: three identity planes
 
