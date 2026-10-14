@@ -6,7 +6,7 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => k
 const toastMock = vi.hoisted(() => ({ error: vi.fn() }));
 vi.mock('sonner', () => ({ toast: { error: (...a: unknown[]) => toastMock.error(...a) } }));
 
-const ctx = vi.hoisted(() => ({ setUserContext: vi.fn(), isLoggedIn: false }));
+const ctx = vi.hoisted(() => ({ setUserContext: vi.fn(), isLoggedIn: false, isLoading: false }));
 vi.mock('@/context/user-context', () => ({ useUserContext: () => ctx }));
 
 const api = vi.hoisted(() => ({
@@ -29,8 +29,10 @@ vi.mock('@/api-client/client.gen', () => ({
   },
 }));
 
+const invoke = vi.hoisted(() => vi.fn(async (_cmd: string, _args?: Record<string, unknown>): Promise<unknown> => true));
+
 const runtime = vi.hoisted(() => ({
-  getTauriInvoke: vi.fn((): object | null => ({})),
+  getTauriInvoke: vi.fn((): typeof invoke | null => invoke),
   isTauriDesktopApp: vi.fn(() => true),
   isMobileClient: vi.fn(() => false),
   getHubBaseUrlSync: vi.fn(() => null as string | null),
@@ -89,7 +91,8 @@ vi.mock('@tauri-apps/api/event', () => ({
 const { useDesktopPortalAuth } = await import('./use-desktop-portal-auth');
 
 beforeEach(() => {
-  runtime.getTauriInvoke.mockReturnValue({});
+  invoke.mockReset().mockResolvedValue(true);
+  runtime.getTauriInvoke.mockReturnValue(invoke);
   runtime.isTauriDesktopApp.mockReturnValue(true);
   runtime.isMobileClient.mockReturnValue(false);
   runtime.getHubBaseUrlSync.mockReturnValue(null);
@@ -100,6 +103,7 @@ beforeEach(() => {
     value: {
       ...window.location,
       origin: 'http://localhost:5005',
+      hostname: 'localhost',
       port: '5005',
       assign: locationAssign,
     },
@@ -124,6 +128,7 @@ beforeEach(() => {
   }
   ctx.setUserContext.mockReset();
   ctx.isLoggedIn = false;
+  ctx.isLoading = false;
   dl.used.clear();
   dl.takePendingDesktopPortalAuth.mockReset().mockResolvedValue(null);
   dl.persistDesktopPortalToken.mockReset();
@@ -134,6 +139,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe('useDesktopPortalAuth — wiring', () => {
@@ -145,12 +151,75 @@ describe('useDesktopPortalAuth — wiring', () => {
     expect(api.apiFetch).not.toHaveBeenCalled();
   });
 
-  it('tells the Hub this desktop window is running so browser callbacks can hand off', async () => {
+  it('heartbeats session-hint with desktop=1, so a signed-in window clears the handoff flag', async () => {
     renderHook(() => useDesktopPortalAuth());
 
     await waitFor(() => {
       expect(api.apiFetch).toHaveBeenCalledWith('/api/auth/portal/session-hint?desktop=1');
     });
+  });
+
+  const waitingAnnouncements = () => invoke.mock.calls.filter((call) => call[0] === 'announce_desktop_sign_in_wait_command').length;
+
+  it('has the desktop shell tell the Hub it is waiting for a sign-in while the window is signed out, every 60 s', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    renderHook(() => useDesktopPortalAuth());
+
+    expect(waitingAnnouncements()).toBe(1);
+    vi.advanceTimersByTime(60_000);
+    expect(waitingAnnouncements()).toBe(2);
+    // The page never sends the proof itself; only the shell can.
+    expect(api.apiFetch.mock.calls.some((call) => String(call[0]).includes('desktop-waiting'))).toBe(false);
+  });
+
+  it('does not say it is waiting for a sign-in while signed in', async () => {
+    ctx.isLoggedIn = true;
+    renderHook(() => useDesktopPortalAuth());
+
+    await waitFor(() => expect(api.apiFetch).toHaveBeenCalledWith('/api/auth/portal/session-hint?desktop=1'));
+    expect(waitingAnnouncements()).toBe(0);
+  });
+
+  it('waits for the user context before saying it is waiting, so a signed-in window never does', () => {
+    ctx.isLoading = true;
+    const { rerender } = renderHook(() => useDesktopPortalAuth());
+    expect(waitingAnnouncements()).toBe(0);
+
+    ctx.isLoading = false;
+    ctx.isLoggedIn = true;
+    rerender();
+    expect(waitingAnnouncements()).toBe(0);
+  });
+
+  it('stops saying it is waiting once the window signs in', () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const { rerender } = renderHook(() => useDesktopPortalAuth());
+    expect(waitingAnnouncements()).toBe(1);
+
+    ctx.isLoggedIn = true;
+    rerender();
+    vi.advanceTimersByTime(120_000);
+    expect(waitingAnnouncements()).toBe(1);
+  });
+
+  it('does not say it is waiting while the window shows a Hub on another machine', async () => {
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...window.location, origin: 'http://hub.ci.lan', hostname: 'hub.ci.lan', port: '', assign: locationAssign },
+    });
+    renderHook(() => useDesktopPortalAuth());
+
+    await waitFor(() => expect(ev.listen).toHaveBeenCalledWith('deep-link-auth'));
+    expect(waitingAnnouncements()).toBe(0);
+  });
+
+  it('carries on when the desktop app is too old to have the command', async () => {
+    invoke.mockRejectedValue(new Error('Command announce_desktop_sign_in_wait_command not found'));
+    renderHook(() => useDesktopPortalAuth());
+
+    await waitFor(() => expect(ev.listen).toHaveBeenCalledWith('deep-link-auth'));
+    expect(waitingAnnouncements()).toBe(1);
+    expect(toastMock.error).not.toHaveBeenCalled();
   });
 
   it('remembers the account this window is signed in as, so the sign-in screen can name it after sign-out', async () => {
@@ -219,6 +288,7 @@ describe('useDesktopPortalAuth — wiring', () => {
 
     await waitFor(() => expect(ev.listen).toHaveBeenCalled());
     expect(api.apiFetch).not.toHaveBeenCalledWith('/api/auth/portal/session-hint?desktop=1');
+    expect(waitingAnnouncements()).toBe(0);
   });
 
   it('subscribes to deep-link-auth', async () => {

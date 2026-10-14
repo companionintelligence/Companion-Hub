@@ -15,7 +15,9 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
+  HttpCode,
   HttpStatus,
   Patch,
   Post,
@@ -39,6 +41,7 @@ import { UserRepository } from '@/modules/user/user.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { SessionManager } from './session.manager';
+import { DesktopWaitingChallenges } from './desktop-waiting-challenges';
 import {
   BrowserHandoffMintBody,
   BrowserHandoffMintDto,
@@ -86,6 +89,9 @@ import {
   shouldHandoffPortalLoginToDesktop,
   exchangePortalAuthorizationCode,
   fetchPortalSessionEmail,
+  DESKTOP_SIGN_IN_WAIT_NONCE_HEADER,
+  DESKTOP_SIGN_IN_WAIT_PROOF_HEADER,
+  isDesktopSignInWaitProof,
   isDirectLoopbackRequest,
   probePortalReachable,
   type PortalDesktopExchange,
@@ -183,6 +189,8 @@ export class AuthController {
     private readonly forwardAuthIdentities: ForwardAuthIdentityResolver,
     private readonly rateLimiter: AuthRateLimiter,
   ) {}
+
+  private readonly desktopWaitingChallenges = new DesktopWaitingChallenges();
 
   /**
    * Run an unauthenticated auth step under {@link AuthRateLimiter}: refuse if this client has
@@ -848,18 +856,53 @@ export class AuthController {
     }
   }
 
+  /**
+   * A nonce for the desktop shell to sign before `POST /portal/desktop-waiting`. Unauthenticated
+   * because a nonce grants nothing until it comes back signed with the host-local key; rate-limited
+   * like the other unauthenticated auth routes. Only a caller that `isDirectLoopbackRequest` admits
+   * gets one: the shell always passes, and a caller from the internet could otherwise fill the open
+   * set and push the shell's nonce out. Left out of the API client because the frontend never calls it.
+   */
+  @Post('/portal/desktop-waiting/challenge')
+  @HttpCode(HttpStatus.OK)
+  @ApiExcludeEndpoint()
+  desktopSignInWaitChallenge(@Req() req: Request) {
+    if (!isDirectLoopbackRequest(req)) {
+      throw new ForbiddenException();
+    }
+    this.rateLimiter.admit('desktopWaitingChallenge', authClientKey(req));
+    return { nonce: this.desktopWaitingChallenges.issue() };
+  }
+
+  /**
+   * The desktop app on this machine is signed out and waiting for a sign-in, so a browser sign-in on
+   * the loopback address hands off to it (shouldHandoffPortalLoginToDesktop). The desktop shell sends
+   * this from Rust every 60 s while its window is signed out, with a challenge's nonce and its
+   * `desktopSignInWaitProof`. The nonce is spent here whether or not the proof matches.
+   */
+  @Post('/portal/desktop-waiting')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiExcludeEndpoint()
+  desktopSignInWait(@Req() req: Request) {
+    const nonce = req.headers[DESKTOP_SIGN_IN_WAIT_NONCE_HEADER];
+    const proof = req.headers[DESKTOP_SIGN_IN_WAIT_PROOF_HEADER];
+    if (
+      typeof nonce !== 'string' ||
+      !this.desktopWaitingChallenges.take(nonce) ||
+      !isDesktopSignInWaitProof(proof, nonce, this.config.get('hubLocalKey'))
+    ) {
+      throw new UnauthorizedException();
+    }
+    this.cache.set(PORTAL_DESKTOP_PRESENCE_CACHE_KEY, '1', PORTAL_DESKTOP_PRESENCE_TTL_SECONDS);
+  }
+
   @Get('/portal/session-hint')
   @ApiResponse({ type: PortalSessionHintDto })
   async portalSessionHint(@Req() req: Request, @Query('desktop') desktop?: string) {
-    // The flag hands sign-ins started on this machine's loopback address to the desktop app, so only
-    // a request sent straight to that address may set it. A signed-in window is not waiting for a
-    // sign-in, so its heartbeat clears the flag instead.
-    if ((desktop === '1' || desktop === 'true') && isDirectLoopbackRequest(req)) {
-      if (req.user) {
-        this.cache.del(PORTAL_DESKTOP_PRESENCE_CACHE_KEY);
-      } else {
-        this.cache.set(PORTAL_DESKTOP_PRESENCE_CACHE_KEY, '1', PORTAL_DESKTOP_PRESENCE_TTL_SECONDS);
-      }
+    // A signed-in desktop window is not waiting for a sign-in, so its heartbeat clears the flag.
+    // Only the desktop app sets it, through POST /portal/desktop-waiting.
+    if ((desktop === '1' || desktop === 'true') && req.user && isDirectLoopbackRequest(req)) {
+      this.cache.del(PORTAL_DESKTOP_PRESENCE_CACHE_KEY);
     }
     const portalBaseUrl = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '') || null;
 

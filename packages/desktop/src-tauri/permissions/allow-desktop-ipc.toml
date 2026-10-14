@@ -16,6 +16,7 @@ commands.allow = [
   "check_docker_available",
   "check_docker_access_command",
   "get_hub_api_url_command",
+  "announce_desktop_sign_in_wait_command",
   "get_hub_status_command",
   "get_stack_change_state_command",
   "get_startup_progress_command",

@@ -25,9 +25,12 @@ import { useTranslation } from 'react-i18next';
 /** One toast for a link, however many copies of it fail. */
 const DESKTOP_PORTAL_EXCHANGE_TOAST_ID = 'desktop-portal-exchange';
 
+/** How often a desktop window heartbeats session-hint, and, while signed out, says it is waiting. */
+const DESKTOP_PRESENCE_INTERVAL_MS = 60_000;
+
 /** Listen for cihub:// / cihub-dev:// portal SSO handoffs and exchange the one-time token. */
 export function useDesktopPortalAuth() {
-  const { setUserContext, isLoggedIn } = useUserContext();
+  const { setUserContext, isLoggedIn, isLoading } = useUserContext();
   const { t } = useTranslation();
   // Read on every render: a phone that picks its Hub on /connect moves from cloud connect to Hub
   // sign-in without a reload, and has to start listening then.
@@ -182,7 +185,7 @@ export function useDesktopPortalAuth() {
     };
 
     announceDesktopPresence();
-    presenceTimer = setInterval(announceDesktopPresence, 60_000);
+    presenceTimer = setInterval(announceDesktopPresence, DESKTOP_PRESENCE_INTERVAL_MS);
 
     void (async () => {
       try {
@@ -232,4 +235,24 @@ export function useDesktopPortalAuth() {
       void unlisten?.();
     };
   }, [authFlow, completeDesktopPortalLogin]);
+
+  // While this window is signed out, the desktop shell tells the Hub it is waiting for a sign-in, so
+  // a browser sign-in on loopback hands off here. The shell sends it from Rust with a proof derived
+  // from the host-local key, which this page never sees, and always to this machine's Hub, so a
+  // window showing another Hub stays out of it. An older shell has no such command, and the
+  // browser sign-in then stays in the browser.
+  useEffect(() => {
+    const invoke = getTauriInvoke();
+    const { hostname } = window.location;
+    const onThisMachinesHub = hostname === '127.0.0.1' || hostname === 'localhost';
+    if (!invoke || !hubAuthFlowPolicy(authFlow).announceDesktopPresence || !onThisMachinesHub || isLoading || isLoggedIn) {
+      return;
+    }
+    const announceSignInWait = () => {
+      void invoke('announce_desktop_sign_in_wait_command').catch(() => undefined);
+    };
+    announceSignInWait();
+    const timer = setInterval(announceSignInWait, DESKTOP_PRESENCE_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [authFlow, isLoading, isLoggedIn]);
 }

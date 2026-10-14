@@ -3,6 +3,7 @@
 
 mod app_binary;
 mod commands;
+mod desktop_sign_in_wait;
 mod digest_hex;
 mod discovery;
 pub mod docker_engine;
@@ -277,6 +278,31 @@ async fn start_wsl_engine_command(
 fn get_hub_api_url_command(state: tauri::State<'_, hub_manager::HubPaths>) -> String {
     let port = port_manager::read_api_port(&state.env_path);
     format!("http://127.0.0.1:{port}")
+}
+
+/// Tell the local Hub this window is signed out and waiting for a sign-in (see
+/// desktop_sign_in_wait.rs). `useDesktopPortalAuth` calls it every 60 s while signed out.
+#[tauri::command]
+async fn announce_desktop_sign_in_wait_command(
+    webview: tauri::Webview,
+    state: tauri::State<'_, hub_manager::HubPaths>,
+) -> Result<bool, String> {
+    let api_port = port_manager::read_api_port(&state.env_path);
+    let on_this_machines_hub = webview
+        .url()
+        .is_ok_and(|page| desktop_sign_in_wait::shows_this_machines_hub(&page, api_port));
+    let outcome = if on_this_machines_hub {
+        let settings_path =
+            desktop_sign_in_wait::hub_settings_path(&state.data_dir, &state.env_path);
+        desktop_sign_in_wait::announce(&format!("http://127.0.0.1:{api_port}"), &settings_path)
+            .await
+    } else {
+        desktop_sign_in_wait::Outcome::NotThisMachinesHub
+    };
+    if let Some(line) = desktop_sign_in_wait::log_line_on_change(&outcome) {
+        let _ = hub_manager::append_desktop_log("sign-in-wait", &line);
+    }
+    outcome.into_command_result()
 }
 
 /// Get the current Hub status (Docker availability, container state, health).
@@ -624,6 +650,7 @@ pub fn run() {
             check_docker_available,
             check_docker_access_command,
             get_hub_api_url_command,
+            announce_desktop_sign_in_wait_command,
             get_hub_status_command,
             get_stack_change_state_command,
             get_startup_progress_command,

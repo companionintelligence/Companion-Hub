@@ -5,7 +5,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { UserRepository } from '@/modules/user/user.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
-import { HttpStatus, UnauthorizedException, type INestApplication } from '@nestjs/common';
+import { ForbiddenException, HttpStatus, UnauthorizedException, type INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import type { Request, Response } from 'express';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -18,7 +18,7 @@ import { ForwardAuthSecretResolver } from '../forward-auth-secret.resolver';
 import { BearerOrgMembershipCache } from '../bearer-org-membership.cache';
 import { AuthService } from '../auth.service';
 import { HUB_FAVICON_LINK_TAG, HUB_FAVICON_PATH, HUB_FAVICON_PNG } from '../hub-favicon';
-import { exchangePortalAuthorizationCode, fetchPortalSessionEmail } from '../portal-sso';
+import { desktopSignInWaitProof, exchangePortalAuthorizationCode, fetchPortalSessionEmail } from '../portal-sso';
 import { verifyPortalIdToken } from '../portal-token';
 import { SessionManager } from '../session.manager';
 import { signForwardAuthAssertion, signForwardAuthUser, signForwardAuthUserId } from '../utils/forward-auth-signing';
@@ -2152,17 +2152,21 @@ describe('AuthController', () => {
       });
     });
 
-    it('records that the desktop app is waiting for a sign-in when its window sends desktop=1', async () => {
-      config.get.mockReturnValue('https://hub.ci.computer');
-
-      await authController.portalSessionHint(desktopWindowRequest(), '1');
-
-      expect(cache.set).toHaveBeenCalledWith('portal_sso_desktop_present', '1', 600);
-    });
+    /** A container on the Hub's network, calling the Hub directly and naming loopback in X-Forwarded-Host. */
+    const appContainerRequest = () =>
+      ({
+        protocol: 'http',
+        ip: '10.128.11.3',
+        socket: { remoteAddress: '10.128.11.3' },
+        headers: { host: 'ci-hub:5002', 'x-forwarded-host': 'localhost:5002' },
+        get: vi.fn((header: string) => (header === 'host' ? 'ci-hub:5002' : undefined)),
+      }) as unknown as Request;
 
     it.each([
       ['through the tunnel, naming a loopback host', tunnelVisitorRequest],
       ['from another device on the network', lanDeviceRequest],
+      ['from an app container that names a loopback host', appContainerRequest],
+      ['to the loopback address without the desktop app proof', () => desktopWindowRequest()],
     ])('ignores desktop=1 sent %s', async (_caller, buildRequest) => {
       config.get.mockReturnValue('https://hub.ci.computer');
 
@@ -2400,6 +2404,119 @@ describe('AuthController', () => {
       expect(sessionManager.createSession).toHaveBeenCalledWith(7);
       expect(userRepository.updateUser).not.toHaveBeenCalled();
       expect(res.redirect).toHaveBeenCalledWith('http://localhost:5002/home');
+    });
+  });
+
+  describe('POST /auth/portal/desktop-waiting', () => {
+    const HUB_LOCAL_KEY = '3f'.repeat(32);
+    const UNISSUED = 'ab'.repeat(32);
+
+    /** The desktop shell's request from Rust: loopback through the published port, carrying `headers`. */
+    const shellRequest = (headers: Record<string, string> = {}) =>
+      ({
+        protocol: 'http',
+        ip: '172.18.0.1',
+        socket: { remoteAddress: '172.18.0.1' },
+        headers: { host: '127.0.0.1:5002', ...headers },
+        get: vi.fn((header: string) => (header === 'host' ? '127.0.0.1:5002' : undefined)),
+      }) as unknown as Request;
+
+    /** A fresh challenge from the Hub, then the headers that answer it with a proof made with `key`. */
+    const answeredChallenge = (key = HUB_LOCAL_KEY) => {
+      const { nonce } = authController.desktopSignInWaitChallenge(shellRequest());
+      return { 'x-ci-hub-desktop-nonce': nonce, 'x-ci-hub-desktop-proof': desktopSignInWaitProof(key, nonce) };
+    };
+
+    beforeEach(() => {
+      config.get.mockImplementation(((key: string) => (key === 'hubLocalKey' ? HUB_LOCAL_KEY : undefined)) as never);
+    });
+
+    it('records that the desktop app is waiting for a sign-in when it answers a fresh challenge with the host-local key', () => {
+      authController.desktopSignInWait(shellRequest(answeredChallenge()));
+
+      expect(cache.set).toHaveBeenCalledWith('portal_sso_desktop_present', '1', 600);
+    });
+
+    it('refuses the same nonce the second time', () => {
+      const headers = answeredChallenge();
+      authController.desktopSignInWait(shellRequest(headers));
+      cache.set.mockClear();
+
+      expect(() => authController.desktopSignInWait(shellRequest(headers))).toThrow(UnauthorizedException);
+      expect(cache.set).not.toHaveBeenCalled();
+    });
+
+    it('burns the nonce on a wrong proof, so the right one cannot follow it', () => {
+      const headers = answeredChallenge();
+
+      expect(() => authController.desktopSignInWait(shellRequest({ ...headers, 'x-ci-hub-desktop-proof': 'f'.repeat(64) }))).toThrow(
+        UnauthorizedException,
+      );
+      expect(() => authController.desktopSignInWait(shellRequest(headers))).toThrow(UnauthorizedException);
+      expect(cache.set).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['no nonce or proof', () => ({})],
+      [
+        'a nonce the Hub never issued',
+        () => ({ 'x-ci-hub-desktop-nonce': UNISSUED, 'x-ci-hub-desktop-proof': desktopSignInWaitProof(HUB_LOCAL_KEY, UNISSUED) }),
+      ],
+      ['no proof', () => ({ 'x-ci-hub-desktop-nonce': authController.desktopSignInWaitChallenge(shellRequest()).nonce })],
+      ['a proof made with another key', () => answeredChallenge('a'.repeat(64))],
+      ['a proof of the wrong length', () => ({ ...answeredChallenge(), 'x-ci-hub-desktop-proof': 'abc' })],
+      ['the host-local key itself in place of the proof', () => ({ ...answeredChallenge(), 'x-ci-hub-desktop-proof': HUB_LOCAL_KEY })],
+      ['the host-local key as a bearer token', () => ({ authorization: `Bearer ${HUB_LOCAL_KEY}` })],
+    ])('refuses a request with %s', (_case, headers: () => Record<string, string>) => {
+      expect(() => authController.desktopSignInWait(shellRequest(headers()))).toThrow(UnauthorizedException);
+      expect(cache.set).not.toHaveBeenCalled();
+    });
+
+    it('refuses every proof while the Hub has no host-local key', () => {
+      config.get.mockReturnValue(null as never);
+      const request = shellRequest(answeredChallenge(''));
+
+      expect(() => authController.desktopSignInWait(request)).toThrow(UnauthorizedException);
+      expect(cache.set).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['the bridge gateway, as a published port forwards it on Linux and the WSL engine', '172.17.0.1'],
+      ['the Docker Desktop VM', '192.168.65.1'],
+      ['loopback, for a Hub running on the host itself', '127.0.0.1'],
+      ['IPv4-mapped loopback', '::ffff:127.0.0.1'],
+    ])('hands the shell a challenge when its request arrives from %s', (_source, address) => {
+      const request = { ...shellRequest(), ip: address, socket: { remoteAddress: address } } as unknown as Request;
+
+      expect(authController.desktopSignInWaitChallenge(request).nonce).toMatch(/^[0-9a-f]{64}$/);
+    });
+
+    it.each([
+      [
+        'a caller through the tunnel',
+        {
+          ip: '10.20.0.2',
+          socket: { remoteAddress: '10.20.0.2' },
+          headers: { host: 'hub-device-org.example.com', 'x-forwarded-host': 'localhost:5002', 'cf-ray': '8c1f2e3d4a5b6c7d-AMS' },
+          host: 'hub-device-org.example.com',
+        },
+      ],
+      [
+        'another device on the LAN, by the host address',
+        { ip: '192.168.1.50', socket: { remoteAddress: '192.168.1.50' }, headers: { host: '192.168.1.20:5002' }, host: '192.168.1.20:5002' },
+      ],
+    ])('hands no challenge to %s, so it cannot push the shell nonce out', (_caller, { host, ...rest }) => {
+      const request = { protocol: 'http', ...rest, get: vi.fn((header: string) => (header === 'host' ? host : undefined)) } as unknown as Request;
+
+      expect(() => authController.desktopSignInWaitChallenge(request)).toThrow(ForbiddenException);
+    });
+
+    it('rate-limits the challenge like the other unauthenticated auth routes', () => {
+      for (let i = 0; i < 10; i += 1) {
+        authController.desktopSignInWaitChallenge(shellRequest());
+      }
+
+      expect(() => authController.desktopSignInWaitChallenge(shellRequest())).toThrow('AUTH_ERROR_RATE_LIMITED');
     });
   });
 
@@ -2807,5 +2924,71 @@ describe('AuthController — GET /api/auth/favicon.png, real HTTP dispatch', () 
     expect(res.headers.get('content-type')).toBe('image/png');
     expect(res.headers.get('cache-control')).toBe('public, max-age=86400');
     expect(Buffer.from(await res.arrayBuffer()).equals(HUB_FAVICON_PNG)).toBe(true);
+  });
+});
+
+describe('AuthController — POST /api/auth/portal/desktop-waiting, real HTTP dispatch', () => {
+  const HUB_LOCAL_KEY = '3f'.repeat(32);
+  let app: INestApplication;
+  let baseUrl: string;
+  const config = mock<ConfigurationService>();
+  const cache = mock<CacheService>();
+
+  beforeAll(async () => {
+    config.get.mockImplementation(((key: string) => (key === 'hubLocalKey' ? HUB_LOCAL_KEY : undefined)) as never);
+    const moduleRef = await Test.createTestingModule({
+      controllers: [AuthController],
+      providers: [
+        { provide: AuthService, useValue: mock<AuthService>() },
+        { provide: ForwardAuthSecretResolver, useValue: mock<ForwardAuthSecretResolver>() },
+        { provide: LoggerService, useValue: mock<LoggerService>() },
+        { provide: ConfigurationService, useValue: config },
+        { provide: CacheService, useValue: cache },
+        { provide: UserRepository, useValue: mock<UserRepository>() },
+        { provide: SessionManager, useValue: mock<SessionManager>() },
+        { provide: RegistrationService, useValue: mock<RegistrationService>() },
+        { provide: DeviceRegistrationRepository, useValue: mock<DeviceRegistrationRepository>() },
+        { provide: BearerOrgMembershipCache, useValue: mock<BearerOrgMembershipCache>() },
+        { provide: SessionUserCache, useValue: mock<SessionUserCache>() },
+        { provide: ForwardAuthIdentityResolver, useValue: mock<ForwardAuthIdentityResolver>() },
+        AuthRateLimiter,
+      ],
+    }).compile();
+
+    app = moduleRef.createNestApplication();
+    app.setGlobalPrefix('/api');
+    await app.init();
+    await app.listen(0);
+    const address = app.getHttpServer().address();
+    baseUrl = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`;
+  });
+
+  afterAll(async () => {
+    await app?.close();
+  });
+
+  afterEach(() => {
+    cache.set.mockClear();
+  });
+
+  it('answers 204 to the challenge, path and headers the desktop shell sends', async () => {
+    const challenge = await fetch(`${baseUrl}/api/auth/portal/desktop-waiting/challenge`, { method: 'POST' });
+    expect(challenge.status).toBe(200);
+    const { nonce } = (await challenge.json()) as { nonce: string };
+
+    const res = await fetch(`${baseUrl}/api/auth/portal/desktop-waiting`, {
+      method: 'POST',
+      headers: { 'X-CI-Hub-Desktop-Nonce': nonce, 'X-CI-Hub-Desktop-Proof': desktopSignInWaitProof(HUB_LOCAL_KEY, nonce) },
+    });
+
+    expect(res.status).toBe(204);
+    expect(cache.set).toHaveBeenCalledWith('portal_sso_desktop_present', '1', 600);
+  });
+
+  it('answers 401 without the proof', async () => {
+    const res = await fetch(`${baseUrl}/api/auth/portal/desktop-waiting`, { method: 'POST' });
+
+    expect(res.status).toBe(401);
+    expect(cache.set).not.toHaveBeenCalled();
   });
 });
