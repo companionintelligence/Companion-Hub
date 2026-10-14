@@ -65,8 +65,10 @@ elevated script adds the update listener's firewall rule (see
 `%ProgramW6432%\Docker\Docker\resources\bin` when it isn't there. Docker doesn't sign its static
 Windows CLI and publishes no checksums for it, so setup downloads one pinned zip
 (`WINDOWS_STATIC_DOCKER_CLI_VERSION`) and refuses it unless its SHA-256 matches
-`WINDOWS_STATIC_DOCKER_CLI_SHA256`. Bump the two together. An unsigned `docker.exe` passes on the
-hash; a signed one must be signed by Docker. `Start-Process -Verb RunAs` returns only the exit code,
+`WINDOWS_STATIC_DOCKER_CLI_SHA256`. Bump the two together. The zip stays in memory from the download
+to Program Files: the user's own processes can write to `%TEMP%`, so a file there could change
+between the check and the copy. An unsigned `docker.exe` passes on the hash; a signed one must be
+signed by Docker. `Start-Process -Verb RunAs` returns only the exit code,
 so the elevated script writes its error to a temp file that the app reads and shows.
 
 WSL stops a distro soon after its last foreground process

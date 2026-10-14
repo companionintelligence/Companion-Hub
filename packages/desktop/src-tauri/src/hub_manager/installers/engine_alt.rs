@@ -274,38 +274,55 @@ trap {
 "#
 }
 
-/// Expand-CompanionHubDockerCli: checks Docker's static CLI zip against the
-/// pinned SHA-256 before expanding it, and returns the path of docker.exe. Docker
-/// doesn't sign these builds, so an unsigned docker.exe passes on the hash alone;
-/// a signed one must still be signed by Docker. The hash is computed with .NET
-/// rather than Get-FileHash for the same reason the Authenticode helper imports
-/// its module explicitly: a PSModulePath inherited from PowerShell 7 can break
-/// module autoloading in Windows PowerShell.
+/// Install-CompanionHubDockerCli: checks Docker's static CLI zip against the
+/// pinned SHA-256 and writes its docker.exe to `$Target`. The zip stays in memory
+/// from download to Program Files, since the user's own processes can write to
+/// %TEMP% and a file there could change after the check. Docker doesn't sign
+/// these builds, so an unsigned docker.exe passes on the hash alone; a signed one
+/// must still be signed by Docker, or `$Target` is removed again. The hash is
+/// computed with .NET rather than Get-FileHash for the same reason the
+/// Authenticode helper imports its module explicitly: a PSModulePath inherited
+/// from PowerShell 7 can break module autoloading in Windows PowerShell.
 #[cfg(any(test, target_os = "windows"))]
-pub(crate) fn windows_docker_cli_check_function() -> &'static str {
-    r#"function Expand-CompanionHubDockerCli {
-  param([string]$ZipPath, [string]$ExpectedSha256, [string]$Destination)
-  $stream = [System.IO.File]::OpenRead($ZipPath)
-  try {
-    $actual = [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash($stream)) -replace '-', ''
-  } finally {
-    $stream.Dispose()
-  }
+pub(crate) fn windows_docker_cli_install_function() -> &'static str {
+    r#"function Install-CompanionHubDockerCli {
+  param([byte[]]$Zip, [string]$ZipName, [string]$ExpectedSha256, [string]$Target)
+  $actual = [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash($Zip)) -replace '-', ''
   if ($actual -ne $ExpectedSha256) {
-    throw "Downloaded docker CLI $(Split-Path -Leaf $ZipPath) has SHA-256 $($actual.ToLowerInvariant()), expected $ExpectedSha256."
+    throw "Downloaded docker CLI $ZipName has SHA-256 $($actual.ToLowerInvariant()), expected $ExpectedSha256."
   }
-  Expand-Archive -LiteralPath $ZipPath -DestinationPath $Destination -Force
-  $exe = Join-Path $Destination 'docker\docker.exe'
-  $signature = Get-CompanionHubAuthenticodeSignature $exe
-  if ($signature.Status -ne 'NotSigned') {
-    if ($signature.Status -ne 'Valid') {
-      throw "Downloaded docker CLI signature validation failed: $($signature.Status)"
+  Add-Type -AssemblyName System.IO.Compression
+  $archive = [System.IO.Compression.ZipArchive]::new([System.IO.MemoryStream]::new($Zip), [System.IO.Compression.ZipArchiveMode]::Read)
+  try {
+    $entries = @($archive.Entries | Where-Object { $_.FullName.Replace('\', '/') -eq 'docker/docker.exe' })
+    if ($entries.Count -ne 1) { throw "Downloaded docker CLI $ZipName has no docker/docker.exe." }
+    $source = $entries[0].Open()
+    try {
+      $file = [System.IO.File]::Create($Target)
+      try {
+        $source.CopyTo($file)
+        $file.Dispose()
+        $signature = Get-CompanionHubAuthenticodeSignature $Target
+        if ($signature.Status -ne 'NotSigned') {
+          if ($signature.Status -ne 'Valid') {
+            throw "Downloaded docker CLI signature validation failed: $($signature.Status)"
+          }
+          if (-not $signature.SignerCertificate -or $signature.SignerCertificate.Subject -notmatch 'Docker') {
+            throw "Downloaded docker CLI signer was not recognized as Docker."
+          }
+        }
+      } catch {
+        # Leave no half-written or refused docker.exe: setup skips this step once one exists.
+        $file.Dispose()
+        Remove-Item -LiteralPath $Target -Force -ErrorAction SilentlyContinue
+        throw
+      }
+    } finally {
+      $source.Dispose()
     }
-    if (-not $signature.SignerCertificate -or $signature.SignerCertificate.Subject -notmatch 'Docker') {
-      throw "Downloaded docker CLI signer was not recognized as Docker."
-    }
+  } finally {
+    $archive.Dispose()
   }
-  return $exe
 }
 "#
 }
@@ -370,10 +387,10 @@ pub(crate) fn update_listener_firewall_function() -> &'static str {
 #[cfg(any(test, target_os = "windows"))]
 pub(crate) fn wsl2_engine_elevated_script() -> String {
     format!(
-        "{prelude}{authenticode}{docker_cli_check}{firewall}$dockerCliVersion = '{version}'\n$dockerCliSha256 = @{{ 'x86_64' = '{sha256}' }}\n{body}",
+        "{prelude}{authenticode}{docker_cli_install}{firewall}$dockerCliVersion = '{version}'\n$dockerCliSha256 = @{{ 'x86_64' = '{sha256}' }}\n{body}",
         prelude = wsl2_engine_elevated_script_prelude(),
         authenticode = powershell_authenticode_helper(),
-        docker_cli_check = windows_docker_cli_check_function(),
+        docker_cli_install = windows_docker_cli_install_function(),
         firewall = update_listener_firewall_function(),
         version = WINDOWS_STATIC_DOCKER_CLI_VERSION,
         sha256 = WINDOWS_STATIC_DOCKER_CLI_SHA256,
@@ -419,19 +436,11 @@ if (-not (Test-Path (Join-Path $dockerBin 'docker.exe'))) {
   if (-not $dockerCliSha256.ContainsKey($arch)) {
     throw "Docker publishes no static docker CLI for Windows on $arch."
   }
+  # In memory, never in %TEMP%: see Install-CompanionHubDockerCli.
   $zipName = "docker-$dockerCliVersion.zip"
-  $zipPath = Join-Path $Env:TEMP $zipName
-  $extract = Join-Path $Env:TEMP 'companionhub-docker-cli'
-  Invoke-WebRequest -UseBasicParsing -Uri "https://download.docker.com/win/static/stable/$arch/$zipName" -OutFile $zipPath
-  try {
-    Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
-    $extractedExe = Expand-CompanionHubDockerCli -ZipPath $zipPath -ExpectedSha256 $dockerCliSha256[$arch] -Destination $extract
-    New-Item -ItemType Directory -Force -Path $dockerBin | Out-Null
-    Copy-Item $extractedExe (Join-Path $dockerBin 'docker.exe') -Force
-  } finally {
-    Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
-  }
+  $zip = (Invoke-WebRequest -UseBasicParsing -Uri "https://download.docker.com/win/static/stable/$arch/$zipName").RawContentStream.ToArray()
+  New-Item -ItemType Directory -Force -Path $dockerBin | Out-Null
+  Install-CompanionHubDockerCli -Zip $zip -ZipName $zipName -ExpectedSha256 $dockerCliSha256[$arch] -Target (Join-Path $dockerBin 'docker.exe')
 }
 exit 0
 "#

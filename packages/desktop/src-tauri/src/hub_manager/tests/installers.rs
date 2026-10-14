@@ -123,7 +123,7 @@ fn wsl2_engine_elevated_script_only_does_admin_work() {
     assert!(script.contains("aarch64"));
     assert!(script.contains("docker.exe"));
     assert!(script.contains("Import-Module Microsoft.PowerShell.Security -ErrorAction Stop"));
-    assert!(script.contains("Get-CompanionHubAuthenticodeSignature $exe"));
+    assert!(script.contains("Get-CompanionHubAuthenticodeSignature $Target"));
 
     // Per-user state must NOT be created in the elevated phase — that is the
     // core fix (it would otherwise land in the wrong profile under
@@ -146,8 +146,9 @@ fn wsl2_engine_elevated_script_installs_the_pinned_docker_cli() {
     assert!(script.contains(&format!("'x86_64' = '{WINDOWS_STATIC_DOCKER_CLI_SHA256}'")));
     assert!(script.contains("/win/static/stable/$arch/$zipName"));
     assert!(script.contains(
-        "Expand-CompanionHubDockerCli -ZipPath $zipPath -ExpectedSha256 $dockerCliSha256[$arch]"
+        "Install-CompanionHubDockerCli -Zip $zip -ZipName $zipName -ExpectedSha256 $dockerCliSha256[$arch]"
     ));
+    assert!(!script.contains("$Env:TEMP"));
     assert!(!script.contains("Sort-Object"));
     assert!(!script.contains("$zips[-1]"));
 }
@@ -306,10 +307,11 @@ fn run_windows_powershell(dir: &Path, script: &str, args: &[&str]) -> std::proce
 }
 
 /// Zips `exe` as docker\docker.exe, the layout of Docker's static zip, and runs
-/// the elevated script's check on it. An `exe` of None is an unsigned program
+/// the elevated script's install on it. An `exe` of None is an unsigned program
 /// that Add-Type builds, which reads as NotSigned like Docker's static builds;
 /// arbitrary bytes would read as UnknownError. `expected_sha256` of None means
-/// the zip's own hash. Prints `accepted=<path>` when the check passes.
+/// the zip's own hash. Prints `accepted=<path>` when the install passes, and
+/// `left=<bool>` for whether a docker.exe is left at the target.
 #[cfg(target_os = "windows")]
 fn run_docker_cli_check(exe: Option<&[u8]>, expected_sha256: Option<&str>) -> std::process::Output {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -333,11 +335,17 @@ if (-not $expected) {{
   try {{ $expected = [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash($stream)) -replace '-', '' }} finally {{ $stream.Dispose() }}
   $expected = $expected.ToLowerInvariant()
 }}
-$exe = Expand-CompanionHubDockerCli -ZipPath (Join-Path $root 'docker.zip') -ExpectedSha256 $expected -Destination (Join-Path $root 'out')
-"accepted=$exe"
+$target = Join-Path $root 'bin\docker.exe'
+New-Item -ItemType Directory -Path (Split-Path $target) | Out-Null
+try {{
+  Install-CompanionHubDockerCli -Zip ([System.IO.File]::ReadAllBytes((Join-Path $root 'docker.zip'))) -ZipName 'docker.zip' -ExpectedSha256 $expected -Target $target
+  "accepted=$target"
+}} finally {{
+  "left=$(Test-Path $target)"
+}}
 "#,
         helper = powershell_authenticode_helper(),
-        check = windows_docker_cli_check_function(),
+        check = windows_docker_cli_install_function(),
         root = escape_powershell_single_quoted(&dir.path().to_string_lossy()),
         expected = expected_sha256.unwrap_or(""),
     );
@@ -358,9 +366,10 @@ fn docker_cli_check_accepts_an_unsigned_docker_exe_when_the_zip_hash_matches() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        stdout.contains("accepted=") && stdout.trim_end().ends_with(r"out\docker\docker.exe"),
+        stdout.contains("accepted=") && stdout.contains(r"bin\docker.exe"),
         "stdout: {stdout}"
     );
+    assert!(stdout.contains("left=True"), "stdout: {stdout}");
 }
 
 #[cfg(target_os = "windows")]
@@ -375,6 +384,7 @@ fn docker_cli_check_rejects_a_zip_with_another_hash() {
         stderr.contains(&format!("expected {WINDOWS_STATIC_DOCKER_CLI_SHA256}")),
         "stderr: {stderr}"
     );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("left=False"));
 }
 
 #[cfg(target_os = "windows")]
@@ -394,6 +404,106 @@ fn docker_cli_check_rejects_a_docker_exe_signed_by_someone_else() {
         stderr.contains("signer was not recognized as Docker"),
         "stderr: {stderr}"
     );
+    // The refused file doesn't stay where setup would take it as installed.
+    assert!(String::from_utf8_lossy(&output.stdout).contains("left=False"));
+}
+
+/// Runs the whole elevated script under Windows PowerShell 5.1 as a PC with WSL
+/// and no docker.exe would, with Program Files and %TEMP% moved into a temp
+/// folder. Docker's download is a zip built here, pinned in place of the real
+/// hash. The stand-in for New-Item plays another process of the same user: when
+/// the script creates the folder in Program Files, right before it writes
+/// docker.exe there, it overwrites every docker.exe and zip under %TEMP%.
+/// Prints one `key=value` per line.
+#[cfg(target_os = "windows")]
+fn run_elevated_docker_cli_install_while_temp_is_tampered_with() -> String {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("template.ps1"),
+        wsl2_engine_elevated_script(),
+    )
+    .expect("write the elevated script");
+    let script = format!(
+        r#"$ErrorActionPreference = 'Stop'
+$root = '{root}'
+$genuine = Join-Path $root 'src\docker\docker.exe'
+New-Item -ItemType Directory -Path (Join-Path $root 'src\docker'), (Join-Path $root 'temp'), (Join-Path $root 'Program Files') | Out-Null
+Add-Type -TypeDefinition 'public static class P {{ public static void Main() {{ }} }}' -OutputAssembly $genuine -OutputType ConsoleApplication
+$global:TestZip = Join-Path $root 'docker.zip'
+Compress-Archive -Path (Join-Path $root 'src\docker') -DestinationPath $global:TestZip
+function Get-TestSha256([string]$Path) {{
+  $stream = [System.IO.File]::OpenRead($Path)
+  try {{ ([System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash($stream)) -replace '-', '').ToLowerInvariant() }} finally {{ $stream.Dispose() }}
+}}
+$elevated = Join-Path $root 'elevated.ps1'
+[System.IO.File]::WriteAllText($elevated, [System.IO.File]::ReadAllText((Join-Path $root 'template.ps1')).Replace('{pinned}', (Get-TestSha256 $global:TestZip)))
+
+$global:TestTemp = Join-Path $root 'temp'
+$global:TestSwapped = @()
+$global:TestDownloads = @()
+function wsl.exe {{ $global:LASTEXITCODE = 0 }}
+function Invoke-WebRequest {{
+  param([switch]$UseBasicParsing, [string]$Uri, [string]$OutFile)
+  $global:TestDownloads += $Uri
+  $bytes = [System.IO.File]::ReadAllBytes($global:TestZip)
+  if ($OutFile) {{ [System.IO.File]::WriteAllBytes($OutFile, $bytes); return }}
+  [pscustomobject]@{{ Content = $bytes; RawContentStream = (New-Object System.IO.MemoryStream -ArgumentList @(,$bytes)) }}
+}}
+function New-Item {{
+  [CmdletBinding(SupportsShouldProcess = $true)]
+  param([Parameter(Position = 0)][string[]]$Path, [Alias('Type')][string]$ItemType, [switch]$Force, [string]$Name, [object]$Value)
+  if ("$Path" -like '*\Docker\resources\bin') {{
+    foreach ($file in @(Get-ChildItem -LiteralPath $global:TestTemp -Recurse -File | Where-Object {{ $_.Name -eq 'docker.exe' -or $_.Extension -eq '.zip' }})) {{
+      [System.IO.File]::WriteAllBytes($file.FullName, [byte[]](77, 90, 0, 0))
+      $global:TestSwapped += $file.Name
+    }}
+  }}
+  Microsoft.PowerShell.Management\New-Item @PSBoundParameters
+}}
+
+$env:TEMP = $global:TestTemp
+$env:TMP = $global:TestTemp
+$env:ProgramW6432 = Join-Path $root 'Program Files'
+$errorFile = Join-Path $root 'error.txt'
+& $elevated -ErrorFile $errorFile
+"exit=$LASTEXITCODE"
+"downloads=$($global:TestDownloads -join ',')"
+"swapped=$($global:TestSwapped -join ',')"
+$installed = Join-Path $env:ProgramW6432 'Docker\Docker\resources\bin\docker.exe'
+"genuine=$((Test-Path $installed) -and (Get-TestSha256 $installed) -eq (Get-TestSha256 $genuine))"
+"temp=$(@(Get-ChildItem -LiteralPath $global:TestTemp -Recurse -Force).Count)"
+if (Test-Path $errorFile) {{ "error=$([System.IO.File]::ReadAllText($errorFile))" }}
+"#,
+        root = escape_powershell_single_quoted(&dir.path().to_string_lossy()),
+        pinned = WINDOWS_STATIC_DOCKER_CLI_SHA256,
+    );
+    let output = run_windows_powershell(dir.path(), &script, &[]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn elevated_script_installs_the_checked_docker_exe_even_if_temp_files_change() {
+    let stdout = run_elevated_docker_cli_install_while_temp_is_tampered_with();
+    let lines: Vec<&str> = stdout.lines().map(str::trim_end).collect();
+
+    assert!(lines.contains(&"exit=0"), "stdout: {stdout}");
+    assert!(
+        lines.contains(&format!(
+            "downloads=https://download.docker.com/win/static/stable/x86_64/docker-{WINDOWS_STATIC_DOCKER_CLI_VERSION}.zip"
+        ).as_str()),
+        "stdout: {stdout}"
+    );
+    // Nothing the check passed sits in %TEMP%, where the user's own
+    // processes could change it before the copy into Program Files.
+    assert!(lines.contains(&"swapped="), "stdout: {stdout}");
+    assert!(lines.contains(&"temp=0"), "stdout: {stdout}");
+    assert!(lines.contains(&"genuine=True"), "stdout: {stdout}");
 }
 
 #[cfg(target_os = "windows")]
