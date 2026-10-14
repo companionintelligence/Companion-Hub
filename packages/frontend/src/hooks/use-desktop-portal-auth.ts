@@ -25,6 +25,9 @@ import { useTranslation } from 'react-i18next';
 /** One toast for a link, however many copies of it fail. */
 const DESKTOP_PORTAL_EXCHANGE_TOAST_ID = 'desktop-portal-exchange';
 
+/** How often a desktop window heartbeats session-hint, and, while signed out, says it is waiting. */
+const DESKTOP_PRESENCE_INTERVAL_MS = 60_000;
+
 /** Listen for cihub:// / cihub-dev:// portal SSO handoffs and exchange the one-time token. */
 export function useDesktopPortalAuth() {
   const { setUserContext, isLoggedIn, isLoading } = useUserContext();
@@ -182,7 +185,7 @@ export function useDesktopPortalAuth() {
     };
 
     announceDesktopPresence();
-    presenceTimer = setInterval(announceDesktopPresence, 60_000);
+    presenceTimer = setInterval(announceDesktopPresence, DESKTOP_PRESENCE_INTERVAL_MS);
 
     void (async () => {
       try {
@@ -249,7 +252,7 @@ export function useDesktopPortalAuth() {
       void invoke('announce_desktop_sign_in_wait_command').catch(() => undefined);
     };
     announceSignInWait();
-    const timer = setInterval(announceSignInWait, 60_000);
+    const timer = setInterval(announceSignInWait, DESKTOP_PRESENCE_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [authFlow, isLoading, isLoggedIn]);
 }
