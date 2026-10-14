@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import { StrictMode } from 'react';
+import { type ComponentProps, StrictMode } from 'react';
 import { MemoryRouter } from 'react-router';
 import { useForm } from 'react-hook-form';
 import type { AppInfo, FormField } from '@/types/app.types';
@@ -8,6 +9,7 @@ import { CustomDomainField } from './custom-domain-field';
 import { InstallForm } from './install-form';
 import { preselectedPublicDomain } from './preselected-public-domain';
 import { useAppContext } from '@/context/app-context';
+import { LAST_USED_CONFIGS_KEY_PREFIX } from '@/modules/app/lib/install-config-storage';
 import { TranslatableError } from '@/types/error.types';
 
 // Polyfill ResizeObserver for Radix UI
@@ -64,6 +66,7 @@ const { toast } = vi.hoisted(() => ({
   toast: {
     error: vi.fn(),
     success: vi.fn(),
+    warning: vi.fn(),
   },
 }));
 
@@ -2722,5 +2725,272 @@ describe('InstallForm - importing a config it just exported', () => {
     } finally {
       MOCK_AVAILABLE_DOMAINS.domains = [];
     }
+  });
+});
+
+/*
+ * Companion-Hub#1984. In simple mode "Enable authentication" sits behind "Show advanced settings",
+ * and a config that turned it off said only "Config imported.", so an app could go on Public Web
+ * without the Hub login and nobody saw the switch move. Simple mode now shows the switch whenever
+ * the app is on Public Web with the login off, and an import that leads there says so.
+ */
+describe('InstallForm - an imported config that turns the Hub login off', () => {
+  const adminEmail = { type: 'text', label: 'Admin Email', env_variable: 'ADMIN_EMAIL', required: true } as unknown as FormField;
+  const cyberchef = {
+    id: 'cyberchef',
+    urn: 'cyberchef:ci-marketplace',
+    form_fields: [adminEmail],
+    exposable: true,
+    dynamic_config: true,
+    port: 8000,
+  } as unknown as AppInfo;
+  const cyberchefWithEdgeAuth = { ...(cyberchef as object), hub_integration: { edge_auth: { default: true } } } as unknown as AppInfo;
+
+  const context = (advancedMode: boolean) =>
+    ({
+      userSettings: {
+        ciHubOrganizationSlug: 'bc',
+        ciHubDeviceSlug: 'blaptop',
+        localDomain: 'ci.lan',
+        domain: 'example.com',
+        maxBackups: 5,
+        guestDashboard: false,
+      },
+      user: { advancedMode },
+      isProduction: true,
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
+    }) as unknown as ReturnType<typeof useAppContext>;
+
+  const configValues = (values: Record<string, unknown>) => ({ ADMIN_EMAIL: 'ops@example.org', exposureMode: 'cloudflare', ...values });
+  const configFile = (values: Record<string, unknown>) =>
+    JSON.stringify({ schemaVersion: 1, appId: 'cyberchef', exportedAt: '2026-10-01T10:00:00.000Z', values: configValues(values) });
+
+  const renderForm = (props: Partial<ComponentProps<typeof InstallForm>> = {}) =>
+    render(
+      <MemoryRouter>
+        <InstallForm info={cyberchef} onSubmit={vi.fn()} formId="import-auth-form" formFields={[adminEmail]} {...props} />
+      </MemoryRouter>,
+    );
+
+  const importFile = async (container: HTMLElement, json: string) => {
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(fileInput, { target: { files: [{ text: async () => json }] } });
+    });
+  };
+
+  // A switch is named by its visible label; the edge-auth app's label adds "recommended" after it.
+  const authSwitch = () => screen.queryByRole('switch', { name: /APP_INSTALL_FORM_ENABLE_AUTH/ });
+  const advancedSettingsSwitch = () => screen.getByRole('switch', { name: 'APP_INSTALL_FORM_SHOW_ADVANCED_SETTINGS' });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    fetchDnsAvailability.mockImplementation(async () => new Response(JSON.stringify({ available: true }), { status: 200 }));
+    vi.mocked(useAppContext).mockReturnValue(context(false));
+  });
+
+  afterEach(() => {
+    fetchDnsAvailability.mockReset();
+  });
+
+  it.each([
+    ['an app', cyberchef],
+    ['an app whose manifest defaults the login on', cyberchefWithEdgeAuth],
+  ])('shows the switch turned off, and says so, when a file turns the login off for %s', async (_, info) => {
+    const onSubmit = vi.fn();
+    const { container } = renderForm({ info, onSubmit });
+    await screen.findByLabelText(/Admin Email/);
+    expect(authSwitch()).not.toBeInTheDocument();
+
+    await importFile(container, configFile({ enableAuth: false }));
+
+    await waitFor(() => expect(authSwitch()).toBeInTheDocument());
+    expect(authSwitch()).not.toBeChecked();
+    expect(advancedSettingsSwitch()).not.toBeChecked();
+    expect(toast.warning).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_AUTH_OFF', { duration: 8000 });
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
+
+    // The import itself is not second-guessed: what the switch shows is what gets saved.
+    await act(async () => {
+      fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+    });
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ enableAuth: false, exposureMode: 'cloudflare' });
+  });
+
+  it.each([
+    ['saved with the login on', cyberchef, { enableAuth: true }],
+    ['that never chose, on a manifest that defaults the login on', cyberchefWithEdgeAuth, {}],
+  ])('shows the switch turned off, and says so, when a file turns the login off for an installed app %s', async (_, info, saved) => {
+    const { container } = renderForm({
+      info,
+      isEdit: true,
+      initialValues: { ADMIN_EMAIL: 'ops@example.org', exposureMode: 'cloudflare', ...saved },
+    });
+    await screen.findByLabelText(/Admin Email/);
+    expect(authSwitch()).not.toBeInTheDocument();
+
+    await importFile(container, configFile({ enableAuth: false }));
+
+    await waitFor(() => expect(authSwitch()).toBeInTheDocument());
+    expect(authSwitch()).not.toBeChecked();
+    expect(toast.warning).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_AUTH_OFF', { duration: 8000 });
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it('names the login as well as the fields it ignored', async () => {
+    const { container } = renderForm();
+    await screen.findByLabelText(/Admin Email/);
+
+    await importFile(container, configFile({ enableAuth: false, SOME_OTHER_APPS_FIELD: 'x' }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_UNRECOGNIZED'));
+    expect(toast.warning).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_AUTH_OFF', { duration: 8000 });
+    expect(authSwitch()).not.toBeChecked();
+  });
+
+  it('shows the switch turned off, and says so, when a recently used config turns the login off', async () => {
+    localStorage.setItem(
+      `${LAST_USED_CONFIGS_KEY_PREFIX}cyberchef`,
+      JSON.stringify([{ id: 'recent-1', savedAt: '2026-10-01T10:00:00.000Z', values: configValues({ enableAuth: false }) }]),
+    );
+    const user = userEvent.setup();
+    renderForm();
+    await screen.findByLabelText(/Admin Email/);
+    expect(authSwitch()).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /APP_INSTALL_FORM_RECENTLY_USED/ }));
+    await user.click(await screen.findByRole('menuitem'));
+
+    await waitFor(() => expect(authSwitch()).toBeInTheDocument());
+    expect(authSwitch()).not.toBeChecked();
+    expect(advancedSettingsSwitch()).not.toBeChecked();
+    expect(toast.warning).toHaveBeenCalledWith('APP_INSTALL_FORM_RECENTLY_USED_APPLIED_AUTH_OFF', { duration: 8000 });
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['keeps the login on', { enableAuth: true }],
+    ['does not mention the login', {}],
+  ])('changes nothing on screen when the file %s', async (_, values) => {
+    const { container } = renderForm();
+    await screen.findByLabelText(/Admin Email/);
+
+    await importFile(container, configFile(values));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS'));
+    expect(toast.warning).not.toHaveBeenCalled();
+    expect(advancedSettingsSwitch()).not.toBeChecked();
+    expect(authSwitch()).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['saved with the login off', { enableAuth: false }],
+    ['that never chose, on a manifest that leaves the login off', {}],
+  ])('shows the switch turned off, and says so, when a file only moves an installed app %s onto Public Web', async (_, saved) => {
+    const onSubmit = vi.fn();
+    const { container } = renderForm({
+      isEdit: true,
+      onSubmit,
+      initialValues: { ADMIN_EMAIL: 'ops@example.org', exposureMode: 'local', ...saved },
+    });
+    await screen.findByLabelText(/Admin Email/);
+    expect(authSwitch()).not.toBeInTheDocument();
+
+    await importFile(container, JSON.stringify({ schemaVersion: 1, appId: 'cyberchef', values: { exposureMode: 'cloudflare' } }));
+
+    await waitFor(() => expect(authSwitch()).toBeInTheDocument());
+    expect(authSwitch()).not.toBeChecked();
+    expect(toast.warning).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_AUTH_OFF', { duration: 8000 });
+    expect(toast.success).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+    });
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ enableAuth: false, exposureMode: 'cloudflare' });
+  });
+
+  // The Hub login sits on the Public Web route only, so on This Machine Only or Private VPN a file
+  // that turns it off changes nothing anyone can reach.
+  it.each(['local', 'tailscale'])('keeps the plain toast when a file turns the login off on %s', async (exposureMode) => {
+    vi.mocked(useAppContext).mockReturnValue({ ...context(false), tailscaleAvailable: true });
+    const { container } = renderForm();
+    await screen.findByLabelText(/Admin Email/);
+
+    await importFile(container, configFile({ exposureMode, enableAuth: false }));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS'));
+    expect(toast.warning).not.toHaveBeenCalled();
+    expect(advancedSettingsSwitch()).not.toBeChecked();
+    expect(authSwitch()).not.toBeInTheDocument();
+  });
+
+  it('shows the switch when someone picks Public Web for an app whose login is off, and keeps it there once turned on', async () => {
+    renderForm({
+      isEdit: true,
+      initialValues: { ADMIN_EMAIL: 'ops@example.org', exposureMode: 'local', enableAuth: false },
+    });
+    await screen.findByLabelText(/Admin Email/);
+    expect(authSwitch()).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE' }));
+
+    await waitFor(() => expect(authSwitch()).toBeInTheDocument());
+    expect(authSwitch()).not.toBeChecked();
+    expect(advancedSettingsSwitch()).not.toBeChecked();
+
+    // Turning the login on must not make the switch vanish under the pointer.
+    fireEvent.click(authSwitch() as HTMLElement);
+    await waitFor(() => expect(authSwitch()).toBeChecked());
+    expect(toast.warning).not.toHaveBeenCalled();
+  });
+
+  it('shows the switch from the start for an installed app already on Public Web with the login off', async () => {
+    const { container } = renderForm({
+      isEdit: true,
+      initialValues: { ADMIN_EMAIL: 'ops@example.org', exposureMode: 'cloudflare', enableAuth: false },
+    });
+    await screen.findByLabelText(/Admin Email/);
+    await waitFor(() => expect(authSwitch()).toBeInTheDocument());
+    expect(authSwitch()).not.toBeChecked();
+    expect(advancedSettingsSwitch()).not.toBeChecked();
+
+    // Already on screen, so a file that keeps it off is a plain import.
+    await importFile(container, configFile({ enableAuth: false }));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS'));
+    expect(toast.warning).not.toHaveBeenCalled();
+    expect(authSwitch()).not.toBeChecked();
+  });
+
+  it('keeps the plain toast in advanced mode, where the switch is already on screen', async () => {
+    vi.mocked(useAppContext).mockReturnValue(context(true));
+    const { container } = renderForm();
+    await waitFor(() => expect(authSwitch()).toBeChecked());
+
+    await importFile(container, configFile({ enableAuth: false }));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS'));
+    expect(authSwitch()).not.toBeChecked();
+    expect(toast.warning).not.toHaveBeenCalled();
+  });
+
+  it('keeps the plain toast in advanced mode when a file moves an app whose login is off onto Public Web', async () => {
+    vi.mocked(useAppContext).mockReturnValue(context(true));
+    const { container } = renderForm({
+      isEdit: true,
+      initialValues: { ADMIN_EMAIL: 'ops@example.org', exposureMode: 'local', enableAuth: false },
+    });
+    await waitFor(() => expect(authSwitch()).toBeInTheDocument());
+
+    await importFile(container, JSON.stringify({ schemaVersion: 1, appId: 'cyberchef', values: { exposureMode: 'cloudflare' } }));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS'));
+    expect(toast.warning).not.toHaveBeenCalled();
+    expect(authSwitch()).not.toBeChecked();
   });
 });

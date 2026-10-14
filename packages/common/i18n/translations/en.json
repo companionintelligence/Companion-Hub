@@ -374,6 +374,8 @@
   "APP_INSTALL_FORM_AUTO_RESTART_ON_DOMAIN_CHANGE_HINT": "Off: the app keeps working on its platform address until you confirm a restart, so you choose when it is briefly unavailable. On: it restarts by itself as soon as the domain is ready.",
   "APP_RESTART_FORM_CUSTOM_DOMAIN_REASON": "Restarting {{name}} lets it answer on {{domain}}. {{name}} is briefly unavailable while it restarts.",
   "APP_INSTALL_FORM_ENABLE_AUTH_RECOMMENDED": "This app recommends keeping authentication enabled.",
+  "APP_INSTALL_FORM_IMPORT_CONFIG_AUTH_OFF": "Config imported. This app will be on Public Web with the Hub login off.",
+  "APP_INSTALL_FORM_RECENTLY_USED_APPLIED_AUTH_OFF": "Applied recently used config. This app will be on Public Web with the Hub login off.",
   "APP_INSTALL_FORM_EXPOSURE_MODE": "Exposure mode",
   "APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE": "Public Web",
   "APP_INSTALL_FORM_EXPOSURE_LOCAL": "This Machine Only",
