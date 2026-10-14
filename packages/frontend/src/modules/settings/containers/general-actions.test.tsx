@@ -746,6 +746,9 @@ describe('GeneralActionsContainer', () => {
     expect(screen.queryByText('Current version: 0.2.44')).not.toBeInTheDocument();
     expect(screen.queryByText('Update App Stores')).not.toBeInTheDocument();
     expect(screen.queryByText('Factory reset')).not.toBeInTheDocument();
+    // Both answers feed only the hidden Hub update card.
+    expect(getUpdateBlocks).not.toHaveBeenCalled();
+    expect(getAutoUpdates).not.toHaveBeenCalled();
   });
 
   it('labels the stack button as a stack-only update', async () => {

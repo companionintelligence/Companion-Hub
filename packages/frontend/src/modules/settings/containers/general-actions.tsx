@@ -250,8 +250,12 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
   }, []);
 
   // `blocked`, not `check`: this runs on every visit, and `check` also looks up the registry and wakes
-  // every connected agent when an update is available.
+  // every connected agent when an update is available. Only the Hub update card reads the answer, so a
+  // member, who doesn't see that card, isn't asked.
   useEffect(() => {
+    if (!manageHub) {
+      return;
+    }
     const seq = ++stackCheckSeq.current;
     unwrapSdkOrNull(getUpdateBlocks())
       .then((data) => {
@@ -262,14 +266,17 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
     return () => {
       stackCheckSeq.current += 1;
     };
-  }, [applyStackBlock]);
+  }, [applyStackBlock, manageHub]);
 
   useEffect(() => {
+    if (!manageHub) {
+      return;
+    }
     void unwrapSdkOrNull(getAutoUpdates()).then((data) => {
       const enabled = (data as { enabled?: boolean } | null)?.enabled;
       if (typeof enabled === 'boolean') setAutoUpdates(enabled);
     });
-  }, []);
+  }, [manageHub]);
 
   const handleCheckForUpdates = useCallback(async () => {
     setChecking(true);

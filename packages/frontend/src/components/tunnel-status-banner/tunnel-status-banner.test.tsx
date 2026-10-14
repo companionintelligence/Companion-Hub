@@ -1,22 +1,28 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { useRegistrationStatus, reconnectTunnel, resetRegistrationForRePair, navigate, invalidateQueries, toast, hubAccess } = vi.hoisted(() => ({
-  hubAccess: { manageHub: true, isPending: false },
-  useRegistrationStatus: vi.fn(),
-  reconnectTunnel: vi.fn(),
-  resetRegistrationForRePair: vi.fn(),
-  navigate: vi.fn(),
-  invalidateQueries: vi.fn(),
-  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
-}));
+const { useRegistrationStatus, reconnectTunnel, resetRegistrationForRePair, navigate, invalidateQueries, toast, hubAccess, hubAccessAsked } =
+  vi.hoisted(() => ({
+    hubAccess: { manageHub: true, isPending: false },
+    /** The `enabled` each `useHubAccess` call passed. */
+    hubAccessAsked: [] as boolean[],
+    useRegistrationStatus: vi.fn(),
+    reconnectTunnel: vi.fn(),
+    resetRegistrationForRePair: vi.fn(),
+    navigate: vi.fn(),
+    invalidateQueries: vi.fn(),
+    toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
+  }));
 
 vi.mock('@/lib/hooks/use-registration-status', () => ({
   useRegistrationStatus: () => useRegistrationStatus(),
 }));
 
 vi.mock('@/lib/hooks/use-hub-access', () => ({
-  useHubAccess: () => hubAccess,
+  useHubAccess: (options?: { enabled?: boolean }) => {
+    hubAccessAsked.push(options?.enabled ?? true);
+    return hubAccess;
+  },
 }));
 
 vi.mock('@/lib/registration-api', () => ({
@@ -53,6 +59,7 @@ describe('TunnelStatusBanner', () => {
     vi.clearAllMocks();
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     hubAccess.manageHub = true;
+    hubAccessAsked.length = 0;
   });
 
   // Reconnecting or re-pairing changes the whole Hub, an owner's or admin's to do.
@@ -85,6 +92,17 @@ describe('TunnelStatusBanner', () => {
 
     useRegistrationStatus.mockReturnValue({ data: undefined });
     expect(render(<TunnelStatusBanner />).container).toBeEmptyDOMElement();
+  });
+
+  // The banner sits on every dashboard page, and most of the time it has nothing to show.
+  it('asks who may reconnect only while the banner shows', () => {
+    useRegistrationStatus.mockReturnValue({ data: { phase: 'locally_ready', registered: true, degradedReasons: [] } });
+    render(<TunnelStatusBanner />);
+    expect(hubAccessAsked).not.toContain(true);
+
+    useRegistrationStatus.mockReturnValue(degraded);
+    render(<TunnelStatusBanner />);
+    expect(hubAccessAsked.at(-1)).toBe(true);
   });
 
   it('recovers in place on reconnect success (refetches status, no navigation)', async () => {

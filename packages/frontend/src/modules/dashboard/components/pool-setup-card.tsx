@@ -2,6 +2,7 @@ import { poolStatusOptions } from '@/api-client/@tanstack/react-query.gen';
 import { Button } from '@/components/ui/Button';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
+import { useHubAccess } from '@/lib/hooks/use-hub-access';
 import { useRegistrationStatus } from '@/lib/hooks/use-registration-status';
 import { POLLING } from '@/lib/polling-budget';
 import { LazyPoolSetupWizard } from '@/modules/settings/components/pool-setup-wizard/lazy-pool-setup-wizard';
@@ -27,11 +28,15 @@ const MAX_NAMED_REQUESTERS = 3;
  *
  * The status read is the cheap `/status` route, never the discovery route. A pending or failed read
  * renders nothing: this card decorates the page and must not raise an error over something nobody asked for.
+ *
+ * Neither card shows to a member (`useHubAccess`): every step of the guide pairs, approves or turns on
+ * the pool, which the Hub refuses them, and the review card would sit there for good, since it ignores dismissal.
  */
 export function PoolSetupCard() {
   const { t } = useTranslation();
   const headingId = useId();
   const demoMode = useDemoMode();
+  const { manageHub } = useHubAccess();
   const { data: registration } = useRegistrationStatus();
   const { dismissed, dismiss } = usePoolSetupDismissal();
   const wizard = useDisclosure();
@@ -42,8 +47,12 @@ export function PoolSetupCard() {
     staleTime: 30_000,
     retry: false,
     refetchInterval: POLLING.POOL_NUDGE_MS,
-    enabled: !demoMode,
+    enabled: !demoMode && manageHub,
   });
+
+  if (!manageHub) {
+    return null;
+  }
 
   const invitation = poolInvitation({ registered: Boolean(registration?.registered), demoMode, dismissed, status });
 

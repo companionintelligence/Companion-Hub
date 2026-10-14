@@ -1,9 +1,8 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { castAppUrn } from '@/common/helpers/app-helpers';
 import { settingsReadAction } from '@/core/portal/local-app-reads';
-import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
-import { HubManagerGuard } from '@/modules/auth/hub-manager.guard';
+import { HubManagerGuard, resolveWhoisService } from '@/modules/auth/hub-manager.guard';
 import { Controller, HttpStatus, type MessageEvent, Query, Req, Sse, UseGuards } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { Request } from 'express';
@@ -32,7 +31,8 @@ export class SSEController {
   @Sse('app-logs')
   async appLogsEvents(@Query() query: StreamAppLogsQueryDto, @Req() req: Request): Promise<Observable<MessageEvent>> {
     const appUrn = castAppUrn(query.appUrn);
-    const whois = this.resolveWhois();
+    // Resolved when asked, as `HubManagerGuard` resolves it, so this module needn't import the Portal module.
+    const whois = resolveWhoisService(this.moduleRef);
 
     if (!whois) {
       throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action: settingsReadAction(appUrn) }, HttpStatus.FORBIDDEN);
@@ -48,14 +48,5 @@ export class SSEController {
   @UseGuards(HubManagerGuard)
   async hubLogsEvents(@Query() query: StreamHubLogsQueryDto): Promise<Observable<MessageEvent>> {
     return this.sseService.getLogStreamObservable('ci-hub-logs', logStreamLines(query.maxLines));
-  }
-
-  /** Resolved when asked, as `HubManagerGuard` resolves it, so this module needn't import the Portal module. */
-  private resolveWhois(): MarketplaceWhoIsService | null {
-    try {
-      return this.moduleRef.get(MarketplaceWhoIsService, { strict: false }) ?? null;
-    } catch {
-      return null;
-    }
   }
 }

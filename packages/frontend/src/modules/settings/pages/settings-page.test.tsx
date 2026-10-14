@@ -56,7 +56,7 @@ function renderSettingsPage(initialEntry: string) {
     user: { username: 'admin@ci.computer', totpEnabled: false },
   } as ReturnType<typeof useAppContext>);
 
-  render(
+  return render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <SettingsPage />
     </MemoryRouter>,
@@ -97,6 +97,25 @@ describe('SettingsPage', () => {
     renderSettingsPage('/settings?tab=logs');
 
     expect(await screen.findByRole('tab', { name: 'COMMON_LOGS' })).toBeInTheDocument();
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest', inline: 'nearest' });
+  });
+
+  it('scrolls the linked tab into view once the access answer arrives', async () => {
+    const scrollIntoView = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    hubAccess.isPending = true;
+
+    const view = renderSettingsPage('/settings?tab=system');
+    expect(scrollIntoView).not.toHaveBeenCalled();
+
+    hubAccess.isPending = false;
+    view.rerender(
+      <MemoryRouter initialEntries={['/settings?tab=system']}>
+        <SettingsPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole('tab', { name: 'COMMON_SYSTEM' })).toBeInTheDocument();
     expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest', inline: 'nearest' });
   });
 

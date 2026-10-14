@@ -13,9 +13,11 @@ const fixtures = vi.hoisted(() => ({
   poolReads: 0,
   registered: true,
   demo: false,
+  manageHub: true,
 }));
 
 vi.mock('@/lib/hooks/use-demo-mode', () => ({ useDemoMode: () => fixtures.demo }));
+vi.mock('@/lib/hooks/use-hub-access', () => ({ useHubAccess: () => ({ manageHub: fixtures.manageHub, isPending: false }) }));
 vi.mock('@/lib/hooks/use-registration-status', () => ({
   useRegistrationStatus: () => ({ data: { registered: fixtures.registered } }),
 }));
@@ -62,6 +64,7 @@ beforeEach(() => {
   fixtures.poolReads = 0;
   fixtures.registered = true;
   fixtures.demo = false;
+  fixtures.manageHub = true;
 });
 
 afterEach(() => {
@@ -233,6 +236,20 @@ describe('PoolSetupCard', () => {
 
       expect(review()).not.toBeInTheDocument();
     });
+  });
+
+  // Approving, pairing and turning the pool on are an owner's or admin's; the Hub refuses a member each one.
+  it('shows a member neither card and does not read pool status', async () => {
+    fixtures.manageHub = false;
+    fixtures.pool = poolWith([incomingPeer()]);
+    renderCard();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(invite()).not.toBeInTheDocument();
+    expect(review()).not.toBeInTheDocument();
+    expect(fixtures.poolReads).toBe(0);
   });
 
   it('keeps the guide mounted when the invitation disappears mid-flow because a peer now exists', async () => {

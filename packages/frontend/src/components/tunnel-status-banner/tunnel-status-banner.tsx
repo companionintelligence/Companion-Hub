@@ -25,10 +25,12 @@ export function TunnelStatusBanner() {
   const queryClient = useQueryClient();
   const { data: status } = useRegistrationStatus();
   const [isReconnecting, setIsReconnecting] = useState(false);
+  const showsBanner = Boolean(status && requiresPortalRePairing(status));
   // Reconnecting or re-pairing changes the whole Hub, an owner's or admin's to do. A member sees the notice only.
-  const { manageHub } = useHubAccess();
+  // Asked only while the banner shows: this layout wraps every page, and most of the time there is no banner.
+  const { manageHub } = useHubAccess({ enabled: showsBanner });
 
-  if (!status || !requiresPortalRePairing(status)) {
+  if (!showsBanner) {
     return null;
   }
 

@@ -49,12 +49,17 @@ export default () => {
   const isLogsTab = currentTab === 'logs';
   const tabListRef = useRef<HTMLDivElement>(null);
 
+  // Runs again when the access answer arrives: the strip doesn't exist while it loads, and a link to a tab
+  // a member also sees (`?tab=system`) leaves `currentTab` unchanged once it renders.
   useEffect(() => {
+    if (hubAccessPending) {
+      return;
+    }
     const active = tabListRef.current?.querySelector<HTMLElement>('[role="tab"][data-state="active"]');
     if (currentTab && typeof active?.scrollIntoView === 'function') {
       active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     }
-  }, [currentTab]);
+  }, [currentTab, hubAccessPending]);
 
   const handleTabChange = (newTab: string) => {
     setSearchParams({ tab: newTab });
