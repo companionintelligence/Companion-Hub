@@ -616,8 +616,10 @@ keys `LLM_API_BASE`, `LLM_API_KEY`, `LLM_DEFAULT_CHAT_MODEL`, `LLM_DEFAULT_EMBED
   downloaded model (`ollama/<tag>` in `/data/.openclaw/openclaw.json`), so OpenClaw's reconciler
   puts it back on Hub Auto. The Hub reads that file out of the running container through Docker's
   archive API, since where `/data` is a named volume (see [App volumes](#app-volumes)) the app-data
-  folder never gets it. When that read fails, the sweep leaves OpenClaw running and its log line says
-  the picker could not be checked.
+  folder never gets it. A stopped container or a missing file means there is no pick to take back.
+  Any other failed read restarts OpenClaw too, as a failed staleness check restarts an app on an
+  operator's sweep, and the log line says the picker could not be checked. An automatic sweep never
+  reads the picker.
 
 ## Model loads
 

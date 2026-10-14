@@ -259,8 +259,9 @@ export class AiAppInferenceRefreshService implements OnModuleInit, OnModuleDestr
   /**
    * OpenClaw stores a click on a downloaded model as `ollama/<tag>`. That is not the
    * Hub handout, so the env comparison stays current and Save would leave the old row
-   * selected. Returns a restart when an operator save should take the default back, and
-   * a decision to leave it running when the config couldn't be read.
+   * selected. Returns a restart when an operator save should take the default back, or
+   * when the config couldn't be read: like a failed staleness check, an operator who
+   * saved gets the restart a save always did before these checks existed.
    *
    * The config is read out of the running container, not from the app-data folder. Where
    * that folder can't hold POSIX permissions (a Windows drive), OpenClaw's `/data` is a
@@ -281,7 +282,10 @@ export class AiAppInferenceRefreshService implements OnModuleInit, OnModuleDestr
       primary = config.agents?.defaults?.model?.primary;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return { restart: false, why: `its inference env is current, but OpenClaw's model picker could not be checked (${message})` };
+      return {
+        restart: true,
+        why: `its inference env is current, but OpenClaw's model picker could not be checked (${message}); restarting in case it holds a downloaded model`,
+      };
     }
     if (typeof primary === 'string' && primary.startsWith('ollama/')) {
       return { restart: true, why: `chat default left the Hub model (${primary}); returning it to Hub Auto` };

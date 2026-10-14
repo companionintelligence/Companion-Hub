@@ -223,7 +223,7 @@ describe('AiAppInferenceRefreshService', () => {
         await mkdir(path.dirname(hostConfig()), { recursive: true });
         await writeFile(hostConfig(), openClawConfig('ollama/gemma3:1b'));
 
-        // OpenClaw is back on the Hub's model in the file it actually uses.
+        // In the config OpenClaw reads, it is back on the Hub's model.
         dockerRead.readRunningAppFile.mockResolvedValue(openClawConfig('ci-hub/auto'));
         service.requestRefresh('inference preferences changed');
         await service.flush();
@@ -237,16 +237,26 @@ describe('AiAppInferenceRefreshService', () => {
         expect(decisions.find((decision) => decision.appUrn === CI_OPENCLAW)?.why).toBe('its inference config is already current');
       });
 
-      it('says the picker check could not run, instead of calling the config current, when Docker cannot read the file', async () => {
+      it('restarts OpenClaw on an operator save when Docker cannot read the file, and says the picker could not be checked', async () => {
+        // The operator saved and expects OpenClaw back on Hub Auto, as with a failed staleness check.
         dockerRead.readRunningAppFile.mockRejectedValue(new Error('(HTTP code 500) server error - mount failed'));
 
         service.requestRefresh('inference preferences changed');
         const decisions = await service.flush();
 
-        expect(restarted).toEqual([]);
+        expect(restarted).toEqual([CI_OPENCLAW]);
         expect(decisions.find((decision) => decision.appUrn === CI_OPENCLAW)?.why).toBe(
-          "its inference env is current, but OpenClaw's model picker could not be checked ((HTTP code 500) server error - mount failed)",
+          "its inference env is current, but OpenClaw's model picker could not be checked ((HTTP code 500) server error - mount failed); " +
+            'restarting in case it holds a downloaded model',
         );
+
+        // An automatic sweep never reads the picker, so a failing read can't restart OpenClaw on its own.
+        restarted.length = 0;
+        dockerRead.readRunningAppFile.mockClear();
+        service.requestRefresh('pool membership changed', { automatic: true });
+        await service.flush();
+        expect(restarted).toEqual([]);
+        expect(dockerRead.readRunningAppFile).not.toHaveBeenCalled();
       });
     });
 
