@@ -143,11 +143,16 @@ const STORE_B = { slug: 'community', name: 'Community', enabled: true, url: '', 
 const OWNER_ACTIONS = ['view', 'start', 'stop', 'restart', 'install', 'update', 'uninstall', 'reset', 'backup', 'restore', 'configure'];
 /** What `GET /api/custom-apps/access` answers: an organization owner or admin unless a test says otherwise. */
 let customAppActions: string[] = OWNER_ACTIONS;
+/** What `GET /api/hub-access` answers: an owner or admin unless a test says otherwise. */
+let manageHub = true;
 
 function setupQueries(stores = [STORE_A, STORE_B]) {
   mockUseQuery.mockImplementation((opts: { queryKey: readonly unknown[] }) => {
     if (opts.queryKey[0] === 'custom-app-access') {
       return { data: customAppActions, isLoading: false } as ReturnType<typeof useQuery>;
+    }
+    if (opts.queryKey[0] === 'hub-access') {
+      return { data: manageHub, isLoading: false, isPending: false } as ReturnType<typeof useQuery>;
     }
     if (opts.queryKey[0] === 'enabledStores') {
       return { data: { appStores: stores }, isLoading: false } as ReturnType<typeof useQuery>;
@@ -166,6 +171,7 @@ describe('AppStorePage — multi-store UX', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     customAppActions = OWNER_ACTIONS;
+    manageHub = true;
     mockUseParams.mockReturnValue({});
     capturedSearchParams = new URLSearchParams();
     mockStoreState.category = undefined;
@@ -194,6 +200,23 @@ describe('AppStorePage — multi-store UX', () => {
 
     expect(mockNavigate).toHaveBeenCalledWith('/apps/expose');
     expect(mockNavigate).toHaveBeenCalledWith('/apps/create');
+  });
+
+  // Pulling the app stores refreshes them for the whole Hub, an owner's or admin's to do.
+  it.each([
+    ['offers an owner or admin', true],
+    ['does not offer a member', false],
+  ])('%s Check for Updates', (_label, canManage) => {
+    manageHub = canManage;
+    setupQueries();
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryAllByRole('button', { name: 'APP_STORE_CHECK_FOR_UPDATES' })).toHaveLength(canManage ? 1 : 0);
   });
 
   // Only an organization owner or admin may create a custom app, so a member is not offered the button.

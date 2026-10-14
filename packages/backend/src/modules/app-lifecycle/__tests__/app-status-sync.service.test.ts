@@ -236,6 +236,99 @@ describe('AppStatusSyncService', () => {
   });
 
   /*
+   * A restart, backup, or restore takes the app's containers down before it brings them back, and can
+   * run as long as the queue allows. Five minutes in, the sync read the missing containers as a stopped
+   * app (Companion-Hub#1985). A boot start that pulls the images an uninstall removed is the same case
+   * (Companion-Hub#1980). The row's last update is past the time window here, so only the registry
+   * entry keeps the app skipped.
+   */
+  it.each([
+    ['restarting', 'restart'],
+    ['backing_up', 'backup'],
+    ['starting', 'start'],
+  ] as const)('leaves a %s app with no containers alone while its operation is in the registry', async (status, command) => {
+    appRepository.getApps.mockResolvedValue([
+      { id: 14, appName: 'wordpress', appStoreSlug: 'ci-marketplace', status, updatedAt: new Date(Date.now() - 50 * 60 * 1000).toISOString() },
+    ] as never);
+    operationRegistry.register('wordpress:ci-marketplace' as never, { requestId: 'req-14', command, tier: 'safe' });
+
+    const result = await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    expect(sseService.emit).not.toHaveBeenCalled();
+    expect(errorReportingService.captureWarning).not.toHaveBeenCalled();
+    expect(errorReportingService.reportAppFailure).not.toHaveBeenCalled();
+    expect(result.skippedCount).toBe(1);
+  });
+
+  /*
+   * A queued command's entry clears when the queue gives up on it, but a force stop calls Docker
+   * directly with no timeout of its own. An entry that outlives the queue timeout no longer holds the app.
+   */
+  it('reads Docker for an app whose registry entry has outlived the queue timeout', async () => {
+    appRepository.getApps.mockResolvedValue([
+      {
+        id: 16,
+        appName: 'wordpress',
+        appStoreSlug: 'ci-marketplace',
+        status: 'stopping',
+        updatedAt: new Date(Date.now() - 50 * 60 * 1000).toISOString(),
+      },
+    ] as never);
+    const entry = operationRegistry.register('wordpress:ci-marketplace' as never, { requestId: 'req-16', command: 'stop', tier: 'safe' });
+    entry.createdAt = Date.now() - 50 * 60 * 1000;
+
+    await service.syncAllAppStatuses();
+
+    expect(errorReportingService.captureWarning).toHaveBeenCalledWith(
+      "App wordpress:ci-marketplace stuck in 'stopping'",
+      expect.objectContaining({ appUrn: 'wordpress:ci-marketplace', status: 'stopping' }),
+      expect.anything(),
+    );
+    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(16, 'stopping', { status: 'stopped' });
+  });
+
+  /*
+   * A backend restart empties the registry. A command RabbitMQ hands to the new process writes no
+   * status when it ends, so this sync is what settles the row. With the queue's 45 minutes as the
+   * window, an in-app update that restarted the backend during a restart left the app on Restarting
+   * that long. A row the registry does not list keeps the window it always had.
+   */
+  it('settles a restarting app the registry does not list from Docker once eventsTimeout has passed', async () => {
+    appRepository.getApps.mockResolvedValue([
+      {
+        id: 15,
+        appName: 'wordpress',
+        appStoreSlug: 'ci-marketplace',
+        status: 'restarting',
+        updatedAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+      },
+    ] as never);
+
+    await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(15, 'restarting', { status: 'stopped' });
+    expect(errorReportingService.reportAppFailure).not.toHaveBeenCalled();
+  });
+
+  it('leaves an updating app the registry does not list alone while its image pull may still run', async () => {
+    appRepository.getApps.mockResolvedValue([
+      {
+        id: 15,
+        appName: 'wordpress',
+        appStoreSlug: 'ci-marketplace',
+        status: 'updating',
+        updatedAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+      },
+    ] as never);
+
+    const result = await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    expect(result.skippedCount).toBe(1);
+  });
+
+  /*
    * Postgres hands a `timestamp` back without a zone ("2026-10-01 10:00:00.123456"), and the Hub writes
    * them as UTC. Every fixture above is an ISO string ending in Z, which names its zone and so hid that
    * the sync read the other kind in the PROCESS's zone: the Hub container runs in the host's.

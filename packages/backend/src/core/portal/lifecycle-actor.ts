@@ -58,6 +58,7 @@ export type SystemLifecycleReason =
   | 'restore-after-pairing' // pairing back onto a device, with a code from its organization, restores the apps Portal lists for it
   // The Hub's own upkeep:
   | 'bootstrap-restart' // a Hub starting on a new version restarts the apps that were running
+  | 'bootstrap-recreate' // a Hub starting on the same version starts a running app whose containers are all gone
   | 'inference-env-refresh' // inference settings or the Hub version changed; AI apps pick up the new env
   | 'custom-domain-revert' // an app still forwarding a removed custom domain is restarted off it
   | 'custom-domain-apply' // the operator asked for a bound custom domain to start serving, so the app is recreated onto it

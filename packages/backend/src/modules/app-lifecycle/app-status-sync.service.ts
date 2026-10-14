@@ -127,13 +127,24 @@ export class AppStatusSyncService {
 
       let syncedCount = 0;
       let skippedCount = 0;
+      const { eventsTimeoutMs, queueTimeoutMs } = this.getGraceWindowsMs();
 
       for (const app of apps) {
         const appUrn: AppUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
 
         const isTransitional = TRANSITIONAL_STATES.includes(app.status);
-        const transitionalGraceMs = this.getTransitionalGraceMs(app.status);
+        const transitionalGraceMs = LONG_RUNNING_TRANSITIONAL_STATES.includes(app.status) ? queueTimeoutMs : eventsTimeoutMs;
         if (isTransitional) {
+          // A restart, backup, or restore takes the containers down before it brings them back, so
+          // Docker cannot say whether one is still running. The registry can, for as long as the queue
+          // waits for the command. Past that the caller has given up on it, and an entry that never
+          // clears, such as a force stop hung on Docker, must not hold the app forever.
+          const operation = this.operationRegistry.get(appUrn);
+          if (operation && Date.now() - operation.createdAt < queueTimeoutMs) {
+            this.logger.debug(`Skipping ${appUrn} - '${app.status}' operation still in progress`);
+            skippedCount++;
+            continue;
+          }
           const timeSinceUpdate = Date.now() - parseDbTimestampMs(app.updatedAt);
           if (timeSinceUpdate < transitionalGraceMs) {
             this.logger.debug(`Skipping ${appUrn} - in recent transitional state '${app.status}'`);
@@ -348,11 +359,19 @@ export class AppStatusSyncService {
     });
   }
 
-  private getTransitionalGraceMs(status: AppStatus): number {
+  /**
+   * How long an app in a transitional state is left alone. While the registry lists its operation,
+   * the app-events queue's own timeout for a command (see QueueModule), counted from the entry's
+   * creation. A row the registry does not list, as after a backend restart, gets `eventsTimeout`
+   * from its last update, or the queue timeout for `installing` and `updating`, whose image pulls
+   * take longer. Apart from an install, a command RabbitMQ hands to the new process writes no status
+   * when it ends, so this sync is what settles that row, and a longer window only keeps it spinning.
+   */
+  private getGraceWindowsMs(): { eventsTimeoutMs: number; queueTimeoutMs: number } {
     const eventsTimeoutMinutes = this.configuration.get('userSettings').eventsTimeout;
-    const minutes = LONG_RUNNING_TRANSITIONAL_STATES.includes(status)
-      ? Math.max(eventsTimeoutMinutes, Number(DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES))
-      : eventsTimeoutMinutes;
-    return minutes * 60 * 1000;
+    return {
+      eventsTimeoutMs: eventsTimeoutMinutes * 60 * 1000,
+      queueTimeoutMs: Math.max(eventsTimeoutMinutes, Number(DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES)) * 60 * 1000,
+    };
   }
 }

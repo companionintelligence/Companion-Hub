@@ -7,6 +7,7 @@ mod cli_install;
 mod compose;
 mod containers;
 mod core;
+mod credentials;
 mod docker_access;
 mod docker_versions;
 mod installers;

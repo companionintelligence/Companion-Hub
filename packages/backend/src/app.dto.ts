@@ -554,3 +554,9 @@ const userContextDto = z.object({
 export class UserContextDto extends createZodDto(userContextDto) {}
 
 export class AcknowledgeWelcomeBody extends createZodDto(z.object({ allowErrorMonitoring: z.boolean() })) {}
+
+/**
+ * Whether the signed-in person may change what applies to the whole Hub (`MarketplaceWhoIsService.hubManageHint`).
+ * The UI shows Hub-wide controls and the Logs tab from it; the routes still decide.
+ */
+export class HubAccessDto extends createZodDto(z.object({ manageHub: z.boolean() })) {}

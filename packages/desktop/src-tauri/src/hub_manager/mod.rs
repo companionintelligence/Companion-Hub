@@ -21,6 +21,7 @@ use crate::portal_url::{compiled_ci_cloud_url, launch_portal_url, PortalUrlResol
 
 mod cli_install;
 mod compose;
+mod container_exec;
 mod containers;
 mod credentials;
 mod docker_access;
@@ -43,6 +44,7 @@ mod tests;
 
 pub(crate) use cli_install::*;
 pub use compose::*;
+pub(crate) use container_exec::*;
 pub use containers::*;
 pub(crate) use credentials::*;
 pub use docker_access::*;

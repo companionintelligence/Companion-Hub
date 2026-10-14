@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { HttpStatus } from '@nestjs/common';
 import { mock } from 'vitest-mock-extended';
 import type { Request } from 'express';
@@ -8,6 +8,7 @@ import { DatabaseService } from '@/core/database/database.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { EVERY_ADDRESS_FAILED, axiosEveryAddressFailed } from '@/tests/utils/network-failures';
 import { FederatedIdentityRepository } from '@/modules/user/federated-identity.repository';
+import { UserRepository } from '@/modules/user/user.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { PortalClientService } from '../portal-client.service';
 import { MarketplaceWhoIsService } from '../marketplace-whois.service';
@@ -23,6 +24,7 @@ describe('MarketplaceWhoIsService', () => {
   let logger: ReturnType<typeof mock<LoggerService>>;
   let federatedIdentities: ReturnType<typeof mock<FederatedIdentityRepository>>;
   let registration: ReturnType<typeof mock<RegistrationService>>;
+  let users: ReturnType<typeof mock<UserRepository>>;
   let service: MarketplaceWhoIsService;
   let cacheRows: Array<{
     subject: string;
@@ -52,6 +54,7 @@ describe('MarketplaceWhoIsService', () => {
     logger = mock<LoggerService>();
     federatedIdentities = mock<FederatedIdentityRepository>();
     registration = mock<RegistrationService>();
+    users = mock<UserRepository>();
     cacheRows = [];
     portExposeRows = [];
     appRowsError = null;
@@ -82,7 +85,10 @@ describe('MarketplaceWhoIsService', () => {
     federatedIdentities.findByUserId.mockResolvedValue([{ subject: SUBJECT }] as never);
     registration.getDeviceRegistrationInfo.mockResolvedValue({ id: 'org-hub' } as never);
 
-    service = new MarketplaceWhoIsService(portal, database, logger, federatedIdentities, registration);
+    // The operator who claimed this Hub is someone else unless a test says otherwise.
+    users.getFirstOperator.mockResolvedValue({ id: 1 } as never);
+
+    service = new MarketplaceWhoIsService(portal, database, logger, federatedIdentities, registration, users);
   });
 
   it('gives an unlinked operator the member actions only, and logs once', async () => {
@@ -907,6 +913,290 @@ describe('MarketplaceWhoIsService', () => {
       await expect(ask(service)).resolves.toBe(false);
       expect(portal.whoisApps).not.toHaveBeenCalled();
       expect(logger.warn).toHaveBeenCalledWith(`${purpose}_role_unverified userId=${USER_ID} status=no-organization`);
+    });
+  });
+
+  /*
+   * Hub-wide changes (settings, keys, providers, updates, pool, app stores, registration, factory reset)
+   * and the Hub's own log are an owner's or admin's. Asked of the Portal fresh, about no app.
+   */
+  describe('hubManageVerdict: who may change the whole Hub', () => {
+    const roleAnswer = (role: string, status = 200) =>
+      ({ status, body: { organizations: [{ organizationId: 'org-hub', version: 1, user: { role }, apps: [] }] } }) as never;
+    const hostLocalReq = () => ({ user: { id: 1 }, hubPrincipal: 'host-local' }) as Request;
+
+    it.each(['owner', 'admin'] as const)('lets an organization %s through, asking the Portal about no app', async (role) => {
+      portal.whoisApps.mockResolvedValue(roleAnswer(role));
+
+      await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('allowed');
+      await expect(service.assertSessionMayManageHub(sessionReq())).resolves.toBeUndefined();
+      expect(portal.whoisApps).toHaveBeenCalledWith({ subject: SUBJECT, appIds: [], surface: 'hub', organizationId: 'org-hub' });
+    });
+
+    it('refuses a member with 403', async () => {
+      portal.whoisApps.mockResolvedValue(roleAnswer('member'));
+
+      await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('refused');
+      await expect(service.assertSessionMayManageHub(sessionReq())).rejects.toMatchObject({
+        message: 'HUB_MANAGE_ROLE_REQUIRED',
+        status: HttpStatus.FORBIDDEN,
+      });
+    });
+
+    it('refuses someone the Portal lists in no organization of ours', async () => {
+      portal.whoisApps.mockResolvedValue({ status: 200, body: { organizations: [] } } as never);
+
+      await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('refused');
+    });
+
+    it('refuses with 503 and says why when the Portal cannot answer', async () => {
+      portal.whoisApps.mockResolvedValue(roleAnswer('owner', 503));
+
+      await expect(service.assertSessionMayManageHub(sessionReq())).rejects.toMatchObject({
+        message: 'HUB_MANAGE_ROLE_UNVERIFIED',
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+      });
+      expect(logger.warn).toHaveBeenCalledWith(`hub_manage_role_unverified userId=${USER_ID} status=503`);
+    });
+
+    it('is unknown when the Portal cannot be reached', async () => {
+      portal.whoisApps.mockRejectedValue(new Error('ECONNREFUSED'));
+
+      await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('unknown');
+    });
+
+    /*
+     * One AI settings save is several guarded requests. An owner's or admin's yes is kept for a minute,
+     * so a demotion in the Portal takes effect within one. A no or a failure is never kept.
+     */
+    describe('keeping a yes for a minute', () => {
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('asks the Portal once a minute for an owner or admin, and a demotion counts after that', async () => {
+        vi.useFakeTimers();
+        portal.whoisApps.mockResolvedValue(roleAnswer('admin'));
+
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('allowed');
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('allowed');
+        expect(portal.whoisApps).toHaveBeenCalledTimes(1);
+
+        portal.whoisApps.mockResolvedValue(roleAnswer('member'));
+        vi.advanceTimersByTime(60_001);
+
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('refused');
+        expect(portal.whoisApps).toHaveBeenCalledTimes(2);
+      });
+
+      it("never keeps a member's answer or a failure", async () => {
+        portal.whoisApps
+          .mockResolvedValueOnce(roleAnswer('member'))
+          .mockResolvedValueOnce(roleAnswer('owner', 503))
+          .mockRejectedValueOnce(new Error('ECONNREFUSED'))
+          .mockResolvedValue(roleAnswer('member'));
+
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('refused');
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('unknown');
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('unknown');
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('refused');
+        expect(portal.whoisApps).toHaveBeenCalledTimes(4);
+      });
+
+      it('keeps a yes for that person, Portal identity and organization only', async () => {
+        portal.whoisApps.mockResolvedValue(roleAnswer('owner'));
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('allowed');
+
+        await service.hubManageVerdict(sessionReq(8));
+        expect(portal.whoisApps).toHaveBeenCalledTimes(2);
+
+        federatedIdentities.findByUserId.mockResolvedValue([{ subject: 'portal-user-2' }] as never);
+        await service.hubManageVerdict(sessionReq());
+        expect(portal.whoisApps).toHaveBeenCalledTimes(3);
+
+        // Paired to another organization, where the Portal lists no role for this person.
+        registration.getDeviceRegistrationInfo.mockResolvedValue({ id: 'org-other' } as never);
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('refused');
+        expect(portal.whoisApps).toHaveBeenCalledTimes(4);
+      });
+
+      it('refuses at once when the Hub is unpaired', async () => {
+        portal.whoisApps.mockResolvedValue(roleAnswer('owner'));
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('allowed');
+
+        registration.getDeviceRegistrationInfo.mockResolvedValue(undefined as never);
+
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('refused');
+      });
+
+      it('leaves the API key and custom app role reads fresh', async () => {
+        portal.whoisApps.mockResolvedValue(roleAnswer('owner'));
+        await service.hubManageVerdict(sessionReq());
+
+        await expect(service.isOrgManager(USER_ID)).resolves.toBe(true);
+        expect(portal.whoisApps).toHaveBeenCalledTimes(2);
+      });
+    });
+
+    it('asks the Portal each time rather than trusting the role stored at sign-in', async () => {
+      const storedOwner = { hubSessionId: 'sess-1', user: { id: USER_ID, orgRole: 'owner' }, hubPrincipal: 'session' } as unknown as Request;
+      portal.whoisApps.mockResolvedValue(roleAnswer('member'));
+
+      await expect(service.hubManageVerdict(storedOwner)).resolves.toBe('refused');
+    });
+
+    /*
+     * The person who set the Hub up keeps it: the claiming operator passes whatever the Portal says
+     * their role is, and the Portal is not asked.
+     */
+    describe('the operator who claimed the Hub', () => {
+      const memberReq = (userId: number) =>
+        ({ hubSessionId: `sess-${userId}`, user: { id: userId, orgRole: 'member' }, hubPrincipal: 'session' }) as unknown as Request;
+
+      it('keeps Hub-wide writes as a member, and the Portal is not asked', async () => {
+        users.getFirstOperator.mockResolvedValue({ id: USER_ID } as never);
+        portal.whoisApps.mockResolvedValue(roleAnswer('member'));
+
+        await expect(service.assertSessionMayManageHub(memberReq(USER_ID))).resolves.toBeUndefined();
+        await expect(service.hubManageHint(memberReq(USER_ID))).resolves.toBe(true);
+        expect(portal.whoisApps).not.toHaveBeenCalled();
+      });
+
+      it('keeps them while the Portal is down', async () => {
+        users.getFirstOperator.mockResolvedValue({ id: USER_ID } as never);
+        portal.whoisApps.mockRejectedValue(new Error('ECONNREFUSED'));
+
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('allowed');
+      });
+
+      it('gives another member nothing: 403', async () => {
+        users.getFirstOperator.mockResolvedValue({ id: 1 } as never);
+        portal.whoisApps.mockResolvedValue(roleAnswer('member'));
+
+        await expect(service.assertSessionMayManageHub(memberReq(USER_ID))).rejects.toMatchObject({
+          message: 'HUB_MANAGE_ROLE_REQUIRED',
+          status: HttpStatus.FORBIDDEN,
+        });
+        await expect(service.hubManageHint(memberReq(USER_ID))).resolves.toBe(false);
+      });
+
+      /*
+       * A factory reset truncates the user table with RESTART IDENTITY and drops every session
+       * (factory-reset.service.test.ts), and only a Hub with no operator can be claimed. So the next
+       * claimer gets the first row, and the old claimer, signing in again, gets a new one.
+       */
+      it('moves to whoever claims the Hub after a factory reset, and the old claimer is a member like any other', async () => {
+        let operators: Array<{ id: number }> = [{ id: 1 }];
+        users.getFirstOperator.mockImplementation(async () => [...operators].sort((a, b) => a.id - b.id)[0] as never);
+        portal.whoisApps.mockResolvedValue(roleAnswer('member'));
+        const oldClaimer = 1;
+
+        await expect(service.hubManageVerdict(memberReq(oldClaimer))).resolves.toBe('allowed');
+
+        // The reset empties the table, someone else claims the Hub, and the old claimer signs in again.
+        operators = [];
+        const newClaimer = 1;
+        operators.push({ id: newClaimer });
+        const oldClaimerAgain = 2;
+        operators.push({ id: oldClaimerAgain });
+
+        await expect(service.hubManageVerdict(memberReq(newClaimer))).resolves.toBe('allowed');
+        await expect(service.assertSessionMayManageHub(memberReq(oldClaimerAgain))).rejects.toMatchObject({
+          message: 'HUB_MANAGE_ROLE_REQUIRED',
+          status: HttpStatus.FORBIDDEN,
+        });
+        await expect(service.hubManageHint(memberReq(oldClaimerAgain))).resolves.toBe(false);
+      });
+    });
+
+    describe('with no role to ask about', () => {
+      it('lets the operator who claimed an unpaired Hub through, without asking the Portal', async () => {
+        registration.getDeviceRegistrationInfo.mockResolvedValue(undefined as never);
+        users.getFirstOperator.mockResolvedValue({ id: USER_ID } as never);
+
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('allowed');
+        expect(portal.whoisApps).not.toHaveBeenCalled();
+      });
+
+      it('refuses any other operator on an unpaired Hub', async () => {
+        registration.getDeviceRegistrationInfo.mockResolvedValue(undefined as never);
+
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('refused');
+      });
+
+      it('lets an operator with no linked Portal identity through only when they claimed the Hub', async () => {
+        federatedIdentities.findByUserId.mockResolvedValue([] as never);
+
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('refused');
+
+        users.getFirstOperator.mockResolvedValue({ id: USER_ID } as never);
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('allowed');
+        expect(portal.whoisApps).not.toHaveBeenCalled();
+      });
+
+      it('refuses when the operator rows cannot be read', async () => {
+        federatedIdentities.findByUserId.mockResolvedValue([] as never);
+        users.getFirstOperator.mockRejectedValue(new Error('db down'));
+
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('refused');
+      });
+    });
+
+    it('lets the CLI and the host-local key through without asking the Portal', async () => {
+      await expect(service.hubManageVerdict(cliReq())).resolves.toBe('allowed');
+      await expect(service.hubManageVerdict(hostLocalReq())).resolves.toBe('allowed');
+      expect(portal.whoisApps).not.toHaveBeenCalled();
+    });
+
+    it('refuses the Portal push and an unnamed principal, and the log names them', async () => {
+      await expect(service.assertSessionMayManageHub(portalPushReq())).rejects.toMatchObject({ message: 'HUB_MANAGE_ROLE_REQUIRED' });
+      await expect(service.hubManageVerdict(unknownPrincipalReq())).resolves.toBe('refused');
+      expect(logger.warn).toHaveBeenCalledWith('hub_manage_refused principal=portal-device');
+      expect(logger.warn).toHaveBeenCalledWith('hub_manage_refused principal=none');
+      expect(portal.whoisApps).not.toHaveBeenCalled();
+    });
+
+    /* The UI's question, answered from the role stored at sign-in, as for custom apps. */
+    describe('hubManageHint', () => {
+      const withStoredRole = (orgRole: 'owner' | 'admin' | 'member' | null) =>
+        ({ hubSessionId: 'sess-1', user: { id: USER_ID, orgRole }, hubPrincipal: 'session' }) as unknown as Request;
+
+      it.each([
+        ['owner', true],
+        ['admin', true],
+        ['member', false],
+      ] as const)('answers a stored %s with %s without asking the Portal', async (role, expected) => {
+        await expect(service.hubManageHint(withStoredRole(role))).resolves.toBe(expected);
+        expect(portal.whoisApps).not.toHaveBeenCalled();
+      });
+
+      it('asks the Portal when no role is stored', async () => {
+        portal.whoisApps.mockResolvedValue(roleAnswer('admin'));
+
+        await expect(service.hubManageHint(withStoredRole(null))).resolves.toBe(true);
+        expect(portal.whoisApps).toHaveBeenCalledTimes(1);
+      });
+
+      it('answers as the routes do when there is no role to ask about, whatever role the row says', async () => {
+        federatedIdentities.findByUserId.mockResolvedValue([] as never);
+
+        await expect(service.hubManageHint(withStoredRole('owner'))).resolves.toBe(false);
+
+        users.getFirstOperator.mockResolvedValue({ id: USER_ID } as never);
+        await expect(service.hubManageHint(withStoredRole('member'))).resolves.toBe(true);
+        expect(portal.whoisApps).not.toHaveBeenCalled();
+      });
+
+      it('offers nothing when the identity cannot be read', async () => {
+        federatedIdentities.findByUserId.mockRejectedValue(new Error('db down'));
+
+        await expect(service.hubManageHint(withStoredRole('owner'))).resolves.toBe(false);
+      });
+
+      it('offers the CLI everything and the Portal push nothing', async () => {
+        await expect(service.hubManageHint(cliReq())).resolves.toBe(true);
+        await expect(service.hubManageHint(portalPushReq())).resolves.toBe(false);
+      });
     });
   });
 });

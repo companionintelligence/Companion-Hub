@@ -155,6 +155,16 @@ nothing: ci-memory's long-running services and OpenClaw stayed `Running`, and on
 exited init services started. Compose does not see a changed
 bind-mounted file, but this path rewrites only the compose file and `app.env`.
 
+On a boot that keeps the version, the Hub starts only the apps whose row says `running`
+but that have no container at all, and schedules the first app status sync after that.
+Uninstalling the desktop app with its data kept leaves exactly this: every app container
+is gone, and the cache still holds the old version. A stopped app stays stopped. An app
+with any container left, running or not, is left to the status sync. The row is set to
+`starting` first, so a start that fails never leaves a `running` row with no containers for
+the sync to report as a crash. If the queue refuses the start because it isn't up yet, the
+Hub tries once more as soon as it is, waiting up to 10 minutes. A start that fails otherwise,
+or again, marks the app `stopped`, so the next boot doesn't try it again.
+
 ### Tunnel sidecar (`cloudflared`)
 
 On boot the Hub leaves a `running` cloudflared alone. A missing, exited, or crash-looping
@@ -195,11 +205,21 @@ Guards prevent false alarms:
 
 - **Transitional grace.** Apps in a transitional state (`installing`,
   `uninstalling`, `stopping`, `starting`, `updating`, `resetting`, `restarting`,
-  `backing_up`, `restoring`) are skipped while within their grace window. The
-  window is `eventsTimeout`, extended to `max(eventsTimeout, image-pull-timeout)`
-  for the long-running `installing` / `updating` states so big image pulls
-  aren't mistaken for failures. Apps stuck past the grace window are logged as
-  stuck.
+  `backing_up`, `restoring`) are skipped while the operation registry lists an
+  operation for them. A restart, backup, or restore takes the containers down
+  first, so Docker can't tell a slow one from a stopped app. The skip lasts as
+  long as the app-events queue waits for a command, `max(eventsTimeout, image-pull-timeout)`
+  (45 minutes by default), counted from when the operation was registered. By
+  then the caller has given up on the command, and an entry that never clears,
+  such as a force stop hung on Docker, can't hold the app forever. A row the
+  registry doesn't list is skipped for `eventsTimeout` after its last update, or
+  for that same queue timeout in the long-running `installing` / `updating` states
+  so big image pulls aren't mistaken for failures. The registry lives in memory,
+  so after a backend restart every row is in this case. Apart from an install, a
+  command RabbitMQ hands to the new process writes no status when it finishes,
+  so the sync is what settles the row, and a longer window would only keep it
+  spinning. Apps stuck
+  past their window are logged as stuck.
 - **Mid-install protection.** An `installing` / `install_failed` app with no
   containers is **not** marked `missing` (the pull may simply be slow).
 

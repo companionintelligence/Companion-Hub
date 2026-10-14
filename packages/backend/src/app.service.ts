@@ -2,7 +2,11 @@ import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Inject, Injectable, type OnApplicationShutdown } from '@nestjs/common';
-import { APP_DATA_DIR, DATA_DIR, HUB_MANAGED_LABEL, HUB_STACK_REGISTRY_REPO } from './common/constants';
+import { isPortExposeApp } from '@ci-hub/common/schemas';
+import type { AppUrn } from '@ci-hub/common/types';
+import { APP_DATA_DIR, appUrnFromLabels, DATA_DIR, HUB_MANAGED_LABEL, HUB_STACK_REGISTRY_REPO } from './common/constants';
+import { TranslatableError } from './common/error/translatable-error';
+import { createAppUrn } from './common/helpers/app-helpers';
 import { redactSecretsForLog } from './common/helpers/log-privacy';
 import { fillHubContainerName } from './common/helpers/traefik-hub-address';
 import { withTimeout } from './common/helpers/with-timeout';
@@ -18,6 +22,7 @@ import { MarketplaceService } from './modules/marketplace/marketplace.service';
 import { RepoEventsQueue } from './modules/queue/entities/repo-events';
 import { SystemEventsQueue } from './modules/queue/entities/system-events';
 import { DOCKERODE } from './modules/docker/docker.module';
+import { listContainersMatchingAnyLabelSets, managedAppLabelSets } from './modules/docker/hub-container-query';
 import Dockerode from 'dockerode';
 import { RegistryService } from './utils/registry/registry.service';
 import { PortManagerService } from './modules/network/port-manager.service';
@@ -25,6 +30,16 @@ import { AppsRepository } from './modules/apps/apps.repository';
 import { APP_SESSION_KEY_PREFIX, SESSION_KEY_PREFIX } from './modules/auth/session.manager';
 import { fillEdgeHopAddresses } from './modules/network/edge-hops';
 import { TRAEFIK_CONTAINER_NAME } from './modules/network/network-constants';
+
+/** How long the boot waits for Docker to list the app containers before it skips the recreate. */
+const BOOT_CONTAINER_LIST_TIMEOUT_MS = 15_000;
+
+/**
+ * How long a boot start the queue refused waits for the queue before it is tried once more. RabbitMQ
+ * has answered several minutes after the Hub booted.
+ */
+const BOOT_START_QUEUE_WAIT_MS = 10 * 60_000;
+const BOOT_START_QUEUE_POLL_MS = 2_000;
 
 @Injectable()
 export class AppService implements OnApplicationShutdown {
@@ -185,10 +200,6 @@ export class AppService implements OnApplicationShutdown {
         this.repoQueue.publishRepeatable({ command: 'update_all' }, '*/15 * * * *');
         this.logger.info('Repo update job scheduled');
       }
-      this.logger.info('Setting up repeatable app status sync job...');
-      this.systemEventsQueue.publishRepeatable({ command: 'sync_app_statuses' }, '*/5 * * * *');
-      this.logger.info('App status sync job scheduled');
-
       this.logger.info('Setting up repeatable orphan network reconcile job...');
       this.systemEventsQueue.publishRepeatable({ command: 'reconcile_orphan_networks' }, '*/30 * * * *');
       this.logger.info('Orphan network reconcile job scheduled');
@@ -213,7 +224,15 @@ export class AppService implements OnApplicationShutdown {
         this.logger.info('Restarting running apps...');
         await this.appLifecycleService.restartRunningApps();
         this.logger.info('Finished restarting running apps');
+      } else if (__prod__) {
+        await this.startRunningAppsWithoutContainers();
       }
+
+      // Only now, so the first sync finds an app started above `starting`, not `running` with no
+      // containers, which it reports as a crash.
+      this.logger.info('Setting up repeatable app status sync job...');
+      this.systemEventsQueue.publishRepeatable({ command: 'sync_app_statuses' }, '*/5 * * * *');
+      this.logger.info('App status sync job scheduled');
 
       this.logger.info('Bootstrap completed successfully');
     } catch (e) {
@@ -565,5 +584,100 @@ export class AppService implements OnApplicationShutdown {
     } catch (err) {
       this.logger.warn(`Port allocation migration failed (non-fatal): ${err}`);
     }
+  }
+
+  /**
+   * Starts each app whose row says `running` but that has no container at all, on a boot that keeps
+   * the version and so skips `restartRunningApps`. Uninstalling the desktop app with its data kept
+   * removes every app container and leaves the cache, so after a reinstall of the same version those
+   * apps stayed down and the first status sync reported each one as a crash.
+   *
+   * A stopped app stays stopped. So does an app with any container left, running or not: the
+   * desktop's Stop Hub leaves exited containers, and the status sync reads what they say. A start the
+   * queue refuses because it is not up yet is tried once more when it is. A start that fails
+   * otherwise, or again, settles the app as `stopped`, so the next boot does not try it again.
+   */
+  private async startRunningAppsWithoutContainers() {
+    let containers: Dockerode.ContainerInfo[];
+    let running: Awaited<ReturnType<AppsRepository['getApps']>>;
+    try {
+      running = (await this.appsRepository.getApps()).filter((app) => app.status === 'running' && !isPortExposeApp(app.config));
+      if (running.length === 0) return;
+      // Bounded like the network prune above: the boot waits on this before it listens, and a
+      // dockerode call that hangs on Desktop would keep /api/health/live down.
+      containers = await withTimeout(
+        listContainersMatchingAnyLabelSets(this.docker, managedAppLabelSets()),
+        BOOT_CONTAINER_LIST_TIMEOUT_MS,
+        `Docker did not list the app containers within ${BOOT_CONTAINER_LIST_TIMEOUT_MS / 1000}s`,
+      );
+    } catch (error) {
+      this.logger.warn(`Could not look for running apps without containers: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+
+    const withContainers = new Set(containers.map((container) => appUrnFromLabels(container.Labels)));
+    const refused: Array<{ id: number; appUrn: AppUrn }> = [];
+    for (const app of running) {
+      const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+      if (withContainers.has(appUrn)) continue;
+
+      this.logger.warn(`App ${appUrn} is marked running but has no containers; starting it so compose creates them again`);
+      try {
+        // Not left `running`: a start the queue never took puts back the status it read, and the
+        // status sync reports a `running` app with no containers as a crash.
+        if (!(await this.appsRepository.updateAppByIdIfStatus(app.id, 'running', { status: 'starting' }))) continue;
+        await this.startAppAtBoot(appUrn);
+      } catch (error) {
+        if (error instanceof TranslatableError && error.message === 'APP_ERROR_QUEUE_UNAVAILABLE') {
+          refused.push({ id: app.id, appUrn });
+          continue;
+        }
+        await this.markBootStartFailed(app.id, appUrn, error);
+      }
+    }
+
+    if (refused.length > 0) {
+      void this.startRefusedAppsOnceQueueIsUp(refused);
+    }
+  }
+
+  /**
+   * Tries each boot start the queue refused once more, as soon as the queue is up, or after
+   * BOOT_START_QUEUE_WAIT_MS. The apps stay `starting` meanwhile. The status sync runs on the same
+   * connection, so it cannot read them before the queue is up.
+   */
+  private async startRefusedAppsOnceQueueIsUp(apps: Array<{ id: number; appUrn: AppUrn }>) {
+    this.logger.info(`Waiting for the queue to start ${apps.map(({ appUrn }) => appUrn).join(', ')}`);
+    // Every queue shares one connection, so the system queue is up when the app queue is.
+    let waited = 0;
+    while (waited < BOOT_START_QUEUE_WAIT_MS && this.systemEventsQueue.unavailableReason() !== undefined) {
+      await new Promise((resolve) => setTimeout(resolve, BOOT_START_QUEUE_POLL_MS));
+      waited += BOOT_START_QUEUE_POLL_MS;
+    }
+
+    for (const { id, appUrn } of apps) {
+      try {
+        await this.startAppAtBoot(appUrn);
+      } catch (error) {
+        await this.markBootStartFailed(id, appUrn, error);
+      }
+    }
+  }
+
+  private async startAppAtBoot(appUrn: AppUrn) {
+    await this.appLifecycleService.startApp({
+      appUrn,
+      skipPull: true,
+      onlyRecreateChanged: true,
+      actor: { kind: 'system', reason: 'bootstrap-recreate' },
+    });
+  }
+
+  private async markBootStartFailed(appId: number, appUrn: AppUrn, error: unknown) {
+    this.logger.error(`Could not start ${appUrn}; it stays stopped: ${error instanceof Error ? error.message : String(error)}`);
+    await this.appsRepository.updateAppByIdIfStatus(appId, 'starting', { status: 'stopped' }).catch((updateError: unknown) => {
+      this.logger.warn(`Could not mark ${appUrn} stopped: ${updateError instanceof Error ? updateError.message : String(updateError)}`);
+      return false;
+    });
   }
 }

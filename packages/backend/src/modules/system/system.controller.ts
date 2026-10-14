@@ -5,6 +5,7 @@ import { Controller, Get, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import { pipeline } from 'node:stream/promises';
 import { AuthGuard } from '../auth/auth.guard';
+import { HubManagerGuard } from '../auth/hub-manager.guard';
 import { LoadDto, SystemResourcesDto, HostTelemetryHistoryDto, HostEventLogDto } from './dto/system.dto';
 import { ResourceAllocatorService } from './resource-allocator.service';
 import { SystemService } from './system.service';
@@ -60,7 +61,7 @@ export class SystemController {
     return HostEventLogDto.parse({ events }, { reportOnly: true });
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Get('/logs/download')
   @ApiResponse({ status: 200, description: 'Hub logs download' })
   async downloadHubLogs(@Res() res: Response) {

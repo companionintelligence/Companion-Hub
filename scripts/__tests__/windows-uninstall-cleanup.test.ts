@@ -759,6 +759,47 @@ describeEachShell('uninstall-cleanup.ps1 user files under %s', (_name, shell) =>
   );
 });
 
+// The WSL engine setup adds this inbound rule so the Hub can reach the desktop app's update listener.
+const UPDATE_LISTENER_RULE = 'CompanionHub-UpdateListener-WSL';
+
+describeEachShell('uninstall-cleanup.ps1 update listener firewall rule under %s', (_name, shell) => {
+  // Stand-ins for the NetSecurity cmdlets, holding the Hub's rule and one of another program.
+  const firewall = (call: string) =>
+    [
+      `$script:rules = @('${UPDATE_LISTENER_RULE}', 'Other program')`,
+      'function Get-NetFirewallRule { [CmdletBinding()] param([string]$Name) if ($script:rules -contains $Name) { [pscustomobject]@{ Name = $Name } } }',
+      'function Remove-NetFirewallRule { [CmdletBinding()] param([string]$Name) $script:rules = @($script:rules | Where-Object { $_ -ne $Name }) }',
+      call,
+      '"left=$($script:rules -join \',\')"',
+    ].join('\n');
+  const left = (stdout: string) =>
+    stdout
+      .split(/\r?\n/)
+      .find((line) => line.startsWith('left='))
+      ?.slice('left='.length);
+  const removeRule = () => harness(firewall('Remove-UpdateListenerFirewallRule'), { importFunctions: true });
+
+  it(
+    "removes the setup's rule and leaves other rules alone",
+    () => {
+      const result = runPowerShell(shell, makeSandbox(), removeRule());
+      expect(left(result.stdout)).toBe('Other program');
+      expect(result.stdout).toContain(`[cleanup][INFO] Removed the firewall rule ${UPDATE_LISTENER_RULE}`);
+    },
+    PS_TIMEOUT,
+  );
+
+  it(
+    'with -DryRun only says it would remove the rule',
+    () => {
+      const result = runPowerShell(shell, makeSandbox(), removeRule(), ['-DryRun']);
+      expect(left(result.stdout)).toBe(`${UPDATE_LISTENER_RULE},Other program`);
+      expect(result.stdout).toContain(`[cleanup][DRYRUN] Would remove the firewall rule ${UPDATE_LISTENER_RULE}`);
+    },
+    PS_TIMEOUT,
+  );
+});
+
 describeEachShell('Scoop uninstaller under %s', (_name, shell) => {
   // The publish copy carries the same script; the generator test below checks that.
   it(
@@ -821,6 +862,13 @@ describe('Windows uninstall scripts', () => {
     expect(ps).toContain(
       "Remove-HubUserFiles (Join-Path $profilePath 'AppData\\Roaming') (Join-Path $profilePath 'AppData\\Local') (Join-Path $profilePath 'AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup')",
     );
+  });
+
+  it('removes the firewall rule the WSL engine install adds', () => {
+    const engine = read('packages/desktop/src-tauri/src/hub_manager/installers/engine_alt.rs');
+    expect(/\$name = '([^']+)'/.exec(engine)?.[1]).toBe(UPDATE_LISTENER_RULE);
+    expect(ps).toContain(`$name = '${UPDATE_LISTENER_RULE}'`);
+    expect(ps).toMatch(/^Remove-UpdateListenerFirewallRule$/m);
   });
 
   it('removes the folder the desktop app adds to the user PATH', () => {

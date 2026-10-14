@@ -1,5 +1,5 @@
 import type { ZodDto } from '@/common/zod-dto';
-import { AcknowledgeWelcomeBody, AppContextDto, UserContextDto, UserSettingsBody } from './app.dto';
+import { AcknowledgeWelcomeBody, AppContextDto, HubAccessDto, UserContextDto, UserSettingsBody } from './app.dto';
 import { StreamAppLogsQueryDto, StreamHubLogsQueryDto } from './core/sse/dto/sse.dto';
 import { CreateApiKeyBody, UpdateApiKeyBody } from './modules/api-keys/api-key-admin.dto';
 import {
@@ -105,6 +105,7 @@ export const SWAGGER_ZOD_DTOS: ZodDto[] = [
   AppDataListingDto,
   AcknowledgeWelcomeBody,
   AppContextDto,
+  HubAccessDto,
   UserContextDto,
   UserSettingsBody,
   StreamAppLogsQueryDto,
