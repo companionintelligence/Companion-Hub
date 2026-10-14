@@ -1157,20 +1157,23 @@ export class HardwareInspectorService {
    * classification (one daemon round-trip instead of two). Docker Desktop reports
    * OperatingSystem "Docker Desktop"; a native engine inside WSL2 reports a distro OS
    * with a `*-microsoft-standard-WSL2` kernel; any other reachable Linux daemon is
-   * treated as native Linux. Runtimes JSON, OperatingSystem, and KernelVersion contain
-   * no tabs, so a tab-delimited template splits cleanly.
+   * treated as native Linux. socktainer (Apple container) sends no OperatingSystem at all,
+   * but names itself in ProductLicense. Runtimes JSON, OperatingSystem, KernelVersion, and
+   * ProductLicense contain no tabs, so a tab-delimited template splits cleanly.
    */
   private async detectDockerInfo(): Promise<{
     nvidiaRuntime: boolean;
     containerHostKind: NonNullable<HardwareProfile['gpu']['containerHostKind']>;
   }> {
     try {
-      const { stdout } = await execAsync('docker info --format "{{json .Runtimes}}\t{{.OperatingSystem}}\t{{.KernelVersion}}"');
-      const [runtimes = '', osName = '', kernel = ''] = stdout.trim().split('\t');
+      const { stdout } = await execAsync('docker info --format "{{json .Runtimes}}\t{{.OperatingSystem}}\t{{.KernelVersion}}\t{{.ProductLicense}}"');
+      const [runtimes = '', osName = '', kernel = '', license = ''] = stdout.trim().split('\t');
       const nvidiaRuntime = runtimes.includes('nvidia');
 
       let containerHostKind: NonNullable<HardwareProfile['gpu']['containerHostKind']> = 'unknown';
-      if (osName.includes('Docker Desktop')) {
+      if (license.toLowerCase().includes('socktainer')) {
+        containerHostKind = 'apple-container';
+      } else if (osName.includes('Docker Desktop')) {
         containerHostKind = 'docker-desktop';
       } else if (kernel.toLowerCase().includes('microsoft') || kernel.toLowerCase().includes('wsl')) {
         containerHostKind = 'wsl-engine';

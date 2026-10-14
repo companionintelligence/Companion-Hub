@@ -1793,13 +1793,28 @@ describe('HardwareInspectorService', () => {
       filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
     });
 
-    // detectDockerInfo runs one call: `{{json .Runtimes}}\t{{.OperatingSystem}}\t{{.KernelVersion}}`
-    function mockDockerInfo(runtimes: string, osName: string, kernel: string) {
+    // detectDockerInfo runs one call: `{{json .Runtimes}}\t{{.OperatingSystem}}\t{{.KernelVersion}}\t{{.ProductLicense}}`
+    function mockDockerInfo(runtimes: string, osName: string, kernel: string, license = '') {
       execAsyncMock.mockImplementation((cmd: string) => {
-        if (cmd.includes('.OperatingSystem')) return Promise.resolve({ stdout: `${runtimes}\t${osName}\t${kernel}` });
+        if (cmd.includes('.OperatingSystem')) return Promise.resolve({ stdout: `${runtimes}\t${osName}\t${kernel}\t${license}` });
         return Promise.resolve({ stdout: '{}' });
       });
     }
+
+    it('classifies Apple container from socktainer, which sends no OperatingSystem', async () => {
+      // What socktainer's /info carries: empty OperatingSystem, the kernel name, and a license line
+      // that names it. Without the ProductLicense field this read as `unknown`.
+      mockDockerInfo('{}', '', 'vmlinux-6.18', 'socktainer [Apache License 2.0], Apple container [Apache License 2.0]');
+      const profile = await service.detect();
+      expect(profile.gpu.containerHostKind).toBe('apple-container');
+    });
+
+    it('does not mistake Docker Desktop or a native engine for Apple container', async () => {
+      mockDockerInfo('{"runc":{}}', 'Docker Desktop', '6.10.14-linuxkit', 'Docker Desktop commercial license');
+      expect((await service.detect()).gpu.containerHostKind).toBe('docker-desktop');
+      mockDockerInfo('{"runc":{}}', 'Ubuntu 24.04.1 LTS', '6.8.0-45-generic', 'Community Engine');
+      expect((await service.detect()).gpu.containerHostKind).toBe('native-linux');
+    });
 
     it('classifies Docker Desktop from OperatingSystem', async () => {
       mockDockerInfo('{"runc":{}}', 'Docker Desktop', '5.15.0-microsoft-standard-WSL2');
