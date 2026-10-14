@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { HttpStatus } from '@nestjs/common';
 import { mock } from 'vitest-mock-extended';
 import type { Request } from 'express';
@@ -963,6 +963,79 @@ describe('MarketplaceWhoIsService', () => {
       portal.whoisApps.mockRejectedValue(new Error('ECONNREFUSED'));
 
       await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('unknown');
+    });
+
+    /*
+     * One AI settings save is several guarded requests. An owner's or admin's yes is kept for a minute,
+     * so a demotion in the Portal takes effect within one. A no or a failure is never kept.
+     */
+    describe('keeping a yes for a minute', () => {
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('asks the Portal once a minute for an owner or admin, and a demotion counts after that', async () => {
+        vi.useFakeTimers();
+        portal.whoisApps.mockResolvedValue(roleAnswer('admin'));
+
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('allowed');
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('allowed');
+        expect(portal.whoisApps).toHaveBeenCalledTimes(1);
+
+        portal.whoisApps.mockResolvedValue(roleAnswer('member'));
+        vi.advanceTimersByTime(60_001);
+
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('refused');
+        expect(portal.whoisApps).toHaveBeenCalledTimes(2);
+      });
+
+      it("never keeps a member's answer or a failure", async () => {
+        portal.whoisApps
+          .mockResolvedValueOnce(roleAnswer('member'))
+          .mockResolvedValueOnce(roleAnswer('owner', 503))
+          .mockRejectedValueOnce(new Error('ECONNREFUSED'))
+          .mockResolvedValue(roleAnswer('member'));
+
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('refused');
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('unknown');
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('unknown');
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('refused');
+        expect(portal.whoisApps).toHaveBeenCalledTimes(4);
+      });
+
+      it('keeps a yes for that person, Portal identity and organization only', async () => {
+        portal.whoisApps.mockResolvedValue(roleAnswer('owner'));
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('allowed');
+
+        await service.hubManageVerdict(sessionReq(8));
+        expect(portal.whoisApps).toHaveBeenCalledTimes(2);
+
+        federatedIdentities.findByUserId.mockResolvedValue([{ subject: 'portal-user-2' }] as never);
+        await service.hubManageVerdict(sessionReq());
+        expect(portal.whoisApps).toHaveBeenCalledTimes(3);
+
+        // Paired to another organization, where the Portal lists no role for this person.
+        registration.getDeviceRegistrationInfo.mockResolvedValue({ id: 'org-other' } as never);
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('refused');
+        expect(portal.whoisApps).toHaveBeenCalledTimes(4);
+      });
+
+      it('refuses at once when the Hub is unpaired', async () => {
+        portal.whoisApps.mockResolvedValue(roleAnswer('owner'));
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('allowed');
+
+        registration.getDeviceRegistrationInfo.mockResolvedValue(undefined as never);
+
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('refused');
+      });
+
+      it('leaves the API key and custom app role reads fresh', async () => {
+        portal.whoisApps.mockResolvedValue(roleAnswer('owner'));
+        await service.hubManageVerdict(sessionReq());
+
+        await expect(service.isOrgManager(USER_ID)).resolves.toBe(true);
+        expect(portal.whoisApps).toHaveBeenCalledTimes(2);
+      });
     });
 
     it('asks the Portal each time rather than trusting the role stored at sign-in', async () => {

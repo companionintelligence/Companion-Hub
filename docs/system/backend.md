@@ -843,8 +843,13 @@ The guard asks `MarketplaceWhoIsService.hubManageVerdict`:
   asked: the person who set the Hub up keeps it. That is the oldest operator row
   (`UserRepository.getFirstOperator`), the one `createFirstOperator` writes and the CLI acts as. A
   factory reset truncates the user table and its sessions, so the next claimer takes it over.
-- Anyone else follows their role, asked of the Portal fresh with a role-only WhoIs, never from the role
-  stored at sign-in. An owner or admin passes, and a member gets 403 `HUB_MANAGE_ROLE_REQUIRED`.
+- Anyone else follows their role, asked of the Portal with a role-only WhoIs, never from the role
+  stored at sign-in. An owner or admin passes, and a member gets 403 `HUB_MANAGE_ROLE_REQUIRED`. A yes
+  is kept for a minute per person, Portal identity and organization (`HUB_MANAGER_KEPT_MS`), so one
+  settings save doesn't ask once per request; a demotion counts once it runs out. A no or a failure
+  is never kept.
+- The claimer may also give an API key full capability (`mayGrantFull`), which otherwise takes an
+  owner or admin, asked fresh.
 - A role the Portal can't confirm (down, unreachable, an error answer) gets 503 `HUB_MANAGE_ROLE_UNVERIFIED`.
 - Someone else with no role to ask about (the Hub isn't paired, or no linked Portal identity) gets 403.
 - The CLI and the host-local key pass by name. The Portal push key, which only brokers app installs,

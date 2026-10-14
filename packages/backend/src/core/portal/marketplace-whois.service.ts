@@ -65,6 +65,13 @@ type ManagingRoleVerdict = 'manager' | 'not-manager' | 'unlinked' | 'no-organiza
 export type HubManageVerdict = 'allowed' | 'refused' | 'unknown';
 
 /**
+ * How long the Hub-wide routes keep an owner's or admin's yes. One AI settings save is several guarded
+ * requests, and each would wait on the Portal. A demotion counts once it runs out; a no or a failure
+ * is never kept.
+ */
+const HUB_MANAGER_KEPT_MS = 60_000;
+
+/**
  * Hub UX cache of Portal org app grants (WhoIs / CapMap).
  *
  * Not commerce. A modified Hub can skip this. Portal POST install and
@@ -81,6 +88,8 @@ export type HubManageVerdict = 'allowed' | 'refused' | 'unknown';
 export class MarketplaceWhoIsService {
   private readonly loggedUnlinked = new Set<number>();
   private readonly loggedOrgUnresolved = new Set<string>();
+  /** When each Hub-wide yes runs out, by person, Portal identity and organization. See `HUB_MANAGER_KEPT_MS`. */
+  private readonly hubManagerUntil = new Map<string, number>();
 
   constructor(
     private readonly portal: PortalClientService,
@@ -304,6 +313,11 @@ export class MarketplaceWhoIsService {
         return 'no-organization';
       }
 
+      const keptKey = purpose === 'hub_manage' ? `${userId}:${subject}:${organizationId}` : null;
+      if (keptKey !== null && (this.hubManagerUntil.get(keptKey) ?? 0) > Date.now()) {
+        return 'manager';
+      }
+
       const response = await this.portal.whoisApps({ subject, appIds, surface: 'hub', organizationId });
 
       if (!response?.body || response.status < 200 || response.status >= 300) {
@@ -314,11 +328,27 @@ export class MarketplaceWhoIsService {
 
       const role = this.pickOrg(response.body, organizationId)?.user?.role;
 
-      return role === 'owner' || role === 'admin' ? 'manager' : 'not-manager';
+      if (role !== 'owner' && role !== 'admin') {
+        return 'not-manager';
+      }
+      if (keptKey !== null) {
+        this.keepHubManager(keptKey);
+      }
+      return 'manager';
     } catch (error) {
       this.logger.warn(`Could not read the organization role (${purpose}): ${describeNetworkError(error)}`);
       return 'unknown';
     }
+  }
+
+  private keepHubManager(key: string): void {
+    const now = Date.now();
+    for (const [other, until] of this.hubManagerUntil) {
+      if (until <= now) {
+        this.hubManagerUntil.delete(other);
+      }
+    }
+    this.hubManagerUntil.set(key, now + HUB_MANAGER_KEPT_MS);
   }
 
   /**
@@ -328,10 +358,11 @@ export class MarketplaceWhoIsService {
    *
    * The operator who claimed this Hub may, whatever their organization role, without asking the
    * Portal: the person who set the Hub up keeps it (`isClaimingOperator`). Anyone else follows their
-   * role, asked of the Portal fresh each time, never from the role stored at sign-in: an owner or
-   * admin may, a member may not, and a role that can't be read is `unknown`, which refuses. Someone
-   * with no role to ask about (this Hub isn't paired, or they have no linked Portal identity) is
-   * refused, as `customAppGrant` gives an unlinked operator no role-gated right.
+   * role, asked of the Portal, never from the role stored at sign-in: an owner or admin may (a yes is
+   * kept for a minute, `HUB_MANAGER_KEPT_MS`), a member may not, and a role that can't be read is
+   * `unknown`, which refuses. Someone with no role to ask about (this Hub isn't paired, or they have
+   * no linked Portal identity) is refused, as `customAppGrant` gives an unlinked operator no
+   * role-gated right.
    *
    * The CLI and the host-local key are admitted by name: both prove access to the box. Every other
    * principal is refused, the Portal push included, which only brokers app installs.
