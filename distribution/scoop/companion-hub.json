@@ -6,7 +6,7 @@
   "url": "https://github.com/companionintelligence/CI-Hub/releases/download/v0.3.5/Companion.Hub_0.3.5_x64-setup.exe",
   "hash": "8cfc24eb0d927b3a4e17ae5987cc60bc87c090387b6cc17028d01e6191fc2eb3",
   "installer": {
-    "script": "& \"$dir\\Companion.Hub_$version_x64-setup.exe\" /S"
+    "script": "& \"$dir\\Companion.Hub_${version}_x64-setup.exe\" /S"
   },
   "uninstaller": {
     "script": [

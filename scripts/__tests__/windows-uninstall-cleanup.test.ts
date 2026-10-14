@@ -853,6 +853,27 @@ describe('Windows uninstall scripts', () => {
     }
   });
 
+  // Scoop runs `installer.script` as PowerShell, down the call chain of its install_app, so it can read
+  // `$dir` and `$version` there. `$version_x64` is read as one variable, undefined, and expands to
+  // nothing: the script then ran "Companion.Hub_-setup.exe", which does not exist. (`autoupdate.url`
+  // is different: Scoop rewrites it by plain string replacement of `$version`, so it is left alone.)
+  it('Scoop installer script names the setup exe with variables Scoop sets, in the generator and both manifests', () => {
+    const generator = read(MANIFEST_GENERATOR);
+    const template = generator.slice(generator.indexOf('cat >"$SCOOP" <<JSON'), generator.indexOf('\nJSON\n'));
+    const line = template.split('\n').find((candidate) => candidate.trim().startsWith('"script": "&'));
+    expect(line, 'installer script line in the generator').toBeDefined();
+    // The heredoc is unquoted, so bash removes the backslash before $, ` and \ when it writes the manifest.
+    const generated = (JSON.parse(`{${(line as string).replace(/\\([$`\\])/g, '$1')}}`) as { script: string }).script;
+    expect(generated).toBe('& "$dir\\Companion.Hub_${version}_x64-setup.exe" /S');
+
+    for (const manifest of SCOOP_MANIFESTS) {
+      const script = (JSON.parse(read(manifest)) as { installer: { script: string } }).installer.script;
+      expect(script, manifest).toBe(generated);
+      const variables = [...script.matchAll(/\$\{?(\w+)\}?/g)].map((match) => match[1]);
+      expect(variables, manifest).toEqual(['dir', 'version']);
+    }
+  });
+
   it('removes the logon script the WSL engine install writes, for the current user and every profile', () => {
     const engine = read('packages/desktop/src-tauri/src/hub_manager/installers/engine_alt.rs');
     const vbs = /Join-Path \$startup '([^']+\.vbs)'/.exec(engine)?.[1];

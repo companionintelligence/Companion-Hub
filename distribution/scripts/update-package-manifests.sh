@@ -80,6 +80,16 @@ cask "companion-hub" do
 end
 RUBY
 
+# Scoop variables, two kinds that look alike:
+#  - installer.script is PowerShell that Scoop runs down the install_app call chain, so it reads that
+#    function's variables ($dir, $version, $app, ...) by dynamic scoping. `$version_x64` is not one of
+#    them: PowerShell takes the whole identifier, a variable named version_x64 that is undefined and
+#    expands to nothing, so the script ran "Companion.Hub_-setup.exe". Braces end the name: `${version}_x64`.
+#  - autoupdate.url is not run, it is rewritten by Scoop's substitute() with a plain string Replace of
+#    `$version` (and `$dotVersion`, `$matchHead`, ...), longest key first and with no word boundary, so
+#    `$version_x64` there becomes `<new version>_x64`. That one is correct and is left as it is.
+# Checked against ScoopInstaller/Scoop lib/install.ps1 (install_app, Invoke-HookScript) and
+# lib/autoupdate.ps1 + lib/core.ps1 (Get-VersionSubstitution, substitute) on 2026-10-13.
 cat >"$SCOOP" <<JSON
 {
   "version": "${TAG}",
@@ -89,7 +99,7 @@ cat >"$SCOOP" <<JSON
   "url": "https://github.com/companionintelligence/CI-Hub/releases/download/v${TAG}/Companion.Hub_${TAG}_x64-setup.exe",
   "hash": "${SHA_X64_SETUP}",
   "installer": {
-    "script": "& \"\$dir\\\\Companion.Hub_\$version_x64-setup.exe\" /S"
+    "script": "& \"\$dir\\\\Companion.Hub_\${version}_x64-setup.exe\" /S"
   },
   "uninstaller": {
     "script": [
