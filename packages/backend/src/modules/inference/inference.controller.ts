@@ -42,6 +42,7 @@ import { HostMetricsService } from '@/modules/system/host-metrics.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { InferenceAccessGuard } from '@/modules/auth/inference-access.guard';
+import { HubManagerGuard } from '@/modules/auth/hub-manager.guard';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderType, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
 import {
@@ -353,7 +354,7 @@ export class InferenceController {
   }
 
   /** A vLLM key that comes back as the mask is left as stored; `null` or an empty one still clears it. */
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Patch('preferences')
   async updatePreferences(@Body() body: UpdateInferencePreferencesBody) {
     const result = await this.configurationService.setInferencePreferences(
@@ -484,7 +485,7 @@ export class InferenceController {
     return this.hardwareInspector.getProfile();
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('hardware/rescan')
   async rescanHardware() {
     return this.hardwareInspector.rescan();
@@ -496,7 +497,7 @@ export class InferenceController {
     return this.rocmInstaller.getStatus();
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('rocm/install-state')
   async updateRocmInstallState(@Body() body: UpdateRocmInstallStateBody) {
     await this.rocmInstaller.recordInstallState({
@@ -554,7 +555,7 @@ export class InferenceController {
     return this.modelRegistry.getTrackedModels();
   }
 
-  @UseGuards(AuthGuard, DemoModeGuard)
+  @UseGuards(AuthGuard, HubManagerGuard, DemoModeGuard)
   @Post('models/pull/start')
   async startPullModel(@Body() body: { modelId: string; bestEffort?: boolean }) {
     if (!body.modelId?.trim()) {
@@ -563,7 +564,7 @@ export class InferenceController {
     return this.modelPuller.startPull(body.modelId.trim(), { bestEffort: body.bestEffort });
   }
 
-  @UseGuards(AuthGuard, DemoModeGuard)
+  @UseGuards(AuthGuard, HubManagerGuard, DemoModeGuard)
   @Post('models/pull')
   async pullModel(@Body() body: { modelId: string; bestEffort?: boolean }) {
     const result = await this.modelPuller.startPull(body.modelId, { bestEffort: body.bestEffort });
@@ -608,7 +609,7 @@ export class InferenceController {
     return catalog.some((model) => model.modality !== 'llm' && (model.id === modelId || model.backendModelId === modelId));
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('models/load')
   async loadModel(@Body() body: { modelId: string; backend?: InferenceBackendType }) {
     const catalogId = this.catalogIdForEngineModel(body.modelId);
@@ -642,7 +643,7 @@ export class InferenceController {
     return { success: true, message: `Model ${body.modelId} loaded` };
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('models/unload')
   async unloadModel(@Body() body: { modelId: string; backend?: InferenceBackendType }) {
     const catalogId = this.catalogIdForEngineModel(body.modelId);
@@ -657,7 +658,7 @@ export class InferenceController {
     return { success: true, message: `Model ${body.modelId} unloaded` };
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('models/pin')
   async pinModel(@Body() body: { modelId: string }) {
     // Through the router's load path, so the pin fits, evicts or refuses exactly as a load does
@@ -671,7 +672,7 @@ export class InferenceController {
     return { success: true, message: `Model ${body.modelId} pinned` };
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('models/unpin')
   async unpinModel(@Body() body: { modelId: string }) {
     this.modelRegistry.unpinModel(body.modelId);
@@ -689,7 +690,7 @@ export class InferenceController {
     }));
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('cloud-providers')
   async setCloudProvider(@Body() body: { provider: CloudProviderType; apiKey?: string; enabled: boolean; baseUrl?: string; defaultModel?: string }) {
     await this.cloudFallback.setProvider({
@@ -708,7 +709,7 @@ export class InferenceController {
    * the masked Settings field relies on. Running AI apps hold the key in their env, so they are
    * refreshed as they are after a save.
    */
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Delete('cloud-providers/:provider')
   async removeCloudProvider(@Param('provider') provider: CloudProviderType) {
     const removed = await this.cloudFallback.removeProvider(provider);
@@ -967,7 +968,7 @@ export class InferenceController {
     };
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, HubManagerGuard)
   @Post('ollama/install')
   async installOllama() {
     return this.ollamaInstaller.install();

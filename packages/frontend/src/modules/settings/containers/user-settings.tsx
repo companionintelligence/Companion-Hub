@@ -18,9 +18,11 @@ type Props = {
   initialValues?: SettingsFormValues;
   /** hub-{device}-{org}.{domain} from registration + settings; display-only */
   publicHubHostname?: string;
+  /** Whether this person may change the Hub's settings; a member keeps only their own (`useHubAccess`). */
+  manageHub?: boolean;
 };
 
-export const UserSettingsContainer = ({ initialValues, publicHubHostname }: Props) => {
+export const UserSettingsContainer = ({ initialValues, publicHubHostname, manageHub = true }: Props) => {
   const currentLocale = i18next.language;
   const { t } = useTranslation();
   const { refreshAppContext, user } = useAppContext();
@@ -99,6 +101,7 @@ export const UserSettingsContainer = ({ initialValues, publicHubHostname }: Prop
         onSubmit={onSubmit}
         loading={updateSettings.isPending}
         publicHubHostname={publicHubHostname}
+        manageHub={manageHub}
       />
     </div>
   );

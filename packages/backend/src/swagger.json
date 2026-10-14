@@ -137,6 +137,27 @@
         ]
       }
     },
+    "/api/hub-access": {
+      "get": {
+        "operationId": "hubAccess",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HubAccessDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "App"
+        ]
+      }
+    },
     "/api/user-settings": {
       "patch": {
         "operationId": "updateUserSettings",
@@ -5476,14 +5497,9 @@
             "in": "query",
             "required": false,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991
-                },
-                {}
-              ]
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
             }
           }
         ],
@@ -5506,14 +5522,9 @@
             "in": "query",
             "required": false,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991
-                },
-                {}
-              ]
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
             }
           }
         ],
@@ -7566,6 +7577,18 @@
           "isProduction",
           "cloudflareAvailable",
           "tailscaleAvailable"
+        ],
+        "additionalProperties": false
+      },
+      "HubAccessDto": {
+        "type": "object",
+        "properties": {
+          "manageHub": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "manageHub"
         ],
         "additionalProperties": false
       },
@@ -16760,14 +16783,9 @@
             "type": "string"
           },
           "maxLines": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "minimum": -9007199254740991,
-                "maximum": 9007199254740991
-              },
-              {}
-            ]
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
           }
         },
         "required": [
@@ -16779,14 +16797,9 @@
         "type": "object",
         "properties": {
           "maxLines": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "minimum": -9007199254740991,
-                "maximum": 9007199254740991
-              },
-              {}
-            ]
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
           }
         },
         "additionalProperties": false

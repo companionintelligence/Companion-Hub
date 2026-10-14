@@ -50,6 +50,17 @@ it('lets a keyboard user focus a setting hint', () => {
   expect(hint).toHaveFocus();
 });
 
+// The theme and every setting below it apply to the whole Hub, an owner's or admin's to change.
+it("shows a member only their own language, and nothing that changes the Hub's settings", () => {
+  render(<UserSettingsForm initialValues={newHubSettings} onSubmit={vi.fn()} manageHub={false} />);
+
+  expect(screen.getByText('User settings')).toBeInTheDocument();
+  expect(screen.getByRole('combobox', { name: /language/i })).toBeInTheDocument();
+  expect(screen.queryByText('General settings')).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Update settings' })).not.toBeInTheDocument();
+  expect(screen.getAllByRole('combobox')).toHaveLength(1);
+});
+
 /** The Timezone box. Its label is not tied to it, so find it by its name. */
 const timezoneField = () => screen.getAllByRole('combobox').find((box) => box.getAttribute('name') === 'timezone');
 

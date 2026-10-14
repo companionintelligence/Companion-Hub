@@ -17,7 +17,20 @@ describe('PATCH /api/user-settings — inference preferences', () => {
     refresh = mock<AiAppInferenceRefreshService>();
     // Only the two collaborators this route touches matter; the rest are inert stand-ins.
     const unused = () => mock<never>();
-    controller = new AppController(unused(), unused(), configuration, unused(), unused(), unused(), unused(), unused(), unused(), unused(), refresh);
+    controller = new AppController(
+      unused(),
+      unused(),
+      configuration,
+      unused(),
+      unused(),
+      unused(),
+      unused(),
+      unused(),
+      unused(),
+      unused(),
+      refresh,
+      unused(),
+    );
   });
 
   it('refreshes AI apps through the same service as PATCH /api/inference/preferences when a preference changes', async () => {

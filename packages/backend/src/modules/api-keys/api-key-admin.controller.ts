@@ -6,6 +6,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { hubSessionOperatorUserId } from '@/core/portal/hub-session-operator';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
+import { HubManagerGuard } from '@/modules/auth/hub-manager.guard';
 import { ApiKeyAdminService } from './api-key-admin.service';
 import { CreateApiKeyBody, UpdateApiKeyBody } from './api-key-admin.dto';
 
@@ -52,6 +53,7 @@ export class ApiKeyAdminController {
    * organization owner or admin; see {@link mayGrantFull}.
    */
   @Post()
+  @UseGuards(HubManagerGuard)
   async createKey(@Body() body: CreateApiKeyBody, @Req() req: Request) {
     // Asked of the MCP surface only. `capability` is what a key may do with the *tools*, and the
     // owner/admin gate exists because 'full' reaches the destructive ones; an 'inference' key
@@ -78,6 +80,7 @@ export class ApiKeyAdminController {
    * tightening one takes nobody's permission.
    */
   @Patch(':id')
+  @UseGuards(HubManagerGuard)
   async updateKey(@Param('id', ParseIntPipe) id: number, @Body() body: UpdateApiKeyBody, @Req() req: Request) {
     if (body.capability === 'full') {
       await this.assertMayGrantFull(req);
@@ -88,6 +91,7 @@ export class ApiKeyAdminController {
 
   /** Revoke a key by id (create-new → roll-out → revoke-old is the no-downtime rotation flow). */
   @Delete(':id')
+  @UseGuards(HubManagerGuard)
   revokeKey(@Param('id', ParseIntPipe) id: number) {
     return this.adminService.revokeKey(id);
   }
@@ -97,7 +101,8 @@ export class ApiKeyAdminController {
    * also opens the destructive MCP tools, and some act on no app a per-app grant could bound: updating
    * the Hub, and adding, re-enabling or deleting an app store. So who may hand it out is an owner's or
    * admin's call, as it is in the Portal. Asked of WhoIs fresh and about no app (`isOrgManager`); every
-   * way of not knowing is a no.
+   * way of not knowing is a no. The operator who claimed the Hub may too, whatever their role, as
+   * `HubManagerGuard` lets them make every other Hub-wide change (`isClaimingOperator`).
    *
    * The exempt principals (the CLI, the Portal device push) are admitted by name, as
    * `MarketplaceWhoIsService.lifecycleActor` names them, not through `isGrantExemptPrincipal`: one
@@ -113,8 +118,13 @@ export class ApiKeyAdminController {
         return true;
       case 'session': {
         const userId = hubSessionOperatorUserId(req);
+        const whois = this.resolveWhois();
 
-        return userId !== undefined && (await this.resolveWhois()?.isOrgManager(userId)) === true;
+        if (userId === undefined || !whois) {
+          return false;
+        }
+
+        return (await whois.isClaimingOperator(userId)) || (await whois.isOrgManager(userId));
       }
       default:
         this.logger.warn(`whois_unrecognised_principal principal=${req.hubPrincipal ?? 'none'} action=grant_full`);
