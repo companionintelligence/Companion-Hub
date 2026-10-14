@@ -24,7 +24,7 @@ import { fetchRegistrationPhase, RegistrationPhaseRouteMissing, type Registratio
 import { run, runCapture } from './cli-proc.js';
 import { confirmDestructiveAction } from './cli-prompt.js';
 import { checkDockerAvailable, isHubRepoRoot, requireRepoRoot } from './cli-repo-context.js';
-import { describeAppTeardown } from './cli-teardown.js';
+import { printAppTeardownPlan } from './cli-teardown.js';
 import { BASE_COMMAND, type HubEnv } from './cli-types.js';
 import { bold, cliFail, cliOk, cliWarn, colorize, dim, printMessageBox, STEP_ICONS, type Tone } from './cli-ui.js';
 import { runDeviceIdDoctorSection } from './device-id-doctor.js';
@@ -413,16 +413,16 @@ function doctorTunnelTokenStatus(ctx: HubContext): string {
   return colorize(`${STEP_ICONS.pending} absent`, 'dim');
 }
 
-/** The apps `cihub uninstall` removes with their volumes and images, listed as `cihub reset` lists them. */
+/**
+ * The apps `cihub uninstall` removes with their volumes and images, listed as `cihub reset` lists
+ * them, and what runHubCleanup removes after them.
+ */
 function printUninstallPlan(plan: AppTeardownPlan) {
-  const lines = describeAppTeardown(plan);
-  if (lines.length > 0) lines.push(dim("The apps' images are removed too."));
-  if (!plan.listed) lines.push('Docker did not list its containers, so this list may be incomplete.');
-  printMessageBox(
-    'Apps and containers this uninstall removes',
-    lines.length > 0 ? lines : [dim('None: no installed apps, and nothing else on the Hub network.')],
-    'yellow',
-  );
+  const notes: string[] = [];
+  if (plan.projects.length > 0) notes.push(dim("The apps' images are removed too."));
+  notes.push(dim('Then the Hub\'s own containers, volumes, and networks, and every container whose name contains "e2e-".'));
+  if (!plan.listed) notes.push('Docker did not list its containers, so this list may be incomplete.');
+  printAppTeardownPlan('Apps and containers this uninstall removes', plan, notes);
 }
 
 export async function uninstallHub(force: boolean) {

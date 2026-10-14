@@ -39,9 +39,7 @@ vi.mock('../lib/cli-proc.js', () => ({
     if (command === 'ps -a --filter label=ci-os-hub.managed=true --format {{.Label "com.docker.compose.project"}}') {
       return { ok: true, stdout: 'ci-memory_ci-marketplace' };
     }
-    if (
-      command === 'ps -a --filter label=com.docker.compose.project=ci-memory_ci-marketplace --filter label=ci-os-hub.managed=true --format {{.Names}}'
-    ) {
+    if (command === 'ps -a --filter label=com.docker.compose.project=ci-memory_ci-marketplace --format {{.Names}}') {
       return { ok: true, stdout: 'mem-api\nmem-db' };
     }
     if (command.startsWith('ps -a --filter network=ci-hub_network ')) {

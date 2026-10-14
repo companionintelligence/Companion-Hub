@@ -124,7 +124,7 @@ describe('hub-cleanup-lib', () => {
       args.includes('label=ci-os-hub.managed=true') ? ['runtipi', 'runcihub', 'ci-memory_ci-marketplace'] : [],
     );
 
-    expect([...projects.keys()]).toEqual(['ci-memory_ci-marketplace']);
+    expect(projects).toEqual(['ci-memory_ci-marketplace']);
   });
 
   it('cleans up every compose project name the Hub stack has ever used', () => {
@@ -135,7 +135,7 @@ describe('hub-cleanup-lib', () => {
     expect(parseNames('one\n\n two \n')).toEqual(['one', 'two']);
   });
 
-  it('reads each managed container project label once, keeps the filters it was found under, and drops names Docker would not accept', () => {
+  it('reads each managed container project label once, and drops names Docker would not accept', () => {
     const calls: string[] = [];
     const projects = findManagedAppProjects((args) => {
       calls.push(args.join(' '));
@@ -148,10 +148,7 @@ describe('hub-cleanup-lib', () => {
       'ps -a --filter label=ci-hub.managed=true --format {{.Label "com.docker.compose.project"}}',
       'ps -a --filter label=ci-os-hub.managed=true --format {{.Label "com.docker.compose.project"}}',
     ]);
-    expect([...projects]).toEqual([
-      ['ci-memory_ci-marketplace', ['label=ci-hub.managed=true', 'label=ci-os-hub.managed=true']],
-      ['ci-openclaw_ci-marketplace', ['label=ci-os-hub.managed=true']],
-    ]);
+    expect(projects).toEqual(['ci-memory_ci-marketplace', 'ci-openclaw_ci-marketplace']);
   });
 
   describe('planAppTeardown and removeManagedAppProjects (cihub reset)', () => {
@@ -183,16 +180,10 @@ describe('hub-cleanup-lib', () => {
         if (command === 'ps -a --filter label=ci-os-hub.managed=true --format {{.Label "com.docker.compose.project"}}') {
           return { ok: true, stdout: 'ci-openclaw_ci-marketplace' };
         }
-        if (
-          command ===
-          'ps -a --filter label=com.docker.compose.project=ci-hermes_ci-marketplace --filter label=ci-hub.managed=true --format {{.Names}}'
-        ) {
+        if (command === 'ps -a --filter label=com.docker.compose.project=ci-hermes_ci-marketplace --format {{.Names}}') {
           return { ok: true, stdout: 'hermes-1\nhermes-gateway-1' };
         }
-        if (
-          command ===
-          'ps -a --filter label=com.docker.compose.project=ci-openclaw_ci-marketplace --filter label=ci-os-hub.managed=true --format {{.Names}}'
-        ) {
+        if (command === 'ps -a --filter label=com.docker.compose.project=ci-openclaw_ci-marketplace --format {{.Names}}') {
           return { ok: true, stdout: 'openclaw-1' };
         }
         if (command === 'network ls --filter label=com.docker.compose.project=ci-hermes_ci-marketplace --format {{.Name}}') {
@@ -406,55 +397,100 @@ describe('hub-cleanup-lib', () => {
       ]);
     });
 
-    it('removes only the containers in an app project that carry the managed label', () => {
+    // Services the user adds in the app's user-config docker-compose.yml. Compose gives them the
+    // app's project label, but the Hub's labels are not on them. One joins the Hub network.
+    const appWithUserServices = () => {
+      const project = { 'com.docker.compose.project': 'ci-hermes_ci-marketplace' };
+      return fakeDockerEngine({
+        containers: [
+          { name: 'ci-hub', labels: { 'ci-hub.managed': 'true', 'com.docker.compose.project': 'ci-hub' }, networks: ['ci-hub_network'] },
+          {
+            name: 'hermes-1',
+            labels: { 'ci-hub.managed': 'true', ...project },
+            networks: ['ci-hub_network', 'ci-hermes_ci-marketplace_network'],
+          },
+          { name: 'hermes-sidecar-1', labels: project, networks: ['ci-hermes_ci-marketplace_default'] },
+          { name: 'hermes-proxy-1', labels: project, networks: ['ci-hub_network'] },
+        ],
+        networks: [
+          { name: 'ci-hermes_ci-marketplace_network', labels: project },
+          { name: 'ci-hermes_ci-marketplace_default', labels: project },
+        ],
+        volumes: [{ name: 'ci-hermes_ci-marketplace_sidecar-data', labels: project }],
+      });
+    };
+
+    it('removes the services a user added to an app with the app, before its networks and volumes (cihub reset, cihub clean)', () => {
+      const { docker, removals } = appWithUserServices();
+
+      const plan = removeManagedAppProjects(docker, { removeVolumes: true });
+
+      expect(plan.projects).toEqual([
+        {
+          project: 'ci-hermes_ci-marketplace',
+          containers: ['hermes-1', 'hermes-sidecar-1', 'hermes-proxy-1'],
+          networks: ['ci-hermes_ci-marketplace_network', 'ci-hermes_ci-marketplace_default'],
+          volumes: ['ci-hermes_ci-marketplace_sidecar-data'],
+        },
+      ]);
+      expect(plan.unmanaged).toEqual([]);
+      expect(removals()).toEqual([
+        'rm -f hermes-1 hermes-sidecar-1 hermes-proxy-1',
+        'network rm ci-hermes_ci-marketplace_network',
+        'network rm ci-hermes_ci-marketplace_default',
+        'volume rm ci-hermes_ci-marketplace_sidecar-data',
+      ]);
+    });
+
+    it('removes the services a user added to an app with the app in the uninstall cleanup too (cihub uninstall)', () => {
+      const { docker, removals } = appWithUserServices();
+
+      withXdgHome('/home/dev', () =>
+        runHubCleanup({
+          cwd: '/home/dev/ci-hub',
+          homeDir: '/home/dev',
+          platform: 'linux',
+          execFile: (_file, args) => docker(args),
+          exists: () => false,
+          removeDir: () => {},
+          logger: { info: () => {}, warn: () => {}, error: () => {} },
+        }),
+      );
+
+      const removed = removals();
+      const appNetworkRemoval = removed.indexOf('network rm ci-hermes_ci-marketplace_default');
+      expect(appNetworkRemoval).toBeGreaterThan(-1);
+      for (const container of ['hermes-1', 'hermes-sidecar-1', 'hermes-proxy-1']) {
+        const removal = removed.indexOf(`rm -f ${container}`);
+        expect(removal, container).toBeGreaterThan(-1);
+        expect(removal, container).toBeLessThan(appNetworkRemoval);
+      }
+      expect(removed.indexOf('volume rm ci-hermes_ci-marketplace_sidecar-data')).toBeGreaterThan(appNetworkRemoval);
+    });
+
+    it('keeps an app container whose {{.Names}} also carries legacy link aliases', () => {
       const { docker } = fakeDockerEngine({
         containers: [
-          { name: 'hermes-1', labels: { 'ci-hub.managed': 'true', 'com.docker.compose.project': 'ci-hermes_ci-marketplace' } },
-          { name: 'not-the-hubs', labels: { 'com.docker.compose.project': 'ci-hermes_ci-marketplace' } },
+          { name: 'hermes-1,other/hermes', labels: { 'ci-hub.managed': 'true', 'com.docker.compose.project': 'ci-hermes_ci-marketplace' } },
         ],
       });
 
-      expect(planAppTeardown(docker, { removeVolumes: false }).projects).toEqual([
-        { project: 'ci-hermes_ci-marketplace', containers: ['hermes-1'], networks: [], volumes: [] },
-      ]);
+      expect(planAppTeardown(docker, { removeVolumes: false }).projects[0]?.containers).toEqual(['hermes-1']);
     });
   });
 
   it('resolves Linux state directories and includes repo-local paths', () => {
-    const prevDataHome = process.env.XDG_DATA_HOME;
-    const prevConfigHome = process.env.XDG_CONFIG_HOME;
-    const prevCacheHome = process.env.XDG_CACHE_HOME;
-    process.env.XDG_DATA_HOME = '/home/tester/.local/share';
-    process.env.XDG_CONFIG_HOME = '/home/tester/.config';
-    process.env.XDG_CACHE_HOME = '/home/tester/.cache';
+    const dirs = withXdgHome('/home/tester', () =>
+      getHubStateDirs({
+        cwd: '/tmp/ci-hub',
+        homeDir: '/home/tester',
+        platform: 'linux',
+      }),
+    );
 
-    const dirs = getHubStateDirs({
-      cwd: '/tmp/ci-hub',
-      homeDir: '/home/tester',
-      platform: 'linux',
-    });
-
-    try {
-      expect(dirs.some((dir) => dir.path === '/tmp/ci-hub/.local')).toBe(true);
-      expect(dirs.some((dir) => dir.path.includes('/home/tester/.config'))).toBe(true);
-      expect(dirs.some((dir) => dir.path.endsWith('computer.ci.app.hub'))).toBe(true);
-    } finally {
-      if (prevDataHome === undefined) {
-        delete process.env.XDG_DATA_HOME;
-      } else {
-        process.env.XDG_DATA_HOME = prevDataHome;
-      }
-      if (prevConfigHome === undefined) {
-        delete process.env.XDG_CONFIG_HOME;
-      } else {
-        process.env.XDG_CONFIG_HOME = prevConfigHome;
-      }
-      if (prevCacheHome === undefined) {
-        delete process.env.XDG_CACHE_HOME;
-      } else {
-        process.env.XDG_CACHE_HOME = prevCacheHome;
-      }
-    }
+    expect(dirs.some((dir) => dir.path === '/tmp/ci-hub/.local')).toBe(true);
+    expect(dirs.some((dir) => dir.path.includes('/home/tester/.config'))).toBe(true);
+    expect(dirs.some((dir) => dir.path.endsWith('computer.ci.app.hub'))).toBe(true);
   });
 
   it('resolves Windows state directories and includes AppData names', () => {
@@ -489,17 +525,10 @@ describe('hub-cleanup-lib', () => {
   });
 
   it('supports dry-run without deleting files while still reporting planned work', () => {
-    const prevDataHome = process.env.XDG_DATA_HOME;
-    const prevConfigHome = process.env.XDG_CONFIG_HOME;
-    const prevCacheHome = process.env.XDG_CACHE_HOME;
-    process.env.XDG_DATA_HOME = '/home/dev/.local/share';
-    process.env.XDG_CONFIG_HOME = '/home/dev/.config';
-    process.env.XDG_CACHE_HOME = '/home/dev/.cache';
-
     const commands: string[] = [];
     const removed: string[] = [];
 
-    try {
+    withXdgHome('/home/dev', () => {
       const summary = runHubCleanup({
         cwd: '/tmp/ci-hub',
         homeDir: '/home/dev',
@@ -533,36 +562,13 @@ describe('hub-cleanup-lib', () => {
       expect(summary.attemptedCommands).toBeGreaterThan(5);
       expect(commands.some((command) => command.includes('docker volume ls'))).toBe(false);
       expect(commands.some((command) => command.includes('docker network ls'))).toBe(false);
-    } finally {
-      if (prevDataHome === undefined) {
-        delete process.env.XDG_DATA_HOME;
-      } else {
-        process.env.XDG_DATA_HOME = prevDataHome;
-      }
-      if (prevConfigHome === undefined) {
-        delete process.env.XDG_CONFIG_HOME;
-      } else {
-        process.env.XDG_CONFIG_HOME = prevConfigHome;
-      }
-      if (prevCacheHome === undefined) {
-        delete process.env.XDG_CACHE_HOME;
-      } else {
-        process.env.XDG_CACHE_HOME = prevCacheHome;
-      }
-    }
+    });
   });
 
   it('tears down marketplace app projects discovered via the ci-os-hub.managed label', () => {
-    const prevDataHome = process.env.XDG_DATA_HOME;
-    const prevConfigHome = process.env.XDG_CONFIG_HOME;
-    const prevCacheHome = process.env.XDG_CACHE_HOME;
-    process.env.XDG_DATA_HOME = '/home/dev/.local/share';
-    process.env.XDG_CONFIG_HOME = '/home/dev/.config';
-    process.env.XDG_CACHE_HOME = '/home/dev/.cache';
-
     const commands: string[] = [];
 
-    try {
+    withXdgHome('/home/dev', () => {
       runHubCleanup({
         cwd: '/home/dev/ci-hub',
         homeDir: '/home/dev',
@@ -575,10 +581,7 @@ describe('hub-cleanup-lib', () => {
             // also carries this label in docker-compose.prod.yml, to prove the app loop excludes it.
             return { ok: true, stdout: 'ci-hermes_ci-marketplace\nfoo_ci-marketplace\nci-os-hub' };
           }
-          // The app's containers that carry the label it was found under.
-          if (
-            command === 'docker ps -a --filter label=com.docker.compose.project=ci-hermes_ci-marketplace --filter label=ci-os-hub.managed=true -q'
-          ) {
+          if (command === 'docker ps -a --filter label=com.docker.compose.project=ci-hermes_ci-marketplace -q') {
             return { ok: true, stdout: 'cid-hermes' };
           }
           if (command === 'docker inspect --format {{.Image}} cid-hermes') {
@@ -607,31 +610,15 @@ describe('hub-cleanup-lib', () => {
       expect(commands).toContain('docker volume rm ci-hermes_ci-marketplace_data');
       expect(commands).toContain('docker image rm -f sha256:appimage');
       // The Hub-stack project is excluded from the marketplace loop (handled by Hub teardown).
-      expect(commands.some((command) => command.startsWith('docker ps -a --filter label=com.docker.compose.project=ci-os-hub --filter '))).toBe(
-        false,
-      );
+      expect(commands.some((command) => command.startsWith('docker volume ls --filter label=com.docker.compose.project=ci-os-hub'))).toBe(false);
       expect(commands.some((command) => command.startsWith('docker network ls --filter label=com.docker.compose.project=ci-os-hub'))).toBe(false);
-    } finally {
-      if (prevDataHome === undefined) delete process.env.XDG_DATA_HOME;
-      else process.env.XDG_DATA_HOME = prevDataHome;
-      if (prevConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
-      else process.env.XDG_CONFIG_HOME = prevConfigHome;
-      if (prevCacheHome === undefined) delete process.env.XDG_CACHE_HOME;
-      else process.env.XDG_CACHE_HOME = prevCacheHome;
-    }
+    });
   });
 
   it('completes with no directory failures when cwd is within the user home', () => {
-    const prevDataHome = process.env.XDG_DATA_HOME;
-    const prevConfigHome = process.env.XDG_CONFIG_HOME;
-    const prevCacheHome = process.env.XDG_CACHE_HOME;
-    process.env.XDG_DATA_HOME = '/home/dev/.local/share';
-    process.env.XDG_CONFIG_HOME = '/home/dev/.config';
-    process.env.XDG_CACHE_HOME = '/home/dev/.cache';
-
     const errors: string[] = [];
 
-    try {
+    withXdgHome('/home/dev', () => {
       const summary = runHubCleanup({
         cwd: '/home/dev/repo',
         homeDir: '/home/dev',
@@ -651,36 +638,13 @@ describe('hub-cleanup-lib', () => {
 
       expect(summary.failedDirs).toBe(0);
       expect(errors).toEqual([]);
-    } finally {
-      if (prevDataHome === undefined) {
-        delete process.env.XDG_DATA_HOME;
-      } else {
-        process.env.XDG_DATA_HOME = prevDataHome;
-      }
-      if (prevConfigHome === undefined) {
-        delete process.env.XDG_CONFIG_HOME;
-      } else {
-        process.env.XDG_CONFIG_HOME = prevConfigHome;
-      }
-      if (prevCacheHome === undefined) {
-        delete process.env.XDG_CACHE_HOME;
-      } else {
-        process.env.XDG_CACHE_HOME = prevCacheHome;
-      }
-    }
+    });
   });
 
   it('blocks repo-local deletions when cwd is outside the user home', () => {
-    const prevDataHome = process.env.XDG_DATA_HOME;
-    const prevConfigHome = process.env.XDG_CONFIG_HOME;
-    const prevCacheHome = process.env.XDG_CACHE_HOME;
-    process.env.XDG_DATA_HOME = '/home/dev/.local/share';
-    process.env.XDG_CONFIG_HOME = '/home/dev/.config';
-    process.env.XDG_CACHE_HOME = '/home/dev/.cache';
-
     const errors: string[] = [];
 
-    try {
+    withXdgHome('/home/dev', () => {
       const summary = runHubCleanup({
         cwd: '/repo',
         homeDir: '/home/dev',
@@ -700,23 +664,7 @@ describe('hub-cleanup-lib', () => {
 
       expect(summary.failedDirs).toBeGreaterThan(0);
       expect(errors.some((message) => message.includes('Blocked unsafe path'))).toBe(true);
-    } finally {
-      if (prevDataHome === undefined) {
-        delete process.env.XDG_DATA_HOME;
-      } else {
-        process.env.XDG_DATA_HOME = prevDataHome;
-      }
-      if (prevConfigHome === undefined) {
-        delete process.env.XDG_CONFIG_HOME;
-      } else {
-        process.env.XDG_CONFIG_HOME = prevConfigHome;
-      }
-      if (prevCacheHome === undefined) {
-        delete process.env.XDG_CACHE_HOME;
-      } else {
-        process.env.XDG_CACHE_HOME = prevCacheHome;
-      }
-    }
+    });
   });
 });
 
