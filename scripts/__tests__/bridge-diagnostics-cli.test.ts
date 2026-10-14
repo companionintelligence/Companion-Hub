@@ -74,24 +74,29 @@ describe('bridge-diagnostics-cli', () => {
       ]);
     });
 
-    // Regression (CI-Hub#1695): an unset DSPARK_URL fell back to 8080, which on a desktop Hub is
-    // Traefik's dashboard, and doctor failed a healthy Hub over an engine nobody had set up.
-    it('leaves out engines whose URL is unset or blank', () => {
-      parseEnvFile.mockReturnValue({ DSPARK_URL: '', MTPLX_URL: '   ' });
+    // Regression (CI-Hub#1695): an unset engine URL fell back to a stock port, which on a desktop Hub can
+    // be Traefik's dashboard (8080), and doctor failed a healthy Hub over an engine nobody had set up.
+    it('leaves out an engine whose URL is unset or blank', () => {
+      parseEnvFile.mockReturnValue({ OMLX_URL: '   ' });
       const labels = resolveBridgeServices('.env.prod').map((service) => service.label);
-      expect(labels).not.toContain('MTPLX');
-      expect(labels).not.toContain('Speculative inference');
+      expect(labels).not.toContain('oMLX');
+      expect(resolveBridgeServices('.env.prod')).toHaveLength(4);
     });
 
-    it('checks the optional engines whose URL is set', () => {
+    it('checks oMLX when its URL is set, at the port that URL names', () => {
+      parseEnvFile.mockReturnValue({ OMLX_URL: 'http://host.docker.internal:8010' });
+      const services = resolveBridgeServices('.env.prod');
+      expect(services).toContainEqual({ label: 'oMLX', port: 8010 });
+      expect(services).toHaveLength(5);
+    });
+
+    it('no longer reads the retired runners URLs, which the Hub does not dial', () => {
       parseEnvFile.mockReturnValue({
         MTPLX_URL: 'http://host.docker.internal:8010',
+        DSPARK_URL: 'http://host.docker.internal:9090',
         SPECULATIVE_INFERENCE_URL: 'http://host.docker.internal:8020',
       });
-      const services = resolveBridgeServices('.env.prod');
-      expect(services).toContainEqual({ label: 'MTPLX', port: 8010 });
-      expect(services).toContainEqual({ label: 'Speculative inference', port: 8020 });
-      expect(services).toHaveLength(6);
+      expect(resolveBridgeServices('.env.prod')).toHaveLength(4);
     });
 
     it('reads ports from the env file, including URL-shaped values', () => {
@@ -105,9 +110,11 @@ describe('bridge-diagnostics-cli', () => {
       expect(services[1]).toEqual({ label: 'Ollama', port: 12000 });
     });
 
-    it('reads the speculative inference port from a URL-shaped DSPARK_URL', () => {
-      parseEnvFile.mockReturnValue({ DSPARK_URL: 'http://host.docker.internal:9090' });
-      expect(resolveBridgeServices('.env.prod')).toContainEqual({ label: 'Speculative inference', port: 9090 });
+    it('reads the oMLX port from a URL-shaped OMLX_URL, and falls back to 8000 when the URL names none', () => {
+      parseEnvFile.mockReturnValue({ OMLX_URL: 'http://host.docker.internal:9090' });
+      expect(resolveBridgeServices('.env.prod')).toContainEqual({ label: 'oMLX', port: 9090 });
+      parseEnvFile.mockReturnValue({ OMLX_URL: 'http://mac-studio.lan' });
+      expect(resolveBridgeServices('.env.prod')).toContainEqual({ label: 'oMLX', port: 8000 });
     });
 
     it('falls back when a port is out of range rather than handing net.connect a bad port', () => {
@@ -197,17 +204,17 @@ describe('bridge-diagnostics-cli', () => {
       expect(section.failureCount).toBe(0);
       expect(section.issueCount).toBe(0);
       expect(section.lines[0]).toContain('ok');
-      expect(section.lines.join('\n')).not.toContain('Speculative inference');
+      expect(section.lines.join('\n')).not.toContain('oMLX');
     });
 
-    it('still checks a speculative inference server whose URL is set', async () => {
-      parseEnvFile.mockReturnValue({ DSPARK_URL: 'http://host.docker.internal:8080' });
+    it('still checks an oMLX server whose URL is set', async () => {
+      parseEnvFile.mockReturnValue({ OMLX_URL: 'http://host.docker.internal:8080' });
       listeningHostPorts = new Set([8080]);
       mockDocker({ ps: 'ci-hub', inspect: '172.18.0.7/16', exec: () => 11 });
 
       const section = await runBridgeDoctorSection('.env.prod');
       expect(section.failureCount).toBe(1);
-      expect(section.lines.join('\n')).toContain('Speculative inference');
+      expect(section.lines.join('\n')).toContain('oMLX');
     });
 
     // The core case: the service answers on the host but not from the container.

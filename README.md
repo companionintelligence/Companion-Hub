@@ -212,7 +212,7 @@ Hub speaks the OpenAI API and the Ollama native API. Create an `inference`-scope
 http://<hub-host>:5002/api/inference/v1      model: "auto"
 ```
 
-The key reaches the inference routes and nothing else. If you already run `llama-server` or LM Studio, set `LLAMACPP_URL` or `LMSTUDIO_URL` and the Hub serves from it rather than asking you to switch engines. See [`docs/editor-inference.md`](docs/editor-inference.md).
+The key reaches the inference routes and nothing else. If you already run vLLM or oMLX, set `VLLM_URL` or `OMLX_URL` (or the URL in **Settings → AI**) and the Hub serves from it rather than asking you to switch engines. See [`docs/editor-inference.md`](docs/editor-inference.md).
 
 Agents connect over MCP. Claude Code, OpenClaw, Hermes, and any client that speaks Streamable HTTP can manage the Hub and read Companion Memory. See **[Connect an agent](https://docs.ci.computer/docs/connect)**.
 

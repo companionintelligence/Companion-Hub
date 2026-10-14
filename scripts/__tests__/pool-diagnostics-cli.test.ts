@@ -1446,6 +1446,9 @@ describe('D2 backend DNS', () => {
     expect(notes).toContain('blocks then fails EAI_AGAIN');
     expect(notes).toContain('attempts:5');
     expect(notes).toContain('timeout:2');
+    // The "point it at a closed port" example names a variable the Hub still reads, not a retired runner's.
+    expect(notes).toContain('OMLX_URL=http://127.0.0.1:1');
+    expect(notes).not.toContain('MTPLX_URL');
   });
 
   it('treats a fast failure as a real finding from the container and undecidable from the host', () => {
@@ -1996,9 +1999,10 @@ describe('runPoolDoctorSection', () => {
    * configured, so the capabilities build resolves nothing" — and nothing in the suite noticed.
    */
   it('resolves the backend URLs the container has, and lets them override the env file', async () => {
-    // The env file names MTPLX_URL too, at a different address — an IP literal, which needs no
+    // The env file names OMLX_URL too, at a different address — an IP literal, which needs no
     // lookup at all. Whichever side wins is visible in the verdict, so precedence is pinned by it.
-    parseEnvFile.mockReturnValue({ API_PORT: '5002', ROOT_FOLDER_HOST: '/data/hub', MTPLX_URL: 'http://127.0.0.1:1' });
+    // (It has to be a variable the check reads: a retired one in the file would be ignored on both sides.)
+    parseEnvFile.mockReturnValue({ API_PORT: '5002', ROOT_FOLDER_HOST: '/data/hub', OMLX_URL: 'http://127.0.0.1:1' });
     existsSync.mockReturnValue(true);
     statSync.mockReturnValue({ uid: 1000, gid: 1000, mode: 0o40755 });
     resolveHubContainerName.mockReturnValue('ci-hub');
