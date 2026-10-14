@@ -17,11 +17,16 @@ import { BearerOrgMembershipCache } from '@/modules/auth/bearer-org-membership.c
 import { APP_DATA_DIR, TUNNEL_DIR } from '@/common/constants';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { app } from '@/core/database/drizzle/schema';
+import { CloudFallbackService } from '@/modules/inference/cloud-fallback.service';
+import type { CloudProviderConfig } from '@ci-hub/common/types';
 import fs from 'node:fs';
 import path from 'node:path';
 import { vol } from 'memfs';
 
 const uninstallExecute = vi.fn().mockResolvedValue({ success: true, message: 'ok' });
+
+/** `ConfigurationService.get` on a Hub whose data folder is `/data`, mounted from an ordinary ROOT_FOLDER_HOST. */
+const configurationValue = (key: string) => (key === 'rootFolderHost' ? '/opt/ci-hub' : { dataDir: '/data' });
 
 vi.mock('@/modules/app-lifecycle/commands/uninstall-app-command', () => ({
   UninstallAppCommand: class {
@@ -63,7 +68,8 @@ describe('FactoryResetService', () => {
         {
           provide: ConfigurationService,
           useValue: {
-            get: vi.fn().mockReturnValue({ dataDir: '/data' }),
+            get: vi.fn(configurationValue),
+            forgetPersistedUserSettings: vi.fn(),
           },
         },
         { provide: CacheService, useValue: cache },
@@ -289,7 +295,7 @@ describe('FactoryResetService: data folders', () => {
       {} as never,
       mock<ModuleRef>(),
       new FilesystemService(logger),
-      { get: vi.fn().mockReturnValue({ dataDir: '/data' }) } as never,
+      { get: vi.fn(configurationValue) } as never,
       mock<CacheService>(),
       new SessionUserCache(),
       logger,
@@ -387,5 +393,292 @@ describe('FactoryResetService: data folders', () => {
 
     expect(deletedRows).toEqual([{ table: app, sql: '"app"."id" = $1', params: [7] }]);
     expect(db.execute).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A reset on the suite's memfs disk, with a real `FilesystemService` and a real `ConfigurationService`
+ * (built without its constructor, which wants the whole appliance env). `moduleRef` hands out the
+ * services the reset reaches that way.
+ */
+function resetOnDisk(options: { rootFolderHost?: string; userSettings?: Record<string, unknown>; moduleRef?: ModuleRef } = {}) {
+  const logger = mock<LoggerService>();
+  const configuration = Object.assign(Object.create(ConfigurationService.prototype) as ConfigurationService, {
+    logger,
+    config: {
+      demoMode: false,
+      rootFolderHost: options.rootFolderHost ?? '/opt/ci-hub',
+      directories: { dataDir: '/data' },
+      userSettings: { ...options.userSettings },
+    },
+  });
+  const db = {
+    execute: vi.fn().mockResolvedValue(undefined),
+    delete: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+    query: { app: { findMany: vi.fn().mockResolvedValue([]) } },
+  };
+  const registrationService = mock<RegistrationService>();
+  registrationService.resetRegistration.mockResolvedValue(undefined);
+  const service = new FactoryResetService(
+    db as never,
+    {} as never,
+    options.moduleRef ?? mock<ModuleRef>(),
+    new FilesystemService(logger),
+    configuration,
+    mock<CacheService>(),
+    new SessionUserCache(),
+    logger,
+    registrationService,
+  );
+
+  return { service, configuration, db, registrationService };
+}
+
+const SETTINGS_PATH = path.join('/data', 'state', 'settings.json');
+
+const onDisk = () => JSON.parse(String(vol.readFileSync(SETTINGS_PATH, 'utf8')));
+
+describe('FactoryResetService: settings the Hub holds in memory', () => {
+  const OPENAI: CloudProviderConfig = { provider: 'openai', apiKey: 'sk-before-the-reset', enabled: true, defaultModel: 'gpt-4o' };
+  const GOOGLE: CloudProviderConfig = { provider: 'google', apiKey: 'key-after-the-reset', enabled: true, defaultModel: 'gemini-2.5-pro' };
+
+  let cloudFallback: CloudFallbackService;
+  let configuration: ConfigurationService;
+  let service: FactoryResetService;
+
+  const setUp = (userSettings: Record<string, unknown> = {}) => {
+    const moduleRef = mock<ModuleRef>();
+    moduleRef.get.mockImplementation((token: unknown) => (token === CloudFallbackService ? cloudFallback : undefined) as never);
+    ({ service, configuration } = resetOnDisk({ moduleRef, userSettings }));
+    cloudFallback = new CloudFallbackService(mock<LoggerService>(), configuration);
+    cloudFallback.onModuleInit();
+  };
+
+  beforeEach(() => {
+    vol.writeFileSync(SETTINGS_PATH, '{}');
+  });
+
+  it('forgets the cloud provider keys, so the next provider saved is the only one in settings.json', async () => {
+    setUp();
+    await cloudFallback.setProvider(OPENAI);
+    expect(onDisk().inferenceCloudProviders).toEqual([expect.objectContaining({ provider: 'openai' })]);
+
+    await service.execute();
+    await cloudFallback.setProvider(GOOGLE);
+
+    expect(onDisk()).toEqual({
+      inferenceCloudProviders: [{ ...GOOGLE, baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai' }],
+    });
+  });
+
+  it('hands apps no cloud key, and lists no provider, once the reset is done', async () => {
+    setUp();
+    await cloudFallback.setProvider(OPENAI);
+
+    await service.execute();
+
+    expect(cloudFallback.toAppEnv()).toEqual({});
+    expect(cloudFallback.listProviders()).toEqual([]);
+    expect(configuration.getInferenceCloudProviders()).toEqual([]);
+  });
+
+  it('puts the settings it read from settings.json back to their defaults, and keeps the ones from the environment', async () => {
+    // As boot leaves them on a Hub that was then paired, and set up in Settings, in this process.
+    setUp({
+      timeZone: 'Europe/Berlin',
+      maxBackups: 7,
+      inferenceBackend: 'vllm',
+      inferenceVllmApiKey: 'vllm-key-before-the-reset',
+      defaultAppCpuLimit: '2',
+      autoAllocateAppResources: false,
+      hubPoolMdnsEnabled: true,
+      hubPoolPins: [{ scope: 'all', targetKind: 'local' }],
+      // The pairing callback saves these through setUserSettings, which merges them in here too.
+      ciHubApiKey: 'portal-device-key',
+      ciHubMoveKey: 'portal-move-key',
+      ciHubOrganizationId: 'org-1',
+    });
+
+    await service.execute();
+
+    expect(JSON.parse(JSON.stringify(configuration.get('userSettings')))).toEqual({
+      timeZone: 'Europe/Berlin',
+      maxBackups: 7,
+      autoAllocateAppResources: true,
+    });
+    expect(configuration.getInferencePreferences()).toMatchObject({ preferredBackend: null, preferredVllmApiKey: null });
+    expect(configuration.getHubPoolPreferences()).toMatchObject({ poolMdnsEnabled: false, poolPins: [] });
+  });
+});
+
+describe('FactoryResetService: a data folder that is a home folder', () => {
+  const folders = ['app-data', 'apps', 'repos', 'backups', 'user-config'];
+  const ownFile = path.join('/data', 'repos', 'notes', 'todo.txt');
+
+  /** The filesystem columns of a mountinfo line, for the engines and disks the tests below use. */
+  const DRIVE_C = '9p C:\\134 rw,aname=drvfs;path=C:\\';
+  const DRIVE_D = '9p D:\\134 rw,aname=drvfs;path=D:\\';
+  const LINUX_ROOT = 'ext4 /dev/nvme0n1p2 rw';
+  const LINUX_DATA_DISK = 'ext4 /dev/sdb1 rw';
+  const MAC_VIRTIOFS = 'fakeowner /run/host_mark/Users rw,fakeowner';
+
+  /**
+   * `/proc/self/mountinfo` with each data folder mounted from `<root>/<name>`, as compose mounts them,
+   * from the filesystem `fs` (drive C through drvfs unless given). `sources` replaces the folder a data
+   * folder comes from, as a link would.
+   */
+  const mountEachFrom = (root: string, { sources = {}, fs = DRIVE_C }: { sources?: Record<string, string>; fs?: string } = {}) => {
+    vol.mkdirSync('/proc/self', { recursive: true });
+    vol.writeFileSync(
+      '/proc/self/mountinfo',
+      [
+        '836 506 0:104 / / rw,relatime - overlay overlay rw,lowerdir=/var/lib/docker/overlay2/l/ABC',
+        ...folders.map((name, index) => {
+          const mountPoint = name === 'app-data' ? '/app-data' : `/data/${name}`;
+          return `${861 + index} 836 0:69 ${sources[name] ?? `${root}/${name}`} ${mountPoint} rw,noatime - ${fs}`;
+        }),
+      ].join('\n'),
+    );
+  };
+
+  beforeEach(() => {
+    uninstallExecute.mockClear();
+    vol.mkdirSync(path.dirname(ownFile), { recursive: true });
+    vol.writeFileSync(ownFile, 'x');
+    vol.writeFileSync(SETTINGS_PATH, '{"ciHubApiKey":"portal-device-key"}');
+  });
+
+  it.each([
+    '/',
+    '/root',
+    '/home/ci',
+    '/home/ci/',
+    '/var/home/ci',
+    '/Users/ci',
+    'C:\\Users\\ci',
+    'c:/users/ci',
+    '/mnt/c/Users/ci',
+    '/c/Users/ci',
+    'C:\\',
+    '/mnt/c',
+    '/c',
+  ])('refuses ROOT_FOLDER_HOST=%s before it touches an app, a file, the registration or the database', async (rootFolderHost) => {
+    const { service, db, registrationService } = resetOnDisk({ rootFolderHost });
+    db.query.app.findMany.mockResolvedValue([{ id: 7, appName: 'wordpress', appStoreSlug: 'ci-marketplace' }]);
+
+    const failure = await service.execute().catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(TranslatableError);
+    expect((failure as TranslatableError).getResponse()).toEqual({
+      message: 'SETTINGS_FACTORY_RESET_DATA_ROOT_REFUSED',
+      intlParams: { root: rootFolderHost },
+    });
+    expect(uninstallExecute).not.toHaveBeenCalled();
+    expect(vol.readFileSync(ownFile, 'utf8')).toBe('x');
+    expect(registrationService.resetRegistration).not.toHaveBeenCalled();
+    expect(db.execute).not.toHaveBeenCalled();
+    expect(onDisk()).toEqual({ ciHubApiKey: 'portal-device-key' });
+  });
+
+  it.each([
+    ['a junction to a Windows home folder', '/Users/ci', DRIVE_C, '/mnt/c/hub', 'C:\\Users\\ci'],
+    ['a symlink to a Linux home folder', '/home/ci', LINUX_ROOT, '/srv/hub', '/home/ci'],
+    ['a symlink to a macOS home folder, through VirtioFS', '/ci', MAC_VIRTIOFS, '/opt/hub', '/Users/ci'],
+  ])('refuses when ROOT_FOLDER_HOST is %s, and names it as the host does', async (_shape, root, fs, rootFolderHost, named) => {
+    mountEachFrom(root, { fs });
+    const { service, db } = resetOnDisk({ rootFolderHost });
+
+    const failure = await service.execute().catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(TranslatableError);
+    expect((failure as TranslatableError).getResponse()).toEqual({
+      message: 'SETTINGS_FACTORY_RESET_DATA_ROOT_REFUSED',
+      intlParams: { root: named },
+    });
+    expect(uninstallExecute).not.toHaveBeenCalled();
+    expect(vol.readFileSync(ownFile, 'utf8')).toBe('x');
+    expect(db.execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'C:\\Users\\ci\\AppData\\Roaming\\companion-hub',
+    '/mnt/c/Users/ci/AppData/Roaming/companion-hub',
+    '/c/Users/ci/AppData/Roaming/companion-hub',
+    '/home/ci/.local/share/companion-hub',
+    '/Users/ci/Library/Application Support/companion-hub',
+    '/home/ci/CI-Hub/.internal',
+    '/opt/ci-hub',
+    '/srv/hub',
+    'D:\\',
+    '/mnt/d',
+  ])('runs with ROOT_FOLDER_HOST=%s', async (rootFolderHost) => {
+    const { service } = resetOnDisk({ rootFolderHost });
+
+    await expect(service.execute()).resolves.toMatchObject({ success: true });
+
+    expect(vol.readdirSync(path.join('/data', 'repos'))).toEqual([]);
+  });
+
+  it.each([
+    [
+      'a Windows install, each folder mounted from %APPDATA%\\companion-hub',
+      '/Users/ci/AppData/Roaming/companion-hub',
+      DRIVE_C,
+      '/mnt/c/Users/ci/AppData/Roaming/companion-hub',
+    ],
+    // A mount on a Windows drive names no letter, so D:\home\hub reads /home/hub.
+    ['D:\\home\\hub', '/home/hub', DRIVE_D, '/mnt/d/home/hub'],
+    ['a junction to D:\\home\\hub', '/home/hub', DRIVE_D, '/mnt/c/hub'],
+    // A disk mounted at /data: its mounts read /home/hub, without the /data.
+    ['/data/home/hub on a disk of its own', '/home/hub', LINUX_DATA_DISK, '/data/home/hub'],
+    ['Linux, the data folder on the root filesystem', '/home/ci/.local/share/companion-hub', LINUX_ROOT, '/home/ci/.local/share/companion-hub'],
+  ])('runs on %s', async (_shape, root, fs, rootFolderHost) => {
+    mountEachFrom(root, { fs });
+    const { service } = resetOnDisk({ rootFolderHost });
+
+    await expect(service.execute()).resolves.toMatchObject({ success: true });
+
+    expect(vol.readdirSync(path.join('/data', 'repos'))).toEqual([]);
+  });
+
+  it.each([
+    [
+      'a Windows install',
+      '/Users/ci/AppData/Roaming/companion-hub',
+      DRIVE_C,
+      '/mnt/c/Users/ci/AppData/Roaming/companion-hub',
+      { backups: '/Users/ci', repos: '/Users/ci/repos' },
+    ],
+    ['a Linux install', '/srv/hub', LINUX_ROOT, '/srv/hub', { backups: '/home/ci', repos: '/home/ci/repos' }],
+  ])(
+    'on %s, leaves a folder linked to a home folder alone, or to a folder of the same name in one, and names both',
+    async (_shape, root, fs, rootFolderHost, sources) => {
+      // `backups` is a link to the user's home folder itself, `repos` one to the `repos` folder in it.
+      // Neither says ROOT_FOLDER_HOST is a home folder, so the reset is not refused, but emptying
+      // either would delete the user's own files.
+      mountEachFrom(root, { fs, sources });
+      const { service, db } = resetOnDisk({ rootFolderHost });
+
+      const failure = await service.execute().catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(TranslatableError);
+      expect((failure as TranslatableError).getResponse()).toEqual({
+        message: 'SETTINGS_FACTORY_RESET_FILES_LEFT',
+        intlParams: { count: '2', paths: 'repos/, backups/' },
+      });
+      expect(vol.readFileSync(ownFile, 'utf8')).toBe('x');
+      expect(vol.readdirSync(path.join('/data', 'apps'))).toEqual([]);
+      expect(db.execute).not.toHaveBeenCalled();
+    },
+  );
+
+  it('still empties a folder linked to one of the same name outside a home folder', async () => {
+    // It can't be told apart from a Hub folder kept elsewhere, so it is emptied, as before.
+    mountEachFrom('/Users/ci/AppData/Roaming/companion-hub', { sources: { repos: '/Users/ci/Documents/repos' } });
+    const { service } = resetOnDisk({ rootFolderHost: '/mnt/c/Users/ci/AppData/Roaming/companion-hub' });
+
+    await expect(service.execute()).resolves.toMatchObject({ success: true });
+
+    expect(vol.readdirSync(path.join('/data', 'repos'))).toEqual([]);
   });
 });

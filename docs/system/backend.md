@@ -477,11 +477,40 @@ outside the Hub's data folder, and the reset leaves it alone and names it with t
 not delete. Everything else is emptied as before: no mount of its own at that path (one volume for
 all of `/data`, or a backend run outside a container), no readable mountinfo, the root of a whole
 filesystem, or a Docker or Podman volume (`.../volumes/<name>/_data`). A link to a folder with the
-same name looks like the folder itself and is emptied.
+same name looks like the folder itself and is emptied, unless `mountedFromFolder` (below) places
+that folder in a home folder, as with `~/repos`. The reset leaves that one alone and names it too.
 
 If anything is left or left alone, the reset throws `SETTINGS_FACTORY_RESET_FILES_LEFT` before it
 wipes the database, so the operator can still sign in. Each app it tore down has already lost its
 row by then, as an ordinary uninstall does.
+
+Before it tears down a single app, the reset refuses to run when the data folder is the top of a
+disk or a home folder, where it would empty `~/repos` and the rest. The container sees neither that
+folder nor the host's home, so `common/helpers/home-folder.ts` goes by the shape of the path:
+`/root`, `/home/<name>`, `/var/home/<name>`, `/Users/<name>`, `<drive>:\Users\<name>`,
+`/mnt/<drive>/Users/<name>`, and `/<drive>/Users/<name>`, in any letter case. The top of a disk is
+`/`, or drive C as `C:\`, `/mnt/c`, or `/c`. Drive C holds Windows and its users' folders, while the
+top of another drive may be a disk given to the Hub. It checks `ROOT_FOLDER_HOST`, and the folder
+the data folders are mounted from when mountinfo shows them all in one (`mountedDataRoot`), which is
+where a `ROOT_FOLDER_HOST` that is a link to a home folder shows. It throws
+`SETTINGS_FACTORY_RESET_DATA_ROOT_REFUSED` with the folder it refused. `cihub reset` runs on the host
+and checks real paths instead.
+
+A mount's root is a path inside its filesystem, so `mountedFromFolder` reads it by the filesystem.
+Through drvfs it is a path on the drive the mount names: `D:\home\hub` reads `/home/hub`, and is
+named `D:\home\hub`, which is no home folder. With Docker Desktop on macOS it is the Mac's path, or
+with VirtioFS a path in the shared `/Users`. On a Linux disk it lacks the disk's mount point
+(`/data/home/hub` on a disk mounted at `/data` reads `/home/hub`), so a folder that
+`ROOT_FOLDER_HOST` ends in is taken to be `ROOT_FOLDER_HOST` itself. On any other filesystem, such
+as a network share, it gives no answer.
+
+Once settings.json is `{}`, the reset also drops what the running Hub still holds from it:
+`CloudFallbackService.forgetProviders()` empties the cloud provider keys, and
+`ConfigurationService.forgetPersistedUserSettings()` puts the inference, Hub Pool, and app resource
+settings in `userSettings` back to what boot makes of an empty file. Without that, apps were handed
+the old keys until a restart, and the next provider saved wrote them all back to the file. The
+General settings keep their old values until the Hub restarts: boot resolved them into the process
+environment (`generateSystemEnvFile`), and nothing kept the environment as it was before that.
 
 ## The four engines, or two endpoints
 

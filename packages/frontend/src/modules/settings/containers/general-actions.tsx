@@ -183,10 +183,12 @@ export const GeneralActionsContainer = () => {
       window.location.href = '/login';
     } catch (error) {
       setFactoryResetting(false);
-      // A reset that stopped on files it could not delete says how many, which, and how to finish.
-      // Anything else may have stopped anywhere, and running it again is the advice.
+      // A reset that stopped on files it could not delete says how many, which, and how to finish, and
+      // one that refused a home folder as the data folder names it. Anything else may have stopped
+      // anywhere, and running it again is the advice.
       toast.error(
-        error instanceof TranslatableError && error.message === 'SETTINGS_FACTORY_RESET_FILES_LEFT'
+        error instanceof TranslatableError &&
+          (error.message === 'SETTINGS_FACTORY_RESET_FILES_LEFT' || error.message === 'SETTINGS_FACTORY_RESET_DATA_ROOT_REFUSED')
           ? t(error.message, error.intlParams)
           : t('SETTINGS_FACTORY_RESET_ERROR'),
       );

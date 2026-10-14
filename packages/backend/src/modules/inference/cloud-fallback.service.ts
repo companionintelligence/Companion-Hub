@@ -151,6 +151,16 @@ export class CloudFallbackService implements OnModuleInit {
     return true;
   }
 
+  /**
+   * Forget every provider and its key, in memory only. For a factory reset, which has just emptied
+   * settings.json: until a restart, apps were still handed the old keys, and the next provider saved
+   * wrote them all back to the file.
+   */
+  forgetProviders(): void {
+    this.providers.clear();
+    this.logger.info('[CloudFallback] Forgot every cloud provider: settings.json was reset');
+  }
+
   /** Get enabled providers */
   getEnabledProviders(): CloudProviderConfig[] {
     return this.listProviders().filter((p) => p.enabled && p.apiKey);

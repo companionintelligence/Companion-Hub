@@ -222,6 +222,30 @@ describe('CloudFallbackService.removeProvider', () => {
   });
 });
 
+describe('CloudFallbackService.forgetProviders', () => {
+  // A factory reset has just written `{}` to settings.json, and the next save writes the whole list.
+  it('drops every key from memory and writes nothing, so the next save holds only its own provider', async () => {
+    const configuration = mock<ConfigurationService>();
+    configuration.getInferenceCloudProviders.mockReturnValue([
+      { provider: 'openai', apiKey: 'sk-live', enabled: true, defaultModel: 'gpt-4o' },
+      { provider: 'anthropic', apiKey: 'sk-ant', enabled: true, defaultModel: 'claude-opus-4' },
+    ]);
+    configuration.setInferenceCloudProviders.mockResolvedValue([]);
+    const service = new CloudFallbackService(mock<LoggerService>(), configuration);
+    service.onModuleInit();
+
+    service.forgetProviders();
+
+    expect(service.listProviders()).toEqual([]);
+    expect(service.toAppEnv()).toEqual({});
+    expect(configuration.setInferenceCloudProviders).not.toHaveBeenCalled();
+
+    await service.setProvider({ provider: 'google', apiKey: 'g-key', enabled: true, defaultModel: 'gemini-2.5-pro' });
+
+    expect(configuration.setInferenceCloudProviders).toHaveBeenLastCalledWith([expect.objectContaining({ provider: 'google', apiKey: 'g-key' })]);
+  });
+});
+
 // ─── How long a cloud request may wait ───────────────
 // Streamed cloud requests had axios's `timeout: 120000`. With axios's default follow-redirects
 // transport that is also a socket idle timeout never cleared after the headers, so a reasoning
