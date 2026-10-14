@@ -32,7 +32,14 @@ type UpstreamBehaviour =
   /** Answers 200 and one frame, then holds the stream open: a generation in progress. */
   | 'one-frame'
   /** Answers 200 and one frame, then drops the connection: an engine that died mid-generation. */
-  | 'one-frame-then-drop';
+  | 'one-frame-then-drop'
+  /** Answers 200 and one frame, goes quiet for {@link PAUSE_MS}, then finishes: a long gap between tokens. */
+  | 'one-frame-pause-then-finish';
+
+/** A mid-stream silence longer than {@link SHORT_BUDGET_MS}, which a socket idle timeout would turn into a cut. */
+const PAUSE_MS = 400;
+/** A header budget the pause outlasts, for the tests that show the budget is only about the headers. */
+const SHORT_BUDGET_MS = 150;
 
 interface FakeUpstream {
   url: string;
@@ -73,6 +80,9 @@ async function startUpstream(behaviour: UpstreamBehaviour, frame = OPENAI_FRAME)
       res.write(frame);
       if (behaviour === 'one-frame-then-drop') {
         setTimeout(() => req.socket.destroy(), 50);
+      }
+      if (behaviour === 'one-frame-pause-then-finish') {
+        setTimeout(() => res.end('data: [DONE]\n\n'), PAUSE_MS);
       }
     });
   });
@@ -169,6 +179,35 @@ describe('postStreamUnderHeaderDeadline with a client-closed signal', () => {
     await within(upstream.closed[0], TEARDOWN_MS, "the upstream's connection closing");
     const err = await within(outcomes[0], TEARDOWN_MS, 'the post settling');
     expect((err as Error).message).toBe(`${CLIENT_CLOSED_MESSAGE}; the request to cloud provider openai was abandoned before it answered`);
+  });
+});
+
+// The budget is for the response headers only. axios's own `timeout` is also a socket idle timer under
+// follow-redirects, so a stream that went quiet for as long as the budget was destroyed mid-answer and
+// the bare pipe() left the client's response open for good (measured against axios 1.18 / follow-redirects 1.16).
+describe('postStreamUnderHeaderDeadline — the header deadline', () => {
+  it('gives up on an upstream that sends no headers within the budget, and names the budget', async () => {
+    const upstream = await startUpstream('silent');
+
+    await expect(
+      postStreamUnderHeaderDeadline(upstream.url, {}, {}, { budgetMs: SHORT_BUDGET_MS, upstream: 'ollama', hint: ' (a hint)' }),
+    ).rejects.toThrow(`ollama sent no response headers within ${SHORT_BUDGET_MS}ms (a hint)`);
+    await within(upstream.closed[0], TEARDOWN_MS, "the upstream's connection closing");
+  });
+
+  it('does not cut a stream that goes quiet for longer than the budget once the headers are in', async () => {
+    const upstream = await startUpstream('one-frame-pause-then-finish');
+    const hub = await startHub(async (res) => {
+      const response = await postStreamUnderHeaderDeadline(upstream.url, {}, {}, { budgetMs: SHORT_BUDGET_MS, upstream: 'ollama' });
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      relayStream(response.data, res);
+    });
+
+    const client = connect(hub);
+    await within(client.firstChunk, TEARDOWN_MS, 'the first frame');
+
+    // Whole, not cut: the pause outlasted the budget by more than twice and the answer still finished.
+    await expect(within(client.ended, TEARDOWN_MS, "the client's response ending")).resolves.toEqual({ complete: true });
   });
 });
 

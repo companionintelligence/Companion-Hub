@@ -143,6 +143,43 @@
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
       "outputs": []
     },
+    // `test` is cached, so a test that reads a file outside its package must declare it, or turbo replays
+    // a stale green after that file changes. backend: the root and desktop-resource compose files (the
+    // edge, Traefik and storage guard tests), the favicon under packages/frontend/brand, and the scripts/
+    // and e2e/ modules it imports. frontend: the desktop capabilities and the mobile Tauri project. Both:
+    // the root tsconfig.json (backend's extends it; vite-tsconfig-paths and esbuild read it) and, for
+    // frontend, the sibling packages' tsconfig.json. Found by tracing fs reads over a full run
+    // (2026-10-13); add a path when a test starts reading a new one.
+    "backend#test": {
+      "cache": true,
+      "dependsOn": ["^test"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        ".env*",
+        "$TURBO_ROOT$/tsconfig.json",
+        "$TURBO_ROOT$/docker-compose*.yml",
+        "$TURBO_ROOT$/packages/desktop/src-tauri/resources/**",
+        "$TURBO_ROOT$/packages/frontend/brand/**",
+        "$TURBO_ROOT$/scripts/*.ts",
+        "$TURBO_ROOT$/scripts/lib/**",
+        "$TURBO_ROOT$/e2e/helpers/**",
+        "$TURBO_ROOT$/e2e/mock-portal/**"
+      ],
+      "outputs": []
+    },
+    "frontend#test": {
+      "cache": true,
+      "dependsOn": ["^test"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        ".env*",
+        "$TURBO_ROOT$/tsconfig.json",
+        "$TURBO_ROOT$/packages/*/tsconfig.json",
+        "$TURBO_ROOT$/packages/desktop/src-tauri/capabilities/**",
+        "$TURBO_ROOT$/packages/mobile/src-tauri/**"
+      ],
+      "outputs": []
+    },
     "test:coverage": {
       "cache": false,
       "dependsOn": ["^test:coverage"],

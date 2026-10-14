@@ -290,9 +290,12 @@ describe('InferenceController — local /v1 path answers with the engine, not a 
     expect(body.error.message).toMatch(/ECONNREFUSED/);
   });
 
-  it('keeps 502 for a refused connection on a streamed request too', async () => {
+  it.each([
+    ['/v1/chat/completions', { model: 'gemma3:4b', messages: [{ role: 'user', content: 'hi' }], stream: true }],
+    ['/v1/completions', { model: 'gemma3:4b', prompt: 'def f(', stream: true }],
+  ])('keeps 502 for a refused connection on a streamed %s request too', async (path, body) => {
     ollamaBackend.getBaseUrl.mockReturnValue(deadEngineUrl);
-    const res = await post('/v1/chat/completions', { model: 'gemma3:4b', messages: [{ role: 'user', content: 'hi' }], stream: true });
+    const res = await post(path, body);
     expect(res.status).toBe(502);
     expect(((await res.json()) as { error: { type: string } }).error.type).toBe('server_error');
   });
@@ -346,11 +349,20 @@ describe('InferenceController — local /v1 path answers with the engine, not a 
       await within(heldClosed[0], TEARDOWN_MS, "the engine's connection closing");
     });
 
+    // Both routes: the mid-stream test above cannot tell whether a route handed `clientClosed` to the
+    // router, because relaying the stream cancels the upstream body on close anyway. Only a client that
+    // leaves BEFORE the engine has answered depends on the signal reaching the upstream request.
     it.each([
-      ['a streamed', true],
-      ['a whole-answer', false],
-    ])('closes the engine connection when the client leaves %s request before the engine answered', async (_label, stream) => {
-      const client = connect(`${baseUrl}/v1/chat/completions`, { model: 'gemma3:4b', messages: [{ role: 'user', content: HOLD_SILENT }], stream });
+      ['/v1/chat/completions', 'a streamed', true],
+      ['/v1/chat/completions', 'a whole-answer', false],
+      ['/v1/completions', 'a streamed', true],
+      ['/v1/completions', 'a whole-answer', false],
+    ])('closes the engine connection when the client leaves %s %s request before the engine answered', async (path, _label, stream) => {
+      const body =
+        path === '/v1/completions'
+          ? { model: 'gemma3:4b', prompt: HOLD_SILENT, stream }
+          : { model: 'gemma3:4b', messages: [{ role: 'user', content: HOLD_SILENT }], stream };
+      const client = connect(`${baseUrl}${path}`, body);
       await within(heldArrived, TEARDOWN_MS, 'the request reaching the engine');
 
       client.hangUp();
@@ -358,12 +370,11 @@ describe('InferenceController — local /v1 path answers with the engine, not a 
       await within(heldClosed[0], TEARDOWN_MS, "the engine's connection closing");
     });
 
-    it("ends the client's response when the engine drops mid-stream, instead of leaving it open", async () => {
-      const client = connect(`${baseUrl}/v1/chat/completions`, {
-        model: 'gemma3:4b',
-        messages: [{ role: 'user', content: DROP_AFTER_FRAME }],
-        stream: true,
-      });
+    it.each([
+      ['/v1/chat/completions', { model: 'gemma3:4b', messages: [{ role: 'user', content: DROP_AFTER_FRAME }], stream: true }],
+      ['/v1/completions', { model: 'gemma3:4b', prompt: DROP_AFTER_FRAME, stream: true }],
+    ])("ends the client's response when the engine drops mid-%s stream, instead of leaving it open", async (path, body) => {
+      const client = connect(`${baseUrl}${path}`, body);
       await within(client.firstChunk, TEARDOWN_MS, 'the first frame');
 
       // Cut, not complete: the client learns the answer was lost instead of waiting on it for good.
