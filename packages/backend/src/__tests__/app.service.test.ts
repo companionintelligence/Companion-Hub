@@ -41,6 +41,10 @@ describe('AppService', () => {
 
   beforeEach(async () => {
     dockerode = mock<Dockerode>();
+    // One fresh mock per token. `useMocker(mock)` hands the class itself to `mock()` as the mock's
+    // implementation, so the mock functions were stored on the class and every test wrapped the last
+    // test's: setups leaked from test to test, and the module took twice as long to build each time.
+    const mocks = new Map<unknown, unknown>();
     const moduleRef = await Test.createTestingModule({
       providers: [
         AppService,
@@ -51,7 +55,10 @@ describe('AppService', () => {
         },
       ],
     })
-      .useMocker(mock)
+      .useMocker((token) => {
+        if (!mocks.has(token)) mocks.set(token, mock());
+        return mocks.get(token);
+      })
       .compile();
 
     appService = moduleRef.get(AppService);
