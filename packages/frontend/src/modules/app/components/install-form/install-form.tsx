@@ -337,9 +337,20 @@ export const InstallForm: React.FC<IProps> = ({
   // `?? true` on an edit while the backend persisted `?? false` and built the route without the
   // login, so an install that never decided looked protected and was not (OpenClaw, 2026-09-28).
   const enableAuthFallback = useMemo(() => (isEdit ? manifestDefaultsEdgeAuthOn(info) : true), [isEdit, info]);
-  // Whether the "Enable authentication" switch is drawn. An import reads this too, to tell when it
-  // changes a switch nobody can see (#1984).
-  const authSwitchShown = Boolean(info.exposable && info.dynamic_config) && (isAdvancedMode || showAdvancedSettings);
+  const hasAuthSwitch = Boolean(info.exposable && info.dynamic_config);
+  // The app goes on Public Web with the Hub login off. Simple mode shows the "Enable authentication"
+  // switch for this too, however the form got here (an import, a recently used config, the exposure
+  // buttons, or an app saved that way), so nobody puts an app on the internet without the login and
+  // without seeing it (#1984). The other modes don't count: the login guards the Public Web route only.
+  const watchEnableAuth = watch('enableAuth');
+  const loginOffOnPublicWeb = watchExposureMode === 'cloudflare' && (watchEnableAuth ?? enableAuthFallback) === false;
+  // Once shown that way the switch stays, so turning the login back on doesn't hide it.
+  const [authSwitchRevealed, setAuthSwitchRevealed] = useState(false);
+  useEffect(() => {
+    if (loginOffOnPublicWeb) setAuthSwitchRevealed(true);
+  }, [loginOffOnPublicWeb]);
+  // Whether the switch is drawn. An import reads this too, to tell when it leads somewhere nobody saw.
+  const authSwitchShown = hasAuthSwitch && (isAdvancedMode || showAdvancedSettings || loginOffOnPublicWeb || authSwitchRevealed);
   const watchedFormValues = watch();
 
   // Client-side install-config export/import + "recently used" list (no backend involved — see
@@ -352,22 +363,20 @@ export const InstallForm: React.FC<IProps> = ({
   }, [info.id]);
 
   /**
-   * Returns true when the values turn the app's Hub login off while the "Enable authentication"
-   * switch is hidden behind "Show advanced settings". That setting is then opened, so the switch is
-   * on screen and off before anyone saves, and the caller says so in its toast (#1984).
+   * Sets the values. Returns true when they leave the app on Public Web with the Hub login off while
+   * the "Enable authentication" switch was hidden: the switch shows now (`loginOffOnPublicWeb`), and
+   * the caller says why in its toast (#1984).
    */
   const applyImportedValues = useCallback(
     (values: Record<string, unknown>): boolean => {
-      const turnsLoginOff = !authSwitchShown && values.enableAuth === false && (getValues('enableAuth') ?? enableAuthFallback) !== false;
       for (const [key, value] of Object.entries(values)) {
         setValue(key, value as string, { shouldDirty: true, shouldValidate: true });
       }
-      if (turnsLoginOff) {
-        setShowAdvancedSettings(true);
-      }
-      return turnsLoginOff;
+      return (
+        hasAuthSwitch && !authSwitchShown && getValues('exposureMode') === 'cloudflare' && (getValues('enableAuth') ?? enableAuthFallback) === false
+      );
     },
-    [setValue, getValues, enableAuthFallback, authSwitchShown],
+    [setValue, getValues, enableAuthFallback, hasAuthSwitch, authSwitchShown],
   );
 
   /**
@@ -445,7 +454,7 @@ export const InstallForm: React.FC<IProps> = ({
       }
 
       const { values, dropped } = withoutUnofferedAccessSettings(result.values);
-      const turnsLoginOff = applyImportedValues(values);
+      const revealsLoginOff = applyImportedValues(values);
 
       const unrecognizedKeys = [...result.unrecognizedKeys, ...dropped];
       if (unrecognizedKeys.length > 0) {
@@ -457,7 +466,7 @@ export const InstallForm: React.FC<IProps> = ({
           }),
         );
       }
-      if (turnsLoginOff) {
+      if (revealsLoginOff) {
         toast.warning(t('APP_INSTALL_FORM_IMPORT_CONFIG_AUTH_OFF'), { duration: 8000 });
       } else if (unrecognizedKeys.length === 0) {
         toast.success(t('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS', { defaultValue: 'Config imported.' }));

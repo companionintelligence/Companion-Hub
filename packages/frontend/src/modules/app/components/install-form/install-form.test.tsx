@@ -2731,7 +2731,8 @@ describe('InstallForm - importing a config it just exported', () => {
 /*
  * Companion-Hub#1984. In simple mode "Enable authentication" sits behind "Show advanced settings",
  * and a config that turned it off said only "Config imported.", so an app could go on Public Web
- * without the Hub login and nobody saw the switch move.
+ * without the Hub login and nobody saw the switch move. Simple mode now shows the switch whenever
+ * the app is on Public Web with the login off, and an import that leads there says so.
  */
 describe('InstallForm - an imported config that turns the Hub login off', () => {
   const adminEmail = { type: 'text', label: 'Admin Email', env_variable: 'ADMIN_EMAIL', required: true } as unknown as FormField;
@@ -2807,7 +2808,7 @@ describe('InstallForm - an imported config that turns the Hub login off', () => 
 
     await waitFor(() => expect(authSwitch()).toBeInTheDocument());
     expect(authSwitch()).not.toBeChecked();
-    expect(advancedSettingsSwitch()).toBeChecked();
+    expect(advancedSettingsSwitch()).not.toBeChecked();
     expect(toast.warning).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_AUTH_OFF', { duration: 8000 });
     expect(toast.success).not.toHaveBeenCalled();
     expect(toast.error).not.toHaveBeenCalled();
@@ -2866,7 +2867,7 @@ describe('InstallForm - an imported config that turns the Hub login off', () => 
 
     await waitFor(() => expect(authSwitch()).toBeInTheDocument());
     expect(authSwitch()).not.toBeChecked();
-    expect(advancedSettingsSwitch()).toBeChecked();
+    expect(advancedSettingsSwitch()).not.toBeChecked();
     expect(toast.warning).toHaveBeenCalledWith('APP_INSTALL_FORM_RECENTLY_USED_APPLIED_AUTH_OFF', { duration: 8000 });
     expect(toast.success).not.toHaveBeenCalled();
   });
@@ -2886,18 +2887,84 @@ describe('InstallForm - an imported config that turns the Hub login off', () => 
     expect(authSwitch()).not.toBeInTheDocument();
   });
 
-  it('changes nothing on screen when the login was already off', async () => {
+  it.each([
+    ['saved with the login off', { enableAuth: false }],
+    ['that never chose, on a manifest that leaves the login off', {}],
+  ])('shows the switch turned off, and says so, when a file only moves an installed app %s onto Public Web', async (_, saved) => {
+    const onSubmit = vi.fn();
+    const { container } = renderForm({
+      isEdit: true,
+      onSubmit,
+      initialValues: { ADMIN_EMAIL: 'ops@example.org', exposureMode: 'local', ...saved },
+    });
+    await screen.findByLabelText(/Admin Email/);
+    expect(authSwitch()).not.toBeInTheDocument();
+
+    await importFile(container, JSON.stringify({ schemaVersion: 1, appId: 'cyberchef', values: { exposureMode: 'cloudflare' } }));
+
+    await waitFor(() => expect(authSwitch()).toBeInTheDocument());
+    expect(authSwitch()).not.toBeChecked();
+    expect(toast.warning).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_AUTH_OFF', { duration: 8000 });
+    expect(toast.success).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+    });
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ enableAuth: false, exposureMode: 'cloudflare' });
+  });
+
+  // The Hub login sits on the Public Web route only, so on This Machine Only or Private VPN a file
+  // that turns it off changes nothing anyone can reach.
+  it.each(['local', 'tailscale'])('keeps the plain toast when a file turns the login off on %s', async (exposureMode) => {
+    vi.mocked(useAppContext).mockReturnValue({ ...context(false), tailscaleAvailable: true });
+    const { container } = renderForm();
+    await screen.findByLabelText(/Admin Email/);
+
+    await importFile(container, configFile({ exposureMode, enableAuth: false }));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS'));
+    expect(toast.warning).not.toHaveBeenCalled();
+    expect(advancedSettingsSwitch()).not.toBeChecked();
+    expect(authSwitch()).not.toBeInTheDocument();
+  });
+
+  it('shows the switch when someone picks Public Web for an app whose login is off, and keeps it there once turned on', async () => {
+    renderForm({
+      isEdit: true,
+      initialValues: { ADMIN_EMAIL: 'ops@example.org', exposureMode: 'local', enableAuth: false },
+    });
+    await screen.findByLabelText(/Admin Email/);
+    expect(authSwitch()).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE' }));
+
+    await waitFor(() => expect(authSwitch()).toBeInTheDocument());
+    expect(authSwitch()).not.toBeChecked();
+    expect(advancedSettingsSwitch()).not.toBeChecked();
+
+    // Turning the login on must not make the switch vanish under the pointer.
+    fireEvent.click(authSwitch() as HTMLElement);
+    await waitFor(() => expect(authSwitch()).toBeChecked());
+    expect(toast.warning).not.toHaveBeenCalled();
+  });
+
+  it('shows the switch from the start for an installed app already on Public Web with the login off', async () => {
     const { container } = renderForm({
       isEdit: true,
       initialValues: { ADMIN_EMAIL: 'ops@example.org', exposureMode: 'cloudflare', enableAuth: false },
     });
     await screen.findByLabelText(/Admin Email/);
+    await waitFor(() => expect(authSwitch()).toBeInTheDocument());
+    expect(authSwitch()).not.toBeChecked();
+    expect(advancedSettingsSwitch()).not.toBeChecked();
 
+    // Already on screen, so a file that keeps it off is a plain import.
     await importFile(container, configFile({ enableAuth: false }));
 
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS'));
     expect(toast.warning).not.toHaveBeenCalled();
-    expect(authSwitch()).not.toBeInTheDocument();
+    expect(authSwitch()).not.toBeChecked();
   });
 
   it('keeps the plain toast in advanced mode, where the switch is already on screen', async () => {
@@ -2910,5 +2977,20 @@ describe('InstallForm - an imported config that turns the Hub login off', () => 
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS'));
     expect(authSwitch()).not.toBeChecked();
     expect(toast.warning).not.toHaveBeenCalled();
+  });
+
+  it('keeps the plain toast in advanced mode when a file moves an app whose login is off onto Public Web', async () => {
+    vi.mocked(useAppContext).mockReturnValue(context(true));
+    const { container } = renderForm({
+      isEdit: true,
+      initialValues: { ADMIN_EMAIL: 'ops@example.org', exposureMode: 'local', enableAuth: false },
+    });
+    await waitFor(() => expect(authSwitch()).toBeInTheDocument());
+
+    await importFile(container, JSON.stringify({ schemaVersion: 1, appId: 'cyberchef', values: { exposureMode: 'cloudflare' } }));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS'));
+    expect(toast.warning).not.toHaveBeenCalled();
+    expect(authSwitch()).not.toBeChecked();
   });
 });
