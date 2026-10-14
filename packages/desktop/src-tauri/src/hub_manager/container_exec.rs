@@ -2,11 +2,13 @@
 //!
 //! Through the Docker engine the Windows desktop app runs in WSL2 (`tcp://127.0.0.1:2375`), the
 //! docker CLI half-closes the exec stream at once when no stdin is attached, and WSL's localhost
-//! forwarding drops the rest. Nothing the command prints comes back, and `docker exec` exits 0
-//! whatever the command did. `docker cp` still works there, since it returns the files in one
-//! response. So when a command that always prints something comes back empty with status 0, it runs
-//! again detached (`docker exec -d`), writing its output and exit status to files in the container,
-//! and the files are copied out. The CLI does the same in `scripts/lib/docker-exec-output.ts`.
+//! forwarding drops the rest. `docker exec` exits 0 whatever the command did, and what the command
+//! prints may not come back, or only its first part may: rabbitmqctl's banner without the error
+//! after it. `docker cp` still works there, since it returns the files in one response. So a status
+//! of 0 from a plain `docker exec` counts only when the output holds the line the command prints
+//! once it has succeeded. Otherwise the command runs again detached (`docker exec -d`), writing its
+//! output and exit status to files in the container, and the files are copied out. The CLI does the
+//! same in `scripts/lib/docker-exec-output.ts`.
 
 use super::*;
 use std::cell::Cell;
@@ -37,12 +39,16 @@ impl ContainerOutput {
     pub(crate) fn succeeded(&self) -> bool {
         self.status == Some(0)
     }
+
+    /// Whether the command printed `line` to stdout, ignoring the spaces around it.
+    pub(crate) fn printed_line(&self, line: &str) -> bool {
+        self.stdout.lines().any(|printed| printed.trim() == line)
+    }
 }
 
-/// Runs commands in one container and returns what they printed. Only for commands that print
-/// something when they succeed and are safe to run twice: an exit status of 0 with nothing printed
-/// means the output was lost, and the command then runs again through the copy route, as does
-/// every later command from this reader.
+/// Runs commands in one container and returns what they printed. Only for commands that are safe
+/// to run twice: when a plain `docker exec` can't show that a command succeeded, it runs again
+/// through the copy route, as does every later command from this reader.
 pub(crate) struct ContainerReader<'a> {
     docker: DockerCli<'a>,
     container: &'a str,
@@ -66,10 +72,17 @@ impl<'a> ContainerReader<'a> {
         self.docker
     }
 
-    pub(crate) fn run(&self, command: &[&str]) -> ContainerOutput {
+    /// Runs `command`. `success_line` is a line it prints only once it has succeeded, or `None` when
+    /// nothing it prints shows that. A plain `docker exec` that exits 0 counts only when its output
+    /// holds that line; a command without one always takes the copy route. A failing status from a
+    /// plain `docker exec` is kept: the WSL engine turns a failure into 0, never the other way.
+    pub(crate) fn run(&self, command: &[&str], success_line: Option<&str>) -> ContainerOutput {
+        let Some(success_line) = success_line else {
+            return self.exec_through_copy(command);
+        };
         if !self.copy_out.get() {
             let direct = self.exec_direct(command);
-            if direct.status != Some(0) || !direct.stdout.is_empty() {
+            if direct.status != Some(0) || direct.printed_line(success_line) {
                 return direct;
             }
             self.copy_out.set(true);

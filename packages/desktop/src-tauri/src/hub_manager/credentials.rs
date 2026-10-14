@@ -41,9 +41,9 @@ fn postgres_probe_script(password: &str) -> String {
 /// `psql -qt -c 'SELECT 1'` prints `1` once it has signed in.
 fn postgres_tcp_auth_probe(db: &ContainerReader, password: &str) -> PostgresTcpProbeResult {
     let script = postgres_probe_script(password);
-    let out = db.run(&["bash", "-lc", &script]);
+    let out = db.run(&["bash", "-lc", &script], Some("1"));
     PostgresTcpProbeResult {
-        ok: out.succeeded() && out.stdout.lines().any(|line| line.trim() == "1"),
+        ok: out.succeeded() && out.printed_line("1"),
         stdout: out.stdout,
         stderr: out.stderr,
     }
@@ -181,8 +181,8 @@ fn postgres_tcp_auth_works_with_retries(
     Err((kind, detail))
 }
 
-/// `ALTER USER` prints `ALTER ROLE`, and setting the same password twice is harmless, so it can go
-/// through the reader.
+/// `ALTER USER` prints `ALTER ROLE` once it has run, and setting the same password twice is
+/// harmless, so it can go through the reader.
 fn sync_postgres_password(
     db: &ContainerReader,
     password: &str,
@@ -192,17 +192,20 @@ fn sync_postgres_password(
         "ALTER USER companion WITH PASSWORD '{}';",
         escape_sql_literal(password)
     );
-    let output = db.run(&[
-        "psql",
-        "-U",
-        "companion",
-        "-d",
-        "companiondb",
-        "-p",
-        "6543",
-        "-c",
-        &sql,
-    ]);
+    let output = db.run(
+        &[
+            "psql",
+            "-U",
+            "companion",
+            "-d",
+            "companiondb",
+            "-p",
+            "6543",
+            "-c",
+            &sql,
+        ],
+        Some("ALTER ROLE"),
+    );
 
     if !output.succeeded() {
         let combined = format_command_output(&output.stdout, &output.stderr);
@@ -260,26 +263,35 @@ pub(crate) fn ensure_postgres_password_matches(
     Ok(())
 }
 
-/// Runs rabbitmqctl in `queue`. Both rabbitmqctl commands print a banner line, and running either
-/// twice is harmless, so they go through the reader. Share one between calls: each new reader on
-/// the WSL engine spends a direct `docker exec`, and an Erlang VM start, finding out it needs the
-/// copy route.
+/// Runs rabbitmqctl in `queue`. Running either rabbitmqctl command twice is harmless, so they go
+/// through the reader. Share one between calls: each new reader on the WSL engine spends a direct
+/// `docker exec`, and an Erlang VM start, finding out it needs the copy route.
 pub(crate) fn rabbitmq_reader<'a>(docker: DockerCli<'a>, queue: &'a str) -> ContainerReader<'a> {
     ContainerReader::new(docker, queue, RABBITMQCTL_TIMEOUT)
 }
 
+/// `authenticate_user` prints a banner first whatever the outcome, then `Success` only when the
+/// password signs in.
 pub(crate) fn rabbitmq_auth_works(queue: &ContainerReader, password: &str) -> bool {
     queue
-        .run(&["rabbitmqctl", "authenticate_user", "companion", password])
+        .run(
+            &["rabbitmqctl", "authenticate_user", "companion", password],
+            Some("Success"),
+        )
         .succeeded()
 }
 
+/// `change_password` prints only its banner, failed or not, so just its exit status read through
+/// the copy route shows that it worked.
 pub(crate) fn sync_rabbitmq_password(
     queue: &ContainerReader,
     password: &str,
     data_dir: &Path,
 ) -> Result<(), String> {
-    let output = queue.run(&["rabbitmqctl", "change_password", "companion", password]);
+    let output = queue.run(
+        &["rabbitmqctl", "change_password", "companion", password],
+        None,
+    );
     if output.succeeded() {
         let _ = append_desktop_log_for(
             data_dir,

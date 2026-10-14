@@ -41,6 +41,9 @@ struct FakeEngine {
     /// False acts like the WSL engine at `tcp://127.0.0.1:2375`: `docker exec` exits 0 and prints
     /// nothing whatever the command did, and `docker run` keeps its exit status but prints nothing.
     streams_output: bool,
+    /// With `streams_output` false, `docker exec` still exits 0 but passes on the first line the
+    /// command printed, as when the stream ends right after rabbitmqctl's banner.
+    exec_output_stops_after_first_line: bool,
     /// ALTER USER and `rabbitmqctl change_password` fail.
     password_changes_fail: bool,
     /// psql inside `ci-hub-db` can't resolve the container's own name.
@@ -60,6 +63,7 @@ impl FakeEngine {
     fn new(streams_output: bool, password: &str) -> Self {
         Self {
             streams_output,
+            exec_output_stops_after_first_line: false,
             password_changes_fail: false,
             name_lookup_fails_inside: false,
             inspect_fails: false,
@@ -104,6 +108,9 @@ impl FakeEngine {
                 let (code, stdout, stderr) = self.run_in_container(command);
                 if self.streams_output {
                     Ok(output(code, &stdout, &stderr))
+                } else if self.exec_output_stops_after_first_line {
+                    let first_line = stdout.split_inclusive('\n').next().unwrap_or("");
+                    Ok(output(0, first_line, ""))
                 } else {
                     Ok(output(0, "", ""))
                 }
@@ -427,4 +434,76 @@ fn postgres_check_syncs_a_wrong_password_when_only_the_network_probe_can_connect
 
     assert_eq!(result, Ok(()));
     assert_eq!(engine.db_password.borrow().as_str(), "new-secret");
+}
+
+#[test]
+fn rabbitmq_check_rejects_a_wrong_password_when_exec_output_stops_after_the_banner() {
+    let mut engine = FakeEngine::wsl_engine("old-secret");
+    engine.exec_output_stops_after_first_line = true;
+    let docker = |args: &[&str]| engine.docker(args);
+    let queue = rabbitmq_reader(&docker, "ci-hub-queue");
+
+    assert!(!rabbitmq_auth_works(&queue, "new-secret"));
+    assert!(rabbitmq_auth_works(&queue, "old-secret"));
+}
+
+#[test]
+fn rabbitmq_sync_reports_a_failed_change_password_when_exec_output_stops_after_the_banner() {
+    let mut engine = FakeEngine::wsl_engine("old-secret");
+    engine.exec_output_stops_after_first_line = true;
+    engine.password_changes_fail = true;
+    let data_dir = tempfile::tempdir().expect("tempdir");
+
+    let docker = |args: &[&str]| engine.docker(args);
+    let result = sync_rabbitmq_password(
+        &rabbitmq_reader(&docker, "ci-hub-queue"),
+        "new-secret",
+        data_dir.path(),
+    );
+
+    let error = result.expect_err("a failed change_password must be reported");
+    assert!(
+        error.contains("change_password failed"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(engine.queue_password.borrow().as_str(), "old-secret");
+}
+
+#[test]
+fn rabbitmq_sync_changes_the_password_on_an_engine_that_streams_exec_output() {
+    let engine = FakeEngine::streaming_engine("old-secret");
+    let data_dir = tempfile::tempdir().expect("tempdir");
+    let docker = |args: &[&str]| engine.docker(args);
+    let queue = rabbitmq_reader(&docker, "ci-hub-queue");
+
+    assert!(!rabbitmq_auth_works(&queue, "new-secret"));
+    assert_eq!(
+        sync_rabbitmq_password(&queue, "new-secret", data_dir.path()),
+        Ok(())
+    );
+    assert!(rabbitmq_auth_works(&queue, "new-secret"));
+    assert_eq!(engine.queue_password.borrow().as_str(), "new-secret");
+}
+
+#[test]
+fn postgres_check_skips_the_copy_route_on_an_engine_that_streams_exec_output() {
+    let engine = FakeEngine::streaming_engine("old-secret");
+    let data_dir = tempfile::tempdir().expect("tempdir");
+
+    let result = ensure_postgres_password_matches(
+        &|args: &[&str]| engine.docker(args),
+        "new-secret",
+        data_dir.path(),
+    );
+
+    assert_eq!(result, Ok(()));
+    assert!(
+        !engine
+            .calls
+            .borrow()
+            .iter()
+            .any(|call| call.starts_with("exec -d ")),
+        "calls: {:?}",
+        engine.calls.borrow()
+    );
 }
