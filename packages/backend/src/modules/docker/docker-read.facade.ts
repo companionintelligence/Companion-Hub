@@ -276,6 +276,54 @@ export class DockerReadFacade {
   }
 
   /**
+   * The text of `filePath` inside the app's running container that mounts `mountPoint`, or null when
+   * no running container of the app mounts it or the file isn't there.
+   *
+   * Read through Docker's archive API, the one `docker cp` uses, so it finds the same file whether
+   * `mountPoint` is a bind mount of the app-data folder or a named volume. Where that folder can't
+   * hold POSIX permissions, the Hub mounts `requiresPosixPermissions` binds as named volumes (see
+   * "App volumes" in docs/system/backend.md), and the Hub can't see those files on its own disk.
+   * Throws when Docker fails, when the listing or the archive read each takes longer than
+   * {@link DOCKER_INSPECT_TIMEOUT_MS}, or when Docker sends back something other than a whole file.
+   */
+  public async readRunningAppFile(appUrn: AppUrn, mountPoint: string, filePath: string): Promise<string | null> {
+    const containers = await withTimeout(
+      listContainersMatchingAnyLabelSets(this.docker, appUrnLabelSets(appUrn), false),
+      DOCKER_INSPECT_TIMEOUT_MS,
+      `Docker container listing timed out for ${appUrn}`,
+    );
+    const container = containers.find((info) => info.Mounts?.some((mount) => mount.Destination === mountPoint));
+    if (!container) {
+      return null;
+    }
+
+    const chunks: Buffer[] = [];
+    const deadline = AbortSignal.timeout(DOCKER_INSPECT_TIMEOUT_MS);
+    try {
+      const archive = await this.docker.getContainer(container.Id).getArchive({ path: filePath, abortSignal: deadline });
+      for await (const chunk of archive) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+    } catch (error) {
+      // The container was running a moment ago, so a 404 means the file isn't there (or the container just went away).
+      if ((error as { statusCode?: number } | null)?.statusCode === 404) {
+        return null;
+      }
+      // An abort surfaces as a bare "aborted" or "The operation was aborted", which doesn't say it was the deadline.
+      if (deadline.aborted) {
+        throw new Error(`Docker archive read of ${filePath} timed out for ${appUrn}`);
+      }
+      throw error;
+    }
+
+    const file = firstFileInTar(Buffer.concat(chunks));
+    if (!file) {
+      throw new Error(`Docker's archive of ${filePath} held no complete regular file`);
+    }
+    return file.toString('utf-8');
+  }
+
+  /**
    * Returns true if the named container exists and its status is exactly
    * "running" (i.e. not paused, restarting, exited, or in any other state).
    *
@@ -665,6 +713,30 @@ function toSupervisionContainerInspection(
     labels,
     inHubComposeProject: labels['com.docker.compose.project'] === composeProject,
   };
+}
+
+/** Tar entry types that describe the next entry instead of being one: PAX extended headers and GNU long names. */
+const TAR_METADATA_TYPES = new Set(['x', 'g', 'L', 'K']);
+
+/**
+ * The data of the first entry in a tar archive when it is a regular file, else null. For one file
+ * Docker's archive API sends a ustar header block, then the data padded to 512 bytes, then zero
+ * blocks. It writes PAX format, so an extended header can come first; that entry is skipped.
+ */
+function firstFileInTar(archive: Buffer): Buffer | null {
+  let offset = 0;
+  while (offset + 512 <= archive.length && archive[offset] !== 0) {
+    const size = Number.parseInt(archive.toString('ascii', offset + 124, offset + 136), 8) || 0;
+    const type = String.fromCharCode(archive[offset + 156] ?? 0);
+    if (type === '0' || type === '\0') {
+      return offset + 512 + size <= archive.length ? archive.subarray(offset + 512, offset + 512 + size) : null;
+    }
+    if (!TAR_METADATA_TYPES.has(type)) {
+      return null;
+    }
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+  return null;
 }
 
 /**

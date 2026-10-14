@@ -1,11 +1,10 @@
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
 import { Injectable, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { AppUrn } from '@ci-hub/common/types';
 import { InferenceEnvStalenessService } from '../apps/inference-env-staleness.service';
+import { DockerReadFacade } from '../docker/docker-read.facade';
 import { AppCredentialsService } from '../inference/app-credentials.service';
 import { InferenceEndpointService } from '../inference/inference-endpoint.service';
 import { AppLifecycleService } from './app-lifecycle.service';
@@ -133,6 +132,7 @@ export class AiAppInferenceRefreshService implements OnModuleInit, OnModuleDestr
     private readonly appCredentials: AppCredentialsService,
     private readonly endpoints: InferenceEndpointService,
     private readonly configuration: ConfigurationService,
+    private readonly dockerRead: DockerReadFacade,
   ) {}
 
   onModuleInit(): void {
@@ -222,9 +222,9 @@ export class AiAppInferenceRefreshService implements OnModuleInit, OnModuleDestr
         // older downloaded row. An operator save puts that agent back on Hub Auto. An
         // automatic sweep leaves the pick until the next start.
         if (!automatic) {
-          const drift = await this.openClawLocalPickerDrift(appUrn);
-          if (drift) {
-            return { appUrn, restart: true, why: drift };
+          const picker = await this.openClawLocalPicker(appUrn);
+          if (picker) {
+            return { appUrn, ...picker };
           }
         }
         return { appUrn, restart: false, why: 'its inference config is already current' };
@@ -259,25 +259,42 @@ export class AiAppInferenceRefreshService implements OnModuleInit, OnModuleDestr
   /**
    * OpenClaw stores a click on a downloaded model as `ollama/<tag>`. That is not the
    * Hub handout, so the env comparison stays current and Save would leave the old row
-   * selected. Returns the restart reason when an operator save should take the default back.
+   * selected. Returns a restart when an operator save should take the default back, or
+   * when the config couldn't be read: like a failed staleness check, an operator who
+   * saved gets the restart a save always did before these checks existed.
+   *
+   * The config is read out of the running container, not from the app-data folder. Where
+   * that folder can't hold POSIX permissions (a Windows drive), OpenClaw's `/data` is a
+   * named volume, and the folder holds no config, or an old one OpenClaw no longer writes.
    */
-  private async openClawLocalPickerDrift(appUrn: AppUrn): Promise<string | null> {
+  private async openClawLocalPicker(appUrn: AppUrn): Promise<Pick<AiAppRefreshDecision, 'restart' | 'why'> | null> {
     if (extractAppUrn(appUrn).appName !== 'ci-openclaw') {
       return null;
     }
+    const unchecked = (message: string) => ({
+      restart: true,
+      why: `its inference env is current, but OpenClaw's model picker could not be checked (${message}); restarting in case it holds a downloaded model`,
+    });
+    let raw: string | null;
     try {
-      const { directories } = this.configuration.getConfig();
-      const { appStoreId, appName } = extractAppUrn(appUrn);
-      const configPath = path.join(directories.appDataDir, appStoreId, appName, 'data', '.openclaw', 'openclaw.json');
-      const config = JSON.parse(await readFile(configPath, 'utf8')) as {
-        agents?: { defaults?: { model?: { primary?: unknown } } };
-      };
-      const primary = config.agents?.defaults?.model?.primary;
-      if (typeof primary === 'string' && primary.startsWith('ollama/')) {
-        return `chat default left the Hub model (${primary}); returning it to Hub Auto`;
-      }
+      raw = await this.dockerRead.readRunningAppFile(appUrn, '/data', '/data/.openclaw/openclaw.json');
+    } catch (err) {
+      return unchecked(err instanceof Error ? err.message : String(err));
+    }
+    // Not running, or no config written yet: there is no pick to take back.
+    if (raw === null) {
+      return null;
+    }
+    let config: { agents?: { defaults?: { model?: { primary?: unknown } } } } | null;
+    try {
+      config = JSON.parse(raw);
     } catch {
-      // A missing or unreadable config is not a drifted default.
+      // Not the parser's message: V8 quotes the text around the fault, and this file holds OpenClaw's gateway token.
+      return unchecked('openclaw.json is not valid JSON');
+    }
+    const primary = config?.agents?.defaults?.model?.primary;
+    if (typeof primary === 'string' && primary.startsWith('ollama/')) {
+      return { restart: true, why: `chat default left the Hub model (${primary}); returning it to Hub Auto` };
     }
     return null;
   }
