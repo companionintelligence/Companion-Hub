@@ -32,6 +32,7 @@ import {
   planOllamaRuntime,
   RUNTIME_DROPIN,
 } from '../lib/fleet-ollama-runtime.js';
+import { INFERENCE_BACKEND_TYPES } from '../../packages/common/src/types/inference.js';
 import { CANONICAL_BIND_DROPIN, type DropinFile, KNOWN_LEGACY_BIND_DROPINS, systemdNameCompare } from '../lib/fleet-ollama-bind.js';
 
 const envLines = (content: string) => content.split('\n').filter((l) => l.startsWith('Environment='));
@@ -791,6 +792,23 @@ describe.skipIf(!bash)('hubContextCapShell (sandboxed bash)', () => {
     none.run(null);
     expect(none.calls().filter((c) => c.startsWith('PATCH'))[0]).toContain('{"backend":"ollama","maxNumCtx":null}');
   });
+
+  // The allowlist once named engines the Hub retired (mtplx, dspark) and lacked the live oMLX, so
+  // clearing a context cap on an oMLX Hub PATCHed its preferred backend to Ollama as a side effect.
+  it.each(INFERENCE_BACKEND_TYPES)('sends the live backend %s back on a clear', (backend) => {
+    const box = sandbox({ preferredBackend: backend, maxNumCtx: 32768 });
+    box.run(null);
+    expect(box.calls().filter((c) => c.startsWith('PATCH'))[0]).toContain(`{"backend":"${backend}","maxNumCtx":null}`);
+  });
+
+  it.each(['mtplx', 'dspark', 'lucebox', 'llamacpp', 'lmstudio'])(
+    'does not echo %s, which the Hub would refuse, and falls back to Ollama',
+    (backend) => {
+      const box = sandbox({ preferredBackend: backend, maxNumCtx: 32768 });
+      box.run(null);
+      expect(box.calls().filter((c) => c.startsWith('PATCH'))[0]).toContain('{"backend":"ollama","maxNumCtx":null}');
+    },
+  );
 
   it('fails a Hub whose preferences carry no maxNumCtx before writing anything', () => {
     const old = sandbox({ preferredBackend: 'ollama', preferredModel: null });

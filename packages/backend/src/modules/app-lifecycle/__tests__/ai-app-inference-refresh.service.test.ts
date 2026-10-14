@@ -18,10 +18,12 @@ import { AppLifecycleService } from '../app-lifecycle.service';
 import { InferenceEnvStalenessService } from '@/modules/apps/inference-env-staleness.service';
 import { AppCredentialsService } from '@/modules/inference/app-credentials.service';
 import { InferenceEndpointService } from '@/modules/inference/inference-endpoint.service';
+import { settingsSchema } from '@/app.dto';
 import {
   AUTOMATIC_RESTART_COOLDOWN_MS,
   AiAppInferenceRefreshService,
   changedInferenceEnvSettings,
+  INFERENCE_ENV_SETTING_KEYS,
   MEMBERSHIP_SETTLE_POLLS,
   REFRESH_DEBOUNCE_MS,
 } from '../ai-app-inference-refresh.service';
@@ -347,6 +349,19 @@ describe('AiAppInferenceRefreshService', () => {
       expect(changedInferenceEnvSettings({}, { themeColor: 'blue', hubPoolLocalAffinity: 1 })).toEqual([]);
       // The context cap changes CI_LLM_NUM_CTX in every AI app's env, so a PATCH of it sweeps them too.
       expect(changedInferenceEnvSettings({ inferenceMaxNumCtx: 65_536 }, { inferenceMaxNumCtx: 16_384 })).toEqual(['inferenceMaxNumCtx']);
+    });
+
+    it('names an oMLX URL change, which reaches an AI app as its engine address', () => {
+      expect(changedInferenceEnvSettings({}, { inferenceOmlxUrl: 'http://mac-studio.lan:8000' })).toEqual(['inferenceOmlxUrl']);
+      expect(
+        changedInferenceEnvSettings({ inferenceOmlxUrl: 'http://mac-studio.lan:8000' }, { inferenceOmlxUrl: 'http://mac-mini.lan:8000' }),
+      ).toEqual(['inferenceOmlxUrl']);
+    });
+
+    it('lists only settings keys the Hub still has, so a retired engine cannot hold a place a live one needs', () => {
+      // dspark and mtplx were retired (2026-09-28): their URL keys sat here while oMLX's was missing.
+      const known = new Set(Object.keys(settingsSchema.shape));
+      expect(INFERENCE_ENV_SETTING_KEYS.filter((key) => !known.has(key))).toEqual([]);
     });
 
     it('ignores inference keys a write carries with the values they already had', () => {

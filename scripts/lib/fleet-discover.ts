@@ -143,12 +143,14 @@ export interface DiscoveredNode extends FleetNode {
 export const HUB_API_PORT = Number(process.env.CI_HUB_API_PORT) || 5002;
 export const OLLAMA_PORT = 11434;
 
-/** Ports worth a GET when looking for an engine. Matches the six backends CI-Hub can front. */
+/**
+ * Ports worth a GET when looking for an engine. Not 8080: that was the retired dspark engine's port
+ * and is Traefik's dashboard on every appliance, so a listener there says nothing about inference.
+ */
 const ENGINE_PROBES: { backend: string; port: number; path: string }[] = [
   { backend: 'ollama', port: 11434, path: '/api/tags' },
   { backend: 'lemonade', port: 13305, path: '/v1/models' },
-  { backend: 'dspark', port: 8080, path: '/health' },
-  // vllm / mtplx / lucebox share a port space; the fingerprint needs a live body to tell them apart,
+  // vllm / omlx / lucebox share a port space; the fingerprint needs a live body to tell them apart,
   // so discovery reports the port answered and leaves naming to the richer probes in the QA harness.
   { backend: 'openai-compatible', port: 8000, path: '/v1/models' },
   { backend: 'openai-compatible', port: 8216, path: '/v1/models' },
