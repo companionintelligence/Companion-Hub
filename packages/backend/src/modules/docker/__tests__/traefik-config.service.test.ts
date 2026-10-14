@@ -308,8 +308,9 @@ describe('TraefikConfigService — routes while an app restarts', () => {
   });
 
   it("leaves a @docker middleware the app's containers do not define as it is", async () => {
-    // The Hub's forward auth named by the Hub container's labels: with no copy in apps.yml, the kept
-    // route must lose it the way the app's own route does, never answer without it.
+    // The Hub's forward auth as the Hub container's labels define it, which many marketplace apps
+    // name. It has no copy in apps.yml, so the kept route keeps naming it and answers only while it
+    // exists (on a running Hub, always), never without it.
     runningContainers(
       publicWebLabels({ chain: 'ci-hub-edge-headers@file,ci-hub@docker,wordpress-ci-marketplace-public-host@docker,ci-hub-app-starting@file' }),
     );
