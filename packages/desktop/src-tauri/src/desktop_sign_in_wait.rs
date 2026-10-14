@@ -7,12 +7,15 @@
 //! under the host-local key. The Hub takes each nonce once, so a proof can't be replayed, and no
 //! clock is involved. The key itself is never sent, since this runs every minute against whatever
 //! answers on the API port. The backend checks the same HMAC (`desktopSignInWaitProof` in
-//! `packages/backend/src/modules/auth/portal-sso.ts`).
+//! `packages/backend/src/modules/auth/portal-sso.ts`). Only a window showing this machine's Hub
+//! may ask, and each change in how it went is written to desktop.log.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
+use tauri::Url;
 
 const NONCE_HEADER: &str = "x-ci-hub-desktop-nonce";
 const PROOF_HEADER: &str = "x-ci-hub-desktop-proof";
@@ -68,28 +71,100 @@ fn read_hub_local_key(settings_path: &Path) -> Option<String> {
     (!key.is_empty()).then(|| key.to_string())
 }
 
-/// `Ok(true)` when the Hub took it. `Ok(false)` when it gave no usable challenge, refused the
-/// proof, or there is no key to sign with yet (the Hub mints it on its first boot). `Err` when the
-/// Hub could not be reached.
-pub(crate) async fn announce(api_base_url: &str, settings_path: &Path) -> Result<bool, String> {
-    let Some(key) = read_hub_local_key(settings_path) else {
-        return Ok(false);
-    };
+/// Whether the page asking is this machine's Hub as the shell opens it: plain http on loopback at
+/// the API port. Every Hub page the window may show holds the same IPC grant, and the flag sends
+/// the next loopback browser sign-in to this window, so a page from another Hub, or the Vite
+/// server under `local:desktop`, doesn't get to set it.
+pub(crate) fn shows_this_machines_hub(page: &Url, api_port: u16) -> bool {
+    page.scheme() == "http"
+        && matches!(page.host_str(), Some("127.0.0.1" | "localhost"))
+        && page.port_or_known_default() == Some(api_port)
+}
 
+/// How one announce went.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Outcome {
+    /// The Hub took the proof and holds the flag.
+    Accepted,
+    /// The window that asked isn't showing this machine's Hub, so nothing was sent.
+    NotThisMachinesHub,
+    /// No key to sign with yet. The Hub mints it on its first boot.
+    NoKey,
+    /// The Hub couldn't be reached.
+    Unreachable(String),
+    /// The Hub gave no challenge, with this status. 429 means the loopback budget is spent.
+    NoChallenge(u16),
+    /// The challenge wasn't a nonce, so nothing was signed.
+    NotANonce,
+    /// The Hub refused the proof with this status.
+    Refused(u16),
+}
+
+impl Outcome {
+    /// What the page gets: `Ok(true)` once the Hub took it, `Err` when it couldn't be reached.
+    pub(crate) fn into_command_result(self) -> Result<bool, String> {
+        match self {
+            Self::Accepted => Ok(true),
+            Self::Unreachable(error) => Err(error),
+            _ => Ok(false),
+        }
+    }
+
+    fn describe(&self) -> String {
+        match self {
+            Self::Accepted => {
+                "the Hub took it, so a loopback browser sign-in hands off here".into()
+            }
+            Self::NotThisMachinesHub => "not sent, the window isn't on this machine's Hub".into(),
+            Self::NoKey => "not sent, state/settings.json has no host-local key yet".into(),
+            Self::Unreachable(error) => format!("the Hub couldn't be reached ({error})"),
+            Self::NoChallenge(status) => format!("the Hub gave no challenge (HTTP {status})"),
+            Self::NotANonce => "not sent, the Hub's challenge wasn't a nonce".into(),
+            Self::Refused(status) => format!("the Hub refused the proof (HTTP {status})"),
+        }
+    }
+}
+
+/// The outcome last written to desktop.log. The page asks every minute, so only a change is logged.
+static LAST_LOGGED: Mutex<Option<Outcome>> = Mutex::new(None);
+
+/// The desktop.log line for `outcome`, or `None` when it is the one logged last.
+pub(crate) fn log_line_on_change(outcome: &Outcome) -> Option<String> {
+    line_if_changed(&LAST_LOGGED, outcome)
+}
+
+fn line_if_changed(last: &Mutex<Option<Outcome>>, outcome: &Outcome) -> Option<String> {
+    let mut last = last.lock().unwrap_or_else(PoisonError::into_inner);
+    if last.as_ref() == Some(outcome) {
+        return None;
+    }
+    *last = Some(outcome.clone());
+    Some(format!("Desktop sign-in wait: {}.", outcome.describe()))
+}
+
+/// Ask the Hub for a challenge and answer it with the proof.
+pub(crate) async fn announce(api_base_url: &str, settings_path: &Path) -> Outcome {
+    let Some(key) = read_hub_local_key(settings_path) else {
+        return Outcome::NoKey;
+    };
+    answer_challenge(api_base_url, &key)
+        .await
+        .unwrap_or_else(|error| Outcome::Unreachable(error.to_string()))
+}
+
+async fn answer_challenge(api_base_url: &str, key: &str) -> Result<Outcome, reqwest::Error> {
     // Straight to loopback, never through a proxy from the environment.
     let client = reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .no_proxy()
-        .build()
-        .map_err(|error| error.to_string())?;
+        .build()?;
 
     let challenge = client
         .post(format!("{api_base_url}{CHALLENGE_PATH}"))
         .send()
-        .await
-        .map_err(|error| error.to_string())?;
+        .await?;
     if !challenge.status().is_success() {
-        return Ok(false);
+        return Ok(Outcome::NoChallenge(challenge.status().as_u16()));
     }
     let nonce = challenge
         .json::<serde_json::Value>()
@@ -98,17 +173,20 @@ pub(crate) async fn announce(api_base_url: &str, settings_path: &Path) -> Result
         .and_then(|body| body.get("nonce")?.as_str().map(str::to_string))
         .filter(|nonce| is_plausible_nonce(nonce));
     let Some(nonce) = nonce else {
-        return Ok(false);
+        return Ok(Outcome::NotANonce);
     };
 
     let response = client
         .post(format!("{api_base_url}{WAITING_PATH}"))
         .header(NONCE_HEADER, &nonce)
-        .header(PROOF_HEADER, sign_in_wait_proof(&key, &nonce))
+        .header(PROOF_HEADER, sign_in_wait_proof(key, &nonce))
         .send()
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(response.status().is_success())
+        .await?;
+    Ok(if response.status().is_success() {
+        Outcome::Accepted
+    } else {
+        Outcome::Refused(response.status().as_u16())
+    })
 }
 
 #[cfg(test)]
@@ -185,7 +263,7 @@ mod tests {
             .map(str::to_string)
     }
 
-    fn announce_with_key(base_url: &str) -> Result<bool, String> {
+    fn announce_with_key(base_url: &str) -> Outcome {
         let data_dir = settings_with(&format!(r#"{{"hubLocalKey":"{KEY}"}}"#));
         block_on(announce(
             base_url,
@@ -295,7 +373,7 @@ mod tests {
             reply("HTTP/1.1 204 No Content", ""),
         ]);
 
-        assert_eq!(announce_with_key(&base_url), Ok(true));
+        assert_eq!(announce_with_key(&base_url), Outcome::Accepted);
 
         let challenge = received
             .recv_timeout(Duration::from_secs(5))
@@ -326,7 +404,7 @@ mod tests {
             reply("HTTP/1.1 401 Unauthorized", ""),
         ]);
 
-        assert_eq!(announce_with_key(&base_url), Ok(false));
+        assert_eq!(announce_with_key(&base_url), Outcome::Refused(401));
     }
 
     #[test]
@@ -334,7 +412,7 @@ mod tests {
         let (base_url, received) =
             scripted_hub(vec![reply("HTTP/1.1 429 Too Many Requests", "{}")]);
 
-        assert_eq!(announce_with_key(&base_url), Ok(false));
+        assert_eq!(announce_with_key(&base_url), Outcome::NoChallenge(429));
         assert!(received.recv_timeout(Duration::from_secs(5)).is_ok());
         assert!(received.recv_timeout(Duration::from_millis(200)).is_err());
     }
@@ -343,7 +421,7 @@ mod tests {
     fn does_not_sign_a_challenge_that_is_not_a_nonce() {
         let (base_url, received) = scripted_hub(vec![challenge_reply("not-a-nonce")]);
 
-        assert_eq!(announce_with_key(&base_url), Ok(false));
+        assert_eq!(announce_with_key(&base_url), Outcome::NotANonce);
         assert!(received.recv_timeout(Duration::from_secs(5)).is_ok());
         assert!(received.recv_timeout(Duration::from_millis(200)).is_err());
     }
@@ -357,6 +435,77 @@ mod tests {
             &data_dir.path().join("state").join("settings.json"),
         ));
 
-        assert_eq!(accepted, Ok(false));
+        assert_eq!(accepted, Outcome::NoKey);
+    }
+
+    #[test]
+    fn reports_a_hub_it_cannot_reach() {
+        let port = TcpListener::bind("127.0.0.1:0")
+            .and_then(|listener| listener.local_addr())
+            .expect("free port")
+            .port();
+
+        let outcome = announce_with_key(&format!("http://127.0.0.1:{port}"));
+
+        assert!(matches!(outcome, Outcome::Unreachable(_)), "{outcome:?}");
+    }
+
+    #[test]
+    fn hands_the_page_what_it_got_before() {
+        assert_eq!(Outcome::Accepted.into_command_result(), Ok(true));
+        for refused in [
+            Outcome::NotThisMachinesHub,
+            Outcome::NoKey,
+            Outcome::NoChallenge(429),
+            Outcome::NotANonce,
+            Outcome::Refused(401),
+        ] {
+            assert_eq!(refused.into_command_result(), Ok(false));
+        }
+        assert_eq!(
+            Outcome::Unreachable("refused".to_string()).into_command_result(),
+            Err("refused".to_string())
+        );
+    }
+
+    #[test]
+    fn logs_an_outcome_only_when_it_changes() {
+        let last = Mutex::new(None);
+
+        assert!(line_if_changed(&last, &Outcome::Accepted).is_some());
+        assert_eq!(line_if_changed(&last, &Outcome::Accepted), None);
+        let refused = line_if_changed(&last, &Outcome::NoChallenge(429)).expect("a change");
+        assert!(refused.contains("429"), "{refused}");
+        assert_eq!(line_if_changed(&last, &Outcome::NoChallenge(429)), None);
+        assert!(line_if_changed(&last, &Outcome::Accepted).is_some());
+    }
+
+    #[test]
+    fn announces_only_for_a_window_on_this_machines_hub() {
+        let page = |url: &str| Url::parse(url).expect("url");
+
+        assert!(shows_this_machines_hub(
+            &page("http://127.0.0.1:5002/login"),
+            5002
+        ));
+        assert!(shows_this_machines_hub(
+            &page("http://localhost:5002/"),
+            5002
+        ));
+        for elsewhere in [
+            // The Vite server under local:desktop.
+            "http://127.0.0.1:5005/login",
+            "http://127.0.0.1:5003/login",
+            "https://127.0.0.1:5002/login",
+            "http://hub.ci.lan:5002/login",
+            "https://hub-device-org.companionintelligence.com/login",
+            "tauri://localhost/",
+            "http://tauri.localhost/",
+        ] {
+            assert!(
+                !shows_this_machines_hub(&page(elsewhere), 5002),
+                "{elsewhere}"
+            );
+        }
     }
 }
