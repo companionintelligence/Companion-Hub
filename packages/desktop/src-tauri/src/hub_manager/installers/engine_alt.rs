@@ -317,6 +317,11 @@ pub(crate) fn windows_docker_cli_check_function() -> &'static str {
 /// unless the user ticks Public too. The rule allows one port, one program, and
 /// only traffic between addresses in 172.16.0.0/12: WSL's NAT network is a /20
 /// that Windows picks from that range, and it can pick a new one after a reboot.
+/// It can't name the WSL adapter, because a rule stores an adapter by its GUID
+/// and Windows creates the WSL adapter with a new GUID at every boot. So it
+/// covers wired interfaces only, which keeps out Wi-Fi in that range, such as a
+/// hotel's network or a phone's Wi-Fi hotspot.
+///
 /// Block rules win over Allow rules, so the prompt's Block rule for Public
 /// networks, named `TCP Query User{...}<program path>`, loses port 17400 and keeps
 /// the rest. A Block rule that also covers Private networks is what the prompt
@@ -341,6 +346,7 @@ pub(crate) fn update_listener_firewall_function() -> &'static str {
     Program = $Program
     LocalAddress = '172.16.0.0/12'
     RemoteAddress = '172.16.0.0/12'
+    InterfaceType = 'Wired'
     Profile = 'Any'
   }
   New-NetFirewallRule @rule | Out-Null

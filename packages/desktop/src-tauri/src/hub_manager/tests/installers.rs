@@ -275,6 +275,10 @@ fn wsl2_engine_elevated_script_lets_the_hub_reach_the_update_listener() {
     assert!(function.contains("Program = $Program"));
     assert!(function.contains("LocalAddress = '172.16.0.0/12'"));
     assert!(function.contains("RemoteAddress = '172.16.0.0/12'"));
+    // Wi-Fi in that range (a hotel, a phone's hotspot) stays out. The WSL
+    // adapter itself can't be named: it gets a new GUID at every boot.
+    assert!(function.contains("InterfaceType = 'Wired'"));
+    assert!(!function.contains("InterfaceAlias"));
 }
 
 /// Runs `script` under Windows PowerShell 5.1, which runs the elevated script
@@ -447,8 +451,8 @@ $calls = New-Object System.Collections.ArrayList
 function Record($call) {{ [void]$calls.Add((ConvertTo-Json -Compress $call)) }}
 function Remove-NetFirewallRule {{ [CmdletBinding()] param([string]$Name) Record @{{ call = 'Remove-NetFirewallRule'; name = $Name }} }}
 function New-NetFirewallRule {{
-  [CmdletBinding()] param([string]$Name, [string]$DisplayName, [string]$Description, [string]$Direction, [string]$Action, [string]$Protocol, [string[]]$LocalPort, [string]$Program, [string[]]$LocalAddress, [string[]]$RemoteAddress, [string[]]$Profile)
-  Record @{{ call = 'New-NetFirewallRule'; name = $Name; direction = $Direction; action = $Action; protocol = $Protocol; localPort = $LocalPort; program = $Program; localAddress = $LocalAddress; remoteAddress = $RemoteAddress; profile = $Profile }}
+  [CmdletBinding()] param([string]$Name, [string]$DisplayName, [string]$Description, [string]$Direction, [string]$Action, [string]$Protocol, [string[]]$LocalPort, [string]$Program, [string[]]$LocalAddress, [string[]]$RemoteAddress, [string[]]$InterfaceType, [string[]]$Profile)
+  Record @{{ call = 'New-NetFirewallRule'; name = $Name; direction = $Direction; action = $Action; protocol = $Protocol; localPort = $LocalPort; program = $Program; localAddress = $LocalAddress; remoteAddress = $RemoteAddress; interfaceType = $InterfaceType; profile = $Profile }}
 }}
 function Get-NetFirewallApplicationFilter {{ [CmdletBinding()] param([string]$Program) $rules | Where-Object {{ $_.Program -eq $Program }} }}
 function Get-NetFirewallRule {{ [CmdletBinding()] param([Parameter(ValueFromPipeline = $true)]$InputObject) process {{ $InputObject }} }}
@@ -495,6 +499,7 @@ fn update_listener_firewall_allows_17400_from_wsl_and_takes_it_out_of_the_prompt
                 "program": r"C:\Users\u\AppData\Local\Companion Hub\companion-hub.exe",
                 "localAddress": ["172.16.0.0/12"],
                 "remoteAddress": ["172.16.0.0/12"],
+                "interfaceType": ["Wired"],
                 "profile": ["Any"],
             }),
             serde_json::json!({
