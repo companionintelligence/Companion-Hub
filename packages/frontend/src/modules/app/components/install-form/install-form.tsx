@@ -337,6 +337,9 @@ export const InstallForm: React.FC<IProps> = ({
   // `?? true` on an edit while the backend persisted `?? false` and built the route without the
   // login, so an install that never decided looked protected and was not (OpenClaw, 2026-09-28).
   const enableAuthFallback = useMemo(() => (isEdit ? manifestDefaultsEdgeAuthOn(info) : true), [isEdit, info]);
+  // Whether the "Enable authentication" switch is drawn. An import reads this too, to tell when it
+  // changes a switch nobody can see (#1984).
+  const authSwitchShown = Boolean(info.exposable && info.dynamic_config) && (isAdvancedMode || showAdvancedSettings);
   const watchedFormValues = watch();
 
   // Client-side install-config export/import + "recently used" list (no backend involved — see
@@ -355,8 +358,7 @@ export const InstallForm: React.FC<IProps> = ({
    */
   const applyImportedValues = useCallback(
     (values: Record<string, unknown>): boolean => {
-      const authSwitchHidden = Boolean(info.exposable && info.dynamic_config) && !isAdvancedMode && !showAdvancedSettings;
-      const turnsLoginOff = authSwitchHidden && values.enableAuth === false && (getValues('enableAuth') ?? enableAuthFallback) !== false;
+      const turnsLoginOff = !authSwitchShown && values.enableAuth === false && (getValues('enableAuth') ?? enableAuthFallback) !== false;
       for (const [key, value] of Object.entries(values)) {
         setValue(key, value as string, { shouldDirty: true, shouldValidate: true });
       }
@@ -365,7 +367,7 @@ export const InstallForm: React.FC<IProps> = ({
       }
       return turnsLoginOff;
     },
-    [setValue, getValues, enableAuthFallback, info.exposable, info.dynamic_config, isAdvancedMode, showAdvancedSettings],
+    [setValue, getValues, enableAuthFallback, authSwitchShown],
   );
 
   /**
@@ -454,11 +456,11 @@ export const InstallForm: React.FC<IProps> = ({
             fields: unrecognizedKeys.join(', '),
           }),
         );
-      } else if (!turnsLoginOff) {
-        toast.success(t('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS', { defaultValue: 'Config imported.' }));
       }
       if (turnsLoginOff) {
         toast.warning(t('APP_INSTALL_FORM_IMPORT_CONFIG_AUTH_OFF'), { duration: 8000 });
+      } else if (unrecognizedKeys.length === 0) {
+        toast.success(t('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS', { defaultValue: 'Config imported.' }));
       }
     },
     [formFields, info.id, withoutUnofferedAccessSettings, applyImportedValues, t],
@@ -1030,7 +1032,7 @@ export const InstallForm: React.FC<IProps> = ({
   };
 
   const renderAdvancedExposureOptions = () => {
-    if (!info.exposable || (!isAdvancedMode && !showAdvancedSettings)) return null;
+    if (!authSwitchShown) return null;
 
     return (
       <Controller
@@ -1264,7 +1266,7 @@ export const InstallForm: React.FC<IProps> = ({
               )}
             />
           )}
-          {info.exposable && info.dynamic_config && renderAdvancedExposureOptions()}
+          {renderAdvancedExposureOptions()}
           {renderExposeForm()}
           {isAdvancedMode && (
             <div className="mb-3">

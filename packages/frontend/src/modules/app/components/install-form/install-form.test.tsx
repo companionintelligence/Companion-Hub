@@ -2820,6 +2820,26 @@ describe('InstallForm - an imported config that turns the Hub login off', () => 
     expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ enableAuth: false, exposureMode: 'cloudflare' });
   });
 
+  it.each([
+    ['saved with the login on', cyberchef, { enableAuth: true }],
+    ['that never chose, on a manifest that defaults the login on', cyberchefWithEdgeAuth, {}],
+  ])('shows the switch turned off, and says so, when a file turns the login off for an installed app %s', async (_, info, saved) => {
+    const { container } = renderForm({
+      info,
+      isEdit: true,
+      initialValues: { ADMIN_EMAIL: 'ops@example.org', exposureMode: 'cloudflare', ...saved },
+    });
+    await screen.findByLabelText(/Admin Email/);
+    expect(authSwitch()).not.toBeInTheDocument();
+
+    await importFile(container, configFile({ enableAuth: false }));
+
+    await waitFor(() => expect(authSwitch()).toBeInTheDocument());
+    expect(authSwitch()).not.toBeChecked();
+    expect(toast.warning).toHaveBeenCalledWith('APP_INSTALL_FORM_IMPORT_CONFIG_AUTH_OFF', { duration: 8000 });
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
   it('names the login as well as the fields it ignored', async () => {
     const { container } = renderForm();
     await screen.findByLabelText(/Admin Email/);
