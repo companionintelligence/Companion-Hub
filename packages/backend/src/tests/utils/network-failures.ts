@@ -1,8 +1,9 @@
 /**
- * A request that failed on every address of the Portal, shaped as Node 22 and axios 1.18 build it.
+ * A request that failed on every address of the Portal, shaped as Node 22 and axios 1.20 build it.
  *
  * Built by hand rather than with `AxiosError.from`, because many suites mock axios whole.
- * `network-error.test.ts` checks this shape against the real `AxiosError.from`.
+ * `network-error.test.ts` checks this shape against the real `AxiosError.from` — that check is
+ * what caught axios 1.20 changing the shape, so keep it passing rather than relaxing it.
  */
 
 const ERRNO = { ETIMEDOUT: -110, ENETUNREACH: -101, ECONNREFUSED: -111 } as const;
@@ -28,11 +29,22 @@ export function everyAddressFailed() {
   return Object.assign(new AggregateError(attempts, ''), { code: 'ETIMEDOUT' });
 }
 
-/** {@link everyAddressFailed} as axios rejects with it: the empty message, name and code copied, the attempts on `cause`. */
+/**
+ * {@link everyAddressFailed} as axios rejects with it: name and code copied, the attempts on
+ * `cause`, and a message axios synthesises by joining the attempts with `'; '`.
+ *
+ * Up to axios 1.18 this message was the AggregateError's own empty string. 1.20 populates it
+ * instead, so it is derived from `cause.errors` here rather than hard-coded — that keeps the
+ * fixture byte-identical to `AxiosError.from` even if the attempt list above changes.
+ *
+ * Consumers assert on {@link EVERY_ADDRESS_FAILED} (what `describeNetworkError` returns from
+ * `cause.errors`), never on this message, so populating it changes no expectations.
+ */
 export function axiosEveryAddressFailed() {
   const cause = everyAddressFailed();
+  const message = cause.errors.map((attempt: Error) => attempt.message).join('; ');
 
-  return Object.assign(new Error(''), { name: cause.name, isAxiosError: true as const, code: cause.code, cause });
+  return Object.assign(new Error(message), { name: cause.name, isAxiosError: true as const, code: cause.code, cause });
 }
 
 /** How the Hub describes those four attempts. */
