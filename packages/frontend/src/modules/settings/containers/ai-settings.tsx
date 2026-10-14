@@ -137,6 +137,11 @@ export const AiSettingsContainer = () => {
   vllmUrlRef.current = vllmUrl;
   const vllmApiKeyRef = useRef('');
   vllmApiKeyRef.current = vllmApiKey;
+  // A stored key shows as the mask, and any edit replaces it whole. A key typed after the dots would
+  // still start with them, and the save would keep the stored key.
+  const handleVllmApiKeyChange = useCallback((value: string) => {
+    setVllmApiKey((current) => (isMaskedKey(current) && value !== current ? value.replace(/•/g, '') : value));
+  }, []);
   const omlxUrlRef = useRef('');
   omlxUrlRef.current = omlxUrl;
   const decodeEndpointRef = useRef('');
@@ -209,6 +214,10 @@ export const AiSettingsContainer = () => {
       const prefData = await fetchInferencePreferences();
       if (prefData?.preferredVllmApiKey) {
         setVllmApiKey(prefData.preferredVllmApiKey);
+      } else if (prefData) {
+        // A mask left from an earlier load stands for a key the Hub no longer holds (a save on another
+        // engine clears it). Left in the field it reads as stored, and the next save keeps nothing.
+        setVllmApiKey((current) => (isMaskedKey(current) ? '' : current));
       }
       if (prefData?.preferredVllmUrl) {
         setVllmUrl(prefData.preferredVllmUrl);
@@ -563,9 +572,9 @@ export const AiSettingsContainer = () => {
           await removeCloudProviderConfig(cp.provider);
           // The refetch after the save keeps the old list when no provider is left, so drop it here.
           setCloudProviders((prev) => prev.filter((other) => other.provider !== cp.provider));
-        } else if (cp.apiKey.trim() && !cp.apiKey.startsWith('••')) {
+        } else if (cp.apiKey.trim() && !isMaskedKey(cp.apiKey)) {
           await saveCloudProviderConfig({ provider: cp.provider, apiKey: cp.apiKey, enabled: cp.enabled });
-        } else if (cp.apiKey.startsWith('••')) {
+        } else if (isMaskedKey(cp.apiKey)) {
           await saveCloudProviderConfig({ provider: cp.provider, enabled: cp.enabled });
         }
       }
@@ -881,7 +890,7 @@ export const AiSettingsContainer = () => {
                 checking={checkingVllm}
                 onRecheck={handleRecheckVllm}
                 apiKey={vllmApiKey}
-                onApiKeyChange={setVllmApiKey}
+                onApiKeyChange={handleVllmApiKeyChange}
                 endpointUrl={vllmUrl}
                 onEndpointUrlChange={setVllmUrl}
               />

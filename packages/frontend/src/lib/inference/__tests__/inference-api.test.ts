@@ -122,4 +122,11 @@ describe('vLLM probes', () => {
     expect(getVllmStatus.mock.calls[0]?.[0]?.headers).toBeUndefined();
     expect(getOnboardingProfile.mock.calls[0]?.[0]?.headers).toBeUndefined();
   });
+
+  // The header value is trimmed, so the check is too: sent, the mask's dots make fetch throw.
+  it('send no key for a mask with a stray space around it', async () => {
+    await fetchVllmInstallStatus('http://127.0.0.1:8000', ` ${MASKED_KEY}`);
+
+    expect(getVllmStatus.mock.calls[0]?.[0]?.headers).toBeUndefined();
+  });
 });
