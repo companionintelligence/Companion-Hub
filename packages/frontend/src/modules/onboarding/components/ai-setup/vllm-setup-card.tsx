@@ -41,6 +41,8 @@ interface VllmSetupCardProps {
   onRecheck: () => Promise<void>;
   apiKey: string;
   onApiKeyChange: (value: string) => void;
+  /** Shown under the key field when the key needs attention, such as a saved key that no longer applies. */
+  apiKeyNotice?: string;
   /** Operator-configured vLLM base URL; empty string means "use the Hub default". */
   endpointUrl?: string;
   onEndpointUrlChange?: (value: string) => void;
@@ -51,13 +53,14 @@ interface VllmSetupCardProps {
 const VllmConnectionFields = ({
   apiKey,
   onApiKeyChange,
+  apiKeyNotice,
   endpointUrl,
   onEndpointUrlChange,
   labelClass,
   hintClass,
   defaultEndpointUrl,
   idSuffix,
-}: Pick<VllmSetupCardProps, 'apiKey' | 'onApiKeyChange' | 'endpointUrl' | 'onEndpointUrlChange'> & {
+}: Pick<VllmSetupCardProps, 'apiKey' | 'onApiKeyChange' | 'apiKeyNotice' | 'endpointUrl' | 'onEndpointUrlChange'> & {
   labelClass: string;
   hintClass: string;
   defaultEndpointUrl?: string;
@@ -99,6 +102,11 @@ const VllmConnectionFields = ({
           className="w-full max-w-full"
         />
         <p className={`mt-1 text-xs ${hintClass}`}>{t('ONBOARDING_VLLM_API_KEY_HINT')}</p>
+        {apiKeyNotice && (
+          <p className={`mt-1 text-xs font-medium ${hintClass}`} data-testid="vllm-api-key-notice">
+            {apiKeyNotice}
+          </p>
+        )}
       </div>
     </div>
   );
@@ -110,6 +118,7 @@ export const VllmSetupCard = ({
   onRecheck,
   apiKey,
   onApiKeyChange,
+  apiKeyNotice,
   endpointUrl,
   onEndpointUrlChange,
   onAutoInstall,
@@ -161,6 +170,7 @@ export const VllmSetupCard = ({
           <VllmConnectionFields
             apiKey={apiKey}
             onApiKeyChange={onApiKeyChange}
+            apiKeyNotice={apiKeyNotice}
             endpointUrl={endpointUrl}
             onEndpointUrlChange={onEndpointUrlChange}
             labelClass="text-success"
@@ -194,6 +204,7 @@ export const VllmSetupCard = ({
               <VllmConnectionFields
                 apiKey={apiKey}
                 onApiKeyChange={onApiKeyChange}
+                apiKeyNotice={apiKeyNotice}
                 endpointUrl={endpointUrl}
                 onEndpointUrlChange={onEndpointUrlChange}
                 labelClass="text-warning"

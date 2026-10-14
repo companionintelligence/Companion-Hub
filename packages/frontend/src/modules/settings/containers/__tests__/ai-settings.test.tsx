@@ -481,6 +481,69 @@ describe('AiSettingsContainer', () => {
     expect(await screen.findByTestId('vllm-api-key-input')).toHaveValue('••••••••');
   });
 
+  // The Hub sends a stored vLLM key only to the server it was saved for, and drops it when a save
+  // moves vLLM elsewhere. The field shows that before the save instead of a key that won't be used.
+  describe('the masked vLLM key when the URL changes', () => {
+    const savedUrl = 'http://192.168.1.50:8000';
+
+    beforeEach(() => {
+      fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'vllm', preferredVllmApiKey: '••••••••', preferredVllmUrl: savedUrl });
+    });
+
+    async function typeVllmUrl(user: ReturnType<typeof userEvent.setup>, url: string) {
+      const field = screen.getByTestId('vllm-endpoint-url-input');
+      await user.clear(field);
+      await user.type(field, url);
+    }
+
+    async function save(user: ReturnType<typeof userEvent.setup>) {
+      await user.click(screen.getByTestId('ai-settings-save-btn'));
+      await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+      await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+      return saveInferencePreferences.mock.calls[0]?.[0] as { vllmUrl?: string | null; vllmApiKey?: string | null };
+    }
+
+    it('empties the key field, says the saved key goes, and saves without it', async () => {
+      const user = userEvent.setup();
+      renderAiSettings();
+      await waitFor(() => expect(screen.getByTestId('vllm-api-key-input')).toHaveValue('••••••••'));
+      expect(screen.queryByTestId('vllm-api-key-notice')).not.toBeInTheDocument();
+
+      await typeVllmUrl(user, 'http://192.168.1.99:8000');
+
+      expect(screen.getByTestId('vllm-api-key-input')).toHaveValue('');
+      expect(screen.getByTestId('vllm-api-key-notice')).toHaveTextContent('The saved key was for the previous URL');
+      expect(await save(user)).toMatchObject({ vllmUrl: 'http://192.168.1.99:8000', vllmApiKey: null });
+    });
+
+    it('saves a key typed for the new URL', async () => {
+      const user = userEvent.setup();
+      renderAiSettings();
+      await waitFor(() => expect(screen.getByTestId('vllm-api-key-input')).toHaveValue('••••••••'));
+
+      await typeVllmUrl(user, 'http://192.168.1.99:8000');
+      await user.type(screen.getByTestId('vllm-api-key-input'), 'new-server-key');
+
+      expect(screen.queryByTestId('vllm-api-key-notice')).not.toBeInTheDocument();
+      expect(await save(user)).toMatchObject({ vllmUrl: 'http://192.168.1.99:8000', vllmApiKey: 'new-server-key' });
+    });
+
+    it('shows the mask again when the URL goes back to the saved one, and keeps the key', async () => {
+      const user = userEvent.setup();
+      renderAiSettings();
+      await waitFor(() => expect(screen.getByTestId('vllm-api-key-input')).toHaveValue('••••••••'));
+
+      await typeVllmUrl(user, 'http://192.168.1.99:8000');
+      await typeVllmUrl(user, savedUrl);
+
+      expect(screen.getByTestId('vllm-api-key-input')).toHaveValue('••••••••');
+      expect(screen.queryByTestId('vllm-api-key-notice')).not.toBeInTheDocument();
+      const body = await save(user);
+      expect(body.vllmUrl).toBe(savedUrl);
+      expect(body.vllmApiKey).toBeUndefined();
+    });
+  });
+
   // #1109: the backend-switch effect listed `profile` in its dependency array while writing it
   // with a freshly-fetched object, so every switch started an unbounded refetch loop (165 requests
   // in 400ms). The shared-fixture mock used elsewhere hides this — React bails out on identical

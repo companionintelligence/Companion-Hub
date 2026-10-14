@@ -1,7 +1,7 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { Test } from '@nestjs/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 
 vi.mock('../../app-lifecycle/app-lifecycle.service', () => ({
@@ -289,6 +289,60 @@ describe('InferenceController — preferences', () => {
 
     expect(configService.setInferencePreferences.mock.calls[0]?.[4]).toBeNull();
   }, 30_000);
+
+  // The stored key belongs to the server it was saved for. Re-check never sends it to another one,
+  // and a save that moves vLLM elsewhere must not either.
+  describe('a save that changes the vLLM URL', () => {
+    const savedVllmUrl = 'http://192.168.1.50:8000';
+    const savedVllmEnv = process.env.VLLM_URL;
+
+    beforeEach(() => {
+      delete process.env.VLLM_URL;
+      configService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'vllm',
+        preferredVllmApiKey: 'vllm-secret',
+        preferredVllmUrl: savedVllmUrl,
+      } as never);
+      configService.setInferencePreferences.mockResolvedValue({ preferredBackend: 'vllm', preferredVllmApiKey: null } as never);
+    });
+
+    afterEach(() => {
+      if (savedVllmEnv === undefined) delete process.env.VLLM_URL;
+      else process.env.VLLM_URL = savedVllmEnv;
+    });
+
+    const storedKeyArg = () => configService.setInferencePreferences.mock.calls[0]?.[4];
+
+    it('drops the stored key when the key comes back as the mask', async () => {
+      await controller.updatePreferences({ backend: 'vllm', vllmApiKey: MASKED_VLLM_API_KEY, vllmUrl: 'http://192.168.1.99:8000' });
+
+      expect(storedKeyArg()).toBeNull();
+    });
+
+    it('drops the stored key when the key is left out', async () => {
+      await controller.updatePreferences({ backend: 'vllm', vllmUrl: 'http://192.168.1.99:8000' });
+
+      expect(storedKeyArg()).toBeNull();
+    });
+
+    it('drops the stored key when the URL is cleared and vLLM falls back to the default server', async () => {
+      await controller.updatePreferences({ backend: 'vllm', vllmApiKey: MASKED_VLLM_API_KEY, vllmUrl: null });
+
+      expect(storedKeyArg()).toBeNull();
+    });
+
+    it('keeps the stored key for another spelling of the same server', async () => {
+      await controller.updatePreferences({ backend: 'vllm', vllmApiKey: MASKED_VLLM_API_KEY, vllmUrl: 'http://192.168.1.50:8000/v1/' });
+
+      expect(storedKeyArg()).toBeUndefined();
+    });
+
+    it('stores a key typed for the new server', async () => {
+      await controller.updatePreferences({ backend: 'vllm', vllmApiKey: 'new-server-key', vllmUrl: 'http://192.168.1.99:8000' });
+
+      expect(storedKeyArg()).toBe('new-server-key');
+    });
+  });
 
   it('passes the oMLX endpoint URL through when provided', async () => {
     configService.setInferencePreferences.mockResolvedValue({

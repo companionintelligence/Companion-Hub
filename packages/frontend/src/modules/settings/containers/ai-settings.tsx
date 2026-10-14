@@ -17,7 +17,7 @@ import {
   unloadInferenceModel,
   unpinInferenceModel,
 } from '@/lib/inference/inference-api';
-import { isMaskedKey } from '@/lib/inference/masked-key';
+import { MASKED_KEY, isMaskedKey } from '@/lib/inference/masked-key';
 import { POLLING } from '@/lib/polling-budget';
 import { ensurePullsStarted, waitForModelPulls } from '@/lib/inference/tracked-models';
 import { Button } from '@/components/ui/Button';
@@ -142,6 +142,25 @@ export const AiSettingsContainer = () => {
   const handleVllmApiKeyChange = useCallback((value: string) => {
     setVllmApiKey((current) => (isMaskedKey(current) && value !== current ? value.replace(/•/g, '') : value));
   }, []);
+  // The vLLM URL and whether a key is stored, as the Hub last reported them. The Hub sends a stored
+  // key only to the server it was saved for, and a save that moves vLLM elsewhere drops it. So the
+  // mask leaves the field while the URL differs, and comes back if the URL returns unchanged.
+  const [savedVllm, setSavedVllm] = useState({ url: '', keyStored: false });
+  const handleVllmUrlChange = useCallback(
+    (value: string) => {
+      setVllmUrl(value);
+      if (!savedVllm.keyStored) return;
+      const moved = value.trim() !== savedVllm.url;
+      setVllmApiKey((current) => {
+        if (moved && isMaskedKey(current)) return '';
+        if (!moved && !current) return MASKED_KEY;
+        return current;
+      });
+    },
+    [savedVllm],
+  );
+  const vllmApiKeyNotice =
+    savedVllm.keyStored && vllmUrl.trim() !== savedVllm.url && !vllmApiKey.trim() ? t('AI_SETTINGS_VLLM_KEY_NEW_URL') : undefined;
   const omlxUrlRef = useRef('');
   omlxUrlRef.current = omlxUrl;
   const decodeEndpointRef = useRef('');
@@ -212,6 +231,9 @@ export const AiSettingsContainer = () => {
       // Load preferences first because the profile's hardware fallback can compute installed
       // models for a backend other than the one shown in settings.
       const prefData = await fetchInferencePreferences();
+      if (prefData) {
+        setSavedVllm({ url: prefData.preferredVllmUrl?.trim() ?? '', keyStored: Boolean(prefData.preferredVllmApiKey) });
+      }
       if (prefData?.preferredVllmApiKey) {
         setVllmApiKey(prefData.preferredVllmApiKey);
       } else if (prefData) {
@@ -891,8 +913,9 @@ export const AiSettingsContainer = () => {
                 onRecheck={handleRecheckVllm}
                 apiKey={vllmApiKey}
                 onApiKeyChange={handleVllmApiKeyChange}
+                apiKeyNotice={vllmApiKeyNotice}
                 endpointUrl={vllmUrl}
-                onEndpointUrlChange={setVllmUrl}
+                onEndpointUrlChange={handleVllmUrlChange}
               />
               <div>
                 <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>

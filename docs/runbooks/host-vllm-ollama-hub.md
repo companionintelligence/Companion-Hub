@@ -53,6 +53,8 @@ curl -s http://127.0.0.1:11434/api/tags
 
 Hub persists `inferenceBackend: "vllm"` and optional `inferenceVllmApiKey` / `inferenceVllmUrl` to `state/settings.json`.
 
+Settings > AI shows a saved key as `••••••••`, and saving with that field untouched keeps it. The saved key is sent only to the URL it was saved with. If you change the URL, enter the key again for the new server; a save without one deletes the old key.
+
 ## 4. Env injected into ci-memory
 
 After saving preferences, Hub regenerates `app.env` and restarts AI apps:

@@ -2030,6 +2030,7 @@
   "AI_SETTINGS_CLOUD_KEY_REMOVE": "Remove",
   "AI_SETTINGS_CLOUD_KEY_REMOVE_LABEL": "Remove the saved {{provider}} key",
   "AI_SETTINGS_CLOUD_KEY_REMOVED_ON_SAVE": "The saved key is deleted when you save.",
+  "AI_SETTINGS_VLLM_KEY_NEW_URL": "The saved key was for the previous URL, so it is deleted when you save. Enter this server's key if it needs one.",
   "API_KEYS_TITLE": "API keys",
   "API_KEYS_DESC": "Keys that authenticate agents and apps to this Hub. Raw values are shown only once at creation.",
   "API_KEYS_LOAD_ERROR": "Failed to load API keys.",
