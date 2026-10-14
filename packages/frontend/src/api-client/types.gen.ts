@@ -170,8 +170,6 @@ export type UserSettingsBody = {
     experimental_insecureCookie?: boolean;
     themeBase?: string;
     themeColor?: string;
-    ciHubApiKey?: string;
-    ciHubMoveKey?: string;
     ciHubOrganizationId?: string;
     ciHubOrganizationSlug?: string;
     ciHubOrganizationLabel?: string;

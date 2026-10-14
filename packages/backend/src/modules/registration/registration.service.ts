@@ -2611,7 +2611,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // Persist the optional device API key for authenticated Portal requests.
       if (data.apiKey) {
         this.logger.info('Saving CI Hub API Key from registration callback');
-        await this.config.setUserSettings({ ciHubApiKey: data.apiKey });
+        await this.config.setFileOnlySettings({ ciHubApiKey: data.apiKey });
       }
 
       /*
@@ -2619,7 +2619,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
        * Memory the device key, never this, so a key leaked from an app cannot move this Hub.
        */
       if (data.moveKey) {
-        await this.config.setUserSettings({ ciHubMoveKey: data.moveKey });
+        await this.config.setFileOnlySettings({ ciHubMoveKey: data.moveKey });
       }
 
       // Persist the organization ID for future Portal disambiguation.

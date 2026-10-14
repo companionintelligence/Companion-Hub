@@ -197,12 +197,12 @@ const WRITERS: Array<{ name: string; write: (w: Writers) => Promise<unknown>; wr
   },
   {
     name: 'the Portal pairing callback',
-    write: (w) => w.configuration.setUserSettings({ ciHubApiKey: 'rotated-portal-key' }),
+    write: (w) => w.configuration.setFileOnlySettings({ ciHubApiKey: 'rotated-portal-key' }),
     writes: { ciHubApiKey: 'rotated-portal-key' },
   },
   {
     name: 'the Portal pairing, keeping the move key it returned',
-    write: (w) => w.configuration.setUserSettings({ ciHubMoveKey: 'rotated-move-key' }),
+    write: (w) => w.configuration.setFileOnlySettings({ ciHubMoveKey: 'rotated-move-key' }),
     writes: { ciHubMoveKey: 'rotated-move-key' },
   },
   { name: 'the auto-update switch', write: (w) => w.systemUpdate.setAutoUpdatesEnabled(true), writes: { autoUpdates: true } },

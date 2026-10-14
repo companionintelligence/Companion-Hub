@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AppContextDto, UserSettingsBody, parsePersistedSettings, settingsSchema } from '../app.dto';
+import { AppContextDto, UserSettingsBody, parsePersistedSettings, settingsFileSchema, settingsSchema } from '../app.dto';
 
 describe('UserSettingsBody — timeZone validation (write path)', () => {
   it.each([
@@ -69,8 +69,9 @@ describe('settingsSchema — Hub Pool tuning (boot read path)', () => {
   });
 
   it('MUST keep every other field when one pool knob is out of range', () => {
-    // The whole point: a bad tuning value costs that value, not the Portal credential next to it.
-    const result = settingsSchema.partial().safeParse({ hubPoolLocalAffinity: -1, ciHubApiKey: 'portal-key', hubPoolEnabled: false });
+    // The whole point: a bad tuning value costs that value, not the Portal credential next to it. The
+    // credential is a file-only setting, so this reads the whole file's schema, as boot does.
+    const result = settingsFileSchema.partial().safeParse({ hubPoolLocalAffinity: -1, ciHubApiKey: 'portal-key', hubPoolEnabled: false });
 
     expect(result.success).toBe(true);
     expect(result.success && result.data.ciHubApiKey).toBe('portal-key');
@@ -197,6 +198,22 @@ describe('AppContextDto: the settings it reports', () => {
     const reported = Object.keys(AppContextDto.schema.shape.userSettings.shape);
     const keptOut = Object.keys(settingsSchema.shape).filter((key) => !reported.includes(key));
 
-    expect(keptOut.sort()).toEqual(['autoUpdates', 'ciHubApiKey', 'ciHubMoveKey', 'inferenceCloudProviders', 'inferenceVllmApiKey']);
+    expect(keptOut.sort()).toEqual(['autoUpdates', 'inferenceCloudProviders', 'inferenceVllmApiKey']);
+  });
+});
+
+describe('UserSettingsBody: the Portal keys', () => {
+  // The pairing callback writes both as file-only settings. A settings save cannot set them.
+  it('takes neither the device key nor the move key', () => {
+    const body = UserSettingsBody.schema.parse({ ciHubApiKey: 'device-key', ciHubMoveKey: 'move-key', themeColor: 'red' });
+
+    expect(body).toEqual({ themeColor: 'red' });
+  });
+
+  it('still reads both from settings.json', () => {
+    expect(parsePersistedSettings({ ciHubApiKey: 'device-key', ciHubMoveKey: 'move-key' }).settings).toEqual({
+      ciHubApiKey: 'device-key',
+      ciHubMoveKey: 'move-key',
+    });
   });
 });

@@ -161,8 +161,6 @@ export const settingsSchema = z.object({
   experimental_insecureCookie: z.boolean().optional(),
   themeBase: z.string().optional(),
   themeColor: z.string().optional(),
-  ciHubApiKey: z.string().trim().optional(),
-  ciHubMoveKey: z.string().trim().optional(),
   ciHubOrganizationId: z.string().trim().optional(),
   ciHubOrganizationSlug: z.string().trim().optional(),
   ciHubOrganizationLabel: z.string().trim().optional(),
@@ -292,6 +290,13 @@ const fileOnlySettingsSchema = z.object({
    * and read at boot by `resolveHubDomain`, where it wins over the `DOMAIN` the container inherited.
    */
   portalDomain: z.string().trim().optional(),
+  /**
+   * The Hub's Portal device key, and the move key the Portal returned with it at the last pairing,
+   * which lets this Hub move itself to another organization. Written by the pairing callback
+   * (`RegistrationService`); the code reads both from the top-level config.
+   */
+  ciHubApiKey: z.string().trim().optional(),
+  ciHubMoveKey: z.string().trim().optional(),
 });
 
 export type FileOnlySettings = z.infer<typeof fileOnlySettingsSchema>;

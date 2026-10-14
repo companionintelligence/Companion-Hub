@@ -848,7 +848,7 @@ describe('RegistrationService', () => {
           timeout: 60_000,
         }),
       );
-      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubApiKey: 'key-pair' });
+      expect(configService.setFileOnlySettings).toHaveBeenCalledWith({ ciHubApiKey: 'key-pair' });
       expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubOrganizationId: 'org-pair' });
       expect(setupSpy).toHaveBeenCalledWith(
         'org-pair',
@@ -941,8 +941,8 @@ describe('RegistrationService', () => {
         { pairing_code: 'ABC123', device_id: 'test-device', device_key: 'stored-device-key', move_key: 'stored-move-key' },
         expect.objectContaining({ headers: { 'Content-Type': 'application/json' } }),
       );
-      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubApiKey: 'key-pair' });
-      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubMoveKey: 'move-pair' });
+      expect(configService.setFileOnlySettings).toHaveBeenCalledWith({ ciHubApiKey: 'key-pair' });
+      expect(configService.setFileOnlySettings).toHaveBeenCalledWith({ ciHubMoveKey: 'move-pair' });
 
       setupSpy.mockRestore();
     });
@@ -976,7 +976,7 @@ describe('RegistrationService', () => {
       await service.pairDevice('ABC123');
 
       expect(mockedAxios.post.mock.calls[0]?.[1]).not.toHaveProperty('move_key');
-      expect(configService.setUserSettings).not.toHaveBeenCalledWith(expect.objectContaining({ ciHubMoveKey: expect.anything() }));
+      expect(configService.setFileOnlySettings).not.toHaveBeenCalledWith(expect.objectContaining({ ciHubMoveKey: expect.anything() }));
 
       setupSpy.mockRestore();
     });
@@ -1166,7 +1166,7 @@ describe('RegistrationService', () => {
       const result = await service.pairDevice('ABC123', { callerAuthenticated: true });
 
       expect(result.success).toBe(true);
-      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubApiKey: 'fresh-key' });
+      expect(configService.setFileOnlySettings).toHaveBeenCalledWith({ ciHubApiKey: 'fresh-key' });
       expect(deviceRegistrationRepository.deleteAll).not.toHaveBeenCalled();
       setupSpy.mockRestore();
     });
@@ -1230,7 +1230,7 @@ describe('RegistrationService', () => {
       const result = await service.pairDevice('ABC123', { callerAuthenticated: true });
 
       expect(result.success).toBe(true);
-      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubApiKey: 'fresh-key' });
+      expect(configService.setFileOnlySettings).toHaveBeenCalledWith({ ciHubApiKey: 'fresh-key' });
       setupSpy.mockRestore();
     });
 
@@ -1701,7 +1701,7 @@ describe('RegistrationService', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubApiKey: 'key-cb' });
+      expect(configService.setFileOnlySettings).toHaveBeenCalledWith({ ciHubApiKey: 'key-cb' });
       setupSpy.mockRestore();
     });
 
