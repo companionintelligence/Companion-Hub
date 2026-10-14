@@ -5,7 +5,7 @@
 > **Inventory:** [TEST_INVENTORY.md](TEST_INVENTORY.md) — regenerate with `pnpm run agent:test-inventory`
 > **Commands:** `pnpm test`, `pnpm run test:e2e:ci`, `pnpm run test:visual`
 > **Router:** [AGENTS.md](../../AGENTS.md)
-> **Last updated:** 2026-10-13
+> **Last updated:** 2026-10-14
 > **Related:** docs/system/e2e.md, .cursor/rules/ci-checks.mdc
 
 ---
@@ -28,9 +28,10 @@ other gate looks at the TypeScript instead. v0.2.67 shipped a `cihub pool update
 suite compiles the binary with the release's own `scripts/build-standalone-cli.cjs` and runs its
 commands against stub `docker`/`git` binaries and a throwaway `HOME` — no real Docker state, no
 network. Add a case there whenever you add a CLI subcommand. It skips locally without bun and
-**fails** without bun when `CI` is set, so it can never pass by not running. It always skips on
-Windows: the stubs are `#!/bin/sh` files Windows won't run, so the tests would use the real
-`docker.exe` and the Hub on it (#1988). Run it on Linux or macOS.
+**fails** without bun when `CI` is set, so it can never pass by not running. Windows gets the same
+treatment, a skip locally and a failure when `CI` is set: the stubs are `#!/bin/sh` files Windows
+won't run, so the tests would use the real `docker.exe` and the Hub on it (#1988). Run it on Linux
+or macOS.
 
 **Why the image has its own layer:** every other layer runs the TypeScript sources, so none of them
 runs the esbuild bundle the image actually ships. NestJS 12 made esbuild leave `require("express")`

@@ -80,18 +80,20 @@ const CLOSED_DOCKER_HOST = 'tcp://127.0.0.1:9';
 const onWindows = process.platform === 'win32';
 const WINDOWS_SKIP_NOTE =
   'cli-binary-smoke: skipped on Windows. The stub docker and git are #!/bin/sh files Windows does not run, so the tests would use the real docker.exe and the Hub on it (#1988).';
-// Vitest's default reporter drops console output from a file whose tests all skipped, so a
-// console.warn here only showed under --reporter=verbose. Raw stderr gets through.
-if (onWindows) process.stderr.write(`${WINDOWS_SKIP_NOTE}\n`);
 
 const hasBun = !onWindows && spawnSync('bun', ['--version'], { encoding: 'utf-8' }).status === 0;
 
 /**
  * Bun is what compiles the shipped binary, so without it there is nothing to smoke-test. Locally
  * that is a skip; in CI it is a failure (beforeAll throws), because a gate that quietly passes when
- * its tool is missing is the gate that let v0.2.67 out. Windows is a skip either way, see above.
+ * its tool is missing is the gate that let v0.2.67 out. Windows goes the same way, so a Windows CI
+ * job can't turn green by skipping the suite.
  */
-const skipSuite = onWindows || (!hasBun && !process.env.CI);
+const skipSuite = !process.env.CI && (onWindows || !hasBun);
+
+// Vitest's default reporter drops console output from a file whose tests all skipped, so a
+// console.warn here only showed under --reporter=verbose. Raw stderr gets through.
+if (onWindows && skipSuite) process.stderr.write(`${WINDOWS_SKIP_NOTE}\n`);
 
 let binary = '';
 let workspace = '';
@@ -193,6 +195,11 @@ function expectNoCrash(args: string[], output: string): void {
 describe('compiled cihub binary', () => {
   beforeAll(() => {
     if (skipSuite) return;
+    if (onWindows) {
+      throw new Error(
+        "cihub's binary smoke tests can't run on Windows yet (#1988), and with CI set a skip would pass without testing anything. Run them on Linux or macOS.",
+      );
+    }
     if (!hasBun) {
       throw new Error('bun is required to compile the cihub binary (CI installs it via oven-sh/setup-bun; locally: https://bun.sh)');
     }
