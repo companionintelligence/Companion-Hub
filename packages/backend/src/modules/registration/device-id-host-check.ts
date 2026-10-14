@@ -66,7 +66,7 @@ export interface DeviceIdHostCheckInput {
   envDeviceId: string | undefined;
   /**
    * `state/registered-device-id`. The Hub pairs and checks in under it ahead of `DEVICE_ID`, and a data
-   * folder copied from another machine brings it along, so it gets the same check.
+   * folder copied from another machine brings it along, so it gets the same check in `DEVICE_ID`'s place.
    */
   registeredDeviceId?: string | null;
   allowForeign?: string | undefined;
@@ -110,36 +110,34 @@ export function foreignDeviceIdMessage(deviceId: string): string {
 }
 
 /**
- * The remedy for a registration record from another machine that differs from `DEVICE_ID`. The
- * record wins over `DEVICE_ID`, so editing the env file alone changes nothing; only a reset removes
- * the record.
+ * The remedy for a registration record from another machine. The record wins over `DEVICE_ID` and
+ * survives a registration reset, so editing the env file changes nothing until Start fresh removes
+ * the record. On the desktop app, a launch also copies the record into `DEVICE_ID`, which is why Start
+ * fresh comes before the edit.
  */
 export function foreignRegisteredDeviceIdMessage(deviceId: string): string {
   return (
     `This Hub's registration record (state/registered-device-id) holds ${deviceId}, which was not generated on this machine: it is not this host's /etc/machine-id or DMI identity, so this Hub most likely paired under an ID copied from another Hub, or its data folder was copied from one. ` +
     "Portal knows a Hub only by its device ID, so two Hubs with one ID are one device, and whichever pairs second takes over the other one's registration or is refused. " +
-    'The Hub uses the record ahead of DEVICE_ID, so changing DEVICE_ID alone does not help. To give this Hub its own ID, make sure DEVICE_ID in its env file is the output of `cat /etc/machine-id`, then reset the registration from Settings, or run `cihub register --fresh --code <code>` on a Hub that is not registered. ' +
+    'The Hub uses the record ahead of DEVICE_ID, and a registration reset keeps it, so only Start fresh gives this Hub its own ID. ' +
+    'If the Hub is registered, reset its registration from Settings first. Then choose Start fresh on the pairing page, set DEVICE_ID in its env file to the output of `cat /etc/machine-id`, recreate the Hub container, and pair it again. ' +
+    'Without the desktop app, you can instead set DEVICE_ID, recreate the Hub container, and run `cihub register --fresh --code <code>`, which does Start fresh before it pairs. ' +
     `If no other Hub uses this ID, or the Hub was moved to new hardware on purpose, set ${ALLOW_FOREIGN_DEVICE_ID_ENV}=true instead, because changing a registered Hub's device ID means registering it again as a new device.`
   );
 }
 
 /**
- * Judges the registration record, which is the ID the Hub pairs and checks in under when it has one,
- * and `DEVICE_ID` as well, which it pairs under once a reset removes the record. A foreign record
- * comes first, because it is the ID in use. A record equal to `DEVICE_ID` was written from it at
- * pairing, so the env file is what came from another machine, and its message applies.
+ * Judges the device ID this Hub pairs and checks in under: its registration record when it has one,
+ * else `DEVICE_ID`. A registration reset keeps the record, so `DEVICE_ID` matters only once Start
+ * fresh has removed it, and the Hub judges again then. A record equal to `DEVICE_ID` still gets the
+ * record's remedy, because editing `DEVICE_ID` alone would not change the ID the Hub sends.
  */
 export function checkDeviceIdHostBinding(input: DeviceIdHostCheckInput): DeviceIdHostBinding {
-  const envBinding = judgeDeviceId(input.envDeviceId, input, foreignDeviceIdMessage);
   const registered = normalizeDeviceIdCandidate(input.registeredDeviceId);
-  if (!registered || registered === normalizeDeviceIdCandidate(input.envDeviceId)) {
-    return envBinding;
+  if (registered) {
+    return judgeDeviceId(registered, input, foreignRegisteredDeviceIdMessage);
   }
-  const recordBinding = judgeDeviceId(registered, input, foreignRegisteredDeviceIdMessage);
-  if (recordBinding.status === 'foreign' || envBinding.status !== 'foreign') {
-    return recordBinding;
-  }
-  return envBinding;
+  return judgeDeviceId(input.envDeviceId, input, foreignDeviceIdMessage);
 }
 
 function judgeDeviceId(

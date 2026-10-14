@@ -1348,10 +1348,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   /**
    * Resets device registration so the appliance can pair again.
    *
-   * The reset clears in-memory state, database rows, the tunnel token, the
-   * resolved environment, and the record of the device ID the Hub registered as.
-   * It never changes the Portal: the device stays in the person's account until
-   * an owner or admin deletes it there.
+   * The reset clears in-memory state, database rows, the tunnel token, and the
+   * resolved environment. It never changes the Portal: the device stays in the
+   * person's account until an owner or admin deletes it there.
    */
   public async resetRegistration(options?: { reason?: 'manual' | 'portal_rejected' }): Promise<void> {
     // A person resets a registration, or Portal's coded `DEVICE_NOT_ACTIVE` does. A check-in Portal
@@ -1407,17 +1406,6 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     } catch {
       // A missing resolved environment already satisfies the reset.
     }
-
-    // The ID this Hub registered as goes with the registration. It wins over DEVICE_ID, so an
-    // operator who changed DEVICE_ID on purpose would otherwise pair under the old ID again. The
-    // next pairing records whatever the Hub resolves then.
-    try {
-      clearRegisteredDeviceId(DATA_DIR);
-    } catch (error) {
-      this.logger.warn(`Could not remove the registration record, so the next pairing keeps its device ID: ${describeRegistrationError(error)}`);
-    }
-    this.deviceIdPromise = undefined;
-    this.deviceIdHostBinding = undefined;
 
     await clearRehydrationState();
 
@@ -1705,8 +1693,13 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       };
     }
 
-    // Also removes the registration record, so the device ID comes from DEVICE_ID or the host again.
     await this.resetRegistration();
+    // A fresh setup pairs as a new device, so the ID the Hub registered under goes with it, and the
+    // next pairing takes DEVICE_ID or the host's ID. A registration reset keeps the record; this is
+    // the one place that removes it. Unguarded, so that Start fresh fails rather than pair the old ID.
+    clearRegisteredDeviceId(DATA_DIR);
+    this.deviceIdPromise = undefined;
+    this.deviceIdHostBinding = undefined;
     const clearedAppEnvFiles = await clearRegistrationKeysFromAppData(APP_DATA_DIR);
     await clearRegistrationRecoveryArtifacts();
     try {
@@ -1813,10 +1806,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   private deviceIdHostBinding?: DeviceIdHostBinding;
 
   /**
-   * Whether the registration record and `DEVICE_ID` were generated on this machine. Memoized like
-   * {@link getDeviceId}, and forgotten with it on a reset: the environment and the host's machine
-   * ID cannot change under a running process, and the record changes only when a reset removes it
-   * or a pairing writes the ID this process already resolved.
+   * Whether the device ID this Hub pairs under (its registration record, else `DEVICE_ID`) was
+   * generated on this machine. Memoized like {@link getDeviceId}: the environment and the host's
+   * machine ID cannot change under a running process. The record changes only when Start fresh
+   * removes it or a pairing writes it, and each of those forgets the verdict.
    */
   public getDeviceIdHostBinding(): DeviceIdHostBinding {
     this.deviceIdHostBinding ??= checkDeviceIdHostBinding({
@@ -1827,7 +1820,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     return this.deviceIdHostBinding;
   }
 
-  /** The refusal message when this Hub must not pair under its registration record or `DEVICE_ID`, or `null` when it may. */
+  /** The refusal message when this Hub must not pair under the device ID it would send, or `null` when it may. */
   private foreignDeviceIdRefusal(): string | null {
     const binding = this.getDeviceIdHostBinding();
     if (binding.status !== 'foreign') {
@@ -2485,7 +2478,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     try {
       // Prefer an explicit device ID and otherwise use the hardware-derived value.
       const deviceId = customDeviceId?.trim() || (await this.getDeviceId());
-      // Only the Hub's own IDs (its registration record and DEVICE_ID) are judged. An ID the operator typed into the form is their decision.
+      // Only the Hub's own ID (its registration record, else DEVICE_ID) is judged. An ID the operator typed into the form is their decision.
       const foreignDeviceId = customDeviceId?.trim() ? null : this.foreignDeviceIdRefusal();
       if (foreignDeviceId) {
         return { success: false, message: foreignDeviceId };
@@ -2683,6 +2676,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // host: the next image may run as a different user and derive a different hardware ID, and
       // Portal answers that with 403 on every check-in.
       persistRegisteredDeviceId(DATA_DIR, await this.getDeviceId(), this.logger);
+      // The host check judges the record when there is one, and before this pairing there may have been none.
+      this.deviceIdHostBinding = undefined;
 
       this.logger.info(`Device registration completed via callback: organization=${data.organizationId}, subdomain=${data.subdomain}`);
 

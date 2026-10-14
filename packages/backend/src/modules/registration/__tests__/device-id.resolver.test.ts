@@ -72,6 +72,8 @@ describe('device-id.resolver', () => {
       expect(line).toContain('…7e9d8e');
       expect(line).not.toContain(registered);
       expect(line).not.toContain(machineGuid);
+      // A registration reset keeps the record, so the way to a new ID is Start fresh.
+      expect(line).toContain('Start fresh removes the record, and a registration reset does not');
     });
 
     it('logs nothing when DEVICE_ID and the registered ID agree', async () => {

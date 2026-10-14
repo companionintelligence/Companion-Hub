@@ -193,8 +193,9 @@ async function readSystemInformationUuid(
  * product UUID, and the next image ran it as uid 1000, read `/etc/machine-id` instead, and Portal
  * answered every check-in with `403 Device ID does not match authenticated device`. Once a Hub has
  * registered, what it registered as is its identity, whatever the next image can or cannot read,
- * and whatever a later launch writes into `DEVICE_ID`. Written on registration, removed by every
- * registration reset (`RegistrationService.resetRegistration`), and never by an upgrade.
+ * and whatever a later launch writes into `DEVICE_ID`. Written on registration, removed by Start
+ * fresh (`RegistrationService.prepareFreshSetup`), and never by an upgrade or a registration reset,
+ * so a reset Hub pairs back onto the Portal device it had.
  */
 const REGISTERED_DEVICE_ID_FILE = 'registered-device-id';
 
@@ -269,7 +270,7 @@ export async function resolveDeviceId(options: ResolveDeviceIdOptions): Promise<
     if (envDeviceId && envDeviceId !== registered) {
       logger?.warn(
         `Keeping the device ID this Hub registered as (${maskDeviceId(registered)}); DEVICE_ID in the env file is ${maskDeviceId(envDeviceId)}. ` +
-          'To change the device ID on purpose, reset the registration first, then set DEVICE_ID and recreate the Hub container.',
+          'To change the device ID on purpose, pair this Hub again as a new device: Start fresh removes the record, and a registration reset does not.',
       );
     } else {
       logger?.debug(`Device ID from the registration record: ${registered}`);

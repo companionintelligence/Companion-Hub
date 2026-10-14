@@ -114,13 +114,14 @@ describe('checkDeviceIdHostBinding with a registration record', () => {
     });
   });
 
-  it('keeps the env file’s remedy for a Hub that paired under a copied DEVICE_ID, whose record holds the same ID', () => {
-    // A fleet node registered under a machine-ID-shaped DEVICE_ID that no other node carried. The env file
-    // was the copy, and the remedy that keeps its registration is the one that names it.
+  it('gives the record’s remedy for a Hub that paired under a copied DEVICE_ID, whose record holds the same ID', () => {
+    // The env file was the copy, but the record now wins over it and survives a reset, so editing
+    // DEVICE_ID and pairing again would still send the copied ID. On the desktop app, the next launch
+    // would even write the record back into DEVICE_ID.
     expect(checkDeviceIdHostBinding({ envDeviceId: COPIED_DEVICE_ID, registeredDeviceId: COPIED_DEVICE_ID, readFile: betaRed })).toEqual({
       status: 'foreign',
       deviceId: COPIED_DEVICE_ID,
-      message: foreignDeviceIdMessage(COPIED_DEVICE_ID),
+      message: foreignRegisteredDeviceIdMessage(COPIED_DEVICE_ID),
     });
   });
 
@@ -132,12 +133,16 @@ describe('checkDeviceIdHostBinding with a registration record', () => {
     });
   });
 
-  it('still judges DEVICE_ID when the record is this host’s, because a reset removes the record and the Hub then pairs under DEVICE_ID', () => {
+  it('does not refuse a Hub whose record is its own over a copied DEVICE_ID, because it pairs under the record', () => {
+    // A registration reset keeps the record. Only Start fresh removes it, and the Hub judges DEVICE_ID then.
     expect(checkDeviceIdHostBinding({ envDeviceId: COPIED_DEVICE_ID, registeredDeviceId: BETA_RED_MACHINE_ID, readFile: betaRed })).toEqual({
-      status: 'foreign',
-      deviceId: COPIED_DEVICE_ID,
-      message: foreignDeviceIdMessage(COPIED_DEVICE_ID),
+      status: 'matches_host',
+      deviceId: BETA_RED_MACHINE_ID,
     });
+    expect(
+      checkDeviceIdHostBinding({ envDeviceId: COPIED_DEVICE_ID, registeredDeviceId: '4C4C4544-0042-3510-8052-B4C04F4D3232', readFile: betaRed })
+        .status,
+    ).toBe('not_checkable');
   });
 
   it(`honours ${ALLOW_FOREIGN_DEVICE_ID_ENV}=true for the record too`, () => {
@@ -157,10 +162,12 @@ describe('checkDeviceIdHostBinding with a registration record', () => {
 });
 
 describe('foreignRegisteredDeviceIdMessage', () => {
-  it('names the record and a remedy that removes it, since changing DEVICE_ID alone would not', () => {
+  it('names the record and Start fresh as what removes it, since changing DEVICE_ID or a registration reset would not', () => {
     const message = foreignRegisteredDeviceIdMessage(COPIED_DEVICE_ID);
 
     expect(message).toContain('state/registered-device-id');
+    expect(message).toContain('a registration reset keeps it');
+    expect(message).toContain('choose Start fresh on the pairing page');
     expect(message).toContain('cihub register --fresh --code <code>');
     expect(message).toContain(`${ALLOW_FOREIGN_DEVICE_ID_ENV}=true`);
     expect(message).not.toContain(BETA_RED_MACHINE_ID);
