@@ -352,10 +352,7 @@ export class InferenceController {
     return maskInferencePreferences(this.configurationService.getInferencePreferences());
   }
 
-  /**
-   * A vLLM key that comes back as the mask is left as stored; `null` or an empty one still clears it.
-   * A save that moves vLLM to another server drops the stored key unless a new one comes with it.
-   */
+  /** A vLLM key that comes back as the mask is left as stored; `null` or an empty one still clears it. */
   @UseGuards(AuthGuard)
   @Patch('preferences')
   async updatePreferences(@Body() body: UpdateInferencePreferencesBody) {
