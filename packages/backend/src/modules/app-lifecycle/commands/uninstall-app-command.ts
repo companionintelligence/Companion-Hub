@@ -2,6 +2,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
 import { DockerService } from '@/modules/docker/docker.service';
+import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
@@ -57,6 +58,18 @@ export class UninstallAppCommand extends AppLifecycleCommand {
       }
 
       if (!isPortExpose) {
+        // apps.yml keeps a route to the starting page for each app router while its containers are
+        // gone (CI-Hub#1944), so rebuild it now, as Stop does; until then the removed app's address
+        // would still answer with that page instead of a 404. Straight after compose down, which has
+        // already removed the containers, and before the cleanup below, which can throw. ModuleRef.get
+        // throws for a provider it cannot resolve, and the containers are gone by now, so that must
+        // not fail the uninstall.
+        try {
+          await this.moduleRef.get(TraefikConfigService, { strict: false })?.regenerateTraefikConfig(0);
+        } catch (err) {
+          logger.warn(`Failed to rebuild the Traefik routes after removing ${appUrn}: ${err}`);
+        }
+
         // Explicit post-down cleanup is a safety net for partial teardown states.
         await dockerService.removeAppImages(appUrn, snapshotImageIds);
         await dockerService.removeAppNetworks(appUrn);
