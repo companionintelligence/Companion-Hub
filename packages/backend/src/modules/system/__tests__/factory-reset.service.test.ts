@@ -515,8 +515,19 @@ describe('FactoryResetService: a data folder that is a home folder', () => {
   const folders = ['app-data', 'apps', 'repos', 'backups', 'user-config'];
   const ownFile = path.join('/data', 'repos', 'notes', 'todo.txt');
 
-  /** `/proc/self/mountinfo` with each data folder mounted from `<root>/<name>`, as compose mounts them, through drvfs. */
-  const mountEachFrom = (root: string, sources: Record<string, string> = {}) => {
+  /** The filesystem columns of a mountinfo line, for the engines and disks the tests below use. */
+  const DRIVE_C = '9p C:\\134 rw,aname=drvfs;path=C:\\';
+  const DRIVE_D = '9p D:\\134 rw,aname=drvfs;path=D:\\';
+  const LINUX_ROOT = 'ext4 /dev/nvme0n1p2 rw';
+  const LINUX_DATA_DISK = 'ext4 /dev/sdb1 rw';
+  const MAC_VIRTIOFS = 'fakeowner /run/host_mark/Users rw,fakeowner';
+
+  /**
+   * `/proc/self/mountinfo` with each data folder mounted from `<root>/<name>`, as compose mounts them,
+   * from the filesystem `fs` (drive C through drvfs unless given). `sources` replaces the folder a data
+   * folder comes from, as a link would.
+   */
+  const mountEachFrom = (root: string, { sources = {}, fs = DRIVE_C }: { sources?: Record<string, string>; fs?: string } = {}) => {
     vol.mkdirSync('/proc/self', { recursive: true });
     vol.writeFileSync(
       '/proc/self/mountinfo',
@@ -524,7 +535,7 @@ describe('FactoryResetService: a data folder that is a home folder', () => {
         '836 506 0:104 / / rw,relatime - overlay overlay rw,lowerdir=/var/lib/docker/overlay2/l/ABC',
         ...folders.map((name, index) => {
           const mountPoint = name === 'app-data' ? '/app-data' : `/data/${name}`;
-          return `${861 + index} 836 0:69 ${sources[name] ?? `${root}/${name}`} ${mountPoint} rw,noatime - 9p C:\\134 rw,aname=drvfs;path=C:\\`;
+          return `${861 + index} 836 0:69 ${sources[name] ?? `${root}/${name}`} ${mountPoint} rw,noatime - ${fs}`;
         }),
       ].join('\n'),
     );
@@ -569,17 +580,22 @@ describe('FactoryResetService: a data folder that is a home folder', () => {
     expect(onDisk()).toEqual({ ciHubApiKey: 'portal-device-key' });
   });
 
-  it('refuses when the folders are mounted from a home folder, as when ROOT_FOLDER_HOST is a link to one', async () => {
-    mountEachFrom('/home/ci');
-    const { service, db } = resetOnDisk({ rootFolderHost: '/srv/hub' });
+  it.each([
+    ['a junction to a Windows home folder', '/Users/ci', DRIVE_C, '/mnt/c/hub', 'C:\\Users\\ci'],
+    ['a symlink to a Linux home folder', '/home/ci', LINUX_ROOT, '/srv/hub', '/home/ci'],
+    ['a symlink to a macOS home folder, through VirtioFS', '/ci', MAC_VIRTIOFS, '/opt/hub', '/Users/ci'],
+  ])('refuses when ROOT_FOLDER_HOST is %s, and names it as the host does', async (_shape, root, fs, rootFolderHost, named) => {
+    mountEachFrom(root, { fs });
+    const { service, db } = resetOnDisk({ rootFolderHost });
 
     const failure = await service.execute().catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(TranslatableError);
     expect((failure as TranslatableError).getResponse()).toEqual({
       message: 'SETTINGS_FACTORY_RESET_DATA_ROOT_REFUSED',
-      intlParams: { root: '/home/ci' },
+      intlParams: { root: named },
     });
+    expect(uninstallExecute).not.toHaveBeenCalled();
     expect(vol.readFileSync(ownFile, 'utf8')).toBe('x');
     expect(db.execute).not.toHaveBeenCalled();
   });
@@ -603,29 +619,66 @@ describe('FactoryResetService: a data folder that is a home folder', () => {
     expect(vol.readdirSync(path.join('/data', 'repos'))).toEqual([]);
   });
 
-  it('runs on a Windows install, with each folder mounted from %APPDATA%\\companion-hub', async () => {
-    mountEachFrom('/Users/ci/AppData/Roaming/companion-hub');
-    const { service } = resetOnDisk({ rootFolderHost: '/mnt/c/Users/ci/AppData/Roaming/companion-hub' });
+  it.each([
+    [
+      'a Windows install, each folder mounted from %APPDATA%\\companion-hub',
+      '/Users/ci/AppData/Roaming/companion-hub',
+      DRIVE_C,
+      '/mnt/c/Users/ci/AppData/Roaming/companion-hub',
+    ],
+    // A mount on a Windows drive names no letter, so D:\home\hub reads /home/hub.
+    ['D:\\home\\hub', '/home/hub', DRIVE_D, '/mnt/d/home/hub'],
+    ['a junction to D:\\home\\hub', '/home/hub', DRIVE_D, '/mnt/c/hub'],
+    // A disk mounted at /data: its mounts read /home/hub, without the /data.
+    ['/data/home/hub on a disk of its own', '/home/hub', LINUX_DATA_DISK, '/data/home/hub'],
+    ['Linux, the data folder on the root filesystem', '/home/ci/.local/share/companion-hub', LINUX_ROOT, '/home/ci/.local/share/companion-hub'],
+  ])('runs on %s', async (_shape, root, fs, rootFolderHost) => {
+    mountEachFrom(root, { fs });
+    const { service } = resetOnDisk({ rootFolderHost });
 
     await expect(service.execute()).resolves.toMatchObject({ success: true });
 
     expect(vol.readdirSync(path.join('/data', 'repos'))).toEqual([]);
   });
 
-  it('still leaves a folder linked to a home folder alone, and still empties one linked to a folder of the same name', async () => {
-    // `backups` is a junction to the user's home folder itself, `repos` one to a `repos` folder in it.
-    // Neither says where ROOT_FOLDER_HOST is, so neither is refused: the first is left alone and
-    // named, and the second can't be told apart from the folder itself, as before.
-    mountEachFrom('/Users/ci/AppData/Roaming/companion-hub', { backups: '/Users/ci', repos: '/Users/ci/repos' });
+  it.each([
+    [
+      'a Windows install',
+      '/Users/ci/AppData/Roaming/companion-hub',
+      DRIVE_C,
+      '/mnt/c/Users/ci/AppData/Roaming/companion-hub',
+      { backups: '/Users/ci', repos: '/Users/ci/repos' },
+    ],
+    ['a Linux install', '/srv/hub', LINUX_ROOT, '/srv/hub', { backups: '/home/ci', repos: '/home/ci/repos' }],
+  ])(
+    'on %s, leaves a folder linked to a home folder alone, or to a folder of the same name in one, and names both',
+    async (_shape, root, fs, rootFolderHost, sources) => {
+      // `backups` is a link to the user's home folder itself, `repos` one to the `repos` folder in it.
+      // Neither says ROOT_FOLDER_HOST is a home folder, so the reset is not refused, but emptying
+      // either would delete the user's own files.
+      mountEachFrom(root, { fs, sources });
+      const { service, db } = resetOnDisk({ rootFolderHost });
+
+      const failure = await service.execute().catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(TranslatableError);
+      expect((failure as TranslatableError).getResponse()).toEqual({
+        message: 'SETTINGS_FACTORY_RESET_FILES_LEFT',
+        intlParams: { count: '2', paths: 'repos/, backups/' },
+      });
+      expect(vol.readFileSync(ownFile, 'utf8')).toBe('x');
+      expect(vol.readdirSync(path.join('/data', 'apps'))).toEqual([]);
+      expect(db.execute).not.toHaveBeenCalled();
+    },
+  );
+
+  it('still empties a folder linked to one of the same name outside a home folder', async () => {
+    // It can't be told apart from a Hub folder kept elsewhere, so it is emptied, as before.
+    mountEachFrom('/Users/ci/AppData/Roaming/companion-hub', { sources: { repos: '/Users/ci/Documents/repos' } });
     const { service } = resetOnDisk({ rootFolderHost: '/mnt/c/Users/ci/AppData/Roaming/companion-hub' });
 
-    const failure = await service.execute().catch((error: unknown) => error);
+    await expect(service.execute()).resolves.toMatchObject({ success: true });
 
-    expect(failure).toBeInstanceOf(TranslatableError);
-    expect((failure as TranslatableError).getResponse()).toEqual({
-      message: 'SETTINGS_FACTORY_RESET_FILES_LEFT',
-      intlParams: { count: '1', paths: 'backups/' },
-    });
     expect(vol.readdirSync(path.join('/data', 'repos'))).toEqual([]);
   });
 });

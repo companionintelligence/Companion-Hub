@@ -5,7 +5,7 @@ import { removeSettingsJsonCopies, writeSettingsJsonFile } from '@/common/helper
 import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR } from '@/common/constants';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { isHomeFolder, isTopOrHomeFolder } from '@/common/helpers/home-folder';
-import { linkedMountSource, type MountInfoEntry, mountedDataRoot, parseMountInfo } from '@/common/helpers/mount-source';
+import { linkedMountSource, type MountInfoEntry, mountedDataRoot, mountedFromFolder, parseMountInfo } from '@/common/helpers/mount-source';
 import { app } from '@/core/database/drizzle/schema';
 import { DATABASE, type Database } from '@/core/database/database.module';
 import { CacheService } from '@/core/cache/cache.service';
@@ -74,20 +74,21 @@ export class FactoryResetService {
   }
 
   /**
-   * Refuse to run when the Hub's data folder is the top of a disk or a home folder. The reset empties `app-data`,
-   * `apps`, `repos`, `backups`, and `user-config` in it, so with `ROOT_FOLDER_HOST=/home/<user>` it
-   * emptied `~/repos` and the rest. `cihub reset` refuses a root like that too.
+   * Refuse to run when the Hub's data folder is the top of a disk or a home folder. The reset empties
+   * `app-data`, `apps`, `repos`, `backups`, and `user-config` in it, so with
+   * `ROOT_FOLDER_HOST=/home/<user>` it emptied `~/repos` and the rest. `cihub reset` refuses a root like
+   * that too.
    *
    * The container sees neither that folder nor the host's home, so this goes by the shape of the path
-   * (`isHomeFolder`): `ROOT_FOLDER_HOST` as compose passed it in, and the folder the data folders'
-   * mounts come from, which names a home folder that `ROOT_FOLDER_HOST` is a link to. Data folders
-   * mounted from the top of their filesystem are as likely to be on a data disk of their own as on
-   * `/`, so `/` counts only when `ROOT_FOLDER_HOST` says it.
+   * (`isTopOrHomeFolder`): `ROOT_FOLDER_HOST` as compose passed it in, and the folder the data folders'
+   * mounts come from (`mountedDataRoot`), which names a home folder that `ROOT_FOLDER_HOST` is a link
+   * to. A mount from a Linux disk reads without the disk's mount point, so there a folder at the top of
+   * the disk, or one `ROOT_FOLDER_HOST` ends in, is taken to be `ROOT_FOLDER_HOST` itself.
    */
   private async refuseHomeFolderRoot(): Promise<void> {
     const configured = this.configuration.get('rootFolderHost');
-    const mounted = mountedDataRoot(await readMounts(), this.dataFolders());
-    const root = isTopOrHomeFolder(configured) ? configured : mounted && isHomeFolder(mounted) ? mounted : undefined;
+    const mounted = mountedDataRoot(await readMounts(), this.dataFolders(), configured);
+    const root = [configured, mounted].find((folder) => folder !== undefined && isTopOrHomeFolder(folder));
 
     if (root) {
       this.logger.error(
@@ -186,7 +187,10 @@ export class FactoryResetService {
    *
    * A folder whose mount comes from a folder with another name is left alone too: on the host it is a
    * link (a symlink, or a junction on Windows) to a folder outside the Hub's data folder, which
-   * Docker followed. See `linkedMountSource`.
+   * Docker followed. See `linkedMountSource`. So is one whose mount comes from a folder of the same
+   * name in a home folder, such as `~/repos`, which holds the user's own files (`mountedFromFolder`).
+   * A link to a folder of the same name anywhere else looks like a Hub folder kept there, and is
+   * emptied.
    *
    * Throws when a folder still has something in it, or was left alone, before the database and the
    * registration are wiped, so the operator can still sign in and run the reset again. The page
@@ -195,6 +199,7 @@ export class FactoryResetService {
   public async wipeDataMounts(): Promise<void> {
     // No mounts (outside a container, or not Linux) means every folder is emptied.
     const mounts = await readMounts();
+    const rootFolderHost = this.configuration.get('rootFolderHost');
     const left: string[] = [];
 
     for (const { dir: target, name, mountPoint, names } of this.dataFolders()) {
@@ -203,6 +208,16 @@ export class FactoryResetService {
       if (linkedTo) {
         this.logger.error(
           `Factory reset left ${target} alone: it is mounted from ${linkedTo}, not from a folder named ${name}, so it is a link to a folder outside the Hub's data folder`,
+        );
+        left.push(`${path.basename(target)}/`);
+        continue;
+      }
+
+      const mountedFrom = mountedFromFolder(mounts, mountPoint, names, rootFolderHost);
+
+      if (mountedFrom && isHomeFolder(mountedFrom)) {
+        this.logger.error(
+          `Factory reset left ${target} alone: it is mounted from a folder of the same name in the home folder ${mountedFrom}, so it is a link to the user's own files`,
         );
         left.push(`${path.basename(target)}/`);
         continue;
