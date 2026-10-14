@@ -102,6 +102,19 @@ const manualEndpointStatusQuerySchema = z.object({
 
 export class ManualEndpointStatusQueryDto extends createZodDto(manualEndpointStatusQuerySchema) {}
 
+/**
+ * A model to load or unload: a catalog id, or the name an engine holds a file under. `backend` names
+ * the engine for a file the catalog does not know; a catalog id is routed without it.
+ */
+const modelOnBackendSchema = z.object({
+  modelId: z.string(),
+  backend: inferenceBackendSchema.optional(),
+});
+
+export class LoadModelBody extends createZodDto(modelOnBackendSchema) {}
+
+export class UnloadModelBody extends createZodDto(modelOnBackendSchema) {}
+
 export const rocmInstallPhaseSchema = z.enum(['idle', 'downloading', 'installing', 'reboot_required', 'failed', 'completed']);
 
 const updateRocmInstallStateSchema = z.object({

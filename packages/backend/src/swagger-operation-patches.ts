@@ -112,7 +112,6 @@ export const OPERATION_REQUEST_BODIES: Record<string, { schemaName: string; sche
   },
   pinModel: { schemaName: 'PinModelBody', schema: z.object({ modelId: z.string() }) },
   unpinModel: { schemaName: 'UnpinModelBody', schema: z.object({ modelId: z.string() }) },
-  unloadModel: { schemaName: 'UnloadModelBody', schema: z.object({ modelId: z.string() }) },
   setCloudProvider: {
     schemaName: 'SetCloudProviderBody',
     schema: z.object({

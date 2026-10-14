@@ -45,6 +45,8 @@ import { InferenceAccessGuard } from '@/modules/auth/inference-access.guard';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderType, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
 import {
+  LoadModelBody,
+  UnloadModelBody,
   RuntimeModelsQueryDto,
   UpdateInferencePreferencesBody,
   UpdateRocmInstallStateBody,
@@ -610,7 +612,7 @@ export class InferenceController {
 
   @UseGuards(AuthGuard)
   @Post('models/load')
-  async loadModel(@Body() body: { modelId: string; backend?: InferenceBackendType }) {
+  async loadModel(@Body() body: LoadModelBody) {
     const catalogId = this.catalogIdForEngineModel(body.modelId);
     if (catalogId) {
       // Through the router, like a pin: it makes room, sizes the context window and refuses a load
@@ -644,7 +646,7 @@ export class InferenceController {
 
   @UseGuards(AuthGuard)
   @Post('models/unload')
-  async unloadModel(@Body() body: { modelId: string; backend?: InferenceBackendType }) {
+  async unloadModel(@Body() body: UnloadModelBody) {
     const catalogId = this.catalogIdForEngineModel(body.modelId);
     if (catalogId) {
       await this.modelPuller.unloadModel(catalogId);
