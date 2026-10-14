@@ -3140,6 +3140,23 @@ describe('RegistrationService', () => {
       );
     });
 
+    it('records the ID a registration through the form used, so check-ins send that ID and not an older record', async () => {
+      // The record outlives a reset, so one left from an earlier pairing would otherwise win over the ID
+      // the operator just registered this Hub under.
+      process.env.DEVICE_ID = MACHINE_GUID;
+      vol.writeFileSync(RECORD_PATH, `${REGISTERED}\n`);
+      await expect(service.getDeviceId()).resolves.toBe(REGISTERED);
+      configService.getOutboundCiCloudUrl.mockReturnValue('http://cloud.api');
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      mockedAxios.post.mockResolvedValue({ status: 200, data: { tunnel_id: 't', tunnel_token: 'tok', subdomain: 'hub-org' } } as any);
+      vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+
+      await expect(service.initiateRegistration('org-1', 'My Org', MACHINE_GUID)).resolves.toMatchObject({ success: true });
+
+      expect(vol.readFileSync(RECORD_PATH, 'utf-8')).toBe(`${MACHINE_GUID}\n`);
+      await expect(service.getDeviceId()).resolves.toBe(MACHINE_GUID);
+    });
+
     it('judges the record a pairing writes, where before there was only a host-derived ID to judge', async () => {
       const hostMachineId = '5eed5eed5eed5eed5eed5eed5eed5eed';
       delete process.env.DEVICE_ID;

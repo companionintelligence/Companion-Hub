@@ -1809,7 +1809,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * Whether the device ID this Hub pairs under (its registration record, else `DEVICE_ID`) was
    * generated on this machine. Memoized like {@link getDeviceId}: the environment and the host's
    * machine ID cannot change under a running process. The record changes only when Start fresh
-   * removes it or a pairing writes it, and each of those forgets the verdict.
+   * removes it or a registration writes it, and each of those forgets the verdict.
    */
   public getDeviceIdHostBinding(): DeviceIdHostBinding {
     this.deviceIdHostBinding ??= checkDeviceIdHostBinding({
@@ -2542,6 +2542,13 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // Portal validation endpoint.
 
       await this.holdAppSyncForPairingCheck();
+
+      // Portal now knows this Hub as `deviceId`, which may be one the operator typed. The record wins
+      // over DEVICE_ID and survives a registration reset, so a stale one left from an earlier pairing
+      // would send every check-in under an ID this registration never used.
+      persistRegisteredDeviceId(DATA_DIR, deviceId, this.logger);
+      this.deviceIdPromise = undefined;
+      this.deviceIdHostBinding = undefined;
 
       // Enter `paired` before infrastructure setup. The `paired` and
       // `provisioning` phases remain in memory until a database row exists. If the
