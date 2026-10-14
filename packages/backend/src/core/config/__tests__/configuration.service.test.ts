@@ -38,6 +38,7 @@ function makeService() {
     config: { demoMode: boolean; userSettings: Record<string, unknown> };
     mergeSettingsToDisk: ReturnType<typeof vi.fn>;
     setUserSettings: (s: Record<string, unknown>) => Promise<void>;
+    setFileOnlySettings: (s: Record<string, unknown>) => Promise<void>;
   };
   svc.logger = { warn: vi.fn(), error: vi.fn(), info: vi.fn() };
   svc.config = { demoMode: false, userSettings: { themeColor: 'red' } };
@@ -57,6 +58,27 @@ describe('ConfigurationService.setUserSettings', () => {
     expect(svc.mergeSettingsToDisk.mock.calls[0][0]).toEqual({ themeColor: 'green' });
     expect(svc.config.userSettings.themeColor).toBe('green');
     expect(svc.logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('keeps the organization ID the pairing callback saves in userSettings and the top-level config', async () => {
+    await svc.setUserSettings({ ciHubOrganizationId: 'org-1' });
+
+    expect(svc.mergeSettingsToDisk.mock.calls[0][0]).toEqual({ ciHubOrganizationId: 'org-1' });
+    expect(svc.config).toMatchObject({ ciHubOrganizationId: 'org-1' });
+    expect(svc.config.userSettings).toMatchObject({ ciHubOrganizationId: 'org-1', themeColor: 'red' });
+  });
+});
+
+describe('ConfigurationService.setFileOnlySettings', () => {
+  it('writes the Portal device key and move key to disk and the top-level config, never to userSettings', async () => {
+    // The pairing callback saves both through here, and the UI's context is built from userSettings.
+    const svc = makeService();
+
+    await svc.setFileOnlySettings({ ciHubApiKey: 'device-key', ciHubMoveKey: 'move-key' });
+
+    expect(svc.mergeSettingsToDisk.mock.calls[0][0]).toEqual({ ciHubApiKey: 'device-key', ciHubMoveKey: 'move-key' });
+    expect(svc.config).toMatchObject({ ciHubApiKey: 'device-key', ciHubMoveKey: 'move-key' });
+    expect(svc.config.userSettings).toEqual({ themeColor: 'red' });
   });
 });
 

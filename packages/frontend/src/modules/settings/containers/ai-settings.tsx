@@ -17,6 +17,7 @@ import {
   unloadInferenceModel,
   unpinInferenceModel,
 } from '@/lib/inference/inference-api';
+import { MASKED_KEY, isMaskedKey } from '@/lib/inference/masked-key';
 import { POLLING } from '@/lib/polling-budget';
 import { ensurePullsStarted, waitForModelPulls } from '@/lib/inference/tracked-models';
 import { Button } from '@/components/ui/Button';
@@ -136,6 +137,30 @@ export const AiSettingsContainer = () => {
   vllmUrlRef.current = vllmUrl;
   const vllmApiKeyRef = useRef('');
   vllmApiKeyRef.current = vllmApiKey;
+  // A stored key shows as the mask, and any edit replaces it whole. A key typed after the dots would
+  // still start with them, and the save would keep the stored key.
+  const handleVllmApiKeyChange = useCallback((value: string) => {
+    setVllmApiKey((current) => (isMaskedKey(current) && value !== current ? value.replace(/•/g, '') : value));
+  }, []);
+  // The vLLM URL and whether a key is stored, as the Hub last reported them. The Hub sends a stored
+  // key only to the server it was saved for, and a save that moves vLLM elsewhere drops it. So the
+  // mask leaves the field while the URL differs, and comes back if the URL returns unchanged.
+  const [savedVllm, setSavedVllm] = useState({ url: '', keyStored: false });
+  const handleVllmUrlChange = useCallback(
+    (value: string) => {
+      setVllmUrl(value);
+      if (!savedVllm.keyStored) return;
+      const moved = value.trim() !== savedVllm.url;
+      setVllmApiKey((current) => {
+        if (moved && isMaskedKey(current)) return '';
+        if (!moved && !current) return MASKED_KEY;
+        return current;
+      });
+    },
+    [savedVllm],
+  );
+  const vllmApiKeyNotice =
+    savedVllm.keyStored && vllmUrl.trim() !== savedVllm.url && !vllmApiKey.trim() ? t('AI_SETTINGS_VLLM_KEY_NEW_URL') : undefined;
   const omlxUrlRef = useRef('');
   omlxUrlRef.current = omlxUrl;
   const decodeEndpointRef = useRef('');
@@ -206,8 +231,15 @@ export const AiSettingsContainer = () => {
       // Load preferences first because the profile's hardware fallback can compute installed
       // models for a backend other than the one shown in settings.
       const prefData = await fetchInferencePreferences();
+      if (prefData) {
+        setSavedVllm({ url: prefData.preferredVllmUrl?.trim() ?? '', keyStored: Boolean(prefData.preferredVllmApiKey) });
+      }
       if (prefData?.preferredVllmApiKey) {
         setVllmApiKey(prefData.preferredVllmApiKey);
+      } else if (prefData) {
+        // A mask left from an earlier load stands for a key the Hub no longer holds (a save on another
+        // engine clears it). Left in the field it reads as stored, and the next save keeps nothing.
+        setVllmApiKey((current) => (isMaskedKey(current) ? '' : current));
       }
       if (prefData?.preferredVllmUrl) {
         setVllmUrl(prefData.preferredVllmUrl);
@@ -562,9 +594,9 @@ export const AiSettingsContainer = () => {
           await removeCloudProviderConfig(cp.provider);
           // The refetch after the save keeps the old list when no provider is left, so drop it here.
           setCloudProviders((prev) => prev.filter((other) => other.provider !== cp.provider));
-        } else if (cp.apiKey.trim() && !cp.apiKey.startsWith('••')) {
+        } else if (cp.apiKey.trim() && !isMaskedKey(cp.apiKey)) {
           await saveCloudProviderConfig({ provider: cp.provider, apiKey: cp.apiKey, enabled: cp.enabled });
-        } else if (cp.apiKey.startsWith('••')) {
+        } else if (isMaskedKey(cp.apiKey)) {
           await saveCloudProviderConfig({ provider: cp.provider, enabled: cp.enabled });
         }
       }
@@ -574,7 +606,8 @@ export const AiSettingsContainer = () => {
         model: preferredModel,
         embeddingModel: preferredEmbeddingModel,
         visionModel: preferredVisionModel,
-        vllmApiKey: selectedBackend === 'vllm' ? vllmApiKey.trim() || null : null,
+        // A field still showing the mask is left out, and the Hub keeps the key it has stored.
+        vllmApiKey: selectedBackend === 'vllm' ? (isMaskedKey(vllmApiKey) ? undefined : vllmApiKey.trim() || null) : null,
         vllmUrl: selectedBackend === 'vllm' ? vllmUrl.trim() || null : null,
         omlxUrl: selectedBackend === 'omlx' ? omlxUrl.trim() || null : null,
         decodeEndpoint: decodeEndpoint.trim() || null,
@@ -879,9 +912,10 @@ export const AiSettingsContainer = () => {
                 checking={checkingVllm}
                 onRecheck={handleRecheckVllm}
                 apiKey={vllmApiKey}
-                onApiKeyChange={setVllmApiKey}
+                onApiKeyChange={handleVllmApiKeyChange}
+                apiKeyNotice={vllmApiKeyNotice}
                 endpointUrl={vllmUrl}
-                onEndpointUrlChange={setVllmUrl}
+                onEndpointUrlChange={handleVllmUrlChange}
               />
               <div>
                 <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>

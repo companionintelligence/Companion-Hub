@@ -49,6 +49,22 @@ export const inferencePreferencesSchema = z.object({
 
 export class UpdateInferencePreferencesBody extends createZodDto(inferencePreferencesSchema) {}
 
+/**
+ * What the Hub shows in place of a stored key: `GET /api/inference/preferences` sends it for the vLLM
+ * key, and Settings > AI shows it for a cloud provider key. A save that sends it back keeps the stored key.
+ */
+export const MASKED_API_KEY = '••••••••';
+
+/** Whether a key in a save is that placeholder, which the UI sends back for an untouched field. */
+export function isMaskedApiKey(value: string | null | undefined): boolean {
+  return typeof value === 'string' && value.trim().startsWith('••');
+}
+
+/** Inference preferences as the API reports them: the stored vLLM key becomes {@link MASKED_API_KEY}. */
+export function maskInferencePreferences<T extends { preferredVllmApiKey?: string | null }>(preferences: T): T {
+  return preferences.preferredVllmApiKey ? { ...preferences, preferredVllmApiKey: MASKED_API_KEY } : preferences;
+}
+
 const runtimeModelsQuerySchema = z.object({
   backend: inferenceBackendSchema,
 });

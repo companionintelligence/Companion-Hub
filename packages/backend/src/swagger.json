@@ -7099,9 +7099,6 @@
               "autoAllocateAppResources": {
                 "type": "boolean"
               },
-              "autoUpdates": {
-                "type": "boolean"
-              },
               "demoMode": {
                 "type": "boolean"
               },
@@ -7185,12 +7182,6 @@
               "themeColor": {
                 "type": "string"
               },
-              "ciHubApiKey": {
-                "type": "string"
-              },
-              "ciHubMoveKey": {
-                "type": "string"
-              },
               "ciHubOrganizationId": {
                 "type": "string"
               },
@@ -7222,9 +7213,6 @@
                 "type": "string"
               },
               "inferenceVisionModel": {
-                "type": "string"
-              },
-              "inferenceVllmApiKey": {
                 "type": "string"
               },
               "inferenceVllmUrl": {
@@ -7362,41 +7350,6 @@
                     "scope",
                     "targetKind",
                     "mode"
-                  ],
-                  "additionalProperties": false
-                }
-              },
-              "inferenceCloudProviders": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "provider": {
-                      "type": "string",
-                      "enum": [
-                        "openai",
-                        "anthropic",
-                        "google",
-                        "github-copilot"
-                      ]
-                    },
-                    "apiKey": {
-                      "type": "string"
-                    },
-                    "baseUrl": {
-                      "type": "string"
-                    },
-                    "defaultModel": {
-                      "type": "string"
-                    },
-                    "enabled": {
-                      "type": "boolean"
-                    }
-                  },
-                  "required": [
-                    "provider",
-                    "defaultModel",
-                    "enabled"
                   ],
                   "additionalProperties": false
                 }
@@ -7725,12 +7678,6 @@
             "type": "string"
           },
           "themeColor": {
-            "type": "string"
-          },
-          "ciHubApiKey": {
-            "type": "string"
-          },
-          "ciHubMoveKey": {
             "type": "string"
           },
           "ciHubOrganizationId": {

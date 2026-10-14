@@ -48,7 +48,6 @@ export type AppContextDto = {
         defaultAppCpuLimit?: string;
         defaultAppMemoryLimit?: string;
         autoAllocateAppResources?: boolean;
-        autoUpdates?: boolean;
         demoMode: boolean;
         disablePasswordReset: boolean;
         dnsIp: string;
@@ -69,8 +68,6 @@ export type AppContextDto = {
         experimental_insecureCookie?: boolean;
         themeBase?: string;
         themeColor?: string;
-        ciHubApiKey?: string;
-        ciHubMoveKey?: string;
         ciHubOrganizationId?: string;
         ciHubOrganizationSlug?: string;
         ciHubOrganizationLabel?: string;
@@ -80,7 +77,6 @@ export type AppContextDto = {
         inferenceModel?: string;
         inferenceEmbeddingModel?: string;
         inferenceVisionModel?: string;
-        inferenceVllmApiKey?: string;
         inferenceVllmUrl?: string;
         inferenceOmlxUrl?: string;
         inferenceDecodeEndpoint?: string;
@@ -110,13 +106,6 @@ export type AppContextDto = {
             targetKind: 'local' | 'peer';
             peerId?: string;
             mode: 'prefer';
-        }>;
-        inferenceCloudProviders?: Array<{
-            provider: 'openai' | 'anthropic' | 'google' | 'github-copilot';
-            apiKey?: string;
-            baseUrl?: string;
-            defaultModel: string;
-            enabled: boolean;
         }>;
     };
     appDataRootHostPath?: string;
@@ -181,8 +170,6 @@ export type UserSettingsBody = {
     experimental_insecureCookie?: boolean;
     themeBase?: string;
     themeColor?: string;
-    ciHubApiKey?: string;
-    ciHubMoveKey?: string;
     ciHubOrganizationId?: string;
     ciHubOrganizationSlug?: string;
     ciHubOrganizationLabel?: string;

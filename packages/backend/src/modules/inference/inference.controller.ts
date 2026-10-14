@@ -52,10 +52,12 @@ import {
   VllmStatusQueryDto,
   OmlxStatusQueryDto,
   ManualEndpointStatusQueryDto,
+  isMaskedApiKey,
+  maskInferencePreferences,
 } from './inference.dto';
 import { InferenceBackendRegistry } from './backends/backend-registry';
 import { OllamaBackend } from './backends/ollama.backend';
-import { buildVllmRemediation, resolveVllmProbeUrl, VLLM_PROBE_API_KEY_HEADER, VllmBackend } from './backends/vllm.backend';
+import { buildVllmRemediation, resolveVllmProbeUrl, VLLM_PROBE_API_KEY_HEADER, VllmBackend, vllmBaseUrl } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
 import { buildLemonadeRemediation, classifyLemonadeFailure } from './backends/lemonade-remediation';
 import { resolveBridgeTopology, resolveHostPlatform } from './backends/ollama-host-bridge';
@@ -68,6 +70,7 @@ import {
   trackedPullCounts,
 } from './model-availability.util';
 import { BackendObserverService } from './supervision/backend-observer.service';
+import { isSameServer } from './engine-credential-scope';
 import { buildTranscriptionForm, MAX_TRANSCRIPTION_BYTES, speechContentType, type UploadedAudio } from './audio-proxy.util';
 import { sendRouteError } from './inference-error-reply';
 import { abortWhenClientCloses, relayStream } from './upstream-stream';
@@ -342,12 +345,14 @@ export class InferenceController {
 
   // ─── Management Endpoints ─────────────────────────────────────────────
 
+  /** The vLLM key is reported masked, as `cloud-providers` reports a provider key (`configured`). */
   @UseGuards(AuthGuard)
   @Get('preferences')
   async getPreferences() {
-    return this.configurationService.getInferencePreferences();
+    return maskInferencePreferences(this.configurationService.getInferencePreferences());
   }
 
+  /** A vLLM key that comes back as the mask is left as stored; `null` or an empty one still clears it. */
   @UseGuards(AuthGuard)
   @Patch('preferences')
   async updatePreferences(@Body() body: UpdateInferencePreferencesBody) {
@@ -356,7 +361,7 @@ export class InferenceController {
       body.model,
       body.embeddingModel,
       body.visionModel,
-      body.vllmApiKey,
+      this.vllmApiKeyToSave(body),
       body.vllmUrl,
       body.omlxUrl,
       body.decodeEndpoint,
@@ -367,7 +372,20 @@ export class InferenceController {
 
     this.scheduleAiAppRestart('inference preferences changed');
 
-    return result;
+    return maskInferencePreferences(result);
+  }
+
+  /**
+   * The vLLM key a preferences save stores, where `undefined` keeps the stored one. A key sent back
+   * as the mask, or left out, stands for the stored key, and that key belongs to the server it was
+   * saved for: Re-check never sends it to another one (`VllmBackend.healthCheck`). When the same
+   * save moves vLLM to another server, the stored key is dropped, to be entered again for the new one.
+   */
+  private vllmApiKeyToSave(body: UpdateInferencePreferencesBody): string | null | undefined {
+    if (body.vllmApiKey !== undefined && !isMaskedApiKey(body.vllmApiKey)) return body.vllmApiKey;
+    if (body.vllmUrl === undefined) return undefined;
+    const savedUrl = this.configurationService.getInferencePreferences().preferredVllmUrl;
+    return isSameServer(vllmBaseUrl(body.vllmUrl), vllmBaseUrl(savedUrl)) ? undefined : null;
   }
 
   /**

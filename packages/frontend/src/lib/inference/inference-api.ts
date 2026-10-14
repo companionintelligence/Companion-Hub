@@ -30,8 +30,14 @@ import type {
   RuntimeModelsResponse,
 } from '@/modules/onboarding/helpers/ai-setup-types';
 import { unwrapSdk, unwrapSdkOrNull } from '@/lib/sdk-unwrap';
+import { MASKED_KEY, isMaskedKey } from './masked-key';
 
 const VLLM_PROBE_API_KEY_HEADER = 'x-ci-vllm-api-key';
+
+/** The probe header for a vLLM key typed but not saved. A masked field sends none, so the Hub probes with its stored key. */
+function vllmProbeHeaders(apiKey: string | undefined): Record<string, string> | undefined {
+  return apiKey?.trim() && !isMaskedKey(apiKey) ? { [VLLM_PROBE_API_KEY_HEADER]: apiKey.trim() } : undefined;
+}
 
 async function unwrap<T>(promise: Promise<{ data?: T; error?: unknown }>): Promise<T> {
   return unwrapSdk(promise);
@@ -47,7 +53,7 @@ export async function fetchInferenceOnboardingProfile(
   if (backend) query.backend = backend;
   if (backend === 'vllm' && vllmUrl?.trim()) query.vllmUrl = vllmUrl.trim();
   if (backend === 'omlx' && omlxUrl?.trim()) query.omlxUrl = omlxUrl.trim();
-  const headers = backend === 'vllm' && vllmApiKey?.trim() ? { [VLLM_PROBE_API_KEY_HEADER]: vllmApiKey.trim() } : undefined;
+  const headers = backend === 'vllm' ? vllmProbeHeaders(vllmApiKey) : undefined;
   return unwrap(
     getOnboardingProfile({
       query: Object.keys(query).length > 0 ? query : undefined,
@@ -102,7 +108,7 @@ export async function fetchConfiguredCloudProviders(): Promise<CloudProviderInpu
       .filter((p) => p.configured)
       .map((p) => ({
         provider: p.provider,
-        apiKey: '••••••••',
+        apiKey: MASKED_KEY,
         enabled: p.enabled,
         stored: true,
       }));
@@ -148,7 +154,7 @@ export async function saveInferencePreferences(body: {
 
 export async function fetchVllmInstallStatus(url?: string, apiKey?: string) {
   const query = url?.trim() ? { url: url.trim() } : undefined;
-  const headers = apiKey?.trim() ? { [VLLM_PROBE_API_KEY_HEADER]: apiKey.trim() } : undefined;
+  const headers = vllmProbeHeaders(apiKey);
   return unwrap(getVllmStatus({ query, headers } as Parameters<typeof getVllmStatus>[0]));
 }
 

@@ -1,21 +1,32 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { updatePreferences, getCloudProviders, clientDelete } = vi.hoisted(() => ({
+const { updatePreferences, getCloudProviders, clientDelete, getVllmStatus, getOnboardingProfile } = vi.hoisted(() => ({
   updatePreferences: vi.fn(),
   getCloudProviders: vi.fn(),
   clientDelete: vi.fn(),
+  getVllmStatus: vi.fn(),
+  getOnboardingProfile: vi.fn(),
 }));
 
 vi.mock('@/api-client/sdk.gen', () => ({
   updatePreferences,
   getCloudProviders,
+  getVllmStatus,
+  getOnboardingProfile,
 }));
 
 vi.mock('@/api-client/client.gen', () => ({
   client: { delete: clientDelete },
 }));
 
-import { fetchConfiguredCloudProviders, removeCloudProviderConfig, saveInferencePreferences } from '@/lib/inference/inference-api';
+import {
+  fetchConfiguredCloudProviders,
+  fetchInferenceOnboardingProfile,
+  fetchVllmInstallStatus,
+  removeCloudProviderConfig,
+  saveInferencePreferences,
+} from '@/lib/inference/inference-api';
+import { MASKED_KEY } from '@/lib/inference/masked-key';
 
 describe('saveInferencePreferences', () => {
   beforeEach(() => {
@@ -85,5 +96,37 @@ describe('cloud provider keys', () => {
     clientDelete.mockResolvedValue({ error: { message: 'Failed to set user settings' } });
 
     await expect(removeCloudProviderConfig('openai')).rejects.toThrow('Failed to set user settings');
+  });
+});
+
+// Settings > AI shows a stored vLLM key as the mask. A Re-check then probes with the key the Hub
+// stored, so the mask itself is never sent as a key.
+describe('vLLM probes', () => {
+  beforeEach(() => {
+    getVllmStatus.mockReset().mockResolvedValue({ data: {} });
+    getOnboardingProfile.mockReset().mockResolvedValue({ data: {} });
+  });
+
+  it('send a key that was typed in', async () => {
+    await fetchVllmInstallStatus('http://127.0.0.1:8000', 'typed-key');
+    await fetchInferenceOnboardingProfile('vllm', 'http://127.0.0.1:8000', 'typed-key');
+
+    expect(getVllmStatus.mock.calls[0]?.[0]?.headers).toEqual({ 'x-ci-vllm-api-key': 'typed-key' });
+    expect(getOnboardingProfile.mock.calls[0]?.[0]?.headers).toEqual({ 'x-ci-vllm-api-key': 'typed-key' });
+  });
+
+  it('send no key when the field still shows the mask', async () => {
+    await fetchVllmInstallStatus('http://127.0.0.1:8000', MASKED_KEY);
+    await fetchInferenceOnboardingProfile('vllm', 'http://127.0.0.1:8000', MASKED_KEY);
+
+    expect(getVllmStatus.mock.calls[0]?.[0]?.headers).toBeUndefined();
+    expect(getOnboardingProfile.mock.calls[0]?.[0]?.headers).toBeUndefined();
+  });
+
+  // The header value is trimmed, so the check is too: sent, the mask's dots make fetch throw.
+  it('send no key for a mask with a stray space around it', async () => {
+    await fetchVllmInstallStatus('http://127.0.0.1:8000', ` ${MASKED_KEY}`);
+
+    expect(getVllmStatus.mock.calls[0]?.[0]?.headers).toBeUndefined();
   });
 });

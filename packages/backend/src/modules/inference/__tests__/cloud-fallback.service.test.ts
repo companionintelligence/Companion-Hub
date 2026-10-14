@@ -5,6 +5,7 @@ import { InternalServerErrorException } from '@nestjs/common';
 import axios from 'axios';
 import type { CloudProviderConfig } from '@ci-hub/common/types';
 import { CloudFallbackService } from '../cloud-fallback.service';
+import { MASKED_API_KEY } from '../inference.dto';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { COMPLETION_TIMEOUT_MS, CONNECT_TIMEOUT_MS, firstByteBudgetMs } from '@/modules/hub-pool/hub-pool-budget';
@@ -62,6 +63,14 @@ describe('CloudFallbackService.setProvider', () => {
 
     expect(service.getProvider('openai')?.apiKey).toBe('sk-live');
     expect(service.getProvider('openai')?.enabled).toBe(false);
+  });
+
+  // An API client that saves back what Settings > AI shows must not store the dots as the key.
+  it('keeps the stored API key when a later save sends the mask back', () => {
+    service.setProvider({ provider: 'openai', apiKey: 'sk-live', enabled: true, defaultModel: 'gpt-4o' });
+    service.setProvider({ provider: 'openai', apiKey: MASKED_API_KEY, enabled: true, defaultModel: 'gpt-4o' });
+
+    expect(service.getProvider('openai')?.apiKey).toBe('sk-live');
   });
 
   it('answers only once the provider is in settings.json', async () => {

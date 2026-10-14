@@ -522,12 +522,6 @@ export class ConfigurationService {
       }
 
       // Update in-memory config for runtime changes.
-      if (settings.ciHubApiKey) {
-        (this.config as Record<string, unknown>).ciHubApiKey = settings.ciHubApiKey;
-      }
-      if (settings.ciHubMoveKey) {
-        (this.config as Record<string, unknown>).ciHubMoveKey = settings.ciHubMoveKey;
-      }
       if (settings.ciHubOrganizationId) {
         (this.config as Record<string, unknown>).ciHubOrganizationId = settings.ciHubOrganizationId;
       }
@@ -612,7 +606,14 @@ export class ConfigurationService {
       // Mirror the disk into the running config the way `setUserSettings` does, so the middleware
       // and the push-key service read the value just written. An empty string is how a caller
       // clears one of these (the schema trims and accepts it); it reads back as null.
-      for (const key of ['hubLocalKey', 'portalPushKeyPrefix', 'portalPushKeyPending', 'portalPushKeyDeliveredAt'] as const) {
+      for (const key of [
+        'hubLocalKey',
+        'portalPushKeyPrefix',
+        'portalPushKeyPending',
+        'portalPushKeyDeliveredAt',
+        'ciHubApiKey',
+        'ciHubMoveKey',
+      ] as const) {
         if (settings[key] !== undefined) {
           (this.config as Record<string, unknown>)[key] = settings[key] || null;
         }
