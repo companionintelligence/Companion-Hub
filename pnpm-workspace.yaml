@@ -8,19 +8,19 @@ overrides:
   # (CI, the image build, and the pre-commit hook) rejects the lockfile.
   '@types/node@26.6.4': 26.6.3
   '@babel/core': 7.29.6
-  '@grpc/grpc-js': 1.14.4
+  '@grpc/grpc-js': 1.14.5
   '@hono/node-server': 1.19.15
   '@opentelemetry/core': 2.8.0
   '@protobufjs/utf8': 1.1.1
   axios: 1.18.0
   baseline-browser-mapping: 2.11.13
   body-parser: 2.3.0
-  brace-expansion: 5.0.9
+  brace-expansion: 5.0.11
   browserslist: 4.28.9
   dompurify: 3.4.13
   drizzle-orm: 0.45.2
   esbuild: 0.25.0
-  fast-uri: 3.1.6
+  fast-uri: 3.1.7
   fflate: 0.8.3
   file-type: 21.3.2
   follow-redirects: 1.16.0
@@ -40,6 +40,7 @@ overrides:
   qs: 6.16.0
   react-router: 8.4.0
   smol-toml: 1.7.2
+  source-map-js: 1.2.2
   systeminformation: companionintelligence/systeminformation#master
   turbo: 2.9.14
   uuid: 11.1.1
