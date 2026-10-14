@@ -26,8 +26,14 @@ describe('describeNetworkError', () => {
   it('looks through the axios error that wraps it, and never prints the request', () => {
     const error = AxiosError.from(everyAddressFailed(), undefined, pairingRequestConfig());
 
-    // axios copies the empty message and the first attempt's code, and keeps the reasons on `cause`.
-    expect(error.message).toBe('');
+    // axios synthesises a message by joining the attempts, copies the first attempt's code, and
+    // keeps the reasons on `cause`. Up to 1.18 the message was the AggregateError's empty string;
+    // 1.20 populates it. `describeNetworkError` reads `cause.errors`, so its answer is unchanged.
+    expect(error.message).toBe(
+      everyAddressFailed()
+        .errors.map((attempt: Error) => attempt.message)
+        .join('; '),
+    );
     expect(error.code).toBe('ETIMEDOUT');
 
     const described = describeNetworkError(error);
