@@ -7107,9 +7107,6 @@
               "autoAllocateAppResources": {
                 "type": "boolean"
               },
-              "autoUpdates": {
-                "type": "boolean"
-              },
               "demoMode": {
                 "type": "boolean"
               },
@@ -7701,12 +7698,6 @@
             "type": "string"
           },
           "themeColor": {
-            "type": "string"
-          },
-          "ciHubApiKey": {
-            "type": "string"
-          },
-          "ciHubMoveKey": {
             "type": "string"
           },
           "ciHubOrganizationId": {

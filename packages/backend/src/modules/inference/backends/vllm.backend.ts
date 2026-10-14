@@ -47,6 +47,11 @@ export { detectHubContainer };
  */
 export const resolveVllmProbeUrl = resolveHostBackendProbeUrl;
 
+/** Where vLLM requests go with `savedUrl` as the URL saved in Settings: that, else VLLM_URL, else the Hub's own vLLM service. */
+export function vllmBaseUrl(savedUrl: string | null | undefined): string {
+  return resolveVllmProbeUrl(savedUrl?.trim() || process.env.VLLM_URL || 'http://ci-hub-vllm:8000');
+}
+
 @Injectable()
 export class VllmBackend implements InferenceBackend {
   readonly type = 'vllm' as const;
@@ -63,8 +68,7 @@ export class VllmBackend implements InferenceBackend {
    * constructor so a Settings change takes effect without a Hub restart.
    */
   getBaseUrl(): string {
-    const configured = this.configuration.getInferencePreferences().preferredVllmUrl?.trim();
-    return resolveVllmProbeUrl(configured || process.env.VLLM_URL || 'http://ci-hub-vllm:8000');
+    return vllmBaseUrl(this.configuration.getInferencePreferences().preferredVllmUrl);
   }
 
   getApiKey(apiKeyOverride?: string): string | undefined {

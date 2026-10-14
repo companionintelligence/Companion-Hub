@@ -144,6 +144,9 @@ vi.mock('@/modules/onboarding/components/ai-setup/backend-selection-card', () =>
       <button type="button" data-testid="select-lemonade" onClick={() => onSelect('lemonade')}>
         select lemonade
       </button>
+      <button type="button" data-testid="select-vllm" onClick={() => onSelect('vllm')}>
+        select vllm
+      </button>
     </div>
   ),
 }));
@@ -422,6 +425,123 @@ describe('AiSettingsContainer', () => {
     // Left out, not null: null would clear the key.
     expect(body).not.toHaveProperty('vllmApiKey', null);
     expect(body.vllmApiKey).toBeUndefined();
+  });
+
+  // The field is a password input, so the mask looks like any key. Typing after the dots enters a new
+  // key; read as the mask, the save would have kept the old one.
+  it('saves a key typed into the masked field in place of the mask', async () => {
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'vllm', preferredVllmApiKey: '••••••••' });
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    const field = await screen.findByTestId('vllm-api-key-input');
+    await waitFor(() => expect(field).toHaveValue('••••••••'));
+    await user.type(field, 'sk-new');
+    expect(field).toHaveValue('sk-new');
+
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+    expect(saveInferencePreferences.mock.calls[0]?.[0]).toMatchObject({ backend: 'vllm', vllmApiKey: 'sk-new' });
+  });
+
+  // A save on another engine clears the stored vLLM key. The mask still in the field stood for it, and
+  // a later vLLM save left the key out, so the field showed a key the Hub no longer had.
+  it('drops the mask once the Hub reports no stored vLLM key', async () => {
+    fetchInferencePreferences
+      .mockResolvedValueOnce({ preferredBackend: 'vllm', preferredVllmApiKey: '••••••••' })
+      .mockResolvedValue({ preferredBackend: 'lemonade', preferredVllmApiKey: null });
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('vllm-api-key-input')).toHaveValue('••••••••'));
+    await user.click(screen.getByTestId('select-lemonade'));
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+    await waitFor(() => expect(fetchInferencePreferences).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByTestId('ai-settings-save-btn')).not.toBeDisabled());
+
+    await user.click(screen.getByTestId('select-vllm'));
+    expect(await screen.findByTestId('vllm-api-key-input')).toHaveValue('');
+  });
+
+  it('keeps the mask when the preferences cannot be read', async () => {
+    fetchInferencePreferences.mockResolvedValueOnce({ preferredBackend: 'vllm', preferredVllmApiKey: '••••••••' }).mockResolvedValue(null);
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('vllm-api-key-input')).toHaveValue('••••••••'));
+    await user.click(screen.getByTestId('rescan-btn'));
+    await waitFor(() => expect(fetchInferencePreferences).toHaveBeenCalledTimes(2));
+    // With no preferences the panel shows the recommended engine, so come back to vLLM to read the field.
+    await waitFor(() => expect(fetchConfiguredCloudProviders).toHaveBeenCalledTimes(2));
+    await user.click(screen.getByTestId('select-vllm'));
+
+    expect(await screen.findByTestId('vllm-api-key-input')).toHaveValue('••••••••');
+  });
+
+  // The Hub sends a stored vLLM key only to the server it was saved for, and drops it when a save
+  // moves vLLM elsewhere. The field shows that before the save instead of a key that won't be used.
+  describe('the masked vLLM key when the URL changes', () => {
+    const savedUrl = 'http://192.168.1.50:8000';
+
+    beforeEach(() => {
+      fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'vllm', preferredVllmApiKey: '••••••••', preferredVllmUrl: savedUrl });
+    });
+
+    async function typeVllmUrl(user: ReturnType<typeof userEvent.setup>, url: string) {
+      const field = screen.getByTestId('vllm-endpoint-url-input');
+      await user.clear(field);
+      await user.type(field, url);
+    }
+
+    async function save(user: ReturnType<typeof userEvent.setup>) {
+      await user.click(screen.getByTestId('ai-settings-save-btn'));
+      await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+      await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+      return saveInferencePreferences.mock.calls[0]?.[0] as { vllmUrl?: string | null; vllmApiKey?: string | null };
+    }
+
+    it('empties the key field, says the saved key goes, and saves without it', async () => {
+      const user = userEvent.setup();
+      renderAiSettings();
+      await waitFor(() => expect(screen.getByTestId('vllm-api-key-input')).toHaveValue('••••••••'));
+      expect(screen.queryByTestId('vllm-api-key-notice')).not.toBeInTheDocument();
+
+      await typeVllmUrl(user, 'http://192.168.1.99:8000');
+
+      expect(screen.getByTestId('vllm-api-key-input')).toHaveValue('');
+      expect(screen.getByTestId('vllm-api-key-notice')).toHaveTextContent('The saved key was for the previous URL');
+      expect(await save(user)).toMatchObject({ vllmUrl: 'http://192.168.1.99:8000', vllmApiKey: null });
+    });
+
+    it('saves a key typed for the new URL', async () => {
+      const user = userEvent.setup();
+      renderAiSettings();
+      await waitFor(() => expect(screen.getByTestId('vllm-api-key-input')).toHaveValue('••••••••'));
+
+      await typeVllmUrl(user, 'http://192.168.1.99:8000');
+      await user.type(screen.getByTestId('vllm-api-key-input'), 'new-server-key');
+
+      expect(screen.queryByTestId('vllm-api-key-notice')).not.toBeInTheDocument();
+      expect(await save(user)).toMatchObject({ vllmUrl: 'http://192.168.1.99:8000', vllmApiKey: 'new-server-key' });
+    });
+
+    it('shows the mask again when the URL goes back to the saved one, and keeps the key', async () => {
+      const user = userEvent.setup();
+      renderAiSettings();
+      await waitFor(() => expect(screen.getByTestId('vllm-api-key-input')).toHaveValue('••••••••'));
+
+      await typeVllmUrl(user, 'http://192.168.1.99:8000');
+      await typeVllmUrl(user, savedUrl);
+
+      expect(screen.getByTestId('vllm-api-key-input')).toHaveValue('••••••••');
+      expect(screen.queryByTestId('vllm-api-key-notice')).not.toBeInTheDocument();
+      const body = await save(user);
+      expect(body.vllmUrl).toBe(savedUrl);
+      expect(body.vllmApiKey).toBeUndefined();
+    });
   });
 
   // #1109: the backend-switch effect listed `profile` in its dependency array while writing it

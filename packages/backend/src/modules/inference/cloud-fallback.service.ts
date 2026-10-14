@@ -4,6 +4,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderConfig, CloudProviderType } from '@ci-hub/common/types';
 import { buildCloudProviderEnv } from './cloud-provider-env';
+import { isMaskedApiKey } from './inference.dto';
 import { BUDGET_SETTINGS_HINT, postStreamUnderHeaderDeadline } from './upstream-stream';
 import { COMPLETION_TIMEOUT_MS, firstByteBudgetMs, forwardBudgetMs } from '@/modules/hub-pool/hub-pool-budget';
 
@@ -98,7 +99,8 @@ export class CloudFallbackService implements OnModuleInit {
     const resolved = this.resolveConfig({
       ...existing,
       ...config,
-      apiKey: config.apiKey?.trim() || existing?.apiKey,
+      // A blank key, or the mask Settings > AI shows for a stored one, keeps the stored key.
+      apiKey: (isMaskedApiKey(config.apiKey) ? undefined : config.apiKey?.trim()) || existing?.apiKey,
       baseUrl: config.baseUrl || existing?.baseUrl,
       defaultModel: config.defaultModel || existing?.defaultModel || this.getDefaultModel(config.provider),
     });
