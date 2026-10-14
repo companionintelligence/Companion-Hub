@@ -22,6 +22,8 @@ const SCOPES = {
   passwordResetVerify: { mode: 'failures', limit: 10, windowMs: 60_000 },
   register: { mode: 'attempts', limit: 5, windowMs: 60_000 },
   passwordResetRequest: { mode: 'attempts', limit: 5, windowMs: 60_000 },
+  // The desktop shell asks once a minute. Every loopback caller may share one address here.
+  desktopWaitingChallenge: { mode: 'attempts', limit: 10, windowMs: 60_000 },
 } as const;
 
 export type AuthRateScope = keyof typeof SCOPES;

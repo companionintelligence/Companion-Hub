@@ -9,7 +9,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import path, { join } from 'node:path';
 import { runBridgeDoctorSection } from '../bridge-diagnostics-cli.js';
 import { parseEnvFile } from '../env-file.js';
-import { runHubCleanup } from '../hub-cleanup-lib.js';
+import { type AppTeardownPlan, planAppTeardown, runHubCleanup } from '../hub-cleanup-lib.js';
 import { runNetworkDoctorSection } from '../network-diagnostics-cli.js';
 import { HubUnreachableError, resolveHubApiBase } from '../public-web-cli.js';
 import {
@@ -24,6 +24,7 @@ import { fetchRegistrationPhase, RegistrationPhaseRouteMissing, type Registratio
 import { run, runCapture } from './cli-proc.js';
 import { confirmDestructiveAction } from './cli-prompt.js';
 import { checkDockerAvailable, isHubRepoRoot, requireRepoRoot } from './cli-repo-context.js';
+import { printAppTeardownPlan } from './cli-teardown.js';
 import { BASE_COMMAND, type HubEnv } from './cli-types.js';
 import { bold, cliFail, cliOk, cliWarn, colorize, dim, printMessageBox, STEP_ICONS, type Tone } from './cli-ui.js';
 import { runDeviceIdDoctorSection } from './device-id-doctor.js';
@@ -412,8 +413,21 @@ function doctorTunnelTokenStatus(ctx: HubContext): string {
   return colorize(`${STEP_ICONS.pending} absent`, 'dim');
 }
 
+/**
+ * The apps `cihub uninstall` removes with their volumes and images, listed as `cihub reset` lists
+ * them, and what runHubCleanup removes after them.
+ */
+function printUninstallPlan(plan: AppTeardownPlan) {
+  const notes: string[] = [];
+  if (plan.projects.length > 0) notes.push(dim("The apps' images are removed too."));
+  notes.push(dim('Then the Hub\'s own containers, volumes, and networks, and every container whose name contains "e2e-".'));
+  if (!plan.listed) notes.push('Docker did not list its containers, so this list may be incomplete.');
+  printAppTeardownPlan('Apps and containers this uninstall removes', plan, notes);
+}
+
 export async function uninstallHub(force: boolean) {
   requireRepoRoot('cihub uninstall');
+  printUninstallPlan(planAppTeardown((args) => runCapture('docker', args), { removeVolumes: true }));
   const confirmed = await confirmDestructiveAction('Uninstalling CI-Hub', force, 'Remove CI-Hub runtime state from this machine? [y/N]: ');
   if (!confirmed) {
     printMessageBox('Uninstall cancelled', ['Left Docker volumes, configs, and caches untouched.'], 'yellow');

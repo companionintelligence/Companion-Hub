@@ -337,6 +337,20 @@ export const InstallForm: React.FC<IProps> = ({
   // `?? true` on an edit while the backend persisted `?? false` and built the route without the
   // login, so an install that never decided looked protected and was not (OpenClaw, 2026-09-28).
   const enableAuthFallback = useMemo(() => (isEdit ? manifestDefaultsEdgeAuthOn(info) : true), [isEdit, info]);
+  const hasAuthSwitch = Boolean(info.exposable && info.dynamic_config);
+  // The app goes on Public Web with the Hub login off. Simple mode shows the "Enable authentication"
+  // switch for this too, however the form got here (an import, a recently used config, the exposure
+  // buttons, or an app saved that way), so nobody puts an app on the internet without the login and
+  // without seeing it (#1984). The other modes don't count: the login guards the Public Web route only.
+  const watchEnableAuth = watch('enableAuth');
+  const loginOffOnPublicWeb = watchExposureMode === 'cloudflare' && (watchEnableAuth ?? enableAuthFallback) === false;
+  // Once shown that way the switch stays, so turning the login back on doesn't hide it.
+  const [authSwitchRevealed, setAuthSwitchRevealed] = useState(false);
+  useEffect(() => {
+    if (loginOffOnPublicWeb) setAuthSwitchRevealed(true);
+  }, [loginOffOnPublicWeb]);
+  // Whether the switch is drawn. An import reads this too, to tell when it leads somewhere nobody saw.
+  const authSwitchShown = hasAuthSwitch && (isAdvancedMode || showAdvancedSettings || loginOffOnPublicWeb || authSwitchRevealed);
   const watchedFormValues = watch();
 
   // Client-side install-config export/import + "recently used" list (no backend involved — see
@@ -348,13 +362,21 @@ export const InstallForm: React.FC<IProps> = ({
     setRecentConfigs(readLastUsedConfigs(info.id));
   }, [info.id]);
 
+  /**
+   * Sets the values. Returns true when they leave the app on Public Web with the Hub login off while
+   * the "Enable authentication" switch was hidden: the switch shows now (`loginOffOnPublicWeb`), and
+   * the caller says why in its toast (#1984).
+   */
   const applyImportedValues = useCallback(
-    (values: Record<string, unknown>) => {
+    (values: Record<string, unknown>): boolean => {
       for (const [key, value] of Object.entries(values)) {
         setValue(key, value as string, { shouldDirty: true, shouldValidate: true });
       }
+      return (
+        hasAuthSwitch && !authSwitchShown && getValues('exposureMode') === 'cloudflare' && (getValues('enableAuth') ?? enableAuthFallback) === false
+      );
     },
-    [setValue],
+    [setValue, getValues, enableAuthFallback, hasAuthSwitch, authSwitchShown],
   );
 
   /**
@@ -432,7 +454,7 @@ export const InstallForm: React.FC<IProps> = ({
       }
 
       const { values, dropped } = withoutUnofferedAccessSettings(result.values);
-      applyImportedValues(values);
+      const revealsLoginOff = applyImportedValues(values);
 
       const unrecognizedKeys = [...result.unrecognizedKeys, ...dropped];
       if (unrecognizedKeys.length > 0) {
@@ -443,7 +465,10 @@ export const InstallForm: React.FC<IProps> = ({
             fields: unrecognizedKeys.join(', '),
           }),
         );
-      } else {
+      }
+      if (revealsLoginOff) {
+        toast.warning(t('APP_INSTALL_FORM_IMPORT_CONFIG_AUTH_OFF'), { duration: 8000 });
+      } else if (unrecognizedKeys.length === 0) {
         toast.success(t('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS', { defaultValue: 'Config imported.' }));
       }
     },
@@ -452,8 +477,11 @@ export const InstallForm: React.FC<IProps> = ({
 
   const handleApplyRecentConfig = useCallback(
     (entry: LastUsedInstallConfig) => {
-      applyImportedValues(withoutUnofferedAccessSettings(entry.values).values);
-      toast.success(t('APP_INSTALL_FORM_RECENTLY_USED_APPLIED', { defaultValue: 'Applied recently used config.' }));
+      if (applyImportedValues(withoutUnofferedAccessSettings(entry.values).values)) {
+        toast.warning(t('APP_INSTALL_FORM_RECENTLY_USED_APPLIED_AUTH_OFF'), { duration: 8000 });
+      } else {
+        toast.success(t('APP_INSTALL_FORM_RECENTLY_USED_APPLIED', { defaultValue: 'Applied recently used config.' }));
+      }
     },
     [withoutUnofferedAccessSettings, applyImportedValues, t],
   );
@@ -1013,7 +1041,7 @@ export const InstallForm: React.FC<IProps> = ({
   };
 
   const renderAdvancedExposureOptions = () => {
-    if (!info.exposable || (!isAdvancedMode && !showAdvancedSettings)) return null;
+    if (!authSwitchShown) return null;
 
     return (
       <Controller
@@ -1247,7 +1275,7 @@ export const InstallForm: React.FC<IProps> = ({
               )}
             />
           )}
-          {info.exposable && info.dynamic_config && renderAdvancedExposureOptions()}
+          {renderAdvancedExposureOptions()}
           {renderExposeForm()}
           {isAdvancedMode && (
             <div className="mb-3">

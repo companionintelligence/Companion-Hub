@@ -3195,6 +3195,10 @@ export type FactoryResetErrors = {
      * Operator authentication required
      */
     403: unknown;
+    /**
+     * The Hub's data folder is the top of a disk or a home folder, so nothing was changed
+     */
+    409: unknown;
 };
 
 export type FactoryResetResponses = {

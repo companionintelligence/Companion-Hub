@@ -5,6 +5,7 @@ import type Dockerode from 'dockerode';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { DockerService } from '@/modules/docker/docker.service';
+import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import type { AppUrn } from '@ci-hub/common/types';
 import { UninstallAppCommand } from '../uninstall-app-command';
@@ -23,6 +24,7 @@ describe('UninstallAppCommand', () => {
   };
   let appFilesManager: MockProxy<AppFilesManager>;
   let portManager: MockProxy<PortManagerService>;
+  let traefikConfigService: MockProxy<TraefikConfigService>;
 
   // Single token-dispatch map for every command built in this suite, so a new
   // constructor dependency only has to be added here.
@@ -33,6 +35,7 @@ describe('UninstallAppCommand', () => {
         if (token === AppFilesManager) return appFilesManager;
         if (token === DockerService) return dockerService;
         if (token === PortManagerService) return portManager;
+        if (token === TraefikConfigService) return traefikConfigService;
         return null;
       }),
     }) as unknown as ModuleRef;
@@ -47,6 +50,9 @@ describe('UninstallAppCommand', () => {
 
     portManager = mock<PortManagerService>();
     portManager.releaseAll.mockResolvedValue(1);
+
+    traefikConfigService = mock<TraefikConfigService>();
+    traefikConfigService.regenerateTraefikConfig.mockResolvedValue();
 
     dockerService = {
       composeApp: vi.fn().mockResolvedValue({ success: true }),
@@ -203,6 +209,51 @@ describe('UninstallAppCommand', () => {
 
     expect(result).toEqual({ success: true, message: `App ${appUrn} uninstalled successfully` });
     expect(dockerService.removeAppImages).toHaveBeenCalledWith(appUrn, []);
+    expect(dockerService.removeAppNetworks).toHaveBeenCalledWith(appUrn);
+    expect(appFilesManager.deleteAppFolder).toHaveBeenCalledWith(appUrn);
+  });
+
+  // apps.yml keeps a route to the starting page for each app router while the app's containers are
+  // gone (CI-Hub#1944). A removed app must not keep it, so the routes are rebuilt after compose down.
+  it('rebuilds the Traefik routes after compose down, so the removed app keeps none', async () => {
+    await command.execute(appUrn);
+
+    expect(traefikConfigService.regenerateTraefikConfig).toHaveBeenCalledTimes(1);
+    expect(dockerService.composeApp.mock.invocationCallOrder[0]).toBeLessThan(
+      traefikConfigService.regenerateTraefikConfig.mock.invocationCallOrder[0] ?? 0,
+    );
+  });
+
+  it('rebuilds the Traefik routes even when compose down fails', async () => {
+    dockerService.composeApp.mockRejectedValueOnce(new Error('compose failed'));
+
+    await command.execute(appUrn);
+
+    expect(traefikConfigService.regenerateTraefikConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it('rebuilds the Traefik routes before the image and network cleanup, which can throw', async () => {
+    dockerService.removeAppImages.mockRejectedValueOnce(new Error('image in use'));
+
+    await command.execute(appUrn);
+
+    expect(traefikConfigService.regenerateTraefikConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it('still uninstalls when the Traefik routes cannot be rebuilt', async () => {
+    // ModuleRef.get throws for a provider it cannot resolve.
+    const moduleRef = makeModuleRef();
+    const resolve = moduleRef.get as unknown as ReturnType<typeof vi.fn>;
+    const fallback = resolve.getMockImplementation();
+    resolve.mockImplementation((token: unknown) => {
+      if (token === TraefikConfigService) throw new Error('Nest could not find TraefikConfigService element');
+      return fallback?.(token);
+    });
+    command = new UninstallAppCommand(moduleRef, mock<Dockerode>());
+
+    const result = await command.execute(appUrn);
+
+    expect(result).toEqual({ success: true, message: `App ${appUrn} uninstalled successfully` });
     expect(dockerService.removeAppNetworks).toHaveBeenCalledWith(appUrn);
     expect(appFilesManager.deleteAppFolder).toHaveBeenCalledWith(appUrn);
   });

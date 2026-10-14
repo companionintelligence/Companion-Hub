@@ -1,17 +1,19 @@
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import type { AppUrn } from '@ci-hub/common/types';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { InferenceEnvStaleness } from '@/modules/apps/inference-env-staleness.service';
+import type { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 
 // The lifecycle service drags in the queue, Docker and Portal graphs; this suite only needs the
 // one method the refresh calls, so the module is replaced with an empty class and mocked per test.
 vi.mock('../app-lifecycle.service', () => ({ AppLifecycleService: class AppLifecycleService {} }));
 vi.mock('@/modules/apps/inference-env-staleness.service', () => ({ InferenceEnvStalenessService: class InferenceEnvStalenessService {} }));
-vi.mock('node:fs/promises', () => ({ readFile: vi.fn() }));
 
-import { readFile } from 'node:fs/promises';
 import { AppLifecycleService } from '../app-lifecycle.service';
 import { InferenceEnvStalenessService } from '@/modules/apps/inference-env-staleness.service';
 import { AppCredentialsService } from '@/modules/inference/app-credentials.service';
@@ -44,6 +46,9 @@ const staleness = (appUrn: AppUrn, overrides: Partial<InferenceEnvStaleness>): I
   ...overrides,
 });
 
+/** OpenClaw's `openclaw.json` with `primary` as the chat default its model picker last chose. */
+const openClawConfig = (primary: string) => JSON.stringify({ agents: { defaults: { model: { primary } } } });
+
 describe('AiAppInferenceRefreshService', () => {
   let service: AiAppInferenceRefreshService;
   let lifecycle: MockProxy<AppLifecycleService>;
@@ -51,6 +56,7 @@ describe('AiAppInferenceRefreshService', () => {
   let credentials: MockProxy<AppCredentialsService>;
   let endpoints: MockProxy<InferenceEndpointService>;
   let configuration: MockProxy<ConfigurationService>;
+  let dockerRead: MockProxy<DockerReadFacade>;
   let restarted: AppUrn[];
   let results: Map<AppUrn, InferenceEnvStaleness | Error>;
 
@@ -61,6 +67,8 @@ describe('AiAppInferenceRefreshService', () => {
     endpoints = mock<InferenceEndpointService>();
     configuration = mock<ConfigurationService>();
     configuration.getHubPoolPreferences.mockReturnValue({ poolHealthPollSeconds: 30 } as never);
+    dockerRead = mock<DockerReadFacade>();
+    dockerRead.readRunningAppFile.mockResolvedValue(null);
 
     restarted = [];
     results = new Map();
@@ -76,7 +84,7 @@ describe('AiAppInferenceRefreshService', () => {
       return result;
     });
 
-    service = new AiAppInferenceRefreshService(mock<LoggerService>(), lifecycle, stalenessService, credentials, endpoints, configuration);
+    service = new AiAppInferenceRefreshService(mock<LoggerService>(), lifecycle, stalenessService, credentials, endpoints, configuration, dockerRead);
   });
 
   afterEach(() => {
@@ -170,22 +178,99 @@ describe('AiAppInferenceRefreshService', () => {
     });
 
     it('restarts ci-openclaw on an operator save when the picker left a downloaded model selected', async () => {
-      configuration.getConfig.mockReturnValue({ directories: { appDataDir: '/data' } } as never);
-      vi.mocked(readFile).mockResolvedValue(
-        JSON.stringify({ agents: { defaults: { model: { primary: 'ollama/Qwen3-0.6B-GGUF:latest' } } } }) as never,
-      );
+      dockerRead.readRunningAppFile.mockResolvedValue(openClawConfig('ollama/Qwen3-0.6B-GGUF:latest'));
       results.set(CI_OPENCLAW, staleness(CI_OPENCLAW, { stale: false }));
 
       service.requestRefresh('inference preferences changed');
       const decisions = await service.flush();
       expect(restarted).toEqual([CI_OPENCLAW]);
       expect(decisions.find((decision) => decision.appUrn === CI_OPENCLAW)?.why).toContain('returning it to Hub Auto');
-      expect(readFile).toHaveBeenCalledWith('/data/ci-marketplace/ci-openclaw/data/.openclaw/openclaw.json', 'utf8');
+      expect(dockerRead.readRunningAppFile).toHaveBeenCalledWith(CI_OPENCLAW, '/data', '/data/.openclaw/openclaw.json');
 
       restarted.length = 0;
       service.requestRefresh('pool membership changed', { automatic: true });
       await service.flush();
       expect(restarted).toEqual([]);
+    });
+
+    describe('when OpenClaw keeps /data in a named volume (an app-data folder that cannot hold POSIX permissions)', () => {
+      let appDataDir: string;
+      const hostConfig = () => path.join(appDataDir, 'ci-marketplace', 'ci-openclaw', 'data', '.openclaw', 'openclaw.json');
+
+      beforeEach(async () => {
+        appDataDir = await mkdtemp(path.join(tmpdir(), 'openclaw-picker-'));
+        configuration.getConfig.mockReturnValue({ directories: { appDataDir } } as never);
+        results.set(CI_OPENCLAW, staleness(CI_OPENCLAW, { stale: false }));
+      });
+
+      afterEach(async () => {
+        await rm(appDataDir, { recursive: true, force: true });
+      });
+
+      it('finds the downloaded-model pick in the container although the app-data folder has no openclaw.json', async () => {
+        dockerRead.readRunningAppFile.mockResolvedValue(openClawConfig('ollama/gemma3:1b'));
+
+        service.requestRefresh('inference preferences changed');
+        const decisions = await service.flush();
+
+        expect(restarted).toEqual([CI_OPENCLAW]);
+        expect(decisions.find((decision) => decision.appUrn === CI_OPENCLAW)?.why).toBe(
+          'chat default left the Hub model (ollama/gemma3:1b); returning it to Hub Auto',
+        );
+      });
+
+      it('ignores an old openclaw.json an earlier install left in the app-data folder', async () => {
+        await mkdir(path.dirname(hostConfig()), { recursive: true });
+        await writeFile(hostConfig(), openClawConfig('ollama/gemma3:1b'));
+
+        // In the config OpenClaw reads, it is back on the Hub's model.
+        dockerRead.readRunningAppFile.mockResolvedValue(openClawConfig('ci-hub/auto'));
+        service.requestRefresh('inference preferences changed');
+        await service.flush();
+        expect(restarted).toEqual([]);
+
+        // OpenClaw is not running.
+        dockerRead.readRunningAppFile.mockResolvedValue(null);
+        service.requestRefresh('inference preferences changed');
+        const decisions = await service.flush();
+        expect(restarted).toEqual([]);
+        expect(decisions.find((decision) => decision.appUrn === CI_OPENCLAW)?.why).toBe('its inference config is already current');
+      });
+
+      it('restarts OpenClaw on an operator save when Docker cannot read the file, and says the picker could not be checked', async () => {
+        // The operator saved and expects OpenClaw back on Hub Auto, as with a failed staleness check.
+        dockerRead.readRunningAppFile.mockRejectedValue(new Error('(HTTP code 500) server error - mount failed'));
+
+        service.requestRefresh('inference preferences changed');
+        const decisions = await service.flush();
+
+        expect(restarted).toEqual([CI_OPENCLAW]);
+        expect(decisions.find((decision) => decision.appUrn === CI_OPENCLAW)?.why).toBe(
+          "its inference env is current, but OpenClaw's model picker could not be checked ((HTTP code 500) server error - mount failed); " +
+            'restarting in case it holds a downloaded model',
+        );
+
+        // An automatic sweep never reads the picker, so a failing read can't restart OpenClaw on its own.
+        restarted.length = 0;
+        dockerRead.readRunningAppFile.mockClear();
+        service.requestRefresh('pool membership changed', { automatic: true });
+        await service.flush();
+        expect(restarted).toEqual([]);
+        expect(dockerRead.readRunningAppFile).not.toHaveBeenCalled();
+      });
+
+      it('keeps the text of an openclaw.json that is not valid JSON out of the log line', async () => {
+        // openclaw.json holds the gateway token, and V8's parse error quotes the text around the fault.
+        dockerRead.readRunningAppFile.mockResolvedValue('{"gateway":{"auth":{"token":tok_0123456789abcdef}}}');
+
+        service.requestRefresh('inference preferences changed');
+        const decisions = await service.flush();
+
+        const why = decisions.find((decision) => decision.appUrn === CI_OPENCLAW)?.why;
+        expect(why).toContain("OpenClaw's model picker could not be checked (openclaw.json is not valid JSON)");
+        expect(why).not.toContain('tok_');
+        expect(restarted).toEqual([CI_OPENCLAW]);
+      });
     });
 
     it('restarts on a failed staleness check only when an operator changed a setting', async () => {

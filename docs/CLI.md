@@ -1904,8 +1904,8 @@ cihub uninstall [--yes]                # full machine cleanup of CI-Hub runtime 
 ```
 
 `reset` is the environment-focused cleanup path. `uninstall` is the full machine cleanup path.
-`reset` prints the apps and containers it will remove before it asks; `reset --dry-run` prints
-that list and the host data it would delete, then stops. See [RESET_RUNBOOK.md](RESET_RUNBOOK.md).
+`reset` and `uninstall` print the apps and containers they will remove before they ask; `reset --dry-run`
+prints that list and the host data it would delete, then stops. See [RESET_RUNBOOK.md](RESET_RUNBOOK.md).
 
 `doctor` first names the Hub it checks: the checkout it runs in, or, outside a checkout, the
 installed Hub's data folder. Inside a checkout, the file checks read the checkout, while the live

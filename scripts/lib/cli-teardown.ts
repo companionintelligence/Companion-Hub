@@ -457,6 +457,16 @@ export function describeAppTeardown(plan: AppTeardownPlan): string[] {
 }
 
 /**
+ * The box `cihub reset` and `cihub uninstall` show before they ask. `notes` follow the list. With
+ * nothing listed it says so, unless Docker could not list containers, which is not "nothing".
+ */
+export function printAppTeardownPlan(title: string, plan: AppTeardownPlan, notes: string[] = []): void {
+  const planned = describeAppTeardown(plan);
+  const lines = planned.length > 0 || !plan.listed ? planned : [dim('None: no installed apps, and nothing else on the Hub network.')];
+  printMessageBox(title, [...lines, ...notes], 'yellow');
+}
+
+/**
  * Where reset deletes host files: the whole canonical tree and the Hub's files in the tunnel folder
  * beside it (appliance), or the root folder and its tunnel folder (checkout; see
  * checkoutHostDataTargets).
@@ -562,12 +572,7 @@ export async function resetHub(env: HubEnv, force: boolean, dryRun = false): Pro
   // operator should see those by name before agreeing to remove them. See planAppTeardown.
   const plan = planAppTeardown(docker.capture, { removeVolumes: true });
   if (!listedOrRefuse(plan)) return false;
-  const planned = describeAppTeardown(plan);
-  printMessageBox(
-    `Apps and containers this reset ${dryRun ? 'would remove' : 'removes'}`,
-    planned.length > 0 ? planned : [dim('None: no installed apps, and nothing else on the Hub network.')],
-    'yellow',
-  );
+  printAppTeardownPlan(`Apps and containers this reset ${dryRun ? 'would remove' : 'removes'}`, plan);
   if (dryRun) {
     printMessageBox(
       'Dry run: nothing was removed',

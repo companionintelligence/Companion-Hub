@@ -9,6 +9,8 @@ import {
   exchangePortalAuthorizationCode,
   fetchPortalSessionEmail,
   buildPortalDesktopHandoffHtml,
+  desktopSignInWaitProof,
+  isDesktopSignInWaitProof,
   isDirectLoopbackRequest,
   resolvePortalDesktopHandoffState,
   shouldHandoffPortalLoginToDesktop,
@@ -319,6 +321,40 @@ describe('portal-sso helpers', () => {
     } as unknown as Request;
 
     expect(isDirectLoopbackRequest(req)).toBe(expected);
+  });
+
+  it('derives the desktop proof the way the desktop shell does', () => {
+    // The same key, nonce and proof are asserted in desktop_sign_in_wait.rs, so the two halves cannot drift.
+    expect(desktopSignInWaitProof('3f'.repeat(32), '00112233445566778899aabbccddeeff'.repeat(2))).toBe(
+      '7a460e26999017e65eaa1c282c52201b9b79bb408fdbd2e0893b1af334e84bc2',
+    );
+  });
+
+  describe('isDesktopSignInWaitProof', () => {
+    const KEY = '3f'.repeat(32);
+    const NONCE = 'ab'.repeat(32);
+    const proof = desktopSignInWaitProof(KEY, NONCE);
+
+    it.each([
+      ['the proof for this nonce', true, proof],
+      ['the proof for another nonce', false, desktopSignInWaitProof(KEY, 'cd'.repeat(32))],
+      ['a proof made with another key', false, desktopSignInWaitProof('a'.repeat(64), NONCE)],
+      ['the key itself', false, KEY],
+      ['a proof of the wrong length', false, proof.slice(0, 10)],
+      ['a proof with stray whitespace', false, ` ${proof}\n`],
+      ['a repeated proof header', false, [proof]],
+      ['no proof', false, undefined],
+    ])('%s -> %s', (_case, expected, presented: unknown) => {
+      expect(isDesktopSignInWaitProof(presented, NONCE, KEY)).toBe(expected);
+    });
+
+    it('refuses every proof while the Hub has no key', () => {
+      expect(isDesktopSignInWaitProof(desktopSignInWaitProof('', NONCE), NONCE, null)).toBe(false);
+    });
+
+    it('refuses a wrong-length proof without throwing', () => {
+      expect(() => isDesktopSignInWaitProof('ab', NONCE, KEY)).not.toThrow();
+    });
   });
 
   it('exchanges authorization codes for user email via Portal OAuth endpoints', async () => {

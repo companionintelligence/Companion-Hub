@@ -1323,6 +1323,9 @@
           },
           "403": {
             "description": "Operator authentication required"
+          },
+          "409": {
+            "description": "The Hub's data folder is the top of a disk or a home folder, so nothing was changed"
           }
         },
         "summary": "Wipe all Hub state and return to first-operator setup",

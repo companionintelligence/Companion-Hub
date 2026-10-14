@@ -36,17 +36,15 @@ vi.mock('../lib/cli-proc.js', () => ({
     if (state.dockerDown) {
       return { ok: false, stdout: '' };
     }
-    if (command === 'ps -a --filter label=ci-os-hub.managed=true --format {{.Labels}}') {
-      return { ok: true, stdout: 'ci-os-hub.managed=true,com.docker.compose.project=ci-memory_ci-marketplace' };
+    if (command === 'ps -a --filter label=ci-os-hub.managed=true --format {{.Label "com.docker.compose.project"}}') {
+      return { ok: true, stdout: 'ci-memory_ci-marketplace' };
     }
     if (command === 'ps -a --filter label=com.docker.compose.project=ci-memory_ci-marketplace --format {{.Names}}') {
       return { ok: true, stdout: 'mem-api\nmem-db' };
     }
     if (command.startsWith('ps -a --filter network=ci-hub_network ')) {
-      return {
-        ok: true,
-        stdout: 'ci-hub com.docker.compose.project=ci-hub\nci-hermes_ci-marketplace-ci-hermes-1 org.opencontainers.image.revision=345cd2b',
-      };
+      // Name, then compose project; the stray container has none.
+      return { ok: true, stdout: 'ci-hub ci-hub\nci-hermes_ci-marketplace-ci-hermes-1 ' };
     }
     return { ok: true, stdout: '' };
   }),

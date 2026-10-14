@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { ALLOW_FOREIGN_DEVICE_ID_ENV, checkDeviceIdHostBinding, foreignDeviceIdMessage } from '../device-id-host-check';
+import {
+  ALLOW_FOREIGN_DEVICE_ID_ENV,
+  checkDeviceIdHostBinding,
+  foreignDeviceIdMessage,
+  foreignRegisteredDeviceIdMessage,
+} from '../device-id-host-check';
 
 /** Placeholders for what beta-red showed on 2026-09-17: its own machine ID, and the DEVICE_ID its env file shared with beta-nas. */
 const BETA_RED_MACHINE_ID = '5eed5eed5eed5eed5eed5eed5eed5eed';
@@ -95,6 +100,77 @@ describe('checkDeviceIdHostBinding', () => {
       deviceId: COPIED_DEVICE_ID,
     });
     expect(checkDeviceIdHostBinding({ envDeviceId: COPIED_DEVICE_ID, allowForeign: '1', readFile: betaRed }).status).toBe('foreign');
+  });
+});
+
+describe('checkDeviceIdHostBinding with a registration record', () => {
+  // The Hub pairs and checks in under `state/registered-device-id` when it has one, and a data folder
+  // copied from another node brings that file along with it.
+  it('flags a record copied from another machine, even when DEVICE_ID is this host’s own', () => {
+    expect(checkDeviceIdHostBinding({ envDeviceId: BETA_RED_MACHINE_ID, registeredDeviceId: COPIED_DEVICE_ID, readFile: betaRed })).toEqual({
+      status: 'foreign',
+      deviceId: COPIED_DEVICE_ID,
+      message: foreignRegisteredDeviceIdMessage(COPIED_DEVICE_ID),
+    });
+  });
+
+  it('gives the record’s remedy for a Hub that paired under a copied DEVICE_ID, whose record holds the same ID', () => {
+    // The env file was the copy, but the record now wins over it and survives a reset, so editing
+    // DEVICE_ID and pairing again would still send the copied ID. On the desktop app, the next launch
+    // would even write the record back into DEVICE_ID.
+    expect(checkDeviceIdHostBinding({ envDeviceId: COPIED_DEVICE_ID, registeredDeviceId: COPIED_DEVICE_ID, readFile: betaRed })).toEqual({
+      status: 'foreign',
+      deviceId: COPIED_DEVICE_ID,
+      message: foreignRegisteredDeviceIdMessage(COPIED_DEVICE_ID),
+    });
+  });
+
+  it('judges the record when DEVICE_ID is unset', () => {
+    expect(checkDeviceIdHostBinding({ envDeviceId: undefined, registeredDeviceId: COPIED_DEVICE_ID, readFile: betaRed }).status).toBe('foreign');
+    expect(checkDeviceIdHostBinding({ envDeviceId: undefined, registeredDeviceId: `${BETA_RED_MACHINE_ID}\n`, readFile: betaRed })).toEqual({
+      status: 'matches_host',
+      deviceId: BETA_RED_MACHINE_ID,
+    });
+  });
+
+  it('does not refuse a Hub whose record is its own over a copied DEVICE_ID, because it pairs under the record', () => {
+    // A registration reset keeps the record. Only Start fresh removes it, and the Hub judges DEVICE_ID then.
+    expect(checkDeviceIdHostBinding({ envDeviceId: COPIED_DEVICE_ID, registeredDeviceId: BETA_RED_MACHINE_ID, readFile: betaRed })).toEqual({
+      status: 'matches_host',
+      deviceId: BETA_RED_MACHINE_ID,
+    });
+    expect(
+      checkDeviceIdHostBinding({ envDeviceId: COPIED_DEVICE_ID, registeredDeviceId: '4C4C4544-0042-3510-8052-B4C04F4D3232', readFile: betaRed })
+        .status,
+    ).toBe('not_checkable');
+  });
+
+  it(`honours ${ALLOW_FOREIGN_DEVICE_ID_ENV}=true for the record too`, () => {
+    expect(
+      checkDeviceIdHostBinding({ envDeviceId: undefined, registeredDeviceId: COPIED_DEVICE_ID, allowForeign: 'true', readFile: betaRed }),
+    ).toEqual({
+      status: 'allowed_foreign',
+      deviceId: COPIED_DEVICE_ID,
+    });
+  });
+
+  it('does not judge a registered Windows SMBIOS UUID, which no host file can confirm or refute', () => {
+    expect(
+      checkDeviceIdHostBinding({ envDeviceId: undefined, registeredDeviceId: '4C4C4544-0042-3510-8052-B4C04F4D3232', readFile: betaRed }).status,
+    ).toBe('not_checkable');
+  });
+});
+
+describe('foreignRegisteredDeviceIdMessage', () => {
+  it('names the record and Start fresh as what removes it, since changing DEVICE_ID or a registration reset would not', () => {
+    const message = foreignRegisteredDeviceIdMessage(COPIED_DEVICE_ID);
+
+    expect(message).toContain('state/registered-device-id');
+    expect(message).toContain('a registration reset keeps it');
+    expect(message).toContain('choose Start fresh on the pairing page');
+    expect(message).toContain('cihub register --fresh --code <code>');
+    expect(message).toContain(`${ALLOW_FOREIGN_DEVICE_ID_ENV}=true`);
+    expect(message).not.toContain(BETA_RED_MACHINE_ID);
   });
 });
 
