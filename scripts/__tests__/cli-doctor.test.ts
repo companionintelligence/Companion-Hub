@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => ({
     remediationCommands: [] as string[],
   })),
   runHubCleanup: vi.fn(() => ({ removedDirs: 3, skippedDirs: 0, failedDirs: 0, attemptedCommands: 2, failedCommands: 0 })),
+  confirmDestructiveAction: vi.fn(async (_label: string, _force: boolean, _prompt: string): Promise<boolean> => true),
   fetchHubClaimStatus: vi.fn(async () => ({ claimed: true, operators: 1, registered: true })),
   fetchRegistrationPhase: vi.fn(
     async (): Promise<RegistrationPhaseResponse> => ({
@@ -59,6 +60,11 @@ vi.mock('../lib/cli-repo-context.js', async (importOriginal) => ({
 vi.mock('../lib/cli-proc.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/cli-proc.js')>()),
   runCapture: mocks.runCapture,
+}));
+
+vi.mock('../lib/cli-prompt.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/cli-prompt.js')>()),
+  confirmDestructiveAction: mocks.confirmDestructiveAction,
 }));
 
 vi.mock('../lib/hub-context.js', async (importOriginal) => ({
@@ -278,6 +284,36 @@ describe('uninstallHub exit code', () => {
     mocks.runHubCleanup.mockReturnValue({ removedDirs: 3, skippedDirs: 0, failedDirs: 0, attemptedCommands: 2, failedCommands: 1 });
     await uninstallHub(true);
     expect(process.exitCode).toBe(1);
+  });
+});
+
+describe('uninstallHub plan', () => {
+  const PROJECT_FILTER = 'label=com.docker.compose.project=ci-memory_ci-marketplace';
+
+  it('lists the installed apps and their volumes before it asks, and removes nothing on "no"', async () => {
+    mocks.runCapture.mockImplementation((...args: unknown[]) => {
+      const argv = args[1] as string[];
+      if (argv[0] === 'ps' && argv.includes('label=ci-hub.managed=true') && !argv.includes(PROJECT_FILTER)) {
+        return { ok: true, stdout: 'ci-memory_ci-marketplace' };
+      }
+      if (argv[0] === 'ps' && argv.includes(PROJECT_FILTER)) return { ok: true, stdout: 'ci-memory_ci-marketplace-api-1' };
+      if (argv[0] === 'volume' && argv.includes(PROJECT_FILTER)) return { ok: true, stdout: 'ci-memory_ci-marketplace_data' };
+      return { ok: true, stdout: '' };
+    });
+    mocks.runHubCleanup.mockClear();
+    let shownBeforeAsking = '';
+    mocks.confirmDestructiveAction.mockImplementationOnce(async () => {
+      shownBeforeAsking = stripAnsi(log.mock.calls.flat().join('\n'));
+      return false;
+    });
+
+    await uninstallHub(false);
+
+    expect(shownBeforeAsking).toContain('ci-memory_ci-marketplace: ci-memory_ci-marketplace-api-1');
+    expect(shownBeforeAsking).toContain('volumes: ci-memory_ci-marketplace_data');
+    expect(mocks.runHubCleanup).not.toHaveBeenCalled();
+    const dockerCalls = (mocks.runCapture.mock.calls as unknown[][]).map((call) => (call[1] as string[]).join(' '));
+    expect(dockerCalls.filter((command) => !/^(ps|network ls|volume ls) /.test(command))).toEqual([]);
   });
 });
 
