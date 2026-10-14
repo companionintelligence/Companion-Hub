@@ -10,6 +10,7 @@ import type { AppsReadService } from '../modules/apps/apps-read.service';
 import type { CloudflareClientService } from '../modules/cloudflare/cloudflare-client.service';
 import type { TailscaleService, TailscaleStatus } from '../modules/tailscale/tailscale.service';
 import type { ConfigurationService } from '@/core/config/configuration.service';
+import type { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import type { RegistrationService } from '@/modules/registration/registration.service';
 
 /** A host Tailscale client that is signed in, with HTTPS certificates on for the tailnet. */
@@ -34,6 +35,7 @@ describe('GET /api/app-context', () => {
   };
   let controller: AppController;
   let configuration: ReturnType<typeof mock<ConfigurationService>>;
+  let whois: ReturnType<typeof mock<MarketplaceWhoIsService>>;
 
   beforeEach(() => {
     delete process.env.PRIVATE_VPN_USER_DISABLED;
@@ -51,6 +53,8 @@ describe('GET /api/app-context', () => {
     appsReadService.peekUpdatesAvailableCached.mockReturnValue(0);
     const cloudflareClientService = mock<CloudflareClientService>();
     cloudflareClientService.getTunnelToken.mockReturnValue(null as never);
+    whois = mock<MarketplaceWhoIsService>();
+    whois.hubManageHint.mockResolvedValue(true);
 
     // Only the collaborators this route reads matter; the rest are inert stand-ins.
     const unused = () => mock<never>();
@@ -66,7 +70,7 @@ describe('GET /api/app-context', () => {
       unused(),
       unused(),
       unused(),
-      unused(),
+      whois,
     );
   });
 
@@ -121,5 +125,29 @@ describe('GET /api/app-context', () => {
     process.env.TAILSCALE_SERVE_USER_DISABLED = 'true';
 
     await expect(appContext()).resolves.toMatchObject({ tailscaleAvailable: false, tailscaleNodeFqdn: null });
+  });
+
+  /*
+   * Every step of the device wizard changes the whole Hub, which the Hub refuses a member. A member who
+   * signs in before the owner finishes it skips it, like a later operator whose wizard already ran.
+   */
+  describe('the device wizard', () => {
+    const asUser = (hasCompletedOnboarding: boolean) =>
+      controller.appContext({ hubPrincipal: 'session', user: { id: 2, hasCompletedOnboarding } } as unknown as Request);
+
+    it('sends a member who has not run it to the Hub instead', async () => {
+      whois.hubManageHint.mockResolvedValue(false);
+
+      await expect(asUser(false)).resolves.toMatchObject({ user: { hasCompletedOnboarding: true } });
+    });
+
+    it('still sends an owner, an admin or the claimer through it', async () => {
+      await expect(asUser(false)).resolves.toMatchObject({ user: { hasCompletedOnboarding: false } });
+    });
+
+    it('asks nothing once it has run', async () => {
+      await expect(asUser(true)).resolves.toMatchObject({ user: { hasCompletedOnboarding: true } });
+      expect(whois.hubManageHint).not.toHaveBeenCalled();
+    });
   });
 });

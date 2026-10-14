@@ -853,6 +853,8 @@ The guard asks `MarketplaceWhoIsService.hubManageVerdict`:
 `GET /api/hub-access` tells the UI whether to show these controls (`hubManageHint`), from the role
 stored at sign-in, as `GET /custom-apps/access` does for custom apps. Settings hides the App stores,
 Network, AI, MCP and Logs tabs from a member, and the Hub-wide controls on Settings, Security and System.
+A member skips the device wizard: `GET /api/app-context` reports `hasCompletedOnboarding: true` for
+someone `hubManageHint` turns down, as it does for a later operator whose wizard already ran.
 
 `GET /api/app-context` reports the settings named in `APP_CONTEXT_SETTINGS` (`app.dto.ts`) and nothing
 else, so no key reaches it: not the Portal device or move key, the vLLM key or the cloud provider keys.

@@ -290,6 +290,11 @@ export class AppController {
       ? tailscaleStatus.nodeFqdn || buildTailscaleNodeFqdn(tailscaleStatus.hostname, tailscaleStatus.tailnet)
       : null;
 
+    // Every step of the device wizard changes the whole Hub, which the Hub refuses a member. A member who
+    // signs in before the owner finishes it goes to the Hub instead, like a later operator whose wizard ran.
+    const user = req.user as UserDto;
+    const skipsWizard = Boolean(user) && !user.hasCompletedOnboarding && !(await this.whois.hubManageHint(req));
+
     return AppContextDto.parse(
       {
         version,
@@ -302,7 +307,7 @@ export class AppController {
         },
         appDataRootHostPath,
         architecture,
-        user: req.user as UserDto,
+        user: skipsWizard ? { ...user, hasCompletedOnboarding: true } : user,
         apps: [],
         updatesAvailable: updatesAvailableCount,
         isProduction,
