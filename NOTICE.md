@@ -5,29 +5,6 @@ upstream projects legally require us to reproduce. It is not a full dependency
 list — see [THIRD_PARTY.md](THIRD_PARTY.md) for that, and [CREDITS.md](CREDITS.md)
 for acknowledgements.
 
-<!-- hand-authored: do not regenerate this section -->
-
-## Upstream derivation
-
-The derivation recorded here was reviewed and cleared before this repository was
-made public (October 2026). This section is the provenance record; it is not a
-statement of the licence terms, which are in [LICENSE.md](LICENSE.md).
-
-**Companion Hub** (formerly CI-Hub) is derived from
-**[Runtipi](https://github.com/runtipi/runtipi)**, which was licensed GPL-3.0 at the
-time the code was taken.
-
-    Copyright (c) 2022 Nicolas Meienberger and the Runtipi contributors
-
-Earlier licence history: MIT (root commit only, 2022-03-26 → 2022-04-22).
-
-The GNU General Public License v3.0 requires that derivative works be
-distributed under the same licence, and s10 forbids imposing further
-restrictions on downstream recipients. The full text is at
-<https://www.gnu.org/licenses/gpl-3.0.txt>.
-
-<!-- end hand-authored -->
-
 ## Copyleft and reciprocal-licence dependencies
 
 These dependencies carry obligations beyond retaining a notice. Review before
