@@ -72,6 +72,28 @@ describe('committed swagger.json', () => {
   });
 
   /*
+   * `models/load` once had no body here, so the generated client typed it `never` and the frontend
+   * cast past that. Both routes take a Zod DTO class now; the body they document is the DTO's.
+   */
+  it.each([
+    ['/api/inference/models/load', 'LoadModelBody'],
+    ['/api/inference/models/unload', 'UnloadModelBody'],
+  ])('documents the %s request body as %s, with the engine optional', (path, schemaName) => {
+    const operation = document.paths?.[path]?.post;
+    const schemas = document.components?.schemas as Record<string, unknown>;
+
+    expect(operation?.requestBody).toEqual({
+      required: true,
+      content: { 'application/json': { schema: { $ref: `#/components/schemas/${schemaName}` } } },
+    });
+    expect(schemas[schemaName]).toMatchObject({
+      type: 'object',
+      properties: { modelId: { type: 'string' }, backend: { type: 'string', enum: expect.arrayContaining(['ollama', 'vllm', 'lemonade', 'omlx']) } },
+      required: ['modelId'],
+    });
+  });
+
+  /*
    * Exactly one: ids repeat across controllers (five routes are `getStatus`), and
    * the patch lands on whichever comes first, so a second match is as quiet as none.
    */

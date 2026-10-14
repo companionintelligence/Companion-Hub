@@ -62,8 +62,10 @@ import {
   UpdatePortExposeAppDto,
 } from './modules/custom-apps/dto/custom-apps.dto';
 import {
+  LoadModelBody,
   OnboardingProfileQueryDto,
   RuntimeModelsQueryDto,
+  UnloadModelBody,
   UpdateInferencePreferencesBody,
   UpdateRocmInstallStateBody,
 } from './modules/inference/inference.dto';
@@ -166,6 +168,8 @@ export const SWAGGER_ZOD_DTOS: ZodDto[] = [
   UpdatePortExposeAppDto,
   OnboardingProfileQueryDto,
   RuntimeModelsQueryDto,
+  LoadModelBody,
+  UnloadModelBody,
   UpdateInferencePreferencesBody,
   UpdateRocmInstallStateBody,
   PairingUpgradeBody,

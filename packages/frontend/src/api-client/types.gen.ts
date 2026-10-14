@@ -1439,6 +1439,16 @@ export type UpdateRocmInstallStateBody = {
     message?: string;
 };
 
+export type LoadModelBody = {
+    modelId: string;
+    backend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
+};
+
+export type UnloadModelBody = {
+    modelId: string;
+    backend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
+};
+
 export type UpdateHubPoolPreferencesBody = {
     poolEnabled?: boolean;
     poolOutboundEnabled?: boolean;
@@ -2236,10 +2246,6 @@ export type PinModelBody = {
 };
 
 export type UnpinModelBody = {
-    modelId: string;
-};
-
-export type UnloadModelBody = {
     modelId: string;
 };
 
@@ -4298,7 +4304,7 @@ export type PullModelResponses = {
 };
 
 export type LoadModelData = {
-    body?: never;
+    body: LoadModelBody;
     path?: never;
     query?: never;
     url: '/api/inference/models/load';

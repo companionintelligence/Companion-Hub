@@ -3389,6 +3389,16 @@
       "post": {
         "operationId": "loadModel",
         "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoadModelBody"
+              }
+            }
+          }
+        },
         "responses": {
           "201": {
             "description": ""
@@ -3403,14 +3413,6 @@
       "post": {
         "operationId": "unloadModel",
         "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -3420,7 +3422,15 @@
               }
             }
           }
-        }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
       }
     },
     "/api/inference/models/pin": {
@@ -13445,6 +13455,48 @@
         ],
         "additionalProperties": false
       },
+      "LoadModelBody": {
+        "type": "object",
+        "properties": {
+          "modelId": {
+            "type": "string"
+          },
+          "backend": {
+            "type": "string",
+            "enum": [
+              "ollama",
+              "vllm",
+              "lemonade",
+              "omlx"
+            ]
+          }
+        },
+        "required": [
+          "modelId"
+        ],
+        "additionalProperties": false
+      },
+      "UnloadModelBody": {
+        "type": "object",
+        "properties": {
+          "modelId": {
+            "type": "string"
+          },
+          "backend": {
+            "type": "string",
+            "enum": [
+              "ollama",
+              "vllm",
+              "lemonade",
+              "omlx"
+            ]
+          }
+        },
+        "required": [
+          "modelId"
+        ],
+        "additionalProperties": false
+      },
       "UpdateHubPoolPreferencesBody": {
         "type": "object",
         "properties": {
@@ -17034,18 +17086,6 @@
         "additionalProperties": false
       },
       "UnpinModelBody": {
-        "type": "object",
-        "properties": {
-          "modelId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "modelId"
-        ],
-        "additionalProperties": false
-      },
-      "UnloadModelBody": {
         "type": "object",
         "properties": {
           "modelId": {
