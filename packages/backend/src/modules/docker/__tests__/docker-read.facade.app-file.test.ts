@@ -1,4 +1,4 @@
-import { Readable } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppUrn } from '@ci-hub/common/types';
 import { DockerReadFacade } from '../docker-read.facade';
@@ -59,9 +59,10 @@ describe('DockerReadFacade.readRunningAppFile', () => {
     await expect(facade.readRunningAppFile(OPENCLAW, '/data', CONFIG)).resolves.toBe('{"agents":{}}');
 
     expect(getContainer).toHaveBeenCalledWith('c0ffee00c0ffee');
-    expect(getArchive).toHaveBeenCalledWith(expect.objectContaining({ path: CONFIG }));
+    // Without the deadline a stalled archive stream would hold the single-flight refresh sweep open for good.
+    expect(getArchive).toHaveBeenCalledWith(expect.objectContaining({ path: CONFIG, abortSignal: expect.any(AbortSignal) }));
     for (const [options] of listContainers.mock.calls) {
-      expect(options).toMatchObject({ all: false });
+      expect(options).toMatchObject({ all: false, filters: { label: expect.arrayContaining([expect.stringContaining(`.appurn=${OPENCLAW}`)]) } });
     }
   });
 
@@ -102,6 +103,40 @@ describe('DockerReadFacade.readRunningAppFile', () => {
     await expect(facade.readRunningAppFile(OPENCLAW, '/data', CONFIG)).rejects.toThrow('server error');
 
     getArchive.mockResolvedValueOnce(archive(tarEntry('openclaw.json', '2')));
-    await expect(facade.readRunningAppFile(OPENCLAW, '/data', CONFIG)).rejects.toThrow('no regular file');
+    await expect(facade.readRunningAppFile(OPENCLAW, '/data', CONFIG)).rejects.toThrow('no complete regular file');
+
+    // A stream that ends inside the file's data.
+    getArchive.mockResolvedValueOnce(Readable.from([tarEntry('openclaw.json', '0', '{"a":1}').subarray(0, 512 + 3)]));
+    await expect(facade.readRunningAppFile(OPENCLAW, '/data', CONFIG)).rejects.toThrow('no complete regular file');
+  });
+
+  it('passes on a rejection that is not an Error as it is, not as a TypeError from reading its status code', async () => {
+    listContainers.mockResolvedValue([container([{ Type: 'volume', Destination: '/data' }])]);
+    getArchive.mockRejectedValueOnce(null);
+
+    await expect(facade.readRunningAppFile(OPENCLAW, '/data', CONFIG)).rejects.toBeNull();
+  });
+
+  it('says the read timed out when the deadline cuts the archive stream off', async () => {
+    listContainers.mockResolvedValue([container([{ Type: 'volume', Destination: '/data' }])]);
+    const deadline = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(deadline.signal);
+    // The stream never ends on its own. When the request's signal fires, Node destroys the response with a bare "aborted".
+    getArchive.mockImplementation(async ({ abortSignal }: { abortSignal: AbortSignal }) => {
+      const stream = new PassThrough();
+      const cut = () => stream.destroy(new Error('aborted'));
+      if (abortSignal.aborted) cut();
+      else abortSignal.addEventListener('abort', cut, { once: true });
+      return stream;
+    });
+
+    try {
+      const read = facade.readRunningAppFile(OPENCLAW, '/data', CONFIG);
+      await vi.waitFor(() => expect(getArchive).toHaveBeenCalled());
+      deadline.abort();
+      await expect(read).rejects.toThrow(`Docker archive read of ${CONFIG} timed out for ${OPENCLAW}`);
+    } finally {
+      timeout.mockRestore();
+    }
   });
 });

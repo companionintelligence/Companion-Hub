@@ -283,8 +283,8 @@ export class DockerReadFacade {
    * `mountPoint` is a bind mount of the app-data folder or a named volume. Where that folder can't
    * hold POSIX permissions, the Hub mounts `requiresPosixPermissions` binds as named volumes (see
    * "App volumes" in docs/system/backend.md), and the Hub can't see those files on its own disk.
-   * Throws when Docker fails, takes longer than {@link DOCKER_INSPECT_TIMEOUT_MS}, or sends back
-   * something other than a file.
+   * Throws when Docker fails, when the listing or the archive read each takes longer than
+   * {@link DOCKER_INSPECT_TIMEOUT_MS}, or when Docker sends back something other than a whole file.
    */
   public async readRunningAppFile(appUrn: AppUrn, mountPoint: string, filePath: string): Promise<string | null> {
     const containers = await withTimeout(
@@ -298,24 +298,27 @@ export class DockerReadFacade {
     }
 
     const chunks: Buffer[] = [];
+    const deadline = AbortSignal.timeout(DOCKER_INSPECT_TIMEOUT_MS);
     try {
-      const archive = await this.docker
-        .getContainer(container.Id)
-        .getArchive({ path: filePath, abortSignal: AbortSignal.timeout(DOCKER_INSPECT_TIMEOUT_MS) });
+      const archive = await this.docker.getContainer(container.Id).getArchive({ path: filePath, abortSignal: deadline });
       for await (const chunk of archive) {
         chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       }
     } catch (error) {
       // The container was running a moment ago, so a 404 means the file isn't there (or the container just went away).
-      if ((error as { statusCode?: number }).statusCode === 404) {
+      if ((error as { statusCode?: number } | null)?.statusCode === 404) {
         return null;
+      }
+      // An abort surfaces as a bare "aborted" or "The operation was aborted", which doesn't say it was the deadline.
+      if (deadline.aborted) {
+        throw new Error(`Docker archive read of ${filePath} timed out for ${appUrn}`);
       }
       throw error;
     }
 
     const file = firstFileInTar(Buffer.concat(chunks));
     if (!file) {
-      throw new Error(`Docker's archive of ${filePath} held no regular file`);
+      throw new Error(`Docker's archive of ${filePath} held no complete regular file`);
     }
     return file.toString('utf-8');
   }
