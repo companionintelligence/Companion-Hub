@@ -475,7 +475,7 @@ describe('AppService', () => {
       );
     });
 
-    it('leaves stopped apps, apps with containers and port-expose apps alone', async () => {
+    it('leaves stopped apps, apps with containers, and port-expose apps alone', async () => {
       appsRepository.getApps.mockResolvedValue([
         { id: 2, appName: 'plane', appStoreSlug: 'ci-marketplace', status: 'stopped', config: {} },
         { id: 3, appName: 'flatnotes', appStoreSlug: 'ci-marketplace', status: 'running', config: {} },
@@ -507,6 +507,29 @@ describe('AppService', () => {
       await expect(appService.bootstrap()).resolves.toBeUndefined();
 
       expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(1, 'running', { status: 'stopped' });
+    });
+
+    // The boot waits on this listing before the Hub listens, so a Docker that never answers must not hold it.
+    it('finishes the boot without starting anything when Docker does not list the containers', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        appsRepository.getApps.mockResolvedValue([wordpress] as never);
+        dockerode.listContainers.mockReturnValue(new Promise(() => undefined) as never);
+
+        let settled = false;
+        const booting = appService.bootstrap().finally(() => {
+          settled = true;
+        });
+        for (let tick = 0; tick < 40 && !settled; tick++) {
+          await vi.advanceTimersByTimeAsync(1_000);
+        }
+
+        await expect(booting).resolves.toBeUndefined();
+        expect(appLifecycleService.startApp).not.toHaveBeenCalled();
+        expect(systemEventsQueue.publishRepeatable).toHaveBeenCalledWith({ command: 'sync_app_statuses' }, '*/5 * * * *');
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('leaves the apps to the version-change restart on an upgrade', async () => {

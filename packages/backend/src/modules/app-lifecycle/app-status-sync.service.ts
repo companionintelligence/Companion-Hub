@@ -125,16 +125,19 @@ export class AppStatusSyncService {
 
       let syncedCount = 0;
       let skippedCount = 0;
+      const transitionalGraceMs = this.getTransitionalGraceMs();
 
       for (const app of apps) {
         const appUrn: AppUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
 
         const isTransitional = TRANSITIONAL_STATES.includes(app.status);
-        const transitionalGraceMs = this.getTransitionalGraceMs();
         if (isTransitional) {
-          // A restart, backup or restore takes the containers down before it brings them back, so
-          // Docker cannot say whether one is still running. The registry can, however long it takes.
-          if (this.operationRegistry.get(appUrn)) {
+          // A restart, backup, or restore takes the containers down before it brings them back, so
+          // Docker cannot say whether one is still running. The registry can, for as long as the queue
+          // waits for the command. Past that the caller has given up on it, and an entry that never
+          // clears, such as a force stop hung on Docker, must not hold the app forever.
+          const operation = this.operationRegistry.get(appUrn);
+          if (operation && Date.now() - operation.createdAt < transitionalGraceMs) {
             this.logger.debug(`Skipping ${appUrn} - '${app.status}' operation still in progress`);
             skippedCount++;
             continue;
@@ -354,10 +357,11 @@ export class AppStatusSyncService {
   }
 
   /**
-   * How long an app in a transitional state that the registry does not list is left alone. The
-   * registry lives in memory, so a backend restart empties it while RabbitMQ hands the unfinished
-   * command to the new process. Every state gets the app-events queue's own timeout for that
-   * command to finish (see QueueModule).
+   * How long an app in a transitional state is left alone: the app-events queue's own timeout for
+   * a command to finish (see QueueModule), for every state. It counts from the registry entry's
+   * creation while the registry lists the operation, and from the row's last update when it does
+   * not. The registry lives in memory, so a backend restart empties it while RabbitMQ hands the
+   * unfinished command to the new process.
    */
   private getTransitionalGraceMs(): number {
     const eventsTimeoutMinutes = this.configuration.get('userSettings').eventsTimeout;

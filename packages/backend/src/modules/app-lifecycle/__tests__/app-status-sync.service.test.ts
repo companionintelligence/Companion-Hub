@@ -236,10 +236,11 @@ describe('AppStatusSyncService', () => {
   });
 
   /*
-   * A restart, backup or restore takes the app's containers down before it brings them back, and can
+   * A restart, backup, or restore takes the app's containers down before it brings them back, and can
    * run as long as the queue allows. Five minutes in, the sync read the missing containers as a stopped
    * app (Companion-Hub#1985). A boot start that pulls the images an uninstall removed is the same case
-   * (Companion-Hub#1980).
+   * (Companion-Hub#1980). The row's last update is past the time window here, so only the registry
+   * entry keeps the app skipped.
    */
   it.each([
     ['restarting', 'restart'],
@@ -247,7 +248,7 @@ describe('AppStatusSyncService', () => {
     ['starting', 'start'],
   ] as const)('leaves a %s app with no containers alone while its operation is in the registry', async (status, command) => {
     appRepository.getApps.mockResolvedValue([
-      { id: 14, appName: 'wordpress', appStoreSlug: 'ci-marketplace', status, updatedAt: new Date(Date.now() - 10 * 60 * 1000).toISOString() },
+      { id: 14, appName: 'wordpress', appStoreSlug: 'ci-marketplace', status, updatedAt: new Date(Date.now() - 50 * 60 * 1000).toISOString() },
     ] as never);
     operationRegistry.register('wordpress:ci-marketplace' as never, { requestId: 'req-14', command, tier: 'safe' });
 
@@ -258,6 +259,33 @@ describe('AppStatusSyncService', () => {
     expect(errorReportingService.captureWarning).not.toHaveBeenCalled();
     expect(errorReportingService.reportAppFailure).not.toHaveBeenCalled();
     expect(result.skippedCount).toBe(1);
+  });
+
+  /*
+   * A queued command's entry clears when the queue gives up on it, but a force stop calls Docker
+   * directly with no timeout of its own. An entry that outlives the queue timeout no longer holds the app.
+   */
+  it('reads Docker for an app whose registry entry has outlived the queue timeout', async () => {
+    appRepository.getApps.mockResolvedValue([
+      {
+        id: 16,
+        appName: 'wordpress',
+        appStoreSlug: 'ci-marketplace',
+        status: 'stopping',
+        updatedAt: new Date(Date.now() - 50 * 60 * 1000).toISOString(),
+      },
+    ] as never);
+    const entry = operationRegistry.register('wordpress:ci-marketplace' as never, { requestId: 'req-16', command: 'stop', tier: 'safe' });
+    entry.createdAt = Date.now() - 50 * 60 * 1000;
+
+    await service.syncAllAppStatuses();
+
+    expect(errorReportingService.captureWarning).toHaveBeenCalledWith(
+      "App wordpress:ci-marketplace stuck in 'stopping'",
+      expect.objectContaining({ appUrn: 'wordpress:ci-marketplace', status: 'stopping' }),
+      expect.anything(),
+    );
+    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(16, 'stopping', { status: 'stopped' });
   });
 
   /*

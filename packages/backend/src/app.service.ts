@@ -29,6 +29,9 @@ import { APP_SESSION_KEY_PREFIX, SESSION_KEY_PREFIX } from './modules/auth/sessi
 import { fillEdgeHopAddresses } from './modules/network/edge-hops';
 import { TRAEFIK_CONTAINER_NAME } from './modules/network/network-constants';
 
+/** How long the boot waits for Docker to list the app containers before it skips the recreate. */
+const BOOT_CONTAINER_LIST_TIMEOUT_MS = 15_000;
+
 @Injectable()
 export class AppService implements OnApplicationShutdown {
   /**
@@ -590,7 +593,13 @@ export class AppService implements OnApplicationShutdown {
     try {
       running = (await this.appsRepository.getApps()).filter((app) => app.status === 'running' && !isPortExposeApp(app.config));
       if (running.length === 0) return;
-      containers = await listContainersMatchingAnyLabelSets(this.docker, managedAppLabelSets());
+      // Bounded like the network prune above: the boot waits on this before it listens, and a
+      // dockerode call that hangs on Desktop would keep /api/health/live down.
+      containers = await withTimeout(
+        listContainersMatchingAnyLabelSets(this.docker, managedAppLabelSets()),
+        BOOT_CONTAINER_LIST_TIMEOUT_MS,
+        `Docker did not list the app containers within ${BOOT_CONTAINER_LIST_TIMEOUT_MS / 1000}s`,
+      );
     } catch (error) {
       this.logger.warn(`Could not look for running apps without containers: ${error instanceof Error ? error.message : String(error)}`);
       return;
@@ -611,7 +620,10 @@ export class AppService implements OnApplicationShutdown {
         });
       } catch (error) {
         this.logger.error(`Could not start ${appUrn}; it stays stopped: ${error instanceof Error ? error.message : String(error)}`);
-        await this.appsRepository.updateAppByIdIfStatus(app.id, 'running', { status: 'stopped' }).catch(() => false);
+        await this.appsRepository.updateAppByIdIfStatus(app.id, 'running', { status: 'stopped' }).catch((updateError: unknown) => {
+          this.logger.warn(`Could not mark ${appUrn} stopped: ${updateError instanceof Error ? updateError.message : String(updateError)}`);
+          return false;
+        });
       }
     }
   }

@@ -203,11 +203,14 @@ Guards prevent false alarms:
 - **Transitional grace.** Apps in a transitional state (`installing`,
   `uninstalling`, `stopping`, `starting`, `updating`, `resetting`, `restarting`,
   `backing_up`, `restoring`) are skipped while the operation registry lists an
-  operation for them, however long it runs. A restart, backup or restore takes
-  the containers down first, so Docker can't tell a slow one from a stopped app.
-  The registry lives in memory and a backend restart empties it, so a row it
-  doesn't list gets a time window instead: `max(eventsTimeout, image-pull-timeout)`,
-  the app-events queue's own timeout (45 minutes by default), for every state.
+  operation for them. A restart, backup, or restore takes the containers down
+  first, so Docker can't tell a slow one from a stopped app. The skip lasts as
+  long as the app-events queue waits for a command, `max(eventsTimeout, image-pull-timeout)`
+  (45 minutes by default), counted from when the operation was registered. By
+  then the caller has given up on the command, and an entry that never clears,
+  such as a force stop hung on Docker, can't hold the app forever. The registry
+  lives in memory and a backend restart empties it, so a row it doesn't list
+  gets the same window, counted from the row's last update, for every state.
   Apps stuck past that window are logged as stuck.
 - **Mid-install protection.** An `installing` / `install_failed` app with no
   containers is **not** marked `missing` (the pull may simply be slow).
