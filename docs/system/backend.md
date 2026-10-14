@@ -506,9 +506,11 @@ as a network share, it gives no answer.
 
 Once settings.json is `{}`, the reset also drops what the running Hub still holds from it:
 `CloudFallbackService.forgetProviders()` empties the cloud provider keys, and
-`ConfigurationService.forgetPersistedUserSettings()` puts `userSettings` back to what boot makes of
-an empty file. Without that, apps were handed the old keys until a restart, and the next provider
-saved wrote them all back to the file.
+`ConfigurationService.forgetPersistedUserSettings()` puts the inference, Hub Pool, and app resource
+settings in `userSettings` back to what boot makes of an empty file. Without that, apps were handed
+the old keys until a restart, and the next provider saved wrote them all back to the file. The
+General settings keep their old values until the Hub restarts: boot resolved them into the process
+environment (`generateSystemEnvFile`), and nothing kept the environment as it was before that.
 
 ## The four engines, or two endpoints
 
