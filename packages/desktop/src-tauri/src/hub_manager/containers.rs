@@ -606,24 +606,6 @@ pub(crate) fn hub_queue_name() -> &'static str {
     first_existing_container(HUB_QUEUE_NAMES).unwrap_or(HUB_QUEUE)
 }
 
-fn docker_network_exists(name: &str) -> bool {
-    docker_command()
-        .args(["network", "inspect", name, "--format", "{{.Id}}"])
-        .output()
-        .map(|output| {
-            output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty()
-        })
-        .unwrap_or(false)
-}
-
-pub(crate) fn postgres_docker_network() -> &'static str {
-    if docker_network_exists(HUB_NETWORK) {
-        HUB_NETWORK
-    } else {
-        LEGACY_HUB_NETWORK
-    }
-}
-
 fn inspect_status_ok(status: &str) -> bool {
     !status.is_empty() && !status.contains("No such object") && !status.contains("Error")
 }
