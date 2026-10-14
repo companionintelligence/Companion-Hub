@@ -25,7 +25,9 @@ import { SystemUpdateController } from '@/modules/system-update/system-update.co
 import { FactoryResetController } from '@/modules/system/factory-reset.controller';
 import { SystemController } from '@/modules/system/system.controller';
 import { TailscaleController } from '@/modules/tailscale/tailscale.controller';
+import { AuthGuard } from '../auth.guard';
 import { HubManagerGuard } from '../hub-manager.guard';
+import { HubSessionGuard } from '../hub-session.guard';
 
 const contextFor = (request: Partial<Request>) => ({ switchToHttp: () => ({ getRequest: () => request }) }) as unknown as ExecutionContext;
 
@@ -118,7 +120,7 @@ const HUB_WIDE_ROUTES: Array<[string, { prototype: object }, string[]]> = [
   ['app stores', MarketplaceController, ['pullAppStores', 'createAppStore', 'updateAppStore', 'deleteAppStore']],
   ['Docker network repair', NetworkController, ['repairOrphans']],
   ['Tailscale', TailscaleController, ['syncExposure', 'startAuth', 'connectWithAuthKey', 'disconnect']],
-  ['registration reset, removal check and tunnel reconnect', RegistrationController, ['resetRegistration', 'checkForRemoval', 'reconnectTunnel']],
+  ['registration reset and tunnel reconnect', RegistrationController, ['resetRegistration', 'reconnectTunnel']],
   ['Hub update and auto-updates', SystemUpdateController, ['performUpdate', 'setAutoUpdates']],
   ['factory reset', FactoryResetController, ['factoryReset']],
   ['API keys', ApiKeyAdminController, ['createKey', 'updateKey', 'revokeKey']],
@@ -148,5 +150,17 @@ describe('routes that take an owner or admin', () => {
     [ApiKeyAdminController, 'listKeys'],
   ] as const)('%O.%s stays open to anyone signed in', (controller, method) => {
     expect(guardsOn(controller, method)).not.toContain(HubManagerGuard);
+  });
+
+  /*
+   * The removal check only reports the check-in that the unauthenticated GET /registration/status
+   * already sends. A role check there would fail once the Portal deletes the device, which is what
+   * the check watches for.
+   */
+  it('keeps the removal check to a signed-in person, without the role check', () => {
+    const guards = guardsOn(RegistrationController, 'checkForRemoval');
+
+    expect(guards).toEqual(expect.arrayContaining([AuthGuard, HubSessionGuard]));
+    expect(guards).not.toContain(HubManagerGuard);
   });
 });

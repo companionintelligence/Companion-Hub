@@ -831,9 +831,11 @@ whole Hub, or reads the Hub's own log, carries `HubManagerGuard` after `AuthGuar
 `acknowledge-welcome`, inference preferences, cloud providers, model pulls, loads and pins, hardware
 rescan, ROCm state and the Ollama install, Hub Pool settings, pins, pairing and peers, app stores
 (add, change, delete, pull), Tailscale connect, sync and disconnect, the Docker network repair, the
-registration reset, removal check and tunnel reconnect, the Hub update and auto-updates, the factory
-reset, API keys (create, change, revoke), the MCP tool runner, `GET /system/logs/download` and
-`/api/sse/ci-hub-logs`. `hub-manager.guard.test.ts` lists them; add a new Hub-wide route there too.
+registration reset and tunnel reconnect, the Hub update and auto-updates, the factory reset, API keys
+(create, change, revoke), the MCP tool runner, `GET /system/logs/download` and `/api/sse/ci-hub-logs`.
+`hub-manager.guard.test.ts` lists them; add a new Hub-wide route there too. The removal check
+(`POST /registration/removal-check`) takes only a sign-in: it reports the check-in the unauthenticated
+status route sends anyway, and a role can't be read once the Portal has deleted the device.
 
 The guard asks `MarketplaceWhoIsService.hubManageVerdict`:
 

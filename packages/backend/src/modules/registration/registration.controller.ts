@@ -70,9 +70,12 @@ export class RegistrationController {
    * One check while Settings waits for the person to delete this Hub in the Portal. Shares the
    * check-in throttle with the status route, and resets the Hub only when the Portal answers
    * `DEVICE_NOT_ACTIVE`.
+   *
+   * No `HubManagerGuard`: this only reports the check-in that the unauthenticated `status` route
+   * sends anyway, and once the Portal deletes the device it can't confirm anyone's role.
    */
   @Post('removal-check')
-  @UseGuards(AuthGuard, HubSessionGuard, HubManagerGuard, DemoModeGuard)
+  @UseGuards(AuthGuard, HubSessionGuard, DemoModeGuard)
   @ApiOperation({ summary: 'Check whether this Hub was removed from its account in the Portal' })
   @ApiResponse({
     status: 200,
