@@ -159,8 +159,11 @@ On a boot that keeps the version, the Hub starts only the apps whose row says `r
 but that have no container at all, and schedules the first app status sync after that.
 Uninstalling the desktop app with its data kept leaves exactly this: every app container
 is gone, and the cache still holds the old version. A stopped app stays stopped. An app
-with any container left, running or not, is left to the status sync. If the start fails,
-the app is marked `stopped`, so the next boot doesn't try it again.
+with any container left, running or not, is left to the status sync. The row is set to
+`starting` first, so a start that fails never leaves a `running` row with no containers for
+the sync to report as a crash. If the queue refuses the start because it isn't up yet, the
+Hub tries once more as soon as it is, waiting up to 10 minutes. A start that fails otherwise,
+or again, marks the app `stopped`, so the next boot doesn't try it again.
 
 ### Tunnel sidecar (`cloudflared`)
 

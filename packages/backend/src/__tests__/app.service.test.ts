@@ -9,7 +9,7 @@ import { RegistryService } from '@/utils/registry/registry.service';
 import { faker } from '@faker-js/faker';
 import { Test } from '@nestjs/testing';
 import { fromPartial } from '@total-typescript/shoehorn';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { DOCKERODE } from '@/modules/docker/docker.module';
 import Dockerode from 'dockerode';
@@ -23,6 +23,7 @@ import { AppsRepository } from '@/modules/apps/apps.repository';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import { APP_SESSION_KEY_PREFIX, SESSION_KEY_PREFIX } from '@/modules/auth/session.manager';
 import { SystemEventsQueue } from '@/modules/queue/entities/system-events';
+import { TranslatableError } from '@/common/error/translatable-error';
 
 describe('AppService', () => {
   let appService: AppService;
@@ -458,6 +459,7 @@ describe('AppService', () => {
       );
       cacheService.get.mockImplementation((key: string) => (key === 'buster' ? '1.0.0' : undefined));
       dockerode.listContainers.mockResolvedValue([]);
+      appsRepository.updateAppByIdIfStatus.mockResolvedValue(true);
       appLifecycleService.startApp.mockResolvedValue({ requestId: 'req-1' });
     });
 
@@ -506,14 +508,65 @@ describe('AppService', () => {
       expect(appLifecycleService.startApp).not.toHaveBeenCalled();
     });
 
-    it('marks an app stopped when its start is refused, so no later boot or sync keeps at it', async () => {
+    /*
+     * A start the queue never took puts back the status it read. Left `running` with no containers,
+     * the app was what the first status sync reports as a crash.
+     */
+    it('moves the app to starting before it starts it', async () => {
       appsRepository.getApps.mockResolvedValue([wordpress] as never);
-      appsRepository.updateAppByIdIfStatus.mockResolvedValue(true);
-      appLifecycleService.startApp.mockRejectedValue(new Error("Queue 'app-events-queue' is unavailable while RabbitMQ is reconnecting."));
+
+      await appService.bootstrap();
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(1, 'running', { status: 'starting' });
+      expect(appsRepository.updateAppByIdIfStatus.mock.invocationCallOrder[0]).toBeLessThan(appLifecycleService.startApp.mock.invocationCallOrder[0]);
+    });
+
+    describe('when the queue is not up yet', () => {
+      const refusal = () => new TranslatableError('APP_ERROR_QUEUE_UNAVAILABLE', { command: 'start' }, 503);
+
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        appsRepository.getApps.mockResolvedValue([wordpress] as never);
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('starts the app once the queue is up, and leaves it starting meanwhile', async () => {
+        appLifecycleService.startApp.mockRejectedValueOnce(refusal());
+        systemEventsQueue.unavailableReason.mockReturnValueOnce("Queue 'system-events-queue' is unavailable while RabbitMQ is connecting.");
+
+        await appService.bootstrap();
+        expect(appLifecycleService.startApp).toHaveBeenCalledTimes(1);
+
+        await vi.advanceTimersByTimeAsync(2_000);
+
+        await vi.waitFor(() => expect(appLifecycleService.startApp).toHaveBeenCalledTimes(2));
+        expect(appLifecycleService.startApp).toHaveBeenLastCalledWith(expect.objectContaining({ appUrn: 'wordpress:ci-marketplace' }));
+        expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalledWith(1, expect.anything(), { status: 'stopped' });
+      });
+
+      it('marks the app stopped when the queue refuses it again', async () => {
+        appLifecycleService.startApp.mockRejectedValue(refusal());
+        systemEventsQueue.unavailableReason.mockReturnValue("Queue 'system-events-queue' is unavailable while RabbitMQ is connecting.");
+
+        await appService.bootstrap();
+        await vi.advanceTimersByTimeAsync(10 * 60_000);
+
+        await vi.waitFor(() => expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(1, 'starting', { status: 'stopped' }));
+        expect(appLifecycleService.startApp).toHaveBeenCalledTimes(2);
+      });
+    });
+
+    it('marks an app stopped at once when its start fails for another reason', async () => {
+      appsRepository.getApps.mockResolvedValue([wordpress] as never);
+      appLifecycleService.startApp.mockRejectedValue(new Error('connection to the database was lost'));
 
       await expect(appService.bootstrap()).resolves.toBeUndefined();
 
-      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(1, 'running', { status: 'stopped' });
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(1, 'starting', { status: 'stopped' });
+      expect(appLifecycleService.startApp).toHaveBeenCalledTimes(1);
     });
 
     // The boot waits on this listing before the Hub listens, so a Docker that never answers must not hold it.
