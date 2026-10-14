@@ -22,6 +22,7 @@ export class FactoryResetController {
   @ApiResponse({ status: 200, description: 'Factory reset completed' })
   @ApiResponse({ status: 400, description: 'Confirmation does not match this device name' })
   @ApiResponse({ status: 403, description: 'Operator authentication required' })
+  @ApiResponse({ status: 409, description: "The Hub's data folder is the top of a disk or a home folder, so nothing was changed" })
   async factoryReset(@Req() req: Request, @Body() body: FactoryResetDto) {
     if (!req.user?.operator) {
       throw new ForbiddenException('Only Hub operators can perform a factory reset');
