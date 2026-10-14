@@ -859,9 +859,9 @@ export class AuthController {
   /**
    * A nonce for the desktop shell to sign before `POST /portal/desktop-waiting`. Unauthenticated
    * because a nonce grants nothing until it comes back signed with the host-local key; rate-limited
-   * like the other unauthenticated auth routes. Only a caller on the loopback address gets one. The
-   * shell is always there, and a caller through the tunnel could fill the open set and push its nonce out.
-   * Left out of the API client because the frontend never calls it.
+   * like the other unauthenticated auth routes. Only a caller that `isDirectLoopbackRequest` admits
+   * gets one: the shell always passes, and a caller from the internet could otherwise fill the open
+   * set and push the shell's nonce out. Left out of the API client because the frontend never calls it.
    */
   @Post('/portal/desktop-waiting/challenge')
   @HttpCode(HttpStatus.OK)
