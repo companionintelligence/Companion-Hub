@@ -186,13 +186,56 @@ fn wsl2_engine_elevated_failure_shows_the_script_error_over_the_exit_code() {
     );
     assert_eq!(
         wsl2_engine_elevated_failure(Some(1), "  ", ""),
-        "WSL2 Docker Engine installation failed with exit code Some(1)."
+        "WSL2 Docker Engine installation failed with exit code 1."
+    );
+    assert_eq!(
+        wsl2_engine_elevated_failure(None, "", ""),
+        "WSL2 Docker Engine installation failed without an exit code."
+    );
+}
+
+#[test]
+fn firewall_program_path_drops_verbatim_prefixes() {
+    assert_eq!(
+        firewall_program_path(r"\\?\C:\Users\u\AppData\Local\Companion Hub\companion-hub.exe"),
+        r"C:\Users\u\AppData\Local\Companion Hub\companion-hub.exe"
+    );
+    assert_eq!(
+        firewall_program_path(r"\\?\UNC\server\share\Companion Hub\companion-hub.exe"),
+        r"\\server\share\Companion Hub\companion-hub.exe"
+    );
+    assert_eq!(
+        firewall_program_path(r"C:\Program Files\Companion Hub\companion-hub.exe"),
+        r"C:\Program Files\Companion Hub\companion-hub.exe"
+    );
+}
+
+#[test]
+fn powershell_single_quoted_escape_doubles_typographic_quotes_too() {
+    // PowerShell ends a single-quoted string at U+2018 to U+201B as well.
+    assert_eq!(
+        escape_powershell_single_quoted("C:\\Users\\O\u{2019}Neil and o'neil"),
+        "C:\\Users\\O\u{2019}\u{2019}Neil and o''neil"
+    );
+    assert_eq!(
+        escape_powershell_single_quoted("\u{2018}\u{201A}\u{201B}"),
+        "\u{2018}\u{2018}\u{201A}\u{201A}\u{201B}\u{201B}"
+    );
+}
+
+#[test]
+fn docker_desktop_launch_is_unchanged_by_the_shared_elevated_launch_command() {
+    // The command Docker Desktop's install ran before the WSL engine setup
+    // shared the builder with it.
+    assert_eq!(
+        docker_desktop_windows_outer_launch_command(r"C:\Temp\install.ps1", "test user"),
+        r#"$ErrorActionPreference = 'Stop'; $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','"C:\Temp\install.ps1"','-AppUser','"test user"'); exit $process.ExitCode"#
     );
 }
 
 #[test]
 fn wsl2_engine_elevated_launch_passes_the_program_and_error_file_quoted() {
-    let cmd = wsl2_engine_elevated_launch_command(
+    let cmd = elevated_powershell_launch_command(
         r"C:\Users\o'neil\AppData\Local\Temp\.tmp1.ps1",
         &[
             (
@@ -219,7 +262,12 @@ fn wsl2_engine_elevated_script_lets_the_hub_reach_the_update_listener() {
     let script = wsl2_engine_elevated_script();
 
     assert!(script.contains(update_listener_firewall_function()));
-    assert!(script.contains("Set-CompanionHubUpdateListenerFirewall -Program $Program"));
+    // Before the WSL step's `exit 100`: with docker.exe already in Program
+    // Files, the run after the reboot skips the elevated script.
+    let firewall_call = script
+        .find("Set-CompanionHubUpdateListenerFirewall -Program $Program")
+        .expect("firewall call");
+    assert!(firewall_call < script.find("exit 100").expect("reboot exit"));
     // The rule must stay narrow: one port, one program, the WSL range only.
     let function = update_listener_firewall_function();
     assert!(function.contains("$name = 'CompanionHub-UpdateListener-WSL'"));
@@ -286,7 +334,7 @@ $exe = Expand-CompanionHubDockerCli -ZipPath (Join-Path $root 'docker.zip') -Exp
 "#,
         helper = powershell_authenticode_helper(),
         check = windows_docker_cli_check_function(),
-        root = dir.path().display(),
+        root = escape_powershell_single_quoted(&dir.path().to_string_lossy()),
         expected = expected_sha256.unwrap_or(""),
     );
     let output = run_windows_powershell(dir.path(), &script, &[]);
@@ -382,14 +430,18 @@ fn run_update_listener_firewall(program: &str) -> Vec<serde_json::Value> {
 $hub = 'c:\users\u\appdata\local\companion hub\companion-hub.exe'
 $rules = @(
   # What the first-run prompt leaves when only Private networks is ticked.
-  [pscustomobject]@{{ Name = "TCP Query User{{1}}$hub"; Direction = 'Inbound'; Action = 'Block'; Program = $hub; Protocol = 'TCP'; LocalPort = 'Any' }}
-  [pscustomobject]@{{ Name = "UDP Query User{{2}}$hub"; Direction = 'Inbound'; Action = 'Block'; Program = $hub; Protocol = 'UDP'; LocalPort = 'Any' }}
-  [pscustomobject]@{{ Name = "TCP Query User{{3}}$hub"; Direction = 'Inbound'; Action = 'Allow'; Program = $hub; Protocol = 'TCP'; LocalPort = 'Any' }}
+  [pscustomobject]@{{ Name = "TCP Query User{{1}}$hub"; Direction = 'Inbound'; Action = 'Block'; Profile = 'Public'; Program = $hub; Protocol = 'TCP'; LocalPort = 'Any' }}
+  [pscustomobject]@{{ Name = "UDP Query User{{2}}$hub"; Direction = 'Inbound'; Action = 'Block'; Profile = 'Public'; Program = $hub; Protocol = 'UDP'; LocalPort = 'Any' }}
+  [pscustomobject]@{{ Name = "TCP Query User{{3}}$hub"; Direction = 'Inbound'; Action = 'Allow'; Profile = 'Private'; Program = $hub; Protocol = 'TCP'; LocalPort = 'Any' }}
   # A rule the user made, and the prompt's rule for another program.
-  [pscustomobject]@{{ Name = 'Block Companion Hub'; Direction = 'Inbound'; Action = 'Block'; Program = $hub; Protocol = 'TCP'; LocalPort = 'Any' }}
-  [pscustomobject]@{{ Name = 'TCP Query User{{4}}c:\tools\other.exe'; Direction = 'Inbound'; Action = 'Block'; Program = 'c:\tools\other.exe'; Protocol = 'TCP'; LocalPort = 'Any' }}
+  [pscustomobject]@{{ Name = 'Block Companion Hub'; Direction = 'Inbound'; Action = 'Block'; Profile = 'Public'; Program = $hub; Protocol = 'TCP'; LocalPort = 'Any' }}
+  [pscustomobject]@{{ Name = 'TCP Query User{{4}}c:\tools\other.exe'; Direction = 'Inbound'; Action = 'Block'; Profile = 'Public'; Program = 'c:\tools\other.exe'; Protocol = 'TCP'; LocalPort = 'Any' }}
   # The prompt's rule after an earlier run took 17400 out of it.
-  [pscustomobject]@{{ Name = "TCP Query User{{5}}$hub"; Direction = 'Inbound'; Action = 'Block'; Program = $hub; Protocol = 'TCP'; LocalPort = @('1-17399', '17401-65535') }}
+  [pscustomobject]@{{ Name = "TCP Query User{{5}}$hub"; Direction = 'Inbound'; Action = 'Block'; Profile = 'Public'; Program = $hub; Protocol = 'TCP'; LocalPort = @('1-17399', '17401-65535') }}
+  # What the prompt leaves when the user denies the app (Cancel): the user's call, left alone.
+  [pscustomobject]@{{ Name = "TCP Query User{{6}}$hub"; Direction = 'Inbound'; Action = 'Block'; Profile = 'Private, Public'; Program = $hub; Protocol = 'TCP'; LocalPort = 'Any' }}
+  # A domain-joined PC where only Private was ticked.
+  [pscustomobject]@{{ Name = "TCP Query User{{7}}$hub"; Direction = 'Inbound'; Action = 'Block'; Profile = 'Domain, Public'; Program = $hub; Protocol = 'TCP'; LocalPort = 'Any' }}
 )
 $calls = New-Object System.Collections.ArrayList
 function Record($call) {{ [void]$calls.Add((ConvertTo-Json -Compress $call)) }}
@@ -401,13 +453,13 @@ function New-NetFirewallRule {{
 function Get-NetFirewallApplicationFilter {{ [CmdletBinding()] param([string]$Program) $rules | Where-Object {{ $_.Program -eq $Program }} }}
 function Get-NetFirewallRule {{ [CmdletBinding()] param([Parameter(ValueFromPipeline = $true)]$InputObject) process {{ $InputObject }} }}
 function Get-NetFirewallPortFilter {{ [CmdletBinding()] param([Parameter(ValueFromPipeline = $true)]$InputObject) process {{ [pscustomobject]@{{ Protocol = $InputObject.Protocol; LocalPort = $InputObject.LocalPort }} }} }}
-function Set-NetFirewallRule {{ [CmdletBinding()] param([string]$Name, [string[]]$LocalPort) Record @{{ call = 'Set-NetFirewallRule'; name = $Name; localPort = $LocalPort }} }}
+function Set-NetFirewallRule {{ [CmdletBinding()] param([Parameter(ValueFromPipeline = $true)]$InputObject, [string[]]$LocalPort) process {{ Record @{{ call = 'Set-NetFirewallRule'; name = $InputObject.Name; localPort = $LocalPort }} }} }}
 {function}
 Set-CompanionHubUpdateListenerFirewall -Program '{program}'
 $calls
 "#,
         function = update_listener_firewall_function(),
-        program = program.replace('\'', "''"),
+        program = escape_powershell_single_quoted(program),
     );
     let output = run_windows_powershell(dir.path(), &script, &[]);
     assert!(
@@ -448,6 +500,11 @@ fn update_listener_firewall_allows_17400_from_wsl_and_takes_it_out_of_the_prompt
             serde_json::json!({
                 "call": "Set-NetFirewallRule",
                 "name": r"TCP Query User{1}c:\users\u\appdata\local\companion hub\companion-hub.exe",
+                "localPort": ["1-17399", "17401-65535"],
+            }),
+            serde_json::json!({
+                "call": "Set-NetFirewallRule",
+                "name": r"TCP Query User{7}c:\users\u\appdata\local\companion hub\companion-hub.exe",
                 "localPort": ["1-17399", "17401-65535"],
             }),
         ]

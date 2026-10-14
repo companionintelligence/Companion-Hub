@@ -60,9 +60,9 @@ immediately.
 
 On Windows the Hub can run on Docker Engine inside a WSL2 distro instead of Docker Desktop
 (`hub_manager/installers/engine_alt.rs`). Setup runs one elevated script, then one as the user. The
-elevated script enables WSL, puts Docker's static `docker.exe` in
-`%ProgramW6432%\Docker\Docker\resources\bin` when it isn't there, and adds the update listener's
-firewall rule (see [Host update listener](#host-update-listener)). Docker doesn't sign its static
+elevated script adds the update listener's firewall rule (see
+[Host update listener](#host-update-listener)), enables WSL, and puts Docker's static `docker.exe` in
+`%ProgramW6432%\Docker\Docker\resources\bin` when it isn't there. Docker doesn't sign its static
 Windows CLI and publishes no checksums for it, so setup downloads one pinned zip
 (`WINDOWS_STATIC_DOCKER_CLI_VERSION`) and refuses it unless its SHA-256 matches
 `WINDOWS_STATIC_DOCKER_CLI_SHA256`. Bump the two together. An unsigned `docker.exe` passes on the
@@ -226,7 +226,7 @@ The Hub's own Docker calls (its self-update, every app install and start) read `
 
 The Hub calls the listener at `host.docker.internal`, which on the Docker engine inside WSL is the WSL VM, not the Windows host the listener runs on. On that engine the app writes the Windows host's address on the WSL adapter (the distro's default gateway, which the container reaches through the VM) to `state/update-listener.host` (`hub_manager/wsl_engine_files.rs`), and the Hub calls the listener there. The app writes it at each launch while Docker answers, at each Hub start, and once Docker answers again after the app started the engine, in case the WSL network came back with a new gateway. On any other engine it removes the file. The Hub uses the file only when it holds one private IPv4 address, and the app writes only an address that belongs to this PC, so with WSL's mirrored networking, where the gateway is the router, nothing is written.
 
-Windows Defender Firewall filters the WSL adapter with the Public profile, and the prompt Windows shows the first time the app listens ticks only Private networks. So the WSL engine's elevated setup adds the inbound rule `CompanionHub-UpdateListener-WSL`: TCP 17400, the app's own executable, local and remote addresses in `172.16.0.0/12` (WSL picks its NAT subnet, a /20, from that range, and can pick another after a reboot), any profile. Block rules beat Allow rules, so setup also takes port 17400 out of the prompt's Public Block rule for the app (`TCP Query User{...}<path>`) and leaves the rest of that rule alone. If the rule can't be added, setup carries on and `desktop.log` says why. `uninstall-cleanup.ps1` removes the rule when it runs with admin rights. A PC that set up the engine before this rule existed doesn't get it, since setup skips the elevated script once WSL and `docker.exe` are in place.
+Windows Defender Firewall filters the WSL adapter with the Public profile, and the prompt Windows shows the first time the app listens ticks only Private networks. So the WSL engine's elevated setup adds the inbound rule `CompanionHub-UpdateListener-WSL`: TCP 17400, the app's own executable, local and remote addresses in `172.16.0.0/12` (WSL picks its NAT subnet, a /20, from that range, and can pick another after a reboot), any profile. Block rules beat Allow rules, so setup also takes port 17400 out of the prompt's Public Block rule for the app (`TCP Query User{...}<path>`) and leaves the rest of that rule alone. A Block rule that covers Private networks too is what the prompt leaves when the user denied the app, and setup doesn't touch it. The rule's program is the app's executable with junctions resolved, since that is the path the firewall matches. If the rule can't be added, setup carries on and `desktop.log` says why. `uninstall-cleanup.ps1` removes the rule when it runs with admin rights. A PC that set up the engine before this rule existed doesn't get it, since setup skips the elevated script once WSL and `docker.exe` are in place. The same goes for a PC that already had both, such as one moving off Docker Desktop.
 
 ## Testing
 

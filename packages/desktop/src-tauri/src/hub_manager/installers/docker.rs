@@ -90,14 +90,33 @@ pub(crate) fn docker_desktop_windows_outer_launch_command(
     script_path: &str,
     username: &str,
 ) -> String {
-    // The -File path and -AppUser value are wrapped in embedded double quotes
-    // because Start-Process flattens -ArgumentList into a command line without
-    // re-quoting elements, so a path or username containing spaces would
-    // otherwise break the inner invocation.
+    elevated_powershell_launch_command(script_path, &[("-AppUser", username)])
+}
+
+/// The command that runs `script_path` elevated with `script_args` and exits with
+/// its exit code. The -File path and each value are wrapped in embedded double
+/// quotes because Start-Process flattens -ArgumentList into a command line without
+/// re-quoting elements, so a path or value containing spaces (a profile dir, a
+/// username, or the app's own folder) would otherwise break the inner invocation.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn elevated_powershell_launch_command(
+    script_path: &str,
+    script_args: &[(&str, &str)],
+) -> String {
+    let mut arguments = vec![
+        "'-NoProfile'".to_string(),
+        "'-ExecutionPolicy'".to_string(),
+        "'Bypass'".to_string(),
+        "'-File'".to_string(),
+        format!("'\"{}\"'", escape_powershell_single_quoted(script_path)),
+    ];
+    for (name, value) in script_args {
+        arguments.push(format!("'{name}'"));
+        arguments.push(format!("'\"{}\"'", escape_powershell_single_quoted(value)));
+    }
     format!(
-        "$ErrorActionPreference = 'Stop'; $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','\"{}\"','-AppUser','\"{}\"'); exit $process.ExitCode",
-        escape_powershell_single_quoted(script_path),
-        escape_powershell_single_quoted(username),
+        "$ErrorActionPreference = 'Stop'; $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @({}); exit $process.ExitCode",
+        arguments.join(",")
     )
 }
 
@@ -221,9 +240,19 @@ fn resolve_current_username_windows() -> Result<String, String> {
     }
 }
 
+/// Escapes `value` for a PowerShell single-quoted string. PowerShell ends such a
+/// string at a typographic quote (U+2018 to U+201B) as well as at `'`, so each of
+/// them is doubled, which is how PowerShell reads one of them literally.
 #[cfg(any(target_os = "windows", test))]
 pub(crate) fn escape_powershell_single_quoted(value: &str) -> String {
-    value.replace('\'', "''")
+    let mut escaped = String::with_capacity(value.len());
+    for c in value.chars() {
+        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
+            escaped.push(c);
+        }
+        escaped.push(c);
+    }
+    escaped
 }
 
 #[cfg(target_os = "windows")]

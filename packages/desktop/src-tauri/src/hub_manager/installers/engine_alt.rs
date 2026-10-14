@@ -220,37 +220,37 @@ fn install_colima_macos() -> Result<DockerInstallResult, String> {
     }
 }
 
-/// Windows: Docker Engine inside WSL2, no Docker Desktop.
-///
-/// The install is split across two PowerShell scripts so that only the steps
-/// that genuinely need Windows admin run elevated, and everything that is
-/// inherently per-user runs as the logged-in user. This matters because:
-///   - WSL distros, the docker context (`~/.docker`) and the Startup keepalive
-///     are all per-user; if they were created by an elevated *other* admin
-///     account (over-the-shoulder UAC) the Hub — running as the real user —
-///     would never see them, so `docker info` would keep failing after a
-///     "successful" install.
-///   - The Colima path on macOS already uses this elevated-then-user split.
-///
-/// Exit code contract for the **elevated** script matches the Docker Desktop
-/// installer: 100 = WSL was just enabled and Windows must reboot (NeedsRestart);
-/// 0 = elevated work done. The **user** script returns 0 once the engine is
-/// reachable.
-///
-/// Design notes (all verified against MS Learn / Docker docs):
-///   - `wsl --install -d Ubuntu --no-launch` registers Ubuntu without the
-///     interactive first-run user creation; `wsl -u root` works without it.
-///     Once the WSL platform is enabled, adding/running a distro is per-user and
-///     does not require Windows admin.
-///   - Ubuntu's docker-ce systemd unit uses `-H fd://`, which conflicts with a
-///     daemon.json `hosts` key — TCP exposure needs a systemd drop-in instead.
-///   - WSL2 localhost forwarding makes tcp://127.0.0.1:2375 reachable from
-///     Windows, but only while the distro runs — and systemd services do NOT
-///     keep the VM alive, hence the hidden `sleep infinity` keepalive in the
-///     user's Startup folder.
-///   - docker.exe goes where find_docker_binary() already looks, and a docker
-///     context (stored in ~/.docker, read at runtime) points it at the TCP
-///     endpoint — no env vars, so the running Hub needs no restart.
+// Windows: Docker Engine inside WSL2, no Docker Desktop.
+//
+// The install is split across two PowerShell scripts so that only the steps
+// that genuinely need Windows admin run elevated, and everything that is
+// inherently per-user runs as the logged-in user. This matters because:
+//   - WSL distros, the docker context (`~/.docker`) and the Startup keepalive
+//     are all per-user; if they were created by an elevated *other* admin
+//     account (over-the-shoulder UAC) the Hub — running as the real user —
+//     would never see them, so `docker info` would keep failing after a
+//     "successful" install.
+//   - The Colima path on macOS already uses this elevated-then-user split.
+//
+// Exit code contract for the **elevated** script matches the Docker Desktop
+// installer: 100 = WSL was just enabled and Windows must reboot (NeedsRestart);
+// 0 = elevated work done. The **user** script returns 0 once the engine is
+// reachable.
+//
+// Design notes (all verified against MS Learn / Docker docs):
+//   - `wsl --install -d Ubuntu --no-launch` registers Ubuntu without the
+//     interactive first-run user creation; `wsl -u root` works without it.
+//     Once the WSL platform is enabled, adding/running a distro is per-user and
+//     does not require Windows admin.
+//   - Ubuntu's docker-ce systemd unit uses `-H fd://`, which conflicts with a
+//     daemon.json `hosts` key — TCP exposure needs a systemd drop-in instead.
+//   - WSL2 localhost forwarding makes tcp://127.0.0.1:2375 reachable from
+//     Windows, but only while the distro runs — and systemd services do NOT
+//     keep the VM alive, hence the hidden `sleep infinity` keepalive in the
+//     user's Startup folder.
+//   - docker.exe goes where find_docker_binary() already looks, and a docker
+//     context (stored in ~/.docker, read at runtime) points it at the TCP
+//     endpoint — no env vars, so the running Hub needs no restart.
 
 /// The static docker CLI the WSL engine setup puts in Program Files. Docker doesn't
 /// sign these Windows builds and publishes no checksums for them, so setup pins one
@@ -319,8 +319,11 @@ pub(crate) fn windows_docker_cli_check_function() -> &'static str {
 /// that Windows picks from that range, and it can pick a new one after a reboot.
 /// Block rules win over Allow rules, so the prompt's Block rule for Public
 /// networks, named `TCP Query User{...}<program path>`, loses port 17400 and keeps
-/// the rest. The uninstaller (`distribution/scripts/uninstall-cleanup.ps1`)
-/// removes the rule by its name.
+/// the rest. A Block rule that also covers Private networks is what the prompt
+/// leaves when the user denied the app altogether (Cancel), and stays as it is.
+/// The rule object is piped to Set-NetFirewallRule because -Name takes wildcards
+/// and the name holds the program path. The uninstaller
+/// (`distribution/scripts/uninstall-cleanup.ps1`) removes the rule by its name.
 #[cfg(any(test, target_os = "windows"))]
 pub(crate) fn update_listener_firewall_function() -> &'static str {
     r#"function Set-CompanionHubUpdateListenerFirewall {
@@ -344,18 +347,20 @@ pub(crate) fn update_listener_firewall_function() -> &'static str {
   Get-NetFirewallApplicationFilter -Program $Program -ErrorAction SilentlyContinue | Get-NetFirewallRule |
     Where-Object { $_.Direction -eq 'Inbound' -and $_.Action -eq 'Block' -and $_.Name -like 'TCP Query User*' } |
     ForEach-Object {
-      if ("$(($_ | Get-NetFirewallPortFilter).LocalPort)" -eq 'Any') {
-        Set-NetFirewallRule -Name $_.Name -LocalPort '1-17399', '17401-65535'
+      $profiles = "$($_.Profile)" -split ',\s*'
+      if ($profiles -contains 'Public' -and $profiles -notcontains 'Private' -and
+          "$(($_ | Get-NetFirewallPortFilter).LocalPort)" -eq 'Any') {
+        $_ | Set-NetFirewallRule -LocalPort '1-17399', '17401-65535'
       }
     }
 }
 "#
 }
 
-/// Elevated phase, for the steps that need Windows admin: enabling the WSL
-/// platform (reboot via exit 100 the first time), writing the static docker CLI
-/// into Program Files where `find_docker_binary()` looks, and the firewall rule
-/// for the update listener. Run with -Program and -ErrorFile (see the prelude).
+/// Elevated phase, for the steps that need Windows admin: the firewall rule for
+/// the update listener, enabling the WSL platform (reboot via exit 100 the first
+/// time), and writing the static docker CLI into Program Files where
+/// `find_docker_binary()` looks. Run with -Program and -ErrorFile (see the prelude).
 #[cfg(any(test, target_os = "windows"))]
 pub(crate) fn wsl2_engine_elevated_script() -> String {
     format!(
@@ -369,6 +374,19 @@ pub(crate) fn wsl2_engine_elevated_script() -> String {
         body = r#"$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $env:WSL_UTF8 = '1'
+
+# Firewall rule for the desktop app's update listener. It comes first so the run
+# that enables WSL and exits 100 adds it too: when docker.exe is already in
+# Program Files, the run after the reboot skips this script. The engine works
+# without the rule, so a failure is reported in -ErrorFile and setup goes on; a
+# later failure overwrites that message with its own.
+if ($Program) {
+  try {
+    Set-CompanionHubUpdateListenerFirewall -Program $Program
+  } catch {
+    if ($ErrorFile) { try { [System.IO.File]::WriteAllText($ErrorFile, "Couldn't add the firewall rule for the update listener: $_") } catch { } }
+  }
+}
 
 # Phase 1: WSL platform itself (admin + reboot when absent). The status probe is
 # allowed to fail (WSL absent) — relax briefly so its non-zero exit doesn't become
@@ -407,16 +425,6 @@ if (-not (Test-Path (Join-Path $dockerBin 'docker.exe'))) {
   } finally {
     Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
-  }
-}
-
-# Phase 3: firewall rule for the desktop app's update listener. The engine works
-# without it, so a failure is reported in -ErrorFile and setup goes on.
-if ($Program) {
-  try {
-    Set-CompanionHubUpdateListenerFirewall -Program $Program
-  } catch {
-    if ($ErrorFile) { try { [System.IO.File]::WriteAllText($ErrorFile, "Couldn't add the firewall rule for the update listener: $_") } catch { } }
   }
 }
 exit 0
@@ -551,33 +559,6 @@ fn program_files_docker_present() -> bool {
     }
 }
 
-/// The command that runs `script_path` elevated with `script_args` and exits with
-/// its exit code. The -File path and each value are wrapped in embedded double
-/// quotes because Start-Process flattens -ArgumentList into a command line without
-/// re-quoting elements, so a path containing spaces (a profile dir, or the app's
-/// own folder) would otherwise break the inner invocation.
-#[cfg(any(test, target_os = "windows"))]
-pub(crate) fn wsl2_engine_elevated_launch_command(
-    script_path: &str,
-    script_args: &[(&str, &str)],
-) -> String {
-    let mut arguments = vec![
-        "'-NoProfile'".to_string(),
-        "'-ExecutionPolicy'".to_string(),
-        "'Bypass'".to_string(),
-        "'-File'".to_string(),
-        format!("'\"{}\"'", escape_powershell_single_quoted(script_path)),
-    ];
-    for (name, value) in script_args {
-        arguments.push(format!("'{name}'"));
-        arguments.push(format!("'\"{}\"'", escape_powershell_single_quoted(value)));
-    }
-    format!(
-        "$ErrorActionPreference = 'Stop'; $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @({}); exit $process.ExitCode",
-        arguments.join(",")
-    )
-}
-
 /// The error for a failed elevated phase: the message the script wrote to its
 /// error file, else what the launcher printed, else the exit code.
 #[cfg(any(test, target_os = "windows"))]
@@ -590,24 +571,35 @@ pub(crate) fn wsl2_engine_elevated_failure(
         "" => launcher_output.trim(),
         script_error => script_error,
     };
-    if reason.is_empty() {
-        format!("WSL2 Docker Engine installation failed with exit code {code:?}.")
+    match (reason.is_empty(), code) {
+        (false, _) => format!("WSL2 Docker Engine installation failed: {reason}"),
+        (true, Some(code)) => {
+            format!("WSL2 Docker Engine installation failed with exit code {code}.")
+        }
+        (true, None) => "WSL2 Docker Engine installation failed without an exit code.".to_string(),
+    }
+}
+
+/// `path` as the firewall matches a program: verbatim prefixes removed, so
+/// `\\?\C:\x` reads `C:\x` and `\\?\UNC\server\share` reads `\\server\share`.
+#[cfg(any(test, target_os = "windows"))]
+pub(crate) fn firewall_program_path(path: &str) -> String {
+    if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
     } else {
-        format!("WSL2 Docker Engine installation failed: {reason}")
+        path.strip_prefix(r"\\?\").unwrap_or(path).to_string()
     }
 }
 
 /// This executable, which also runs the update listener, so the firewall rule
-/// names it as the program.
+/// names it as the program. Resolved through junctions and symlinks first: the
+/// firewall matches the program a process was really started from, and that is
+/// where the first-run prompt's rules point too.
 #[cfg(target_os = "windows")]
 fn update_listener_program() -> String {
     std::env::current_exe()
-        .map(|path| {
-            let path = path.to_string_lossy().into_owned();
-            path.strip_prefix(r"\\?\")
-                .map(str::to_string)
-                .unwrap_or(path)
-        })
+        .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
+        .map(|path| firewall_program_path(&path.to_string_lossy()))
         .unwrap_or_default()
 }
 
@@ -643,7 +635,7 @@ fn run_powershell_script(
     if elevated {
         // Elevate via a nested Start-Process -Verb RunAs and propagate the inner
         // exit code.
-        let launch_command = wsl2_engine_elevated_launch_command(&script_path_str, script_args);
+        let launch_command = elevated_powershell_launch_command(&script_path_str, script_args);
         command.args([
             "-NoProfile",
             "-ExecutionPolicy",
@@ -687,6 +679,12 @@ fn install_docker_wsl2_windows() -> Result<DockerInstallResult, String> {
             .into_temp_path();
         let error_file_str = error_file.to_string_lossy().into_owned();
         let program = update_listener_program();
+        if program.is_empty() {
+            let _ = append_desktop_log(
+                "docker.install",
+                "Couldn't tell where this program is, so setup adds no firewall rule for the update listener.",
+            );
+        }
         let output = run_powershell_script(
             &wsl2_engine_elevated_script(),
             true,
@@ -702,11 +700,11 @@ fn install_docker_wsl2_windows() -> Result<DockerInstallResult, String> {
             &String::from_utf8_lossy(&output.stderr),
         );
         let combined_lower = combined.to_lowercase();
+        // A message with exit 0 or 100 is the firewall step's, which doesn't stop setup.
+        if matches!(output.status.code(), Some(0) | Some(100)) && !script_error.is_empty() {
+            let _ = append_desktop_log("docker.install", script_error);
+        }
         match output.status.code() {
-            // A message after success is the firewall step's, which doesn't stop setup.
-            Some(0) if !script_error.is_empty() => {
-                let _ = append_desktop_log("docker.install", script_error);
-            }
             Some(0) => {}
             Some(100) => {
                 return Ok(DockerInstallResult {
