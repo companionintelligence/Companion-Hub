@@ -26,7 +26,7 @@ import { CloudFallbackService } from '../cloud-fallback.service';
 import { OllamaInstallerService } from '../ollama-installer.service';
 import { RocmInstallerService } from '../rocm-installer.service';
 import { AppCredentialsService } from '../app-credentials.service';
-import { MASKED_VLLM_API_KEY, inferencePreferencesSchema } from '../inference.dto';
+import { MASKED_API_KEY, inferencePreferencesSchema } from '../inference.dto';
 import { InferenceBackendRegistry } from '../backends/backend-registry';
 import { ModelResidencyService } from '../model-residency.service';
 import { BackendObserverService } from '../supervision/backend-observer.service';
@@ -256,14 +256,14 @@ describe('InferenceController — preferences', () => {
 
     const result = await controller.getPreferences();
 
-    expect(result).toMatchObject({ preferredVllmApiKey: MASKED_VLLM_API_KEY, preferredVllmUrl: 'http://192.168.1.50:8000' });
+    expect(result).toMatchObject({ preferredVllmApiKey: MASKED_API_KEY, preferredVllmUrl: 'http://192.168.1.50:8000' });
     expect(JSON.stringify(result)).not.toContain('vllm-secret');
   });
 
   it('keeps the stored vLLM key when a save sends the mask back, and answers masked', async () => {
     configService.setInferencePreferences.mockResolvedValue({ preferredBackend: 'vllm', preferredVllmApiKey: 'vllm-secret' } as never);
 
-    const result = await controller.updatePreferences({ backend: 'vllm', vllmApiKey: MASKED_VLLM_API_KEY });
+    const result = await controller.updatePreferences({ backend: 'vllm', vllmApiKey: MASKED_API_KEY });
 
     // `undefined` is "leave it as stored"; `null` or an empty key still clears it.
     expect(configService.setInferencePreferences).toHaveBeenCalledWith(
@@ -279,7 +279,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
     );
-    expect(result).toMatchObject({ preferredVllmApiKey: MASKED_VLLM_API_KEY });
+    expect(result).toMatchObject({ preferredVllmApiKey: MASKED_API_KEY });
   }, 30_000);
 
   it('still clears the vLLM key on a null', async () => {
@@ -314,7 +314,7 @@ describe('InferenceController — preferences', () => {
     const storedKeyArg = () => configService.setInferencePreferences.mock.calls[0]?.[4];
 
     it('drops the stored key when the key comes back as the mask', async () => {
-      await controller.updatePreferences({ backend: 'vllm', vllmApiKey: MASKED_VLLM_API_KEY, vllmUrl: 'http://192.168.1.99:8000' });
+      await controller.updatePreferences({ backend: 'vllm', vllmApiKey: MASKED_API_KEY, vllmUrl: 'http://192.168.1.99:8000' });
 
       expect(storedKeyArg()).toBeNull();
     });
@@ -326,13 +326,13 @@ describe('InferenceController — preferences', () => {
     });
 
     it('drops the stored key when the URL is cleared and vLLM falls back to the default server', async () => {
-      await controller.updatePreferences({ backend: 'vllm', vllmApiKey: MASKED_VLLM_API_KEY, vllmUrl: null });
+      await controller.updatePreferences({ backend: 'vllm', vllmApiKey: MASKED_API_KEY, vllmUrl: null });
 
       expect(storedKeyArg()).toBeNull();
     });
 
     it('keeps the stored key for another spelling of the same server', async () => {
-      await controller.updatePreferences({ backend: 'vllm', vllmApiKey: MASKED_VLLM_API_KEY, vllmUrl: 'http://192.168.1.50:8000/v1/' });
+      await controller.updatePreferences({ backend: 'vllm', vllmApiKey: MASKED_API_KEY, vllmUrl: 'http://192.168.1.50:8000/v1/' });
 
       expect(storedKeyArg()).toBeUndefined();
     });

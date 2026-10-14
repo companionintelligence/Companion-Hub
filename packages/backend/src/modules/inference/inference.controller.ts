@@ -52,7 +52,7 @@ import {
   VllmStatusQueryDto,
   OmlxStatusQueryDto,
   ManualEndpointStatusQueryDto,
-  isMaskedVllmApiKey,
+  isMaskedApiKey,
   maskInferencePreferences,
 } from './inference.dto';
 import { InferenceBackendRegistry } from './backends/backend-registry';
@@ -385,7 +385,7 @@ export class InferenceController {
    * save moves vLLM to another server, the stored key is dropped, to be entered again for the new one.
    */
   private vllmApiKeyToSave(body: UpdateInferencePreferencesBody): string | null | undefined {
-    if (body.vllmApiKey !== undefined && !isMaskedVllmApiKey(body.vllmApiKey)) return body.vllmApiKey;
+    if (body.vllmApiKey !== undefined && !isMaskedApiKey(body.vllmApiKey)) return body.vllmApiKey;
     if (body.vllmUrl === undefined) return undefined;
     const savedUrl = this.configurationService.getInferencePreferences().preferredVllmUrl;
     return isSameServer(vllmBaseUrl(body.vllmUrl), vllmBaseUrl(savedUrl)) ? undefined : null;
