@@ -1,5 +1,11 @@
+import { GUARDS_METADATA } from '@nestjs/common/constants';
 import { describe, expect, it } from 'vitest';
 import { mock } from 'vitest-mock-extended';
+import { HubManagerGuard } from '@/modules/auth/hub-manager.guard';
+import { InferenceController } from '@/modules/inference/inference.controller';
+import { MarketplaceController } from '@/modules/marketplace/marketplace.controller';
+import { SystemUpdateController } from '@/modules/system-update/system-update.controller';
+import { SystemController } from '@/modules/system/system.controller';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 import { AppAgentTools } from '../tools/app-agent.tools';
 import { AppApiProxyTools } from '../tools/app-api-proxy.tools';
@@ -94,6 +100,37 @@ const EXPECTED_READ = [
   'hub_system_load',
 ].sort();
 
+/**
+ * Every Hub-wide tool, with the route whose `HubManagerGuard` it follows: a member may not use it over
+ * MCP because they may not over HTTP. `hub_get_hub_logs` only reads, and the Hub's log routes take an
+ * owner or admin all the same. Each tool on a guarded route belongs here; the other tools' routes
+ * (system load, update check, cloud providers by name, app store lists, links, apps) carry no guard.
+ */
+const EXPECTED_HUB_WIDE: Array<[tool: string, controller: { prototype: object }, handler: string]> = [
+  ['hub_add_app_store', MarketplaceController, 'createAppStore'],
+  ['hub_delete_app_store', MarketplaceController, 'deleteAppStore'],
+  ['hub_get_hub_logs', SystemController, 'downloadHubLogs'],
+  ['hub_load_model', InferenceController, 'loadModel'],
+  ['hub_perform_update', SystemUpdateController, 'performUpdate'],
+  ['hub_pin_model', InferenceController, 'pinModel'],
+  ['hub_pull_app_stores', MarketplaceController, 'pullAppStores'],
+  ['hub_pull_model', InferenceController, 'pullModel'],
+  ['hub_set_auto_updates', SystemUpdateController, 'setAutoUpdates'],
+  ['hub_set_cloud_provider', InferenceController, 'setCloudProvider'],
+  ['hub_unload_model', InferenceController, 'unloadModel'],
+  ['hub_unpin_model', InferenceController, 'unpinModel'],
+  ['hub_update_app_store', MarketplaceController, 'updateAppStore'],
+];
+
+/** The guards a handler carries, its class's first. */
+function guardsOn(controller: { prototype: object }, method: string): unknown[] {
+  const handler = (controller.prototype as Record<string, unknown>)[method];
+  if (typeof handler !== 'function') {
+    throw new Error(`${method} is not a handler`);
+  }
+  return [...(Reflect.getMetadata(GUARDS_METADATA, controller) ?? []), ...(Reflect.getMetadata(GUARDS_METADATA, handler) ?? [])];
+}
+
 /** Register every real tool provider. Non-registry dependencies are unused mocks — onModuleInit only
  *  calls registry.register(); the services run inside tool handlers, which nothing here invokes. */
 function registerAllTools(): McpToolRegistry {
@@ -131,6 +168,14 @@ describe('MCP tool classification', () => {
 
   it('exposes exactly the expected set of tools to a read-only key', () => {
     expect(namesWhere((tool) => tool.access === 'read')).toEqual(EXPECTED_READ);
+  });
+
+  it('marks exactly the expected set of Hub-wide tools', () => {
+    expect(namesWhere((tool) => tool.hubWide === true)).toEqual(EXPECTED_HUB_WIDE.map(([tool]) => tool));
+  });
+
+  it.each(EXPECTED_HUB_WIDE)('%s follows a route that carries HubManagerGuard', (_tool, controller, handler) => {
+    expect(guardsOn(controller, handler)).toContain(HubManagerGuard);
   });
 
   it('never labels a destructive tool read-only', () => {

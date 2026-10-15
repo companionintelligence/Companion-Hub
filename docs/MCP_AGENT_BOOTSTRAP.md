@@ -72,6 +72,15 @@ the key's own app. If an agent must change other apps, give it an operator key c
 `cihub api-key create` records no creator, so no one's grants bound it: it may act on every app, up to
 its capability, though it cannot change which custom domain an app serves.
 
+The tools that change the whole Hub, or read its log, take a key whose creator is an organization owner
+or admin, or the operator who claimed the Hub, asked on every call. They are the model pull, load,
+unload, pin and unpin tools, `hub_set_cloud_provider`, `hub_set_auto_updates`, `hub_perform_update`, the
+app store add, update, delete and pull tools and `hub_get_hub_logs`. A managed key and a key from
+`cihub api-key create` have no such person, so Hermes and OpenClaw don't see these tools. On a 2025-era
+session their call gets `HUB_MANAGE_KEY_REISSUE_REQUIRED`. A key a member created gets
+`HUB_MANAGE_ROLE_REQUIRED` there. A 2026-07-28 client never has these tools registered for such a key,
+so its call fails as an unknown tool (`Tool <name> not found`).
+
 ## CI-Hermes path
 
 Boot order (`entrypoint.sh` / `gateway-entrypoint.sh`):

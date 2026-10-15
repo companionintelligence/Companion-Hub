@@ -1,5 +1,6 @@
 import { Body, Controller, Delete, Get, HttpStatus, Param, ParseIntPipe, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
+import { ApiResponse } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -8,7 +9,7 @@ import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { HubManagerGuard } from '@/modules/auth/hub-manager.guard';
 import { ApiKeyAdminService } from './api-key-admin.service';
-import { CreateApiKeyBody, UpdateApiKeyBody } from './api-key-admin.dto';
+import { ApiKeyListDto, CreateApiKeyBody, UpdateApiKeyBody } from './api-key-admin.dto';
 
 /**
  * Operator-facing hub-wide API-key surface, powering the Settings → Security "API keys" card.
@@ -25,10 +26,14 @@ export class ApiKeyAdminController {
     private readonly logger: LoggerService,
   ) {}
 
-  /** List all stored API keys (operator + app-managed, every scope). Never returns raw keys. */
+  /**
+   * List all stored API keys (operator + app-managed, every scope). Never returns raw keys. Each says
+   * whether it can use the MCP tools that change the whole Hub, so an owner can see which to revoke.
+   */
   @Get()
-  async listKeys() {
-    return { keys: await this.adminService.listKeys() };
+  @ApiResponse({ type: ApiKeyListDto })
+  async listKeys(): Promise<ApiKeyListDto> {
+    return { keys: await this.adminService.listKeys(this.resolveWhois()) };
   }
 
   /**

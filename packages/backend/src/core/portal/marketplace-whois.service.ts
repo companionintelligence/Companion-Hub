@@ -25,6 +25,7 @@ import {
 import { type HubPrincipalFields, hubSessionOperatorUserId, isAppViewObserverPrincipal, isGrantExemptPrincipal } from './hub-session-operator';
 import type { LifecycleActor } from './lifecycle-actor';
 import { PortalClientService, type PortalWhoIsResponse } from './portal-client.service';
+import { assertHubManageAllowed, type HubManageVerdict } from './hub-manage-verdict';
 import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 
 export type GrantSurface = 'hub' | 'store';
@@ -57,12 +58,6 @@ type CachedWhoIs = {
  * the Portal was asked and couldn't answer.
  */
 type ManagingRoleVerdict = 'manager' | 'not-manager' | 'unlinked' | 'no-organization' | 'unknown';
-
-/**
- * Whether a request may change what applies to the whole Hub or read its own log. `unknown` is a
- * refusal too, but one the person can retry: the Portal couldn't say what their role is.
- */
-export type HubManageVerdict = 'allowed' | 'refused' | 'unknown';
 
 /**
  * How long the Hub-wide routes keep an owner's or admin's yes. One AI settings save is several guarded
@@ -385,6 +380,15 @@ export class MarketplaceWhoIsService {
       return 'refused';
     }
 
+    return this.hubManageVerdictFor(userId);
+  }
+
+  /**
+   * {@link hubManageVerdict} for a person named by id rather than by a request: the claiming operator
+   * may, anyone else follows their role, asked of the Portal now. An MCP key asks it about the person who
+   * created the key, on every Hub-wide tool call.
+   */
+  async hubManageVerdictFor(userId: number): Promise<HubManageVerdict> {
     if (await this.isClaimingOperator(userId)) {
       return 'allowed';
     }
@@ -407,22 +411,13 @@ export class MarketplaceWhoIsService {
 
   /** Refuse a request {@link hubManageVerdict} doesn't allow: 403 for a no, 503 when the Portal couldn't say. */
   async assertSessionMayManageHub(req: HubPrincipalFields): Promise<void> {
-    const verdict = await this.hubManageVerdict(req);
-
-    if (verdict === 'unknown') {
-      throw new TranslatableError('HUB_MANAGE_ROLE_UNVERIFIED', {}, HttpStatus.SERVICE_UNAVAILABLE);
-    }
-
-    if (verdict !== 'allowed') {
-      throw new TranslatableError('HUB_MANAGE_ROLE_REQUIRED', {}, HttpStatus.FORBIDDEN);
-    }
+    assertHubManageAllowed(await this.hubManageVerdict(req));
   }
 
   /**
-   * {@link hubManageVerdict} for the UI, answered without a Portal call when it can be. The claiming
-   * operator is read from the database, and anyone else's role is the one the Hub stored at sign-in
-   * (`user.orgRole`), as for {@link customAppActionsHint}. With no role stored, the Portal is asked
-   * now. Only the UI reads this; every route that changes the Hub still asks the Portal fresh.
+   * {@link hubManageVerdict} for the UI, answered without a Portal call when it can be
+   * ({@link storedHubManageVerdict}). With no role stored, the Portal is asked now. Only the UI reads
+   * this; every route that changes the Hub still asks the Portal fresh.
    */
   async hubManageHint(req: HubPrincipalFields): Promise<boolean> {
     const userId = hubSessionOperatorUserId(req);
@@ -431,25 +426,66 @@ export class MarketplaceWhoIsService {
       return (await this.hubManageVerdict(req)) === 'allowed';
     }
 
-    if (await this.isClaimingOperator(userId)) {
-      return true;
+    const stored = await this.storedHubManageVerdict(userId, req.user?.orgRole);
+    if (stored !== 'unknown') {
+      return stored === 'allowed';
     }
 
-    const role = req.user?.orgRole;
-    if (role === 'member') {
-      return false;
-    }
-    if (role !== 'owner' && role !== 'admin') {
-      return (await this.hubManageRoleVerdict(userId)) === 'allowed';
-    }
+    return (await this.hubManageRoleVerdict(userId)) === 'allowed';
+  }
 
-    // A stored owner or admin role counts only where the routes can read one: a linked person on a paired Hub.
+  /**
+   * {@link storedHubManageVerdict} for a person named by id, such as the person who created an API key,
+   * with the role read from their row. The Settings key list and the MCP `tools/list` read it, so neither
+   * waits on the Portal; a Hub-wide tool call still asks fresh ({@link hubManageVerdictFor}). Someone
+   * whose access was revoked is refused whatever role is still stored for them.
+   */
+  async storedHubManageVerdictFor(userId: number): Promise<HubManageVerdict> {
+    let stored: { orgRole?: string | null; accessStatus?: string } | undefined;
+
     try {
-      return Boolean(await this.portalSubject(userId)) && Boolean(await this.deviceOrganizationId());
+      stored = await this.users.getUserDtoById(userId);
     } catch (error) {
       this.logger.warn(`Could not read the organization role (hub_manage): ${describeNetworkError(error)}`);
-      return false;
+      return 'unknown';
     }
+
+    if (stored?.accessStatus === 'revoked') {
+      return 'refused';
+    }
+
+    return this.storedHubManageVerdict(userId, stored?.orgRole);
+  }
+
+  /**
+   * {@link hubManageVerdict} from the Hub's own records, with no Portal call. The claiming operator is
+   * read from the database, and anyone else's role is the one the Hub stored at sign-in or at the hourly
+   * membership check (`user.orgRole`), as for {@link customAppActionsHint}. A stored owner or admin role
+   * counts only where the routes can read one: a linked person on a paired Hub. `unknown` when no role is
+   * stored for someone the Portal could be asked about, or when the records can't be read.
+   */
+  private async storedHubManageVerdict(userId: number, storedRole: string | null | undefined): Promise<HubManageVerdict> {
+    if (await this.isClaimingOperator(userId)) {
+      return 'allowed';
+    }
+
+    if (storedRole === 'member') {
+      return 'refused';
+    }
+
+    try {
+      // With no role to read, the routes refuse anyone but the claiming operator. The registration is
+      // read here rather than through `deviceOrganizationId`, which reads a failed read as "unpaired":
+      // a database blip must leave this `unknown`, not mark every key's creator as refused.
+      if (!(await this.portalSubject(userId)) || !(await this.registration.getDeviceRegistrationInfo())?.id) {
+        return 'refused';
+      }
+    } catch (error) {
+      this.logger.warn(`Could not read the organization role (hub_manage): ${describeNetworkError(error)}`);
+      return 'unknown';
+    }
+
+    return storedRole === 'owner' || storedRole === 'admin' ? 'allowed' : 'unknown';
   }
 
   /**
@@ -459,11 +495,15 @@ export class MarketplaceWhoIsService {
    * operator can be claimed, so the next claimer takes this over and the old one, signing in again,
    * gets a new row like anyone else.
    *
-   * `false` when the operator rows can't be read. Also asked by who may give an API key full capability.
+   * `false` when the operator rows can't be read, and for a claimer whose access was revoked
+   * (`AuthService.revokeOperator`, after the Portal removed them from the organization): they can't
+   * sign in, and the keys they created must not keep the claimer's pass on the Hub-wide MCP tools.
+   * Also asked by who may give an API key full capability.
    */
   async isClaimingOperator(userId: number): Promise<boolean> {
     try {
-      return (await this.users.getFirstOperator())?.id === userId;
+      const first = await this.users.getFirstOperator();
+      return first?.id === userId && first.accessStatus !== 'revoked';
     } catch (error) {
       this.logger.warn(`Could not read this Hub's first operator: ${describeNetworkError(error)}`);
       return false;

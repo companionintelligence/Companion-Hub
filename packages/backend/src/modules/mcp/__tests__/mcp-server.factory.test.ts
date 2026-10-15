@@ -8,6 +8,7 @@ import { McpToolRegistry } from '../mcp-tool-registry.service';
 import { mcpCallContext } from '../mcp-call-context';
 import type { ApiKeyCapability } from '@/modules/api-keys/api-key.capabilities';
 import { LoggerService } from '@/core/logger/logger.service';
+import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 
 // BUG-MCP-1 acceptance test: drive the factory's SDK server with a REAL MCP SDK client over the
 // in-memory transport (not raw fetch). This proves the Hub speaks the protocol end-to-end —
@@ -21,7 +22,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 /** Build a factory-backed server and connect a real MCP client to it in-process. */
 async function connectClient(registry: McpToolRegistry): Promise<Client> {
   const service = new McpService(registry, mock<LoggerService>());
-  const factory = new McpServerFactory(registry, service, mock<LoggerService>());
+  const factory = new McpServerFactory(registry, service, mock<LoggerService>(), mock<MarketplaceWhoIsService>());
   const server = factory.create();
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

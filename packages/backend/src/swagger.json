@@ -648,8 +648,15 @@
         "operationId": "listKeys",
         "parameters": [],
         "responses": {
-          "200": {
-            "description": ""
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyListDto"
+                }
+              }
+            }
           }
         },
         "tags": [
@@ -7935,6 +7942,97 @@
         },
         "required": [
           "allowErrorMonitoring"
+        ],
+        "additionalProperties": false
+      },
+      "ApiKeyListDto": {
+        "type": "object",
+        "properties": {
+          "keys": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "number"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "prefix": {
+                  "type": "string"
+                },
+                "scopes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "capability": {
+                  "type": "string",
+                  "enum": [
+                    "read",
+                    "write",
+                    "full"
+                  ]
+                },
+                "managed": {
+                  "type": "boolean"
+                },
+                "ownerAppUrn": {
+                  "nullable": true,
+                  "type": "string"
+                },
+                "expiresAt": {
+                  "nullable": true,
+                  "type": "string"
+                },
+                "lastUsedAt": {
+                  "nullable": true,
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string"
+                },
+                "createdByUserId": {
+                  "nullable": true,
+                  "type": "number"
+                },
+                "createdByUsername": {
+                  "nullable": true,
+                  "type": "string"
+                },
+                "hubWideBlocked": {
+                  "nullable": true,
+                  "type": "string",
+                  "enum": [
+                    "app-key",
+                    "no-creator",
+                    "creator-role"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "prefix",
+                "scopes",
+                "capability",
+                "managed",
+                "ownerAppUrn",
+                "expiresAt",
+                "lastUsedAt",
+                "createdAt",
+                "createdByUserId",
+                "createdByUsername",
+                "hubWideBlocked"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "keys"
         ],
         "additionalProperties": false
       },

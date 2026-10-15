@@ -47,14 +47,26 @@ describe('ApiKeyAdminController', () => {
   /*
    * The list is a database read. Who may give full capability asks the Portal,
    * so it has its own route: a slow or unreachable Portal must not hold the list.
+   * WhoIs is handed to the list only to read the role the Hub stored for each
+   * key's creator (`storedHubManageVerdictFor`), which asks the Portal nothing.
    */
   describe('the key list', () => {
     it('lists keys without asking the Portal anything', async () => {
       admin.listKeys.mockResolvedValue([]);
 
       await expect(controller.listKeys()).resolves.toEqual({ keys: [] });
-      expect(moduleRef.get).not.toHaveBeenCalled();
+      expect(admin.listKeys).toHaveBeenCalledWith(whois);
       expect(whois.isOrgManager).not.toHaveBeenCalled();
+    });
+
+    it('still lists keys when WhoIs cannot be resolved', async () => {
+      moduleRef.get.mockImplementation(() => {
+        throw new Error('not provided');
+      });
+      admin.listKeys.mockResolvedValue([]);
+
+      await expect(controller.listKeys()).resolves.toEqual({ keys: [] });
+      expect(admin.listKeys).toHaveBeenCalledWith(null);
     });
   });
 

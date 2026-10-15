@@ -898,6 +898,30 @@ Network, AI, MCP and Logs tabs from a member, and the Hub-wide controls on Setti
 A member skips the device wizard: `GET /api/app-context` reports `hasCompletedOnboarding: true` for
 someone `hubManageHint` turns down, as it does for a later operator whose wizard already ran.
 
+### Hub-wide MCP tools
+
+An MCP tool whose HTTP route carries the guard is marked `hubWide` in its registration: the model pull,
+load, unload, pin and unpin tools, `hub_set_cloud_provider`, `hub_set_auto_updates`, `hub_perform_update`,
+the app store add, update, delete and pull tools and `hub_get_hub_logs`. `destructive-tools.test.ts`
+lists them with their routes; mark a new tool there too when its route takes the guard.
+
+Before one runs for an `/api/mcp` key, the registry asks the guard's question about the person who
+created the key (`assertMcpKeyMayManageHub`, which calls `hubManageVerdictFor`) on every call, with the
+guard's answers. The claimer, owners and admins pass. A member gets 403 `HUB_MANAGE_ROLE_REQUIRED` and a
+role the Portal can't confirm gets 503 `HUB_MANAGE_ROLE_UNVERIFIED`. A claimer whose access was revoked
+loses the claimer's pass. A managed app key or a key with no recorded creator (minted by the CLI, or
+before v0.2.70) has nobody to ask and gets 403 `HUB_MANAGE_KEY_REISSUE_REQUIRED`. The tool runner asks
+about the signed-in person.
+
+`tools/list` leaves these tools out for a key they would refuse. It reads the Hub's own records
+(`storedHubManageVerdictFor`): the claimer, the creator's revoked access and the role stored for the
+creator at sign-in or at the hourly membership check. Listing never asks the Portal; with no role stored,
+the tools are listed and the call decides. The 2026-07-28 handler builds a server per request with only
+the tools the key may list, so there a left-out tool is unknown to `tools/call` too. A creator promoted
+since their role was stored waits there for the next membership check. The key list in Security
+settings marks the keys these tools refuse (`hubWideBlocked` on `GET /api/api-keys`), from the same
+records.
+
 `GET /api/app-context` reports the settings named in `APP_CONTEXT_SETTINGS` (`app.dto.ts`) and nothing
 else, so no key reaches it: not the Portal device or move key, the vLLM key or the cloud provider keys.
 `setUserSettings` keeps the device and move keys out of `config.userSettings`; code reads them from the

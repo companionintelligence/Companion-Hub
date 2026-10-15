@@ -86,19 +86,21 @@ export class McpAdminService {
    *
    * `actorFor` names the signed-in person to the lifecycle tools, so the org grants that decide the
    * app routes decide here too. This caller is not a key, and is never taken for one (CI-Hub#1397).
+   * `assertMayManageHub` asks whether that person may run a Hub-wide tool; without it, none runs.
    */
   async callTool(
     name: string,
     args: Record<string, unknown> | undefined,
     confirmDestructive: boolean,
     actorFor: LifecycleActorFor,
+    assertMayManageHub?: () => Promise<void>,
   ): Promise<{ ok: true; result: unknown } | { ok: false; error: string }> {
     const start = Date.now();
     try {
       // 'full' because this caller is not a key: the operator is session-authed, and the thing standing
       // between them and a destructive tool is the confirmation they just gave, not a stored capability.
       const result = await mcpAdminCallContext.run(actorFor, () =>
-        this.registry.callTool(name, args ?? {}, { capability: 'full', allowDestructive: confirmDestructive }),
+        this.registry.callTool(name, args ?? {}, { capability: 'full', allowDestructive: confirmDestructive, assertMayManageHub }),
       );
       this.logger.info('MCP admin tool call', name, `${Date.now() - start}ms`, 'ok');
       return { ok: true, result };

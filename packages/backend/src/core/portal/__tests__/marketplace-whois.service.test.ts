@@ -1069,6 +1069,19 @@ describe('MarketplaceWhoIsService', () => {
         await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('allowed');
       });
 
+      /*
+       * The hourly membership sweep revokes the claimer too when the Portal removes them. They can't
+       * sign in, so the routes never see them, but a key they created asks about them by id.
+       */
+      it('loses the pass once their access is revoked, and follows the Portal like anyone else', async () => {
+        users.getFirstOperator.mockResolvedValue({ id: USER_ID, accessStatus: 'revoked' } as never);
+        portal.whoisApps.mockResolvedValue(roleAnswer('member'));
+
+        await expect(service.isClaimingOperator(USER_ID)).resolves.toBe(false);
+        await expect(service.hubManageVerdictFor(USER_ID)).resolves.toBe('refused');
+        expect(portal.whoisApps).toHaveBeenCalledTimes(1);
+      });
+
       it('gives another member nothing: 403', async () => {
         users.getFirstOperator.mockResolvedValue({ id: 1 } as never);
         portal.whoisApps.mockResolvedValue(roleAnswer('member'));
@@ -1154,6 +1167,101 @@ describe('MarketplaceWhoIsService', () => {
       expect(logger.warn).toHaveBeenCalledWith('hub_manage_refused principal=portal-device');
       expect(logger.warn).toHaveBeenCalledWith('hub_manage_refused principal=none');
       expect(portal.whoisApps).not.toHaveBeenCalled();
+    });
+
+    /* An MCP key asks about the person who created it, named by id, on each Hub-wide tool call. */
+    describe('hubManageVerdictFor', () => {
+      it.each([
+        ['owner', 'allowed'],
+        ['admin', 'allowed'],
+        ['member', 'refused'],
+      ] as const)('asks the Portal about an organization %s and answers %s', async (role, expected) => {
+        portal.whoisApps.mockResolvedValue(roleAnswer(role));
+
+        await expect(service.hubManageVerdictFor(USER_ID)).resolves.toBe(expected);
+        expect(portal.whoisApps).toHaveBeenCalledWith({ subject: SUBJECT, appIds: [], surface: 'hub', organizationId: 'org-hub' });
+      });
+
+      it('is unknown when the Portal cannot be reached', async () => {
+        portal.whoisApps.mockRejectedValue(new Error('ECONNREFUSED'));
+
+        await expect(service.hubManageVerdictFor(USER_ID)).resolves.toBe('unknown');
+      });
+
+      it('lets the operator who claimed the Hub through without asking the Portal', async () => {
+        users.getFirstOperator.mockResolvedValue({ id: USER_ID } as never);
+        portal.whoisApps.mockResolvedValue(roleAnswer('member'));
+
+        await expect(service.hubManageVerdictFor(USER_ID)).resolves.toBe('allowed');
+        expect(portal.whoisApps).not.toHaveBeenCalled();
+      });
+
+      it("shares the routes' kept yes for the same person", async () => {
+        portal.whoisApps.mockResolvedValue(roleAnswer('owner'));
+
+        await expect(service.hubManageVerdict(sessionReq())).resolves.toBe('allowed');
+        await expect(service.hubManageVerdictFor(USER_ID)).resolves.toBe('allowed');
+        expect(portal.whoisApps).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    /*
+     * The Settings key list and the MCP tools/list read the role the Hub stored for a key's creator, so
+     * neither waits on the Portal. Only the calls ask it.
+     */
+    describe('storedHubManageVerdictFor', () => {
+      const storedRole = (orgRole: 'owner' | 'admin' | 'member' | null) => users.getUserDtoById.mockResolvedValue({ id: USER_ID, orgRole } as never);
+
+      it.each([
+        ['owner', 'allowed'],
+        ['admin', 'allowed'],
+        ['member', 'refused'],
+        [null, 'unknown'],
+      ] as const)('answers a stored %s with %s without asking the Portal', async (role, expected) => {
+        storedRole(role);
+
+        await expect(service.storedHubManageVerdictFor(USER_ID)).resolves.toBe(expected);
+        expect(users.getUserDtoById).toHaveBeenCalledWith(USER_ID);
+        expect(portal.whoisApps).not.toHaveBeenCalled();
+      });
+
+      it('allows the operator who claimed the Hub whatever role is stored', async () => {
+        storedRole('member');
+        users.getFirstOperator.mockResolvedValue({ id: USER_ID } as never);
+
+        await expect(service.storedHubManageVerdictFor(USER_ID)).resolves.toBe('allowed');
+      });
+
+      it('refuses a stored owner with no role the routes could read: unlinked, or on an unpaired Hub', async () => {
+        storedRole('owner');
+        federatedIdentities.findByUserId.mockResolvedValue([] as never);
+        await expect(service.storedHubManageVerdictFor(USER_ID)).resolves.toBe('refused');
+
+        federatedIdentities.findByUserId.mockResolvedValue([{ subject: SUBJECT }] as never);
+        registration.getDeviceRegistrationInfo.mockResolvedValue(undefined as never);
+        await expect(service.storedHubManageVerdictFor(USER_ID)).resolves.toBe('refused');
+      });
+
+      it("is unknown when the person's row, identity or this Hub's registration can't be read", async () => {
+        users.getUserDtoById.mockRejectedValue(new Error('db down'));
+        await expect(service.storedHubManageVerdictFor(USER_ID)).resolves.toBe('unknown');
+
+        storedRole('owner');
+        federatedIdentities.findByUserId.mockRejectedValue(new Error('db down'));
+        await expect(service.storedHubManageVerdictFor(USER_ID)).resolves.toBe('unknown');
+
+        federatedIdentities.findByUserId.mockResolvedValue([{ subject: SUBJECT }] as never);
+        registration.getDeviceRegistrationInfo.mockRejectedValue(new Error('db down'));
+        await expect(service.storedHubManageVerdictFor(USER_ID)).resolves.toBe('unknown');
+      });
+
+      it('refuses someone whose access was revoked, whatever role is still stored', async () => {
+        users.getUserDtoById.mockResolvedValue({ id: USER_ID, orgRole: 'owner', accessStatus: 'revoked' } as never);
+        await expect(service.storedHubManageVerdictFor(USER_ID)).resolves.toBe('refused');
+
+        users.getFirstOperator.mockResolvedValue({ id: USER_ID, accessStatus: 'revoked' } as never);
+        await expect(service.storedHubManageVerdictFor(USER_ID)).resolves.toBe('refused');
+      });
     });
 
     /* The UI's question, answered from the role stored at sign-in, as for custom apps. */
