@@ -152,5 +152,11 @@ exactly as before; the change lands on each Hub the first time its Portal confir
 or a Portal that has lost the key leads to a fresh key on the next check-in, and a registration
 reset forgets it entirely.
 
+The Hub also accepts the device key only while it holds a registration: its `device_registration`
+row, or a pairing it is still setting up. Every registration reset deletes the row, including the
+one that follows Portal's `DEVICE_NOT_ACTIVE` answer. From then on the Hub refuses the device key,
+after a restart too, until it pairs again. It keeps the key only to send to Portal as proof at that
+pairing.
+
 The host side changed with it: `cihub` on the box (`claim`, `doctor`, `pool`) now presents the
 `hubLocalKey` the Hub mints into `state/settings.json` at boot, not the device key.
