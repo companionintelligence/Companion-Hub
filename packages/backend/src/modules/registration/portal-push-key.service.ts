@@ -34,7 +34,9 @@ export interface PortalPushKeyCheckInFields {
  *    middleware stops accepting the device key as a bearer. Until then it still
  *    does, so a Hub talking to a Portal that predates this exchange keeps
  *    working exactly as before — the change lands on each Hub the first time
- *    its Portal confirms.
+ *    its Portal confirms;
+ *  - either way the middleware accepts it only while the Hub holds a
+ *    registration, so the reset that forgets the delivery does not reopen it.
  *
  * If the row disappears (an operator revoked it) or Portal reports a different
  * fingerprint with no raw key left to resend, a new key is minted and delivered

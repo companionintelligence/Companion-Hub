@@ -5,6 +5,7 @@ import { Injectable, type OnApplicationBootstrap, type OnApplicationShutdown, In
 import axios from 'axios';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { DatabaseService } from '@/core/database/database.service';
+import { withTransientDbRetry } from '@/core/database/transient-db-retry';
 import { whoisCache } from '@/core/database/drizzle/schema';
 import { scrubString } from '@/core/error-reporting/sentry-scrubber';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -1367,8 +1368,6 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // Use `setPhase` for consistent logging. Reset to `unregistered` is always legal.
     await this.setPhase('unregistered');
     this.portalRejectedSince = null;
-    // The next Portal this Hub pairs with must receive a push key of its own.
-    await this.portalPushKey()?.forget();
 
     // Stop validation before removing its registration state.
     if (this.periodicValidationInterval) {
@@ -1378,6 +1377,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
     // Remove all durable device-registration rows.
     await this.deviceRegistrationRepository.deleteAll();
+    // The next Portal this Hub pairs with must receive a push key of its own. Forgotten only once the
+    // row is gone, because `AuthMiddleware` takes the device key while a registered row exists and no
+    // push key is delivered. `setPhase` above leaves the row as it is when the phase was already
+    // `unregistered`, which it is in a process that has not restored its phase yet.
+    await this.portalPushKey()?.forget();
     // Grants are cached without an organization id. Once this device has none,
     // WhoIs stops asking Portal and would keep serving those rows for a day.
     await this.forgetCachedGrants();
@@ -1852,6 +1856,35 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   public async isRegistered(): Promise<boolean> {
     await this.refreshPhaseFromSources();
     return isOperational(this._currentPhase);
+  }
+
+  /**
+   * Whether this Hub holds a registration: the `device_registration` row a pairing wrote, or a pairing
+   * this process is still setting up (`paired` and `provisioning` come before the row exists).
+   * `AuthMiddleware` accepts the Portal device key only while this is true.
+   *
+   * Read from the row, not the in-memory phase, which starts every boot at `unregistered` until
+   * `syncPhaseFromDb` has run. Unlike `isRegistered` it changes nothing, because it is asked on a
+   * request. A row whose phase says `unregistered` is a reset that has not finished deleting it.
+   * A phase this Hub does not know is read as `unregistered`, as `syncPhaseFromDb` reads it.
+   * A database blip is retried; a database that still cannot answer counts as no registration.
+   */
+  public async holdsRegistration(): Promise<boolean> {
+    if (isActiveRegistrationPhase(this._currentPhase)) {
+      return true;
+    }
+
+    try {
+      const row = await withTransientDbRetry(() => this.deviceRegistrationRepository.getFirstDeviceRegistration());
+      if (!row) {
+        return false;
+      }
+      const phase = row.provisioningPhase ?? 'locally_ready';
+      return phase !== 'unregistered' && PROVISIONING_PHASES.includes(phase as ProvisioningPhase);
+    } catch (error) {
+      this.logger.warn(`Could not read the registration, so the Portal device key is refused: ${describeRegistrationError(error)}`);
+      return false;
+    }
   }
 
   private async verifyLicense() {
