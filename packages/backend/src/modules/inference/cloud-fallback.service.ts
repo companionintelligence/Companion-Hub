@@ -4,6 +4,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderConfig, CloudProviderType } from '@ci-hub/common/types';
 import { buildCloudProviderEnv } from './cloud-provider-env';
+import { isSameServer } from './engine-credential-scope';
 import { isMaskedApiKey } from './inference.dto';
 import { BUDGET_SETTINGS_HINT, postStreamUnderHeaderDeadline } from './upstream-stream';
 import { COMPLETION_TIMEOUT_MS, firstByteBudgetMs, forwardBudgetMs } from '@/modules/hub-pool/hub-pool-budget';
@@ -87,7 +88,8 @@ export class CloudFallbackService implements OnModuleInit {
    * point a cloud key/model at the wrong endpoint (the Ollama fallback URL).
    *
    * An omitted / blank `apiKey` keeps the previously stored key so a Settings save of a masked
-   * field (`••••`) can toggle `enabled` without wiping the secret.
+   * field (`••••`) can toggle `enabled` without wiping the secret. It keeps it only on the server
+   * the key was saved for: see {@link storedKeyKept}.
    *
    * Resolves once the provider is in settings.json, and rejects when it could not be saved. The
    * Settings > AI tab sends its next save as soon as this answers, and a write still running then
@@ -96,14 +98,17 @@ export class CloudFallbackService implements OnModuleInit {
    */
   async setProvider(config: CloudProviderConfig): Promise<void> {
     const existing = this.providers.get(config.provider);
+    // A blank base URL leaves the stored one in place, as a blank key does.
+    const baseUrl = config.baseUrl?.trim() || undefined;
     const resolved = this.resolveConfig({
       ...existing,
       ...config,
-      // A blank key, or the mask Settings > AI shows for a stored one, keeps the stored key.
-      apiKey: (isMaskedApiKey(config.apiKey) ? undefined : config.apiKey?.trim()) || existing?.apiKey,
-      baseUrl: config.baseUrl || existing?.baseUrl,
+      // A blank key, or the mask Settings > AI shows for a stored one, stands for the stored key.
+      apiKey: (isMaskedApiKey(config.apiKey) ? undefined : config.apiKey?.trim()) || this.storedKeyKept(existing, baseUrl),
+      baseUrl: baseUrl || existing?.baseUrl,
       defaultModel: config.defaultModel || existing?.defaultModel || this.getDefaultModel(config.provider),
     });
+    const droppedKey = !!existing?.apiKey && !resolved.apiKey;
     this.providers.set(resolved.provider, resolved);
     try {
       await this.persist();
@@ -119,6 +124,10 @@ export class CloudFallbackService implements OnModuleInit {
       throw error;
     }
     this.logger.info(`[CloudFallback] Configured provider: ${resolved.provider} (enabled: ${resolved.enabled}, baseUrl: ${resolved.baseUrl})`);
+    if (droppedKey) {
+      // The save still answers success, so this line is where an operator learns why the provider stopped.
+      this.logger.warn(`[CloudFallback] Dropped the stored ${resolved.provider} key: the save moved it to another server, which needs its own key`);
+    }
   }
 
   /** Get a provider config */
@@ -422,6 +431,18 @@ export class CloudFallbackService implements OnModuleInit {
   private getEnabledProvider(type: CloudProviderType): CloudProviderConfig | undefined {
     const provider = this.providers.get(type);
     return provider?.enabled && provider?.apiKey ? provider : undefined;
+  }
+
+  /**
+   * The stored key a save without one keeps. A key belongs to the server it was saved for, so a save
+   * that moves the provider to another server drops it. The provider then reads as not configured
+   * until a key is entered for the new URL. This is the rule the vLLM key follows
+   * (`InferenceController.vllmApiKeyToSave`), with servers compared by {@link isSameServer}.
+   */
+  private storedKeyKept(existing: CloudProviderConfig | undefined, baseUrl: string | undefined): string | undefined {
+    if (!existing?.apiKey || !baseUrl) return existing?.apiKey;
+    // Where requests go now. `resolveConfig` filled in the provider's default when none was saved.
+    return isSameServer(baseUrl, existing.baseUrl) ? existing.apiKey : undefined;
   }
 
   private resolveConfig(config: CloudProviderConfig): CloudProviderConfig {

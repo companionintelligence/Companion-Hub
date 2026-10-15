@@ -552,6 +552,11 @@ and in `settings.json`, and requests the same AI app refresh as a save. Settings
 save for a provider whose stored key was cleared, by hand or with its **Remove** button. The card
 shows **On** or **Off** for a provider that holds a key.
 
+A stored key belongs to the server it was saved for, as the vLLM key does. A POST whose `baseUrl`
+names another server drops the stored key unless it sends a new one. The provider then reads as not
+configured until it gets a key for that server. The Hub logs `Dropped the stored <provider> key`
+when that happens, since the POST still answers success.
+
 ## App inference handout
 
 Installed apps get inference config two ways, and both choose the model through the same rules:
