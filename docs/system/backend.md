@@ -546,6 +546,14 @@ On save the Hub:
 AI apps that want these tokens must read the `CI_CLOUD_*` contract (or `hub_integration.inference`
 plus the extra env). See the tracking issue on marketplace / OpenClaw / Hermes.
 
+`GET /api/inference/cloud-providers` and the MCP tool `hub_get_cloud_providers` report `configured`
+in place of a key. They report a provider's `baseUrl` only when that names another server than the
+provider's own, and then only its address and path. Nothing written before the host or after the
+path is shown, since a secret can sit there. Only the POST and the MCP tool
+`hub_set_cloud_provider` can set one, since Settings > AI sends no URL. Settings shows that URL on
+the provider's card, because a key entered there goes to it. It also lists such a provider when it
+holds no key, with **Remove** to delete its settings, URL included.
+
 A blank key in the POST keeps the stored one, so a key is removed with
 `DELETE /api/inference/cloud-providers/:provider`. It forgets the provider, key included, in memory
 and in `settings.json`, and requests the same AI app refresh as a save. Settings > AI calls it on

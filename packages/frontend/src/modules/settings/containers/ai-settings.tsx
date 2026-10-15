@@ -588,9 +588,10 @@ export const AiSettingsContainer = () => {
 
       // Cloud keys first so the debounced AI-app restart (from preferences) sees them.
       // Masked keys (`••••`) omit apiKey so the Hub keeps the stored secret. A stored key whose field
-      // was cleared is deleted: sent as a blank key, the Hub would keep it.
+      // was cleared is deleted: sent as a blank key, the Hub would keep it. So is a provider removed
+      // while it had a URL and no key, which a save cannot reset to the provider's own server.
       for (const cp of cloudProviders) {
-        if (cp.stored && !cp.apiKey.trim()) {
+        if ((cp.stored && !cp.apiKey.trim()) || cp.removed) {
           await removeCloudProviderConfig(cp.provider);
           // The refetch after the save keeps the old list when no provider is left, so drop it here.
           setCloudProviders((prev) => prev.filter((other) => other.provider !== cp.provider));

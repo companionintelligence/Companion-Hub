@@ -296,6 +296,17 @@ export interface CloudProviderConfig {
   enabled: boolean;
 }
 
+/** A cloud provider as `GET /api/inference/cloud-providers` reports it. The key itself is never sent. */
+export interface CloudProviderStatus {
+  provider: CloudProviderType;
+  enabled: boolean;
+  /** Whether the Hub holds a key for the provider. */
+  configured: boolean;
+  defaultModel: string;
+  /** Where the provider's requests go. Present only when that is another server than the provider's own. */
+  baseUrl?: string;
+}
+
 export interface InferenceModelInfo {
   id: string;
   object: 'model';
