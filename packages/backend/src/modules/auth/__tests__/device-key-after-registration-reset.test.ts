@@ -429,10 +429,11 @@ describe('the Portal device key after a registration reset', () => {
     expect(await boot().answer(OLD_DEVICE_KEY)).toBe(200);
   });
 
-  it('reads the row phase as boot does: a legacy row with none is registered, an unknown one is not', async () => {
+  it('reads the row phase as boot does: no phase counts as locally_ready, an unknown one as unregistered', async () => {
     await pairedHub({ knowsPushKeys: false });
     const row = disk.deviceRegistrations[0];
 
+    // The column is NOT NULL today. `syncPhaseFromDb` still reads a missing phase as `locally_ready`.
     row.provisioningPhase = null;
     expect(await boot().answer(OLD_DEVICE_KEY)).toBe(200);
 
