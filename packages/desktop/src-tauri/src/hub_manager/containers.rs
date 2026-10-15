@@ -722,11 +722,23 @@ pub(crate) fn warn_if_hub_node_arch_mismatches_host(data_dir: &Path) {
     log_hub_node_arch(&hub, expected, data_dir);
 }
 
+/// The values Node gives `process.arch`, from Node's docs. `ppc` is from older docs and `mips64el`
+/// is a target in Node's configure.py.
+const NODE_PROCESS_ARCHES: &[&str] = &[
+    "arm", "arm64", "ia32", "loong64", "mips", "mipsel", "mips64el", "ppc", "ppc64", "riscv64",
+    "s390", "s390x", "x64",
+];
+
 /// Logs the Hub's Node `process.arch` against `expected`. A plain `docker exec` that exits 0 counts
-/// only when it prints `expected`. Any other answer with status 0, such as the WSL engine's empty
-/// one, is read again through the copy route. One that still can't be read is never a mismatch.
+/// when it prints an arch from `NODE_PROCESS_ARCHES`, so a real mismatch costs one Node start. Any
+/// other answer with status 0, such as the WSL engine's empty one, is read again through the copy
+/// route. One that still can't be read is never a mismatch.
 pub(crate) fn log_hub_node_arch(hub: &ContainerReader, expected: &str, data_dir: &Path) {
-    let output = hub.run(&["node", "-p", "process.arch"], Some(expected));
+    // An engine that cuts the output short can't turn `arm64` into `arm`: Node prints the arch in
+    // one write and the docker CLI drops an output frame that the stream ends partway through.
+    let output = hub.run_accepting(&["node", "-p", "process.arch"], |output| {
+        node_arch_line(output).is_some()
+    });
     let actual = output.stdout.as_str();
     let message = if !output.succeeded() || actual.is_empty() {
         format!(
@@ -734,12 +746,20 @@ pub(crate) fn log_hub_node_arch(hub: &ContainerReader, expected: &str, data_dir:
             hub_node_arch_unread_reason(&output)
         )
     } else if output.printed_line(expected) {
-        // The same test the reader used to accept a plain `docker exec` answer.
         format!("Hub Node arch ok: process.arch={expected}")
     } else {
-        hub_node_arch_mismatch_message(actual, expected)
+        hub_node_arch_mismatch_message(node_arch_line(&output).unwrap_or(actual), expected)
     };
     let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+}
+
+/// The first line of `output` that is a Node arch.
+fn node_arch_line(output: &ContainerOutput) -> Option<&str> {
+    output
+        .stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| NODE_PROCESS_ARCHES.contains(line))
 }
 
 /// What Node or docker printed to stderr, or else what the exit status says.

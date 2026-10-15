@@ -6,9 +6,10 @@
 //! prints may not come back, or only its first part may: rabbitmqctl's banner without the error
 //! after it. `docker cp` still works there, since it returns the files in one response. So a status
 //! of 0 from a plain `docker exec` counts only when the output holds the line the command prints
-//! once it has succeeded. Otherwise the command runs again detached (`docker exec -d`), writing its
-//! output and exit status to files in the container, and the files are copied out. The CLI does the
-//! same in `scripts/lib/docker-exec-output.ts`.
+//! once it has succeeded, or an answer the caller's own check accepts. Otherwise the command runs
+//! again detached (`docker exec -d`), writing its output and exit status to files in the container.
+//! The files are then copied out. The CLI's reader in `scripts/lib/docker-exec-output.ts` has the
+//! same copy route but takes any answer that isn't empty.
 
 use super::*;
 use std::cell::Cell;
@@ -77,12 +78,22 @@ impl<'a> ContainerReader<'a> {
     /// holds that line; a command without one always takes the copy route. A failing status from a
     /// plain `docker exec` is kept: the WSL engine turns a failure into 0, never the other way.
     pub(crate) fn run(&self, command: &[&str], success_line: Option<&str>) -> ContainerOutput {
-        let Some(success_line) = success_line else {
-            return self.exec_through_copy(command);
-        };
+        match success_line {
+            Some(line) => self.run_accepting(command, |output| output.printed_line(line)),
+            None => self.exec_through_copy(command),
+        }
+    }
+
+    /// Runs `command` as `run` does with a success line, for a command whose answer can be one of
+    /// several lines. A plain `docker exec` that exits 0 counts when `accepts` holds for its output.
+    pub(crate) fn run_accepting(
+        &self,
+        command: &[&str],
+        accepts: impl FnOnce(&ContainerOutput) -> bool,
+    ) -> ContainerOutput {
         if !self.copy_out.get() {
             let direct = self.exec_direct(command);
-            if direct.status != Some(0) || direct.printed_line(success_line) {
+            if direct.status != Some(0) || accepts(&direct) {
                 return direct;
             }
             self.copy_out.set(true);
