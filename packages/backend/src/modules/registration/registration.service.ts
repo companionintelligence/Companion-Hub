@@ -234,6 +234,9 @@ const PORTAL_NO_ANSWER_PAIRING_MESSAGE =
 
 const PAIRING_OVERTAKEN_MESSAGE = "This Hub's registration was reset while it was pairing, so the pairing was stopped. Pair it again to connect it.";
 
+/** The device key and move key Portal issues with a pairing. The redirected callback carries no move key. */
+type IssuedKeys = { apiKey?: string; moveKey?: string };
+
 function describePortalPairingResponse(data: unknown): string {
   if (!data || typeof data !== 'object') {
     return scrubString(String(data));
@@ -311,9 +314,16 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   /**
    * Aborted, then replaced, by every registration reset. A pairing keeps the signal it started with
    * and checks it after each step, so a reset that lands while a pairing is still setting up wins:
-   * the pairing writes nothing more and removes what its step under way left (`undoOvertakenPairing`).
+   * the pairing writes nothing more of its registration and removes what its step under way left
+   * (`undoOvertakenPairing`). It keeps only the keys Portal issued it (`pairingOvertaken`).
    */
   private pairingAbort = new AbortController();
+  /**
+   * Moves on whenever keys Portal issued are saved, and when a reset also removes the device key (the
+   * factory reset). A pairing a reset stopped saves the keys Portal issued it only while this is what
+   * it was when that pairing asked for them. See `pairingOvertaken`.
+   */
+  private deviceKeyEpoch = 0;
   private phaseReadCachedAt = 0;
   private phaseRefreshInFlight: Promise<void> | null = null;
   /** What the last check-in came back with; read by `GET /registration/phase` without sending one. */
@@ -1359,8 +1369,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * The reset clears in-memory state, database rows, the tunnel token, and the
    * resolved environment. It never changes the Portal: the device stays in the
    * person's account until an owner or admin deletes it there.
+   *
+   * @param options.removesDeviceKey The caller removes the device key after this, as the factory reset
+   *   does. A pairing this stops then keeps none of the keys Portal issued it.
    */
-  public async resetRegistration(options?: { reason?: 'manual' | 'portal_rejected' }): Promise<void> {
+  public async resetRegistration(options?: { reason?: 'manual' | 'portal_rejected'; removesDeviceKey?: boolean }): Promise<void> {
     // A person resets a registration, or Portal's coded `DEVICE_NOT_ACTIVE` does. A check-in Portal
     // merely rejects degrades the Hub instead; see `validateRegistrationWithCloud`.
     const reason = options?.reason ?? 'manual';
@@ -1374,6 +1387,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // In the same turn as the phase change below, so a pairing never sees one without the other.
     this.pairingAbort.abort(new Error('The registration was reset while this pairing was in progress'));
     this.pairingAbort = new AbortController();
+    if (options?.removesDeviceKey) {
+      this.deviceKeyEpoch++;
+    }
 
     // Use `setPhase` for consistent logging. Reset to `unregistered` is always legal.
     await this.setPhase('unregistered');
@@ -1675,10 +1691,53 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
   }
 
-  /** What a pairing that a registration reset overtook answers its caller. */
-  private pairingOvertaken(): { success: false; message: string } {
+  /**
+   * What a pairing that a registration reset overtook answers its caller.
+   *
+   * `issued` are the device key and move key Portal issued this pairing, when it stopped before saving
+   * them. Portal replaced the ones this Hub held when it issued these, so only these prove this Hub to
+   * Portal now: in a later pairing that moves or restores it without an owner regenerating its code.
+   * A reset keeps the device key, so they are saved, as if the pairing had finished just before the
+   * reset. Not when another pairing saved its keys, or a factory reset ran, after this one asked Portal
+   * for them (`keyEpoch`).
+   */
+  private async pairingOvertaken(issued?: { keys: IssuedKeys; keyEpoch: number }): Promise<{ success: false; message: string }> {
     this.logger.warn('Stopped a pairing: the registration was reset while it was in progress');
+
+    if (issued && (issued.keys.apiKey || issued.keys.moveKey)) {
+      if (issued.keyEpoch === this.deviceKeyEpoch) {
+        // No await between this check and the call, which takes its turn at settings.json at once. A
+        // factory reset that comes after it empties the file after this write.
+        await this.saveIssuedKeys(issued.keys).catch((error: unknown) => {
+          this.logger.warn(`Could not keep the keys Portal issued to the stopped pairing: ${describeRegistrationError(error)}`);
+        });
+      } else {
+        this.logger.info('Not keeping the keys Portal issued to the stopped pairing: newer keys were saved, or a factory reset ran, since it asked');
+      }
+    }
+
     return { success: false, message: PAIRING_OVERTAKEN_MESSAGE };
+  }
+
+  /**
+   * Saves the device key Portal issued, and the move key it issued with it, in one write. A reset that
+   * stopped a pairing between two writes would leave the new device key beside a stale move key.
+   *
+   * The move key is kept in settings.json with the device key, and nowhere else: `AppHelpers` hands
+   * first-party Memory the device key, never this, so a key leaked from an app cannot move this Hub.
+   */
+  private async saveIssuedKeys(keys: IssuedKeys): Promise<void> {
+    if (!keys.apiKey && !keys.moveKey) {
+      return;
+    }
+    this.deviceKeyEpoch++;
+    if (keys.apiKey) {
+      this.logger.info('Saving CI Hub API Key from registration callback');
+    }
+    await this.config.setFileOnlySettings({
+      ...(keys.apiKey ? { ciHubApiKey: keys.apiKey } : {}),
+      ...(keys.moveKey ? { ciHubMoveKey: keys.moveKey } : {}),
+    });
   }
 
   /** Persists restore intent beyond `sessionStorage` before the device pairs again. */
@@ -2438,6 +2497,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // A check-in already in flight was sent for the registration this pairing replaces. Its
     // DEVICE_NOT_ACTIVE answer must not reset the Hub and stop this pairing with it.
     this.registrationGeneration++;
+    // Keys another pairing saves after this are newer than the ones Portal issues this one.
+    const keyEpoch = this.deviceKeyEpoch;
 
     try {
       const pairUrl = `${this.config.getOutboundCiCloudUrl()}/api/devices/pair`;
@@ -2517,15 +2578,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         };
       }
 
-      // Checked after Portal's refusals, which issued nothing and say more than "reset". Here Portal
-      // has issued a new device key. It is dropped with the rest: a reset keeps only what the Hub held
-      // when it ran.
-      if (pairing.aborted) {
-        return this.pairingOvertaken();
-      }
-
       // Reuse the callback path so pairing and redirected registration persist the
-      // same fields and phase transitions.
+      // same fields and phase transitions. A reset during the request above stops it there, after
+      // Portal's refusals, which issued nothing and say more than "reset".
       return await this.completeRegistrationFromCallback(
         {
           deviceId: data.device_id || deviceId,
@@ -2540,6 +2595,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
           domain: data.domain,
         },
         pairing,
+        keyEpoch,
       );
     } catch (error) {
       const transportFailure = classifyPortalTransportFailure(error);
@@ -2754,6 +2810,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    *
    * @param pairing The signal of the pairing this completes: `pairDevice` passes the one it started
    *   with. A callback from Portal starts its pairing here.
+   * @param keyEpoch The `deviceKeyEpoch` when that pairing asked Portal. A callback from Portal reads it here.
    */
   public async completeRegistrationFromCallback(
     data: {
@@ -2770,11 +2827,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       domain?: string;
     },
     pairing: AbortSignal = this.pairingAbort.signal,
+    keyEpoch: number = this.deviceKeyEpoch,
   ): Promise<{ success: boolean; message: string; domain?: string; subdomain?: string }> {
     try {
-      // Reject callbacks for a different hardware device.
+      // Reject callbacks for a different hardware device. Before the reset check: keys for another
+      // device are never this Hub's to keep.
       const currentDeviceId = await this.getDeviceId();
-      pairing.throwIfAborted();
       if (data.deviceId !== currentDeviceId) {
         this.logger.warn(`Device ID mismatch: expected ${currentDeviceId}, got ${data.deviceId}`);
         return {
@@ -2783,26 +2841,19 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         };
       }
 
-      await this.holdAppSyncForPairingCheck();
-      pairing.throwIfAborted();
-
-      /*
-       * The optional device API key for authenticated Portal requests and the move key Portal issued
-       * with it. The move key is kept in settings.json with the device key, and nowhere else:
-       * `AppHelpers` hands first-party Memory the device key, never this, so a key leaked from an app
-       * cannot move this Hub. One write, because Portal replaced both at once. A reset that stops this
-       * pairing between two writes would leave the new device key beside a stale move key.
-       */
-      if (data.apiKey || data.moveKey) {
-        if (data.apiKey) {
-          this.logger.info('Saving CI Hub API Key from registration callback');
-        }
-        await this.config.setFileOnlySettings({
-          ...(data.apiKey ? { ciHubApiKey: data.apiKey } : {}),
-          ...(data.moveKey ? { ciHubMoveKey: data.moveKey } : {}),
-        });
-        pairing.throwIfAborted();
+      // The optional device API key for authenticated Portal requests, and the move key Portal issued with it.
+      const issued = { keys: { apiKey: data.apiKey, moveKey: data.moveKey }, keyEpoch };
+      if (pairing.aborted) {
+        return await this.pairingOvertaken(issued);
       }
+
+      await this.holdAppSyncForPairingCheck();
+      if (pairing.aborted) {
+        return await this.pairingOvertaken(issued);
+      }
+
+      await this.saveIssuedKeys(issued.keys);
+      pairing.throwIfAborted();
 
       // Persist the organization ID for future Portal disambiguation.
       if (data.organizationId) {

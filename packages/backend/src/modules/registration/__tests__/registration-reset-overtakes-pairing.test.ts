@@ -34,6 +34,9 @@ vi.mock('@/modules/app-lifecycle/commands/uninstall-app-command', () => ({ Unins
 const DEVICE_ID = 'device-under-test';
 const OLD_DEVICE_KEY = 'device-key-from-the-last-pairing';
 const NEW_DEVICE_KEY = 'device-key-from-this-pairing';
+const NEW_MOVE_KEY = 'move-key-from-this-pairing';
+/** What Portal issues the pairing after that one. */
+const NEXT_KEYS = { ciHubApiKey: 'device-key-from-the-next-pairing', ciHubMoveKey: 'move-key-from-the-next-pairing' };
 const TOKEN_PATH = path.join(TUNNEL_DIR, 'token');
 const REGISTRATION_MARKER_PATH = path.join(TUNNEL_DIR, 'registration.json');
 const PAIRING_APP_CHECK_PATH = path.join(DATA_DIR, 'state', 'pairing-app-check.json');
@@ -55,9 +58,10 @@ interface Persisted {
 }
 
 /** The steps a pairing or a check-in can be held at. */
-type Step = 'portal pairs' | 'tunnel starts' | 'tunnel started' | 'row written' | 'check-in answers';
+type Step = 'portal pairs' | 'app sync held' | 'tunnel starts' | 'tunnel started' | 'row written' | 'check-in answers';
 
-const answerFor = (organizationId: string) => ({
+/** Portal's answer to its `pairs`th pairing: the first gets the new keys, every later one the next. */
+const answerFor = (organizationId: string, pairs: number) => ({
   device_id: DEVICE_ID,
   organization_id: organizationId,
   organization_name: 'Next org',
@@ -65,7 +69,8 @@ const answerFor = (organizationId: string) => ({
   subdomain: 'hub-next',
   tunnel_id: 'tunnel-next',
   tunnel_token: 'tunnel-token-next',
-  api_key: NEW_DEVICE_KEY,
+  api_key: pairs === 0 ? NEW_DEVICE_KEY : NEXT_KEYS.ciHubApiKey,
+  move_key: pairs === 0 ? NEW_MOVE_KEY : NEXT_KEYS.ciHubMoveKey,
   domain: 'example.test',
 });
 
@@ -75,7 +80,8 @@ const REGISTERED = { phase: 'publicly_ready', rows: ['org-next'], tunnelToken: t
 describe('a registration reset that overtakes a pairing', () => {
   const cloudflare = mock<CloudflareClientService>();
   const tunnel = { running: false };
-  const portal = { pairInto: 'org-next', deviceRemoved: false };
+  /** `refusesPairing` answers the next pairing with a spent code. `answersFor` names the device Portal paired. */
+  const portal = { pairInto: 'org-next', deviceRemoved: false, pairs: 0, refusesPairing: false, answersFor: DEVICE_ID };
   const booted: RegistrationService[] = [];
   let disk: Persisted;
   let held: Map<Step, { reached: () => void; released: Promise<void> }>;
@@ -155,6 +161,11 @@ describe('a registration reset that overtakes a pairing', () => {
       {} as never,
     );
     vi.spyOn(registration, 'getDeviceId').mockResolvedValue(DEVICE_ID);
+    const holdAppSync = Reflect.get(registration, 'holdAppSyncForPairingCheck').bind(registration);
+    vi.spyOn(registration as never, 'holdAppSyncForPairingCheck').mockImplementation((async () => {
+      await holdAppSync();
+      await pass('app sync held');
+    }) as never);
     const setup = Reflect.get(registration, 'setupOrganizationInfrastructure').bind(registration);
     vi.spyOn(registration as never, 'setupOrganizationInfrastructure').mockImplementation(((...args: unknown[]) => {
       const run = setup(...args);
@@ -220,6 +231,9 @@ describe('a registration reset that overtakes a pairing', () => {
     tunnel.running = false;
     portal.pairInto = 'org-next';
     portal.deviceRemoved = false;
+    portal.pairs = 0;
+    portal.refusesPairing = false;
+    portal.answersFor = DEVICE_ID;
     await fs.promises.mkdir(TUNNEL_DIR, { recursive: true });
 
     cloudflare.initializeTunnel.mockImplementation(async (_organizationId, credentials) => {
@@ -238,12 +252,17 @@ describe('a registration reset that overtakes a pairing', () => {
 
     vi.mocked(axios.post).mockImplementation(async (url: string) => {
       if (url.endsWith('/api/devices/pair')) {
+        if (portal.refusesPairing) {
+          portal.refusesPairing = false;
+          return { status: 410, data: { error: 'That pairing code is no longer valid. Ask for a new one.', code: 'PAIRING_CODE_INVALID' } };
+        }
+        const pairs = portal.pairs++;
         await pass('portal pairs');
-        return { status: 200, data: answerFor(portal.pairInto) };
+        return { status: 200, data: { ...answerFor(portal.pairInto, pairs), device_id: portal.answersFor } };
       }
       if (url.endsWith('/api/devices/register')) {
         await pass('portal pairs');
-        return { status: 200, data: answerFor(portal.pairInto) };
+        return { status: 200, data: answerFor(portal.pairInto, portal.pairs++) };
       }
       if (url.endsWith('/api/devices/check-in')) {
         await pass('check-in answers');
@@ -363,7 +382,7 @@ describe('a registration reset that overtakes a pairing', () => {
     });
   });
 
-  it('stops a pairing whose Portal request was in flight before it writes anything', async () => {
+  it('stops a pairing whose Portal request was in flight before it writes anything but the keys Portal issued', async () => {
     const hub = boot();
     const hold = holdAt('portal pairs');
     const paired = hub.registration.pairDevice('ABC123');
@@ -377,8 +396,91 @@ describe('a registration reset that overtakes a pairing', () => {
     expect(leftOn(hub)).toEqual(UNREGISTERED);
     // Start fresh pairs as a new device, so the ID it removed must stay gone.
     expect(readRegisteredDeviceId(DATA_DIR)).toBeNull();
-    expect(disk.settings).toEqual({ ciHubApiKey: OLD_DEVICE_KEY });
+    expect(disk.settings).toEqual({ ciHubApiKey: NEW_DEVICE_KEY, ciHubMoveKey: NEW_MOVE_KEY });
     expect(fs.existsSync(PAIRING_APP_CHECK_PATH)).toBe(false);
+  });
+
+  // Portal replaced this Hub's keys when it answered, so the ones the Hub held before prove nothing there
+  // now. A reset keeps the device key, so the Hub keeps these, as if the pairing had finished just before it.
+  describe('the keys Portal issued to a pairing a reset stopped', () => {
+    /** Holds a first pairing at `step`, runs `reset`, then lets the pairing go on. */
+    async function resetWhilePairing(hub: Hub, step: Step, reset: () => Promise<unknown>) {
+      const hold = holdAt(step);
+      const paired = hub.registration.pairDevice('ABC123');
+      await hold.reached;
+      await reset();
+      hold.release();
+      return paired;
+    }
+
+    it.each(['portal pairs', 'app sync held'] as const)('are kept after Settings > Reset registration while %s', async (step) => {
+      const hub = boot();
+
+      const paired = resetWhilePairing(hub, step, () => resets['Settings > Reset registration'](hub));
+
+      await expect(paired).resolves.toMatchObject({ success: false, message: expect.stringContaining('reset') });
+      await settled();
+      expect(leftOn(hub)).toEqual(UNREGISTERED);
+      expect(disk.settings).toEqual({ ciHubApiKey: NEW_DEVICE_KEY, ciHubMoveKey: NEW_MOVE_KEY });
+    });
+
+    it('are not kept after a factory reset, which removes the device key', async () => {
+      const hub = boot();
+
+      await expect(resetWhilePairing(hub, 'portal pairs', () => resets['a factory reset'](hub))).resolves.toMatchObject({ success: false });
+
+      expect(disk.settings).toEqual({ ciHubApiKey: OLD_DEVICE_KEY });
+    });
+
+    it('are not kept when a factory reset came after the reset that stopped the pairing', async () => {
+      const hub = boot();
+
+      const paired = resetWhilePairing(hub, 'portal pairs', async () => {
+        await resets['Settings > Reset registration'](hub);
+        await resets['a factory reset'](hub);
+      });
+
+      await expect(paired).resolves.toMatchObject({ success: false });
+      expect(disk.settings).toEqual({ ciHubApiKey: OLD_DEVICE_KEY });
+    });
+
+    it('do not replace the keys of a pairing that finished first', async () => {
+      const hub = boot();
+
+      const paired = resetWhilePairing(hub, 'portal pairs', async () => {
+        await resets['Settings > Reset registration'](hub);
+        await expect(hub.registration.pairDevice('DEF456')).resolves.toMatchObject({ success: true });
+        await settled();
+      });
+
+      await expect(paired).resolves.toMatchObject({ success: false });
+      await settled();
+      expect(leftOn(hub)).toEqual(REGISTERED);
+      expect(disk.settings).toMatchObject(NEXT_KEYS);
+    });
+
+    it('are kept when Portal refused the pairing tried after it', async () => {
+      const hub = boot();
+
+      const paired = resetWhilePairing(hub, 'portal pairs', async () => {
+        await resets['Settings > Reset registration'](hub);
+        portal.refusesPairing = true;
+        await expect(hub.registration.pairDevice('DEF456')).resolves.toMatchObject({ success: false, code: 'PAIRING_CODE_INVALID' });
+      });
+
+      await expect(paired).resolves.toMatchObject({ success: false, message: expect.stringContaining('reset') });
+      expect(disk.settings).toEqual({ ciHubApiKey: NEW_DEVICE_KEY, ciHubMoveKey: NEW_MOVE_KEY });
+    });
+
+    it('are not kept from an answer for another device', async () => {
+      const hub = boot();
+      portal.answersFor = 'another-device';
+
+      const paired = resetWhilePairing(hub, 'portal pairs', () => resets['Settings > Reset registration'](hub));
+
+      await expect(paired).resolves.toEqual({ success: false, message: 'Device ID mismatch. Registration failed.' });
+      expect(disk.settings).toEqual({ ciHubApiKey: OLD_DEVICE_KEY });
+    });
   });
 
   it('stops a registration from the manual form and reports that it was reset', async () => {
