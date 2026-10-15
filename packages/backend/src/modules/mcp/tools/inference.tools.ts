@@ -273,7 +273,10 @@ export class InferenceTools implements OnModuleInit {
         type: 'object',
         properties: {
           provider: { type: 'string', enum: ['openai', 'anthropic', 'google', 'github-copilot'], description: 'Cloud provider type' },
-          apiKey: { type: 'string', description: 'API key for the provider' },
+          apiKey: {
+            type: 'string',
+            description: 'API key for the provider. An empty string keeps the stored key, unless baseUrl names another server.',
+          },
           enabled: { type: 'boolean', description: 'Whether this provider is enabled' },
           baseUrl: { type: 'string', description: 'Custom base URL (optional)' },
           defaultModel: { type: 'string', description: 'Default model for this provider' },
