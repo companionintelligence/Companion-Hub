@@ -461,7 +461,7 @@ export const McpSettingsContainer = () => {
               <Checkbox
                 name="mcp-run-confirm"
                 checked={runConfirmed}
-                onCheckedChange={(v: boolean) => setRunConfirmed(v)}
+                onCheckedChange={(checked) => setRunConfirmed(checked === true)}
                 label={t('MCP_SETTINGS_RUN_DESTRUCTIVE_CONFIRM')}
                 className="text-destructive"
               />
