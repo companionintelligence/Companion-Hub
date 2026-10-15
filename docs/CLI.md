@@ -501,8 +501,8 @@ capability cannot store one, so on such a Hub `create` refuses `--capability` in
 key that can do everything its scopes allow.
 
 A key from `create` records no creator, so it can't use the MCP tools that change the whole Hub (model
-pulls and loads, cloud providers, updates, app stores) or read the Hub's log: those take a key an
-organization owner or admin created in the Hub's Security settings. See
+pulls and loads, cloud providers, updates, app stores) or read the Hub's log: those take a key that the
+operator who claimed the Hub or an organization owner or admin created in the Hub's Security settings. See
 [MCP agent bootstrap](MCP_AGENT_BOOTSTRAP.md).
 
 Both commands run `psql` in the `ci-hub-db` container. Through the Docker engine the Windows desktop

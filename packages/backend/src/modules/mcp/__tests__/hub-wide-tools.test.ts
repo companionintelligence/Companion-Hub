@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -21,6 +23,7 @@ import { FederatedIdentityRepository } from '@/modules/user/federated-identity.r
 import { UserRepository } from '@/modules/user/user.repository';
 import { McpService } from '../mcp.service';
 import { mcpCallContext } from '../mcp-call-context';
+import { McpModernHandlerService } from '../mcp-modern-handler.service';
 import { McpServerFactory } from '../mcp-server.factory';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 import { McpV2ServerFactory } from '../mcp-v2-server.factory';
@@ -225,6 +228,18 @@ describe('Hub-wide MCP tools', () => {
       expect(portal.whoisApps).not.toHaveBeenCalled();
     });
 
+    it('gives a managed key no creator to ask about, even one recorded on it', async () => {
+      const key = writeKey(OWNER, { name: 'ci-hermes', ownerAppUrn: 'ci-hermes:ci-marketplace' });
+      const client = await connect();
+
+      expect(await listedHubWide(client, key)).toEqual([]);
+      const res = await as(key, () => setCloudProvider(client));
+
+      expect(textOf(res)).toBe('HUB_MANAGE_KEY_REISSUE_REQUIRED {"tool":"hub_set_cloud_provider"}');
+      expect(cloudFallback.setProvider).not.toHaveBeenCalled();
+      expect(portal.whoisApps).not.toHaveBeenCalled();
+    });
+
     it("keeps the Hub log from a member's read key and from a managed key", async () => {
       const client = await connect();
 
@@ -353,6 +368,87 @@ describe('Hub-wide MCP tools', () => {
 
       expect(textOf(res)).toBe('HUB_MANAGE_ROLE_REQUIRED {"tool":"hub_set_cloud_provider"}');
       expect(cloudFallback.setProvider).not.toHaveBeenCalled();
+    });
+  });
+
+  /*
+   * The same through the real 2026-07-28 handler, over a socket, with the key's context set around it as
+   * `McpController` sets it: the per-request factory is awaited inside that context.
+   */
+  describe('the 2026-07-28 HTTP handler', () => {
+    const servers: http.Server[] = [];
+
+    afterEach(async () => {
+      for (const server of servers.splice(0)) {
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    });
+
+    /** The JSON-RPC answer to one 2026-07-28 request, made with `key`. */
+    async function modernRequest(key: ApiKeyContext, method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+      const logger = mock<LoggerService>();
+      const modern = new McpModernHandlerService(new McpV2ServerFactory(registry, new McpService(registry, logger), logger, whois), logger);
+      modern.onModuleInit();
+      const server = http.createServer((req, res) => void mcpCallContext.run(key, () => modern.handleRequest(req, res)));
+      servers.push(server);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+
+      const name = typeof params.name === 'string' ? { 'mcp-name': params.name } : {};
+      const res = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          'mcp-protocol-version': '2026-07-28',
+          'mcp-method': method,
+          ...name,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method,
+          params: {
+            ...params,
+            _meta: {
+              'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+              'io.modelcontextprotocol/clientCapabilities': {},
+              'io.modelcontextprotocol/clientInfo': { name: 'hub-wide-test', version: '1.0.0' },
+            },
+          },
+        }),
+      });
+      const text = await res.text();
+      const data = text.startsWith('{')
+        ? text
+        : (text
+            .split('\n')
+            .find((line) => line.startsWith('data: '))
+            ?.slice('data: '.length) ?? text);
+      return JSON.parse(data) as Record<string, unknown>;
+    }
+
+    const toolNames = (answer: Record<string, unknown>) =>
+      ((answer.result as { tools: Array<{ name: string }> }).tools ?? []).map((tool) => tool.name);
+
+    it("lists and runs a Hub-wide tool for an owner's key", async () => {
+      expect(toolNames(await modernRequest(writeKey(OWNER), 'tools/list'))).toEqual(expect.arrayContaining(HUB_WIDE_WRITE_VISIBLE));
+
+      const answer = await modernRequest(writeKey(OWNER), 'tools/call', { name: 'hub_set_auto_updates', arguments: { enabled: false } });
+
+      expect((answer.result as { isError?: boolean }).isError).toBeFalsy();
+      expect(systemUpdate.setAutoUpdatesEnabled).toHaveBeenCalledWith(false);
+    });
+
+    it("leaves them out for a member's key, so a call names an unknown tool and changes nothing", async () => {
+      const listed = toolNames(await modernRequest(writeKey(MEMBER), 'tools/list'));
+      expect(listed).toEqual(expect.arrayContaining(['hub_start_app', 'hub_get_auto_updates']));
+      expect(listed.filter((name) => registry.getTool(name)?.hubWide)).toEqual([]);
+
+      const answer = await modernRequest(writeKey(MEMBER), 'tools/call', { name: 'hub_set_auto_updates', arguments: { enabled: false } });
+
+      expect(answer.error).toMatchObject({ message: expect.stringContaining('Tool hub_set_auto_updates not found') });
+      expect(systemUpdate.setAutoUpdatesEnabled).not.toHaveBeenCalled();
     });
   });
 });

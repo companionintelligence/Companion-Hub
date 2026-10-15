@@ -1262,6 +1262,15 @@ describe('MarketplaceWhoIsService', () => {
         users.getFirstOperator.mockResolvedValue({ id: USER_ID, accessStatus: 'revoked' } as never);
         await expect(service.storedHubManageVerdictFor(USER_ID)).resolves.toBe('refused');
       });
+
+      // A claimer the Portal calls a member is stored as one. A failed read of who claimed the Hub must
+      // not turn that stored role into a refusal of every key they made.
+      it('is unknown, not refused, when the operator rows cannot be read', async () => {
+        storedRole('member');
+        users.getFirstOperator.mockRejectedValue(new Error('db down'));
+
+        await expect(service.storedHubManageVerdictFor(USER_ID)).resolves.toBe('unknown');
+      });
     });
 
     /* The UI's question, answered from the role stored at sign-in, as for custom apps. */

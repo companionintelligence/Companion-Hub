@@ -7,7 +7,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { hubSessionOperatorUserId } from '@/core/portal/hub-session-operator';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
-import { HubManagerGuard } from '@/modules/auth/hub-manager.guard';
+import { HubManagerGuard, resolveWhoisService } from '@/modules/auth/hub-manager.guard';
 import { ApiKeyAdminService } from './api-key-admin.service';
 import { ApiKeyListDto, CreateApiKeyBody, UpdateApiKeyBody } from './api-key-admin.dto';
 
@@ -145,13 +145,10 @@ export class ApiKeyAdminController {
 
   /**
    * Resolved when asked, the way the lifecycle service resolves it, so the key module keeps depending
-   * on nothing but the database and the logger. `null` — cannot resolve — is a refusal, never a pass.
+   * on nothing but the database and the logger. `null` means it can't be resolved. That refuses full
+   * capability rather than passing it. The key list then marks no creator's role.
    */
   private resolveWhois(): MarketplaceWhoIsService | null {
-    try {
-      return this.moduleRef.get(MarketplaceWhoIsService, { strict: false }) ?? null;
-    } catch {
-      return null;
-    }
+    return resolveWhoisService(this.moduleRef);
   }
 }

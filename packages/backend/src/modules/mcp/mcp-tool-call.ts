@@ -8,6 +8,7 @@ import { assertHubManageAllowed } from '@/core/portal/hub-manage-verdict';
 import type { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import type { LoggerService } from '@/core/logger/logger.service';
 import type { ApiKeyCapability } from '@/modules/api-keys/api-key.capabilities';
+import type { ApiKeyContext } from '@/modules/api-keys/api-key.service';
 import type { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { formatToolError, formatToolSuccess } from './mcp-error.handler';
 import { mcpAdminCallContext, mcpCallContext } from './mcp-call-context';
@@ -77,8 +78,8 @@ export async function assertMcpCallerMay(
  * about the key's creator on every call (`MarketplaceWhoIsService.hubManageVerdictFor`), with the same
  * refusals: 403 for a member, 503 when the Portal can't say.
  *
- * A managed app key, and a key nobody is recorded as creating (minted by the CLI, or before v0.2.70),
- * have nobody whose role can be checked. They get a code of their own, `HUB_MANAGE_KEY_REISSUE_REQUIRED`:
+ * A managed app key or a key nobody is recorded as creating (minted by the CLI or before v0.2.70)
+ * has nobody whose role can be checked. They get a code of their own, `HUB_MANAGE_KEY_REISSUE_REQUIRED`:
  * only a key an owner or admin creates can reach these tools.
  */
 export async function assertMcpKeyMayManageHub(whois: Pick<MarketplaceWhoIsService, 'hubManageVerdictFor'>, toolName: string): Promise<void> {
@@ -89,11 +90,21 @@ export async function assertMcpKeyMayManageHub(whois: Pick<MarketplaceWhoIsServi
   if (!key) {
     throw new TranslatableError('HUB_MANAGE_ROLE_REQUIRED', intlParams, HttpStatus.FORBIDDEN);
   }
-  if (key.createdByUserId === null) {
+  const creator = keyCreator(key);
+  if (creator === null) {
     throw new TranslatableError('HUB_MANAGE_KEY_REISSUE_REQUIRED', intlParams, HttpStatus.FORBIDDEN);
   }
 
-  assertHubManageAllowed(await whois.hubManageVerdictFor(key.createdByUserId), intlParams);
+  assertHubManageAllowed(await whois.hubManageVerdictFor(creator), intlParams);
+}
+
+/**
+ * The person whose role decides a key's Hub-wide tools, or `null` when there is none. A managed key acts
+ * for its app, so it has none even if a creator were recorded on it. `ApiKeyService.resolve` already
+ * drops one, but this gate doesn't lean on that.
+ */
+function keyCreator(key: Pick<ApiKeyContext, 'ownerAppUrn' | 'createdByUserId'>): number | null {
+  return key.ownerAppUrn === null ? key.createdByUserId : null;
 }
 
 /**
@@ -103,7 +114,8 @@ export async function assertMcpKeyMayManageHub(whois: Pick<MarketplaceWhoIsServi
  * asks the Portal, answering 503 if it still can't say.
  */
 export async function mcpKeyMayListHubWide(whois: Pick<MarketplaceWhoIsService, 'storedHubManageVerdictFor'>): Promise<boolean> {
-  const creator = mcpCallContext.getStore()?.createdByUserId ?? null;
+  const key = mcpCallContext.getStore();
+  const creator = key ? keyCreator(key) : null;
 
   if (creator === null) {
     return false;

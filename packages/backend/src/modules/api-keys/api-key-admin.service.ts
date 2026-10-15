@@ -13,8 +13,8 @@ export type ApiKeyListEntry = ApiKeyInfo & { hubWideBlocked: ApiKeyHubWideBlock 
 /**
  * Why `key` can't use the Hub-wide MCP tools, or `null` (see `API_KEY_HUB_WIDE_BLOCKS`). Mirrors the
  * gate those tools ask (`assertMcpKeyMayManageHub`): a managed key, or one with no recorded creator, has
- * nobody to ask; anyone else is asked fresh on each call, and is marked here only when the Hub's records
- * already say no. A key without the 'mcp' scope reaches no tool, so it is never marked.
+ * nobody to ask. Anyone else is asked fresh on each call. They are marked here only when the Hub's
+ * records already say no. A key without the 'mcp' scope reaches no tool, so it is never marked.
  */
 async function hubWideBlock(key: ApiKeyInfo, verdictFor: (userId: number) => Promise<HubManageVerdict> | null): Promise<ApiKeyHubWideBlock | null> {
   if (!key.scopes.includes('mcp')) {
@@ -48,8 +48,8 @@ export class ApiKeyAdminService {
    * says whether it can use the MCP tools that change the whole Hub ({@link hubWideBlock}).
    *
    * Each creator's role is read from the Hub's own records (`storedHubManageVerdictFor`), once per
-   * creator, so the list never waits on the Portal. `whois` is `null` when it can't be resolved; then no
-   * creator's role is marked, and the tool calls still decide.
+   * creator, so the list never waits on the Portal. `whois` is `null` when it can't be resolved. Then no
+   * creator's role is marked; the tool calls still decide.
    */
   async listKeys(whois: Pick<MarketplaceWhoIsService, 'storedHubManageVerdictFor'> | null): Promise<ApiKeyListEntry[]> {
     const keys = await this.apiKeys.list();

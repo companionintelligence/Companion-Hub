@@ -2062,7 +2062,7 @@
   "API_KEYS_NEVER_USED": "Never used",
   "API_KEYS_CREATED_BY": "Created by {{name}}",
   "API_KEYS_CREATED_BY_UNKNOWN": "Creator unknown: recreate this key to limit it to one person's access",
-  "API_KEYS_HUB_WIDE_NO_CREATOR": "Creator unknown: this key can't change Hub-wide settings. Revoke it and have an organization owner or admin create a new one.",
+  "API_KEYS_HUB_WIDE_NO_CREATOR": "Creator unknown: this key isn't limited to one person's access to apps, but it can't change Hub-wide settings. Revoke it and have an organization owner or admin create a new one.",
   "API_KEYS_HUB_WIDE_CREATOR_ROLE": "Its creator can't change Hub-wide settings, so this key can't either.",
   "API_KEYS_HUB_WIDE_APP_KEY": "An app's own key can't change Hub-wide settings, such as AI models and cloud providers. An organization owner or admin can change those in the Hub's settings.",
   "API_KEY_FULL_ROLE_REQUIRED": "Only an organization owner or admin can give an API key full capability.",

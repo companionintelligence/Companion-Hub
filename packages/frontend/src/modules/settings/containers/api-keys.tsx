@@ -44,7 +44,8 @@ export interface ApiKeyInfo {
   createdByUsername: string | null;
   /**
    * Why the key can't use the MCP tools that change the whole Hub, or `null` when nothing the Hub holds
-   * stops it. Those tools take a key whose creator is an organization owner or admin.
+   * stops it. Those tools take a key whose creator may manage the Hub: an organization owner or admin,
+   * or the operator who claimed it.
    */
   hubWideBlocked: 'app-key' | 'no-creator' | 'creator-role' | null;
 }

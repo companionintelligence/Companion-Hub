@@ -1,11 +1,21 @@
-import { GUARDS_METADATA } from '@nestjs/common/constants';
-import { describe, expect, it } from 'vitest';
+import path from 'node:path';
+import { GUARDS_METADATA, PATH_METADATA } from '@nestjs/common/constants';
+import { describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
+import { AppController } from '@/app.controller';
+import { SSEController } from '@/core/sse/sse.controller';
+import { ApiKeyAdminController } from '@/modules/api-keys/api-key-admin.controller';
 import { HubManagerGuard } from '@/modules/auth/hub-manager.guard';
+import { HubPoolController } from '@/modules/hub-pool/hub-pool.controller';
 import { InferenceController } from '@/modules/inference/inference.controller';
 import { MarketplaceController } from '@/modules/marketplace/marketplace.controller';
+import { NetworkController } from '@/modules/network/network.controller';
+import { RegistrationController } from '@/modules/registration/registration.controller';
 import { SystemUpdateController } from '@/modules/system-update/system-update.controller';
+import { FactoryResetController } from '@/modules/system/factory-reset.controller';
 import { SystemController } from '@/modules/system/system.controller';
+import { TailscaleController } from '@/modules/tailscale/tailscale.controller';
+import { McpAdminController } from '../mcp-admin.controller';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 import { AppAgentTools } from '../tools/app-agent.tools';
 import { AppApiProxyTools } from '../tools/app-api-proxy.tools';
@@ -20,6 +30,9 @@ import { MarketplaceTools } from '../tools/marketplace.tools';
 import { OperationsTools } from '../tools/operations.tools';
 import { RegistrationTools } from '../tools/registration.tools';
 import { SystemTools } from '../tools/system.tools';
+
+// The suite mocks `fs` with an in-memory one; this test reads the real source tree.
+const { readdirSync, readFileSync } = await vi.importActual<typeof import('node:fs')>('node:fs');
 
 /**
  * Regression guard over the REAL tool registrations, pinning both classification axes:
@@ -100,35 +113,109 @@ const EXPECTED_READ = [
   'hub_system_load',
 ].sort();
 
-/**
- * Every Hub-wide tool, with the route whose `HubManagerGuard` it follows: a member may not use it over
- * MCP because they may not over HTTP. `hub_get_hub_logs` only reads, and the Hub's log routes take an
- * owner or admin all the same. Each tool on a guarded route belongs here; the other tools' routes
- * (system load, update check, cloud providers by name, app store lists, links, apps) carry no guard.
- */
-const EXPECTED_HUB_WIDE: Array<[tool: string, controller: { prototype: object }, handler: string]> = [
-  ['hub_add_app_store', MarketplaceController, 'createAppStore'],
-  ['hub_delete_app_store', MarketplaceController, 'deleteAppStore'],
-  ['hub_get_hub_logs', SystemController, 'downloadHubLogs'],
-  ['hub_load_model', InferenceController, 'loadModel'],
-  ['hub_perform_update', SystemUpdateController, 'performUpdate'],
-  ['hub_pin_model', InferenceController, 'pinModel'],
-  ['hub_pull_app_stores', MarketplaceController, 'pullAppStores'],
-  ['hub_pull_model', InferenceController, 'pullModel'],
-  ['hub_set_auto_updates', SystemUpdateController, 'setAutoUpdates'],
-  ['hub_set_cloud_provider', InferenceController, 'setCloudProvider'],
-  ['hub_unload_model', InferenceController, 'unloadModel'],
-  ['hub_unpin_model', InferenceController, 'unpinModel'],
-  ['hub_update_app_store', MarketplaceController, 'updateAppStore'],
+/** Every controller that puts `HubManagerGuard` on a route, by its file under `src/`. */
+const GUARDED_CONTROLLERS: Array<[file: string, controller: { name: string; prototype: object }]> = [
+  ['app.controller.ts', AppController],
+  ['core/sse/sse.controller.ts', SSEController],
+  ['modules/api-keys/api-key-admin.controller.ts', ApiKeyAdminController],
+  ['modules/hub-pool/hub-pool.controller.ts', HubPoolController],
+  ['modules/inference/inference.controller.ts', InferenceController],
+  ['modules/marketplace/marketplace.controller.ts', MarketplaceController],
+  ['modules/mcp/mcp-admin.controller.ts', McpAdminController],
+  ['modules/network/network.controller.ts', NetworkController],
+  ['modules/registration/registration.controller.ts', RegistrationController],
+  ['modules/system-update/system-update.controller.ts', SystemUpdateController],
+  ['modules/system/factory-reset.controller.ts', FactoryResetController],
+  ['modules/system/system.controller.ts', SystemController],
+  ['modules/tailscale/tailscale.controller.ts', TailscaleController],
 ];
 
-/** The guards a handler carries, its class's first. */
-function guardsOn(controller: { prototype: object }, method: string): unknown[] {
-  const handler = (controller.prototype as Record<string, unknown>)[method];
-  if (typeof handler !== 'function') {
-    throw new Error(`${method} is not a handler`);
-  }
-  return [...(Reflect.getMetadata(GUARDS_METADATA, controller) ?? []), ...(Reflect.getMetadata(GUARDS_METADATA, handler) ?? [])];
+/**
+ * Every route that carries `HubManagerGuard`, with the MCP tools that do what it does. Those tools are
+ * the Hub-wide ones (`hubWide: true`): a member may not use them over MCP because they may not over
+ * HTTP. `hub_get_hub_logs` only reads, but the Hub's log routes take an owner or admin all the same.
+ *
+ * A route with no tool maps to `[]`. A new guarded route fails the test below until it is listed here,
+ * so whoever adds it decides whether an MCP tool reaches the same thing. A new tool that does what a
+ * listed route does goes next to it and is marked `hubWide`.
+ */
+const GUARDED_ROUTE_TOOLS: Record<string, string[]> = {
+  'AppController.acknowledgeWelcome': [],
+  'AppController.updateUserSettings': [],
+  'ApiKeyAdminController.createKey': [],
+  'ApiKeyAdminController.revokeKey': [],
+  'ApiKeyAdminController.updateKey': [],
+  'FactoryResetController.factoryReset': [],
+  'HubPoolController.approvePeer': [],
+  'HubPoolController.cancelPairingPin': [],
+  'HubPoolController.deletePoolPin': [],
+  'HubPoolController.disablePeer': [],
+  'HubPoolController.enablePeer': [],
+  'HubPoolController.mintPairingPin': [],
+  'HubPoolController.pairPeer': [],
+  'HubPoolController.probePeerAddress': [],
+  'HubPoolController.rejectPeer': [],
+  'HubPoolController.removePeer': [],
+  'HubPoolController.rotateIdentity': [],
+  'HubPoolController.updatePoolSettings': [],
+  'HubPoolController.upgradePeer': [],
+  'HubPoolController.upsertPoolPin': [],
+  'InferenceController.installOllama': [],
+  'InferenceController.loadModel': ['hub_load_model'],
+  'InferenceController.pinModel': ['hub_pin_model'],
+  'InferenceController.pullModel': ['hub_pull_model'],
+  'InferenceController.removeCloudProvider': [],
+  'InferenceController.rescanHardware': [],
+  'InferenceController.setCloudProvider': ['hub_set_cloud_provider'],
+  'InferenceController.startPullModel': ['hub_pull_model'],
+  'InferenceController.unloadModel': ['hub_unload_model'],
+  'InferenceController.unpinModel': ['hub_unpin_model'],
+  'InferenceController.updatePreferences': [],
+  'InferenceController.updateRocmInstallState': [],
+  'MarketplaceController.createAppStore': ['hub_add_app_store'],
+  'MarketplaceController.deleteAppStore': ['hub_delete_app_store'],
+  'MarketplaceController.pullAppStores': ['hub_pull_app_stores'],
+  'MarketplaceController.updateAppStore': ['hub_update_app_store'],
+  // The tool runner runs any tool. It asks about the signed-in person again before a Hub-wide one.
+  'McpAdminController.callTool': [],
+  'NetworkController.repairOrphans': [],
+  'RegistrationController.reconnectTunnel': [],
+  'RegistrationController.resetRegistration': [],
+  'SSEController.hubLogsEvents': ['hub_get_hub_logs'],
+  'SystemController.downloadHubLogs': ['hub_get_hub_logs'],
+  'SystemUpdateController.performUpdate': ['hub_perform_update'],
+  'SystemUpdateController.setAutoUpdates': ['hub_set_auto_updates'],
+  'TailscaleController.connectWithAuthKey': [],
+  'TailscaleController.disconnect': [],
+  'TailscaleController.startAuth': [],
+  'TailscaleController.syncExposure': [],
+};
+
+/** `Controller.method` for each route handler a controller puts `HubManagerGuard` on, its class's guards included. */
+function guardedRoutes(controller: { name: string; prototype: object }): string[] {
+  const classGuards: unknown[] = Reflect.getMetadata(GUARDS_METADATA, controller) ?? [];
+  const proto = controller.prototype as Record<string, unknown>;
+
+  return Object.getOwnPropertyNames(proto)
+    .filter((method) => {
+      const handler = proto[method];
+      if (method === 'constructor' || typeof handler !== 'function' || !Reflect.hasMetadata(PATH_METADATA, handler)) {
+        return false;
+      }
+      return [...classGuards, ...(Reflect.getMetadata(GUARDS_METADATA, handler) ?? [])].includes(HubManagerGuard);
+    })
+    .map((method) => `${controller.name}.${method}`);
+}
+
+/** Source files under `src/` (tests left out) that name `HubManagerGuard` in a `@UseGuards`. */
+function filesUsingHubManagerGuard(): string[] {
+  const srcRoot = path.resolve(__dirname, '../../..');
+
+  return readdirSync(srcRoot, { recursive: true, encoding: 'utf8' })
+    .filter((file) => file.endsWith('.ts') && !file.split(path.sep).includes('__tests__'))
+    .filter((file) => /@UseGuards\([^)]*\bHubManagerGuard\b/.test(readFileSync(path.join(srcRoot, file), 'utf8')))
+    .map((file) => file.split(path.sep).join('/'))
+    .sort();
 }
 
 /** Register every real tool provider. Non-registry dependencies are unused mocks — onModuleInit only
@@ -170,12 +257,20 @@ describe('MCP tool classification', () => {
     expect(namesWhere((tool) => tool.access === 'read')).toEqual(EXPECTED_READ);
   });
 
-  it('marks exactly the expected set of Hub-wide tools', () => {
-    expect(namesWhere((tool) => tool.hubWide === true)).toEqual(EXPECTED_HUB_WIDE.map(([tool]) => tool));
+  it('marks exactly the tools that do what a route behind HubManagerGuard does as Hub-wide', () => {
+    const toolsOfGuardedRoutes = [...new Set(Object.values(GUARDED_ROUTE_TOOLS).flat())].sort();
+
+    expect(namesWhere((tool) => tool.hubWide === true)).toEqual(toolsOfGuardedRoutes);
   });
 
-  it.each(EXPECTED_HUB_WIDE)('%s follows a route that carries HubManagerGuard', (_tool, controller, handler) => {
-    expect(guardsOn(controller, handler)).toContain(HubManagerGuard);
+  it('lists every route that carries HubManagerGuard, with the tools that reach it', () => {
+    const guarded = GUARDED_CONTROLLERS.flatMap(([, controller]) => guardedRoutes(controller)).sort();
+
+    expect(guarded).toEqual(Object.keys(GUARDED_ROUTE_TOOLS).sort());
+  });
+
+  it('knows every controller that puts HubManagerGuard on a route', () => {
+    expect(filesUsingHubManagerGuard()).toEqual(GUARDED_CONTROLLERS.map(([file]) => file).sort());
   });
 
   it('never labels a destructive tool read-only', () => {

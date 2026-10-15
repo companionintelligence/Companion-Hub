@@ -52,9 +52,9 @@ export interface McpToolDefinition {
   /**
    * Marks a tool that changes what applies to the whole Hub, or reads the Hub's own log: one whose HTTP
    * route carries `HubManagerGuard`, so a member may not use it. Before one runs,
-   * {@link McpToolRegistry.callTool} asks {@link CallToolOptions.assertMayManageHub}, and `tools/list`
+   * {@link McpToolRegistry.callTool} asks {@link CallToolOptions.assertMayManageHub}. `tools/list`
    * leaves it out for a caller who can't use it. A separate axis from `access`: `hub_get_hub_logs` only
-   * reads, and still takes an owner or admin.
+   * reads but still takes an owner or admin.
    */
   hubWide?: true;
 }
@@ -183,12 +183,11 @@ export class McpToolRegistry {
   }
 
   /**
-   * Invoke a registered tool. Throws {@link McpToolNotFoundError} for an unknown name,
-   * {@link DestructiveToolDisabledError} when a destructive tool is called without permission, and
-   * {@link WriteToolDeniedError} when a mutating tool is called by a read-only key, and the Hub-wide
-   * routes' refusal when a Hub-wide tool is called by someone {@link CallToolOptions.assertMayManageHub}
-   * turns away. Any other error is the tool handler's own failure and propagates to the caller for
-   * formatting.
+   * Invoke a registered tool. Throws {@link McpToolNotFoundError} for an unknown name and
+   * {@link DestructiveToolDisabledError} when a destructive tool is called without permission. A
+   * mutating tool called by a read-only key throws {@link WriteToolDeniedError}. A Hub-wide tool throws
+   * the Hub-wide routes' refusal when {@link CallToolOptions.assertMayManageHub} turns its caller away.
+   * Any other error is the tool handler's own failure and propagates to the caller for formatting.
    *
    * ISSUE-MCP-2's guarantee — a leaked key cannot wipe app data by default — now rests on the key's
    * own capability rather than an appliance-wide switch, so it holds per credential.

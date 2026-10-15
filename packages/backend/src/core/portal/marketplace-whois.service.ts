@@ -459,24 +459,26 @@ export class MarketplaceWhoIsService {
 
   /**
    * {@link hubManageVerdict} from the Hub's own records, with no Portal call. The claiming operator is
-   * read from the database, and anyone else's role is the one the Hub stored at sign-in or at the hourly
+   * read from the database. Anyone else's role is the one the Hub stored at sign-in or at the hourly
    * membership check (`user.orgRole`), as for {@link customAppActionsHint}. A stored owner or admin role
    * counts only where the routes can read one: a linked person on a paired Hub. `unknown` when no role is
    * stored for someone the Portal could be asked about, or when the records can't be read.
    */
   private async storedHubManageVerdict(userId: number, storedRole: string | null | undefined): Promise<HubManageVerdict> {
-    if (await this.isClaimingOperator(userId)) {
-      return 'allowed';
-    }
-
-    if (storedRole === 'member') {
-      return 'refused';
-    }
-
+    // A database blip must leave this `unknown`, not mark a key's creator as refused. So the claimer is
+    // read with `readIsClaimingOperator`, which throws where `isClaimingOperator` answers "not them": a
+    // claimer stored as a member would otherwise lose their keys' Hub-wide tools on a failed read.
     try {
+      if (await this.readIsClaimingOperator(userId)) {
+        return 'allowed';
+      }
+
+      if (storedRole === 'member') {
+        return 'refused';
+      }
+
       // With no role to read, the routes refuse anyone but the claiming operator. The registration is
-      // read here rather than through `deviceOrganizationId`, which reads a failed read as "unpaired":
-      // a database blip must leave this `unknown`, not mark every key's creator as refused.
+      // read here rather than through `deviceOrganizationId`, which reads a failed read as "unpaired".
       if (!(await this.portalSubject(userId)) || !(await this.registration.getDeviceRegistrationInfo())?.id) {
         return 'refused';
       }
@@ -495,19 +497,24 @@ export class MarketplaceWhoIsService {
    * operator can be claimed, so the next claimer takes this over and the old one, signing in again,
    * gets a new row like anyone else.
    *
-   * `false` when the operator rows can't be read, and for a claimer whose access was revoked
+   * `false` when the operator rows can't be read. `false` too for a claimer whose access was revoked
    * (`AuthService.revokeOperator`, after the Portal removed them from the organization): they can't
-   * sign in, and the keys they created must not keep the claimer's pass on the Hub-wide MCP tools.
+   * sign in, so the keys they created must not keep the claimer's pass on the Hub-wide MCP tools.
    * Also asked by who may give an API key full capability.
    */
   async isClaimingOperator(userId: number): Promise<boolean> {
     try {
-      const first = await this.users.getFirstOperator();
-      return first?.id === userId && first.accessStatus !== 'revoked';
+      return await this.readIsClaimingOperator(userId);
     } catch (error) {
       this.logger.warn(`Could not read this Hub's first operator: ${describeNetworkError(error)}`);
       return false;
     }
+  }
+
+  /** {@link isClaimingOperator}, throwing when the operator rows can't be read. */
+  private async readIsClaimingOperator(userId: number): Promise<boolean> {
+    const first = await this.users.getFirstOperator();
+    return first?.id === userId && first.accessStatus !== 'revoked';
   }
 
   /**
