@@ -1378,8 +1378,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // Remove all durable device-registration rows.
     await this.deviceRegistrationRepository.deleteAll();
     // The next Portal this Hub pairs with must receive a push key of its own. Forgotten only once the
-    // row is gone: `setPhase` above marks the row only when the phase changes, and `AuthMiddleware`
-    // takes the device key while a registered row exists and no push key is delivered.
+    // row is gone, because `AuthMiddleware` takes the device key while a registered row exists and no
+    // push key is delivered. `setPhase` above leaves the row as it is when the phase was already
+    // `unregistered`, which it is in a process that has not restored its phase yet.
     await this.portalPushKey()?.forget();
     // Grants are cached without an organization id. Once this device has none,
     // WhoIs stops asking Portal and would keep serving those rows for a day.
@@ -1865,16 +1866,21 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * Read from the row, not the in-memory phase, which starts every boot at `unregistered` until
    * `syncPhaseFromDb` has run. Unlike `isRegistered` it changes nothing, because it is asked on a
    * request. A row whose phase says `unregistered` is a reset that has not finished deleting it.
+   * A phase this Hub does not know is read as `unregistered`, as `syncPhaseFromDb` reads it.
    * A database blip is retried; a database that still cannot answer counts as no registration.
    */
   public async holdsRegistration(): Promise<boolean> {
-    if (this._currentPhase === 'paired' || this._currentPhase === 'provisioning') {
+    if (isActiveRegistrationPhase(this._currentPhase)) {
       return true;
     }
 
     try {
       const row = await withTransientDbRetry(() => this.deviceRegistrationRepository.getFirstDeviceRegistration());
-      return row !== null && row.provisioningPhase !== 'unregistered';
+      if (!row) {
+        return false;
+      }
+      const phase = row.provisioningPhase ?? 'locally_ready';
+      return phase !== 'unregistered' && PROVISIONING_PHASES.includes(phase as ProvisioningPhase);
     } catch (error) {
       this.logger.warn(`Could not read the registration, so the Portal device key is refused: ${describeRegistrationError(error)}`);
       return false;

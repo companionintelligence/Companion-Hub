@@ -382,7 +382,7 @@ describe('the Portal device key after a registration reset', () => {
   it('refuses the device key while Start fresh resets a Hub whose phase is not restored yet', async () => {
     await pairedHub();
     // A new process before boot restores the phase, on a Hub whose tunnel token file is gone: Start fresh
-    // goes ahead, and the reset has no phase change to write to the row before it deletes it.
+    // goes ahead. The reset has no phase change to write to the row before it deletes it.
     await fs.promises.unlink(TOKEN_PATH);
     const restarted = boot();
     const answers: number[] = [];
@@ -427,6 +427,17 @@ describe('the Portal device key after a registration reset', () => {
     expect(await hub.answer(OLD_DEVICE_KEY)).toBe(200);
     // The new process has not restored its phase yet; the row is what counts.
     expect(await boot().answer(OLD_DEVICE_KEY)).toBe(200);
+  });
+
+  it('reads the row phase as boot does: a legacy row with none is registered, an unknown one is not', async () => {
+    await pairedHub({ knowsPushKeys: false });
+    const row = disk.deviceRegistrations[0];
+
+    row.provisioningPhase = null;
+    expect(await boot().answer(OLD_DEVICE_KEY)).toBe(200);
+
+    row.provisioningPhase = 'not-a-phase';
+    expect(await boot().answer(OLD_DEVICE_KEY)).toBe(401);
   });
 
   it("accepts the next pairing's device key from the start, until Portal holds the new push key", async () => {
