@@ -1,10 +1,10 @@
 import axios from 'axios';
-import { Injectable, type OnModuleInit } from '@nestjs/common';
+import { BadRequestException, Injectable, type OnModuleInit } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderConfig, CloudProviderType } from '@ci-hub/common/types';
 import { buildCloudProviderEnv } from './cloud-provider-env';
-import { isSameServer } from './engine-credential-scope';
+import { isSameServer, serverIdentity } from './engine-credential-scope';
 import { isMaskedApiKey } from './inference.dto';
 import { BUDGET_SETTINGS_HINT, postStreamUnderHeaderDeadline } from './upstream-stream';
 import { COMPLETION_TIMEOUT_MS, firstByteBudgetMs, forwardBudgetMs } from '@/modules/hub-pool/hub-pool-budget';
@@ -97,6 +97,13 @@ export class CloudFallbackService implements OnModuleInit {
    * are not handed a key the request reported as not saved.
    */
   async setProvider(config: CloudProviderConfig): Promise<void> {
+    // Neither the POST nor the MCP tool checks types at runtime, and `trim()` on a number answered 500.
+    for (const field of ['apiKey', 'baseUrl'] as const) {
+      const value: unknown = config[field];
+      if (value != null && typeof value !== 'string') {
+        throw new BadRequestException(`${field} must be a string`);
+      }
+    }
     const existing = this.providers.get(config.provider);
     // A blank base URL leaves the stored one in place, as a blank key does.
     const baseUrl = config.baseUrl?.trim() || undefined;
@@ -123,7 +130,9 @@ export class CloudFallbackService implements OnModuleInit {
       }
       throw error;
     }
-    this.logger.info(`[CloudFallback] Configured provider: ${resolved.provider} (enabled: ${resolved.enabled}, baseUrl: ${resolved.baseUrl})`);
+    // The server, not the URL: a user name, password or query string in a base URL can hold a secret.
+    const server = serverIdentity(resolved.baseUrl) ?? 'not an http(s) URL';
+    this.logger.info(`[CloudFallback] Configured provider: ${resolved.provider} (enabled: ${resolved.enabled}, server: ${server})`);
     if (droppedKey) {
       // The save still answers success, so this line is where an operator learns why the provider stopped.
       this.logger.warn(`[CloudFallback] Dropped the stored ${resolved.provider} key: the save moved it to another server, which needs its own key`);

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { PassThrough } from 'node:stream';
-import { InternalServerErrorException } from '@nestjs/common';
+import { BadRequestException, InternalServerErrorException } from '@nestjs/common';
 import axios from 'axios';
 import type { CloudProviderConfig } from '@ci-hub/common/types';
 import { CloudFallbackService } from '../cloud-fallback.service';
@@ -141,6 +141,39 @@ describe('CloudFallbackService.setProvider', () => {
       await logged.setProvider({ provider: 'openai', enabled: true, baseUrl: OTHER_SERVER, defaultModel: 'gpt-4o' });
 
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Dropped the stored openai key'));
+    });
+
+    it('logs the server a save names, without the user name, password or query in its URL', async () => {
+      const logger = mock<LoggerService>();
+      const logged = new CloudFallbackService(logger, configuration);
+
+      await logged.setProvider({
+        provider: 'openai',
+        apiKey: 'sk-proxy',
+        enabled: true,
+        baseUrl: 'https://proxyuser:pw-in-url@proxy.example.test/v1?token=tok-in-query',
+        defaultModel: 'gpt-4o',
+      });
+
+      const lines = logger.info.mock.calls.map(([line]) => String(line)).join('\n');
+      expect(lines).toContain('server: https://proxy.example.test)');
+      expect(lines).not.toMatch(/proxyuser|pw-in-url|tok-in-query/);
+    });
+
+    // Neither the POST nor the MCP tool checks types at runtime.
+    it.each([
+      ['baseUrl', 42],
+      ['baseUrl', { host: 'proxy.example.test' }],
+      ['apiKey', 42],
+    ])('refuses a save whose %s is not a string (%j) and keeps what was stored', async (field, value) => {
+      await service.setProvider({ provider: 'openai', apiKey: 'sk-live', enabled: true, defaultModel: 'gpt-4o' });
+      configuration.setInferenceCloudProviders.mockClear();
+
+      const save = { provider: 'openai', enabled: true, defaultModel: 'gpt-4o', [field]: value } as unknown as CloudProviderConfig;
+      await expect(service.setProvider(save)).rejects.toThrow(BadRequestException);
+
+      expect(service.getProvider('openai')).toMatchObject({ apiKey: 'sk-live', baseUrl: 'https://api.openai.com/v1' });
+      expect(configuration.setInferenceCloudProviders).not.toHaveBeenCalled();
     });
 
     // settings.json can hold a provider without a base URL. Its server is then the provider's default,
