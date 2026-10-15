@@ -4,8 +4,11 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { TranslatableError } from '@/common/error/translatable-error';
 import type { HubAction } from '@/core/portal/hub-actions';
 import type { ActorCheckContext, LifecycleActor } from '@/core/portal/lifecycle-actor';
+import { assertHubManageAllowed } from '@/core/portal/hub-manage-verdict';
+import type { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import type { LoggerService } from '@/core/logger/logger.service';
 import type { ApiKeyCapability } from '@/modules/api-keys/api-key.capabilities';
+import type { ApiKeyContext } from '@/modules/api-keys/api-key.service';
 import type { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { formatToolError, formatToolSuccess } from './mcp-error.handler';
 import { mcpAdminCallContext, mcpCallContext } from './mcp-call-context';
@@ -69,16 +72,72 @@ export async function assertMcpCallerMay(
   await lifecycle.assertActorMay(mcpCallerLifecycleActor(action), appUrn, action, context);
 }
 
+/**
+ * Refuse the in-flight `/api/mcp` key `toolName`, a Hub-wide tool, unless the person who created the key
+ * may change what applies to the whole Hub. It is the question `HubManagerGuard` asks of a request, asked
+ * about the key's creator on every call (`MarketplaceWhoIsService.hubManageVerdictFor`), with the same
+ * refusals: 403 for a member, 503 when the Portal can't say.
+ *
+ * A managed app key or a key nobody is recorded as creating (minted by the CLI or before v0.2.70)
+ * has nobody whose role can be checked. They get a code of their own, `HUB_MANAGE_KEY_REISSUE_REQUIRED`:
+ * only a key an owner or admin creates can reach these tools.
+ */
+export async function assertMcpKeyMayManageHub(whois: Pick<MarketplaceWhoIsService, 'hubManageVerdictFor'>, toolName: string): Promise<void> {
+  const key = mcpCallContext.getStore();
+  const intlParams = { tool: toolName };
+
+  // No key means the request context was lost; that is nobody, as for `mcpCallerCapability`.
+  if (!key) {
+    throw new TranslatableError('HUB_MANAGE_ROLE_REQUIRED', intlParams, HttpStatus.FORBIDDEN);
+  }
+  const creator = keyCreator(key);
+  if (creator === null) {
+    throw new TranslatableError('HUB_MANAGE_KEY_REISSUE_REQUIRED', intlParams, HttpStatus.FORBIDDEN);
+  }
+
+  assertHubManageAllowed(await whois.hubManageVerdictFor(creator), intlParams);
+}
+
+/**
+ * The person whose role decides a key's Hub-wide tools, or `null` when there is none. A managed key acts
+ * for its app, so it has none even if a creator were recorded on it. `ApiKeyService.resolve` already
+ * drops one, but this gate doesn't lean on that.
+ */
+function keyCreator(key: Pick<ApiKeyContext, 'ownerAppUrn' | 'createdByUserId'>): number | null {
+  return key.ownerAppUrn === null ? key.createdByUserId : null;
+}
+
+/**
+ * Whether `tools/list` keeps the Hub-wide tools for the in-flight `/api/mcp` key. Answered from the Hub's
+ * own records (`MarketplaceWhoIsService.storedHubManageVerdictFor`), never the Portal, so listing doesn't
+ * wait on it or fail while it is down: when those records can't tell, the tools are listed and the call
+ * asks the Portal, answering 503 if it still can't say.
+ */
+export async function mcpKeyMayListHubWide(whois: Pick<MarketplaceWhoIsService, 'storedHubManageVerdictFor'>): Promise<boolean> {
+  const key = mcpCallContext.getStore();
+  const creator = key ? keyCreator(key) : null;
+
+  if (creator === null) {
+    return false;
+  }
+
+  return (await whois.storedHubManageVerdictFor(creator)) !== 'refused';
+}
+
 /** Shared tools/call path for v1 and v2 Hub MCP servers. */
 export async function invokeRegistryTool(
   registry: McpToolRegistry,
   logger: LoggerService,
+  whois: Pick<MarketplaceWhoIsService, 'hubManageVerdictFor'>,
   toolName: string,
   toolArgs: Record<string, unknown>,
 ): Promise<CallToolResult> {
   const start = Date.now();
   try {
-    const result = await registry.callTool(toolName, toolArgs, { capability: mcpCallerCapability() });
+    const result = await registry.callTool(toolName, toolArgs, {
+      capability: mcpCallerCapability(),
+      assertMayManageHub: (tool) => assertMcpKeyMayManageHub(whois, tool),
+    });
     logger.info('MCP tool call', toolName, `${Date.now() - start}ms`, 'ok');
     return formatToolSuccess(result) as CallToolResult;
   } catch (error) {

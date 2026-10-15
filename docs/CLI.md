@@ -500,6 +500,11 @@ surfaces its scopes opened — `write` is the default. Raise or lower an existin
 capability cannot store one, so on such a Hub `create` refuses `--capability` instead of creating a
 key that can do everything its scopes allow.
 
+A key from `create` records no creator, so it can't use the MCP tools that change the whole Hub (model
+pulls and loads, cloud providers, updates, app stores) or read the Hub's log: those take a key that the
+operator who claimed the Hub or an organization owner or admin created in the Hub's Security settings. See
+[MCP agent bootstrap](MCP_AGENT_BOOTSTRAP.md).
+
 Both commands run `psql` in the `ci-hub-db` container. Through the Docker engine the Windows desktop
 app runs in WSL2, `docker exec` returns nothing the command printed, so the CLI runs the query again
 detached and copies its answer out with `docker cp`. When neither way returns an answer, the command

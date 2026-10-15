@@ -51,6 +51,7 @@ export class MarketplaceTools implements OnModuleInit {
       category: 'Marketplace',
       name: 'hub_add_app_store',
       access: 'write',
+      hubWide: true, // POST /api/marketplace/create
       // R2-HUBHOSTESCAPE-5: makes a caller-chosen git repo an install source for the whole appliance,
       // whose compose files can ask for privileged/capAdd/host paths — a strictly larger grant than
       // hub_delete_app_store below, which was already gated. Pairs with hub_install_app to reach root.
@@ -70,6 +71,7 @@ export class MarketplaceTools implements OnModuleInit {
       category: 'Marketplace',
       name: 'hub_update_app_store',
       access: 'write',
+      hubWide: true, // PATCH /api/marketplace/:id
       destructive: true, // R2-HUBHOSTESCAPE-5: re-enabling a disabled store re-arms it as an install source.
       description: 'Update an app store name and enabled state.',
       inputSchema: {
@@ -87,6 +89,7 @@ export class MarketplaceTools implements OnModuleInit {
       category: 'Marketplace',
       name: 'hub_delete_app_store',
       access: 'write',
+      hubWide: true, // DELETE /api/marketplace/:id
       destructive: true, // ISSUE-MCP-2: deletes a configured app store.
       description: 'Delete an app store. Installed apps from this store are not removed.',
       inputSchema: { type: 'object', properties: { storeId: { type: 'string', description: 'Store ID to delete' } }, required: ['storeId'] },
@@ -96,6 +99,7 @@ export class MarketplaceTools implements OnModuleInit {
       category: 'Marketplace',
       name: 'hub_pull_app_stores',
       access: 'write',
+      hubWide: true, // POST /api/marketplace/pull
       description: 'Pull latest app definitions from all enabled stores.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: () => this.pullAppStores(),

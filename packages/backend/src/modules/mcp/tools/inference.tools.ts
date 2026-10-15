@@ -128,6 +128,7 @@ export class InferenceTools implements OnModuleInit {
       category: 'Inference & Models',
       name: 'hub_pull_model',
       access: 'write',
+      hubWide: true, // POST /api/inference/models/pull
       description: 'Pull/download a model from the curated catalog to the local backend. Long-running operation.',
       inputSchema: {
         type: 'object',
@@ -148,6 +149,7 @@ export class InferenceTools implements OnModuleInit {
       category: 'Inference & Models',
       name: 'hub_load_model',
       access: 'write',
+      hubWide: true, // POST /api/inference/models/load
       description:
         'Load a pulled model into memory for inference. To make room it unloads only idle models the Hub itself loaded, ' +
         'never one serving a request; when that is not enough the load is refused with the reason and nothing is unloaded.',
@@ -173,6 +175,7 @@ export class InferenceTools implements OnModuleInit {
       category: 'Inference & Models',
       name: 'hub_unload_model',
       access: 'write',
+      hubWide: true, // POST /api/inference/models/unload
       description: 'Unload a model from memory.',
       inputSchema: {
         type: 'object',
@@ -193,6 +196,7 @@ export class InferenceTools implements OnModuleInit {
       category: 'Inference & Models',
       name: 'hub_pin_model',
       access: 'write',
+      hubWide: true, // POST /api/inference/models/pin
       description:
         'Pin a model in memory (prevent eviction), loading it first if it is not loaded, the same way hub_load_model does. ' +
         'The pin survives Hub restarts until hub_unpin_model.',
@@ -222,6 +226,7 @@ export class InferenceTools implements OnModuleInit {
       category: 'Inference & Models',
       name: 'hub_unpin_model',
       access: 'write',
+      hubWide: true, // POST /api/inference/models/unpin
       description: 'Unpin a model (allow eviction when memory is needed).',
       inputSchema: {
         type: 'object',
@@ -268,6 +273,7 @@ export class InferenceTools implements OnModuleInit {
       category: 'Inference & Models',
       name: 'hub_set_cloud_provider',
       access: 'write',
+      hubWide: true, // POST /api/inference/cloud-providers
       description: 'Configure a cloud fallback provider (OpenAI, Anthropic, Google, GitHub Copilot).',
       inputSchema: {
         type: 'object',
@@ -323,8 +329,8 @@ export class InferenceTools implements OnModuleInit {
 
   /**
    * Who a load from this tool call is, which decides what it may unload to make room (see
-   * `LoadOrigin`). An agent's key — Hermes' and OpenClaw's managed keys are 'write' — gets the app
-   * request path's rule: only idle models the Hub itself loaded. Otherwise a prompt-injected agent
+   * `LoadOrigin`). An agent's key, even one an owner or admin created, gets the app request path's
+   * rule: only idle models the Hub itself loaded. Otherwise a prompt-injected agent
    * could evict the model every other app on the node is serving, and apps would keep evicting each
    * other. Only an operator's run from the Hub UI's tool runner may unload models apps loaded, as the
    * REST pin and load do. Either way the Hub picks the window, as for any load that is not a request.

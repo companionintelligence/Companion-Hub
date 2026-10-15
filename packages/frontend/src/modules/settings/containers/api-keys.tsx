@@ -42,7 +42,20 @@ export interface ApiKeyInfo {
   /** The Hub person who created the key, whose grants and role it acts with; `null` when nobody is recorded. */
   createdByUserId: number | null;
   createdByUsername: string | null;
+  /**
+   * Why the key can't use the MCP tools that change the whole Hub, or `null` when nothing the Hub holds
+   * stops it. Those tools take a key whose creator may manage the Hub: an organization owner or admin,
+   * or the operator who claimed it.
+   */
+  hubWideBlocked: 'app-key' | 'no-creator' | 'creator-role' | null;
 }
+
+/** What the list says about each key the Hub-wide tools refuse. */
+const HUB_WIDE_BLOCKED_COPY: Record<NonNullable<ApiKeyInfo['hubWideBlocked']>, string> = {
+  'app-key': 'API_KEYS_HUB_WIDE_APP_KEY',
+  'no-creator': 'API_KEYS_HUB_WIDE_NO_CREATOR',
+  'creator-role': 'API_KEYS_HUB_WIDE_CREATOR_ROLE',
+};
 
 /** The one definition of the list read — the initial load and every post-action refresh share it,
  *  so the endpoint and response envelope live in a single place. Throws on a non-2xx; callers
@@ -356,10 +369,22 @@ export const ApiKeysContainer = () => {
                       <p className="text-xs text-muted-foreground">
                         {key.lastUsedAt ? t('API_KEYS_LAST_USED', { when: formatHubDateTime(key.lastUsedAt) }) : t('API_KEYS_NEVER_USED')}
                       </p>
-                      {/* An operator key acts as whoever created it; a managed key acts for its app, so it has no creator to name. */}
-                      {!key.managed && (
+                      {/* An operator key acts as whoever created it; a managed key acts for its app, so it has no creator to name.
+                          An MCP key with no creator gets the Hub-wide line below instead, which says the same and more. */}
+                      {!key.managed && key.hubWideBlocked !== 'no-creator' && (
                         <p className="text-xs text-muted-foreground" data-testid={`api-key-creator-${key.id}`}>
                           {key.createdByUsername ? t('API_KEYS_CREATED_BY', { name: key.createdByUsername }) : t('API_KEYS_CREATED_BY_UNKNOWN')}
+                        </p>
+                      )}
+                      {/* The tools that change the whole Hub follow the key's creator, so an owner can see here which keys
+                          can't use them and revoke or replace those. An app's key is expected to be refused and nobody
+                          can change that, so its line is a note rather than a warning. */}
+                      {key.hubWideBlocked && (
+                        <p
+                          className={key.hubWideBlocked === 'app-key' ? 'text-xs text-muted-foreground' : 'text-xs text-warning'}
+                          data-testid={`api-key-hub-wide-${key.id}`}
+                        >
+                          {t(HUB_WIDE_BLOCKED_COPY[key.hubWideBlocked])}
                         </p>
                       )}
                     </div>

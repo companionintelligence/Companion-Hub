@@ -77,7 +77,8 @@ const MCP_RATE_LIMIT = Number(process.env.MCP_RATE_LIMIT) || 300;
     LinksModule,
     InferenceModule,
     ApiKeyModule,
-    // MarketplaceWhoIsService: the admin tool runner names the signed-in person to the lifecycle tools.
+    // MarketplaceWhoIsService: the admin tool runner names the signed-in person to the lifecycle tools,
+    // and both MCP servers ask it about a key's creator before a Hub-wide tool.
     PortalModule,
   ],
   controllers: [McpController, McpAdminController, McpAppsController],
