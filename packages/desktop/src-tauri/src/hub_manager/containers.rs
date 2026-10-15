@@ -701,6 +701,10 @@ pub(crate) fn wait_for_queue_healthy() -> Result<(), String> {
     )
 }
 
+/// How long the copy route waits for `node -p process.arch` in the Hub container. The start
+/// result waits on it, though the answer only goes to the log.
+const HUB_NODE_ARCH_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Log loudly when the Hub container's Node arch does not match this desktop binary.
 /// An amd64 Node image on Apple Silicon runs under Rosetta and has been observed to
 /// wedge the HTTP accept loop shortly after boot.
@@ -710,45 +714,57 @@ pub(crate) fn warn_if_hub_node_arch_mismatches_host(data_dir: &Path) {
     } else {
         "x64"
     };
-    let output = match docker_command()
-        .args(["exec", hub_container_name(), "node", "-p", "process.arch"])
-        .output()
-    {
-        Ok(output) => output,
-        Err(err) => {
-            let _ = append_desktop_log_for(
-                data_dir,
-                "hub.start",
-                &format!("Could not probe Hub Node arch: {err}"),
-            );
-            return;
-        }
-    };
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let _ = append_desktop_log_for(
-            data_dir,
-            "hub.start",
-            &format!("Could not probe Hub Node arch: {stderr}"),
-        );
-        return;
-    }
-    let actual = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if actual == expected {
-        let _ = append_desktop_log_for(
-            data_dir,
-            "hub.start",
-            &format!("Hub Node arch ok: process.arch={actual}"),
-        );
-        return;
-    }
-    let _ = append_desktop_log_for(
-        data_dir,
-        "hub.start",
-        &format!(
-            "WARNING: Hub Node arch mismatch — container process.arch={actual}, desktop expects {expected}. \
-             On Apple Silicon this usually means the arm64 image slot contains amd64 content (Rosetta). \
-             Pull/rebuild a native arm64 Hub image before relying on this stack."
-        ),
+    let hub = ContainerReader::new(
+        &run_docker_cli,
+        hub_container_name(),
+        HUB_NODE_ARCH_PROBE_TIMEOUT,
     );
+    log_hub_node_arch(&hub, expected, data_dir);
+}
+
+/// Logs the Hub's Node `process.arch` against `expected`. A plain `docker exec` that exits 0 counts
+/// only when it prints `expected`. Any other answer with status 0, such as the WSL engine's empty
+/// one, is read again through the copy route. One that still can't be read is never a mismatch.
+pub(crate) fn log_hub_node_arch(hub: &ContainerReader, expected: &str, data_dir: &Path) {
+    let output = hub.run(&["node", "-p", "process.arch"], Some(expected));
+    let actual = output.stdout.as_str();
+    let message = if !output.succeeded() || actual.is_empty() {
+        format!(
+            "Could not probe Hub Node arch: {}",
+            hub_node_arch_unread_reason(&output)
+        )
+    } else if output.printed_line(expected) {
+        // The same test the reader used to accept a plain `docker exec` answer.
+        format!("Hub Node arch ok: process.arch={expected}")
+    } else {
+        hub_node_arch_mismatch_message(actual, expected)
+    };
+    let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+}
+
+/// What Node or docker printed to stderr, or else what the exit status says.
+fn hub_node_arch_unread_reason(output: &ContainerOutput) -> String {
+    if !output.stderr.is_empty() {
+        return output.stderr.clone();
+    }
+    match output.status {
+        Some(0) => "node printed nothing.".to_string(),
+        Some(code) => format!("node exited with status {code}."),
+        None => "no exit status came back.".to_string(),
+    }
+}
+
+/// The Rosetta advice fits only an arm64 Mac running x64 Node, so every other mismatch gets the
+/// plain message.
+fn hub_node_arch_mismatch_message(actual: &str, expected: &str) -> String {
+    let mut message = format!(
+        "WARNING: Hub Node arch mismatch: container process.arch={actual}, desktop expects {expected}."
+    );
+    if cfg!(target_os = "macos") && expected == "arm64" && actual == "x64" {
+        message.push_str(
+            " On Apple Silicon this usually means the arm64 image slot contains amd64 content (Rosetta). \
+             Pull/rebuild a native arm64 Hub image before relying on this stack.",
+        );
+    }
+    message
 }

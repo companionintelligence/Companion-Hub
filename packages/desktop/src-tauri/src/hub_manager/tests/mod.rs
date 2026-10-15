@@ -80,3 +80,52 @@ fn write_docker_config_fixture(fixture: &str) -> (tempfile::TempDir, PathBuf) {
     std::fs::write(docker_dir.join("config.json"), fixture).expect("write fixture");
     (tmp_home, docker_dir)
 }
+
+#[cfg(unix)]
+fn exit_status(code: i32) -> std::process::ExitStatus {
+    use std::os::unix::process::ExitStatusExt;
+    std::process::ExitStatus::from_raw(code << 8)
+}
+
+#[cfg(windows)]
+fn exit_status(code: i32) -> std::process::ExitStatus {
+    use std::os::windows::process::ExitStatusExt;
+    std::process::ExitStatus::from_raw(code as u32)
+}
+
+/// What a stand-in docker CLI returns: an exit status and what it printed.
+fn output(code: i32, stdout: &str, stderr: &str) -> std::process::Output {
+    std::process::Output {
+        status: exit_status(code),
+        stdout: stdout.as_bytes().to_vec(),
+        stderr: stderr.as_bytes().to_vec(),
+    }
+}
+
+/// A stand-in `docker cp <container>:<folder> <target>` of a copy-route folder. `folder` gives the
+/// exit status, stdout and stderr of the command run into that folder, or `None` when the folder
+/// isn't in the container.
+fn fake_copy_route_cp(
+    source: &str,
+    target: &str,
+    folder: impl FnOnce(&str) -> Option<(i32, String, String)>,
+) -> std::io::Result<std::process::Output> {
+    let dir = source.split_once(':').map(|(_, dir)| dir).unwrap_or("");
+    let Some((code, stdout, stderr)) = folder(dir) else {
+        return Ok(output(
+            1,
+            "",
+            "Error response from daemon: Could not find the file",
+        ));
+    };
+    let target = Path::new(target);
+    std::fs::create_dir_all(target)?;
+    std::fs::write(target.join("out"), stdout)?;
+    std::fs::write(target.join("err"), stderr)?;
+    std::fs::write(target.join("status"), format!("{code}\n"))?;
+    Ok(output(0, "", ""))
+}
+
+fn desktop_log(data_dir: &Path) -> String {
+    std::fs::read_to_string(desktop_log_path_for(data_dir)).unwrap_or_default()
+}
