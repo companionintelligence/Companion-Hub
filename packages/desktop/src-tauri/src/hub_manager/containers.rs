@@ -722,9 +722,9 @@ pub(crate) fn warn_if_hub_node_arch_mismatches_host(data_dir: &Path) {
     log_hub_node_arch(&hub, expected, data_dir);
 }
 
-/// Logs the Hub's Node `process.arch` against `expected`. A plain `docker exec` answer counts only
-/// when it is `expected`. Any other answer, such as the WSL engine's empty one, is read again
-/// through the copy route. One that still can't be read is never a mismatch.
+/// Logs the Hub's Node `process.arch` against `expected`. A plain `docker exec` that exits 0 counts
+/// only when it prints `expected`. Any other answer with status 0, such as the WSL engine's empty
+/// one, is read again through the copy route. One that still can't be read is never a mismatch.
 pub(crate) fn log_hub_node_arch(hub: &ContainerReader, expected: &str, data_dir: &Path) {
     let output = hub.run(&["node", "-p", "process.arch"], Some(expected));
     let actual = output.stdout.as_str();
