@@ -89,7 +89,7 @@ impl<'a> ContainerReader<'a> {
     pub(crate) fn run_accepting(
         &self,
         command: &[&str],
-        accepts: impl Fn(&ContainerOutput) -> bool,
+        accepts: impl FnOnce(&ContainerOutput) -> bool,
     ) -> ContainerOutput {
         if !self.copy_out.get() {
             let direct = self.exec_direct(command);
