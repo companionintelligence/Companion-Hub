@@ -92,7 +92,7 @@ describe('FactoryResetService', () => {
 
     expect(result.success).toBe(true);
     expect(db.execute).toHaveBeenCalled();
-    expect(registrationService.resetRegistration).toHaveBeenCalledWith({ reason: 'manual' });
+    expect(registrationService.resetRegistration).toHaveBeenCalledWith({ reason: 'manual', removesDeviceKey: true });
     expect(cache.clear).toHaveBeenCalled();
   });
 

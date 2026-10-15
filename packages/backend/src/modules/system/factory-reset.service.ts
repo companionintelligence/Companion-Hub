@@ -107,7 +107,8 @@ export class FactoryResetService {
     await this.wipeDataMounts();
     await this.wipeDatabase();
     await this.clearRegistrationArtifacts();
-    await this.registrationService.resetRegistration({ reason: 'manual' });
+    // `resetSettings` takes the device key, so a pairing this stops keeps none that Portal issued it.
+    await this.registrationService.resetRegistration({ reason: 'manual', removesDeviceKey: true });
     await this.resetSettings();
     this.forgetSettingsInMemory();
     this.cache.clear();
