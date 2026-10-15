@@ -436,3 +436,21 @@ fn hub_node_arch_plain_exec_answer_with_no_arch_line_takes_the_copy_route() {
         engine.calls.borrow()
     );
 }
+
+#[test]
+fn hub_node_arch_missing_from_the_list_of_node_arches_is_still_a_mismatch() {
+    for engine in [
+        FakeHubEngine::streaming_engine("riscv32"),
+        FakeHubEngine::wsl_engine("riscv32"),
+    ] {
+        let log = engine.check_arch("x64");
+
+        assert!(
+            log.contains(
+                "WARNING: Hub Node arch mismatch: container process.arch=riscv32, desktop expects x64."
+            ),
+            "log: {log}"
+        );
+        assert!(!log.contains("Could not probe"), "log: {log}");
+    }
+}

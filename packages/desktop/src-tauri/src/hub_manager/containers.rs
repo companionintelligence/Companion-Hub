@@ -734,6 +734,8 @@ const NODE_PROCESS_ARCHES: &[&str] = &[
 /// such as the WSL engine's empty one, is read again through the copy route. One that still can't
 /// be read is never a mismatch.
 pub(crate) fn log_hub_node_arch(hub: &ContainerReader, expected: &str, data_dir: &Path) {
+    // An engine that cuts the output short can't turn `arm64` into `arm`: Node prints the arch in
+    // one write, and the docker CLI drops an output frame that the stream ends partway through.
     let output = hub.run_accepting(&["node", "-p", "process.arch"], |output| {
         node_arch_line(output).is_some()
     });
