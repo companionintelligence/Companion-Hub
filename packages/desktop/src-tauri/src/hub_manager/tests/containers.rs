@@ -131,6 +131,9 @@ struct FakeHubEngine {
     /// False acts like the WSL engine at `tcp://127.0.0.1:2375`: `docker exec` exits 0 and prints
     /// nothing whatever the command did.
     streams_output: bool,
+    /// With `streams_output` false, the part of Node's answer a plain `docker exec` brings back, as
+    /// when the WSL engine passes on only the first part of the output.
+    plain_exec_prints: Option<&'static str>,
     node_arch: &'static str,
     node_exit: i32,
     /// The Hub container isn't running, so docker refuses every `docker exec`.
@@ -148,6 +151,7 @@ impl FakeHubEngine {
     fn new(streams_output: bool, node_arch: &'static str) -> Self {
         Self {
             streams_output,
+            plain_exec_prints: None,
             node_arch,
             node_exit: 0,
             stopped: false,
@@ -171,6 +175,15 @@ impl FakeHubEngine {
             .borrow()
             .iter()
             .any(|call| call.starts_with("exec -d "))
+    }
+
+    /// How many times Node ran, by a plain `docker exec` or through the copy route.
+    fn node_starts(&self) -> usize {
+        self.calls
+            .borrow()
+            .iter()
+            .filter(|call| call.ends_with(" node -p process.arch"))
+            .count()
     }
 
     fn docker(&self, args: &[&str]) -> std::io::Result<Output> {
@@ -198,7 +211,9 @@ impl FakeHubEngine {
             ["exec", _, "node", "-p", "process.arch"] if self.streams_output => {
                 Ok(output(self.node_exit, &printed, ""))
             }
-            ["exec", _, "node", "-p", "process.arch"] => Ok(output(0, "", "")),
+            ["exec", _, "node", "-p", "process.arch"] => {
+                Ok(output(0, self.plain_exec_prints.unwrap_or(""), ""))
+            }
             ["cp", source, target] => fake_copy_route_cp(source, target, |dir| {
                 let stdout = self.container_dirs.borrow().get(dir).cloned()?;
                 (!self.copy_fails).then_some((self.node_exit, stdout, String::new()))
@@ -304,9 +319,9 @@ fn hub_node_arch_is_not_probed_when_docker_or_node_fails() {
 
 #[test]
 fn hub_node_arch_mismatch_is_reported_on_either_engine() {
-    for engine in [
-        FakeHubEngine::streaming_engine("arm64"),
-        FakeHubEngine::wsl_engine("arm64"),
+    for (engine, takes_copy_route) in [
+        (FakeHubEngine::streaming_engine("arm64"), false),
+        (FakeHubEngine::wsl_engine("arm64"), true),
     ] {
         let log = engine.check_arch("x64");
 
@@ -317,6 +332,12 @@ fn hub_node_arch_mismatch_is_reported_on_either_engine() {
             "log: {log}"
         );
         assert!(!log.contains("On Apple Silicon"), "log: {log}");
+        assert_eq!(
+            engine.used_copy_route(),
+            takes_copy_route,
+            "calls: {:?}",
+            engine.calls.borrow()
+        );
     }
 }
 
@@ -332,6 +353,18 @@ fn hub_node_arch_is_ok_when_node_prints_another_line_before_it() {
 }
 
 #[test]
+fn hub_node_arch_mismatch_names_the_arch_when_node_prints_another_line_before_it() {
+    let log = FakeHubEngine::streaming_engine("preloaded\narm64").check_arch("x64");
+
+    assert!(
+        log.contains(
+            "WARNING: Hub Node arch mismatch: container process.arch=arm64, desktop expects x64."
+        ),
+        "log: {log}"
+    );
+}
+
+#[test]
 fn hub_node_arch_mismatch_gives_the_apple_silicon_advice_only_on_macos() {
     let log = FakeHubEngine::streaming_engine("x64").check_arch("arm64");
 
@@ -340,5 +373,66 @@ fn hub_node_arch_mismatch_gives_the_apple_silicon_advice_only_on_macos() {
         log.contains("On Apple Silicon"),
         cfg!(target_os = "macos"),
         "log: {log}"
+    );
+}
+
+#[test]
+fn hub_node_arch_mismatch_is_read_from_one_plain_exec_on_an_engine_that_streams_exec_output() {
+    let engine = FakeHubEngine::streaming_engine("arm64");
+
+    let log = engine.check_arch("x64");
+
+    assert!(
+        log.contains(
+            "WARNING: Hub Node arch mismatch: container process.arch=arm64, desktop expects x64."
+        ),
+        "log: {log}"
+    );
+    assert_eq!(
+        engine.node_starts(),
+        1,
+        "calls: {:?}",
+        engine.calls.borrow()
+    );
+    assert!(
+        !engine.used_copy_route(),
+        "calls: {:?}",
+        engine.calls.borrow()
+    );
+}
+
+#[test]
+fn hub_node_arch_mismatch_is_reported_on_a_streaming_engine_whose_copy_route_fails() {
+    let mut engine = FakeHubEngine::streaming_engine("arm64");
+    engine.copy_fails = true;
+
+    let log = engine.check_arch("x64");
+
+    assert!(
+        log.contains(
+            "WARNING: Hub Node arch mismatch: container process.arch=arm64, desktop expects x64."
+        ),
+        "log: {log}"
+    );
+    assert!(!log.contains("Could not probe"), "log: {log}");
+}
+
+#[test]
+fn hub_node_arch_plain_exec_answer_with_no_arch_line_takes_the_copy_route() {
+    // A preload script prints a line before Node does and only that line comes back.
+    let mut engine = FakeHubEngine::wsl_engine("preloaded\nx64");
+    engine.plain_exec_prints = Some("preloaded");
+
+    let log = engine.check_arch("x64");
+
+    assert!(
+        log.contains("Hub Node arch ok: process.arch=x64"),
+        "log: {log}"
+    );
+    assert!(!log.contains("mismatch"), "log: {log}");
+    assert!(
+        engine.used_copy_route(),
+        "calls: {:?}",
+        engine.calls.borrow()
     );
 }
