@@ -143,7 +143,7 @@ describe('CloudFallbackService.setProvider', () => {
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Dropped the stored openai key'));
     });
 
-    it('logs the server a save names, without the user name, password or query in its URL', async () => {
+    it('logs the base URL a save names, without the user name, password or query in it', async () => {
       const logger = mock<LoggerService>();
       const logged = new CloudFallbackService(logger, configuration);
 
@@ -156,24 +156,9 @@ describe('CloudFallbackService.setProvider', () => {
       });
 
       const lines = logger.info.mock.calls.map(([line]) => String(line)).join('\n');
-      expect(lines).toContain('server: https://proxy.example.test)');
+      // The path stays, so a missing or extra `/v1` shows in the log.
+      expect(lines).toContain('baseUrl: https://proxy.example.test/v1)');
       expect(lines).not.toMatch(/proxyuser|pw-in-url|tok-in-query/);
-    });
-
-    // Neither the POST nor the MCP tool checks types at runtime.
-    it.each([
-      ['baseUrl', 42],
-      ['baseUrl', { host: 'proxy.example.test' }],
-      ['apiKey', 42],
-    ])('refuses a save whose %s is not a string (%j) and keeps what was stored', async (field, value) => {
-      await service.setProvider({ provider: 'openai', apiKey: 'sk-live', enabled: true, defaultModel: 'gpt-4o' });
-      configuration.setInferenceCloudProviders.mockClear();
-
-      const save = { provider: 'openai', enabled: true, defaultModel: 'gpt-4o', [field]: value } as unknown as CloudProviderConfig;
-      await expect(service.setProvider(save)).rejects.toThrow(BadRequestException);
-
-      expect(service.getProvider('openai')).toMatchObject({ apiKey: 'sk-live', baseUrl: 'https://api.openai.com/v1' });
-      expect(configuration.setInferenceCloudProviders).not.toHaveBeenCalled();
     });
 
     // settings.json can hold a provider without a base URL. Its server is then the provider's default,
@@ -193,6 +178,47 @@ describe('CloudFallbackService.setProvider', () => {
 
       await booted.setProvider({ provider, apiKey: '', enabled: true, baseUrl: OTHER_SERVER, defaultModel: 'm' });
       expect(booted.getProvider(provider)?.apiKey).toBeUndefined();
+    });
+  });
+
+  // Neither the POST nor the MCP tool checks the body at runtime.
+  describe('a save the settings file could not hold', () => {
+    it.each([
+      ['baseUrl', 42],
+      ['baseUrl', { host: 'proxy.example.test' }],
+      ['apiKey', 42],
+      ['defaultModel', 42],
+      ['enabled', 'yes'],
+      ['provider', 'mistral'],
+      ['provider', 'constructor'],
+    ])('refuses a save whose %s is the wrong type or value (%j) and keeps what was stored', async (field, value) => {
+      await service.setProvider({ provider: 'openai', apiKey: 'sk-live', enabled: true, defaultModel: 'gpt-4o' });
+      configuration.setInferenceCloudProviders.mockClear();
+
+      const save = { provider: 'openai', enabled: true, defaultModel: 'gpt-4o', [field]: value } as unknown as CloudProviderConfig;
+      await expect(service.setProvider(save)).rejects.toThrow(BadRequestException);
+
+      expect(service.getProvider('openai')).toMatchObject({ apiKey: 'sk-live', baseUrl: 'https://api.openai.com/v1' });
+      expect(configuration.setInferenceCloudProviders).not.toHaveBeenCalled();
+    });
+
+    // settings.json requires `enabled` on every entry (see `parsePersistedSettings`). The POST and the MCP
+    // tool both copy the field across, so a body without it arrives as `enabled: undefined`.
+    it('keeps the stored enabled flag when a save leaves it out', async () => {
+      await service.setProvider({ provider: 'openai', apiKey: 'sk-live', enabled: true, defaultModel: 'gpt-4o' });
+
+      const save = { provider: 'openai', apiKey: 'sk-new', enabled: undefined, defaultModel: 'gpt-4o' } as unknown as CloudProviderConfig;
+      await service.setProvider(save);
+
+      expect(service.getProvider('openai')).toMatchObject({ apiKey: 'sk-new', enabled: true });
+      expect(configuration.setInferenceCloudProviders.mock.lastCall?.[0]).toEqual([expect.objectContaining({ provider: 'openai', enabled: true })]);
+    });
+
+    it('saves a new provider whose save leaves enabled out as off', async () => {
+      const save = { provider: 'google', apiKey: 'g-key', enabled: undefined, defaultModel: 'gemini-2.5-pro' } as unknown as CloudProviderConfig;
+      await service.setProvider(save);
+
+      expect(configuration.setInferenceCloudProviders.mock.lastCall?.[0]).toEqual([expect.objectContaining({ provider: 'google', enabled: false })]);
     });
   });
 

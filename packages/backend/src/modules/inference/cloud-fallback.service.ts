@@ -45,6 +45,16 @@ export function speaksOpenAiCompletions(provider: CloudProviderType): boolean {
 }
 
 /**
+ * A base URL as the log may show it: origin and path, so a missing or extra `/v1` stays visible. A user
+ * name, password, query string or fragment in a base URL can hold a secret, so they are left out.
+ */
+function loggableBaseUrl(url: string | undefined): string {
+  if (!serverIdentity(url)) return 'not an http(s) URL';
+  const parsed = new URL((url ?? '').trim());
+  return `${parsed.origin}${parsed.pathname}`;
+}
+
+/**
  * Cloud provider key store.
  *
  * The Hub no longer proxies inference requests, so this service no longer makes
@@ -97,12 +107,20 @@ export class CloudFallbackService implements OnModuleInit {
    * are not handed a key the request reported as not saved.
    */
   async setProvider(config: CloudProviderConfig): Promise<void> {
-    // Neither the POST nor the MCP tool checks types at runtime, and `trim()` on a number answered 500.
-    for (const field of ['apiKey', 'baseUrl'] as const) {
+    // Neither the POST nor the MCP tool checks the body at runtime. Every entry written has to pass the
+    // settings.json schema: `parsePersistedSettings` drops `inferenceCloudProviders` whole for one that fails.
+    if (typeof config.provider !== 'string' || !Object.hasOwn(CLOUD_BASE_URLS, config.provider)) {
+      throw new BadRequestException(`provider must be one of ${Object.keys(CLOUD_BASE_URLS).join(', ')}`);
+    }
+    for (const field of ['apiKey', 'baseUrl', 'defaultModel'] as const) {
       const value: unknown = config[field];
       if (value != null && typeof value !== 'string') {
         throw new BadRequestException(`${field} must be a string`);
       }
+    }
+    const enabled: unknown = config.enabled;
+    if (enabled != null && typeof enabled !== 'boolean') {
+      throw new BadRequestException('enabled must be a boolean');
     }
     const existing = this.providers.get(config.provider);
     // A blank base URL leaves the stored one in place, as a blank key does.
@@ -114,6 +132,8 @@ export class CloudFallbackService implements OnModuleInit {
       apiKey: (isMaskedApiKey(config.apiKey) ? undefined : config.apiKey?.trim()) || this.storedKeyKept(existing, baseUrl),
       baseUrl: baseUrl || existing?.baseUrl,
       defaultModel: config.defaultModel || existing?.defaultModel || this.getDefaultModel(config.provider),
+      // The spread above copies an omitted `enabled` as undefined, which settings.json cannot hold.
+      enabled: config.enabled ?? existing?.enabled ?? false,
     });
     const droppedKey = !!existing?.apiKey && !resolved.apiKey;
     this.providers.set(resolved.provider, resolved);
@@ -130,9 +150,9 @@ export class CloudFallbackService implements OnModuleInit {
       }
       throw error;
     }
-    // The server, not the URL: a user name, password or query string in a base URL can hold a secret.
-    const server = serverIdentity(resolved.baseUrl) ?? 'not an http(s) URL';
-    this.logger.info(`[CloudFallback] Configured provider: ${resolved.provider} (enabled: ${resolved.enabled}, server: ${server})`);
+    this.logger.info(
+      `[CloudFallback] Configured provider: ${resolved.provider} (enabled: ${resolved.enabled}, baseUrl: ${loggableBaseUrl(resolved.baseUrl)})`,
+    );
     if (droppedKey) {
       // The save still answers success, so this line is where an operator learns why the provider stopped.
       this.logger.warn(`[CloudFallback] Dropped the stored ${resolved.provider} key: the save moved it to another server, which needs its own key`);

@@ -558,6 +558,10 @@ it sends a new one. The provider then reads as not configured until it gets a ke
 The Hub logs `Dropped the stored <provider> key` when that happens, since the save still answers
 success.
 
+A save with a `provider` other than those four, or with a field of the wrong type, is refused: the
+POST answers 400 and the MCP tool returns an error. `apiKey`, `baseUrl` and `defaultModel` are
+strings and `enabled` is a boolean. A save that leaves `enabled` out keeps the stored value.
+
 ## App inference handout
 
 Installed apps get inference config two ways, and both choose the model through the same rules:
