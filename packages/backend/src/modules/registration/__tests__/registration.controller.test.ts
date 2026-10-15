@@ -363,28 +363,28 @@ describe('RegistrationController', () => {
 
   describe('handleCallback (deprecated GET)', () => {
     /*
-     * CI-OS's headless setup service (`/opt/setup-backend/setup_service.py`)
-     * forwards the cloud's registration response to this route as a GET once the
-     * Hub is running. Removing it strands every appliance that pairs from the
-     * setup portal, so it stays until that caller moves to the POST.
+     * CI-OS's headless setup service (`/opt/setup-backend/setup_service.py`) on
+     * appliances imaged before it moved to the POST forwards the cloud's
+     * registration response to this route as a GET once the Hub is running.
+     * Removing it strands those appliances, so it stays until none is left.
      */
-    const req = { ip: '127.0.0.1' } as any;
+    const request = (ip: string, host: string, headers: Record<string, string> = {}) => {
+      const all: Record<string, string> = { host, ...headers };
+      return { ip, socket: { remoteAddress: ip }, headers: all, protocol: 'http', get: (name: string) => all[name.toLowerCase()] } as any;
+    };
+    // The setup service runs on the host and calls the published port, so the Hub sees a bridge gateway.
+    const req = request('172.18.0.1', '127.0.0.1:5002');
+    const callback = (from: unknown) =>
+      controller.handleCallback(from as any, 'device-1', 'org-1', 'My Org', 'my-org', 'my-sub', 'tun-1', 'tok-1', 'key-1', 'example.com');
+
+    beforeEach(() => {
+      registrationService.isRegisteredAndServing.mockResolvedValue(false);
+    });
 
     it('completes registration without a nonce, so headless setup keeps working', async () => {
       registrationService.completeRegistrationFromCallback.mockResolvedValue({ success: true } as any);
 
-      const result = await controller.handleCallback(
-        req,
-        'device-1',
-        'org-1',
-        'My Org',
-        'my-org',
-        'my-sub',
-        'tun-1',
-        'tok-1',
-        'key-1',
-        'example.com',
-      );
+      const result = await callback(req);
 
       expect(result).toEqual({ success: true });
       expect(registrationService.consumeCallbackNonce).not.toHaveBeenCalled();
@@ -405,6 +405,42 @@ describe('RegistrationController', () => {
       const result = (await controller.handleCallback(req, '', '', '', '', '', '', '', '', '')) as { success: boolean };
 
       expect(result.success).toBe(false);
+      expect(registrationService.completeRegistrationFromCallback).not.toHaveBeenCalled();
+    });
+
+    it('accepts a request made inside the Hub container on loopback', async () => {
+      registrationService.completeRegistrationFromCallback.mockResolvedValue({ success: true } as any);
+
+      await expect(callback(request('::ffff:127.0.0.1', 'localhost:5002'))).resolves.toEqual({ success: true });
+    });
+
+    it('refuses a request that was not sent on loopback, before reading the registration', async () => {
+      await expect(callback(request('192.168.1.50', '192.168.1.10:5002'))).rejects.toThrow(ForbiddenException);
+
+      expect(registrationService.isRegisteredAndServing).not.toHaveBeenCalled();
+      expect(registrationService.completeRegistrationFromCallback).not.toHaveBeenCalled();
+    });
+
+    it('refuses a request that came through the tunnel or Traefik, whatever host it names', async () => {
+      const throughTunnel = request('172.18.0.1', 'hub.example.com', {
+        'cf-ray': '8f00000000000000-LHR',
+        'x-forwarded-host': '127.0.0.1:5002',
+        'x-forwarded-for': '203.0.113.9',
+      });
+      const throughTraefik = request('172.19.0.3', 'hub.example.com', {
+        'x-forwarded-host': 'hub.example.com',
+        'x-forwarded-for': '192.168.1.50',
+      });
+
+      await expect(callback(throughTunnel)).rejects.toThrow(ForbiddenException);
+      await expect(callback(throughTraefik)).rejects.toThrow(ForbiddenException);
+      expect(registrationService.completeRegistrationFromCallback).not.toHaveBeenCalled();
+    });
+
+    it('refuses on a Hub that is already registered and serving, as the POST does', async () => {
+      registrationService.isRegisteredAndServing.mockResolvedValue(true);
+
+      await expect(callback(req)).rejects.toThrow(/already registered/);
       expect(registrationService.completeRegistrationFromCallback).not.toHaveBeenCalled();
     });
   });
