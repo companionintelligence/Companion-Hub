@@ -72,6 +72,7 @@ export type {
   TrackedModel,
   CloudProviderType,
   CloudProviderConfig,
+  CloudProviderStatus,
   InferenceModelInfo,
   InferenceStatus,
   BackendHealthStatus,

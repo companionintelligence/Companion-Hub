@@ -74,6 +74,13 @@ export interface CloudProviderInput {
   enabled: boolean;
   /** The Hub already holds a key for this provider (Settings shows it masked). Cleared and saved, it is deleted. */
   stored?: boolean;
+  /**
+   * Where the Hub sends this provider's requests, when that is not the provider's own server. Set
+   * only in Settings. A key saved there goes to this URL too, since Settings sends no URL.
+   */
+  baseUrl?: string;
+  /** Remove was pressed for a provider that has a `baseUrl` and no stored key. Saved, its settings are deleted. */
+  removed?: boolean;
 }
 
 /**

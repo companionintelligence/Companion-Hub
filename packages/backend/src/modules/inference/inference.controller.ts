@@ -34,6 +34,7 @@ import { ModelResidencyService } from './model-residency.service';
 import { reconcileTrackedWithResidency, trackedPullsNotListed } from './tracked-residency';
 import { ModelPullerService } from './model-puller.service';
 import { CloudFallbackService } from './cloud-fallback.service';
+import { cloudProviderStatus } from './cloud-provider-status';
 import { OllamaInstallerService } from './ollama-installer.service';
 import { RocmInstallerService } from './rocm-installer.service';
 import { AppContainerOriginGuard } from './app-container-origin.guard';
@@ -44,7 +45,7 @@ import { AuthGuard } from '@/modules/auth/auth.guard';
 import { InferenceAccessGuard } from '@/modules/auth/inference-access.guard';
 import { HubManagerGuard } from '@/modules/auth/hub-manager.guard';
 import { ConfigurationService } from '@/core/config/configuration.service';
-import type { CloudProviderType, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
+import type { CloudProviderStatus, CloudProviderType, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
 import {
   LoadModelBody,
   UnloadModelBody,
@@ -681,15 +682,11 @@ export class InferenceController {
     return { success: true, message: `Model ${body.modelId} unpinned` };
   }
 
+  /** Settings > AI shows a provider's base URL (see `cloudProviderStatus`), because a key entered there goes to it. */
   @UseGuards(AuthGuard)
   @Get('cloud-providers')
-  async getCloudProviders() {
-    return this.cloudFallback.listProviders().map((p) => ({
-      provider: p.provider,
-      enabled: p.enabled,
-      configured: !!p.apiKey,
-      defaultModel: p.defaultModel,
-    }));
+  async getCloudProviders(): Promise<CloudProviderStatus[]> {
+    return this.cloudFallback.listProviders().map((p) => cloudProviderStatus(p, this.cloudFallback.getDefaultBaseUrl(p.provider)));
   }
 
   @UseGuards(AuthGuard, HubManagerGuard)

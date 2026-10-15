@@ -7,6 +7,7 @@ import { MemoryManagerService } from '@/modules/inference/memory-manager.service
 import { ModelPullerService } from '@/modules/inference/model-puller.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
 import { CloudFallbackService } from '@/modules/inference/cloud-fallback.service';
+import { cloudProviderStatus } from '@/modules/inference/cloud-provider-status';
 import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
 import { mcpCallerIsOperator } from '../mcp-tool-call';
 import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
@@ -306,15 +307,10 @@ export class InferenceTools implements OnModuleInit {
       category: 'Inference & Models',
       name: 'hub_get_cloud_providers',
       access: 'read',
-      description: 'List configured cloud fallback providers.',
+      description: 'List configured cloud fallback providers. `baseUrl` is reported only for a provider set to another server than its default.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: async () => {
-        return this.cloudFallback.listProviders().map((p) => ({
-          provider: p.provider,
-          enabled: p.enabled,
-          configured: !!p.apiKey,
-          defaultModel: p.defaultModel,
-        }));
+        return this.cloudFallback.listProviders().map((p) => cloudProviderStatus(p, this.cloudFallback.getDefaultBaseUrl(p.provider)));
       },
     });
 

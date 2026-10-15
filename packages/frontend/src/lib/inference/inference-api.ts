@@ -21,7 +21,7 @@ import {
   updateRocmInstallState,
 } from '@/api-client/sdk.gen';
 import { client } from '@/api-client/client.gen';
-import type { CloudProviderType, InferenceBackendType, TrackedModel } from '@ci-hub/common/types';
+import type { CloudProviderStatus, CloudProviderType, InferenceBackendType, TrackedModel } from '@ci-hub/common/types';
 import type {
   CloudProviderInput,
   LemonadeStatus,
@@ -97,20 +97,21 @@ export async function fetchInferenceRuntimeModels(backend: InferenceBackendType)
   return unwrap(getRuntimeModels({ query: { backend } } as Parameters<typeof getRuntimeModels>[0])) as Promise<RuntimeModelsResponse>;
 }
 
+/**
+ * The providers Settings > AI lists as set up: each that holds a key and each set to another server
+ * without one. A key entered for that one goes to its server, so it is listed with the URL.
+ */
 export async function fetchConfiguredCloudProviders(): Promise<CloudProviderInput[]> {
   try {
-    const providers = (await unwrap(getCloudProviders())) as Array<{
-      provider: CloudProviderType;
-      configured: boolean;
-      enabled: boolean;
-    }>;
+    const providers = (await unwrap(getCloudProviders())) as CloudProviderStatus[];
     return providers
-      .filter((p) => p.configured)
+      .filter((p) => p.configured || p.baseUrl)
       .map((p) => ({
         provider: p.provider,
-        apiKey: MASKED_KEY,
+        apiKey: p.configured ? MASKED_KEY : '',
         enabled: p.enabled,
-        stored: true,
+        ...(p.configured ? { stored: true } : {}),
+        ...(p.baseUrl ? { baseUrl: p.baseUrl } : {}),
       }));
   } catch {
     return [];
