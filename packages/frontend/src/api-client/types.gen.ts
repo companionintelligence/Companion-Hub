@@ -2629,6 +2629,10 @@ export type HandleCallbackErrors = {
      * Invalid callback data
      */
     400: unknown;
+    /**
+     * Not sent on this Hub's loopback address, or the Hub is already registered
+     */
+    403: unknown;
 };
 
 export type HandleCallbackResponses = {

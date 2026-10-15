@@ -526,6 +526,9 @@
           },
           "400": {
             "description": "Invalid callback data"
+          },
+          "403": {
+            "description": "Not sent on this Hub's loopback address, or the Hub is already registered"
           }
         },
         "summary": "Handle registration callback from CI Cloud (deprecated GET form — use POST)",
