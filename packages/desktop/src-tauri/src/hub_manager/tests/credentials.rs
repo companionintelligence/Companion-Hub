@@ -6,27 +6,7 @@ use crate::hub_manager::{
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::process::{ExitStatus, Output};
-
-#[cfg(unix)]
-fn exit_status(code: i32) -> ExitStatus {
-    use std::os::unix::process::ExitStatusExt;
-    ExitStatus::from_raw(code << 8)
-}
-
-#[cfg(windows)]
-fn exit_status(code: i32) -> ExitStatus {
-    use std::os::windows::process::ExitStatusExt;
-    ExitStatus::from_raw(code as u32)
-}
-
-fn output(code: i32, stdout: &str, stderr: &str) -> Output {
-    Output {
-        status: exit_status(code),
-        stdout: stdout.as_bytes().to_vec(),
-        stderr: stderr.as_bytes().to_vec(),
-    }
-}
+use std::process::Output;
 
 const NAME_LOOKUP_FAILED: &str =
     "psql: error: could not translate host name \"ci-hub-db\" to address: Name or service not known";
@@ -125,23 +105,9 @@ impl FakeEngine {
                     Ok(output(0, "", ""))
                 }
             }
-            ["cp", source, target] => {
-                let dir = source.split_once(':').map(|(_, dir)| dir).unwrap_or("");
-                let Some((code, stdout, stderr)) = self.container_dirs.borrow().get(dir).cloned()
-                else {
-                    return Ok(output(
-                        1,
-                        "",
-                        "Error response from daemon: Could not find the file",
-                    ));
-                };
-                let target = Path::new(target);
-                std::fs::create_dir_all(target)?;
-                std::fs::write(target.join("out"), stdout)?;
-                std::fs::write(target.join("err"), stderr)?;
-                std::fs::write(target.join("status"), format!("{code}\n"))?;
-                Ok(output(0, "", ""))
-            }
+            ["cp", source, target] => fake_copy_route_cp(source, target, |dir| {
+                self.container_dirs.borrow().get(dir).cloned()
+            }),
             ["inspect", "-f", _, "ci-hub-db"] if !self.inspect_fails => {
                 Ok(output(0, "ci-hub_internal\n", ""))
             }
@@ -248,10 +214,6 @@ impl FakeEngine {
             )
         }
     }
-}
-
-fn desktop_log(data_dir: &Path) -> String {
-    std::fs::read_to_string(desktop_log_path_for(data_dir)).unwrap_or_default()
 }
 
 #[test]

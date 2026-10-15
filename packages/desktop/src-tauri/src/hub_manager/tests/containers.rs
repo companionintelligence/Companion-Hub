@@ -4,6 +4,10 @@
 use super::*;
 #[allow(unused_imports)]
 use crate::hub_manager::*;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::process::Output;
+use std::time::Duration;
 
 #[test]
 fn prefers_a_running_legacy_hub_over_an_exited_canonical_container() {
@@ -118,4 +122,223 @@ fn detects_failed_to_create_shim_task_message() {
 fn does_not_treat_pull_access_denied_as_oci_runtime_error() {
     let output = "Error response from daemon: pull access denied for ci-hub-app, repository does not exist or may require 'docker login'";
     assert!(!is_oci_runtime_error(output));
+}
+
+// --- Hub Node arch check against a stand-in Docker engine ---
+
+/// An engine running the Hub, whose Node prints `node_arch` for `process.arch`.
+struct FakeHubEngine {
+    /// False acts like the WSL engine at `tcp://127.0.0.1:2375`: `docker exec` exits 0 and prints
+    /// nothing whatever the command did.
+    streams_output: bool,
+    node_arch: &'static str,
+    node_exit: i32,
+    /// The Hub container isn't running, so docker refuses every `docker exec`.
+    stopped: bool,
+    /// The docker CLI can't be started.
+    no_docker: bool,
+    /// `docker cp` finds nothing, so no result comes back through the copy route.
+    copy_fails: bool,
+    /// Folders the copy route left in the container, with what Node printed.
+    container_dirs: RefCell<HashMap<String, String>>,
+    calls: RefCell<Vec<String>>,
+}
+
+impl FakeHubEngine {
+    fn new(streams_output: bool, node_arch: &'static str) -> Self {
+        Self {
+            streams_output,
+            node_arch,
+            node_exit: 0,
+            stopped: false,
+            no_docker: false,
+            copy_fails: false,
+            container_dirs: RefCell::new(HashMap::new()),
+            calls: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn streaming_engine(node_arch: &'static str) -> Self {
+        Self::new(true, node_arch)
+    }
+
+    fn wsl_engine(node_arch: &'static str) -> Self {
+        Self::new(false, node_arch)
+    }
+
+    fn used_copy_route(&self) -> bool {
+        self.calls
+            .borrow()
+            .iter()
+            .any(|call| call.starts_with("exec -d "))
+    }
+
+    fn docker(&self, args: &[&str]) -> std::io::Result<Output> {
+        self.calls.borrow_mut().push(args.join(" "));
+        if self.no_docker {
+            return Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+        }
+        let printed = format!("{}\n", self.node_arch);
+        match args {
+            ["exec", ..] if self.stopped => Ok(output(
+                1,
+                "",
+                "Error response from daemon: container 3c5e0f1b2a7d is not running",
+            )),
+            ["exec", "-d", _, "rm", "-rf", dir] => {
+                self.container_dirs.borrow_mut().remove(*dir);
+                Ok(output(0, "", ""))
+            }
+            ["exec", "-d", _, "sh", "-c", _, "sh", dir, "node", "-p", "process.arch"] => {
+                self.container_dirs
+                    .borrow_mut()
+                    .insert(dir.to_string(), printed);
+                Ok(output(0, "", ""))
+            }
+            ["exec", _, "node", "-p", "process.arch"] if self.streams_output => {
+                Ok(output(self.node_exit, &printed, ""))
+            }
+            ["exec", _, "node", "-p", "process.arch"] => Ok(output(0, "", "")),
+            ["cp", source, target] => fake_copy_route_cp(source, target, |dir| {
+                let stdout = self.container_dirs.borrow().get(dir).cloned()?;
+                (!self.copy_fails).then_some((self.node_exit, stdout, String::new()))
+            }),
+            _ => Ok(output(
+                1,
+                "",
+                &format!("fake docker: unexpected call {args:?}"),
+            )),
+        }
+    }
+
+    /// Runs the arch check against this engine and returns the desktop log it wrote.
+    fn check_arch(&self, expected: &str) -> String {
+        let data_dir = tempfile::tempdir().expect("tempdir");
+        let docker = |args: &[&str]| self.docker(args);
+        // The fake has a result ready at the first look, so the copy route needn't wait.
+        let hub = ContainerReader::new(&docker, "ci-hub", Duration::ZERO);
+        log_hub_node_arch(&hub, expected, data_dir.path());
+        desktop_log(data_dir.path())
+    }
+}
+
+#[test]
+fn hub_node_arch_is_ok_from_a_plain_exec_on_an_engine_that_streams_exec_output() {
+    let engine = FakeHubEngine::streaming_engine("x64");
+
+    let log = engine.check_arch("x64");
+
+    assert!(
+        log.contains("Hub Node arch ok: process.arch=x64"),
+        "log: {log}"
+    );
+    assert!(
+        !engine.used_copy_route(),
+        "calls: {:?}",
+        engine.calls.borrow()
+    );
+}
+
+#[test]
+fn hub_node_arch_is_read_through_the_copy_route_on_an_engine_that_drops_exec_output() {
+    let engine = FakeHubEngine::wsl_engine("x64");
+
+    let log = engine.check_arch("x64");
+
+    assert!(
+        log.contains("Hub Node arch ok: process.arch=x64"),
+        "log: {log}"
+    );
+    assert!(!log.contains("mismatch"), "log: {log}");
+    assert!(
+        engine.container_dirs.borrow().is_empty(),
+        "the copy route left its folders behind"
+    );
+}
+
+#[test]
+fn hub_node_arch_that_cannot_be_read_is_not_a_mismatch() {
+    let mut copy_fails = FakeHubEngine::wsl_engine("x64");
+    copy_fails.copy_fails = true;
+    for (engine, reason) in [
+        (copy_fails, "No result came back from ci-hub"),
+        (FakeHubEngine::wsl_engine(""), "node printed nothing."),
+        (FakeHubEngine::streaming_engine(""), "node printed nothing."),
+    ] {
+        let log = engine.check_arch("x64");
+
+        assert!(
+            log.contains(&format!("Could not probe Hub Node arch: {reason}")),
+            "log: {log}"
+        );
+        assert!(!log.contains("mismatch"), "log: {log}");
+    }
+}
+
+#[test]
+fn hub_node_arch_is_not_probed_when_docker_or_node_fails() {
+    let mut stopped = FakeHubEngine::streaming_engine("x64");
+    stopped.stopped = true;
+    let mut no_docker = FakeHubEngine::streaming_engine("x64");
+    no_docker.no_docker = true;
+    let mut node_crashes = FakeHubEngine::streaming_engine("");
+    node_crashes.node_exit = 139;
+    let mut node_crashes_on_wsl = FakeHubEngine::wsl_engine("");
+    node_crashes_on_wsl.node_exit = 139;
+    for (engine, reason) in [
+        (stopped, "container 3c5e0f1b2a7d is not running"),
+        (no_docker, "Failed to exec into ci-hub"),
+        (node_crashes, "node exited with status 139."),
+        (node_crashes_on_wsl, "node exited with status 139."),
+    ] {
+        let log = engine.check_arch("x64");
+
+        assert!(
+            log.contains("Could not probe Hub Node arch: "),
+            "log: {log}"
+        );
+        assert!(log.contains(reason), "log: {log}");
+        assert!(!log.contains("mismatch"), "log: {log}");
+    }
+}
+
+#[test]
+fn hub_node_arch_mismatch_is_reported_on_either_engine() {
+    for engine in [
+        FakeHubEngine::streaming_engine("arm64"),
+        FakeHubEngine::wsl_engine("arm64"),
+    ] {
+        let log = engine.check_arch("x64");
+
+        assert!(
+            log.contains(
+                "WARNING: Hub Node arch mismatch: container process.arch=arm64, desktop expects x64."
+            ),
+            "log: {log}"
+        );
+        assert!(!log.contains("On Apple Silicon"), "log: {log}");
+    }
+}
+
+#[test]
+fn hub_node_arch_is_ok_when_node_prints_another_line_before_it() {
+    let log = FakeHubEngine::streaming_engine("preloaded\nx64").check_arch("x64");
+
+    assert!(
+        log.contains("Hub Node arch ok: process.arch=x64"),
+        "log: {log}"
+    );
+    assert!(!log.contains("mismatch"), "log: {log}");
+}
+
+#[test]
+fn hub_node_arch_mismatch_gives_the_apple_silicon_advice_only_on_macos() {
+    let log = FakeHubEngine::streaming_engine("x64").check_arch("arm64");
+
+    assert!(log.contains("Hub Node arch mismatch"), "log: {log}");
+    assert_eq!(
+        log.contains("On Apple Silicon"),
+        cfg!(target_os = "macos"),
+        "log: {log}"
+    );
 }
