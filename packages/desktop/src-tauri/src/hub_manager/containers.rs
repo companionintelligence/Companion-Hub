@@ -729,10 +729,10 @@ const NODE_PROCESS_ARCHES: &[&str] = &[
     "s390", "s390x", "x64",
 ];
 
-/// Logs the Hub's Node `process.arch` against `expected`. A plain `docker exec` answer counts when
-/// it holds any arch, so a real mismatch costs one Node start. An answer with no arch, such as the
-/// WSL engine's empty one, is read again through the copy route. One that still can't be read is
-/// never a mismatch.
+/// Logs the Hub's Node `process.arch` against `expected`. A plain `docker exec` that exits 0 counts
+/// when it prints any arch, so a real mismatch costs one Node start. Any other answer with status 0,
+/// such as the WSL engine's empty one, is read again through the copy route. One that still can't
+/// be read is never a mismatch.
 pub(crate) fn log_hub_node_arch(hub: &ContainerReader, expected: &str, data_dir: &Path) {
     let output = hub.run_accepting(&["node", "-p", "process.arch"], |output| {
         node_arch_line(output).is_some()

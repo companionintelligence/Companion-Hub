@@ -291,7 +291,7 @@ fn hub_node_arch_that_cannot_be_read_is_not_a_mismatch() {
 }
 
 #[test]
-fn hub_node_arch_is_not_probed_when_docker_or_node_fails() {
+fn hub_node_arch_check_logs_the_reason_when_docker_or_node_fails() {
     let mut stopped = FakeHubEngine::streaming_engine("x64");
     stopped.stopped = true;
     let mut no_docker = FakeHubEngine::streaming_engine("x64");
