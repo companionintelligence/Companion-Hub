@@ -10,10 +10,14 @@ export const THEME_BASE_ENUM = {
 } as const;
 export type ThemeBase = (typeof THEME_BASE_ENUM)[keyof typeof THEME_BASE_ENUM];
 
+const isThemeBase = (value: string): value is ThemeBase => Object.hasOwn(THEME_BASE_ENUM, value);
+
 export const ThemeBaseSelector = ({ value, onChange }: { value?: ThemeBase; onChange?: (value: ThemeBase) => void }) => {
   const { t } = useTranslation();
 
-  const handleChange = (newBaseTheme: ThemeBase) => {
+  const handleChange = (newBaseTheme: string) => {
+    if (!isThemeBase(newBaseTheme)) return;
+
     document.body.dataset.bsThemeBase = newBaseTheme;
 
     if (onChange) {

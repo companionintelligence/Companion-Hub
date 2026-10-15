@@ -38,9 +38,10 @@ export const LanguageSelector = (props: IProps) => {
     setLocale(resolveSupportedLocale(initialLocale));
   }, [initialLocale]);
 
-  const onChange = (newLocale: Locale) => {
-    i18next.changeLanguage(newLocale);
-    setLocale(newLocale);
+  const onChange = (newLocale: string) => {
+    const supported = resolveSupportedLocale(newLocale);
+    i18next.changeLanguage(supported);
+    setLocale(supported);
   };
 
   return (
