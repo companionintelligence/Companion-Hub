@@ -114,6 +114,18 @@ describe('CloudProviderCard', () => {
       expect(onUpdate).toHaveBeenLastCalledWith([{ provider: 'anthropic', apiKey: 'sk-ant-new', enabled: true, baseUrl: PROXY_URL }]);
     });
 
+    // The line sits below the field, so a screen reader in the field never said where the key goes.
+    it('reads the URL out with the key field', async () => {
+      render(<Harness initial={[{ provider: 'anthropic', apiKey: '', enabled: true, baseUrl: PROXY_URL }]} />);
+      const field = screen.getByTestId('cloud-key-anthropic');
+
+      expect(field).toHaveAccessibleDescription(`Needs a key for ${PROXY_URL}.`);
+      await userEvent.type(field, 'sk-ant-new');
+      expect(field).toHaveAccessibleDescription(`This key goes to ${PROXY_URL}.`);
+      await userEvent.click(screen.getByRole('button', { name: 'Remove the Anthropic URL' }));
+      expect(field).not.toHaveAttribute('aria-describedby');
+    });
+
     it('takes a key typed after Remove as the key for that URL, not a removal', async () => {
       const onUpdate = vi.fn();
       render(<Harness initial={[{ provider: 'anthropic', apiKey: '', enabled: true, baseUrl: PROXY_URL }]} onUpdate={onUpdate} />);

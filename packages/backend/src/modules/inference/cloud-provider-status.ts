@@ -15,7 +15,9 @@ export function cloudProviderStatus(config: CloudProviderConfig, defaultBaseUrl:
     configured: !!config.apiKey,
     defaultModel: config.defaultModel,
   };
-  if (config.baseUrl && !isSameServer(config.baseUrl, defaultBaseUrl)) {
+  // Neither the POST nor `hub_set_cloud_provider` checks its type. A number here would turn the whole
+  // list into a 500.
+  if (typeof config.baseUrl === 'string' && config.baseUrl && !isSameServer(config.baseUrl, defaultBaseUrl)) {
     status.baseUrl = withoutSecretParts(config.baseUrl);
   }
   return status;
@@ -31,13 +33,10 @@ function withoutSecretParts(url: string): string {
   }
   // `user:password@host` parses with `user:` as its scheme, so only http and https are read as URLs.
   // Anything else is not a URL requests could reach, but it may still hold `user:password@` or `?key=`.
+  // The characters that end a host (`/` `?` `#`) can sit in a password too, so everything up to the
+  // last `@` goes.
   if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
-    return text.replace(/^([^/]*\/\/)?[^/]*@/, '$1').replace(/[?#].*$/, '');
+    return text.replace(/^([^/]*\/\/)?[\s\S]*@/, '$1').replace(/[?#][\s\S]*$/, '');
   }
-  if (!parsed.username && !parsed.password && !parsed.search && !parsed.hash) return url;
-  parsed.username = '';
-  parsed.password = '';
-  parsed.search = '';
-  parsed.hash = '';
-  return parsed.toString();
+  return `${parsed.origin}${parsed.pathname}`;
 }

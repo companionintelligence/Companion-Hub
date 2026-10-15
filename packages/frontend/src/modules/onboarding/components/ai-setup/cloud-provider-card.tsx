@@ -97,6 +97,7 @@ export const CloudProviderCard = ({ providers, insufficientHardware, onUpdate }:
             ? 'AI_SETTINGS_CLOUD_KEY_AND_URL_REMOVED_ON_SAVE'
             : 'AI_SETTINGS_CLOUD_URL_REMOVED_ON_SAVE'
           : 'AI_SETTINGS_CLOUD_KEY_REMOVED_ON_SAVE';
+        const showUrl = !!current.baseUrl && !removing;
 
         return (
           <div key={type} className="rounded-md border border-primary/40 bg-primary/[0.06] p-4" data-testid={`cloud-provider-${type}`}>
@@ -125,6 +126,8 @@ export const CloudProviderCard = ({ providers, insufficientHardware, onUpdate }:
                 value={current.apiKey}
                 onChange={(e) => handleKeyChange(type, e.target.value)}
                 className="min-w-0 flex-1"
+                // Read out with the field, so a screen reader names the URL a key typed here goes to.
+                aria-describedby={showUrl ? `cloud-base-url-${type}` : undefined}
                 data-testid={`cloud-key-${type}`}
               />
               {(current.stored || current.baseUrl) && !removing && (
@@ -142,8 +145,12 @@ export const CloudProviderCard = ({ providers, insufficientHardware, onUpdate }:
                 </Button>
               )}
             </div>
-            {current.baseUrl && !removing && (
-              <p className="mt-1 text-xs text-muted-foreground [overflow-wrap:anywhere]" data-testid={`cloud-base-url-${type}`}>
+            {showUrl && (
+              <p
+                id={`cloud-base-url-${type}`}
+                className="mt-1 text-xs text-muted-foreground [overflow-wrap:anywhere]"
+                data-testid={`cloud-base-url-${type}`}
+              >
                 {/* The URL is the span's own text, never parsed by Trans as markup. */}
                 <Trans i18nKey={urlCopy} components={{ url: <span className="font-mono text-foreground">{current.baseUrl}</span> }} />
               </p>

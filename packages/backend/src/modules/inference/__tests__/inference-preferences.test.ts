@@ -687,6 +687,43 @@ describe('InferenceController — preferences', () => {
       expect(JSON.stringify(providers)).not.toMatch(/proxy-secret|query-secret/);
     });
 
+    // A `/` or `?` in the password ends the host early. Neither URL parses, so the fallback has to
+    // find the last `@`.
+    it('leaves out a password with a slash or a question mark in it', async () => {
+      cloudFallback.listProviders.mockReturnValue([
+        {
+          provider: 'openai',
+          apiKey: 'sk-stored',
+          enabled: true,
+          defaultModel: 'gpt-4o',
+          baseUrl: ' https://proxy-user:pass/word@llm-proxy.example.test/v1 ',
+        },
+        {
+          provider: 'anthropic',
+          apiKey: 'sk-ant',
+          enabled: true,
+          defaultModel: 'claude-opus-4',
+          baseUrl: 'https://proxy-user:pass?word@llm-proxy.example.test/v1',
+        },
+      ]);
+
+      const providers = await controller.getCloudProviders();
+
+      expect(providers.map((p) => p.baseUrl)).toEqual(['https://llm-proxy.example.test/v1', 'https://llm-proxy.example.test/v1']);
+      expect(JSON.stringify(providers)).not.toMatch(/pass|word/);
+    });
+
+    // Reading the URL made this route fail outright when one was stored as something other than text.
+    it('still lists the providers when a base URL is not text', async () => {
+      cloudFallback.listProviders.mockReturnValue([
+        { provider: 'openai', apiKey: 'sk-stored', enabled: true, defaultModel: 'gpt-4o', baseUrl: 42 as unknown as string },
+      ]);
+
+      await expect(controller.getCloudProviders()).resolves.toEqual([
+        { provider: 'openai', enabled: true, configured: true, defaultModel: 'gpt-4o' },
+      ]);
+    });
+
     it("leaves the base URL out when it is the provider's own server, however it is spelled", async () => {
       cloudFallback.listProviders.mockReturnValue([
         { provider: 'openai', apiKey: 'sk-stored', enabled: true, defaultModel: 'gpt-4o', baseUrl: 'https://api.openai.com/v1' },
