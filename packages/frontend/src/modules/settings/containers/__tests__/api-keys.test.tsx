@@ -142,6 +142,43 @@ describe('ApiKeysContainer', () => {
     expect(screen.queryByTestId('api-key-creator-2')).toBeNull();
   });
 
+  it('marks each key the Hub-wide tools refuse, and why, so an owner can revoke it', async () => {
+    const [operator, managed] = KEYS.keys;
+    mockApiFetch.mockImplementation((url: string) =>
+      url === '/api/api-keys'
+        ? Promise.resolve({
+            ok: true,
+            json: async () => ({
+              keys: [
+                { ...operator, createdByUserId: 4, createdByUsername: 'member@acme.com', hubWideBlocked: 'creator-role' },
+                { ...operator, id: 3, name: 'legacy', createdByUserId: null, createdByUsername: null, hubWideBlocked: 'no-creator' },
+                { ...managed, createdByUserId: null, createdByUsername: null, hubWideBlocked: 'app-key' },
+                { ...operator, id: 5, name: 'owner key', createdByUserId: 2, createdByUsername: 'owner@acme.com', hubWideBlocked: null },
+              ],
+            }),
+          })
+        : mockGet(url),
+    );
+
+    render(<ApiKeysContainer />);
+    await waitFor(() => expect(screen.getByTestId('api-key-list')).toBeTruthy());
+
+    expect(screen.getByTestId('api-key-creator-1').textContent).toBe('API_KEYS_CREATED_BY');
+    expect(screen.getByTestId('api-key-hub-wide-1').textContent).toBe('API_KEYS_HUB_WIDE_CREATOR_ROLE');
+    // The Hub-wide line already says nobody is recorded, so the creator line isn't repeated.
+    expect(screen.getByTestId('api-key-hub-wide-3').textContent).toBe('API_KEYS_HUB_WIDE_NO_CREATOR');
+    expect(screen.queryByTestId('api-key-creator-3')).toBeNull();
+    expect(screen.getByTestId('api-key-hub-wide-2').textContent).toBe('API_KEYS_HUB_WIDE_APP_KEY');
+    // An app key is always refused and nobody can change that: a note, not a warning.
+    expect(screen.getByTestId('api-key-hub-wide-2').className).not.toContain('text-warning');
+    expect(screen.getByTestId('api-key-hub-wide-1').className).toContain('text-warning');
+    expect(screen.queryByTestId('api-key-hub-wide-5')).toBeNull();
+
+    // Each marked key can still be revoked from its row.
+    const memberRow = screen.getByTestId('api-key-hub-wide-1').closest('li') as HTMLElement;
+    expect(within(memberRow).getByText('API_KEYS_REVOKE')).toBeTruthy();
+  });
+
   it('creates a key via POST and reveals the raw value once', async () => {
     const user = userEvent.setup();
     mockApiFetch.mockImplementation((url: string, init?: RequestInit) => {

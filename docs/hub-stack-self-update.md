@@ -93,8 +93,8 @@ The daily check updates a release-pinned node only while `autoUpdates` is on. It
 To turn it off, use any one of these:
 
 - In the Hub UI, open **Settings** and turn off **Auto-update stack**.
-- Call `POST /api/system/update/auto-updates` with `{"enabled": false}` as an authenticated user.
-- Call the MCP tool `hub_set_auto_updates` with `{"enabled": false}`.
+- Call `POST /api/system/update/auto-updates` with `{"enabled": false}` as the operator who claimed the Hub or an organization owner or admin.
+- Call the MCP tool `hub_set_auto_updates` with `{"enabled": false}`, using a key that the operator who claimed the Hub or an organization owner or admin created in **Settings** > **Security**.
 - On the host, set `"autoUpdates": false` in `<ROOT_FOLDER_HOST>/state/settings.json`.
 
 The value must be the JSON boolean `false`. The endpoint and the MCP tool reject anything else, and a string such as `"false"` in the file counts as on.

@@ -7,6 +7,9 @@ import { SessionManager } from '../session.manager';
 import type { Request } from 'express';
 import jsonwebtoken from 'jsonwebtoken';
 
+/** A Hub that holds a registration, the only kind on which the Portal device key is accepted. */
+const registered = { holdsRegistration: async () => true } as never;
+
 describe('AuthMiddleware transient DB handling', () => {
   const sessionManager = {
     resolveSessionUserId: vi.fn(),
@@ -133,7 +136,14 @@ describe('AuthMiddleware session fallback', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     sessionUserCache.get.mockReturnValue(undefined);
-    middleware = new AuthMiddleware(sessionManager as never, config as never, userRepository as never, sessionUserCache as never);
+    middleware = new AuthMiddleware(
+      sessionManager as never,
+      config as never,
+      userRepository as never,
+      sessionUserCache as never,
+      undefined,
+      registered,
+    );
     sessionManager.getSessionExpiresAt.mockReturnValue(null);
   });
 
@@ -337,7 +347,14 @@ describe('AuthMiddleware on a Hub with no operator', () => {
     sessionUserCache.get.mockReturnValue(undefined);
     sessionManager.resolveSessionUserId.mockReturnValue(null);
     sessionManager.getSessionExpiresAt.mockReturnValue(null);
-    middleware = new AuthMiddleware(sessionManager as never, config as never, userRepository as never, sessionUserCache as never);
+    middleware = new AuthMiddleware(
+      sessionManager as never,
+      config as never,
+      userRepository as never,
+      sessionUserCache as never,
+      undefined,
+      registered,
+    );
   });
 
   it.each([
@@ -533,7 +550,14 @@ describe('AuthMiddleware and qa:read API keys', () => {
     repo.findByHash.mockImplementation(async (hash: string) => rows.get(hash));
     repo.touchLastUsed.mockResolvedValue(undefined);
     const apiKeys = new ApiKeyService(repo as never, { warn: vi.fn(), info: vi.fn() } as never);
-    middleware = new AuthMiddleware(sessionManager as never, config as never, userRepository as never, sessionUserCache as never, apiKeys);
+    middleware = new AuthMiddleware(
+      sessionManager as never,
+      config as never,
+      userRepository as never,
+      sessionUserCache as never,
+      apiKeys,
+      registered,
+    );
   });
 
   it('names a qa:read key as its own principal and installs no user', async () => {
@@ -658,6 +682,7 @@ describe("AuthMiddleware and Companion Portal's push key", () => {
     ],
   ]);
   const repo = { findByHash: vi.fn(), touchLastUsed: vi.fn() };
+  const registration = { holdsRegistration: vi.fn() };
   let middleware: AuthMiddleware;
   const bearer = (token: string, method = 'POST', originalUrl = '/api/app-lifecycle/x:ci-marketplace/install') =>
     ({
@@ -682,8 +707,16 @@ describe("AuthMiddleware and Companion Portal's push key", () => {
     userRepository.getFirstOperator.mockResolvedValue({ id: 1, username: 'op' });
     repo.findByHash.mockImplementation(async (hash: string) => rows.get(hash));
     repo.touchLastUsed.mockResolvedValue(undefined);
+    registration.holdsRegistration.mockResolvedValue(true);
     const apiKeys = new ApiKeyService(repo as never, { warn: vi.fn(), info: vi.fn() } as never);
-    middleware = new AuthMiddleware(sessionManager as never, config as never, userRepository as never, sessionUserCache as never, apiKeys);
+    middleware = new AuthMiddleware(
+      sessionManager as never,
+      config as never,
+      userRepository as never,
+      sessionUserCache as never,
+      apiKeys,
+      registration as never,
+    );
   });
 
   it('admits the push key as portal-device, on a write, from the hashed row', async () => {
@@ -728,6 +761,36 @@ describe("AuthMiddleware and Companion Portal's push key", () => {
     await middleware.use(req, {} as never, vi.fn());
     expect(req.hubPrincipal).toBeUndefined();
     expect(req.user).toBeUndefined();
+  });
+
+  it('SECURITY: refuses the Portal device key on a Hub that holds no registration', async () => {
+    // A registration reset keeps the key for the next pairing and forgets the delivery above.
+    registration.holdsRegistration.mockResolvedValue(false);
+    const req = bearer(DEVICE_KEY);
+    await middleware.use(req, {} as never, vi.fn());
+    expect(req.hubPrincipal).toBeUndefined();
+    expect(req.user).toBeUndefined();
+  });
+
+  it('refuses the Portal device key when nothing can say whether the Hub holds a registration', async () => {
+    const apiKeys = new ApiKeyService(repo as never, { warn: vi.fn(), info: vi.fn() } as never);
+    const withoutRegistration = new AuthMiddleware(
+      sessionManager as never,
+      config as never,
+      userRepository as never,
+      sessionUserCache as never,
+      apiKeys,
+    );
+    const req = bearer(DEVICE_KEY);
+    await withoutRegistration.use(req, {} as never, vi.fn());
+    expect(req.hubPrincipal).toBeUndefined();
+  });
+
+  it('asks about the registration only for the device key, never for a push key or another bearer', async () => {
+    await middleware.use(bearer(PUSH_KEY), {} as never, vi.fn());
+    await middleware.use(bearer(LOCAL_KEY), {} as never, vi.fn());
+    await middleware.use(bearer('not-the-device-key'), {} as never, vi.fn());
+    expect(registration.holdsRegistration).not.toHaveBeenCalled();
   });
 
   it('leaves the request unauthenticated, not failed, when the key store cannot answer the push key', async () => {

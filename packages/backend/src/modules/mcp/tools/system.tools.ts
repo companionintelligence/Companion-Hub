@@ -26,6 +26,7 @@ export class SystemTools implements OnModuleInit {
       category: 'System',
       name: 'hub_get_hub_logs',
       access: 'read',
+      hubWide: true, // GET /api/system/logs/download and the /api/sse/ci-hub-logs stream
       description: 'Get recent Hub container log lines. Useful for debugging Hub issues.',
       inputSchema: { type: 'object', properties: { maxLines: { type: 'number', description: 'Max log lines (1-1000, default 100)' } }, required: [] },
       handler: (p) => this.getHubLogs(p as { maxLines?: number }),
@@ -50,6 +51,7 @@ export class SystemTools implements OnModuleInit {
       category: 'System',
       name: 'hub_perform_update',
       access: 'write',
+      hubWide: true, // POST /api/system/update
       destructive: true, // ISSUE-MCP-2: replaces the running Hub with a new version.
       description: 'Update the Hub to a specific or latest version.',
       inputSchema: {
@@ -71,6 +73,7 @@ export class SystemTools implements OnModuleInit {
       category: 'System',
       name: 'hub_set_auto_updates',
       access: 'write',
+      hubWide: true, // POST /api/system/update/auto-updates
       description: 'Enable or disable automatic Hub updates.',
       inputSchema: {
         type: 'object',

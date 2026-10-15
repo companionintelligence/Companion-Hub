@@ -157,6 +157,33 @@ describe('cloud provider keys', () => {
     await expect(fetchConfiguredCloudProviders()).resolves.toEqual([{ provider: 'openai', apiKey: '••••••••', enabled: false, stored: true }]);
   });
 
+  // A provider moved to another server without a key read as never set up. A key entered for it went
+  // to that server.
+  it('lists a provider set to another server with or without a key, with its URL', async () => {
+    getCloudProviders.mockResolvedValue({
+      data: [
+        { provider: 'openai', configured: true, enabled: true, defaultModel: 'gpt-4o', baseUrl: 'https://llm-proxy.example.test/v1' },
+        {
+          provider: 'anthropic',
+          configured: false,
+          enabled: true,
+          defaultModel: 'claude-opus-4',
+          baseUrl: 'https://llm-proxy.example.test/anthropic',
+        },
+        { provider: 'google', configured: false, enabled: false, defaultModel: 'gemini-2.5-pro' },
+      ],
+    });
+
+    const providers = await fetchConfiguredCloudProviders();
+
+    expect(providers).toEqual([
+      { provider: 'openai', apiKey: '••••••••', enabled: true, stored: true, baseUrl: 'https://llm-proxy.example.test/v1' },
+      { provider: 'anthropic', apiKey: '', enabled: true, baseUrl: 'https://llm-proxy.example.test/anthropic' },
+    ]);
+    // Marked as stored, an empty field would be deleted by the next save.
+    expect(providers[1]).not.toHaveProperty('stored');
+  });
+
   it('deletes a saved key at the route the Hub serves for it', async () => {
     clientDelete.mockResolvedValue({ data: { success: true, removed: true } });
 

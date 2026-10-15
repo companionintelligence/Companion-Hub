@@ -597,4 +597,159 @@ describe('InferenceController — preferences', () => {
 
     expect(appCredentials.invalidateCache).not.toHaveBeenCalled();
   });
+
+  // A base URL changed through the API or MCP never showed in Settings > AI. A key entered there
+  // went to that URL.
+  describe('GET cloud-providers', () => {
+    beforeEach(() => {
+      const real = new CloudFallbackService(mock<LoggerService>(), mock<ConfigurationService>());
+      cloudFallback.getDefaultBaseUrl.mockImplementation((provider) => real.getDefaultBaseUrl(provider));
+    });
+
+    it('reports a base URL on another server, with or without a key', async () => {
+      cloudFallback.listProviders.mockReturnValue([
+        { provider: 'openai', apiKey: 'sk-stored', enabled: true, defaultModel: 'gpt-4o', baseUrl: 'https://llm-proxy.example.test/v1' },
+        { provider: 'anthropic', enabled: true, defaultModel: 'claude-opus-4', baseUrl: 'https://llm-proxy.example.test/anthropic' },
+      ]);
+
+      const providers = await controller.getCloudProviders();
+
+      expect(providers).toEqual([
+        { provider: 'openai', enabled: true, configured: true, defaultModel: 'gpt-4o', baseUrl: 'https://llm-proxy.example.test/v1' },
+        {
+          provider: 'anthropic',
+          enabled: true,
+          configured: false,
+          defaultModel: 'claude-opus-4',
+          baseUrl: 'https://llm-proxy.example.test/anthropic',
+        },
+      ]);
+      expect(JSON.stringify(providers)).not.toContain('sk-stored');
+    });
+
+    // Any signed-in member reads this route, so a password written into the URL stays on the Hub.
+    it('leaves out a user name and password written into the base URL', async () => {
+      cloudFallback.listProviders.mockReturnValue([
+        {
+          provider: 'openai',
+          apiKey: 'sk-stored',
+          enabled: true,
+          defaultModel: 'gpt-4o',
+          baseUrl: 'https://proxy-user:proxy-secret@llm-proxy.example.test/v1',
+        },
+      ]);
+
+      const providers = await controller.getCloudProviders();
+
+      expect(providers[0]?.baseUrl).toBe('https://llm-proxy.example.test/v1');
+      expect(JSON.stringify(providers)).not.toContain('proxy-secret');
+    });
+
+    it('leaves out a query string and fragment written into the base URL', async () => {
+      cloudFallback.listProviders.mockReturnValue([
+        {
+          provider: 'openai',
+          apiKey: 'sk-stored',
+          enabled: true,
+          defaultModel: 'gpt-4o',
+          baseUrl: 'https://llm-proxy.example.test/v1?api-key=query-secret#hash-secret',
+        },
+      ]);
+
+      const providers = await controller.getCloudProviders();
+
+      expect(providers[0]?.baseUrl).toBe('https://llm-proxy.example.test/v1');
+      expect(JSON.stringify(providers)).not.toMatch(/query-secret|hash-secret/);
+    });
+
+    // `proxy-user:proxy-secret@...` parses as a URL with the scheme `proxy-user:`; the second doesn't parse.
+    it('leaves the secret parts out of a base URL that is not http or https', async () => {
+      cloudFallback.listProviders.mockReturnValue([
+        {
+          provider: 'openai',
+          apiKey: 'sk-stored',
+          enabled: true,
+          defaultModel: 'gpt-4o',
+          baseUrl: 'proxy-user:proxy-secret@llm-proxy/v1?key=query-secret',
+        },
+        {
+          provider: 'anthropic',
+          apiKey: 'sk-ant',
+          enabled: true,
+          defaultModel: 'claude-opus-4',
+          baseUrl: 'https://proxy-user:proxy-secret@llm proxy/v1',
+        },
+      ]);
+
+      const providers = await controller.getCloudProviders();
+
+      expect(providers.map((p) => p.baseUrl)).toEqual(['llm-proxy/v1', 'https://llm proxy/v1']);
+      expect(JSON.stringify(providers)).not.toMatch(/proxy-secret|query-secret/);
+    });
+
+    // A `/` or `?` in the password ends the host early. Neither URL parses, so the fallback has to
+    // find the last `@`.
+    it('leaves out a password with a slash or a question mark in it', async () => {
+      cloudFallback.listProviders.mockReturnValue([
+        {
+          provider: 'openai',
+          apiKey: 'sk-stored',
+          enabled: true,
+          defaultModel: 'gpt-4o',
+          baseUrl: ' https://proxy-user:pass/word@llm-proxy.example.test/v1 ',
+        },
+        {
+          provider: 'anthropic',
+          apiKey: 'sk-ant',
+          enabled: true,
+          defaultModel: 'claude-opus-4',
+          baseUrl: 'https://proxy-user:pass?word@llm-proxy.example.test/v1',
+        },
+      ]);
+
+      const providers = await controller.getCloudProviders();
+
+      expect(providers.map((p) => p.baseUrl)).toEqual(['https://llm-proxy.example.test/v1', 'https://llm-proxy.example.test/v1']);
+      expect(JSON.stringify(providers)).not.toMatch(/pass|word/);
+    });
+
+    // Reading the URL made this route fail outright when one was stored as something other than text.
+    it('still lists the providers when a base URL is not text', async () => {
+      cloudFallback.listProviders.mockReturnValue([
+        { provider: 'openai', apiKey: 'sk-stored', enabled: true, defaultModel: 'gpt-4o', baseUrl: 42 as unknown as string },
+      ]);
+
+      await expect(controller.getCloudProviders()).resolves.toEqual([
+        { provider: 'openai', enabled: true, configured: true, defaultModel: 'gpt-4o' },
+      ]);
+    });
+
+    it("leaves the base URL out when it is the provider's own server, however it is spelled", async () => {
+      cloudFallback.listProviders.mockReturnValue([
+        { provider: 'openai', apiKey: 'sk-stored', enabled: true, defaultModel: 'gpt-4o', baseUrl: 'https://api.openai.com/v1' },
+        {
+          provider: 'anthropic',
+          apiKey: 'sk-ant-stored',
+          enabled: true,
+          defaultModel: 'claude-opus-4',
+          baseUrl: 'https://API.anthropic.com:443/v1/',
+        },
+        {
+          provider: 'google',
+          apiKey: 'AIza-stored',
+          enabled: false,
+          defaultModel: 'gemini-2.5-pro',
+          baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+        },
+        { provider: 'github-copilot', apiKey: 'ghu-stored', enabled: true, defaultModel: 'claude-opus-4', baseUrl: 'https://api.githubcopilot.com/' },
+      ]);
+
+      const providers = await controller.getCloudProviders();
+
+      expect(providers).toHaveLength(4);
+      for (const provider of providers) {
+        expect(provider).not.toHaveProperty('baseUrl');
+      }
+    });
+  });
 });

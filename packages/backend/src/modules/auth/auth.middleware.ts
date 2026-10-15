@@ -5,6 +5,7 @@ import { withTransientDbRetry } from '@/core/database/transient-db-retry';
 import { isTransientDbError } from '@/modules/api-keys/api-key.errors';
 import { ApiKeyService, isHubApiKeyShaped } from '@/modules/api-keys/api-key.service';
 import { PORTAL_SCOPE, QA_READ_SCOPE } from '@/modules/api-keys/api-key.scopes';
+import { RegistrationService } from '@/modules/registration/registration.service';
 import { Injectable, type NestMiddleware, ServiceUnavailableException } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
 import jsonwebtoken from 'jsonwebtoken';
@@ -157,6 +158,8 @@ export class AuthMiddleware implements NestMiddleware {
     // ApiKeyModule, and if that ever stops resolving the Hub should fail to boot rather than start
     // answering every `qa:read` key 401 with nothing in the log to say why.
     private readonly apiKeys?: ApiKeyService,
+    // Appended and optional the same way. Without it the Portal device key authenticates nothing.
+    private readonly registration?: RegistrationService,
   ) {}
 
   /**
@@ -315,8 +318,18 @@ export class AuthMiddleware implements NestMiddleware {
       // compromised Memory container a Hub operator (2026-09-24 audit). The window closes on each
       // Hub the first time its Portal answers a check-in with the push key's fingerprint, and a
       // Portal that predates the exchange keeps the old contract until it is updated.
+      //
+      // And only while the Hub holds a registration. A registration reset forgets the delivery but
+      // keeps the key, which the next pairing sends to Portal as proof that this is the same device.
+      // Nothing calls this API with it meanwhile: Portal pushes come through the tunnel the reset
+      // stopped. The registration is read from the database, so a restart does not bring the key back.
       const ciHubApiKey = this.config.get('ciHubApiKey');
-      if (ciHubApiKey && !this.config.get('portalPushKeyDeliveredAt') && secretEquals(token, ciHubApiKey)) {
+      if (
+        ciHubApiKey &&
+        !this.config.get('portalPushKeyDeliveredAt') &&
+        secretEquals(token, ciHubApiKey) &&
+        (await this.registration?.holdsRegistration()) === true
+      ) {
         await this.attachFirstOperator(req, 'portal-device');
         return next();
       }

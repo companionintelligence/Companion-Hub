@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { PassThrough } from 'node:stream';
-import { InternalServerErrorException } from '@nestjs/common';
+import { BadRequestException, InternalServerErrorException } from '@nestjs/common';
 import axios from 'axios';
 import type { CloudProviderConfig } from '@ci-hub/common/types';
 import { CloudFallbackService } from '../cloud-fallback.service';
@@ -71,6 +71,155 @@ describe('CloudFallbackService.setProvider', () => {
     service.setProvider({ provider: 'openai', apiKey: MASKED_API_KEY, enabled: true, defaultModel: 'gpt-4o' });
 
     expect(service.getProvider('openai')?.apiKey).toBe('sk-live');
+  });
+
+  // A stored key belongs to the server it was saved for, as the vLLM key does.
+  describe('a save that changes the base URL', () => {
+    const OTHER_SERVER = 'https://proxy.example.test/v1';
+
+    it.each([
+      ['leaves the key out', undefined],
+      ['sends an empty key', ''],
+      ['sends a blank key', '   '],
+      ['sends the mask back', MASKED_API_KEY],
+    ])('drops the stored key when it moves to another server and %s', async (_label, apiKey) => {
+      await service.setProvider({ provider: 'openai', apiKey: 'sk-live', enabled: true, defaultModel: 'gpt-4o' });
+
+      await service.setProvider({ provider: 'openai', apiKey, enabled: true, baseUrl: OTHER_SERVER, defaultModel: 'gpt-4o' });
+
+      const provider = service.getProvider('openai');
+      expect(provider?.baseUrl).toBe(OTHER_SERVER);
+      expect(provider?.apiKey).toBeUndefined();
+      // Not configured, so no fallback and no app env. settings.json no longer holds the key either.
+      expect(service.hasCloudFallback()).toBe(false);
+      expect(service.toAppEnv()).toEqual({});
+      const saved = configuration.setInferenceCloudProviders.mock.lastCall?.[0];
+      expect(saved?.map((p) => [p.provider, p.apiKey])).toEqual([['openai', undefined]]);
+    });
+
+    it('stores the key a save sends with the new URL', async () => {
+      await service.setProvider({ provider: 'openai', apiKey: 'sk-live', enabled: true, defaultModel: 'gpt-4o' });
+
+      await service.setProvider({ provider: 'openai', apiKey: 'sk-proxy', enabled: true, baseUrl: OTHER_SERVER, defaultModel: 'gpt-4o' });
+
+      expect(service.getProvider('openai')).toMatchObject({ baseUrl: OTHER_SERVER, apiKey: 'sk-proxy' });
+    });
+
+    it.each(['https://proxy.example.test/v1/', 'https://PROXY.example.test:443/v1', 'https://proxy.example.test'])(
+      'keeps the stored key when the save names the same server as %s',
+      async (sameServer) => {
+        await service.setProvider({ provider: 'openai', apiKey: 'sk-proxy', enabled: true, baseUrl: OTHER_SERVER, defaultModel: 'gpt-4o' });
+
+        await service.setProvider({ provider: 'openai', enabled: false, baseUrl: sameServer, defaultModel: 'gpt-4o' });
+
+        expect(service.getProvider('openai')).toMatchObject({ baseUrl: sameServer, apiKey: 'sk-proxy', enabled: false });
+      },
+    );
+
+    it('keeps the stored key on a custom server when the save leaves the URL out', async () => {
+      await service.setProvider({ provider: 'openai', apiKey: 'sk-proxy', enabled: true, baseUrl: OTHER_SERVER, defaultModel: 'gpt-4o' });
+
+      await service.setProvider({ provider: 'openai', apiKey: MASKED_API_KEY, enabled: false, defaultModel: 'gpt-4o' });
+
+      expect(service.getProvider('openai')).toMatchObject({ baseUrl: OTHER_SERVER, apiKey: 'sk-proxy', enabled: false });
+    });
+
+    it('reads a blank base URL as leaving the URL out', async () => {
+      await service.setProvider({ provider: 'openai', apiKey: 'sk-proxy', enabled: true, baseUrl: OTHER_SERVER, defaultModel: 'gpt-4o' });
+
+      await service.setProvider({ provider: 'openai', apiKey: '', enabled: false, baseUrl: '   ', defaultModel: 'gpt-4o' });
+
+      expect(service.getProvider('openai')).toMatchObject({ baseUrl: OTHER_SERVER, apiKey: 'sk-proxy', enabled: false });
+    });
+
+    it('logs the dropped key, since the save itself still succeeds', async () => {
+      const logger = mock<LoggerService>();
+      const logged = new CloudFallbackService(logger, configuration);
+      await logged.setProvider({ provider: 'openai', apiKey: 'sk-live', enabled: true, defaultModel: 'gpt-4o' });
+      expect(logger.warn).not.toHaveBeenCalled();
+
+      await logged.setProvider({ provider: 'openai', enabled: true, baseUrl: OTHER_SERVER, defaultModel: 'gpt-4o' });
+
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Dropped the stored openai key'));
+    });
+
+    it('logs the base URL a save names, without the user name, password or query in it', async () => {
+      const logger = mock<LoggerService>();
+      const logged = new CloudFallbackService(logger, configuration);
+
+      await logged.setProvider({
+        provider: 'openai',
+        apiKey: 'sk-proxy',
+        enabled: true,
+        baseUrl: 'https://proxyuser:pw-in-url@proxy.example.test/v1?token=tok-in-query',
+        defaultModel: 'gpt-4o',
+      });
+
+      const lines = logger.info.mock.calls.map(([line]) => String(line)).join('\n');
+      // The path stays, so a missing or extra `/v1` shows in the log.
+      expect(lines).toContain('baseUrl: https://proxy.example.test/v1)');
+      expect(lines).not.toMatch(/proxyuser|pw-in-url|tok-in-query/);
+    });
+
+    // settings.json can hold a provider without a base URL. Its server is then the provider's default,
+    // which is also where Anthropic's own request path posts.
+    it.each([
+      ['openai', 'https://api.openai.com/v1'],
+      ['anthropic', 'https://api.anthropic.com/v1'],
+      ['google', 'https://generativelanguage.googleapis.com/v1beta/openai'],
+      ['github-copilot', 'https://api.githubcopilot.com'],
+    ] as const)('treats the %s default URL, sent explicitly, as the server the key was saved for', async (provider, defaultUrl) => {
+      configuration.getInferenceCloudProviders.mockReturnValue([{ provider, apiKey: 'sk-saved', enabled: true, defaultModel: 'm' }]);
+      const booted = new CloudFallbackService(mock<LoggerService>(), configuration);
+      booted.onModuleInit();
+
+      await booted.setProvider({ provider, apiKey: '', enabled: true, baseUrl: defaultUrl, defaultModel: 'm' });
+      expect(booted.getProvider(provider)?.apiKey).toBe('sk-saved');
+
+      await booted.setProvider({ provider, apiKey: '', enabled: true, baseUrl: OTHER_SERVER, defaultModel: 'm' });
+      expect(booted.getProvider(provider)?.apiKey).toBeUndefined();
+    });
+  });
+
+  // Neither the POST nor the MCP tool checks the body at runtime.
+  describe('a save the settings file could not hold', () => {
+    it.each([
+      ['baseUrl', 42],
+      ['baseUrl', { host: 'proxy.example.test' }],
+      ['apiKey', 42],
+      ['defaultModel', 42],
+      ['enabled', 'yes'],
+      ['provider', 'mistral'],
+      ['provider', 'constructor'],
+    ])('refuses a save whose %s is the wrong type or value (%j) and keeps what was stored', async (field, value) => {
+      await service.setProvider({ provider: 'openai', apiKey: 'sk-live', enabled: true, defaultModel: 'gpt-4o' });
+      configuration.setInferenceCloudProviders.mockClear();
+
+      const save = { provider: 'openai', enabled: true, defaultModel: 'gpt-4o', [field]: value } as unknown as CloudProviderConfig;
+      await expect(service.setProvider(save)).rejects.toThrow(BadRequestException);
+
+      expect(service.getProvider('openai')).toMatchObject({ apiKey: 'sk-live', baseUrl: 'https://api.openai.com/v1' });
+      expect(configuration.setInferenceCloudProviders).not.toHaveBeenCalled();
+    });
+
+    // settings.json requires `enabled` on every entry (see `parsePersistedSettings`). The POST and the MCP
+    // tool both copy the field across, so a body without it arrives as `enabled: undefined`.
+    it('keeps the stored enabled flag when a save leaves it out', async () => {
+      await service.setProvider({ provider: 'openai', apiKey: 'sk-live', enabled: true, defaultModel: 'gpt-4o' });
+
+      const save = { provider: 'openai', apiKey: 'sk-new', enabled: undefined, defaultModel: 'gpt-4o' } as unknown as CloudProviderConfig;
+      await service.setProvider(save);
+
+      expect(service.getProvider('openai')).toMatchObject({ apiKey: 'sk-new', enabled: true });
+      expect(configuration.setInferenceCloudProviders.mock.lastCall?.[0]).toEqual([expect.objectContaining({ provider: 'openai', enabled: true })]);
+    });
+
+    it('saves a new provider whose save leaves enabled out as off', async () => {
+      const save = { provider: 'google', apiKey: 'g-key', enabled: undefined, defaultModel: 'gemini-2.5-pro' } as unknown as CloudProviderConfig;
+      await service.setProvider(save);
+
+      expect(configuration.setInferenceCloudProviders.mock.lastCall?.[0]).toEqual([expect.objectContaining({ provider: 'google', enabled: false })]);
+    });
   });
 
   it('answers only once the provider is in settings.json', async () => {

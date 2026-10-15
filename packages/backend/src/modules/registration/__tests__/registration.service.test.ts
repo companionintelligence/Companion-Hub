@@ -495,14 +495,18 @@ describe('RegistrationService', () => {
       const result = await (service as any).checkRegistrationWithCloud();
 
       expect(result).toBe(true);
-      expect(setupSpy).toHaveBeenCalledWith('org-123', {
-        organization_name: 'Test Org',
-        tunnel_id: 'tunnel-123',
-        tunnel_token: 'token-123',
-        subdomain: 'hub-test-org',
-        slug: 'test-org',
-        domain: 'example.com',
-      });
+      expect(setupSpy).toHaveBeenCalledWith(
+        'org-123',
+        {
+          organization_name: 'Test Org',
+          tunnel_id: 'tunnel-123',
+          tunnel_token: 'token-123',
+          subdomain: 'hub-test-org',
+          slug: 'test-org',
+          domain: 'example.com',
+        },
+        expect.any(AbortSignal),
+      );
     });
   });
 
@@ -861,6 +865,7 @@ describe('RegistrationService', () => {
           slug: 'paired-org',
           domain: 'companionintelligence.com',
         }),
+        expect.any(AbortSignal),
       );
       setupSpy.mockRestore();
     });
@@ -942,8 +947,8 @@ describe('RegistrationService', () => {
         { pairing_code: 'ABC123', device_id: 'test-device', device_key: 'stored-device-key', move_key: 'stored-move-key' },
         expect.objectContaining({ headers: { 'Content-Type': 'application/json' } }),
       );
-      expect(configService.setFileOnlySettings).toHaveBeenCalledWith({ ciHubApiKey: 'key-pair' });
-      expect(configService.setFileOnlySettings).toHaveBeenCalledWith({ ciHubMoveKey: 'move-pair' });
+      // One write: a reset between two would keep the new device key beside a stale move key.
+      expect(configService.setFileOnlySettings).toHaveBeenCalledWith({ ciHubApiKey: 'key-pair', ciHubMoveKey: 'move-pair' });
 
       setupSpy.mockRestore();
     });
@@ -1639,7 +1644,7 @@ describe('RegistrationService', () => {
       expect(result.success).toBe(true);
       expect(result.domain).toBe('companionintelligence.com');
       expect(configService.setDomain).toHaveBeenCalledWith('companionintelligence.com');
-      expect(setupSpy).toHaveBeenCalledWith('org-cb', expect.objectContaining({ domain: 'companionintelligence.com' }));
+      expect(setupSpy).toHaveBeenCalledWith('org-cb', expect.objectContaining({ domain: 'companionintelligence.com' }), expect.any(AbortSignal));
       setupSpy.mockRestore();
     });
 

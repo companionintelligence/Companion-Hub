@@ -12,6 +12,7 @@ import { AuthGuard } from '@/modules/auth/auth.guard';
 import { HubSessionGuard } from '@/modules/auth/hub-session.guard';
 import { HubManagerGuard } from '@/modules/auth/hub-manager.guard';
 import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
+import { isDirectLoopbackRequest } from '@/modules/auth/portal-sso';
 
 interface RegisterDeviceDto {
   organization_id: string;
@@ -212,41 +213,29 @@ export class RegistrationController {
       throw new ForbiddenException('This registration link is not valid any more. Start pairing again from this Hub.');
     }
 
-    /*
-     * A nonce is minted by an unauthenticated route, so on its own it does not
-     * stop someone who can reach this port from starting a registration and
-     * finishing it. Re-registering a Hub that is already serving is
-     * `resetRegistration`'s job.
-     *
-     * A Hub degraded by a missing tunnel token is excluded: it is registered,
-     * but pairing again is how it recovers, and the headless setup service
-     * finishes that pairing here.
-     */
-    if (await this.registrationService.isRegisteredAndServing()) {
-      this.logger.warn('Rejected registration callback: this Hub is already registered');
-
-      throw new ForbiddenException('This Hub is already registered. Reset its registration from Settings before pairing it again.');
-    }
-
     return this.completeRegistrationCallback(body);
   }
 
   /**
-   * Deprecated. Kept because the CI-OS headless setup service still uses it:
+   * Deprecated. Kept because the CI-OS headless setup service on appliances
+   * imaged before it moved to the POST still uses it:
    * `/opt/setup-backend/setup_service.py` forwards the cloud's registration
    * response to `http://127.0.0.1:5002/api/registration/callback` as a GET once
-   * the Hub is running, so removing this route strands every appliance that
-   * pairs from the setup portal.
+   * the Hub is running, so removing this route strands those appliances when
+   * they pair from the setup portal. Newer images send the POST and fall back
+   * to this only when the Hub answers 404 or 405.
    *
    * It carries `api_key` and `tunnel_token` in the query string, where they
-   * reach request logs, so it takes no nonce and gains no guard only because
-   * that caller cannot supply one yet. Migrate CI-OS to the POST above, then
-   * delete this; the warning below is how we tell when nothing calls it.
+   * reach request logs. Its caller cannot supply a nonce, so it answers only a
+   * request made on this Hub's own machine. Like the POST, it refuses a Hub that
+   * is already registered. Delete it once no appliance runs the GET-only setup
+   * service; the warning below is how we tell when nothing calls it.
    */
   @Get('callback')
   @ApiOperation({ summary: 'Handle registration callback from CI Cloud (deprecated GET form — use POST)' })
   @ApiResponse({ status: 200, description: 'Registration completed successfully' })
   @ApiResponse({ status: 400, description: 'Invalid callback data' })
+  @ApiResponse({ status: 403, description: "Not sent on this Hub's loopback address, or the Hub is already registered" })
   async handleCallback(
     @Req() req: Request,
     @Query('device_id') deviceId: string,
@@ -259,6 +248,19 @@ export class RegistrationController {
     @Query('api_key') apiKey: string,
     @Query('domain') domain: string,
   ) {
+    /*
+     * The setup service calls the published port from the host, so the Hub sees it arrive from a
+     * bridge gateway with `Host: 127.0.0.1:5002`, which `isDirectLoopbackRequest` admits. That check
+     * keeps out the tunnel and Traefik. It is not authentication, so the registered check in
+     * `completeRegistrationCallback` still applies.
+     */
+    if (!isDirectLoopbackRequest(req)) {
+      this.logger.warn(`Rejected deprecated GET registration callback from ${req.ip ?? 'unknown'}: not sent on this Hub's loopback address`);
+
+      throw new ForbiddenException('This callback is only accepted from this Hub itself. Pair this Hub from its pairing page instead.');
+    }
+
+    // After the refusal above, so a probe from the LAN does not read as a caller still on the GET.
     this.logger.warn(`Deprecated GET /registration/callback used by ${req.ip ?? 'unknown'} — migrate this caller to POST /registration/callback`);
 
     return this.completeRegistrationCallback({
@@ -302,6 +304,20 @@ export class RegistrationController {
 
     if (missing) {
       return missing;
+    }
+
+    /*
+     * Neither route's gate proves who sent the callback. The POST's nonce is minted by an
+     * unauthenticated route and the GET's loopback check is not authentication. So both refuse a
+     * Hub that is already serving, since re-registering one is `resetRegistration`'s job.
+     *
+     * A Hub degraded by a missing tunnel token is excluded. It is registered, but pairing again is
+     * how it recovers. The headless setup service finishes that pairing here.
+     */
+    if (await this.registrationService.isRegisteredAndServing()) {
+      this.logger.warn('Rejected registration callback: this Hub is already registered');
+
+      throw new ForbiddenException('This Hub is already registered. Reset its registration from Settings before pairing it again.');
     }
 
     return this.registrationService.completeRegistrationFromCallback({

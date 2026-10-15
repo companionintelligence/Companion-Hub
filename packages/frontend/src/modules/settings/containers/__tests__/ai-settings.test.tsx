@@ -164,6 +164,13 @@ vi.mock('@/modules/onboarding/components/ai-setup/cloud-provider-card', () => ({
       >
         clear
       </button>
+      <button
+        type="button"
+        data-testid="remove-cloud-urls"
+        onClick={() => onUpdate(providers.map((provider: any) => (provider.baseUrl ? { ...provider, removed: true } : provider)))}
+      >
+        remove
+      </button>
     </div>
   ),
 }));
@@ -961,6 +968,43 @@ describe('AiSettingsContainer', () => {
     await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
     expect(saveCloudProviderConfig).toHaveBeenCalledWith({ provider: 'openai', enabled: true });
     expect(removeCloudProviderConfig).not.toHaveBeenCalled();
+  });
+
+  // Settings sends no URL, so a provider set to another server without a key had no way back to the
+  // provider's own server short of the API.
+  describe('a provider set to another server without a key', () => {
+    const keyless = { provider: 'anthropic', apiKey: '', enabled: true, baseUrl: 'https://llm-proxy.example.test/v1' };
+
+    it('is deleted when Remove was pressed', async () => {
+      fetchConfiguredCloudProviders.mockResolvedValue([keyless]);
+
+      const user = userEvent.setup();
+      renderAiSettings();
+      await waitFor(() => expect(screen.getByTestId('cloud-providers-held')).toHaveTextContent('anthropic'));
+
+      await user.click(screen.getByTestId('remove-cloud-urls'));
+      await user.click(screen.getByTestId('ai-settings-save-btn'));
+      await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+      await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+      expect(removeCloudProviderConfig).toHaveBeenCalledWith('anthropic');
+      expect(saveCloudProviderConfig).not.toHaveBeenCalled();
+    });
+
+    it('is left as it is by a save that did not touch it', async () => {
+      fetchConfiguredCloudProviders.mockResolvedValue([keyless]);
+
+      const user = userEvent.setup();
+      renderAiSettings();
+      await waitFor(() => expect(screen.getByTestId('cloud-providers-held')).toHaveTextContent('anthropic'));
+
+      await user.click(screen.getByTestId('ai-settings-save-btn'));
+      await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+      await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalled());
+      expect(removeCloudProviderConfig).not.toHaveBeenCalled();
+      expect(saveCloudProviderConfig).not.toHaveBeenCalled();
+    });
   });
 
   it('shows rescan error toast and skips profile refresh when rescan returns non-OK', async () => {

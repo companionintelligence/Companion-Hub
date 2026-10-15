@@ -128,6 +128,23 @@ describe('McpAdminService', () => {
 
       expect(await service.callTool('restart', {}, false, asOperator)).toEqual({ ok: true, result: { restarted: true } });
     });
+
+    it('runs a Hub-wide tool only when the check it is handed lets the person through', async () => {
+      const pull = vi.fn(async () => ({ pulled: true }));
+      registry.register({ ...readTool('hub_pull_model'), access: 'write' as const, hubWide: true, handler: pull });
+
+      const allowed = await service.callTool('hub_pull_model', {}, false, asOperator, async () => undefined);
+      expect(allowed).toEqual({ ok: true, result: { pulled: true } });
+
+      const refused = await service.callTool('hub_pull_model', {}, false, asOperator, async () => {
+        throw new TranslatableError('HUB_MANAGE_ROLE_REQUIRED', {}, HttpStatus.FORBIDDEN);
+      });
+      expect(refused).toEqual({ ok: false, error: 'HUB_MANAGE_ROLE_REQUIRED' });
+
+      // With no check handed in, nobody passes.
+      expect(await service.callTool('hub_pull_model', {}, false, asOperator)).toEqual({ ok: false, error: 'HUB_MANAGE_ROLE_REQUIRED' });
+      expect(pull).toHaveBeenCalledTimes(1);
+    });
   });
 
   /*

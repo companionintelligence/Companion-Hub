@@ -546,11 +546,29 @@ On save the Hub:
 AI apps that want these tokens must read the `CI_CLOUD_*` contract (or `hub_integration.inference`
 plus the extra env). See the tracking issue on marketplace / OpenClaw / Hermes.
 
+`GET /api/inference/cloud-providers` and the MCP tool `hub_get_cloud_providers` report `configured`
+in place of a key. They report a provider's `baseUrl` only when that names another server than the
+provider's own, and then only its address and path. Nothing written before the host or after the
+path is shown, since a secret can sit there. Only the POST and the MCP tool
+`hub_set_cloud_provider` can set one, since Settings > AI sends no URL. Settings shows that URL on
+the provider's card, because a key entered there goes to it. It also lists such a provider when it
+holds no key, with **Remove** to delete its settings, URL included.
+
 A blank key in the POST keeps the stored one, so a key is removed with
 `DELETE /api/inference/cloud-providers/:provider`. It forgets the provider, key included, in memory
 and in `settings.json`, and requests the same AI app refresh as a save. Settings > AI calls it on
 save for a provider whose stored key was cleared, by hand or with its **Remove** button. The card
 shows **On** or **Off** for a provider that holds a key.
+
+A stored key belongs to the server it was saved for, as the vLLM key does. A POST, or a call to the
+MCP tool `hub_set_cloud_provider`, whose `baseUrl` names another server drops the stored key unless
+it sends a new one. The provider then reads as not configured until it gets a key for that server.
+The Hub logs `Dropped the stored <provider> key` when that happens, since the save still answers
+success.
+
+A save with a `provider` other than those four, or with a field of the wrong type, is refused: the
+POST answers 400 and the MCP tool returns an error. `apiKey`, `baseUrl` and `defaultModel` are
+strings and `enabled` is a boolean. A save that leaves `enabled` out keeps the stored value.
 
 ## App inference handout
 
@@ -897,6 +915,32 @@ stored at sign-in, as `GET /custom-apps/access` does for custom apps. Settings h
 Network, AI, MCP and Logs tabs from a member, and the Hub-wide controls on Settings, Security and System.
 A member skips the device wizard: `GET /api/app-context` reports `hasCompletedOnboarding: true` for
 someone `hubManageHint` turns down, as it does for a later operator whose wizard already ran.
+
+### Hub-wide MCP tools
+
+An MCP tool whose HTTP route carries the guard is marked `hubWide` in its registration: the model pull,
+load, unload, pin and unpin tools, `hub_set_cloud_provider`, `hub_set_auto_updates`, `hub_perform_update`,
+the app store add, update, delete and pull tools and `hub_get_hub_logs`. `destructive-tools.test.ts`
+lists every route that carries the guard with the tools that do what it does. It fails when a guarded
+route is missing from that list. A new tool that does what a guarded route does goes there and is
+marked `hubWide`.
+
+Before one runs for an `/api/mcp` key, the registry asks the guard's question about the person who
+created the key (`assertMcpKeyMayManageHub`, which calls `hubManageVerdictFor`) on every call, with the
+guard's answers. The claimer, owners and admins pass. A member gets 403 `HUB_MANAGE_ROLE_REQUIRED` and a
+role the Portal can't confirm gets 503 `HUB_MANAGE_ROLE_UNVERIFIED`. A claimer whose access was revoked
+loses the claimer's pass. A managed app key or a key with no recorded creator (minted by the CLI, or
+before v0.2.70) has nobody to ask and gets 403 `HUB_MANAGE_KEY_REISSUE_REQUIRED`. The tool runner asks
+about the signed-in person.
+
+`tools/list` leaves these tools out for a key they would refuse. It reads the Hub's own records
+(`storedHubManageVerdictFor`): the claimer, the creator's revoked access and the role stored for the
+creator at sign-in or at the hourly membership check. Listing never asks the Portal; with no role stored,
+the tools are listed and the call decides. The 2026-07-28 handler builds a server per request with only
+the tools the key may list, so there a left-out tool is unknown to `tools/call` too. A creator promoted
+since their role was stored waits there for their next sign-in or the hourly membership check. The key
+list in Security settings marks the keys these tools refuse (`hubWideBlocked` on `GET /api/api-keys`),
+from the same records.
 
 `GET /api/app-context` reports the settings named in `APP_CONTEXT_SETTINGS` (`app.dto.ts`) and nothing
 else, so no key reaches it: not the Portal device or move key, the vLLM key or the cloud provider keys.

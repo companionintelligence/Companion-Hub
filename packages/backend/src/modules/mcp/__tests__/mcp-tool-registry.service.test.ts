@@ -1,5 +1,7 @@
+import { HttpStatus } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { TranslatableError } from '@/common/error/translatable-error';
 import {
   DestructiveToolDisabledError,
   McpToolNotFoundError,
@@ -192,20 +194,88 @@ describe('McpToolRegistry', () => {
     });
 
     it('shows a read-only key read tools plus anything readable for some arguments', () => {
-      const names = registry.listToolsForCapability('read').map((tool) => tool.name);
+      const names = registry.listToolsForCapability('read', { mayManageHub: true }).map((tool) => tool.name);
       // 'proxy' is listed despite being 'write' statically: some of its calls are reads, and the
       // per-call gate decides. Dropping it would take away the half of the tool that is safe.
       expect(names).toEqual(['safe', 'proxy']);
     });
 
     it('hides statically destructive tools from a write key, but keeps argument-dependent ones', () => {
-      const names = registry.listToolsForCapability('write').map((tool) => tool.name);
+      const names = registry.listToolsForCapability('write', { mayManageHub: true }).map((tool) => tool.name);
       expect(names).toEqual(['safe', 'mutate', 'proxy']);
       expect(names).not.toContain('danger');
     });
 
     it('shows a full key everything', () => {
-      expect(registry.listToolsForCapability('full')).toHaveLength(4);
+      expect(registry.listToolsForCapability('full', { mayManageHub: true })).toHaveLength(4);
+    });
+  });
+
+  // A Hub-wide tool is the MCP form of a route behind HubManagerGuard: only someone who may manage the
+  // Hub may run it, and the caller says who that is through `assertMayManageHub`.
+  describe('Hub-wide tools', () => {
+    let pulled: number;
+    const refusal = new TranslatableError('HUB_MANAGE_ROLE_REQUIRED', { tool: 'hub_wide_write' }, HttpStatus.FORBIDDEN);
+
+    beforeEach(() => {
+      pulled = 0;
+      registry.register(readTool('safe'));
+      registry.register({ ...readTool('hub_wide_read', { lines: [] }), hubWide: true });
+      registry.register({
+        ...writeTool('hub_wide_write'),
+        hubWide: true,
+        handler: async () => {
+          pulled += 1;
+          return { changed: true };
+        },
+      });
+    });
+
+    it('asks the check with the tool name, then runs the tool', async () => {
+      const assertMayManageHub = vi.fn(async () => undefined);
+
+      await expect(registry.callTool('hub_wide_write', {}, { capability: 'write', assertMayManageHub })).resolves.toEqual({ changed: true });
+      expect(assertMayManageHub).toHaveBeenCalledWith('hub_wide_write');
+    });
+
+    it("passes the check's refusal on and never runs the tool", async () => {
+      const assertMayManageHub = vi.fn(async () => Promise.reject(refusal));
+
+      await expect(registry.callTool('hub_wide_write', {}, { capability: 'write', assertMayManageHub })).rejects.toBe(refusal);
+      expect(pulled).toBe(0);
+    });
+
+    it('refuses every Hub-wide tool, reads included, when no check is supplied', async () => {
+      await expect(registry.callTool('hub_wide_write', {}, { capability: 'full' })).rejects.toMatchObject({
+        message: 'HUB_MANAGE_ROLE_REQUIRED',
+        status: HttpStatus.FORBIDDEN,
+      });
+      await expect(registry.callTool('hub_wide_read', {}, { capability: 'full' })).rejects.toMatchObject({ message: 'HUB_MANAGE_ROLE_REQUIRED' });
+      expect(pulled).toBe(0);
+    });
+
+    it("tells a key its capability doesn't reach the tool before asking about its creator", async () => {
+      const assertMayManageHub = vi.fn(async () => undefined);
+
+      await expect(registry.callTool('hub_wide_write', {}, { capability: 'read', assertMayManageHub })).rejects.toThrow(WriteToolDeniedError);
+      expect(assertMayManageHub).not.toHaveBeenCalled();
+    });
+
+    it('never asks about a tool that is not Hub-wide', async () => {
+      const assertMayManageHub = vi.fn(async () => Promise.reject(refusal));
+
+      await expect(registry.callTool('safe', {}, { capability: 'read', assertMayManageHub })).resolves.toEqual({ ok: true });
+      expect(assertMayManageHub).not.toHaveBeenCalled();
+    });
+
+    it('lists the Hub-wide tools only for a caller who may manage the Hub', () => {
+      expect(registry.listToolsForCapability('write', { mayManageHub: true }).map((tool) => tool.name)).toEqual([
+        'safe',
+        'hub_wide_read',
+        'hub_wide_write',
+      ]);
+      expect(registry.listToolsForCapability('write', { mayManageHub: false }).map((tool) => tool.name)).toEqual(['safe']);
+      expect(registry.listToolsForCapability('read', { mayManageHub: true }).map((tool) => tool.name)).toEqual(['safe', 'hub_wide_read']);
     });
   });
 

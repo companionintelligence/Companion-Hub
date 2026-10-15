@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import type { CuratedModel, HardwareProfile } from '@ci-hub/common/types';
 import type { LifecycleActorFor } from '@/core/portal/lifecycle-actor';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { ApiKeyContext } from '@/modules/api-keys/api-key.service';
 import { HardwareInspectorService } from '@/modules/inference/hardware-inspector.service';
@@ -23,17 +24,19 @@ const asKey = <T>(key: ApiKeyContext, fn: () => Promise<T>) => mcpCallContext.ru
 /** A signed-in operator's run from the Hub UI's tool runner. */
 const asOperator = <T>(fn: () => Promise<T>) => mcpAdminCallContext.run((() => ({ kind: 'operator' })) as unknown as LifecycleActorFor, fn);
 
+const callTool = (registry: McpToolRegistry, name: string, params: Record<string, unknown>) => {
+  const tool = registry.getTool(name);
+  if (!tool) throw new Error(`${name} is not registered`);
+  return tool.handler(params);
+};
+
 describe('InferenceTools — loading and pinning', () => {
   let registry: McpToolRegistry;
   let router: MockProxy<InferenceRouterService>;
   let modelRegistry: MockProxy<ModelRegistryService>;
   let memoryManager: MockProxy<MemoryManagerService>;
 
-  const call = (name: string, params: Record<string, unknown>) => {
-    const tool = registry.getTool(name);
-    if (!tool) throw new Error(`${name} is not registered`);
-    return tool.handler(params);
-  };
+  const call = (name: string, params: Record<string, unknown>) => callTool(registry, name, params);
 
   beforeEach(() => {
     registry = new McpToolRegistry();
@@ -115,5 +118,49 @@ describe('InferenceTools — loading and pinning', () => {
         message: 'gemma4-e4b is not downloaded on this node; pull it first',
       });
     });
+  });
+});
+
+// The schema requires `apiKey`, so a call that means "keep the stored key" sends an empty string. That
+// keeps the key only while the provider stays on the server it was saved for, as a REST save does.
+describe('InferenceTools: hub_set_cloud_provider', () => {
+  let registry: McpToolRegistry;
+  let cloudFallback: CloudFallbackService;
+
+  const call = (name: string, params: Record<string, unknown>) => callTool(registry, name, params);
+
+  beforeEach(() => {
+    registry = new McpToolRegistry();
+    const configuration = mock<ConfigurationService>();
+    configuration.getInferenceCloudProviders.mockReturnValue([{ provider: 'openai', apiKey: 'sk-saved', enabled: true, defaultModel: 'gpt-4o' }]);
+    configuration.setInferenceCloudProviders.mockResolvedValue([]);
+    cloudFallback = new CloudFallbackService(mock<LoggerService>(), configuration);
+    cloudFallback.onModuleInit();
+    new InferenceTools(
+      mock<LoggerService>(),
+      registry,
+      mock<HardwareInspectorService>(),
+      mock<ModelRegistryService>(),
+      mock<MemoryManagerService>(),
+      mock<ModelPullerService>(),
+      mock<InferenceRouterService>(),
+      cloudFallback,
+      mock<InferenceBackendRegistry>(),
+    ).onModuleInit();
+  });
+
+  it('keeps the stored key for an empty apiKey that leaves the base URL alone', async () => {
+    await asKey(HERMES_KEY, () => call('hub_set_cloud_provider', { provider: 'openai', apiKey: '', enabled: false }));
+
+    expect(cloudFallback.getProvider('openai')).toMatchObject({ apiKey: 'sk-saved', enabled: false });
+  });
+
+  it('drops the stored key for an empty apiKey with a base URL on another server', async () => {
+    await asKey(HERMES_KEY, () =>
+      call('hub_set_cloud_provider', { provider: 'openai', apiKey: '', enabled: true, baseUrl: 'https://proxy.example.test/v1' }),
+    );
+
+    expect(cloudFallback.getProvider('openai')?.apiKey).toBeUndefined();
+    await expect(call('hub_get_cloud_providers', {})).resolves.toEqual([expect.objectContaining({ provider: 'openai', configured: false })]);
   });
 });

@@ -223,6 +223,24 @@ export type AcknowledgeWelcomeBody = {
     allowErrorMonitoring: boolean;
 };
 
+export type ApiKeyListDto = {
+    keys: Array<{
+        id: number;
+        name: string;
+        prefix: string;
+        scopes: Array<string>;
+        capability: 'read' | 'write' | 'full';
+        managed: boolean;
+        ownerAppUrn: string;
+        expiresAt: string;
+        lastUsedAt: string;
+        createdAt: string;
+        createdByUserId: number;
+        createdByUsername: string;
+        hubWideBlocked: 'app-key' | 'no-creator' | 'creator-role';
+    }>;
+};
+
 export type CreateApiKeyBody = {
     name: string;
     capability: 'read' | 'write' | 'full';
@@ -2629,6 +2647,10 @@ export type HandleCallbackErrors = {
      * Invalid callback data
      */
     400: unknown;
+    /**
+     * Not sent on this Hub's loopback address, or the Hub is already registered
+     */
+    403: unknown;
 };
 
 export type HandleCallbackResponses = {
@@ -2764,8 +2786,10 @@ export type ListKeysData = {
 };
 
 export type ListKeysResponses = {
-    200: unknown;
+    default: ApiKeyListDto;
 };
+
+export type ListKeysResponse = ListKeysResponses[keyof ListKeysResponses];
 
 export type CreateKeyData = {
     body: CreateApiKeyBody;

@@ -34,6 +34,7 @@ import { RegistrationService } from '@/modules/registration/registration.service
 import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
 import { LinksService } from '@/modules/links/links.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 
 describe('McpModule', () => {
   it('should compile as a standalone NestJS module without the full application', async () => {
@@ -72,6 +73,7 @@ describe('McpModule', () => {
         { provide: LinksService, useValue: mock<LinksService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
         { provide: ApiKeyService, useValue: mock<ApiKeyService>() },
+        { provide: MarketplaceWhoIsService, useValue: mock<MarketplaceWhoIsService>() },
       ],
     }).compile();
 

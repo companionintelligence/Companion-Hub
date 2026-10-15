@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
+import { TranslatableError } from '@/common/error/translatable-error';
 import type { ApiKeyCapability } from '@/modules/api-keys/api-key.capabilities';
 
 export interface McpToolDefinition {
@@ -48,6 +49,14 @@ export interface McpToolDefinition {
    * case is a write. When present it OVERRIDES the static `access` field for the gate decision.
    */
   isReadOnly?: (params: Record<string, unknown>) => boolean;
+  /**
+   * Marks a tool that changes what applies to the whole Hub, or reads the Hub's own log: one whose HTTP
+   * route carries `HubManagerGuard`, so a member may not use it. Before one runs,
+   * {@link McpToolRegistry.callTool} asks {@link CallToolOptions.assertMayManageHub}. `tools/list`
+   * leaves it out for a caller who can't use it. A separate axis from `access`: `hub_get_hub_logs` only
+   * reads but still takes an owner or admin.
+   */
+  hubWide?: true;
 }
 
 /** The MCP wire shape for a tool in a `tools/list` response — the public subset of a definition
@@ -128,6 +137,14 @@ export interface CallToolOptions {
    * agent-facing MCP endpoint never sets it (a key's own capability decides).
    */
   allowDestructive?: boolean;
+  /**
+   * Asked, with the tool's name, before a Hub-wide tool ({@link McpToolDefinition.hubWide}) runs. It
+   * throws the refusal when the caller may not change what applies to the whole Hub. Absent, every
+   * Hub-wide tool is refused, the way a missing capability fails closed to 'read'. The agent endpoint
+   * asks about the key's creator (`assertMcpKeyMayManageHub`), the admin tool runner about the
+   * signed-in person.
+   */
+  assertMayManageHub?: (toolName: string) => Promise<void>;
 }
 
 @Injectable()
@@ -149,9 +166,12 @@ export class McpToolRegistry {
     return Array.from(this.tools.values());
   }
 
-  /** The tools a capability can reach — what `tools/list` returns for a given key. */
-  listToolsForCapability(capability: ApiKeyCapability): McpToolDefinition[] {
-    return this.listTools().filter((tool) => isToolVisibleToCapability(tool, capability));
+  /**
+   * The tools a capability can reach: what `tools/list` returns for a given key. `mayManageHub` says
+   * whether the Hub-wide ones stay in; it is required so that a caller that forgot to ask lists none.
+   */
+  listToolsForCapability(capability: ApiKeyCapability, { mayManageHub }: { mayManageHub: boolean }): McpToolDefinition[] {
+    return this.listTools().filter((tool) => isToolVisibleToCapability(tool, capability) && (mayManageHub || !tool.hubWide));
   }
 
   hasTool(name: string): boolean {
@@ -163,10 +183,11 @@ export class McpToolRegistry {
   }
 
   /**
-   * Invoke a registered tool. Throws {@link McpToolNotFoundError} for an unknown name,
-   * {@link DestructiveToolDisabledError} when a destructive tool is called without permission, and
-   * {@link WriteToolDeniedError} when a mutating tool is called by a read-only key. Any other error
-   * is the tool handler's own failure and propagates to the caller for formatting.
+   * Invoke a registered tool. Throws {@link McpToolNotFoundError} for an unknown name and
+   * {@link DestructiveToolDisabledError} when a destructive tool is called without permission. A
+   * mutating tool called by a read-only key throws {@link WriteToolDeniedError}. A Hub-wide tool throws
+   * the Hub-wide routes' refusal when {@link CallToolOptions.assertMayManageHub} turns its caller away.
+   * Any other error is the tool handler's own failure and propagates to the caller for formatting.
    *
    * ISSUE-MCP-2's guarantee — a leaked key cannot wipe app data by default — now rests on the key's
    * own capability rather than an appliance-wide switch, so it holds per credential.
@@ -196,6 +217,14 @@ export class McpToolRegistry {
     // stronger fact (it is destructive), not just that it mutates.
     if (!readOnly && capability === 'read') {
       throw new WriteToolDeniedError(name);
+    }
+    // Last, so a key its capability already refuses is told that without a Portal call. The refusal is
+    // the one the Hub-wide routes give, naming the tool, as a grant refusal names its verb.
+    if (tool.hubWide) {
+      if (!opts.assertMayManageHub) {
+        throw new TranslatableError('HUB_MANAGE_ROLE_REQUIRED', { tool: name }, HttpStatus.FORBIDDEN);
+      }
+      await opts.assertMayManageHub(name);
     }
     return tool.handler(params);
   }
