@@ -58,7 +58,7 @@ interface Persisted {
 }
 
 /** The steps a pairing or a check-in can be held at. */
-type Step = 'portal pairs' | 'app sync held' | 'tunnel starts' | 'tunnel started' | 'row written' | 'check-in answers';
+type Step = 'portal pairs' | 'app sync held' | 'tunnel starts' | 'tunnel started' | 'row written' | 'check-in answers' | 'tunnel stops';
 
 /** Portal's answer to its `pairs`th pairing: the first gets the new keys, every later one the next. */
 const answerFor = (organizationId: string, pairs: number) => ({
@@ -244,6 +244,7 @@ describe('a registration reset that overtakes a pairing', () => {
       return { tunnelId: credentials.tunnelId, token: credentials.token };
     });
     cloudflare.stopTunnel.mockImplementation(async () => {
+      await pass('tunnel stops');
       tunnel.running = false;
       return true;
     });
@@ -537,6 +538,28 @@ describe('a registration reset that overtakes a pairing', () => {
     } finally {
       cleared.mockRestore();
     }
+  });
+
+  it('stops a pairing that starts while the reset is still running', async () => {
+    const hub = boot();
+    const hold = holdAt('tunnel stops');
+    const reset = resets['Settings > Reset registration'](hub);
+    await hold.reached;
+
+    // The reset has not yet removed the tunnel or registration.json. A pairing let through here would
+    // have them removed under it once the reset goes on.
+    await expect(hub.registration.pairDevice('ABC123')).resolves.toMatchObject({ success: false, message: expect.stringContaining('reset') });
+    hold.release();
+    await reset;
+    await settled();
+
+    expect(leftOn(hub)).toEqual(UNREGISTERED);
+    expect(portal.pairs).toBe(0);
+    expect(disk.settings).toEqual({ ciHubApiKey: OLD_DEVICE_KEY });
+
+    await expect(hub.registration.pairDevice('DEF456')).resolves.toMatchObject({ success: true });
+    await settled();
+    expect(leftOn(hub)).toEqual(REGISTERED);
   });
 
   it('lets a pairing started after the reset complete', async () => {

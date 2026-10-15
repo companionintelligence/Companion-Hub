@@ -312,14 +312,15 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    */
   private registrationGeneration = 0;
   /**
-   * Aborted, then replaced, by every registration reset. A pairing keeps the signal it started with
+   * Aborted when a registration reset starts and replaced once it has finished, so a pairing that
+   * starts while the reset runs is stopped as well. A pairing keeps the signal it started with
    * and checks it after each step, so a reset that lands while a pairing is still setting up wins:
    * the pairing writes nothing more of its registration and removes what its step under way left
    * (`undoOvertakenPairing`). It keeps only the keys Portal issued it (`pairingOvertaken`).
    */
   private pairingAbort = new AbortController();
   /**
-   * Moves on whenever keys Portal issued are saved, and when a reset also removes the device key (the
+   * Moves on whenever keys Portal issued are saved and when a reset also removes the device key (the
    * factory reset). A pairing a reset stopped saves the keys Portal issued it only while this is what
    * it was when that pairing asked for them. See `pairingOvertaken`.
    */
@@ -1384,13 +1385,31 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
 
     this.registrationGeneration++;
+    const overtaken = new Error('The registration was reset while this pairing was in progress');
     // In the same turn as the phase change below, so a pairing never sees one without the other.
-    this.pairingAbort.abort(new Error('The registration was reset while this pairing was in progress'));
-    this.pairingAbort = new AbortController();
+    this.pairingAbort.abort(overtaken);
     if (options?.removesDeviceKey) {
       this.deviceKeyEpoch++;
     }
 
+    try {
+      await this.clearLocalRegistration();
+    } finally {
+      // Replaced only now, so a pairing that began while this reset ran took an aborted signal and
+      // stops. With a fresh one it went on, and the steps of the reset after it removed its token, marker
+      // and cloudflared. Aborting again also stops one that took the signal a concurrent reset made.
+      this.pairingAbort.abort(overtaken);
+      this.pairingAbort = new AbortController();
+    }
+
+    this.logger.info('Device registration reset complete');
+
+    // Resume polling for the next registration.
+    this.pollRegistration();
+  }
+
+  /** What `resetRegistration` removes on this Hub. */
+  private async clearLocalRegistration(): Promise<void> {
     // Use `setPhase` for consistent logging. Reset to `unregistered` is always legal.
     await this.setPhase('unregistered');
     this.portalRejectedSince = null;
@@ -1410,20 +1429,16 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     await this.forgetCachedGrants();
 
     // Remove the tunnel token from disk.
-    const tokenPath = path.join(TUNNEL_DIR, 'token');
     try {
-      await fs.promises.unlink(tokenPath);
+      await fs.promises.unlink(tunnelTokenPath());
     } catch {
       // A missing token already satisfies the reset.
     }
 
     // Deleting the token does not disconnect a running `cloudflared`, which keeps
     // serving this Hub's hostname until its container stops. A failed stop is
-    // retried by the registration check that starts below.
-    if (!(await this.cloudflareClientService.stopTunnel())) {
-      this.tunnelStopPending = true;
-      this.tunnelCheckPending = true;
-    }
+    // retried by the registration check that `resetRegistration` starts next.
+    await this.stopTunnelOrRetryLater();
     await this.unmarkTunnelRegistered();
 
     // Remove the resolved environment so the next startup regenerates it.
@@ -1435,11 +1450,6 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
 
     await clearRehydrationState();
-
-    this.logger.info('Device registration reset complete');
-
-    // Resume polling for the next registration.
-    this.pollRegistration();
   }
 
   /**
@@ -1720,10 +1730,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
-   * Saves the device key Portal issued, and the move key it issued with it, in one write. A reset that
+   * Saves the device key Portal issued and the move key it issued with it in one write. A reset that
    * stopped a pairing between two writes would leave the new device key beside a stale move key.
    *
-   * The move key is kept in settings.json with the device key, and nowhere else: `AppHelpers` hands
+   * The move key is kept in settings.json with the device key and nowhere else: `AppHelpers` hands
    * first-party Memory the device key, never this, so a key leaked from an app cannot move this Hub.
    */
   private async saveIssuedKeys(keys: IssuedKeys): Promise<void> {
@@ -2107,16 +2117,20 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     if (this._currentPhase !== 'unregistered') {
       return;
     }
-    // As after the reset: a failed stop is retried by the registration check.
-    if (!(await this.cloudflareClientService.stopTunnel())) {
-      this.tunnelStopPending = true;
-      this.tunnelCheckPending = true;
-    }
+    await this.stopTunnelOrRetryLater();
 
     if (this._currentPhase !== 'unregistered') {
       return;
     }
     await this.unmarkTunnelRegistered();
+  }
+
+  /** Stops `cloudflared`. A failed stop is retried by the registration check. */
+  private async stopTunnelOrRetryLater(): Promise<void> {
+    if (!(await this.cloudflareClientService.stopTunnel())) {
+      this.tunnelStopPending = true;
+      this.tunnelCheckPending = true;
+    }
   }
 
   /**
@@ -2841,7 +2855,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         };
       }
 
-      // The optional device API key for authenticated Portal requests, and the move key Portal issued with it.
+      // The optional device API key for authenticated Portal requests and the move key Portal issued with it.
       const issued = { keys: { apiKey: data.apiKey, moveKey: data.moveKey }, keyEpoch };
       if (pairing.aborted) {
         return await this.pairingOvertaken(issued);
