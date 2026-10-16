@@ -12,7 +12,7 @@
 use std::sync::OnceLock;
 
 use regex::Regex;
-use tauri::{Runtime, Url, plugin::TauriPlugin};
+use tauri::{plugin::TauriPlugin, Runtime, Url};
 use tauri_plugin_opener::OpenerExt;
 
 /// Vite dev server from `tauri.conf.json` `build.devUrl`. `tauri dev` loads the
@@ -23,7 +23,8 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
     tauri::plugin::Builder::new("hub-webview-navigation")
         .on_navigation(|webview, url| {
             let current = webview.url().ok();
-            let hub_api_port = crate::port_manager::read_api_port(&crate::hub_manager::hub_env_path());
+            let hub_api_port =
+                crate::port_manager::read_api_port(&crate::hub_manager::hub_env_path());
             if stays_in_hub_webview(url, current.as_ref(), hub_api_port) {
                 return true;
             }
@@ -77,7 +78,10 @@ fn origins_match(target: &Url, current: &Url) -> bool {
 
 /// Hosts the webview itself uses for IPC and the asset protocol, not an app.
 fn is_shell_internal_host(host: &str) -> bool {
-    matches!(host, "ipc.localhost" | "tauri.localhost" | "asset.localhost")
+    matches!(
+        host,
+        "ipc.localhost" | "tauri.localhost" | "asset.localhost"
+    )
 }
 
 /// The Hub's own hostname: the label `hub` (`hub.ci.lan`) or a public label
