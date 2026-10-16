@@ -92,8 +92,8 @@
     "pngjs": "^7.0.0",
     "systeminformation": "^5.31.11",
     "turbo": "^2.11.7",
-    "vitest": "^5.0.3",
-    "zod": "^4.6.6"
+    "vitest": "^5.0.4",
+    "zod": "^4.6.7"
   },
   "private": false,
   "peerDependencies": {
