@@ -438,8 +438,8 @@ importers:
         specifier: ^0.7.2
         version: 0.7.2
       better-ajv-errors:
-        specifier: ^2.0.3
-        version: 2.0.3(ajv@8.20.0)
+        specifier: ^3.0.2
+        version: 3.0.2(ajv@8.20.0)
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -1317,9 +1317,9 @@ packages:
       zod:
         optional: true
 
-  '@humanwhocodes/momoa@2.0.4':
-    resolution: {integrity: sha512-RE815I4arJFtt+FVeU1Tgp9/Xvecacji8w/V6XtXsWWH/wz/eNkNbhb+ny/+PlVZjV0rxQpRSQKNKE3lcktHEA==}
-    engines: {node: '>=10.10.0'}
+  '@humanwhocodes/momoa@3.3.13':
+    resolution: {integrity: sha512-AbKq3EW41+HY6pNMJgAOrz68iyiTTf0Nr1JRHHfuG5zwniJ9Dw8J3U7oa1I2ptpqYwmEf1sXKOGK6lbdZ9eqmg==}
+    engines: {node: '>=18'}
 
   '@inquirer/ansi@1.0.2':
     resolution: {integrity: sha512-S8qNSZiYzFd0wAcyG5AXCvUHC5Sr7xpZ9wZ2py9XR88jUz8wooStVx5M6dRzczbBWjic9NP7+rY0Xi7qqK/aMQ==}
@@ -3841,9 +3841,9 @@ packages:
   bcrypt-pbkdf@1.0.2:
     resolution: {integrity: sha512-qeFIXtP4MSoi6NLqO12WfqARWWuCKi2Rn/9hJLEmtB5yTNr9DqFWkJRCf2qShWzPeAMRnOgCrq0sg/KLv5ES9w==}
 
-  better-ajv-errors@2.0.3:
-    resolution: {integrity: sha512-t1vxUP+vYKsaYi/BbKo2K98nEAZmfi4sjwvmRT8aOPDzPJeAtLurfoIDazVkLILxO4K+Sw4YrLYnBQ46l6pePg==}
-    engines: {node: '>= 18.20.6'}
+  better-ajv-errors@3.0.2:
+    resolution: {integrity: sha512-2VHXZZa5pNA9GcQwk/wmgfUpmtVm0JzUgA/H1IrFSbZsuJV/8OzdIzUpIusjlNWS2Mzl2sa+uiS1qZImG6V9xw==}
+    engines: {node: '>= 22'}
     peerDependencies:
       ajv: 4.11.8 - 8
 
@@ -6937,8 +6937,8 @@ packages:
     resolution: {integrity: sha512-3hu+tD8YzSLGuFYtPRb48vdhKMi0KQV5sn+uWr8+7dMEq/2G/dtLrdDinkLjqq5TIbIBjYJ4Ax/n3YiaW7QM8A==}
     engines: {node: 20 || >=22}
 
-  watchpack@2.6.1:
-    resolution: {integrity: sha512-8mk/LnXpQAiM2xKZhTkxikwly5GhL2Z+DWiLTkMa/E1Nfv9zURhHgiFyWvM4BWqW+LjIgL2AIS7JntEUx6v3vQ==}
+  watchpack@2.5.2:
+    resolution: {integrity: sha512-6i/00NBjP4yGPs+caKSyRfpTF/8Torsu0MOW3mMzIbhgISFder8i7xbqgHlLMwJrdiN8ndBV3UA1/AfzPSr+jg==}
     engines: {node: '>=10.13.0'}
 
   web-namespaces@2.0.1:
@@ -7858,7 +7858,7 @@ snapshots:
       valibot: 1.4.2(typescript@7.0.2)
       zod: 4.6.6
 
-  '@humanwhocodes/momoa@2.0.4': {}
+  '@humanwhocodes/momoa@3.3.13': {}
 
   '@inquirer/ansi@1.0.2':
     optional: true
@@ -10055,12 +10055,10 @@ snapshots:
     dependencies:
       tweetnacl: 0.14.5
 
-  better-ajv-errors@2.0.3(ajv@8.20.0):
+  better-ajv-errors@3.0.2(ajv@8.20.0):
     dependencies:
-      '@babel/code-frame': 7.29.7
-      '@humanwhocodes/momoa': 2.0.4
+      '@humanwhocodes/momoa': 3.3.13
       ajv: 8.20.0
-      chalk: 4.1.2
       jsonpointer: 5.0.1
       leven: 3.1.0
 
@@ -13452,7 +13450,7 @@ snapshots:
 
   walk-up-path@4.0.0: {}
 
-  watchpack@2.6.1:
+  watchpack@2.5.2:
     dependencies:
       graceful-fs: 4.2.11
     optional: true
@@ -13502,7 +13500,7 @@ snapshots:
       schema-utils: 4.5.0
       tapable: 2.3.3
       terser-webpack-plugin: 5.6.1(@swc/core@1.16.18)(esbuild@0.25.0)(webpack@5.106.2(@swc/core@1.16.18)(esbuild@0.25.0))
-      watchpack: 2.6.1
+      watchpack: 2.5.2
       webpack-sources: 3.6.0
     transitivePeerDependencies:
       - '@minify-html/node'
