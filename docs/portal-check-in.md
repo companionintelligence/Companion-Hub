@@ -73,7 +73,7 @@ A Hub in `portal_rejected` or `tunnel_token_missing` accepts a new pairing witho
 
 `POST /api/registration/pair` needs no authentication for a Hub that is not registered, because a Hub being set up has nobody to sign in as. To pair a registered Hub again, the caller must be authenticated, the same as for `POST /api/registration/reset`. A Hub session, the host-local device key, and the CLI token all count, and so does a key on a Hub with no operator yet. `cihub register` sends the device key from `state/settings.json`. Without this check, anyone who can reach the Hub could pair it into their own organization, because the Hub sends its own device key to Portal as proof of possession.
 
-The registration callback accepts a pairing for `portal_rejected` and `tunnel_token_missing` only. It carries its own one-time nonce instead of a session.
+The registration callback accepts a pairing for `portal_rejected` and `tunnel_token_missing` only. It carries its own one-time nonce instead of a session. On a registered Hub it also needs someone who may manage the Hub (the operator who claimed it, an owner or admin, the CLI token or the host-local key) or a request sent from the Hub's own machine, which is how CI-OS's headless setup service sends it. When Portal can't confirm a person's role, the role the Hub stored at sign-in decides.
 
 Earlier builds read these answers differently. They deleted the local registration and tunnel token on any `400`, including a schema refusal, and treated a `401` as transient. A Hub on such a build whose key Portal rejects reports `cloud_validation_failed` after three check-ins and refuses to pair with `Device is already registered.`
 

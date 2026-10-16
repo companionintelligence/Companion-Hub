@@ -17,6 +17,12 @@ vi.mock('../public-reachability', async (importOriginal) => ({
   probePublicHostname: vi.fn(),
 }));
 
+// The Hub as it runs on an appliance: in a container whose default gateway is 172.18.0.1, where the
+// setup service's requests from the host arrive from.
+vi.mock('@/common/helpers/this-host-address', async (importOriginal) =>
+  (await import('@/tests/utils/appliance-host-address')).onAppliance(await importOriginal()),
+);
+
 describe('RegistrationController', () => {
   let controller: RegistrationController;
   let registrationService: MockProxy<RegistrationService>;
@@ -416,6 +422,13 @@ describe('RegistrationController', () => {
 
     it('refuses a request that was not sent on loopback, before reading the registration', async () => {
       await expect(callback(request('192.168.1.50', '192.168.1.10:5002'))).rejects.toThrow(ForbiddenException);
+
+      expect(registrationService.isRegisteredAndServing).not.toHaveBeenCalled();
+      expect(registrationService.completeRegistrationFromCallback).not.toHaveBeenCalled();
+    });
+
+    it('refuses a LAN machine that names a loopback host, before reading the registration', async () => {
+      await expect(callback(request('192.168.1.50', '127.0.0.1:5002'))).rejects.toThrow(ForbiddenException);
 
       expect(registrationService.isRegisteredAndServing).not.toHaveBeenCalled();
       expect(registrationService.completeRegistrationFromCallback).not.toHaveBeenCalled();

@@ -1315,5 +1315,56 @@ describe('MarketplaceWhoIsService', () => {
         await expect(service.hubManageHint(portalPushReq())).resolves.toBe(false);
       });
     });
+
+    /*
+     * Who may pair a registered Hub again through the registration callback. The Portal is asked
+     * first. A Hub whose device key it rejects gets no role from it for anyone, so then the role
+     * stored at sign-in decides.
+     */
+    describe('hubManageVerdictForRePairing', () => {
+      const withStoredRole = (orgRole: 'owner' | 'admin' | 'member' | null) =>
+        ({ hubSessionId: 'sess-1', user: { id: USER_ID, orgRole }, hubPrincipal: 'session' }) as unknown as Request;
+
+      it('lets through an owner the Portal confirms, whatever role is stored', async () => {
+        portal.whoisApps.mockResolvedValue(roleAnswer('owner'));
+
+        await expect(service.hubManageVerdictForRePairing(withStoredRole('member'))).resolves.toBe('allowed');
+      });
+
+      it('refuses a member the Portal confirms, whatever role is stored', async () => {
+        portal.whoisApps.mockResolvedValue(roleAnswer('member'));
+
+        await expect(service.hubManageVerdictForRePairing(withStoredRole('owner'))).resolves.toBe('refused');
+      });
+
+      it.each([
+        ['owner', 'allowed'],
+        ['admin', 'allowed'],
+        ['member', 'refused'],
+        [null, 'unknown'],
+      ] as const)('reads a stored %s as %s when the Portal rejects the device key', async (role, expected) => {
+        portal.whoisApps.mockResolvedValue(roleAnswer('owner', 401));
+
+        await expect(service.hubManageVerdictForRePairing(withStoredRole(role))).resolves.toBe(expected);
+      });
+
+      it('reads the stored role when the Portal cannot be reached', async () => {
+        portal.whoisApps.mockRejectedValue(new Error('ECONNREFUSED'));
+
+        await expect(service.hubManageVerdictForRePairing(withStoredRole('admin'))).resolves.toBe('allowed');
+        await expect(service.hubManageVerdictForRePairing(withStoredRole('member'))).resolves.toBe('refused');
+      });
+
+      it('lets the claiming operator, the CLI and the host-local key through but not the Portal push', async () => {
+        users.getFirstOperator.mockResolvedValue({ id: USER_ID } as never);
+        portal.whoisApps.mockRejectedValue(new Error('ECONNREFUSED'));
+
+        await expect(service.hubManageVerdictForRePairing(withStoredRole('member'))).resolves.toBe('allowed');
+        await expect(service.hubManageVerdictForRePairing(cliReq())).resolves.toBe('allowed');
+        await expect(service.hubManageVerdictForRePairing(hostLocalReq())).resolves.toBe('allowed');
+        await expect(service.hubManageVerdictForRePairing(portalPushReq())).resolves.toBe('refused');
+        await expect(service.hubManageVerdictForRePairing({} as Request)).resolves.toBe('refused');
+      });
+    });
   });
 });

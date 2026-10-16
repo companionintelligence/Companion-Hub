@@ -73,8 +73,17 @@ describe('registration callback guard', () => {
   it('a Hub re-pairing to restore its tunnel now completes the callback', async () => {
     withPhase('degraded', ['tunnel_token_missing']);
     const nonce = service.mintCallbackNonce();
+    // Sent on the Hub's own machine, as the headless setup service sends it. Who else may send it is
+    // in registration-callback-re-pairing.test.ts.
+    const fromThisHost = {
+      ip: '127.0.0.1',
+      socket: { remoteAddress: '127.0.0.1' },
+      headers: { host: '127.0.0.1:5002' },
+      protocol: 'http',
+      get: () => '127.0.0.1:5002',
+    };
 
-    await expect(controller.handleCallbackPost(BODY, nonce)).resolves.toEqual({ success: true });
+    await expect(controller.handleCallbackPost(BODY, nonce, fromThisHost as any)).resolves.toEqual({ success: true });
   });
 
   it('a Hub that is up and serving is still refused', async () => {

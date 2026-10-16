@@ -1,4 +1,5 @@
 import { Body, Controller, ForbiddenException, Get, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import type { Request } from 'express';
 import { RegistrationService } from './registration.service';
 import type { RegistrationPhaseReport } from './registration-state';
@@ -10,9 +11,9 @@ import { ApiTags, ApiOperation, ApiQuery, ApiResponse } from '@nestjs/swagger';
 import { isLocalHostname, isPrivateOrLocalIp } from '@/common/helpers/ip-address';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { HubSessionGuard } from '@/modules/auth/hub-session.guard';
-import { HubManagerGuard } from '@/modules/auth/hub-manager.guard';
+import { HubManagerGuard, resolveWhoisService } from '@/modules/auth/hub-manager.guard';
 import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
-import { isDirectLoopbackRequest } from '@/modules/auth/portal-sso';
+import { isRequestFromThisHost } from '@/modules/auth/portal-sso';
 
 interface RegisterDeviceDto {
   organization_id: string;
@@ -48,6 +49,9 @@ export class RegistrationController {
     private readonly registrationService: RegistrationService,
     private readonly config: ConfigurationService,
     private readonly logger: LoggerService,
+    // Optional only to TypeScript, for the tests that build this controller by hand to reset a Hub.
+    // Nest always injects it. Without it the callback finds no WhoIs service to ask about the caller.
+    private readonly moduleRef?: ModuleRef,
   ) {}
 
   /**
@@ -187,8 +191,8 @@ export class RegistrationController {
   @ApiQuery({ name: 'state', required: false, description: 'Registration nonce from `callback_url`; may also be sent in the body.' })
   @ApiResponse({ status: 200, description: 'Registration completed successfully' })
   @ApiResponse({ status: 400, description: 'Invalid callback data' })
-  @ApiResponse({ status: 403, description: 'No valid registration nonce, or the Hub is already registered' })
-  async handleCallbackPost(@Body() body: RegistrationCallbackDto, @Query('state') stateQuery?: string) {
+  @ApiResponse({ status: 403, description: 'No valid registration nonce, or the Hub is registered and the caller may not pair it again' })
+  async handleCallbackPost(@Body() body: RegistrationCallbackDto, @Query('state') stateQuery?: string, @Req() req?: Request) {
     // Check the shape before spending the nonce, so a malformed callback does not
     // burn a one-time secret that costs another round trip through Portal.
     const missing = this.missingCallbackParams(body);
@@ -213,7 +217,7 @@ export class RegistrationController {
       throw new ForbiddenException('This registration link is not valid any more. Start pairing again from this Hub.');
     }
 
-    return this.completeRegistrationCallback(body);
+    return this.completeRegistrationCallback(body, req);
   }
 
   /**
@@ -235,7 +239,7 @@ export class RegistrationController {
   @ApiOperation({ summary: 'Handle registration callback from CI Cloud (deprecated GET form — use POST)' })
   @ApiResponse({ status: 200, description: 'Registration completed successfully' })
   @ApiResponse({ status: 400, description: 'Invalid callback data' })
-  @ApiResponse({ status: 403, description: "Not sent on this Hub's loopback address, or the Hub is already registered" })
+  @ApiResponse({ status: 403, description: "Not sent from this Hub's own machine, or the Hub is already registered" })
   async handleCallback(
     @Req() req: Request,
     @Query('device_id') deviceId: string,
@@ -249,13 +253,15 @@ export class RegistrationController {
     @Query('domain') domain: string,
   ) {
     /*
-     * The setup service calls the published port from the host, so the Hub sees it arrive from a
-     * bridge gateway with `Host: 127.0.0.1:5002`, which `isDirectLoopbackRequest` admits. That check
-     * keeps out the tunnel and Traefik. It is not authentication, so the registered check in
-     * `completeRegistrationCallback` still applies.
+     * The setup service calls the published port from the host, so the Hub sees it arrive from its
+     * container's gateway with `Host: 127.0.0.1:5002`. `isRequestFromThisHost` admits that and keeps
+     * out the tunnel, Traefik and other machines on the LAN. It is not authentication, so the rules
+     * in `completeRegistrationCallback` still apply.
      */
-    if (!isDirectLoopbackRequest(req)) {
-      this.logger.warn(`Rejected deprecated GET registration callback from ${req.ip ?? 'unknown'}: not sent on this Hub's loopback address`);
+    if (!isRequestFromThisHost(req)) {
+      this.logger.warn(
+        `Rejected deprecated GET registration callback from ${req.socket?.remoteAddress ?? 'unknown'}: not sent from this Hub's own machine`,
+      );
 
       throw new ForbiddenException('This callback is only accepted from this Hub itself. Pair this Hub from its pairing page instead.');
     }
@@ -263,17 +269,20 @@ export class RegistrationController {
     // After the refusal above, so a probe from the LAN does not read as a caller still on the GET.
     this.logger.warn(`Deprecated GET /registration/callback used by ${req.ip ?? 'unknown'} — migrate this caller to POST /registration/callback`);
 
-    return this.completeRegistrationCallback({
-      device_id: deviceId,
-      organization_id: organizationId,
-      organization_name: organizationName,
-      slug,
-      subdomain,
-      tunnel_id: tunnelId,
-      tunnel_token: tunnelToken,
-      api_key: apiKey,
-      domain,
-    });
+    return this.completeRegistrationCallback(
+      {
+        device_id: deviceId,
+        organization_id: organizationId,
+        organization_name: organizationName,
+        slug,
+        subdomain,
+        tunnel_id: tunnelId,
+        tunnel_token: tunnelToken,
+        api_key: apiKey,
+        domain,
+      },
+      req,
+    );
   }
 
   /** The fields a callback must carry, whichever route it arrives on. */
@@ -299,7 +308,7 @@ export class RegistrationController {
     return null;
   }
 
-  private async completeRegistrationCallback(body: RegistrationCallbackDto) {
+  private async completeRegistrationCallback(body: RegistrationCallbackDto, req: Request | undefined) {
     const missing = this.missingCallbackParams(body);
 
     if (missing) {
@@ -320,6 +329,28 @@ export class RegistrationController {
       throw new ForbiddenException('This Hub is already registered. Reset its registration from Settings before pairing it again.');
     }
 
+    /*
+     * A Hub that holds a registration but needs pairing again (`portal_rejected`,
+     * `tunnel_token_missing`) gets past the check above. A `portal_rejected` Hub keeps its tunnel.
+     * Pairing it again replaces its device key and tunnel, so it takes someone who may manage this
+     * Hub, or a request from this Hub's own machine, where the headless setup service runs with no
+     * session. An unregistered Hub has nobody to ask.
+     *
+     * The row counts as well as the phase (`holdsRegistration`). A Hub without its tunnel token reads
+     * `unregistered` in memory until boot restores the phase from the row. If that read fails it stays
+     * there, so the phase alone would skip this check.
+     */
+    const registered = (await this.registrationService.isRegistered()) || (await this.registrationService.holdsRegistration());
+    if (registered && !(await this.mayPairRegisteredHubAgain(req))) {
+      this.logger.warn(
+        `Rejected registration callback for a registered Hub from ${req?.socket?.remoteAddress ?? 'unknown'}: no owner or admin and not sent from this Hub's own machine`,
+      );
+
+      throw new ForbiddenException(
+        'This Hub is already registered. Sign in as an owner or admin to pair it again, or run `cihub register --code <code>` on the Hub itself.',
+      );
+    }
+
     return this.registrationService.completeRegistrationFromCallback({
       deviceId: body.device_id,
       organizationId: body.organization_id,
@@ -331,6 +362,25 @@ export class RegistrationController {
       slug: body.slug,
       domain: body.domain,
     });
+  }
+
+  /**
+   * Who may complete a callback for a Hub that is registered but needs pairing again: a request from
+   * this Hub's own machine, or someone `hubManageVerdictForRePairing` allows: the claiming operator,
+   * an owner or admin, the CLI or the host-local key. A member is refused.
+   */
+  private async mayPairRegisteredHubAgain(req: Request | undefined): Promise<boolean> {
+    if (!req) {
+      return false;
+    }
+
+    if (isRequestFromThisHost(req)) {
+      return true;
+    }
+
+    const whois = this.moduleRef ? resolveWhoisService(this.moduleRef) : null;
+
+    return (await whois?.hubManageVerdictForRePairing(req)) === 'allowed';
   }
 
   @Get('config')

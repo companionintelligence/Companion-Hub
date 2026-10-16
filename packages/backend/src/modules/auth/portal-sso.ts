@@ -3,6 +3,7 @@ import type { Request } from 'express';
 import axios from 'axios';
 import { describeNetworkError } from '@/common/helpers/network-error';
 import { internalOriginRefusal } from '@/common/helpers/request-origin';
+import { isThisHostAddress } from '@/common/helpers/this-host-address';
 import {
   buildPortalAxiosConfig,
   readPortalInternalUrlOverride,
@@ -99,6 +100,18 @@ export function isDirectLoopbackRequest(req: Request): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether a request came from this Hub's own machine: {@link isDirectLoopbackRequest}, on a socket
+ * whose peer is an address only this machine's connections arrive from (`isThisHostAddress`).
+ *
+ * `isDirectLoopbackRequest` alone admits a machine on the LAN, which has a private address and can
+ * name `127.0.0.1` in its Host header. The socket's address is read rather than `req.ip`, which
+ * `HUB_TRUST_PROXY` lets a header rewrite.
+ */
+export function isRequestFromThisHost(req: Request): boolean {
+  return isDirectLoopbackRequest(req) && isThisHostAddress(req.socket?.remoteAddress);
 }
 
 /**

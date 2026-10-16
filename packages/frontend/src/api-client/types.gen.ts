@@ -2648,7 +2648,7 @@ export type HandleCallbackErrors = {
      */
     400: unknown;
     /**
-     * Not sent on this Hub's loopback address, or the Hub is already registered
+     * Not sent from this Hub's own machine, or the Hub is already registered
      */
     403: unknown;
 };
@@ -2678,7 +2678,7 @@ export type HandleCallbackPostErrors = {
      */
     400: unknown;
     /**
-     * No valid registration nonce, or the Hub is already registered
+     * No valid registration nonce, or the Hub is registered and the caller may not pair it again
      */
     403: unknown;
 };

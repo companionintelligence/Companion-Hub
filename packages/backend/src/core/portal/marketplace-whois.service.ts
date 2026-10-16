@@ -409,6 +409,24 @@ export class MarketplaceWhoIsService {
     }
   }
 
+  /**
+   * {@link hubManageVerdict}, or, when the Portal can't say, the verdict from the role this Hub stored
+   * for the person ({@link storedHubManageVerdict}, read as {@link hubManageHint} reads it).
+   *
+   * For pairing a registered Hub again. A Hub whose device key the Portal rejects learns nobody's
+   * role from it. Pairing again is how that Hub recovers.
+   */
+  async hubManageVerdictForRePairing(req: HubPrincipalFields): Promise<HubManageVerdict> {
+    const verdict = await this.hubManageVerdict(req);
+    const userId = hubSessionOperatorUserId(req);
+
+    if (verdict !== 'unknown' || userId == null) {
+      return verdict;
+    }
+
+    return this.storedHubManageVerdict(userId, req.user?.orgRole);
+  }
+
   /** Refuse a request {@link hubManageVerdict} doesn't allow: 403 for a no, 503 when the Portal couldn't say. */
   async assertSessionMayManageHub(req: HubPrincipalFields): Promise<void> {
     assertHubManageAllowed(await this.hubManageVerdict(req));
