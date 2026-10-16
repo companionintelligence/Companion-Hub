@@ -88,7 +88,7 @@
     "lint-staged": "^17.6.0",
     "openai": "^7.32.0",
     "pg": "^8.23.1",
-    "pixelmatch": "^7.2.0",
+    "pixelmatch": "^8.0.0",
     "pngjs": "^7.0.0",
     "systeminformation": "^5.31.11",
     "turbo": "^2.11.7",
