@@ -7,6 +7,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { SSEService } from '@/core/sse/sse.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { AppsRepository } from '@/modules/apps/apps.repository';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import { DockerService } from '@/modules/docker/docker.service';
@@ -147,6 +148,8 @@ describe('InstallAppCommand — pull policy', () => {
     portManager.releaseAll.mockResolvedValue();
     portManager.allocatePorts.mockResolvedValue([]);
 
+    const appsRepository = mock<AppsRepository>();
+
     const cloudflareService = mock<CloudflareClientService>();
 
     const dockerode = mock<Dockerode>();
@@ -166,6 +169,7 @@ describe('InstallAppCommand — pull policy', () => {
         if (token === EnvUtils) return envUtils;
         if (token === TraefikConfigService) return traefikConfigService;
         if (token === PortManagerService) return portManager;
+        if (token === AppsRepository) return appsRepository;
         if (token === CloudflareClientService) return cloudflareService;
         return mock();
       }),
@@ -528,6 +532,103 @@ describe('InstallAppCommand — pull policy', () => {
   });
 
   // ── download size in the progress ticks ─────────────────────────────────────
+  describe('when something outside the Hub holds the host port', () => {
+    /** Docker Engine 29.6's wording when a program on the host already listens on the port. */
+    const portTaken = (port: number) =>
+      new Error(
+        `Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint test-app-1 (a65f29c5): failed to bind host port 127.0.0.1:${port}/tcp: address already in use`,
+      );
+    const mainAllocation = (hostPort: number) => ({
+      id: hostPort,
+      appUrn,
+      hostPort,
+      containerPort: 8080,
+      protocol: 'tcp' as const,
+      label: 'main',
+      createdAt: '',
+    });
+
+    let portManager: ReturnType<typeof mock<PortManagerService>>;
+    let appFilesManager: ReturnType<typeof mock<AppFilesManager>>;
+    let appsRepository: ReturnType<typeof mock<AppsRepository>>;
+    /** Host ports Docker refuses, in the order `compose up` meets them. */
+    let refusals: number[];
+
+    beforeEach(() => {
+      const moduleRef = (command as any).moduleRef as ModuleRef;
+      portManager = moduleRef.get(PortManagerService) as any;
+      appFilesManager = moduleRef.get(AppFilesManager) as any;
+      appsRepository = moduleRef.get(AppsRepository) as any;
+
+      portManager.allocatePorts.mockResolvedValue([mainAllocation(8080)]);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 7, port: 8080, config: { exposureMode: 'local' }, status: 'installing' } as any);
+
+      refusals = [];
+      dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+        composeArgs.push(args);
+        const refused = args.startsWith('up') ? refusals.shift() : undefined;
+        if (refused !== undefined) {
+          throw portTaken(refused);
+        }
+      });
+    });
+
+    it('moves the main port to a free one, records it on the app and app.env, and installs', async () => {
+      refusals = [8080];
+      portManager.getMainPort.mockResolvedValue(8080);
+      portManager.moveMainPort.mockResolvedValue(mainAllocation(10000));
+      const form: { port?: number } = {};
+
+      const result = await command.execute(appUrn, form);
+
+      expect(result.success).toBe(true);
+      expect(portManager.moveMainPort).toHaveBeenCalledExactlyOnceWith(appUrn, new Set([8080]));
+      expect(composeArgs.filter((args) => args.startsWith('up'))).toHaveLength(2);
+      const env = appFilesManager.writeAppEnv.mock.calls.at(-1)?.[1] ?? '';
+      expect(env).toContain('APP_PORT=10000');
+      expect(env).toContain('APP_INTERNAL_AUTHORITY=127.0.0.1:10000');
+      expect(env).toContain('APP_URL=http://127.0.0.1:10000');
+      // Starts, restarts and updates rebuild app.env from the row's config, so the port must be there.
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { config: { exposureMode: 'local', port: 10000 }, port: 10000 });
+      expect(form.port).toBe(10000);
+    });
+
+    it('never offers a port Docker already refused during the same install', async () => {
+      refusals = [8080, 10000];
+      portManager.getMainPort.mockResolvedValueOnce(8080).mockResolvedValueOnce(10000);
+      const avoidedOnEachMove: number[][] = [];
+      portManager.moveMainPort.mockImplementation(async (_urn, avoid) => {
+        avoidedOnEachMove.push([...avoid]);
+        return mainAllocation(avoidedOnEachMove.length === 1 ? 10000 : 10001);
+      });
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(true);
+      expect(avoidedOnEachMove).toEqual([[8080], [8080, 10000]]);
+      expect(appFilesManager.writeAppEnv.mock.calls.at(-1)?.[1]).toContain('APP_PORT=10001');
+    });
+
+    it('fails as before when the refused port is not the main port', async () => {
+      // An `addPorts` port from the manifest: it is published as written, so moving the main port would not help.
+      refusals = [51820];
+      portManager.getMainPort.mockResolvedValue(8080);
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(false);
+      expect(portManager.moveMainPort).not.toHaveBeenCalled();
+      expect(composeArgs.filter((args) => args.startsWith('up'))).toHaveLength(1);
+    });
+
+    it('leaves the app row alone when the main port is the one it already records', async () => {
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(true);
+      expect(appsRepository.updateAppById).not.toHaveBeenCalledWith(7, expect.objectContaining({ port: expect.anything() }));
+    });
+  });
+
   describe('download progress ticks', () => {
     const MB = 1024 * 1024;
     const pullTick = (completedBytes: number, totalBytes: number) => ({

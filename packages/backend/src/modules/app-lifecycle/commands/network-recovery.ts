@@ -4,6 +4,7 @@ import { AppsRepository } from '@/modules/apps/apps.repository';
 import { DockerService } from '@/modules/docker/docker.service';
 import { cidrOverlaps } from '@/modules/network/cidr-overlap';
 import { isDockerNetworkOverlapError } from '@/modules/network/docker-network-errors';
+import { isDockerHostPortConflictError } from '@/modules/network/docker-port-errors';
 import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -19,6 +20,12 @@ export interface ComposeRecoveryDeps {
   moduleRef: ModuleRef;
   ensureAppDir: (appUrn: AppUrn, form: AppEventFormInput, options?: { excludeSubnets?: string[] }) => Promise<void>;
   removeStaleAppNetworks: (appUrn: AppUrn) => Promise<void>;
+  /**
+   * Called when Docker refused to publish a host port because something already holds it. Resolves
+   * true once the app has been moved off that port, so compose is worth another attempt. Left out,
+   * a port conflict fails at once, as it always did.
+   */
+  recoverHostPortConflict?: (error: unknown) => Promise<boolean>;
 }
 
 export async function removeAppProjectNetworks(moduleRef: ModuleRef, appUrn: AppUrn): Promise<void> {
@@ -28,7 +35,8 @@ export async function removeAppProjectNetworks(moduleRef: ModuleRef, appUrn: App
 
 /**
  * Run compose for an app, removing stale project networks first and retrying
- * with a fresh subnet when Docker reports overlapping bridge ranges.
+ * with a fresh subnet when Docker reports overlapping bridge ranges, or after
+ * `deps.recoverHostPortConflict` moved the app off a host port Docker could not bind.
  *
  * When a `signal` is supplied, an abort kills the underlying `docker compose` process and is
  * re-thrown immediately so a cancellation is never misclassified as a retryable network overlap.
@@ -77,6 +85,18 @@ export async function runComposeWithNetworkRecovery(
         throw error;
       }
       lastError = error;
+      if (isDockerHostPortConflictError(error) && attempt < maxAttempts && deps.recoverHostPortConflict) {
+        const moved = await deps.recoverHostPortConflict(error).catch((recoveryError: unknown) => {
+          logger.warn(
+            `Could not move ${appUrn} off the host port Docker refused: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`,
+          );
+          return false;
+        });
+        if (moved) {
+          logger.warn(`Host port conflict for ${appUrn} on attempt ${attempt}/${maxAttempts}; retrying on the new port`);
+          continue;
+        }
+      }
       const canRetry = isDockerNetworkOverlapError(error) && attempt < maxAttempts;
       if (!canRetry) {
         if (isDockerNetworkOverlapError(error)) {

@@ -9,6 +9,7 @@ import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
+import { extractConflictingHostPort } from '@/modules/network/docker-port-errors';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -174,28 +175,9 @@ export class InstallAppCommand extends AppLifecycleCommand {
               `Allocated ${allocations.length} port(s) for ${appUrn}: ${allocations.map((a) => `${a.hostPort}:${a.containerPort}/${a.protocol} [${a.label}]`).join(', ')}`,
             );
 
-            // Update APP_PORT in the env file with the allocated main port
             const mainAlloc = allocations.find((a) => a.label === 'main');
             if (mainAlloc) {
-              const appEnvData = await appFilesManager.getAppEnv(appUrn);
-              const envMap = envUtils.envStringToMap(appEnvData.content);
-              envMap.set('APP_PORT', String(mainAlloc.hostPort));
-
-              // Keep URL/origin vars aligned with generateEnvFile (browser host, not bind address).
-              const bindHost = envMap.get('APP_HOSTNAME') || _config.getConfig().internalIp;
-              const browserHost = resolveBrowserHost(bindHost);
-              const internalAuthority = `${browserHost}:${mainAlloc.hostPort}`;
-              envMap.set('APP_INTERNAL_AUTHORITY', internalAuthority);
-              if (envMap.get('APP_EXPOSED') !== 'true') {
-                envMap.set('APP_HOST', browserHost);
-                envMap.set('APP_DOMAIN', internalAuthority);
-                envMap.set('APP_URL', `http://${internalAuthority}`);
-              }
-
-              // Also update form.port so ensureAppDir uses the right port
-              form.port = mainAlloc.hostPort;
-
-              await appFilesManager.writeAppEnv(appUrn, envUtils.envMapToString(envMap));
+              await this.applyMainHostPort(appUrn, form, mainAlloc.hostPort);
             }
           }
         }
@@ -430,7 +412,10 @@ export class InstallAppCommand extends AppLifecycleCommand {
       throwIfAborted(ctx?.signal);
 
       await emitProgress(99);
-      await this.composeAppWithNetworkRecovery(appUrn, form, 'up --detach --force-recreate --remove-orphans', 3, ctx?.signal);
+      const refusedHostPorts = new Set<number>();
+      await this.composeAppWithNetworkRecovery(appUrn, form, 'up --detach --force-recreate --remove-orphans', 3, ctx?.signal, {
+        recoverHostPortConflict: (error) => this.moveMainPortOffConflict(appUrn, form, error, refusedHostPorts),
+      });
       await appFilesManager.setAppDataDirPermissions(appUrn);
 
       // Honor a cancel that landed while `compose up` was running but still completed: install is a
@@ -633,6 +618,74 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
     logger.info(`[install-cancel] compensation complete for ${appUrn}`);
     return `Install of ${appUrn} was cancelled and cleaned up`;
+  }
+
+  /**
+   * Point the app at `hostPort` for its main port: `APP_PORT` and the local URL variables in its
+   * app.env, `form.port`, and the `port` column and `config.port` of its row. Every later start,
+   * restart and update rebuilds app.env from the row's config, so a port kept only in app.env would
+   * go back to the manifest's port on the next start.
+   */
+  private async applyMainHostPort(appUrn: AppUrn, form: AppEventFormInput, hostPort: number): Promise<void> {
+    const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
+    const envUtils = this.moduleRef.get(EnvUtils, { strict: false });
+    const config = this.moduleRef.get(ConfigurationService, { strict: false });
+    const appsRepository = this.moduleRef.get(AppsRepository, { strict: false });
+
+    const appEnvData = await appFilesManager.getAppEnv(appUrn);
+    const envMap = envUtils.envStringToMap(appEnvData.content);
+    envMap.set('APP_PORT', String(hostPort));
+
+    // Keep URL/origin vars aligned with generateEnvFile (browser host, not bind address).
+    const bindHost = envMap.get('APP_HOSTNAME') || config.getConfig().internalIp;
+    const browserHost = resolveBrowserHost(bindHost);
+    const internalAuthority = `${browserHost}:${hostPort}`;
+    envMap.set('APP_INTERNAL_AUTHORITY', internalAuthority);
+    if (envMap.get('APP_EXPOSED') !== 'true') {
+      envMap.set('APP_HOST', browserHost);
+      envMap.set('APP_DOMAIN', internalAuthority);
+      envMap.set('APP_URL', `http://${internalAuthority}`);
+    }
+
+    // Also update form.port so ensureAppDir uses the right port
+    form.port = hostPort;
+
+    await appFilesManager.writeAppEnv(appUrn, envUtils.envMapToString(envMap));
+
+    const app = await appsRepository?.getAppByUrn(appUrn);
+    const storedConfig = (app?.config ?? {}) as Record<string, unknown>;
+    if (app && (app.port !== hostPort || (storedConfig.port !== undefined && storedConfig.port !== hostPort))) {
+      await appsRepository.updateAppById(app.id, { config: { ...storedConfig, port: hostPort }, port: hostPort });
+    }
+  }
+
+  /**
+   * Move the app's main port when `compose up` failed because something already holds it on the
+   * host, and report whether it moved. The port manager's probe runs inside the Hub container and
+   * cannot see a program listening on the host itself (a locally run OpenClaw gateway on 18789,
+   * say), so Docker's refusal is the first sign of it. `refused` collects every port Docker turned
+   * down during this install, so a retry never lands on one of them again.
+   *
+   * Only the main port moves. A port from the manifest's `addPorts` is published as written, so a
+   * conflict on one fails the install as before.
+   */
+  private async moveMainPortOffConflict(appUrn: AppUrn, form: AppEventFormInput, error: unknown, refused: Set<number>): Promise<boolean> {
+    const portManager = this.moduleRef.get(PortManagerService, { strict: false });
+    const logger = this.moduleRef.get(LoggerService, { strict: false });
+    const port = extractConflictingHostPort(error);
+    if (!portManager || port === undefined || (await portManager.getMainPort(appUrn)) !== port) {
+      return false;
+    }
+
+    refused.add(port);
+    const moved = await portManager.moveMainPort(appUrn, refused);
+    if (!moved) {
+      return false;
+    }
+
+    logger.warn(`Host port ${port} for ${appUrn} is already in use on this computer; moving the app to port ${moved.hostPort}`);
+    await this.applyMainHostPort(appUrn, form, moved.hostPort);
+    return true;
   }
 
   private async markInstallSucceeded(
