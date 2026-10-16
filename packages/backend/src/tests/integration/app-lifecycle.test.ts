@@ -67,6 +67,11 @@ const DB_NAME = 'applifecycletest';
 function cleanTree(tree: Record<string, string | null>) {
   const newTree: Record<string, string | null> = {};
   for (const [key, value] of Object.entries(tree)) {
+    if (key.endsWith('/.ci-hub-fs-permissions')) {
+      // The permission probe caches its verdict per process, so only the first install in the file
+      // writes this, and keeping it would tie each snapshot to test order.
+      continue;
+    }
     if (value && (key.endsWith('config.json') || key.endsWith('app-data.json'))) {
       try {
         const json = JSON.parse(value);
