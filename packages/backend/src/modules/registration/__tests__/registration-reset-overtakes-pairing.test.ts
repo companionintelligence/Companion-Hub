@@ -328,7 +328,7 @@ describe('a registration reset that overtakes a pairing', () => {
         const hub = await hubWhoseKeyPortalRejects();
         portal.pairInto = 'org-test';
         const hold = holdAt(step);
-        await expect(hub.registration.pairDevice('ABC123', { callerAuthenticated: true })).resolves.toMatchObject({ success: true });
+        await expect(hub.registration.pairDevice('ABC123', { mayPairAgain: async () => true })).resolves.toMatchObject({ success: true });
         await hold.reached;
 
         portal.deviceRemoved = true;
@@ -348,7 +348,7 @@ describe('a registration reset that overtakes a pairing', () => {
       const portalPairs = holdAt('portal pairs');
       const removal = hub.registration.checkForRemoval();
       await checkIn.reached;
-      const paired = hub.registration.pairDevice('ABC123', { callerAuthenticated: true });
+      const paired = hub.registration.pairDevice('ABC123', { mayPairAgain: async () => true });
       await portalPairs.reached;
 
       // The answer is about the key this Hub held before the pairing. Portal is replacing that key.

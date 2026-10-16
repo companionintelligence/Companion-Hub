@@ -74,7 +74,7 @@ describe('registration callback guard', () => {
     withPhase('degraded', ['tunnel_token_missing']);
     const nonce = service.mintCallbackNonce();
     // Sent on the Hub's own machine, as the headless setup service sends it. Who else may send it is
-    // in registration-callback-re-pairing.test.ts.
+    // in registration-re-pairing.test.ts.
     const fromThisHost = {
       ip: '127.0.0.1',
       socket: { remoteAddress: '127.0.0.1' },

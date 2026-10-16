@@ -86,24 +86,17 @@ export function createThisHostAddressCheck(
 }
 
 /**
- * Whether a socket's peer address is one only this machine's own connections arrive from: loopback,
- * or, when the Hub runs in a container, the container's IPv4 default gateway.
+ * Whether a socket's peer address is loopback or, when the Hub runs in a container, the container's
+ * IPv4 default gateway. Those are the addresses the host's own connections to the Hub arrive from.
  *
- * Why the gateway: Docker programs a container's published ports on its gateway network. Every
+ * Why the gateway: Docker programs a container's published ports on its gateway network. A
  * connection that reaches them through the host arrives from that network's gateway (see
- * `network/edge-hops.ts`), including docker-proxy relaying a client on the host's loopback, such as
- * the headless setup service calling `http://127.0.0.1:5002`. On Docker Engine on Linux, a machine
- * on the LAN that reaches the published port over IPv4 is DNATed to the container with its own
- * address kept. A container that calls the Hub on a shared network arrives from its own address.
- * Both are refused.
+ * `network/edge-hops.ts`). docker-proxy relaying a client on the host's loopback is one, such as
+ * the headless setup service calling `http://127.0.0.1:5002`.
  *
- * What it can't refuse, because each arrives from the same gateway: a container that dials the
- * host's published port (an installed app through `host.docker.internal`) and a client that reaches
- * the published port over IPv6, which docker-proxy relays to the Hub's IPv4 address. By address
- * either one is the host.
- *
- * Outside a container the default gateway is the LAN's router, so only loopback counts there. IPv4
- * only, since the Hub's networks have no IPv6.
+ * This places a connection by its address. It isn't authentication, so a route that relies on it
+ * keeps its other checks. Outside a container the default gateway is the LAN's router, so only
+ * loopback counts there. It reads the IPv4 route table, since the Hub's networks are IPv4.
  */
 export const isThisHostAddress = createThisHostAddressCheck({
   inContainer: detectHubContainer,

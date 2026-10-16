@@ -254,9 +254,9 @@ export class RegistrationController {
   ) {
     /*
      * The setup service calls the published port from the host, so the Hub sees it arrive from its
-     * container's gateway with `Host: 127.0.0.1:5002`. `isRequestFromThisHost` admits that and keeps
-     * out the tunnel, Traefik and other machines on the LAN. It is not authentication, so the rules
-     * in `completeRegistrationCallback` still apply.
+     * container's gateway with `Host: 127.0.0.1:5002`, which `isRequestFromThisHost` admits. That
+     * places the request by address and isn't authentication, so the rules in
+     * `completeRegistrationCallback` still apply.
      */
     if (!isRequestFromThisHost(req)) {
       this.logger.warn(
@@ -334,14 +334,10 @@ export class RegistrationController {
      * `tunnel_token_missing`) gets past the check above. A `portal_rejected` Hub keeps its tunnel.
      * Pairing it again replaces its device key and tunnel, so it takes someone who may manage this
      * Hub, or a request from this Hub's own machine, where the headless setup service runs with no
-     * session. An unregistered Hub has nobody to ask.
-     *
-     * The row counts as well as the phase (`holdsRegistration`). A Hub without its tunnel token reads
-     * `unregistered` in memory until boot restores the phase from the row. If that read fails it stays
-     * there, so the phase alone would skip this check.
+     * session. An unregistered Hub has nobody to ask. The row counts as well as the phase
+     * (`pairingReplacesRegistration`).
      */
-    const registered = (await this.registrationService.isRegistered()) || (await this.registrationService.holdsRegistration());
-    if (registered && !(await this.mayPairRegisteredHubAgain(req))) {
+    if ((await this.registrationService.pairingReplacesRegistration()) && !(await this.mayPairRegisteredHubAgain(req))) {
       this.logger.warn(
         `Rejected registration callback for a registered Hub from ${req?.socket?.remoteAddress ?? 'unknown'}: no owner or admin and not sent from this Hub's own machine`,
       );
@@ -365,9 +361,10 @@ export class RegistrationController {
   }
 
   /**
-   * Who may complete a callback for a Hub that is registered but needs pairing again: a request from
-   * this Hub's own machine, or someone `hubManageVerdictForRePairing` allows: the claiming operator,
-   * an owner or admin, the CLI or the host-local key. A member is refused.
+   * Who may pair a Hub that holds a registration again, by a callback or a pairing code: a request
+   * from this Hub's own machine, or someone `hubManageVerdictForRePairing` allows: the claiming
+   * operator, an owner or admin, the CLI or the host-local key. A member is refused, as are the
+   * Portal device key and a caller nobody authenticated.
    */
   private async mayPairRegisteredHubAgain(req: Request | undefined): Promise<boolean> {
     if (!req) {
@@ -376,6 +373,11 @@ export class RegistrationController {
 
     if (isRequestFromThisHost(req)) {
       return true;
+    }
+
+    // Nobody authenticated, so no WhoIs answer could allow it. Not asked, so it logs no refusal of its own.
+    if (!req.hubPrincipal) {
+      return false;
     }
 
     const whois = this.moduleRef ? resolveWhoisService(this.moduleRef) : null;
@@ -515,11 +517,10 @@ export class RegistrationController {
       return { success: false, message: 'A valid 6-character pairing code is required.' };
     }
 
-    // No guard: first pairing has nobody to authenticate. `AuthMiddleware` names the principal
-    // when there is one (a session, the host-local device key, or the CLI token, including on an
-    // unclaimed Hub), and the service requires one before it re-pairs a registered Hub.
+    // No guard: first pairing has nobody to authenticate. Only for a Hub that holds a registration
+    // does the service ask the question a registration callback asks (`mayPairRegisteredHubAgain`).
     const result = await this.registrationService.pairDevice(pairingCode, {
-      callerAuthenticated: Boolean(req?.hubPrincipal),
+      mayPairAgain: () => this.mayPairRegisteredHubAgain(req),
       confirmMove: body.confirm_move === true,
     });
     return result;

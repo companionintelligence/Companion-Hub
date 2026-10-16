@@ -535,32 +535,40 @@ describe('RegistrationController', () => {
 
       const result = await controller.pairDevice({ pairing_code: 'ABCDEF' });
       expect(result).toEqual({ success: true });
-      expect(registrationService.pairDevice).toHaveBeenCalledWith('ABCDEF', { callerAuthenticated: false, confirmMove: false });
+      expect(registrationService.pairDevice).toHaveBeenCalledWith('ABCDEF', { mayPairAgain: expect.any(Function), confirmMove: false });
     });
 
-    it('tells the service who is asking, so a stranger on the port cannot re-pair a registered Hub', async () => {
+    /*
+     * The service asks this only of a Hub that holds a registration. Who passes is the callback's
+     * rule; registration-re-pairing.test.ts covers each caller through the real WhoIs service.
+     */
+    it('tells the service whether the caller may pair a registered Hub again, by the callback rule', async () => {
       registrationService.pairDevice.mockResolvedValue({ success: true } as any);
+      const request = (ip: string, host: string, caller: Record<string, unknown> = {}) =>
+        ({ ip, socket: { remoteAddress: ip }, headers: { host }, protocol: 'http', get: () => host, ...caller }) as any;
+      const mayPairAgainFor = async (req: unknown) => {
+        await controller.pairDevice({ pairing_code: 'ABCDEF' }, req as any);
+        return registrationService.pairDevice.mock.lastCall?.[1]?.mayPairAgain?.();
+      };
 
-      await controller.pairDevice({ pairing_code: 'ABCDEF' }, {} as any);
-      expect(registrationService.pairDevice).toHaveBeenLastCalledWith('ABCDEF', { callerAuthenticated: false, confirmMove: false });
-
-      // `cihub register` on an unclaimed Hub: the device key authenticates, with no operator row to be.
-      await controller.pairDevice({ pairing_code: 'ABCDEF' }, { hubPrincipal: 'portal-device', hubUnclaimed: true } as any);
-      expect(registrationService.pairDevice).toHaveBeenLastCalledWith('ABCDEF', { callerAuthenticated: true, confirmMove: false });
-
-      await controller.pairDevice({ pairing_code: 'ABCDEF' }, { hubPrincipal: 'session', user: { id: 1 } } as any);
-      expect(registrationService.pairDevice).toHaveBeenLastCalledWith('ABCDEF', { callerAuthenticated: true, confirmMove: false });
+      await expect(mayPairAgainFor(undefined)).resolves.toBe(false);
+      await expect(mayPairAgainFor(request('192.168.1.50', '192.168.1.10:5002'))).resolves.toBe(false);
+      // Any principal used to be enough. Without a WhoIs service to ask, only this machine passes.
+      await expect(mayPairAgainFor(request('192.168.1.50', '192.168.1.10:5002', { hubPrincipal: 'session', user: { id: 1 } }))).resolves.toBe(false);
+      await expect(mayPairAgainFor(request('192.168.1.50', '127.0.0.1:5002', { hubPrincipal: 'portal-device' }))).resolves.toBe(false);
+      // `cihub register` and the setup service, on the Hub's own machine.
+      await expect(mayPairAgainFor(request('172.18.0.1', '127.0.0.1:5002'))).resolves.toBe(true);
     });
 
     it('passes the yes to a move on, and nothing else as one', async () => {
       registrationService.pairDevice.mockResolvedValue({ success: true } as any);
 
       await controller.pairDevice({ pairing_code: 'ABCDEF', confirm_move: true });
-      expect(registrationService.pairDevice).toHaveBeenLastCalledWith('ABCDEF', { callerAuthenticated: false, confirmMove: true });
+      expect(registrationService.pairDevice).toHaveBeenLastCalledWith('ABCDEF', expect.objectContaining({ confirmMove: true }));
 
       // Only a literal true: a string from a hand-made request is not a yes.
       await controller.pairDevice({ pairing_code: 'ABCDEF', confirm_move: 'yes' as never });
-      expect(registrationService.pairDevice).toHaveBeenLastCalledWith('ABCDEF', { callerAuthenticated: false, confirmMove: false });
+      expect(registrationService.pairDevice).toHaveBeenLastCalledWith('ABCDEF', expect.objectContaining({ confirmMove: false }));
     });
 
     it('returns the Portal refusal code to the registration page', async () => {

@@ -1,14 +1,16 @@
 /**
- * Who may complete a registration callback on a Hub that is registered but needs pairing again
- * (`portal_rejected`, `tunnel_token_missing`), through either route. Driven through the real
- * controller, `RegistrationService` and `MarketplaceWhoIsService` over one set of settings and table
- * rows, so a refusal is checked by what it leaves behind.
+ * Who may pair a Hub that is registered but needs pairing again (`portal_rejected`,
+ * `tunnel_token_missing`): through either registration callback route, or with a pairing code.
+ * Driven through the real controller, `RegistrationService` and `MarketplaceWhoIsService` over one
+ * set of settings and table rows, so a refusal is checked by what it leaves behind.
  *
  * Such a Hub is past the "already registered" refusal, because pairing again is how it recovers. A
- * `portal_rejected` Hub keeps its tunnel. The POST's nonce comes from an unauthenticated route. So
- * the callback takes someone who may manage the Hub, or a request from the Hub's own machine, where
- * CI-OS's headless setup service calls `http://127.0.0.1:5002` with no session.
+ * `portal_rejected` Hub keeps its tunnel. The POST's nonce comes from an unauthenticated route, and
+ * `POST /registration/pair` takes no credential for a first pairing. So both take someone who may
+ * manage the Hub, or a request from the Hub's own machine, where CI-OS's headless setup service and
+ * `cihub register` run.
  */
+import axios from 'axios';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { Test } from '@nestjs/testing';
@@ -50,7 +52,7 @@ const DEVICE_ID = 'device-test-1';
 const OWNER_ID = 7;
 
 type Row = Record<string, unknown> & { id: string };
-type Caller = { hubPrincipal?: 'session' | 'portal-device'; user?: { id: number; orgRole?: string | null } };
+type Caller = { hubPrincipal?: 'session' | 'portal-device' | 'cli' | 'host-local'; user?: { id: number; orgRole?: string | null } };
 
 let controller: RegistrationController;
 let service: RegistrationService;
@@ -306,6 +308,35 @@ describe('a registration callback on a Hub whose phase has not been restored fro
   });
 });
 
+/*
+ * The same Hub while its database can't answer. Not knowing whether it holds a registration must not
+ * read as "it holds none", or the callback would save a stranger's keys over this Hub's own.
+ */
+describe('a registration callback on a Hub whose registration cannot be read', () => {
+  beforeEach(() => {
+    settings.ciHubApiKey = 'key-current';
+    const repository = (service as any).deviceRegistrationRepository as MockProxy<DeviceRegistrationRepository>;
+    repository.getFirstDeviceRegistration.mockRejectedValue(new Error('connection terminated unexpectedly'));
+    repository.hasAnyDeviceRegistration.mockRejectedValue(new Error('connection terminated unexpectedly'));
+    vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(false);
+  });
+
+  it('refuses an anonymous caller on the POST and a pairing code from the LAN without changing anything', async () => {
+    mockedPost.mockReset();
+    const before = snapshot();
+
+    await expect(sendPost(anonymousOnLan())).rejects.toThrow(/Sign in as an owner or admin/);
+    await expect(sendPair(anonymousOnLan())).resolves.toMatchObject({
+      success: false,
+      message: expect.stringContaining('Sign in as an owner or admin'),
+    });
+
+    expect(portalPairCalls()).toEqual([]);
+    expect(snapshot()).toEqual(before);
+    expectNothingWritten();
+  });
+});
+
 describe('a registration callback on a Hub that is registered and serving', () => {
   it('is refused for everyone, the owner and the setup service included', async () => {
     registerThenDegrade('portal_rejected');
@@ -321,5 +352,140 @@ describe('a registration callback on a Hub that is registered and serving', () =
 
     expect(snapshot()).toEqual(before);
     expectNothingWritten();
+  });
+});
+
+/*
+ * `POST /registration/pair` asks the same question before it sends the code to Portal. Portal is
+ * mocked here, so a pairing that passes reaches `/api/devices/pair` and one that is refused never does.
+ */
+const mockedPost = vi.mocked(axios.post);
+const portalPairCalls = () => mockedPost.mock.calls.filter(([url]) => String(url).endsWith('/api/devices/pair'));
+const sendPair = (from: unknown, confirmMove = false) =>
+  controller.pairDevice({ pairing_code: 'abc123', ...(confirmMove ? { confirm_move: true } : {}) }, from as any);
+const asCli = () => request('192.168.1.50', '192.168.1.10:5002', { hubPrincipal: 'cli', user: { id: 1 } });
+const asHostLocalKey = () => request('192.168.1.50', '192.168.1.10:5002', { hubPrincipal: 'host-local', user: { id: 1 } });
+/** `cihub register` on the Hub's own machine, on a build that has no host-local key to send. */
+const cliOnThisHostWithDeviceKey = () => request('172.18.0.1', '127.0.0.1:5002', { hubPrincipal: 'portal-device', user: { id: 1 } });
+
+function portalIssuesPairing() {
+  mockedPost.mockResolvedValue({ status: 200, headers: {}, data: { ...BODY, move_key: 'move-new' } } as any);
+}
+
+describe.each(['portal_rejected', 'tunnel_token_missing'] as const)('a pairing code on a %s Hub', (reason) => {
+  beforeEach(() => {
+    mockedPost.mockReset();
+    registerThenDegrade(reason);
+  });
+
+  it('refuses an anonymous caller, a member and the device key before Portal is asked, without changing anything', async () => {
+    portalSays('member');
+    const before = snapshot();
+
+    for (const from of [undefined, anonymousOnLan(), lanNamingLoopback(), signedIn('member'), signedIn('owner'), memoryWithDeviceKey()]) {
+      await expect(sendPair(from)).resolves.toMatchObject({ success: false, message: expect.stringContaining('Sign in as an owner or admin') });
+      await expect(sendPair(from, true)).resolves.toMatchObject({ success: false });
+    }
+
+    expect(portalPairCalls()).toEqual([]);
+    expect(snapshot()).toEqual(before);
+    expectNothingWritten();
+  });
+
+  it('refuses a member whose role the Portal cannot confirm and someone with no stored role', async () => {
+    portalRejectsDeviceKey();
+
+    await expect(sendPair(signedIn('member'))).resolves.toMatchObject({ success: false });
+    await expect(sendPair(signedIn(null), true)).resolves.toMatchObject({ success: false });
+    expect(portalPairCalls()).toEqual([]);
+  });
+
+  it('pairs for an owner the Portal confirms and passes their yes to a move on', async () => {
+    portalSays('owner');
+    portalIssuesPairing();
+
+    await expect(sendPair(signedIn('member'), true)).resolves.toMatchObject({ success: true });
+    expect(portalPairCalls()).toHaveLength(1);
+    expect(portalPairCalls()[0]?.[1]).toMatchObject({ pairing_code: 'ABC123', device_key: 'key-current', confirm_move: true });
+    await expectPairedAgain();
+  });
+
+  it.each(['owner', 'admin'])('pairs for a stored %s when the Portal will not say', async (role) => {
+    portalRejectsDeviceKey();
+    portalIssuesPairing();
+
+    await expect(sendPair(signedIn(role))).resolves.toMatchObject({ success: true });
+    await expectPairedAgain();
+  });
+
+  it('pairs for the operator who claimed the Hub, whatever their role', async () => {
+    users.getFirstOperator.mockResolvedValue({ id: OWNER_ID } as any);
+    portalSays('member');
+    portalIssuesPairing();
+
+    await expect(sendPair(signedIn('member'))).resolves.toMatchObject({ success: true });
+    await expectPairedAgain();
+  });
+
+  it.each([
+    ['the CLI token', asCli],
+    ['the host-local key', asHostLocalKey],
+    ['a caller on the Hub itself', fromSetupService],
+    ['cihub register on the Hub itself with only the device key', cliOnThisHostWithDeviceKey],
+  ])('pairs for %s', async (_caller, from) => {
+    portalIssuesPairing();
+
+    await expect(sendPair(from())).resolves.toMatchObject({ success: true });
+    expect(portal.whoisApps).not.toHaveBeenCalled();
+    await expectPairedAgain();
+  });
+});
+
+describe('a pairing code on a Hub that is not registered', () => {
+  it('goes to Portal for anyone, as a first pairing has nobody to sign in as', async () => {
+    mockedPost.mockReset();
+    portalIssuesPairing();
+
+    await expect(sendPair(anonymousOnLan())).resolves.toMatchObject({ success: true });
+    expect(portalPairCalls()).toHaveLength(1);
+    expect(portal.whoisApps).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect((service as any)._currentPhase).toBe('publicly_ready'));
+  });
+});
+
+describe('a pairing code on a Hub that is registered and serving', () => {
+  beforeEach(() => {
+    mockedPost.mockReset();
+    registerThenDegrade('portal_rejected');
+    (service as any)._currentPhase = 'publicly_ready';
+    (service as any)._degradedReasons = [];
+  });
+
+  it('is refused for everyone before Portal is asked, the owner and the Hub itself included', async () => {
+    portalSays('owner');
+    const before = snapshot();
+
+    for (const from of [signedIn('owner'), asHostLocalKey(), fromSetupService(), anonymousOnLan()]) {
+      await expect(sendPair(from)).resolves.toMatchObject({ success: false, message: 'Device is already registered.' });
+    }
+
+    expect(portalPairCalls()).toEqual([]);
+    expect(snapshot()).toEqual(before);
+    expectNothingWritten();
+  });
+
+  it('lets a caller who may pair it again through while Portal is rejecting its key but nobody else', async () => {
+    (service as any).portalRejectedSince = Date.now();
+    portalSays('member');
+
+    await expect(sendPair(anonymousOnLan())).resolves.toMatchObject({ success: false, message: 'Device is already registered.' });
+    await expect(sendPair(signedIn('owner'))).resolves.toMatchObject({ success: false, message: 'Device is already registered.' });
+    expect(portalPairCalls()).toEqual([]);
+
+    portalIssuesPairing();
+    await expect(sendPair(asHostLocalKey())).resolves.toMatchObject({ success: true });
+    expect(portalPairCalls()).toHaveLength(1);
+    await vi.waitFor(() => expect(rows[0]).toMatchObject({ tunnelToken: 'tok-new' }));
+    await vi.waitFor(() => expect(traefik.writeHubRoute).toHaveBeenCalled());
   });
 });

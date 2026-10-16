@@ -104,14 +104,36 @@ export function isDirectLoopbackRequest(req: Request): boolean {
 
 /**
  * Whether a request came from this Hub's own machine: {@link isDirectLoopbackRequest}, on a socket
- * whose peer is an address only this machine's connections arrive from (`isThisHostAddress`).
+ * whose peer is an address the host's own connections arrive from (`isThisHostAddress`).
  *
- * `isDirectLoopbackRequest` alone admits a machine on the LAN, which has a private address and can
- * name `127.0.0.1` in its Host header. The socket's address is read rather than `req.ip`, which
- * `HUB_TRUST_PROXY` lets a header rewrite.
+ * The socket's address is read rather than `req.ip`, which `HUB_TRUST_PROXY` lets a header rewrite.
+ * Like the checks it builds on, this places a request by address. It isn't authentication.
+ *
+ * A browser on this machine sends from the same address whichever page asked it to, so a request
+ * the browser marks as coming from another origin (`Sec-Fetch-Site`, `Origin`) is refused. The
+ * setup service and `cihub` send neither header.
  */
 export function isRequestFromThisHost(req: Request): boolean {
-  return isDirectLoopbackRequest(req) && isThisHostAddress(req.socket?.remoteAddress);
+  return isDirectLoopbackRequest(req) && !isCrossOriginBrowserRequest(req) && isThisHostAddress(req.socket?.remoteAddress);
+}
+
+/** Whether a browser says the page that sent this request is on another origin than the one it names. */
+function isCrossOriginBrowserRequest(req: Request): boolean {
+  const fetchSite = req.headers['sec-fetch-site'];
+  if (typeof fetchSite === 'string' && fetchSite !== 'same-origin' && fetchSite !== 'none') {
+    return true;
+  }
+
+  const origin = req.headers.origin;
+  if (typeof origin !== 'string' || !origin) {
+    return false;
+  }
+
+  try {
+    return origin.toLowerCase() !== resolveHubRequestOrigin(req).toLowerCase();
+  } catch {
+    return true;
+  }
 }
 
 /**

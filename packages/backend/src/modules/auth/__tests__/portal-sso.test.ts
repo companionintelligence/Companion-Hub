@@ -338,6 +338,27 @@ describe('portal-sso helpers', () => {
     ['the gateway naming another host', false, { host: '192.168.1.10:5002' }, '172.18.0.1'],
     ['the gateway carrying a public forwarded hop', false, { host: '127.0.0.1:5002', 'x-forwarded-for': '203.0.113.9' }, '172.18.0.1'],
     ['the gateway carrying a tunnel marker', false, { host: '127.0.0.1:5002', 'cf-ray': '8c1f2e3d4a5b6c7d-AMS' }, '172.18.0.1'],
+    [
+      "the Hub's own page in a browser on the host",
+      true,
+      { host: '127.0.0.1:5002', origin: 'http://127.0.0.1:5002', 'sec-fetch-site': 'same-origin' },
+      '172.18.0.1',
+    ],
+    [
+      'a form on another site, in a browser on the host',
+      false,
+      { host: '127.0.0.1:5002', origin: 'https://other.example', 'sec-fetch-site': 'cross-site' },
+      '172.18.0.1',
+    ],
+    [
+      'a form on another site, from a browser that sends no fetch metadata',
+      false,
+      { host: '127.0.0.1:5002', origin: 'https://other.example' },
+      '172.18.0.1',
+    ],
+    ["an app's page on another loopback port", false, { host: '127.0.0.1:5002', 'sec-fetch-site': 'same-site' }, '172.18.0.1'],
+    ['an address typed into a browser on the host', true, { host: '127.0.0.1:5002', 'sec-fetch-site': 'none' }, '127.0.0.1'],
+    ['a link followed from another site', false, { host: '127.0.0.1:5002', 'sec-fetch-site': 'cross-site' }, '127.0.0.1'],
   ])('isRequestFromThisHost: %s -> %s', (_caller, expected, headers: Record<string, string>, ip) => {
     const req = {
       headers,
