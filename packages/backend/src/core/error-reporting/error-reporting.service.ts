@@ -4,6 +4,7 @@ import * as Sentry from '@sentry/nestjs';
 import type { AppUrn } from '@ci-hub/common/types';
 import { KVM_MISSING_CODE, NETWORK_OVERLAP_CODE, ROCM_KFD_MISSING_CODE } from '@/modules/app-lifecycle/commands/app-lifecycle-errors';
 import { PORTAL_HTTP_ERROR_CODE, PORTAL_TIMEOUT_CODE, PORTAL_UNREACHABLE_CODE } from '@/core/portal/portal.constants';
+import { DOCKER_HOST_PORT_CONFLICT_PATTERN } from '@/modules/network/docker-port-errors';
 import { snapshotHostHealth } from './host-health';
 import { scrubString } from './sentry-scrubber';
 import { type UserConsent, currentUserConsent, resolveTelemetryDecision } from './telemetry-consent';
@@ -56,7 +57,7 @@ const USER_ENVIRONMENT_PATTERNS: ReadonlyArray<{ pattern: RegExp; errorClass: st
     errorClass: 'docker-daemon-unreachable',
   },
   { pattern: /no matching manifest for \S+ in the manifest list/i, errorClass: 'image-arch-unsupported' },
-  { pattern: /ports are not available|address already in use|port is already allocated/i, errorClass: 'port-conflict' },
+  { pattern: DOCKER_HOST_PORT_CONFLICT_PATTERN, errorClass: 'port-conflict' },
   { pattern: /no space left on device/i, errorClass: 'disk-full' },
   { pattern: /toomanyrequests|unauthenticated pull rate limit/i, errorClass: 'registry-rate-limit' },
   { pattern: /could not select device driver/i, errorClass: 'device-driver-missing' },

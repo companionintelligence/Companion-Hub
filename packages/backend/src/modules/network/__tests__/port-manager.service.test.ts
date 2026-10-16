@@ -178,6 +178,16 @@ describe('PortManagerService', () => {
       );
     });
 
+    it('keeps the main port it had when no new port can be allocated', async () => {
+      const appUrn = 'openclaw:store' as AppUrn;
+      const [main] = await service.allocatePorts(appUrn, [{ containerPort: 18789, label: 'main', preferredHostPort: 18789 }]);
+      vi.mocked(repo.create).mockRejectedValueOnce(new Error('database unavailable'));
+
+      await expect(service.moveMainPort(appUrn, new Set())).rejects.toThrow('database unavailable');
+
+      expect(await service.getMainPort(appUrn)).toBe(main?.hostPort);
+    });
+
     it('returns null and allocates nothing for an app with no main allocation', async () => {
       const moved = await service.moveMainPort('nothing:store' as AppUrn, new Set());
 

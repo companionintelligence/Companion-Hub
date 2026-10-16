@@ -251,12 +251,12 @@ export function hubTrustMaterialScopes(config: Pick<AppInfo, 'urn' | 'hub_integr
   return scopes;
 }
 
-function parseAppBaseUrl(url: string): URL {
+export function parseAppBaseUrl(url: string): URL {
   const withScheme = /^https?:\/\//i.test(url) ? url : `http://${url}`;
   return new URL(withScheme);
 }
 
-function deriveAppBaseWsOrigin(parsed: URL): string {
+export function deriveAppBaseWsOrigin(parsed: URL): string {
   const wsScheme = parsed.protocol === 'https:' ? 'wss' : 'ws';
   return `${wsScheme}://${parsed.host}`;
 }

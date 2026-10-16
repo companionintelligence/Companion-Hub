@@ -142,8 +142,10 @@ export class PortManagerService {
       return null;
     }
 
-    await this.portAllocationRepo.deleteByHostPort(main.hostPort, main.protocol);
+    // The new port is taken before the old one goes, so a failed allocation leaves the app on the
+    // main port it had instead of with none. The old port is still allocated, so the search skips it.
     const moved = await this.allocateWithRetry(appUrn, main.containerPort, main.protocol, 'main', undefined, 0, new Set([...avoid, main.hostPort]));
+    await this.portAllocationRepo.deleteByHostPort(main.hostPort, main.protocol);
     this.logger.info(`Port moved: ${main.hostPort} to ${moved.hostPort} for ${main.containerPort}/${main.protocol} [main] of ${appUrn}`);
     return moved;
   }

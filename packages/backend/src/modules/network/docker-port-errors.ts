@@ -1,11 +1,13 @@
 /**
- * True when Docker could not publish a container port because the host port is taken: by a program
- * running on the host ("address already in use") or by another container ("port is already
- * allocated"). Docker Desktop words both as "Ports are not available".
+ * Docker's wordings for a host port that is taken: by a program running on the host ("address
+ * already in use") or by another container ("port is already allocated"). Docker Desktop words both
+ * as "Ports are not available". The failure classifier in error reporting reads the same pattern.
  */
+export const DOCKER_HOST_PORT_CONFLICT_PATTERN = /ports are not available|address already in use|port is already allocated/i;
+
+/** True when Docker could not publish a container port because the host port is taken. */
 export function isDockerHostPortConflictError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /ports are not available|address already in use|port is already allocated/i.test(message);
+  return DOCKER_HOST_PORT_CONFLICT_PATTERN.test(messageOf(error));
 }
 
 /**
@@ -25,14 +27,34 @@ const HOST_PORT_PATTERNS = [
   /listen (?:tcp|udp)[46]? \S*?:(\d{1,5}):/i,
 ];
 
-/** The host port a Docker port-conflict error names, or `undefined` when it names none. */
-export function extractConflictingHostPort(error: unknown): number | undefined {
-  const message = error instanceof Error ? error.message : String(error);
+/** The protocol in `/tcp`, `exposing port UDP` or `listen tcp4`. "Bind for ... failed" names none. */
+const PROTOCOL_PATTERN = /\/(tcp|udp)\b|exposing port (tcp|udp)\b|listen (tcp|udp)[46]?\s/i;
+
+export interface ConflictingHostBinding {
+  port: number;
+  /** Left out when the wording names no protocol. */
+  protocol?: 'tcp' | 'udp';
+}
+
+/** The host port, and its protocol when given, that a Docker port-conflict error names. */
+export function extractConflictingHostBinding(error: unknown): ConflictingHostBinding | undefined {
+  const message = messageOf(error);
   for (const pattern of HOST_PORT_PATTERNS) {
     const port = Number(message.match(pattern)?.[1]);
     if (Number.isInteger(port) && port >= 1 && port <= 65535) {
-      return port;
+      const named = message.match(PROTOCOL_PATTERN);
+      const protocol = (named?.[1] ?? named?.[2] ?? named?.[3])?.toLowerCase();
+      return protocol === 'tcp' || protocol === 'udp' ? { port, protocol } : { port };
     }
   }
   return undefined;
+}
+
+/** The host port a Docker port-conflict error names, or `undefined` when it names none. */
+export function extractConflictingHostPort(error: unknown): number | undefined {
+  return extractConflictingHostBinding(error)?.port;
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

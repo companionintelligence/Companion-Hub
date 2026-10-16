@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { extractConflictingHostPort, isDockerHostPortConflictError } from '../docker-port-errors';
+import { extractConflictingHostBinding, extractConflictingHostPort, isDockerHostPortConflictError } from '../docker-port-errors';
 
 /** Verbatim from Docker Engine 29.6 with a program on the host listening on 127.0.0.1:18789. */
 const HOST_PROGRAM_LOOPBACK =
@@ -42,6 +42,23 @@ describe('docker-port-errors', () => {
     expect(extractConflictingHostPort('failed to bind host port [::]:18789/tcp: address already in use')).toBe(18789);
     expect(extractConflictingHostPort('Bind for :::5432 failed: port is already allocated')).toBe(5432);
     expect(extractConflictingHostPort('Bind for [::1]:8642 failed: port is already allocated')).toBe(8642);
+  });
+
+  it('reads the protocol when the wording gives one', () => {
+    expect(extractConflictingHostBinding(new Error(HOST_PROGRAM_LOOPBACK))).toEqual({ port: 18789, protocol: 'tcp' });
+    expect(extractConflictingHostBinding('failed to bind host port 0.0.0.0:51820/udp: address already in use')).toEqual({
+      port: 51820,
+      protocol: 'udp',
+    });
+    expect(extractConflictingHostBinding('Ports are not available: exposing port UDP 0.0.0.0:53 -> 0.0.0.0:0')).toEqual({
+      port: 53,
+      protocol: 'udp',
+    });
+    expect(extractConflictingHostBinding('Error starting userland proxy: listen tcp4 0.0.0.0:3000: bind: address already in use')).toEqual({
+      port: 3000,
+      protocol: 'tcp',
+    });
+    expect(extractConflictingHostBinding(new Error(OTHER_CONTAINER))).toEqual({ port: 18798 });
   });
 
   it('names no port when the message carries none', () => {
