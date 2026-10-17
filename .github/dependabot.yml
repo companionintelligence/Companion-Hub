@@ -21,6 +21,13 @@ updates:
       # alone breaks the backend build. Lift this when 2FA moves to the otplib 13 API.
       - dependency-name: '@otplib/*'
         update-types: ['version-update:semver-major']
+      # better-ajv-errors 3.x imports styleText from node:util and calls it unguarded. The compose
+      # JSON editor runs it in the browser bundle, where node:util is a stub, so every schema
+      # error becomes "Invalid JSON format". Vitest runs on Node and tsc sees the module as any,
+      # so no check catches it. Lift this once upstream guards the call or the editor stops
+      # depending on the package.
+      - dependency-name: 'better-ajv-errors'
+        update-types: ['version-update:semver-major']
 
   - package-ecosystem: 'github-actions'
     directory: '/'
