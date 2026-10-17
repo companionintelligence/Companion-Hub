@@ -13,6 +13,9 @@
  *                   with fallback to ~/devel/CI-App-Store/apps)
  *   RESULTS_DIR     local results output dir      (default: ~/qa-results)
  *   SKIP_SCREENSHOT set to "1" to skip Playwright screenshot
+ *   QA_ENV_FILE     set to "1" to attach a production-style app.env (system variables + form fields) to every service, as the
+ *                   Hub does. Off by default. Use it at QA_CONCURRENCY=1: it reads the same per-app globals as valueForVar.
+ *   QA_NO_PROXY_HEADERS  set to "1" to stop the readiness probe sending X-Forwarded-Proto/Port (the Hub's Traefik adds them)
  */
 
 import { exec, execSync, spawnSync } from 'node:child_process';
@@ -29,6 +32,8 @@ const APP_STORE_DIR =
 const RESULTS_DIR = process.env.RESULTS_DIR ?? join(home, 'qa-results');
 const SCREENSHOTS_DIR = join(RESULTS_DIR, 'screenshots');
 const SKIP_SCREENSHOT = process.env.SKIP_SCREENSHOT === '1';
+const QA_ENV_FILE = process.env.QA_ENV_FILE === '1';
+const QA_NO_PROXY_HEADERS = process.env.QA_NO_PROXY_HEADERS === '1';
 
 // Durable results — qa-aggregate.ts SCPs results.json (an array of QAResult) and
 // batch-<N>-summary.json off each node. We append every app result here as it finishes
@@ -346,6 +351,7 @@ interface DockerService {
   sysctls?: Record<string, number | string>;
   dns?: string | string[];
   extraHosts?: string[];
+  networkMode?: string; // e.g. 'service:<main>' for a sidecar sharing the main service's namespace — honored by the Hub builder
   volumes?: { hostPath?: string; containerPath?: string; readOnly?: boolean }[];
   environment?: { key?: string; value?: string }[];
   dependsOn?: unknown; // map {svc:{condition}} (Hub) or string[] — handled in composeUp
@@ -523,7 +529,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
             // e.g. mesh-llm's `"$${APP_MODEL}"` became `$<generated-value>`, and the container's own
             // shell then expanded that as its own (unset) `$APP_MODEL`-shaped variable, silently
             // truncating the value and breaking its CLI arg parsing.
-            .replace(/(?<!\$)\$\{([A-Z0-9_]+)(?::-([^}]*))?\}/g, (_, k, def) => (def === undefined ? valueForVar(k, cache, scratchBase) : def))
+            .replace(/(?<!\$)\$\{([A-Z0-9_]+)(?::?-([^}]*))?\}/g, (_, k, def) => (def === undefined ? valueForVar(k, cache, scratchBase) : def))
             // Manifests are authored for docker-compose semantics, where `$$` escapes a literal `$`
             // (e.g. ollama's entrypoint uses `$$!`/`$$OLLAMA_MODEL` to survive compose's own
             // interpolation pass). This single-container path invokes `docker run` directly, with no
@@ -556,11 +562,14 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         // Manifest `command` override — the single-service path used to run the image's DEFAULT cmd,
         // so apps that declare `command` (e.g. quarkdown's preview server) ran the wrong process and
         // false-failed. docker run takes command+args AFTER the image: array = exec form (args as-is);
-        // a plain string is a shell command (match compose's `sh -c`).
+        // a plain string is split into argv the way compose does (shellWords: quotes and backslashes, NO shell), so an image
+        // whose ENTRYPOINT is not a shell still gets the real arguments instead of `-c <cmd>`.
         if (main?.command !== undefined) {
           cmdSuffix = Array.isArray(main.command)
             ? ` ${main.command.map((c) => shQuote(subst(String(c)))).join(' ')}`
-            : ` sh -c ${shQuote(subst(String(main.command)))}`;
+            : ` ${shellWords(subst(String(main.command)))
+                .map((w) => shQuote(w))
+                .join(' ')}`;
         }
         // ENTRYPOINT override (e.g. opencode-web's chown wrapper). `docker run --entrypoint` takes ONE
         // executable; remaining array elements become leading command args (before any `command`).
@@ -690,11 +699,28 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       // with the Hub/Traefik (commonly :80) or a peer app on the same node.
       const reserved = await reserveHostPort();
       const publishFlag = reserved > 0 ? `${reserved}:${result.port}` : `0:${result.port}`;
-      const run = execQuiet(`docker run -d --name ${containerName} -p ${publishFlag}${capFlags}${runFlags} ${result.image}${cmdSuffix}`, 60_000);
+      let envFileFlag = '';
+      if (QA_ENV_FILE) {
+        const sb = join(RESULTS_DIR, 'scratch', appId);
+        mkdirSync(sb, { recursive: true });
+        const ef = join(sb, 'app.env');
+        writeFileSync(ef, buildAppEnv(appId, config as unknown as Record<string, unknown>, new Map(), sb, reserved, Number(result.port)));
+        envFileFlag = ` --env-file ${shQuote(ef)}`;
+      }
+      const run = execQuiet(
+        `docker run -d --name ${containerName} -p ${publishFlag}${capFlags}${envFileFlag}${runFlags} ${result.image}${cmdSuffix}`,
+        60_000,
+      );
       if (!run.ok) {
+        // A `--device` for hardware this node lacks (zigbee2mqtt's USB coordinator, zwave-js-ui's stick) is not an app failure.
+        if (/error gathering device information|no such device|cannot access .*\/dev\//i.test(run.err)) {
+          result.score = 'skip' as Score;
+          result.notes = `needs a host device the node does not have: ${run.err.slice(-240)}`;
+          return result;
+        }
         result.score = 'error';
         result.failKind = 'start';
-        result.notes = `Container start failed: ${run.err.slice(0, 200)}`;
+        result.notes = `Container start failed: ${run.err.slice(-300)}`;
         return result;
       }
       // Resolve the host port. When reserveHostPort() succeeded above, `publishFlag` already asked
@@ -825,9 +851,12 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       // inkscape, medusa and mixpost all serve in 10-40s standalone yet timed out on the fleet.
       // A 3xx is itself proof of a live HTTP server, so it counts as ready.
       try {
+        // The Hub's Traefik terminates TLS and forwards X-Forwarded-Proto/Port; apps that force HTTPS (alf.io throws
+        // 'HTTP Port N does not have a corresponding HTTPS Port') need them to answer a request on a non-standard port.
         const res = await fetch(`http://localhost:${hostPort}${uiPath}`, {
           redirect: 'manual',
           signal: AbortSignal.timeout(4000),
+          headers: QA_NO_PROXY_HEADERS ? {} : { 'X-Forwarded-Proto': 'https', 'X-Forwarded-Port': '443' },
         });
         httpStatus = res.status;
         if (httpStatus < 500) {
@@ -1303,6 +1332,82 @@ function serverGreets(port: number, waitMs = 3000): Promise<boolean> {
   });
 }
 
+// The manifest of the app loadFieldSpecs last saw; read by composeUp for QA_ENV_FILE. A module global like FIELD_SPECS, with the same
+// caveat: two apps starting at once (QA_CONCURRENCY > 1) can overwrite each other's.
+let CURRENT_CONFIG: Record<string, unknown> | null = null;
+
+/**
+ * Opt-in (QA_ENV_FILE=1): emulate what the production Hub writes to app.env and attaches as `env_file` to EVERY service
+ * (packages/backend/src/modules/apps/app.helpers.ts generateEnvFile): system variables, plus every
+ * declared form field (random / default / required stand-in), plus derived base-URL variables.
+ */
+function buildAppEnv(
+  appId: string,
+  config: Record<string, unknown> | null,
+  cache: Map<string, string>,
+  scratchBase: string,
+  hostPort: number,
+  mainPort: number,
+): string {
+  const kv = new Map<string, string>();
+  const base = `http://127.0.0.1:${hostPort}`;
+  const set = (k: string, v: string) => kv.set(k, v);
+  set('NODE_ENV', 'production');
+  set('DOMAIN', 'ci.localhost');
+  set('LOCAL_DOMAIN', 'ci.lan');
+  set('TZ', 'Etc/UTC');
+  set('ROOT_FOLDER_HOST', scratchBase);
+  set('APP_DATA_DIR', scratchBase);
+  set('APP_PORT', String(mainPort));
+  set('APP_URN', `${appId}:ci`);
+  set('APP_ID', `${appId}-ci`);
+  set('APP_NAME', appId);
+  set('APP_STORE_ID', 'ci');
+  set('APP_IMAGE_TAG', String(config?.version ?? 'latest'));
+  set('APP_HOSTNAME', '0.0.0.0');
+  set('APP_INTERNAL_AUTHORITY', `127.0.0.1:${hostPort}`);
+  set('APP_EXPOSED', 'false');
+  set('APP_SCHEME', 'http');
+  set('APP_PROTOCOL', 'http');
+  set('APP_HOST', '127.0.0.1');
+  set('APP_DOMAIN', `127.0.0.1:${hostPort}`);
+  set('APP_URL', base);
+  set('APP_BASE_URL', base);
+  set('APP_BASE_HOST', `127.0.0.1:${hostPort}`);
+  set('APP_BASE_WSS_ORIGIN', `ws://127.0.0.1:${hostPort}`);
+  if (config?.generate_vapid_keys) {
+    const { publicKey, privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const pj = publicKey.export({ format: 'jwk' }) as { x: string; y: string };
+    const dj = privateKey.export({ format: 'jwk' }) as { d: string };
+    const point = Buffer.concat([Buffer.from([4]), Buffer.from(pj.x, 'base64url'), Buffer.from(pj.y, 'base64url')]);
+    set('VAPID_PUBLIC_KEY', point.toString('base64url'));
+    set('VAPID_PRIVATE_KEY', dj.d);
+  }
+  for (const f of (config?.form_fields ?? []) as Array<Record<string, unknown>>) {
+    const env = typeof f?.env_variable === 'string' ? f.env_variable : '';
+    if (!env) continue;
+    if (f.type === 'app_base_url') {
+      set(env, base);
+      continue;
+    }
+    if (f.type === 'random') {
+      set(env, valueForVar(env, cache, scratchBase));
+      continue;
+    }
+    if (f.default !== undefined && f.default !== null) {
+      set(env, String(f.default));
+      continue;
+    }
+    if (f.required) {
+      set(env, valueForVar(env, cache, scratchBase));
+    }
+  }
+  // The Hub writes plain KEY=value lines (env.utils.ts envMapToString; CR/LF stripped). Quoting here would leave the quotes
+  // IN the value for `docker run --env-file`, which does no unquoting (compose's env_file does).
+  const q = (v: string) => v.replace(/[\r\n]+/g, ' ');
+  return `${[...kv].map(([k, v]) => `${k}=${q(v)}`).join('\n')}\n`;
+}
+
 /**
  * The manifest's own declared constraints for a generated env var, keyed by env_variable.
  * Built per-app from config.json `form_fields` so QA honours the SAME contract the Hub does
@@ -1313,10 +1418,11 @@ function serverGreets(port: number, waitMs = 3000): Promise<boolean> {
  * QA run while a real Hub install was fine. That is the harness testing something the product
  * never does.
  */
-type FieldSpec = { min?: number; max?: number; type?: string; def?: string; encoding?: string };
+type FieldSpec = { min?: number; max?: number; type?: string; def?: string; encoding?: string; options?: string[] };
 let FIELD_SPECS: Map<string, FieldSpec> = new Map();
 
 function loadFieldSpecs(config: Record<string, unknown>): void {
+  CURRENT_CONFIG = config;
   FIELD_SPECS = new Map();
   const fields = config?.form_fields;
   if (!Array.isArray(fields)) return;
@@ -1329,6 +1435,9 @@ function loadFieldSpecs(config: Record<string, unknown>): void {
       type: typeof f.type === 'string' ? f.type : undefined,
       def: f.default !== undefined && f.default !== null ? String(f.default) : undefined,
       encoding: typeof f.encoding === 'string' ? f.encoding : undefined,
+      options: Array.isArray(f.options)
+        ? (f.options as Array<Record<string, unknown>>).map((o) => String(o?.value ?? '')).filter(Boolean)
+        : undefined,
     });
   }
 }
@@ -1374,6 +1483,34 @@ async function hasInternalListener(container: string, port: number): Promise<boo
   // If we could not even read /proc/net/tcp, we have no evidence either way — do not fail on a guess.
   if (!proc.ok || Number((proc.out || '0').trim()) === 0) return true;
   return false;
+}
+
+/** Split a command string into argv the way Docker Compose does (shlex: quotes and backslashes, NO shell). The single-container path used to run a string `command` as `sh -c '<cmd>'`, which an image whose ENTRYPOINT is not a shell receives as `-c` (openbooks: 'unknown shorthand flag: c' while compose starts it fine). */
+function shellWords(str: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let q: string | null = null;
+  let has = false;
+  for (let i = 0; i < str.length; i++) {
+    const c = str[i] as string;
+    if (q) {
+      if (c === q) q = null;
+      else if (c === '\\' && q === '"' && i + 1 < str.length) cur += str[++i];
+      else cur += c;
+    } else if (c === '"' || c === "'") {
+      q = c;
+      has = true;
+    } else if (c === '\\' && i + 1 < str.length) {
+      cur += str[++i];
+      has = true;
+    } else if (/\s/.test(c)) {
+      if (cur || has) out.push(cur);
+      cur = '';
+      has = false;
+    } else cur += c;
+  }
+  if (cur || has) out.push(cur);
+  return out;
 }
 
 function valueForVar(name: string, cache: Map<string, string>, scratchBase: string): string {
@@ -1442,7 +1579,10 @@ function valueForVar(name: string, cache: Map<string, string>, scratchBase: stri
     // raw base64 secret (dittofeed) got a value that decodes to 3/4 the byte length it declared —
     // wrong for any cipher with a fixed valid key size, and neither app could ever boot under this
     // harness even though their manifests were already correct for real production.
-    v = spec.encoding === 'base64' ? randomBytes(spec.min).toString('base64') : hexOfLength(spec.min);
+    // The Hub derives these from a SHA-256 digest (env.utils.ts createRandomString), so it can mint at most 32 bytes (base64)
+    // or 64 hex characters whatever `min` says. invoice-ninja asks for min 43 base64 and builds APP_KEY=base64:<value>: the Hub
+    // yields a 32-byte key, a 43-byte key (what this used to generate) makes Laravel fail 'Unsupported cipher or incorrect key length'.
+    v = spec.encoding === 'base64' ? randomBytes(Math.min(spec.min, 32)).toString('base64') : hexOfLength(Math.min(spec.min, 64));
     cache.set(name, v);
     return v;
   }
@@ -1454,6 +1594,13 @@ function valueForVar(name: string, cache: Map<string, string>, scratchBase: stri
   // app as genuinely broken. With the declared default it serves HTTP 200 in 3.0s.
   // Deliberately AFTER the `random` branch above: a `random` field's default (if any) is a
   // placeholder, not a usable secret.
+  // A select-style field (`options`) holds one of its option values — the Hub makes the user pick one,
+  // so a random string (gotosocial's GTS_ACCOUNTS_REGISTRATION_OPEN) is not a state the product ever has.
+  if (spec?.options?.length) {
+    v = spec.def !== undefined && spec.options.includes(spec.def) ? spec.def : (spec.options[0] as string);
+    cache.set(name, v);
+    return v;
+  }
   if (spec?.def !== undefined) {
     cache.set(name, spec.def);
     return spec.def;
@@ -1617,7 +1764,7 @@ async function composeUp(
   // to `${VAR}` before compose ever sees the escape, and compose would then try to interpolate that
   // ${VAR} using ITS OWN (unset) environment instead of leaving it for the container's shell.
   const subst = (s: string) =>
-    s.replace(/(?<!\$)\$\{([A-Z0-9_]+)(?::-([^}]*))?\}/g, (_, k, def) => (def === undefined ? valueForVar(k, cache, scratchBase) : def));
+    s.replace(/(?<!\$)\$\{([A-Z0-9_]+)(?::?-([^}]*))?\}/g, (_, k, def) => (def === undefined ? valueForVar(k, cache, scratchBase) : def));
   // One scratch dir per declared hostPath, shared by every service that mounts it (see the volumes
   // block below), plus the set of dirs already seeded so shared ones are prepared exactly once.
   const sharedMounts = new Map<string, string>();
@@ -1625,6 +1772,11 @@ async function composeUp(
   // Services that declare a healthcheck: a depends_on may only request `service_healthy`
   // against these — asking it of a service without one makes `compose up` error out.
   const hasHealthcheck = new Set(services.filter((s) => s.name && (s.healthCheck ?? s.healthcheck)?.test).map((s) => s.name as string));
+  let envFileLine = '';
+  if (QA_ENV_FILE) {
+    writeFileSync(join(scratchBase, 'app.env'), buildAppEnv(appId, CURRENT_CONFIG, cache, scratchBase, reservedHostPort || 0, mainPort));
+    envFileLine = '    env_file:\n      - app.env\n';
+  }
   let y = 'services:\n';
   for (const s of services) {
     if (!s.name || !s.image) continue;
@@ -1635,6 +1787,7 @@ async function composeUp(
     // langfuse). Bounded on-failure restarts let that transient race self-heal while the readiness
     // ceiling and the exited/restart-loop fail-fast still bail out on a genuinely broken app.
     y += `  ${s.name}:\n    image: ${yamlStr(subst(s.image))}\n    restart: on-failure:10\n`;
+    y += envFileLine;
     // Optional resource caps (off unless QA_MEM_LIMIT/QA_CPU_LIMIT set). Applied per service so a
     // multi-service stack stays bounded when several apps run concurrently on one node. These are
     // Compose v2 top-level keys (`mem_limit`/`cpus`) — honored by `docker compose up` without swarm.
@@ -1679,6 +1832,8 @@ async function composeUp(
       y += '    extra_hosts:\n';
       for (const eh of s.extraHosts) y += `      - ${yamlStr(subst(String(eh)))}\n`;
     }
+    // networkMode (a sidecar in the main service's namespace, e.g. bisq2-node's web UI) — the Hub's service.builder emits it.
+    if (s.networkMode) y += `    network_mode: ${yamlStr(String(s.networkMode))}\n`;
     // Command override — for some apps (e.g. affine) this is the ONLY thing that runs the
     // DB migration/predeploy step; dropping it boots the app against an empty schema and
     // crashes with `relation "..." does not exist`.
@@ -1718,7 +1873,10 @@ async function composeUp(
         const sc = hp
           ? (sharedMounts.get(hp) ??
             (() => {
-              const d = join(scratchBase, '_shared', hp.replace(/[^a-zA-Z0-9]/g, '_'));
+              // Keep the real tree when the path is already under the scratch root: ci-memory's setup-secrets writes into
+              // .../data/secrets while api/database mount .../data/secrets/services/<svc>, so flattening each path into
+              // its own _shared dir broke the nesting the Hub has.
+              const d = hp.startsWith(`${scratchBase}/`) ? hp : join(scratchBase, '_shared', hp.replace(/[^a-zA-Z0-9]/g, '_'));
               sharedMounts.set(hp, d);
               return d;
             })())
@@ -1804,7 +1962,7 @@ async function composeUp(
   // `spawnSync /bin/sh ETIMEDOUT` (notesnook's 7-service stack, hermes-agent, n8n). The per-app watchdog
   // stays the real backstop for a genuinely-stuck stack (force-fails to `timeout`, not `error`).
   const up = await execAsync(`docker compose -p ${project} -f ${ymlPath} up -d --quiet-pull`, 1_200_000);
-  if (!up.ok) return { ok: false, hostPort: 0, statsName: '', project, err: up.err.slice(-200) };
+  if (!up.ok) return { ok: false, hostPort: 0, statsName: '', project, err: up.err.slice(-600) };
   // docker compose port may fail if service exited before port was bound — retry briefly
   let portMap = await execAsync(`docker compose -p ${project} -f ${ymlPath} port ${main?.name} ${mainPort}`);
   if (!portMap.ok) {

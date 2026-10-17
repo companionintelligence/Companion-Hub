@@ -420,6 +420,11 @@ function runSmoke(
       stderr += d.toString();
     });
     proc.on('error', (e) => finish({ ok: false, tools: [], reason: `docker spawn failed: ${e.message}` }));
+    // A child that closes its stdin early makes write() report EPIPE as an async 'error' event, which the try/catch in
+    // send() cannot see; unhandled, it throws and ends the whole process. The 'exit' handler below reports the dead child.
+    proc.stdin.on('error', () => {
+      /* EPIPE: the child is gone */
+    });
     proc.on('exit', (code) => {
       exited = true;
       if (!sawInit && !done) {
