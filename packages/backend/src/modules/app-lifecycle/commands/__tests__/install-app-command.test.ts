@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mock, mockDeep } from 'vitest-mock-extended';
-import { InstallAppCommand, extractComposeImages, mapPullProgressToInstallProgress } from '../install-app-command';
+import { InstallAppCommand, extractComposeImages, mapPullProgressToInstallProgress, withMovedPort } from '../install-app-command';
 import type { ModuleRef } from '@nestjs/core';
 import type Dockerode from 'dockerode';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { SSEService } from '@/core/sse/sse.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { AppsRepository } from '@/modules/apps/apps.repository';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import { DockerService } from '@/modules/docker/docker.service';
@@ -65,6 +66,32 @@ describe('install progress helpers', () => {
     expect(mapPullProgressToInstallProgress(0, 100)).toBe(60);
     expect(mapPullProgressToInstallProgress(50, 100)).toBeGreaterThan(60);
     expect(mapPullProgressToInstallProgress(100, 100)).toBe(98);
+  });
+});
+
+describe('withMovedPort', () => {
+  it('moves the port a URL names, keeping the rest of it as written', () => {
+    expect(withMovedPort('http://localhost:8080', 8080, 10000)).toBe('http://localhost:10000');
+    expect(withMovedPort('http://localhost:8080/', 8080, 10000)).toBe('http://localhost:10000/');
+    expect(withMovedPort('https://hub.tail1234.ts.net:8080/ghost?x=1#top', 8080, 10000)).toBe('https://hub.tail1234.ts.net:10000/ghost?x=1#top');
+    expect(withMovedPort('http://[::1]:8080', 8080, 10000)).toBe('http://[::1]:10000');
+    expect(withMovedPort('HTTP://192.168.1.20:8080', 8080, 10000)).toBe('HTTP://192.168.1.20:10000');
+  });
+
+  it('leaves a URL naming another port or none, and anything that is not an http(s) URL', () => {
+    for (const value of [
+      'http://localhost:18080',
+      'http://localhost:80800',
+      'http://localhost:808',
+      'https://ghost.example.com',
+      'https://ghost.example.com/blog:8080',
+      'http://user:secret@localhost:8080',
+      'localhost:8080',
+      'ftp://localhost:8080',
+      '',
+    ]) {
+      expect(withMovedPort(value, 8080, 10000)).toBe(value);
+    }
   });
 });
 
@@ -147,6 +174,8 @@ describe('InstallAppCommand — pull policy', () => {
     portManager.releaseAll.mockResolvedValue();
     portManager.allocatePorts.mockResolvedValue([]);
 
+    const appsRepository = mock<AppsRepository>();
+
     const cloudflareService = mock<CloudflareClientService>();
 
     const dockerode = mock<Dockerode>();
@@ -166,6 +195,7 @@ describe('InstallAppCommand — pull policy', () => {
         if (token === EnvUtils) return envUtils;
         if (token === TraefikConfigService) return traefikConfigService;
         if (token === PortManagerService) return portManager;
+        if (token === AppsRepository) return appsRepository;
         if (token === CloudflareClientService) return cloudflareService;
         return mock();
       }),
@@ -525,6 +555,198 @@ describe('InstallAppCommand — pull policy', () => {
   it('still succeeds when called without a cancellation context (backward compatible)', async () => {
     const result = await command.execute(appUrn, {});
     expect(result.success).toBe(true);
+  });
+
+  describe('when something outside the Hub holds the host port', () => {
+    const envUtilsMap = (content: string) => Object.fromEntries(new EnvUtils().envStringToMap(content));
+    /** Docker Engine 29.6's wording when a program on the host already listens on the port. */
+    const portTaken = (port: number) =>
+      new Error(
+        `Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint test-app-1 (a65f29c5): failed to bind host port 127.0.0.1:${port}/tcp: address already in use`,
+      );
+    const mainAllocation = (hostPort: number) => ({
+      id: hostPort,
+      appUrn,
+      hostPort,
+      containerPort: 8080,
+      protocol: 'tcp' as const,
+      label: 'main',
+      createdAt: '',
+    });
+
+    let portManager: ReturnType<typeof mock<PortManagerService>>;
+    let appFilesManager: ReturnType<typeof mock<AppFilesManager>>;
+    let appsRepository: ReturnType<typeof mock<AppsRepository>>;
+    /** Host ports Docker refuses, in the order `compose up` meets them. */
+    let refusals: number[];
+    /** app.env as the last write left it, which the next read returns, as the file would. */
+    let appEnv: string;
+
+    beforeEach(() => {
+      const moduleRef = (command as any).moduleRef as ModuleRef;
+      portManager = moduleRef.get(PortManagerService) as any;
+      appFilesManager = moduleRef.get(AppFilesManager) as any;
+      appsRepository = moduleRef.get(AppsRepository) as any;
+
+      // What generateEnvFile writes before the install allocates: the manifest's port, 8080.
+      appEnv = ['APP_PORT=8080', 'APP_INTERNAL_AUTHORITY=127.0.0.1:8080', 'APP_URL=http://127.0.0.1:8080'].join('\n');
+      appFilesManager.getAppEnv.mockImplementation(async () => ({ content: appEnv, path: '/tmp/.env' }));
+      appFilesManager.writeAppEnv.mockImplementation(async (_urn, content) => {
+        appEnv = content;
+      });
+
+      portManager.allocatePorts.mockResolvedValue([mainAllocation(8080)]);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 7, port: 8080, config: { exposureMode: 'local' }, status: 'installing' } as any);
+
+      refusals = [];
+      dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+        composeArgs.push(args);
+        const refused = args.startsWith('up') ? refusals.shift() : undefined;
+        if (refused !== undefined) {
+          throw portTaken(refused);
+        }
+      });
+    });
+
+    it('moves the main port to a free one, records it on the app and app.env, and installs', async () => {
+      refusals = [8080];
+      portManager.getMainPort.mockResolvedValue(8080);
+      portManager.moveMainPort.mockResolvedValue(mainAllocation(10000));
+      const form: { port?: number } = {};
+
+      const result = await command.execute(appUrn, form);
+
+      expect(result.success).toBe(true);
+      expect(portManager.moveMainPort).toHaveBeenCalledExactlyOnceWith(appUrn, new Set([8080]));
+      expect(composeArgs.filter((args) => args.startsWith('up'))).toHaveLength(2);
+      const env = appFilesManager.writeAppEnv.mock.calls.at(-1)?.[1] ?? '';
+      expect(env).toContain('APP_PORT=10000');
+      expect(env).toContain('APP_INTERNAL_AUTHORITY=127.0.0.1:10000');
+      expect(env).toContain('APP_URL=http://127.0.0.1:10000');
+      // Starts, restarts and updates rebuild app.env from the row's config, so the port must be there.
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { config: { exposureMode: 'local', port: 10000 }, port: 10000 });
+      expect(form.port).toBe(10000);
+    });
+
+    it('never offers a port Docker already refused during the same install', async () => {
+      refusals = [8080, 10000];
+      portManager.getMainPort.mockResolvedValueOnce(8080).mockResolvedValueOnce(10000);
+      const avoidedOnEachMove: number[][] = [];
+      portManager.moveMainPort.mockImplementation(async (_urn, avoid) => {
+        avoidedOnEachMove.push([...avoid]);
+        return mainAllocation(avoidedOnEachMove.length === 1 ? 10000 : 10001);
+      });
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(true);
+      expect(avoidedOnEachMove).toEqual([[8080], [8080, 10000]]);
+      expect(appFilesManager.writeAppEnv.mock.calls.at(-1)?.[1]).toContain('APP_PORT=10001');
+    });
+
+    it('fails as before when the refused port is not the main port', async () => {
+      // An `addPorts` port from the manifest: it is published as written, so moving the main port would not help.
+      refusals = [51820];
+      portManager.getMainPort.mockResolvedValue(8080);
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(false);
+      expect(portManager.moveMainPort).not.toHaveBeenCalled();
+      expect(composeArgs.filter((args) => args.startsWith('up'))).toHaveLength(1);
+    });
+
+    it('leaves the app row alone when the main port is the one it already records', async () => {
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(true);
+      expect(appsRepository.updateAppById).not.toHaveBeenCalledWith(7, expect.objectContaining({ port: expect.anything() }));
+    });
+
+    it('records config.port when only the port column already holds the new port', async () => {
+      // A retried install keeps the row's port from the failed attempt, but its config is the new form's.
+      portManager.allocatePorts.mockResolvedValue([mainAllocation(10000)]);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 7, port: 10000, config: { exposureMode: 'local' }, status: 'installing' } as any);
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(true);
+      // Without config.port, the next start would go back to the manifest's port, 8080.
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { config: { exposureMode: 'local', port: 10000 }, port: 10000 });
+    });
+
+    it('moves the base URLs that named the refused port, in app.env and in the stored config', async () => {
+      refusals = [8080];
+      portManager.getMainPort.mockResolvedValue(8080);
+      portManager.moveMainPort.mockResolvedValue(mainAllocation(10000));
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({
+        id: 'test-app',
+        name: 'Test App',
+        port: 8080,
+        force_pull: false,
+        form_fields: [
+          { type: 'app_base_url', label: 'Site URL', env_variable: 'SITE_URL', alias_env_variables: ['SITE_URL_SLASH'], trailing_slash: true },
+          { type: 'app_base_url', label: 'Media URL', env_variable: 'MEDIA_URL' },
+          { type: 'url', label: 'Other service', env_variable: 'OTHER_URL' },
+        ],
+      } as any);
+      appEnv = [
+        'APP_PORT=8080',
+        'APP_URL=http://127.0.0.1:8080',
+        'APP_BASE_URL=http://127.0.0.1:8080',
+        'APP_BASE_HOST=127.0.0.1:8080',
+        'APP_BASE_WSS_ORIGIN=ws://127.0.0.1:8080',
+        'SITE_URL=http://localhost:8080',
+        'SITE_URL_SLASH=http://localhost:8080/',
+        'MEDIA_URL=https://media.example.com',
+        'OTHER_URL=http://localhost:8080',
+      ].join('\n');
+      const storedConfig = {
+        exposureMode: 'local',
+        SITE_URL: 'http://localhost:8080',
+        MEDIA_URL: 'https://media.example.com',
+        OTHER_URL: 'http://localhost:8080',
+      };
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 7, port: 8080, config: storedConfig, status: 'installing' } as any);
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(true);
+      const env = envUtilsMap(appEnv);
+      expect(env).toMatchObject({
+        APP_PORT: '10000',
+        APP_URL: 'http://127.0.0.1:10000',
+        APP_BASE_URL: 'http://127.0.0.1:10000',
+        APP_BASE_HOST: '127.0.0.1:10000',
+        APP_BASE_WSS_ORIGIN: 'ws://127.0.0.1:10000',
+        SITE_URL: 'http://localhost:10000',
+        SITE_URL_SLASH: 'http://localhost:10000/',
+        // A public address names no port, and a `url` field is some other service's address.
+        MEDIA_URL: 'https://media.example.com',
+        OTHER_URL: 'http://localhost:8080',
+      });
+      // The stored form is what every later start replays.
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, {
+        config: { ...storedConfig, SITE_URL: 'http://localhost:10000', port: 10000 },
+        port: 10000,
+      });
+    });
+
+    it('does not move the main port for a UDP mapping on the same number', async () => {
+      portManager.getMainPort.mockResolvedValue(8080);
+      dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+        composeArgs.push(args);
+        if (args.startsWith('up')) {
+          throw new Error('Error response from daemon: failed to bind host port 0.0.0.0:8080/udp: address already in use');
+        }
+      });
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(false);
+      expect(portManager.moveMainPort).not.toHaveBeenCalled();
+      expect(composeArgs.filter((args) => args.startsWith('up'))).toHaveLength(1);
+    });
   });
 
   // ── download size in the progress ticks ─────────────────────────────────────

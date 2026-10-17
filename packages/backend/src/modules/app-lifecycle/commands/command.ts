@@ -8,7 +8,7 @@ import type { OperationPhase } from '../app-operation-registry';
 import { prepareAppComposeDir } from './compose-preparation';
 import { reportAndTranslateAppError } from './failure-reporting';
 import { assertHostDevicesAvailable } from './host-device-preflight';
-import { removeAppProjectNetworks, runComposeWithNetworkRecovery } from './network-recovery';
+import { type ComposeRecoveryDeps, removeAppProjectNetworks, runComposeWithNetworkRecovery } from './network-recovery';
 
 /**
  * Optional cancellation context threaded into a command's `execute()`.
@@ -82,12 +82,14 @@ export class AppLifecycleCommand {
     command: string,
     maxAttempts = 3,
     signal?: AbortSignal,
+    recovery?: Pick<ComposeRecoveryDeps, 'recoverHostPortConflict'>,
   ): Promise<void> {
     // Bound to `this` so a subclass override or an instance spy still wins over the base method.
-    const deps = {
+    const deps: ComposeRecoveryDeps = {
       moduleRef: this.moduleRef,
       ensureAppDir: (urn: AppUrn, f: AppEventFormInput, options?: { excludeSubnets?: string[] }) => this.ensureAppDir(urn, f, options),
       removeStaleAppNetworks: (urn: AppUrn) => this.removeStaleAppNetworks(urn),
+      recoverHostPortConflict: recovery?.recoverHostPortConflict,
     };
     return runComposeWithNetworkRecovery(deps, appUrn, form, command, maxAttempts, signal);
   }

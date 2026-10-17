@@ -41,7 +41,12 @@ const createMockRepo = () => {
       }
       return before - allocations.length;
     }),
-    deleteByHostPort: vi.fn(),
+    deleteByHostPort: vi.fn(async (port: number, protocol: string) => {
+      const index = allocations.findIndex((a) => a.hostPort === port && a.protocol === protocol);
+      if (index !== -1) {
+        allocations.splice(index, 1);
+      }
+    }),
     _allocations: allocations,
   } as unknown as PortAllocationRepository & { _allocations: typeof allocations };
 };
@@ -149,5 +154,45 @@ describe('PortManagerService', () => {
 
     expect(allocations).toHaveLength(1);
     expect(callCount).toBe(2); // First failed, second succeeded
+  });
+
+  describe('moveMainPort', () => {
+    it('gives the main port a new host port, skipping the refused one and every port in avoid', async () => {
+      const appUrn = 'openclaw:store' as AppUrn;
+      await service.allocatePorts(appUrn, [
+        { containerPort: 18789, label: 'main', preferredHostPort: 18789 },
+        { containerPort: 9090, label: 'admin', preferredHostPort: 15001 },
+      ]);
+
+      const moved = await service.moveMainPort(appUrn, new Set([10000, 10001]));
+
+      expect(moved).toMatchObject({ appUrn, containerPort: 18789, protocol: 'tcp', label: 'main' });
+      expect([18789, 10000, 10001]).not.toContain(moved?.hostPort);
+      expect(await service.getMainPort(appUrn)).toBe(moved?.hostPort);
+      // The other allocation stays where it was.
+      expect((await service.getAppPorts(appUrn)).map((a) => [a.label, a.hostPort]).sort()).toEqual(
+        [
+          ['admin', 15001],
+          ['main', moved?.hostPort],
+        ].sort(),
+      );
+    });
+
+    it('keeps the main port it had when no new port can be allocated', async () => {
+      const appUrn = 'openclaw:store' as AppUrn;
+      const [main] = await service.allocatePorts(appUrn, [{ containerPort: 18789, label: 'main', preferredHostPort: 18789 }]);
+      vi.mocked(repo.create).mockRejectedValueOnce(new Error('database unavailable'));
+
+      await expect(service.moveMainPort(appUrn, new Set())).rejects.toThrow('database unavailable');
+
+      expect(await service.getMainPort(appUrn)).toBe(main?.hostPort);
+    });
+
+    it('returns null and allocates nothing for an app with no main allocation', async () => {
+      const moved = await service.moveMainPort('nothing:store' as AppUrn, new Set());
+
+      expect(moved).toBeNull();
+      expect(repo.create).not.toHaveBeenCalled();
+    });
   });
 });

@@ -476,6 +476,111 @@ describe('runComposeWithNetworkRecovery', () => {
 
     expect(harness.ensureAppDirCalls.map((call) => call.excludeSubnets)).toEqual([[]]);
   });
+
+  describe('host port conflicts', () => {
+    /** Docker Engine 29.6's wording when a program on the host already listens on the port. */
+    const PORT_CONFLICT_MESSAGE =
+      'Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint ghost_ci-marketplace-ghost-1 (a65f29c5): failed to bind host port 127.0.0.1:18789/tcp: address already in use';
+
+    it('retries once the hook has moved the app off the refused port', async () => {
+      const harness = createHarness();
+      const conflict = new Error(PORT_CONFLICT_MESSAGE);
+      harness.failComposeOnce(conflict);
+      const recoverHostPortConflict = vi.fn(async (_error: unknown) => true);
+
+      await expect(runComposeWithNetworkRecovery({ ...harness.deps, recoverHostPortConflict }, APP_URN, FORM, COMMAND)).resolves.toBeUndefined();
+
+      expect(recoverHostPortConflict).toHaveBeenCalledExactlyOnceWith(conflict);
+      expect(harness.callOrder).toEqual(['removeStaleAppNetworks', 'composeApp', 'removeStaleAppNetworks', 'composeApp']);
+      // A port conflict is not a subnet problem: the subnet stays and compose is not regenerated.
+      expect(harness.releaseSubnet).not.toHaveBeenCalled();
+      expect(harness.ensureAppDir).not.toHaveBeenCalled();
+    });
+
+    it('fails at once with the original error when no hook is given', async () => {
+      const harness = createHarness();
+      const conflict = new Error(PORT_CONFLICT_MESSAGE);
+      harness.failComposeAlways(conflict);
+
+      const error = await runComposeWithNetworkRecovery(harness.deps, APP_URN, FORM, COMMAND).catch((err: unknown) => err);
+
+      expect(error).toBe(conflict);
+      expect(harness.composeApp).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails at once with the original error when the hook cannot move the app', async () => {
+      const harness = createHarness();
+      const conflict = new Error(PORT_CONFLICT_MESSAGE);
+      harness.failComposeAlways(conflict);
+      const recoverHostPortConflict = vi.fn(async () => false);
+
+      const error = await runComposeWithNetworkRecovery({ ...harness.deps, recoverHostPortConflict }, APP_URN, FORM, COMMAND).catch(
+        (err: unknown) => err,
+      );
+
+      expect(error).toBe(conflict);
+      expect(harness.composeApp).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports the compose failure, not the hook failure, when the hook throws', async () => {
+      const harness = createHarness();
+      const conflict = new Error(PORT_CONFLICT_MESSAGE);
+      harness.failComposeAlways(conflict);
+      const recoverHostPortConflict = vi.fn(async () => {
+        throw new Error('database unavailable');
+      });
+
+      const error = await runComposeWithNetworkRecovery({ ...harness.deps, recoverHostPortConflict }, APP_URN, FORM, COMMAND).catch(
+        (err: unknown) => err,
+      );
+
+      expect(error).toBe(conflict);
+      expect(harness.composeApp).toHaveBeenCalledTimes(1);
+      expect(harness.warn).toHaveBeenCalledWith(expect.stringContaining('database unavailable'));
+    });
+
+    it('stops after maxAttempts when every new port is refused too, and never asks to move on the last attempt', async () => {
+      const harness = createHarness();
+      const lastConflict = new Error(PORT_CONFLICT_MESSAGE.replace('18789', '10001'));
+      harness.failComposeOnce(new Error(PORT_CONFLICT_MESSAGE));
+      harness.failComposeOnce(new Error(PORT_CONFLICT_MESSAGE.replace('18789', '10000')));
+      harness.failComposeOnce(lastConflict);
+      const recoverHostPortConflict = vi.fn(async () => true);
+
+      const error = await runComposeWithNetworkRecovery({ ...harness.deps, recoverHostPortConflict }, APP_URN, FORM, COMMAND, 3).catch(
+        (err: unknown) => err,
+      );
+
+      expect(error).toBe(lastConflict);
+      expect(harness.composeApp).toHaveBeenCalledTimes(3);
+      expect(recoverHostPortConflict).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not offer a network overlap to the port hook', async () => {
+      const harness = createHarness();
+      harness.failComposeOnce(new Error(OVERLAP_MESSAGE));
+      const recoverHostPortConflict = vi.fn(async () => true);
+
+      await runComposeWithNetworkRecovery({ ...harness.deps, recoverHostPortConflict }, APP_URN, FORM, COMMAND);
+
+      expect(recoverHostPortConflict).not.toHaveBeenCalled();
+      expect(harness.releaseSubnet).toHaveBeenCalledOnce();
+    });
+
+    it('propagates a cancellation worded like a port conflict without calling the hook', async () => {
+      const harness = createHarness();
+      const aborted = abortError(PORT_CONFLICT_MESSAGE);
+      harness.failComposeAlways(aborted);
+      const recoverHostPortConflict = vi.fn(async () => true);
+
+      const error = await runComposeWithNetworkRecovery({ ...harness.deps, recoverHostPortConflict }, APP_URN, FORM, COMMAND).catch(
+        (err: unknown) => err,
+      );
+
+      expect(error).toBe(aborted);
+      expect(recoverHostPortConflict).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe('removeAppProjectNetworks', () => {
