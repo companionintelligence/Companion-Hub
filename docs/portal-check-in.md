@@ -106,7 +106,7 @@ For each affected Hub:
 
 1. In Portal, as an owner or admin of the Hub's organization, get a pairing code. If the device no longer appears, add it again. If it appears as inactive, re-register it.
 1. Update the Hub to a build that includes this change. Otherwise the Hub refuses to pair while it is registered.
-1. On the Hub, run `cihub register --code <code>`. It sends the Hub's device key from `state/settings.json`, which authenticates the pairing of an already registered Hub.
+1. On the Hub, run `cihub register --code <code>`. It runs on the Hub's own machine and sends the host-local key from `state/settings.json`, so the Hub lets it pair an already registered Hub again.
 1. Run `cihub doctor`. `Registration` shows a ready phase and `Portal check-in` shows `accepted`.
 
 Pairing sends the Hub's current device key as proof of possession. Portal accepts a pairing without that proof only when the device row is `inactive` or absent. If Portal answers `DEVICE_PROOF_REQUIRED`, the row is live under a different key, so re-register the device in Portal and use the new code.

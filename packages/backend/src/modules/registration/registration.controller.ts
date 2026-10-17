@@ -317,8 +317,9 @@ export class RegistrationController {
 
     /*
      * Neither route's gate proves who sent the callback. The POST's nonce is minted by an
-     * unauthenticated route and the GET's loopback check is not authentication. So both refuse a
-     * Hub that is already serving, since re-registering one is `resetRegistration`'s job.
+     * unauthenticated route and the GET's check of where it came from is not authentication. So
+     * both refuse a Hub that is already serving, since re-registering one is `resetRegistration`'s
+     * job.
      *
      * A Hub degraded by a missing tunnel token is excluded. It is registered, but pairing again is
      * how it recovers. The headless setup service finishes that pairing here.
