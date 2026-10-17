@@ -12,6 +12,7 @@ import {
   desktopSignInWaitProof,
   isDesktopSignInWaitProof,
   isDirectLoopbackRequest,
+  isRequestFromThisHost,
   resolvePortalDesktopHandoffState,
   shouldHandoffPortalLoginToDesktop,
   resolvePortalCallbackUrl,
@@ -38,6 +39,11 @@ vi.mock('axios', () => ({
     get: vi.fn(),
   },
 }));
+
+// The Hub as it runs on an appliance: in a container whose default gateway is 172.18.0.1.
+vi.mock('@/common/helpers/this-host-address', async (importOriginal) =>
+  (await import('@/tests/utils/appliance-host-address')).onAppliance(await importOriginal()),
+);
 
 /** The page needs three links now; only the deep link varies across these tests. */
 function handoffHtml(deepLink: string, overrides: { continueHref?: string; statusHref?: string } = {}) {
@@ -321,6 +327,76 @@ describe('portal-sso helpers', () => {
     } as unknown as Request;
 
     expect(isDirectLoopbackRequest(req)).toBe(expected);
+  });
+
+  it.each([
+    ['the setup service on the host, relayed from the gateway', true, { host: '127.0.0.1:5002' }, '172.18.0.1'],
+    ['the same on a dual-stack socket', true, { host: '127.0.0.1:5002' }, '::ffff:172.18.0.1'],
+    ['a request inside the Hub container on loopback', true, { host: 'localhost:5002' }, '127.0.0.1'],
+    ['a LAN machine naming a loopback host', false, { host: '127.0.0.1:5002' }, '192.168.1.50'],
+    ['a container calling the Hub on a shared network', false, { host: '127.0.0.1:5002' }, '172.18.0.7'],
+    ['the gateway naming another host', false, { host: '192.168.1.10:5002' }, '172.18.0.1'],
+    ['the gateway carrying a public forwarded hop', false, { host: '127.0.0.1:5002', 'x-forwarded-for': '203.0.113.9' }, '172.18.0.1'],
+    ['the gateway carrying a tunnel marker', false, { host: '127.0.0.1:5002', 'cf-ray': '8c1f2e3d4a5b6c7d-AMS' }, '172.18.0.1'],
+    [
+      "the Hub's own page in a browser on the host",
+      true,
+      { host: '127.0.0.1:5002', origin: 'http://127.0.0.1:5002', 'sec-fetch-site': 'same-origin' },
+      '172.18.0.1',
+    ],
+    [
+      'a form on another site, in a browser on the host',
+      false,
+      { host: '127.0.0.1:5002', origin: 'https://other.example', 'sec-fetch-site': 'cross-site' },
+      '172.18.0.1',
+    ],
+    [
+      'a form on another site, from a browser that sends no fetch metadata',
+      false,
+      { host: '127.0.0.1:5002', origin: 'https://other.example' },
+      '172.18.0.1',
+    ],
+    ["an app's page on another loopback port", false, { host: '127.0.0.1:5002', 'sec-fetch-site': 'same-site' }, '172.18.0.1'],
+    // A link opened from a mail or chat app reads the same as a typed address. No browser route asks this.
+    ['a link opened from another app, in a browser on the host', false, { host: '127.0.0.1:5002', 'sec-fetch-site': 'none' }, '172.18.0.1'],
+    ['a link followed from another site', false, { host: '127.0.0.1:5002', 'sec-fetch-site': 'cross-site' }, '127.0.0.1'],
+    [
+      'an image on another site, from a browser that sends no fetch metadata',
+      false,
+      { host: '127.0.0.1:5002', referer: 'https://other.example/page' },
+      '172.18.0.1',
+    ],
+    [
+      "the Hub's own page, from a browser that sends no fetch metadata",
+      true,
+      { host: '127.0.0.1:5002', origin: 'http://127.0.0.1:5002', referer: 'http://127.0.0.1:5002/device-registration' },
+      '172.18.0.1',
+    ],
+    ['a sandboxed page, which sends Origin: null', false, { host: '127.0.0.1:5002', origin: 'null' }, '172.18.0.1'],
+  ])('isRequestFromThisHost: %s -> %s', (_caller, expected, headers: Record<string, string>, ip) => {
+    const req = {
+      headers,
+      ip,
+      protocol: 'http',
+      socket: { remoteAddress: ip },
+      get: (name: string) => (name.toLowerCase() === 'host' ? headers.host : undefined),
+    } as unknown as Request;
+
+    expect(isRequestFromThisHost(req)).toBe(expected);
+  });
+
+  it('isRequestFromThisHost reads the socket, not the address HUB_TRUST_PROXY resolved from a header', () => {
+    const headers = { host: '127.0.0.1:5002', 'x-forwarded-for': '127.0.0.1' };
+    const req = {
+      headers,
+      ip: '127.0.0.1',
+      protocol: 'http',
+      socket: { remoteAddress: '192.168.1.50' },
+      get: (name: string) => (name.toLowerCase() === 'host' ? headers.host : undefined),
+    } as unknown as Request;
+
+    expect(isDirectLoopbackRequest(req)).toBe(true);
+    expect(isRequestFromThisHost(req)).toBe(false);
   });
 
   it('derives the desktop proof the way the desktop shell does', () => {

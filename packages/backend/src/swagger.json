@@ -436,7 +436,7 @@
             "description": "Invalid callback data"
           },
           "403": {
-            "description": "No valid registration nonce, or the Hub is already registered"
+            "description": "No valid registration nonce, or the Hub is registered and the caller may not pair it again"
           }
         },
         "summary": "Handle registration callback from CI Cloud",
@@ -528,7 +528,7 @@
             "description": "Invalid callback data"
           },
           "403": {
-            "description": "Not sent on this Hub's loopback address, or the Hub is already registered"
+            "description": "Not sent from this Hub's own machine, or the Hub is already registered"
           }
         },
         "summary": "Handle registration callback from CI Cloud (deprecated GET form — use POST)",

@@ -71,9 +71,9 @@ Apart from `DEVICE_NOT_ACTIVE`, a check-in never deletes the registration. The t
 
 A Hub in `portal_rejected` or `tunnel_token_missing` accepts a new pairing without a reset. So does a Hub whose key Portal is rejecting but whose rejection isn't confirmed yet. Updating a Hub restarts it, which restarts the 10-minute wait, so the remedy below would otherwise be refused right after the update.
 
-`POST /api/registration/pair` needs no authentication for a Hub that is not registered, because a Hub being set up has nobody to sign in as. To pair a registered Hub again, the caller must be authenticated, the same as for `POST /api/registration/reset`. A Hub session, the host-local device key, and the CLI token all count, and so does a key on a Hub with no operator yet. `cihub register` sends the device key from `state/settings.json`. Without this check, anyone who can reach the Hub could pair it into their own organization, because the Hub sends its own device key to Portal as proof of possession.
+`POST /api/registration/pair` needs no authentication for a Hub that is not registered, because a Hub being set up has nobody to sign in as. To pair a Hub that holds a registration again, the caller must be someone who may manage the Hub (the operator who claimed it, an organization owner or admin, the CLI token or the host-local key) or a request sent from the Hub's own machine. A member's session isn't enough. When Portal can't confirm a person's role, the role the Hub stored at sign-in decides. `cihub register` runs on the Hub's machine and sends the host-local key from `state/settings.json`. The Hub sends its own device key to Portal as proof of possession, so without this check anyone who can reach the Hub could pair it into their own organization.
 
-The registration callback accepts a pairing for `portal_rejected` and `tunnel_token_missing` only. It carries its own one-time nonce instead of a session.
+The registration callback accepts a pairing for `portal_rejected` and `tunnel_token_missing` only. It carries its own one-time nonce instead of a session. On a Hub that holds a registration it asks the same of its caller as `POST /api/registration/pair`. CI-OS's headless setup service passes because it sends the callback from the Hub's own machine.
 
 Earlier builds read these answers differently. They deleted the local registration and tunnel token on any `400`, including a schema refusal, and treated a `401` as transient. A Hub on such a build whose key Portal rejects reports `cloud_validation_failed` after three check-ins and refuses to pair with `Device is already registered.`
 
@@ -106,7 +106,7 @@ For each affected Hub:
 
 1. In Portal, as an owner or admin of the Hub's organization, get a pairing code. If the device no longer appears, add it again. If it appears as inactive, re-register it.
 1. Update the Hub to a build that includes this change. Otherwise the Hub refuses to pair while it is registered.
-1. On the Hub, run `cihub register --code <code>`. It sends the Hub's device key from `state/settings.json`, which authenticates the pairing of an already registered Hub.
+1. On the Hub, run `cihub register --code <code>`. It runs on the Hub's own machine and sends the host-local key from `state/settings.json`, so the Hub lets it pair an already registered Hub again.
 1. Run `cihub doctor`. `Registration` shows a ready phase and `Portal check-in` shows `accepted`.
 
 Pairing sends the Hub's current device key as proof of possession. Portal accepts a pairing without that proof only when the device row is `inactive` or absent. If Portal answers `DEVICE_PROOF_REQUIRED`, the row is live under a different key, so re-register the device in Portal and use the new code.

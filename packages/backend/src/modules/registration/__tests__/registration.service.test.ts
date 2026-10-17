@@ -1169,7 +1169,7 @@ describe('RegistrationService', () => {
       } as any);
       const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
 
-      const result = await service.pairDevice('ABC123', { callerAuthenticated: true });
+      const result = await service.pairDevice('ABC123', { mayPairAgain: async () => true });
 
       expect(result.success).toBe(true);
       expect(configService.setFileOnlySettings).toHaveBeenCalledWith({ ciHubApiKey: 'fresh-key' });
@@ -1233,7 +1233,7 @@ describe('RegistrationService', () => {
       } as any);
       const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
 
-      const result = await service.pairDevice('ABC123', { callerAuthenticated: true });
+      const result = await service.pairDevice('ABC123', { mayPairAgain: async () => true });
 
       expect(result.success).toBe(true);
       expect(configService.setFileOnlySettings).toHaveBeenCalledWith({ ciHubApiKey: 'fresh-key' });
@@ -1246,7 +1246,7 @@ describe('RegistrationService', () => {
       vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
       (service as any)._currentPhase = 'publicly_ready';
 
-      await expect(service.pairDevice('ABC123', { callerAuthenticated: true })).resolves.toMatchObject({
+      await expect(service.pairDevice('ABC123', { mayPairAgain: async () => true })).resolves.toMatchObject({
         success: false,
         message: 'Device is already registered.',
       });

@@ -1956,20 +1956,51 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * A database blip is retried; a database that still cannot answer counts as no registration.
    */
   public async holdsRegistration(): Promise<boolean> {
+    try {
+      return await this.readHoldsRegistration();
+    } catch (error) {
+      this.logger.warn(`Could not read the registration, so the Portal device key is refused: ${describeRegistrationError(error)}`);
+      return false;
+    }
+  }
+
+  /** {@link holdsRegistration}, throwing when the database still can't answer. */
+  private async readHoldsRegistration(): Promise<boolean> {
     if (isActiveRegistrationPhase(this._currentPhase)) {
       return true;
     }
 
-    try {
-      const row = await withTransientDbRetry(() => this.deviceRegistrationRepository.getFirstDeviceRegistration());
-      if (!row) {
-        return false;
-      }
-      const phase = row.provisioningPhase ?? 'locally_ready';
-      return phase !== 'unregistered' && PROVISIONING_PHASES.includes(phase as ProvisioningPhase);
-    } catch (error) {
-      this.logger.warn(`Could not read the registration, so the Portal device key is refused: ${describeRegistrationError(error)}`);
+    const row = await withTransientDbRetry(() => this.deviceRegistrationRepository.getFirstDeviceRegistration());
+    if (!row) {
       return false;
+    }
+    const phase = row.provisioningPhase ?? 'locally_ready';
+    return phase !== 'unregistered' && PROVISIONING_PHASES.includes(phase as ProvisioningPhase);
+  }
+
+  /**
+   * Whether a pairing now would replace a registration, so its caller must be someone who may pair
+   * this Hub again (the `mayPairAgain` of `pairDevice` and the registration callback): an operational
+   * phase, or a registration {@link holdsRegistration} finds. The row counts as well as the phase. A
+   * Hub without its tunnel token reads `unregistered` in memory until boot restores the phase from
+   * the row. It stays there if that read failed.
+   *
+   * Read after {@link isRegisteredAndServing}, which refreshes the phase. Unlike `holdsRegistration`,
+   * a registration that can't be read counts as one, so a database outage doesn't let anyone pair a
+   * registered Hub.
+   */
+  public async pairingReplacesRegistration(): Promise<boolean> {
+    if (isOperational(this._currentPhase)) {
+      return true;
+    }
+
+    try {
+      return await this.readHoldsRegistration();
+    } catch (error) {
+      this.logger.warn(
+        `Could not read the registration, so pairing again takes someone who may manage this Hub: ${describeRegistrationError(error)}`,
+      );
+      return true;
     }
   }
 
@@ -2176,7 +2207,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   ): Promise<void> {
     // Read before any phase change below. A re-pair is a registered Hub that pairing is meant to
     // fix: degraded for a reason only pairing clears, or with a key Portal is rejecting right now
-    // (`pairDevice` admits an authenticated caller before the rejection is confirmed).
+    // (`pairDevice` admits a caller who may pair the Hub again before the rejection is confirmed).
     const rePairing =
       isOperational(this._currentPhase) && (requiresPortalRePairing(this._currentPhase, this._degradedReasons) || this.portalRejectedSince !== null);
 
@@ -2474,7 +2505,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   public async pairDevice(
     pairingCode: string,
     options: {
-      callerAuthenticated?: boolean;
+      /**
+       * Whether the caller may pair this Hub again while it holds a registration: someone who may
+       * manage the Hub, or a request from its own machine (`RegistrationController`, which asks the
+       * same of a registration callback). Asked only when the Hub holds one. Absent means no.
+       */
+      mayPairAgain?: () => Promise<boolean>;
       /**
        * The person's yes to `DEVICE_MOVE_CONFIRMATION_REQUIRED`: this Hub is in another organization,
        * and pairing here moves it, taking it from that organization. The Portal only acts on it with
@@ -2511,29 +2547,31 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
     /*
      * `POST /registration/pair` is unauthenticated, because a Hub being set up has nobody to log
-     * in as. A registered Hub does, and re-pairing one replaces its organization, device key and
-     * tunnel with whatever the pairing code names. Letting through anyone who can reach this port
-     * (the LAN, or the public hostname while the old tunnel still serves) would let them move the
-     * Hub into an organization of their choosing, and this Hub attaches its own device key to the
-     * request as proof of possession, so Portal would accept it. Before this route admitted
-     * degraded Hubs it refused every registered one, so asking for the caller `reset` requires
-     * costs nobody a working path: a Hub session, or the host-local device key or CLI token that
-     * `cihub register` sends.
+     * in as. A Hub that holds a registration does. Pairing it again replaces its organization,
+     * device key and tunnel with whatever the pairing code names. This Hub attaches its own device
+     * key to the request as proof of possession, so Portal's checks can't tell who is asking. The
+     * caller has to pass the rule a registration callback does (`mayPairAgain`): someone who may
+     * manage the Hub, or a request from its own machine, which is where `cihub register` runs.
+     * The registration row counts as well as the phase, as it does for the callback.
      *
      * That caller may also re-pair a Hub whose key Portal is rejecting right now but has not yet
      * rejected for `PORTAL_REJECTION_CONFIRM_MS`. Otherwise an owner who updates a Hub and runs
      * `cihub register --code` straight away, the remedy in `docs/portal-check-in.md`, is refused for
      * ten minutes after every restart, because the confirmation window restarts with the process.
+     * All of this is decided before Portal is called.
      */
-    if (serving && !(options.callerAuthenticated && this.portalRejectedSince !== null)) {
+    if (serving && this.portalRejectedSince === null) {
       return { success: false, message: 'Device is already registered.' };
     }
 
-    if (isOperational(this._currentPhase) && !options.callerAuthenticated) {
-      return {
-        success: false,
-        message: 'This Hub is already registered. Sign in to pair it again, or run `cihub register --code <code>` on the Hub itself.',
-      };
+    if ((await this.pairingReplacesRegistration()) && !(await options.mayPairAgain?.())) {
+      return serving
+        ? { success: false, message: 'Device is already registered.' }
+        : {
+            success: false,
+            message:
+              'This Hub is already registered. Sign in as an owner or admin to pair it again, or run `cihub register --code <code>` on the Hub itself.',
+          };
     }
 
     // Before Portal claims the code and provisions anything for this pairing.

@@ -34,6 +34,12 @@ vi.mock('../public-reachability', async (importOriginal) => ({
   probePublicHostname: vi.fn().mockResolvedValue({ reachable: true }),
 }));
 
+// The Hub as it runs on an appliance: in a container whose default gateway is 172.18.0.1, where the
+// setup service's requests from the host arrive from.
+vi.mock('@/common/helpers/this-host-address', async (importOriginal) =>
+  (await import('@/tests/utils/appliance-host-address')).onAppliance(await importOriginal()),
+);
+
 const DEVICE_ID = 'device-test-1';
 
 type Row = Record<string, unknown> & { id: string };
@@ -54,6 +60,8 @@ function request(ip: string, host: string, headers: Record<string, string> = {})
 /** What the setup service's request looks like to the Hub. */
 const fromSetupService = () => request('172.18.0.1', '127.0.0.1:5002');
 const fromLan = () => request('192.168.1.50', '192.168.1.10:5002');
+/** A machine on the LAN that names this Hub's loopback address, which its own address gives away. */
+const fromLanNamingLoopback = () => request('192.168.1.50', '127.0.0.1:5002');
 const throughTunnel = () =>
   request('172.18.0.1', 'hub.example.com', {
     'cf-ray': '8f00000000000000-LHR',
@@ -162,7 +170,7 @@ describe('GET /registration/callback on a Hub that is registered and serving', (
     startServing();
     const before = snapshot();
 
-    for (const from of [fromLan(), throughTunnel(), throughTraefik(), fromSetupService()]) {
+    for (const from of [fromLan(), fromLanNamingLoopback(), throughTunnel(), throughTraefik(), fromSetupService()]) {
       await expect(sendGet(from)).rejects.toThrow(ForbiddenException);
       // The same organization would update the existing row in place rather than add one.
       await expect(sendGet(from, 'org-current')).rejects.toThrow(ForbiddenException);
@@ -186,7 +194,7 @@ describe('GET /registration/callback on a Hub that is not registered', () => {
   it('is refused from anywhere else without changing anything', async () => {
     const before = snapshot();
 
-    for (const from of [fromLan(), throughTunnel(), throughTraefik()]) {
+    for (const from of [fromLan(), fromLanNamingLoopback(), throughTunnel(), throughTraefik()]) {
       await expect(sendGet(from)).rejects.toThrow(ForbiddenException);
     }
 
@@ -209,7 +217,7 @@ describe('GET /registration/callback on a Hub that is not registered', () => {
 
 describe('POST /registration/callback is unchanged', () => {
   it('completes a registration with its nonce, with no rule about where it came from', async () => {
-    await expect(controller.handleCallbackPost(BODY, service.mintCallbackNonce())).resolves.toMatchObject({ success: true });
+    await expect(controller.handleCallbackPost(BODY, service.mintCallbackNonce(), fromLan())).resolves.toMatchObject({ success: true });
     await vi.waitFor(() => expect(rows.map((row) => row.id)).toEqual(['org-new']));
     await vi.waitFor(() => expect((service as any)._currentPhase).toBe('publicly_ready'));
   });

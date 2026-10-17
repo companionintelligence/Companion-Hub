@@ -183,9 +183,9 @@ export async function prepareFreshSetup(apiBase: string): Promise<PrepareFreshRe
 
 /**
  * `deviceKey` is the host-local device key from `state/settings.json`, when this machine has one.
- * A first pairing needs no credential, but the Hub re-pairs an already registered Hub (a key Portal
- * rejects, a lost tunnel token) only for an authenticated caller, and this is how `cihub register`
- * on the Hub itself is one.
+ * A first pairing needs no credential. The Hub pairs a registered Hub again (a key Portal rejects, a
+ * lost tunnel token) only for someone who may manage it or a request from its own machine.
+ * `cihub register` runs on that machine. The host-local key also makes it the `host-local` principal.
  */
 export async function submitPairingCode(
   apiBase: string,

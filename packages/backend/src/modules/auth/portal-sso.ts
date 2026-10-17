@@ -3,6 +3,7 @@ import type { Request } from 'express';
 import axios from 'axios';
 import { describeNetworkError } from '@/common/helpers/network-error';
 import { internalOriginRefusal } from '@/common/helpers/request-origin';
+import { isThisHostAddress } from '@/common/helpers/this-host-address';
 import {
   buildPortalAxiosConfig,
   readPortalInternalUrlOverride,
@@ -99,6 +100,59 @@ export function isDirectLoopbackRequest(req: Request): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether a request came from this Hub's own machine: {@link isDirectLoopbackRequest}, on a socket
+ * whose peer is an address the host's own connections arrive from (`isThisHostAddress`).
+ *
+ * The socket's address is read rather than `req.ip`, which `HUB_TRUST_PROXY` lets a header rewrite.
+ * Like the checks it builds on, this places a request by address. It isn't authentication.
+ *
+ * A browser on this machine sends from the same address whichever page asked it to, so a request
+ * the browser doesn't mark as sent by the Hub's own page is refused (`Sec-Fetch-Site`, `Origin`,
+ * `Referer`). That includes `Sec-Fetch-Site: none`, a navigation no page started, since nothing
+ * opens these routes in a browser. The setup service and `cihub` send none of these headers.
+ */
+export function isRequestFromThisHost(req: Request): boolean {
+  return isDirectLoopbackRequest(req) && !isCrossOriginBrowserRequest(req) && isThisHostAddress(req.socket?.remoteAddress);
+}
+
+/**
+ * Whether a browser says this request wasn't sent by a page on the origin it names. A browser too
+ * old to send `Sec-Fetch-Site` still names the page in `Referer` for a cross-site image or link.
+ */
+function isCrossOriginBrowserRequest(req: Request): boolean {
+  const fetchSite = req.headers['sec-fetch-site'];
+  if (typeof fetchSite === 'string' && fetchSite !== 'same-origin') {
+    return true;
+  }
+
+  for (const sentBy of [req.headers.origin, req.headers.referer]) {
+    if (typeof sentBy !== 'string' || !sentBy) {
+      continue;
+    }
+
+    try {
+      if (new URL(sentBy).origin.toLowerCase() !== new URL(resolveHubRequestOrigin(req)).origin.toLowerCase()) {
+        return true;
+      }
+    } catch {
+      // `Origin: null` and anything else that isn't a URL.
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Whether a browser says a page on another site or on a sibling hostname sent this request
+ * (`Sec-Fetch-Site`). The Hub's own pages send `same-origin`.
+ */
+export function isCrossSiteBrowserRequest(req: Request): boolean {
+  const fetchSite = req.headers['sec-fetch-site'];
+  return fetchSite === 'same-site' || fetchSite === 'cross-site';
 }
 
 /**
