@@ -14,15 +14,18 @@
  *   RESULTS_DIR     local results output dir      (default: ~/qa-results)
  *   SKIP_SCREENSHOT set to "1" to skip Playwright screenshot
  *   QA_ENV_FILE     set to "1" to attach a production-style app.env (system variables + form fields) to every service, as the
- *                   Hub does. Off by default. Use it at QA_CONCURRENCY=1: it reads the same per-app globals as valueForVar.
+ *                   Hub does. Off by default. Safe at any QA_CONCURRENCY: each app's form-field specs and manifest are passed
+ *                   down explicitly, never read from module state after an await.
  *   QA_NO_PROXY_HEADERS  set to "1" to stop the readiness probe sending X-Forwarded-Proto/Port (the Hub's Traefik adds them)
+ *   QA_NO_TEMPLATES set to "1" to seed the .template files under an app's data/ as they are. By default each is rendered into the
+ *                   mount without the suffix, from the app.env map, as the Hub's copyDataDir does.
  */
 
 import { exec, execSync, spawnSync } from 'node:child_process';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
-import { homedir } from 'node:os';
+import { EOL, homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 const home = homedir();
@@ -34,6 +37,7 @@ const SCREENSHOTS_DIR = join(RESULTS_DIR, 'screenshots');
 const SKIP_SCREENSHOT = process.env.SKIP_SCREENSHOT === '1';
 const QA_ENV_FILE = process.env.QA_ENV_FILE === '1';
 const QA_NO_PROXY_HEADERS = process.env.QA_NO_PROXY_HEADERS === '1';
+const QA_NO_TEMPLATES = process.env.QA_NO_TEMPLATES === '1';
 
 // Durable results — qa-aggregate.ts SCPs results.json (an array of QAResult) and
 // batch-<N>-summary.json off each node. We append every app result here as it finishes
@@ -408,6 +412,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
   let statsName = containerName; // container to `docker stats` (overridden for compose path)
   let composeProject = '';
   let composeYml = '';
+  const templateJobs: TemplateJob = []; // single-container path: .template files seeded into the mounts, rendered once the port is reserved
   const result: Record<string, unknown> = {
     appId,
     score: 'fail' as Score,
@@ -430,8 +435,12 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
 
     const config: AppConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
     // Per-app; must be loaded before any ${VAR} substitution so generated secrets match the
-    // lengths this manifest actually declares (see loadFieldSpecs).
-    loadFieldSpecs(config as unknown as Record<string, unknown>);
+    // lengths this manifest actually declares (see loadFieldSpecs). Kept in a local and passed to valueForVar rather than stored
+    // at module level: apps run side by side (QA_CONCURRENCY > 1) and read these after an await.
+    const specs = loadFieldSpecs(config as unknown as Record<string, unknown>);
+    // The values minted for ${VAR} placeholders, shared by the `-e` flags and the --env-file below so one variable has one value
+    // everywhere (composeUp keeps the same kind of cache for the compose path).
+    const cache = new Map<string, string>();
     result.name = config.name ?? appId;
     result.port = config.port ?? 80;
     result.categories = config.categories ?? [];
@@ -500,25 +509,15 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
           // Seed the mount from the app's source data/ subtree (mirrors Hub copyDataDir + the
           // composeUp path) so config FILE targets and seeded dirs (e.g. quarkdown's docs/main.qd)
           // exist before boot — previously this path mounted an empty dir and seed-reliant apps failed.
-          const seed = seedSourceFor(appId, v.hostPath);
-          if (seed && statSync(seed).isFile()) {
-            mkdirSync(dirname(scratch), { recursive: true });
-            rmSync(scratch, { recursive: true, force: true });
-            cpSync(seed, scratch); // file:file bind
-          } else if (seed) {
-            mkdirSync(scratch, { recursive: true });
-            cpSync(seed, scratch, { recursive: true });
-          } else {
-            mkdirSync(scratch, { recursive: true });
-          }
-          if (statSync(scratch).isDirectory()) chmodSync(scratch, 0o777); // any runtime uid can write
+          // Its .template files are rendered from the app.env map, which needs the host port reserved just
+          // before `docker run`, so seedMount hands them back (templateJobs) instead of rendering now.
+          templateJobs.push(...seedMount(appId, v.hostPath, scratch));
           scratchDirs.push(scratch);
           runFlags += ` -v ${scratch}:${v.containerPath}`;
         }
         // Substitute ${VAR} placeholders with consistent values (admin passwords, secret keys,
         // etc.) instead of dropping them — dropping them is why single-service apps booted with
         // no credentials set and had broken logins. Same substitution the compose path uses.
-        const cache = new Map<string, string>();
         const scratchBase = join(RESULTS_DIR, 'scratch', appId);
         const subst = (s: string) =>
           s
@@ -529,7 +528,9 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
             // e.g. mesh-llm's `"$${APP_MODEL}"` became `$<generated-value>`, and the container's own
             // shell then expanded that as its own (unset) `$APP_MODEL`-shaped variable, silently
             // truncating the value and breaking its CLI arg parsing.
-            .replace(/(?<!\$)\$\{([A-Z0-9_]+)(?::?-([^}]*))?\}/g, (_, k, def) => (def === undefined ? valueForVar(k, cache, scratchBase) : def))
+            .replace(/(?<!\$)\$\{([A-Z0-9_]+)(?::?-([^}]*))?\}/g, (_, k, def) =>
+              def === undefined ? valueForVar(k, cache, scratchBase, specs) : def,
+            )
             // Manifests are authored for docker-compose semantics, where `$$` escapes a literal `$`
             // (e.g. ollama's entrypoint uses `$$!`/`$$OLLAMA_MODEL` to survive compose's own
             // interpolation pass). This single-container path invokes `docker run` directly, with no
@@ -638,7 +639,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       mkdirSync(scratchBase, { recursive: true });
       scratchDirs.push(scratchBase);
       composeYml = join(scratchBase, 'docker-compose.gen.yml');
-      const up = await composeUp(appId, services, scratchBase, composeYml);
+      const up = await composeUp(appId, services, scratchBase, composeYml, config as unknown as Record<string, unknown>);
       composeProject = up.project;
       result.pullMs = Date.now() - startT0;
       if (!up.ok) {
@@ -699,12 +700,19 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       // with the Hub/Traefik (commonly :80) or a peer app on the same node.
       const reserved = await reserveHostPort();
       const publishFlag = reserved > 0 ? `${reserved}:${result.port}` : `0:${result.port}`;
+      // The Hub's app.env as a map, built only if the --env-file or a template needs it. It reads the same `cache` as the `-e`
+      // flags above, so a variable gets one value whichever way it reaches the container (a random form field that the
+      // manifest also maps to a differently named `environment` entry used to get two).
+      const sb = join(RESULTS_DIR, 'scratch', appId);
+      let envMapMemo: Map<string, string> | undefined;
+      const envMapOf = () =>
+        (envMapMemo ??= buildAppEnv(appId, config as unknown as Record<string, unknown>, cache, sb, reserved, Number(result.port)));
+      renderTemplates(templateJobs, envMapOf);
       let envFileFlag = '';
       if (QA_ENV_FILE) {
-        const sb = join(RESULTS_DIR, 'scratch', appId);
         mkdirSync(sb, { recursive: true });
         const ef = join(sb, 'app.env');
-        writeFileSync(ef, buildAppEnv(appId, config as unknown as Record<string, unknown>, new Map(), sb, reserved, Number(result.port)));
+        writeFileSync(ef, formatAppEnv(envMapOf()));
         envFileFlag = ` --env-file ${shQuote(ef)}`;
       }
       const run = execQuiet(
@@ -934,8 +942,11 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     result.startupMs = Date.now() - readyStart;
     result.readyVia = readyVia;
 
+    // The container the readiness poll watches: the compose service flagged isMain (else the first), or the single container.
+    const mainService = isMulti ? ((services.find((s) => s.isMain) ?? services[0])?.name ?? '') : 'main';
+
     if (!ready) {
-      const bh = await captureBackendHealth({ composeProject, composeYml, containerName });
+      const bh = await captureBackendHealth({ composeProject, composeYml, containerName, mainService });
       result.backendErrors = bh.errors;
       const waited = Math.round((Date.now() - readyStart) / 1000);
       // Container exited / restart-looped after a clean start = a real app FAIL; never becoming
@@ -947,15 +958,6 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         (bh.down.length ? ` — down: ${bh.down.join(', ')}` : '') +
         (bh.errors ? ` | ${bh.errors.replace(/\s+/g, ' ').slice(0, 200)}` : '');
       return result;
-    }
-
-    // Backend health: the frontend served, but a backend service may be crashed/restarting
-    // (the "page loads, login broken" case). Capture it so it isn't a false pass.
-    const backend = await captureBackendHealth({ composeProject, composeYml, containerName });
-    result.backendHealthy = backend.healthy;
-    if (!backend.healthy) {
-      result.backendDown = backend.down;
-      result.backendErrors = backend.errors;
     }
 
     // ── Screenshot ────────────────────────────────────────────
@@ -1031,6 +1033,16 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     if (diskSample.ok) {
       const bytes = Number.parseInt(diskSample.out.trim(), 10);
       if (Number.isFinite(bytes) && bytes >= 0) result.diskMb = Math.round(bytes / (1024 * 1024));
+    }
+
+    // Backend health: the frontend served, but a backend service may be crashed/restarting (the "page loads, login broken" case).
+    // Checked here, after the screenshot and benchmark, not the moment the frontend first answered: a service that dies or
+    // starts crash-looping in between would otherwise be missed, and it gives a service that was still settling time to do so.
+    const backend = await captureBackendHealth({ composeProject, composeYml, containerName, mainService });
+    result.backendHealthy = backend.healthy;
+    if (!backend.healthy) {
+      result.backendDown = backend.down;
+      result.backendErrors = backend.errors;
     }
 
     // ── Score ─────────────────────────────────────────────────
@@ -1332,23 +1344,21 @@ function serverGreets(port: number, waitMs = 3000): Promise<boolean> {
   });
 }
 
-// The manifest of the app loadFieldSpecs last saw; read by composeUp for QA_ENV_FILE. A module global like FIELD_SPECS, with the same
-// caveat: two apps starting at once (QA_CONCURRENCY > 1) can overwrite each other's.
-let CURRENT_CONFIG: Record<string, unknown> | null = null;
-
 /**
- * Opt-in (QA_ENV_FILE=1): emulate what the production Hub writes to app.env and attaches as `env_file` to EVERY service
- * (packages/backend/src/modules/apps/app.helpers.ts generateEnvFile): system variables, plus every
- * declared form field (random / default / required stand-in), plus derived base-URL variables.
+ * Emulate the app.env the production Hub generates (packages/backend/src/modules/apps/app.helpers.ts generateEnvFile): system
+ * variables, plus every declared form field (random / default / required stand-in), plus derived base-URL variables.
+ * The Hub uses this one map two ways, and so does the harness: QA_ENV_FILE=1 attaches it as `env_file` to EVERY service, and
+ * the templates under an app's data/ are rendered from it (renderTemplate). Pure of module state: everything it needs is passed.
  */
 function buildAppEnv(
   appId: string,
-  config: Record<string, unknown> | null,
+  config: Record<string, unknown>,
   cache: Map<string, string>,
   scratchBase: string,
   hostPort: number,
   mainPort: number,
-): string {
+): Map<string, string> {
+  const specs = loadFieldSpecs(config);
   const kv = new Map<string, string>();
   const base = `http://127.0.0.1:${hostPort}`;
   const set = (k: string, v: string) => kv.set(k, v);
@@ -1363,7 +1373,7 @@ function buildAppEnv(
   set('APP_ID', `${appId}-ci`);
   set('APP_NAME', appId);
   set('APP_STORE_ID', 'ci');
-  set('APP_IMAGE_TAG', String(config?.version ?? 'latest'));
+  set('APP_IMAGE_TAG', String(config.version ?? 'latest'));
   set('APP_HOSTNAME', '0.0.0.0');
   set('APP_INTERNAL_AUTHORITY', `127.0.0.1:${hostPort}`);
   set('APP_EXPOSED', 'false');
@@ -1375,7 +1385,7 @@ function buildAppEnv(
   set('APP_BASE_URL', base);
   set('APP_BASE_HOST', `127.0.0.1:${hostPort}`);
   set('APP_BASE_WSS_ORIGIN', `ws://127.0.0.1:${hostPort}`);
-  if (config?.generate_vapid_keys) {
+  if (config.generate_vapid_keys) {
     const { publicKey, privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
     const pj = publicKey.export({ format: 'jwk' }) as { x: string; y: string };
     const dj = privateKey.export({ format: 'jwk' }) as { d: string };
@@ -1383,7 +1393,7 @@ function buildAppEnv(
     set('VAPID_PUBLIC_KEY', point.toString('base64url'));
     set('VAPID_PRIVATE_KEY', dj.d);
   }
-  for (const f of (config?.form_fields ?? []) as Array<Record<string, unknown>>) {
+  for (const f of (config.form_fields ?? []) as Array<Record<string, unknown>>) {
     const env = typeof f?.env_variable === 'string' ? f.env_variable : '';
     if (!env) continue;
     if (f.type === 'app_base_url') {
@@ -1391,7 +1401,7 @@ function buildAppEnv(
       continue;
     }
     if (f.type === 'random') {
-      set(env, valueForVar(env, cache, scratchBase));
+      set(env, valueForVar(env, cache, scratchBase, specs));
       continue;
     }
     if (f.default !== undefined && f.default !== null) {
@@ -1399,11 +1409,17 @@ function buildAppEnv(
       continue;
     }
     if (f.required) {
-      set(env, valueForVar(env, cache, scratchBase));
+      set(env, valueForVar(env, cache, scratchBase, specs));
     }
   }
-  // The Hub writes plain KEY=value lines (env.utils.ts envMapToString; CR/LF stripped). Quoting here would leave the quotes
-  // IN the value for `docker run --env-file`, which does no unquoting (compose's env_file does).
+  return kv;
+}
+
+/**
+ * The text of an app.env: plain KEY=value lines (env.utils.ts envMapToString; CR/LF stripped). Quoting here would leave the quotes
+ * IN the value for `docker run --env-file`, which does no unquoting (compose's env_file does).
+ */
+function formatAppEnv(kv: Map<string, string>): string {
   const q = (v: string) => v.replace(/[\r\n]+/g, ' ');
   return `${[...kv].map(([k, v]) => `${k}=${q(v)}`).join('\n')}\n`;
 }
@@ -1419,17 +1435,21 @@ function buildAppEnv(
  * never does.
  */
 type FieldSpec = { min?: number; max?: number; type?: string; def?: string; encoding?: string; options?: string[] };
-let FIELD_SPECS: Map<string, FieldSpec> = new Map();
 
-function loadFieldSpecs(config: Record<string, unknown>): void {
-  CURRENT_CONFIG = config;
-  FIELD_SPECS = new Map();
+/**
+ * Returned, not stored. A module-level map set per app was read after an await (reserveHostPort, then composeUp), so with apps
+ * running side by side the last manifest loaded would win as soon as that await really yields. Today it is a single microtask
+ * hop, because reserveHostPort is synchronous, which is why it never showed. Callers keep their own map and pass it to
+ * valueForVar.
+ */
+function loadFieldSpecs(config: Record<string, unknown>): Map<string, FieldSpec> {
+  const specs = new Map<string, FieldSpec>();
   const fields = config?.form_fields;
-  if (!Array.isArray(fields)) return;
+  if (!Array.isArray(fields)) return specs;
   for (const f of fields as Array<Record<string, unknown>>) {
     const env = typeof f?.env_variable === 'string' ? f.env_variable : '';
     if (!env) continue;
-    FIELD_SPECS.set(env, {
+    specs.set(env, {
       min: typeof f.min === 'number' ? f.min : undefined,
       max: typeof f.max === 'number' ? f.max : undefined,
       type: typeof f.type === 'string' ? f.type : undefined,
@@ -1440,6 +1460,7 @@ function loadFieldSpecs(config: Record<string, unknown>): void {
         : undefined,
     });
   }
+  return specs;
 }
 
 /** Hex string of exactly `chars` characters (randomBytes yields 2 hex chars per byte). */
@@ -1513,16 +1534,16 @@ function shellWords(str: string): string[] {
   return out;
 }
 
-function valueForVar(name: string, cache: Map<string, string>, scratchBase: string): string {
+function valueForVar(name: string, cache: Map<string, string>, scratchBase: string, specs: Map<string, FieldSpec>): string {
   const hit = cache.get(name);
   if (hit !== undefined) return hit;
   let v: string;
-  const spec = FIELD_SPECS.get(name);
+  const spec = specs.get(name);
   // Production's real app_base_url resolution (app.helpers.ts) keys off `field.type ===
   // 'app_base_url'`, NOT the field's env_variable name — `envMap.set(field.env_variable,
   // resolvedBaseUrl)` works identically whether that name is the catalog-wide convention
   // "APP_BASE_URL" or something app-specific like checkmate's "CLIENT_HOST". This harness's
-  // FIELD_SPECS captures `type` but, before this check existed, never consulted it here — only the
+  // field specs capture `type` but, before this check existed, never consulted it here — only the
   // two name-specific cases below (APP_BASE_HOST/APP_BASE_WSS_ORIGIN) got a real URL; every OTHER
   // app_base_url field (any name, any app) fell through to the generic HOST/DOMAIN heuristic, which
   // yields a bare hostname with no scheme ("ci.localhost") — checkmate's own field is declared
@@ -1538,7 +1559,7 @@ function valueForVar(name: string, cache: Map<string, string>, scratchBase: stri
   // actual OTHER variable to delegate to; the literal APP_BASE_URL case falls through to the
   // generic `/URL/` heuristic below like it always has.
   if (spec?.type === 'app_base_url' && name !== 'APP_BASE_URL') {
-    v = valueForVar('APP_BASE_URL', cache, scratchBase);
+    v = valueForVar('APP_BASE_URL', cache, scratchBase, specs);
     cache.set(name, v);
     return v;
   }
@@ -1553,7 +1574,7 @@ function valueForVar(name: string, cache: Map<string, string>, scratchBase: stri
   // resolves to (via the same cache, so a compose-path pre-seeded real value is honored) and derive
   // both from it, ws:// unless the base URL is https.
   if (name === 'APP_BASE_HOST' || name === 'APP_BASE_WSS_ORIGIN') {
-    const baseUrl = valueForVar('APP_BASE_URL', cache, scratchBase);
+    const baseUrl = valueForVar('APP_BASE_URL', cache, scratchBase, specs);
     try {
       const parsed = new URL(/^https?:\/\//i.test(baseUrl) ? baseUrl : `http://${baseUrl}`);
       v = name === 'APP_BASE_HOST' ? parsed.host : `${parsed.protocol === 'https:' ? 'wss' : 'ws'}://${parsed.host}`;
@@ -1699,6 +1720,96 @@ function seedSourceFor(appId: string, hostPath?: string): string | null {
   return existsSync(src) ? src : null;
 }
 
+/**
+ * Files still to be written into a seeded mount: `to` is the path in the scratch mount, `template` the text of the `.template`
+ * that produces it. Kept apart from the copy because rendering needs the app.env map, which the single-container path cannot
+ * build until it has reserved its host port.
+ */
+type TemplateJob = Array<{ to: string; template: string }>;
+
+/**
+ * The Hub's renderTemplate (app-store-files-manager.ts): each `{{KEY}}` becomes the app.env value of KEY, for every key of the map.
+ * A `{{KEY}}` the map does not define stays as it is. Mirrors the Hub exactly, including passing the value to String.replace as a
+ * replacement pattern.
+ */
+function renderTemplate(template: string, envMap: Map<string, string>): string {
+  let rendered = template;
+  envMap.forEach((value, key) => {
+    const safeKey = key.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+    rendered = rendered.replace(new RegExp(`{{${safeKey}}}`, 'g'), value);
+  });
+  return rendered;
+}
+
+/**
+ * Copying an app's data/ tree, the Hub (copyDataDir) writes each `X.template` rendered as `X` and does not copy the template.
+ * Do that to a tree that was copied verbatim: delete every template in it and return what to write in its place. An empty
+ * template yields no file (the Hub skips it too), and only regular files count.
+ */
+function takeTemplates(dir: string, out: TemplateJob = []): TemplateJob {
+  for (const ent of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, ent.name);
+    if (ent.isDirectory()) takeTemplates(p, out);
+    else if (ent.isFile() && ent.name.endsWith('.template')) {
+      const template = readFileSync(p, 'utf-8');
+      rmSync(p);
+      if (template) out.push({ to: p.slice(0, -'.template'.length), template });
+    }
+  }
+  return out;
+}
+
+/**
+ * Write a TemplateJob, one line break after each file as the Hub's FilesystemService.writeTextFile adds. `envMapOf` is only
+ * called when there is something to render, so apps without templates never build the map for it.
+ */
+function renderTemplates(job: TemplateJob, envMapOf: () => Map<string, string>): void {
+  if (!job.length) return;
+  const envMap = envMapOf();
+  for (const { to, template } of job) writeFileSync(to, `${renderTemplate(template, envMap)}${EOL}`);
+}
+
+/**
+ * Seed one scratch mount from the app's source data/ subtree, as the Hub's copyDataDir does (see seedSourceFor), for both the
+ * single-container and the compose path. Returns the templates the Hub would have rendered into the mount; the caller renders
+ * them with renderTemplates once it can build the app.env map. An app without .template files gets an empty job, so its mounts are
+ * seeded exactly as before. QA_NO_TEMPLATES=1 copies the templates like any other file.
+ */
+function seedMount(appId: string, hostPath: string | undefined, dest: string): TemplateJob {
+  const seed = seedSourceFor(appId, hostPath);
+  // The mount names a file that the store only ships as `<file>.template` (librechat's librechat.yaml): the Hub renders it under that name.
+  const tmplSrc = seed || QA_NO_TEMPLATES || !hostPath ? null : seedSourceFor(appId, `${hostPath}.template`);
+  const tmplText = tmplSrc && statSync(tmplSrc).isFile() ? readFileSync(tmplSrc, 'utf-8') : '';
+  let job: TemplateJob = [];
+  if (seed && statSync(seed).isFile()) {
+    // File target (e.g. nginx default.conf): the scratch mount must itself be a FILE so the
+    // bind is file:file — mounting a dir onto a file is what aborts `compose up`.
+    mkdirSync(dirname(dest), { recursive: true });
+    rmSync(dest, { recursive: true, force: true });
+    cpSync(seed, dest);
+  } else if (seed) {
+    // Directory seed (e.g. data/initdb → /docker-entrypoint-initdb.d): copy its contents in.
+    mkdirSync(dest, { recursive: true });
+    cpSync(seed, dest, { recursive: true });
+    if (!QA_NO_TEMPLATES) job = takeTemplates(dest);
+  } else if (tmplText) {
+    // The file itself is written by renderTemplates; only its place has to exist.
+    mkdirSync(dirname(dest), { recursive: true });
+    rmSync(dest, { recursive: true, force: true });
+    job = [{ to: dest, template: tmplText }];
+  } else {
+    // No source seed: ephemeral runtime dir (pgdata/redis/storage/minio), fresh + empty.
+    mkdirSync(dest, { recursive: true });
+  }
+  // The scratch dir is created owned by the harness user (uid 1001 `ci`). Images that run
+  // as a different uid (n8n's `node`=1000, mattermost=2000, …) can't write a 1001-owned bind
+  // mount → spurious EACCES and a false fail. Make the dir writable by any runtime uid;
+  // teardown wipes non-owned content via a throwaway root container. (File mounts — read-only
+  // config — are left untouched so we don't trip apps that reject world-writable config.)
+  if (existsSync(dest) && statSync(dest).isDirectory()) chmodSync(dest, 0o777);
+  return job;
+}
+
 /** Reserve a host port via Docker so ${APP_BASE_URL} can include the mapped port before compose up. */
 async function reserveHostPort(): Promise<number> {
   const name = `qa-port-reserve-${randomBytes(4).toString('hex')}`;
@@ -1718,14 +1829,18 @@ function composeReferencesVar(services: DockerService[], varName: string): boole
  * Bring up a multi-service app's FULL compose stack (deps included) with consistent
  * ${VAR} substitution, publishing the main service on a Docker-assigned host port.
  * Returns the host port for the HTTP check and the main container name for `docker stats`.
+ * `config` is the app's own manifest: apps are brought up side by side, so everything per-app (its form-field specs, the
+ * app.env it implies) is derived from it here and never read from module state across an await.
  */
 async function composeUp(
   appId: string,
   services: DockerService[],
   scratchBase: string,
   ymlPath: string,
+  config: Record<string, unknown>,
 ): Promise<{ ok: boolean; hostPort: number; statsName: string; project: string; err: string }> {
   const project = `qa-${appId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  const specs = loadFieldSpecs(config);
   // Start from a clean scratch tree (scoped to THIS app's scratchBase). Postgres only applies
   // POSTGRES_PASSWORD on first init of an EMPTY data dir, but valueForVar mints a fresh
   // ${...DB_PASSWORD} every run — a pgdata left behind by a prior run (e.g. one killed before the
@@ -1764,7 +1879,7 @@ async function composeUp(
   // to `${VAR}` before compose ever sees the escape, and compose would then try to interpolate that
   // ${VAR} using ITS OWN (unset) environment instead of leaving it for the container's shell.
   const subst = (s: string) =>
-    s.replace(/(?<!\$)\$\{([A-Z0-9_]+)(?::?-([^}]*))?\}/g, (_, k, def) => (def === undefined ? valueForVar(k, cache, scratchBase) : def));
+    s.replace(/(?<!\$)\$\{([A-Z0-9_]+)(?::?-([^}]*))?\}/g, (_, k, def) => (def === undefined ? valueForVar(k, cache, scratchBase, specs) : def));
   // One scratch dir per declared hostPath, shared by every service that mounts it (see the volumes
   // block below), plus the set of dirs already seeded so shared ones are prepared exactly once.
   const sharedMounts = new Map<string, string>();
@@ -1772,9 +1887,13 @@ async function composeUp(
   // Services that declare a healthcheck: a depends_on may only request `service_healthy`
   // against these — asking it of a service without one makes `compose up` error out.
   const hasHealthcheck = new Set(services.filter((s) => s.name && (s.healthCheck ?? s.healthcheck)?.test).map((s) => s.name as string));
+  // The Hub's app.env as a map, built only if the env_file or a template needs it. Both read the same `cache` as the `${VAR}`
+  // substitution above, so a variable has one value however it reaches a container or a rendered file.
+  let envMapMemo: Map<string, string> | undefined;
+  const envMapOf = () => (envMapMemo ??= buildAppEnv(appId, config, cache, scratchBase, reservedHostPort || 0, mainPort));
   let envFileLine = '';
   if (QA_ENV_FILE) {
-    writeFileSync(join(scratchBase, 'app.env'), buildAppEnv(appId, CURRENT_CONFIG, cache, scratchBase, reservedHostPort || 0, mainPort));
+    writeFileSync(join(scratchBase, 'app.env'), formatAppEnv(envMapOf()));
     envFileLine = '    env_file:\n      - app.env\n';
   }
   let y = 'services:\n';
@@ -1889,27 +2008,8 @@ async function composeUp(
         if (hp) seededMounts.add(sc);
         // Seed the mount from the app's source data/ subtree (mirrors Hub copyDataDir) so config
         // FILE targets and initdb scripts exist before compose up; otherwise an empty dir is mounted.
-        const seed = seedSourceFor(appId, v.hostPath);
-        if (seed && statSync(seed).isFile()) {
-          // File target (e.g. nginx default.conf): the scratch mount must itself be a FILE so the
-          // bind is file:file — mounting a dir onto a file is what aborts `compose up`.
-          mkdirSync(dirname(sc), { recursive: true });
-          rmSync(sc, { recursive: true, force: true });
-          cpSync(seed, sc);
-        } else if (seed) {
-          // Directory seed (e.g. data/initdb → /docker-entrypoint-initdb.d): copy its contents in.
-          mkdirSync(sc, { recursive: true });
-          cpSync(seed, sc, { recursive: true });
-        } else {
-          // No source seed: ephemeral runtime dir (pgdata/redis/storage/minio), fresh + empty.
-          mkdirSync(sc, { recursive: true });
-        }
-        // The scratch dir is created owned by the harness user (uid 1001 `ci`). Images that run
-        // as a different uid (n8n's `node`=1000, mattermost=2000, …) can't write a 1001-owned bind
-        // mount → spurious EACCES and a false fail. Make the dir writable by any runtime uid;
-        // teardown wipes non-owned content via a throwaway root container. (File mounts — read-only
-        // config — are left untouched so we don't trip apps that reject world-writable config.)
-        if (statSync(sc).isDirectory()) chmodSync(sc, 0o777);
+        // The reserved port is known here, so the app's .template files are rendered right away.
+        renderTemplates(seedMount(appId, v.hostPath, sc), envMapOf);
         y += `      - ${yamlStr(`${sc}:${cp}`)}\n`;
       }
     }
@@ -1973,52 +2073,127 @@ async function composeUp(
   return { ok: hostPort > 0, hostPort, statsName: `${project}-${main?.name}-1`, project, err: hostPort > 0 ? '' : 'no host port mapping' };
 }
 
+/** One container as Docker reports it: enough to tell "up and staying up" from "up for now". */
+interface ServiceSample {
+  name: string; // the compose service ('main' for the single container)
+  state: string; // State.Status: running | restarting | exited | dead | created | paused
+  exitCode: number; // State.ExitCode of its last exit (0 until it has exited)
+  restarts: number; // RestartCount: how often the restart policy has restarted it
+  startedAt: number; // State.StartedAt, epoch ms (NaN if unparsable)
+}
+
+/**
+ * How long a service that is restarting, or has only just restarted, gets to show it has settled before the stack is called
+ * degraded. Docker's restart policy backs off between restarts (0.1 s doubling), so a crash-looping service is mostly in
+ * "restarting" and only briefly "running", and a single look at it is a coin toss.
+ */
+const BACKEND_SETTLE_MS = 10_000;
+/** A running service that has been up this long since its last start counts as settled, whatever its restart count says. */
+const BACKEND_STABLE_MS = 5_000;
+
+/**
+ * Every container of the stack (the compose project's, exited ones included, or the single container) with its state, last exit
+ * code, restart count and start time. Null when Docker could not be asked, which callers treat as "no verdict" rather than a
+ * degraded stack.
+ */
+async function sampleServices(composeProject: string, containerName: string): Promise<ServiceSample[] | null> {
+  const targets = composeProject ? `$(docker ps -aq --filter label=com.docker.compose.project=${composeProject})` : containerName;
+  const fmt = '{{index .Config.Labels "com.docker.compose.service"}}|{{.State.Status}}|{{.State.ExitCode}}|{{.RestartCount}}|{{.State.StartedAt}}';
+  const r = await execAsync(`docker inspect ${targets} --format '${fmt}'`, 20_000);
+  if (!r.ok) return null;
+  const samples: ServiceSample[] = [];
+  for (const line of r.out.split('\n')) {
+    const [svc, state, exitCode, restarts, startedAt] = line.split('|');
+    if (!state) continue;
+    samples.push({
+      name: svc || 'main',
+      state: state.trim(),
+      exitCode: Number(exitCode) || 0,
+      restarts: Number(restarts) || 0,
+      startedAt: Date.parse(startedAt ?? ''),
+    });
+  }
+  return samples;
+}
+
+/**
+ * Sort the services of one look at the stack, as `name(state, N restarts, exit C)` strings:
+ *  - `down`: will not recover by itself — exited non-zero, the main service exited (it is the one serving the frontend), dead,
+ *    never started.
+ *  - `unsettled`: restarting, or running but restarted and up for less than BACKEND_STABLE_MS since. That is either a service that
+ *    lost a race with its dependency and is about to stay up (miniflux legitimately restarts ~4 times while postgres runs
+ *    initdb) or one that is crash-looping, and one look cannot tell which.
+ * Pass the previous look as `previous` for the second one, which settles it: a service that is restarting, or that restarted
+ * since and has not been up for BACKEND_STABLE_MS, is `down`, and nothing is `unsettled` any more. One that restarted early in
+ * the wait and has stayed up since is not.
+ */
+function classifyServices(
+  samples: ServiceSample[],
+  mainService: string,
+  nowMs: number,
+  previous?: ServiceSample[],
+): { down: string[]; unsettled: string[] } {
+  const down: string[] = [];
+  const unsettled: string[] = [];
+  for (const s of samples) {
+    const restarts = s.restarts ? `, ${s.restarts} restarts` : '';
+    const exit = s.exitCode ? `, exit ${s.exitCode}` : '';
+    if (s.state === 'running') {
+      const grew = previous ? s.restarts - (previous.find((p) => p.name === s.name)?.restarts ?? s.restarts) : 0;
+      const young = nowMs - s.startedAt < BACKEND_STABLE_MS; // false when StartedAt did not parse
+      if (previous && grew > 0 && young) down.push(`${s.name}(running but restarting${restarts}, +${grew} in ${BACKEND_SETTLE_MS / 1000}s)`);
+      else if (!previous && s.restarts > 0 && young) unsettled.push(`${s.name}(running, just restarted${restarts})`);
+      continue;
+    }
+    if (s.state === 'restarting') {
+      (previous ? down : unsettled).push(`${s.name}(restarting${restarts}${exit})`);
+      continue;
+    }
+    // A one-shot init/migrator/seeder that EXITED 0 has COMPLETED — not down. Only count it as down if it exited non-zero, is dead,
+    // or never started (created). This is the single biggest source of false "backend degraded" warns
+    // (plane/matomo/hoppscotch/openproject). The main service is never a one-shot: it is the one serving the frontend.
+    if (s.state === 'exited' && s.exitCode === 0 && s.name !== mainService) continue;
+    down.push(`${s.name}(${s.state}${restarts}${exit})`);
+  }
+  return { down, unsettled };
+}
+
 /**
  * Inspect whether the app's BACKEND is actually healthy — a frontend can serve HTTP 200
  * while a backend service (db, api, worker) is crashed/restarting, which is exactly the
  * "page loads but login is broken" failure. Returns down services + a scan of their error
- * logs. Cheap when healthy (no log fetch).
+ * logs. Cheap when healthy (no log fetch). A service that is restarting, or just restarted,
+ * is looked at again after BACKEND_SETTLE_MS before it counts (see classifyServices).
  */
-async function captureBackendHealth(o: { composeProject: string; composeYml: string; containerName: string }): Promise<{
+async function captureBackendHealth(o: { composeProject: string; composeYml: string; containerName: string; mainService: string }): Promise<{
   healthy: boolean;
   down: string[];
   errors: string;
 }> {
   const ERR = `grep -iE 'error|fatal|fail|refused|denied|panic|cannot|unable|exception|no such host' | tail -8`;
-  if (o.composeProject && o.composeYml) {
-    const ps = await execAsync(
-      `docker compose -p ${o.composeProject} -f ${o.composeYml} ps -a --format '{{.Service}}|{{.State}}|{{.ExitCode}}'`,
-      20_000,
-    );
-    const down: string[] = [];
-    for (const line of ps.out.split('\n')) {
-      const [svc, state, exitCode] = line.split('|');
-      if (!svc || !state) continue;
-      const st = state.trim();
-      if (/running|^up/i.test(st)) continue;
-      // A one-shot init/migrator/seeder that EXITED 0 has COMPLETED — not down. Only count it
-      // as down if it exited non-zero, is restarting/dead, or never started (created). This is the
-      // single biggest source of false "backend degraded" warns (plane/matomo/hoppscotch/openproject).
-      if (/^exited/i.test(st) && (exitCode ?? '').trim() === '0') continue;
-      down.push(`${svc}(${st})`);
+  let down: string[] = [];
+  const first = await sampleServices(o.composeProject, o.containerName);
+  if (first) {
+    const look = classifyServices(first, o.mainService, Date.now());
+    down = look.down;
+    if (look.unsettled.length) {
+      await new Promise((r) => setTimeout(r, BACKEND_SETTLE_MS));
+      const second = await sampleServices(o.composeProject, o.containerName);
+      // Could not look twice: say what the first look saw rather than call it healthy.
+      down = second ? classifyServices(second, o.mainService, Date.now(), first).down : [...look.down, ...look.unsettled];
     }
-    let errors = '';
-    if (down.length) {
-      const logs = await execAsync(`docker compose -p ${o.composeProject} -f ${o.composeYml} logs --tail 25 2>&1 | ${ERR}`, 25_000);
-      errors = logs.out.slice(-700);
-    }
-    return { healthy: down.length === 0, down, errors };
   }
-  const st = await execAsync(`docker inspect ${o.containerName} --format '{{.State.Status}}|{{.RestartCount}}'`);
-  const [status, restarts] = (st.out || '|').split('|');
-  const restartCount = Number(restarts || 0);
-  const healthy = status === 'running' && restartCount < 3;
   let errors = '';
-  if (!healthy) {
-    const logs = await execAsync(`docker logs --tail 25 ${o.containerName} 2>&1 | ${ERR}`, 20_000);
+  if (down.length) {
+    const logs = await execAsync(
+      o.composeProject && o.composeYml
+        ? `docker compose -p ${o.composeProject} -f ${o.composeYml} logs --tail 25 2>&1 | ${ERR}`
+        : `docker logs --tail 25 ${o.containerName} 2>&1 | ${ERR}`,
+      25_000,
+    );
     errors = logs.out.slice(-700);
   }
-  return { healthy, down: healthy ? [] : [`main(${status},restarts=${restartCount})`], errors };
+  return { healthy: down.length === 0, down, errors };
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
