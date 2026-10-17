@@ -438,8 +438,8 @@ importers:
         specifier: ^0.7.2
         version: 0.7.2
       better-ajv-errors:
-        specifier: ^3.0.2
-        version: 3.0.2(ajv@8.20.0)
+        specifier: ^2.0.3
+        version: 2.0.3(ajv@8.20.0)
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -1317,9 +1317,9 @@ packages:
       zod:
         optional: true
 
-  '@humanwhocodes/momoa@3.3.13':
-    resolution: {integrity: sha512-AbKq3EW41+HY6pNMJgAOrz68iyiTTf0Nr1JRHHfuG5zwniJ9Dw8J3U7oa1I2ptpqYwmEf1sXKOGK6lbdZ9eqmg==}
-    engines: {node: '>=18'}
+  '@humanwhocodes/momoa@2.0.4':
+    resolution: {integrity: sha512-RE815I4arJFtt+FVeU1Tgp9/Xvecacji8w/V6XtXsWWH/wz/eNkNbhb+ny/+PlVZjV0rxQpRSQKNKE3lcktHEA==}
+    engines: {node: '>=10.10.0'}
 
   '@inquirer/ansi@1.0.2':
     resolution: {integrity: sha512-S8qNSZiYzFd0wAcyG5AXCvUHC5Sr7xpZ9wZ2py9XR88jUz8wooStVx5M6dRzczbBWjic9NP7+rY0Xi7qqK/aMQ==}
@@ -3841,9 +3841,9 @@ packages:
   bcrypt-pbkdf@1.0.2:
     resolution: {integrity: sha512-qeFIXtP4MSoi6NLqO12WfqARWWuCKi2Rn/9hJLEmtB5yTNr9DqFWkJRCf2qShWzPeAMRnOgCrq0sg/KLv5ES9w==}
 
-  better-ajv-errors@3.0.2:
-    resolution: {integrity: sha512-2VHXZZa5pNA9GcQwk/wmgfUpmtVm0JzUgA/H1IrFSbZsuJV/8OzdIzUpIusjlNWS2Mzl2sa+uiS1qZImG6V9xw==}
-    engines: {node: '>= 22'}
+  better-ajv-errors@2.0.3:
+    resolution: {integrity: sha512-t1vxUP+vYKsaYi/BbKo2K98nEAZmfi4sjwvmRT8aOPDzPJeAtLurfoIDazVkLILxO4K+Sw4YrLYnBQ46l6pePg==}
+    engines: {node: '>= 18.20.6'}
     peerDependencies:
       ajv: 4.11.8 - 8
 
@@ -7855,7 +7855,7 @@ snapshots:
       valibot: 1.4.2(typescript@7.0.2)
       zod: 4.6.7
 
-  '@humanwhocodes/momoa@3.3.13': {}
+  '@humanwhocodes/momoa@2.0.4': {}
 
   '@inquirer/ansi@1.0.2':
     optional: true
@@ -10052,10 +10052,12 @@ snapshots:
     dependencies:
       tweetnacl: 0.14.5
 
-  better-ajv-errors@3.0.2(ajv@8.20.0):
+  better-ajv-errors@2.0.3(ajv@8.20.0):
     dependencies:
-      '@humanwhocodes/momoa': 3.3.13
+      '@babel/code-frame': 7.29.7
+      '@humanwhocodes/momoa': 2.0.4
       ajv: 8.20.0
+      chalk: 4.1.2
       jsonpointer: 5.0.1
       leven: 3.1.0
 
