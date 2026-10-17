@@ -357,8 +357,22 @@ describe('portal-sso helpers', () => {
       '172.18.0.1',
     ],
     ["an app's page on another loopback port", false, { host: '127.0.0.1:5002', 'sec-fetch-site': 'same-site' }, '172.18.0.1'],
-    ['an address typed into a browser on the host', true, { host: '127.0.0.1:5002', 'sec-fetch-site': 'none' }, '127.0.0.1'],
+    // A link opened from a mail or chat app reads the same as a typed address. No browser route asks this.
+    ['a link opened from another app, in a browser on the host', false, { host: '127.0.0.1:5002', 'sec-fetch-site': 'none' }, '172.18.0.1'],
     ['a link followed from another site', false, { host: '127.0.0.1:5002', 'sec-fetch-site': 'cross-site' }, '127.0.0.1'],
+    [
+      'an image on another site, from a browser that sends no fetch metadata',
+      false,
+      { host: '127.0.0.1:5002', referer: 'https://other.example/page' },
+      '172.18.0.1',
+    ],
+    [
+      "the Hub's own page, from a browser that sends no fetch metadata",
+      true,
+      { host: '127.0.0.1:5002', origin: 'http://127.0.0.1:5002', referer: 'http://127.0.0.1:5002/device-registration' },
+      '172.18.0.1',
+    ],
+    ['a sandboxed page, which sends Origin: null', false, { host: '127.0.0.1:5002', origin: 'null' }, '172.18.0.1'],
   ])('isRequestFromThisHost: %s -> %s', (_caller, expected, headers: Record<string, string>, ip) => {
     const req = {
       headers,

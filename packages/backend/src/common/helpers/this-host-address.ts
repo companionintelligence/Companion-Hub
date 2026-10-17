@@ -89,8 +89,8 @@ export function createThisHostAddressCheck(
  * Whether a socket's peer address is loopback or, when the Hub runs in a container, the container's
  * IPv4 default gateway. Those are the addresses the host's own connections to the Hub arrive from.
  *
- * Why the gateway: Docker publishes a container's ports on the network that carries its default
- * route. A client on the host's loopback, such as the headless setup service calling
+ * The gateway counts because Docker publishes a container's ports on the network that carries its
+ * default route. A client on the host's loopback, such as the headless setup service calling
  * `http://127.0.0.1:5002`, reaches the container through Docker's port proxy, which connects from
  * that network's gateway.
  *

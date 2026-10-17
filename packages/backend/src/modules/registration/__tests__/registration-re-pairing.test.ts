@@ -94,6 +94,15 @@ const sendPost = (from: unknown) => controller.handleCallbackPost(BODY, service.
 const sendGet = (from: unknown) =>
   controller.handleCallback(from as any, DEVICE_ID, 'org-current', 'Current', 'current', 'new-sub', 'tun-new', 'tok-new', 'key-new', 'new.example');
 
+/*
+ * `POST /registration/pair` asks the same question before it sends the code to Portal. Portal is
+ * mocked here, so a pairing that passes reaches `/api/devices/pair` and one that is refused never does.
+ */
+const mockedPost = vi.mocked(axios.post);
+const portalPairCalls = () => mockedPost.mock.calls.filter(([url]) => String(url).endsWith('/api/devices/pair'));
+const sendPair = (from: unknown, confirmMove = false) =>
+  controller.pairDevice({ pairing_code: 'abc123', ...(confirmMove ? { confirm_move: true } : {}) }, from as any);
+
 /** The Portal's answer about the person's role in this Hub's organization. */
 const portalSays = (role: string) =>
   portal.whoisApps.mockResolvedValue({
@@ -240,6 +249,22 @@ describe.each(['portal_rejected', 'tunnel_token_missing'] as const)('a registrat
     expectNothingWritten();
   });
 
+  it('refuses a link opened in a browser on the Hub itself, on either route, without changing anything', async () => {
+    const before = snapshot();
+    // A link in a mail or chat app opens with `Sec-Fetch-Site: none`, from the same address the setup service uses.
+    const linkOnThisHost = () => {
+      const from = fromSetupService();
+      from.headers['sec-fetch-site'] = 'none';
+      return from;
+    };
+
+    await expect(sendGet(linkOnThisHost())).rejects.toThrow(/only accepted from this Hub itself/);
+    await expect(sendPost(linkOnThisHost())).rejects.toThrow(/Sign in as an owner or admin/);
+
+    expect(snapshot()).toEqual(before);
+    expectNothingWritten();
+  });
+
   it('is refused on the POST when there is no request to read the caller from', async () => {
     await expect(controller.handleCallbackPost(BODY, service.mintCallbackNonce())).rejects.toThrow(/Sign in as an owner or admin/);
     expectNothingWritten();
@@ -355,14 +380,6 @@ describe('a registration callback on a Hub that is registered and serving', () =
   });
 });
 
-/*
- * `POST /registration/pair` asks the same question before it sends the code to Portal. Portal is
- * mocked here, so a pairing that passes reaches `/api/devices/pair` and one that is refused never does.
- */
-const mockedPost = vi.mocked(axios.post);
-const portalPairCalls = () => mockedPost.mock.calls.filter(([url]) => String(url).endsWith('/api/devices/pair'));
-const sendPair = (from: unknown, confirmMove = false) =>
-  controller.pairDevice({ pairing_code: 'abc123', ...(confirmMove ? { confirm_move: true } : {}) }, from as any);
 const asCli = () => request('192.168.1.50', '192.168.1.10:5002', { hubPrincipal: 'cli', user: { id: 1 } });
 const asHostLocalKey = () => request('192.168.1.50', '192.168.1.10:5002', { hubPrincipal: 'host-local', user: { id: 1 } });
 /** `cihub register` on the Hub's own machine, on a build that has no host-local key to send. */
@@ -415,6 +432,27 @@ describe.each(['portal_rejected', 'tunnel_token_missing'] as const)('a pairing c
     portalIssuesPairing();
 
     await expect(sendPair(signedIn(role))).resolves.toMatchObject({ success: true });
+    await expectPairedAgain();
+  });
+
+  it("refuses an owner's session that a page on another site or a sibling hostname sent, but not the Hub's own page", async () => {
+    portalSays('owner');
+    portalIssuesPairing();
+
+    for (const fetchSite of ['same-site', 'cross-site']) {
+      const fromOtherPage = signedIn('owner');
+      fromOtherPage.headers['sec-fetch-site'] = fetchSite;
+      await expect(sendPair(fromOtherPage)).resolves.toMatchObject({
+        success: false,
+        message: expect.stringContaining('Sign in as an owner or admin'),
+      });
+    }
+    expect(portalPairCalls()).toEqual([]);
+    expectNothingWritten();
+
+    const fromHubPage = signedIn('owner');
+    fromHubPage.headers['sec-fetch-site'] = 'same-origin';
+    await expect(sendPair(fromHubPage)).resolves.toMatchObject({ success: true });
     await expectPairedAgain();
   });
 

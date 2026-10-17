@@ -13,7 +13,7 @@ import { AuthGuard } from '@/modules/auth/auth.guard';
 import { HubSessionGuard } from '@/modules/auth/hub-session.guard';
 import { HubManagerGuard, resolveWhoisService } from '@/modules/auth/hub-manager.guard';
 import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
-import { isRequestFromThisHost } from '@/modules/auth/portal-sso';
+import { isCrossSiteBrowserRequest, isRequestFromThisHost } from '@/modules/auth/portal-sso';
 
 interface RegisterDeviceDto {
   organization_id: string;
@@ -365,7 +365,7 @@ export class RegistrationController {
    * Who may pair a Hub that holds a registration again, by a callback or a pairing code: a request
    * from this Hub's own machine, or someone `hubManageVerdictForRePairing` allows: the claiming
    * operator, an owner or admin, the CLI or the host-local key. A member is refused, as are the
-   * Portal device key and a caller nobody authenticated.
+   * Portal device key, a caller nobody authenticated and a session a page on another site sent.
    */
   private async mayPairRegisteredHubAgain(req: Request | undefined): Promise<boolean> {
     if (!req) {
@@ -378,6 +378,11 @@ export class RegistrationController {
 
     // Nobody authenticated, so no WhoIs answer could allow it. Not asked, so it logs no refusal of its own.
     if (!req.hubPrincipal) {
+      return false;
+    }
+
+    // Not a session that a browser says another site's page sent. The Hub's own pages send `same-origin`.
+    if (req.hubPrincipal === 'session' && isCrossSiteBrowserRequest(req)) {
       return false;
     }
 
