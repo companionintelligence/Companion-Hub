@@ -1,45 +1,51 @@
 packages:
   - 'packages/*'
 
-# Security overrides — pin vulnerable transitive deps to patched versions
-# (Dependabot alerts on CI-Hub@dev). Direct deps are also bumped in their package.json.
+# Security overrides — raise vulnerable deps to patched versions
+# (Dependabot alerts on CI-Hub@dev). The advisory-driven entries below are FLOOR
+# SELECTORS ('pkg@<floor': '^floor'): pnpm rewrites a request only when its range
+# intersects the selector, so a direct dependency range at or above the floor wins
+# and a Dependabot bump in a package.json takes effect. An exact pin ('pkg': 'x.y.z')
+# applies to direct dependencies too and silently swallows those bumps. Dependabot
+# cannot edit this file, so raise a floor here when a new advisory lands.
 overrides:
   # 26.6.4 was published inside pnpm's release-age window, so a frozen install
   # (CI, the image build, and the pre-commit hook) rejects the lockfile.
   '@types/node@26.6.4': 26.6.3
   '@babel/core': 7.29.6
-  '@grpc/grpc-js': 1.14.5
+  '@grpc/grpc-js@<1.14.6': '^1.14.6'
   '@hono/node-server': 1.19.15
   '@opentelemetry/core': 2.8.0
   '@protobufjs/utf8': 1.1.1
-  axios: 1.18.0
+  'axios@<1.20.0': '^1.20.0'
   baseline-browser-mapping: 2.11.13
   body-parser: 2.3.0
-  brace-expansion: 5.0.11
+  'brace-expansion@<5.0.12': '^5.0.12'
   browserslist: 4.28.9
-  dompurify: 3.4.13
+  'dompurify@<3.4.17': '^3.4.17'
   drizzle-orm: 0.45.2
   esbuild: 0.25.0
-  fast-uri: 3.1.7
+  'fast-uri@<3.1.8': '^3.1.8'
   fflate: 0.8.3
   file-type: 21.3.2
   follow-redirects: 1.16.0
   form-data: 4.0.6
-  handlebars: 4.7.9
-  hono: 4.13.5
-  i18next-fs-backend: 2.6.6
-  i18next-http-backend: 4.0.2
-  ip-address: 10.3.1
+  'handlebars@<4.7.10': '^4.7.10'
+  'hono@<4.13.11': '^4.13.11'
+  'i18next-fs-backend@<2.6.9': '^2.6.9'
+  'i18next-http-backend@<4.0.3': '^4.0.3'
+  'ip-address@<10.7.1': '^10.7.1'
   'js-yaml@^3': 3.15.2
   'js-yaml@^4': 4.3.2
-  multer: 2.3.0
+  'multer@<2.4.0': '^2.4.0'
   'nanoid@^3': 3.3.18
-  piscina: 4.9.3
+  'piscina@<4.9.4': '^4.9.4'
   postcss: 8.5.23
   protobufjs: 7.6.5
   qs: 6.16.0
   react-router: 8.4.0
-  smol-toml: 1.7.2
+  'shell-quote@>=1.8.4 <1.11.0': '^1.11.0'
+  'smol-toml@<1.9.0': '^1.9.0'
   source-map-js: 1.2.2
   systeminformation: companionintelligence/systeminformation#master
   turbo: 2.9.14
