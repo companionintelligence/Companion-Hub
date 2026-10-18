@@ -47,7 +47,7 @@ window on an app that already crashed. `qa-stream` instead waits on:
 
 1. the container's own **Docker healthcheck** reporting `healthy` (authoritative when present);
 2. **HTTP** `/` `< 500`; or
-3. **fast-fail** — the main container `exited`/`dead` or restart-looped (report `backend exited after Ns` + logs, don't wait).
+3. **fast-fail** — the main container `exited`/`dead` (it is not restarted: `restart: "no"`, or a clean exit under `on-failure`) or restart-looped (more than 10 restarts under a policy that never gives up; report `backend exited after Ns` + logs, don't wait).
 
 Ceiling: **300s single-service / 600s multi-service**, override with `QA_READY_TIMEOUT_MS`.
 The result records `readyVia` (`healthcheck` | `http <code>`) and `startupMs`.
@@ -69,6 +69,16 @@ The result records `readyVia` (`healthcheck` | `http <code>`) and `startupMs`.
   (`scripts/heal-hub-bind-mounts.ts`).
 - **Prepull + registry cache** on lab hardware and a 900s pull timeout to kill cold-pull
   flakiness on heavy images.
+- **The Hub's restart policy.** Each service runs under its manifest `restart` value
+  (`no` | `always` | `unless-stopped` | `on-failure`), and under `unless-stopped` when it declares
+  none, as the Hub's compose builder does: `docker run --restart` for a single-service app,
+  `restart:` per service for a compose stack. An app that exits 0 once on purpose and relies on
+  the restart (lidarr-deemix, hoppscotch) is scored on what it does afterwards. Teardown
+  force-removes the containers, since a restart policy brings back one that is only stopped.
+- **Host-port bind races are retried.** The published host port is reserved up front; if the
+  real bind then loses it to another app (`address already in use` / `failed to bind host port` /
+  `port is already allocated`, most likely at `QA_CONCURRENCY` above 1) the start is retried with a fresh reservation, at most
+  twice (`bindRetries` on the result). Any other start failure is scored on the first try.
 
 ## Reusable environment issues
 
