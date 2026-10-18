@@ -8,6 +8,20 @@
  * Usage:
  *   tsx scripts/qa-stream.ts nextcloud jellyfin uptime-kuma
  *
+ * Manifest keys the harness reads from an app's docker-compose.json (the app's own say in how it is tested):
+ *   qaSkip              top-level string. The app cannot run headless by nature (needs a display, a device, a licence, a host the
+ *                       node lacks). It scores `skip` (failKind `declared`, notes `declared skip: <reason>`) before anything is
+ *                       pulled or started, and prepull ignores it. An empty or non-string value is ignored and noted
+ *                       (result.qaSkipIgnored), never a crash.
+ *   qaReadyTimeoutMs    top-level number. Raises the readiness ceiling for a legitimately slow first boot.
+ *   services[].httpsBackend  on the main service: the upstream only speaks TLS (the Hub's Traefik dials it over https). The
+ *                       readiness probe and the screenshot then go over https with certificate verification OFF (the cert is
+ *                       self-signed); every other app keeps the plain-http probe. X-Forwarded-* headers are unchanged.
+ *
+ * A main-service image that is not a syntactically valid Docker reference (a `<placeholder>`, prose, whitespace, an upper-case
+ * path) scores `skip` (failKind `unpublished`, notes `no published image: <ref>`) before any pull. `${VAR}` references are left to
+ * the normal path.
+ *
  * Env vars:
  *   APP_STORE_DIR   path to CI-Marketplace/apps  (default: ~/devel/CI-Marketplace/apps
  *                   with fallback to ~/devel/CI-App-Store/apps)
@@ -38,6 +52,7 @@
 import { exec, execSync, spawnSync } from 'node:child_process';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { request as httpsRequest } from 'node:https';
 import { connect } from 'node:net';
 import { EOL, homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -103,6 +118,7 @@ function captureScreenshot(
   screenshotPath: string,
   url: string,
   opts: { virtualTimeBudgetMs: number; timeoutMs: number; spawnTimeoutMs: number },
+  insecureTls = false, // an httpsBackend app serves a self-signed certificate
 ): { ok: boolean; diag: string } {
   const ss = spawnSync(
     chromeBin,
@@ -113,6 +129,7 @@ function captureScreenshot(
       '--hide-scrollbars',
       `--screenshot=${screenshotPath}`,
       '--window-size=1280,800',
+      ...(insecureTls ? ['--ignore-certificate-errors'] : []),
       `--virtual-time-budget=${opts.virtualTimeBudgetMs}`,
       `--timeout=${opts.timeoutMs}`,
       url,
@@ -360,6 +377,7 @@ interface DockerService {
   image?: string;
   isMain?: boolean;
   internalPort?: number;
+  httpsBackend?: boolean; // the upstream only speaks TLS (self-signed): the Hub's Traefik dials it over https, so the probe must too
   user?: string; // run-as user (uid[:gid] or name) — honored by the real Hub builder (service.builder.ts setUser); mirrored here
   command?: string[] | string; // entrypoint override; carries DB migration/predeploy steps for some apps
   entrypoint?: string[] | string; // ENTRYPOINT override (e.g. opencode-web's chown wrapper) — honored on both paths
@@ -395,6 +413,7 @@ interface DockerService {
 interface ComposeJson {
   services?: DockerService[];
   qaReadyTimeoutMs?: number; // optional QA hint: raise the readiness ceiling for a legit-slow app
+  qaSkip?: unknown; // optional QA hint: non-empty string = why the app cannot run headless; scores skip. Anything else is ignored (see declaredQaSkip)
 }
 
 /**
@@ -418,6 +437,48 @@ function requiresGpu(services: DockerService[], config?: AppConfig): boolean {
   return false;
 }
 
+/**
+ * The manifest's own verdict that the app cannot run headless by nature: a top-level `qaSkip` string in docker-compose.json (next to
+ * `qaReadyTimeoutMs`) giving the reason. Only a non-empty string counts. Anything else (empty, whitespace, a number, null, an object) is
+ * ignored and returned in `ignored` so the caller can note it; a malformed hint must never crash or silently skip a run. An unreadable
+ * manifest returns no verdict at all, the normal path reports it.
+ */
+function declaredQaSkip(appId: string): { reason: string | null; ignored: string | null } {
+  const none = { reason: null, ignored: null };
+  try {
+    const cj = join(APP_STORE_DIR, appId, 'docker-compose.json');
+    if (!existsSync(cj)) return none;
+    const raw = (JSON.parse(readFileSync(cj, 'utf-8')) as ComposeJson).qaSkip;
+    if (raw === undefined) return none;
+    if (typeof raw === 'string' && raw.trim()) return { reason: raw.trim().replace(/\s+/g, ' '), ignored: null };
+    const got = typeof raw === 'string' ? 'an empty string' : raw === null ? 'null' : Array.isArray(raw) ? 'an array' : `a ${typeof raw}`;
+    return { reason: null, ignored: `qaSkip ignored: expected a non-empty string, got ${got}` };
+  } catch {
+    return none;
+  }
+}
+
+// Docker image reference grammar (distribution/reference), used only to tell a real reference from a placeholder. It accepts what Docker
+// accepts (optional registry host[:port] or [ipv6], lower-case path components, optional :tag, optional @algo:digest) and rejects what no
+// registry can hold: `<image not yet published>`, prose, whitespace, an upper-case path.
+const REF_PATH = '[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*';
+const REF_HOST_PART = '(?:[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9])';
+const REF_DOMAIN = `(?:${REF_HOST_PART}(?:\\.${REF_HOST_PART})*|\\[[0-9a-fA-F:.]+\\])(?::[0-9]+)?`;
+const IMAGE_REF_RE = new RegExp(
+  `^(?:${REF_DOMAIN}/)?${REF_PATH}(?:/${REF_PATH})*(?::[\\w][\\w.-]{0,127})?(?:@[A-Za-z][A-Za-z0-9]*:[0-9a-fA-F]{32,})?$`,
+);
+
+/**
+ * Is `ref` a syntactically valid image reference? A placeholder in the manifest (`<image not yet published>`, `NOT PUBLISHED, no
+ * official image exists`) is not, and interpolated into `docker pull` it is shell syntax, not an image. A templated reference
+ * (any `$`, as in `${APP_IMAGE}`) is resolved at run time and is never judged here.
+ */
+function isValidImageRef(ref: string): boolean {
+  const r = ref.trim();
+  if (r.includes('$')) return true;
+  return !/[<>\s]/.test(r) && IMAGE_REF_RE.test(r);
+}
+
 async function attemptApp(appId: string): Promise<Record<string, unknown>> {
   emit({ event: 'app_start', appId, ts: Date.now() });
 
@@ -428,6 +489,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
   let services: DockerService[] = [];
   let isMulti = false;
   let composeReadyTimeoutMs: number | undefined; // per-app readiness-ceiling override from the manifest
+  let httpsBackend = false; // the main service only speaks TLS (self-signed): probe and screenshot over https, certificate unchecked
   let statsName = containerName; // container to `docker stats` (overridden for compose path)
   let composeProject = '';
   let composeYml = '';
@@ -471,6 +533,21 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     result.hostAccess = !!config.host_access;
     result.formFieldsCount = Array.isArray(config.form_fields) ? config.form_fields.length : 0;
 
+    // The manifest's own verdict that the app cannot run headless by nature. Decided before anything is pulled or started, and
+    // before the no_gui/MCP routing below so it holds for every kind of app. A malformed hint is noted, never fatal.
+    const declared = declaredQaSkip(appId);
+    if (declared.ignored) {
+      result.qaSkipIgnored = declared.ignored;
+      result.notes = declared.ignored;
+    }
+    if (declared.reason) {
+      result.image = resolveMainImage(appId) ?? '';
+      result.score = 'skip' as Score;
+      result.failKind = 'declared';
+      result.notes = `declared skip: ${declared.reason}`;
+      return result;
+    }
+
     // Non-HTTP apps have no web surface to check. MCP-server apps (a `.mcp` block) speak JSON-RPC
     // over stdio — route them to the protocol smoke (boot → initialize → tools/list → manifest
     // assertion + read-only exec probe) so they get a real verdict instead of a blind skip. The
@@ -506,6 +583,16 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       const main = compose.services?.find((s) => s.isMain) ?? compose.services?.[0];
       result.image = main?.image ?? `${appId}:latest`;
       if (main?.internalPort) result.port = main.internalPort;
+      httpsBackend = main?.httpsBackend === true;
+      // A placeholder where the image should be (`<image not yet published>`, `NOT PUBLISHED, ...`) is not an image anyone can pull:
+      // report it as unpublished before any pull, and before the reference is interpolated into a `docker` shell command. Judged here
+      // only, on the manifest's own value; the .yml fallback below extracts `image:` with a regexp that can keep quotes and comments.
+      if (!isValidImageRef(String(result.image))) {
+        result.score = 'skip' as Score;
+        result.failKind = 'unpublished';
+        result.notes = `no published image: ${String(result.image).trim().slice(0, 300) || '(empty)'}`;
+        return result;
+      }
       // Single-service path only: build `docker run` flags. Multi-service apps go through
       // the compose path (composeUp) which handles volumes + ${VAR}-substituted env itself.
       if (!isMulti) {
@@ -910,15 +997,22 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       try {
         // The Hub's Traefik terminates TLS and forwards X-Forwarded-Proto/Port; apps that force HTTPS (alf.io throws
         // 'HTTP Port N does not have a corresponding HTTPS Port') need them to answer a request on a non-standard port.
-        const res = await fetch(`http://localhost:${hostPort}${uiPath}`, {
-          redirect: 'manual',
-          signal: AbortSignal.timeout(4000),
-          headers: QA_NO_PROXY_HEADERS ? {} : { 'X-Forwarded-Proto': 'https', 'X-Forwarded-Port': '443' },
-        });
-        httpStatus = res.status;
+        const probeHeaders: Record<string, string> = QA_NO_PROXY_HEADERS ? {} : { 'X-Forwarded-Proto': 'https', 'X-Forwarded-Port': '443' };
+        // An httpsBackend upstream only speaks TLS (the Hub's Traefik dials it over https, certificate unchecked), so a plain-http probe
+        // can never succeed: probe it the same way. Every other app keeps the plain-http probe.
+        if (httpsBackend) {
+          httpStatus = await probeHttps(hostPort, uiPath, probeHeaders, 4000);
+        } else {
+          const res = await fetch(`http://localhost:${hostPort}${uiPath}`, {
+            redirect: 'manual',
+            signal: AbortSignal.timeout(4000),
+            headers: probeHeaders,
+          });
+          httpStatus = res.status;
+        }
         if (httpStatus < 500) {
           ready = true;
-          readyVia = `http ${httpStatus}`;
+          readyVia = `${httpsBackend ? 'https' : 'http'} ${httpStatus}`;
         }
       } catch {
         // not serving yet
@@ -1026,7 +1120,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         // "Page load timed out" at the old 12s/20s budget and writes a 4714-byte white PNG that
         // looked like a pass (hasScreenshot=true). A longer second attempt fixes gitea/arkanum and
         // similar SSR/redirect apps without raising the default ceiling for websocket-hanging SPAs.
-        const shotUrl = `http://localhost:${hostPort}${uiPath}`;
+        const shotUrl = `${httpsBackend ? 'https' : 'http'}://localhost:${hostPort}${uiPath}`;
         const shotAttempts: Array<{ virtualTimeBudgetMs: number; timeoutMs: number; spawnTimeoutMs: number }> = [
           { virtualTimeBudgetMs: 30_000, timeoutMs: 45_000, spawnTimeoutMs: 55_000 },
           { virtualTimeBudgetMs: 60_000, timeoutMs: 60_000, spawnTimeoutMs: 70_000 },
@@ -1034,7 +1128,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         let ssDiag = '';
         for (const attempt of shotAttempts) {
           if (result.hasScreenshot) break;
-          const shot = captureScreenshot(chromeBin, screenshotPath, shotUrl, attempt);
+          const shot = captureScreenshot(chromeBin, screenshotPath, shotUrl, attempt, httpsBackend);
           result.hasScreenshot = shot.ok;
           if (!shot.ok) ssDiag = shot.diag;
         }
@@ -1320,7 +1414,15 @@ function pullAsync(image: string, timeoutMs: number): Promise<boolean> {
  * cached). Bounded concurrency; failures are non-fatal (the per-app pull re-reports real ones).
  */
 async function prepull(appIds: string[]): Promise<void> {
-  const images = [...new Set(appIds.map(resolveMainImage).filter((x): x is string => !!x && !x.includes('${')))];
+  // Nothing a declared skip or a placeholder image resolves to is worth pulling: attemptApp skips both before it would use the image.
+  const images = [
+    ...new Set(
+      appIds
+        .filter((id) => !declaredQaSkip(id).reason)
+        .map(resolveMainImage)
+        .filter((x): x is string => !!x && !x.includes('${') && isValidImageRef(x)),
+    ),
+  ];
   if (!images.length) return;
   emit({ event: 'prepull_start', count: images.length, ts: Date.now() });
   const CONCURRENCY = 3;
@@ -1336,6 +1438,29 @@ async function prepull(appIds: string[]): Promise<void> {
   }
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, images.length) }, () => worker()));
   emit({ event: 'prepull_done', count: images.length, ts: Date.now() });
+}
+
+/**
+ * One GET over TLS with certificate verification OFF, for an `httpsBackend` app (TLS-only upstream, self-signed certificate). Resolves
+ * the status code and discards the body; a redirect is not followed, so a 3xx counts as a live server exactly as in the plain probe.
+ * Rejects on a connection error or after `timeoutMs`. Node's fetch cannot skip verification for one request without undici's Agent (not
+ * a built-in; this file ships alone to the nodes), and NODE_TLS_REJECT_UNAUTHORIZED=0 would switch verification off for the whole process.
+ */
+function probeHttps(port: number, path: string, headers: Record<string, string>, timeoutMs: number): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const req = httpsRequest(
+      { host: 'localhost', port, path, method: 'GET', headers, rejectUnauthorized: false, agent: false, signal: AbortSignal.timeout(timeoutMs) },
+      (res) => {
+        res.on('error', () => {
+          /* the body is abandoned on purpose */
+        });
+        resolve(res.statusCode ?? 0);
+        req.destroy();
+      },
+    );
+    req.once('error', reject);
+    req.end();
+  });
 }
 
 /**
