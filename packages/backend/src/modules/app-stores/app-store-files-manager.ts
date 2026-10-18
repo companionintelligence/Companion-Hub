@@ -301,6 +301,10 @@ export class AppStoreFilesManager {
   /**
    * Given a template and a map of variables, this function replaces all instances of the variables in the template with their values.
    *
+   * The values are written exactly as given. Several are secrets the user typed, and a password such as
+   * `pa$$word` or `a$&b` must not be read as a `$` replacement pattern (`$$`, `$&`, `` $` ``, `$'`, `$1`),
+   * so the replacement is a function, whose result `replace` inserts without interpreting it.
+   *
    * @param {string} template - The template to be rendered.
    * @param {Map<string, string>} envMap - The map of variables and their values.
    */
@@ -308,8 +312,9 @@ export class AppStoreFilesManager {
     let renderedTemplate = template;
 
     envMap.forEach((value, key) => {
+      // The key is matched as literal text: escape it, and the braces around it, so none of it is read as regex syntax.
       const safeKey = key.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
-      renderedTemplate = renderedTemplate.replace(new RegExp(`{{${safeKey}}}`, 'g'), value);
+      renderedTemplate = renderedTemplate.replace(new RegExp(`\\{\\{${safeKey}\\}\\}`, 'g'), () => value);
     });
 
     return renderedTemplate;
