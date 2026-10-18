@@ -19,6 +19,20 @@
  *   QA_NO_PROXY_HEADERS  set to "1" to stop the readiness probe sending X-Forwarded-Proto/Port (the Hub's Traefik adds them)
  *   QA_NO_TEMPLATES set to "1" to seed the .template files under an app's data/ as they are. By default each is rendered into the
  *                   mount without the suffix, from the app.env map, as the Hub's copyDataDir does.
+ *
+ * Restart policy and host ports (an app is started here as the Hub starts it):
+ *   - Each service runs under its manifest's `restart` (no | always | unless-stopped | on-failure), else `unless-stopped`: the Hub's
+ *     default (compose.builder.ts). That is `docker run --restart <policy>` for a single-service app and `restart:` per service in
+ *     a compose stack, so an app that exits 0 once on purpose and relies on the restart (lidarr-deemix, hoppscotch) is scored on
+ *     what it does afterwards. A service that declares `restart: "no"` stays exited, as under the Hub.
+ *   - Those policies never give up, so a crash-looping main service shows as `restarting`, not `exited`. The readiness loop calls it
+ *     dead (`fail`, failKind `exit`, "restart loop (N restarts)") once its restart count passes 10, which takes under 2 minutes
+ *     (about 100 s measured on Docker 29) for a process that dies at once (Docker's backoff) where an exit used to be seen in 3 seconds. The post-ready backend
+ *     check reports a restarting service as down, as before.
+ *   - Teardown and the stale-container cleanup stop and force-remove: a restart policy brings back a container that is only stopped.
+ *   - The host port is reserved before the start and published as that exact port. If the bind loses a race for it ("address
+ *     already in use" / "failed to bind host port" / "port is already allocated", e.g. a peer app at QA_CONCURRENCY=2) the start is retried with a fresh
+ *     reservation, at most 2 times (`bindRetries` on the result), then scored as before. Other start failures are not retried.
  */
 
 import { exec, execSync, spawnSync } from 'node:child_process';
@@ -299,7 +313,11 @@ async function forceTeardown(o: {
   // Compose teardown (operates on the project by name when we have no yml — compose v2 matches the
   // project label), then a single-container force-remove. One of the two is a no-op per app shape.
   await execAsync(`docker compose -p ${project} ${ymlRef} down -v --remove-orphans 2>/dev/null`, 150_000);
-  await execAsync(`docker rm -f ${o.containerName} 2>/dev/null`, 30_000);
+  // A restart policy (the Hub's default is unless-stopped) brings a container back unless it is removed, and `compose down` can fail
+  // part-way, so force-remove what the project still has. Stop the single container first: a failed `rm -f` then leaves it stopped.
+  await execAsync(`docker rm -f -v $(docker ps -aq --filter label=com.docker.compose.project=${project}) 2>/dev/null`, 60_000);
+  await execAsync(`docker stop -t 3 ${o.containerName} 2>/dev/null`, 30_000);
+  await execAsync(`docker rm -f -v ${o.containerName} 2>/dev/null`, 30_000);
   for (const d of o.scratchDirs ?? []) {
     try {
       wipeScratchTree(d);
@@ -356,6 +374,7 @@ interface DockerService {
   dns?: string | string[];
   extraHosts?: string[];
   networkMode?: string; // e.g. 'service:<main>' for a sidecar sharing the main service's namespace — honored by the Hub builder
+  restart?: string; // no | always | unless-stopped | on-failure; the Hub's default when absent is unless-stopped (see restartPolicyOf)
   volumes?: { hostPath?: string; containerPath?: string; readOnly?: boolean }[];
   environment?: { key?: string; value?: string }[];
   dependsOn?: unknown; // map {svc:{condition}} (Hub) or string[] — handled in composeUp
@@ -413,6 +432,8 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
   let composeProject = '';
   let composeYml = '';
   const templateJobs: TemplateJob = []; // single-container path: .template files seeded into the mounts, rendered once the port is reserved
+  let restartPolicy = HUB_DEFAULT_RESTART; // the main service's, as the Hub would run it (restartPolicyOf)
+  let mainRestarts = 0; // the main container's RestartCount at the last readiness look
   const result: Record<string, unknown> = {
     appId,
     score: 'fail' as Score,
@@ -420,8 +441,8 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     ts: Date.now(),
   };
 
-  // Cleanup stale container
-  execQuiet(`docker stop ${containerName} 2>/dev/null; docker rm ${containerName} 2>/dev/null`);
+  // Cleanup stale container. Force-removed: one left by a killed run keeps its restart policy, so it may be running again.
+  execQuiet(`docker stop ${containerName} 2>/dev/null; docker rm -f -v ${containerName} 2>/dev/null`);
 
   try {
     // ── Config ────────────────────────────────────────────────
@@ -550,6 +571,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         // self-healing chown step can run) and instead ran as the image's default non-root user,
         // hit an EPERM writing to storage/, and never got the chance to prove the fix.
         if (main?.user) runFlags += ` --user ${shQuote(subst(String(main.user)))}`;
+        restartPolicy = restartPolicyOf(main);
         if (main?.privileged === true) runFlags += ' --privileged';
         for (const c of main?.capAdd ?? []) runFlags += ` --cap-add ${shQuote(String(c))}`;
         for (const d of main?.devices ?? []) runFlags += ` --device ${shQuote(subst(String(d)))}`;
@@ -639,8 +661,18 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       mkdirSync(scratchBase, { recursive: true });
       scratchDirs.push(scratchBase);
       composeYml = join(scratchBase, 'docker-compose.gen.yml');
-      const up = await composeUp(appId, services, scratchBase, composeYml, config as unknown as Record<string, unknown>);
+      restartPolicy = restartPolicyOf(services.find((s) => s.isMain) ?? services[0]);
+      let up = await composeUp(appId, services, scratchBase, composeYml, config as unknown as Record<string, unknown>);
       composeProject = up.project;
+      // `compose up` can lose the race for the host port composeUp reserved (a peer app, QA_CONCURRENCY > 1). Take down whatever it
+      // did start and build the stack afresh: composeUp wipes the scratch tree, reserves a new port and mints new secrets, so the
+      // retry is a clean start rather than a stack half-initialised under the old port.
+      for (let bindTry = 1; !up.ok && bindTry <= BIND_RETRIES && isPortBindRace(up.err); bindTry++) {
+        phase(appId, 'starting', `Host port was taken before compose could bind it; retrying with a new reservation (${bindTry}/${BIND_RETRIES})`);
+        await forceTeardown({ appId, containerName, composeProject, composeYml });
+        up = await composeUp(appId, services, scratchBase, composeYml, config as unknown as Record<string, unknown>);
+        result.bindRetries = bindTry;
+      }
       result.pullMs = Date.now() - startT0;
       if (!up.ok) {
         // Classify compose failures the same as single-service pull failures
@@ -656,7 +688,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         }
         result.score = 'error';
         result.failKind = 'compose';
-        result.notes = `compose up failed: ${up.err}`;
+        result.notes = `compose up failed${result.bindRetries ? ` after ${result.bindRetries} host-port retries` : ''}: ${up.err}`;
         return result;
       }
       hostPort = up.hostPort;
@@ -698,27 +730,43 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       // screenshot, TCP probe) keeps using the port resolved once here — so a restart silently
       // moves the app and we probe a dead port for the rest of the ceiling. Still avoids colliding
       // with the Hub/Traefik (commonly :80) or a peer app on the same node.
-      const reserved = await reserveHostPort();
-      const publishFlag = reserved > 0 ? `${reserved}:${result.port}` : `0:${result.port}`;
-      // The Hub's app.env as a map, built only if the --env-file or a template needs it. It reads the same `cache` as the `-e`
-      // flags above, so a variable gets one value whichever way it reaches the container (a random form field that the
-      // manifest also maps to a differently named `environment` entry used to get two).
-      const sb = join(RESULTS_DIR, 'scratch', appId);
-      let envMapMemo: Map<string, string> | undefined;
-      const envMapOf = () =>
-        (envMapMemo ??= buildAppEnv(appId, config as unknown as Record<string, unknown>, cache, sb, reserved, Number(result.port)));
-      renderTemplates(templateJobs, envMapOf);
-      let envFileFlag = '';
-      if (QA_ENV_FILE) {
-        mkdirSync(sb, { recursive: true });
-        const ef = join(sb, 'app.env');
-        writeFileSync(ef, formatAppEnv(envMapOf()));
-        envFileFlag = ` --env-file ${shQuote(ef)}`;
+      // The reservation can lose its race for the port: the reservation container is removed before the real bind, and a peer app
+      // (QA_CONCURRENCY > 1) or the Hub can take it in between. That is not an app failure, so start again with a fresh reservation
+      // (BIND_RETRIES times at most); every other failure falls through to the scoring below untouched.
+      let reserved = 0;
+      let run: ReturnType<typeof execQuiet>;
+      for (let bindTry = 0; ; bindTry++) {
+        reserved = await reserveHostPort();
+        const publishFlag = reserved > 0 ? `${reserved}:${result.port}` : `0:${result.port}`;
+        // The Hub's app.env as a map, built only if the --env-file or a template needs it. It reads the same `cache` as the `-e`
+        // flags above, so a variable gets one value whichever way it reaches the container (a random form field that the
+        // manifest also maps to a differently named `environment` entry used to get two).
+        const sb = join(RESULTS_DIR, 'scratch', appId);
+        let envMapMemo: Map<string, string> | undefined;
+        const envMapOf = () =>
+          (envMapMemo ??= buildAppEnv(appId, config as unknown as Record<string, unknown>, cache, sb, reserved, Number(result.port)));
+        renderTemplates(templateJobs, envMapOf);
+        let envFileFlag = '';
+        if (QA_ENV_FILE) {
+          mkdirSync(sb, { recursive: true });
+          const ef = join(sb, 'app.env');
+          writeFileSync(ef, formatAppEnv(envMapOf()));
+          envFileFlag = ` --env-file ${shQuote(ef)}`;
+        }
+        run = execQuiet(
+          `docker run -d --name ${containerName} --restart ${restartPolicy} -p ${publishFlag}${capFlags}${envFileFlag}${runFlags} ${result.image}${cmdSuffix}`,
+          60_000,
+        );
+        if (run.ok || bindTry >= BIND_RETRIES || !isPortBindRace(run.err)) break;
+        phase(
+          appId,
+          'starting',
+          `Host port :${reserved} was taken before docker could bind it; retrying with a new reservation (${bindTry + 1}/${BIND_RETRIES})`,
+        );
+        // `docker run` creates the container before it binds, so the failed one still holds the name.
+        execQuiet(`docker rm -f -v ${containerName}`, 30_000);
+        result.bindRetries = bindTry + 1;
       }
-      const run = execQuiet(
-        `docker run -d --name ${containerName} -p ${publishFlag}${capFlags}${envFileFlag}${runFlags} ${result.image}${cmdSuffix}`,
-        60_000,
-      );
       if (!run.ok) {
         // A `--device` for hardware this node lacks (zigbee2mqtt's USB coordinator, zwave-js-ui's stick) is not an app failure.
         if (/error gathering device information|no such device|cannot access .*\/dev\//i.test(run.err)) {
@@ -728,7 +776,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         }
         result.score = 'error';
         result.failKind = 'start';
-        result.notes = `Container start failed: ${run.err.slice(-300)}`;
+        result.notes = `Container start failed${result.bindRetries ? ` after ${result.bindRetries} host-port retries` : ''}: ${run.err.slice(-300)}`;
         return result;
       }
       // Resolve the host port. When reserveHostPort() succeeded above, `publishFlag` already asked
@@ -808,11 +856,11 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     // Concurrency slows first-boot (shared CPU/disk while peers also pull+migrate), so scale the
     // ceiling up modestly when QA_CONCURRENCY>1: +50% per extra slot, capped at 2x. This only
     // affects the success ceiling — the fail-fast exit/restart-loop signals below are unchanged,
-    // so a genuinely dead app still bails immediately rather than burning the longer ceiling.
+    // so a genuinely dead app still bails rather than burning the longer ceiling.
     const readyScale = QA_CONCURRENCY > 1 ? Math.min(2, 1 + (QA_CONCURRENCY - 1) * 0.5) : 1;
     // Per-app override: a legit-slow app (gitlab/nextcloud/coolify/…) declares `qaReadyTimeoutMs` in
     // its config.json to raise the readiness ceiling, so a long-but-healthy first boot isn't a false
-    // `timeout`. The fail-fast exit/restart-loop signals still bail a genuinely dead app immediately.
+    // `timeout`. The fail-fast exit/restart-loop signals still bail a genuinely dead app: at once for `exited`, after about 100 s of backoff for a restart loop.
     const perAppCeil = Number(composeReadyTimeoutMs) || Number((config as Record<string, unknown>).qaReadyTimeoutMs) || 0;
     const maxWaitMs = Number(process.env.QA_READY_TIMEOUT_MS) || perAppCeil || Math.round((isMulti ? 600_000 : 300_000) * readyScale);
     const readyStart = Date.now();
@@ -833,14 +881,15 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       if (ins.ok) {
         const [st, rc, health] = (ins.out || '').split('|');
         const restarts = Number(rc || 0);
+        mainRestarts = restarts;
+        // `exited` is final only when the policy does not restart it (`no`, or `on-failure` after a clean exit). Otherwise the container
+        // goes `restarting` and comes back, which is how an app that exits 0 once on purpose (lidarr-deemix, hoppscotch) boots.
         if (st === 'exited' || st === 'dead') {
           deadReason = `container ${st}`;
           break;
         }
-        // Must stay ABOVE the compose restart policy's MaximumRetryCount (on-failure:10), or we
-        // fail an app mid-recovery: miniflux legitimately needs ~4 restarts to outlast postgres
-        // initdb, then serves HTTP 200. A genuinely dead app is still caught immediately below —
-        // once the policy is exhausted the container settles in `exited`, which fail-fasts above.
+        // A policy that never gives up leaves a crash-looping container `restarting`, never `exited`, so its restart count is the only
+        // signal. Keep it ABOVE what an app legitimately needs (miniflux ~4, to outlast postgres initdb) or we fail it mid-recovery.
         if (restarts > 10) {
           deadReason = `restart loop (${restarts} restarts)`;
           break;
@@ -941,6 +990,8 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     result.httpStatus = httpStatus;
     result.startupMs = Date.now() - readyStart;
     result.readyVia = readyVia;
+    result.restartPolicy = restartPolicy;
+    if (mainRestarts) result.mainRestarts = mainRestarts;
 
     // The container the readiness poll watches: the compose service flagged isMain (else the first), or the single container.
     const mainService = isMulti ? ((services.find((s) => s.isMain) ?? services[0])?.name ?? '') : 'main';
@@ -1810,6 +1861,32 @@ function seedMount(appId: string, hostPath: string | undefined, dest: string): T
   return job;
 }
 
+/** The Hub's restart policy for a service whose manifest names none (compose.builder.ts: `params.restart ?? 'unless-stopped'`). */
+const HUB_DEFAULT_RESTART = 'unless-stopped';
+const RESTART_POLICIES = ['no', 'always', 'unless-stopped', 'on-failure'];
+
+/**
+ * The restart policy the Hub would run this service under: its manifest `restart` when that is one of the four values the Hub's
+ * schema accepts (dynamic-compose.ts), else the Hub's default. The value is interpolated into a shell command and a YAML file, so
+ * anything else (a typo, `on-failure:3`, text that is not a policy at all) falls back to the default instead of being passed on.
+ */
+function restartPolicyOf(s: DockerService | undefined): string {
+  const r = typeof s?.restart === 'string' ? s.restart.trim() : '';
+  return RESTART_POLICIES.includes(r) ? r : HUB_DEFAULT_RESTART;
+}
+
+/** How many times a start that lost the race for its reserved host port is retried with a fresh reservation. */
+const BIND_RETRIES = 2;
+
+/**
+ * True when `docker run` / `compose up` failed because the host port it was asked to publish was taken in the meantime. Those are
+ * the daemon's own wordings: "failed to bind host port ...: address already in use" (current engines) and "Bind for ...: port is
+ * already allocated" (older ones). Nothing else counts, so any other start failure is scored on the first try.
+ */
+function isPortBindRace(err: string): boolean {
+  return /address already in use|failed to bind host port|port is already allocated/i.test(err);
+}
+
 /** Reserve a host port via Docker so ${APP_BASE_URL} can include the mapped port before compose up. */
 async function reserveHostPort(): Promise<number> {
   const name = `qa-port-reserve-${randomBytes(4).toString('hex')}`;
@@ -1857,7 +1934,7 @@ async function composeUp(
   // Reserve UNCONDITIONALLY. Publishing `0:<port>` lets Docker pick an ephemeral host port, and it
   // picks a NEW one every time the container restarts — while the readiness loop, the screenshot and
   // the TCP probe all keep using the port resolved once at startup. Any app that restarts before it
-  // settles (a first-boot DB race, which `restart: on-failure:10` now makes MORE likely) therefore
+  // settles (a first-boot DB race, which a restart policy makes MORE likely) therefore
   // gets probed on a dead port for the rest of its ceiling and scores a bogus `timeout`: hasura,
   // miniflux and langfuse all hit this. A fixed reservation survives restarts and matches what the
   // appliance actually does in production (`hostPort: '${APP_PORT}'`).
@@ -1899,13 +1976,10 @@ async function composeUp(
   let y = 'services:\n';
   for (const s of services) {
     if (!s.name || !s.image) continue;
-    // `restart: "no"` diverged from the appliance, which runs apps under a restart policy. Manifests
-    // routinely declare `dependsOn` with no health condition, so on a cold boot the app connects while
-    // its DB is still running initdb, takes one refused connection and exits. In production it restarts
-    // and comes up fine; under `"no"` it stayed dead and QA scored a false `fail` (miniflux, hasura,
-    // langfuse). Bounded on-failure restarts let that transient race self-heal while the readiness
-    // ceiling and the exited/restart-loop fail-fast still bail out on a genuinely broken app.
-    y += `  ${s.name}:\n    image: ${yamlStr(subst(s.image))}\n    restart: on-failure:10\n`;
+    // The Hub runs every service under its manifest's `restart`, else `unless-stopped` (compose.builder.ts). `"no"` made a cold boot
+    // fail when the app connected before its DB finished initdb and exited (miniflux, hasura, langfuse); `on-failure:10` fixed that
+    // but does not restart a clean exit, so an app that exits 0 once on purpose (lidarr-deemix, hoppscotch) stayed `exited`.
+    y += `  ${s.name}:\n    image: ${yamlStr(subst(s.image))}\n    restart: ${yamlStr(restartPolicyOf(s))}\n`;
     y += envFileLine;
     // Optional resource caps (off unless QA_MEM_LIMIT/QA_CPU_LIMIT set). Applied per service so a
     // multi-service stack stays bounded when several apps run concurrently on one node. These are
