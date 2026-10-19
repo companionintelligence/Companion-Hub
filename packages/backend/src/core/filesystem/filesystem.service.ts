@@ -103,6 +103,25 @@ export class FilesystemService {
     }
   }
 
+  /**
+   * Creates `filePath` with exactly `content` and `mode`, unless something already exists at that
+   * path. The check and the write are one exclusive open, so a file another process created first
+   * is never overwritten.
+   */
+  async createFileIfMissing(filePath: string, content: string, mode: number): Promise<'created' | 'exists' | 'failed'> {
+    try {
+      await fs.promises.mkdir(this.getSafeFilePath(path.dirname(filePath)), { recursive: true });
+      await fs.promises.writeFile(this.getSafeFilePath(filePath), content, { flag: 'wx', mode });
+      return 'created';
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | undefined)?.code === 'EEXIST') {
+        return 'exists';
+      }
+      this.logger.error(`Error creating file ${filePath}:`, error);
+      return 'failed';
+    }
+  }
+
   async writeBinaryFile(filePath: string, data: Buffer): Promise<boolean> {
     try {
       await fs.promises.mkdir(this.getSafeFilePath(path.dirname(filePath)), { recursive: true });

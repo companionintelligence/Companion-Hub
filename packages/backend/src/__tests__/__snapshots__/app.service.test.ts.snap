@@ -25,6 +25,7 @@ exports[`AppService > copyAssets > should create base folder structure 1`] = `
   "/data/media/usenet/watch": null,
   "/data/repos": null,
   "/data/state/seed": "seed",
+  "/data/state/traefik/acme_storage.json": "{}",
   "/data/state/traefik/config": null,
   "/data/state/traefik/dynamic": null,
   "/data/state/traefik/tls": null,

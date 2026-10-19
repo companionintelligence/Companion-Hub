@@ -328,6 +328,9 @@ export class AppService implements OnApplicationShutdown {
       path.join(dataDir, 'state', 'traefik', 'tls'),
     ]);
 
+    // Before traefik.yml, whose rewrite can restart Traefik: that restart fails too while the store is missing.
+    const acmeStorage = await this.ensureTraefikAcmeStorage(dataDir);
+
     // Copy Traefik config files from assets to shared location
     try {
       this.logger.info('Copying Traefik config files...');
@@ -377,6 +380,11 @@ export class AppService implements OnApplicationShutdown {
       );
     } catch (error) {
       this.logger.warn(`Failed to copy Traefik config files: ${error instanceof Error ? error.message : error}. Traefik may not start correctly.`);
+    }
+
+    // After the config files, so a Traefik started here reads the ones this boot wrote.
+    if (acmeStorage === 'created') {
+      await this.startTraefikAfterAcmeStorageRepair();
     }
 
     // Create media folders (with timeout to prevent hanging)
@@ -485,6 +493,65 @@ export class AppService implements OnApplicationShutdown {
       this.logger.warn(
         `Could not restart Traefik after rewriting traefik.yml: ${error instanceof Error ? error.message : String(error)}. ` +
           'It keeps its previous static config until it next restarts.',
+      );
+    }
+  }
+
+  /**
+   * The compose file mounts Traefik's ACME store as a file with `create_host_path: false`, so Traefik
+   * cannot start while it is missing. `cihub up` and the desktop app create it before they start the
+   * stack, but a Hub started any other way never put it back. A data dir that lost it kept working
+   * only until Traefik next restarted (CI-Hub#2055).
+   */
+  private async ensureTraefikAcmeStorage(dataDir: string): Promise<'present' | 'created' | 'failed'> {
+    const acmeStorage = path.join(dataDir, 'state', 'traefik', 'acme_storage.json');
+
+    if (await this.filesystem.isFile(acmeStorage)) {
+      return 'present';
+    }
+
+    if (await this.filesystem.isDirectory(acmeStorage)) {
+      this.logger.warn(`Traefik's ACME store is a directory, replacing it with an empty store: ${acmeStorage}`);
+      if (!(await this.filesystem.removeDirectory(acmeStorage))) {
+        this.logger.warn(`Failed to remove the directory at ${acmeStorage}. Traefik cannot start until it is a file.`);
+        return 'failed';
+      }
+    }
+
+    // Traefik drops its ACME resolver when the store's group or others have any access ("too open, please use 600").
+    const result = await this.filesystem.createFileIfMissing(acmeStorage, '{}', 0o600);
+    if (result === 'created') {
+      this.logger.warn(`Traefik's ACME store was missing; created an empty one at ${acmeStorage}`);
+    } else if (result === 'failed') {
+      this.logger.warn(`Failed to create Traefik's ACME store at ${acmeStorage}. Traefik cannot start until it exists.`);
+    }
+    return result === 'exists' ? 'present' : result;
+  }
+
+  /**
+   * Starts a Traefik that is down after the Hub had to recreate its ACME store. Docker does not retry a
+   * container whose bind mount was missing, restart policy or not, so after a reboot it stays exited
+   * until something starts it. A Traefik in any other state is left alone. A failure does not stop
+   * the boot.
+   */
+  private async startTraefikAfterAcmeStorageRepair(): Promise<void> {
+    try {
+      const traefik = this.docker.getContainer(TRAEFIK_CONTAINER_NAME);
+      const info = await traefik.inspect();
+      const status = info?.State?.Status;
+      if (status !== 'exited' && status !== 'created') {
+        return;
+      }
+      this.logger.info(`Starting Traefik (${status}), which could not start while its ACME store was missing`);
+      await traefik.start();
+    } catch (error) {
+      if ((error as { statusCode?: number } | undefined)?.statusCode === 404) {
+        this.logger.debug('No Traefik container to start after recreating its ACME store');
+        return;
+      }
+      this.logger.warn(
+        `Could not start Traefik after recreating its ACME store: ${error instanceof Error ? error.message : String(error)}. ` +
+          `Start it with: docker start ${TRAEFIK_CONTAINER_NAME}`,
       );
     }
   }

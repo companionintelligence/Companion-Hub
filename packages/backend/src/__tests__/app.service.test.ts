@@ -287,6 +287,117 @@ describe('AppService', () => {
     });
   });
 
+  /*
+   * The compose file mounts the ACME store as a file and never creates it, so a missing one keeps
+   * Traefik from starting at all. After a reboot Docker leaves that Traefik exited (CI-Hub#2055).
+   */
+  describe('copyAssets keeps Traefik ACME store in place', () => {
+    const acmeStoragePath = path.join(DATA_DIR, 'state', 'traefik', 'acme_storage.json');
+    const traefikConfigPath = path.join(DATA_DIR, 'state', 'traefik', 'config', 'traefik.yml');
+    let traefik: {
+      inspect: ReturnType<typeof vi.fn>;
+      start: ReturnType<typeof vi.fn>;
+      restart: ReturnType<typeof vi.fn>;
+    };
+
+    const copy = async () => {
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(APP_DIR);
+      vi.stubEnv('HUB_EDGE_CLOUDFLARED_IP', '');
+      try {
+        await appService.copyAssets();
+      } finally {
+        cwdSpy.mockRestore();
+        vi.unstubAllEnvs();
+      }
+    };
+
+    beforeEach(() => {
+      configurationService.getConfig.mockReturnValue(
+        fromPartial({ directories: { appDir: APP_DIR, dataDir: DATA_DIR, appDataDir: APP_DATA_DIR }, userSettings: { persistTraefikConfig: false } }),
+      );
+      (fs as unknown as FsMock).__applyMockFiles({
+        [path.join(APP_DIR, 'assets', 'traefik', 'traefik.yml')]: 'entryPoints: {}\n',
+        [path.join(APP_DIR, 'assets', 'traefik', 'dynamic', 'dynamic.yml')]: 'http: {}\n',
+      });
+      // What a reboot leaves behind when the store was missing at boot.
+      traefik = {
+        inspect: vi.fn().mockResolvedValue({ State: { Status: 'exited', Running: false, ExitCode: 127 } }),
+        start: vi.fn().mockResolvedValue(undefined),
+        restart: vi.fn().mockResolvedValue(undefined),
+      };
+      dockerode.getContainer.mockReturnValue(traefik as never);
+    });
+
+    it('creates a missing store that only its owner can read, then starts the exited Traefik', async () => {
+      await copy();
+
+      expect(await fs.promises.readFile(acmeStoragePath, 'utf8')).toBe('{}');
+      expect((await fs.promises.stat(acmeStoragePath)).mode & 0o777).toBe(0o600);
+      expect(dockerode.getContainer).toHaveBeenCalledWith('traefik');
+      expect(traefik.start).toHaveBeenCalledTimes(1);
+
+      // The next boot finds the store and leaves Traefik alone.
+      await copy();
+      expect(traefik.start).toHaveBeenCalledTimes(1);
+    });
+
+    it('never touches a store that exists, or Traefik', async () => {
+      await fs.promises.mkdir(path.dirname(acmeStoragePath), { recursive: true });
+      await fs.promises.writeFile(acmeStoragePath, '{"letsencrypt":{"Certificates":[]}}', { mode: 0o600 });
+
+      await copy();
+
+      expect(await fs.promises.readFile(acmeStoragePath, 'utf8')).toBe('{"letsencrypt":{"Certificates":[]}}');
+      expect(traefik.start).not.toHaveBeenCalled();
+    });
+
+    it('replaces a directory at the store path with an empty store', async () => {
+      await fs.promises.mkdir(acmeStoragePath, { recursive: true });
+
+      await copy();
+
+      expect((await fs.promises.stat(acmeStoragePath)).isFile()).toBe(true);
+      expect(await fs.promises.readFile(acmeStoragePath, 'utf8')).toBe('{}');
+      expect(traefik.start).toHaveBeenCalledTimes(1);
+    });
+
+    it('creates the store before a changed traefik.yml restarts a running Traefik and does not start it again', async () => {
+      await fs.promises.mkdir(path.dirname(traefikConfigPath), { recursive: true });
+      await fs.promises.writeFile(traefikConfigPath, 'entryPoints:\n  web:\n    address: ":80"\n');
+      traefik.inspect.mockResolvedValue({ State: { Status: 'running', Running: true } });
+      let storeExistedAtRestart = false;
+      traefik.restart.mockImplementation(async () => {
+        storeExistedAtRestart = fs.existsSync(acmeStoragePath);
+      });
+
+      await copy();
+
+      expect(traefik.restart).toHaveBeenCalledTimes(1);
+      expect(storeExistedAtRestart).toBe(true);
+      expect(traefik.start).not.toHaveBeenCalled();
+    });
+
+    it('leaves a restarting or paused Traefik alone', async () => {
+      traefik.inspect.mockResolvedValue({ State: { Status: 'restarting', Running: false, Restarting: true } });
+
+      await copy();
+
+      expect(await fs.promises.readFile(acmeStoragePath, 'utf8')).toBe('{}');
+      expect(traefik.start).not.toHaveBeenCalled();
+    });
+
+    it('finishes the boot when Traefik cannot be started or does not exist', async () => {
+      traefik.start.mockRejectedValue(new Error('driver failed programming external connectivity'));
+      await expect(copy()).resolves.toBeUndefined();
+      expect(traefik.start).toHaveBeenCalledTimes(1);
+
+      await fs.promises.rm(acmeStoragePath);
+      traefik.inspect.mockRejectedValue(Object.assign(new Error('no such container: traefik'), { statusCode: 404 }));
+      await expect(copy()).resolves.toBeUndefined();
+      expect(await fs.promises.readFile(acmeStoragePath, 'utf8')).toBe('{}');
+    });
+  });
+
   describe('bootstrap', () => {
     it('continues bootstrap when docker socket access is denied during network prune', async () => {
       const error = Object.assign(new Error('connect EACCES /var/run/docker.sock'), { code: 'EACCES' });
