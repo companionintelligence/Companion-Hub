@@ -19,6 +19,7 @@ import { parseRetryAfterSeconds } from '@/common/helpers/retry-after';
 import { PasswordService } from '@/core/password/password.service';
 import axios, { type AxiosResponse } from 'axios';
 import { PORTAL_GRANT_DENIED_CODE, PortalClientService } from '@/core/portal/portal-client.service';
+import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { FederatedIdentityRepository } from '@/modules/user/federated-identity.repository';
 import { normalizeUsername, UserRepository } from '@/modules/user/user.repository';
@@ -50,6 +51,8 @@ export type UserOrgRole = 'owner' | 'admin' | 'member';
 export type PairedOrgMembershipDetail = {
   membership: PairedOrgMembership;
   role: UserOrgRole | null;
+  /** Set with `not-member` when this Hub is paired to no organization, so there was nobody to check against. */
+  unpaired?: true;
 };
 
 /** Portal never answered. Distinct from "Portal said these credentials are wrong". */
@@ -98,6 +101,7 @@ export class AuthService {
     private portal: PortalClientService,
     private deviceRegistration: DeviceRegistrationRepository,
     private bearerOrgMembership: BearerOrgMembershipCache,
+    private apiKeys: ApiKeyService,
   ) {}
 
   public getCookieDomain(domain?: string) {
@@ -259,8 +263,9 @@ export class AuthService {
   /**
    * Admit a verified Portal person onto this Hub.
    *
-   * Existing federated links win. The first operator may bootstrap without an org check.
-   * Additional people need a Portal membership on the org this appliance is paired to.
+   * Existing federated links win. Everyone else needs a Portal membership on the org this appliance
+   * is paired to, the first operator included. Only a Hub paired to no organization admits its first
+   * operator without one, since there is nobody to check against.
    */
   public async admitHubPerson(params: { issuer: string; subject: string | null; email: string; emailVerified: boolean }) {
     const issuer = (params.issuer || this.getPublicPortalBaseUrl()).trim();
@@ -309,6 +314,24 @@ export class AuthService {
       return this.ensureLocalCompanionUser(params.email);
     }
 
+    /*
+     * ⚠ ASK PORTAL BEFORE CREATING THE FIRST OPERATOR, NOT AFTER.
+     *
+     * The row used to be created first and the answer only decided its role. On a freshly paired
+     * Hub, anyone with a verified CI Account could sign in on its public `/login` or `/register` and
+     * be the admin until the next check-in sweep revoked them. What they made in between, an API key
+     * for one, outlived them (#2062). A paired Hub holds its first operator to the same rule as every
+     * later one. A Hub paired to no organization has nobody to check against and still admits its
+     * first operator.
+     */
+    const firstDetail = await this.resolvePairedOrgMembershipDetail(subject);
+    if (firstDetail.membership === 'unknown') {
+      throw new TranslatableError('AUTH_ERROR_ORG_CHECK_UNAVAILABLE', {}, HttpStatus.SERVICE_UNAVAILABLE);
+    }
+    if (firstDetail.membership === 'not-member' && !firstDetail.unpaired) {
+      throw new TranslatableError('AUTH_ERROR_NOT_ORG_MEMBER', {}, HttpStatus.FORBIDDEN);
+    }
+
     const first = await this.ensureFederatedUser({
       issuer,
       subject,
@@ -316,7 +339,6 @@ export class AuthService {
       emailVerified: params.emailVerified,
       allowCreateAdditionalOperator: false,
     });
-    const firstDetail = await this.resolvePairedOrgMembershipDetail(subject);
     if (firstDetail.membership === 'member') {
       return this.markOperatorActive(first.id, firstDetail.role, first);
     }
@@ -369,7 +391,7 @@ export class AuthService {
     // Paired to no organization: nobody is a member of one this Hub does not have. That is a
     // settled local fact, so it is safe to remember, unlike a Portal we could not reach.
     if (!registration?.id) {
-      return { membership: 'not-member', role: null };
+      return { membership: 'not-member', role: null, unpaired: true };
     }
 
     // `whoisApps` does not catch transport failures: a DNS failure, a refused connection or its own
@@ -418,6 +440,8 @@ export class AuthService {
     });
     await this.sessionManager.destroyAllSessionsByUserId(userId);
     this.sessionUserCache.invalidate(userId);
+    // Their keys act with their grants, so they stop with them (#2062).
+    await this.apiKeys.revokeCreatedBy(userId);
 
     if (subject) {
       this.bearerOrgMembership.delete(subject);
@@ -563,8 +587,8 @@ export class AuthService {
       hasCompletedOnboarding: operators.some((operator) => operator.hasCompletedOnboarding),
     };
 
-    // Claiming an empty Hub skips the Portal membership check (see `admitHubPerson`), so it is done
-    // atomically: two people arriving together must not both be admitted as the first operator.
+    // Nothing here checks Portal membership (`admitHubPerson` does that first on a paired Hub), so the
+    // claim is atomic: two people arriving together must not both be admitted as the first operator.
     if (operators.length === 0) {
       const claimed = await this.userRepository.createFirstOperator(newOperator);
       if (claimed) {

@@ -16,6 +16,7 @@ import { BearerOrgMembershipCache } from '../bearer-org-membership.cache';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
+import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import type { LoginBody } from '../dto/auth.dto';
 import axios from 'axios';
 
@@ -38,6 +39,7 @@ describe('AuthService', () => {
   let deviceRegistration: MockProxy<DeviceRegistrationRepository>;
   let bearerOrgMembership: MockProxy<BearerOrgMembershipCache>;
   let encryptionService: MockProxy<EncryptionService>;
+  let apiKeys: MockProxy<ApiKeyService>;
 
   beforeEach(async () => {
     vi.mocked(axios.post).mockReset();
@@ -59,6 +61,7 @@ describe('AuthService', () => {
         { provide: PortalClientService, useValue: mock<PortalClientService>() },
         { provide: DeviceRegistrationRepository, useValue: mock<DeviceRegistrationRepository>() },
         { provide: BearerOrgMembershipCache, useValue: mock<BearerOrgMembershipCache>() },
+        { provide: ApiKeyService, useValue: mock<ApiKeyService>() },
       ],
     }).compile();
 
@@ -73,6 +76,7 @@ describe('AuthService', () => {
     deviceRegistration = moduleRef.get(DeviceRegistrationRepository);
     bearerOrgMembership = moduleRef.get(BearerOrgMembershipCache);
     encryptionService = moduleRef.get(EncryptionService);
+    apiKeys = moduleRef.get(ApiKeyService);
     userRepository.getOperators.mockResolvedValue([]);
     federatedIdentityRepository.findByIssuerSubject.mockResolvedValue(undefined as never);
     federatedIdentityRepository.findByUserId.mockResolvedValue([] as never);
@@ -918,6 +922,8 @@ describe('AuthService', () => {
       expect(userRepository.updateUser).toHaveBeenCalledWith(7, expect.objectContaining({ accessStatus: 'revoked' }));
       expect(sessionManager.destroyAllSessionsByUserId).toHaveBeenCalledWith(7);
       expect(bearerOrgMembership.delete).toHaveBeenCalledWith('portal-hello');
+      // A key acts with its creator's grants, so a revoked creator's keys stop too (#2062).
+      expect(apiKeys.revokeCreatedBy).toHaveBeenCalledWith(7);
     });
 
     it('treats a WhoIs 403 GRANT_DENIED as not a member and revokes the existing operator', async () => {
@@ -978,6 +984,7 @@ describe('AuthService', () => {
       ).resolves.toEqual(boundUser);
 
       expect(sessionManager.destroyAllSessionsByUserId).not.toHaveBeenCalled();
+      expect(apiKeys.revokeCreatedBy).not.toHaveBeenCalled();
     });
 
     it('un-revokes a returning member after they are invited back', async () => {
@@ -998,6 +1005,76 @@ describe('AuthService', () => {
       });
 
       expect(result).toEqual(expect.objectContaining({ accessStatus: 'active', orgRole: 'owner' }));
+    });
+
+    // #2062: the first operator of a paired Hub used to be created before the membership check and
+    // kept whatever Portal answered, so a stranger was the admin until the next check-in sweep.
+    describe('the first operator', () => {
+      beforeEach(() => {
+        userRepository.getOperators.mockResolvedValue([]);
+        userRepository.getUserByUsername.mockResolvedValue(undefined as never);
+        userRepository.createFirstOperator.mockResolvedValue({ id: 1, username: 'owner@example.com', accessStatus: 'active' } as never);
+      });
+
+      it('is refused, and never created, when Portal says they are not in the org this Hub is paired to', async () => {
+        deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+        portal.whoisApps.mockResolvedValue({ status: 200, body: { organizations: [{ organizationId: 'other-org', apps: [] }] } });
+
+        await expect(
+          authService.admitHubPerson({ issuer, subject: 'portal-stranger', email: 'stranger@example.com', emailVerified: true }),
+        ).rejects.toMatchObject({ message: 'AUTH_ERROR_NOT_ORG_MEMBER', status: 403 });
+
+        expect(userRepository.createFirstOperator).not.toHaveBeenCalled();
+        expect(federatedIdentityRepository.create).not.toHaveBeenCalled();
+      });
+
+      it('is refused on a 403 GRANT_DENIED from Portal too', async () => {
+        deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+        portal.whoisApps.mockResolvedValue({
+          status: 403,
+          body: { error: 'Not a member of an organization this device is registered to', code: 'GRANT_DENIED' } as never,
+          code: 'GRANT_DENIED',
+        });
+
+        await expect(
+          authService.admitHubPerson({ issuer, subject: 'portal-stranger', email: 'stranger@example.com', emailVerified: true }),
+        ).rejects.toMatchObject({ message: 'AUTH_ERROR_NOT_ORG_MEMBER' });
+        expect(userRepository.createFirstOperator).not.toHaveBeenCalled();
+      });
+
+      it('gets 503, and is not created, when Portal cannot answer for a paired Hub', async () => {
+        deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+        portal.whoisApps.mockRejectedValue(new Error('connect ECONNREFUSED'));
+
+        await expect(
+          authService.admitHubPerson({ issuer, subject: 'portal-owner', email: 'owner@example.com', emailVerified: true }),
+        ).rejects.toMatchObject({ message: 'AUTH_ERROR_ORG_CHECK_UNAVAILABLE', status: 503 });
+        expect(userRepository.createFirstOperator).not.toHaveBeenCalled();
+      });
+
+      it('is created with their Portal role when they are a member', async () => {
+        deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+        portal.whoisApps.mockResolvedValue({
+          status: 200,
+          body: { organizations: [{ organizationId: 'org-1', user: { role: 'owner' }, apps: [] }] },
+        });
+
+        const result = await authService.admitHubPerson({ issuer, subject: 'portal-owner', email: 'owner@example.com', emailVerified: true });
+
+        expect(userRepository.createFirstOperator).toHaveBeenCalledWith(expect.objectContaining({ username: 'owner@example.com', operator: true }));
+        expect(federatedIdentityRepository.create).toHaveBeenCalledWith(expect.objectContaining({ userId: 1, issuer, subject: 'portal-owner' }));
+        expect(result).toEqual(expect.objectContaining({ id: 1, accessStatus: 'active', orgRole: 'owner' }));
+      });
+
+      it('is still created on a Hub paired to no organization, where there is nobody to check against', async () => {
+        deviceRegistration.getFirstDeviceRegistration.mockResolvedValue(null as never);
+
+        const result = await authService.admitHubPerson({ issuer, subject: 'portal-owner', email: 'owner@example.com', emailVerified: true });
+
+        expect(portal.whoisApps).not.toHaveBeenCalled();
+        expect(userRepository.createFirstOperator).toHaveBeenCalled();
+        expect(result).toEqual(expect.objectContaining({ id: 1 }));
+      });
     });
   });
 

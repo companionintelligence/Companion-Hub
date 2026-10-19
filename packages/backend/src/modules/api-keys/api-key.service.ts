@@ -321,6 +321,20 @@ export class ApiKeyService {
   }
 
   /**
+   * Revoke every unmanaged key a person created, for when the Hub revokes that person. A key acts
+   * with its creator's grants, so a creator who is no longer allowed in leaves keys that should not
+   * work either. Managed app keys are left alone: they act for their app, not for whoever was signed
+   * in when it was installed.
+   */
+  async revokeCreatedBy(userId: number): Promise<number> {
+    const removed = await this.repo.deleteUnmanagedByCreator(userId);
+    if (removed > 0) {
+      this.logger.info('API keys revoked with their creator', userId, removed);
+    }
+    return removed;
+  }
+
+  /**
    * Provision a companion app's managed key with exactly the given scopes. If the app's existing
    * key still validates as its own managed key, it is preserved (mirrors how HUB_WAKE_SECRET is
    * preserved across reinstalls) and only its scope set is reconciled in place — a scope change

@@ -194,6 +194,14 @@ describe('ApiKeyService', () => {
     });
   });
 
+  describe('revokeCreatedBy', () => {
+    it("removes the person's own keys and reports how many went", async () => {
+      repo.deleteUnmanagedByCreator.mockResolvedValue(2);
+      await expect(service.revokeCreatedBy(7)).resolves.toBe(2);
+      expect(repo.deleteUnmanagedByCreator).toHaveBeenCalledWith(7);
+    });
+  });
+
   describe('validate', () => {
     it('accepts a token that hashes to a stored, non-expired key carrying the scope and bumps last-used', async () => {
       repo.findByHash.mockResolvedValue(

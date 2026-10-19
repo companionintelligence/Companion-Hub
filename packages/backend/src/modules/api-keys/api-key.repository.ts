@@ -106,6 +106,16 @@ export class ApiKeyRepository {
     return result.length;
   }
 
+  /** Delete the unmanaged keys a person created. Managed app keys belong to their app and stay. */
+  async deleteUnmanagedByCreator(userId: number): Promise<number> {
+    const result = await this.db
+      .delete(apiKey)
+      .where(and(eq(apiKey.createdByUserId, userId), eq(apiKey.managed, false)))
+      .returning()
+      .execute();
+    return result.length;
+  }
+
   /** Rewrite a key's scopes in place, leaving the secret untouched. */
   async updateScopes(id: number, scopes: string[]): Promise<void> {
     await this.db.update(apiKey).set({ scopes }).where(eq(apiKey.id, id)).execute();

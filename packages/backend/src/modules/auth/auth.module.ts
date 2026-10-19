@@ -1,3 +1,4 @@
+import { ApiKeyModule } from '@/modules/api-keys/api-key.module';
 import { AppsModule } from '@/modules/apps/apps.module';
 import { EnvModule } from '@/modules/env/env.module';
 import { EncryptionModule } from '@/core/encryption/encryption.module';
@@ -19,7 +20,7 @@ import { SessionManager } from './session.manager';
   // secret). Cycle-safe: no module imports AuthModule (AuthGuard is consumed as a bare class).
   // SessionUserCache is provided by the global CacheModule — declaring it here too would mint a
   // second instance, so writes invalidated on one would still be served stale by the other.
-  imports: [UserModule, EncryptionModule, PasswordModule, RegistrationModule, forwardRef(() => PortalModule), AppsModule, EnvModule],
+  imports: [UserModule, EncryptionModule, PasswordModule, RegistrationModule, forwardRef(() => PortalModule), AppsModule, EnvModule, ApiKeyModule],
   controllers: [AuthController],
   providers: [AuthService, AuthRateLimiter, SessionManager, ForwardAuthSecretResolver, ForwardAuthIdentityResolver, BearerOrgMembershipCache],
   exports: [AuthService, SessionManager, BearerOrgMembershipCache],
