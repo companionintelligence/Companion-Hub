@@ -189,6 +189,36 @@ plugin is missing. The Hub image registers the plugin under
 errors and restarts the existing container. A log line that ends in
 `unknown flag: --env-file` means the docker CLI had no compose plugin.
 
+### Traefik ACME store
+
+`docker-compose.prod.yml` mounts `state/traefik/acme_storage.json` as a file with
+`create_host_path: false`, so Traefik can't start while that file is missing. `cihub up`
+and the desktop app's Traefik preflight create it before they start the stack. The Hub
+checks it on every boot too, before it rewrites `traefik.yml`, so a Hub started some
+other way still has a store when Traefik next restarts.
+
+The Hub creates a missing store as `{}` with mode 0600. Traefik drops its ACME resolver
+when group or others have any access to the store. An existing store is never touched.
+
+When the Hub had to create the store, it also starts a Traefik that is `exited` or
+`created`. Docker doesn't retry a container whose bind source was missing, even with
+`restart: unless-stopped`, so after a reboot that Traefik stays down until something
+starts it. A Traefik in any other state is left alone. The log line
+`Traefik's ACME store was missing; created an empty one` marks a boot that repaired it.
+The Hub tries that start once. If it fails, run `docker start traefik`.
+
+Only a Hub that runs in its container starts Traefik. A backend run from source on the host
+creates the store but leaves any container named `traefik` alone, because that container
+belongs to an installed Hub.
+
+The Hub leaves a directory in the file's place alone and logs how to fix it. A Traefik
+container that ran with the directory has a directory at its mount point. Docker won't bind
+a file there ("Are you trying to mount a directory onto a file (or vice-versa)?"), so
+swapping in a file would keep that Traefik from starting at all. Run `docker rm -f traefik`,
+delete the directory, then run `cihub up` or relaunch the desktop app. When the Hub can't
+create the store at all, it doesn't restart a running Traefik for a changed `traefik.yml`,
+because that Traefik couldn't start again.
+
 ### App status sync (every 5 minutes)
 
 `syncAllAppStatuses` lists all containers labelled `ci-os-hub.managed=true`,

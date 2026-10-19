@@ -10,6 +10,7 @@ import { createAppUrn } from './common/helpers/app-helpers';
 import { redactSecretsForLog } from './common/helpers/log-privacy';
 import { fillHubContainerName } from './common/helpers/traefik-hub-address';
 import { withTimeout } from './common/helpers/with-timeout';
+import { detectHubContainer } from './modules/inference/backends/host-url.util';
 import { CacheService, ONE_DAY_IN_SECONDS } from './core/cache/cache.service';
 import { resolveHubBuildInfo } from './core/build-info/hub-build-info';
 import { ConfigurationService } from './core/config/configuration.service';
@@ -40,6 +41,9 @@ const BOOT_CONTAINER_LIST_TIMEOUT_MS = 15_000;
  */
 const BOOT_START_QUEUE_WAIT_MS = 10 * 60_000;
 const BOOT_START_QUEUE_POLL_MS = 2_000;
+
+/** How long the boot waits on each Docker call that starts Traefik after its ACME store was recreated. */
+const BOOT_TRAEFIK_START_TIMEOUT_MS = 15_000;
 
 @Injectable()
 export class AppService implements OnApplicationShutdown {
@@ -328,6 +332,9 @@ export class AppService implements OnApplicationShutdown {
       path.join(dataDir, 'state', 'traefik', 'tls'),
     ]);
 
+    // Before traefik.yml, whose rewrite can restart Traefik: that restart fails too while the store is missing.
+    const acmeStorage = await this.ensureTraefikAcmeStorage(dataDir);
+
     // Copy Traefik config files from assets to shared location
     try {
       this.logger.info('Copying Traefik config files...');
@@ -364,7 +371,12 @@ export class AppService implements OnApplicationShutdown {
       // container has started, well before bootstrap reaches here. Without this, a change here (the
       // edge hops' `trustedIPs`, say) waited for Traefik's next restart for some other reason.
       if (staticConfig === 'replaced') {
-        await this.restartTraefikForStaticConfig();
+        if (acmeStorage === 'missing') {
+          // A restart would stop a Traefik that is serving and then fail to start it without the store.
+          this.logger.warn('traefik.yml changed, but Traefik is not restarted: it could not start again without its ACME store');
+        } else {
+          await this.restartTraefikForStaticConfig();
+        }
       }
 
       // Copy dynamic config
@@ -377,6 +389,11 @@ export class AppService implements OnApplicationShutdown {
       );
     } catch (error) {
       this.logger.warn(`Failed to copy Traefik config files: ${error instanceof Error ? error.message : error}. Traefik may not start correctly.`);
+    }
+
+    // After the config files, so a Traefik started here reads the ones this boot wrote.
+    if (acmeStorage === 'created') {
+      await this.startTraefikAfterAcmeStorageRepair();
     }
 
     // Create media folders (with timeout to prevent hanging)
@@ -485,6 +502,85 @@ export class AppService implements OnApplicationShutdown {
       this.logger.warn(
         `Could not restart Traefik after rewriting traefik.yml: ${error instanceof Error ? error.message : String(error)}. ` +
           'It keeps its previous static config until it next restarts.',
+      );
+    }
+  }
+
+  /**
+   * The compose file mounts Traefik's ACME store as a file with `create_host_path: false`, so Traefik
+   * cannot start while it is missing. `cihub up` and the desktop app create it before they start the
+   * stack, but a Hub started any other way never put it back. A data dir that lost it kept working
+   * only until Traefik next restarted (CI-Hub#2055).
+   *
+   * A directory at that path is left alone. A Traefik container that ran with one has a directory at its
+   * mount point. Docker will not bind a file onto it ("Are you trying to mount a directory onto a file"),
+   * so swapping in a file here would keep that container from starting at all. `missing` means the store
+   * could not be created.
+   */
+  private async ensureTraefikAcmeStorage(dataDir: string): Promise<'present' | 'created' | 'directory' | 'missing'> {
+    const acmeStorage = path.join(dataDir, 'state', 'traefik', 'acme_storage.json');
+
+    if (await this.filesystem.isFile(acmeStorage)) {
+      return 'present';
+    }
+
+    if (await this.filesystem.isDirectory(acmeStorage)) {
+      this.logger.warn(
+        `Traefik's ACME store is a directory, so Traefik cannot get certificates: ${acmeStorage}. ` +
+          `To fix it, run docker rm -f ${TRAEFIK_CONTAINER_NAME}, delete the directory, then run cihub up or relaunch the desktop app`,
+      );
+      return 'directory';
+    }
+
+    // Traefik drops its ACME resolver when the store's group or others have any access ("too open, please use 600").
+    const result = await this.filesystem.createFileIfMissing(acmeStorage, '{}', 0o600);
+    if (result === 'exists') {
+      return 'present';
+    }
+    if (result === 'failed') {
+      this.logger.warn(`Failed to create Traefik's ACME store at ${acmeStorage}. Traefik cannot start until it exists.`);
+      return 'missing';
+    }
+    this.logger.warn(`Traefik's ACME store was missing; created an empty one at ${acmeStorage}`);
+    return 'created';
+  }
+
+  /**
+   * Starts a Traefik that is down after the Hub had to recreate its ACME store. Docker does not retry a
+   * container whose bind mount was missing, restart policy or not, so after a reboot it stays exited
+   * until something starts it. A Traefik in any other state is left alone. A failure does not stop
+   * the boot. Each Docker call is bounded because the Hub does not listen until the boot is done.
+   */
+  private async startTraefikAfterAcmeStorageRepair(): Promise<void> {
+    // A backend run from source on the host has no Traefik of its own: one named `traefik` belongs to an installed Hub.
+    if (!detectHubContainer()) {
+      this.logger.debug('Not starting Traefik: this backend does not run in the Hub container');
+      return;
+    }
+    const seconds = BOOT_TRAEFIK_START_TIMEOUT_MS / 1000;
+    try {
+      const traefik = this.docker.getContainer(TRAEFIK_CONTAINER_NAME);
+      const info = await withTimeout(traefik.inspect(), BOOT_TRAEFIK_START_TIMEOUT_MS, `Docker did not inspect Traefik within ${seconds}s`);
+      const status = info?.State?.Status;
+      if (status !== 'exited' && status !== 'created') {
+        return;
+      }
+      this.logger.info(`Starting Traefik (${status}), which could not start while its ACME store was missing`);
+      await withTimeout(traefik.start(), BOOT_TRAEFIK_START_TIMEOUT_MS, `Docker did not start Traefik within ${seconds}s`);
+    } catch (error) {
+      const statusCode = (error as { statusCode?: number } | undefined)?.statusCode;
+      if (statusCode === 404) {
+        this.logger.debug('No Traefik container to start after recreating its ACME store');
+        return;
+      }
+      // Compose or Docker started it between the inspect and this start.
+      if (statusCode === 304) {
+        this.logger.debug('Traefik was already started');
+        return;
+      }
+      this.logger.warn(
+        `Could not start Traefik after recreating its ACME store: ${error instanceof Error ? error.message : String(error)}. ` +
+          `Start it with: docker start ${TRAEFIK_CONTAINER_NAME}`,
       );
     }
   }

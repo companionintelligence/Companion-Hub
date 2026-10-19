@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { mock } from 'vitest-mock-extended';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LoggerService } from '@/core/logger/logger.service';
 import { FilesystemService } from '../filesystem.service';
 
@@ -27,5 +27,39 @@ describe('FilesystemService.createTempDirectory', () => {
     expect(path.isAbsolute(dir as string)).toBe(true);
     expect(path.dirname(dir as string)).toBe(os.tmpdir());
     expect(path.basename(dir as string).startsWith(prefix)).toBe(true);
+  });
+});
+
+describe('FilesystemService.createFileIfMissing', () => {
+  const dir = path.join(os.tmpdir(), 'create-file-if-missing');
+
+  beforeEach(async () => {
+    await fs.promises.mkdir(dir, { recursive: true });
+  });
+
+  it('creates the file once and then reports it exists without rewriting it', async () => {
+    const service = new FilesystemService(mock<LoggerService>());
+    const file = path.join(dir, 'nested', 'store.json');
+
+    expect(await service.createFileIfMissing(file, '{}', 0o600)).toBe('created');
+    await fs.promises.writeFile(file, '{"kept":true}');
+    expect(await service.createFileIfMissing(file, '{}', 0o600)).toBe('exists');
+    expect(await fs.promises.readFile(file, 'utf8')).toBe('{"kept":true}');
+  });
+
+  it('fails, not exists, when the parent path is a file', async () => {
+    const service = new FilesystemService(mock<LoggerService>());
+    const parent = path.join(dir, 'parent-is-a-file');
+    await fs.promises.writeFile(parent, 'not a directory');
+    // What Node's recursive mkdir does here (memfs resolves instead): EEXIST, about the parent.
+    const mkdir = vi
+      .spyOn(fs.promises, 'mkdir')
+      .mockRejectedValueOnce(Object.assign(new Error(`EEXIST: file already exists, mkdir '${parent}'`), { code: 'EEXIST' }));
+
+    try {
+      expect(await service.createFileIfMissing(path.join(parent, 'store.json'), '{}', 0o600)).toBe('failed');
+    } finally {
+      mkdir.mockRestore();
+    }
   });
 });
