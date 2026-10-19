@@ -1102,6 +1102,42 @@ describe('AuthService', () => {
       expect(sessionManager.destroyAllSessionsByUserId).toHaveBeenCalledWith(1);
       expect(userRepository.updateUser).not.toHaveBeenCalledWith(2, expect.objectContaining({ accessStatus: 'revoked' }));
     });
+
+    it('cleans up the keys of operators who were already revoked, without asking Portal about them again', async () => {
+      // Covers people revoked before keys were revoked with them, and a key delete that failed (#2062).
+      userRepository.getOperators.mockResolvedValue([{ id: 4, accessStatus: 'revoked' }] as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+
+      await authService.reconcileOperatorMemberships();
+
+      expect(apiKeys.revokeCreatedBy).toHaveBeenCalledWith(4);
+      expect(portal.whoisApps).not.toHaveBeenCalled();
+    });
+
+    it('still revokes the person, and goes on to the next operator, when their keys cannot be deleted', async () => {
+      userRepository.getOperators.mockResolvedValue([
+        { id: 1, accessStatus: 'active' },
+        { id: 2, accessStatus: 'active' },
+      ] as never);
+      federatedIdentityRepository.findByUserId
+        .mockResolvedValueOnce([{ subject: 'gone' }] as never)
+        .mockResolvedValueOnce([{ subject: 'here' }] as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+      portal.whoisApps
+        .mockResolvedValueOnce({
+          status: 403,
+          body: { error: 'Not a member of an organization this device is registered to', code: 'GRANT_DENIED' } as never,
+          code: 'GRANT_DENIED',
+        })
+        .mockResolvedValueOnce({ status: 200, body: { organizations: [{ organizationId: 'org-1', user: { role: 'member' }, apps: [] }] } });
+      apiKeys.revokeCreatedBy.mockRejectedValueOnce(new Error('connection terminated'));
+
+      await authService.reconcileOperatorMemberships();
+
+      expect(userRepository.updateUser).toHaveBeenCalledWith(1, expect.objectContaining({ accessStatus: 'revoked' }));
+      expect(sessionManager.destroyAllSessionsByUserId).toHaveBeenCalledWith(1);
+      expect(userRepository.updateUser).toHaveBeenCalledWith(2, expect.objectContaining({ accessStatus: 'active', orgRole: 'member' }));
+    });
   });
 
   describe('refreshSession', () => {

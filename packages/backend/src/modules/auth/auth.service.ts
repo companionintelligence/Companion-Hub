@@ -441,7 +441,7 @@ export class AuthService {
     await this.sessionManager.destroyAllSessionsByUserId(userId);
     this.sessionUserCache.invalidate(userId);
     // Their keys act with their grants, so they stop with them (#2062).
-    await this.apiKeys.revokeCreatedBy(userId);
+    await this.revokeKeysCreatedBy(userId);
 
     if (subject) {
       this.bearerOrgMembership.delete(subject);
@@ -468,6 +468,9 @@ export class AuthService {
 
     for (const operator of operators) {
       if (operator.accessStatus === 'revoked') {
+        // Someone revoked before their keys went with them, or whose key delete failed then. The delete
+        // finds nothing once it has worked, so repeating it every sweep is cheap.
+        await this.revokeKeysCreatedBy(operator.id);
         continue;
       }
 
@@ -483,6 +486,19 @@ export class AuthService {
           await this.markOperatorActive(operator.id, detail.role);
         }
       }
+    }
+  }
+
+  /**
+   * Best effort, unlike the revocation itself: a key store that is down for a moment must not undo a
+   * revocation already written, or stop the sweep from reaching everyone else. The sweep repeats this
+   * for every revoked operator, so a failure here is retried on the next check-in.
+   */
+  private async revokeKeysCreatedBy(userId: number) {
+    try {
+      await this.apiKeys.revokeCreatedBy(userId);
+    } catch (error) {
+      this.logger.warn(`Could not revoke the API keys of revoked operator ${userId}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
