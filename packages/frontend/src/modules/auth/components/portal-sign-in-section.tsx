@@ -1,8 +1,7 @@
 import { Button } from '@/components/ui/Button';
-import { AuthSessionCancelledError, openAuthSession } from '@/lib/helpers/open-auth-browser';
 import type React from 'react';
-import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
+import { openPortalSignInOutsideApp } from '../helpers/open-portal-sign-in';
 
 interface IProps {
   portalSsoHref: string;
@@ -15,10 +14,15 @@ interface IProps {
   portalReachable?: boolean;
   /**
    * An email and password form follows the button. The button is then the
-   * outlined alternative, is disabled while Portal is unreachable, and ends in a
+   * outlined alternative. It is disabled while Portal is unreachable and ends in a
    * divider. Phones have no form: the in-app sheet is the only way in.
    */
   withPasswordForm?: boolean;
+  /**
+   * The hint under a disabled button while Portal is unreachable. The default sends people to the
+   * sign-in form below, which works offline for anyone who has signed in here before.
+   */
+  unreachableHintKey?: string;
 }
 
 /** The "Sign in using your CI Account" button, its hint and the account switcher. */
@@ -29,8 +33,12 @@ export const PortalSignInSection: React.FC<IProps> = ({
   onSwitchAccount,
   portalReachable = true,
   withPasswordForm = true,
+  unreachableHintKey = 'AUTH_LOGIN_COMPANION_ACCOUNT_NEEDS_INTERNET',
 }) => {
   const { t } = useTranslation();
+  const label = portalAccountEmail
+    ? t('AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON_AS', { email: portalAccountEmail })
+    : t('AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON');
 
   return (
     <div className="mb-4">
@@ -41,22 +49,9 @@ export const PortalSignInSection: React.FC<IProps> = ({
           intent={withPasswordForm ? undefined : 'primary'}
           className="h-10 w-full text-sm font-semibold"
           disabled={withPasswordForm && !portalReachable}
-          onClick={() => {
-            // Do not discard the rejection. openAuthSession THROWS on
-            // an opener ACL/plugin failure rather than swallowing it, so a
-            // bare `void` turned that into a dead button with no toast, no
-            // console line and no UI change -- the same silent-failure shape
-            // that made the desktop sign-in button look broken.
-            openAuthSession(portalSsoHref).catch((error: unknown) => {
-              if (error instanceof AuthSessionCancelledError) {
-                return;
-              }
-              console.error('login: the system opener refused the SSO URL', error);
-              toast.error(t('COMMON_AN_ERROR_OCCURRED'));
-            });
-          }}
+          onClick={() => openPortalSignInOutsideApp(portalSsoHref, t('COMMON_AN_ERROR_OCCURRED'))}
         >
-          {portalAccountEmail ? t('AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON_AS', { email: portalAccountEmail }) : t('AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON')}
+          {label}
         </Button>
       ) : (
         <Button
@@ -65,22 +60,12 @@ export const PortalSignInSection: React.FC<IProps> = ({
           className="h-10 w-full text-sm font-semibold"
           disabled={withPasswordForm && !portalReachable}
         >
-          {portalReachable ? (
-            <a href={portalSsoHref}>
-              {portalAccountEmail
-                ? t('AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON_AS', { email: portalAccountEmail })
-                : t('AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON')}
-            </a>
-          ) : portalAccountEmail ? (
-            t('AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON_AS', { email: portalAccountEmail })
-          ) : (
-            t('AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON')
-          )}
+          {portalReachable ? <a href={portalSsoHref}>{label}</a> : label}
         </Button>
       )}
       {/* The hint has to follow the branch above: the <a href> branch is a
           plain browser already ON the Hub, which navigates in place. Every
-          native shell — phone and desktop alike — takes the button branch.
+          native shell takes the button branch, phone and desktop alike.
           Phones present an in-app browser sheet. Desktop opens the system browser. */}
       <div className="text-xs text-muted-foreground text-center mt-2">
         {t(
@@ -89,7 +74,7 @@ export const PortalSignInSection: React.FC<IProps> = ({
               ? openPortalSsoExternally
                 ? 'AUTH_LOGIN_COMPANION_ACCOUNT_HINT'
                 : 'AUTH_LOGIN_COMPANION_ACCOUNT_HINT_IN_APP'
-              : 'AUTH_LOGIN_COMPANION_ACCOUNT_NEEDS_INTERNET'
+              : unreachableHintKey
             : 'AUTH_LOGIN_COMPANION_ACCOUNT_HINT_IN_APP',
         )}
       </div>

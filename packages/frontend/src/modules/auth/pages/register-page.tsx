@@ -31,8 +31,8 @@ export default () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const redirectUrl = new URLSearchParams(window.location.search).get('redirect_url');
-  // A paired Hub with no operator opens here, and whoever paired it already has a CI Account.
-  // Offer the same sign-in `/login` does, or that person can only make a second account (#2059).
+  // A paired Hub with no operator opens here. Whoever paired it already has a CI Account, so offer
+  // the same sign-in `/login` does, or that person can only make a second account (#2059).
   const { authPolicy, portalSsoHref, portalAccountEmail, portalReachable, switchAccount } = usePortalSignIn(redirectUrl);
 
   const register = useMutation({
@@ -46,7 +46,7 @@ export default () => {
       markHubSessionIssuedAt();
       setUserContext({ isLoggedIn: true, isConfigured: true });
       refreshUserContext();
-      if (!followSafeRedirect(new URLSearchParams(window.location.search).get('redirect_url'))) {
+      if (!followSafeRedirect(redirectUrl)) {
         navigate('/onboarding');
       }
     },
@@ -75,6 +75,9 @@ export default () => {
             openPortalSsoExternally={authPolicy.openHubSsoInSystemBrowser}
             onSwitchAccount={switchAccount}
             portalReachable={portalReachable}
+            // The default hint points at a sign-in form that works offline. This form signs up at
+            // Portal, so it is no way in while Portal is down either.
+            unreachableHintKey="AUTH_REGISTER_PORTAL_UNREACHABLE"
           />
         ) : null
       }

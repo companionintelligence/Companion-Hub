@@ -51,14 +51,16 @@ const { mockUserContext } = vi.hoisted(() => ({
   mockUserContext: vi.fn(),
 }));
 
-const { mockIsTauriDesktopApp, mockIsMobile, mockHubUrl, mockResolveHint, mockOpenAuthSession, mockClientGetConfig } = vi.hoisted(() => ({
-  mockIsTauriDesktopApp: vi.fn(() => false),
-  mockIsMobile: vi.fn(() => false),
-  mockHubUrl: vi.fn((): string | null => null),
-  mockResolveHint: vi.fn(async () => ({ email: null as string | null, portalBaseUrl: null, source: null, portalReachable: true })),
-  mockOpenAuthSession: vi.fn(async (_url: string) => {}),
-  mockClientGetConfig: vi.fn(() => ({ baseUrl: 'http://localhost:5002' })),
-}));
+const { mockIsTauriDesktopApp, mockIsMobile, mockHubUrl, mockResolveHint, mockForgetPortalAccountEmail, mockOpenAuthSession, mockClientGetConfig } =
+  vi.hoisted(() => ({
+    mockIsTauriDesktopApp: vi.fn(() => false),
+    mockIsMobile: vi.fn(() => false),
+    mockHubUrl: vi.fn((): string | null => null),
+    mockResolveHint: vi.fn(async () => ({ email: null as string | null, portalBaseUrl: null, source: null, portalReachable: true })),
+    mockForgetPortalAccountEmail: vi.fn(),
+    mockOpenAuthSession: vi.fn(async (_url: string) => {}),
+    mockClientGetConfig: vi.fn(() => ({ baseUrl: 'http://localhost:5002' })),
+  }));
 
 vi.mock('@/lib/hub-runtime-mode', () => ({
   isTauriDesktopApp: () => mockIsTauriDesktopApp(),
@@ -72,7 +74,7 @@ vi.mock('@/lib/mobile-connection', () => ({
 
 vi.mock('@/lib/portal-session-hint', () => ({
   resolvePortalSessionHint: () => mockResolveHint(),
-  forgetPortalAccountEmail: vi.fn(),
+  forgetPortalAccountEmail: () => mockForgetPortalAccountEmail(),
 }));
 
 vi.mock('@/api-client/client.gen', () => ({
@@ -260,6 +262,19 @@ describe('RegisterPage', () => {
       expect(screen.getByTestId('login-switch-account')).toBeInTheDocument();
     });
 
+    it('signs in as someone else from the desktop app', async () => {
+      mockIsTauriDesktopApp.mockReturnValue(true);
+      mockResolveHint.mockResolvedValue({ email: 'owner@example.test', portalBaseUrl: null, source: null, portalReachable: true });
+
+      render(<RegisterPage />);
+
+      await userEvent.click(await screen.findByTestId('login-switch-account'));
+
+      expect(mockForgetPortalAccountEmail).toHaveBeenCalledOnce();
+      expect(mockOpenAuthSession).toHaveBeenCalledWith('http://localhost:5002/api/auth/portal/start?desktop=1&desktop_channel=dev');
+      expect(screen.queryByTestId('login-switch-account')).not.toBeInTheDocument();
+    });
+
     it('turns the button off and says why while Portal cannot be reached', async () => {
       mockIsTauriDesktopApp.mockReturnValue(true);
       mockResolveHint.mockResolvedValue({ email: null, portalBaseUrl: null, source: null, portalReachable: false });
@@ -267,7 +282,10 @@ describe('RegisterPage', () => {
       render(<RegisterPage />);
 
       await waitFor(() => expect(screen.getByRole('button', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).toBeDisabled());
-      expect(screen.getByText('AUTH_LOGIN_COMPANION_ACCOUNT_NEEDS_INTERNET')).toBeInTheDocument();
+      // Not the /login hint: that one sends people to a password form that works offline, and the
+      // sign-up form here needs Portal as well.
+      expect(screen.getByText('AUTH_REGISTER_PORTAL_UNREACHABLE')).toBeInTheDocument();
+      expect(screen.queryByText('AUTH_LOGIN_COMPANION_ACCOUNT_NEEDS_INTERNET')).not.toBeInTheDocument();
     });
 
     it('keeps the page a sign-up form on a phone that has not chosen a Hub, where Hub sign-in does not apply', () => {

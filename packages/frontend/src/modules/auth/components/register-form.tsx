@@ -51,7 +51,9 @@ export const RegisterForm: React.FC<IProps> = ({ onSubmit, loading, portalSignIn
         <h2 className="text-xl font-semibold">{t('AUTH_REGISTER_TITLE')}</h2>
         {portalSignIn ? <div className="mt-4">{portalSignIn}</div> : null}
         <p className="mt-2 text-sm text-muted-foreground">{t('AUTH_REGISTER_NOTE')}</p>
-        <p className="mt-2 text-sm text-muted-foreground font-bold">{t('AUTH_REGISTER_NOTE_2')}</p>
+        {/* Tells a CI Account holder to sign up here with the same email, which Portal refuses for an
+            existing account. With the CI Account button above, that button is the way in. */}
+        {portalSignIn ? null : <p className="mt-2 text-sm text-muted-foreground font-bold">{t('AUTH_REGISTER_NOTE_2')}</p>}
       </div>
       <form onSubmit={handleSubmit((values) => onSubmit(values))}>
         <Input

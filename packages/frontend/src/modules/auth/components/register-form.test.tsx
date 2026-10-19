@@ -78,6 +78,8 @@ describe('RegisterForm', () => {
 
     expect(title.compareDocumentPosition(signIn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(signIn.compareDocumentPosition(email) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The note sends CI Account holders to the sign-up form, which Portal refuses for their email.
+    expect(screen.queryByText('AUTH_REGISTER_NOTE_2')).not.toBeInTheDocument();
   });
 
   it('links to the sign-in page when given where it is', () => {
@@ -95,5 +97,6 @@ describe('RegisterForm', () => {
 
     expect(screen.queryByRole('link')).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'AUTH_REGISTER_TITLE' }).nextElementSibling).toHaveTextContent('AUTH_REGISTER_NOTE');
+    expect(screen.getByText('AUTH_REGISTER_NOTE_2')).toBeInTheDocument();
   });
 });
