@@ -439,7 +439,7 @@ describe('AppService', () => {
     });
 
     describe('when Docker does not answer', () => {
-      // Not in a finally: a test that times out never reaches one, and later tests would run on fake timers.
+      // Not in a finally: a test that times out never reaches one. Later tests would then run on fake timers.
       afterEach(() => {
         vi.useRealTimers();
       });

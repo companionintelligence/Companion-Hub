@@ -112,7 +112,7 @@ export class FilesystemService {
     try {
       await fs.promises.mkdir(this.getSafeFilePath(path.dirname(filePath)), { recursive: true });
     } catch (error) {
-      // Never `exists`: mkdir says EEXIST when the parent is a file, and then nothing is at filePath.
+      // Never `exists`: mkdir says EEXIST when the parent is a file. Nothing is at filePath then.
       this.logger.error(`Error creating the directory for ${filePath}:`, error);
       return 'failed';
     }

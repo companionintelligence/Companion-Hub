@@ -513,9 +513,9 @@ export class AppService implements OnApplicationShutdown {
    * only until Traefik next restarted (CI-Hub#2055).
    *
    * A directory at that path is left alone. A Traefik container that ran with one has a directory at its
-   * mount point, and Docker will not bind a file onto it ("Are you trying to mount a directory onto a
-   * file"), so swapping in a file here would keep that container from starting at all. `missing` means
-   * the store could not be created.
+   * mount point. Docker will not bind a file onto it ("Are you trying to mount a directory onto a file"),
+   * so swapping in a file here would keep that container from starting at all. `missing` means the store
+   * could not be created.
    */
   private async ensureTraefikAcmeStorage(dataDir: string): Promise<'present' | 'created' | 'directory' | 'missing'> {
     const acmeStorage = path.join(dataDir, 'state', 'traefik', 'acme_storage.json');
@@ -549,7 +549,7 @@ export class AppService implements OnApplicationShutdown {
    * Starts a Traefik that is down after the Hub had to recreate its ACME store. Docker does not retry a
    * container whose bind mount was missing, restart policy or not, so after a reboot it stays exited
    * until something starts it. A Traefik in any other state is left alone. A failure does not stop
-   * the boot, and each Docker call is bounded because the Hub does not listen until the boot is done.
+   * the boot. Each Docker call is bounded because the Hub does not listen until the boot is done.
    */
   private async startTraefikAfterAcmeStorageRepair(): Promise<void> {
     // A backend run from source on the host has no Traefik of its own: one named `traefik` belongs to an installed Hub.
