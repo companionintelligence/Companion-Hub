@@ -949,6 +949,21 @@ describe('AuthService', () => {
       expect(userRepository.updateUser).toHaveBeenCalledWith(7, expect.objectContaining({ accessStatus: 'revoked' }));
     });
 
+    it("still refuses with 403 when the leaver's keys cannot be deleted", async () => {
+      // The delete is best effort. A key store blip must not turn "not a member" into a 500.
+      federatedIdentityRepository.findByIssuerSubject.mockResolvedValue({ id: 1, userId: 7 } as never);
+      userRepository.getUserById.mockResolvedValue({ id: 7, username: 'old@example.com', accessStatus: 'active' } as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+      portal.whoisApps.mockResolvedValue({ status: 200, body: { organizations: [] } });
+      apiKeys.revokeCreatedBy.mockRejectedValue(new Error('connection terminated'));
+
+      await expect(
+        authService.admitHubPerson({ issuer, subject: 'portal-hello', email: 'old@example.com', emailVerified: true }),
+      ).rejects.toMatchObject({ message: 'AUTH_ERROR_NOT_ORG_MEMBER', status: 403 });
+      expect(userRepository.updateUser).toHaveBeenCalledWith(7, expect.objectContaining({ accessStatus: 'revoked' }));
+      expect(bearerOrgMembership.delete).toHaveBeenCalledWith('portal-hello');
+    });
+
     it('does not revoke an existing operator when this Hub is not paired', async () => {
       const boundUser = { id: 7, username: 'old@example.com', accessStatus: 'active' };
       federatedIdentityRepository.findByIssuerSubject.mockResolvedValue({ id: 1, userId: 7 } as never);
@@ -1016,7 +1031,7 @@ describe('AuthService', () => {
         userRepository.createFirstOperator.mockResolvedValue({ id: 1, username: 'owner@example.com', accessStatus: 'active' } as never);
       });
 
-      it('is refused, and never created, when Portal says they are not in the org this Hub is paired to', async () => {
+      it('is refused and never created when Portal says they are not in the org this Hub is paired to', async () => {
         deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
         portal.whoisApps.mockResolvedValue({ status: 200, body: { organizations: [{ organizationId: 'other-org', apps: [] }] } });
 
@@ -1042,7 +1057,7 @@ describe('AuthService', () => {
         expect(userRepository.createFirstOperator).not.toHaveBeenCalled();
       });
 
-      it('gets 503, and is not created, when Portal cannot answer for a paired Hub', async () => {
+      it('gets 503 and is not created when Portal cannot answer for a paired Hub', async () => {
         deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
         portal.whoisApps.mockRejectedValue(new Error('connect ECONNREFUSED'));
 
@@ -1064,6 +1079,48 @@ describe('AuthService', () => {
         expect(userRepository.createFirstOperator).toHaveBeenCalledWith(expect.objectContaining({ username: 'owner@example.com', operator: true }));
         expect(federatedIdentityRepository.create).toHaveBeenCalledWith(expect.objectContaining({ userId: 1, issuer, subject: 'portal-owner' }));
         expect(result).toEqual(expect.objectContaining({ id: 1, accessStatus: 'active', orgRole: 'owner' }));
+      });
+
+      it('is refused on a paired Hub when the sign-in carries no Portal subject', async () => {
+        // A 2xx from "Portal" without `user.id` can't be checked against the organization (#2062).
+        deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+
+        await expect(authService.admitHubPerson({ issuer, subject: null, email: 'someone@example.com', emailVerified: true })).rejects.toMatchObject({
+          message: 'AUTH_ERROR_ORG_CHECK_UNAVAILABLE',
+          status: 503,
+        });
+        expect(userRepository.createFirstOperator).not.toHaveBeenCalled();
+      });
+
+      it('is refused, not admitted, when it cannot tell whether a subject-less Hub is paired', async () => {
+        deviceRegistration.getFirstDeviceRegistration.mockRejectedValue(new Error('connection terminated'));
+
+        await expect(authService.admitHubPerson({ issuer, subject: null, email: 'someone@example.com', emailVerified: true })).rejects.toMatchObject({
+          status: 503,
+        });
+        expect(userRepository.createFirstOperator).not.toHaveBeenCalled();
+      });
+
+      it('is created with no subject on a paired Hub for the device-key claim', async () => {
+        // The claim passes an empty issuer, so the Portal URL is read the way the real one is.
+        configurationService.getConfig.mockReturnValue({ ciCloudUrl: 'https://hub.example.com' } as never);
+        deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+
+        const result = await authService.admitHubPerson(
+          { issuer: '', subject: null, email: 'owner@example.com', emailVerified: false },
+          { hostLocalClaim: true },
+        );
+
+        expect(userRepository.createFirstOperator).toHaveBeenCalledWith(expect.objectContaining({ username: 'owner@example.com' }));
+        expect(result).toEqual(expect.objectContaining({ id: 1 }));
+      });
+
+      it('is created with no subject on a Hub paired to no organization, as before', async () => {
+        deviceRegistration.getFirstDeviceRegistration.mockResolvedValue(null as never);
+
+        await authService.admitHubPerson({ issuer, subject: null, email: 'owner@example.com', emailVerified: true });
+
+        expect(userRepository.createFirstOperator).toHaveBeenCalled();
       });
 
       it('is still created on a Hub paired to no organization, where there is nobody to check against', async () => {
@@ -1103,18 +1160,44 @@ describe('AuthService', () => {
       expect(userRepository.updateUser).not.toHaveBeenCalledWith(2, expect.objectContaining({ accessStatus: 'revoked' }));
     });
 
-    it('cleans up the keys of operators who were already revoked, without asking Portal about them again', async () => {
-      // Covers people revoked before keys were revoked with them, and a key delete that failed (#2062).
+    it('cleans up the keys of operators who were already revoked without asking Portal about them again', async () => {
+      // Covers people revoked before keys were revoked with them or whose key delete failed (#2062).
       userRepository.getOperators.mockResolvedValue([{ id: 4, accessStatus: 'revoked' }] as never);
       deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
 
       await authService.reconcileOperatorMemberships();
 
-      expect(apiKeys.revokeCreatedBy).toHaveBeenCalledWith(4);
+      expect(apiKeys.revokeCreatedByRevokedPeople).toHaveBeenCalledTimes(1);
       expect(portal.whoisApps).not.toHaveBeenCalled();
     });
 
-    it('still revokes the person, and goes on to the next operator, when their keys cannot be deleted', async () => {
+    it('leaves the keys of a revoked row to the store, which reads the status as it stands', async () => {
+      // The list goes stale while the sweep waits on Portal. Deleting by it would take the new keys of
+      // a person let back in meanwhile.
+      userRepository.getOperators.mockResolvedValue([{ id: 4, accessStatus: 'revoked' }] as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+
+      await authService.reconcileOperatorMemberships();
+
+      expect(apiKeys.revokeCreatedBy).not.toHaveBeenCalled();
+    });
+
+    it("goes on with the sweep when the revoked people's keys cannot be deleted", async () => {
+      userRepository.getOperators.mockResolvedValue([{ id: 2, accessStatus: 'active' }] as never);
+      federatedIdentityRepository.findByUserId.mockResolvedValueOnce([{ subject: 'here' }] as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+      portal.whoisApps.mockResolvedValueOnce({
+        status: 200,
+        body: { organizations: [{ organizationId: 'org-1', user: { role: 'member' }, apps: [] }] },
+      });
+      apiKeys.revokeCreatedByRevokedPeople.mockRejectedValueOnce(new Error('connection terminated'));
+
+      await authService.reconcileOperatorMemberships();
+
+      expect(userRepository.updateUser).toHaveBeenCalledWith(2, expect.objectContaining({ accessStatus: 'active', orgRole: 'member' }));
+    });
+
+    it('still revokes the person and goes on to the next operator when their keys cannot be deleted', async () => {
       userRepository.getOperators.mockResolvedValue([
         { id: 1, accessStatus: 'active' },
         { id: 2, accessStatus: 'active' },

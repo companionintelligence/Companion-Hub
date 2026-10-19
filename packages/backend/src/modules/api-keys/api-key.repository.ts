@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, count, desc, eq, getTableColumns, sql } from 'drizzle-orm';
+import { and, count, desc, eq, getTableColumns, inArray, sql } from 'drizzle-orm';
 import { DATABASE, type Database } from '@/core/database/database.module';
 import { apiKey, user } from '@/core/database/drizzle/schema';
 import type { ApiKeyScope } from './api-key.scopes';
@@ -111,7 +111,21 @@ export class ApiKeyRepository {
     const result = await this.db
       .delete(apiKey)
       .where(and(eq(apiKey.createdByUserId, userId), eq(apiKey.managed, false)))
-      .returning()
+      .returning({ id: apiKey.id })
+      .execute();
+    return result.length;
+  }
+
+  /**
+   * Delete the unmanaged keys of everyone whose access is revoked, in one statement. The status is
+   * read by the same statement, so a person let back in since the caller last looked keeps their keys.
+   */
+  async deleteUnmanagedOfRevokedCreators(): Promise<number> {
+    const revoked = this.db.select({ id: user.id }).from(user).where(eq(user.accessStatus, 'revoked'));
+    const result = await this.db
+      .delete(apiKey)
+      .where(and(eq(apiKey.managed, false), inArray(apiKey.createdByUserId, revoked)))
+      .returning({ id: apiKey.id })
       .execute();
     return result.length;
   }

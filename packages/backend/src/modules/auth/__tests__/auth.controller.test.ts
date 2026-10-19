@@ -2785,7 +2785,11 @@ describe('AuthController', () => {
       // Not a second user-creation path. `admitHubPerson` owns the first-operator bootstrap rule (the
       // one admission that skips the Portal membership check), so this route asks it rather than
       // writing a row of its own.
-      expect(authService.admitHubPerson).toHaveBeenCalledWith({ issuer: '', subject: null, email: 'Owner@Example.com', emailVerified: false });
+      // The device-key claim is the one subject-less first operator a paired Hub admits (#2062).
+      expect(authService.admitHubPerson).toHaveBeenCalledWith(
+        { issuer: '', subject: null, email: 'Owner@Example.com', emailVerified: false },
+        { hostLocalClaim: true },
+      );
     });
 
     it('refuses a caller who did not present the host-local key', async () => {

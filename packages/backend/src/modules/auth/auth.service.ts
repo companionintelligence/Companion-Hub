@@ -263,11 +263,16 @@ export class AuthService {
   /**
    * Admit a verified Portal person onto this Hub.
    *
-   * Existing federated links win. Everyone else needs a Portal membership on the org this appliance
-   * is paired to, the first operator included. Only a Hub paired to no organization admits its first
-   * operator without one, since there is nobody to check against.
+   * Existing federated links win. Everyone else with a Portal subject needs a membership on the org
+   * this appliance is paired to, the first operator included. A Hub paired to no organization admits
+   * its first operator without one, since there is nobody to check against. On a paired Hub the only
+   * first operator admitted with no subject is the device-key claim (`hostLocalClaim`), which proves
+   * access to the box rather than to a CI Account.
    */
-  public async admitHubPerson(params: { issuer: string; subject: string | null; email: string; emailVerified: boolean }) {
+  public async admitHubPerson(
+    params: { issuer: string; subject: string | null; email: string; emailVerified: boolean },
+    options: { hostLocalClaim?: boolean } = {},
+  ) {
     const issuer = (params.issuer || this.getPublicPortalBaseUrl()).trim();
     const subject = params.subject?.trim() || '';
 
@@ -285,64 +290,54 @@ export class AuthService {
     }
 
     const operators = await this.userRepository.getOperators();
-    if (operators.length > 0) {
-      if (!subject) {
-        throw new TranslatableError('AUTH_ERROR_INVALID_CREDENTIALS', {}, HttpStatus.BAD_REQUEST);
-      }
-      // "We could not ask Portal" is not "Portal said no". Both deny, but only one of them is the
-      // person's fault: answering a Portal outage with "you are not a member of this organization"
-      // sends an operator off to chase an invite that was never missing. 503 says retry.
-      const detail = await this.resolvePairedOrgMembershipDetail(subject);
-      if (detail.membership === 'unknown') {
-        throw new TranslatableError('AUTH_ERROR_ORG_CHECK_UNAVAILABLE', {}, HttpStatus.SERVICE_UNAVAILABLE);
-      }
-      if (detail.membership === 'not-member') {
-        throw new TranslatableError('AUTH_ERROR_NOT_ORG_MEMBER', {}, HttpStatus.FORBIDDEN);
-      }
-
-      const created = await this.ensureFederatedUser({
-        issuer,
-        subject,
-        email: params.email,
-        emailVerified: params.emailVerified,
-        allowCreateAdditionalOperator: true,
-      });
-      return this.markOperatorActive(created.id, detail.role, created);
-    }
+    const isFirstOperator = operators.length === 0;
 
     if (!subject) {
+      if (!isFirstOperator) {
+        throw new TranslatableError('AUTH_ERROR_INVALID_CREDENTIALS', {}, HttpStatus.BAD_REQUEST);
+      }
+      // ⚠ A SIGN-IN WITH NO SUBJECT CAN'T BE CHECKED, SO ON A PAIRED HUB IT IS NOT ADMITTED. Portal
+      // names the person in every real sign-in. A 2xx without `user.id` (a proxy answering for it, a
+      // misrouted internal URL) would otherwise make whoever typed the email the first admin, with no
+      // membership check (#2062). The device-key claim has no subject by design and stays allowed.
+      if (!options.hostLocalClaim && (await this.isPairedToAnOrganization())) {
+        throw new TranslatableError('AUTH_ERROR_ORG_CHECK_UNAVAILABLE', {}, HttpStatus.SERVICE_UNAVAILABLE);
+      }
       return this.ensureLocalCompanionUser(params.email);
     }
 
     /*
-     * ⚠ ASK PORTAL BEFORE CREATING THE FIRST OPERATOR, NOT AFTER.
+     * ⚠ ASK PORTAL BEFORE CREATING ANY OPERATOR, THE FIRST ONE INCLUDED.
      *
-     * The row used to be created first and the answer only decided its role. On a freshly paired
-     * Hub, anyone with a verified CI Account could sign in on its public `/login` or `/register` and
-     * be the admin until the next check-in sweep revoked them. What they made in between, an API key
-     * for one, outlived them (#2062). A paired Hub holds its first operator to the same rule as every
-     * later one. A Hub paired to no organization has nobody to check against and still admits its
-     * first operator.
+     * The first operator's row used to be created first and the answer only decided its role. On a
+     * freshly paired Hub, anyone with a verified CI Account could sign in on its public `/login` or
+     * `/register` and be the admin until the next check-in sweep revoked them. What they made in
+     * between, an API key for one, outlived them (#2062). A Hub paired to no organization has nobody
+     * to check against and still admits its first operator.
+     *
+     * "We could not ask Portal" is not "Portal said no". Both deny, but only one of them is the
+     * person's fault: answering a Portal outage with "you are not a member of this organization"
+     * sends an operator off to chase an invite that was never missing. 503 says retry.
      */
-    const firstDetail = await this.resolvePairedOrgMembershipDetail(subject);
-    if (firstDetail.membership === 'unknown') {
+    const detail = await this.resolvePairedOrgMembershipDetail(subject);
+    if (detail.membership === 'unknown') {
       throw new TranslatableError('AUTH_ERROR_ORG_CHECK_UNAVAILABLE', {}, HttpStatus.SERVICE_UNAVAILABLE);
     }
-    if (firstDetail.membership === 'not-member' && !firstDetail.unpaired) {
+    if (detail.membership === 'not-member' && !(isFirstOperator && detail.unpaired)) {
       throw new TranslatableError('AUTH_ERROR_NOT_ORG_MEMBER', {}, HttpStatus.FORBIDDEN);
     }
 
-    const first = await this.ensureFederatedUser({
+    const admitted = await this.ensureFederatedUser({
       issuer,
       subject,
       email: params.email,
       emailVerified: params.emailVerified,
-      allowCreateAdditionalOperator: false,
+      allowCreateAdditionalOperator: !isFirstOperator,
     });
-    if (firstDetail.membership === 'member') {
-      return this.markOperatorActive(first.id, firstDetail.role, first);
+    if (detail.membership === 'member') {
+      return this.markOperatorActive(admitted.id, detail.role, admitted);
     }
-    return first;
+    return admitted;
   }
 
   /**
@@ -360,6 +355,19 @@ export class AuthService {
    * grants, for the same reason: an organization it cannot read, or a WhoIs that failed, takes the
    * cache fallback rather than an empty grant.
    */
+  /** Whether this Hub holds a registration. A read that fails counts as paired, so the caller refuses. */
+  private async isPairedToAnOrganization(): Promise<boolean> {
+    try {
+      const configured = this.config.get('ciHubOrganizationId');
+      const preferred = configured ? await this.deviceRegistration.getDeviceRegistrationById(configured) : null;
+      const registration = preferred ?? (await this.deviceRegistration.getFirstDeviceRegistration());
+      return Boolean(registration?.id);
+    } catch (error) {
+      this.logger.warn(`Device registration read failed while admitting a first operator: ${error instanceof Error ? error.message : String(error)}`);
+      return true;
+    }
+  }
+
   public async resolvePairedOrgMembership(subject: string): Promise<PairedOrgMembership> {
     return (await this.resolvePairedOrgMembershipDetail(subject)).membership;
   }
@@ -459,6 +467,15 @@ export class AuthService {
    * A Portal blip (`unknown`) leaves the row alone.
    */
   public async reconcileOperatorMemberships() {
+    // Someone revoked before their keys went with them, or whose key delete failed then. One statement
+    // for everyone, judged by each row as it stands when it runs. The operator list read below goes
+    // stale while the sweep waits on Portal. A person let back in meanwhile may have made new keys.
+    try {
+      await this.apiKeys.revokeCreatedByRevokedPeople();
+    } catch (error) {
+      this.logger.warn(`Could not revoke the API keys of revoked operators: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
     const registration = await this.deviceRegistration.getFirstDeviceRegistration();
     if (!registration?.id) {
       return;
@@ -468,9 +485,6 @@ export class AuthService {
 
     for (const operator of operators) {
       if (operator.accessStatus === 'revoked') {
-        // Someone revoked before their keys went with them, or whose key delete failed then. The delete
-        // finds nothing once it has worked, so repeating it every sweep is cheap.
-        await this.revokeKeysCreatedBy(operator.id);
         continue;
       }
 
@@ -491,8 +505,8 @@ export class AuthService {
 
   /**
    * Best effort, unlike the revocation itself: a key store that is down for a moment must not undo a
-   * revocation already written, or stop the sweep from reaching everyone else. The sweep repeats this
-   * for every revoked operator, so a failure here is retried on the next check-in.
+   * revocation already written, or stop the sweep from reaching everyone else. The sweep deletes the
+   * keys of every revoked person, so a failure here is retried on the next check-in.
    */
   private async revokeKeysCreatedBy(userId: number) {
     try {
@@ -511,8 +525,7 @@ export class AuthService {
 
     if (detail.membership === 'not-member') {
       // Unpaired is a local fact, not a Portal removal. Do not revoke the people who claimed this Hub.
-      const registration = await this.deviceRegistration.getFirstDeviceRegistration();
-      if (!registration?.id) {
+      if (detail.unpaired) {
         if (user.accessStatus === 'revoked') {
           throw new TranslatableError('AUTH_ERROR_NOT_ORG_MEMBER', {}, HttpStatus.FORBIDDEN);
         }

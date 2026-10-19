@@ -411,9 +411,9 @@ export class AuthController {
    *      strictly less than the root shell that could write the `user` table directly.
    *   2. This Hub must be paired. Pairing is what proved org membership in the first place; a Hub
    *      that has not done it has no organization for an operator to belong to.
-   *   3. There must be no operator yet. First-operator bootstrap is the ONE admission that skips
-   *      the Portal membership check (see `admitHubPerson`), so it must happen at most once —
-   *      after that, additional people go through Portal and get checked.
+   *   3. There must be no operator yet. This claim is the ONE admission on a paired Hub that skips
+   *      the Portal membership check (`hostLocalClaim` in `admitHubPerson`), so it must happen at
+   *      most once. After that, additional people go through Portal and get checked.
    *
    * The row itself is written by `admitHubPerson`, not here: the rules about who may become an
    * operator on this appliance live in one place, and a second creation path would be a second
@@ -447,7 +447,10 @@ export class AuthController {
     // That fill-in throws 503 when `CI_CLOUD_URL` is unset, which is left alone deliberately: a Hub
     // that got past the registration gate above and still has no Portal URL is genuinely broken,
     // and "CI_CLOUD_URL is not configured" is a better answer than a claim that half-works.
-    const user = await this.authService.admitHubPerson({ issuer: '', subject: null, email: body.email, emailVerified: false });
+    const user = await this.authService.admitHubPerson(
+      { issuer: '', subject: null, email: body.email, emailVerified: false },
+      { hostLocalClaim: true },
+    );
 
     this.logger.info(`Hub claimed headlessly by device key for ${hashEmailForLog(user.username)}`);
 
