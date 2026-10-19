@@ -46,6 +46,15 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # tauri-plugin-deep-link 2.6.2 builds ini::ParseOption with two of its four fields, so it
+      # doesn't compile against rust-ini 0.21.3 (0.21.2 is yanked). The code is Linux-only, so
+      # only the Linux desktop builds break. single-instance 2.5.4 requires deep-link ^2.6.2.
+      # Lift both once a fixed deep-link release is out.
+      - dependency-name: 'tauri-plugin-deep-link'
+        versions: ['2.6.2']
+      - dependency-name: 'tauri-plugin-single-instance'
+        versions: ['2.5.4']
 
   # Rust/Tauri mobile app crates
   - package-ecosystem: 'cargo'
