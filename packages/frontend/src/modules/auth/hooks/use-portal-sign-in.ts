@@ -15,8 +15,8 @@ export const PORTAL_RECHECK_INTERVAL_MS = 10_000;
  * What the CI Account button needs: where its sign-in starts, whether this Hub can reach Portal
  * and which Portal account it is likely to sign in as.
  *
- * `/login` and `/register` both offer it. A paired Hub with no operator yet opens on `/register`.
- * Whoever paired it already has a CI Account, so that page needs the same way in (#2059).
+ * `/login` offers it, and `/register` does too for the rare Hub that still renders that page. A paired
+ * Hub with no operator yet opens on `/login` (#2061).
  */
 export function usePortalSignIn(redirectUrl: string | null) {
   const { t } = useTranslation();

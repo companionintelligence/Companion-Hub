@@ -41,8 +41,9 @@ export default () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const redirectUrl = new URLSearchParams(window.location.search).get('redirect_url');
-  // A paired Hub with no operator opens here. Whoever paired it already has a CI Account, so offer
-  // the same sign-in `/login` does, or that person can only make a second account (#2059).
+  // A paired Hub never renders this page (the loader sends it to /login, #2061), so this runs only
+  // when the registration status couldn't be read. Offer the CI Account sign-in here as well, so
+  // whoever lands here can still sign in rather than only make a second account (#2059).
   const { authPolicy, portalSsoHref, portalAccountEmail, portalReachable, switchAccount } = usePortalSignIn(redirectUrl);
 
   const register = useMutation({

@@ -157,7 +157,7 @@ Registration and claiming are two different things, and only one of them was eve
 `cihub register` pairs the appliance and writes `ciHubApiKey` and `ciHubOrganizationId` into
 `state/settings.json`. It does **not** create a row in the `user` table — that row was written only
 by an interactive Portal sign-in landing on `/api/auth/portal/callback`, and `POST /api/auth/register`
-cannot finish unattended because Portal answers it with `requiresEmailVerification`.
+refuses on a paired Hub, because the CI Account it would create is in no organization (#2061).
 
 A Hub in that state is paired, keyed, and unable to authenticate anybody: the device key is accepted,
 there is no operator for it to speak as, and every guarded route answers **409

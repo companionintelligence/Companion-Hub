@@ -100,13 +100,13 @@
       "description": "Registration complete phase ('pairing accepted' success state) just before redirect to /. Timing-sensitive. NEEDS REVIEW."
     },
     {
-      "id": "hub-register",
+      "id": "hub-first-sign-in",
       "app": "hub",
-      "route": "/register",
+      "route": "/login",
       "authRequired": false,
       "theme": "dark",
       "viewport": "1920x1080",
-      "description": "OPTIONAL B-roll: first-boot admin account creation form (root clientLoader redirects here when the Hub is unconfigured)."
+      "description": "OPTIONAL B-roll: first-boot sign-in with the CI Account button (root clientLoader sends a paired Hub with no admin here)."
     },
     {
       "id": "hub-onboarding-form",
