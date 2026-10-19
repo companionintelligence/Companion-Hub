@@ -545,8 +545,14 @@ export class AppService implements OnApplicationShutdown {
       this.logger.info(`Starting Traefik (${status}), which could not start while its ACME store was missing`);
       await traefik.start();
     } catch (error) {
-      if ((error as { statusCode?: number } | undefined)?.statusCode === 404) {
+      const statusCode = (error as { statusCode?: number } | undefined)?.statusCode;
+      if (statusCode === 404) {
         this.logger.debug('No Traefik container to start after recreating its ACME store');
+        return;
+      }
+      // Compose or Docker started it between the inspect and this start.
+      if (statusCode === 304) {
+        this.logger.debug('Traefik was already started');
         return;
       }
       this.logger.warn(

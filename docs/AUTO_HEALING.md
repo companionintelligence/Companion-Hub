@@ -189,6 +189,25 @@ plugin is missing. The Hub image registers the plugin under
 errors and restarts the existing container. A log line that ends in
 `unknown flag: --env-file` means the docker CLI had no compose plugin.
 
+### Traefik ACME store
+
+`docker-compose.prod.yml` mounts `state/traefik/acme_storage.json` as a file with
+`create_host_path: false`, so Traefik can't start while that file is missing. `cihub up`
+and the desktop app's Traefik preflight create it before they start the stack. A Hub
+started any other way, or a data dir that lost the file, used to keep working only until
+Traefik next restarted.
+
+On every boot the Hub now creates a missing store as `{}` with mode 0600, before it
+rewrites `traefik.yml`. Traefik drops its ACME resolver when group or others have any
+access to the store. A directory in the file's place is replaced. An existing store is
+never touched.
+
+When the Hub had to create the store, it also starts a Traefik that is `exited` or
+`created`. Docker doesn't retry a container whose bind source was missing, even with
+`restart: unless-stopped`, so after a reboot that Traefik stays down until something
+starts it. A Traefik in any other state is left alone. The log line
+`Traefik's ACME store was missing; created an empty one` marks a boot that repaired it.
+
 ### App status sync (every 5 minutes)
 
 `syncAllAppStatuses` lists all containers labelled `ci-os-hub.managed=true`,

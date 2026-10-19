@@ -386,6 +386,15 @@ describe('AppService', () => {
       expect(traefik.start).not.toHaveBeenCalled();
     });
 
+    it('takes a Traefik that something else started first as started, with no warning', async () => {
+      traefik.start.mockRejectedValue(Object.assign(new Error('(HTTP code 304) container already started'), { statusCode: 304 }));
+
+      await expect(copy()).resolves.toBeUndefined();
+
+      expect(traefik.start).toHaveBeenCalledTimes(1);
+      expect(loggerService.warn).not.toHaveBeenCalledWith(expect.stringContaining('Could not start Traefik'));
+    });
+
     it('finishes the boot when Traefik cannot be started or does not exist', async () => {
       traefik.start.mockRejectedValue(new Error('driver failed programming external connectivity'));
       await expect(copy()).resolves.toBeUndefined();
