@@ -1,6 +1,7 @@
 import { registerMutation } from '@/api-client/@tanstack/react-query.gen';
 import { userContext } from '@/api-client';
 import { markHubSessionIssuedAt } from '@/lib/api-fetch';
+import { resolveRegistrationStatus } from '@/lib/registration-cache';
 import { followSafeRedirect } from '@/lib/safe-redirect';
 import { useUserContext } from '@/context/user-context';
 import type { TranslatableError } from '@/types/error.types';
@@ -12,7 +13,7 @@ import { PortalSignInSection } from '../components/portal-sign-in-section';
 import { RegisterForm } from '../components/register-form';
 import { usePortalSignIn } from '../hooks/use-portal-sign-in';
 
-export async function clientLoader() {
+export async function clientLoader({ request }: { request?: Request } = {}) {
   const user = await userContext();
 
   if (user.data?.isLoggedIn) {
@@ -21,6 +22,15 @@ export async function clientLoader() {
 
   if (user.data?.isConfigured) {
     return redirect('/login');
+  }
+
+  // ⚠ NO SIGN-UP ON A PAIRED HUB. The form below makes a new CI Account, which is in no
+  // organization, so a paired Hub revoked it at its next check-in and that person was locked out
+  // (#2061). The backend refuses it as well; this sends the person to the sign-in that works.
+  const status = await resolveRegistrationStatus();
+  if (status?.registered) {
+    const redirectUrl = request ? new URL(request.url).searchParams.get('redirect_url') : null;
+    return redirect(redirectUrl ? `/login?redirect_url=${encodeURIComponent(redirectUrl)}` : '/login');
   }
 
   return null;

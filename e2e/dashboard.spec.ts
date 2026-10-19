@@ -8,7 +8,7 @@ test('should display dashboard for logged in user', async ({ page }) => {
 });
 
 test('should display login page for unauthenticated user', async ({ page }) => {
-  // Seed user so we don't get redirected to /register
+  // Seed a user, so this is the login page of a Hub that already has an admin
   const { createTestUser } = await import('./fixtures/fixtures');
   await createTestUser();
 

@@ -3,12 +3,11 @@ import { clearDatabase, seedOrganization } from '../helpers/db';
 import { testUser } from '../helpers/constants';
 
 const BACKEND_URL = `http://localhost:${process.env.BACKEND_PORT || '3000'}`;
-const firstUserPassword = 'SecurePass123!';
 
 /**
  * E2E tests for the onboarding AI setup flow.
  *
- * These tests exercise the full wizard path from registration through
+ * These tests exercise the full wizard path from the first sign-in through
  * AI Setup (step 2) to Install (step 5) and Complete (step 6).
  *
  * The Hub's inference module must be running with Ollama available.
@@ -17,13 +16,12 @@ const firstUserPassword = 'SecurePass123!';
  * /api/inference/onboarding-profile endpoint.
  */
 
-/** Register a new user account and land on the onboarding wizard. */
-async function registerAndStartOnboarding(page: import('@playwright/test').Page) {
-  await page.goto('/register');
+/** Sign in as the paired Hub's first admin and land on the onboarding wizard. */
+async function signInAndStartOnboarding(page: import('@playwright/test').Page) {
+  await page.goto('/login');
   await page.getByPlaceholder('you@example.com').fill(testUser.email);
-  await page.getByPlaceholder('Enter your password').fill(firstUserPassword);
-  await page.getByPlaceholder('Confirm your password').fill(firstUserPassword);
-  await page.getByRole('button', { name: 'Create Local Admin User' }).click();
+  await page.getByPlaceholder('Enter your password').fill(testUser.password);
+  await page.getByRole('button', { name: 'Login' }).click();
 
   // Wait for the onboarding wizard to appear
   await expect(page.getByRole('heading', { name: 'Set Up Companion Hub' })).toBeVisible({ timeout: 15000 });
@@ -31,7 +29,7 @@ async function registerAndStartOnboarding(page: import('@playwright/test').Page)
 
 /** Advance through Welcome → Discover to reach the AI Setup step. */
 async function navigateToAiSetupStep(page: import('@playwright/test').Page) {
-  await registerAndStartOnboarding(page);
+  await signInAndStartOnboarding(page);
 
   // Step 0: Welcome — click the primary CTA to start discovery
   await page.getByRole('button', { name: /get started|next|continue/i }).click();

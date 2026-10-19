@@ -19,14 +19,11 @@ import {
   verifyDataHealth,
   verifyDeviceId,
   verifyDeviceRegistrationGate,
-  verifyFirstUserRegistrationPage,
   verifyInstalledAppState,
   verifyLoginScreen,
   verifyRegistrationStatus,
   verifySeededAppStores,
 } from './helpers/verification';
-
-const firstUserPassword = 'SecurePass123!';
 
 test.describe('Hub State: Fresh Unregistered', () => {
   test.beforeEach(async () => {
@@ -133,16 +130,16 @@ test.describe('Scenario: First Install Path', () => {
     await firstInstallPath();
   });
 
-  test('first visit shows the account registration page', async ({ page }) => {
-    await verifyFirstUserRegistrationPage(page);
+  // A paired Hub's first admin signs in with a CI Account in its organization (#2061).
+  test('first visit shows sign-in', async ({ page }) => {
+    await verifyLoginScreen(page);
   });
 
-  test('can complete first-user registration', async ({ page }) => {
-    await page.goto('/register');
+  test('the first sign-in makes the admin', async ({ page }) => {
+    await page.goto('/login');
     await page.getByPlaceholder('you@example.com').fill(testUser.email);
-    await page.getByPlaceholder('Enter your password').fill(firstUserPassword);
-    await page.getByPlaceholder('Confirm your password').fill(firstUserPassword);
-    await page.getByRole('button', { name: 'Create Local Admin User' }).click();
+    await page.getByPlaceholder('Enter your password').fill(testUser.password);
+    await page.getByRole('button', { name: 'Login' }).click();
 
     await expect(page.getByRole('heading', { name: 'Set Up Companion Hub' })).toBeVisible({ timeout: 15000 });
   });

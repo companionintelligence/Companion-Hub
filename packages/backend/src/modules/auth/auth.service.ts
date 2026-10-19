@@ -209,18 +209,28 @@ export class AuthService {
     const base = this.getPortalBaseUrl();
     const publicBase = this.getPublicPortalBaseUrl();
     const portalConfig = this.portalAxiosConfig();
-    const response = await axios.post(
-      `${base}/api/auth/sign-up/email`,
-      { email, password, name },
-      {
-        ...withPortalAxiosHeaders(portalConfig, {
-          'Content-Type': 'application/json',
-          Origin: publicBase,
-        }),
-        validateStatus: () => true,
-        timeout: 15_000,
-      },
-    );
+    let response: AxiosResponse;
+    try {
+      response = await axios.post(
+        `${base}/api/auth/sign-up/email`,
+        { email, password, name },
+        {
+          ...withPortalAxiosHeaders(portalConfig, {
+            'Content-Type': 'application/json',
+            Origin: publicBase,
+          }),
+          validateStatus: () => true,
+          timeout: 15_000,
+        },
+      );
+    } catch (error) {
+      // Same as sign-in: a Portal that never answered is not a sign-up the person got wrong. Left
+      // uncaught it reached the form as a bare 500 (#2061).
+      if (isPortalTransportFailure(error)) {
+        throw new PortalUnreachableError(error);
+      }
+      throw error;
+    }
 
     const body = (await Promise.resolve(response.data).catch(() => ({}))) as {
       code?: string;
@@ -230,8 +240,15 @@ export class AuthService {
 
     this.throwIfPortalRateLimited(response);
 
+    if (response.status >= 500) {
+      throw new PortalUnreachableError();
+    }
+
     if (response.status < 200 || response.status >= 300) {
-      if (body.code === 'USER_ALREADY_EXISTS') {
+      // Portal's Better Auth answers an address that already has an account with
+      // `USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL`. Only the older `USER_ALREADY_EXISTS` was matched, so the
+      // form said "Error creating user" to someone who only needed to sign in (#2061).
+      if (body.code === 'USER_ALREADY_EXISTS' || body.code === 'USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL') {
         throw new TranslatableError('AUTH_ERROR_USER_ALREADY_EXISTS', {}, HttpStatus.BAD_REQUEST);
       }
 
@@ -846,6 +863,21 @@ export class AuthService {
       throw new TranslatableError('AUTH_ERROR_ADMIN_ALREADY_EXISTS', {}, HttpStatus.FORBIDDEN);
     }
 
+    /*
+     * ⚠ NO SIGN-UP ON A PAIRED HUB.
+     *
+     * This creates a brand-new CI Account, and a brand-new account is in no organization. A Hub
+     * paired to one revokes, at its next check-in, every operator Portal doesn't put in that
+     * organization (`reconcileOperatorMemberships`). So whoever signed up here was the admin for
+     * about half a minute and then locked out for good (#2061). The first admin of a paired Hub is
+     * someone already in its organization, signing in on `/login`. Refused before Portal is asked,
+     * so no account is left behind at Portal either.
+     */
+    const registration = await this.deviceRegistration.getFirstDeviceRegistration();
+    if (registration?.id) {
+      throw new TranslatableError('AUTH_ERROR_REGISTER_PAIRED_HUB', {}, HttpStatus.FORBIDDEN);
+    }
+
     const { password, username } = input;
     const email = normalizeUsername(username);
 
@@ -867,7 +899,15 @@ export class AuthService {
       throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD_COMPLEXITY', {}, HttpStatus.BAD_REQUEST);
     }
 
-    const portalIdentity = await this.signUpWithPortal(email, password, email.split('@')[0] ?? 'User');
+    let portalIdentity: Awaited<ReturnType<AuthService['signUpWithPortal']>>;
+    try {
+      portalIdentity = await this.signUpWithPortal(email, password, email.split('@')[0] ?? 'User');
+    } catch (error) {
+      if (error instanceof PortalUnreachableError) {
+        throw new TranslatableError('AUTH_ERROR_PORTAL_UNREACHABLE', {}, HttpStatus.SERVICE_UNAVAILABLE);
+      }
+      throw error;
+    }
 
     if (!portalIdentity.signedIn) {
       return {
@@ -882,10 +922,10 @@ export class AuthService {
      * instead of their real grants — the appliance answers from a default rather
      * than from Portal.
      *
-     * Reached only when Portal signed the account in on sign-up, which it does
-     * only where `requireEmailVerification` is off (today's Portal has it on, so
-     * registration returns `requiresEmailVerification` above and the operator is
-     * linked on their first login instead). Portal issuing a session token is
+     * Reached when Portal signs the account in on sign-up, which it does unless it
+     * requires email verification. CI-Portal turned that requirement off on
+     * 2026-10-08 (948bc0d2), so this is the usual path. `requiresEmailVerification`
+     * above is for a Portal that still has it on. Portal issuing a session token is
      * itself the assertion that the account may sign in — the same assertion this
      * flow already acted on by provisioning an operator and a Hub session — so it
      * carries `emailVerified: true` rather than re-deriving a weaker signal.

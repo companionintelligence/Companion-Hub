@@ -1073,9 +1073,9 @@ describe('AuthService', () => {
     });
 
     it('creates no local operator when Portal requires email verification', async () => {
-      // Today's Portal has `requireEmailVerification` on, so sign-up returns no
-      // session token. Nothing is provisioned here; the operator is linked on
-      // their first login instead.
+      // A Portal with `requireEmailVerification` on returns no session token on
+      // sign-up. Nothing is provisioned here; the operator is linked on their
+      // first login instead. CI-Portal turned it off on 2026-10-08.
       vi.mocked(axios.post).mockResolvedValue({ status: 200, data: { token: null } });
 
       await expect(authService.register({ username: 'owner@example.com', password: 'Password1!' } as never)).resolves.toEqual({
@@ -1095,6 +1095,49 @@ describe('AuthService', () => {
       });
       expect(federatedIdentityRepository.create).not.toHaveBeenCalled();
       expect(sessionManager.createSession).toHaveBeenCalledWith(11);
+    });
+
+    // #2061: on a paired Hub this made a brand-new CI Account in no organization, the admin for about
+    // half a minute, until the check-in sweep revoked it for not being in the Hub's organization.
+    it('refuses on a paired Hub, before Portal is asked to create anything', async () => {
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+
+      await expect(authService.register({ username: 'new@example.com', password: 'Password1!' } as never)).rejects.toMatchObject({
+        message: 'AUTH_ERROR_REGISTER_PAIRED_HUB',
+        status: 403,
+      });
+      expect(axios.post).not.toHaveBeenCalled();
+      expect(userRepository.createFirstOperator).not.toHaveBeenCalled();
+    });
+
+    it('says the account already exists when Portal answers with the code Better Auth sends today', async () => {
+      vi.mocked(axios.post).mockResolvedValue({
+        status: 422,
+        data: { message: 'User already exists. Use another email.', code: 'USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL' },
+      });
+
+      await expect(authService.register({ username: 'owner@example.com', password: 'Password1!' } as never)).rejects.toMatchObject({
+        message: 'AUTH_ERROR_USER_ALREADY_EXISTS',
+      });
+    });
+
+    it('answers 503, not a bare 500, when Portal cannot be reached', async () => {
+      vi.mocked(axios.post).mockRejectedValue(Object.assign(new Error('connect ECONNREFUSED'), { isAxiosError: true, code: 'ECONNREFUSED' }));
+
+      await expect(authService.register({ username: 'owner@example.com', password: 'Password1!' } as never)).rejects.toMatchObject({
+        message: 'AUTH_ERROR_PORTAL_UNREACHABLE',
+        status: 503,
+      });
+      expect(userRepository.createFirstOperator).not.toHaveBeenCalled();
+    });
+
+    it('answers 503 when Portal answers 5xx', async () => {
+      vi.mocked(axios.post).mockResolvedValue({ status: 502, data: {} });
+
+      await expect(authService.register({ username: 'owner@example.com', password: 'Password1!' } as never)).rejects.toMatchObject({
+        message: 'AUTH_ERROR_PORTAL_UNREACHABLE',
+        status: 503,
+      });
     });
   });
 });
