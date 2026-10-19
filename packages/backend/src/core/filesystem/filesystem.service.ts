@@ -104,13 +104,19 @@ export class FilesystemService {
   }
 
   /**
-   * Creates `filePath` with exactly `content` and `mode`, unless something already exists at that
-   * path. The check and the write are one exclusive open, so a file another process created first
-   * is never overwritten.
+   * Creates `filePath` with `content` and `mode` (less the process umask), unless something already
+   * exists at that path. The check and the write are one exclusive open, so a file another process
+   * created first is never overwritten.
    */
   async createFileIfMissing(filePath: string, content: string, mode: number): Promise<'created' | 'exists' | 'failed'> {
     try {
       await fs.promises.mkdir(this.getSafeFilePath(path.dirname(filePath)), { recursive: true });
+    } catch (error) {
+      // Never `exists`: mkdir says EEXIST when the parent is a file, and then nothing is at filePath.
+      this.logger.error(`Error creating the directory for ${filePath}:`, error);
+      return 'failed';
+    }
+    try {
       await fs.promises.writeFile(this.getSafeFilePath(filePath), content, { flag: 'wx', mode });
       return 'created';
     } catch (error) {

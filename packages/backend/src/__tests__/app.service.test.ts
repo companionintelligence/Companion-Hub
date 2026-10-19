@@ -25,6 +25,12 @@ import { APP_SESSION_KEY_PREFIX, SESSION_KEY_PREFIX } from '@/modules/auth/sessi
 import { SystemEventsQueue } from '@/modules/queue/entities/system-events';
 import { TranslatableError } from '@/common/error/translatable-error';
 
+const { detectHubContainer } = vi.hoisted(() => ({ detectHubContainer: vi.fn(() => true) }));
+vi.mock('@/modules/inference/backends/host-url.util', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/modules/inference/backends/host-url.util')>()),
+  detectHubContainer,
+}));
+
 describe('AppService', () => {
   let appService: AppService;
   let configurationService = mock<ConfigurationService>();
@@ -42,6 +48,7 @@ describe('AppService', () => {
 
   beforeEach(async () => {
     dockerode = mock<Dockerode>();
+    detectHubContainer.mockReturnValue(true);
     // One fresh mock per token. `useMocker(mock)` hands the class itself to `mock()` as the mock's
     // implementation, so the mock functions were stored on the class and every test wrapped the last
     // test's: setups leaked from test to test, and the module took twice as long to build each time.
@@ -326,6 +333,7 @@ describe('AppService', () => {
         restart: vi.fn().mockResolvedValue(undefined),
       };
       dockerode.getContainer.mockReturnValue(traefik as never);
+      detectHubContainer.mockReturnValue(true);
     });
 
     it('creates a missing store that only its owner can read, then starts the exited Traefik', async () => {
@@ -351,14 +359,36 @@ describe('AppService', () => {
       expect(traefik.start).not.toHaveBeenCalled();
     });
 
-    it('replaces a directory at the store path with an empty store', async () => {
+    // Docker will not bind a file onto the directory a container that ran with one has at its mount
+    // point, so swapping the directory for a file would keep that Traefik from starting at all.
+    it('leaves a directory at the store path alone but still restarts Traefik for a changed traefik.yml', async () => {
       await fs.promises.mkdir(acmeStoragePath, { recursive: true });
+      await fs.promises.mkdir(path.dirname(traefikConfigPath), { recursive: true });
+      await fs.promises.writeFile(traefikConfigPath, 'entryPoints:\n  web:\n    address: ":80"\n');
+      traefik.inspect.mockResolvedValue({ State: { Status: 'running', Running: true } });
 
       await copy();
 
-      expect((await fs.promises.stat(acmeStoragePath)).isFile()).toBe(true);
-      expect(await fs.promises.readFile(acmeStoragePath, 'utf8')).toBe('{}');
-      expect(traefik.start).toHaveBeenCalledTimes(1);
+      expect((await fs.promises.stat(acmeStoragePath)).isDirectory()).toBe(true);
+      expect(traefik.restart).toHaveBeenCalledTimes(1);
+      expect(traefik.start).not.toHaveBeenCalled();
+      expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('is a directory, so Traefik cannot get certificates'));
+    });
+
+    it('does not restart a running Traefik for a changed traefik.yml when the store could not be created', async () => {
+      await fs.promises.mkdir(path.dirname(traefikConfigPath), { recursive: true });
+      await fs.promises.writeFile(traefikConfigPath, 'entryPoints:\n  web:\n    address: ":80"\n');
+      traefik.inspect.mockResolvedValue({ State: { Status: 'running', Running: true } });
+      const create = vi.spyOn(FilesystemService.prototype, 'createFileIfMissing').mockResolvedValueOnce('failed');
+
+      try {
+        await copy();
+      } finally {
+        create.mockRestore();
+      }
+
+      expect(traefik.restart).not.toHaveBeenCalled();
+      expect(traefik.start).not.toHaveBeenCalled();
     });
 
     it('creates the store before a changed traefik.yml restarts a running Traefik and does not start it again', async () => {
@@ -377,13 +407,56 @@ describe('AppService', () => {
       expect(traefik.start).not.toHaveBeenCalled();
     });
 
-    it('leaves a restarting or paused Traefik alone', async () => {
-      traefik.inspect.mockResolvedValue({ State: { Status: 'restarting', Running: false, Restarting: true } });
+    // On the host, a container named `traefik` belongs to an installed Hub, not to this backend.
+    it('creates the store but starts no Traefik when the backend runs from source on the host', async () => {
+      detectHubContainer.mockReturnValue(false);
+
+      await copy();
+
+      expect(await fs.promises.readFile(acmeStoragePath, 'utf8')).toBe('{}');
+      expect(traefik.inspect).not.toHaveBeenCalled();
+      expect(traefik.start).not.toHaveBeenCalled();
+    });
+
+    it('starts a Traefik that compose created but could not start', async () => {
+      traefik.inspect.mockResolvedValue({ State: { Status: 'created', Running: false } });
+
+      await copy();
+
+      expect(traefik.start).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      { Status: 'restarting', Running: false, Restarting: true },
+      { Status: 'paused', Running: true, Paused: true },
+    ])('leaves a $Status Traefik alone', async (state) => {
+      traefik.inspect.mockResolvedValue({ State: state });
 
       await copy();
 
       expect(await fs.promises.readFile(acmeStoragePath, 'utf8')).toBe('{}');
       expect(traefik.start).not.toHaveBeenCalled();
+    });
+
+    describe('when Docker does not answer', () => {
+      // Not in a finally: a test that times out never reaches one, and later tests would run on fake timers.
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('finishes the boot', async () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        traefik.inspect.mockReturnValue(new Promise(() => undefined));
+        const pending = copy();
+        while (traefik.inspect.mock.calls.length === 0) {
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+        await vi.advanceTimersByTimeAsync(15_000);
+
+        await expect(pending).resolves.toBeUndefined();
+        expect(traefik.start).not.toHaveBeenCalled();
+        expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('Docker did not inspect Traefik within 15s'));
+      });
     });
 
     it('takes a Traefik that something else started first as started, with no warning', async () => {
