@@ -102,14 +102,46 @@ function resolveChromiumBinary(): string | null {
   if (_chromiumBin === undefined) _chromiumBin = computeChromiumBinary();
   return _chromiumBin;
 }
-/** Headless Chromium's page-load-timeout fallback PNG is always 4714 bytes (1280×800 white). */
-const BLANK_SCREENSHOT_MAX_BYTES = 8000;
+/**
+ * Headless Chromium's page-load-timeout fallback is a solid white 1280×800 PNG, 4714 bytes on the build the fleet nodes had in
+ * 2026-06. It is used only when the reference below cannot be taken.
+ */
+const BLANK_SCREENSHOT_FALLBACK_BYTES = 4714;
+/** A page with even one line of text is hundreds of bytes bigger than a white page (observed: +955 to +1,875); this is the encoder's wobble. */
+const BLANK_SCREENSHOT_SLACK_BYTES = 128;
 
-function isBlankScreenshot(path: string): boolean {
+const CHROME_SHOT_FLAGS = ['--headless=new', '--no-sandbox', '--disable-gpu', '--hide-scrollbars', '--window-size=1280,800'];
+
+/**
+ * How big a genuinely blank screenshot is, measured with THIS binary and THESE flags: a screenshot of about:blank. The
+ * page-load-timeout fallback is the same white image, so it encodes to the same size. The old rule was a flat `<= 8000 bytes`,
+ * and a page that is merely small is not blank: "Ollama is running" (6,244 bytes), Traefik's "404 page not found" (6,589) and
+ * Portainer's "Not found" (5,669) all loaded fine and were reported as "page load timed out before paint". Taken once per
+ * process; null when it cannot be taken, and the caller falls back to BLANK_SCREENSHOT_FALLBACK_BYTES.
+ */
+let _blankReference: number | null | undefined;
+function blankReferenceBytes(chromeBin: string): number | null {
+  if (_blankReference !== undefined) return _blankReference;
+  _blankReference = null;
+  const refPath = join(SCREENSHOTS_DIR, '.blank-reference.png');
   try {
-    return statSync(path).size <= BLANK_SCREENSHOT_MAX_BYTES;
+    rmSync(refPath, { force: true });
+    const r = spawnSync(chromeBin, [...CHROME_SHOT_FLAGS, `--screenshot=${refPath}`, 'about:blank'], { timeout: 30_000, killSignal: 'SIGKILL', stdio: 'pipe' });
+    if (r.status === 0 && existsSync(refPath)) _blankReference = statSync(refPath).size;
   } catch {
-    return true;
+    /* no reference: the fallback constant applies */
+  } finally {
+    rmSync(refPath, { force: true });
+  }
+  return _blankReference;
+}
+
+/** True only for a file that is as small as an empty white page. A missing file is not blank: the capture produced nothing. */
+function isBlankScreenshot(path: string, chromeBin: string): boolean {
+  try {
+    return statSync(path).size <= (blankReferenceBytes(chromeBin) ?? BLANK_SCREENSHOT_FALLBACK_BYTES) + BLANK_SCREENSHOT_SLACK_BYTES;
+  } catch {
+    return false;
   }
 }
 
@@ -120,15 +152,14 @@ function captureScreenshot(
   opts: { virtualTimeBudgetMs: number; timeoutMs: number; spawnTimeoutMs: number },
   insecureTls = false, // an httpsBackend app serves a self-signed certificate
 ): { ok: boolean; diag: string } {
+  // Whatever is at this path is from an EARLIER run (the directory is reused). If this capture is killed before it writes, an old file
+  // would be judged as if it were this attempt's: jellyfin's "blank" in 2026-10 was a 4,714-byte PNG from June.
+  rmSync(screenshotPath, { force: true });
   const ss = spawnSync(
     chromeBin,
     [
-      '--headless=new',
-      '--no-sandbox',
-      '--disable-gpu',
-      '--hide-scrollbars',
+      ...CHROME_SHOT_FLAGS,
       `--screenshot=${screenshotPath}`,
-      '--window-size=1280,800',
       ...(insecureTls ? ['--ignore-certificate-errors'] : []),
       `--virtual-time-budget=${opts.virtualTimeBudgetMs}`,
       `--timeout=${opts.timeoutMs}`,
@@ -136,10 +167,10 @@ function captureScreenshot(
     ],
     { timeout: opts.spawnTimeoutMs, killSignal: 'SIGKILL', stdio: 'pipe' },
   );
-  const ok = ss.status === 0 && existsSync(screenshotPath) && !isBlankScreenshot(screenshotPath);
-  if (ok) return { ok: true, diag: '' };
+  const wrote = ss.status === 0 && existsSync(screenshotPath);
+  const blank = wrote && isBlankScreenshot(screenshotPath, chromeBin);
+  if (wrote && !blank) return { ok: true, diag: '' };
   const errTail = (ss.stderr?.toString() ?? '').replace(/\s+/g, ' ').trim().slice(-160);
-  const blank = existsSync(screenshotPath) && isBlankScreenshot(screenshotPath);
   const diag = blank
     ? 'screenshot blank (page load timed out before paint)'
     : `screenshot failed: exit=${ss.status ?? 'null'}${ss.signal ? ` signal=${ss.signal}` : ''}${errTail ? ` | ${errTail}` : ''}`;
