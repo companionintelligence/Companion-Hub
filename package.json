@@ -92,7 +92,7 @@
     "pngjs": "^7.0.0",
     "systeminformation": "^5.31.11",
     "turbo": "^2.11.8",
-    "vitest": "^5.0.4",
+    "vitest": "^5.0.5",
     "zod": "^4.6.7"
   },
   "private": false,
