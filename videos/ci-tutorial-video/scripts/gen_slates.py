@@ -7,7 +7,7 @@ SHOTS = [
     "portal-signup", "portal-login", "portal-home", "portal-add-device-dialog",
     "portal-pairing-code-dialog", "portal-home-with-device", "portal-store-public",
     "hub-device-registration-empty", "hub-device-registration-provisioning",
-    "hub-device-registration-complete", "hub-register", "hub-onboarding-form",
+    "hub-device-registration-complete", "hub-first-sign-in", "hub-onboarding-form",
     "hub-onboarding-installing", "hub-home-dashboard", "hub-store-grid",
     "hub-store-ci-category", "hub-app-details-immich", "hub-install-dialog-immich",
     "hub-app-installing-immich", "hub-app-running-immich", "app-immich-live",

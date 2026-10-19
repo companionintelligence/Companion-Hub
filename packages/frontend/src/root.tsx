@@ -451,8 +451,8 @@ async function runClientLoader(request: Request) {
   // Root path: determine where to send the user
   //
   // No admin yet goes to sign-in, not to sign-up. Every Hub that gets this far is paired (an unpaired
-  // one went to /device-registration above), and a paired Hub's first admin has to be in its
-  // organization: an account signed up on /register is in none, and the next check-in revoked it
+  // one went to /device-registration above). A paired Hub's first admin has to be in its
+  // organization. An account signed up on /register is in none, so the next check-in revoked it
   // (#2061). /login offers the CI Account button and CI Account email and password.
   if (!userResult.data?.isConfigured) {
     return redirect('/login');

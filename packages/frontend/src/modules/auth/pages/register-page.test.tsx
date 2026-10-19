@@ -263,8 +263,8 @@ describe('RegisterPage', () => {
     expect(screen.getByTestId('navigate')).toHaveTextContent('/login');
   });
 
-  // A paired Hub with no operator opens on this page, after any restart between pairing and the
-  // first sign-in. Whoever paired it already has a CI Account (#2059).
+  // A paired Hub opens on /login now (#2061). This page still offers the CI Account sign-in for the
+  // rare Hub that renders it, because whoever paired a Hub already has a CI Account (#2059).
   describe('CI Account sign-in', () => {
     it('opens CI Account sign-in in the system browser from the desktop app', async () => {
       mockIsTauriDesktopApp.mockReturnValue(true);
@@ -359,7 +359,7 @@ describe('RegisterPage', () => {
         await waitFor(() => expect(screen.getByRole('button', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).toBeEnabled());
       });
 
-      it('stops asking once Portal answers', async () => {
+      it('never starts asking when Portal answers on load', async () => {
         vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
         mockResolveHint.mockResolvedValue({ email: null, portalBaseUrl: null, source: null, portalReachable: true });
 
@@ -372,6 +372,62 @@ describe('RegisterPage', () => {
 
         expect(mockResolveHint).toHaveBeenCalledTimes(1);
       });
+
+      it('stops asking once a recheck finds Portal', async () => {
+        vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+        mockIsTauriDesktopApp.mockReturnValue(true);
+        mockResolveHint.mockResolvedValue({ email: null, portalBaseUrl: null, source: null, portalReachable: false });
+
+        render(<RegisterPage />);
+        await waitFor(() => expect(screen.getByRole('button', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).toBeDisabled());
+
+        mockResolveHint.mockResolvedValue({ email: null, portalBaseUrl: null, source: null, portalReachable: true });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(PORTAL_RECHECK_INTERVAL_MS);
+        });
+        await waitFor(() => expect(screen.getByRole('button', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).toBeEnabled());
+        expect(mockResolveHint).toHaveBeenCalledTimes(2);
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(PORTAL_RECHECK_INTERVAL_MS * 3);
+        });
+
+        expect(mockResolveHint).toHaveBeenCalledTimes(2);
+      });
+
+      it('skips its turn while the page is hidden', async () => {
+        vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+        mockResolveHint.mockResolvedValue({ email: null, portalBaseUrl: null, source: null, portalReachable: false });
+        const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+
+        try {
+          render(<RegisterPage />);
+          await waitFor(() => expect(mockResolveHint).toHaveBeenCalledTimes(1));
+
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(PORTAL_RECHECK_INTERVAL_MS * 3);
+          });
+
+          expect(mockResolveHint).toHaveBeenCalledTimes(1);
+        } finally {
+          visibility.mockRestore();
+        }
+      });
+    });
+
+    it('sends the person to sign-in when the backend refuses sign-up on a paired Hub', async () => {
+      window.history.replaceState({}, '', '/register?redirect_url=%2Fsettings');
+      mockUseMutation.mockImplementation((options) => {
+        mutate = vi.fn(() => options.onError?.({ message: 'AUTH_ERROR_REGISTER_PAIRED_HUB' })) as typeof mutate;
+        return { mutate, isPending: false };
+      });
+
+      render(<RegisterPage />);
+
+      await userEvent.click(screen.getByRole('button', { name: 'register form' }));
+
+      expect(mockToastError).toHaveBeenCalledWith('AUTH_ERROR_REGISTER_PAIRED_HUB');
+      expect(mockNavigate).toHaveBeenCalledWith('/login?redirect_url=%2Fsettings', { replace: true });
     });
 
     it('keeps the page a sign-up form on a phone that has not chosen a Hub, where Hub sign-in does not apply', () => {

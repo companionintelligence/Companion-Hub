@@ -1,6 +1,7 @@
 import { registerMutation } from '@/api-client/@tanstack/react-query.gen';
 import { userContext } from '@/api-client';
 import { markHubSessionIssuedAt } from '@/lib/api-fetch';
+import { firstOf, HUB_BOOTSTRAP_FETCH_MS } from '@/lib/hub-resume';
 import { resolveRegistrationStatus } from '@/lib/registration-cache';
 import { followSafeRedirect } from '@/lib/safe-redirect';
 import { useUserContext } from '@/context/user-context';
@@ -12,6 +13,10 @@ import { Navigate, redirect, useNavigate } from 'react-router';
 import { PortalSignInSection } from '../components/portal-sign-in-section';
 import { RegisterForm } from '../components/register-form';
 import { usePortalSignIn } from '../hooks/use-portal-sign-in';
+
+function loginHref(redirectUrl: string | null) {
+  return redirectUrl ? `/login?redirect_url=${encodeURIComponent(redirectUrl)}` : '/login';
+}
 
 export async function clientLoader({ request }: { request?: Request } = {}) {
   const user = await userContext();
@@ -27,10 +32,11 @@ export async function clientLoader({ request }: { request?: Request } = {}) {
   // ⚠ NO SIGN-UP ON A PAIRED HUB. The form below makes a new CI Account, which is in no
   // organization, so a paired Hub revoked it at its next check-in and that person was locked out
   // (#2061). The backend refuses it as well; this sends the person to the sign-in that works.
-  const status = await resolveRegistrationStatus();
+  // Time-boxed like the root loader's own read of it: a hung status call must not leave this page
+  // blank. With no answer the form renders. The backend still refuses it on a paired Hub.
+  const status = await firstOf(resolveRegistrationStatus(), null, HUB_BOOTSTRAP_FETCH_MS);
   if (status?.registered) {
-    const redirectUrl = request ? new URL(request.url).searchParams.get('redirect_url') : null;
-    return redirect(redirectUrl ? `/login?redirect_url=${encodeURIComponent(redirectUrl)}` : '/login');
+    return redirect(loginHref(request ? new URL(request.url).searchParams.get('redirect_url') : null));
   }
 
   return null;
@@ -41,9 +47,10 @@ export default () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const redirectUrl = new URLSearchParams(window.location.search).get('redirect_url');
-  // A paired Hub never renders this page (the loader sends it to /login, #2061), so this runs only
-  // when the registration status couldn't be read. Offer the CI Account sign-in here as well, so
-  // whoever lands here can still sign in rather than only make a second account (#2059).
+  // A paired Hub never renders this page once its status is read (the loader sends it to /login,
+  // #2061), so this runs for an unpaired Hub or when the status couldn't be read. Offer the CI
+  // Account sign-in here as well, so whoever lands here can still sign in rather than only make a
+  // second account (#2059).
   const { authPolicy, portalSsoHref, portalAccountEmail, portalReachable, switchAccount } = usePortalSignIn(redirectUrl);
 
   const register = useMutation({
@@ -63,6 +70,10 @@ export default () => {
     },
     onError: (e: TranslatableError) => {
       toast.error(t(e.message, e.intlParams));
+      // The loader could not tell this Hub was paired. The backend could, so go where the toast says.
+      if (e.message === 'AUTH_ERROR_REGISTER_PAIRED_HUB') {
+        navigate(loginHref(redirectUrl), { replace: true });
+      }
     },
   });
 
@@ -92,7 +103,7 @@ export default () => {
           />
         ) : null
       }
-      signInHref={redirectUrl ? `/login?redirect_url=${encodeURIComponent(redirectUrl)}` : '/login'}
+      signInHref={loginHref(redirectUrl)}
     />
   );
 };

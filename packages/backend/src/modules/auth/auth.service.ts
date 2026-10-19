@@ -154,24 +154,24 @@ export class AuthService {
     throw new TranslatableError('AUTH_ERROR_RATE_LIMITED', { retryAfter: String(retryAfter ?? 60) }, HttpStatus.TOO_MANY_REQUESTS);
   }
 
-  private async signInWithPortal(email: string, password: string) {
+  /**
+   * POST one of Portal's email auth routes. A Portal that never answered, or answered 5xx, is
+   * `PortalUnreachableError`: that is not credentials the person got wrong. A 429 is a wait.
+   */
+  private async postPortalEmailAuth<TBody>(path: string, payload: Record<string, string>) {
     const base = this.getPortalBaseUrl();
     const publicBase = this.getPublicPortalBaseUrl();
     const portalConfig = this.portalAxiosConfig();
     let response: AxiosResponse;
     try {
-      response = await axios.post(
-        `${base}/api/auth/sign-in/email`,
-        { email, password },
-        {
-          ...withPortalAxiosHeaders(portalConfig, {
-            'Content-Type': 'application/json',
-            Origin: publicBase,
-          }),
-          validateStatus: () => true,
-          timeout: 15_000,
-        },
-      );
+      response = await axios.post(`${base}${path}`, payload, {
+        ...withPortalAxiosHeaders(portalConfig, {
+          'Content-Type': 'application/json',
+          Origin: publicBase,
+        }),
+        validateStatus: () => true,
+        timeout: 15_000,
+      });
     } catch (error) {
       if (isPortalTransportFailure(error)) {
         throw new PortalUnreachableError(error);
@@ -179,10 +179,7 @@ export class AuthService {
       throw error;
     }
 
-    const body = (await Promise.resolve(response.data).catch(() => ({}))) as {
-      code?: string;
-      user?: { id?: string; email?: string; emailVerified?: boolean };
-    };
+    const body = ((await Promise.resolve(response.data).catch(() => ({}))) ?? {}) as TBody;
 
     this.throwIfPortalRateLimited(response);
 
@@ -190,7 +187,16 @@ export class AuthService {
       throw new PortalUnreachableError();
     }
 
-    if (response.status < 200 || response.status >= 300) {
+    return { status: response.status, body };
+  }
+
+  private async signInWithPortal(email: string, password: string) {
+    const { status, body } = await this.postPortalEmailAuth<{
+      code?: string;
+      user?: { id?: string; email?: string; emailVerified?: boolean };
+    }>('/api/auth/sign-in/email', { email, password });
+
+    if (status < 200 || status >= 300) {
       if (body.code === 'EMAIL_NOT_VERIFIED') {
         throw new TranslatableError('AUTH_ERROR_EMAIL_NOT_VERIFIED', {}, HttpStatus.BAD_REQUEST);
       }
@@ -206,45 +212,14 @@ export class AuthService {
   }
 
   private async signUpWithPortal(email: string, password: string, name: string) {
-    const base = this.getPortalBaseUrl();
-    const publicBase = this.getPublicPortalBaseUrl();
-    const portalConfig = this.portalAxiosConfig();
-    let response: AxiosResponse;
-    try {
-      response = await axios.post(
-        `${base}/api/auth/sign-up/email`,
-        { email, password, name },
-        {
-          ...withPortalAxiosHeaders(portalConfig, {
-            'Content-Type': 'application/json',
-            Origin: publicBase,
-          }),
-          validateStatus: () => true,
-          timeout: 15_000,
-        },
-      );
-    } catch (error) {
-      // Same as sign-in: a Portal that never answered is not a sign-up the person got wrong. Left
-      // uncaught it reached the form as a bare 500 (#2061).
-      if (isPortalTransportFailure(error)) {
-        throw new PortalUnreachableError(error);
-      }
-      throw error;
-    }
-
-    const body = (await Promise.resolve(response.data).catch(() => ({}))) as {
+    // A Portal that never answered used to reach the sign-up form as a bare 500 (#2061).
+    const { status, body } = await this.postPortalEmailAuth<{
       code?: string;
       token?: string | null;
       user?: { id?: string; email?: string };
-    };
+    }>('/api/auth/sign-up/email', { email, password, name });
 
-    this.throwIfPortalRateLimited(response);
-
-    if (response.status >= 500) {
-      throw new PortalUnreachableError();
-    }
-
-    if (response.status < 200 || response.status >= 300) {
+    if (status < 200 || status >= 300) {
       // Portal's Better Auth answers an address that already has an account with
       // `USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL`. Only the older `USER_ALREADY_EXISTS` was matched, so the
       // form said "Error creating user" to someone who only needed to sign in (#2061).
@@ -755,6 +730,15 @@ export class AuthService {
     try {
       portalIdentity = await this.signInWithPortal(email, password);
     } catch (error) {
+      if (error instanceof PortalUnreachableError) {
+        // A Hub with no admin yet has no cached password to fall back on. `/login` is its first-run
+        // page (#2061), so "email or password didn't match" here would blame correct credentials
+        // for a Portal outage.
+        const operators = await this.userRepository.getOperators();
+        if (operators.length === 0) {
+          throw new TranslatableError('AUTH_ERROR_FIRST_SIGN_IN_PORTAL_UNREACHABLE', {}, HttpStatus.SERVICE_UNAVAILABLE);
+        }
+      }
       if (error instanceof PortalUnreachableError || error instanceof ServiceUnavailableException) {
         return this.loginWithCachedPassword(email, password);
       }
@@ -866,7 +850,7 @@ export class AuthService {
     /*
      * ⚠ NO SIGN-UP ON A PAIRED HUB.
      *
-     * This creates a brand-new CI Account, and a brand-new account is in no organization. A Hub
+     * This creates a brand-new CI Account. A brand-new account is in no organization. A Hub
      * paired to one revokes, at its next check-in, every operator Portal doesn't put in that
      * organization (`reconcileOperatorMemberships`). So whoever signed up here was the admin for
      * about half a minute and then locked out for good (#2061). The first admin of a paired Hub is

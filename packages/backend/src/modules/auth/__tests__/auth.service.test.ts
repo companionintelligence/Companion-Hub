@@ -290,6 +290,7 @@ describe('AuthService', () => {
       configurationService.getConfig.mockReturnValue({ ciCloudUrl: 'https://hub.example.com' } as never);
       const unreachable = Object.assign(new Error('connect ECONNREFUSED'), { isAxiosError: true, code: 'ECONNREFUSED' });
       vi.mocked(axios.post).mockRejectedValue(unreachable);
+      userRepository.getOperators.mockResolvedValue([{ id: 4, username: 'test@example.com' }] as never);
       userRepository.getUserByUsername.mockResolvedValue({
         id: 4,
         username: 'test@example.com',
@@ -309,6 +310,7 @@ describe('AuthService', () => {
       const loginBody: LoginBody = { username: 'test@example.com', password: 'Password1!' };
       configurationService.getConfig.mockReturnValue({ ciCloudUrl: 'https://hub.example.com' } as never);
       vi.mocked(axios.post).mockResolvedValue({ status: 503, data: {} });
+      userRepository.getOperators.mockResolvedValue([{ id: 4, username: 'test@example.com' }] as never);
       userRepository.getUserByUsername.mockResolvedValue({
         id: 4,
         username: 'test@example.com',
@@ -319,6 +321,21 @@ describe('AuthService', () => {
 
       await expect(authService.login(loginBody)).rejects.toMatchObject({ message: 'AUTH_ERROR_INVALID_CREDENTIALS' });
       expect(passwordService.verify).not.toHaveBeenCalled();
+    });
+
+    // `/login` is a paired Hub's first-run page (#2061). With no admin yet there is no cached password,
+    // so a Portal outage must not read as wrong credentials.
+    it('answers 503, not "email or password didn\'t match", when Portal is unreachable on a Hub with no admin yet', async () => {
+      const loginBody: LoginBody = { username: 'owner@example.com', password: 'Password1!' };
+      configurationService.getConfig.mockReturnValue({ ciCloudUrl: 'https://hub.example.com' } as never);
+      vi.mocked(axios.post).mockRejectedValue(Object.assign(new Error('connect ECONNREFUSED'), { isAxiosError: true, code: 'ECONNREFUSED' }));
+
+      await expect(authService.login(loginBody)).rejects.toMatchObject({
+        message: 'AUTH_ERROR_FIRST_SIGN_IN_PORTAL_UNREACHABLE',
+        status: 503,
+      });
+      expect(userRepository.getUserByUsername).not.toHaveBeenCalled();
+      expect(sessionManager.createSession).not.toHaveBeenCalled();
     });
 
     it('does not fall back to the local hash when Portal rejects the password', async () => {

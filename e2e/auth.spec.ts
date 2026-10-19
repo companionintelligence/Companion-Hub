@@ -1,7 +1,7 @@
 import { testUser } from './helpers/constants';
 import { expect, test, createTestUser } from './fixtures/fixtures';
 
-// The fixtures pair the Hub, and a paired Hub's first admin signs in with a CI Account in its
+// The fixtures pair the Hub. A paired Hub's first admin signs in with a CI Account in its
 // organization. Signing up made an account in none, which the next check-in revoked (#2061).
 test('makes the first CI Account to sign in the admin', async ({ page }) => {
   await page.goto('/');

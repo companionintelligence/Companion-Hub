@@ -2753,9 +2753,9 @@ describe('AuthController', () => {
    * `cihub claim` — the headless way to create a Hub's first operator.
    *
    * The gap it closes: `cihub register` writes the device key and the organization id and stops. The
-   * `user` row was only ever written by an interactive Portal login, and `POST /api/auth/register`
-   * cannot finish unattended because Portal answers it with `requiresEmailVerification`. So a Hub
-   * installed over SSH came up paired, keyed, and unable to authenticate its own operator API.
+   * `user` row was only ever written by an interactive Portal login. `POST /api/auth/register`
+   * refuses on a paired Hub, since the CI Account it would make is in no organization (#2061). So a
+   * Hub installed over SSH came up paired and keyed but unable to authenticate its own operator API.
    *
    * These tests are about the three gates, because a claim route that is one gate short is a way in
    * rather than a way out: the host-local device key, a Hub that is actually paired, and no existing
