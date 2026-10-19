@@ -139,7 +139,7 @@ describe('root clientLoader registration gating', () => {
     expect(result.headers.get('Location')).toBe('/login');
   });
 
-  it('sends an unconfigured registered Hub to first-user registration', async () => {
+  it('sends a paired Hub with no admin yet to sign-in, not to sign-up (#2061)', async () => {
     resolveRegistrationStatus.mockResolvedValue(makeStatus('locally_ready', true));
     userContext.mockResolvedValue({
       data: {
@@ -152,7 +152,7 @@ describe('root clientLoader registration gating', () => {
     const result = (await clientLoader({ request: new Request('http://localhost/') } as never)) as Response;
 
     expect(result.status).toBe(302);
-    expect(result.headers.get('Location')).toBe('/register');
+    expect(result.headers.get('Location')).toBe('/login');
   });
 
   it('keeps a Mac / desktop client on the normal Hub path and never sends it to /connect', async () => {

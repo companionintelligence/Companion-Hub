@@ -399,9 +399,9 @@ export class AuthController {
    *
    * Until now the ONLY thing that could write that row was an interactive Portal login landing on
    * `/api/auth/portal/callback` — `cihub register` writes the device key and the organization id
-   * and stops there, and `POST /register` cannot finish headlessly because Portal answers it with
-   * `requiresEmailVerification`. So every headless appliance came up registered, keyed, and unable
-   * to authenticate its own operator API. That is the gap this closes.
+   * and stops there, and `POST /register` refuses on a paired Hub: the CI Account it would make is in
+   * no organization (#2061). So every headless appliance came up registered, keyed, and unable to
+   * authenticate its own operator API. That is the gap this closes.
    *
    * It is deliberately not a new way IN. Three things gate it, and each is already true of the
    * browser path it substitutes for:

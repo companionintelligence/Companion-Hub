@@ -1,6 +1,7 @@
 import en from '@ci-hub/common/i18n/translations/en.json';
-import { render, screen, userEvent, waitFor } from '@/tests/test-utils';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, userEvent, waitFor } from '@/tests/test-utils';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PORTAL_RECHECK_INTERVAL_MS } from '../hooks/use-portal-sign-in';
 import RegisterPage, { clientLoader } from './register-page';
 
 const {
@@ -47,8 +48,13 @@ const {
   mockMarkSessionIssuedAt: vi.fn(),
 }));
 
-const { mockUserContext } = vi.hoisted(() => ({
+const { mockUserContext, mockResolveRegistrationStatus } = vi.hoisted(() => ({
   mockUserContext: vi.fn(),
+  mockResolveRegistrationStatus: vi.fn(async (): Promise<{ phase: string; registered: boolean; degradedReasons: string[] } | null> => null),
+}));
+
+vi.mock('@/lib/registration-cache', () => ({
+  resolveRegistrationStatus: () => mockResolveRegistrationStatus(),
 }));
 
 const { mockIsTauriDesktopApp, mockIsMobile, mockHubUrl, mockResolveHint, mockForgetPortalAccountEmail, mockOpenAuthSession, mockClientGetConfig } =
@@ -148,10 +154,38 @@ describe('RegisterPage clientLoader', () => {
     vi.clearAllMocks();
   });
 
-  it('renders first-user registration when the Hub has no operator', async () => {
+  it('renders first-user registration when the Hub has no operator and is not paired', async () => {
     mockUserContext.mockResolvedValue({ data: { isConfigured: false, isLoggedIn: false } });
+    mockResolveRegistrationStatus.mockResolvedValue({ phase: 'unregistered', registered: false, degradedReasons: [] });
 
     await expect(clientLoader()).resolves.toBeNull();
+  });
+
+  it('renders it when the registration status cannot be read, as before', async () => {
+    mockUserContext.mockResolvedValue({ data: { isConfigured: false, isLoggedIn: false } });
+    mockResolveRegistrationStatus.mockResolvedValue(null);
+
+    await expect(clientLoader()).resolves.toBeNull();
+  });
+
+  // #2061: a paired Hub revoked the CI Account this form made, at its next check-in.
+  it('sends a paired Hub with no admin yet to sign-in instead', async () => {
+    mockUserContext.mockResolvedValue({ data: { isConfigured: false, isLoggedIn: false } });
+    mockResolveRegistrationStatus.mockResolvedValue({ phase: 'publicly_ready', registered: true, degradedReasons: [] });
+
+    const result = (await clientLoader({ request: new Request('http://localhost/register') })) as Response;
+
+    expect(result.status).toBe(302);
+    expect(result.headers.get('Location')).toBe('/login');
+  });
+
+  it('keeps redirect_url on the way to sign-in', async () => {
+    mockUserContext.mockResolvedValue({ data: { isConfigured: false, isLoggedIn: false } });
+    mockResolveRegistrationStatus.mockResolvedValue({ phase: 'locally_ready', registered: true, degradedReasons: [] });
+
+    const result = (await clientLoader({ request: new Request('http://localhost/register?redirect_url=%2Fstore') })) as Response;
+
+    expect(result.headers.get('Location')).toBe('/login?redirect_url=%2Fstore');
   });
 
   it('redirects configured logged-out Hubs to login', async () => {
@@ -229,8 +263,8 @@ describe('RegisterPage', () => {
     expect(screen.getByTestId('navigate')).toHaveTextContent('/login');
   });
 
-  // A paired Hub with no operator opens on this page, after any restart between pairing and the
-  // first sign-in. Whoever paired it already has a CI Account (#2059).
+  // A paired Hub opens on /login now (#2061). This page still offers the CI Account sign-in for the
+  // rare Hub that renders it, because whoever paired a Hub already has a CI Account (#2059).
   describe('CI Account sign-in', () => {
     it('opens CI Account sign-in in the system browser from the desktop app', async () => {
       mockIsTauriDesktopApp.mockReturnValue(true);
@@ -286,6 +320,114 @@ describe('RegisterPage', () => {
       // sign-up form here needs Portal as well.
       expect(screen.getByText('AUTH_REGISTER_PORTAL_UNREACHABLE')).toBeInTheDocument();
       expect(screen.queryByText('AUTH_LOGIN_COMPANION_ACCOUNT_NEEDS_INTERNET')).not.toBeInTheDocument();
+    });
+
+    // #2061: the answer was read once, so a page opened before Portal was reachable kept the button
+    // off until a reload.
+    describe('when Portal comes back', () => {
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('turns the button on at the next recheck', async () => {
+        vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+        mockIsTauriDesktopApp.mockReturnValue(true);
+        mockResolveHint.mockResolvedValue({ email: null, portalBaseUrl: null, source: null, portalReachable: false });
+
+        render(<RegisterPage />);
+        await waitFor(() => expect(screen.getByRole('button', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).toBeDisabled());
+
+        mockResolveHint.mockResolvedValue({ email: null, portalBaseUrl: null, source: null, portalReachable: true });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(PORTAL_RECHECK_INTERVAL_MS);
+        });
+
+        await waitFor(() => expect(screen.getByRole('button', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).toBeEnabled());
+        expect(screen.getByText('AUTH_LOGIN_COMPANION_ACCOUNT_HINT')).toBeInTheDocument();
+      });
+
+      it('turns the button on when the browser comes back online', async () => {
+        mockIsTauriDesktopApp.mockReturnValue(true);
+        mockResolveHint.mockResolvedValue({ email: null, portalBaseUrl: null, source: null, portalReachable: false });
+
+        render(<RegisterPage />);
+        await waitFor(() => expect(screen.getByRole('button', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).toBeDisabled());
+
+        mockResolveHint.mockResolvedValue({ email: null, portalBaseUrl: null, source: null, portalReachable: true });
+        fireEvent(window, new Event('online'));
+
+        await waitFor(() => expect(screen.getByRole('button', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).toBeEnabled());
+      });
+
+      it('never starts asking when Portal answers on load', async () => {
+        vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+        mockResolveHint.mockResolvedValue({ email: null, portalBaseUrl: null, source: null, portalReachable: true });
+
+        render(<RegisterPage />);
+        await waitFor(() => expect(mockResolveHint).toHaveBeenCalledTimes(1));
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(PORTAL_RECHECK_INTERVAL_MS * 3);
+        });
+
+        expect(mockResolveHint).toHaveBeenCalledTimes(1);
+      });
+
+      it('stops asking once a recheck finds Portal', async () => {
+        vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+        mockIsTauriDesktopApp.mockReturnValue(true);
+        mockResolveHint.mockResolvedValue({ email: null, portalBaseUrl: null, source: null, portalReachable: false });
+
+        render(<RegisterPage />);
+        await waitFor(() => expect(screen.getByRole('button', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).toBeDisabled());
+
+        mockResolveHint.mockResolvedValue({ email: null, portalBaseUrl: null, source: null, portalReachable: true });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(PORTAL_RECHECK_INTERVAL_MS);
+        });
+        await waitFor(() => expect(screen.getByRole('button', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).toBeEnabled());
+        expect(mockResolveHint).toHaveBeenCalledTimes(2);
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(PORTAL_RECHECK_INTERVAL_MS * 3);
+        });
+
+        expect(mockResolveHint).toHaveBeenCalledTimes(2);
+      });
+
+      it('skips its turn while the page is hidden', async () => {
+        vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+        mockResolveHint.mockResolvedValue({ email: null, portalBaseUrl: null, source: null, portalReachable: false });
+        const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+
+        try {
+          render(<RegisterPage />);
+          await waitFor(() => expect(mockResolveHint).toHaveBeenCalledTimes(1));
+
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(PORTAL_RECHECK_INTERVAL_MS * 3);
+          });
+
+          expect(mockResolveHint).toHaveBeenCalledTimes(1);
+        } finally {
+          visibility.mockRestore();
+        }
+      });
+    });
+
+    it('sends the person to sign-in when the backend refuses sign-up on a paired Hub', async () => {
+      window.history.replaceState({}, '', '/register?redirect_url=%2Fsettings');
+      mockUseMutation.mockImplementation((options) => {
+        mutate = vi.fn(() => options.onError?.({ message: 'AUTH_ERROR_REGISTER_PAIRED_HUB' })) as typeof mutate;
+        return { mutate, isPending: false };
+      });
+
+      render(<RegisterPage />);
+
+      await userEvent.click(screen.getByRole('button', { name: 'register form' }));
+
+      expect(mockToastError).toHaveBeenCalledWith('AUTH_ERROR_REGISTER_PAIRED_HUB');
+      expect(mockNavigate).toHaveBeenCalledWith('/login?redirect_url=%2Fsettings', { replace: true });
     });
 
     it('keeps the page a sign-up form on a phone that has not chosen a Hub, where Hub sign-in does not apply', () => {

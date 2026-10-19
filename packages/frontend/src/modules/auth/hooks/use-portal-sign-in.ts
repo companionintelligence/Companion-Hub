@@ -8,12 +8,15 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { openPortalSignInOutsideApp } from '../helpers/open-portal-sign-in';
 
+/** How often the page asks again while Portal looks unreachable. Only then: a reachable answer stops it. */
+export const PORTAL_RECHECK_INTERVAL_MS = 10_000;
+
 /**
  * What the CI Account button needs: where its sign-in starts, whether this Hub can reach Portal
  * and which Portal account it is likely to sign in as.
  *
- * `/login` and `/register` both offer it. A paired Hub with no operator yet opens on `/register`.
- * Whoever paired it already has a CI Account, so that page needs the same way in (#2059).
+ * `/login` offers it. So does `/register`, for the rare Hub that still renders that page. A paired
+ * Hub with no operator yet opens on `/login` (#2061).
  */
 export function usePortalSignIn(redirectUrl: string | null) {
   const { t } = useTranslation();
@@ -37,6 +40,50 @@ export function usePortalSignIn(redirectUrl: string | null) {
       cancelled = true;
     };
   }, []);
+
+  /*
+   * Keep asking while Portal looks unreachable. The answer used to be read once, on load, so a Hub
+   * opened before its network was up kept the CI Account button off until the page was reloaded,
+   * even with Portal back (#2061). Checked again on a timer and when the browser says it is online.
+   * Each check makes the Hub ask Portal twice, so a hidden page skips its turn and a check still in
+   * flight is not doubled up.
+   */
+  useEffect(() => {
+    if (portalReachable) {
+      return;
+    }
+    let cancelled = false;
+    let inFlight = false;
+
+    const recheck = async () => {
+      if (inFlight || document.visibilityState === 'hidden') {
+        return;
+      }
+      inFlight = true;
+      try {
+        const hint = await resolvePortalSessionHint();
+        if (cancelled || !hint.portalReachable) {
+          return;
+        }
+        setPortalReachable(true);
+        if (hint.email) {
+          setPortalAccountEmail(hint.email);
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const timer = setInterval(() => void recheck(), PORTAL_RECHECK_INTERVAL_MS);
+    const onOnline = () => void recheck();
+    window.addEventListener('online', onOnline);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      window.removeEventListener('online', onOnline);
+    };
+  }, [portalReachable]);
 
   const isMobile = isMobileClient();
   const remoteHubUrl = getHubBaseUrlSync();

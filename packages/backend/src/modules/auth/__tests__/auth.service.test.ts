@@ -290,6 +290,7 @@ describe('AuthService', () => {
       configurationService.getConfig.mockReturnValue({ ciCloudUrl: 'https://hub.example.com' } as never);
       const unreachable = Object.assign(new Error('connect ECONNREFUSED'), { isAxiosError: true, code: 'ECONNREFUSED' });
       vi.mocked(axios.post).mockRejectedValue(unreachable);
+      userRepository.getOperators.mockResolvedValue([{ id: 4, username: 'test@example.com' }] as never);
       userRepository.getUserByUsername.mockResolvedValue({
         id: 4,
         username: 'test@example.com',
@@ -309,6 +310,7 @@ describe('AuthService', () => {
       const loginBody: LoginBody = { username: 'test@example.com', password: 'Password1!' };
       configurationService.getConfig.mockReturnValue({ ciCloudUrl: 'https://hub.example.com' } as never);
       vi.mocked(axios.post).mockResolvedValue({ status: 503, data: {} });
+      userRepository.getOperators.mockResolvedValue([{ id: 4, username: 'test@example.com' }] as never);
       userRepository.getUserByUsername.mockResolvedValue({
         id: 4,
         username: 'test@example.com',
@@ -319,6 +321,21 @@ describe('AuthService', () => {
 
       await expect(authService.login(loginBody)).rejects.toMatchObject({ message: 'AUTH_ERROR_INVALID_CREDENTIALS' });
       expect(passwordService.verify).not.toHaveBeenCalled();
+    });
+
+    // `/login` is a paired Hub's first-run page (#2061). With no admin yet there is no cached password,
+    // so a Portal outage must not read as wrong credentials.
+    it('answers 503, not "email or password didn\'t match", when Portal is unreachable on a Hub with no admin yet', async () => {
+      const loginBody: LoginBody = { username: 'owner@example.com', password: 'Password1!' };
+      configurationService.getConfig.mockReturnValue({ ciCloudUrl: 'https://hub.example.com' } as never);
+      vi.mocked(axios.post).mockRejectedValue(Object.assign(new Error('connect ECONNREFUSED'), { isAxiosError: true, code: 'ECONNREFUSED' }));
+
+      await expect(authService.login(loginBody)).rejects.toMatchObject({
+        message: 'AUTH_ERROR_FIRST_SIGN_IN_PORTAL_UNREACHABLE',
+        status: 503,
+      });
+      expect(userRepository.getUserByUsername).not.toHaveBeenCalled();
+      expect(sessionManager.createSession).not.toHaveBeenCalled();
     });
 
     it('does not fall back to the local hash when Portal rejects the password', async () => {
@@ -1073,9 +1090,9 @@ describe('AuthService', () => {
     });
 
     it('creates no local operator when Portal requires email verification', async () => {
-      // Today's Portal has `requireEmailVerification` on, so sign-up returns no
-      // session token. Nothing is provisioned here; the operator is linked on
-      // their first login instead.
+      // A Portal with `requireEmailVerification` on returns no session token on
+      // sign-up. Nothing is provisioned here; the operator is linked on their
+      // first login instead. CI-Portal turned it off on 2026-10-08.
       vi.mocked(axios.post).mockResolvedValue({ status: 200, data: { token: null } });
 
       await expect(authService.register({ username: 'owner@example.com', password: 'Password1!' } as never)).resolves.toEqual({
@@ -1095,6 +1112,49 @@ describe('AuthService', () => {
       });
       expect(federatedIdentityRepository.create).not.toHaveBeenCalled();
       expect(sessionManager.createSession).toHaveBeenCalledWith(11);
+    });
+
+    // #2061: on a paired Hub this made a brand-new CI Account in no organization, the admin for about
+    // half a minute, until the check-in sweep revoked it for not being in the Hub's organization.
+    it('refuses on a paired Hub, before Portal is asked to create anything', async () => {
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+
+      await expect(authService.register({ username: 'new@example.com', password: 'Password1!' } as never)).rejects.toMatchObject({
+        message: 'AUTH_ERROR_REGISTER_PAIRED_HUB',
+        status: 403,
+      });
+      expect(axios.post).not.toHaveBeenCalled();
+      expect(userRepository.createFirstOperator).not.toHaveBeenCalled();
+    });
+
+    it('says the account already exists when Portal answers with the code Better Auth sends today', async () => {
+      vi.mocked(axios.post).mockResolvedValue({
+        status: 422,
+        data: { message: 'User already exists. Use another email.', code: 'USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL' },
+      });
+
+      await expect(authService.register({ username: 'owner@example.com', password: 'Password1!' } as never)).rejects.toMatchObject({
+        message: 'AUTH_ERROR_USER_ALREADY_EXISTS',
+      });
+    });
+
+    it('answers 503, not a bare 500, when Portal cannot be reached', async () => {
+      vi.mocked(axios.post).mockRejectedValue(Object.assign(new Error('connect ECONNREFUSED'), { isAxiosError: true, code: 'ECONNREFUSED' }));
+
+      await expect(authService.register({ username: 'owner@example.com', password: 'Password1!' } as never)).rejects.toMatchObject({
+        message: 'AUTH_ERROR_PORTAL_UNREACHABLE',
+        status: 503,
+      });
+      expect(userRepository.createFirstOperator).not.toHaveBeenCalled();
+    });
+
+    it('answers 503 when Portal answers 5xx', async () => {
+      vi.mocked(axios.post).mockResolvedValue({ status: 502, data: {} });
+
+      await expect(authService.register({ username: 'owner@example.com', password: 'Password1!' } as never)).rejects.toMatchObject({
+        message: 'AUTH_ERROR_PORTAL_UNREACHABLE',
+        status: 503,
+      });
     });
   });
 });
