@@ -591,6 +591,7 @@
   "AUTH_PORTAL_ERROR_ORG_CHECK_UNAVAILABLE": "Could not reach CI Portal to confirm your organization membership. This is a connection problem, not your account — please try again in a moment.",
   "AUTH_REGISTER_NOTE": "Note: this is a local administrator account, separate from your CI Account.",
   "AUTH_REGISTER_NOTE_2": "If you want to sign in with your CI Account, use the same email address here as you use for Hub sign-in.",
+  "AUTH_REGISTER_SIGN_IN_INSTEAD": "Already have a CI Account? Sign in",
   "AUTH_REGISTER_SUBMIT": "Create Local Admin User",
   "AUTH_REGISTER_TITLE": "Create local admin user for this device",
   "AUTH_REGISTER_VERIFY_EMAIL": "Check your email to verify your CI Account, then sign in.",

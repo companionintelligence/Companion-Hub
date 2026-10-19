@@ -1,17 +1,11 @@
 import { userContext } from '@/api-client';
 import { loginMutation, verifyTotpMutation } from '@/api-client/@tanstack/react-query.gen';
-import { client } from '@/api-client/client.gen';
 import { markHubSessionIssuedAt, setTauriSessionId } from '@/lib/api-fetch';
 import { portalErrorTranslationKey } from '@/lib/portal-auth-errors';
 import { SIGNED_OUT_PARAM, signedOutTranslationKey } from '@/lib/signed-out-reasons';
-import { forgetPortalAccountEmail, resolvePortalSessionHint } from '@/lib/portal-session-hint';
-import { hubAuthFlowPolicy, resolveHubAuthFlow } from '@/lib/hub-auth-flow';
-import { isTauriDesktopApp } from '@/lib/hub-runtime-mode';
-import { clearHubConnection, getHubBaseUrlSync, isMobileClient, usesCloudConnect } from '@/lib/mobile-connection';
+import { clearHubConnection } from '@/lib/mobile-connection';
 import { shouldTimeBoxMobileLoads } from '@/lib/use-mobile-load-timeout';
-import { buildPortalSsoStartUrl } from '@/lib/portal-sso-url';
 import { followSafeRedirect } from '@/lib/safe-redirect';
-import { AuthSessionCancelledError, openAuthSession } from '@/lib/helpers/open-auth-browser';
 import { useUserContext } from '@/context/user-context';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation } from '@tanstack/react-query';
@@ -21,6 +15,7 @@ import { useTranslation } from 'react-i18next';
 import { Navigate, redirect, useNavigate, useSearchParams } from 'react-router';
 import { LoginForm } from '../components/login-form';
 import { TotpForm } from '../components/totp-form/totp-form';
+import { usePortalSignIn } from '../hooks/use-portal-sign-in';
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
@@ -71,8 +66,6 @@ export async function clientLoader({ request }: { request: Request }) {
 export default () => {
   const { isLoggedIn, refreshUserContext, setUserContext } = useUserContext();
   const [totpSessionId, setTotpSessionId] = useState<string | null>(null);
-  const [portalAccountEmail, setPortalAccountEmail] = useState<string | null>(null);
-  const [portalReachable, setPortalReachable] = useState(true);
 
   const [searchParams, setSearchParams] = useSearchParams();
   const redirect_url = searchParams.get('redirect_url');
@@ -82,6 +75,7 @@ export default () => {
 
   const { t } = useTranslation();
   const loginType = capitalize(app ?? '') || t('AUTH_LOGIN_LOCAL_ADMIN_ACCOUNT');
+  const { authPolicy, isMobile, portalSsoHref, portalAccountEmail, portalReachable, switchAccount } = usePortalSignIn(redirect_url);
 
   useEffect(() => {
     if (!portalError) return;
@@ -115,34 +109,7 @@ export default () => {
     );
   }, [signedOutReason, setSearchParams, t]);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    void (async () => {
-      const hint = await resolvePortalSessionHint();
-      if (!cancelled) {
-        setPortalReachable(hint.portalReachable);
-        if (hint.email) {
-          setPortalAccountEmail(hint.email);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   const navigate = useNavigate();
-  const isMobile = isMobileClient();
-  const remoteHubUrl = getHubBaseUrlSync();
-  const isTauriDesktop = isTauriDesktopApp();
-  const authFlow = resolveHubAuthFlow({
-    usesCloudConnect: usesCloudConnect(),
-    remoteHubUrl,
-    isTauriDesktop,
-  });
-  const authPolicy = hubAuthFlowPolicy(authFlow);
 
   const login = useMutation({
     ...loginMutation(),
@@ -213,17 +180,6 @@ export default () => {
     );
   }
 
-  const portalSsoHref = authPolicy.usesHubPortalSso
-    ? buildPortalSsoStartUrl({
-        remoteHubUrl,
-        isTauriDesktop,
-        isMobileClient: isMobile,
-        configuredApiBaseUrl: client.getConfig().baseUrl,
-        pageOrigin: window.location.origin,
-        redirectUrl: redirect_url,
-      })
-    : undefined;
-
   return (
     <>
       <LoginForm
@@ -235,26 +191,7 @@ export default () => {
         portalReachable={portalReachable}
         openPortalSsoExternally={authPolicy.openHubSsoInSystemBrowser}
         allowPasswordLogin={!isMobile}
-        onSwitchAccount={() => {
-          forgetPortalAccountEmail();
-          setPortalAccountEmail(null);
-          if (portalSsoHref) {
-            if (authPolicy.openHubSsoInSystemBrowser) {
-              // Same reasoning as the sign-in button in login-form: the opener
-              // rejects on an ACL/plugin failure, and swallowing that leaves a
-              // switcher that looks clicked and does nothing.
-              openAuthSession(portalSsoHref).catch((error: unknown) => {
-                if (error instanceof AuthSessionCancelledError) {
-                  return;
-                }
-                console.error('login: the system opener refused the SSO URL', error);
-                toast.error(t('COMMON_AN_ERROR_OCCURRED'));
-              });
-              return;
-            }
-            window.location.assign(portalSsoHref);
-          }
-        }}
+        onSwitchAccount={switchAccount}
       />
       {authPolicy.showSwitchHub ? (
         <button

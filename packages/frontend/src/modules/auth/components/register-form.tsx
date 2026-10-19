@@ -6,16 +6,21 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import type React from 'react';
 import { useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
+import { Link } from 'react-router';
 import { z } from 'zod';
 
 interface IProps {
   onSubmit: (values: FormValues) => void;
   loading: boolean;
+  /** The CI Account sign-in, offered above the form for people who already have an account. */
+  portalSignIn?: React.ReactNode;
+  /** Where "Already have a CI Account? Sign in" goes. No link without it. */
+  signInHref?: string;
 }
 
 type FormValues = { email: string; password: string; passwordConfirm: string };
 
-export const RegisterForm: React.FC<IProps> = ({ onSubmit, loading }) => {
+export const RegisterForm: React.FC<IProps> = ({ onSubmit, loading, portalSignIn, signInHref }) => {
   const { t } = useTranslation();
   const schema = z
     .object({
@@ -44,6 +49,7 @@ export const RegisterForm: React.FC<IProps> = ({ onSubmit, loading }) => {
     <>
       <div className="mb-4 text-center">
         <h2 className="text-xl font-semibold">{t('AUTH_REGISTER_TITLE')}</h2>
+        {portalSignIn ? <div className="mt-4">{portalSignIn}</div> : null}
         <p className="mt-2 text-sm text-muted-foreground">{t('AUTH_REGISTER_NOTE')}</p>
         <p className="mt-2 text-sm text-muted-foreground font-bold">{t('AUTH_REGISTER_NOTE_2')}</p>
       </div>
@@ -79,6 +85,11 @@ export const RegisterForm: React.FC<IProps> = ({ onSubmit, loading }) => {
             {t('AUTH_REGISTER_SUBMIT')}
           </Button>
         </div>
+        {signInHref ? (
+          <div className="text-sm text-muted-foreground text-center mt-3">
+            <Link to={signInHref}>{t('AUTH_REGISTER_SIGN_IN_INSTEAD')}</Link>
+          </div>
+        ) : null}
       </form>
     </>
   );
