@@ -20,11 +20,12 @@ on:
           - dev
           - production
       platforms:
-        description: 'Platforms to build'
+        description: 'Platforms to build. Default linux-windows skips macOS. Choose all or macos-only to build macOS. Unchecking prerelease (a real release) also builds macOS.'
         required: false
-        default: 'all'
+        default: 'linux-windows'
         type: choice
         options:
+          - linux-windows
           - all
           - macos-only
 concurrency:
@@ -97,7 +98,10 @@ jobs:
       # AZURE_SUBSCRIPTION_ID, AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT,
       # AZURE_CERTIFICATE_PROFILE. OIDC subject: environment:production.
       WINDOWS_SIGNING_CONFIGURED: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_SUBSCRIPTION_ID != '' && secrets.AZURE_SIGNING_ENDPOINT != '' && secrets.AZURE_SIGNING_ACCOUNT != '' && secrets.AZURE_CERTIFICATE_PROFILE != '' && 'true' || '' }}
-      BUILD_ENABLED: ${{ (inputs.platforms == 'all' || startsWith(matrix.label, 'macOS')) && 'true' || '' }}
+      # macOS legs build only for platforms=all or macos-only, or on a real release (prerelease
+      # unchecked). Other legs build for platforms=all or linux-windows. The gate stays in steps:
+      # a job-level if cannot read matrix, so a disabled leg still starts a runner and skips all steps.
+      BUILD_ENABLED: ${{ (inputs.platforms == 'all' || (startsWith(matrix.label, 'macOS') && (inputs.platforms == 'macos-only' || !inputs.prerelease)) || (!startsWith(matrix.label, 'macOS') && inputs.platforms == 'linux-windows')) && 'true' || '' }}
     steps:
       - name: Checkout
         if: env.BUILD_ENABLED
