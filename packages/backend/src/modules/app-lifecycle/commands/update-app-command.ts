@@ -71,6 +71,25 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       logger.info(`Pulling images for ${appUrn} before stopping the current version`);
       await dockerService.pullImages(this.imagesToPull(composeToInstall.content), { forcePull: true });
 
+      // ⚠ LOOK BEFORE STOPPING FOR A BACKUP. A database's files belong to the user its container ran as,
+      // and a Hub running as a plain user on native Linux cannot read them, so the backup's copy stops
+      // at the first one: found only after the app was stopped, that is downtime for nothing. The
+      // rollback snapshot below, unlike the backup, can be taken by a privileged helper, so the way out
+      // is to update without the backup.
+      if (this.performBackup) {
+        const filesystem = this.moduleRef.get(FilesystemService, { strict: false });
+        const { appDataDir } = appFilesManager.getAppPaths(appUrn);
+        const unreadable = (await filesystem?.findUnreadable(appDataDir)) ?? [];
+
+        if (unreadable.length > 0) {
+          throw new Error(
+            `Cannot back up ${appUrn} before updating it: the Hub cannot read ${unreadable.slice(0, 3).join(', ')} ` +
+              `(created by the app's own container under another user). Nothing was stopped. ` +
+              `Update with "back up first" turned off: the Hub still takes a rollback snapshot of the data, as root.`,
+          );
+        }
+      }
+
       if (this.performBackup) {
         stoppedForBackup = true;
         await dockerService.composeApp(appUrn, 'stop');
@@ -235,9 +254,16 @@ export class UpdateAppCommand extends AppLifecycleCommand {
 
       // `removeDirectory` and `copyDirectory` report failure (ENOSPC, EACCES) by returning false, not by throwing.
       if (filesystem && snapshot.snapshotPath && (await filesystem.pathExists(snapshot.snapshotPath))) {
-        const removed = await filesystem.removeDirectory(appDataDir);
-        const copied = await filesystem.copyDirectory(snapshot.snapshotPath, appDataDir);
-        ok = ok && removed !== false && copied !== false;
+        if (snapshot.dataSnapshotCopiedAsRoot) {
+          // The copy keeps the owners of the original (a database's files), so the Hub could neither
+          // read it nor write it back; the helper empties the data folder and copies the snapshot over it.
+          const dockerService = this.moduleRef.get(DockerService, { strict: false });
+          ok = ok && (await dockerService.restoreAppDataDirAsRoot(appUrn, snapshot.snapshotId));
+        } else {
+          const removed = await filesystem.removeDirectory(appDataDir);
+          const copied = await filesystem.copyDirectory(snapshot.snapshotPath, appDataDir);
+          ok = ok && removed !== false && copied !== false;
+        }
       }
 
       if (filesystem && snapshot.appFilesSnapshotPath && (await filesystem.pathExists(snapshot.appFilesSnapshotPath))) {
@@ -367,6 +393,11 @@ export class UpdateAppCommand extends AppLifecycleCommand {
     const filesystem = this.moduleRef.get(FilesystemService, { strict: false });
 
     try {
+      if (snapshotResult.dataSnapshotCopiedAsRoot) {
+        // Its data copy belongs to other users and the Hub cannot delete it: a helper empties it first.
+        const dockerService = this.moduleRef.get(DockerService, { strict: false });
+        await dockerService.removeSnapshotDirAsRoot(snapshotResult.appUrn, snapshotResult.snapshotId);
+      }
       await filesystem?.removeDirectory(snapshotResult.snapshotBaseDir);
     } catch (err) {
       logger.warn(`Could not remove the pre-update snapshot ${snapshotResult.snapshotBaseDir}: ${err}`);

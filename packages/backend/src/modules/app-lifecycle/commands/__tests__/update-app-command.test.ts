@@ -377,6 +377,107 @@ describe('UpdateAppCommand', () => {
     });
   });
 
+  // On a native-Linux Hub (it runs as the host user, not root) a database's files belong to the user its
+  // container ran as. The Hub cannot read them for a backup, but a privileged helper can copy them for
+  // the rollback snapshot.
+  describe('an app whose data the Hub cannot read (a database owned by another user)', () => {
+    const unreadable = '/data/app-data/test-app/mysql/ibdata1';
+
+    it('refuses the backup BEFORE it stops anything, and says to update without it', async () => {
+      filesystem.findUnreadable.mockResolvedValue([unreadable]);
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: false, rolledBack: true });
+      expect(result.message).toContain(unreadable);
+      expect(result.message).toContain('Nothing was stopped');
+      expect(result.message).toContain('back up first');
+      expect(dockerService.composeApp).not.toHaveBeenCalled();
+      expect(backupManager.backupApp).not.toHaveBeenCalled();
+      expect(dockerService.createPreUpdateVolumeSnapshot).not.toHaveBeenCalled();
+      expect(marketplaceService.copyAppFromRepoToInstalled).not.toHaveBeenCalled();
+    });
+
+    it('does not look at all when no backup was asked for, since the snapshot can be taken by a helper', async () => {
+      command = new UpdateAppCommand(moduleRef, docker, false);
+      (command as any).assertMarketplaceEntitlement = vi.fn().mockResolvedValue(undefined);
+      (command as any).ensureAppDir = vi.fn().mockResolvedValue(undefined);
+      filesystem.findUnreadable.mockResolvedValue([unreadable]);
+
+      const result = await command.execute(appUrn, {});
+
+      expect(filesystem.findUnreadable).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ success: true });
+      expect(dockerService.createPreUpdateVolumeSnapshot).toHaveBeenCalledWith(appUrn, { includeData: true });
+    });
+
+    describe('with a data snapshot a privileged helper copied', () => {
+      beforeEach(() => {
+        command = new UpdateAppCommand(moduleRef, docker, false);
+        (command as any).assertMarketplaceEntitlement = vi.fn().mockResolvedValue(undefined);
+        (command as any).ensureAppDir = vi.fn().mockResolvedValue(undefined);
+        filesystem.pathExists.mockResolvedValue(true);
+        dockerService.createPreUpdateVolumeSnapshot.mockResolvedValue({
+          appUrn,
+          snapshotId: 'pre-update-test-app-1',
+          timestamp: new Date().toISOString(),
+          snapshotBaseDir: '/data/backups/.pre-update-snapshots/store/test-app/pre-update-test-app-1',
+          snapshotPath: '/data/backups/.pre-update-snapshots/store/test-app/pre-update-test-app-1/app-data',
+          appFilesSnapshotPath: '/data/backups/.pre-update-snapshots/store/test-app/pre-update-test-app-1/app-files',
+          dataSnapshotCopiedAsRoot: true,
+          volumes: [],
+          success: true,
+        });
+        dockerService.restoreAppDataDirAsRoot.mockResolvedValue(true);
+        dockerService.removeSnapshotDirAsRoot.mockResolvedValue(true);
+      });
+
+      it('puts the data back with the helper, not the Hub, when the new version fails its health probe', async () => {
+        dockerService.verifyContainerHealthProbe.mockResolvedValue({
+          ok: false,
+          healthy: false,
+          containers: [],
+          message: 'Container db is restarting',
+        });
+
+        const result = await command.execute(appUrn, {});
+
+        expect(result.success).toBe(false);
+        expect(dockerService.restoreAppDataDirAsRoot).toHaveBeenCalledWith(appUrn, 'pre-update-test-app-1');
+        // The Hub itself could neither empty nor write a database's files.
+        expect(filesystem.copyDirectory).not.toHaveBeenCalledWith(expect.stringContaining('/app-data'), '/data/app-data/test-app');
+      });
+
+      it('does not report a rollback that restored nothing when the helper fails', async () => {
+        dockerService.verifyContainerHealthProbe.mockResolvedValue({
+          ok: false,
+          healthy: false,
+          containers: [],
+          message: 'Container db is restarting',
+        });
+        dockerService.restoreAppDataDirAsRoot.mockResolvedValue(false);
+
+        const result = await command.execute(appUrn, {});
+
+        expect(result.success).toBe(false);
+        expect(result.rolledBack).not.toBe(true);
+        // The snapshot is the only remaining copy: it is kept.
+        expect(dockerService.removeSnapshotDirAsRoot).not.toHaveBeenCalled();
+      });
+
+      it('empties the root-owned snapshot with the helper before removing it once the update has succeeded', async () => {
+        const result = await command.execute(appUrn, {});
+
+        expect(result).toMatchObject({ success: true });
+        expect(dockerService.removeSnapshotDirAsRoot).toHaveBeenCalledWith(appUrn, 'pre-update-test-app-1');
+        expect(dockerService.removeSnapshotDirAsRoot.mock.invocationCallOrder[0]).toBeLessThan(
+          filesystem.removeDirectory.mock.invocationCallOrder.at(-1) as number,
+        );
+        expect(filesystem.removeDirectory).toHaveBeenCalledWith('/data/backups/.pre-update-snapshots/store/test-app/pre-update-test-app-1');
+      });
+    });
+  });
+
   describe('a snapshot that could not be taken', () => {
     beforeEach(() => {
       dockerService.createPreUpdateVolumeSnapshot.mockResolvedValue({

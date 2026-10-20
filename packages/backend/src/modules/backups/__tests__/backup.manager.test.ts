@@ -80,6 +80,25 @@ describe('BackupManager.enforceRetentionAllApps', () => {
     await expect(listSpy.mock.results[0]?.value).resolves.toHaveLength(4);
   });
 
+  // The pre-update snapshots live beside the backups, under backups/.pre-update-snapshots/<store>/<app>/<id>.
+  // Read as an app store, that folder would turn every snapshot id into an "app" and the sweep would go
+  // looking for archives in folders that are not backups.
+  it('does not read the pre-update snapshot folder as an app store', async () => {
+    const baseList = filesystem.listFiles.getMockImplementation() as (dir: string) => Promise<string[]>;
+    filesystem.listFiles.mockImplementation(async (dir: string) => {
+      if (dir === `${dataDir}/backups`) return ['.pre-update-snapshots', store];
+      if (dir === `${dataDir}/backups/.pre-update-snapshots`) return [store];
+      return baseList(dir);
+    });
+    const listSpy = vi.spyOn(manager, 'listBackupsByAppId');
+
+    await manager.enforceRetentionAllApps();
+
+    expect(filesystem.listFiles).not.toHaveBeenCalledWith(`${dataDir}/backups/.pre-update-snapshots`);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+    expect(listSpy).toHaveBeenCalledWith(`${app}:${store}`);
+  });
+
   it('prunes only the archives beyond maxBackups, keeping the newest', async () => {
     await manager.enforceRetentionAllApps();
 
