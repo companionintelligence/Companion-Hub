@@ -3,13 +3,15 @@ updates:
   - package-ecosystem: 'npm'
     directory: '/'
     schedule:
-      interval: 'daily'
+      interval: 'weekly'
     rebase-strategy: 'auto'
     groups:
       minor-patch:
         update-types:
           - minor
           - patch
+      major:
+        update-types: ['major']
     ignore:
       # 7.76 changed how isDirty follows dirtyFields (react-hook-form#13370). The install form
       # re-seeds on !isDirty and prefills app_base_url from dirtyFields, and two of its tests fail
@@ -32,20 +34,25 @@ updates:
   - package-ecosystem: 'github-actions'
     directory: '/'
     schedule:
-      interval: 'daily'
+      interval: 'weekly'
     rebase-strategy: 'auto'
+    groups:
+      actions:
+        patterns: ['*']
 
   # Rust/Tauri desktop app crates
   - package-ecosystem: 'cargo'
     directory: '/packages/desktop/src-tauri'
     schedule:
-      interval: 'daily'
+      interval: 'weekly'
     rebase-strategy: 'auto'
     groups:
       minor-patch:
         update-types:
           - minor
           - patch
+      major:
+        update-types: ['major']
     ignore:
       # tauri-plugin-deep-link 2.6.2 builds ini::ParseOption with two of its four fields, so it
       # doesn't compile against rust-ini 0.21.3 (0.21.2 is yanked). The code is Linux-only, so
@@ -60,22 +67,26 @@ updates:
   - package-ecosystem: 'cargo'
     directory: '/packages/mobile/src-tauri'
     schedule:
-      interval: 'daily'
+      interval: 'weekly'
     rebase-strategy: 'auto'
     groups:
       minor-patch:
         update-types:
           - minor
           - patch
+      major:
+        update-types: ['major']
 
   # Isolated agent npm tree (not in the pnpm workspace)
   - package-ecosystem: 'npm'
     directory: '/agent'
     schedule:
-      interval: 'daily'
+      interval: 'weekly'
     rebase-strategy: 'auto'
     groups:
       minor-patch:
         update-types:
           - minor
           - patch
+      major:
+        update-types: ['major']
