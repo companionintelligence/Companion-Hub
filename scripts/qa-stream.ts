@@ -126,7 +126,11 @@ function blankReferenceBytes(chromeBin: string): number | null {
   const refPath = join(SCREENSHOTS_DIR, '.blank-reference.png');
   try {
     rmSync(refPath, { force: true });
-    const r = spawnSync(chromeBin, [...CHROME_SHOT_FLAGS, `--screenshot=${refPath}`, 'about:blank'], { timeout: 30_000, killSignal: 'SIGKILL', stdio: 'pipe' });
+    const r = spawnSync(chromeBin, [...CHROME_SHOT_FLAGS, `--screenshot=${refPath}`, 'about:blank'], {
+      timeout: 30_000,
+      killSignal: 'SIGKILL',
+      stdio: 'pipe',
+    });
     if (r.status === 0 && existsSync(refPath)) _blankReference = statSync(refPath).size;
   } catch {
     /* no reference: the fallback constant applies */
@@ -306,6 +310,44 @@ function execQuiet(cmd: string, timeoutMs = 120_000): { ok: boolean; out: string
     return { ok: false, out: '', err, ms: Date.now() - t };
   }
 }
+
+// <registry-failure>
+// (Extracted verbatim by scripts/__tests__/qa-stream-registry-failure.test.ts: keep this block self-contained. qa-stream.ts is
+// copied to the nodes on its own, so it cannot import a helper.)
+/**
+ * What a failed `docker pull` or `docker compose up` says about the registry. Three independent signals; the caller decides the order.
+ *
+ *  - rateLimited: Docker Hub answers 429 "toomanyrequests" (on the manifest HEAD or on the anonymous-token GET) once the budget the
+ *    nodes share is spent. A full catalog run spends it part-way, and every Docker Hub app after that fails the same way. That is
+ *    the registry saying "not now", not the app being broken, and it must be checked BEFORE the other two: the 429 text also
+ *    contains "failed to authorize" and a digest.
+ *  - notFound: a missing image says so in registry words ("manifest unknown", "repository does not exist", containerd's
+ *    ": not found"), never in a bare number. A pinned digest is 64 hex characters, so one that happens to contain "404" is not a
+ *    404; the old `/404/` made lunalytics a "broken marketplace entry".
+ *  - auth: the registry wants credentials the node does not hold.
+ */
+function registryFailureSignals(text: string): { rateLimited: boolean; notFound: boolean; auth: boolean } {
+  return {
+    rateLimited: /(^|[^0-9a-f])429([^0-9a-f]|$)|too many requests|toomanyrequests|pull rate limit/i.test(text),
+    notFound:
+      /manifest unknown|name unknown|repository does not exist|no such image|manifest for \S+ not found|: not found\b|\b404 not found\b|status(?: code)?:? 404\b/i.test(
+        text,
+      ),
+    auth: /failed to authorize|unauthorized|authentication required|\bdenied\b/i.test(text),
+  };
+}
+
+/**
+ * The start and the end of a long error text. The cause of a docker failure is at the END (the HTTP status, "429 Too Many
+ * Requests"); `slice(0, n)` kept only the head and threw the cause away.
+ */
+function headTail(text: string, max = 600): string {
+  const t = text.replace(/\s+/g, ' ').trim();
+  if (t.length <= max) return t;
+  const head = Math.floor(max * 0.4);
+  return `${t.slice(0, head)} […] ${t.slice(t.length - (max - head))}`;
+}
+// </registry-failure>
 
 /**
  * Async, non-blocking variant of execQuiet — and the reason the per-app watchdog can actually fire.
@@ -794,19 +836,27 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       result.pullMs = Date.now() - startT0;
       if (!up.ok) {
         // Classify compose failures the same as single-service pull failures
-        if (/failed to authorize|unauthorized|denied|authentication required/i.test(up.err)) {
+        const sig = registryFailureSignals(up.err);
+        // A rate limit first: it is neither a missing image nor missing credentials, and its text contains both of those words.
+        if (sig.rateLimited) {
+          result.score = 'skip' as Score;
+          result.failKind = 'rate-limited';
+          result.notes = `registry rate limit (HTTP 429) on a dependency image, not an app failure; re-run later: ${headTail(up.err, 400)}`;
+          return result;
+        }
+        if (sig.auth) {
           result.score = 'skip' as Score;
           result.notes = 'registry auth required for dependency image';
           return result;
         }
-        if (/manifest unknown|not found|does not exist|404/i.test(up.err)) {
+        if (sig.notFound) {
           result.score = 'skip' as Score;
           result.notes = 'dependency image not found in registry';
           return result;
         }
         result.score = 'error';
         result.failKind = 'compose';
-        result.notes = `compose up failed${result.bindRetries ? ` after ${result.bindRetries} host-port retries` : ''}: ${up.err}`;
+        result.notes = `compose up failed${result.bindRetries ? ` after ${result.bindRetries} host-port retries` : ''}: ${headTail(up.err, 600)}`;
         return result;
       }
       hostPort = up.hostPort;
@@ -819,21 +869,29 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       result.pullMs = Date.now() - pullT0;
       if (!pull.ok) {
         const errText = pull.err + pull.out;
+        const sig = registryFailureSignals(errText);
+        // Rate limited → skip (the registry said "not now", not "this image is broken"). Checked first: see registryFailureSignals.
+        if (sig.rateLimited) {
+          result.score = 'skip' as Score;
+          result.failKind = 'rate-limited';
+          result.notes = `registry rate limit (HTTP 429), not an app failure; re-run later: ${headTail(errText, 400)}`;
+          return result;
+        }
         // Image doesn't exist in any registry → skip (broken marketplace entry, not a test failure)
-        if (/manifest unknown|not found|does not exist|404|no such image/i.test(errText)) {
+        if (sig.notFound) {
           result.score = 'skip' as Score;
           result.notes = 'image not found in registry — broken marketplace entry';
           return result;
         }
         // Auth failure on any registry (not just CI images caught above) → skip
-        if (/failed to authorize|unauthorized|denied|authentication required/i.test(errText)) {
+        if (sig.auth) {
           result.score = 'skip' as Score;
           result.notes = 'registry auth required — no credentials on fleet nodes';
           return result;
         }
         result.score = 'error';
         result.failKind = 'pull';
-        result.notes = `Pull failed: ${errText.slice(0, 200)}`;
+        result.notes = `Pull failed: ${headTail(errText, 600)}`;
         return result;
       }
       const sizeR = execQuiet(`docker image inspect ${result.image} --format "{{.Size}}"`);
