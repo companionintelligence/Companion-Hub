@@ -466,6 +466,8 @@ export class BackupManager implements OnApplicationShutdown {
     try {
       const storeIds = await this.filesystem.listFiles(backupsRoot);
       for (const storeId of storeIds) {
+        // A leading dot marks Hub bookkeeping (the pre-update snapshots), not an app store.
+        if (storeId.startsWith('.')) continue;
         const storeDir = path.join(backupsRoot, storeId);
         const stat = await this.filesystem.getStats(storeDir);
         if (!stat.isDirectory()) continue;

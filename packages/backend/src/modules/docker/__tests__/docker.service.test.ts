@@ -1126,6 +1126,106 @@ describe('DockerService', () => {
     });
   });
 
+  describe('privileged snapshot helpers (restore and remove a root-owned data snapshot)', () => {
+    const urn = 'test-app:test-store' as any;
+    const snapshotId = 'pre-update-test-app-1792500000000';
+    const hostAppData = getAppDataHostPath(urn, { ciHubAppDataPath: undefined, appDataPath: undefined, rootFolderHost: '/host/root' });
+    const hostSnapshot = `/host/root/backups/.pre-update-snapshots/test-store/test-app/${snapshotId}`;
+
+    beforeEach(() => {
+      configService.getConfig.mockReturnValue({ userSettings: {}, rootFolderHost: '/host/root' } as any);
+      delete process.env.CI_HUB_APP_DATA_PATH;
+      delete process.env.CI_HUB_CLEANUP_IMAGE;
+      (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(0));
+    });
+
+    it('restores by emptying the data folder and copying the snapshot over it, both mounts confined to this app', async () => {
+      await expect(service.restoreAppDataDirAsRoot(urn, snapshotId)).resolves.toBe(true);
+
+      expect(child_process.spawn).toHaveBeenCalledWith(
+        'docker',
+        [
+          'run',
+          '--rm',
+          '--network',
+          'none',
+          '--user',
+          '0:0',
+          '-v',
+          `${hostSnapshot}/app-data:/src:ro`,
+          '-v',
+          `${hostAppData}:/dest:rw`,
+          'alpine:3.20',
+          'sh',
+          '-c',
+          'find /dest -mindepth 1 -delete && cp -a /src/. /dest/',
+        ],
+        { stdio: 'pipe' },
+      );
+    });
+
+    it('removes a snapshot by emptying only its own folder', async () => {
+      await expect(service.removeSnapshotDirAsRoot(urn, snapshotId)).resolves.toBe(true);
+
+      expect(child_process.spawn).toHaveBeenCalledWith(
+        'docker',
+        [
+          'run',
+          '--rm',
+          '--network',
+          'none',
+          '--user',
+          '0:0',
+          '-v',
+          `${hostSnapshot}:/target:rw`,
+          'alpine:3.20',
+          'find',
+          '/target',
+          '-mindepth',
+          '1',
+          '-delete',
+        ],
+        { stdio: 'pipe' },
+      );
+    });
+
+    it('reports a helper that exits non-zero as a failure', async () => {
+      (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(1));
+
+      await expect(service.restoreAppDataDirAsRoot(urn, snapshotId)).resolves.toBe(false);
+    });
+
+    it('honours the CI_HUB_CLEANUP_IMAGE override', async () => {
+      process.env.CI_HUB_CLEANUP_IMAGE = 'busybox:1.36';
+
+      await service.copyAppDataDirAsRoot(urn, snapshotId);
+
+      expect(child_process.spawn).toHaveBeenCalledWith('docker', expect.arrayContaining(['busybox:1.36']), { stdio: 'pipe' });
+    });
+
+    // The ids are recomputed from the URN and the snapshot id; nothing a caller sends reaches a mount.
+    it.each([
+      ['a snapshot id that climbs out of the snapshot folder', urn, 'pre-update-x-1/../../../etc'],
+      ['a snapshot id that is not one this service made', urn, 'anything'],
+      ['an app name that is not a plain name', '..:test-store' as any, snapshotId],
+      ['a store that is not a plain name', 'test-app:..' as any, snapshotId],
+    ])('refuses (and never spawns) for %s', async (_name, u, id) => {
+      await expect(service.copyAppDataDirAsRoot(u, id)).resolves.toBe(false);
+      await expect(service.restoreAppDataDirAsRoot(u, id)).resolves.toBe(false);
+      await expect(service.removeSnapshotDirAsRoot(u, id)).resolves.toBe(false);
+
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    it('refuses when the Hub has no absolute root folder on the host to put the snapshot under', async () => {
+      configService.getConfig.mockReturnValue({ userSettings: {}, rootFolderHost: '' } as any);
+
+      await expect(service.copyAppDataDirAsRoot(urn, snapshotId)).resolves.toBe(false);
+
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+  });
+
   describe('createPreUpdateVolumeSnapshot', () => {
     const testUrn = 'test-app:test-store' as any;
 
@@ -1136,6 +1236,11 @@ describe('DockerService', () => {
       } as any);
       dockerode.listContainers.mockResolvedValue([]);
       dockerode.listVolumes.mockResolvedValue({ Volumes: [] } as any);
+      // The data folder goes through copyDirectoryDetailed so a permission failure can be told from a full disk.
+      filesystemService.copyDirectoryDetailed.mockResolvedValue({ copied: true, permissionDenied: false });
+      configService.getConfig.mockReturnValue({ userSettings: {}, rootFolderHost: '/host/root' } as any);
+      delete process.env.CI_HUB_APP_DATA_PATH;
+      delete process.env.CI_HUB_CLEANUP_IMAGE;
     });
 
     it('snapshots app data directory and registers docker volumes when data exists', async () => {
@@ -1172,7 +1277,10 @@ describe('DockerService', () => {
       expect(result.appUrn).toBe(testUrn);
       expect(result.snapshotPath).toContain('snapshots');
       expect(filesystemService.createDirectory).toHaveBeenCalled();
-      expect(filesystemService.copyDirectory).toHaveBeenCalledWith('/data/app-data/test-store/test-app', expect.stringContaining('snapshots'));
+      expect(filesystemService.copyDirectoryDetailed).toHaveBeenCalledWith(
+        '/data/app-data/test-store/test-app',
+        expect.stringContaining('snapshots'),
+      );
       expect(result.volumes.some((v) => v.type === 'bind')).toBe(true);
       expect(result.volumes.some((v) => v.name === 'test-app_dbdata')).toBe(true);
     });
@@ -1234,6 +1342,10 @@ describe('DockerService', () => {
       filesystemService.createDirectory.mockResolvedValue(true);
       filesystemService.removeDirectory.mockResolvedValue(true);
       filesystemService.copyDirectory.mockImplementation(async (source: string) => source !== failingSource);
+      filesystemService.copyDirectoryDetailed.mockImplementation(async (source: string) => ({
+        copied: source !== failingSource,
+        permissionDenied: false,
+      }));
 
       const result = await service.createPreUpdateVolumeSnapshot(testUrn);
 
@@ -1241,6 +1353,91 @@ describe('DockerService', () => {
       expect(result.error).toContain('Could not copy');
       expect(result.appFilesSnapshotPath).toBeUndefined();
       expect(filesystemService.removeDirectory).toHaveBeenCalledWith(expect.stringContaining('snapshots'));
+      // Not a permission failure, so root would not fix it and no privileged helper is started.
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    // The failure that stopped every app update on a native-Linux Hub: /data is root-owned and only its
+    // subfolders are mounted, so a folder made directly under it was refused. `backups` is mounted.
+    it('writes the snapshot under backups/.pre-update-snapshots, a folder the Hub can create', async () => {
+      filesystemService.pathExists.mockResolvedValue(true);
+      filesystemService.createDirectory.mockResolvedValue(true);
+      filesystemService.copyDirectory.mockResolvedValue(true);
+
+      const result = await service.createPreUpdateVolumeSnapshot(testUrn);
+
+      expect(result.snapshotBaseDir).toMatch(/^\/data\/backups\/\.pre-update-snapshots\/test-store\/test-app\/pre-update-test-app-\d+$/);
+      expect(result.snapshotBaseDir).not.toMatch(/^\/data\/snapshots/);
+    });
+
+    describe('data the Hub cannot read (a database owned by another user)', () => {
+      const hostAppData = getAppDataHostPath(testUrn, { ciHubAppDataPath: undefined, appDataPath: undefined, rootFolderHost: '/host/root' });
+
+      beforeEach(() => {
+        filesystemService.pathExists.mockResolvedValue(true);
+        filesystemService.createDirectory.mockResolvedValue(true);
+        filesystemService.removeDirectory.mockResolvedValue(true);
+        filesystemService.copyDirectory.mockResolvedValue(true);
+        filesystemService.copyDirectoryDetailed.mockResolvedValue({ copied: false, permissionDenied: true });
+      });
+
+      it('copies the data as root through the hardened helper, keeping owners, and records that it did', async () => {
+        (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(0));
+
+        const result = await service.createPreUpdateVolumeSnapshot(testUrn);
+
+        expect(result.success).toBe(true);
+        expect(result.dataSnapshotCopiedAsRoot).toBe(true);
+        expect(result.snapshotPath).toBeDefined();
+        expect(child_process.spawn).toHaveBeenCalledTimes(1);
+        expect(child_process.spawn).toHaveBeenCalledWith(
+          'docker',
+          [
+            'run',
+            '--rm',
+            '--network',
+            'none',
+            '--user',
+            '0:0',
+            '-v',
+            `${hostAppData}:/src:ro`,
+            '-v',
+            `/host/root/backups/.pre-update-snapshots/test-store/test-app/${result.snapshotId}/app-data:/dest:rw`,
+            'alpine:3.20',
+            'cp',
+            '-a',
+            '/src/.',
+            '/dest/',
+          ],
+          { stdio: 'pipe' },
+        );
+      });
+
+      it('is not a success when the helper fails too, and removes what it wrote', async () => {
+        (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(1));
+
+        const result = await service.createPreUpdateVolumeSnapshot(testUrn);
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('Could not copy');
+        expect(result.dataSnapshotCopiedAsRoot).toBeUndefined();
+        expect(filesystemService.removeDirectory).toHaveBeenCalledWith(expect.stringContaining('.pre-update-snapshots'));
+      });
+
+      it('empties the root-owned copy with a helper, then removes the folder, when a later step fails', async () => {
+        (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(0));
+        // The data copy needed root; the installed-files copy then fails.
+        filesystemService.copyDirectory.mockResolvedValue(false);
+
+        const result = await service.createPreUpdateVolumeSnapshot(testUrn);
+
+        expect(result.success).toBe(false);
+        const calls = (child_process.spawn as any).mock.calls.map((c: any[]) => c[1] as string[]);
+        expect(calls).toHaveLength(2);
+        expect(calls[1]).toEqual(expect.arrayContaining(['find', '/target', '-mindepth', '1', '-delete']));
+        expect(calls[1].join(' ')).toContain(`${result.snapshotId}:/target:rw`);
+        expect(filesystemService.removeDirectory).toHaveBeenCalledWith(expect.stringContaining('.pre-update-snapshots'));
+      });
     });
 
     it('handles container listing errors without throwing', async () => {
