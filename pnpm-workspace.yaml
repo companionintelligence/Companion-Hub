@@ -41,6 +41,9 @@ overrides:
   'nanoid@^3': 3.3.18
   'piscina@<4.9.4': '^4.9.4'
   postcss: 8.5.23
+  # @tailwindcss/typography 0.5.20 (the latest) pins 6.0.10 exactly. Build time only, and the
+  # frontend's built CSS is byte-identical on 7.x.
+  'postcss-selector-parser@<7.1.6': '^7.1.6'
   protobufjs: 7.6.5
   qs: 6.16.0
   react-router: 8.4.0
