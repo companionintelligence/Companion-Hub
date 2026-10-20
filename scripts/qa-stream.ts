@@ -126,7 +126,11 @@ function blankReferenceBytes(chromeBin: string): number | null {
   const refPath = join(SCREENSHOTS_DIR, '.blank-reference.png');
   try {
     rmSync(refPath, { force: true });
-    const r = spawnSync(chromeBin, [...CHROME_SHOT_FLAGS, `--screenshot=${refPath}`, 'about:blank'], { timeout: 30_000, killSignal: 'SIGKILL', stdio: 'pipe' });
+    const r = spawnSync(chromeBin, [...CHROME_SHOT_FLAGS, `--screenshot=${refPath}`, 'about:blank'], {
+      timeout: 30_000,
+      killSignal: 'SIGKILL',
+      stdio: 'pipe',
+    });
     if (r.status === 0 && existsSync(refPath)) _blankReference = statSync(refPath).size;
   } catch {
     /* no reference: the fallback constant applies */
@@ -325,7 +329,10 @@ function execQuiet(cmd: string, timeoutMs = 120_000): { ok: boolean; out: string
 function registryFailureSignals(text: string): { rateLimited: boolean; notFound: boolean; auth: boolean } {
   return {
     rateLimited: /(^|[^0-9a-f])429([^0-9a-f]|$)|too many requests|toomanyrequests|pull rate limit/i.test(text),
-    notFound: /manifest unknown|name unknown|repository does not exist|no such image|manifest for \S+ not found|: not found\b|\b404 not found\b|status(?: code)?:? 404\b/i.test(text),
+    notFound:
+      /manifest unknown|name unknown|repository does not exist|no such image|manifest for \S+ not found|: not found\b|\b404 not found\b|status(?: code)?:? 404\b/i.test(
+        text,
+      ),
     auth: /failed to authorize|unauthorized|authentication required|\bdenied\b/i.test(text),
   };
 }

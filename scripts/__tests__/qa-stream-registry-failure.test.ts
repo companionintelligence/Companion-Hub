@@ -19,13 +19,14 @@ const DIGEST_WITH_429 = 'sha256:3a429b8c1d0e7f65a4b2c93d8e1f0a7b6c5d4e3f2a1b0c9d
 
 // The shapes below are the ones a 2026-10-20 full run on 10 nodes produced (compose) and the ones Docker documents (pull).
 const COMPOSE_429 =
-  `unexpected status from HEAD request to https://registry-1.docker.io/v2/kerrongordon/gibbon/manifests/sha256:1af30b99442dfcb3b05343d03e5665efb563cec4affb7db8a1aa75591be80575: 429 Too Many Requests\n` +
+  'unexpected status from HEAD request to https://registry-1.docker.io/v2/kerrongordon/gibbon/manifests/sha256:1af30b99442dfcb3b05343d03e5665efb563cec4affb7db8a1aa75591be80575: 429 Too Many Requests\n' +
   `Error response from daemon: unknown: failed to resolve reference "docker.io/kerrongordon/gibbon:latest@sha256:1af30b99442dfcb3b05343d03e5665efb563cec4affb7db8a1aa75591be80575"`;
 const PULL_429_TOKEN =
-  `Command failed: docker pull ghost:latest@sha256:428ce627d581017a534d756eae5e8fa973052dd8ec5f5a0c6cd6a83ab85e94ca\n` +
+  'Command failed: docker pull ghost:latest@sha256:428ce627d581017a534d756eae5e8fa973052dd8ec5f5a0c6cd6a83ab85e94ca\n' +
   `Error response from daemon: unknown: failed to resolve reference "docker.io/library/ghost:latest@sha256:428ce627d581017a534d756eae5e8fa973052dd8ec5f5a0c6cd6a83ab85e94ca": ` +
-  `failed to authorize: failed to fetch anonymous token: unexpected status from GET request to https://auth.docker.io/token?scope=repository%3Alibrary%2Fghost%3Apull&service=registry.docker.io: 429 Too Many Requests`;
-const PULL_TOOMANY = 'Error response from daemon: toomanyrequests: You have reached your pull rate limit. You may increase the limit by authenticating and upgrading: https://www.docker.com/increase-rate-limit';
+  'failed to authorize: failed to fetch anonymous token: unexpected status from GET request to https://auth.docker.io/token?scope=repository%3Alibrary%2Fghost%3Apull&service=registry.docker.io: 429 Too Many Requests';
+const PULL_TOOMANY =
+  'Error response from daemon: toomanyrequests: You have reached your pull rate limit. You may increase the limit by authenticating and upgrading: https://www.docker.com/increase-rate-limit';
 
 describe('registryFailureSignals', () => {
   it('reads a rate limit as a rate limit, however the daemon words it', () => {
@@ -62,12 +63,22 @@ describe('registryFailureSignals', () => {
   });
 
   it('still reads missing credentials', () => {
-    expect(registryFailureSignals('Error response from daemon: Head "https://ghcr.io/v2/besoeasy/l-town/manifests/20260621": denied')).toEqual({ rateLimited: false, notFound: false, auth: true });
-    expect(registryFailureSignals('failed to authorize: failed to fetch oauth token: unexpected status from GET request to https://ghcr.io/token?scope=x: 401 Unauthorized').auth).toBe(true);
+    expect(registryFailureSignals('Error response from daemon: Head "https://ghcr.io/v2/besoeasy/l-town/manifests/20260621": denied')).toEqual({
+      rateLimited: false,
+      notFound: false,
+      auth: true,
+    });
+    expect(
+      registryFailureSignals(
+        'failed to authorize: failed to fetch oauth token: unexpected status from GET request to https://ghcr.io/token?scope=x: 401 Unauthorized',
+      ).auth,
+    ).toBe(true);
   });
 
   it('says nothing for an ordinary failure', () => {
-    expect(registryFailureSignals('Error response from daemon: driver failed programming external connectivity: bind: address already in use')).toEqual({ rateLimited: false, notFound: false, auth: false });
+    expect(
+      registryFailureSignals('Error response from daemon: driver failed programming external connectivity: bind: address already in use'),
+    ).toEqual({ rateLimited: false, notFound: false, auth: false });
   });
 });
 
