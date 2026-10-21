@@ -1746,7 +1746,11 @@ describe('AppLifecycleService', () => {
       it('removes the row when it lands while the row is being written', async () => {
         const created = held<unknown>();
         appsRepository.createApp.mockImplementation(() => created.promise as any);
-        appsRepository.getAppByUrn.mockResolvedValueOnce(null as any).mockResolvedValue({ id: 1, status: 'installing' } as any);
+        // No row for the two reads before the write (one before the Portal download, one after).
+        appsRepository.getAppByUrn
+          .mockResolvedValueOnce(null as any)
+          .mockResolvedValueOnce(null as any)
+          .mockResolvedValue({ id: 1, status: 'installing' } as any);
 
         const install = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
         await settle();
@@ -1830,6 +1834,111 @@ describe('AppLifecycleService', () => {
         expect(appEventsQueue.publish).not.toHaveBeenCalled();
         expect(operationRegistry.get(appUrn)).toBeUndefined();
         expect(cancelledEvents()).toEqual([['app', expect.objectContaining({ event: 'install_cancelled', appUrn, appStatus: 'install_failed' })]]);
+      });
+    });
+
+    /*
+     * An install sent while the app's install or uninstall was still running was taken as a
+     * reinstall: the row was patched and a Start queued. The Start replaced the running operation in
+     * the registry, so a second install restarted the new app right after it installed, and an
+     * uninstall never finished and left a row that "started" with no containers.
+     */
+    describe('while the same app is still installing or uninstalling', () => {
+      const held = <T>() => {
+        let release!: (value: T) => void;
+        const promise = new Promise<T>((resolve) => {
+          release = resolve;
+        });
+        return { promise, release };
+      };
+      const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+      const refusal = (promise: Promise<unknown>) =>
+        promise.then(
+          () => null,
+          (error: unknown) => error as TranslatableError,
+        );
+
+      it('refuses with 409 while the uninstall is still finishing, and leaves the uninstall to finish', async () => {
+        appStoreService.getAppStoreBySlug.mockResolvedValue({ slug: 'ci-marketplace', url: 'http://portal/api', type: 'ci_cloud_api' } as any);
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 5, status: 'uninstalling', config: {} } as any);
+        operationRegistry.register(appUrn, { requestId: 'uninstall-1', command: 'uninstall', tier: 'non_cancellable' });
+        const startApp = vi.spyOn(service, 'startApp');
+
+        const error = await refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
+
+        expect(error).toBeInstanceOf(TranslatableError);
+        expect(error?.message).toBe('APP_ERROR_UNINSTALL_IN_PROGRESS');
+        expect(error?.getStatus()).toBe(409);
+        expect(error?.getResponse()).toEqual({ message: 'APP_ERROR_UNINSTALL_IN_PROGRESS', intlParams: { id: 'testapp' } });
+        expect(reposHelpers.downloadAppFiles).not.toHaveBeenCalled();
+        expect(startApp).not.toHaveBeenCalled();
+        expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        // The uninstall still owns its outcome, so its completion deletes the row.
+        expect(operationRegistry.ownsOutcome(appUrn, 'uninstall-1')).toBe(true);
+        // The next install, once the uninstall is done, is not held up by this one.
+        expect(operationRegistry.isPreparingInstall(appUrn)).toBe(false);
+      });
+
+      it('refuses an uninstall that began while the Portal bundle downloaded', async () => {
+        appStoreService.getAppStoreBySlug.mockResolvedValue({ slug: 'ci-marketplace', url: 'http://portal/api', type: 'ci_cloud_api' } as any);
+        appsRepository.getAppByUrn
+          .mockResolvedValueOnce({ id: 5, status: 'running', config: {} } as any)
+          .mockResolvedValue({ id: 5, status: 'uninstalling', config: {} } as any);
+        reposHelpers.downloadAppFiles.mockResolvedValue({ success: true, files: {} } as any);
+        const startApp = vi.spyOn(service, 'startApp');
+
+        const error = await refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
+
+        expect(error?.message).toBe('APP_ERROR_UNINSTALL_IN_PROGRESS');
+        expect(reposHelpers.downloadAppFiles).toHaveBeenCalled();
+        expect(startApp).not.toHaveBeenCalled();
+        expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      });
+
+      it('refuses a second install once the first has written its row', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 6, status: 'installing', config: {} } as any);
+        operationRegistry.register(appUrn, { requestId: 'install-1', command: 'install', tier: 'safe' });
+        const startApp = vi.spyOn(service, 'startApp');
+
+        const error = await refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
+
+        expect(error?.message).toBe('APP_ERROR_INSTALL_IN_PROGRESS');
+        expect(error?.getStatus()).toBe(409);
+        expect(startApp).not.toHaveBeenCalled();
+        expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+        expect(operationRegistry.ownsOutcome(appUrn, 'install-1')).toBe(true);
+      });
+
+      it('refuses a second install sent while the first is still in its checks, and the first goes on', async () => {
+        const archCheck = held<null>();
+        imageSizeService.verifyAppArchitecture.mockReturnValue(archCheck.promise);
+        const startApp = vi.spyOn(service, 'startApp');
+
+        const first = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+        await settle();
+        const error = await refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
+        archCheck.release(null);
+        await first;
+
+        expect(error?.message).toBe('APP_ERROR_INSTALL_IN_PROGRESS');
+        expect(appsRepository.createApp).toHaveBeenCalledTimes(1);
+        expect(appEventsQueue.publish).toHaveBeenCalledTimes(1);
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'install', appUrn }));
+        expect(startApp).not.toHaveBeenCalled();
+      });
+
+      it('takes the next install once the first has left its checks', async () => {
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+
+        expect(operationRegistry.isPreparingInstall(appUrn)).toBe(false);
+      });
+
+      it.each(['running', 'stopped', 'install_failed'] as const)('still takes an install of an app that is %s', async (status) => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 7, status, port: 8080, exposedLocal: true, config: {} } as any);
+        vi.spyOn(service, 'startApp').mockResolvedValue({ requestId: 'start-1' });
+
+        await expect(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} })).resolves.toBeDefined();
       });
     });
 

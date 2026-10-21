@@ -78,6 +78,11 @@ export class AppOperationRegistry {
 
   constructor(private readonly logger: LoggerService) {}
 
+  /** True while an install of this app is still in its pre-registration checks. */
+  isPreparingInstall(appUrn: AppUrn): boolean {
+    return this.preparing.has(appUrn);
+  }
+
   /** Mark an install as running its pre-registration checks. */
   beginPreparingInstall(appUrn: AppUrn): PreparingInstall {
     const preparing: PreparingInstall = { cancelRequested: false };

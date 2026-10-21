@@ -1288,7 +1288,31 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     };
   }
 
+  /**
+   * Refuse an install that would land on an install or uninstall of the same app that is still
+   * running. Taken as a reinstall, it patches the row and queues a Start, which replaces that
+   * operation in the registry: a second install restarts the app as soon as the first one finishes,
+   * and an uninstall never completes, leaving a row that "starts" with no containers behind it.
+   */
+  private refuseInstallWhileBusy(appUrn: AppUrn, status: AppStatus | undefined): void {
+    const { appName } = extractAppUrn(appUrn);
+
+    if (status === 'uninstalling') {
+      throw new TranslatableError('APP_ERROR_UNINSTALL_IN_PROGRESS', { id: appName }, HttpStatus.CONFLICT);
+    }
+
+    if (status === 'installing') {
+      throw new TranslatableError('APP_ERROR_INSTALL_IN_PROGRESS', { id: appName }, HttpStatus.CONFLICT);
+    }
+  }
+
   async installApp(params: { appUrn: AppUrn; form: unknown; skipRun?: boolean; actor: LifecycleActor }) {
+    // A second install sent while the first is still in the checks below has no row to find yet.
+    // Checked and begun in one synchronous step, so two requests cannot both get through.
+    if (this.operationRegistry.isPreparingInstall(params.appUrn)) {
+      throw new TranslatableError('APP_ERROR_INSTALL_IN_PROGRESS', { id: extractAppUrn(params.appUrn).appName }, HttpStatus.CONFLICT);
+    }
+
     // The page offers Cancel as soon as Install is clicked, but the operation registers only after
     // the checks below, which take seconds. A cancel in that window is held and applied here.
     const preparing = this.operationRegistry.beginPreparingInstall(params.appUrn);
@@ -1307,6 +1331,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     // Before anything is fetched, written or queued — see `assertActorMay`.
     await this.assertActorMayApplyForm(params.actor, appUrn, form, 'install');
+    // Before the Portal download, which rewrites the app's store files and takes seconds.
+    this.refuseInstallWhileBusy(appUrn, (await this.appRepository.getAppByUrn(appUrn))?.status);
     const { demoMode, architecture } = this.config.getConfig();
 
     // Check if we need to download files from Companion Portal
@@ -1331,6 +1357,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     const existingApp = await this.appRepository.getAppByUrn(appUrn);
+    // Again, for an uninstall that began during the download.
+    this.refuseInstallWhileBusy(appUrn, existingApp?.status);
 
     // Reinstalling an app that is already there restarts it below, which nothing can cancel. Its
     // window ends here, and a cancel held for it is dropped: applying it would send
@@ -1562,6 +1590,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         if (!raced) {
           throw createError;
         }
+
+        this.refuseInstallWhileBusy(appUrn, raced.status);
 
         if (raced.status !== 'install_failed') {
           // A reinstall after all, which nothing can cancel (see `reinstall` above).
