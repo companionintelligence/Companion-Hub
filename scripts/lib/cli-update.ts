@@ -254,9 +254,9 @@ export async function runHostUpdate(args: string[]) {
 /**
  * `cihub self-update` — replace this standalone binary with the release the stack runs.
  *
- * See cli-self-update.ts for why the package-manager channels are refused and why this needs a
- * token. Nothing here touches the Hub stack: `cihub pool update` is that half, and keeping them
- * apart is what lets an operator fix one without recreating containers to do it.
+ * See cli-self-update.ts for why the package-manager channels are refused. Nothing here touches the
+ * Hub stack: `cihub pool update` is that half, and keeping them apart is what lets an operator fix
+ * one without recreating containers to do it.
  */
 export async function runSelfUpdateCommand(args: string[], gathered?: SkewSnapshot) {
   for (const arg of args) {
@@ -307,7 +307,10 @@ export async function runSelfUpdateCommand(args: string[], gathered?: SkewSnapsh
   } catch (error) {
     printMessageBox(
       'Self-update failed',
-      [error instanceof Error ? error.message : String(error), '', '  Check the token can read the private repository: gh auth status'],
+      [
+        error instanceof Error ? error.message : String(error),
+        ...(plan.token ? ['', '  Check the token in GH_TOKEN or GITHUB_TOKEN is valid: gh auth status'] : []),
+      ],
       'red',
     );
     process.exitCode = 1;

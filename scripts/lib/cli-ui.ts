@@ -86,7 +86,7 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
       },
       {
         command: `${BASE_COMMAND} self-update [--to <version>] [--check]`,
-        description: 'Replace a standalone cihub binary with the release this Hub stack runs (needs GH_TOKEN)',
+        description: 'Replace a standalone cihub binary with the release this Hub stack runs',
       },
       {
         command: `${BASE_COMMAND} version [--short]`,

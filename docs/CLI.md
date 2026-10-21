@@ -396,7 +396,10 @@ It refuses, with the right command instead, when:
 | Shipped inside the desktop app | The desktop updater replaces the app and its bundled CLI as one artifact |
 | Running from a source checkout | There is no binary to replace — `git pull`, then `node scripts/build-standalone-cli.cjs` |
 | Windows | Windows cannot replace a running executable |
-| No `GH_TOKEN`/`GITHUB_TOKEN` | The CI-Hub releases are **private**; unauthenticated the API answers 404, which reads like "no such release" |
+
+It needs no GitHub token: the repository and its release assets are public. When `GH_TOKEN` or
+`GITHUB_TOKEN` is set it is sent along, which raises GitHub's limit of 60 unauthenticated API
+requests an hour.
 
 Before anything is replaced, the downloaded asset is staged beside the target on the same
 filesystem, run once to make it identify itself, and checked against the version that was asked for.

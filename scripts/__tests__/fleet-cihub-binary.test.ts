@@ -238,6 +238,36 @@ describe('downloadReleaseAsset', () => {
       /private repo/,
     );
   });
+
+  it('downloads without a token and sends no Authorization header: the repository is public', async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), 'cihub-cache-'));
+    dirs.push(cacheDir);
+    const elf = Buffer.concat([Buffer.from('\x7fELF', 'latin1'), Buffer.alloc(64, 1)]);
+    const seen: Array<Record<string, string>> = [];
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      seen.push((init?.headers ?? {}) as Record<string, string>);
+      if (String(url).endsWith('/releases/tags/v0.3.6')) {
+        return new Response(
+          JSON.stringify({ tag_name: 'v0.3.6', assets: [{ name: 'cihub-linux-x64', url: 'https://api.github.com/repos/x/y/releases/assets/1' }] }),
+          { status: 200 },
+        );
+      }
+      return new Response(elf, { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const asset = await downloadReleaseAsset({ assetName: 'cihub-linux-x64', version: '0.3.6', cacheDir, fetchImpl });
+
+    expect(asset.tag).toBe('v0.3.6');
+    expect(seen).toHaveLength(2);
+    for (const headers of seen) expect(headers).not.toHaveProperty('Authorization');
+  });
+
+  it('points at a token when GitHub rate-limits a lookup made without one', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{"message":"API rate limit exceeded"}', { status: 403 })) as unknown as typeof fetch;
+    await expect(downloadReleaseAsset({ assetName: 'cihub-linux-x64', version: 'latest', fetchImpl })).rejects.toThrow(
+      /60 API requests an hour without a token; set GH_TOKEN/,
+    );
+  });
 });
 
 describe('installCihubFromStdinScript', () => {

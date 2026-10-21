@@ -153,10 +153,23 @@ export interface ReleaseInfo {
   assets: ReleaseAsset[];
 }
 
-const githubHeaders = (token: string) => ({ Authorization: `Bearer ${token}`, 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'cihub-fleet' });
+/** No token is fine: the repository is public. One still raises GitHub's limit of 60 unauthenticated API requests an hour. */
+const githubHeaders = (token?: string) => ({
+  ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  'X-GitHub-Api-Version': '2022-11-28',
+  'User-Agent': 'cihub-fleet',
+});
+
+function releaseLookupHint(status: number, token: string | undefined): string {
+  if (token) return status === 404 ? ' — does the token see the private repo?' : '';
+  if (status === 403 || status === 429) {
+    return '. GitHub allows 60 API requests an hour without a token; set GH_TOKEN or GITHUB_TOKEN to raise that';
+  }
+  return '';
+}
 
 /** The release a version names: `latest` as GitHub resolves it right now, or one tag, `v` or not. */
-export async function lookupRelease(input: { token: string; version: string; fetchImpl?: typeof fetch }): Promise<ReleaseInfo> {
+export async function lookupRelease(input: { token?: string; version: string; fetchImpl?: typeof fetch }): Promise<ReleaseInfo> {
   const fetchImpl = input.fetchImpl ?? fetch;
   const releaseUrl =
     input.version === 'latest'
@@ -164,9 +177,7 @@ export async function lookupRelease(input: { token: string; version: string; fet
       : `https://api.github.com/repos/${CIHUB_RELEASES_REPO}/releases/tags/${input.version.startsWith('v') ? input.version : `v${input.version}`}`;
   const releaseRes = await fetchImpl(releaseUrl, { headers: { ...githubHeaders(input.token), Accept: 'application/vnd.github+json' } });
   if (!releaseRes.ok) {
-    throw new Error(
-      `GitHub release lookup failed: HTTP ${releaseRes.status} for ${releaseUrl}${releaseRes.status === 404 ? ' — does the token see the private repo?' : ''}`,
-    );
+    throw new Error(`GitHub release lookup failed: HTTP ${releaseRes.status} for ${releaseUrl}${releaseLookupHint(releaseRes.status, input.token)}`);
   }
   return (await releaseRes.json()) as ReleaseInfo;
 }
@@ -196,14 +207,15 @@ export async function pinCihubReleaseSource(source: CihubBinarySource, fetchImpl
 }
 
 /**
- * Fetch one release asset with the operator's token into a per-run cache, and return its path.
+ * Fetch one release asset into a per-run cache and return its path. The token is optional: the
+ * repository has been public since 2026-09-30. Its release API and assets answer without one.
  *
  * Two requests: the release (by tag, or `latest`), then the asset by its API URL with
- * `Accept: application/octet-stream`, which is the only form that serves a private repository's
- * asset bytes. The browser download URL does not, whatever the token.
+ * `Accept: application/octet-stream`, which serves the bytes with or without a token. While the
+ * repository was private it was the only form that did; the browser download URL did not.
  */
 export async function downloadReleaseAsset(input: {
-  token: string;
+  token?: string;
   assetName: string;
   version: string;
   cacheDir?: string;
