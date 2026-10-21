@@ -23,10 +23,21 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
 // Renders a real <form> so "is the Hub access section inside the form?" is an honest question —
 // a <div> stub would make that assertion pass no matter where the section is mounted.
 vi.mock('../../install-form/install-form', () => ({
-  InstallForm: ({ onDirtyChange, formId }: { onDirtyChange?: (dirty: boolean) => void; formId: string }) => (
+  InstallForm: ({
+    onDirtyChange,
+    onSubmittingChange,
+    formId,
+  }: {
+    onDirtyChange?: (dirty: boolean) => void;
+    onSubmittingChange?: (submitting: boolean) => void;
+    formId: string;
+  }) => (
     <form id={formId} data-testid="install-form">
       <button type="button" data-testid="mark-dirty" onClick={() => onDirtyChange?.(true)}>
         Mark dirty
+      </button>
+      <button type="button" data-testid="start-submit" onClick={() => onSubmittingChange?.(true)}>
+        Start submitting
       </button>
       <button type="submit" form={formId}>
         Submit
@@ -44,8 +55,8 @@ vi.mock('../../hub-access/hub-access', () => ({
 }));
 
 vi.mock('../../install-form-buttons/install-form-buttons', () => ({
-  InstallFormButtons: ({ disabled, formId }: { disabled?: boolean; formId: string }) => (
-    <button type="submit" form={formId} disabled={disabled} data-testid="update-settings-save-btn">
+  InstallFormButtons: ({ disabled, loading, formId }: { disabled?: boolean; loading?: boolean; formId: string }) => (
+    <button type="submit" form={formId} disabled={disabled} aria-busy={loading || undefined} data-testid="update-settings-save-btn">
       Save
     </button>
   ),
@@ -72,6 +83,19 @@ describe('UpdateSettingsDialog', () => {
       'Saving these settings will restart the app with your new configuration.',
     );
     expect(screen.getByTestId('update-settings-save-btn')).not.toBeDisabled();
+  });
+
+  // On Public Web the form runs a last DNS check before it saves, which took seconds on a slow link.
+  it('shows Update busy while the form is still checking, before the save goes out', async () => {
+    const user = userEvent.setup();
+
+    render(<UpdateSettingsDialog info={mockInfo} config={{}} isOpen onClose={vi.fn()} status="running" />);
+
+    expect(screen.getByTestId('update-settings-save-btn')).not.toHaveAttribute('aria-busy');
+
+    await user.click(screen.getByTestId('start-submit'));
+
+    expect(screen.getByTestId('update-settings-save-btn')).toHaveAttribute('aria-busy', 'true');
   });
 
   it('shows stopped hint when the app is not running', async () => {

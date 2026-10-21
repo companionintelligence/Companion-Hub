@@ -685,8 +685,16 @@ describe('AppAccessPoints', () => {
     const [publicQr, vpnQr, localQr] = qrButtons;
     expect(publicQr).toBeEnabled();
     expect(vpnQr).toBeEnabled();
-    expect(localQr).toBeDisabled();
-    expect(localQr).toHaveAttribute('title', 'APP_DETAILS_ACCESS_QR_LOOPBACK');
+    expect(localQr).toHaveAttribute('aria-disabled', 'true');
+
+    // A disabled button takes no pointer and no focus, so its `title` was never shown to anyone.
+    // This one stays reachable, says why on hover and focus, and does nothing when pressed.
+    expect(localQr).toBeEnabled();
+    expect(localQr).not.toHaveAttribute('title');
+    expect(localQr).toHaveAccessibleDescription('APP_DETAILS_ACCESS_QR_LOOPBACK');
+    expect(localQr).toHaveAttribute('data-tooltip-content', 'APP_DETAILS_ACCESS_QR_LOOPBACK');
+    fireEvent.click(localQr as HTMLElement);
+    expect(screen.queryByTitle('COMMON_QR_CODE')).not.toBeInTheDocument();
 
     fireEvent.click(publicQr as HTMLElement);
 
@@ -694,6 +702,21 @@ describe('AppAccessPoints', () => {
     // as selectable text
     expect(screen.getByTitle('COMMON_QR_CODE')).toBeInTheDocument();
     expect(screen.getAllByText('https://openwebui-studio-companion.companionintelligence.com/login').length).toBeGreaterThan(1);
+  });
+
+  it('names every Copy button', () => {
+    render(
+      <AppAccessPoints
+        app={
+          { status: 'running', port: 3000, localSubdomain: 'openwebui', domain: 'openwebui.example.com', exposed: true, exposedLocal: true } as any
+        }
+        info={
+          { urn: 'openwebui:community', name: 'Open WebUI', no_gui: false, https: false, port: 3000, dynamic_config: true, exposable: true } as any
+        }
+      />,
+    );
+
+    expect(screen.getAllByRole('button', { name: 'SETTINGS_GENERAL_COPY' })).toHaveLength(3);
   });
 });
 
