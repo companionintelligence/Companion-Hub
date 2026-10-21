@@ -493,7 +493,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   // recovery strands the prerendered gate as a dead full-screen overlay. Stay
   // identical to the prerender for the first render, then flip in an effect.
   const [apiReady, setApiReady] = useState(false);
-  const [documentTitle, setDocumentTitle] = useState(() => (i18next.isInitialized ? i18next.t('APP_NAME') : 'CI Hub'));
+  const [documentTitle, setDocumentTitle] = useState(() => (i18next.isInitialized ? i18next.t('APP_NAME') : 'Companion Hub'));
   const [documentLang, setDocumentLang] = useState(() => i18next.resolvedLanguage || i18next.language || 'en');
   // The document is PRERENDERED in Node, where isMobileClient() is false, so the
   // emitted <html>/<body> carry no mobile classes. Rendering them on the very
@@ -546,7 +546,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const syncDocumentTitle = () => {
-      setDocumentTitle(i18next.isInitialized ? i18next.t('APP_NAME') : 'CI Hub');
+      setDocumentTitle(i18next.isInitialized ? i18next.t('APP_NAME') : 'Companion Hub');
       setDocumentLang(i18next.resolvedLanguage || i18next.language || 'en');
     };
 

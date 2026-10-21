@@ -5,7 +5,7 @@
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-10-21 (Desktop app card offers the current installer in the desktop window; toasts sit at the top of the sign-in pages)
+> **Last updated:** 2026-10-21 (Desktop app card offers the current installer in the desktop window; toasts sit at the top of the sign-in pages; the UI says Companion Hub)
 > **Related:** docs/system/desktop.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/system/e2e.md
 
 ---
@@ -93,6 +93,10 @@ Settings → System → **Desktop app** offers the newest desktop installer for 
 - The install steps under the button never say to remove the app first. Removing the Linux package runs its cleanup (deb `postrm` on `remove`/`purge`, rpm `postun` at `0`), which deletes the Hub's database, every app with its data, and the Hub's folder. The steps install over it: `sudo apt install "./<file>"`, `sudo rpm -U "./<file>"`, or `chmod +x "./<file>"` for an AppImage. `<file>` is the download URL's last segment, decoded (`Companion Hub_0.2.78_amd64.deb`, with a space), and the step shows no command when the name has anything but letters, digits, spaces, `.`, `_`, `+` and `-`.
 - In the desktop window, an available update installs in one click: `installDesktopUpdate()` in `update-service.ts` calls the app's `perform_desktop_update_command` and reports `get_update_progress_command`. The updater stops the Hub during the update (older releases before they install, current ones once the update is installed), so `HubStatus` keeps the page while `isDesktopUpdateRunning()`, and a failed call starts the Hub again when its API doesn't answer. Then the card offers the download and the manual steps, unless the app had reported `done` or `relaunch`: the update is installed and only the restart failed, so the card says to quit and reopen the app. See [`DESKTOP-AUTO-UPDATE.md`](../DESKTOP-AUTO-UPDATE.md).
 - The card never says the desktop app isn't running. The Hub can't reach the listener of any desktop app up to 0.2.77, so an unreachable listener says nothing about the app. A browser gets where to update instead: Companion Hub on the computer that runs the Hub, or `companion-hub update` there.
+
+## Product name
+
+The UI calls the app Companion Hub, the desktop app's `productName` in `tauri.conf.json`. `APP_NAME` names it in the desktop title bar (`components/titlebar/titlebar.tsx`), the document title (`root.tsx`, the browser tab) and the startup gate's heading (`components/hub-status/hub-status.tsx`). The desktop bootstrap page (`packages/desktop/bootstrap/`) and the PWA manifest (`public/icons/site.webmanifest`) spell it out themselves. `titlebar.test.tsx` fails when a translation file says "CI Hub" again. Names the backend sends, like the Hub's own row in the resource monitor, still say CI Hub.
 
 ## Toasts on the sign-in pages
 

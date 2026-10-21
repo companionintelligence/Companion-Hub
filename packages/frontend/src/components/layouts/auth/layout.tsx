@@ -32,7 +32,7 @@ export const AuthLayout = ({ children, wide = false }: AuthLayoutProps) => {
       <div className={cn('w-full my-auto', wide ? 'max-w-4xl' : 'max-w-md')}>
         <div className="mb-6 text-center">
           <img
-            alt="CI Hub logo"
+            alt="Companion Hub logo"
             src={getLogo(allowAutoThemes)}
             height={80}
             width={80}

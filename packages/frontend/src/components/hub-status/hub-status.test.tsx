@@ -191,7 +191,7 @@ describe('getDockerDesktopGuideContent', () => {
         'Start Docker Desktop',
         'Come back here. The Hub will start automatically',
       ],
-      hint: 'Docker Desktop requires Windows 10/11 with WSL2 enabled. If WSL is installed during setup, restart Windows before reopening CI Hub.',
+      hint: 'Docker Desktop requires Windows 10/11 with WSL2 enabled. If WSL is installed during setup, restart Windows before reopening Companion Hub.',
     });
   });
 
@@ -263,7 +263,7 @@ describe('HubStatus Docker guidance', () => {
       'href',
       'https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe',
     );
-    expect(screen.getByText(/CI Hub needs a Docker engine/)).toBeInTheDocument();
+    expect(screen.getByText(/Companion Hub needs a Docker engine/)).toBeInTheDocument();
     expect(screen.getByText('If Docker Desktop is already installed:')).toBeInTheDocument();
     expect(screen.getByText('Open Docker Desktop from your Start Menu')).toBeInTheDocument();
     expect(screen.getByText('If Docker Desktop is NOT installed:')).toBeInTheDocument();
@@ -323,7 +323,7 @@ describe('HubStatus Docker guidance', () => {
     await flushAsyncWork();
 
     expect(invoke).toHaveBeenCalledWith('install_docker_engine_alternative_command');
-    expect(screen.getByText(/Restart Windows, then reopen CI Hub/)).toBeInTheDocument();
+    expect(screen.getByText(/Restart Windows, then reopen Companion Hub/)).toBeInTheDocument();
   });
 
   it('offers the Colima alternative on macOS and reports success', async () => {
@@ -408,7 +408,7 @@ describe('HubStatus Docker guidance', () => {
     await flushAsyncWork();
 
     expect(invoke).toHaveBeenCalledWith('start_hub_command');
-    expect(screen.getByText('Starting CI Hub')).toBeInTheDocument();
+    expect(screen.getByText('Starting Companion Hub')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
 
     await act(async () => {
@@ -452,7 +452,7 @@ describe('HubStatus Docker guidance', () => {
     await flushAsyncWork();
 
     expect(invoke).toHaveBeenCalledWith('start_hub_command');
-    expect(screen.getByText('Starting CI Hub')).toBeInTheDocument();
+    expect(screen.getByText('Starting Companion Hub')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
 
     await act(async () => {
@@ -548,7 +548,7 @@ describe('HubStatus steady running and recovery', () => {
     expect(await screen.findByText('Hub child')).toBeInTheDocument();
     // No blocking screens should be shown
     expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
-    expect(screen.queryByText('Starting CI Hub')).not.toBeInTheDocument();
+    expect(screen.queryByText('Starting Companion Hub')).not.toBeInTheDocument();
   });
 
   it('does not reload after a transient Starting blip once the hub is already running', async () => {
@@ -566,7 +566,7 @@ describe('HubStatus steady running and recovery', () => {
     await flushAsyncWork();
 
     expect(screen.getByText('Hub child')).toBeInTheDocument();
-    expect(screen.queryByText('Starting CI Hub')).not.toBeInTheDocument();
+    expect(screen.queryByText('Starting Companion Hub')).not.toBeInTheDocument();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5000);
@@ -581,7 +581,7 @@ describe('HubStatus steady running and recovery', () => {
     mockMacTauriWithStatus(['Starting']);
 
     expect(await screen.findByText('Hub child')).toBeInTheDocument();
-    expect(screen.queryByText('Starting CI Hub')).not.toBeInTheDocument();
+    expect(screen.queryByText('Starting Companion Hub')).not.toBeInTheDocument();
   });
 
   it('keeps the app mounted across a brief API probe miss after the hub is steady', async () => {
@@ -594,7 +594,7 @@ describe('HubStatus steady running and recovery', () => {
 
     await flushAsyncWork();
     expect(screen.getByText('Hub child')).toBeInTheDocument();
-    expect(screen.queryByText('Starting CI Hub')).not.toBeInTheDocument();
+    expect(screen.queryByText('Starting Companion Hub')).not.toBeInTheDocument();
     expect(reloadSpy).not.toHaveBeenCalled();
 
     await act(async () => {
@@ -603,7 +603,7 @@ describe('HubStatus steady running and recovery', () => {
     await flushAsyncWork();
 
     expect(screen.getByText('Hub child')).toBeInTheDocument();
-    expect(screen.queryByText('Starting CI Hub')).not.toBeInTheDocument();
+    expect(screen.queryByText('Starting Companion Hub')).not.toBeInTheDocument();
     expect(reloadSpy).not.toHaveBeenCalled();
   });
 
@@ -617,7 +617,7 @@ describe('HubStatus steady running and recovery', () => {
 
     await flushAsyncWork();
     expect(screen.getByText('Hub child')).toBeInTheDocument();
-    expect(screen.queryByText('Starting CI Hub')).not.toBeInTheDocument();
+    expect(screen.queryByText('Starting Companion Hub')).not.toBeInTheDocument();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(9000);
@@ -625,7 +625,7 @@ describe('HubStatus steady running and recovery', () => {
     await flushAsyncWork();
 
     expect(screen.getByText('Hub child')).toBeInTheDocument();
-    expect(screen.queryByText('Starting CI Hub')).not.toBeInTheDocument();
+    expect(screen.queryByText('Starting Companion Hub')).not.toBeInTheDocument();
     expect(reloadSpy).not.toHaveBeenCalled();
   });
 
@@ -644,7 +644,7 @@ describe('HubStatus steady running and recovery', () => {
     await flushAsyncWork();
 
     expect(screen.getByText('Hub child')).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: "CI Hub isn't running" })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: "Companion Hub isn't running" })).not.toBeInTheDocument();
 
     // The install failed and the page let go: a Hub that is still down gets the usual screen.
     updateMocks.isDesktopUpdateRunning.mockReturnValue(false);
@@ -653,7 +653,7 @@ describe('HubStatus steady running and recovery', () => {
     });
     await flushAsyncWork();
 
-    expect(screen.getByRole('heading', { name: "CI Hub isn't running" })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: "Companion Hub isn't running" })).toBeInTheDocument();
   });
 
   it('revalidates routes after the hub becomes healthy without a full window reload', async () => {
@@ -664,7 +664,7 @@ describe('HubStatus steady running and recovery', () => {
     mockMacTauriWithStatus(['Stopped', 'Running']);
 
     await flushAsyncWork();
-    expect(screen.getByRole('heading', { name: "CI Hub isn't running" })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: "Companion Hub isn't running" })).toBeInTheDocument();
 
     probeMocks.probeHealthyHubApiPort.mockResolvedValue(5002);
 
@@ -836,7 +836,7 @@ describe('HubStatus startup screens', () => {
     ];
     mountStartupScreens({ status: 'Starting', progress: startupProgress({ services }) });
 
-    expect(await screen.findByRole('heading', { name: 'Starting CI Hub' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Starting Companion Hub' })).toBeInTheDocument();
     expect(await screen.findByText('Services are coming online…')).toBeInTheDocument();
     // `find`, not `get`: the status line renders from `status` while the progress panel waits on the
     // progress poll, and on a loaded CI runner the panel was still the Initialising row here.
@@ -875,15 +875,15 @@ describe('HubStatus startup screens', () => {
     });
 
     await settle();
-    expect(screen.getByRole('heading', { name: 'Starting CI Hub' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Starting Companion Hub' })).toBeInTheDocument();
 
     await advance(91_000);
-    expect(screen.getByRole('heading', { name: 'Starting CI Hub' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Starting Companion Hub' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'View logs' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Restart Hub' })).not.toBeInTheDocument();
 
     await advance(90_000);
-    expect(screen.getByRole('heading', { name: "CI Hub hasn't finished starting" })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: "Companion Hub hasn't finished starting" })).toBeInTheDocument();
     // The page has waited 3:01, so that is what the stuck service reports, not its own 30 s.
     expect(screen.getByText('Hub backend has been starting for 3 minutes. Restarting the Hub often clears this.')).toBeInTheDocument();
     expect(rowFor('Hub backend')).toHaveTextContent(/Starting for 3:0\d/);
@@ -891,24 +891,24 @@ describe('HubStatus startup screens', () => {
     expect(screen.getByRole('button', { name: 'View logs' })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Keep waiting' }));
-    expect(screen.getByRole('heading', { name: 'Starting CI Hub' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Starting Companion Hub' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Restart Hub' })).not.toBeInTheDocument();
 
     await advance(179_000);
-    expect(screen.getByRole('heading', { name: 'Starting CI Hub' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Starting Companion Hub' })).toBeInTheDocument();
     await advance(2_000);
-    expect(screen.getByRole('heading', { name: "CI Hub hasn't finished starting" })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: "Companion Hub hasn't finished starting" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Restart Hub' }));
     expect(screen.queryByRole('button', { name: 'Restart Hub' })).not.toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Starting CI Hub' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Starting Companion Hub' })).toBeInTheDocument();
     expect(metaTime()).toBe('0:00 elapsed');
     await settle();
 
     // This origin may not restart: it starts instead of failing on the ACL.
     expect(invoke).toHaveBeenCalledWith('restart_hub_command');
     expect(invoke).toHaveBeenCalledWith('start_hub_command');
-    expect(screen.getByRole('heading', { name: 'Starting CI Hub' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Starting Companion Hub' })).toBeInTheDocument();
   });
 
   it('never goes stuck while a start is downloading images, and gives the services three minutes after', async () => {
@@ -925,20 +925,22 @@ describe('HubStatus startup screens', () => {
     mountStartupScreens({ status: 'Starting', progress: () => progress });
 
     await settle();
-    expect(screen.getByText('Downloading what CI Hub needs. The first start after an install or update can take a few minutes.')).toBeInTheDocument();
+    expect(
+      screen.getByText('Downloading what Companion Hub needs. The first start after an install or update can take a few minutes.'),
+    ).toBeInTheDocument();
     expect(fact('Images pulled')).toBe('Images pulled2 of 4 (50%)');
 
     await advance(240_000);
-    expect(screen.getByRole('heading', { name: 'Starting CI Hub' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Starting Companion Hub' })).toBeInTheDocument();
 
     progress = { ...progress, image_pulled: 4, image_pull_pct: 100 };
     await advance(170_000);
-    expect(screen.getByRole('heading', { name: 'Starting CI Hub' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Starting Companion Hub' })).toBeInTheDocument();
     expect(screen.getByText('Services are coming online…')).toBeInTheDocument();
 
     await advance(15_000);
-    expect(screen.getByRole('heading', { name: "CI Hub hasn't finished starting" })).toBeInTheDocument();
-    expect(screen.getByText('CI Hub has been starting for 7 minutes. Restarting the Hub often clears this.')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: "Companion Hub hasn't finished starting" })).toBeInTheDocument();
+    expect(screen.getByText('Companion Hub has been starting for 7 minutes. Restarting the Hub often clears this.')).toBeInTheDocument();
   });
 
   it('does not call missing images a download when no start is running', async () => {
@@ -946,7 +948,7 @@ describe('HubStatus startup screens', () => {
     mountStartupScreens({ status: 'Starting', progress: startupProgress({ image_pulled: 3, image_total: 4, image_pull_pct: 75 }) });
 
     expect(await screen.findByText('Services are coming online…')).toBeInTheDocument();
-    expect(screen.queryByText(/Downloading what CI Hub needs/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Downloading what Companion Hub needs/)).not.toBeInTheDocument();
   });
 
   it('says when the user stopped the Hub, and Start Hub starts it with the button gone at once', async () => {
@@ -968,7 +970,7 @@ describe('HubStatus startup screens', () => {
       },
     });
 
-    expect(await screen.findByRole('heading', { name: 'CI Hub is stopped' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Companion Hub is stopped' })).toBeInTheDocument();
     const line = await screen.findByText(/^You stopped it on /);
     // Date and time each stay on one line.
     expect(line.textContent).toMatch(/^You stopped it on Sep\u00a016 at 9:25[\u00a0\u202f]PM\. It stays stopped until you start it again\.$/);
@@ -986,7 +988,7 @@ describe('HubStatus startup screens', () => {
 
     expect(invoke).toHaveBeenCalledWith('start_hub_command');
     expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Starting CI Hub' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Starting Companion Hub' })).toBeInTheDocument();
     expect(metaTime()).toBe('0:00 elapsed');
 
     await act(async () => {
@@ -1014,8 +1016,8 @@ describe('HubStatus startup screens', () => {
       },
     });
 
-    expect(await screen.findByRole('heading', { name: "CI Hub isn't running" })).toBeInTheDocument();
-    expect(await screen.findByText('Start it to use CI Hub and your apps.')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: "Companion Hub isn't running" })).toBeInTheDocument();
+    expect(await screen.findByText('Start it to use Companion Hub and your apps.')).toBeInTheDocument();
     expect(metaTime()).toBe('Not running');
     expect(screen.getByText('0%')).toBeInTheDocument();
     expect(fact('Docker')).toBe('DockerRunning');
@@ -1049,8 +1051,8 @@ describe('HubStatus startup screens', () => {
       },
     });
 
-    expect(await screen.findByRole('heading', { name: "CI Hub couldn't start" })).toBeInTheDocument();
-    expect(await screen.findByText("Docker couldn't start the database. CI Hub won't retry on its own.")).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: "Companion Hub couldn't start" })).toBeInTheDocument();
+    expect(await screen.findByText("Docker couldn't start the database. Companion Hub won't retry on its own.")).toBeInTheDocument();
     const databaseRow = rowFor('Database');
     expect(databaseRow).toHaveTextContent('Failed');
     expect(within(databaseRow).getByText(detail)).toBeInTheDocument();
@@ -1072,7 +1074,7 @@ describe('HubStatus startup screens', () => {
 
     expect(invoke).toHaveBeenCalledWith('start_hub_command');
     expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Starting CI Hub' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Starting Companion Hub' })).toBeInTheDocument();
 
     await act(async () => {
       finishStart('Hub started successfully');
@@ -1092,8 +1094,8 @@ describe('HubStatus startup screens', () => {
       }),
     });
 
-    expect(await screen.findByRole('heading', { name: "CI Hub couldn't start" })).toBeInTheDocument();
-    expect(await screen.findByText("CI Hub won't retry on its own until you try again.")).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: "Companion Hub couldn't start" })).toBeInTheDocument();
+    expect(await screen.findByText("Companion Hub won't retry on its own until you try again.")).toBeInTheDocument();
     // The failed line renders from hub status alone. The rate-limit text is inside the progress
     // panel, which arrives on a second poll, so a synchronous query races that poll on a busy runner.
     const panelError = await screen.findByText(rateLimited);
@@ -1126,7 +1128,7 @@ describe('HubStatus startup screens', () => {
       },
     });
 
-    expect(await screen.findByText("Docker couldn't start the Hub backend. CI Hub won't retry on its own.")).toBeInTheDocument();
+    expect(await screen.findByText("Docker couldn't start the Hub backend. Companion Hub won't retry on its own.")).toBeInTheDocument();
     expect(within(rowFor('Hub backend')).getByText(/Hub has restarted 4 times/)).toBeInTheDocument();
     expect(countsRow()).toEqual(['3Ready', '0Starting', '0Waiting', '1Failed']);
   });
@@ -1150,13 +1152,13 @@ describe('HubStatus startup screens', () => {
     await settle();
 
     expect(invoke).toHaveBeenCalledWith('start_hub_command');
-    expect(screen.getByRole('heading', { name: "CI Hub couldn't start" })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: "Companion Hub couldn't start" })).toBeInTheDocument();
     const panelError = screen.getByText(/blocked this start command for the current page origin/);
     expect(panelError).toHaveTextContent('Command start_hub_command not allowed by ACL');
     expect(metaTime()).toBe('Failed after 0:00');
 
     await advance(5_000);
-    expect(screen.getByRole('heading', { name: "CI Hub couldn't start" })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: "Companion Hub couldn't start" })).toBeInTheDocument();
     expect(screen.getByText(/blocked this start command for the current page origin/)).toBeInTheDocument();
   });
 

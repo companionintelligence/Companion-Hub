@@ -10,6 +10,7 @@ import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { z } from 'zod';
 import { ResetPasswordForm } from '../components/reset-password-form/reset-password-form';
+import { emailField } from '../helpers/email-field';
 
 type RequestFormValues = { email: string };
 type TokenStatus = 'loading' | 'valid' | 'invalid';
@@ -30,9 +31,9 @@ export default () => {
   const requestSchema = useMemo(
     () =>
       z.object({
-        email: z.string().email(),
+        email: emailField(t),
       }),
-    [],
+    [t],
   );
 
   const {
