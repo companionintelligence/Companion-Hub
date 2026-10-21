@@ -393,7 +393,7 @@ describe('AppDetailsPage', () => {
 
     expect(runtimeCall?.[0]).toEqual(
       expect.objectContaining({
-        queryKey: ['app-runtime-health', 'test-app:community'],
+        queryKey: ['app-runtime-health', 'test-app:community', 'uninstalling'],
         enabled: false,
       }),
     );

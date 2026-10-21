@@ -152,7 +152,9 @@ export default () => {
   });
 
   const runtimeHealth = useQuery({
-    queryKey: ['app-runtime-health', appUrn],
+    // Keyed on the status too, so a change of status (the end of a restart) asks for a snapshot of
+    // the new one at once rather than at the next poll.
+    queryKey: ['app-runtime-health', appUrn, privateRecord?.app?.status],
     queryFn: () => fetchAppRuntimeHealth(appUrn),
     refetchInterval: 15_000,
     enabled: runtimeHealthEnabled,

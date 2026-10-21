@@ -110,7 +110,7 @@ export interface AppPublicUrlStatus {
  */
 export function getAppStatusPresentation(
   status: AppStatusType,
-  runtimeHealth?: AppRuntimeHealth | null,
+  snapshot?: AppRuntimeHealth | null,
   publicUrl?: AppPublicUrlStatus | null,
 ): {
   labelKey: string;
@@ -119,6 +119,14 @@ export function getAppStatusPresentation(
   animate: boolean;
   detail: string | null;
 } {
+  /*
+   * A snapshot describes the app as it was when it was taken. One taken during a restart says the
+   * app did not answer, and the status turns `running` before the next poll: read with it, a
+   * restarted app showed Needs attention for one poll interval. Until a snapshot of the current
+   * status arrives, the status alone decides.
+   */
+  const runtimeHealth = snapshot?.status && snapshot.status !== status ? null : snapshot;
+
   const containers = runtimeHealth?.containers ?? [];
   const monitoredContainers = containersExpectedToRun(containers);
   const runningContainers = monitoredContainers.filter((container) => container.state === 'running').length;
