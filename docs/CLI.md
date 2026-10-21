@@ -280,13 +280,13 @@ than averaged away.
 ## Hub lifecycle
 
 ```bash
-cihub up [env] [--detached|--attached]       # start the hub stack
-cihub down [env]                             # stop the hub stack
-cihub restart [env] [--detached|--attached]  # stop then start the target environment
-cihub recreate [env]         # reset runtime state, then start again
-cihub status [env]           # show container health + resolved config
-cihub logs [env] [service]   # stream compose logs
-cihub config [env]           # show resolved config values only
+cihub up [env] [--detached|--attached]               # start the hub stack
+cihub down [env]                                     # stop the hub stack
+cihub restart [env] [--detached|--attached]          # stop then start the target environment
+cihub recreate [env] [--detached|--attached] [--yes] # reset runtime state, then start again
+cihub status [env]                                   # show container health + resolved config
+cihub logs [env] [service]                           # stream compose logs
+cihub config [env]                                   # show resolved config values only
 ```
 
 - `--detached` runs the stack in the background (equivalent to `docker compose up -d`). Outside a CI-Hub checkout (the `cihub` a desktop install or a standalone binary puts on PATH), `up`, `restart` and `recreate` run detached unless you pass `--attached`. In 0.3.6 and earlier, `restart` and `recreate` stayed attached there. Attached, the command stays on `docker compose up`. Ctrl+C or a signal to it then makes Compose stop the containers, `cloudflared` included.
