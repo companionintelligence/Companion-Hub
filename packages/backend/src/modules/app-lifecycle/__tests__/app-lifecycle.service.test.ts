@@ -1896,6 +1896,24 @@ describe('AppLifecycleService', () => {
         expect(appsRepository.updateAppById).not.toHaveBeenCalled();
       });
 
+      it('refuses a reinstall when the uninstall began during the image check', async () => {
+        const archCheck = held<null>();
+        imageSizeService.verifyAppArchitecture.mockReturnValue(archCheck.promise);
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 5, status: 'running', port: 8080, exposedLocal: true, config: {} } as any);
+        const startApp = vi.spyOn(service, 'startApp');
+
+        const install = refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
+        await settle();
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 5, status: 'uninstalling', config: {} } as any);
+        archCheck.release(null);
+        const error = await install;
+
+        expect(imageSizeService.verifyAppArchitecture).toHaveBeenCalled();
+        expect(error?.message).toBe('APP_ERROR_UNINSTALL_IN_PROGRESS');
+        expect(startApp).not.toHaveBeenCalled();
+        expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      });
+
       it('refuses a second install once the first has written its row', async () => {
         appsRepository.getAppByUrn.mockResolvedValue({ id: 6, status: 'installing', config: {} } as any);
         operationRegistry.register(appUrn, { requestId: 'install-1', command: 'install', tier: 'safe' });

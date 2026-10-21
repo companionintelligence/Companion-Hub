@@ -1528,6 +1528,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     if (existingApp && existingApp.status !== 'install_failed') {
+      // Once more before the write. The checks since the last look reach the image registry and
+      // Companion Portal, and an uninstall that began meanwhile would lose its outcome to this Start.
+      this.refuseInstallWhileBusy(appUrn, (await this.appRepository.getAppByUrn(appUrn))?.status);
       await this.appRepository.updateAppById(existingApp.id, buildInstallRowPatch(parsedForm));
       await this.claimCustomDomainIntent(existingApp.id, parsedForm.customDomain);
       // Part of the install the caller was authorized for, not a new decision.
