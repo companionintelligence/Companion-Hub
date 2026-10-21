@@ -1268,7 +1268,7 @@ describe('DockerService', () => {
           'alpine:3.20',
           'sh',
           '-c',
-          'cp -a /src/. /dest/; status=$?; chown -R "$1" /dest && chmod -R u+rwX /dest || status=1; exit $status',
+          'cp -a /src/. /dest/; status=$?; find /dest \\( -type b -o -type c \\) -delete || status=1; chown -R "$1" /dest && chmod -R u+rwX /dest || status=1; exit $status',
           'sh',
           '1000:1000',
         ],

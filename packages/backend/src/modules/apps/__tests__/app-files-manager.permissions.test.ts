@@ -34,7 +34,7 @@ describe('buildPermissionsCommand', () => {
     const cmd = buildPermissionsCommand('/app-data/store/app', ['/app-data/store/app/data/secrets', '/app-data/store/app/app.env']);
 
     expect(cmd).toBe(
-      "find '/app-data/store/app' \\( -path '/app-data/store/app/data/secrets' -o -path '/app-data/store/app/app.env' \\) -prune -o -exec chmod -f a+rwx {} +",
+      "find '/app-data/store/app' \\( -path '/app-data/store/app/data/secrets' -o -path '/app-data/store/app/app.env' \\) -prune -o ! -type l -exec chmod -f a+rwx {} +",
     );
   });
 
@@ -48,20 +48,20 @@ describe('buildPermissionsCommand', () => {
     const cmd = buildPermissionsCommand('/app-data/store/app', ['/app-data/store/app/app.env'], 1000);
 
     expect(cmd).toBe(
-      "find '/app-data/store/app' \\( -path '/app-data/store/app/app.env' -o -type d ! -user 1000 ! -perm -005 \\) -prune -o -user 1000 -exec chmod -f a+rwx {} +",
+      "find '/app-data/store/app' \\( -path '/app-data/store/app/app.env' -o -type d ! -user 1000 ! -perm -005 \\) -prune -o ! -type l -user 1000 -exec chmod -f a+rwx {} +",
     );
   });
 
   it('for a Hub running as a plain user with nothing excluded, still keeps to what it owns', () => {
     expect(buildPermissionsCommand('/app-data/store/app', [], 1000)).toBe(
-      "find '/app-data/store/app' \\( -type d ! -user 1000 ! -perm -005 \\) -prune -o -user 1000 -exec chmod -f a+rwx {} +",
+      "find '/app-data/store/app' \\( -type d ! -user 1000 ! -perm -005 \\) -prune -o ! -type l -user 1000 -exec chmod -f a+rwx {} +",
     );
   });
 
   it.each([0, undefined])('for a Hub running as root (uid %s), is the sweep it always was', (uid) => {
     expect(buildPermissionsCommand('/app-data/store/app', [], uid)).toBe("chmod -Rf a+rwx '/app-data/store/app'");
     expect(buildPermissionsCommand('/app-data/store/app', ['/app-data/store/app/app.env'], uid)).toBe(
-      "find '/app-data/store/app' \\( -path '/app-data/store/app/app.env' \\) -prune -o -exec chmod -f a+rwx {} +",
+      "find '/app-data/store/app' \\( -path '/app-data/store/app/app.env' \\) -prune -o ! -type l -exec chmod -f a+rwx {} +",
     );
   });
 
@@ -175,7 +175,7 @@ describe('AppFilesManager.setAppDataDirPermissions', () => {
 
     const cmd = execAsyncMock.mock.calls[0]?.[0] as string;
     expect(cmd).toContain('-type d ! -user 1000 ! -perm -005');
-    expect(cmd).toContain('-o -user 1000 -exec chmod -f a+rwx {} +');
+    expect(cmd).toContain('-o ! -type l -user 1000 -exec chmod -f a+rwx {} +');
   });
 
   it('falls back to the plain sweep of everything but app.env when the manifest is unreadable', async () => {

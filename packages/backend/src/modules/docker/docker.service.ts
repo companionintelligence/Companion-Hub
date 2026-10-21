@@ -642,8 +642,16 @@ export class DockerService {
 
     const copied = await this.runPrivilegedSnapshotHelper(
       [`${paths.hostAppDataDir}:/src:ro`, `${paths.hostSnapshotDir}:/dest:rw`],
-      // The owner changes even after a copy that failed half-way, so the Hub can delete what was written.
-      ['sh', '-c', 'cp -a /src/. /dest/; status=$?; chown -R "$1" /dest && chmod -R u+rwX /dest || status=1; exit $status', 'sh', `${uid}:${gid}`],
+      // Device nodes go before the chown. A container running as root can make one in its data, and
+      // given to the Hub's user it would open that disk to the same user on the host. The owner changes
+      // even after a copy that failed half-way, so the Hub can delete what was written.
+      [
+        'sh',
+        '-c',
+        'cp -a /src/. /dest/; status=$?; find /dest \\( -type b -o -type c \\) -delete || status=1; chown -R "$1" /dest && chmod -R u+rwX /dest || status=1; exit $status',
+        'sh',
+        `${uid}:${gid}`,
+      ],
       PRIVILEGED_COPY_TIMEOUT_MS,
       `copying ${paths.hostAppDataDir} into ${paths.hostSnapshotDir} for a backup`,
       BACKUP_STAGING_AREA.tag,

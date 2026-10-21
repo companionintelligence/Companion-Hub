@@ -32,6 +32,11 @@ function shellQuotePath(value: string): string {
  * only fail. Every such failure made the whole sweep report an error for an
  * app that works. A root Hub can change everything, so it gets the sweep as
  * it always was.
+ *
+ * Symbolic links are never handed to chmod (`! -type l`). chmod follows a
+ * link named on its command line, so a link an app's container left in its
+ * data (`data/x -> /data/state/settings.json`) made that file, outside the
+ * app's folder, world-writable. `chmod -R` already skips the links it meets.
  */
 export function buildPermissionsCommand(appDataDir: string, excluded: readonly string[], hubUid?: number): string {
   const dir = shellQuotePath(appDataDir);
@@ -41,10 +46,10 @@ export function buildPermissionsCommand(appDataDir: string, excluded: readonly s
   }
   const prune = excluded.map((target) => `-path ${shellQuotePath(target)}`);
   if (!ownedOnly) {
-    return `find ${dir} \\( ${prune.join(' -o ')} \\) -prune -o -exec chmod -f a+rwx {} +`;
+    return `find ${dir} \\( ${prune.join(' -o ')} \\) -prune -o ! -type l -exec chmod -f a+rwx {} +`;
   }
   prune.push(`-type d ! -user ${hubUid} ! -perm -005`);
-  return `find ${dir} \\( ${prune.join(' -o ')} \\) -prune -o -user ${hubUid} -exec chmod -f a+rwx {} +`;
+  return `find ${dir} \\( ${prune.join(' -o ')} \\) -prune -o ! -type l -user ${hubUid} -exec chmod -f a+rwx {} +`;
 }
 
 @Injectable()

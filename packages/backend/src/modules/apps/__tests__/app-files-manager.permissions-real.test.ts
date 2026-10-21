@@ -63,4 +63,46 @@ describe.skipIf(!canEnforcePermissions)('the permission sweep on a real tree', (
     await expect(mode('data/plugin.yaml')).resolves.toBe('644');
     await expect(mode('data/db/mysql')).resolves.toBe('700');
   });
+
+  /*
+   * The test owns its 700 folders, so `find` could list them whether it pruned them or not. A folder
+   * at 000 is one even its owner cannot list: the sweep for root walks into it and fails, as it did
+   * into MariaDB's, and the sweep for a plain-user Hub must not.
+   */
+  describe('with a folder the sweep cannot list', () => {
+    const locked = () => path.join(appDataDir, 'data', 'db', 'sys');
+
+    beforeEach(async () => {
+      await fs.promises.chmod(locked(), 0o000);
+    });
+
+    afterEach(async () => {
+      await fs.promises.chmod(locked(), 0o700);
+    });
+
+    it('does not walk into it when it belongs to another user', async () => {
+      const excluded = [path.join(appDataDir, 'app.env')];
+
+      await expect(execAsync(buildPermissionsCommand(appDataDir, excluded))).resolves.toMatchObject({
+        stderr: expect.stringContaining('Permission denied'),
+      });
+      await expect(execAsync(buildPermissionsCommand(appDataDir, excluded, uid + 1))).resolves.toMatchObject({ stderr: '' });
+    });
+  });
+
+  // chmod follows a link named on its command line: a link left in the data made its target world-writable.
+  it.each([
+    ['a Hub running as a plain user', () => uid],
+    ['a Hub running as root', () => undefined],
+  ])('does not follow a link out of the data folder, for %s', async (_label, hubUid) => {
+    const outside = path.join(scratch, 'settings.json');
+    await fs.promises.writeFile(outside, '{"hubLocalKey":"x"}', { mode: 0o600 });
+    await fs.promises.symlink(outside, path.join(appDataDir, 'data', 'settings-link'));
+
+    const { stderr } = await execAsync(buildPermissionsCommand(appDataDir, [path.join(appDataDir, 'app.env')], hubUid()));
+
+    expect(stderr).toBe('');
+    expect(((await fs.promises.stat(outside)).mode & 0o777).toString(8)).toBe('600');
+    await expect(mode('data/plugin.yaml')).resolves.toBe('777');
+  });
 });
