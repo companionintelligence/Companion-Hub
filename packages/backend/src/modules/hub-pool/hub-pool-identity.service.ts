@@ -111,8 +111,11 @@ export class HubPoolIdentityService {
       })
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
-        this.lastError = message;
-        this.retryAfter = Date.now() + IDENTITY_RETRY_MS;
+        // A load from before a {@link forget} failing late must not hold off the next Hub's mint for a minute.
+        if (generation === this.generation) {
+          this.lastError = message;
+          this.retryAfter = Date.now() + IDENTITY_RETRY_MS;
+        }
         this.logger.warn(`[HubPool] pool identity unavailable; peers will keep using the bearer token: ${message}`);
         return null;
       })

@@ -223,4 +223,25 @@ describe('HubPoolIdentityService', () => {
 
     expect((await service.get())?.nodeUuid).not.toBe(old?.nodeUuid);
   });
+
+  // The failure of a load from before the reset used to set the one-minute retry wait the reset had cleared.
+  it('mints at once after forget when a load from before it fails late', async () => {
+    const service = build();
+    let fail: () => void = () => undefined;
+    vi.spyOn(repo, 'get').mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          fail = () => reject(new Error('connection terminated'));
+        }),
+    );
+
+    const loading = service.get();
+    service.forget();
+    fail();
+    await expect(loading).resolves.toBeNull();
+
+    const after = await service.get();
+    expect(after?.nodeUuid).toMatch(/^[0-9a-f-]{36}$/);
+    await expect(service.summary()).resolves.toMatchObject({ nodeUuid: after?.nodeUuid, identityError: null });
+  });
 });
