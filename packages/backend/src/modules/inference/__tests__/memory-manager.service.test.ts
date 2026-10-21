@@ -634,6 +634,22 @@ describe('MemoryManagerService', () => {
       expect((await service.canFitModel(unified(live(61440)), 30000)).fits).toBe(false);
     });
 
+    it("never budgets an APU past what its GPU addresses (the driver's VRAM plus GTT), however much RAM is free", async () => {
+      // A Ryzen AI Max+ 395: 125780 MB of RAM with 115712 free. amdgpu gives the GPU 512 MiB + 107.5 GiB = 110592 MB.
+      const strixHalo: HardwareProfile = {
+        ...unified(live(115_712)),
+        gpu: { ...unified(live(115_712)).gpu, vramMb: 110_592 },
+        ram: { totalMb: 125_780, availableMb: 115_712, usedMb: 10_068, sampledAt: '2026-10-20T12:00:00.000Z' },
+      };
+
+      const budget = await service.calculateBudget(strixHalo);
+
+      expect(budget.modelBudgetRamMb).toBe(110_592);
+      expect(modelMemoryCeilingMb(strixHalo)).toBe(110_592);
+      expect((await service.canFitModel(strixHalo, 112_000)).fits).toBe(false);
+      expect((await service.canFitModel(strixHalo, 100_000)).fits).toBe(true);
+    });
+
     it('does not cap on a host-probe snapshot (no sampledAt): macOS/Windows keep the budget arithmetic', async () => {
       // The desktop probe's vm_stat free+inactive at app start on a busy Mac; it never refreshes,
       // and macOS would hand the memory over on demand. Capping on it would refuse loads that

@@ -178,12 +178,7 @@ if ($null -eq $gpu) { exit 3 };
 
     #[cfg(target_os = "linux")]
     {
-        let output = Command::new("sh")
-        .arg("-lc")
-        .arg("nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader,nounits | head -n 1")
-        .output();
-
-        let output = match output {
+        let output = match linux_nvidia_smi_query() {
             Ok(value) => value,
             Err(error) => {
                 clear_stale_probe();
@@ -245,11 +240,14 @@ if ($null -eq $gpu) { exit 3 };
             return;
         }
 
+        // `updatedAt` lets the Hub take the file as proof that the driver answered in this boot
+        // (`hostNvidiaAvailable`), as it does for the one `cihub up` writes.
         let payload = serde_json::json!({
             "model": model,
             "vramMb": vram_mb,
             "driverVersion": driver_version,
-            "source": "desktop-host-nvidia-smi"
+            "source": "desktop-host-nvidia-smi",
+            "updatedAt": chrono::Utc::now().to_rfc3339()
         });
 
         let serialized = match serde_json::to_string_pretty(&payload) {
@@ -287,6 +285,28 @@ if ($null -eq $gpu) { exit 3 };
                 );
             }
         }
+    }
+}
+
+/// `nvidia-smi --query-gpu=name,memory.total,driver_version` on a Linux host, one CSV row per GPU.
+///
+/// Run directly, not through `sh -lc`. A login shell sources `~/.profile` first. With dash, one
+/// bad line there ends the shell before nvidia-smi starts: on a laptop whose profile sourced a file
+/// that no longer existed, every start logged `nvidia-smi command failed: sh: 34: .: cannot open …`
+/// and no `nvidia.json` was written, which left the Hub without the card's real memory. The login
+/// shell stays as the fallback for an app started with a PATH that lacks nvidia-smi.
+#[cfg(target_os = "linux")]
+fn linux_nvidia_smi_query() -> std::io::Result<std::process::Output> {
+    const QUERY: [&str; 2] = [
+        "--query-gpu=name,memory.total,driver_version",
+        "--format=csv,noheader,nounits",
+    ];
+    match Command::new("nvidia-smi").args(QUERY).output() {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Command::new("sh")
+            .arg("-lc")
+            .arg(format!("nvidia-smi {}", QUERY.join(" ")))
+            .output(),
+        result => result,
     }
 }
 

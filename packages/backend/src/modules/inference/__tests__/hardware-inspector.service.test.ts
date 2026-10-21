@@ -80,7 +80,7 @@ describe('HardwareInspectorService', () => {
 
     it('S-HW-1.1: SHALL detect GPU vendor, model, and VRAM', async () => {
       (si.graphics as any) = vi.fn().mockResolvedValue({
-        controllers: [{ vendor: 'NVIDIA', model: 'RTX 4090', vram: 24576, driverVersion: '535.129.03' }],
+        controllers: [{ vendor: 'NVIDIA', model: 'RTX 4090', vram: 24576, memoryTotal: 24576, driverVersion: '535.129.03' }],
       });
       (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen 9' });
       filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
@@ -135,7 +135,7 @@ describe('HardwareInspectorService', () => {
       (si.graphics as any) = vi.fn().mockResolvedValue({
         controllers: [
           { vendor: 'Intel', model: 'Intel UHD Graphics', vram: 128, driverVersion: '1.0' },
-          { vendor: 'NVIDIA', model: 'NVIDIA GeForce RTX 4090', vram: 24564, driverVersion: '535.129.03' },
+          { vendor: 'NVIDIA', model: 'NVIDIA GeForce RTX 4090', vram: 24564, memoryTotal: 24564, driverVersion: '535.129.03' },
         ],
       });
       (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen 9' });
@@ -200,7 +200,7 @@ describe('HardwareInspectorService', () => {
 
     it('SHALL keep the systeminformation VRAM when it already exceeds the nvidia-smi reading', async () => {
       (si.graphics as any) = vi.fn().mockResolvedValue({
-        controllers: [{ vendor: 'NVIDIA', model: 'RTX 4090', vram: 24576, driverVersion: '535.129.03' }],
+        controllers: [{ vendor: 'NVIDIA', model: 'RTX 4090', vram: 24576, memoryTotal: 24576, driverVersion: '535.129.03' }],
       });
       execAsyncMock.mockImplementation(async (command: string) => {
         if (command.includes('--query-gpu=name,memory.total,driver_version')) {
@@ -475,12 +475,16 @@ describe('HardwareInspectorService', () => {
 
         const profile = await service.detect();
 
+        // The container's 8192 is lspci's BAR. The card's size and name are what the host's
+        // nvidia-smi says. 8188 MiB is an 8 GB card, so it tiers medium.
         expect(profile.gpu.vendor).toBe('nvidia');
-        expect(profile.gpu.vramMb).toBe(8192);
+        expect(profile.gpu.model).toBe('NVIDIA RTX A1000');
+        expect(profile.gpu.vramMb).toBe(8188);
+        expect(profile.gpu.driverVersion).toBe('595.91.07');
         expect(profile.gpu.runtimeAvailable).toBe(false);
         expect(profile.gpu.hostNvidiaAvailable).toBe(true);
         expect(profile.tier).toBe('medium');
-        expect(profile.effectiveInferenceMemoryMb).toBe(8192);
+        expect(profile.effectiveInferenceMemoryMb).toBe(8188);
       });
 
       it('SHALL tier high from the host probe VRAM when the container sees no controller at all', async () => {
@@ -574,7 +578,7 @@ describe('HardwareInspectorService', () => {
         expect(profile.tier).toBe('medium');
       });
 
-      it('SHALL accept a fresh host gpu_processes.json for the nvidia vendor as the host proof when nvidia.json is absent', async () => {
+      it('SHALL accept a fresh host gpu_processes.json for the nvidia vendor as the host proof when nvidia.json is absent (VRAM unknown, so low)', async () => {
         betaNasContainerView();
         filesystemService.readTextFile.mockImplementation(async () => meminfo);
         filesystemService.readJsonFile.mockImplementation(async (filePath: string) =>
@@ -591,9 +595,12 @@ describe('HardwareInspectorService', () => {
 
         const profile = await service.detect();
 
+        // The process file proves the driver but carries no total. The container's 8192 is
+        // lspci's BAR, so the card's memory is unknown until a probe says it.
         expect(profile.gpu.runtimeAvailable).toBe(false);
         expect(profile.gpu.hostNvidiaAvailable).toBe(true);
-        expect(profile.tier).toBe('medium');
+        expect(profile.gpu.vramMb).toBe(0);
+        expect(profile.tier).toBe('low');
       });
 
       it('SHALL ignore a stale gpu_processes.json: a dead writer proves nothing about the host', async () => {
@@ -1026,9 +1033,9 @@ describe('HardwareInspectorService', () => {
       expect(tier).toBe('medium');
     });
 
-    it('S-HW-3.1: the tier lines are exact — nvidia-smi 8188 MB for an 8 GB card (the driver keeps 4 MB back) lands low when it is the only VRAM source', () => {
-      // Deliberately pinned: whether the lines should carry slack for the driver's reservation is
-      // its own change, not part of the host-proof fix.
+    it('S-HW-3.1: an 8 GB card that nvidia-smi reports as 8188 MB (the driver keeps 4 MB back) tiers medium', () => {
+      // The Hub reads the driver's figure now, not lspci's BAR. The driver's figure sits a few MB
+      // under the card's size.
       const tier = service.computeTier(
         {
           available: true,
@@ -1042,7 +1049,25 @@ describe('HardwareInspectorService', () => {
         },
         { totalMb: 63425, availableMb: 33734 },
       );
-      expect(tier).toBe('low');
+      expect(tier).toBe('medium');
+    });
+
+    it('S-HW-3.1: the slack under a tier line lifts no smaller card: 6 GB and 7.5 GB stay low, a 24 GB card at 24564 MB is high', () => {
+      const card = (vramMb: number) => ({
+        available: true,
+        vendor: 'nvidia' as const,
+        model: 'card',
+        vramMb,
+        unifiedMemory: false,
+        driverVersion: '',
+        runtimeAvailable: true,
+      });
+      const ram = { totalMb: 63425, availableMb: 33734 };
+      expect(service.computeTier(card(6144), ram)).toBe('low');
+      expect(service.computeTier(card(7680), ram)).toBe('low');
+      expect(service.computeTier(card(15360), ram)).toBe('medium');
+      expect(service.computeTier(card(24564), ram)).toBe('high');
+      expect(service.computeTier(card(3584), ram)).toBe('cpu-only');
     });
 
     it('S-HW-3.1: high tier for a 24 GB NVIDIA card proven by the host probe without the container runtime', () => {
@@ -1149,7 +1174,7 @@ describe('HardwareInspectorService', () => {
           controllers: [{ vendor: 'NVIDIA', model: 'RTX 3080', vram: 0, driverVersion: '535' }],
         })
         .mockResolvedValueOnce({
-          controllers: [{ vendor: 'NVIDIA', model: 'RTX 3080', vram: 8192, driverVersion: '535' }],
+          controllers: [{ vendor: 'NVIDIA', model: 'RTX 3080', vram: 8192, memoryTotal: 8192, driverVersion: '535' }],
         });
       (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen' });
       filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
@@ -1210,7 +1235,7 @@ describe('HardwareInspectorService', () => {
           controllers: [{ vendor: 'NVIDIA', model: 'RTX 3080', vram: 32, driverVersion: '535' }],
         })
         .mockResolvedValueOnce({
-          controllers: [{ vendor: 'NVIDIA', model: 'RTX 3080', vram: 8192, driverVersion: '535' }],
+          controllers: [{ vendor: 'NVIDIA', model: 'RTX 3080', vram: 8192, memoryTotal: 8192, driverVersion: '535' }],
         });
       (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen' });
       filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
@@ -1781,6 +1806,216 @@ describe('HardwareInspectorService', () => {
     });
   });
 
+  // ─── Linux NVIDIA: lspci's BAR is not the card's memory ─────────────────────
+
+  describe('NVIDIA on Linux without nvidia-smi in the container', () => {
+    // What `si.graphics()` returns on an RTX 3080 Laptop GPU (8 GB) host with nvidia-smi out of
+    // reach, as it is in the Hub container: lspci's chip name and its 16G prefetchable BAR (Resizable
+    // BAR on). With nvidia-smi the same call says `vram: 8192, memoryTotal: 8192`.
+    const rtx3080LaptopContainerView = () => {
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [
+          {
+            vendor: 'Intel Corporation',
+            model: 'CometLake-H GT2 [UHD Graphics]',
+            bus: 'Onboard',
+            busAddress: '00:02.0',
+            vram: 256,
+            vramDynamic: false,
+          },
+          {
+            vendor: 'NVIDIA Corporation',
+            model: 'GA104M [GeForce RTX 3080 Mobile / Max-Q 8GB/16GB]',
+            bus: 'Onboard',
+            busAddress: '01:00.0',
+            vram: 16384,
+            vramDynamic: false,
+          },
+        ],
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'Core™ i7-10875H' });
+      vi.spyOn(service as any, 'detectDockerInfo').mockResolvedValue({ nvidiaRuntime: true, containerHostKind: 'native-linux' });
+      execAsyncMock.mockImplementation(async (command: string) => {
+        if (command.includes('nvidia-smi') || command.includes('/proc/driver/nvidia')) throw new Error('not in the container');
+        return { stdout: '{}' };
+      });
+      filesystemService.listFiles.mockResolvedValue([]);
+      filesystemService.pathExists.mockResolvedValue(false);
+    };
+    const meminfo = 'MemTotal: 64649216\nMemAvailable: 34422784';
+
+    beforeEach(() => {
+      process.env.CI_HUB_HOST_PLATFORM = 'linux';
+    });
+
+    it('SHALL NOT report the 16G BAR as VRAM: without a probe the memory is unknown and the tier waits on it', async () => {
+      rtx3080LaptopContainerView();
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => (filePath === '/host/proc/meminfo' ? meminfo : null));
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vendor).toBe('nvidia');
+      expect(profile.gpu.available).toBe(true);
+      expect(profile.gpu.vramMb).toBe(0);
+      expect(profile.tier).toBe('low');
+      expect(profile.effectiveInferenceMemoryMb).toBe(0);
+    });
+
+    it('SHALL take the card from the host nvidia.json: 8192 MB, its marketing name and the driver version', async () => {
+      rtx3080LaptopContainerView();
+      uptimeOverride.value = 2 * 60 * 60;
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/data/state/hardware/nvidia.json') {
+          return JSON.stringify({
+            model: 'NVIDIA GeForce RTX 3080 Laptop GPU',
+            vramMb: 8192,
+            driverVersion: '595.99.02',
+            source: 'desktop-host-nvidia-smi',
+            updatedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+          });
+        }
+        return filePath === '/host/proc/meminfo' ? meminfo : null;
+      });
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vramMb).toBe(8192);
+      expect(profile.gpu.model).toBe('NVIDIA GeForce RTX 3080 Laptop GPU');
+      expect(profile.gpu.driverVersion).toBe('595.99.02');
+      expect(profile.tier).toBe('medium');
+      expect(profile.effectiveInferenceMemoryMb).toBe(8192);
+    });
+
+    it('SHALL trust the reading when systeminformation got it from nvidia-smi (a Hub on the host) and use the card name', async () => {
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [
+          {
+            vendor: 'NVIDIA Corporation',
+            model: 'GA104M [GeForce RTX 3080 Mobile / Max-Q 8GB/16GB]',
+            busAddress: '01:00.0',
+            vram: 8192,
+            memoryTotal: 8192,
+            driverVersion: '595.99.02',
+            name: 'NVIDIA GeForce RTX 3080 Laptop GPU',
+          },
+        ],
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'Core™ i7-10875H' });
+      vi.spyOn(service as any, 'detectDockerInfo').mockResolvedValue({ nvidiaRuntime: true, containerHostKind: 'native-linux' });
+      const smiSpy = vi.spyOn(service as any, 'detectLargestNvidiaGpuViaSmi');
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => (filePath === '/host/proc/meminfo' ? meminfo : null));
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vramMb).toBe(8192);
+      expect(profile.gpu.model).toBe('NVIDIA GeForce RTX 3080 Laptop GPU');
+      expect(profile.tier).toBe('medium');
+      expect(smiSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── AMD APU: what the GPU can address, from the driver ────────────────────
+
+  describe('AMD APU shared memory from amdgpu sysfs', () => {
+    // A Ryzen AI Max+ 395 with 122.8 GB of RAM, as its Hub saw it: systeminformation reported no AMD
+    // controller, so the APU was inferred from the CPU name. amdgpu gives it a 512 MiB carve-out and
+    // 107.5 GiB of GTT; the host's Ollama (Vulkan) says total="108.0 GiB".
+    const GIB = 1024 * 1024 * 1024;
+    const strixHalo = (sysfs: Record<string, string>) => {
+      process.env.CI_HUB_HOST_PLATFORM = 'linux';
+      (si.graphics as any) = vi.fn().mockResolvedValue({ controllers: [] });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 32, brand: 'AMD RYZEN AI MAX+ 395 w/ Radeon 8060S' });
+      vi.spyOn(service as any, 'detectDockerInfo').mockResolvedValue({ nvidiaRuntime: false, containerHostKind: 'native-linux' });
+      filesystemService.pathExists.mockResolvedValue(false);
+      filesystemService.listFiles.mockImplementation(async (dirPath: string) =>
+        dirPath === '/sys/class/drm' ? ['card1', 'card1-DP-1', 'renderD128', 'version'] : [],
+      );
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/host/proc/meminfo') return 'MemTotal: 128798720\nMemAvailable: 118489088';
+        return sysfs[filePath] ?? null;
+      });
+    };
+
+    it('SHALL report the carve-out plus GTT (108 GiB), not all 122.8 GB of RAM and budget no more than that', async () => {
+      strixHalo({
+        '/sys/class/drm/card1/device/mem_info_vram_total': `${0.5 * GIB}\n`,
+        '/sys/class/drm/card1/device/mem_info_gtt_total': `${107.5 * GIB}\n`,
+      });
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vendor).toBe('amd');
+      expect(profile.gpu.unifiedMemory).toBe(true);
+      expect(profile.ram.totalMb).toBe(125780);
+      expect(profile.gpu.vramMb).toBe(108 * 1024);
+      // 115712 MB of RAM is free, but the GPU addresses 110592.
+      expect(profile.ram.availableMb).toBe(115712);
+      expect(profile.effectiveInferenceMemoryMb).toBe(108 * 1024);
+      expect(profile.tier).toBe('high');
+    });
+
+    it('SHALL keep the RAM figure when the driver publishes no GTT total', async () => {
+      strixHalo({ '/sys/class/drm/card1/device/mem_info_vram_total': `${0.5 * GIB}\n` });
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.unifiedMemory).toBe(true);
+      expect(profile.gpu.vramMb).toBe(125780);
+      expect(profile.effectiveInferenceMemoryMb).toBe(115712);
+    });
+  });
+
+  // ─── Host OS from inside the Hub container ──────────────────────────────────
+
+  describe('host OS', () => {
+    beforeEach(() => {
+      process.env.CI_HUB_HOST_PLATFORM = 'linux';
+      (si.graphics as any) = vi.fn().mockResolvedValue({ controllers: [] });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'Intel Core i7' });
+      // What si.osInfo() reads inside the Hub image.
+      (si.osInfo as any) = vi.fn().mockResolvedValue({ platform: 'linux', distro: 'Alpine Linux', release: '3.21.4', codename: '' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+    });
+
+    const dockerInfo = (osName: string, osVersion: string, kernel = '7.0.0-38-generic') => {
+      execAsyncMock.mockImplementation(async (cmd: string) => {
+        if (cmd.includes('.OperatingSystem')) return { stdout: `{"runc":{}}\t${osName}\t${kernel}\t\t${osVersion}\n` };
+        return { stdout: '{}' };
+      });
+    };
+
+    it('SHALL name the host distribution from the Docker engine when the Hub runs in a container on Linux', async () => {
+      dockerInfo('Ubuntu 26.04 LTS', '26.04');
+      vi.spyOn(service as any, 'runsInContainer').mockReturnValue(true);
+
+      const profile = await service.detect();
+
+      expect(profile.os).toEqual({ platform: 'linux', name: 'Ubuntu', version: '26.04 LTS' });
+    });
+
+    it('SHALL keep the whole engine OS as the name when it has no version to split on', async () => {
+      dockerInfo('Arch Linux', '');
+      vi.spyOn(service as any, 'runsInContainer').mockReturnValue(true);
+
+      expect((await service.detect()).os).toEqual({ platform: 'linux', name: 'Arch Linux', version: '' });
+    });
+
+    it('SHALL NOT take "Docker Desktop" for the host OS', async () => {
+      dockerInfo('Docker Desktop', '', '6.10.14-linuxkit');
+      vi.spyOn(service as any, 'runsInContainer').mockReturnValue(true);
+
+      expect((await service.detect()).os.name).toBe('Alpine Linux');
+    });
+
+    it('SHALL keep si.osInfo() when the backend runs on the host, whatever engine it talks to', async () => {
+      dockerInfo('Alpine Linux v3.22', '3.22.2');
+      vi.spyOn(service as any, 'runsInContainer').mockReturnValue(false);
+
+      expect((await service.detect()).os.name).toBe('Alpine Linux');
+      expect(si.osInfo).toHaveBeenCalled();
+    });
+  });
+
   // ─── Container host kind (Docker Desktop vs native WSL2 engine vs Linux) ─────
 
   describe('container host kind detection', () => {
@@ -2058,7 +2293,7 @@ describe('HardwareInspectorService', () => {
 
     it('discrete node: free RAM is live but the inference budget stays the card', async () => {
       (si.graphics as any) = vi.fn().mockResolvedValue({
-        controllers: [{ vendor: 'NVIDIA', model: 'RTX 4090', vram: 24576, driverVersion: '535.129.03' }],
+        controllers: [{ vendor: 'NVIDIA', model: 'RTX 4090', vram: 24576, memoryTotal: 24576, driverVersion: '535.129.03' }],
       });
       (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen 9 7950X' });
       const live = { current: meminfo(49941, 65536) };

@@ -3,6 +3,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 import { isHostRocmStackProbe, isRocmKfdPassthroughProbe } from '@/modules/inference/host-rocm-availability';
+import { detectHubContainer } from '@/modules/inference/backends/host-url.util';
 import {
   HOST_GPU_PROCESSES_FILE_PATH,
   hostGpuProcessesFileSchema,
@@ -41,6 +42,10 @@ const MIN_PLAUSIBLE_DISCRETE_VRAM_MB = 512;
 // nothing about this one. /proc/uptime is the kernel's, not the container's, so this boot is
 // known here; the tolerance covers the wall clock settling (NTP) between boot and the probe.
 const HOST_NVIDIA_PROBE_BOOT_TOLERANCE_MS = 5 * 60 * 1000;
+// A tier rung is a card size. A driver keeps a few MB of the card for itself: nvidia-smi says
+// 8188 MiB for an 8 GB RTX A1000 and 24564 for a 24 GB RTX 4090. A card this close under a rung is
+// on it. Card sizes sit gigabytes apart, so no smaller card is lifted by it.
+const VRAM_TIER_SLACK_MB = 256;
 // Windows WMI Win32_VideoController.AdapterRAM is a 32-bit field that NVIDIA saturates at exactly
 // 4095 MB, so any GPU with >=4 GB VRAM reports ~4095 MB there. Readings in this band on Windows are
 // treated as suspect and cross-checked against nvidia-smi. A reading of 4096+ MB instead comes from
@@ -53,6 +58,23 @@ type IntegratedGpuInference = {
   model: string;
 };
 
+/**
+ * What a Linux NVIDIA controller from `si.graphics()` says about the card's memory, in MB, or 0
+ * when it says nothing.
+ *
+ * systeminformation fills `vram` from the largest `Memory at … [size=…]` region `lspci -vvv` lists.
+ * That is a PCIe BAR, an address window, not the card's memory: an 8 GB RTX 3080 Laptop GPU
+ * (`GA104M [GeForce RTX 3080 Mobile / Max-Q 8GB/16GB]`) shows `[size=16G]` with Resizable BAR on,
+ * and a card with it off shows 256M. Only when systeminformation's own `nvidia-smi` call answered
+ * does it replace `vram` with the driver's figure. It sets `memoryTotal` then too, so
+ * `memoryTotal` is what tells the two apart. The Hub container has no `nvidia-smi`, so there it is
+ * always the BAR. The host probe (`nvidia.json`) has to supply the figure.
+ */
+function linuxNvidiaControllerVramMb(controller: { memoryTotal?: number | null }): number {
+  const fromDriver = controller.memoryTotal;
+  return typeof fromDriver === 'number' && Number.isFinite(fromDriver) && fromDriver > 0 ? Math.round(fromDriver) : 0;
+}
+
 /** Hardware data written by the Tauri desktop app on macOS hosts. */
 interface MacOsHostProbe {
   platform: 'darwin';
@@ -63,6 +85,31 @@ interface MacOsHostProbe {
   availableRamMb: number;
   isAppleSilicon: boolean;
   source: string;
+}
+
+/**
+ * What models may take on a unified-memory GPU right now: the RAM free now, but never more than the
+ * GPU can address (`vramMb`). That is all of RAM on Apple Silicon and on an APU whose driver said
+ * nothing, so only an AMD APU with a driver figure is capped. 0 or less is no figure.
+ */
+function unifiedInferenceMemoryMb(gpu: HardwareProfile['gpu'], availableRamMb: number): number {
+  return gpu.vramMb > 0 ? Math.min(availableRamMb, gpu.vramMb) : availableRamMb;
+}
+
+/**
+ * `docker info`'s `OperatingSystem` split into the OS tile's name and version, using `OSVersion`:
+ * "Ubuntu 26.04 LTS" with "26.04" gives "Ubuntu" and "26.04 LTS". Without a version to split on
+ * the whole string is the name ("Arch Linux"). Undefined when the engine named no OS.
+ */
+function splitEngineOs(operatingSystem: string, osVersion: string): { name: string; version: string } | undefined {
+  const full = operatingSystem.trim();
+  if (!full) return undefined;
+  const version = osVersion.trim();
+  const at = version ? full.indexOf(version) : -1;
+  if (at > 0) {
+    return { name: full.slice(0, at).trim(), version: full.slice(at).trim() };
+  }
+  return { name: full, version: '' };
 }
 
 @Injectable()
@@ -153,7 +200,11 @@ export class HardwareInspectorService {
       usedMb: Math.max(0, profile.ram.totalMb - availableMb),
       sampledAt: new Date(liveAvailableMb.sampledAt).toISOString(),
     };
-    const effectiveInferenceMemoryMb = profile.gpu.unifiedMemory || !profile.gpu.available ? availableMb : profile.effectiveInferenceMemoryMb;
+    const effectiveInferenceMemoryMb = profile.gpu.unifiedMemory
+      ? unifiedInferenceMemoryMb(profile.gpu, availableMb)
+      : profile.gpu.available
+        ? profile.effectiveInferenceMemoryMb
+        : availableMb;
     return { ...profile, ram, effectiveInferenceMemoryMb };
   }
 
@@ -236,7 +287,7 @@ export class HardwareInspectorService {
       this.detectDockerInfo(),
       this.detectRocmSupport(),
     ]);
-    const { nvidiaRuntime, containerHostKind } = dockerInfo;
+    const { nvidiaRuntime, containerHostKind, engineOs } = dockerInfo;
 
     // Read cross-platform host probe (init-host-probe, Tauri desktop, or legacy macOS file).
     const hostProbe = await this.hostMetrics.readHostProbe();
@@ -269,12 +320,18 @@ export class HardwareInspectorService {
     const [nvidiaHostProbe, amdHostProbe] = await Promise.all([this.readNvidiaHostProbe(), this.readAmdHostProbe()]);
     let effectiveGpuInfo = gpuInfo;
     if (nvidiaHostProbe && (gpuInfo.vendor === 'nvidia' || !gpuInfo.available)) {
+      // When the figure is the host's, so is the name: the container only has lspci's, which is the
+      // chip and every memory size it ships with ("GA104M [GeForce RTX 3080 Mobile / Max-Q
+      // 8GB/16GB]"), where nvidia-smi on the host names the card ("NVIDIA GeForce RTX 3080 Laptop GPU").
+      const containerVramPlausible = gpuInfo.vramMb >= MIN_PLAUSIBLE_DISCRETE_VRAM_MB;
+      const probeIdentity = !containerVramPlausible && nvidiaHostProbe.vramMb > 0;
       effectiveGpuInfo = {
         available: gpuInfo.available || !!nvidiaHostProbe.model,
         vendor: 'nvidia' as const,
-        model: gpuInfo.model || nvidiaHostProbe.model,
-        vramMb: gpuInfo.vramMb >= MIN_PLAUSIBLE_DISCRETE_VRAM_MB ? gpuInfo.vramMb : nvidiaHostProbe.vramMb,
-        driverVersion: gpuInfo.driverVersion || nvidiaHostProbe.driverVersion,
+        model: (probeIdentity ? nvidiaHostProbe.model : gpuInfo.model) || gpuInfo.model || nvidiaHostProbe.model,
+        vramMb: containerVramPlausible ? gpuInfo.vramMb : nvidiaHostProbe.vramMb,
+        driverVersion:
+          (probeIdentity ? nvidiaHostProbe.driverVersion : gpuInfo.driverVersion) || gpuInfo.driverVersion || nvidiaHostProbe.driverVersion,
       };
     } else if (amdHostProbe && (gpuInfo.vendor === 'amd' || !gpuInfo.available)) {
       // On Windows + Docker Desktop the container's systeminformation cannot see
@@ -294,8 +351,10 @@ export class HardwareInspectorService {
       this.logger.info('[HardwareInspector] Using host NVIDIA probe cache fallback for GPU detection.');
     } else if (!gpuInfo.available && hostProbe && amdHostProbe) {
       this.logger.info('[HardwareInspector] Using host AMD probe cache fallback for GPU detection.');
-    } else if (hostProbe && gpuInfo.vendor === 'nvidia' && gpuInfo.vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB) {
-      this.logger.info('[HardwareInspector] Augmenting NVIDIA GPU detection with host probe VRAM data (SI reported unreliable value).');
+    } else if (nvidiaHostProbe && gpuInfo.vendor === 'nvidia' && gpuInfo.vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB) {
+      this.logger.info(
+        `[HardwareInspector] NVIDIA VRAM from the host probe: ${nvidiaHostProbe.vramMb} MB (the container has no nvidia-smi reading).`,
+      );
     } else if (hostProbe && gpuInfo.vendor === 'amd' && gpuInfo.vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB && amdHostProbe) {
       this.logger.info('[HardwareInspector] Augmenting AMD GPU detection with host probe VRAM data (SI reported unreliable value).');
     }
@@ -338,7 +397,8 @@ export class HardwareInspectorService {
     };
 
     if (!isAppleSilicon) {
-      gpu = this.applyIntegratedGpuInference(gpu, cpuInfo.model, ramInfo.totalMb, rocmSupport);
+      const apuMemoryMb = this.inferIntegratedGpuFromCpu(cpuInfo.model)?.vendor === 'amd' ? await this.detectAmdApuMemoryFromSysfs() : null;
+      gpu = this.applyIntegratedGpuInference(gpu, cpuInfo.model, ramInfo.totalMb, rocmSupport, apuMemoryMb);
     }
 
     if (gpu.vendor === 'amd') {
@@ -379,10 +439,18 @@ export class HardwareInspectorService {
       }
     }
 
-    const effectiveInferenceMemoryMb = gpu.unifiedMemory ? ramInfo.availableMb : gpu.available ? (gpu.poolVramMb ?? gpu.vramMb) : ramInfo.availableMb;
+    const effectiveInferenceMemoryMb = gpu.unifiedMemory
+      ? unifiedInferenceMemoryMb(gpu, ramInfo.availableMb)
+      : gpu.available
+        ? (gpu.poolVramMb ?? gpu.vramMb)
+        : ramInfo.availableMb;
 
     const tier = this.computeTier(gpu, ramInfo);
-    const os = await this.detectOs(platform, hostPlatform === 'darwin' || hostPlatform === 'win32');
+    const os = await this.detectOs(platform, hostPlatform === 'darwin' || hostPlatform === 'win32', {
+      containerHostKind,
+      engineOs,
+      inContainer: this.runsInContainer(),
+    });
 
     return {
       gpu,
@@ -403,16 +471,31 @@ export class HardwareInspectorService {
    * Host OS name + release codename. In dev (backend on the host) systeminformation reports the real
    * OS (e.g. macOS "Tahoe"). When a macOS or Windows host probe is present the backend runs inside
    * Docker, so si.osInfo() would describe the Linux VM — report the probed host OS instead.
+   *
+   * Inside the Hub container on a Linux host, si.osInfo() reads the image's own `/etc/os-release`
+   * and says "Alpine Linux" on every machine. The Docker engine it talks to runs on the host and
+   * reports the host's distribution in `docker info` ("Ubuntu 26.04 LTS"), so that is the answer
+   * there. Docker Desktop names itself instead and a socktainer engine names nothing, so neither
+   * is used. A backend running on the host keeps si.osInfo(): its engine may be somewhere else.
    */
   private async detectOs(
     platform: NodeJS.Platform | 'darwin',
     fromVmHostProbe: boolean,
+    engine: {
+      containerHostKind: NonNullable<HardwareProfile['gpu']['containerHostKind']>;
+      engineOs?: { name: string; version: string };
+      inContainer: boolean;
+    },
   ): Promise<{ platform: string; name: string; version: string }> {
     if (fromVmHostProbe && platform === 'darwin') {
       return { platform: 'darwin', name: 'macOS', version: '' };
     }
     if (fromVmHostProbe && platform === 'win32') {
       return { platform: 'win32', name: 'Windows', version: '' };
+    }
+    const engineIsOnThisHost = engine.containerHostKind === 'native-linux' || engine.containerHostKind === 'wsl-engine';
+    if (engine.inContainer && engineIsOnThisHost && engine.engineOs) {
+      return { platform: 'linux', ...engine.engineOs };
     }
     try {
       const info = await si.osInfo();
@@ -458,11 +541,16 @@ export class HardwareInspectorService {
     return null;
   }
 
+  /**
+   * `driverApuMemoryMb` is {@link detectAmdApuMemoryFromSysfs}: what the amdgpu driver lets the GPU
+   * address. It is the APU's `vramMb` when there is one; without it, the machine's RAM, as always.
+   */
   private applyIntegratedGpuInference(
     gpu: HardwareProfile['gpu'],
     cpuModel: string,
     totalRamMb: number,
     rocmRuntimeAvailable: boolean,
+    driverApuMemoryMb: number | null = null,
   ): HardwareProfile['gpu'] {
     const integrated = this.inferIntegratedGpuFromCpu(cpuModel);
     const looksLikeDiscreteAmd = gpu.available && gpu.vendor === 'amd' && !gpu.unifiedMemory && gpu.vramMb >= MIN_PLAUSIBLE_DISCRETE_VRAM_MB;
@@ -483,16 +571,19 @@ export class HardwareInspectorService {
 
     const model = integrated.model || gpu.model || 'Integrated Graphics';
     const runtimeAvailable = integrated.vendor === 'amd' ? rocmRuntimeAvailable : gpu.runtimeAvailable;
+    const sharedMb = integrated.vendor === 'amd' && driverApuMemoryMb && driverApuMemoryMb > 0 ? driverApuMemoryMb : totalRamMb;
 
     this.logger.info(
-      `[HardwareInspector] Inferred ${integrated.vendor.toUpperCase()} integrated GPU (${model}) from CPU "${cpuModel}" with ${totalRamMb} MB shared memory.`,
+      `[HardwareInspector] Inferred ${integrated.vendor.toUpperCase()} integrated GPU (${model}) from CPU "${cpuModel}" with ${sharedMb} MB shared memory${
+        sharedMb === totalRamMb ? '' : ` (the driver's VRAM plus GTT; ${totalRamMb} MB RAM)`
+      }.`,
     );
 
     return {
       available: true,
       vendor: integrated.vendor,
       model,
-      vramMb: totalRamMb,
+      vramMb: sharedMb,
       unifiedMemory: true,
       driverVersion: gpu.driverVersion,
       runtimeAvailable,
@@ -547,10 +638,12 @@ export class HardwareInspectorService {
 
   computeTier(gpu: HardwareProfile['gpu'], ram: HardwareProfile['ram']): HardwareTier {
     if (gpu.available && this.gpuRuntimeReady(gpu)) {
-      const effectiveVram = gpu.unifiedMemory ? ram.totalMb : gpu.vramMb;
-      if (effectiveVram >= 16384) return 'high';
-      if (effectiveVram >= 8192) return 'medium';
-      if (effectiveVram >= 4096) return 'low';
+      // Unified memory: what the GPU can address, which an AMD APU's driver states (see
+      // detectAmdApuMemoryFromSysfs) and which is all of RAM on Apple Silicon.
+      const effectiveVram = gpu.unifiedMemory ? gpu.vramMb || ram.totalMb : gpu.vramMb;
+      if (effectiveVram >= 16384 - VRAM_TIER_SLACK_MB) return 'high';
+      if (effectiveVram >= 8192 - VRAM_TIER_SLACK_MB) return 'medium';
+      if (effectiveVram >= 4096 - VRAM_TIER_SLACK_MB) return 'low';
       if (!gpu.unifiedMemory && effectiveVram < MIN_PLAUSIBLE_DISCRETE_VRAM_MB && (gpu.vendor === 'nvidia' || gpu.vendor === 'amd')) {
         this.logger.warn(
           `[HardwareInspector] ${gpu.vendor.toUpperCase()} GPU detected with unreliable VRAM reading (${effectiveVram} MB); defaulting tier to low until probe data is available.`,
@@ -611,9 +704,11 @@ export class HardwareInspectorService {
 
       const rankedControllers = controllers
         .map((controller) => {
-          const model = controller.model || '';
-          const vendor = detectVendor(controller.vendor || '', model);
-          const vramMb = controller.vram || 0;
+          const vendor = detectVendor(controller.vendor || '', controller.model || '');
+          // With nvidia-smi, systeminformation also has the card's name ("NVIDIA GeForce RTX 3080
+          // Laptop GPU"); `model` is lspci's chip name ("GA104M [GeForce RTX 3080 Mobile / Max-Q 8GB/16GB]").
+          const model = (vendor === 'nvidia' && controller.name) || controller.model || '';
+          const vramMb = vendor === 'nvidia' && platform === 'linux' ? linuxNvidiaControllerVramMb(controller) : controller.vram || 0;
           const vendorRank = vendor === 'nvidia' ? 3 : vendor === 'amd' ? 2 : vendor === 'intel' ? 1 : 0;
           return {
             vendor,
@@ -642,10 +737,11 @@ export class HardwareInspectorService {
       let driverVersion = best.driverVersion;
       let multiGpu: { deviceCount: number; poolVramMb: number } | null = null;
       // Only cross-check NVIDIA VRAM against nvidia-smi when the systeminformation reading looks
-      // unreliable: a sub-512 MB PCIe BAR/framebuffer (any platform), or a value in the Windows WMI
-      // 32-bit AdapterRAM cap band (~4095 MB). Such a capped >4 GB card also lands below the 4096 MB
-      // tier threshold and mislabels the host as "CPU Only". A plausible reading is trusted as-is,
-      // avoiding the external nvidia-smi call (and its 5s timeout) on the common path.
+      // unreliable: a sub-512 MB PCIe BAR/framebuffer (any platform), a Linux reading that came from
+      // lspci rather than nvidia-smi (0 here, see linuxNvidiaControllerVramMb), or a value in the
+      // Windows WMI 32-bit AdapterRAM cap band (~4095 MB). Such a capped >4 GB card also lands below
+      // the 4096 MB tier threshold and mislabels the host as "CPU Only". A plausible reading is
+      // trusted as-is, avoiding the external nvidia-smi call (and its 5s timeout) on the common path.
       const inWmiCapBand = platform === 'win32' && vramMb >= WMI_VRAM_CAP_MIN_MB && vramMb <= WMI_VRAM_CAP_MAX_MB;
       const siVramLooksUnreliable = vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB || inWmiCapBand;
       if (best.vendor === 'nvidia' && siVramLooksUnreliable) {
@@ -925,6 +1021,11 @@ export class HardwareInspectorService {
     }
   }
 
+  /** Whether this backend runs inside a container (the Hub's own), not on the host. A seam for tests. */
+  private runsInContainer(): boolean {
+    return detectHubContainer();
+  }
+
   private getHostPlatform(): NodeJS.Platform {
     if (
       process.env.CI_HUB_HOST_PLATFORM === 'darwin' ||
@@ -1083,6 +1184,39 @@ export class HardwareInspectorService {
     }
   }
 
+  /**
+   * What an AMD APU's GPU can address, in MB, from the amdgpu driver: its carve-out
+   * (`mem_info_vram_total`) plus the system RAM it may map (`mem_info_gtt_total`). Null when no
+   * card publishes both.
+   *
+   * It is not the machine's RAM. A Ryzen AI Max+ 395 with 122.8 GB of RAM had a 512 MiB carve-out
+   * and 107.5 GiB of GTT. The host's Ollama (Vulkan) reported `total="108.0 GiB"` for the GPU,
+   * which is the sum. A BIOS carve-out can also be larger than the RAM the OS sees. Then the sum
+   * is larger than RAM. The card with the largest sum is taken.
+   */
+  private async detectAmdApuMemoryFromSysfs(): Promise<number | null> {
+    try {
+      const entries = (await this.filesystem.listFiles('/sys/class/drm')) ?? [];
+      const readBytes = async (file: string): Promise<number> => {
+        const value = Number.parseInt((await this.filesystem.readTextFile(file))?.trim() ?? '', 10);
+        return Number.isFinite(value) && value > 0 ? value : 0;
+      };
+      let largestBytes = 0;
+      for (const card of entries.filter((name) => /^card\d+$/.test(name))) {
+        const [vramBytes, gttBytes] = await Promise.all([
+          readBytes(`/sys/class/drm/${card}/device/mem_info_vram_total`),
+          readBytes(`/sys/class/drm/${card}/device/mem_info_gtt_total`),
+        ]);
+        if (vramBytes > 0 && gttBytes > 0) {
+          largestBytes = Math.max(largestBytes, vramBytes + gttBytes);
+        }
+      }
+      return largestBytes > 0 ? Math.round(largestBytes / (1024 * 1024)) : null;
+    } catch {
+      return null;
+    }
+  }
+
   private async detectAmdVram(): Promise<number> {
     try {
       const { stdout } = await execAsync('rocm-smi --showmeminfo vram --csv', { timeout: 5000 });
@@ -1164,10 +1298,14 @@ export class HardwareInspectorService {
   private async detectDockerInfo(): Promise<{
     nvidiaRuntime: boolean;
     containerHostKind: NonNullable<HardwareProfile['gpu']['containerHostKind']>;
+    /** The engine's own `OperatingSystem` and `OSVersion`, e.g. "Ubuntu 26.04 LTS" and "26.04". */
+    engineOs?: { name: string; version: string };
   }> {
     try {
-      const { stdout } = await execAsync('docker info --format "{{json .Runtimes}}\t{{.OperatingSystem}}\t{{.KernelVersion}}\t{{.ProductLicense}}"');
-      const [runtimes = '', osName = '', kernel = '', license = ''] = stdout.trim().split('\t');
+      const { stdout } = await execAsync(
+        'docker info --format "{{json .Runtimes}}\t{{.OperatingSystem}}\t{{.KernelVersion}}\t{{.ProductLicense}}\t{{.OSVersion}}"',
+      );
+      const [runtimes = '', osName = '', kernel = '', license = '', osVersion = ''] = stdout.trim().split('\t');
       const nvidiaRuntime = runtimes.includes('nvidia');
 
       let containerHostKind: NonNullable<HardwareProfile['gpu']['containerHostKind']> = 'unknown';
@@ -1181,7 +1319,7 @@ export class HardwareInspectorService {
         containerHostKind = 'native-linux';
       }
 
-      return { nvidiaRuntime, containerHostKind };
+      return { nvidiaRuntime, containerHostKind, engineOs: splitEngineOs(osName, osVersion) };
     } catch {
       return { nvidiaRuntime: false, containerHostKind: 'unknown' };
     }

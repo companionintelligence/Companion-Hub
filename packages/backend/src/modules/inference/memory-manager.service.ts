@@ -47,9 +47,19 @@ export function modelMemoryCeilingMb(profile: HardwareProfile): number {
     return modelBudgetVramMbFor(profile);
   }
   if (profile.ram.sampledAt) {
-    return Math.max(0, profile.ram.availableMb - SYSTEM_RESERVED_RAM_MB);
+    return Math.max(0, Math.min(profile.ram.availableMb - SYSTEM_RESERVED_RAM_MB, unifiedGpuLimitMb(profile)));
   }
   return Math.max(0, profile.effectiveInferenceMemoryMb);
+}
+
+/**
+ * The most a unified-memory GPU can address, `vramMb`: on an AMD APU the driver's carve-out plus GTT
+ * (108 GiB of a Ryzen AI Max+ 395's 122.8 GB), on Apple Silicon all of RAM. Models on the RAM pool are never
+ * budgeted past it, whatever RAM is free. No limit off unified memory, or without a figure.
+ */
+function unifiedGpuLimitMb(profile: HardwareProfile): number {
+  const { gpu } = profile;
+  return gpu.available && gpu.unifiedMemory && gpu.vramMb > 0 ? gpu.vramMb : Number.POSITIVE_INFINITY;
 }
 
 /**
@@ -156,7 +166,7 @@ export class MemoryManagerService {
     const appContainerBudgetMb = dockerOverheadMb;
 
     const modelBudgetVramMb = totalVramMb > 0 ? modelBudgetVramMbFor(profile) : 0;
-    const modelBudgetRamMb = Math.max(0, totalRamMb - SYSTEM_RESERVED_RAM_MB - appContainerBudgetMb);
+    const modelBudgetRamMb = Math.max(0, Math.min(totalRamMb - SYSTEM_RESERVED_RAM_MB - appContainerBudgetMb, unifiedGpuLimitMb(profile)));
 
     const pool = modelPoolFor(profile);
     const usage = await this.observeUsage(profile);

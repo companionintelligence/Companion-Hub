@@ -15,7 +15,7 @@ type NvidiaProbe = {
   updatedAt: string;
 };
 
-function runCapture(cmd: string, args: string[], extraEnv?: NodeJS.ProcessEnv): { ok: boolean; stdout: string; stderr: string } {
+function runCapture(cmd: string, args: string[], extraEnv?: NodeJS.ProcessEnv): { ok: boolean; stdout: string; stderr: string; notFound: boolean } {
   const result = spawnSync(cmd, args, {
     stdio: 'pipe',
     encoding: 'utf-8',
@@ -26,6 +26,7 @@ function runCapture(cmd: string, args: string[], extraEnv?: NodeJS.ProcessEnv): 
     ok: result.status === 0,
     stdout: (result.stdout || '').toString(),
     stderr: (result.stderr || '').toString(),
+    notFound: (result.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT',
   };
 }
 
@@ -264,8 +265,19 @@ function clearNvidiaProbe(): void {
   }
 }
 
-function collectHostNvidiaProbe(): NvidiaProbe | null {
-  const probe = runCapture('sh', ['-lc', 'nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader,nounits | head -n 1']);
+const NVIDIA_SMI_QUERY = ['--query-gpu=name,memory.total,driver_version', '--format=csv,noheader,nounits'];
+
+/**
+ * The host card as nvidia-smi names and sizes it, for `nvidia.json`. nvidia-smi runs directly, not
+ * through `sh -lc`: a login shell sources `~/.profile` first. With dash, one bad line there (a
+ * `.` of a file that has gone) ends the shell before nvidia-smi starts. The login shell is only the
+ * fallback for a PATH that lacks nvidia-smi.
+ */
+export function collectHostNvidiaProbe(): NvidiaProbe | null {
+  let probe = runCapture('nvidia-smi', NVIDIA_SMI_QUERY);
+  if (!probe.ok && probe.notFound) {
+    probe = runCapture('sh', ['-lc', `nvidia-smi ${NVIDIA_SMI_QUERY.join(' ')}`]);
+  }
   if (!probe.ok) return null;
 
   const line = probe.stdout
