@@ -328,10 +328,11 @@ export class HardwareInspectorService {
       effectiveGpuInfo = {
         available: gpuInfo.available || !!nvidiaHostProbe.model,
         vendor: 'nvidia' as const,
-        model: (probeIdentity ? nvidiaHostProbe.model : gpuInfo.model) || gpuInfo.model || nvidiaHostProbe.model,
+        model: probeIdentity ? nvidiaHostProbe.model || gpuInfo.model : gpuInfo.model || nvidiaHostProbe.model,
         vramMb: containerVramPlausible ? gpuInfo.vramMb : nvidiaHostProbe.vramMb,
-        driverVersion:
-          (probeIdentity ? nvidiaHostProbe.driverVersion : gpuInfo.driverVersion) || gpuInfo.driverVersion || nvidiaHostProbe.driverVersion,
+        driverVersion: probeIdentity
+          ? nvidiaHostProbe.driverVersion || gpuInfo.driverVersion
+          : gpuInfo.driverVersion || nvidiaHostProbe.driverVersion,
       };
     } else if (amdHostProbe && (gpuInfo.vendor === 'amd' || !gpuInfo.available)) {
       // On Windows + Docker Desktop the container's systeminformation cannot see

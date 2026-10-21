@@ -1185,7 +1185,14 @@ export class InferenceRouterService implements OnApplicationBootstrap {
 
       // A model the pin found in memory was not loaded by it, so it still has whatever keep_alive it
       // had: Ollama's usual expiry after an unpin, or for a model an app loaded through Ollama itself.
-      await this.setEngineKeepAlive(catalogId, 'pinned');
+      // The registry's `loaded` can outlive the model: an unpinned one expires on Ollama's keep_alive
+      // without the registry hearing of it. Then the pin loads it, so it never pins a model that is gone.
+      if ((await this.setEngineKeepAlive(catalogId, 'pinned')) === 'not-resident') {
+        const outcome = await this.loadTrackedModelLocked(catalogId, { origin: options.origin });
+        if (!outcome.loaded) {
+          return { pinned: false, reason: outcome.reason };
+        }
+      }
       this.modelRegistry.pinModel(catalogId);
       return { pinned: true };
     });

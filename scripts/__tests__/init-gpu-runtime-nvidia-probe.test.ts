@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 type SpawnResult = { status: number | null; stdout: string; stderr: string; error?: NodeJS.ErrnoException };
 
@@ -14,7 +14,20 @@ vi.mock('node:child_process', () => ({
   },
 }));
 
-const { collectHostNvidiaProbe } = await import('../init-gpu-runtime');
+// A Linux host with the NVIDIA driver loaded. Nothing is written to disk.
+const fsWrites = vi.hoisted(() => ({ paths: [] as string[], contents: new Map<string, string>() }));
+vi.mock('node:fs', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:fs')>()),
+  existsSync: (target: string) => target === '/proc/driver/nvidia/gpus',
+  mkdirSync: () => undefined,
+  rmSync: () => undefined,
+  writeFileSync: (target: string, data: string) => {
+    fsWrites.paths.push(String(target));
+    fsWrites.contents.set(String(target), String(data));
+  },
+}));
+
+const { collectHostNvidiaProbe, initGpuRuntime } = await import('../init-gpu-runtime');
 
 const ROW = 'NVIDIA GeForce RTX 3080 Laptop GPU, 8192, 595.99.02\n';
 const notFound = (): SpawnResult => ({
@@ -61,5 +74,59 @@ describe('collectHostNvidiaProbe', () => {
 
     expect(collectHostNvidiaProbe()).toBeNull();
     expect(spawn.calls.map((call) => call.command)).toEqual(['nvidia-smi']);
+  });
+});
+
+describe('initGpuRuntime on a Linux host whose ~/.profile stops a login shell', () => {
+  const originalPlatform = process.platform;
+  const savedStatePath = process.env.CI_HUB_STATE_PATH;
+  const savedSkip = process.env.CI_HUB_SKIP_GPU_TOOLKIT;
+
+  beforeEach(() => {
+    spawn.calls = [];
+    fsWrites.paths = [];
+    fsWrites.contents.clear();
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    process.env.CI_HUB_STATE_PATH = '/srv/hub-data';
+    delete process.env.CI_HUB_SKIP_GPU_TOOLKIT;
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform });
+    if (savedStatePath === undefined) delete process.env.CI_HUB_STATE_PATH;
+    else process.env.CI_HUB_STATE_PATH = savedStatePath;
+    if (savedSkip !== undefined) process.env.CI_HUB_SKIP_GPU_TOOLKIT = savedSkip;
+    vi.restoreAllMocks();
+  });
+
+  it('still finds docker and writes nvidia.json: only a login shell reads the profile', () => {
+    spawn.answer = (command, args) => {
+      // Every login shell dies on the profile, as dash does on a `.` of a file that has gone.
+      if (command === 'sh' && args[0] === '-lc') return { status: 2, stdout: '', stderr: 'sh: 34: .: cannot open /home/user/bin/env: No such file' };
+      if (command === 'sh' && args[0] === '-c') return { status: 0, stdout: '', stderr: '' };
+      if (command === 'nvidia-smi') return { status: 0, stdout: ROW, stderr: '' };
+      if (command === 'docker') return { status: 0, stdout: '{"nvidia":{"path":"nvidia-container-runtime"},"runc":{"path":"runc"}}', stderr: '' };
+      return { status: 1, stdout: '', stderr: '' };
+    };
+
+    initGpuRuntime();
+
+    expect(fsWrites.paths).toContain('/srv/hub-data/state/hardware/nvidia.json');
+    expect(spawn.calls).toContainEqual({ command: 'sh', args: ['-c', 'command -v docker >/dev/null 2>&1'] });
+  });
+
+  it('still finds rocm-smi on an AMD host without /dev/kfd: the ROCm probe runs it directly too', () => {
+    spawn.answer = (command, args) => {
+      if (command === 'sh' && args[0] === '-lc') return { status: 2, stdout: '', stderr: 'sh: 34: .: cannot open /home/user/bin/env: No such file' };
+      if (command === 'rocm-smi') return { status: 0, stdout: 'ROCM-SMI version: 3.0.0\n', stderr: '' };
+      return { status: 1, stdout: '', stderr: '' };
+    };
+
+    initGpuRuntime();
+
+    const rocm = fsWrites.contents.get('/srv/hub-data/state/hardware/rocm.json');
+    expect(rocm && JSON.parse(rocm)).toMatchObject({ available: false, source: 'host-rocm-smi' });
   });
 });

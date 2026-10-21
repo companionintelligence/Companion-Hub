@@ -8,6 +8,7 @@ import axios from 'axios';
 import { type DeviceGroupProbe, resolveAmdDeviceGroupIds } from './amd-device-groups.util';
 import { QUARANTINE_STRIKES, ServingQuarantine } from './serving-quarantine';
 import { type ContextCost, estimateContextCost, parseModelGeometry } from '../model-geometry.util';
+import { sameModelId } from '@/common/helpers/hub-pool';
 
 /**
  * Ollama's own default `keep_alive`, the one a model loaded with none gets while `OLLAMA_KEEP_ALIVE`
@@ -236,9 +237,8 @@ export class OllamaBackend implements InferenceBackend {
         this.listResident(),
       ]);
       const geometry = parseModelGeometry(show.data?.model_info as Record<string, unknown> | undefined);
-      const sameTag = (id: string) => id === modelId || id === `${modelId}:latest` || `${id}:latest` === modelId;
-      const onDisk = tags.find((m) => sameTag(m.id));
-      const loaded = resident.models?.find((m) => sameTag(m.id));
+      const onDisk = tags.find((m) => sameModelId(m.id, modelId));
+      const loaded = resident.models?.find((m) => sameModelId(m.id, modelId));
       const sighting =
         loaded && loaded.contextLength != null && loaded.engineGpuBytes != null
           ? { contextLength: loaded.contextLength, vramBytes: loaded.engineGpuBytes }
@@ -267,8 +267,7 @@ export class OllamaBackend implements InferenceBackend {
    */
   async residentContextLength(modelId: string): Promise<number | null> {
     const resident = await this.listResident();
-    const sameTag = (id: string) => id === modelId || id === `${modelId}:latest` || `${id}:latest` === modelId;
-    const loaded = resident.models?.find((m) => sameTag(m.id));
+    const loaded = resident.models?.find((m) => sameModelId(m.id, modelId));
     return loaded?.contextLength != null && loaded.contextLength > 0 ? loaded.contextLength : null;
   }
 
@@ -434,8 +433,7 @@ export class OllamaBackend implements InferenceBackend {
       this.logger.warn(`[Ollama] Could not set ${modelId}'s keep_alive: /api/ps did not answer (${residency.error ?? 'unreachable'})`);
       return 'unreachable';
     }
-    const sameTag = (id: string) => id === modelId || id === `${modelId}:latest` || `${id}:latest` === modelId;
-    const resident = residency.models.find((m) => sameTag(m.id));
+    const resident = residency.models.find((m) => sameModelId(m.id, modelId));
     if (!resident) {
       return 'not-resident';
     }
@@ -445,10 +443,16 @@ export class OllamaBackend implements InferenceBackend {
     const url = await this.resolveUrl();
     const keepAlive = keep === 'pinned' ? -1 : OLLAMA_DEFAULT_KEEP_ALIVE;
     const window = resident.contextLength && resident.contextLength > 0 ? { options: { num_ctx: resident.contextLength } } : {};
-    if (options?.embedding) {
-      await axios.post(`${url}/api/embed`, { model: resident.id, input: '', keep_alive: keepAlive, ...window }, { timeout: 30000 });
-    } else {
-      await axios.post(`${url}/api/generate`, { model: resident.id, prompt: '', keep_alive: keepAlive, ...window }, { timeout: 30000 });
+    try {
+      if (options?.embedding) {
+        await axios.post(`${url}/api/embed`, { model: resident.id, input: '', keep_alive: keepAlive, ...window }, { timeout: 30000 });
+      } else {
+        await axios.post(`${url}/api/generate`, { model: resident.id, prompt: '', keep_alive: keepAlive, ...window }, { timeout: 30000 });
+      }
+    } catch (err) {
+      // Like a failed load or unload: the next call re-resolves the daemon's URL.
+      this.invalidateResolvedUrl();
+      throw err;
     }
     this.logger.info(`[Ollama] ${resident.id} now has keep_alive ${keepAlive}`);
     return 'set';

@@ -1546,6 +1546,36 @@ describe('InferenceRouterService', () => {
       expect(modelRegistry.pinModel).toHaveBeenCalledWith(smollm.id);
     });
 
+    // An unpinned model expires on Ollama's keep_alive while the registry still says `loaded`.
+    it('a pin the registry calls loaded but Ollama no longer holds loads the model before it pins it', async () => {
+      modelRegistry.getTrackedModel.mockReturnValue(tracked('loaded'));
+      memoryManager.canPinModel.mockResolvedValue({ canPin: true });
+      memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 1_000 });
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [smollm.backendModelId] });
+      ollamaBackend.isModelLoaded.mockResolvedValue(false);
+      ollamaBackend.setResidentKeepAlive.mockResolvedValue('not-resident');
+
+      await expect(service.pinTrackedModel(smollm.id, { origin: 'operator' })).resolves.toEqual({ pinned: true });
+
+      expect(modelPuller.loadModel).toHaveBeenCalledTimes(1);
+      expect(modelPuller.loadModel.mock.invocationCallOrder[0]).toBeLessThan(modelRegistry.pinModel.mock.invocationCallOrder[0] ?? 0);
+    });
+
+    it('a pin whose model is gone and cannot be loaded again is refused, not pinned', async () => {
+      modelRegistry.getTrackedModel.mockReturnValue(tracked('loaded'));
+      memoryManager.canPinModel.mockResolvedValue({ canPin: true });
+      memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 1_000 });
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [smollm.backendModelId] });
+      ollamaBackend.isModelLoaded.mockResolvedValue(false);
+      ollamaBackend.setResidentKeepAlive.mockResolvedValue('not-resident');
+      modelPuller.loadModel.mockRejectedValueOnce(new Error('model requires more system memory'));
+
+      const outcome = await service.pinTrackedModel(smollm.id, { origin: 'operator' });
+
+      expect(outcome.pinned).toBe(false);
+      expect(modelRegistry.pinModel).not.toHaveBeenCalled();
+    });
+
     it('waits for a pin of the same model queued ahead of it, so that pin is not written back after the unpin', async () => {
       modelRegistry.getTrackedModel.mockReturnValue(tracked('pulled'));
       memoryManager.canPinModel.mockResolvedValue({ canPin: true });
