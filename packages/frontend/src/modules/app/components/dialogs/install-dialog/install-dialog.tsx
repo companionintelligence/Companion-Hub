@@ -1,7 +1,9 @@
-import { installAppMutation } from '@/api-client/@tanstack/react-query.gen';
+import type { GetAppDto } from '@/api-client';
+import { getAppQueryKey, installAppMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { invalidateAppQueries } from '@/modules/app/helpers/app-sse-cache';
+import { installRequestKey, withInstallRequest } from '@/modules/app/helpers/install-request';
 import { addOptimisticInstalledApp, removeOptimisticInstalledApp } from '@/modules/app/helpers/optimistic-installed-apps';
 import { useAppStatus } from '@/modules/app/helpers/use-app-status';
 import type { AppInfo } from '@/types/app.types';
@@ -38,20 +40,36 @@ export const InstallDialog: React.FC<IProps> = ({ info, isOpen, onClose, boundCu
   const { setOptimisticStatus } = useAppStatus();
   const formId = useId();
   const [isFormValid, setIsFormValid] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [appSlug] = info.urn.split(':');
+  const appQueryKey = getAppQueryKey({ path: { urn: info.urn } });
+  // Also when the app has not been read yet, or the cancel below took back a read that had no data
+  // before it: `setOptimisticStatus` leaves an empty cache alone.
+  const markInstalling = () => queryClient.setQueryData(appQueryKey, (current: GetAppDto | undefined) => withInstallRequest(current, info.urn, true));
 
   const installMutation = useMutation({
     ...installAppMutation(),
+    mutationKey: installRequestKey(info.urn),
     onError: (e: TranslatableError) => {
       toast.error(t(e.message, e.intlParams));
-      // The install never happened, so retract the row we invented. Left behind it would sit on the
-      // dashboard as a permanent "installing" spinner, and the store page would keep counting the
-      // app as installed.
-      removeOptimisticInstalledApp(queryClient, info.urn);
+      if (e.message === 'APP_ERROR_INSTALL_IN_PROGRESS') {
+        // Refused because an install of this app is already under way. The read below shows it.
+        markInstalling();
+      } else {
+        // The install never happened, so retract the row we invented. Left behind it would sit on the
+        // dashboard as a permanent "installing" spinner, and the store page would keep counting the
+        // app as installed.
+        removeOptimisticInstalledApp(queryClient, info.urn);
+      }
       invalidateAppQueries(queryClient, info.urn);
     },
-    onMutate: () => {
+    onMutate: async () => {
+      onClose();
+      // A read of the app still on its way would land after the write below and put the page back
+      // on Install. Cancelled first, as its revert would otherwise land on top of the write.
+      await queryClient.cancelQueries({ queryKey: appQueryKey });
       setOptimisticStatus('installing', info.urn);
+      markInstalling();
       if (appSlug) {
         addOptimisticInstalledApp(queryClient, {
           urn: info.urn,
@@ -59,7 +77,12 @@ export const InstallDialog: React.FC<IProps> = ({ info, isOpen, onClose, boundCu
           slug: appSlug,
         });
       }
-      onClose();
+    },
+    onSuccess: () => {
+      // The Hub answers once it has written the app's row. A read in the seconds before that found
+      // no row; keep showing the install until the reads below bring the row.
+      markInstalling();
+      invalidateAppQueries(queryClient, info.urn);
     },
   });
 
@@ -112,11 +135,13 @@ export const InstallDialog: React.FC<IProps> = ({ info, isOpen, onClose, boundCu
             formId={formId}
             editingAppUrn={info.urn}
             onValidityChange={handleValidityChange}
+            onSubmittingChange={setIsSubmitting}
           />
         </div>
         <DialogFooter className="shrink-0 flex-col items-stretch gap-2 sm:flex-col">
           {!isFormValid && <p className="text-sm text-muted-foreground text-left">{t('APP_INSTALL_FORM_COMPLETE_REQUIRED')}</p>}
-          <InstallFormButtons loading={installMutation.isPending} formId={formId} disabled={!isFormValid} />
+          {/* From the click: on Public Web the form runs a last DNS check before the request goes out. */}
+          <InstallFormButtons loading={isSubmitting || installMutation.isPending} formId={formId} disabled={!isFormValid} />
         </DialogFooter>
       </DialogContent>
     </Dialog>

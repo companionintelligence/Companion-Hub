@@ -5,6 +5,7 @@ import type { AppInfo } from '@/types/app.types';
 import { Card, CardContent } from '@/components/ui/Card/Card';
 import { useAppContext } from '@/context/app-context';
 import { useQuery } from '@tanstack/react-query';
+import { useMemo } from 'react';
 import { redirect, useParams } from 'react-router';
 import { AppStatus } from '../components/app-status/app-status';
 import { AppActions } from '../containers/app-actions/app-actions';
@@ -27,6 +28,7 @@ import { PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY, queryPublicWebDiagnostics } from '@/l
 import { McpAccessCard } from '../components/mcp-access-card/mcp-access-card';
 import { MemoryStatusBadge } from '../components/memory-status-badge/memory-status-badge';
 import { useAppUrlAvailability } from '../helpers/use-app-url-availability';
+import { useInstallRequestPending, withInstallRequest } from '../helpers/install-request';
 
 export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   const { storeId } = params;
@@ -129,7 +131,13 @@ export default () => {
     enabled: listingVisible,
     retry: false,
   });
-  const privateRecord = getApp.isError ? undefined : getApp.data;
+  const installRequestPending = useInstallRequestPending(appUrn);
+  const fetchedRecord = getApp.isError ? undefined : getApp.data;
+  // An install still in the Hub's checks has no row yet; the page shows it as installing anyway.
+  const privateRecord = useMemo(
+    () => withInstallRequest(fetchedRecord, appUrn, installRequestPending),
+    [fetchedRecord, appUrn, installRequestPending],
+  );
   const runtimeHealthEnabled = Boolean(privateRecord?.app && privateRecord.app.status !== 'uninstalling');
 
   const imageSize = useQuery({
@@ -144,8 +152,13 @@ export default () => {
   });
 
   const runtimeHealth = useQuery({
-    queryKey: ['app-runtime-health', appUrn],
+    // Keyed on the status too, so a change of status (the end of a restart) asks for a snapshot of
+    // the new one at once rather than at the next poll.
+    queryKey: ['app-runtime-health', appUrn, privateRecord?.app?.status],
     queryFn: () => fetchAppRuntimeHealth(appUrn),
+    // The last snapshot stays up while the new one loads, so the readiness badge and checks card do
+    // not drop out on every change of status. The status pill ignores a snapshot of another status.
+    placeholderData: (previous) => previous,
     refetchInterval: 15_000,
     enabled: runtimeHealthEnabled,
   });
