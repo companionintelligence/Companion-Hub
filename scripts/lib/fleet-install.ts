@@ -563,7 +563,7 @@ async function resolveBinaryForNode(opts: InstallOptions, arch: string): Promise
   } catch (error) {
     return {
       why: error instanceof Error ? error.message : String(error),
-      fix: ['Check GH_TOKEN can read the private repository, or pass --cihub-binary.'],
+      fix: ['Run it again, or pass --cihub-binary <path> to a cihub-linux-x64 / cihub-linux-arm64 asset already on disk.'],
     };
   }
 }

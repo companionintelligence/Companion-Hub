@@ -120,7 +120,8 @@ describe('installNode with a release the run resolved', () => {
     expect(report.ok).toBe(false);
     expect(report.steps.map(ok)).toEqual(['probe', 'preflight', 'install cihub']);
     expect(report.steps[2]?.detail).toContain('asset download failed: HTTP 502');
-    expect(report.steps[2]?.detail).toContain('GH_TOKEN');
+    expect(report.steps[2]?.detail).toContain('--cihub-binary');
+    expect(report.steps[2]?.detail).not.toContain('private');
   });
 
   it('names the reason when it exits 0 without installing anything', async () => {
