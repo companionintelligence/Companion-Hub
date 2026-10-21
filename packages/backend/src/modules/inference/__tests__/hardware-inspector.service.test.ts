@@ -1804,6 +1804,77 @@ describe('HardwareInspectorService', () => {
       expect(profile.os).toEqual({ platform: 'win32', name: 'Windows', version: '' });
       expect(si.osInfo).not.toHaveBeenCalled();
     });
+
+    // Inside Docker Desktop's VM the Hub sees no NVIDIA controller at all (the GPU reaches WSL2 as
+    // /dev/dxg, not over PCI), so the card is whatever the desktop app's nvidia.json says. The
+    // container's `/proc/uptime` is the VM's, which boots when Docker Desktop starts.
+    describe("NVIDIA from the desktop app's Windows nvidia.json", () => {
+      const HOUR_MS = 60 * 60 * 1000;
+      const windowsHost = (nvidiaJson: Record<string, unknown>) => {
+        vi.spyOn(service as any, 'detectDockerInfo').mockResolvedValue({ nvidiaRuntime: false, containerHostKind: 'docker-desktop' });
+        filesystemService.listFiles.mockResolvedValue([]);
+        filesystemService.pathExists.mockResolvedValue(false);
+        filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+          if (filePath === '/data/state/hardware/host_metrics.json') {
+            return JSON.stringify({
+              schemaVersion: 1,
+              platform: 'win32',
+              cpuArch: 'x86_64',
+              source: 'desktop-host-windows',
+              probedAt: new Date().toISOString(),
+              host: {
+                totalRamMb: 32768,
+                availableRamMb: 20000,
+                cpuCores: 16,
+                cpuModel: 'Intel Core i7-12700K',
+                diskTotalGb: 1024,
+                diskUsedGb: 512,
+                diskMount: 'C:',
+              },
+            });
+          }
+          if (filePath === '/data/state/hardware/nvidia.json') return JSON.stringify(nvidiaJson);
+          if (filePath === '/host/proc/meminfo') return 'MemTotal: 16384000\nMemAvailable: 8192000';
+          return null;
+        });
+        execAsyncMock.mockImplementation(async (command: string) => {
+          if (command.includes('nvidia-smi') || command.includes('/proc/driver/nvidia')) throw new Error('not in the container');
+          return { stdout: '{}' };
+        });
+      };
+      const card = { model: 'NVIDIA GeForce RTX 4070', vramMb: 12282, driverVersion: '581.80', source: 'desktop-host-windows-nvidia-smi' };
+
+      it('keeps the card from a file an older desktop app wrote without updatedAt, without taking it as proof of the driver', async () => {
+        windowsHost(card);
+
+        const profile = await service.detect();
+
+        expect(profile.gpu).toMatchObject({ available: true, vendor: 'nvidia', model: 'NVIDIA GeForce RTX 4070', vramMb: 12282 });
+        expect(profile.gpu.hostNvidiaAvailable).toBe(false);
+        expect(profile.effectiveInferenceMemoryMb).toBe(12282);
+      });
+
+      it('takes a file stamped after the VM booted as proof and tiers by the card', async () => {
+        uptimeOverride.value = 3 * 60 * 60;
+        windowsHost({ ...card, updatedAt: new Date(Date.now() - HOUR_MS).toISOString() });
+
+        const profile = await service.detect();
+
+        expect(profile.gpu.vramMb).toBe(12282);
+        expect(profile.gpu.hostNvidiaAvailable).toBe(true);
+        expect(profile.tier).toBe('medium');
+      });
+
+      it('keeps the card but not the proof when Docker Desktop restarted after the file was written', async () => {
+        uptimeOverride.value = 10 * 60;
+        windowsHost({ ...card, updatedAt: new Date(Date.now() - 2 * HOUR_MS).toISOString() });
+
+        const profile = await service.detect();
+
+        expect(profile.gpu.vramMb).toBe(12282);
+        expect(profile.gpu.hostNvidiaAvailable).toBe(false);
+      });
+    });
   });
 
   // ─── Linux NVIDIA: lspci's BAR is not the card's memory ─────────────────────

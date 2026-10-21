@@ -299,7 +299,14 @@ export function collectHostNvidiaProbe(): NvidiaProbe | null {
   };
 }
 
+/**
+ * The Windows host card, nvidia-smi.exe first as the desktop app's probe does, then WMI. WMI's
+ * `AdapterRAM` is 32 bits and reads about 4095 MB for any card over 4 GB, so it only stands in when
+ * nvidia-smi.exe is not on PATH.
+ */
 function collectHostNvidiaProbeWindows(): NvidiaProbe | null {
+  const fromSmi = collectHostNvidiaProbe();
+  if (fromSmi) return fromSmi;
   const probe = runCapture('powershell.exe', [
     '-NoProfile',
     '-NonInteractive',

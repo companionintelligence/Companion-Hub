@@ -68,67 +68,14 @@ if ($null -eq $gpu) { exit 3 };
             return;
         }
 
-        let raw_json = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let parsed: serde_json::Value = match serde_json::from_str(&raw_json) {
-            Ok(value) => value,
-            Err(error) => {
+        let payload = match windows_nvidia_probe_payload(&String::from_utf8_lossy(&output.stdout)) {
+            Ok(payload) => payload,
+            Err(details) => {
                 clear_stale_probe();
-                let _ = append_desktop_log_for(
-                    data_dir,
-                    "gpu.probe",
-                    &format!("Failed to parse Windows NVIDIA probe output: {}", error),
-                );
+                let _ = append_desktop_log_for(data_dir, "gpu.probe", &details);
                 return;
             }
         };
-
-        let model = parsed
-            .get("Name")
-            .and_then(|value| value.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        if model.is_empty() {
-            clear_stale_probe();
-            let _ = append_desktop_log_for(
-                data_dir,
-                "gpu.probe",
-                "Windows NVIDIA probe output missing adapter name; host cache not updated.",
-            );
-            return;
-        }
-
-        let vram_mb = parsed
-            .get("VramMb")
-            .and_then(|value| {
-                value
-                    .as_u64()
-                    .or_else(|| value.as_str().and_then(|s| s.trim().parse::<u64>().ok()))
-            })
-            .or_else(|| {
-                parsed
-                    .get("AdapterRAM")
-                    .and_then(|value| value.as_u64())
-                    .map(|bytes| bytes / (1024 * 1024))
-            })
-            .unwrap_or(0);
-        let driver_version = parsed
-            .get("DriverVersion")
-            .and_then(|value| value.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        let source = parsed
-            .get("Source")
-            .and_then(|value| value.as_str())
-            .unwrap_or("desktop-host-windows-wmi");
-
-        let payload = serde_json::json!({
-            "model": model,
-            "vramMb": vram_mb,
-            "driverVersion": driver_version,
-            "source": source
-        });
 
         let serialized = match serde_json::to_string_pretty(&payload) {
             Ok(value) => format!("{}\n", value),
@@ -206,49 +153,14 @@ if ($null -eq $gpu) { exit 3 };
             return;
         }
 
-        let first_line = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(str::trim)
-            .find(|line| !line.is_empty())
-            .unwrap_or("")
-            .to_string();
-        if first_line.is_empty() {
-            clear_stale_probe();
-            let _ = append_desktop_log_for(
-                data_dir,
-                "gpu.probe",
-                "nvidia-smi produced no GPU rows; host NVIDIA probe cache not updated.",
-            );
-            return;
-        }
-
-        let mut parts = first_line.split(',').map(str::trim);
-        let model = parts.next().unwrap_or_default().to_string();
-        let vram_mb = parts
-            .next()
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(0);
-        let driver_version = parts.next().unwrap_or_default().to_string();
-
-        if model.is_empty() {
-            clear_stale_probe();
-            let _ = append_desktop_log_for(
-                data_dir,
-                "gpu.probe",
-                "nvidia-smi probe row did not include a GPU model; host cache not updated.",
-            );
-            return;
-        }
-
-        // `updatedAt` lets the Hub take the file as proof that the driver answered in this boot
-        // (`hostNvidiaAvailable`), as it does for the one `cihub up` writes.
-        let payload = serde_json::json!({
-            "model": model,
-            "vramMb": vram_mb,
-            "driverVersion": driver_version,
-            "source": "desktop-host-nvidia-smi",
-            "updatedAt": chrono::Utc::now().to_rfc3339()
-        });
+        let payload = match linux_nvidia_probe_payload(&String::from_utf8_lossy(&output.stdout)) {
+            Ok(payload) => payload,
+            Err(details) => {
+                clear_stale_probe();
+                let _ = append_desktop_log_for(data_dir, "gpu.probe", &details);
+                return;
+            }
+        };
 
         let serialized = match serde_json::to_string_pretty(&payload) {
             Ok(value) => format!("{}\n", value),
@@ -286,6 +198,106 @@ if ($null -eq $gpu) { exit 3 };
             }
         }
     }
+}
+
+/// The Windows probe script's output (an nvidia-smi row, else WMI's `Win32_VideoController`) as
+/// `nvidia.json`. Err with the line to log when it cannot be read or names no adapter.
+#[cfg(any(test, target_os = "windows"))]
+pub(crate) fn windows_nvidia_probe_payload(raw_json: &str) -> Result<serde_json::Value, String> {
+    let parsed: serde_json::Value = serde_json::from_str(raw_json.trim())
+        .map_err(|error| format!("Failed to parse Windows NVIDIA probe output: {}", error))?;
+    let model = parsed
+        .get("Name")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if model.is_empty() {
+        return Err(
+            "Windows NVIDIA probe output missing adapter name; host cache not updated.".to_string(),
+        );
+    }
+    let vram_mb = parsed
+        .get("VramMb")
+        .and_then(|value| {
+            value
+                .as_u64()
+                .or_else(|| value.as_str().and_then(|s| s.trim().parse::<u64>().ok()))
+        })
+        .or_else(|| {
+            parsed
+                .get("AdapterRAM")
+                .and_then(|value| value.as_u64())
+                .map(|bytes| bytes / (1024 * 1024))
+        })
+        .unwrap_or(0);
+    let driver_version = parsed
+        .get("DriverVersion")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let source = parsed
+        .get("Source")
+        .and_then(|value| value.as_str())
+        .unwrap_or("desktop-host-windows-wmi");
+    Ok(nvidia_probe_payload(
+        &model,
+        vram_mb,
+        &driver_version,
+        source,
+    ))
+}
+
+/// nvidia-smi's CSV output (`name, memory.total, driver_version`, first GPU) as `nvidia.json`. Err
+/// with the line to log when it has no row or the row names no GPU.
+#[cfg(any(test, target_os = "linux"))]
+pub(crate) fn linux_nvidia_probe_payload(stdout: &str) -> Result<serde_json::Value, String> {
+    let first_line = stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .ok_or_else(|| {
+            "nvidia-smi produced no GPU rows; host NVIDIA probe cache not updated.".to_string()
+        })?;
+    let mut parts = first_line.split(',').map(str::trim);
+    let model = parts.next().unwrap_or_default().to_string();
+    let vram_mb = parts
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let driver_version = parts.next().unwrap_or_default().to_string();
+    if model.is_empty() {
+        return Err(
+            "nvidia-smi probe row did not include a GPU model; host cache not updated.".to_string(),
+        );
+    }
+    Ok(nvidia_probe_payload(
+        &model,
+        vram_mb,
+        &driver_version,
+        "desktop-host-nvidia-smi",
+    ))
+}
+
+/// `nvidia.json` as every writer lays it out (this app on Linux and Windows, `cihub up` through
+/// `scripts/init-gpu-runtime.ts`): the card as the host's driver names and sizes it, plus `updatedAt`.
+/// The Hub reads the card whatever the file's age, but takes the file as proof that the host's driver
+/// answered (`hostNvidiaAvailable`) only when `updatedAt` falls inside the current boot.
+#[cfg(any(test, target_os = "linux", target_os = "windows"))]
+fn nvidia_probe_payload(
+    model: &str,
+    vram_mb: u64,
+    driver_version: &str,
+    source: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "model": model,
+        "vramMb": vram_mb,
+        "driverVersion": driver_version,
+        "source": source,
+        "updatedAt": chrono::Utc::now().to_rfc3339()
+    })
 }
 
 /// `nvidia-smi --query-gpu=name,memory.total,driver_version` on a Linux host, one CSV row per GPU.

@@ -10,6 +10,7 @@ mod core;
 mod credentials;
 mod docker_access;
 mod docker_versions;
+mod host_probe;
 mod installers;
 mod lifecycle;
 mod logging;
