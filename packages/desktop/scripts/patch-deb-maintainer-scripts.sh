@@ -43,6 +43,8 @@ find "$DESKTOP_DIR/src-tauri/target" -path '*/bundle/deb/*.deb' -type f 2>/dev/n
   (
     temp_dir=$(mktemp -d)
     trap 'rm -rf "$temp_dir"' EXIT
+    # mktemp makes the folder 0700. dpkg-deb records it as the package's ./ entry.
+    chmod 0755 "$temp_dir"
     rebuilt_path="$deb_path.rebuilt"
 
     echo "[deb-patch][INFO] Patching maintainer scripts into $deb_path"
@@ -76,7 +78,16 @@ while i < len(control_lines):
 
 control_path.write_text("\n".join(result) + "\n")
 PY
-    dpkg-deb --build "$temp_dir" "$rebuilt_path" >/dev/null
+    # dpkg-deb -R unpacks as the build user (uid 1001 "runner" on GitHub's runners). A plain --build
+    # records whoever owns the files, so every installed file belonged to that uid. Tauri's own .deb
+    # is root:root. --root-owner-group (dpkg 1.19+) writes root:root again.
+    dpkg-deb --root-owner-group --build "$temp_dir" "$rebuilt_path" >/dev/null
+    not_root=$(dpkg-deb -c "$rebuilt_path" | awk '$2 != "root/root"')
+    if [ -n "$not_root" ]; then
+      echo "[deb-patch][ERROR] Rebuilt package has entries not owned by root:root:" >&2
+      echo "$not_root" >&2
+      exit 1
+    fi
     mv "$rebuilt_path" "$deb_path"
   )
 done
