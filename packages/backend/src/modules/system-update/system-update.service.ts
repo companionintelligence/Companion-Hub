@@ -176,6 +176,12 @@ function blockedEverywhere(reason: string): UpdateBlocks {
 export class SystemUpdateService implements OnApplicationBootstrap, OnApplicationShutdown {
   autoUpdateInterval: ReturnType<typeof setInterval> | null = null;
   private static readonly CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+  /**
+   * The release agents were last woken about. A check runs whenever someone presses Check for
+   * updates and whenever an agent calls `hub_check_for_updates`, so without this an agent that looks
+   * into the wake would wake itself again for the same release.
+   */
+  private announcedUpdate: string | null = null;
 
   constructor(
     private readonly logger: LoggerService,
@@ -220,7 +226,8 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     const target = build.version ? selectReleaseTarget(build.version, tags) : null;
     const updateAvailable = target !== null && blocks.updateBlockedReason === null;
 
-    if (updateAvailable) {
+    if (updateAvailable && target !== this.announcedUpdate) {
+      this.announcedUpdate = target;
       this.agentNotifyService?.notify('system.update_available', { current, latest: target }, 'low');
     }
 

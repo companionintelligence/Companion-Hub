@@ -229,6 +229,26 @@ describe('SystemUpdateService', () => {
       expect(agentNotifyService.notify).toHaveBeenCalledWith('system.update_available', { current: '0.2.70', latest: '0.2.71' }, 'low');
     });
 
+    // An agent that looks into the wake with hub_check_for_updates runs this same check.
+    it('wakes agents once per release, not on every check', async () => {
+      const agentNotifyService = { notify: vi.fn() };
+      service = new SystemUpdateService(mockLogger as never, mockConfig as never, mockRegistryService as never, agentNotifyService as never);
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core6Appliance(RELEASE_PIN));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+
+      await service.checkForUpdates();
+      await service.checkForUpdates();
+
+      expect(agentNotifyService.notify).toHaveBeenCalledTimes(1);
+
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71', '0.2.72']);
+      await service.checkForUpdates();
+
+      expect(agentNotifyService.notify).toHaveBeenCalledTimes(2);
+      expect(agentNotifyService.notify).toHaveBeenLastCalledWith('system.update_available', { current: '0.2.70', latest: '0.2.72' }, 'low');
+    });
+
     it('says the build is unknown outside a container instead of reporting CI_HUB_VERSION', async () => {
       const result = await service.checkForUpdates();
 
