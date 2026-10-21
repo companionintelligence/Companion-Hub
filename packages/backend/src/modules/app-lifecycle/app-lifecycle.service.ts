@@ -1307,9 +1307,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   }
 
   async installApp(params: { appUrn: AppUrn; form: unknown; skipRun?: boolean; actor: LifecycleActor }) {
-    // A second install sent while the first is still in the checks below has no row to find yet.
-    // Checked and begun in one synchronous step, so two requests cannot both get through.
-    if (this.operationRegistry.isPreparingInstall(params.appUrn)) {
+    // A second install sent while the first is still in here gets past the status checks below: a
+    // fresh install has no row yet, and a reinstall's row says `running` until its Start. Checked and
+    // begun in one synchronous step, so two requests cannot both get through.
+    if (!this.operationRegistry.beginInstallCall(params.appUrn)) {
       throw new TranslatableError('APP_ERROR_INSTALL_IN_PROGRESS', { id: extractAppUrn(params.appUrn).appName }, HttpStatus.CONFLICT);
     }
 
@@ -1320,6 +1321,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       return await this.installAppWhilePreparing(params, preparing);
     } finally {
       this.operationRegistry.endPreparingInstall(params.appUrn, preparing);
+      this.operationRegistry.endInstallCall(params.appUrn);
     }
   }
 
@@ -1331,8 +1333,6 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     // Before anything is fetched, written or queued — see `assertActorMay`.
     await this.assertActorMayApplyForm(params.actor, appUrn, form, 'install');
-    // Before the Portal download, which rewrites the app's store files and takes seconds.
-    this.refuseInstallWhileBusy(appUrn, (await this.appRepository.getAppByUrn(appUrn))?.status);
     const { demoMode, architecture } = this.config.getConfig();
 
     // Check if we need to download files from Companion Portal
@@ -1340,6 +1340,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     const store = await this.appStoreService.getAppStoreBySlug(appStoreId);
 
     if (store && store.type === 'ci_cloud_api') {
+      // Before the Portal download, which rewrites the app's store files and takes seconds.
+      this.refuseInstallWhileBusy(appUrn, (await this.appRepository.getAppByUrn(appUrn))?.status);
       const result = await this.repoHelpers.downloadAppFiles(store.url, store.slug, appName);
       if (!result.success) {
         const failure = this.describePortalBundleFailure(appUrn, 'install', result);
@@ -1357,7 +1359,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     const existingApp = await this.appRepository.getAppByUrn(appUrn);
-    // Again, for an uninstall that began during the download.
+    // For an install or uninstall under way, including one that began during the download.
     this.refuseInstallWhileBusy(appUrn, existingApp?.status);
 
     // Reinstalling an app that is already there restarts it below, which nothing can cancel. Its
@@ -1524,13 +1526,16 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
      * had failed.
      */
     if (existingApp) {
+      // Once more before anything is written, for a reinstall and a retry alike. The checks since the
+      // last look reach the image registry and Companion Portal, and an uninstall that began meanwhile
+      // would lose its outcome to this install's Start or its queued install. Before the release,
+      // which must follow every refusal. A row that is gone was removed by an uninstall that finished.
+      const current = await this.appRepository.getAppByUrn(appUrn);
+      this.refuseInstallWhileBusy(appUrn, current ? current.status : 'uninstalling');
       await this.releaseClearedCustomDomain(appUrn, parsedForm, existingApp);
     }
 
     if (existingApp && existingApp.status !== 'install_failed') {
-      // Once more before the write. The checks since the last look reach the image registry and
-      // Companion Portal, and an uninstall that began meanwhile would lose its outcome to this Start.
-      this.refuseInstallWhileBusy(appUrn, (await this.appRepository.getAppByUrn(appUrn))?.status);
       await this.appRepository.updateAppById(existingApp.id, buildInstallRowPatch(parsedForm));
       await this.claimCustomDomainIntent(existingApp.id, parsedForm.customDomain);
       // Part of the install the caller was authorized for, not a new decision.

@@ -1746,11 +1746,7 @@ describe('AppLifecycleService', () => {
       it('removes the row when it lands while the row is being written', async () => {
         const created = held<unknown>();
         appsRepository.createApp.mockImplementation(() => created.promise as any);
-        // No row for the two reads before the write (one before the Portal download, one after).
-        appsRepository.getAppByUrn
-          .mockResolvedValueOnce(null as any)
-          .mockResolvedValueOnce(null as any)
-          .mockResolvedValue({ id: 1, status: 'installing' } as any);
+        appsRepository.getAppByUrn.mockResolvedValueOnce(null as any).mockResolvedValue({ id: 1, status: 'installing' } as any);
 
         const install = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
         await settle();
@@ -1877,7 +1873,7 @@ describe('AppLifecycleService', () => {
         // The uninstall still owns its outcome, so its completion deletes the row.
         expect(operationRegistry.ownsOutcome(appUrn, 'uninstall-1')).toBe(true);
         // The next install, once the uninstall is done, is not held up by this one.
-        expect(operationRegistry.isPreparingInstall(appUrn)).toBe(false);
+        expect(operationRegistry.beginInstallCall(appUrn)).toBe(true);
       });
 
       it('refuses an uninstall that began while the Portal bundle downloaded', async () => {
@@ -1949,7 +1945,90 @@ describe('AppLifecycleService', () => {
       it('takes the next install once the first has left its checks', async () => {
         await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
 
-        expect(operationRegistry.isPreparingInstall(appUrn)).toBe(false);
+        expect(operationRegistry.beginInstallCall(appUrn)).toBe(true);
+      });
+
+      // A reinstall leaves its cancel window early, and its row says `running` until the Start.
+      it('refuses a second reinstall sent while the first is still in its checks', async () => {
+        const archCheck = held<null>();
+        imageSizeService.verifyAppArchitecture.mockReturnValue(archCheck.promise);
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 5, status: 'running', port: 8080, exposedLocal: true, config: {} } as any);
+        const startApp = vi.spyOn(service, 'startApp').mockResolvedValue({ requestId: 'start-1' });
+
+        const first = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+        await settle();
+        const error = await refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
+        archCheck.release(null);
+        await first;
+
+        expect(error?.message).toBe('APP_ERROR_INSTALL_IN_PROGRESS');
+        expect(appsRepository.updateAppById).toHaveBeenCalledTimes(1);
+        expect(startApp).toHaveBeenCalledTimes(1);
+      });
+
+      it('refuses a retry of a failed install when the uninstall began during the image check', async () => {
+        const archCheck = held<null>();
+        imageSizeService.verifyAppArchitecture.mockReturnValue(archCheck.promise);
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 5, status: 'install_failed', port: 8080, exposedLocal: true, config: {} } as any);
+        operationRegistry.register(appUrn, { requestId: 'uninstall-1', command: 'uninstall', tier: 'non_cancellable' });
+
+        const install = refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
+        await settle();
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 5, status: 'uninstalling', config: {} } as any);
+        archCheck.release(null);
+        const error = await install;
+
+        expect(error?.message).toBe('APP_ERROR_UNINSTALL_IN_PROGRESS');
+        expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        expect(operationRegistry.ownsOutcome(appUrn, 'uninstall-1')).toBe(true);
+      });
+
+      it('refuses a reinstall whose row an uninstall removed during the image check', async () => {
+        const archCheck = held<null>();
+        imageSizeService.verifyAppArchitecture.mockReturnValue(archCheck.promise);
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 5, status: 'running', port: 8080, exposedLocal: true, config: {} } as any);
+        const startApp = vi.spyOn(service, 'startApp');
+
+        const install = refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
+        await settle();
+        appsRepository.getAppByUrn.mockResolvedValue(null as any);
+        archCheck.release(null);
+        const error = await install;
+
+        expect(error?.message).toBe('APP_ERROR_UNINSTALL_IN_PROGRESS');
+        expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+        expect(startApp).not.toHaveBeenCalled();
+      });
+
+      // The release reaches CI-Cloud and clears the binding, so it must follow every refusal.
+      it('does not release a custom domain for a reinstall it then refuses', async () => {
+        const archCheck = held<null>();
+        imageSizeService.verifyAppArchitecture.mockReturnValue(archCheck.promise);
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 5, status: 'stopped', config: { port: 8080 }, customDomain: 'comfy.acme.com' } as any);
+        const release = vi.spyOn(exposureSyncService, 'releaseCustomDomain').mockResolvedValue({ ok: true });
+
+        const install = refusal(
+          service.installApp({
+            actor: TEST_ACTOR,
+            appUrn,
+            form: {
+              port: 8080,
+              exposureMode: 'cloudflare',
+              exposedLocal: true,
+              openPort: false,
+              customDomain: '',
+              customDomainExpected: 'comfy.acme.com',
+            },
+          } as any),
+        );
+        await settle();
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 5, status: 'uninstalling', config: {}, customDomain: 'comfy.acme.com' } as any);
+        archCheck.release(null);
+        const error = await install;
+
+        expect(error?.message).toBe('APP_ERROR_UNINSTALL_IN_PROGRESS');
+        expect(release).not.toHaveBeenCalled();
       });
 
       it.each(['running', 'stopped', 'install_failed'] as const)('still takes an install of an app that is %s', async (status) => {
