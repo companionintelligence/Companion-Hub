@@ -97,11 +97,17 @@ export class ForwardAuthIdentityResolver {
   }
 
   private getIssuer(): Promise<string> {
-    this.issuer ??= this.readIssuer().catch((error: unknown) => {
-      // Not remembered, so the next request can recover.
-      this.issuer = undefined;
-      throw error;
-    });
+    if (!this.issuer) {
+      const reading: Promise<string> = this.readIssuer().catch((error: unknown) => {
+        // Not remembered, so the next request can recover. A read from before a {@link forget} that
+        // fails late leaves alone the one that replaced it.
+        if (this.issuer === reading) {
+          this.issuer = undefined;
+        }
+        throw error;
+      });
+      this.issuer = reading;
+    }
     return this.issuer;
   }
 

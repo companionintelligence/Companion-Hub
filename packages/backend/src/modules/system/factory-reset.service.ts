@@ -38,6 +38,7 @@ import { removeTunnelRegistrationMarker } from '@/modules/registration/tunnel-ma
 import { BearerOrgMembershipCache } from '@/modules/auth/bearer-org-membership.cache';
 import { ForwardAuthIdentityResolver } from '@/modules/auth/forward-auth-identity.resolver';
 import { HubPoolIdentityService } from '@/modules/hub-pool/hub-pool-identity.service';
+import { HubPoolPairingPinService } from '@/modules/hub-pool/hub-pool-pairing-pin.service';
 import { AppCredentialsService } from '@/modules/inference/app-credentials.service';
 import { CloudFallbackService } from '@/modules/inference/cloud-fallback.service';
 import { ModelRegistryService } from '@/modules/inference/model-registry.service';
@@ -69,7 +70,7 @@ const FACTORY_RESET_TABLES = [
   // What the old organization bought and may use.
   entitlementCache,
   whoisCache,
-  // Hub Pool pairings with their tokens, and this node's key that the peers pinned.
+  // Hub Pool pairings with their tokens and this node's key that the peers pinned.
   hubPoolPeer,
   hubPoolIdentity,
   // History of apps that are gone.
@@ -120,7 +121,7 @@ export class FactoryResetService {
 
   /**
    * The model pins and the record of what each app was handed, kept in `state/` beside settings.json
-   * and in memory. The pins came back after the reset, and pinned the old Hub's models again.
+   * and in memory. The pins came back after the reset and pinned the old Hub's models again.
    */
   private async forgetInferenceState(): Promise<void> {
     await this.forgetIn(ModelRegistryService, 'the pinned models', (registry) => registry.forgetPins());
@@ -245,6 +246,8 @@ export class FactoryResetService {
       // signs is cached by user id, which `RESTART IDENTITY` hands to the next account.
       await this.forgetIn(ForwardAuthIdentityResolver, 'the stable ids forward auth signs', (resolver) => resolver.forget());
       await this.forgetIn(HubPoolIdentityService, 'the Hub Pool identity in memory', (identity) => identity.forget());
+      // A PIN the old operator minted would still let a node ask the reset Hub to pair for ten minutes.
+      await this.forgetIn(HubPoolPairingPinService, 'the outstanding Hub Pool pairing PIN', (pins) => pins.cancel());
     }
   }
 

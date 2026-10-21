@@ -20,6 +20,7 @@ import * as schema from '@/core/database/drizzle/schema';
 import { app } from '@/core/database/drizzle/schema';
 import { ForwardAuthIdentityResolver } from '@/modules/auth/forward-auth-identity.resolver';
 import { HubPoolIdentityService } from '@/modules/hub-pool/hub-pool-identity.service';
+import { HubPoolPairingPinService } from '@/modules/hub-pool/hub-pool-pairing-pin.service';
 import { AppCredentialsService } from '@/modules/inference/app-credentials.service';
 import { HANDOUT_RECORDS_PATH, type RecordedHandout } from '@/modules/inference/app-handout-record';
 import { CloudFallbackService } from '@/modules/inference/cloud-fallback.service';
@@ -158,7 +159,7 @@ describe('FactoryResetService', () => {
 
   /**
    * A reset that named seven tables left the rest: Memory keys of the apps it removed, Hub Pool pairings
-   * and the key the peers pinned, the old organization's entitlements, and the old Hub's job history.
+   * and the key the peers pinned, the old organization's entitlements and the old Hub's job history.
    * A table added later is emptied too, or this fails until someone says why it should stay.
    */
   it('MUST empty every table in the database', async () => {
@@ -177,15 +178,17 @@ describe('FactoryResetService', () => {
     expect([...(emptied ?? [])].sort()).toEqual([...tables].sort());
   });
 
-  // They cache rows of the tables the TRUNCATE empties, and `RESTART IDENTITY` hands an old account's
-  // id to the next one: a cached public id was signed for that new person until a restart.
-  it('MUST forget the stable ids forward auth signs and the Hub Pool identity, even when the TRUNCATE rejects', async () => {
+  // They cache rows of the tables the TRUNCATE empties. `RESTART IDENTITY` hands an old account's id
+  // to the next one: a cached public id was signed for that new person until a restart.
+  it('MUST forget the stable ids forward auth signs and the Hub Pool identity and PIN, even when the TRUNCATE rejects', async () => {
     const resolver = { forget: vi.fn() };
     const poolIdentity = { forget: vi.fn() };
+    const pairingPins = { cancel: vi.fn() };
     const others = new Map<unknown, unknown>([
       [BearerOrgMembershipCache, bearerOrgMembership],
       [ForwardAuthIdentityResolver, resolver],
       [HubPoolIdentityService, poolIdentity],
+      [HubPoolPairingPinService, pairingPins],
     ]);
     moduleRefMock.get.mockImplementation(((token: unknown) => others.get(token)) as never);
     db.execute.mockRejectedValueOnce(new Error('ECONNRESET'));
@@ -194,6 +197,7 @@ describe('FactoryResetService', () => {
 
     expect(resolver.forget).toHaveBeenCalled();
     expect(poolIdentity.forget).toHaveBeenCalled();
+    expect(pairingPins.cancel).toHaveBeenCalled();
   });
 
   it('MUST drop cached session users even when the TRUNCATE rejects on the way back', async () => {
@@ -562,9 +566,9 @@ describe('FactoryResetService: settings the Hub holds in memory', () => {
   });
 
   /**
-   * Boot lifts these out of settings.json into the config itself, and only their copies in the user
+   * Boot lifts these out of settings.json into the config itself. Only their copies in the user
    * settings went. Until a restart the reset Hub asked Portal about its old device with the key (the
-   * pairing page offered Move this device), and its next pairing sent both keys as proof.
+   * pairing page offered Move this device). Its next pairing sent both keys as proof.
    */
   it('forgets the Portal device key, the move key and the organization id the config holds', async () => {
     const pairing = { ciHubApiKey: 'portal-device-key', ciHubMoveKey: 'portal-move-key', ciHubOrganizationId: 'org-1' };

@@ -1243,8 +1243,8 @@ describe('AppCredentialsService', () => {
       expect(differingHandoutKeys(record as RecordedHandout, await restarted.previewCredentials('openclaw'))).toEqual(['CI_CLOUD_OPENAI_API_KEY']);
     });
 
-    // A factory reset removes the apps. The records stayed, and the next app to fetch wrote them back.
-    it('forgets every record, in memory and on disk, and the credentials it cached', async () => {
+    // A factory reset removes the apps. The records stayed and the next app to fetch wrote them back.
+    it('forgets every record (in memory and on disk) with the credentials it cached', async () => {
       cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-before-the-reset' });
       await service.getCredentials('openclaw');
       expect((await service.getCredentials('hermes-agent')).env).toHaveProperty('CI_CLOUD_OPENAI_API_KEY', 'sk-before-the-reset');
@@ -1261,6 +1261,26 @@ describe('AppCredentialsService', () => {
       expect((await service.getCredentials('hermes-agent')).env).not.toHaveProperty('CI_CLOUD_OPENAI_API_KEY');
       await service.onApplicationShutdown();
       expect(Object.keys(JSON.parse(await fs.promises.readFile(HANDOUT_RECORDS_PATH, 'utf8')))).toEqual(['hermes-agent']);
+    });
+
+    // A fetch still resolving at the reset read the old Hub's keys. Cached, they went to the next app for 30 s.
+    it('resolves again a fetch that was under way when the handouts were forgotten', async () => {
+      let release: () => void = () => undefined;
+      hardwareInspector.getProfile.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = () => resolve(baseProfile);
+          }),
+      );
+      cloudFallback.toAppEnv.mockReturnValueOnce({ CI_CLOUD_OPENAI_API_KEY: 'sk-before-the-reset' }).mockReturnValue({});
+      const fetching = service.getCredentials('openclaw');
+
+      await service.forgetHandouts();
+      release();
+
+      expect((await fetching).env).not.toHaveProperty('CI_CLOUD_OPENAI_API_KEY');
+      expect((await service.getCredentials('openclaw')).env).not.toHaveProperty('CI_CLOUD_OPENAI_API_KEY');
+      expect(hardwareInspector.getProfile).toHaveBeenCalledTimes(2);
     });
   });
 

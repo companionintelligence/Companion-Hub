@@ -100,7 +100,7 @@ export async function readHandoutRecords(file = HANDOUT_RECORDS_PATH): Promise<R
   return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, RecordedHandout] => isRecordedHandout(entry[1])));
 }
 
-/** Remove the persisted records, and a write a crash left behind. */
+/** Remove the persisted records with any write a crash left behind. */
 export async function removeHandoutRecords(file = HANDOUT_RECORDS_PATH): Promise<void> {
   await Promise.all([fs.promises.rm(file, { force: true }), fs.promises.rm(`${file}.tmp`, { force: true })]);
 }

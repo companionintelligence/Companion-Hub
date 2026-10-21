@@ -244,4 +244,28 @@ describe('HubPoolIdentityService', () => {
     expect(after?.nodeUuid).toMatch(/^[0-9a-f-]{36}$/);
     await expect(service.summary()).resolves.toMatchObject({ nodeUuid: after?.nodeUuid, identityError: null });
   });
+
+  // A rotation still writing its key when the reset ran cached the old node UUID over the forget.
+  it('does not keep a rotation that a forget overtook', async () => {
+    const service = build();
+    const before = await service.get();
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const replaceKeys = repo.replaceKeys.bind(repo);
+    vi.spyOn(repo, 'replaceKeys').mockImplementationOnce(async (publicKey: string, privateKeyEncrypted: string) => {
+      await held;
+      await replaceKeys(publicKey, privateKeyEncrypted);
+    });
+
+    const rotating = service.rotate();
+    await vi.waitFor(() => expect(repo.replaceKeys).toHaveBeenCalled());
+    repo.row = undefined;
+    service.forget();
+    release();
+    await rotating;
+
+    expect((await service.get())?.nodeUuid).not.toBe(before?.nodeUuid);
+  });
 });

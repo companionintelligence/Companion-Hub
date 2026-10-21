@@ -82,7 +82,7 @@ function configOver(disk: Persisted) {
       Object.assign(disk.settings, patch);
     },
     setDomain: async () => undefined,
-    // As the factory reset leaves the running config: settings.json is `{}`, and the pairing is forgotten.
+    // As the factory reset leaves the running config: settings.json is `{}` and the pairing is forgotten.
     forgetPersistedUserSettings: () => {
       delete disk.settings.ciHubApiKey;
       delete disk.settings.ciHubMoveKey;

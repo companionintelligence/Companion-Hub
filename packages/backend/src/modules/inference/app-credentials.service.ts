@@ -137,6 +137,8 @@ export class AppCredentialsService implements OnApplicationShutdown {
   private handouts = new Map<AppSlug, RecordedHandout>();
   private handoutsLoaded: Promise<void> | null = null;
   private handoutWrites: Promise<void> = Promise.resolve();
+  /** Bumped by {@link forgetHandouts}, so a fetch resolved before it is resolved again rather than cached. */
+  private generation = 0;
 
   constructor(
     private readonly logger: LoggerService,
@@ -191,7 +193,14 @@ export class AppCredentialsService implements OnApplicationShutdown {
       return cached.config;
     }
 
-    const config = await this.resolveCredentials(slug, apiVersion);
+    // Resolved again when a factory reset forgot the handouts meanwhile: this one may hold what the
+    // old Hub had, its cloud keys among it, and caching it handed them out for another 30 s.
+    let generation: number;
+    let config: AppCredentialsConfig;
+    do {
+      generation = this.generation;
+      config = await this.resolveCredentials(slug, apiVersion);
+    } while (generation !== this.generation);
     for (const decision of config.prePull) {
       this.logger.info(
         `[AppCredentials] pre-pull decision slug=${slug} ${decision.kind}=${decision.catalogId} pull=${decision.pull}: ${decision.reason}`,
@@ -233,16 +242,19 @@ export class AppCredentialsService implements OnApplicationShutdown {
   }
 
   /**
-   * Forget what each app was handed, in memory and on disk, and the credentials cached for them: a
-   * factory reset removed the apps. The records described apps that were gone, and the next app to
-   * fetch wrote them all back to the file beside its own.
+   * Forget what each app was handed (in memory and on disk) with the credentials cached for them: a
+   * factory reset removed the apps. The records described apps that were gone. The next app to fetch
+   * wrote them all back to the file beside its own.
    */
   async forgetHandouts(): Promise<void> {
+    this.generation++;
     this.cache.clear();
     this.handoutWrites = this.handoutWrites
       .then(async () => {
-        // Loaded first, so a read still under way cannot add the old records back afterwards.
-        await this.loadPersistedHandouts();
+        // A read still under way is waited for, so it cannot add the old records back afterwards. One
+        // that never started is not needed: the file goes next.
+        this.handoutsLoaded ??= Promise.resolve();
+        await this.handoutsLoaded;
         this.handouts.clear();
         await removeHandoutRecords();
       })

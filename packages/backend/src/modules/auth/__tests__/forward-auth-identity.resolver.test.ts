@@ -110,8 +110,8 @@ describe('ForwardAuthIdentityResolver', () => {
     expect(logger.warn).toHaveBeenCalled();
   });
 
-  // A factory reset empties `user` and `user_directory`, and `RESTART IDENTITY` hands id 1 to the
-  // next account. The cached public id was then signed for that new person, until a restart.
+  // A factory reset empties `user` and `user_directory`. `RESTART IDENTITY` hands id 1 to the next
+  // account, and the cached public id was then signed for that new person until a restart.
   it('reads the directory and each public id again after forget', async () => {
     let directoryId = DIRECTORY_ID;
     const resolver = make(fakeDb({ directory: () => directoryId }));
@@ -148,5 +148,28 @@ describe('ForwardAuthIdentityResolver', () => {
     users.getPublicId.mockResolvedValue(NEW_PUBLIC_ID);
 
     await expect(resolver.stableIdFor(1)).resolves.toMatchObject({ userId: NEW_PUBLIC_ID });
+  });
+
+  it('keeps the directory read after forget when a read from before it fails late', async () => {
+    const db = fakeDb();
+    let fail: () => void = () => undefined;
+    db.insert.mockImplementationOnce(() => ({
+      values: () => ({
+        onConflictDoNothing: () =>
+          new Promise<void>((_, reject) => {
+            fail = () => reject(new Error('ci-hub-db went away'));
+          }),
+      }),
+    }));
+    const resolver = make(db);
+    const before = resolver.stableIdFor(7);
+
+    resolver.forget();
+    await resolver.stableIdFor(7);
+    fail();
+    await before;
+    await resolver.stableIdFor(7);
+
+    expect(db.select).toHaveBeenCalledTimes(1);
   });
 });

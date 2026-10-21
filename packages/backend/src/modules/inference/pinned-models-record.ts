@@ -38,7 +38,7 @@ export async function readPinnedModels(file = PINNED_MODELS_PATH): Promise<Pinne
   return { pinned: [...new Set(pinned.filter((id): id is string => typeof id === 'string' && id.length > 0))] };
 }
 
-/** Remove the persisted pins, and a write a crash left behind. */
+/** Remove the persisted pins with any write a crash left behind. */
 export async function removePinnedModels(file = PINNED_MODELS_PATH): Promise<void> {
   await Promise.all([fs.promises.rm(file, { force: true }), fs.promises.rm(`${file}.tmp`, { force: true })]);
 }

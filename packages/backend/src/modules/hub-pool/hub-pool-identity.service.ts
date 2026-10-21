@@ -174,17 +174,26 @@ export class HubPoolIdentityService {
    * message that would have told them.
    */
   async rotate(): Promise<LoadedPoolIdentity> {
+    const generation = this.generation;
     const existing = await this.repo.get();
     if (!existing) {
       throw new Error('This node has no pool identity to rotate');
     }
     const material = generatePoolKeyPair();
     await this.repo.replaceKeys(material.publicKey, this.encryption.encrypt(material.privateKey, existing.nodeUuid));
-    this.cached = { nodeUuid: existing.nodeUuid, publicKey: material.publicKey, privateKey: privateKeyFromBase64(material.privateKey) };
-    this.lastError = null;
-    this.retryAfter = 0;
+    const rotated: LoadedPoolIdentity = {
+      nodeUuid: existing.nodeUuid,
+      publicKey: material.publicKey,
+      privateKey: privateKeyFromBase64(material.privateKey),
+    };
+    // A rotation that a factory reset overtook would cache the node UUID the reset forgot.
+    if (generation === this.generation) {
+      this.cached = rotated;
+      this.lastError = null;
+      this.retryAfter = 0;
+    }
     this.logger.info(`[HubPool] pool identity key rotated; node UUID ${existing.nodeUuid} is unchanged`);
-    return this.cached;
+    return rotated;
   }
 
   /** Record a verified sender FQDN that disagrees with the stored row. Drained by the health tick. */
