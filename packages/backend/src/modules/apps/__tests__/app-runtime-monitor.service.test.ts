@@ -871,6 +871,117 @@ describe('AppRuntimeMonitorService', () => {
     });
   });
 
+  /*
+   * The probe verdict is cached for a minute and the CPU samples behind "sustained" are kept per app.
+   * Both describe one run of the app. A stop and start, a restart or an edit within that minute must
+   * not hand the new run the old one's verdict: a fixed app kept the banner and Force Stop, and a
+   * newly broken one kept looking healthy.
+   */
+  describe('a new run of the app', () => {
+    const container = (containerId: string) => ({
+      containerId,
+      name: 'cpu-hog__user-web-1',
+      state: 'running',
+      status: 'Up',
+      health: null,
+      exitCode: null,
+      cpuPercent: 200,
+      memoryUsageBytes: 100,
+      memoryLimitBytes: 1000,
+    });
+
+    function appRow(updatedAt: string, exposureMode = 'local') {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        appName: 'cpu-hog',
+        appStoreSlug: '_user',
+        status: 'running',
+        exposureMode,
+        config: {},
+        updatedAt,
+      } as any);
+    }
+
+    beforeEach(() => {
+      appFilesManager.getDockerComposeJson.mockResolvedValue({
+        path: '/apps/_user/cpu-hog/docker-compose.json',
+        content: { schemaVersion: 2, services: [{ name: 'web', image: 'alpine:3.20', isMain: true, internalPort: 80 }] },
+      });
+      dockerReadFacade.getServiceAddressOnHubNetwork.mockResolvedValue('10.200.0.7');
+    });
+
+    async function sample(times: number) {
+      let result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      for (let i = 1; i < times; i++) {
+        result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      }
+      return result;
+    }
+
+    it('drops the degraded verdict when a fixed app is started again', async () => {
+      appRow('2026-10-21 13:14:00');
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([container('hung-run')]);
+      vi.mocked(probeAppPort).mockResolvedValue('silent');
+      expect(await sample(3)).toMatchObject({ degraded: true, forceStopEligible: true });
+
+      // Force stopped, edited and started again: the row moved and compose made a new container.
+      appRow('2026-10-21 13:14:40');
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([container('fixed-run')]);
+      vi.mocked(probeAppPort).mockResolvedValue('answered');
+
+      const result = await sample(1);
+
+      expect(probeAppPort).toHaveBeenCalledTimes(2);
+      expect(result).toMatchObject({ responsive: true, sustainedHighCpu: false, degraded: false, forceStopEligible: false, reason: null });
+    });
+
+    it('asks a restarted app again instead of keeping its healthy verdict', async () => {
+      appRow('2026-10-21 13:20:00');
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([container('same-container')]);
+      vi.mocked(probeAppPort).mockResolvedValue('answered');
+      expect(await sample(3)).toMatchObject({ responsive: true, degraded: false });
+
+      // A restart keeps the container but writes the row twice (restarting, then running).
+      appRow('2026-10-21 13:20:30');
+      vi.mocked(probeAppPort).mockResolvedValue('silent');
+
+      const result = await sample(3);
+
+      expect(probeAppPort).toHaveBeenCalledTimes(2);
+      expect(result).toMatchObject({ responsive: false, degraded: true, forceStopEligible: true });
+    });
+
+    it('asks the public route again after a Public Web app restarts', async () => {
+      appRow('2026-10-21 13:30:00', 'cloudflare');
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([container('public-run')]);
+      appsService.checkAppAvailability.mockResolvedValue({
+        available: false,
+        errorCode: 'CONNECTION_TIMEOUT',
+        detail: 'Connection timed out reaching the app.',
+      } as any);
+      expect(await sample(3)).toMatchObject({ degraded: true });
+
+      appRow('2026-10-21 13:30:45', 'cloudflare');
+      appsService.checkAppAvailability.mockResolvedValue({ available: true, stage: 'ready' } as any);
+
+      const result = await sample(1);
+
+      expect(appsService.checkAppAvailability).toHaveBeenCalledTimes(2);
+      expect(result).toMatchObject({ responsive: true, degraded: false, forceStopEligible: false });
+    });
+
+    it('keeps the cached verdict while the same run goes on', async () => {
+      appRow('2026-10-21 13:40:00');
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([container('steady-run')]);
+      vi.mocked(probeAppPort).mockResolvedValue('silent');
+
+      const result = await sample(5);
+
+      expect(probeAppPort).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ sustainedHighCpu: true, degraded: true });
+    });
+  });
+
   describe('readiness probe (hub_integration.readiness, CI-Hub#1556)', () => {
     const descriptor = { service: 'ci-hermes-gateway', port: 8642, path: '/health/detailed', bearer_env: 'APP_SEED' };
     const runningContainer = {
