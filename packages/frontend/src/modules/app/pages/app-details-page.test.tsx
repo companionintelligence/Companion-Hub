@@ -1,8 +1,9 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { useQuery, getMarketplaceAppImageUrl } = vi.hoisted(() => ({
+const { useQuery, useIsMutating, getMarketplaceAppImageUrl } = vi.hoisted(() => ({
   useQuery: vi.fn(),
+  useIsMutating: vi.fn(() => 0),
   getMarketplaceAppImageUrl: vi.fn(),
 }));
 
@@ -23,6 +24,8 @@ vi.mock('react-router', async () => {
 
 vi.mock('@tanstack/react-query', () => ({
   useQuery,
+  // Whether an install request for the app is still out (`useInstallRequestPending`).
+  useIsMutating,
   // The page now renders CustomDomainRestartBanner, which reaches for a client to
   // invalidate after a restart. This page test never restarts anything, so the
   // narrow mock only has to satisfy the hook call.
@@ -93,7 +96,7 @@ vi.mock('../helpers/use-app-url-availability', () => ({
 }));
 
 vi.mock('../containers/app-actions/app-actions', () => ({
-  AppActions: () => <div data-testid="app-actions" />,
+  AppActions: ({ app }: { app?: { status?: string } | null }) => <div data-testid="app-actions" data-status={app?.status ?? 'none'} />,
 }));
 
 vi.mock('../containers/app-details-tabs/app-details-tabs', () => ({
@@ -113,6 +116,7 @@ import AppDetailsPage from './app-details-page';
 describe('AppDetailsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useIsMutating.mockReturnValue(0);
     getMarketplaceAppImageUrl.mockReturnValue('http://localhost:5002/api/marketplace/apps/test-app%3Acommunity/image');
     useQuery.mockImplementation((options: { queryKey?: readonly unknown[] }) => {
       if (options.queryKey?.[0] === 'app-image-size') {
@@ -317,6 +321,46 @@ describe('AppDetailsPage', () => {
     expect(mobileChip).toHaveClass('col-start-2', 'row-start-1', 'justify-self-end', 'sm:hidden');
     expect(icon.parentElement).toHaveClass('items-start', 'grid');
     expect(desktopChip).toHaveClass('hidden', 'sm:inline-flex');
+  });
+
+  // The Hub writes the row only after its checks, which took seconds on a slow link, and a read in
+  // that time put the page back on a plain Install while the install went ahead.
+  it('shows an app whose install request is still out as installing, with no row yet', () => {
+    useIsMutating.mockReturnValue(1);
+    useQuery.mockImplementation((options: { queryKey?: readonly unknown[] }) => {
+      if (options.queryKey?.[0] === 'app-image-size') {
+        return { data: { totalBytes: 1234, formatted: '1.2 KB' }, isLoading: false };
+      }
+
+      return {
+        data: { info: { urn: 'test-app:community', name: 'Test App', categories: ['utilities'] }, app: null, metadata: {} },
+        isLoading: false,
+      };
+    });
+
+    render(<AppDetailsPage />);
+
+    expect(useIsMutating).toHaveBeenCalledWith({ mutationKey: ['install-request', 'test-app:community'] });
+    expect(screen.getByTestId('app-actions')).toHaveAttribute('data-status', 'installing');
+    expect(screen.getByTestId('app-status')).toBeInTheDocument();
+  });
+
+  it('shows the app as the Hub reports it once no install request is out', () => {
+    useQuery.mockImplementation((options: { queryKey?: readonly unknown[] }) => {
+      if (options.queryKey?.[0] === 'app-image-size') {
+        return { data: { totalBytes: 1234, formatted: '1.2 KB' }, isLoading: false };
+      }
+
+      return {
+        data: { info: { urn: 'test-app:community', name: 'Test App', categories: ['utilities'] }, app: null, metadata: {} },
+        isLoading: false,
+      };
+    });
+
+    render(<AppDetailsPage />);
+
+    expect(screen.getByTestId('app-actions')).toHaveAttribute('data-status', 'none');
+    expect(screen.queryByTestId('app-status')).not.toBeInTheDocument();
   });
 
   it('disables runtime-health polling while an app is uninstalling', () => {
