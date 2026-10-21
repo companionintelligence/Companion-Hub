@@ -519,7 +519,7 @@ export class DockerService {
    * Resolves the two host folders a privileged snapshot helper touches, refusing anything that is not
    * exactly `{app-data-root}/{store}/{app}` and `{root}/backups/.pre-update-snapshots/{store}/{app}/{snapshotId}`
    * (or `.backup-staging` for a backup's copy). Both are recomputed from the app URN and the id, never
-   * taken from a caller, and every segment must be a plain name, so the helper can only ever read one
+   * taken from a caller. Every segment must be a plain name, so the helper can only ever read one
    * app's data and write one copy of it.
    *
    * @returns the host paths, or `null` (already logged) when anything fails validation.
@@ -642,13 +642,14 @@ export class DockerService {
 
     const copied = await this.runPrivilegedSnapshotHelper(
       [`${paths.hostAppDataDir}:/src:ro`, `${paths.hostSnapshotDir}:/dest:rw`],
-      // Device nodes go before the chown. A container running as root can make one in its data, and
-      // given to the Hub's user it would open that disk to the same user on the host. The owner changes
-      // even after a copy that failed half-way, so the Hub can delete what was written.
+      // Device nodes go before the chown. A container running as root can make one in its data. Given to
+      // the Hub's user, it would open that disk to the same user on the host. Pipes and sockets hold no
+      // data. The Hub's own copy out of the staging folder refuses them. The owner changes even after a
+      // copy that failed half-way, so the Hub can delete what was written.
       [
         'sh',
         '-c',
-        'cp -a /src/. /dest/; status=$?; find /dest \\( -type b -o -type c \\) -delete || status=1; chown -R "$1" /dest && chmod -R u+rwX /dest || status=1; exit $status',
+        'cp -a /src/. /dest/; status=$?; find /dest \\( -type b -o -type c -o -type p -o -type s \\) -delete || status=1; chown -R "$1" /dest && chmod -R u+rwX /dest || status=1; exit $status',
         'sh',
         `${uid}:${gid}`,
       ],

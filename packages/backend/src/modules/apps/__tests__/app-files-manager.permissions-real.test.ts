@@ -67,7 +67,7 @@ describe.skipIf(!canEnforcePermissions)('the permission sweep on a real tree', (
   /*
    * The test owns its 700 folders, so `find` could list them whether it pruned them or not. A folder
    * at 000 is one even its owner cannot list: the sweep for root walks into it and fails, as it did
-   * into MariaDB's, and the sweep for a plain-user Hub must not.
+   * into MariaDB's. The sweep for a plain-user Hub must not.
    */
   describe('with a folder the sweep cannot list', () => {
     const locked = () => path.join(appDataDir, 'data', 'db', 'sys');
