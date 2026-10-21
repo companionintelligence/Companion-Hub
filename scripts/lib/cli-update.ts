@@ -7,9 +7,8 @@
  * one and the Hub stack image on another, and nothing used to notice when they drifted apart. Every
  * update entry point now opens with that answer; see cli-version-skew.ts.
  */
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { stdin as input, stdout as output } from 'node:process';
@@ -303,12 +302,12 @@ export async function runSelfUpdateCommand(args: string[], gathered?: SkewSnapsh
     return;
   }
 
-  // A folder only this user can open, removed again afterwards. The default cache is one shared folder
-  // under the system temp dir, and a file already there is used as it is, so another account on this
-  // machine could leave a binary in it for this command to run and install over cihub.
-  const cacheDir = mkdtempSync(path.join(tmpdir(), 'cihub-self-update-'));
+  // A folder only this user can open, removed again afterwards. A file already in a download cache is
+  // used as it is. A fresh folder means nothing another account left behind is run or installed.
+  let cacheDir: string | undefined;
   let asset: { bytes: Buffer; tag: string };
   try {
+    cacheDir = mkdtempSync(path.join(tmpdir(), 'cihub-self-update-'));
     const downloaded = await downloadReleaseAsset({ token: plan.token, assetName: plan.assetName, version: plan.version, cacheDir });
     asset = { bytes: readFileSync(downloaded.path), tag: downloaded.tag };
   } catch (error) {
@@ -323,7 +322,7 @@ export async function runSelfUpdateCommand(args: string[], gathered?: SkewSnapsh
     process.exitCode = 1;
     return;
   } finally {
-    rmSync(cacheDir, { recursive: true, force: true });
+    if (cacheDir) rmSync(cacheDir, { recursive: true, force: true });
   }
 
   const installed = installBinaryOverSelf({

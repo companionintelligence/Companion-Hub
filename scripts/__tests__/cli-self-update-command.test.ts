@@ -1,10 +1,10 @@
 /**
  * Where `cihub self-update` puts the asset it downloads.
  *
- * `downloadReleaseAsset` defaults to one shared folder under the system temp dir and uses a file
- * already there as it is. With no token needed, any account on the machine could leave a binary in
- * that folder for `cihub self-update` to run (as its version probe) and install. The command now
- * downloads into a folder of its own that only this user can open, and removes it afterwards.
+ * `downloadReleaseAsset` uses a file already in its cache as it is. Its default cache used to be one
+ * shared folder under the system temp dir, where any account on the machine could leave a binary for
+ * `cihub self-update` to run (as its version probe) and install. The command downloads into a fresh
+ * folder that only this user can open. It removes that folder afterwards.
  */
 import { existsSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -77,7 +77,7 @@ describe.skipIf(process.platform === 'win32')('cihub self-update download folder
     expect(mode).toBe(0o700);
   });
 
-  it('removes the folder when the download fails, and installs nothing', async () => {
+  it('removes the folder when the download fails and installs nothing', async () => {
     mocks.downloadReleaseAsset.mockImplementationOnce(async (input: { cacheDir?: string }) => {
       seenCacheDir = input.cacheDir;
       throw new Error('asset download failed: HTTP 502 for cihub-linux-x64');

@@ -19,7 +19,7 @@ import {
   planAppTeardown,
   removeManagedAppProjects,
 } from '../hub-cleanup-lib.js';
-import { resolveUpStartMode } from './cli-args.js';
+import { resolveUpStartMode, type StartFlags } from './cli-args.js';
 import { buildEnvOverrides, getEnvFileOrExit } from './cli-compose-env.js';
 import { startHub } from './cli-lifecycle.js';
 import { run, runBestEffort, runCapture } from './cli-proc.js';
@@ -148,16 +148,14 @@ export function downHub(env: HubEnv, options?: { volumes?: boolean }) {
   removeProjectContainers('ci-hub', hubDocker(undefined));
 }
 
-/**
- * `--detached` / `--attached` as typed. Both commands start the stack again with the mode `cihub up`
- * would pick for them ({@link resolveUpStartMode}): outside a checkout that is detached unless
- * `--attached` was given. Attached, the command stays on `docker compose up`. A Ctrl+C or a signal
- * to it then makes compose stop the containers.
- */
-export type StartFlags = { detached: boolean; attached: boolean };
-
 const NO_START_FLAGS: StartFlags = { detached: false, attached: false };
 
+/**
+ * `restart` and `recreate` start the stack again with the mode `cihub up` would pick for the same
+ * flags ({@link resolveUpStartMode}): outside a checkout that is detached unless `--attached` was
+ * given. Attached, the command stays on `docker compose up`. A Ctrl+C or a signal to it then makes
+ * compose stop the containers.
+ */
 export async function restartHub(env: HubEnv, flags: StartFlags = NO_START_FLAGS) {
   downHub(env);
   await startHub(resolveUpStartMode(env, flags), env);

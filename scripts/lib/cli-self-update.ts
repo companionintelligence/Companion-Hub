@@ -78,7 +78,7 @@ export function planSelfUpdate(input: SelfUpdatePlanInput): SelfUpdatePlan {
     };
   }
 
-  const token = GITHUB_TOKEN_ENV_VARS.map((name) => input.env[name]?.trim()).find(Boolean) || undefined;
+  const token = GITHUB_TOKEN_ENV_VARS.map((name) => input.env[name]?.trim()).find(Boolean);
 
   const requested = input.requestedVersion?.trim();
   if (requested && requested !== 'latest') {

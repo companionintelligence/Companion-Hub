@@ -96,7 +96,7 @@ describe('initHubDataDirs on an appliance env file', () => {
     expect(modeOf(envPath)).toBe(0o600);
   });
 
-  it('adds DOCKER_GID when a CLI-seeded file has none, and changes nothing else', () => {
+  it('adds DOCKER_GID when a CLI-seeded file has none and changes nothing else', () => {
     const seeded = `ROOT_FOLDER_HOST=${dir}\nPOSTGRES_PASSWORD=pg\nENV_FILE=.env.dev\n`;
     const envPath = writeEnv('.env.dev', seeded);
 
@@ -105,7 +105,7 @@ describe('initHubDataDirs on an appliance env file', () => {
     expect(readFileSync(envPath, 'utf-8')).toBe(`${seeded}DOCKER_GID=981\n`);
   });
 
-  it('keeps a uid the desktop app pinned when the socket is root-only, and pins 0:0 only where none is set', () => {
+  it('keeps a uid the desktop app pinned when the socket is root-only and pins 0:0 only where none is set', () => {
     docker.socketRootOnly = true;
     const envPath = writeEnv('.env.dev', `ROOT_FOLDER_HOST=${dir}\nCI_HUB_CONTAINER_UID=0\n`);
 
