@@ -7,6 +7,7 @@ import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { BackupManager } from '@/modules/backups/backup.manager';
+import { removeAppDataDirWithRootFallback } from '@/modules/docker/app-data-removal';
 import { DockerService } from '@/modules/docker/docker.service';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
@@ -70,25 +71,6 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       // files already on disk. Nothing is stopped, removed or replaced until the images are here.
       logger.info(`Pulling images for ${appUrn} before stopping the current version`);
       await dockerService.pullImages(this.imagesToPull(composeToInstall.content), { forcePull: true });
-
-      // ⚠ LOOK BEFORE STOPPING FOR A BACKUP. A database's files belong to the user its container ran as,
-      // and a Hub running as a plain user on native Linux cannot read them, so the backup's copy stops
-      // at the first one: found only after the app was stopped, that is downtime for nothing. The
-      // rollback snapshot below, unlike the backup, can be taken by a privileged helper, so the way out
-      // is to update without the backup.
-      if (this.performBackup) {
-        const filesystem = this.moduleRef.get(FilesystemService, { strict: false });
-        const { appDataDir } = appFilesManager.getAppPaths(appUrn);
-        const unreadable = (await filesystem?.findUnreadable(appDataDir)) ?? [];
-
-        if (unreadable.length > 0) {
-          throw new Error(
-            `Cannot back up ${appUrn} before updating it: the Hub cannot read ${unreadable.slice(0, 3).join(', ')} ` +
-              `(created by the app's own container under another user). Nothing was stopped. ` +
-              `Update with "back up first" turned off: the Hub still takes a rollback snapshot of the data, as root.`,
-          );
-        }
-      }
 
       if (this.performBackup) {
         stoppedForBackup = true;
@@ -260,9 +242,13 @@ export class UpdateAppCommand extends AppLifecycleCommand {
           const dockerService = this.moduleRef.get(DockerService, { strict: false });
           ok = ok && (await dockerService.restoreAppDataDirAsRoot(appUrn, snapshot.snapshotId));
         } else {
-          const removed = await filesystem.removeDirectory(appDataDir);
-          const copied = await filesystem.copyDirectory(snapshot.snapshotPath, appDataDir);
-          ok = ok && removed !== false && copied !== false;
+          // The Hub could read the data, so it copied it, but what the app's container wrote as another
+          // user (Uptime Kuma runs as root) it cannot delete: those go through the root helper. A copy
+          // over data that is still there would mix the two versions, so it waits for the delete.
+          const dockerService = this.moduleRef.get(DockerService, { strict: false });
+          const removed = await removeAppDataDirWithRootFallback({ filesystem, docker: dockerService, logger }, appUrn, appDataDir);
+          const copied = removed && (await filesystem.copyDirectory(snapshot.snapshotPath, appDataDir));
+          ok = ok && removed && copied !== false;
         }
       }
 

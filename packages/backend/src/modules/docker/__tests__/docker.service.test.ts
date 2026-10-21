@@ -1226,6 +1226,69 @@ describe('DockerService', () => {
     });
   });
 
+  // A backup of a database's data: the Hub cannot read it, so a helper copies it as root into a staging
+  // folder under backups/ and hands the copy to the Hub's own user.
+  describe('copyAppDataDirForBackupAsRoot', () => {
+    const urn = 'kimai:ci-marketplace' as any;
+    const hostAppData = getAppDataHostPath(urn, { ciHubAppDataPath: undefined, appDataPath: undefined, rootFolderHost: '/host/root' });
+
+    beforeEach(() => {
+      configService.getConfig.mockReturnValue({ userSettings: {}, rootFolderHost: '/host/root' } as any);
+      delete process.env.CI_HUB_APP_DATA_PATH;
+      delete process.env.CI_HUB_CLEANUP_IMAGE;
+      filesystemService.createDirectory.mockResolvedValue(true);
+      vi.spyOn(process, 'getuid').mockReturnValue(1000);
+      vi.spyOn(process, 'getgid').mockReturnValue(1000);
+      vi.spyOn(Date, 'now').mockReturnValue(1792500000000);
+      (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(0));
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('copies as root into a staging folder the Hub made, gives it to the Hub and says where it is', async () => {
+      const staging = await service.copyAppDataDirForBackupAsRoot(urn);
+
+      expect(staging).toBe('/data/backups/.backup-staging/ci-marketplace/kimai/backup-kimai-1792500000000');
+      expect(filesystemService.createDirectory).toHaveBeenCalledWith(staging);
+      expect(child_process.spawn).toHaveBeenCalledWith(
+        'docker',
+        [
+          'run',
+          '--rm',
+          '--network',
+          'none',
+          '--user',
+          '0:0',
+          '-v',
+          `${hostAppData}:/src:ro`,
+          '-v',
+          '/host/root/backups/.backup-staging/ci-marketplace/kimai/backup-kimai-1792500000000:/dest:rw',
+          'alpine:3.20',
+          'sh',
+          '-c',
+          'cp -a /src/. /dest/; status=$?; chown -R "$1" /dest && chmod -R u+rwX /dest || status=1; exit $status',
+          'sh',
+          '1000:1000',
+        ],
+        { stdio: 'pipe' },
+      );
+    });
+
+    it('removes the staging folder and returns null when the helper fails', async () => {
+      (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(1));
+
+      await expect(service.copyAppDataDirForBackupAsRoot(urn)).resolves.toBeNull();
+      expect(filesystemService.removeDirectory).toHaveBeenCalledWith('/data/backups/.backup-staging/ci-marketplace/kimai/backup-kimai-1792500000000');
+    });
+
+    it('refuses (and never spawns) for an app name that is not a plain name', async () => {
+      await expect(service.copyAppDataDirForBackupAsRoot('..:ci-marketplace' as any)).resolves.toBeNull();
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+  });
+
   describe('createPreUpdateVolumeSnapshot', () => {
     const testUrn = 'test-app:test-store' as any;
 

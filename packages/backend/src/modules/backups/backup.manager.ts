@@ -20,6 +20,7 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import type { AppUrn } from '@ci-hub/common/types';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppVolumeArchiveService } from '../docker/app-volume-archive.service';
+import { removeAppDataDirWithRootFallback } from '../docker/app-data-removal';
 import { DockerService } from '../docker/docker.service';
 
 @Injectable()
@@ -71,19 +72,10 @@ export class BackupManager implements OnApplicationShutdown {
       const { appDataDir, appInstalledDir } = this.appFilesManager.getAppPaths(appUrn);
       const userConfigDir = path.join(dataDir, 'user-config', appStoreId, appName);
 
-      // Links are copied as links with their targets as written: by default `fs.cp` rewrites a relative
-      // target to an absolute one under the SOURCE folder, which no longer points anywhere once the
-      // data is restored somewhere else.
       // An app that has not written anything yet may have no data folder. The archive still gets one,
       // because a restore refuses a backup without it.
       const dataCopied = (await this.filesystem.pathExists(appDataDir))
-        ? await this.filesystem.copyDirectory(appDataDir, path.join(tempDir, 'app-data'), {
-            recursive: true,
-            verbatimSymlinks: true,
-            // Judged on the path inside the app's data folder: the folder itself may live under a path that
-            // contains "backups" (a volume mounted at /mnt/backups), and excluding it excluded everything.
-            filter: (src) => !path.relative(appDataDir, src).includes('backups'),
-          })
+        ? await this.copyAppDataForBackup(appUrn, appDataDir, path.join(tempDir, 'app-data'))
         : await this.filesystem.createDirectory(path.join(tempDir, 'app-data'));
       const filesCopied = await this.filesystem.copyDirectory(appInstalledDir, path.join(tempDir, 'app'));
 
@@ -224,6 +216,47 @@ export class BackupManager implements OnApplicationShutdown {
     }
   };
 
+  /**
+   * Copy the app's data folder into a backup being assembled at `dest`.
+   *
+   * A database's files belong to the user its container runs as (MariaDB's are uid 999, folders at
+   * 700). A Hub on a native Linux host runs as the host user and cannot read them. Then a root helper
+   * copies the data into a folder under `backups/` that the Hub can read. The backup copies from there.
+   */
+  private async copyAppDataForBackup(appUrn: AppUrn, appDataDir: string, dest: string): Promise<boolean> {
+    // Links are copied as links with their targets as written: by default `fs.cp` rewrites a relative
+    // target to an absolute one under the SOURCE folder, which no longer points anywhere once the
+    // data is restored somewhere else.
+    const options = (root: string): fs.CopyOptions => ({
+      recursive: true,
+      verbatimSymlinks: true,
+      // Judged on the path inside the app's data folder: the folder itself may live under a path that
+      // contains "backups" (a volume mounted at /mnt/backups), and excluding it excluded everything.
+      filter: (src) => !path.relative(root, src).includes('backups'),
+    });
+
+    const first = await this.filesystem.copyDirectoryDetailed(appDataDir, dest, options(appDataDir));
+
+    if (first.copied || !first.permissionDenied) {
+      return first.copied;
+    }
+
+    this.logger.warn(`The Hub cannot read some of the data of ${appUrn} (its container wrote it as another user); copying it as root for the backup`);
+    const staging = await this.docker.copyAppDataDirForBackupAsRoot(appUrn);
+
+    if (!staging) {
+      return false;
+    }
+
+    try {
+      // The first try stopped part-way; the copy from the staging folder is the whole of it.
+      await this.filesystem.removeDirectory(dest);
+      return await this.filesystem.copyDirectory(staging, dest, options(staging));
+    } finally {
+      await this.filesystem.removeDirectory(staging);
+    }
+  }
+
   /** Write each of the app's named Docker volumes into `dir` as `<key>.tar`. An app with none gets no folder. */
   private async archiveAppVolumes(appUrn: AppUrn, dir: string) {
     const volumes = (await this.appVolumes.listAppVolumes(appUrn)).map((volume) => ({ ...volume, file: `${volume.key}.tar` }));
@@ -292,32 +325,15 @@ export class BackupManager implements OnApplicationShutdown {
   }
 
   /**
-   * Delete the app's data folder so the backup's copy replaces it instead of being mixed into it.
-   *
-   * A container that runs as root writes files the Hub, a plain user on a native Linux host, cannot
-   * delete: Uptime Kuma re-creates its `data/` as root after Reset app. Root can, so a permission
-   * error goes to the helper uninstall uses, which empties the folder as root. Data that still
-   * cannot go stops the restore before anything is copied, since a copy over what is left would
-   * leave old and restored files side by side.
+   * Delete the app's data folder so the backup's copy replaces it instead of being mixed into it. Data
+   * a container wrote as another user (Uptime Kuma re-creates its `data/` as root after Reset app) goes
+   * through the root helper. Data that still cannot go stops the restore before anything is copied,
+   * since a copy over what is left would leave old and restored files side by side.
    */
   private async removeLiveAppData(appUrn: AppUrn, appDataDir: string) {
-    const first = await this.filesystem.removeDirectoryDetailed(appDataDir);
-
-    if (first.removed) {
-      return;
+    if (!(await removeAppDataDirWithRootFallback({ filesystem: this.filesystem, docker: this.docker, logger: this.logger }, appUrn, appDataDir))) {
+      throw new Error(`Could not remove the current data of ${appUrn} to restore the backup`);
     }
-
-    if (first.permissionDenied) {
-      this.logger.warn(`The Hub cannot delete some of the current data of ${appUrn} (written by its container as another user); emptying it as root`);
-
-      if (await this.docker.removeAppDataDirAsRoot(appUrn)) {
-        // The helper keeps the folder itself, now empty. The copy can go into it, so removing it is only tidying.
-        await this.filesystem.removeDirectory(appDataDir);
-        return;
-      }
-    }
-
-    throw new Error(`Could not remove the current data of ${appUrn} to restore the backup`);
   }
 
   /**

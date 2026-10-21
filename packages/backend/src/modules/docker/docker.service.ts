@@ -44,6 +44,12 @@ export type { AppContainerRuntimeStats, AppNetworkTarget, ManagedAppContainerVer
  */
 export const PRE_UPDATE_SNAPSHOT_DIRNAME = '.pre-update-snapshots';
 
+/**
+ * Where the root helper stages a copy of app data the Hub cannot read, for a backup, under
+ * `<dataDir>/backups/` for the same reasons as {@link PRE_UPDATE_SNAPSHOT_DIRNAME}.
+ */
+export const BACKUP_STAGING_DIRNAME = '.backup-staging';
+
 export interface PreUpdateVolumeSnapshotResult {
   appUrn: AppUrn;
   snapshotId: string;
@@ -104,6 +110,13 @@ const PRIVILEGED_CLEANUP_TIMEOUT_MS = 120_000;
 const PRIVILEGED_COPY_TIMEOUT_MS = 30 * 60_000;
 // `pre-update-<app>-<epoch ms>`, as createPreUpdateVolumeSnapshot names a snapshot.
 const SNAPSHOT_ID_PATTERN = /^pre-update-[A-Za-z0-9][A-Za-z0-9._-]*-\d+$/;
+// `backup-<app>-<epoch ms>`, as copyAppDataDirForBackupAsRoot names a staging folder.
+const BACKUP_STAGING_ID_PATTERN = /^backup-[A-Za-z0-9][A-Za-z0-9._-]*-\d+$/;
+
+/** A folder under `backups/` that the privileged helpers may write one app's copy into and how its entries are named. */
+type PrivilegedCopyArea = { dirname: string; idPattern: RegExp; tag: string };
+const SNAPSHOT_AREA: PrivilegedCopyArea = { dirname: PRE_UPDATE_SNAPSHOT_DIRNAME, idPattern: SNAPSHOT_ID_PATTERN, tag: '[pre-update-snapshot]' };
+const BACKUP_STAGING_AREA: PrivilegedCopyArea = { dirname: BACKUP_STAGING_DIRNAME, idPattern: BACKUP_STAGING_ID_PATTERN, tag: '[backup]' };
 
 /**
  * Bounds `docker compose up <service>`.
@@ -449,7 +462,7 @@ export class DockerService {
       hostAppDataDir = getAppDataHostPath(appUrn, inputs);
       appDataRoot = resolveAppDataHostRoot(inputs);
     } catch (err) {
-      this.logger.error(`[uninstall-cleanup] cannot resolve host app-data path for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger.error(`[app-data-cleanup] cannot resolve host app-data path for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
 
@@ -469,7 +482,7 @@ export class DockerService {
       p.basename(p.dirname(hostAppDataDir)) !== appStoreId ||
       hostAppDataDir.split('/').filter(Boolean).length < 3
     ) {
-      this.logger.error(`[uninstall-cleanup] refusing privileged delete for ${appUrn}: resolved path ${hostAppDataDir} failed validation`);
+      this.logger.error(`[app-data-cleanup] refusing privileged delete for ${appUrn}: resolved path ${hostAppDataDir} failed validation`);
       return false;
     }
 
@@ -492,25 +505,31 @@ export class DockerService {
       '-delete',
     ];
 
-    this.logger.warn(`[uninstall-cleanup] emptying root-owned remnant in ${hostAppDataDir} via a privileged ${image} helper`);
+    this.logger.warn(`[app-data-cleanup] emptying root-owned remnant in ${hostAppDataDir} via a privileged ${image} helper`);
     try {
       await this.runDockerCliCommand(args, PRIVILEGED_CLEANUP_TIMEOUT_MS);
       return true;
     } catch (err) {
-      this.logger.error(`[uninstall-cleanup] privileged cleanup failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger.error(`[app-data-cleanup] privileged cleanup failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
   }
 
   /**
    * Resolves the two host folders a privileged snapshot helper touches, refusing anything that is not
-   * exactly `{app-data-root}/{store}/{app}` and `{root}/backups/.pre-update-snapshots/{store}/{app}/{snapshotId}`.
-   * Both are recomputed from the app URN and the snapshot id, never taken from a caller, and every
-   * segment must be a plain name, so the helper can only ever read one app's data and write one snapshot.
+   * exactly `{app-data-root}/{store}/{app}` and `{root}/backups/.pre-update-snapshots/{store}/{app}/{snapshotId}`
+   * (or `.backup-staging` for a backup's copy). Both are recomputed from the app URN and the id, never
+   * taken from a caller, and every segment must be a plain name, so the helper can only ever read one
+   * app's data and write one copy of it.
    *
    * @returns the host paths, or `null` (already logged) when anything fails validation.
    */
-  private resolveSnapshotHostPaths(appUrn: AppUrn, snapshotId: string, action: string): { hostAppDataDir: string; hostSnapshotDir: string } | null {
+  private resolveSnapshotHostPaths(
+    appUrn: AppUrn,
+    snapshotId: string,
+    action: string,
+    area: PrivilegedCopyArea = SNAPSHOT_AREA,
+  ): { hostAppDataDir: string; hostSnapshotDir: string } | null {
     const config = this.config.getConfig();
     const inputs = {
       ciHubAppDataPath: process.env.CI_HUB_APP_DATA_PATH,
@@ -530,12 +549,12 @@ export class DockerService {
         throw new Error(`the Hub's root folder on the host is not an absolute path (${rootFolderHost || 'unset'})`);
       }
 
-      const hostSnapshotDir = p.join(rootFolderHost, 'backups', PRE_UPDATE_SNAPSHOT_DIRNAME, appStoreId, appName, snapshotId);
+      const hostSnapshotDir = p.join(rootFolderHost, 'backups', area.dirname, appStoreId, appName, snapshotId);
 
       if (
         !isSafeSegment(appStoreId) ||
         !isSafeSegment(appName) ||
-        !SNAPSHOT_ID_PATTERN.test(snapshotId) ||
+        !area.idPattern.test(snapshotId) ||
         p.normalize(appDataRoot) === '/' ||
         p.normalize(hostAppDataDir) !== p.normalize(p.join(appDataRoot, appStoreId, appName)) ||
         hostAppDataDir.split('/').filter(Boolean).length < 3
@@ -545,7 +564,7 @@ export class DockerService {
 
       return { hostAppDataDir, hostSnapshotDir };
     } catch (err) {
-      this.logger.error(`[pre-update-snapshot] refusing privileged ${action} for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger.error(`${area.tag} refusing privileged ${action} for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
       return null;
     }
   }
@@ -554,16 +573,22 @@ export class DockerService {
    * Runs one privileged, no-network, `--rm` helper container as root. The caller supplies the exact
    * argument list after the image, so no value is ever passed through a shell by this method.
    */
-  private async runPrivilegedSnapshotHelper(mounts: string[], command: string[], timeoutMs: number, what: string): Promise<boolean> {
+  private async runPrivilegedSnapshotHelper(
+    mounts: string[],
+    command: string[],
+    timeoutMs: number,
+    what: string,
+    tag = SNAPSHOT_AREA.tag,
+  ): Promise<boolean> {
     const image = process.env.CI_HUB_CLEANUP_IMAGE || 'alpine:3.20';
     const args = ['run', '--rm', '--network', 'none', '--user', '0:0', ...mounts.flatMap((m) => ['-v', m]), image, ...command];
 
-    this.logger.warn(`[pre-update-snapshot] ${what} via a privileged ${image} helper`);
+    this.logger.warn(`${tag} ${what} via a privileged ${image} helper`);
     try {
       await this.runDockerCliCommand(args, timeoutMs);
       return true;
     } catch (err) {
-      this.logger.error(`[pre-update-snapshot] privileged helper failed (${what}): ${err instanceof Error ? err.message : String(err)}`);
+      this.logger.error(`${tag} privileged helper failed (${what}): ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
   }
@@ -583,6 +608,53 @@ export class DockerService {
       PRIVILEGED_COPY_TIMEOUT_MS,
       `copying ${paths.hostAppDataDir} into ${paths.hostSnapshotDir}`,
     );
+  }
+
+  /**
+   * Copies an app's data folder as root into a staging folder under `backups/` and gives the copy to
+   * the Hub's own user, so a backup can include files the Hub cannot read: a database's, which belong
+   * to the user its container runs as. The archive made from it records the Hub as their owner, as
+   * every backup the Hub copies itself does; a restore by a Hub that is not root could not put the
+   * original owners back anyway. The official database images take their folders back when they start.
+   *
+   * @returns the staging folder as the Hub sees it, for the caller to copy from and then delete, or
+   *   `null` (already logged) when the copy could not be made.
+   */
+  public async copyAppDataDirForBackupAsRoot(appUrn: AppUrn): Promise<string | null> {
+    const uid = process.getuid?.();
+    const gid = process.getgid?.();
+
+    if (uid === undefined || gid === undefined || !Number.isInteger(uid) || !Number.isInteger(gid)) {
+      this.logger.error(`[backup] cannot copy the data of ${appUrn} as root: this platform has no uid for the Hub`);
+      return null;
+    }
+
+    const { appName, appStoreId } = extractAppUrn(appUrn);
+    const stagingId = `backup-${appName}-${Date.now()}`;
+    const paths = this.resolveSnapshotHostPaths(appUrn, stagingId, 'backup copy', BACKUP_STAGING_AREA);
+    if (!paths) return null;
+
+    const { dataDir } = this.config.get('directories');
+    const stagingDir = path.join(dataDir, 'backups', BACKUP_STAGING_DIRNAME, appStoreId, appName, stagingId);
+
+    // Made by the Hub first, so Docker mounts the Hub's folder instead of creating one as root.
+    if (!(await this.filesystem.createDirectory(stagingDir))) return null;
+
+    const copied = await this.runPrivilegedSnapshotHelper(
+      [`${paths.hostAppDataDir}:/src:ro`, `${paths.hostSnapshotDir}:/dest:rw`],
+      // The owner changes even after a copy that failed half-way, so the Hub can delete what was written.
+      ['sh', '-c', 'cp -a /src/. /dest/; status=$?; chown -R "$1" /dest && chmod -R u+rwX /dest || status=1; exit $status', 'sh', `${uid}:${gid}`],
+      PRIVILEGED_COPY_TIMEOUT_MS,
+      `copying ${paths.hostAppDataDir} into ${paths.hostSnapshotDir} for a backup`,
+      BACKUP_STAGING_AREA.tag,
+    );
+
+    if (!copied) {
+      await this.filesystem.removeDirectory(stagingDir);
+      return null;
+    }
+
+    return stagingDir;
   }
 
   /** Puts a snapshot made by {@link copyAppDataDirAsRoot} back over the app's data folder, as root, emptying it first. */

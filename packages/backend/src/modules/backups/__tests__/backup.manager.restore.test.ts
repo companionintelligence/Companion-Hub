@@ -367,6 +367,60 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
       await expect(fs.promises.readFile(path.join(appDataDir, 'data.txt'), 'utf8')).resolves.toBe('live-data');
     });
 
+    /*
+     * MariaDB keeps its files under uid 999 with its folders at 700, so a Hub running as uid 1000 cannot
+     * read them and every manual backup of Kimai failed with EACCES. A file at 000 stands in for them.
+     */
+    describe.skipIf(!canEnforcePermissions)('data the Hub cannot read', () => {
+      const secret = () => path.join(appDataDir, 'data', 'db', 'mysql', 'ibdata1');
+
+      beforeEach(async () => {
+        await fs.promises.mkdir(path.dirname(secret()), { recursive: true });
+        await fs.promises.writeFile(secret(), 'database rows');
+        await fs.promises.chmod(secret(), 0o000);
+      });
+
+      afterEach(async () => {
+        await fs.promises.chmod(secret(), 0o644).catch(() => undefined);
+      });
+
+      it('copies it through the root helper, so the backup holds the database', async () => {
+        let staging = '';
+        // What the helper does as root: copy everything into a folder under backups/ that the Hub owns.
+        docker.copyAppDataDirForBackupAsRoot.mockImplementation(async () => {
+          staging = path.join(dataDir, 'backups', '.backup-staging', 'test-store', 'test-app', 'backup-test-app-1');
+          await fs.promises.chmod(secret(), 0o644);
+          await fs.promises.cp(appDataDir, staging, { recursive: true });
+          await fs.promises.chmod(secret(), 0o000);
+          return staging;
+        });
+
+        const { filename } = await manager.backupApp(appUrn);
+
+        expect(docker.copyAppDataDirForBackupAsRoot).toHaveBeenCalledWith(appUrn);
+        const listing = execFileSync('tar', ['-tzf', path.join(backupDir, filename)], { encoding: 'utf8' });
+        expect(listing).toContain('./app-data/data/db/mysql/ibdata1');
+        expect(execFileSync('tar', ['-xzOf', path.join(backupDir, filename), './app-data/data/db/mysql/ibdata1'], { encoding: 'utf8' })).toBe(
+          'database rows',
+        );
+        // The staging copy is gone once the archive is written.
+        await expect(fs.promises.access(staging)).rejects.toThrow();
+      });
+
+      it('does not report a backup when the helper cannot copy it either', async () => {
+        docker.copyAppDataDirForBackupAsRoot.mockResolvedValue(null);
+
+        await expect(manager.backupApp(appUrn)).rejects.toThrow('Failed to copy the app files for the backup');
+        await expect(fs.promises.access(backupDir)).rejects.toThrow();
+      });
+    });
+
+    it('does not ask the root helper when the Hub can read everything', async () => {
+      await manager.backupApp(appUrn);
+
+      expect(docker.copyAppDataDirForBackupAsRoot).not.toHaveBeenCalled();
+    });
+
     it('gives an app with no data folder an empty one in the archive, so the backup can be restored', async () => {
       await fs.promises.rm(appDataDir, { recursive: true, force: true });
 

@@ -1,6 +1,8 @@
+import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
+import { removeAppDataDirWithRootFallback } from '@/modules/docker/app-data-removal';
 import { DockerService } from '@/modules/docker/docker.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
@@ -16,6 +18,7 @@ export class ResetAppCommand extends AppLifecycleCommand {
     const marketplaceService = this.moduleRef.get(MarketplaceService, { strict: false });
     const appHelpers = this.moduleRef.get(AppHelpers, { strict: false });
     const envUtils = this.moduleRef.get(EnvUtils, { strict: false });
+    const filesystem = this.moduleRef.get(FilesystemService, { strict: false });
 
     try {
       logger.info(`Resetting app ${appUrn}`);
@@ -34,8 +37,12 @@ export class ResetAppCommand extends AppLifecycleCommand {
         }
       }
 
-      // Delete app data directory
-      await appFilesManager.deleteAppDataDir(appUrn);
+      // Delete app data directory. A reset that left the old data in place used to say it had reset
+      // the app: on a native-Linux Hub, everything a root container wrote survived the Hub's delete.
+      const { appDataDir } = appFilesManager.getAppPaths(appUrn);
+      if (!(await removeAppDataDirWithRootFallback({ filesystem, docker: dockerService, logger }, appUrn, appDataDir))) {
+        throw new Error(`Could not delete the data of ${appUrn}, so it was not reset`);
+      }
       await appFilesManager.createAppDataDir(appUrn);
 
       // Create app.env file

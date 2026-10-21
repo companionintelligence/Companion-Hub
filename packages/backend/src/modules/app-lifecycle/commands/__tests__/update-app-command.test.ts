@@ -56,6 +56,7 @@ describe('UpdateAppCommand', () => {
     appFilesManager.deleteAppFolder.mockResolvedValue(true);
     appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/app-data/test-app/app.env', content: 'PREVIOUS=1\n' } as any);
     filesystem.removeDirectory.mockResolvedValue(true);
+    filesystem.removeDirectoryDetailed.mockResolvedValue({ removed: true, permissionDenied: false });
     filesystem.copyDirectory.mockResolvedValue(true);
     appsRepository.getAppByUrn.mockResolvedValue({ maxBackups: null } as any);
     configService.get.mockReturnValue({ maxBackups: 0 } as any);
@@ -378,35 +379,23 @@ describe('UpdateAppCommand', () => {
   });
 
   // On a native-Linux Hub (it runs as the host user, not root) a database's files belong to the user its
-  // container ran as. The Hub cannot read them for a backup, but a privileged helper can copy them for
-  // the rollback snapshot.
+  // container ran as. The Hub cannot read them itself, but a privileged helper copies them both for the
+  // backup (see BackupManager) and for the rollback snapshot.
   describe('an app whose data the Hub cannot read (a database owned by another user)', () => {
-    const unreadable = '/data/app-data/test-app/mysql/ibdata1';
-
-    it('refuses the backup BEFORE it stops anything, and says to update without it', async () => {
-      filesystem.findUnreadable.mockResolvedValue([unreadable]);
-
+    it('backs it up before updating like any other app, rather than refusing', async () => {
       const result = await command.execute(appUrn, {});
 
-      expect(result).toMatchObject({ success: false, rolledBack: true });
-      expect(result.message).toContain(unreadable);
-      expect(result.message).toContain('Nothing was stopped');
-      expect(result.message).toContain('back up first');
-      expect(dockerService.composeApp).not.toHaveBeenCalled();
-      expect(backupManager.backupApp).not.toHaveBeenCalled();
-      expect(dockerService.createPreUpdateVolumeSnapshot).not.toHaveBeenCalled();
-      expect(marketplaceService.copyAppFromRepoToInstalled).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ success: true });
+      expect(backupManager.backupApp).toHaveBeenCalledWith(appUrn);
     });
 
-    it('does not look at all when no backup was asked for, since the snapshot can be taken by a helper', async () => {
+    it('snapshots the data when no backup was asked for, since the snapshot can be taken by a helper', async () => {
       command = new UpdateAppCommand(moduleRef, docker, false);
       (command as any).assertMarketplaceEntitlement = vi.fn().mockResolvedValue(undefined);
       (command as any).ensureAppDir = vi.fn().mockResolvedValue(undefined);
-      filesystem.findUnreadable.mockResolvedValue([unreadable]);
 
       const result = await command.execute(appUrn, {});
 
-      expect(filesystem.findUnreadable).not.toHaveBeenCalled();
       expect(result).toMatchObject({ success: true });
       expect(dockerService.createPreUpdateVolumeSnapshot).toHaveBeenCalledWith(appUrn, { includeData: true });
     });
