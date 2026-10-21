@@ -5,6 +5,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 DESKTOP_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 POSTRM_SOURCE="$DESKTOP_DIR/src-tauri/linux/deb/postrm"
 POSTINST_SOURCE="$DESKTOP_DIR/src-tauri/linux/deb/postinst"
+PREINST_SOURCE="$DESKTOP_DIR/src-tauri/linux/deb/preinst"
 METAINFO_SOURCE="$DESKTOP_DIR/src-tauri/linux/companion-hub.metainfo.xml"
 LONG_DESCRIPTION_SOURCE="$DESKTOP_DIR/src-tauri/linux/deb/description-long.txt"
 
@@ -28,6 +29,11 @@ if [ ! -f "$POSTINST_SOURCE" ]; then
   exit 1
 fi
 
+if [ ! -f "$PREINST_SOURCE" ]; then
+  echo "[deb-patch][ERROR] Missing preinst source: $PREINST_SOURCE" >&2
+  exit 1
+fi
+
 if [ ! -f "$METAINFO_SOURCE" ]; then
   echo "[deb-patch][ERROR] Missing metainfo source: $METAINFO_SOURCE" >&2
   exit 1
@@ -42,16 +48,18 @@ find "$DESKTOP_DIR/src-tauri/target" -path '*/bundle/deb/*.deb' -type f 2>/dev/n
   [ -n "$deb_path" ] || continue
   (
     temp_dir=$(mktemp -d)
-    trap 'rm -rf "$temp_dir"' EXIT
     rebuilt_path="$deb_path.rebuilt"
+    # A failed check leaves no half-checked .rebuilt beside the bundle. On success it was moved over.
+    trap 'rm -rf "$temp_dir" "$rebuilt_path"' EXIT
 
     echo "[deb-patch][INFO] Patching maintainer scripts into $deb_path"
     dpkg-deb -R "$deb_path" "$temp_dir"
-    # dpkg-deb records this folder as the package's ./ entry. mktemp makes it 0700, and -R gives it
-    # the mode of the ./ entry when the input has one (0700 in the 0.3.6 .deb), so set it after.
+    # dpkg-deb records this folder as the package's ./ entry. mktemp makes it 0700. -R gives it the
+    # mode of the ./ entry when the input has one (0700 in the 0.3.6 .deb), so set it after.
     chmod 0755 "$temp_dir"
     install -Dm755 "$POSTRM_SOURCE" "$temp_dir/DEBIAN/postrm"
     install -Dm755 "$POSTINST_SOURCE" "$temp_dir/DEBIAN/postinst"
+    install -Dm755 "$PREINST_SOURCE" "$temp_dir/DEBIAN/preinst"
     install -Dm644 "$METAINFO_SOURCE" "$temp_dir/usr/share/metainfo/computer.ci.app.hub.metainfo.xml"
     python3 - "$temp_dir/DEBIAN/control" "$LONG_DESCRIPTION_SOURCE" <<'PY'
 from pathlib import Path
@@ -83,7 +91,10 @@ PY
     # records whoever owns the files, so every installed file belonged to that uid. Tauri's own .deb
     # is root:root. --root-owner-group (dpkg 1.19+) writes root:root again.
     dpkg-deb --root-owner-group --build "$temp_dir" "$rebuilt_path" >/dev/null
-    not_root=$(dpkg-deb -c "$rebuilt_path" | awk '$2 != "root/root"')
+    # Listed on its own line so set -e stops the build when dpkg-deb -c fails. Piped straight into
+    # awk, a failed listing printed nothing and the ownership check passed.
+    listing=$(dpkg-deb -c "$rebuilt_path")
+    not_root=$(printf '%s\n' "$listing" | awk '$2 != "root/root"')
     if [ -n "$not_root" ]; then
       echo "[deb-patch][ERROR] Rebuilt package has entries not owned by root:root:" >&2
       echo "$not_root" >&2

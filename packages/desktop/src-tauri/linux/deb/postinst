@@ -6,15 +6,18 @@ set -eu
 CLI_LINK=/usr/bin/cihub
 PACKAGE=${DPKG_MAINTSCRIPT_PACKAGE:-companion-hub}
 
+# BEGIN root-owned package folders (identical in preinst and postinst)
 # 0.3.5 and 0.3.6 shipped every entry owned by uid 1001, the build runner's user. dpkg sets the
-# owner of each file it unpacks, but it leaves a directory that already exists as it is. After an
+# owner of each file it unpacks, but it leaves a folder that already exists as it is. After an
 # upgrade "/usr/lib/Companion Hub" and its resources folder still belonged to that uid, which could
-# then swap the bundled cihub that /usr/bin/cihub points at. Hand everything this package installed
-# under /usr back to root. Symlinks are skipped and never followed.
-restore_root_ownership() {
+# then swap the bundled cihub that /usr/bin/cihub points at. preinst hands the installed version's
+# folders back to root before the new files are unpacked into them. postinst does the same for
+# this version's. Only folders: a file dpkg unpacked is root's already, so one that is not was
+# swapped in and must not be made to look like a package file. Symlinks are never followed.
+restore_root_owned_folders() {
   dpkg-query -L "$PACKAGE" 2>/dev/null | while IFS= read -r path; do
     case "$path" in /usr/*) ;; *) continue ;; esac
-    if [ -L "$path" ] || [ ! -e "$path" ]; then
+    if [ -L "$path" ] || [ ! -d "$path" ]; then
       continue
     fi
     if [ "$(stat -c '%u:%g' "$path" 2>/dev/null)" != "0:0" ]; then
@@ -22,8 +25,9 @@ restore_root_ownership() {
     fi
   done
 }
+# END root-owned package folders
 
-restore_root_ownership || true
+restore_root_owned_folders || true
 
 find_bundled_cli() {
   for dir in "/usr/lib/Companion Hub/resources" "/usr/lib/companion-hub/resources"; do
