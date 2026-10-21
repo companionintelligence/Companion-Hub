@@ -428,7 +428,10 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
       // Install over the current app, never remove it first. Removing the package runs its cleanup,
       // which deletes the Hub's database, every app with its data, and the Hub's folder. An install
       // in place skips that: the old package's deb `postrm` sees `upgrade`, its rpm `postun` sees 1.
-      const install = kind === 'deb' ? 'sudo apt install' : 'sudo rpm -U';
+      // The version this computer already runs is installed again: apt skips it as "already the
+      // newest version" and `rpm -U` refuses it as "already installed" without these flags.
+      const reinstall = shellVersion !== null && shellUpdate.latestVersion === shellVersion;
+      const install = kind === 'deb' ? `sudo apt install${reinstall ? ' --reinstall' : ''}` : `sudo rpm -U${reinstall ? ' --replacepkgs' : ''}`;
       steps = [
         { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_DOWNLOAD') },
         fileName
@@ -771,9 +774,10 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
               {renderManualUpdateInstructions()}
             </>
           ) : (
-            // No installer to offer here, so the up-to-date line can't say there is one to download.
+            // No installer to offer here, so the up-to-date line can't say there is one to download. Only
+            // a check that answered can call the app up to date: none has while it runs or after it failed.
             <p className="text-sm text-muted-foreground">
-              {shellVersion && !shellUpdate?.updateAvailable
+              {shellVersion && shellUpdate && !shellUpdate.updateAvailable
                 ? t('SETTINGS_ACTIONS_SHELL_UP_TO_DATE_NO_DOWNLOAD')
                 : t('SETTINGS_ACTIONS_UPDATE_NO_DOWNLOAD_URL')}
             </p>

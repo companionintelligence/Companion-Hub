@@ -718,7 +718,10 @@ describe('GeneralActionsContainer', () => {
       const download = await screen.findByTestId('hub-shell-update-btn');
       expect(download).toHaveTextContent('Download 0.3.6');
       expect(screen.getByText('This computer is already on the latest desktop app. You can still download the installer.')).toBeInTheDocument();
-      expect(screen.getByTestId('manual-update-instructions')).toBeInTheDocument();
+      // apt skips a package of the version already installed unless told to reinstall it.
+      expect(commandsIn(screen.getByTestId('manual-update-instructions'))).toEqual([
+        'sudo apt install --reinstall "./Companion Hub_0.3.6_amd64.deb"',
+      ]);
       expect(screen.queryByTestId('hub-shell-install-btn')).not.toBeInTheDocument();
 
       await userEvent.click(download);
@@ -742,6 +745,20 @@ describe('GeneralActionsContainer', () => {
       expect(await screen.findByText('This computer is already on the latest desktop app.')).toBeInTheDocument();
       expect(screen.queryByText(/You can still download the installer/)).not.toBeInTheDocument();
       expect(screen.queryByTestId('hub-shell-update-btn')).not.toBeInTheDocument();
+    });
+
+    it('does not call the app up to date when the update check found nothing', async () => {
+      mockIsTauri.mockReturnValue(true);
+      mockGetInstalledDesktopVersion.mockResolvedValue('0.3.6');
+      mockCheckForUpdates.mockResolvedValue(null);
+
+      render(<GeneralActionsContainer />);
+
+      await waitFor(() => expect(mockCheckForUpdates).toHaveBeenCalled());
+      await act(async () => {});
+      expect(screen.getByText(/This computer has Companion Hub 0\.3\.6 installed/)).toBeInTheDocument();
+      expect(screen.getByText('No download URL available for this platform.')).toBeInTheDocument();
+      expect(screen.queryByText(/already on the latest desktop app/)).not.toBeInTheDocument();
     });
 
     it('keeps the download when there is no newer version to install', async () => {

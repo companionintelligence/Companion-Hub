@@ -267,11 +267,11 @@ async function resolveInstallerFromHub(
  * can't read them itself; `askHub` lets the Hub read them. An installer of any other version is
  * dropped, because the Desktop app card offers `version` by name.
  *
- * The Hub is asked only when this computer runs `version`. The desktop app picks this computer's own
- * format (`.deb` on Ubuntu, `.rpm` on Fedora) and the Hub picks from all of them, so for a newer
- * version the desktop app found nothing for, the Hub could only name another format, which the card
- * would then install in one click. A release older than the running app gets no installer, because
- * its steps would downgrade the app (a dev build ahead of its download server, for one).
+ * Only the version this computer runs gets an installer from here. The desktop app picks this
+ * computer's own format (`.deb` on Ubuntu, `.rpm` on Fedora) while the Hub and the download server
+ * pick from all of them. For a newer version the desktop app found nothing for, either could only
+ * name another format, which the card would then install in one click. A release older than the
+ * running app would downgrade it (a dev build ahead of its download server, for one).
  */
 async function findDesktopInstaller(
   version: string,
@@ -281,27 +281,22 @@ async function findDesktopInstaller(
   askHub: boolean,
 ): Promise<string> {
   const runs = semver.valid(running) ? running : null;
-  if (runs && semver.lt(version, runs)) {
+  if (runs && !semver.eq(version, runs)) {
     return '';
   }
-  const sources = askHub && runs && semver.eq(version, runs) ? [resolveInstallerFromHub, resolveInstallerFromCdn] : [resolveInstallerFromCdn];
-  for (const source of sources) {
-    try {
-      const resolved = await source(platform, osArch);
-      if (resolved?.downloadUrl && resolved.latestVersion === version) {
-        return resolved.downloadUrl;
-      }
-    } catch {
-      // Best effort: try the next source.
-    }
+  const source = askHub && runs ? resolveInstallerFromHub : resolveInstallerFromCdn;
+  try {
+    const resolved = await source(platform, osArch);
+    return resolved?.downloadUrl && resolved.latestVersion === version ? resolved.downloadUrl : '';
+  } catch {
+    return '';
   }
-  return '';
 }
 
 export interface CheckForUpdatesOptions {
   /**
    * In the desktop window, ask the Hub for the installer when the desktop app names none. Only for
-   * a signed-in page: the Hub answers a signed-out one with a 401, and a 401 signs the page out,
+   * a signed-in page: the Hub answers a signed-out one with a 401 and a 401 signs the page out,
    * which sends a page like `/register` to `/login`.
    */
   askHubForInstaller?: boolean;

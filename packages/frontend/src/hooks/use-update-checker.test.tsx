@@ -272,7 +272,7 @@ describe('useUpdateChecker — desktop behaviour', () => {
   });
 });
 
-describe('useUpdateChecker — wording', () => {
+describe('useUpdateChecker wording', () => {
   it('names the desktop app as the restart notice and the Desktop app card do', () => {
     // The two notices used to disagree: "CI Hub 0.3.6 is available." and then "Companion Hub 0.3.6 is installed".
     expect(en.UPDATE_TOAST_AVAILABLE).toBe('Companion Hub {{version}} is available.');

@@ -22,7 +22,7 @@ describe('toasterPlacement', () => {
     vi.unstubAllGlobals();
   });
 
-  it.each(['/login', '/register', '/reset-password', '/device-registration', '/login/'])(
+  it.each(['/login', '/register', '/reset-password', '/device-registration', '/login/', '/Login'])(
     'puts toasts at the top of %s, below the title bar, where they cannot cover the sign-in form',
     async (pathname) => {
       render(<Toaster {...toasterPlacement(pathname)} />);

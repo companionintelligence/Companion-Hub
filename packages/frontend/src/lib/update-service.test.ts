@@ -260,10 +260,21 @@ describe('update-service', () => {
         updateAvailable: true,
       });
       expect(mockGetDesktopRelease).not.toHaveBeenCalled();
+      // The download server picks from every format too.
+      expect(corsBlockedFetch).not.toHaveBeenCalled();
+    });
+
+    it('does not read the download server after the Hub, which the window cannot read', async () => {
+      mockGetDesktopRelease.mockResolvedValue(sdkFail(500));
+
+      await checkForUpdates('0.3.6', { askHubForInstaller: true });
+
+      expect(mockGetDesktopRelease).toHaveBeenCalled();
+      expect(corsBlockedFetch).not.toHaveBeenCalled();
     });
 
     it('leaves the Hub alone for the update notice, which also runs on the signed-out pages', async () => {
-      // A signed-out page gets a 401 from the Hub, and a 401 signs the page out.
+      // A signed-out page gets a 401 from the Hub and a 401 signs the page out.
       await expect(checkForUpdates()).resolves.toMatchObject({ latestVersion: '0.3.6', downloadUrl: '' });
       expect(mockGetDesktopRelease).not.toHaveBeenCalled();
     });
