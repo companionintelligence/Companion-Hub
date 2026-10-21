@@ -85,7 +85,7 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
       toast.success(t('CUSTOM_APP_UPDATE_SUCCESS', { name: appName }));
       // The editor fills itself from this query, which stays fresh for 30 seconds and wins over the
       // loader's newer answer. Without this, opening the editor again right after a save showed the
-      // config from before it, and saving that view put the old config back.
+      // config from before it. Saving that view put the old config back.
       void queryClient.invalidateQueries({ queryKey: getAppComposeDiffQueryKey({ path: { urn: `${params.appId}:_user` } }) });
       navigate(`/apps/${appName}`);
     },

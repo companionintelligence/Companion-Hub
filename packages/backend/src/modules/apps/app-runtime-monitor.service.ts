@@ -8,7 +8,7 @@ import type { App } from '@/core/database/drizzle/types';
 import si from 'systeminformation';
 import { AppFilesManager } from './app-files-manager';
 import { type AppReadiness, normalizeReadinessBody, unknownReadiness } from './app-readiness.helpers';
-import { probeAppPort } from './app-port-probe';
+import { type AppPortProbeResult, probeAppPort } from './app-port-probe';
 import { AppsRepository } from './apps.repository';
 import { AppsService } from './apps.service';
 import { EnvUtils } from '../env/env.utils';
@@ -154,6 +154,10 @@ const HUB_RUNTIME_URN = 'ci-hub:system';
 export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, PoolContainerSampler {
   private readonly samples = new Map<string, RuntimeSample[]>();
   private readonly availabilityProbeCache = new Map<string, AvailabilityProbeCacheEntry>();
+  /** The probe running for each app, which a concurrent caller joins instead of dialling again. */
+  private readonly availabilityProbeInFlight = new Map<string, Promise<AvailabilityProbeCacheEntry>>();
+  /** What each This Machine Only app's own port did last time, and at which address. See `probeLocalApp`. */
+  private readonly lastLocalPortProbe = new Map<string, { address: string; result: AppPortProbeResult }>();
   /** Apps already warned about a readiness `service` their compose does not declare — once, not every tick. */
   private readonly readinessServiceWarned = new Set<string>();
   private readonly history: AppRuntimeHistorySample[] = [];
@@ -567,12 +571,30 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
       return cached;
     }
 
+    // The 60 s tick, the detail page's poll and a Force stop request can all miss the cache at once.
+    // They share one dial, because each silent dial of a hung app also takes a slot in its accept queue.
+    const inFlight = this.availabilityProbeInFlight.get(appUrn);
+    if (inFlight) {
+      return inFlight;
+    }
+
+    const probe = this.probeAvailability(app, appUrn)
+      .then((nextEntry) => {
+        this.availabilityProbeCache.set(appUrn, nextEntry);
+        return nextEntry;
+      })
+      .finally(() => {
+        this.availabilityProbeInFlight.delete(appUrn);
+      });
+    this.availabilityProbeInFlight.set(appUrn, probe);
+    return probe;
+  }
+
+  private async probeAvailability(app: App, appUrn: AppUrn): Promise<AvailabilityProbeCacheEntry> {
     // `checkAppAvailability` reports a This Machine Only app as available without contacting it, which
     // made such an app responsive whatever it did. It is asked at its own port instead.
     const localVerdict = (app.exposureMode || 'local') === 'local' ? await this.probeLocalApp(appUrn) : null;
-    const nextEntry = localVerdict ?? (await this.probeAppRoute(appUrn));
-    this.availabilityProbeCache.set(appUrn, nextEntry);
-    return nextEntry;
+    return localVerdict ?? (await this.probeAppRoute(appUrn));
   }
 
   private async probeAppRoute(appUrn: AppUrn): Promise<AvailabilityProbeCacheEntry> {
@@ -596,7 +618,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
    * reach the host's loopback. Only a connection the app took and never answered counts against it,
    * which is the rule the proxied routes follow: an app that answers while it is busy is doing its
    * work, not hanging. Null when the probe can't tell (no main service port, no address on the
-   * network, no route to it), and the route verdict decides as before.
+   * network, no route to it). The route verdict then decides as before.
    */
   private async probeLocalApp(appUrn: AppUrn): Promise<AvailabilityProbeCacheEntry | null> {
     try {
@@ -616,14 +638,24 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
         return null;
       }
 
-      const result = await probeAppPort(address, port, LOCAL_APP_PROBE_TIMEOUT_MS);
+      const probed = await probeAppPort(address, port, LOCAL_APP_PROBE_TIMEOUT_MS);
+      // A listener that never accepts keeps every connection an earlier probe left in its queue. Once the
+      // queue is full the kernel drops new connection attempts, so the next dial never opens. At the same
+      // address right after a silent dial, that is the same hung app and not a lost route.
+      const previous = this.lastLocalPortProbe.get(appUrn);
+      const queueFull = probed === 'unreachable' && previous?.address === address && previous.result === 'silent';
+      const result = queueFull ? 'silent' : probed;
+      this.lastLocalPortProbe.set(appUrn, { address, result });
+
       const sampledAtMs = Date.now();
       switch (result) {
         case 'silent':
           return {
             sampledAtMs,
             responsive: false,
-            reason: `The app accepted a connection on port ${port} but did not answer within ${LOCAL_APP_PROBE_TIMEOUT_MS / 1000} seconds.`,
+            reason: queueFull
+              ? `The app stopped taking connections on port ${port} after leaving earlier ones unanswered.`
+              : `The app accepted a connection on port ${port} but did not answer within ${LOCAL_APP_PROBE_TIMEOUT_MS / 1000} seconds.`,
           };
         // A port nobody listens on yet is an app still starting (loading a model, running migrations)
         // as often as a dead one. A proxied route gets the Hub's "is starting" page in that case,

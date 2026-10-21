@@ -743,7 +743,7 @@ describe('AppRuntimeMonitorService', () => {
   /*
    * `checkAppAvailability` answers "available" for a This Machine Only app without contacting it, so
    * a hung local app could never be unresponsive, degraded or force-stoppable. The monitor asks the
-   * main container at its address on the Hub's app network instead, and holds it to the rule the
+   * main container at its address on the Hub's app network instead. It holds the app to the rule the
    * proxied routes follow: only a connection the app took and never answered counts against it.
    */
   describe('This Machine Only apps', () => {
@@ -804,6 +804,24 @@ describe('AppRuntimeMonitorService', () => {
       });
     });
 
+    it('dials once when the tick and a page poll ask at the same time', async () => {
+      let answer: (result: 'silent') => void = () => {};
+      vi.mocked(probeAppPort).mockReturnValue(
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+      );
+
+      const first = service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      const second = service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      await vi.waitFor(() => expect(probeAppPort).toHaveBeenCalled());
+      answer('silent');
+      const results = await Promise.all([first, second]);
+
+      expect(probeAppPort).toHaveBeenCalledTimes(1);
+      expect(results.map((result) => result.responsive)).toEqual([false, false]);
+    });
+
     it.each([
       ['answers', 'answered'],
       ['has nothing listening on its port yet', 'refused'],
@@ -816,6 +834,49 @@ describe('AppRuntimeMonitorService', () => {
 
       expect(appsService.checkAppAvailability).not.toHaveBeenCalled();
       expect(result).toMatchObject({ sustainedHighCpu: true, responsive: true, degraded: false, forceStopEligible: false, reason: null });
+    });
+
+    // A hung listener never accepts, so each silent dial stays in its accept queue. With a small backlog
+    // the queue fills and later dials never open, which must not read as the app recovering.
+    it('keeps a hung app degraded once its accept queue is full', async () => {
+      vi.useFakeTimers();
+      try {
+        vi.mocked(probeAppPort).mockResolvedValueOnce('silent').mockResolvedValue('unreachable');
+
+        await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+        await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+        await vi.advanceTimersByTimeAsync(61_000);
+        const result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+
+        expect(probeAppPort).toHaveBeenCalledTimes(2);
+        expect(appsService.checkAppAvailability).not.toHaveBeenCalled();
+        expect(result).toMatchObject({
+          responsive: false,
+          degraded: true,
+          forceStopEligible: true,
+          reason: 'The app stopped taking connections on port 80 after leaving earlier ones unanswered.',
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not carry a silent verdict over to a new container address', async () => {
+      vi.useFakeTimers();
+      try {
+        vi.mocked(probeAppPort).mockResolvedValueOnce('silent').mockResolvedValue('unreachable');
+        appsService.checkAppAvailability.mockResolvedValue({ available: true, stage: 'ready' } as any);
+
+        await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+        dockerReadFacade.getServiceAddressOnHubNetwork.mockResolvedValue('10.200.0.9');
+        await vi.advanceTimersByTimeAsync(61_000);
+        const result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+
+        expect(appsService.checkAppAvailability).toHaveBeenCalledTimes(1);
+        expect(result.responsive).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('falls back to the route verdict when the container cannot be reached from here', async () => {
