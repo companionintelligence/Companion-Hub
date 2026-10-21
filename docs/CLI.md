@@ -280,16 +280,17 @@ than averaged away.
 ## Hub lifecycle
 
 ```bash
-cihub up [env] [--detached]  # start the hub stack
-cihub down [env]             # stop the hub stack
-cihub restart [env]          # stop then start the target environment
+cihub up [env] [--detached|--attached]       # start the hub stack
+cihub down [env]                             # stop the hub stack
+cihub restart [env] [--detached|--attached]  # stop then start the target environment
 cihub recreate [env]         # reset runtime state, then start again
 cihub status [env]           # show container health + resolved config
 cihub logs [env] [service]   # stream compose logs
 cihub config [env]           # show resolved config values only
 ```
 
-- `--detached` runs the stack in the background (equivalent to `docker compose up -d`).
+- `--detached` runs the stack in the background (equivalent to `docker compose up -d`). Outside a CI-Hub checkout (the `cihub` a desktop install or a standalone binary puts on PATH), `up`, `restart` and `recreate` run detached unless you pass `--attached`. In 0.3.6 and earlier, `restart` and `recreate` stayed attached there. Attached, the command stays on `docker compose up`. Ctrl+C or a signal to it then makes Compose stop the containers, `cloudflared` included.
+- Outside a checkout, `up` and `restart` leave the keys the desktop app writes in the data dir's env file alone (`DOCKER_GID`, `CI_HUB_CONTAINER_UID`, `CI_HUB_CONTAINER_GID`) and add only the ones that are missing. Both env files there hold `JWT_SECRET`, `POSTGRES_PASSWORD` and `RABBITMQ_PASSWORD`. `cihub` restricts them to `0600` before it starts the stack.
 - Before it starts the stack, `cihub up` checks the Docker versions the stack file needs. If Docker Compose is older than 2.33, which can't read the file, it stops and names the version it found. If Docker Engine is older than 28, which ignores the file's network priority, it warns that the Hub, Traefik, and the Tailscale helper may use the wrong network for internet and host traffic, and starts anyway. If it can't read a version, it says so and starts anyway. `restart` and `recreate` run the same check when they start the stack again. `cihub up local` (source dev) isn't checked.
 - After a reset (no `~/.local/share/companion-hub` seed), `cihub up prod` prompts interactively for a database password and writes a fresh install. Set `POSTGRES_PASSWORD` (or `CIHUB_POSTGRES_PASSWORD`) to skip the prompt.
 - The fresh install pins `CI_HUB_IMAGE` from exactly one of these, in order, and prints which:

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
 export function parseEnvFile(envFileName: string): Record<string, string> {
@@ -26,6 +26,43 @@ export function parseEnvFile(envFileName: string): Record<string, string> {
   return vars;
 }
 
+/**
+ * Owner read and write only. A Hub env file holds JWT_SECRET, POSTGRES_PASSWORD and
+ * RABBITMQ_PASSWORD; seed-appliance creates it at this mode and the container reads it as its owner.
+ */
+const ENV_FILE_MODE = 0o600;
+
+/**
+ * Clear the group and other bits on an env file this user owns. Never adds any: a 0400 file stays
+ * 0400. Returns the mode it replaced, or undefined when it changed nothing.
+ *
+ * `writeFileSync`'s `mode` applies only when it creates the file, so an env file first written at the
+ * umask's 0664 (by the desktop app, or by `cp .env.example`) kept that mode through every later write.
+ * Only a file this user owns: taking bits off someone else's could lock its owner's Hub out of it.
+ */
+export function restrictEnvFileMode(envFileName: string): number | undefined {
+  if (process.platform === 'win32') return undefined;
+  const abs = isAbsolute(envFileName) ? envFileName : join(process.cwd(), envFileName);
+  try {
+    const stat = statSync(abs);
+    if (!stat.isFile() || stat.uid !== process.getuid?.()) return undefined;
+    const current = stat.mode & 0o777;
+    const restricted = current & ENV_FILE_MODE;
+    if (restricted === current) return undefined;
+    chmodSync(abs, restricted);
+    return current;
+  } catch {
+    // Missing, or a mount that refuses chmod: the write still goes ahead.
+    return undefined;
+  }
+}
+
+/** Restrict first, so the new content never lands in a file other users can read. */
+function writeEnvFile(abs: string, content: string): void {
+  restrictEnvFileMode(abs);
+  writeFileSync(abs, content, { encoding: 'utf-8', mode: ENV_FILE_MODE });
+}
+
 export function upsertEnvVar(envFileName: string, key: string, value: string) {
   const abs = isAbsolute(envFileName) ? envFileName : join(process.cwd(), envFileName);
   const line = `${key}=${value}`;
@@ -45,7 +82,12 @@ export function upsertEnvVar(envFileName: string, key: string, value: string) {
     }
   }
   if (!replaced) lines.push(line);
-  writeFileSync(abs, `${lines.join('\n')}\n`, 'utf-8');
+  const next = `${lines.join('\n')}\n`;
+  if (next === current) {
+    restrictEnvFileMode(abs);
+    return;
+  }
+  writeEnvFile(abs, next);
 }
 
 /**
@@ -66,5 +108,5 @@ export function removeEnvVar(envFileName: string, key: string) {
   const lines = readFileSync(abs, 'utf-8').split(/\r?\n/);
   const kept = lines.filter((line) => !line.trimStart().startsWith(`${key}=`));
   if (kept.length === lines.length) return;
-  writeFileSync(abs, `${kept.filter((entry, index, all) => !(index === all.length - 1 && entry === '')).join('\n')}\n`, 'utf-8');
+  writeEnvFile(abs, `${kept.filter((entry, index, all) => !(index === all.length - 1 && entry === '')).join('\n')}\n`);
 }

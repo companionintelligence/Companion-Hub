@@ -730,18 +730,21 @@ pub(crate) fn ensure_runtime_env_state_for_portal(
     let changed = strip_port_vars(&previous_content) != env_content;
 
     if changed {
-        std::fs::write(env_path, &env_content).map_err(|e| {
+        write_private_file(env_path, &env_content).map_err(|e| {
             format!(
                 "Failed to write runtime env file at {}: {}",
                 env_path.display(),
                 e
             )
         })?;
+    } else {
+        // Unchanged files are not rewritten, so one an older build left at 0o664 is restricted here.
+        let _ = restrict_private_state_file(env_path);
     }
 
     let compat_env_path = compat_hub_env_path_for(data_dir);
     if compat_env_path != env_path {
-        let _ = std::fs::write(&compat_env_path, &env_content);
+        let _ = write_private_file(&compat_env_path, &env_content);
     }
 
     Ok(changed)

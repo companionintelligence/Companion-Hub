@@ -1,9 +1,9 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { parseEnvFile, upsertEnvVar } from '../env-file';
+import { parseEnvFile, removeEnvVar, restrictEnvFileMode, upsertEnvVar } from '../env-file';
 
 let dir: string;
 
@@ -53,5 +53,82 @@ describe('upsertEnvVar', () => {
     upsertEnvVar(p, 'API_PORT', '5003');
 
     expect(readFileSync(p, 'utf-8')).toBe('API_PORT=5003\nHTTPS_PORT=443\n');
+  });
+});
+
+/**
+ * A Hub env file holds JWT_SECRET, POSTGRES_PASSWORD and RABBITMQ_PASSWORD. writeFileSync's `mode`
+ * only applies when it creates the file, so a file first written at the umask's 0664 used to keep
+ * that mode through every cihub write.
+ */
+describe.skipIf(process.platform === 'win32')('env file mode', () => {
+  const modeOf = (p: string) => statSync(p).mode & 0o777;
+
+  it('creates a new env file at 0600, whatever the umask', () => {
+    const p = path.join(dir, '.env.prod');
+    const previous = process.umask(0o002);
+    try {
+      upsertEnvVar(p, 'HTTP_PORT', '80');
+    } finally {
+      process.umask(previous);
+    }
+    expect(modeOf(p)).toBe(0o600);
+  });
+
+  it('takes group and other bits off an existing 0664 file it writes', () => {
+    const p = path.join(dir, '.env.dev');
+    writeFileSync(p, 'POSTGRES_PASSWORD=x\n');
+    chmodSync(p, 0o664);
+
+    upsertEnvVar(p, 'DOCKER_GID', '981');
+
+    expect(modeOf(p)).toBe(0o600);
+    expect(readFileSync(p, 'utf-8')).toBe('POSTGRES_PASSWORD=x\nDOCKER_GID=981\n');
+  });
+
+  it('restricts the file even when the value is already there and nothing is rewritten', () => {
+    const p = path.join(dir, '.env.dev');
+    writeFileSync(p, 'DOCKER_GID=981\n');
+    chmodSync(p, 0o644);
+
+    upsertEnvVar(p, 'DOCKER_GID', '981');
+
+    expect(modeOf(p)).toBe(0o600);
+    expect(readFileSync(p, 'utf-8')).toBe('DOCKER_GID=981\n');
+  });
+
+  it('restricts on removeEnvVar too', () => {
+    const p = path.join(dir, '.env.prod');
+    writeFileSync(p, 'CI_HUB_CONTAINER_UID=1000\nJWT_SECRET=y\n');
+    chmodSync(p, 0o664);
+
+    removeEnvVar(p, 'CI_HUB_CONTAINER_UID');
+
+    expect(modeOf(p)).toBe(0o600);
+    expect(readFileSync(p, 'utf-8')).toBe('JWT_SECRET=y\n');
+  });
+
+  it('never adds a bit: a 0400 file stays 0400 and reports no change', () => {
+    const p = path.join(dir, '.env.dev');
+    writeFileSync(p, 'JWT_SECRET=y\n');
+    chmodSync(p, 0o400);
+
+    expect(restrictEnvFileMode(p)).toBeUndefined();
+    expect(modeOf(p)).toBe(0o400);
+  });
+
+  it('reports the mode it replaced', () => {
+    const p = path.join(dir, '.env');
+    writeFileSync(p, 'JWT_SECRET=y\n');
+    chmodSync(p, 0o664);
+
+    expect(restrictEnvFileMode(p)).toBe(0o664);
+    expect(modeOf(p)).toBe(0o600);
+  });
+
+  it('leaves a missing file missing', () => {
+    const p = path.join(dir, '.env');
+    expect(restrictEnvFileMode(p)).toBeUndefined();
+    expect(existsSync(p)).toBe(false);
   });
 });

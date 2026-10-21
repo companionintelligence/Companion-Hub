@@ -115,16 +115,16 @@ export async function runCli(rawArgs: string[]) {
   }
 
   if (first === 'restart') {
-    const { detached, remaining } = normalizeDetachedFlag(args.slice(1));
-    await restartHub(resolveEnvFromArgs(remaining), detached);
+    const { detached, attached, remaining } = normalizeDetachedFlag(args.slice(1));
+    await restartHub(resolveEnvFromArgs(remaining), { detached, attached });
     return;
   }
 
   if (first === 'recreate') {
-    const { detached, remaining } = normalizeDetachedFlag(args.slice(1));
+    const { detached, attached, remaining } = normalizeDetachedFlag(args.slice(1));
     const force = remaining.includes('--yes');
     const env = resolveEnvFromArgs(remaining.filter((arg) => arg !== '--yes'));
-    await recreateHub(env, detached, force);
+    await recreateHub(env, { detached, attached }, force);
     return;
   }
 

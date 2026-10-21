@@ -444,6 +444,39 @@ fn portal_override_is_written_to_both_env_files_and_survives_relaunch() {
     assert_eq!(log.matches(&active).count(), 2, "{log}");
 }
 
+#[cfg(unix)]
+#[test]
+fn a_launch_leaves_both_env_files_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode_of = |path: &std::path::Path| {
+        std::fs::metadata(path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    let chmod = |path: &std::path::Path, mode: u32| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod")
+    };
+    let (_tempdir, data_dir) = portal_test_data_dir();
+    let [env_path, compat_path] = both_env_paths(&data_dir);
+    std::fs::write(&env_path, portal_test_env_lines()).expect("write env");
+    chmod(&env_path, 0o664);
+    let portal = resolve_portal_url_at(None);
+
+    // A launch that rewrites the file.
+    ensure_runtime_env_state_for_portal(&data_dir, &env_path, &portal).expect("first launch");
+    assert_eq!(mode_of(&env_path), 0o600);
+    assert_eq!(mode_of(&compat_path), 0o600);
+
+    // A launch that finds nothing to change does not rewrite the primary file but still restricts it.
+    chmod(&env_path, 0o664);
+    chmod(&compat_path, 0o644);
+    ensure_runtime_env_state_for_portal(&data_dir, &env_path, &portal).expect("relaunch");
+    assert_eq!(mode_of(&env_path), 0o600);
+    assert_eq!(mode_of(&compat_path), 0o600);
+}
+
 #[test]
 fn removing_the_portal_override_file_restores_the_compiled_portal() {
     let (_tempdir, data_dir) = portal_test_data_dir();

@@ -269,7 +269,8 @@ pub fn write_ports_to_env(env_path: &Path, resolution: &PortResolution) -> Resul
 
     // Ensure trailing newline
     let content = lines.join("\n") + "\n";
-    std::fs::write(env_path, content).map_err(|e| format!("Failed to write .env: {}", e))
+    crate::hub_manager::write_private_file(env_path, content)
+        .map_err(|e| format!("Failed to write .env: {}", e))
 }
 
 /// Read the API_PORT from .env (returns default 5002 if not found).
