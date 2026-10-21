@@ -42,9 +42,21 @@ describe('removeAppDataDirWithRootFallback', () => {
 
   it('counts an emptied folder as done even when the Hub cannot remove the folder itself', async () => {
     filesystem.removeDirectoryDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+    filesystem.listFiles.mockResolvedValue([]);
     docker.removeAppDataDirAsRoot.mockResolvedValue(true);
 
     await expect(run()).resolves.toBe(true);
+  });
+
+  // The helper mounts the host path it works out from the settings. If that is not the folder the Hub
+  // sees, the helper "succeeds" and the old data is still here.
+  it('fails when the helper reported success but the Hub still sees data in the folder', async () => {
+    filesystem.removeDirectoryDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+    filesystem.listFiles.mockResolvedValue(['data']);
+    docker.removeAppDataDirAsRoot.mockResolvedValue(true);
+
+    await expect(run()).resolves.toBe(false);
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining(`${appDataDir} still holds data`));
   });
 
   it('fails and says so when root cannot delete it either', async () => {

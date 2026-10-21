@@ -231,7 +231,7 @@ export class BackupManager implements OnApplicationShutdown {
       recursive: true,
       verbatimSymlinks: true,
       // Judged on the path inside the app's data folder: the folder itself may live under a path that
-      // contains "backups" (a volume mounted at /mnt/backups), and excluding it excluded everything.
+      // contains "backups" (a volume mounted at /mnt/backups). Excluding it excluded everything.
       filter: (src) => !path.relative(root, src).includes('backups'),
     });
 
