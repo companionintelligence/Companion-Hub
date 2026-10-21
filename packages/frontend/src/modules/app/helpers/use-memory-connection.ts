@@ -2,6 +2,7 @@ import { client } from '@/api-client/client.gen';
 import { openExternalWithHubSession } from '@/lib/hub-browser-handoff';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import { isMemoryProviderUrn } from '@/modules/app/helpers/memory-provider';
+import { TranslatableError } from '@/types/error.types';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
@@ -190,9 +191,11 @@ export function useMemoryConnection(appUrn: string) {
       toast.success(t('MEMORY_CONNECT_DISCONNECTED_TOAST'));
       await queryClient.invalidateQueries({ queryKey: memoryStatusQueryKey(appUrn) });
     },
-    onError: async () => {
-      toast.error(t('MEMORY_CONNECT_DISCONNECT_ERROR'));
-      // A refusal can mean someone else's connection replaced this person's since the page loaded.
+    onError: async (error) => {
+      // A 403 means someone else's connection replaced this person's since the page loaded. Trying
+      // again can't help, so say whose it is instead of "try again".
+      const refused = error instanceof TranslatableError && error.http?.status === 403;
+      toast.error(t(refused ? 'MEMORY_CONNECT_DISCONNECT_REFUSED' : 'MEMORY_CONNECT_DISCONNECT_ERROR'));
       await queryClient.invalidateQueries({ queryKey: memoryStatusQueryKey(appUrn) });
     },
   });

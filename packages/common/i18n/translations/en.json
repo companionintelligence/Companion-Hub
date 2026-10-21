@@ -2447,6 +2447,7 @@
   "MEMORY_CONNECT_ERROR_TOAST": "Couldn't connect to CI Memory. Please try again.",
   "MEMORY_CONNECT_DISCONNECTED_TOAST": "Disconnected from CI Memory.",
   "MEMORY_CONNECT_DISCONNECT_ERROR": "Could not disconnect. Please try again.",
+  "MEMORY_CONNECT_DISCONNECT_REFUSED": "Another person on this Hub connected this app to their CI Memory. Only they can disconnect it.",
   "MEMORY_CONNECT_DISCONNECT_TITLE": "Disconnect {{name}} from CI Memory?",
   "MEMORY_CONNECT_DISCONNECT_CONFIRM": "This revokes the app's access to your CI Memory and restarts it. You can reconnect at any time.",
   "MEMORY_CONNECT_FINISHING_TITLE": "Applying your memory connection",

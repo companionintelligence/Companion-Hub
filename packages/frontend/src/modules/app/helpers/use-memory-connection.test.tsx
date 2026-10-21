@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { TranslatableError } from '@/types/error.types';
 import { useMemoryConnection, useMemoryProviderForceGate } from './use-memory-connection';
 
 const h = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
@@ -209,5 +210,18 @@ describe('useMemoryConnection disconnect()', () => {
     expect(result.current.connected).toBe(false);
     expect(toasts.error).toHaveBeenCalledWith('Could not disconnect. Please try again.');
     expect(h.get).toHaveBeenCalledTimes(2);
+  });
+
+  // The interceptor in root.tsx turns a 403 into a TranslatableError. "Try again" would fail forever.
+  it('says only the other person can disconnect when the Hub answers 403', async () => {
+    h.get.mockResolvedValueOnce({ data: CONNECTED }).mockResolvedValue({ data: { ...CONNECTED, state: 'unconfigured', connectedByOther: true } });
+    h.post.mockRejectedValue(new TranslatableError('COMMON_AN_ERROR_OCCURRED', {}, { status: 403, url: '/api/memory-connect/apps/x/disconnect' }));
+    const { result } = renderHook(() => useMemoryConnection(NORMAL), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.connected).toBe(true));
+
+    result.current.disconnect();
+
+    await waitFor(() => expect(result.current.connectedByOther).toBe(true));
+    expect(toasts.error).toHaveBeenCalledWith('Another person on this Hub connected this app to their CI Memory. Only they can disconnect it.');
   });
 });
