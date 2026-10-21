@@ -425,10 +425,6 @@ function toResponse(handler: () => Promise<unknown>, responseHeaders: Headers = 
   );
 }
 
-/**
- * Routes `https://<fqdn>/api/inference/pool/...` to that node's real controller, through its real
- * guard. Anything else — an unreachable node, an unknown route — rejects the way `fetch` would.
- */
 /** A refused pairing as the operator's page receives it: the status, and the key with its parameters. */
 async function refusal(attempt: Promise<unknown>): Promise<{ status: number; body: unknown }> {
   const error = await attempt.then(
@@ -441,6 +437,10 @@ async function refusal(attempt: Promise<unknown>): Promise<{ status: number; bod
   return { status: error.getStatus(), body: error.getResponse() };
 }
 
+/**
+ * Routes `https://<fqdn>/api/inference/pool/...` to that node's real controller, through its real
+ * guard. Anything else — an unreachable node, an unknown route — rejects the way `fetch` would.
+ */
 function installFetchRouter(nodes: Node[], options: { offline?: Set<string>; addresses?: Map<string, Node> } = {}): void {
   global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = new URL(String(input));

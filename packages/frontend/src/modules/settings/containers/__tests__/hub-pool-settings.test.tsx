@@ -1652,16 +1652,19 @@ describe('HubPoolSection', () => {
 
     it('passes the reason’s parameters along, so a declined request can name the other Hub’s answer', async () => {
       pairable();
-      const declined = new TranslatableError('HUB_POOL_PAIR_ERROR_PEER_DECLINED', { status: '503', detail: 'Pooling is turned off' });
+      const declined = new TranslatableError('HUB_POOL_PAIR_ERROR_PEER_DECLINED_REASON', { status: '503', detail: 'Pooling is turned off' });
       fail(vi.mocked(pairPeer), declined);
       renderSection();
 
       await userEvent.click(await screen.findByRole('button', { name: 'HUB_POOL_PAIR_BUTTON' }));
 
       await waitFor(() =>
-        expect(vi.mocked(toast.error)).toHaveBeenCalledWith('HUB_POOL_PAIR_ERROR', { description: 'HUB_POOL_PAIR_ERROR_PEER_DECLINED' }),
+        expect(vi.mocked(toast.error)).toHaveBeenCalledWith('HUB_POOL_PAIR_ERROR', { description: 'HUB_POOL_PAIR_ERROR_PEER_DECLINED_REASON' }),
       );
-      expect(i18nCalls).toContainEqual({ key: 'HUB_POOL_PAIR_ERROR_PEER_DECLINED', params: { status: '503', detail: 'Pooling is turned off' } });
+      expect(i18nCalls).toContainEqual({
+        key: 'HUB_POOL_PAIR_ERROR_PEER_DECLINED_REASON',
+        params: { status: '503', detail: 'Pooling is turned off' },
+      });
     });
 
     it.each([
