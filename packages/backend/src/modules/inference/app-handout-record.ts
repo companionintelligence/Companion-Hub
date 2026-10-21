@@ -100,6 +100,11 @@ export async function readHandoutRecords(file = HANDOUT_RECORDS_PATH): Promise<R
   return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, RecordedHandout] => isRecordedHandout(entry[1])));
 }
 
+/** Remove the persisted records, and a write a crash left behind. */
+export async function removeHandoutRecords(file = HANDOUT_RECORDS_PATH): Promise<void> {
+  await Promise.all([fs.promises.rm(file, { force: true }), fs.promises.rm(`${file}.tmp`, { force: true })]);
+}
+
 export async function writeHandoutRecords(records: Record<string, RecordedHandout>, file = HANDOUT_RECORDS_PATH): Promise<void> {
   await fs.promises.mkdir(path.dirname(file), { recursive: true });
   // Write-then-rename so a Hub killed mid-write leaves the previous file rather than a torn one.

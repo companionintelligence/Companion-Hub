@@ -1242,6 +1242,26 @@ describe('AppCredentialsService', () => {
       cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-rotated' });
       expect(differingHandoutKeys(record as RecordedHandout, await restarted.previewCredentials('openclaw'))).toEqual(['CI_CLOUD_OPENAI_API_KEY']);
     });
+
+    // A factory reset removes the apps. The records stayed, and the next app to fetch wrote them back.
+    it('forgets every record, in memory and on disk, and the credentials it cached', async () => {
+      cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-before-the-reset' });
+      await service.getCredentials('openclaw');
+      expect((await service.getCredentials('hermes-agent')).env).toHaveProperty('CI_CLOUD_OPENAI_API_KEY', 'sk-before-the-reset');
+      await service.onApplicationShutdown();
+      expect(fs.existsSync(HANDOUT_RECORDS_PATH)).toBe(true);
+
+      await service.forgetHandouts();
+
+      expect(await service.lastHandout('openclaw')).toBeNull();
+      expect(fs.existsSync(HANDOUT_RECORDS_PATH)).toBe(false);
+
+      // Resolved again rather than served from the cache, which held the key from before the reset.
+      cloudFallback.toAppEnv.mockReturnValue({});
+      expect((await service.getCredentials('hermes-agent')).env).not.toHaveProperty('CI_CLOUD_OPENAI_API_KEY');
+      await service.onApplicationShutdown();
+      expect(Object.keys(JSON.parse(await fs.promises.readFile(HANDOUT_RECORDS_PATH, 'utf8')))).toEqual(['hermes-agent']);
+    });
   });
 
   describe('getCredentials — preferred backend not running', () => {

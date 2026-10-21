@@ -7,8 +7,8 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { DOCKERODE } from '@/modules/docker/constants';
 import { Test } from '@nestjs/testing';
 import { ModuleRef } from '@nestjs/core';
-import type { SQLWrapper } from 'drizzle-orm';
-import { PgDialect } from 'drizzle-orm/pg-core';
+import { getTableName, is, type SQLWrapper } from 'drizzle-orm';
+import { PgDialect, PgTable } from 'drizzle-orm/pg-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { FactoryResetService } from '../factory-reset.service';
@@ -16,8 +16,15 @@ import { RegistrationService } from '@/modules/registration/registration.service
 import { BearerOrgMembershipCache } from '@/modules/auth/bearer-org-membership.cache';
 import { APP_DATA_DIR, TUNNEL_DIR } from '@/common/constants';
 import { TranslatableError } from '@/common/error/translatable-error';
+import * as schema from '@/core/database/drizzle/schema';
 import { app } from '@/core/database/drizzle/schema';
+import { ForwardAuthIdentityResolver } from '@/modules/auth/forward-auth-identity.resolver';
+import { HubPoolIdentityService } from '@/modules/hub-pool/hub-pool-identity.service';
+import { AppCredentialsService } from '@/modules/inference/app-credentials.service';
+import { HANDOUT_RECORDS_PATH, type RecordedHandout } from '@/modules/inference/app-handout-record';
 import { CloudFallbackService } from '@/modules/inference/cloud-fallback.service';
+import { ModelRegistryService } from '@/modules/inference/model-registry.service';
+import { PINNED_MODELS_PATH, writePinnedModels } from '@/modules/inference/pinned-models-record';
 import type { CloudProviderConfig } from '@ci-hub/common/types';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -42,6 +49,7 @@ describe('FactoryResetService', () => {
   let sessionUserCache: SessionUserCache;
   let registrationService: MockProxy<RegistrationService>;
   let bearerOrgMembership: BearerOrgMembershipCache;
+  let moduleRefMock: MockProxy<ModuleRef>;
 
   beforeEach(async () => {
     uninstallExecute.mockClear();
@@ -52,7 +60,7 @@ describe('FactoryResetService', () => {
     };
     filesystem = mock<FilesystemService>();
     bearerOrgMembership = new BearerOrgMembershipCache();
-    const moduleRefMock = mock<ModuleRef>();
+    moduleRefMock = mock<ModuleRef>();
     moduleRefMock.get.mockImplementation((token: unknown) => (token === BearerOrgMembershipCache ? bearerOrgMembership : undefined) as never);
     cache = mock<CacheService>();
     registrationService = mock<RegistrationService>();
@@ -146,6 +154,46 @@ describe('FactoryResetService', () => {
     const { sql: statement } = new PgDialect().sqlToQuery(db.execute.mock.calls[0][0]);
 
     expect(statement).toMatch(/\bapi_key\b/);
+  });
+
+  /**
+   * A reset that named seven tables left the rest: Memory keys of the apps it removed, Hub Pool pairings
+   * and the key the peers pinned, the old organization's entitlements, and the old Hub's job history.
+   * A table added later is emptied too, or this fails until someone says why it should stay.
+   */
+  it('MUST empty every table in the database', async () => {
+    await service.wipeDatabase();
+
+    const { sql: statement } = new PgDialect().sqlToQuery(db.execute.mock.calls[0][0]);
+    const emptied = /^TRUNCATE TABLE (.+) RESTART IDENTITY CASCADE$/
+      .exec(statement)?.[1]
+      .split(', ')
+      .map((name) => name.replaceAll('"', ''));
+    const tables = Object.values(schema)
+      .filter((value): value is PgTable => is(value, PgTable))
+      .map((table) => getTableName(table));
+
+    expect(tables).toEqual(expect.arrayContaining(['memory_connection', 'hub_pool_peer', 'hub_pool_identity', 'lifecycle_job']));
+    expect([...(emptied ?? [])].sort()).toEqual([...tables].sort());
+  });
+
+  // They cache rows of the tables the TRUNCATE empties, and `RESTART IDENTITY` hands an old account's
+  // id to the next one: a cached public id was signed for that new person until a restart.
+  it('MUST forget the stable ids forward auth signs and the Hub Pool identity, even when the TRUNCATE rejects', async () => {
+    const resolver = { forget: vi.fn() };
+    const poolIdentity = { forget: vi.fn() };
+    const others = new Map<unknown, unknown>([
+      [BearerOrgMembershipCache, bearerOrgMembership],
+      [ForwardAuthIdentityResolver, resolver],
+      [HubPoolIdentityService, poolIdentity],
+    ]);
+    moduleRefMock.get.mockImplementation(((token: unknown) => others.get(token)) as never);
+    db.execute.mockRejectedValueOnce(new Error('ECONNRESET'));
+
+    await expect(service.wipeDatabase()).rejects.toThrow('ECONNRESET');
+
+    expect(resolver.forget).toHaveBeenCalled();
+    expect(poolIdentity.forget).toHaveBeenCalled();
   });
 
   it('MUST drop cached session users even when the TRUNCATE rejects on the way back', async () => {
@@ -401,7 +449,9 @@ describe('FactoryResetService: data folders', () => {
  * (built without its constructor, which wants the whole appliance env). `moduleRef` hands out the
  * services the reset reaches that way.
  */
-function resetOnDisk(options: { rootFolderHost?: string; userSettings?: Record<string, unknown>; moduleRef?: ModuleRef } = {}) {
+function resetOnDisk(
+  options: { rootFolderHost?: string; userSettings?: Record<string, unknown>; pairing?: Record<string, string>; moduleRef?: ModuleRef } = {},
+) {
   const logger = mock<LoggerService>();
   const configuration = Object.assign(Object.create(ConfigurationService.prototype) as ConfigurationService, {
     logger,
@@ -410,6 +460,7 @@ function resetOnDisk(options: { rootFolderHost?: string; userSettings?: Record<s
       rootFolderHost: options.rootFolderHost ?? '/opt/ci-hub',
       directories: { dataDir: '/data' },
       userSettings: { ...options.userSettings },
+      ...options.pairing,
     },
   });
   const db = {
@@ -508,6 +559,94 @@ describe('FactoryResetService: settings the Hub holds in memory', () => {
     });
     expect(configuration.getInferencePreferences()).toMatchObject({ preferredBackend: null, preferredVllmApiKey: null });
     expect(configuration.getHubPoolPreferences()).toMatchObject({ poolMdnsEnabled: false, poolPins: [] });
+  });
+
+  /**
+   * Boot lifts these out of settings.json into the config itself, and only their copies in the user
+   * settings went. Until a restart the reset Hub asked Portal about its old device with the key (the
+   * pairing page offered Move this device), and its next pairing sent both keys as proof.
+   */
+  it('forgets the Portal device key, the move key and the organization id the config holds', async () => {
+    const pairing = { ciHubApiKey: 'portal-device-key', ciHubMoveKey: 'portal-move-key', ciHubOrganizationId: 'org-1' };
+    ({ service, configuration } = resetOnDisk({ pairing, userSettings: pairing }));
+
+    await service.execute();
+
+    expect(configuration.get('ciHubApiKey')).toBeNull();
+    expect(configuration.get('ciHubMoveKey')).toBeNull();
+    expect(configuration.get('ciHubOrganizationId')).toBeNull();
+    expect(configuration.get('userSettings')).not.toHaveProperty('ciHubApiKey');
+  });
+});
+
+describe('FactoryResetService: what the inference module keeps in state/', () => {
+  const handout: RecordedHandout = {
+    servedAt: '2026-10-20T10:00:00.000Z',
+    routedThroughPool: false,
+    chatModelId: 'gemma4-e4b',
+    chatModelError: null,
+    endpointUrl: 'http://host.docker.internal:11434/v1',
+    managedKeys: ['CI_LLM_MODEL'],
+    envDigests: { CI_LLM_MODEL: 'digest' },
+  };
+
+  const resetWith = (providers: Map<unknown, unknown>) => {
+    const moduleRef = mock<ModuleRef>();
+    moduleRef.get.mockImplementation(((token: unknown) => providers.get(token)) as never);
+    return resetOnDisk({ moduleRef }).service;
+  };
+
+  // The new Hub read them back at its next boot: "[ModelRegistry] Restored 3 pinned model(s)".
+  it('unpins the models and removes the pins file, so the next boot pins nothing', async () => {
+    await writePinnedModels({ pinned: ['gemma4-e4b', 'gemma3-1b', 'nomic-embed-text'] });
+    const registry = new ModelRegistryService(mock<LoggerService>());
+    await registry.onModuleInit();
+    registry.trackModel('gemma4-e4b', 'loaded');
+    expect(registry.getTrackedModel('gemma4-e4b')).toMatchObject({ state: 'pinned' });
+
+    await resetWith(new Map([[ModelRegistryService, registry]])).execute();
+
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+    expect(registry.getTrackedModel('gemma4-e4b')).toMatchObject({ state: 'loaded', pinned: false });
+    expect(vol.existsSync(PINNED_MODELS_PATH)).toBe(false);
+    const nextBoot = new ModelRegistryService(mock<LoggerService>());
+    await nextBoot.onModuleInit();
+    expect(nextBoot.getPinnedCatalogIds()).toEqual([]);
+  });
+
+  it('forgets what each app was handed, which describes apps the reset removed', async () => {
+    vol.writeFileSync(HANDOUT_RECORDS_PATH, JSON.stringify({ openclaw: handout }));
+    const credentials = new AppCredentialsService(mock<LoggerService>(), mock(), mock(), mock(), mock(), mock(), mock(), mock());
+    await expect(credentials.lastHandout('openclaw')).resolves.toEqual(handout);
+
+    await resetWith(new Map([[AppCredentialsService, credentials]])).execute();
+
+    await expect(credentials.lastHandout('openclaw')).resolves.toBeNull();
+    expect(vol.existsSync(HANDOUT_RECORDS_PATH)).toBe(false);
+  });
+
+  it('keeps the footprint sightings, which describe this hardware, not the Hub', async () => {
+    const sightings = path.join('/data', 'state', 'inference-footprint-sightings.json');
+    vol.writeFileSync(sightings, '{"hardware":"cuda:0:8","sightings":[]}');
+
+    await resetWith(new Map()).execute();
+
+    expect(vol.readFileSync(sightings, 'utf8')).toBe('{"hardware":"cuda:0:8","sightings":[]}');
+  });
+
+  it('stops before the pins when a data folder could not be emptied, as it does before users and pairing', async () => {
+    await writePinnedModels({ pinned: ['gemma4-e4b'] });
+    const registry = new ModelRegistryService(mock<LoggerService>());
+    await registry.onModuleInit();
+    const service = resetWith(new Map([[ModelRegistryService, registry]]));
+    vi.spyOn(service, 'wipeDataMounts').mockRejectedValueOnce(
+      new TranslatableError('SETTINGS_FACTORY_RESET_FILES_LEFT', { count: '1', paths: 'backups/' }),
+    );
+
+    await expect(service.execute()).rejects.toBeInstanceOf(TranslatableError);
+
+    expect(registry.getPinnedCatalogIds()).toEqual(['gemma4-e4b']);
+    expect(vol.existsSync(PINNED_MODELS_PATH)).toBe(true);
   });
 });
 

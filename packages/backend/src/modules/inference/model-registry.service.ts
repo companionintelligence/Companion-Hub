@@ -13,7 +13,7 @@ import type {
 import { CURATED_MODELS } from './catalog/curated-models';
 // A value import: Nest reads the constructor's parameter types from emitted decorator metadata.
 import { LemonadeBackend } from './backends/lemonade.backend';
-import { readPinnedModels, writePinnedModels } from './pinned-models-record';
+import { readPinnedModels, removePinnedModels, writePinnedModels } from './pinned-models-record';
 
 // ─── Hardware-fit selection tuning ──────────────────────────────────────────
 // The curated catalog (CURATED_MODELS) is the single source of truth for model sizing.
@@ -192,6 +192,33 @@ export class ModelRegistryService implements OnModuleInit {
         this.logger.warn(`[ModelRegistry] Could not read the persisted pins: ${error instanceof Error ? error.message : String(error)}`);
       });
     return this.pinsRead;
+  }
+
+  /**
+   * Unpin every model and remove the persisted pins, for a factory reset. Without it the reset Hub
+   * read the old pins back at its next boot and pinned them again. The models stay in memory, as
+   * after an unpin, so the next load that needs the room may unload them.
+   */
+  async forgetPins(): Promise<void> {
+    // A boot still reading the file would add the old pins back after they were cleared.
+    await this.pinsRead;
+    if (this.pins.size > 0) {
+      this.logger.info(`[ModelRegistry] Unpinned ${this.pins.size} model(s) for the factory reset: ${[...this.pins].join(', ')}`);
+    }
+    this.pins.clear();
+    for (const tracked of this.trackedModels.values()) {
+      if (tracked.pinned) {
+        tracked.pinned = false;
+        if (tracked.state === 'pinned') tracked.state = 'loaded';
+      }
+    }
+    // Behind the writes already queued, so none of them puts the old pins back afterwards.
+    this.pinsWrite = this.pinsWrite
+      .then(() => removePinnedModels())
+      .catch((error) => {
+        this.logger.warn(`[ModelRegistry] Could not remove the persisted pins: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    await this.pinsWrite;
   }
 
   /** Resolves once every pin change made so far has been written (or failed to be). */

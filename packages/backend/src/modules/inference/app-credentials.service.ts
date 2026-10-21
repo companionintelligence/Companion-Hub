@@ -25,7 +25,7 @@ import {
   selectPoolChatModel,
   type PrePullDecision,
 } from './app-model-handout';
-import { handoutRecord, readHandoutRecords, writeHandoutRecords, type RecordedHandout } from './app-handout-record';
+import { handoutRecord, readHandoutRecords, removeHandoutRecords, writeHandoutRecords, type RecordedHandout } from './app-handout-record';
 import { catalogEmbedsOn, embedderEngineId, embeddingBackendFor, pickEmbeddingModel } from './embedder-handout';
 
 // Only Hub-managed sibling apps use the bootstrap credentials endpoints.
@@ -229,6 +229,26 @@ export class AppCredentialsService implements OnApplicationShutdown {
 
   /** Let a pending record reach the disk, so an app that fetched just before shutdown is not read as stale after it. */
   async onApplicationShutdown(): Promise<void> {
+    await this.handoutWrites;
+  }
+
+  /**
+   * Forget what each app was handed, in memory and on disk, and the credentials cached for them: a
+   * factory reset removed the apps. The records described apps that were gone, and the next app to
+   * fetch wrote them all back to the file beside its own.
+   */
+  async forgetHandouts(): Promise<void> {
+    this.cache.clear();
+    this.handoutWrites = this.handoutWrites
+      .then(async () => {
+        // Loaded first, so a read still under way cannot add the old records back afterwards.
+        await this.loadPersistedHandouts();
+        this.handouts.clear();
+        await removeHandoutRecords();
+      })
+      .catch((err) => {
+        this.logger.warn(`[AppCredentials] could not remove the handout records: ${err instanceof Error ? err.message : String(err)}`);
+      });
     await this.handoutWrites;
   }
 

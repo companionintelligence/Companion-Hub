@@ -183,4 +183,44 @@ describe('HubPoolIdentityService', () => {
     expect(service.takeObservedPeerFqdn('peer-1')).toBe('hub-new.example-tailnet.ts.net');
     expect(service.takeObservedPeerFqdn('peer-1')).toBeUndefined();
   });
+
+  // A factory reset empties the table. Until a restart the reset Hub signed with the key its old peers pinned.
+  it('mints a new identity after forget, once the table is emptied', async () => {
+    const service = build();
+    const before = await service.get();
+    service.noteObservedPeerFqdn('peer-1', 'hub-new.example-tailnet.ts.net');
+
+    repo.row = undefined;
+    service.forget();
+    const after = await service.get();
+
+    expect(after?.nodeUuid).toMatch(/^[0-9a-f-]{36}$/);
+    expect(after?.nodeUuid).not.toBe(before?.nodeUuid);
+    expect(after?.publicKey).not.toBe(before?.publicKey);
+    expect(repo.row?.nodeUuid).toBe(after?.nodeUuid);
+    expect(service.takeObservedPeerFqdn('peer-1')).toBeUndefined();
+  });
+
+  it('does not keep the identity a load still under way at the forget read', async () => {
+    const service = build();
+    await build().get();
+    const old = repo.row;
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // The first read of the row returns the old one, but only after the reset.
+    vi.spyOn(repo, 'get').mockImplementationOnce(async () => {
+      await held;
+      return old;
+    });
+
+    const loading = service.get();
+    repo.row = undefined;
+    service.forget();
+    release();
+    await loading;
+
+    expect((await service.get())?.nodeUuid).not.toBe(old?.nodeUuid);
+  });
 });

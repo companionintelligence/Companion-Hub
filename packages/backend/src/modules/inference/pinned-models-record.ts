@@ -38,6 +38,11 @@ export async function readPinnedModels(file = PINNED_MODELS_PATH): Promise<Pinne
   return { pinned: [...new Set(pinned.filter((id): id is string => typeof id === 'string' && id.length > 0))] };
 }
 
+/** Remove the persisted pins, and a write a crash left behind. */
+export async function removePinnedModels(file = PINNED_MODELS_PATH): Promise<void> {
+  await Promise.all([fs.promises.rm(file, { force: true }), fs.promises.rm(`${file}.tmp`, { force: true })]);
+}
+
 export async function writePinnedModels(record: PinnedModelsRecord, file = PINNED_MODELS_PATH): Promise<void> {
   await fs.promises.mkdir(path.dirname(file), { recursive: true });
   // Write-then-rename so a Hub killed mid-write leaves the previous file rather than a torn one.

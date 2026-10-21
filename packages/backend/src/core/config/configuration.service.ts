@@ -561,8 +561,11 @@ export class ConfigurationService {
    * the General settings: boot resolved them from settings.json into the environment
    * (`generateSystemEnvFile`), so they keep their old values until a restart. So does the
    * error-reporting switch, which is no secret and which the reporting gate holds too (`setUserConsent`).
-   * The copies of the pairing credentials in `userSettings` go; the config's own (`ciHubApiKey` and
-   * the rest) are untouched.
+   *
+   * The pairing goes too: the Portal device key, the move key and the organization id, both the
+   * config's own and their copies in `userSettings`. Kept, they let the reset Hub go on asking Portal
+   * about its old device until a restart (the pairing page then offered **Move this device**), and
+   * the next pairing sent them as proof that it was that device.
    *
    * Listeners hear about every key it reset, as after a save, so the mDNS socket closes when the old
    * settings had it open.
@@ -572,6 +575,9 @@ export class ConfigurationService {
     const kept = Object.entries(this.config.userSettings).filter(([key]) => !PAIRING_KEYS_IN_USER_SETTINGS.includes(key));
 
     this.config.userSettings = { ...(Object.fromEntries(kept) as typeof this.config.userSettings), ...reset };
+    this.config.ciHubApiKey = null;
+    this.config.ciHubMoveKey = null;
+    this.config.ciHubOrganizationId = null;
     this.notifyUserSettingsListeners([...Object.keys(reset), ...PAIRING_KEYS_IN_USER_SETTINGS]);
   }
 

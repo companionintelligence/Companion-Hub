@@ -70,6 +70,8 @@ export class HubPoolIdentityService {
   private loading: Promise<LoadedPoolIdentity | null> | null = null;
   private retryAfter = 0;
   private lastError: string | null = null;
+  /** Bumped by {@link forget}, so a load that began before it does not cache the identity it forgot. */
+  private generation = 0;
 
   /**
    * FQDNs observed on *verified* signed requests that disagree with the peer row's `node_fqdn`.
@@ -99,9 +101,12 @@ export class HubPoolIdentityService {
       return null;
     }
 
-    this.loading = this.load()
+    const generation = this.generation;
+    const loading: Promise<LoadedPoolIdentity | null> = this.load()
       .then((identity) => {
-        this.cached = identity;
+        if (generation === this.generation) {
+          this.cached = identity;
+        }
         return identity;
       })
       .catch((error: unknown) => {
@@ -112,10 +117,27 @@ export class HubPoolIdentityService {
         return null;
       })
       .finally(() => {
-        this.loading = null;
+        if (this.loading === loading) {
+          this.loading = null;
+        }
       });
+    this.loading = loading;
 
-    return this.loading;
+    return loading;
+  }
+
+  /**
+   * Drop the identity this process loaded, for a factory reset that emptied `hub_pool_identity`. The
+   * next {@link get} mints a new one. Until then the reset Hub went on signing with the key its old
+   * peers had pinned.
+   */
+  forget(): void {
+    this.generation++;
+    this.cached = null;
+    this.loading = null;
+    this.retryAfter = 0;
+    this.lastError = null;
+    this.observedFqdns.clear();
   }
 
   /** True when this node can actually produce a signature right now. */
