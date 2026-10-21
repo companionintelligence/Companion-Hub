@@ -24,6 +24,9 @@ vi.mock('../registration-recovery-state', () => ({
   writeRehydrationState: vi.fn(),
   hasRestoreIntent: vi.fn(),
   clearRestoreIntent: vi.fn(),
+  readPairingAppCheck: vi.fn(),
+  readRestoreNotice: vi.fn(),
+  acknowledgeRestoreNotice: vi.fn(),
 }));
 
 // The plan is built by `buildRehydrationPlan`; here it is an input.
@@ -119,7 +122,9 @@ describe('AppRehydrationService.executeRehydrate', () => {
     const result = await service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR });
 
     expect(result).toMatchObject({ success: true, incomplete: true, queued: [], started: [] });
-    expect(result.skipped).toEqual([{ name: 'Immich', reason: 'APP_ACTION_GRANT_DENIED' }]);
+    expect(result.skipped).toEqual([
+      { name: 'Immich', reason: 'APP_ACTION_GRANT_DENIED', appUrn, code: 'refused', params: { action: 'install', app: 'immich' } },
+    ]);
     // Recorded as done, the refusal was final: nothing retried it without `force`.
     expect(recovery.writeRehydrationState).not.toHaveBeenCalled();
     // The intent is cleared all the same — left standing, it holds Cloudflare sync for the whole Hub.
@@ -146,6 +151,23 @@ describe('AppRehydrationService.executeRehydrate', () => {
 
     expect(result).toMatchObject({ incomplete: false, skipped: [{ name: 'Immich', reason: 'APP_ERROR_PORT_ALREADY_IN_USE' }] });
     expect(recovery.writeRehydrationState).toHaveBeenCalled();
+  });
+
+  /*
+   * The restore sends only what the Portal keeps for an app, its address and port. Kimai's admin
+   * password has no default, so its install form is refused on every restore. The log said
+   * `APP_INSTALL_FORM_ERROR_INVALID` and nothing told the person which settings were missing.
+   */
+  it('keeps the form fields an install was refused for, so the restore can say what is missing', async () => {
+    lifecycle.installApp.mockRejectedValue(
+      new TranslatableError('APP_INSTALL_FORM_ERROR_INVALID', { fields: 'Admin Password' }, HttpStatus.BAD_REQUEST),
+    );
+
+    const result = await service.executeRehydrate({ actor: { kind: 'system', reason: 'restore-after-pairing' } });
+
+    const expected = { name: 'Immich', reason: 'APP_INSTALL_FORM_ERROR_INVALID', appUrn, code: 'failed', params: { fields: 'Admin Password' } };
+    expect(result.skipped).toEqual([expected]);
+    expect(recovery.writeRehydrationState).toHaveBeenCalledWith(expect.objectContaining({ skipped: [expected] }));
   });
 
   it('starts an installed app as the person who asked, and keeps a refused start open for retry', async () => {
@@ -188,7 +210,7 @@ describe('AppRehydrationService.executeRehydrate', () => {
 
     expect(lifecycle.installApp).not.toHaveBeenCalled();
     expect(lifecycle.startApp).not.toHaveBeenCalled();
-    expect(result).toMatchObject({ incomplete: false, skipped: [{ name: 'Immich', reason: expect.stringContaining('in progress') }] });
+    expect(result).toMatchObject({ incomplete: false, skipped: [{ name: 'Immich', reason: expect.stringContaining('in progress'), code: 'busy' }] });
   });
   /*
    * After a pairing the Hub restores on its own, and the restore page asks too. Both used to plan from
@@ -256,5 +278,156 @@ describe('AppRehydrationService.executeRehydrate', () => {
 
     expect(recovery.writeRehydrationState).not.toHaveBeenCalled();
     expect(lifecycle.installApp).not.toHaveBeenCalled();
+  });
+});
+
+/*
+ * After a pairing the Hub restores the device's apps with nobody signed in. Whether the next sign-in
+ * showed the restore used to depend on a choice one browser kept, so any other browser, the CLI or
+ * the desktop app got the setup wizard on a Hub that had its apps back. A failed app went unsaid.
+ */
+describe('AppRehydrationService restore status', () => {
+  const kimai = 'kimai:ci-marketplace';
+  const excalidraw = 'excalidraw:ci-marketplace';
+  const openclaw = 'ci-openclaw:ci-marketplace';
+  const finishedRun: RehydrationStateFile = {
+    completedAt: new Date().toISOString(),
+    queuedUrns: [excalidraw, openclaw],
+    startedUrns: [],
+    skipped: [
+      { name: 'kimai', reason: 'APP_INSTALL_FORM_ERROR_INVALID', appUrn: kimai, code: 'failed', params: { fields: 'Admin Password' } },
+      { name: 'cyberchef', reason: 'App is already running locally', appUrn: 'cyberchef:ci-marketplace', code: 'already_running' },
+      { name: 'my-wiki', reason: 'No matching marketplace app found for Portal application', code: 'unlisted' },
+    ],
+  };
+  const listings: Record<string, { name: string; categories?: string[] }> = {
+    [kimai]: { name: 'Kimai' },
+    [excalidraw]: { name: 'Excalidraw' },
+    [openclaw]: { name: 'OpenClaw', categories: ['ai'] },
+    'cyberchef:ci-marketplace': { name: 'CyberChef' },
+  };
+
+  let users: MockProxy<UserRepository>;
+  let preferredModel: string | null;
+  let service: AppRehydrationService;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    preferredModel = null;
+    vi.mocked(recovery.readRehydrationState).mockResolvedValue(finishedRun);
+    vi.mocked(recovery.hasRestoreIntent).mockResolvedValue(false);
+    vi.mocked(recovery.readPairingAppCheck).mockResolvedValue({
+      markedAt: finishedRun.completedAt,
+      restore: { startedAt: finishedRun.completedAt, portalAppNames: [] },
+    });
+    vi.mocked(recovery.readRestoreNotice).mockResolvedValue({ startedAt: finishedRun.completedAt });
+
+    users = mock<UserRepository>();
+    const marketplace = mock<MarketplaceService>();
+    marketplace.getAppInfoFromAppStoreOrInstalled.mockImplementation(async (urn) => listings[urn] as never);
+    const apps = mock<AppsRepository>();
+    apps.getApps.mockResolvedValue([
+      { appName: 'excalidraw', appStoreSlug: 'ci-marketplace', status: 'running' },
+      { appName: 'ci-openclaw', appStoreSlug: 'ci-marketplace', status: 'installing' },
+      { appName: 'cyberchef', appStoreSlug: 'ci-marketplace', status: 'running' },
+    ] as never);
+
+    const module = await Test.createTestingModule({
+      providers: [
+        AppRehydrationService,
+        { provide: LoggerService, useValue: mock<LoggerService>() },
+        {
+          provide: ConfigurationService,
+          useValue: { getConfig: () => ({ ciHubApiKey: 'device-key' }), getInferencePreferences: () => ({ preferredModel }) },
+        },
+        { provide: RegistrationService, useValue: mock<RegistrationService>() },
+        { provide: CloudflareClientService, useValue: mock<CloudflareClientService>() },
+        { provide: AppStoreService, useValue: mock<AppStoreService>() },
+        { provide: MarketplaceService, useValue: marketplace },
+        { provide: AppsRepository, useValue: apps },
+        { provide: AppFilesManager, useValue: mock<AppFilesManager>() },
+        { provide: AppLifecycleService, useValue: mock<AppLifecycleService>() },
+        { provide: UserRepository, useValue: users },
+      ],
+    }).compile();
+    service = module.get(AppRehydrationService);
+  });
+
+  it('shows someone who may manage the Hub what the restore brought back and what it could not, until they have seen it', async () => {
+    const status = await service.getRestoreStatus(async () => true);
+
+    expect(status).toMatchObject({ completed: true, checking: false, noticePending: true });
+    expect(status.summary).toEqual({
+      completedAt: finishedRun.completedAt,
+      restored: [
+        { name: 'Excalidraw', urn: excalidraw, status: 'running', usesAi: false },
+        { name: 'OpenClaw', urn: openclaw, status: 'installing', usesAi: true },
+        { name: 'CyberChef', urn: 'cyberchef:ci-marketplace', status: 'running', usesAi: false },
+      ],
+      notRestored: [
+        { name: 'Kimai', urn: kimai, reason: 'APP_INSTALL_FORM_ERROR_INVALID', code: 'failed', params: { fields: 'Admin Password' } },
+        { name: 'my-wiki', reason: 'No matching marketplace app found for Portal application', code: 'unlisted' },
+      ],
+      aiModelChosen: false,
+    });
+  });
+
+  it('says whether a chat model has been chosen, since restored AI apps use the recommended one until then', async () => {
+    preferredModel = 'gemma3-270m';
+
+    const status = await service.getRestoreStatus(async () => true);
+
+    expect(status.summary?.aiModelChosen).toBe(true);
+  });
+
+  it('keeps the notice from a member, who is not offered the setup wizard either', async () => {
+    const status = await service.getRestoreStatus(async () => false);
+
+    expect(status.noticePending).toBe(false);
+    expect(status.summary).toBeUndefined();
+  });
+
+  it('does not ask about the person, or show anything, once the restore has been seen', async () => {
+    vi.mocked(recovery.readRestoreNotice).mockResolvedValue({ startedAt: finishedRun.completedAt, acknowledgedAt: new Date().toISOString() });
+    const mayManage = vi.fn(async () => true);
+
+    const status = await service.getRestoreStatus(mayManage);
+
+    expect(status).toMatchObject({ noticePending: false });
+    expect(status.summary).toBeUndefined();
+    expect(mayManage).not.toHaveBeenCalled();
+  });
+
+  it('reports a restore under way, with no summary until it has finished', async () => {
+    vi.mocked(recovery.readRehydrationState).mockResolvedValue(null);
+
+    const status = await service.getRestoreStatus(async () => true);
+
+    expect(status).toMatchObject({ completed: false, noticePending: true, checking: false });
+    expect(status.summary).toBeUndefined();
+  });
+
+  it('reports a pairing whose apps check has not decided yet', async () => {
+    vi.mocked(recovery.readRehydrationState).mockResolvedValue(null);
+    vi.mocked(recovery.readRestoreNotice).mockResolvedValue(null);
+    vi.mocked(recovery.readPairingAppCheck).mockResolvedValue({ markedAt: new Date().toISOString() });
+
+    await expect(service.getRestoreStatus(async () => true)).resolves.toMatchObject({ checking: true, noticePending: false });
+  });
+
+  it('skips the setup wizard for every operator once a finished restore has been seen', async () => {
+    await service.acknowledgeRestore();
+
+    expect(recovery.acknowledgeRestoreNotice).toHaveBeenCalled();
+    expect(users.markApplianceOnboardingComplete).toHaveBeenCalled();
+  });
+
+  it('leaves the setup wizard when the restore never finished', async () => {
+    vi.mocked(recovery.readRehydrationState).mockResolvedValue(null);
+
+    await service.acknowledgeRestore();
+
+    expect(recovery.acknowledgeRestoreNotice).toHaveBeenCalled();
+    expect(users.markApplianceOnboardingComplete).not.toHaveBeenCalled();
   });
 });

@@ -18,6 +18,7 @@ import {
   hasRestoreIntent,
   readPairingAppCheck,
   readRehydrationState,
+  startRestoreNotice,
   writePairingAppCheck,
   writeRestoreIntent,
 } from './registration-recovery-state';
@@ -268,6 +269,8 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
       restore: { startedAt: new Date().toISOString(), portalAppNames: portalApps.map((app) => app.name) },
     };
     await writeRestoreIntent();
+    // Before the run: whoever signs in while it is under way is shown it, not the setup wizard.
+    await startRestoreNotice();
     await writePairingAppCheck(withRestore);
 
     return withRestore;

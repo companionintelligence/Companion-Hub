@@ -186,3 +186,52 @@ const validateConfigResultSchema = z.object({
 });
 
 export class ValidateConfigResultDto extends createZodDto(validateConfigResultSchema) {}
+
+const rehydrationSkipCodeSchema = z.enum(['already_running', 'busy', 'unlisted', 'no_target', 'refused', 'failed']);
+
+const rehydrationStateSchema = z.object({
+  completedAt: z.string(),
+  queuedUrns: z.array(z.string()),
+  startedUrns: z.array(z.string()),
+  skipped: z.array(
+    z.object({
+      name: z.string(),
+      reason: z.string(),
+      appUrn: z.string().optional(),
+      code: rehydrationSkipCodeSchema.optional(),
+      params: z.record(z.string(), z.string()).optional(),
+    }),
+  ),
+});
+
+const restoreSummarySchema = z.object({
+  completedAt: z.string(),
+  restored: z.array(z.object({ name: z.string(), urn: z.string(), status: z.string(), usesAi: z.boolean() })),
+  notRestored: z.array(
+    z.object({
+      name: z.string(),
+      urn: z.string().optional(),
+      reason: z.string(),
+      code: rehydrationSkipCodeSchema.optional(),
+      params: z.record(z.string(), z.string()).optional(),
+    }),
+  ),
+  aiModelChosen: z.boolean(),
+});
+
+const rehydrateStatusSchema = z.object({
+  completed: z.boolean(),
+  /** Absent rather than `null` when no restore has finished: the generated client cannot express `| null`. */
+  state: rehydrationStateSchema.optional(),
+  restoreIntent: z.boolean(),
+  /** A pairing's apps check has not yet decided whether there is anything to restore. */
+  checking: z.boolean(),
+  /** This pairing's restore began or finished, nobody has seen it yet and the caller may manage the Hub. */
+  noticePending: z.boolean(),
+  /** What the finished restore brought back, while `noticePending`. */
+  summary: restoreSummarySchema.optional(),
+});
+
+export class RehydrateStatusDto extends createZodDto(rehydrateStatusSchema) {}
+
+export class AcknowledgeRestoreResponseDto extends createZodDto(z.object({ success: z.boolean() })) {}

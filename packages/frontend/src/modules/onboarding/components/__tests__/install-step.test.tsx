@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 import { claimOnboardingInstallUrn } from '../../helpers/install-session';
 import { InstallStep } from '../install-step';
@@ -408,6 +408,72 @@ describe('InstallStep', () => {
     );
 
     expect(pinInferenceModel).not.toHaveBeenCalledWith('still-pulling');
+  });
+
+  /*
+   * After a reset or a reinstall the Hub tracks nothing, though every model is still in Ollama. The pin
+   * step pinned only tracked models, so it pinned nothing. Its row showed a check mark anyway.
+   */
+  describe('pinning models the engine already has', () => {
+    const onDiskConfig = {
+      agentFrameworks: ['openclaw' as const],
+      remoteAccess: [],
+      selectedModels: ['gemma3-270m', 'nomic-embed-text'],
+      installedCatalogIds: ['gemma3-270m', 'nomic-embed-text'],
+      backend: 'ollama' as const,
+      cloudProviders: [],
+      skipped: false,
+    };
+
+    it('pins a chosen model Ollama has even when this Hub does not track it', async () => {
+      fetchTrackedModels.mockResolvedValue([]);
+
+      render(<InstallStep apps={[]} onComplete={onComplete} aiSetupConfig={onDiskConfig} />);
+
+      await waitFor(() => expect(pinInferenceModel).toHaveBeenCalledTimes(2));
+      expect(pinInferenceModel).toHaveBeenCalledWith('gemma3-270m');
+      expect(pinInferenceModel).toHaveBeenCalledWith('nomic-embed-text');
+      await waitFor(() => expect(within(screen.getByTestId('pin-models-row')).getByText('✓')).toBeInTheDocument());
+      expect(screen.queryByTestId('pin-models-failures')).not.toBeInTheDocument();
+    });
+
+    it('marks the row failed and names a model the Hub refused to pin', async () => {
+      fetchTrackedModels.mockResolvedValue([]);
+      pinInferenceModel.mockImplementation(async (modelId: string) => {
+        if (modelId === 'nomic-embed-text') throw new Error("nomic-embed-text does not fit this node's pinned-model budget");
+      });
+
+      render(<InstallStep apps={[]} onComplete={onComplete} aiSetupConfig={onDiskConfig} />);
+
+      const failures = await screen.findByTestId('pin-models-failures');
+      expect(failures).toHaveTextContent("nomic-embed-text is not pinned: nomic-embed-text does not fit this node's pinned-model budget");
+      const row = screen.getByTestId('pin-models-row');
+      expect(within(row).getByText('✕')).toBeInTheDocument();
+      expect(within(row).queryByText('✓')).not.toBeInTheDocument();
+    });
+
+    it('says a model that was still downloading was not pinned, instead of checking the row', async () => {
+      vi.useFakeTimers();
+      fetchTrackedModels.mockResolvedValue([{ catalogId: 'gemma4-26b', state: 'pulling', pullProgress: 30 }] as never);
+
+      render(
+        <InstallStep
+          apps={[]}
+          onComplete={onComplete}
+          aiSetupConfig={{ ...onDiskConfig, selectedModels: ['gemma3-270m', 'gemma4-26b'], installedCatalogIds: ['gemma3-270m'] }}
+        />,
+      );
+
+      await act(async () => {
+        await vi.runAllTimersAsync();
+      });
+      vi.useRealTimers();
+
+      const failures = await screen.findByTestId('pin-models-failures');
+      expect(failures).toHaveTextContent('gemma4-26b is not pinned: it is still downloading.');
+      expect(pinInferenceModel).toHaveBeenCalledWith('gemma3-270m');
+      expect(pinInferenceModel).not.toHaveBeenCalledWith('gemma4-26b');
+    });
   });
 
   it('keeps the chosen model when its pull is still running after the wait', async () => {

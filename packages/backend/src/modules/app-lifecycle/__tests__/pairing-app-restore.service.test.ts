@@ -23,6 +23,7 @@ vi.mock('../registration-recovery-state', () => ({
   writeRestoreIntent: vi.fn(),
   clearRestoreIntent: vi.fn(),
   readRehydrationState: vi.fn(),
+  startRestoreNotice: vi.fn(),
 }));
 
 const portalApp = (name: string) => ({ id: `id-${name}`, name, slug: name, port: 80, publicDomain: null });
@@ -49,6 +50,7 @@ describe('PairingAppRestoreService', () => {
     check: PairingAppCheckFile | null;
     restoreIntent: boolean;
     rehydration: RehydrationStateFile | null;
+    noticeStarted: boolean;
   };
   let registration: MockProxy<RegistrationService>;
   let cloudflare: MockProxy<CloudflareClientService>;
@@ -67,7 +69,10 @@ describe('PairingAppRestoreService', () => {
     vi.clearAllMocks();
 
     // The state files, in memory, so what one pass writes the next one reads.
-    state = { check: { markedAt: pairedAt }, restoreIntent: false, rehydration: null };
+    state = { check: { markedAt: pairedAt }, restoreIntent: false, rehydration: null, noticeStarted: false };
+    vi.mocked(recovery.startRestoreNotice).mockImplementation(async () => {
+      state.noticeStarted = true;
+    });
     vi.mocked(recovery.readPairingAppCheck).mockImplementation(async () => state.check);
     vi.mocked(recovery.writePairingAppCheck).mockImplementation(async (check) => {
       state.check = check ?? { markedAt: new Date().toISOString() };
@@ -152,6 +157,20 @@ describe('PairingAppRestoreService', () => {
       expect(state.check?.restore?.portalAppNames).toEqual(['wordpress', 'ci-memory', 'ci-hermes']);
       // Syncing now would leave out every app still installing, and the Portal would release it.
       expect(exposureSync.syncExposurePublic).not.toHaveBeenCalled();
+    });
+
+    /*
+     * Nobody is signed in while this runs, so the person who signs in next was never on the restore
+     * page. What sent them there was a choice one browser had stored; everyone else got the setup
+     * wizard on a Hub that already had its apps. An app that failed was only in the log.
+     */
+    it('leaves a notice of the restore for whoever signs in next', async () => {
+      await service.runCheck();
+
+      expect(state.noticeStarted).toBe(true);
+      expect(vi.mocked(recovery.startRestoreNotice).mock.invocationCallOrder[0]).toBeLessThan(
+        rehydration.executeRehydrate.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+      );
     });
 
     it('lifts the hold and syncs once the restored apps have settled', async () => {
@@ -269,6 +288,7 @@ describe('PairingAppRestoreService', () => {
 
     expect(state.check).toBeNull();
     expect(state.restoreIntent).toBe(false);
+    expect(state.noticeStarted).toBe(false);
     expect(rehydration.executeRehydrate).not.toHaveBeenCalled();
     expect(exposureSync.syncExposurePublic).toHaveBeenCalledTimes(1);
   });
