@@ -2,7 +2,6 @@ import { Injectable, type OnModuleInit } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 import { HardwareInspectorService } from '@/modules/inference/hardware-inspector.service';
-import { ModelRegistryService } from '@/modules/inference/model-registry.service';
 import { MemoryManagerService } from '@/modules/inference/memory-manager.service';
 import { ModelPullerService } from '@/modules/inference/model-puller.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
@@ -19,7 +18,6 @@ export class InferenceTools implements OnModuleInit {
     private readonly logger: LoggerService,
     private readonly registry: McpToolRegistry,
     private readonly hardwareInspector: HardwareInspectorService,
-    private readonly modelRegistry: ModelRegistryService,
     private readonly memoryManager: MemoryManagerService,
     private readonly modelPuller: ModelPullerService,
     private readonly inferenceRouter: InferenceRouterService,
@@ -238,7 +236,7 @@ export class InferenceTools implements OnModuleInit {
       },
       handler: async (params) => {
         const modelId = params.modelId as string;
-        this.modelRegistry.unpinModel(modelId);
+        await this.inferenceRouter.unpinTrackedModel(modelId);
         return { success: true, message: `Model ${modelId} unpinned` };
       },
     });

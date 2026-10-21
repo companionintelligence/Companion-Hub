@@ -9,6 +9,25 @@ import { type DeviceGroupProbe, resolveAmdDeviceGroupIds } from './amd-device-gr
 import { QUARANTINE_STRIKES, ServingQuarantine } from './serving-quarantine';
 import { type ContextCost, estimateContextCost, parseModelGeometry } from '../model-geometry.util';
 
+/**
+ * Ollama's own default `keep_alive`, the one a model loaded with none gets while `OLLAMA_KEEP_ALIVE`
+ * is unset. What an unpinned model is set to: the API does not say what the daemon's setting is, so
+ * on a node that sets `OLLAMA_KEEP_ALIVE` (the fleet uses 24h) an unpinned model expires sooner than
+ * a model the daemon loaded itself.
+ */
+const OLLAMA_DEFAULT_KEEP_ALIVE = '5m';
+
+/**
+ * Whether `/api/ps` says the model is held until told otherwise (`keep_alive: -1`). Ollama 0.22.0
+ * reports that as an expiry in 2319; older releases sent a zero-value time, which `listResident`
+ * turns into null. A century out is neither a real expiry nor a typo.
+ */
+function heldForever(expiresAt: string | null | undefined): boolean {
+  if (!expiresAt) return true;
+  const at = Date.parse(expiresAt);
+  return !Number.isFinite(at) || at - Date.now() > 100 * 365 * 24 * 60 * 60 * 1000;
+}
+
 /** Candidate Ollama URLs ordered by likelihood inside a Docker container. */
 const OLLAMA_FALLBACK_URLS = [
   'http://host.docker.internal:11434',
@@ -390,6 +409,49 @@ export class OllamaBackend implements InferenceBackend {
       this.invalidateResolvedUrl();
       throw err;
     }
+  }
+
+  /**
+   * How long Ollama keeps a model it already holds: `pinned` is `keep_alive: -1`, `default` is
+   * {@link OLLAMA_DEFAULT_KEEP_ALIVE}. Every Hub load holds a model at -1 (see {@link loadModel}), so
+   * after an unpin it stayed in memory, `ollama ps` saying Forever, until something unloaded it. And a
+   * pin of a model already in memory loaded nothing, so a model Ollama had loaded with its usual
+   * expiry stayed on it, pinned or not.
+   *
+   * Only for a model `/api/ps` lists, because the same empty request for one that is not in memory
+   * would load it. It names the window the model is resident at, because a request that names none
+   * reloads it at Ollama's default (see {@link loadModel}). It names the keep_alive too: a request
+   * that names none leaves a loaded model's as it is, which on Ollama 0.22.0 kept an unpinned model at
+   * Forever. A model already on the asked-for side (held, or with a finite expiry) gets no request.
+   */
+  async setResidentKeepAlive(
+    modelId: string,
+    keep: 'pinned' | 'default',
+    options?: { embedding?: boolean },
+  ): Promise<'set' | 'not-resident' | 'unreachable'> {
+    const residency = await this.listResident();
+    if (residency.models === null) {
+      this.logger.warn(`[Ollama] Could not set ${modelId}'s keep_alive: /api/ps did not answer (${residency.error ?? 'unreachable'})`);
+      return 'unreachable';
+    }
+    const sameTag = (id: string) => id === modelId || id === `${modelId}:latest` || `${id}:latest` === modelId;
+    const resident = residency.models.find((m) => sameTag(m.id));
+    if (!resident) {
+      return 'not-resident';
+    }
+    if (heldForever(resident.expiresAt) === (keep === 'pinned')) {
+      return 'set';
+    }
+    const url = await this.resolveUrl();
+    const keepAlive = keep === 'pinned' ? -1 : OLLAMA_DEFAULT_KEEP_ALIVE;
+    const window = resident.contextLength && resident.contextLength > 0 ? { options: { num_ctx: resident.contextLength } } : {};
+    if (options?.embedding) {
+      await axios.post(`${url}/api/embed`, { model: resident.id, input: '', keep_alive: keepAlive, ...window }, { timeout: 30000 });
+    } else {
+      await axios.post(`${url}/api/generate`, { model: resident.id, prompt: '', keep_alive: keepAlive, ...window }, { timeout: 30000 });
+    }
+    this.logger.info(`[Ollama] ${resident.id} now has keep_alive ${keepAlive}`);
+    return 'set';
   }
 
   async unloadModel(modelId: string, options?: { embedding?: boolean }): Promise<void> {

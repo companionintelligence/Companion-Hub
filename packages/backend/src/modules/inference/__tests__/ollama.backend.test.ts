@@ -411,6 +411,97 @@ describe('OllamaBackend', () => {
       );
     });
 
+    describe('setResidentKeepAlive (what a pin and an unpin tell Ollama)', () => {
+      // `/api/ps` for a model the Hub pinned: Ollama 0.22.0's expiry for keep_alive -1, which
+      // `ollama ps` prints as Forever.
+      const psWith = (models: Array<Record<string, unknown>>) => {
+        (axios.get as any) = vi.fn().mockImplementation(async (url: string) => (url.endsWith('/api/ps') ? { data: { models } } : { data: {} }));
+      };
+      const pinned = {
+        name: 'gemma3:270m',
+        model: 'gemma3:270m',
+        size: 566_000_000,
+        size_vram: 0,
+        expires_at: '2319-01-31T12:59:54.605Z',
+        context_length: 16384,
+      };
+      const inFourMinutes = () => new Date(Date.now() + 4 * 60_000).toISOString();
+
+      // Named, not left out: a request without keep_alive leaves a loaded model's as it is, which on
+      // Ollama 0.22.0 kept the unpinned model at Forever.
+      it("unpin: sets a held model to Ollama's default keep_alive at the window it holds, so it neither reloads nor stays Forever", async () => {
+        psWith([pinned]);
+        (axios.post as any) = vi.fn().mockResolvedValue({ data: {} });
+
+        expect(await backend.setResidentKeepAlive('gemma3:270m', 'default')).toBe('set');
+
+        expect(axios.post).toHaveBeenCalledTimes(1);
+        expect(axios.post).toHaveBeenCalledWith(
+          expect.stringContaining('/api/generate'),
+          { model: 'gemma3:270m', prompt: '', keep_alive: '5m', options: { num_ctx: 16384 } },
+          expect.any(Object),
+        );
+      });
+
+      it('pin: holds a model already in memory with a finite expiry, at its window', async () => {
+        psWith([{ ...pinned, expires_at: inFourMinutes() }]);
+        (axios.post as any) = vi.fn().mockResolvedValue({ data: {} });
+
+        expect(await backend.setResidentKeepAlive('gemma3:270m', 'pinned')).toBe('set');
+
+        expect(axios.post).toHaveBeenCalledWith(
+          expect.stringContaining('/api/generate'),
+          { model: 'gemma3:270m', prompt: '', keep_alive: -1, options: { num_ctx: 16384 } },
+          expect.any(Object),
+        );
+      });
+
+      it('sends nothing when the model is already on the asked-for side: held for a pin, expiring for an unpin', async () => {
+        (axios.post as any) = vi.fn().mockResolvedValue({ data: {} });
+
+        psWith([pinned]);
+        expect(await backend.setResidentKeepAlive('gemma3:270m', 'pinned')).toBe('set');
+        // An older Ollama's zero-value time for keep_alive -1 reads as held too.
+        psWith([{ ...pinned, expires_at: '0001-01-01T00:00:00Z' }]);
+        expect(await backend.setResidentKeepAlive('gemma3:270m', 'pinned')).toBe('set');
+        // A model the daemon loaded with its own OLLAMA_KEEP_ALIVE (24h on the fleet) keeps it.
+        psWith([{ ...pinned, expires_at: new Date(Date.now() + 24 * 3_600_000).toISOString() }]);
+        expect(await backend.setResidentKeepAlive('gemma3:270m', 'default')).toBe('set');
+
+        expect(axios.post).not.toHaveBeenCalled();
+      });
+
+      it('matches the tag Ollama reports (`:latest`) and sets an embedder through /api/embed', async () => {
+        psWith([{ ...pinned, name: 'nomic-embed-text:latest', model: 'nomic-embed-text:latest', context_length: 2048 }]);
+        (axios.post as any) = vi.fn().mockResolvedValue({ data: {} });
+
+        expect(await backend.setResidentKeepAlive('nomic-embed-text', 'default', { embedding: true })).toBe('set');
+
+        expect(axios.post).toHaveBeenCalledWith(
+          expect.stringContaining('/api/embed'),
+          { model: 'nomic-embed-text:latest', input: '', keep_alive: '5m', options: { num_ctx: 2048 } },
+          expect.any(Object),
+        );
+      });
+
+      it('sends nothing for a model Ollama does not hold: the same request would load it', async () => {
+        psWith([{ ...pinned, name: 'qwen3.5:9b', model: 'qwen3.5:9b' }]);
+        (axios.post as any) = vi.fn().mockResolvedValue({ data: {} });
+
+        expect(await backend.setResidentKeepAlive('gemma3:270m', 'default')).toBe('not-resident');
+        expect(await backend.setResidentKeepAlive('gemma3:270m', 'pinned')).toBe('not-resident');
+        expect(axios.post).not.toHaveBeenCalled();
+      });
+
+      it('sends nothing when /api/ps does not answer', async () => {
+        (axios.get as any) = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+        (axios.post as any) = vi.fn().mockResolvedValue({ data: {} });
+
+        expect(await backend.setResidentKeepAlive('gemma3:270m', 'default')).toBe('unreachable');
+        expect(axios.post).not.toHaveBeenCalled();
+      });
+    });
+
     it('should check if model is loaded via /api/ps', async () => {
       (axios.get as any) = vi.fn().mockResolvedValue({
         data: { models: [{ name: 'phi4-mini' }] },

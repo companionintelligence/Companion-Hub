@@ -678,7 +678,8 @@ export class InferenceController {
   @UseGuards(AuthGuard, HubManagerGuard)
   @Post('models/unpin')
   async unpinModel(@Body() body: { modelId: string }) {
-    this.modelRegistry.unpinModel(body.modelId);
+    // Through the router, so Ollama is told too: the pin held the model there at `keep_alive: -1`.
+    await this.router.unpinTrackedModel(body.modelId);
     return { success: true, message: `Model ${body.modelId} unpinned` };
   }
 
