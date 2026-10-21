@@ -8,14 +8,10 @@ import { useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 import z from 'zod';
+import { emailField } from '../helpers/email-field';
 import { PortalSignInSection } from './portal-sign-in-section';
 
 type FormValues = { email: string; password: string };
-
-const schema = z.object({
-  email: z.string().email(),
-  password: z.string(),
-});
 
 interface IProps {
   onSubmit: (values: FormValues) => void;
@@ -49,6 +45,10 @@ export const LoginForm: React.FC<IProps> = ({
   allowPasswordLogin = true,
 }) => {
   const { t } = useTranslation();
+  const schema = z.object({
+    email: emailField(t),
+    password: z.string(),
+  });
   const {
     register,
     handleSubmit,

@@ -57,7 +57,7 @@ export function SetupPageShell({
           >
             {showLogo && (
               <img
-                alt="CI Hub logo"
+                alt="Companion Hub logo"
                 src={hubLogo}
                 height={64}
                 width={64}

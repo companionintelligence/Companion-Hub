@@ -56,6 +56,16 @@ describe('ResetPasswordPage', () => {
     expect(screen.getByRole('button', { name: 'AUTH_RESET_PASSWORD_REQUEST_SUBMIT' })).toBeInTheDocument();
   });
 
+  it('says in words that the email address is missing', async () => {
+    render(<ResetPasswordPage />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'AUTH_RESET_PASSWORD_REQUEST_SUBMIT' }));
+
+    expect(await screen.findByText('AUTH_FORM_ERROR_EMAIL_REQUIRED')).toBeInTheDocument();
+    expect(screen.queryByText(/invalid email|too small/i)).not.toBeInTheDocument();
+    expect(mockRequestResetPassword).not.toHaveBeenCalled();
+  });
+
   it('shows generic success message after requesting a reset', async () => {
     mockRequestResetPassword.mockResolvedValue({ ok: true });
 
