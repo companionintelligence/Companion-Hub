@@ -11,6 +11,8 @@ import { AppsRepository } from '@/modules/apps/apps.repository';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { CloudflareClientService, type PortalDeviceApplication } from '@/modules/cloudflare/cloudflare-client.service';
 import { isAiAppInfo } from '@/modules/apps/app.helpers';
+import { SUPPORTED_APP_SLUGS } from '@/modules/inference/app-credentials.service';
+import { bootstrapAppNamesForSlug } from '@/modules/inference/bootstrap-app-names';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { UserRepository } from '@/modules/user/user.repository';
@@ -61,7 +63,7 @@ export interface RestoreSummaryApp {
   urn: string;
   /** The app's status on this Hub now, or `missing` when its install never made a row. */
   status: string;
-  /** The Hub hands this app an AI model (`isAiAppInfo`). */
+  /** The Hub hands this app a chat model (`usesChatModel`). */
   usesAi: boolean;
 }
 
@@ -123,6 +125,18 @@ function messageParams(error: unknown): Record<string, string> | undefined {
   const response = error.getResponse() as { intlParams?: Record<string, string | undefined> };
   const entries = Object.entries(response.intlParams ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === 'string');
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+/**
+ * Whether the Hub hands this app a chat model: by its listing (`isAiAppInfo`), or as an agent that
+ * fetches its credentials from the Hub. OpenClaw's listing is filed under `development` with no
+ * inference mapping, and it is the app most likely to be running on a model nobody chose.
+ */
+function usesChatModel(appName: string, info: Parameters<typeof isAiAppInfo>[0] | undefined): boolean {
+  if (info && isAiAppInfo(info)) {
+    return true;
+  }
+  return SUPPORTED_APP_SLUGS.some((slug) => bootstrapAppNamesForSlug(slug).includes(appName));
 }
 
 @Injectable()
@@ -197,7 +211,8 @@ export class AppRehydrationService {
     const restored = await Promise.all(
       restoredUrns.map(async (urn) => {
         const info = await this.appInfoFor(urn);
-        return { name: info?.name || (urn.split(':')[0] ?? urn), urn, status: rows.get(urn) ?? 'missing', usesAi: info ? isAiAppInfo(info) : false };
+        const appName = urn.split(':')[0] ?? urn;
+        return { name: info?.name || appName, urn, status: rows.get(urn) ?? 'missing', usesAi: usesChatModel(appName, info) };
       }),
     );
     const notRestored = await Promise.all(

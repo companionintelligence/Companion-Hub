@@ -303,7 +303,8 @@ describe('AppRehydrationService restore status', () => {
   const listings: Record<string, { name: string; categories?: string[] }> = {
     [kimai]: { name: 'Kimai' },
     [excalidraw]: { name: 'Excalidraw' },
-    [openclaw]: { name: 'OpenClaw', categories: ['ai'] },
+    // As CI-Marketplace lists it: no `ai` category and no inference mapping, yet an agent the Hub hands a model.
+    [openclaw]: { name: 'OpenClaw', categories: ['development'] },
     'cyberchef:ci-marketplace': { name: 'CyberChef' },
   };
 
