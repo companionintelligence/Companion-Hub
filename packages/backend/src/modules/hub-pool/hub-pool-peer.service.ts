@@ -80,12 +80,15 @@ import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
  *
  * Nest serializes an `HttpException` as `{ message, statusCode }`; `error` is the fallback shape.
  * Bounded, because this string is authored by the far end and ends up in an operator-facing message.
+ * A translation key (a peer's `INTERNAL_SERVER_ERROR`, say) is dropped: it is copy for that Hub's own
+ * page, and quoted on this one it reads as the raw key.
  */
 async function peerRefusalDetail(response: Response): Promise<string | null> {
   try {
     const body = (await response.json()) as { message?: unknown; error?: unknown };
     const detail = typeof body.message === 'string' ? body.message : typeof body.error === 'string' ? body.error : null;
-    return detail ? detail.slice(0, 200) : null;
+    if (!detail || /^[A-Z][A-Z0-9_]+$/.test(detail)) return null;
+    return detail.slice(0, 200);
   } catch {
     return null;
   }
@@ -780,7 +783,9 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       const status = String(response.status);
       // A refused PIN is the one failure an operator can act on, and a bare status code hides it.
       // Answered 400 rather than with the peer's 401: the page reads a 401 as its own session ending.
-      if (pin !== undefined && (response.status === 401 || response.status === 403)) {
+      // Only a 401 is the PIN. The peer's 403 is its tailnet check, which runs after the PIN was
+      // accepted, so a fresh PIN would be refused the same way. That one falls through with its reason.
+      if (pin !== undefined && response.status === 401) {
         this.logger.warn(`[HubPool] ${url} refused the pairing PIN (${status}). A PIN is single-use and expires, so mint a fresh one on that Hub.`);
         throw new TranslatableError('HUB_POOL_PAIR_ERROR_PIN_REFUSED', undefined, HttpStatus.BAD_REQUEST);
       }

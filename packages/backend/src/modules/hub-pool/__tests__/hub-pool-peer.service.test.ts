@@ -240,13 +240,37 @@ describe('HubPoolPeerService', () => {
         return { status: translatable.getStatus(), body: translatable.getResponse() };
       };
 
-      it.each([401, 403])('answers a PIN the peer refused with %i as a 400 that says to generate a new one', async (peerStatus) => {
-        const answer = new Response(JSON.stringify({ statusCode: peerStatus, message: 'Invalid or expired pairing PIN' }), { status: peerStatus });
+      it('answers a PIN the peer refused with 401 as a 400 that says to generate a new one', async () => {
+        const answer = new Response(JSON.stringify({ statusCode: 401, message: 'Invalid or expired pairing PIN' }), { status: 401 });
 
         // Not 401: the page reads a 401 from its own Hub as a lapsed session and signs the operator out.
         expect(await refusal('000000', answer)).toEqual({ status: 400, body: { message: 'HUB_POOL_PAIR_ERROR_PIN_REFUSED' } });
         // The filter logs only 500s, so the service keeps the operator's log line itself.
         expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('refused the pairing PIN'));
+      });
+
+      // The peer checks the tailnet after it has taken the PIN, so a fresh PIN would get the same 403.
+      it("reads the peer's 403 as a declined request with its reason, not as a refused PIN", async () => {
+        const answer = new Response(JSON.stringify({ statusCode: 403, message: 'Pairing requests are only accepted from devices on this tailnet' }), {
+          status: 403,
+        });
+
+        expect(await refusal('000000', answer)).toEqual({
+          status: 502,
+          body: {
+            message: 'HUB_POOL_PAIR_ERROR_PEER_DECLINED_REASON',
+            intlParams: { status: '403', detail: 'Pairing requests are only accepted from devices on this tailnet' },
+          },
+        });
+      });
+
+      it("drops a reason that is the peer's own translation key, which would show as the raw key", async () => {
+        const answer = new Response(JSON.stringify({ statusCode: 500, message: 'INTERNAL_SERVER_ERROR' }), { status: 500 });
+
+        expect(await refusal(undefined, answer)).toEqual({
+          status: 502,
+          body: { message: 'HUB_POOL_PAIR_ERROR_PEER_DECLINED', intlParams: { status: '500' } },
+        });
       });
 
       it("passes the peer's own reason on, as a 502, when it gave one", async () => {
