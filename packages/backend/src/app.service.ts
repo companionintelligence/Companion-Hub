@@ -1,4 +1,3 @@
-import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Inject, Injectable, type OnApplicationShutdown } from '@nestjs/common';
@@ -13,7 +12,7 @@ import { withTimeout } from './common/helpers/with-timeout';
 import { detectHubContainer } from './modules/inference/backends/host-url.util';
 import { CacheService, ONE_DAY_IN_SECONDS } from './core/cache/cache.service';
 import { resolveHubBuildInfo } from './core/build-info/hub-build-info';
-import { ConfigurationService } from './core/config/configuration.service';
+import { ConfigurationService, newHubLocalKey } from './core/config/configuration.service';
 import { DatabaseService } from './core/database/database.service';
 import { FilesystemService } from './core/filesystem/filesystem.service';
 import { LoggerService } from './core/logger/logger.service';
@@ -58,7 +57,7 @@ export class AppService implements OnApplicationShutdown {
       return;
     }
     try {
-      await this.configuration.setFileOnlySettings({ hubLocalKey: randomBytes(32).toString('hex') });
+      await this.configuration.setFileOnlySettings({ hubLocalKey: newHubLocalKey() });
       this.logger.info('Minted the host-local key into state/settings.json');
     } catch (error) {
       // Boot goes on: `cihub` on the box reports a missing key with the paths it checked.

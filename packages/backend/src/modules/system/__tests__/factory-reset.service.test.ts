@@ -14,6 +14,7 @@ import { mock, type MockProxy } from 'vitest-mock-extended';
 import { FactoryResetService } from '../factory-reset.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { BearerOrgMembershipCache } from '@/modules/auth/bearer-org-membership.cache';
+import { AuthMiddleware } from '@/modules/auth/auth.middleware';
 import { APP_DATA_DIR, TUNNEL_DIR } from '@/common/constants';
 import { TranslatableError } from '@/common/error/translatable-error';
 import * as schema from '@/core/database/drizzle/schema';
@@ -29,6 +30,7 @@ import type { CloudProviderConfig } from '@ci-hub/common/types';
 import fs from 'node:fs';
 import path from 'node:path';
 import { vol } from 'memfs';
+import type { Request } from 'express';
 
 const uninstallExecute = vi.fn().mockResolvedValue({ success: true, message: 'ok' });
 
@@ -78,6 +80,7 @@ describe('FactoryResetService', () => {
           useValue: {
             get: vi.fn(configurationValue),
             forgetPersistedUserSettings: vi.fn(),
+            replaceHubLocalKey: vi.fn(),
           },
         },
         { provide: CacheService, useValue: cache },
@@ -229,7 +232,7 @@ describe('FactoryResetService', () => {
 
     await service.execute();
 
-    expect(vol.readFileSync(path.join(stateDir, 'settings.json'), 'utf8')).toBe('{}');
+    expect(Object.keys(JSON.parse(String(vol.readFileSync(path.join(stateDir, 'settings.json'), 'utf8'))))).toEqual(['hubLocalKey']);
     expect(vol.readdirSync(stateDir).filter((name) => String(name).startsWith('settings.json'))).toEqual(['settings.json']);
     expect(vol.existsSync(path.join(stateDir, 'seed'))).toBe(true);
   });
@@ -450,7 +453,7 @@ describe('FactoryResetService: data folders', () => {
  * services the reset reaches that way.
  */
 function resetOnDisk(
-  options: { rootFolderHost?: string; userSettings?: Record<string, unknown>; pairing?: Record<string, string>; moduleRef?: ModuleRef } = {},
+  options: { rootFolderHost?: string; userSettings?: Record<string, unknown>; fileSettings?: Record<string, string>; moduleRef?: ModuleRef } = {},
 ) {
   const logger = mock<LoggerService>();
   const configuration = Object.assign(Object.create(ConfigurationService.prototype) as ConfigurationService, {
@@ -460,7 +463,8 @@ function resetOnDisk(
       rootFolderHost: options.rootFolderHost ?? '/opt/ci-hub',
       directories: { dataDir: '/data' },
       userSettings: { ...options.userSettings },
-      ...options.pairing,
+      // What boot lifts out of settings.json into the config itself (`ciHubApiKey`, `hubLocalKey`...).
+      ...options.fileSettings,
     },
   });
   const db = {
@@ -518,6 +522,7 @@ describe('FactoryResetService: settings the Hub holds in memory', () => {
     await cloudFallback.setProvider(GOOGLE);
 
     expect(onDisk()).toEqual({
+      hubLocalKey: configuration.get('hubLocalKey'),
       inferenceCloudProviders: [{ ...GOOGLE, baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai' }],
     });
   });
@@ -568,7 +573,7 @@ describe('FactoryResetService: settings the Hub holds in memory', () => {
    */
   it('forgets the Portal device key, the move key and the organization id the config holds', async () => {
     const pairing = { ciHubApiKey: 'portal-device-key', ciHubMoveKey: 'portal-move-key', ciHubOrganizationId: 'org-1' };
-    ({ service, configuration } = resetOnDisk({ pairing, userSettings: pairing }));
+    ({ service, configuration } = resetOnDisk({ fileSettings: pairing, userSettings: pairing }));
 
     await service.execute();
 
@@ -647,6 +652,55 @@ describe('FactoryResetService: what the inference module keeps in state/', () =>
 
     expect(registry.getPinnedCatalogIds()).toEqual(['gemma4-e4b']);
     expect(vol.existsSync(PINNED_MODELS_PATH)).toBe(true);
+  });
+});
+
+describe('FactoryResetService: the host-local key', () => {
+  const OLD_KEY = 'a'.repeat(64);
+
+  /** The principal the running Hub's `AuthMiddleware` makes of `Authorization: Bearer <token>`. */
+  const principalFor = async (configuration: ConfigurationService, token: string) => {
+    const middleware = new AuthMiddleware(
+      { resolveSessionUserId: () => null, getSessionExpiresAt: () => null } as never,
+      configuration,
+      { getFirstOperator: async () => null } as never,
+      new SessionUserCache(),
+    );
+    const req = { cookies: {}, headers: { authorization: `Bearer ${token}` }, query: {}, get: () => undefined, method: 'GET' } as unknown as Request;
+    await middleware.use(req, {} as never, () => undefined);
+    return req.hubPrincipal;
+  };
+
+  /**
+   * `cihub` and the desktop app read the key from settings.json. The reset left the file `{}` and the
+   * running Hub on the old key, so neither found one until the next boot minted it, while the old
+   * key, which anyone who copied the file before the reset still holds, went on working.
+   */
+  it('writes a new key to settings.json, which the running Hub accepts and the old one no longer is', async () => {
+    vol.writeFileSync(SETTINGS_PATH, JSON.stringify({ hubLocalKey: OLD_KEY, ciHubApiKey: 'portal-device-key' }));
+    const { service, configuration } = resetOnDisk({ fileSettings: { hubLocalKey: OLD_KEY, ciHubApiKey: 'portal-device-key' } });
+    await expect(principalFor(configuration, OLD_KEY)).resolves.toBe('host-local');
+
+    await service.execute();
+
+    const { hubLocalKey } = onDisk();
+    expect(onDisk()).toEqual({ hubLocalKey });
+    expect(hubLocalKey).toMatch(/^[0-9a-f]{64}$/);
+    expect(hubLocalKey).not.toBe(OLD_KEY);
+    await expect(principalFor(configuration, hubLocalKey)).resolves.toBe('host-local');
+    await expect(principalFor(configuration, OLD_KEY)).resolves.toBeUndefined();
+  });
+
+  it('keeps the old key, on disk and in the Hub, when settings.json cannot be written', async () => {
+    vol.writeFileSync(SETTINGS_PATH, JSON.stringify({ hubLocalKey: OLD_KEY }));
+    const { service, configuration } = resetOnDisk({ fileSettings: { hubLocalKey: OLD_KEY } });
+    vi.spyOn(fs.promises, 'rename').mockRejectedValueOnce(Object.assign(new Error('EROFS: read-only file system'), { code: 'EROFS' }));
+
+    await expect(service.execute()).rejects.toThrow();
+
+    expect(onDisk()).toEqual({ hubLocalKey: OLD_KEY });
+    expect(configuration.get('hubLocalKey')).toBe(OLD_KEY);
+    vi.restoreAllMocks();
   });
 });
 

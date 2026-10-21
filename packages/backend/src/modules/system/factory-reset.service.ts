@@ -30,7 +30,7 @@ import { CacheService } from '@/core/cache/cache.service';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { LoggerService } from '@/core/logger/logger.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
-import { ConfigurationService, inSettingsFileTurn } from '@/core/config/configuration.service';
+import { ConfigurationService, inSettingsFileTurn, newHubLocalKey } from '@/core/config/configuration.service';
 import { UninstallAppCommand } from '@/modules/app-lifecycle/commands/uninstall-app-command';
 import { clearRegistrationRecoveryArtifacts } from '@/modules/app-lifecycle/registration-recovery-state';
 import { RegistrationService } from '@/modules/registration/registration.service';
@@ -106,9 +106,10 @@ export class FactoryResetService {
   }
 
   /**
-   * settings.json is `{}` now, but what was in it is still in memory: the cloud provider keys in
-   * `CloudFallbackService`, and the user settings in `ConfigurationService`. Until a restart, apps
-   * were handed the old keys, and the next provider saved wrote them all back to the file.
+   * settings.json holds only the new host-local key now, but what was in it is still in memory: the
+   * cloud provider keys in `CloudFallbackService`, and the user settings in `ConfigurationService`.
+   * Until a restart, apps were handed the old keys, and the next provider saved wrote them all back
+   * to the file.
    *
    * Resolved through `ModuleRef`, as the Bearer verdicts are, because `SystemModule` does not import
    * `InferenceModule`.
@@ -338,11 +339,19 @@ export class FactoryResetService {
     await clearRegistrationRecoveryArtifacts();
   }
 
+  /**
+   * Empty settings.json but for a new host-local key, which the running Hub accepts from then on.
+   * `cihub` and the desktop app read the key from this file, so an empty file left them none until
+   * the next boot minted one, while the Hub went on accepting the old key, which anyone who copied
+   * the file before the reset still holds.
+   */
   public async resetSettings(): Promise<void> {
     const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
-    // After any save already under way, which would otherwise write the old settings back over `{}`.
+    const hubLocalKey = newHubLocalKey();
+    // After any save already under way, which would otherwise write the old settings back over these.
     await inSettingsFileTurn(async () => {
-      await writeSettingsJsonFile(settingsPath, '{}', this.logger);
+      await writeSettingsJsonFile(settingsPath, `${JSON.stringify({ hubLocalKey }, null, 2)}`, this.logger);
+      this.configuration.replaceHubLocalKey(hubLocalKey);
       // Not allowed to fail the reset: the cache and Bearer verdicts after this must still be cleared.
       await removeSettingsJsonCopies(settingsPath).catch((error: unknown) => {
         this.logger.warn(
