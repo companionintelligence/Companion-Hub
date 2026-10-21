@@ -15,6 +15,8 @@ import { FactoryResetService } from '../factory-reset.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { BearerOrgMembershipCache } from '@/modules/auth/bearer-org-membership.cache';
 import { AuthMiddleware } from '@/modules/auth/auth.middleware';
+import { PairingAppRestoreService } from '@/modules/app-lifecycle/pairing-app-restore.service';
+import { clearPairingAppCheck } from '@/modules/app-lifecycle/registration-recovery-state';
 import { APP_DATA_DIR, TUNNEL_DIR } from '@/common/constants';
 import { TranslatableError } from '@/common/error/translatable-error';
 import * as schema from '@/core/database/drizzle/schema';
@@ -37,6 +39,13 @@ const uninstallExecute = vi.fn().mockResolvedValue({ success: true, message: 'ok
 
 /** `ConfigurationService.get` on a Hub whose data folder is `/data`, mounted from an ordinary ROOT_FOLDER_HOST. */
 const configurationValue = (key: string) => (key === 'rootFolderHost' ? '/opt/ci-hub' : { dataDir: '/data' });
+
+// These state files are written with `node:fs/promises`, which the suite's memfs does not cover.
+vi.mock('@/modules/app-lifecycle/registration-recovery-state', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/modules/app-lifecycle/registration-recovery-state')>()),
+  clearPairingAppCheck: vi.fn(async () => undefined),
+  clearRegistrationRecoveryArtifacts: vi.fn(async () => undefined),
+}));
 
 vi.mock('@/modules/app-lifecycle/commands/uninstall-app-command', () => ({
   UninstallAppCommand: class {
@@ -705,6 +714,53 @@ describe('FactoryResetService: the host-local key', () => {
     expect(onDisk()).toEqual({ hubLocalKey: OLD_KEY });
     expect(configuration.get('hubLocalKey')).toBe(OLD_KEY);
     vi.restoreAllMocks();
+  });
+});
+
+describe('FactoryResetService: what the old Hub left for its operator and its last pairing', () => {
+  const PASSWORD_CHANGE_REQUEST = path.join('/data', 'state', 'password-change-request');
+
+  const resetWith = (providers: Map<unknown, unknown> = new Map()) => {
+    const moduleRef = mock<ModuleRef>();
+    moduleRef.get.mockImplementation(((token: unknown) => providers.get(token)) as never);
+    return resetOnDisk({ moduleRef }).service;
+  };
+
+  beforeEach(() => {
+    vi.mocked(clearPairingAppCheck).mockClear();
+  });
+
+  // Asked for on the box within the last 15 minutes. Left in place, it set the password of whoever
+  // became the reset Hub's first operator in that time and turned off their 2FA.
+  it('removes a pending password change request', async () => {
+    vol.writeFileSync(PASSWORD_CHANGE_REQUEST, String(Date.now() / 1000));
+
+    await resetWith().execute();
+
+    expect(vol.existsSync(PASSWORD_CHANGE_REQUEST)).toBe(false);
+  });
+
+  // It held app sync and named the old device's apps for the restore after the next pairing.
+  it("removes the last pairing's apps check and the backoff it built up", async () => {
+    const restore = { forget: vi.fn() };
+
+    await resetWith(new Map([[PairingAppRestoreService, restore]])).execute();
+
+    expect(clearPairingAppCheck).toHaveBeenCalled();
+    expect(restore.forget).toHaveBeenCalled();
+  });
+
+  it('leaves both alone when a data folder could not be emptied, as it does users and pairing', async () => {
+    vol.writeFileSync(PASSWORD_CHANGE_REQUEST, String(Date.now() / 1000));
+    const service = resetWith();
+    vi.spyOn(service, 'wipeDataMounts').mockRejectedValueOnce(
+      new TranslatableError('SETTINGS_FACTORY_RESET_FILES_LEFT', { count: '1', paths: 'backups/' }),
+    );
+
+    await expect(service.execute()).rejects.toBeInstanceOf(TranslatableError);
+
+    expect(vol.existsSync(PASSWORD_CHANGE_REQUEST)).toBe(true);
+    expect(clearPairingAppCheck).not.toHaveBeenCalled();
   });
 });
 

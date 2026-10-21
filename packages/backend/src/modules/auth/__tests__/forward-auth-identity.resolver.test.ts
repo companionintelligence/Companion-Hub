@@ -111,7 +111,7 @@ describe('ForwardAuthIdentityResolver', () => {
   });
 
   // A factory reset empties `user` and `user_directory`. `RESTART IDENTITY` hands id 1 to the next
-  // account, and the cached public id was then signed for that new person until a restart.
+  // account. The cached public id was then signed for that new person until a restart.
   it('reads the directory and each public id again after forget', async () => {
     let directoryId = DIRECTORY_ID;
     const resolver = make(fakeDb({ directory: () => directoryId }));

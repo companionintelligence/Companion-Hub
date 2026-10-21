@@ -156,6 +156,8 @@ export class ModelRegistryService implements OnModuleInit {
   private pinsRead: Promise<void> = Promise.resolve();
   /** Writes in the order they were asked for, each of the whole set as it stands when it runs. */
   private pinsWrite: Promise<void> = Promise.resolve();
+  /** Bumped by {@link forgetPins}. See {@link currentPinGeneration}. */
+  private pinGeneration = 0;
 
   /**
    * `@Optional()` so the many tests that build a registry from the logger alone keep working; with no
@@ -200,6 +202,7 @@ export class ModelRegistryService implements OnModuleInit {
    * after an unpin, so the next load that needs the room may unload them.
    */
   async forgetPins(): Promise<void> {
+    this.pinGeneration++;
     // A boot still reading the file would add the old pins back after they were cleared.
     await this.pinsRead;
     if (this.pins.size > 0) {
@@ -219,6 +222,14 @@ export class ModelRegistryService implements OnModuleInit {
         this.logger.warn(`[ModelRegistry] Could not remove the persisted pins: ${error instanceof Error ? error.message : String(error)}`);
       });
     await this.pinsWrite;
+  }
+
+  /**
+   * Read when a pin is asked for and compared before it lands. A pin whose model was still loading
+   * when a factory reset forgot the pins would otherwise pin it again on the reset Hub.
+   */
+  currentPinGeneration(): number {
+    return this.pinGeneration;
   }
 
   /** Resolves once every pin change made so far has been written (or failed to be). */

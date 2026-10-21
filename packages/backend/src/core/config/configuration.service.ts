@@ -119,7 +119,7 @@ export function inSettingsFileTurn<T>(task: () => Promise<T>): Promise<T> {
   return turn;
 }
 
-/** A new host-local key (`hubLocalKey`): what boot mints when settings.json has none, and a factory reset writes. */
+/** A new host-local key (`hubLocalKey`). Boot mints one when settings.json has none. A factory reset writes one. */
 export function newHubLocalKey(): string {
   return randomBytes(32).toString('hex');
 }
@@ -563,16 +563,16 @@ export class ConfigurationService {
   /**
    * Forget the user settings this process has from settings.json, for a factory reset that has just
    * emptied it (`replaceHubLocalKey` covers the one key it writes there). They go back to what boot
-   * makes of an empty file: no cloud provider keys and no inference, pool, or resource settings. The
-   * ones the environment supplies stay, and that includes the General settings: boot resolved them
-   * from settings.json into the environment (`generateSystemEnvFile`), so they keep their old values
-   * until a restart. So does the error-reporting switch, which is no secret and which the reporting
+   * makes of an empty file: no cloud provider keys and no inference, pool or resource settings. The
+   * ones the environment supplies stay. That includes the General settings: boot resolved them from
+   * settings.json into the environment (`generateSystemEnvFile`), so they keep their old values until
+   * a restart. So does the error-reporting switch, which is no secret and which the reporting
    * gate holds too (`setUserConsent`).
    *
    * The pairing goes too: the Portal device key, the move key and the organization id, both the
    * config's own and their copies in `userSettings`. Kept, they let the reset Hub go on asking Portal
-   * about its old device until a restart (the pairing page then offered **Move this device**), and
-   * the next pairing sent them as proof that it was that device.
+   * about its old device until a restart (the pairing page then offered **Move this device**). The
+   * next pairing sent them as proof that it was that device.
    *
    * Listeners hear about every key it reset, as after a save, so the mDNS socket closes when the old
    * settings had it open.

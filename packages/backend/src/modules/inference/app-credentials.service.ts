@@ -194,7 +194,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
     }
 
     // Resolved again when a factory reset forgot the handouts meanwhile: this one may hold what the
-    // old Hub had, its cloud keys among it, and caching it handed them out for another 30 s.
+    // old Hub had, its cloud keys among it. Caching it handed them out for another 30 s.
     let generation: number;
     let config: AppCredentialsConfig;
     do {

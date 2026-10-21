@@ -523,8 +523,12 @@ complete) and then forgets the caches over them: the stable ids forward auth sig
 (`ForwardAuthIdentityResolver.forget()`), the Hub Pool identity and any pairing PIN. After the
 settings, `ModelRegistryService.forgetPins()` and `AppCredentialsService.forgetHandouts()` remove
 `state/inference-pinned-models.json` and `state/inference-handouts.json` with their copies in
-memory. `state/inference-footprint-sightings.json` and `state/tailscale-serve-ownership.json` stay:
-one describes this hardware and the other names the Tailscale Serve listeners this Hub published.
+memory. A pin whose model is still loading when the reset runs is refused once the load ends
+(`ModelRegistryService.currentPinGeneration()`), so it does not pin the old Hub's model again.
+`clearOldHubRequests` removes `state/password-change-request` and `state/pairing-app-check.json`
+and drops the backoff of that apps check (`PairingAppRestoreService.forget()`).
+`state/inference-footprint-sightings.json` and `state/tailscale-serve-ownership.json` stay: one
+describes this hardware and the other names the Tailscale Serve listeners this Hub published.
 
 ## The four engines, or two endpoints
 

@@ -305,7 +305,7 @@ function world(opts: {
     apps,
   );
   vi.spyOn(router as unknown as { delay: (ms: number) => Promise<void> }, 'delay').mockResolvedValue(undefined);
-  return { router, registry, memoryManager, logger, engines, hardwareInspector, poolLoad };
+  return { router, registry, memoryManager, logger, engines, hardwareInspector, poolLoad, puller };
 }
 
 describe('the load window on the fleet', () => {
@@ -839,5 +839,41 @@ describe('the load window on the fleet', () => {
     await expect(router.loadTrackedModel('qwen3-coder-30b', { origin: 'operator' })).resolves.toEqual({ loaded: true });
 
     expect([...engines.ollama.resident.keys()]).toEqual(['qwen3-coder:30b']);
+  });
+});
+
+// A factory reset forgets every pin while a pin may still be loading its model. That pin landed once the
+// load finished, so the reset Hub pinned the old Hub's model again and wrote it back to the pins file.
+describe('a factory reset while a pin is still loading its model', () => {
+  it('leaves the model loaded but not pinned', async () => {
+    const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+    const { router, registry, puller } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const load = vi.mocked(puller.loadModel).getMockImplementation();
+    vi.mocked(puller.loadModel).mockImplementationOnce(async (...args) => {
+      await held;
+      return load?.(...args);
+    });
+
+    const pinning = router.pinTrackedModel('gemma4-e4b', { origin: 'operator' });
+    await vi.waitFor(() => expect(puller.loadModel).toHaveBeenCalled());
+    await registry.forgetPins();
+    release();
+
+    await expect(pinning).resolves.toEqual({ pinned: false, reason: expect.stringContaining('a factory reset ran while it loaded') });
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+    expect(registry.getTrackedModel('gemma4-e4b')).toMatchObject({ state: 'loaded', pinned: false });
+    expect([...ollama.resident.keys()]).toEqual(['gemma4:e4b']);
+  });
+
+  it('pins as before when no reset came in between', async () => {
+    const { router, registry } = world({ profile: BETA_RED, ollama: new FakeOllama(16_384, gemma4E4bHeld), ollamaSlots: 4 });
+    await registry.forgetPins();
+
+    await expect(router.pinTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toEqual({ pinned: true });
+    expect(registry.getPinnedCatalogIds()).toEqual(['gemma4-e4b']);
   });
 });

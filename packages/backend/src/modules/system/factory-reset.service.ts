@@ -32,7 +32,8 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { ConfigurationService, inSettingsFileTurn, newHubLocalKey } from '@/core/config/configuration.service';
 import { UninstallAppCommand } from '@/modules/app-lifecycle/commands/uninstall-app-command';
-import { clearRegistrationRecoveryArtifacts } from '@/modules/app-lifecycle/registration-recovery-state';
+import { PairingAppRestoreService } from '@/modules/app-lifecycle/pairing-app-restore.service';
+import { clearPairingAppCheck, clearRegistrationRecoveryArtifacts } from '@/modules/app-lifecycle/registration-recovery-state';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { removeTunnelRegistrationMarker } from '@/modules/registration/tunnel-markers';
 import { BearerOrgMembershipCache } from '@/modules/auth/bearer-org-membership.cache';
@@ -108,9 +109,9 @@ export class FactoryResetService {
 
   /**
    * settings.json holds only the new host-local key now, but what was in it is still in memory: the
-   * cloud provider keys in `CloudFallbackService`, and the user settings in `ConfigurationService`.
-   * Until a restart, apps were handed the old keys, and the next provider saved wrote them all back
-   * to the file.
+   * cloud provider keys in `CloudFallbackService` and the user settings in `ConfigurationService`.
+   * Until a restart, apps were handed the old keys. The next provider saved wrote them all back to
+   * the file.
    *
    * Resolved through `ModuleRef`, as the Bearer verdicts are, because `SystemModule` does not import
    * `InferenceModule`.
@@ -178,6 +179,7 @@ export class FactoryResetService {
     await this.wipeDataMounts();
     await this.wipeDatabase();
     await this.clearRegistrationArtifacts();
+    await this.clearOldHubRequests();
     // `resetSettings` takes the device key, so a pairing this stops keeps none that Portal issued it.
     await this.registrationService.resetRegistration({ reason: 'manual', removesDeviceKey: true });
     await this.resetSettings();
@@ -340,6 +342,23 @@ export class FactoryResetService {
     });
     await fs.promises.unlink(resolvedEnvPath).catch(() => undefined);
     await clearRegistrationRecoveryArtifacts();
+  }
+
+  /**
+   * What the old Hub left in `state/` for its own operator and its last pairing.
+   *
+   * - `password-change-request`: a password change asked for on the box. Within its 15 minutes it
+   *   would set the password of whoever becomes the reset Hub's first operator and turn off their 2FA.
+   * - `pairing-app-check.json`: the apps check of the last pairing. It holds app sync and may name the
+   *   old device's apps to restore. The next pairing writes its own.
+   */
+  public async clearOldHubRequests(): Promise<void> {
+    const passwordChangeRequest = path.join(DATA_DIR, 'state', 'password-change-request');
+    await fs.promises.rm(passwordChangeRequest, { force: true }).catch((error: unknown) => {
+      this.logger.warn(`Factory reset could not remove ${passwordChangeRequest}: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    await clearPairingAppCheck();
+    await this.forgetIn(PairingAppRestoreService, 'the backoff of the last pairing apps check', (restore) => restore.forget());
   }
 
   /**

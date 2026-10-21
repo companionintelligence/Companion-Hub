@@ -1105,6 +1105,8 @@ export class InferenceRouterService implements OnApplicationBootstrap {
    * then mark pinned a model that is no longer in memory.
    */
   async pinTrackedModel(catalogId: string, options: { origin: 'operator' | 'agent' }): Promise<{ pinned: true } | { pinned: false; reason: string }> {
+    // Read before the lock, so a pin waiting behind another load when a factory reset runs is refused too.
+    const pinGeneration = this.modelRegistry.currentPinGeneration();
     return this.withLoadLock(async () => {
       const curated = this.modelRegistry.getCuratedModel(catalogId);
       const served = this.modelRegistry.getTrackedModel(catalogId) ?? curated;
@@ -1137,6 +1139,9 @@ export class InferenceRouterService implements OnApplicationBootstrap {
         }
       }
 
+      if (pinGeneration !== this.modelRegistry.currentPinGeneration()) {
+        return { pinned: false, reason: `${catalogId} is loaded, but not pinned: a factory reset ran while it loaded` };
+      }
       this.modelRegistry.pinModel(catalogId);
       return { pinned: true };
     });

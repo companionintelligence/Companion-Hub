@@ -128,6 +128,15 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
     }
   }
 
+  /**
+   * Drop the backoff an earlier pairing's check built up, for a factory reset that removed that check.
+   * Left in place, it held the next pairing's check for up to five minutes.
+   */
+  forget(): void {
+    this.failures = 0;
+    this.retryAt = 0;
+  }
+
   /** One pass over the pending check. Concurrent callers share the pass under way. */
   runCheck(): Promise<PairingAppCheckOutcome> {
     if (!this.checkInFlight) {

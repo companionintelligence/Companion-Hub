@@ -307,6 +307,31 @@ describe('PairingAppRestoreService', () => {
     expect(state.restoreIntent).toBe(false);
   });
 
+  // A factory reset removes the check. The backoff stayed, so the next pairing's check waited up to five minutes.
+  it('runs the next pairing check at once after forget, whatever backoff the last one built up', async () => {
+    vi.useFakeTimers({ now: Date.now() });
+    try {
+      cloudflare.getDeviceApplications.mockRejectedValue(new Error('socket hang up'));
+      for (let pass = 0; pass < 5; pass++) {
+        await expect(service.runCheck()).resolves.toBe('held');
+        vi.advanceTimersByTime(PairingAppRestoreService.MAX_RETRY_DELAY_MS);
+      }
+      await expect(service.runCheck()).resolves.toBe('held');
+      // Inside the backoff now: the pass does not ask the Portal.
+      await expect(service.runCheck()).resolves.toBe('held');
+      const asked = cloudflare.getDeviceApplications.mock.calls.length;
+
+      service.forget();
+      state.check = { markedAt: new Date().toISOString() };
+      cloudflare.getDeviceApplications.mockResolvedValue([]);
+
+      await expect(service.runCheck()).resolves.toBe('released');
+      expect(cloudflare.getDeviceApplications).toHaveBeenCalledTimes(asked + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not hold app sync for a pairing that left no device key to ask with', async () => {
     config.getConfig = () => ({ ciHubApiKey: null });
 
