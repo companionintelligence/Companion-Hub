@@ -22,7 +22,8 @@ export const ForceStopDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => 
   const { setOptimisticStatus } = useAppStatus();
 
   const forceStopMutation = useMutation({
-    mutationFn: () => client.post({ url: `/api/app-lifecycle/${encodeURIComponent(info.urn)}/force-stop` }),
+    // throwOnError: the generated client resolves on a non-2xx, so a refused force-stop would never reach onError.
+    mutationFn: () => client.post({ url: `/api/app-lifecycle/${encodeURIComponent(info.urn)}/force-stop`, throwOnError: true }),
     onError: (error: TranslatableError) => {
       toast.error(t(error.message, error.intlParams));
       // A pre-flight rejection (e.g. force-stopping an app that was just removed)

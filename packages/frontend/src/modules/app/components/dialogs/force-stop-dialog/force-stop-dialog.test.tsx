@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { client } from '@/api-client/client.gen';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ForceStopDialog } from './force-stop-dialog';
 
@@ -23,8 +24,7 @@ vi.mock('@tanstack/react-query', () => ({
   useQueryClient: () => h.queryClient,
 }));
 
-// The mutationFn never runs (useMutation is stubbed) — this mock only keeps the
-// module import side-effect-free.
+// useMutation is stubbed, so the mutationFn runs only when a test calls it from the captured options.
 vi.mock('@/api-client/client.gen', () => ({
   client: { post: vi.fn() },
 }));
@@ -67,5 +67,15 @@ describe('ForceStopDialog', () => {
 
     expect(h.toastError).toHaveBeenCalledTimes(1);
     expect(h.invalidateAppQueries).toHaveBeenCalledWith(h.queryClient, 'plane:ci-marketplace');
+  });
+
+  // The generated client resolves with `{ error }` on a non-2xx unless the call passes throwOnError, and
+  // the mutation would then succeed, so the onError above (and its #909 re-sync) would never run.
+  it('posts with throwOnError so a refused force-stop reaches onError', async () => {
+    render(<ForceStopDialog info={app} isOpen onClose={vi.fn()} />);
+
+    await h.opts?.mutationFn?.();
+
+    expect(vi.mocked(client.post)).toHaveBeenCalledWith({ url: '/api/app-lifecycle/plane%3Aci-marketplace/force-stop', throwOnError: true });
   });
 });
