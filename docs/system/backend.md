@@ -512,6 +512,20 @@ the old keys until a restart, and the next provider saved wrote them all back to
 General settings keep their old values until the Hub restarts: boot resolved them into the process
 environment (`generateSystemEnvFile`), and nothing kept the environment as it was before that.
 
+The file is not quite empty: `resetSettings` writes a new `hubLocalKey` into it in the same settings
+turn and the running Hub switches to that key, so the old one is refused at once.
+`forgetPersistedUserSettings` also sets `ciHubApiKey`, `ciHubMoveKey` and `ciHubOrganizationId` in
+the running config to null, so the reset Hub stops calling Portal as its old device and its next
+pairing sends no device key or move key.
+
+`wipeDatabase` truncates every table in `schema.ts` (`FACTORY_RESET_TABLES`, which a test keeps
+complete) and then forgets the caches over them: the stable ids forward auth signs
+(`ForwardAuthIdentityResolver.forget()`), the Hub Pool identity and any pairing PIN. After the
+settings, `ModelRegistryService.forgetPins()` and `AppCredentialsService.forgetHandouts()` remove
+`state/inference-pinned-models.json` and `state/inference-handouts.json` with their copies in
+memory. `state/inference-footprint-sightings.json` and `state/tailscale-serve-ownership.json` stay:
+one describes this hardware and the other names the Tailscale Serve listeners this Hub published.
+
 ## The four engines, or two endpoints
 
 Setup offers Ollama, oMLX, vLLM, or Lemonade, and only the ones the detected machine can run. The other path is a decode endpoint and an encode endpoint. Either URL may be set alone. From inside Docker the probe uses `host.docker.internal`, and the card shows that URL.
