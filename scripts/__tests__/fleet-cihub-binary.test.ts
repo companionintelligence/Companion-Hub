@@ -1,8 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   assetFormatError,
   assetNameForArch,
@@ -267,6 +267,66 @@ describe('downloadReleaseAsset', () => {
     await expect(downloadReleaseAsset({ assetName: 'cihub-linux-x64', version: 'latest', fetchImpl })).rejects.toThrow(
       /60 API requests an hour without a token; set GH_TOKEN/,
     );
+  });
+
+  it('points at a token when the asset download itself is rate-limited', async () => {
+    // The asset comes from api.github.com too, so it counts against the same 60 an hour.
+    const cacheDir = mkdtempSync(join(tmpdir(), 'cihub-cache-'));
+    dirs.push(cacheDir);
+    const fetchImpl = vi.fn(async (url: string | URL) =>
+      String(url).endsWith('/releases/latest')
+        ? new Response(
+            JSON.stringify({ tag_name: 'v0.3.6', assets: [{ name: 'cihub-linux-x64', url: 'https://api.github.com/repos/x/y/releases/assets/1' }] }),
+            {
+              status: 200,
+            },
+          )
+        : new Response('{"message":"API rate limit exceeded"}', { status: 429 }),
+    ) as unknown as typeof fetch;
+    await expect(downloadReleaseAsset({ assetName: 'cihub-linux-x64', version: 'latest', cacheDir, fetchImpl })).rejects.toThrow(
+      /asset download failed: HTTP 429.*60 API requests an hour without a token/,
+    );
+  });
+
+  describe.skipIf(process.platform === 'win32')('default cache folder', () => {
+    let scratch: string;
+    const uid = process.getuid?.() as number;
+    const elf = Buffer.concat([Buffer.from('\x7fELF', 'latin1'), Buffer.alloc(64, 1)]);
+
+    // os.tmpdir() reads TMPDIR on every call, so the default cache lands in this scratch folder.
+    beforeEach(() => {
+      scratch = mkdtempSync(join(tmpdir(), 'cihub-default-cache-'));
+      dirs.push(scratch);
+      const previousTmpdir = process.env.TMPDIR;
+      process.env.TMPDIR = scratch;
+      return () => {
+        if (previousTmpdir === undefined) delete process.env.TMPDIR;
+        else process.env.TMPDIR = previousTmpdir;
+      };
+    });
+
+    it('is a 0700 folder of this user under the temp dir, with no partial file left in it', async () => {
+      const asset = await downloadReleaseAsset({ token: 'ghp_x', assetName: 'cihub-linux-x64', version: 'latest', fetchImpl: fakeFetch(elf) });
+
+      const cacheDir = join(scratch, `cihub-fleet-binaries-${uid}`);
+      expect(asset.path).toBe(join(cacheDir, 'v0.2.72-cihub-linux-x64'));
+      expect(statSync(cacheDir).mode & 0o777).toBe(0o700);
+      expect(readdirSync(cacheDir)).toEqual(['v0.2.72-cihub-linux-x64']);
+    });
+
+    it('refuses a cache folder other accounts can write to and fetches nothing into it', async () => {
+      // Another account that made the folder first could have left its own binary in it.
+      const cacheDir = join(scratch, `cihub-fleet-binaries-${uid}`);
+      mkdirSync(cacheDir);
+      chmodSync(cacheDir, 0o777);
+      writeFileSync(join(cacheDir, 'v0.2.72-cihub-linux-x64'), 'planted');
+      const fetchImpl = fakeFetch(elf);
+
+      await expect(downloadReleaseAsset({ token: 'ghp_x', assetName: 'cihub-linux-x64', version: 'latest', fetchImpl })).rejects.toThrow(
+        /refusing to use .* as the cihub download cache/,
+      );
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    });
   });
 });
 

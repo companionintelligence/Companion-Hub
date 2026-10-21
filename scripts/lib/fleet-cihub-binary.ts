@@ -9,7 +9,7 @@
  * install holds can carry the bytes down. That is what this module does; nothing here runs on a node.
  */
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -160,7 +160,7 @@ const githubHeaders = (token?: string) => ({
   'User-Agent': 'cihub-fleet',
 });
 
-function releaseLookupHint(status: number, token: string | undefined): string {
+function githubStatusHint(status: number, token: string | undefined): string {
   if (token) return status === 404 ? ' — does the token see the private repo?' : '';
   if (status === 403 || status === 429) {
     return '. GitHub allows 60 API requests an hour without a token; set GH_TOKEN or GITHUB_TOKEN to raise that';
@@ -177,7 +177,7 @@ export async function lookupRelease(input: { token?: string; version: string; fe
       : `https://api.github.com/repos/${CIHUB_RELEASES_REPO}/releases/tags/${input.version.startsWith('v') ? input.version : `v${input.version}`}`;
   const releaseRes = await fetchImpl(releaseUrl, { headers: { ...githubHeaders(input.token), Accept: 'application/vnd.github+json' } });
   if (!releaseRes.ok) {
-    throw new Error(`GitHub release lookup failed: HTTP ${releaseRes.status} for ${releaseUrl}${releaseLookupHint(releaseRes.status, input.token)}`);
+    throw new Error(`GitHub release lookup failed: HTTP ${releaseRes.status} for ${releaseUrl}${githubStatusHint(releaseRes.status, input.token)}`);
   }
   return (await releaseRes.json()) as ReleaseInfo;
 }
@@ -207,7 +207,26 @@ export async function pinCihubReleaseSource(source: CihubBinarySource, fetchImpl
 }
 
 /**
- * Fetch one release asset into a per-run cache and return its path. The token is optional: the
+ * The default download cache: one folder per user under the system temp dir, at 0700.
+ *
+ * A file already in the cache is used as it is, then streamed to every node and installed there as
+ * root. One shared `/tmp` folder let any account on the operator machine create it first and leave
+ * its own binary in it. A folder this user doesn't own, or that others can open, is refused.
+ */
+function defaultCacheDir(): string {
+  const uid = process.getuid?.();
+  if (uid === undefined) return path.join(tmpdir(), 'cihub-fleet-binaries');
+  const dir = path.join(tmpdir(), `cihub-fleet-binaries-${uid}`);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const stat = lstatSync(dir);
+  if (!stat.isDirectory() || stat.uid !== uid || (stat.mode & 0o077) !== 0) {
+    throw new Error(`refusing to use ${dir} as the cihub download cache: it must be a folder only this user can open (remove it and run again)`);
+  }
+  return dir;
+}
+
+/**
+ * Fetch one release asset into a cache and return its path. The token is optional: the
  * repository has been public since 2026-09-30. Its release API and assets answer without one.
  *
  * Two requests: the release (by tag, or `latest`), then the asset by its API URL with
@@ -228,18 +247,24 @@ export async function downloadReleaseAsset(input: {
   if (!asset)
     throw new Error(`release ${release.tag_name} has no asset named ${input.assetName} (has: ${release.assets.map((a) => a.name).join(', ')})`);
 
-  const cacheDir = input.cacheDir ?? path.join(tmpdir(), 'cihub-fleet-binaries');
+  const cacheDir = input.cacheDir ?? defaultCacheDir();
   mkdirSync(cacheDir, { recursive: true });
   const target = path.join(cacheDir, `${release.tag_name}-${input.assetName}`);
   if (!existsSync(target) || statSync(target).size === 0) {
     const assetRes = await fetchImpl(asset.url, { headers: { ...headers, Accept: 'application/octet-stream' }, redirect: 'follow' });
-    if (!assetRes.ok) throw new Error(`asset download failed: HTTP ${assetRes.status} for ${input.assetName}`);
+    if (!assetRes.ok) {
+      throw new Error(`asset download failed: HTTP ${assetRes.status} for ${input.assetName}${githubStatusHint(assetRes.status, input.token)}`);
+    }
     const bytes = Buffer.from(await assetRes.arrayBuffer());
     if (bytes.length === 0) throw new Error(`asset download for ${input.assetName} was empty`);
     // Refuse an HTML error page renamed to a binary — the failure this download had for its whole life.
     const formatError = assetFormatError(input.assetName, bytes);
     if (formatError) throw new Error(formatError);
-    writeFileSync(target, bytes, { mode: 0o755 });
+    // Written beside the target and renamed, so a run cut off mid-write leaves no truncated binary
+    // for the next run to reuse.
+    const partial = `${target}.partial-${process.pid}`;
+    writeFileSync(partial, bytes, { mode: 0o755 });
+    renameSync(partial, target);
   }
   return { path: target, tag: release.tag_name, sha256: sha256File(target) };
 }
