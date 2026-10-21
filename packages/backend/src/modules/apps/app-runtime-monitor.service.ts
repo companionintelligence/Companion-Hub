@@ -158,6 +158,8 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
   private readonly availabilityProbeInFlight = new Map<string, Promise<AvailabilityProbeCacheEntry>>();
   /** What each This Machine Only app's own port did last time, and at which address. See `probeLocalApp`. */
   private readonly lastLocalPortProbe = new Map<string, { address: string; result: AppPortProbeResult }>();
+  /** Which run of each app the samples and the cached probe verdict above belong to (see {@link startNewRunIfChanged}). */
+  private readonly runKeys = new Map<string, string>();
   /** Apps already warned about a readiness `service` their compose does not declare — once, not every tick. */
   private readonly readinessServiceWarned = new Set<string>();
   private readonly history: AppRuntimeHistorySample[] = [];
@@ -578,13 +580,19 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
       return inFlight;
     }
 
+    // A verdict for a run that ended while it was being taken describes processes that are gone.
+    const runKey = this.runKeys.get(appUrn);
     const probe = this.probeAvailability(app, appUrn)
       .then((nextEntry) => {
-        this.availabilityProbeCache.set(appUrn, nextEntry);
+        if (this.runKeys.get(appUrn) === runKey) {
+          this.availabilityProbeCache.set(appUrn, nextEntry);
+        }
         return nextEntry;
       })
       .finally(() => {
-        this.availabilityProbeInFlight.delete(appUrn);
+        if (this.availabilityProbeInFlight.get(appUrn) === probe) {
+          this.availabilityProbeInFlight.delete(appUrn);
+        }
       });
     this.availabilityProbeInFlight.set(appUrn, probe);
     return probe;
@@ -672,11 +680,33 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
     }
   }
 
+  /**
+   * Forgets the CPU samples, the cached probe verdict, a probe still running and the last port
+   * result an app gathered in an earlier run. Every
+   * start, stop, restart, update or reset writes the app's row, which moves `updatedAt`, and a
+   * recreated container has a new id; either one means the samples and the verdict describe
+   * processes that are gone. Kept, they let an app that was fixed and started again inside the
+   * probe cache's minute keep the "degraded" verdict and Force Stop, and a newly broken one keep the
+   * healthy verdict.
+   */
+  private startNewRunIfChanged(appUrn: string, app: App, containers: AppContainerRuntimeStats[]) {
+    const runKey = [app.status, app.updatedAt, ...containers.map((container) => container.containerId).sort()].join('|');
+    const previous = this.runKeys.get(appUrn);
+    this.runKeys.set(appUrn, runKey);
+    if (previous !== undefined && previous !== runKey) {
+      this.samples.delete(appUrn);
+      this.availabilityProbeCache.delete(appUrn);
+      this.availabilityProbeInFlight.delete(appUrn);
+      this.lastLocalPortProbe.delete(appUrn);
+    }
+  }
+
   private async collectAppRuntimeHealthForApp(app: App): Promise<AppRuntimeHealth> {
     const appUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
 
     const sampledAt = new Date().toISOString();
     const containers = await this.dockerReadFacade.getAppRuntimeStats(appUrn);
+    this.startNewRunIfChanged(appUrn, app, containers);
     const cpuPercent = Number(containers.reduce((sum, container) => sum + container.cpuPercent, 0).toFixed(2));
     const memoryUsageBytes = containers.reduce((sum, container) => sum + container.memoryUsageBytes, 0);
     const memoryLimitBytes = containers.reduce((sum, container) => sum + container.memoryLimitBytes, 0);
