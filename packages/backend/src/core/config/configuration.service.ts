@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { type FileOnlySettings, type PersistedSettings, type UserSettingsBody, parsePersistedSettings, settingsFileSchema } from '@/app.dto';
@@ -116,6 +117,11 @@ export function inSettingsFileTurn<T>(task: () => Promise<T>): Promise<T> {
   const turn = settingsFileWrites.then(() => task());
   settingsFileWrites = turn.catch(() => undefined);
   return turn;
+}
+
+/** A new host-local key (`hubLocalKey`): what boot mints when settings.json has none, and a factory reset writes. */
+export function newHubLocalKey(): string {
+  return randomBytes(32).toString('hex');
 }
 
 /** Called after a successful settings write with the settings.json keys it wrote. See `onUserSettingsChanged`. */
@@ -556,11 +562,12 @@ export class ConfigurationService {
 
   /**
    * Forget the user settings this process has from settings.json, for a factory reset that has just
-   * written `{}` there. They go back to what boot makes of an empty file: no cloud provider keys and
-   * no inference, pool, or resource settings. The ones the environment supplies stay, and that includes
-   * the General settings: boot resolved them from settings.json into the environment
-   * (`generateSystemEnvFile`), so they keep their old values until a restart. So does the
-   * error-reporting switch, which is no secret and which the reporting gate holds too (`setUserConsent`).
+   * emptied it (`replaceHubLocalKey` covers the one key it writes there). They go back to what boot
+   * makes of an empty file: no cloud provider keys and no inference, pool, or resource settings. The
+   * ones the environment supplies stay, and that includes the General settings: boot resolved them
+   * from settings.json into the environment (`generateSystemEnvFile`), so they keep their old values
+   * until a restart. So does the error-reporting switch, which is no secret and which the reporting
+   * gate holds too (`setUserConsent`).
    *
    * The pairing goes too: the Portal device key, the move key and the organization id, both the
    * config's own and their copies in `userSettings`. Kept, they let the reset Hub go on asking Portal
@@ -579,6 +586,14 @@ export class ConfigurationService {
     this.config.ciHubMoveKey = null;
     this.config.ciHubOrganizationId = null;
     this.notifyUserSettingsListeners([...Object.keys(reset), ...PAIRING_KEYS_IN_USER_SETTINGS]);
+  }
+
+  /**
+   * Accept `key` as the host-local key from now on, for a factory reset that has just written it to
+   * the new settings.json. Memory only: the caller writes the file, in the same settings turn.
+   */
+  public replaceHubLocalKey(key: string): void {
+    this.config.hubLocalKey = key;
   }
 
   private notifyUserSettingsListeners(changedKeys: string[]): void {

@@ -88,6 +88,9 @@ function configOver(disk: Persisted) {
       delete disk.settings.ciHubMoveKey;
       delete disk.settings.ciHubOrganizationId;
     },
+    replaceHubLocalKey: (key: string) => {
+      disk.settings.hubLocalKey = key;
+    },
   };
 }
 
