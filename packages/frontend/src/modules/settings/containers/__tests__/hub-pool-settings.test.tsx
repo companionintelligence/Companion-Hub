@@ -1,8 +1,10 @@
-import { pairPeer, removePeer } from '@/api-client/sdk.gen';
+import { approvePeer, pairPeer, rejectPeer, removePeer } from '@/api-client/sdk.gen';
+import { TranslatableError } from '@/types/error.types';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { toast } from 'sonner';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HubPoolSection } from '../hub-pool-settings';
 
 type Json = Record<string, unknown>;
@@ -19,12 +21,12 @@ const fixtures = vi.hoisted(() => ({
   discoverableGate: null as null | Promise<void>,
   routingLog: { entries: [] as Json[], summary: { recorded: 0, capacity: 200, served: 0, failed: 0, failovers: 0, lastAt: null } } as Json,
   updateSettings: vi.fn(async (_options: { body: Record<string, unknown> }) => ({})),
-  peerToggle: vi.fn(async (_options: { url: string }) => ({})),
-  patchSettings: vi.fn(async (_options: { url: string; body: Record<string, unknown> }) => ({})),
-  pinMint: vi.fn(async (_options: { url: string }) => ({ data: undefined }) as { data?: Record<string, unknown> }),
-  pinCancel: vi.fn(async (_options: { url: string }) => ({})),
-  upsertPin: vi.fn(async (_options: { body: Record<string, unknown> }) => ({})),
-  deletePin: vi.fn(async (_options: { query: Record<string, unknown> }) => ({})),
+  peerToggle: vi.fn(async (_options: { url: string; throwOnError?: boolean }) => ({})),
+  patchSettings: vi.fn(async (_options: { url: string; body: Record<string, unknown>; throwOnError?: boolean }) => ({})),
+  pinMint: vi.fn(async (_options: { url: string; throwOnError?: boolean }) => ({ data: undefined }) as { data?: Record<string, unknown> }),
+  pinCancel: vi.fn(async (_options: { url: string; throwOnError?: boolean }) => ({})),
+  upsertPin: vi.fn(async (_options: { body: Record<string, unknown>; throwOnError?: boolean }) => ({})),
+  deletePin: vi.fn(async (_options: { query: Record<string, unknown>; throwOnError?: boolean }) => ({})),
 }));
 
 vi.mock('react-i18next', () => {
@@ -64,8 +66,8 @@ vi.mock('@/api-client/sdk.gen', () => ({
   approvePeer: vi.fn(),
   rejectPeer: vi.fn(),
   removePeer: vi.fn(),
-  upsertPoolPin: (options: { body: Record<string, unknown> }) => fixtures.upsertPin(options),
-  deletePoolPin: (options: { query: Record<string, unknown> }) => fixtures.deletePin(options),
+  upsertPoolPin: (options: { body: Record<string, unknown>; throwOnError?: boolean }) => fixtures.upsertPin(options),
+  deletePoolPin: (options: { query: Record<string, unknown>; throwOnError?: boolean }) => fixtures.deletePin(options),
 }));
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   poolStatusQueryKey: () => ['pool-status'],
@@ -241,7 +243,7 @@ describe('HubPoolSection', () => {
 
       await userEvent.click(await screen.findByTestId('hub-pool-peer-toggle'));
 
-      expect(fixtures.peerToggle).toHaveBeenCalledWith({ url: '/api/inference/pool/peers/peer-1/disable' });
+      expect(fixtures.peerToggle).toHaveBeenCalledWith({ url: '/api/inference/pool/peers/peer-1/disable', throwOnError: true });
     });
 
     it('never renders a disabled peer as connected', async () => {
@@ -1068,7 +1070,7 @@ describe('HubPoolSection', () => {
 
       await userEvent.click(await screen.findByTestId('hub-pool-pin-add'));
 
-      expect(fixtures.upsertPin).toHaveBeenCalledWith({ body: { scope: 'default', targetKind: 'local' } });
+      expect(fixtures.upsertPin).toHaveBeenCalledWith({ body: { scope: 'default', targetKind: 'local' }, throwOnError: true });
     });
 
     it('removes a pin by scope and model, never by an id it does not have', async () => {
@@ -1079,7 +1081,7 @@ describe('HubPoolSection', () => {
       renderSection();
       await userEvent.click(await screen.findByTestId('hub-pool-pin-remove'));
 
-      expect(fixtures.deletePin).toHaveBeenCalledWith({ query: { scope: 'model', model: 'hf.co/org/repo:Q4_K_M' } });
+      expect(fixtures.deletePin).toHaveBeenCalledWith({ query: { scope: 'model', model: 'hf.co/org/repo:Q4_K_M' }, throwOnError: true });
     });
 
     it('warns in the unpair dialog when a pin points at the peer being unpaired', async () => {
@@ -1456,6 +1458,226 @@ describe('HubPoolSection', () => {
 
       expect(optionsOf('pool-discoverable')?.refetchInterval).toBeUndefined();
       expect(optionsOf('pool-status')?.refetchInterval).toBe(15_000);
+    });
+  });
+
+  /**
+   * The generated client RESOLVES on a non-2xx, with `{ error }`, and rejects only when the call passed
+   * `throwOnError`. A mutation that leaves the flag off runs its `onSuccess` on a failure. These fakes
+   * keep that contract, so a missing flag shows up here as the success toast it causes on a real Hub.
+   */
+  describe('when the Hub answers an action with an error', () => {
+    const failsLikeTheGeneratedClient =
+      (error: Error = new TranslatableError('INTERNAL_SERVER_ERROR')) =>
+      async (options?: { throwOnError?: boolean }) => {
+        if (options?.throwOnError) throw error;
+        return { data: undefined, error };
+      };
+    const fail = (mock: { mockImplementationOnce: (impl: never) => unknown }, error?: Error) =>
+      mock.mockImplementationOnce(failsLikeTheGeneratedClient(error) as never);
+
+    const withPeers = (...peers: Json[]) => {
+      fixtures.status = baseStatus({ peers, peerCounts: { total: peers.length, connected: 0, pending: 0, unreachable: 0, disabled: 0 } });
+    };
+    const pairable = () => {
+      fixtures.discoverable = [{ tailscaleDeviceId: 'ts-1', nodeFqdn: 'hub-b.example-tailnet.ts.net', hostname: 'hub-b' }];
+    };
+    const pairWithPin = async (pin: string) => {
+      await userEvent.type(await screen.findByTestId('hub-pool-pin-input'), pin);
+      await userEvent.click(screen.getByRole('button', { name: 'HUB_POOL_PAIR_BUTTON' }));
+    };
+
+    beforeEach(() => {
+      vi.mocked(toast.success).mockClear();
+      vi.mocked(toast.error).mockClear();
+    });
+
+    afterEach(() => {
+      for (const mock of [pairPeer, approvePeer, rejectPeer, removePeer]) vi.mocked(mock).mockReset();
+      for (const mock of [
+        fixtures.peerToggle,
+        fixtures.patchSettings,
+        fixtures.pinMint,
+        fixtures.pinCancel,
+        fixtures.upsertPin,
+        fixtures.deletePin,
+      ]) {
+        mock.mockReset();
+      }
+    });
+
+    it.each([
+      {
+        action: 'Pair',
+        errorKey: 'HUB_POOL_PAIR_ERROR',
+        arrange: () => {
+          pairable();
+          fail(vi.mocked(pairPeer));
+        },
+        run: async () => userEvent.click(await screen.findByRole('button', { name: 'HUB_POOL_PAIR_BUTTON' })),
+      },
+      {
+        action: 'Approve',
+        errorKey: 'HUB_POOL_APPROVE_ERROR',
+        arrange: () => {
+          withPeers(pendingInboundPeer());
+          fail(vi.mocked(approvePeer));
+        },
+        run: async () => userEvent.click(await screen.findByRole('button', { name: 'HUB_POOL_APPROVE_BUTTON' })),
+      },
+      {
+        action: 'Reject',
+        errorKey: 'HUB_POOL_REJECT_ERROR',
+        arrange: () => {
+          withPeers(pendingInboundPeer());
+          fail(vi.mocked(rejectPeer));
+        },
+        run: async () => userEvent.click(await screen.findByRole('button', { name: 'HUB_POOL_REJECT_BUTTON' })),
+      },
+      {
+        action: 'Cancel request',
+        errorKey: 'HUB_POOL_CANCEL_REQUEST_ERROR',
+        arrange: () => {
+          withPeers(connectedPeer({ id: 'outbound-1', status: 'pending', lastSeenAt: null, lastCapabilities: null, inFlightRequests: 0 }));
+          fail(vi.mocked(removePeer));
+        },
+        run: async () => userEvent.click(await screen.findByTestId('hub-pool-cancel-request-btn')),
+      },
+      {
+        action: 'Unpair',
+        errorKey: 'HUB_POOL_UNPAIR_ERROR',
+        arrange: () => {
+          withPeers(connectedPeer());
+          fail(vi.mocked(removePeer));
+        },
+        run: async () => {
+          await userEvent.click(await screen.findByTestId('hub-pool-unpair-btn'));
+          await userEvent.click(await screen.findByTestId('hub-pool-unpair-confirm-btn'));
+        },
+      },
+      {
+        action: 'the outbound switch',
+        errorKey: 'HUB_POOL_SETTINGS_ERROR',
+        arrange: () => fail(fixtures.patchSettings),
+        run: async () => userEvent.click(await screen.findByTestId('hub-pool-outbound-toggle')),
+      },
+      {
+        action: 'the inbound switch',
+        errorKey: 'HUB_POOL_SETTINGS_ERROR',
+        arrange: () => fail(fixtures.patchSettings),
+        run: async () => userEvent.click(await screen.findByTestId('hub-pool-inbound-toggle')),
+      },
+      {
+        action: 'the per-Hub switch',
+        errorKey: 'HUB_POOL_PEER_TOGGLE_ERROR',
+        arrange: () => {
+          withPeers(connectedPeer());
+          fail(fixtures.peerToggle);
+        },
+        run: async () => userEvent.click(await screen.findByTestId('hub-pool-peer-toggle')),
+      },
+      {
+        action: 'Generate PIN',
+        errorKey: 'HUB_POOL_PIN_MINT_ERROR',
+        arrange: () => fail(fixtures.pinMint),
+        run: async () => userEvent.click(await screen.findByTestId('hub-pool-mint-pin-btn')),
+      },
+      {
+        action: 'Pin',
+        errorKey: 'HUB_POOL_PINS_ERROR',
+        arrange: () => fail(fixtures.upsertPin),
+        run: async () => userEvent.click(await screen.findByTestId('hub-pool-pin-add')),
+      },
+      {
+        action: 'Remove pin',
+        errorKey: 'HUB_POOL_PINS_ERROR',
+        arrange: () => {
+          fixtures.status = baseStatus({
+            pins: [{ scope: 'model', model: 'llama3.2:3b', targetKind: 'local', mode: 'prefer', nodeFqdn: null, targetAvailable: true }],
+          });
+          fail(fixtures.deletePin);
+        },
+        run: async () => userEvent.click(await screen.findByTestId('hub-pool-pin-remove')),
+      },
+    ])('$action shows its failure toast and never the success one', async ({ arrange, run, errorKey }) => {
+      arrange();
+      renderSection();
+
+      await run();
+
+      await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(toast.error).mock.calls[0]?.[0]).toBe(errorKey);
+      expect(vi.mocked(toast.success)).not.toHaveBeenCalled();
+    });
+
+    it('keeps the unpair dialog open when the unpair failed, since the peer is still paired', async () => {
+      withPeers(connectedPeer());
+      fail(vi.mocked(removePeer));
+      renderSection();
+
+      await userEvent.click(await screen.findByTestId('hub-pool-unpair-btn'));
+      await userEvent.click(await screen.findByTestId('hub-pool-unpair-confirm-btn'));
+
+      await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('HUB_POOL_UNPAIR_ERROR'));
+      expect(screen.getByTestId('hub-pool-unpair-confirm-btn')).toBeInTheDocument();
+    });
+
+    it('keeps the PIN on screen when Cancel PIN failed, since it is still live', async () => {
+      fixtures.pinMint.mockResolvedValueOnce({ data: { pin: '481502', expiresAt: '2099-01-01T00:10:00.000Z' } });
+      fail(fixtures.pinCancel);
+      renderSection();
+      await userEvent.click(await screen.findByTestId('hub-pool-mint-pin-btn'));
+      await screen.findByTestId('hub-pool-minted-pin');
+
+      await userEvent.click(screen.getByRole('button', { name: 'HUB_POOL_PIN_CANCEL_BUTTON' }));
+
+      await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('HUB_POOL_PIN_CANCEL_ERROR'));
+      expect(screen.getByTestId('hub-pool-minted-pin')).toHaveTextContent('481502');
+    });
+
+    it('says why a pairing failed when the Hub sent a reason, under the card’s own message', async () => {
+      pairable();
+      fail(vi.mocked(pairPeer), new TranslatableError('HUB_POOL_PAIR_ERROR_PIN_REFUSED', {}));
+      renderSection();
+
+      await pairWithPin('000000');
+
+      await waitFor(() =>
+        expect(vi.mocked(toast.error)).toHaveBeenCalledWith('HUB_POOL_PAIR_ERROR', { description: 'HUB_POOL_PAIR_ERROR_PIN_REFUSED' }),
+      );
+      expect(vi.mocked(toast.success)).not.toHaveBeenCalled();
+      // A refused PIN leaves nothing pending, so the field keeps what was typed rather than looking sent.
+      expect(screen.getByTestId('hub-pool-pin-input')).toHaveValue('000000');
+    });
+
+    it('passes the reason’s parameters along, so a declined request can name the other Hub’s answer', async () => {
+      pairable();
+      const declined = new TranslatableError('HUB_POOL_PAIR_ERROR_PEER_DECLINED', { status: '503', detail: 'Pooling is turned off' });
+      fail(vi.mocked(pairPeer), declined);
+      renderSection();
+
+      await userEvent.click(await screen.findByRole('button', { name: 'HUB_POOL_PAIR_BUTTON' }));
+
+      await waitFor(() =>
+        expect(vi.mocked(toast.error)).toHaveBeenCalledWith('HUB_POOL_PAIR_ERROR', { description: 'HUB_POOL_PAIR_ERROR_PEER_DECLINED' }),
+      );
+      expect(i18nCalls).toContainEqual({ key: 'HUB_POOL_PAIR_ERROR_PEER_DECLINED', params: { status: '503', detail: 'Pooling is turned off' } });
+    });
+
+    it.each([
+      ['a bare 500', new TranslatableError('INTERNAL_SERVER_ERROR')],
+      ['the generic fallback', new TranslatableError('COMMON_AN_ERROR_OCCURRED')],
+      ['raw backend English', new TranslatableError('Already paired or pairing with hub-b.example-tailnet.ts.net')],
+      ['a network failure', new TypeError('Failed to fetch')],
+    ])('shows only the card’s own message for %s', async (_label, error) => {
+      pairable();
+      fail(vi.mocked(pairPeer), error);
+      renderSection();
+
+      await userEvent.click(await screen.findByRole('button', { name: 'HUB_POOL_PAIR_BUTTON' }));
+
+      await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(toast.error).mock.calls[0]).toEqual(['HUB_POOL_PAIR_ERROR']);
     });
   });
 });

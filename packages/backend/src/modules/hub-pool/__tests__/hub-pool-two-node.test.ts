@@ -429,6 +429,18 @@ function toResponse(handler: () => Promise<unknown>, responseHeaders: Headers = 
  * Routes `https://<fqdn>/api/inference/pool/...` to that node's real controller, through its real
  * guard. Anything else — an unreachable node, an unknown route — rejects the way `fetch` would.
  */
+/** A refused pairing as the operator's page receives it: the status, and the key with its parameters. */
+async function refusal(attempt: Promise<unknown>): Promise<{ status: number; body: unknown }> {
+  const error = await attempt.then(
+    () => null,
+    (thrown: unknown) => thrown,
+  );
+  if (!(error instanceof HttpException)) {
+    throw new Error(`expected the pairing to be refused with an HttpException, got ${String(error)}`);
+  }
+  return { status: error.getStatus(), body: error.getResponse() };
+}
+
 function installFetchRouter(nodes: Node[], options: { offline?: Set<string>; addresses?: Map<string, Node> } = {}): void {
   global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = new URL(String(input));
@@ -559,7 +571,10 @@ describe('Hub Pool across two nodes', () => {
     it('rolls core back to nothing when beta refuses the request outright', async () => {
       beta.setPoolEnabled(false);
 
-      await expect(core.service.initiatePairing(BETA_FQDN)).rejects.toThrow(/503/);
+      expect(await refusal(core.service.initiatePairing(BETA_FQDN))).toMatchObject({
+        status: 502,
+        body: { message: 'HUB_POOL_PAIR_ERROR_PEER_DECLINED_REASON', intlParams: { status: '503' } },
+      });
 
       // A pending row left behind would block the retry with a 409 once beta is switched back on.
       expect(core.repo.rows.size).toBe(0);
@@ -645,7 +660,10 @@ describe('Hub Pool across two nodes', () => {
     it('leaves NOTHING on either side when the PIN is wrong', async () => {
       beta.service.mintPairingPin();
 
-      await expect(core.service.initiatePairing(BETA_FQDN, 'Beta Hub', '000000')).rejects.toThrow(/401/);
+      expect(await refusal(core.service.initiatePairing(BETA_FQDN, 'Beta Hub', '000000'))).toEqual({
+        status: 400,
+        body: { message: 'HUB_POOL_PAIR_ERROR_PIN_REFUSED' },
+      });
 
       // The whole point of the PIN: a bad request creates no pending slot and plants no outbound
       // token, so it can neither squat the approval list nor 401 beta's real calls to core forever.
@@ -659,7 +677,10 @@ describe('Hub Pool across two nodes', () => {
       await beta.service.approvePairing(beta.repo.only().id);
       await core.service.removePeer(core.repo.only().id);
 
-      await expect(core.service.initiatePairing(BETA_FQDN, 'Beta Hub', pin)).rejects.toThrow(/401/);
+      expect(await refusal(core.service.initiatePairing(BETA_FQDN, 'Beta Hub', pin))).toEqual({
+        status: 400,
+        body: { message: 'HUB_POOL_PAIR_ERROR_PIN_REFUSED' },
+      });
     });
 
     it('upgrades an existing bearer pairing to signatures off the health tick, and both sides converge', async () => {
@@ -821,7 +842,10 @@ describe('Hub Pool across two nodes', () => {
       addresses.set(BETA_ADDRESS, beta);
       beta.service.mintPairingPin();
 
-      await expect(core.controller.pairPeer({ address: BETA_ADDRESS, pin: '000000' } as never)).rejects.toThrow(/PIN/);
+      expect(await refusal(core.controller.pairPeer({ address: BETA_ADDRESS, pin: '000000' } as never))).toEqual({
+        status: 400,
+        body: { message: 'HUB_POOL_PAIR_ERROR_PIN_REFUSED' },
+      });
 
       expect(core.repo.rows.size).toBe(0);
       expect(beta.repo.rows.size).toBe(0);
@@ -851,7 +875,10 @@ describe('Hub Pool across two nodes', () => {
       addresses.set(BETA_ADDRESS, core);
       const { pin } = core.service.mintPairingPin();
 
-      await expect(core.controller.pairPeer({ address: BETA_ADDRESS, pin } as never)).rejects.toThrow(/itself/);
+      expect(await refusal(core.controller.pairPeer({ address: BETA_ADDRESS, pin } as never))).toMatchObject({
+        status: 502,
+        body: { message: 'HUB_POOL_PAIR_ERROR_PEER_DECLINED_REASON', intlParams: { status: '400', detail: expect.stringMatching(/itself/) } },
+      });
       expect(core.repo.rows.size).toBe(0);
     });
 
