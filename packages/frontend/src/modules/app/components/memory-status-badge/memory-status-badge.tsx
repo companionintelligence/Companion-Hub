@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils';
-import { CheckCircle2, Download, Loader2, PowerOff, Unplug } from 'lucide-react';
+import { CheckCircle2, Download, Loader2, PowerOff, Unplug, Users } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useMemoryConnection } from '../../helpers/use-memory-connection';
 
@@ -17,7 +17,7 @@ import { useMemoryConnection } from '../../helpers/use-memory-connection';
  */
 export function MemoryStatusBadge({ appUrn }: { appUrn: string }) {
   const { t } = useTranslation();
-  const { applicable, connected, memoryInstalled, providerStatus } = useMemoryConnection(appUrn);
+  const { applicable, connected, connectedByOther, memoryInstalled, providerStatus } = useMemoryConnection(appUrn);
 
   if (!applicable) {
     return null;
@@ -36,6 +36,17 @@ export function MemoryStatusBadge({ appUrn }: { appUrn: string }) {
       <span className={cn(pill, 'border-success/30 bg-success/10 text-success')}>
         <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
         {t('MEMORY_CONNECT_BADGE_CONNECTED')}
+      </span>
+    );
+  }
+
+  // Another person on this Hub connected the app, so it has memory, just not this person's. "Not
+  // connected" here would hide that a Connect replaces their connection.
+  if (connectedByOther && memoryInstalled) {
+    return (
+      <span className={cn(pill, 'border-success/30 bg-success/10 text-success')} title={t('MEMORY_CONNECT_CONNECTED_BY_OTHER_DESC')}>
+        <Users className="mr-1 h-3.5 w-3.5" />
+        {t('MEMORY_CONNECT_BADGE_CONNECTED_BY_OTHER')}
       </span>
     );
   }

@@ -24,6 +24,7 @@ const hoisted = vi.hoisted(() => ({
   memory: {
     applicable: false,
     connected: false,
+    connectedByOther: false,
     memoryInstalled: false,
     memoryReady: false,
     connectable: false,
@@ -302,6 +303,7 @@ describe('AppActions', () => {
     Object.assign(hoisted.memory, {
       applicable: false,
       connected: false,
+      connectedByOther: false,
       memoryInstalled: false,
       memoryReady: false,
       connectable: false,
@@ -987,6 +989,17 @@ describe('AppActions', () => {
       renderRunning();
 
       expect(screen.getByTestId('action-memory_connect_action_connect_memory')).toBeEnabled();
+    });
+
+    it('warns that Connect replaces the connection another person made and offers no Disconnect of it', () => {
+      Object.assign(hoisted.memory, { applicable: true, memoryInstalled: true, memoryReady: true, connectable: true, connectedByOther: true });
+
+      renderRunning();
+
+      const button = screen.getByTestId('action-memory_connect_action_connect_memory');
+      expect(button).toBeEnabled();
+      expect(button.closest('[data-tooltip-id="app-actions-tooltip"]')).toHaveAttribute('data-tooltip-content', 'MEMORY_CONNECT_REPLACE_OTHER_DESC');
+      expect(screen.queryByTestId('action-memory_connect_action_disconnect_memory')).not.toBeInTheDocument();
     });
 
     it('keeps Connect visible but disabled — with the REASON — when this browser cannot start one', () => {

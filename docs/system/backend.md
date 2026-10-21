@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-10-01 (failed outbound requests name their cause; 2 s per-address connect time)
+> **Last updated:** 2026-10-21 (Memory connect: page views are read-only, a finished connect takes over)
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -803,7 +803,7 @@ with the app's `detail` (`app-readiness.tsx`).
 
 Human dashboard login (password and Portal SSO) goes through `AuthService.admitHubPerson`. Each Portal `(issuer, subject)` that is a member of the paired org gets their own Hub `user` row (`operator: true`). Device-key Bearer and CLI JWT still map to the bootstrap operator.
 
-`memory_connection` is unique on `(app_urn, hub_user_id)`. Env generation injects the latest connected key; opening an app as a different Hub person revokes the previous Memory key and re-prompts connect. Hermes and OpenClaw declare `hub_integration.memory` so Hub can inject `CI_SERVER_URL` / `CI_SERVER_TOKEN` for the current person.
+`memory_connection` is unique on `(app_urn, hub_user_id)`. Env generation injects the newest connected key, so an app runs with the connection of the person who connected it last. Looking at the app, its Hub page or its connect gate, or choosing **Not now**, never changes that. Only a finished connect does. It revokes the previous person's key on CI Memory before the exchange mints the new one, because CI Memory revokes by app and keeps one key per app. Disconnect is refused to anyone but the person whose connection the app runs with (Companion-Hub#2080). The status route reports `connectedByOther`. The app page shows **Memory connected by someone else**. Hermes and OpenClaw declare `hub_integration.memory` so Hub can inject `CI_SERVER_URL` / `CI_SERVER_TOKEN` for the current person.
 
 ## Per-app grants
 

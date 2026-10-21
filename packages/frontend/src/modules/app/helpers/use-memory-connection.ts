@@ -61,6 +61,8 @@ export interface MemoryConnectionStatus {
   reason: ConnectBlockedReason | null;
   /** ISO instant the key expires (when connected); the Hub auto-rotates before this. */
   keyExpiresAt: string | null;
+  /** The app runs with another Hub person's connection; `state` is this person's own. */
+  connectedByOther: boolean;
 }
 
 /** Query-key prefix, shared with the SSE cache so ci-memory events can invalidate every consumer's status. */
@@ -188,7 +190,11 @@ export function useMemoryConnection(appUrn: string) {
       toast.success(t('MEMORY_CONNECT_DISCONNECTED_TOAST'));
       await queryClient.invalidateQueries({ queryKey: memoryStatusQueryKey(appUrn) });
     },
-    onError: () => toast.error(t('MEMORY_CONNECT_DISCONNECT_ERROR')),
+    onError: async () => {
+      toast.error(t('MEMORY_CONNECT_DISCONNECT_ERROR'));
+      // A refusal can mean someone else's connection replaced this person's since the page loaded.
+      await queryClient.invalidateQueries({ queryKey: memoryStatusQueryKey(appUrn) });
+    },
   });
 
   const status = query.data ?? null;
@@ -264,6 +270,8 @@ export function useMemoryConnection(appUrn: string) {
     applicable: !query.isLoading && !!status?.applicable,
     isLoading: query.isLoading,
     connected: status?.state === 'connected',
+    /** Another Hub person's connection is the one the app runs with (see the backend's MemoryConnectUiStatus). */
+    connectedByOther: !!status?.connectedByOther,
     memoryInstalled: !!status?.memoryInstalled,
     /** ci-memory is running — a connect can succeed now. */
     memoryReady: !!status?.memoryReady,

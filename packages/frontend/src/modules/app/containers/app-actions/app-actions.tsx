@@ -754,7 +754,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
           size="lg"
           className="launch-action-button memory-action-button"
           data-tooltip-id="app-actions-tooltip"
-          data-tooltip-content={t('MEMORY_CONNECT_DESC')}
+          data-tooltip-content={t(memory.connectedByOther ? 'MEMORY_CONNECT_REPLACE_OTHER_DESC' : 'MEMORY_CONNECT_DESC')}
         />
       );
     }

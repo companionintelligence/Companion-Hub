@@ -17,6 +17,7 @@ function mockConnection(partial: Record<string, unknown>) {
   useMemoryConnection.mockReturnValue({
     applicable: true,
     connected: false,
+    connectedByOther: false,
     memoryInstalled: false,
     memoryReady: false,
     providerStatus: 'absent',
@@ -60,6 +61,13 @@ describe('MemoryStatusBadge', () => {
     mockConnection({ connected: true, memoryInstalled: true, memoryReady: false, providerStatus: 'offline' });
     render(<MemoryStatusBadge appUrn="ci-openclaw:local" />);
     expect(screen.getByText('MEMORY_CONNECT_BADGE_CONNECTED')).toBeInTheDocument();
+  });
+
+  it('says another person connected the app instead of "not connected" (#2080)', () => {
+    mockConnection({ connectedByOther: true, memoryInstalled: true, memoryReady: true, providerStatus: 'ready' });
+    render(<MemoryStatusBadge appUrn="ci-openclaw:local" />);
+    expect(screen.getByText('MEMORY_CONNECT_BADGE_CONNECTED_BY_OTHER')).toBeInTheDocument();
+    expect(screen.queryByText('MEMORY_CONNECT_BADGE_NOT_CONNECTED')).not.toBeInTheDocument();
   });
 
   it('does NOT show "connected" when the connection is stale and ci-memory has been uninstalled (provider absent)', () => {

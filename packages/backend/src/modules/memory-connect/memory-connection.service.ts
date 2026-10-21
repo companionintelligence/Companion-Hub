@@ -99,7 +99,15 @@ export class MemoryConnectionService {
    * generation).
    */
   async getInjectableCreds(appUrn: string): Promise<InjectableMemoryCreds | null> {
-    return this.credsFromRow(await this.repo.findByAppUrn(appUrn));
+    return this.credsFromRow(await this.repo.findLatestConnected(appUrn));
+  }
+
+  /**
+   * The connection whose key the app runs with (see {@link getInjectableCreds}), or undefined
+   * when nobody's key is injected. With several Hub people, this says whose connection it is.
+   */
+  async getActiveConnection(appUrn: string): Promise<MemoryConnectionRow | undefined> {
+    return this.repo.findLatestConnected(appUrn);
   }
 
   /**

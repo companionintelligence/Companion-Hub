@@ -43,6 +43,7 @@ function makeService(
   const connections = {
     getState: vi.fn().mockResolvedValue('unconfigured'),
     getRow: vi.fn().mockResolvedValue({ state: 'unconfigured', keyExpiresAt: null }),
+    getActiveConnection: vi.fn().mockResolvedValue(undefined),
     credsFromRow: vi.fn().mockReturnValue(null),
   };
   const deviceRegistration = {
