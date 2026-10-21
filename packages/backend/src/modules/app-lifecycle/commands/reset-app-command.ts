@@ -55,6 +55,9 @@ export class ResetAppCommand extends AppLifecycleCommand {
       const envMap = envUtils.envStringToMap(env.content);
 
       await marketplaceService.copyDataDir(appUrn, envMap);
+      // As install does: otherwise Docker creates each bind-mount folder as root when the app starts, and
+      // the next reset, restore or backup of what the app writes there needs the root helper again.
+      await appFilesManager.createVolumeHostDirs(appUrn);
       await this.ensureAppDir(appUrn, form);
 
       return { success: true, message: `App ${appUrn} reset successfully` };

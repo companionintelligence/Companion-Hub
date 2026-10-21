@@ -109,6 +109,48 @@ describe.skipIf(!canEnforcePermissions)('ResetAppCommand on data the Hub cannot 
     await expect(fs.promises.readdir(appDataDir)).resolves.toEqual([]);
   });
 
+  // Docker would otherwise create `data/` as root again when the app starts, and every later reset,
+  // restore or backup of it would need the root helper.
+  it('makes the bind-mount folders again as the Hub, so the next reset needs no root helper', async () => {
+    const installed = path.join(scratch, 'data', 'apps', 'ci-marketplace', 'uptime-kuma');
+    await fs.promises.mkdir(installed, { recursive: true });
+    await fs.promises.writeFile(
+      path.join(installed, 'docker-compose.json'),
+      JSON.stringify({
+        schemaVersion: 2,
+        services: [
+          {
+            name: 'uptime-kuma',
+            image: 'louislam/uptime-kuma:2',
+            isMain: true,
+            internalPort: 3001,
+            volumes: [{ hostPath: '${APP_DATA_DIR}/data', containerPath: '/app/data' }],
+          },
+        ],
+      }),
+    );
+    docker.removeAppDataDirAsRoot.mockImplementation(async () => {
+      await loosen(appDataDir);
+      for (const name of await fs.promises.readdir(appDataDir)) {
+        await fs.promises.rm(path.join(appDataDir, name), { recursive: true, force: true });
+      }
+      return true;
+    });
+
+    await expect(command.execute(appUrn, {})).resolves.toMatchObject({ success: true });
+
+    const data = await fs.promises.stat(path.join(appDataDir, 'data'));
+    expect(data.isDirectory()).toBe(true);
+    expect(data.uid).toBe(process.getuid?.());
+
+    // What the app writes into a folder the Hub owns, the Hub can delete itself.
+    await fs.promises.writeFile(kumaDb(), 'written after the reset');
+    docker.removeAppDataDirAsRoot.mockClear();
+    await expect(command.execute(appUrn, {})).resolves.toMatchObject({ success: true });
+    expect(docker.removeAppDataDirAsRoot).not.toHaveBeenCalled();
+    await expect(fs.promises.access(kumaDb())).rejects.toThrow();
+  });
+
   it('says the reset failed, rather than that it worked, when the helper cannot remove the data either', async () => {
     docker.removeAppDataDirAsRoot.mockResolvedValue(false);
 

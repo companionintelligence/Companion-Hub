@@ -55,6 +55,7 @@ describe.skipIf(!canEnforcePermissions)('UpdateAppCommand rollback over data the
   let appInstalledDir: string;
   let snapshotBaseDir: string;
   let docker: ReturnType<typeof mock<DockerService>>;
+  let appFilesManager: ReturnType<typeof mock<AppFilesManager>>;
   let command: InstanceType<typeof UpdateAppCommand>;
 
   const kumaDb = () => path.join(appDataDir, 'data', 'kuma.db');
@@ -81,7 +82,7 @@ describe.skipIf(!canEnforcePermissions)('UpdateAppCommand rollback over data the
 
     const logger = mockDeep<LoggerService>();
     const filesystem = new FilesystemService(logger);
-    const appFilesManager = mock<AppFilesManager>();
+    appFilesManager = mock<AppFilesManager>();
     appFilesManager.getAppPaths.mockReturnValue({ appDataDir, appInstalledDir } as never);
     appFilesManager.deleteAppFolder.mockResolvedValue(true);
     appFilesManager.getAppEnv.mockResolvedValue({ path: path.join(appDataDir, 'app.env'), content: 'PREVIOUS=1\n' } as never);
@@ -147,6 +148,8 @@ describe.skipIf(!canEnforcePermissions)('UpdateAppCommand rollback over data the
     expect(result).toMatchObject({ success: false, rolledBack: true });
     expect(docker.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn);
     await expect(fs.promises.readFile(kumaDb(), 'utf8')).resolves.toBe('before the update');
+    // Any bind-mount folder the snapshot did not hold is made by the Hub, not by Docker as root.
+    expect(appFilesManager.createVolumeHostDirs).toHaveBeenCalledWith(appUrn);
     // A rollback that worked no longer needs the snapshot.
     await expect(fs.promises.access(snapshotBaseDir)).rejects.toThrow();
   });
@@ -157,6 +160,7 @@ describe.skipIf(!canEnforcePermissions)('UpdateAppCommand rollback over data the
     const result = await command.execute(appUrn, {});
 
     expect(result).toMatchObject({ success: false, rolledBack: false });
+    expect(appFilesManager.createVolumeHostDirs).not.toHaveBeenCalled();
     await expect(fs.promises.readFile(path.join(snapshotBaseDir, 'app-data', 'data', 'kuma.db'), 'utf8')).resolves.toBe('before the update');
   });
 });

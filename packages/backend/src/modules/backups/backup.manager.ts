@@ -322,6 +322,9 @@ export class BackupManager implements OnApplicationShutdown {
     if (copied.includes(false)) {
       throw new Error('Failed to restore the backup files');
     }
+
+    // A backup taken before a folder existed does not bring it back, and Docker would create it as root.
+    await this.appFilesManager.createVolumeHostDirs(appUrn);
   }
 
   /**

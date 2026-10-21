@@ -258,6 +258,12 @@ export class UpdateAppCommand extends AppLifecycleCommand {
         ok = ok && removed !== false && copied !== false;
       }
 
+      // With the previous files back, any bind-mount folder the snapshot did not hold is made by the
+      // Hub, as install does, rather than by Docker as root when the previous version starts.
+      if (ok) {
+        await appFilesManager.createVolumeHostDirs(appUrn);
+      }
+
       if (ok) {
         logger.info(`Restored ${appUrn} app files and data from snapshot ${snapshot.snapshotId}`);
       } else {

@@ -253,6 +253,53 @@ export class AppFilesManager {
   }
 
   /**
+   * Create the host folders the app's bind mounts point at, as the Hub, before its containers start.
+   *
+   * Docker creates a missing bind-mount source itself, as root:root 755. A Hub that runs as the host
+   * user can then neither open it up for a container of another uid nor delete what the app writes
+   * into it, so every later Reset, restore or backup needed the root helper. Install has always made
+   * these folders first; Reset, a restore and an update rollback delete the data folder, so they make
+   * them again the same way. A folder that exists is left as it is, a path outside the app's data
+   * folder is ignored, and a `private: true` one starts at 700 (see {@link setAppDataDirPermissions}).
+   */
+  public async createVolumeHostDirs(appUrn: AppUrn): Promise<void> {
+    const { appDataDir } = this.getAppPaths(appUrn);
+    const { content } = await this.getDockerComposeJson(appUrn);
+    if (!content) {
+      return;
+    }
+    let services: ReturnType<typeof parseComposeJson>['services'];
+    try {
+      ({ services } = parseComposeJson(content));
+    } catch (error) {
+      this.logger.debug(`Could not read the volumes of ${appUrn} to create their folders: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    for (const service of services) {
+      for (const volume of service.volumes ?? []) {
+        // Named volumes carry no host path to create.
+        if (typeof volume.hostPath !== 'string') {
+          continue;
+        }
+        const target = path.resolve(volume.hostPath.replace(/\$\{APP_DATA_DIR\}/g, appDataDir));
+        if (target !== appDataDir && !target.startsWith(`${appDataDir}${path.sep}`)) {
+          continue;
+        }
+        await fs.promises.mkdir(target, { recursive: true }).catch(() => {
+          /* a path the app data mount refuses is Docker's to report at compose up */
+        });
+        // A `private: true` mount is the app's own root-written directory (Memory's secrets); it
+        // starts, and stays, unreadable to other local accounts. The permissions sweep prunes it.
+        if (volume.private === true && process.platform !== 'win32') {
+          await fs.promises.chmod(target, 0o700).catch(() => {
+            /* a mount that rejects chmod is the drvfs case handled elsewhere */
+          });
+        }
+      }
+    }
+  }
+
+  /**
    * Set the permissions for the app data directory.
    *
    * App containers run as whatever user their image picks, the Hub cannot know

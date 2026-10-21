@@ -528,6 +528,22 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
     });
   });
 
+  it('makes the bind-mount folders the backup did not hold as the Hub, rather than leave them to Docker', async () => {
+    const name = await putArchive('good.tar.gz', makeTarGz(VALID_ENTRIES));
+
+    await manager.restoreApp(appUrn, name);
+
+    expect(appFilesManager.createVolumeHostDirs).toHaveBeenCalledWith(appUrn);
+  });
+
+  it('does not touch the folders when it refuses the archive', async () => {
+    const name = await putArchive('bad.tar.gz', 'this is not an archive');
+
+    await expect(manager.restoreApp(appUrn, name)).rejects.toThrow();
+
+    expect(appFilesManager.createVolumeHostDirs).not.toHaveBeenCalled();
+  });
+
   it('does not call the root helper when the Hub can delete the data itself', async () => {
     const name = await putArchive('good.tar.gz', makeTarGz(VALID_ENTRIES));
 
