@@ -7,9 +7,11 @@
  * one and the Hub stack image on another, and nothing used to notice when they drifted apart. Every
  * update entry point now opens with that answer; see cli-version-skew.ts.
  */
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { stdin as input, stdout as output } from 'node:process';
 import { createInterface } from 'node:readline/promises';
 import { parseEnvFile } from '../env-file.js';
@@ -301,9 +303,14 @@ export async function runSelfUpdateCommand(args: string[], gathered?: SkewSnapsh
     return;
   }
 
-  let asset: { path: string; tag: string };
+  // A folder only this user can open, removed again afterwards. The default cache is one shared folder
+  // under the system temp dir, and a file already there is used as it is, so another account on this
+  // machine could leave a binary in it for this command to run and install over cihub.
+  const cacheDir = mkdtempSync(path.join(tmpdir(), 'cihub-self-update-'));
+  let asset: { bytes: Buffer; tag: string };
   try {
-    asset = await downloadReleaseAsset({ token: plan.token, assetName: plan.assetName, version: plan.version });
+    const downloaded = await downloadReleaseAsset({ token: plan.token, assetName: plan.assetName, version: plan.version, cacheDir });
+    asset = { bytes: readFileSync(downloaded.path), tag: downloaded.tag };
   } catch (error) {
     printMessageBox(
       'Self-update failed',
@@ -315,10 +322,12 @@ export async function runSelfUpdateCommand(args: string[], gathered?: SkewSnapsh
     );
     process.exitCode = 1;
     return;
+  } finally {
+    rmSync(cacheDir, { recursive: true, force: true });
   }
 
   const installed = installBinaryOverSelf({
-    sourceBytes: readFileSync(asset.path),
+    sourceBytes: asset.bytes,
     targetPath: plan.target,
     // `latest` is a pointer, not a claim about what the asset reports, so only a named version is
     // held to matching. The binary still has to run and identify itself either way.
