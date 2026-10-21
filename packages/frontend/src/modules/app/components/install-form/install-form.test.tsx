@@ -613,6 +613,8 @@ describe('InstallForm', () => {
 
     afterEach(() => {
       answerChecks();
+      // `vi.clearAllMocks` keeps implementations, and later tests must not inherit a check that never answers.
+      fetchDnsAvailability.mockReset();
     });
 
     const renderForm = (localSubdomain: string, props: Partial<ComponentProps<typeof InstallForm>> = {}) =>

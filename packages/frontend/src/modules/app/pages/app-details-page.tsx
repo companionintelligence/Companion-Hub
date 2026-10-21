@@ -156,6 +156,9 @@ export default () => {
     // the new one at once rather than at the next poll.
     queryKey: ['app-runtime-health', appUrn, privateRecord?.app?.status],
     queryFn: () => fetchAppRuntimeHealth(appUrn),
+    // The last snapshot stays up while the new one loads, so the readiness badge and checks card do
+    // not drop out on every change of status. The status pill ignores a snapshot of another status.
+    placeholderData: (previous) => previous,
     refetchInterval: 15_000,
     enabled: runtimeHealthEnabled,
   });
