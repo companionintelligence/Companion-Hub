@@ -15,14 +15,15 @@ vi.mock('node:child_process', () => ({
 }));
 
 // A Linux host with the NVIDIA driver loaded. Nothing is written to disk.
-const fsWrites = vi.hoisted(() => ({ paths: [] as string[] }));
+const fsWrites = vi.hoisted(() => ({ paths: [] as string[], contents: new Map<string, string>() }));
 vi.mock('node:fs', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:fs')>()),
   existsSync: (target: string) => target === '/proc/driver/nvidia/gpus',
   mkdirSync: () => undefined,
   rmSync: () => undefined,
-  writeFileSync: (target: string) => {
+  writeFileSync: (target: string, data: string) => {
     fsWrites.paths.push(String(target));
+    fsWrites.contents.set(String(target), String(data));
   },
 }));
 
@@ -84,6 +85,7 @@ describe('initGpuRuntime on a Linux host whose ~/.profile stops a login shell', 
   beforeEach(() => {
     spawn.calls = [];
     fsWrites.paths = [];
+    fsWrites.contents.clear();
     Object.defineProperty(process, 'platform', { value: 'linux' });
     process.env.CI_HUB_STATE_PATH = '/srv/hub-data';
     delete process.env.CI_HUB_SKIP_GPU_TOOLKIT;
@@ -113,5 +115,18 @@ describe('initGpuRuntime on a Linux host whose ~/.profile stops a login shell', 
 
     expect(fsWrites.paths).toContain('/srv/hub-data/state/hardware/nvidia.json');
     expect(spawn.calls).toContainEqual({ command: 'sh', args: ['-c', 'command -v docker >/dev/null 2>&1'] });
+  });
+
+  it('still finds rocm-smi on an AMD host without /dev/kfd: the ROCm probe runs it directly too', () => {
+    spawn.answer = (command, args) => {
+      if (command === 'sh' && args[0] === '-lc') return { status: 2, stdout: '', stderr: 'sh: 34: .: cannot open /home/user/bin/env: No such file' };
+      if (command === 'rocm-smi') return { status: 0, stdout: 'ROCM-SMI version: 3.0.0\n', stderr: '' };
+      return { status: 1, stdout: '', stderr: '' };
+    };
+
+    initGpuRuntime();
+
+    const rocm = fsWrites.contents.get('/srv/hub-data/state/hardware/rocm.json');
+    expect(rocm && JSON.parse(rocm)).toMatchObject({ available: false, source: 'host-rocm-smi' });
   });
 });

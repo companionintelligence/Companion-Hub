@@ -135,6 +135,17 @@ function setupNvidiaToolkitInWslDistro(distro: string): boolean {
   return runInWslDistro(distro, script);
 }
 
+/**
+ * A host tool (nvidia-smi, rocm-smi) run directly, not through `sh -lc`: a login shell sources
+ * `~/.profile` first. With dash, one bad line there (a `.` of a file that has gone) ends the shell
+ * before the tool starts. The login shell is only the fallback for a PATH that lacks the tool.
+ */
+function runHostTool(cmd: string, args: string[]): ReturnType<typeof runCapture> {
+  const direct = runCapture(cmd, args);
+  if (direct.ok || !direct.notFound) return direct;
+  return runCapture('sh', ['-lc', [cmd, ...args].join(' ')]);
+}
+
 function hasCommand(cmd: string): boolean {
   if (process.platform === 'win32') {
     const where = runCapture('where', [cmd]);
@@ -149,8 +160,8 @@ function hasCommand(cmd: string): boolean {
     return ps.ok;
   }
 
-  // This process's PATH first. A login shell sources ~/.profile, and with dash one bad line there
-  // ends the shell: `docker` then read as missing and the NVIDIA probe below it never ran. The login
+  // This process's PATH first. A login shell sources ~/.profile. With dash one bad line there ends
+  // the shell: `docker` then read as missing and the NVIDIA probe below it never ran. The login
   // shell is only the fallback for a PATH that lacks the command.
   if (runCapture('sh', ['-c', `command -v ${cmd} >/dev/null 2>&1`]).ok) return true;
   return runCapture('sh', ['-lc', `command -v ${cmd} >/dev/null 2>&1`]).ok;
@@ -238,7 +249,7 @@ function collectHostRocmProbeLinux(): RocmProbe {
     return { available: true, source: 'host-dev-kfd', updatedAt: new Date().toISOString() };
   }
 
-  const smi = runCapture('sh', ['-lc', 'rocm-smi --version']);
+  const smi = runHostTool('rocm-smi', ['--version']);
   if (smi.ok && smi.stdout.trim().length > 0) {
     return { available: false, source: 'host-rocm-smi', updatedAt: new Date().toISOString() };
   }
@@ -270,17 +281,9 @@ function clearNvidiaProbe(): void {
 
 const NVIDIA_SMI_QUERY = ['--query-gpu=name,memory.total,driver_version', '--format=csv,noheader,nounits'];
 
-/**
- * The host card as nvidia-smi names and sizes it, for `nvidia.json`. nvidia-smi runs directly, not
- * through `sh -lc`: a login shell sources `~/.profile` first. With dash, one bad line there (a
- * `.` of a file that has gone) ends the shell before nvidia-smi starts. The login shell is only the
- * fallback for a PATH that lacks nvidia-smi.
- */
+/** The host card as nvidia-smi names and sizes it, for `nvidia.json`. See {@link runHostTool}. */
 export function collectHostNvidiaProbe(): NvidiaProbe | null {
-  let probe = runCapture('nvidia-smi', NVIDIA_SMI_QUERY);
-  if (!probe.ok && probe.notFound) {
-    probe = runCapture('sh', ['-lc', `nvidia-smi ${NVIDIA_SMI_QUERY.join(' ')}`]);
-  }
+  const probe = runHostTool('nvidia-smi', NVIDIA_SMI_QUERY);
   if (!probe.ok) return null;
 
   const line = probe.stdout
@@ -358,7 +361,7 @@ function dockerHasNvidiaRuntime(): boolean {
 function hasNvidiaGpuLinux(): boolean {
   if (existsSync('/proc/driver/nvidia/gpus')) return true;
 
-  const smi = runCapture('sh', ['-lc', 'nvidia-smi -L']);
+  const smi = runHostTool('nvidia-smi', ['-L']);
   if (smi.ok && smi.stdout.toLowerCase().includes('gpu')) return true;
 
   const lspci = runCapture('sh', ['-lc', "lspci 2>/dev/null | grep -i 'nvidia' || true"]);
