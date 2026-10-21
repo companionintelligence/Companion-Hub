@@ -149,8 +149,11 @@ function hasCommand(cmd: string): boolean {
     return ps.ok;
   }
 
-  const res = runCapture('sh', ['-lc', `command -v ${cmd} >/dev/null 2>&1`]);
-  return res.ok;
+  // This process's PATH first. A login shell sources ~/.profile, and with dash one bad line there
+  // ends the shell: `docker` then read as missing and the NVIDIA probe below it never ran. The login
+  // shell is only the fallback for a PATH that lacks the command.
+  if (runCapture('sh', ['-c', `command -v ${cmd} >/dev/null 2>&1`]).ok) return true;
+  return runCapture('sh', ['-lc', `command -v ${cmd} >/dev/null 2>&1`]).ok;
 }
 
 function runCommand(cmd: string, args: string[], useSudo = false) {
