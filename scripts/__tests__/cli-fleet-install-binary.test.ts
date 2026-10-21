@@ -79,13 +79,26 @@ describe('fleet install and the cihub binary source', () => {
     expect(logged.join('\n')).toContain('release v0.2.72 (latest)');
   });
 
+  it('fetches the public release without a token, and says so on the summary line', async () => {
+    // Without GH_TOKEN this used to print "releases are private" and adopt whatever each node had.
+    delete process.env.GH_TOKEN;
+    await runFleetCommand(['install', '--execute']);
+    const headers = (mocks.fetch.mock.calls[0]?.[1] as RequestInit | undefined)?.headers as Record<string, string>;
+    expect(headers).not.toHaveProperty('Authorization');
+    const opts = mocks.installNode.mock.calls[0]?.[1] as InstallOpts;
+    expect(opts.cihubBinary).toEqual({ kind: 'release', version: 'v0.2.72', resolvedFrom: 'latest' });
+    const out = logged.join('\n');
+    expect(out).toContain('release v0.2.72 (latest), fetched here from the public GitHub release');
+    expect(out).not.toMatch(/private/);
+  });
+
   it('says which tag a dry run would install, not just "latest"', async () => {
     await runFleetCommand(['install']);
     expect(mocks.installNode).not.toHaveBeenCalled();
     expect(logged.join('\n')).toContain('release v0.2.72 (latest)');
   });
 
-  it('turns a lookup the token cannot do into an adopt-only run, said once on the summary line', async () => {
+  it('turns a lookup that fails into an adopt-only run, said once on the summary line', async () => {
     mocks.fetch.mockImplementation(async () => new Response('{"message":"Not Found"}', { status: 404 }));
     await runFleetCommand(['install', '--execute']);
     const opts = mocks.installNode.mock.calls[0]?.[1] as InstallOpts;

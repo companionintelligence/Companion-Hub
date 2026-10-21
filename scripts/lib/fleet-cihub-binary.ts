@@ -1,12 +1,13 @@
 /**
  * Where the `cihub` binary a fleet install puts on a node comes from.
  *
- * The release assets live in a private GitHub repository. The first version of the installer had
- * each node `curl` `api.github.com/…/releases/latest` unauthenticated, which answers 404 for a private
- * repo — so it failed on every node of a fifteen-node fleet, on 2026-09-18, before anything else could
- * run. The node has no GitHub credential and should not be given one. The operator's machine can
- * fetch the asset (a token in its environment, or a file already on disk) and the SSH session the
- * install holds can carry the bytes down. That is what this module does; nothing here runs on a node.
+ * The operator's machine fetches the release asset (or takes a file already on disk) and the SSH
+ * session the install holds carries the bytes down. That is what this module does; nothing here runs
+ * on a node. The first version of the installer had each node `curl` `api.github.com/…/releases/latest`
+ * itself. While the repository was private that answered 404, so it failed on every node of a
+ * fifteen-node fleet on 2026-09-18 before anything else could run. The repository has been public
+ * since 2026-09-30, so no token is needed any more; one in the operator's environment is still sent,
+ * and it never reaches a node.
  */
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
@@ -25,11 +26,11 @@ export type CihubBinarySource =
    */
   | { kind: 'local'; path: string; version?: string }
   /**
-   * Fetched from the GitHub release on the operator machine with a token, once per architecture.
-   * `version` is a tag once `pinCihubReleaseSource` has run; `resolvedFrom` then keeps what the flag
-   * said (`latest`) for the run's own summary line.
+   * Fetched from the GitHub release on the operator machine, once per architecture, with the token
+   * from its environment when there is one. `version` is a tag once `pinCihubReleaseSource` has run;
+   * `resolvedFrom` then keeps what the flag said (`latest`) for the run's own summary line.
    */
-  | { kind: 'release'; token: string; version: string; resolvedFrom?: string }
+  | { kind: 'release'; token?: string; version: string; resolvedFrom?: string }
   /** Nothing to install from. `why` and `fix` are what the node's line will say. */
   | { kind: 'unavailable'; why: string; fix: string[] };
 
@@ -53,9 +54,9 @@ export function assetNameForPlatform(platform: NodeJS.Platform, arch: string): s
  * Is this actually an executable for the platform the asset name claims?
  *
  * The check exists because the failure it catches is the one this download had for its whole life:
- * a private-repo API error is served as an HTML page with a 200, written to disk under the asset's
- * name, and installed. Per-platform rather than ELF-only so the macOS and Windows assets
- * `cihub self-update` fetches are held to the same bar — `<html>` is not a Mach-O either.
+ * while the repository was private, an API error was served as an HTML page with a 200, written to
+ * disk under the asset's name and installed. Per-platform rather than ELF-only so the macOS and
+ * Windows assets `cihub self-update` fetches are held to the same bar — `<html>` is not a Mach-O either.
  */
 export function assetFormatError(assetName: string, bytes: Buffer): string | undefined {
   const head = bytes.subarray(0, 4);
@@ -112,16 +113,11 @@ export function resolveCihubBinarySource(input: {
     const declared = input.version && input.version !== 'latest' ? input.version : undefined;
     return { kind: 'local', path: input.binaryPath, version: input.readVersion?.(input.binaryPath) ?? declared };
   }
+  // The release is public, so no token is needed; one in the environment is still sent (it raises
+  // GitHub's limit of 60 unauthenticated API requests an hour). It used to be required: a run
+  // without one could only adopt whatever cihub each node already had.
   const token = GITHUB_TOKEN_ENV_VARS.map((name) => env[name]?.trim()).find(Boolean);
-  if (token) return { kind: 'release', token, version: input.version ?? 'latest' };
-  return {
-    kind: 'unavailable',
-    why: `no cihub binary to install: ${CIHUB_RELEASES_REPO} releases are private, and a node cannot fetch them`,
-    fix: [
-      `Set GH_TOKEN (e.g. GH_TOKEN="$(gh auth token)") so this machine fetches the release and streams it to each node,`,
-      'or pass --cihub-binary <path> to a cihub-linux-x64 / cihub-linux-arm64 asset already on disk.',
-    ],
-  };
+  return { kind: 'release', ...(token ? { token } : {}), version: input.version ?? 'latest' };
 }
 
 export function sha256File(filePath: string): string {
@@ -161,8 +157,9 @@ const githubHeaders = (token?: string) => ({
 });
 
 function releaseLookupHint(status: number, token: string | undefined): string {
-  if (token) return status === 404 ? ' — does the token see the private repo?' : '';
-  if (status === 403 || status === 429) {
+  if (status === 404) return '. GitHub has no release with that tag';
+  if (status === 401 && token) return '. GitHub refused the token in GH_TOKEN or GITHUB_TOKEN; fix it, or unset it since none is needed';
+  if ((status === 403 || status === 429) && !token) {
     return '. GitHub allows 60 API requests an hour without a token; set GH_TOKEN or GITHUB_TOKEN to raise that';
   }
   return '';
@@ -189,8 +186,9 @@ export async function lookupRelease(input: { token?: string; version: string; fe
  * compares versions: handed `latest`, it could only adopt whatever was on PATH. On 2026-09-20 that
  * was a July 0.2.36 in `~/.local/bin`, kept on a node the run had a current release for, and its
  * `cihub up` did not know the headless seed path. Resolving here also means fourteen nodes install
- * the one tag this run saw, not whichever release lands mid-pass, and a token that cannot see the
- * repository is reported once on the summary line rather than adopted around on every node.
+ * the one tag this run saw, not whichever release lands mid-pass, and a lookup that fails (no such
+ * tag, a refused token, a rate limit) is reported once on the summary line rather than adopted around
+ * on every node.
  */
 export async function pinCihubReleaseSource(source: CihubBinarySource, fetchImpl?: typeof fetch): Promise<CihubBinarySource> {
   if (source.kind !== 'release') return source;
@@ -201,7 +199,7 @@ export async function pinCihubReleaseSource(source: CihubBinarySource, fetchImpl
     return {
       kind: 'unavailable',
       why: error instanceof Error ? error.message : String(error),
-      fix: ['Check GH_TOKEN can read the private repository, or pass --cihub-binary.'],
+      fix: ['Check the release exists (--cihub-version), or pass --cihub-binary <path> to a cihub-linux-x64 / cihub-linux-arm64 asset on disk.'],
     };
   }
 }
