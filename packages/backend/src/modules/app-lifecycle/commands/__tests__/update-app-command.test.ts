@@ -382,11 +382,27 @@ describe('UpdateAppCommand', () => {
   // container ran as. The Hub cannot read them itself, but a privileged helper copies them both for the
   // backup (see BackupManager) and for the rollback snapshot.
   describe('an app whose data the Hub cannot read (a database owned by another user)', () => {
-    it('backs it up before updating like any other app, rather than refusing', async () => {
+    it('asks whether the backup can be made before it stops the app, then backs it up', async () => {
       const result = await command.execute(appUrn, {});
 
       expect(result).toMatchObject({ success: true });
+      expect(backupManager.assertBackupPossible).toHaveBeenCalledWith(appUrn);
+      const stop = dockerService.composeApp.mock.calls.findIndex(([, args]) => args === 'stop');
+      expect(backupManager.assertBackupPossible.mock.invocationCallOrder[0]).toBeLessThan(
+        dockerService.composeApp.mock.invocationCallOrder[stop] as number,
+      );
       expect(backupManager.backupApp).toHaveBeenCalledWith(appUrn);
+    });
+
+    it('stops nothing when the backup cannot be made (the helper for unreadable data cannot run)', async () => {
+      backupManager.assertBackupPossible.mockRejectedValue(new Error(`Cannot back up ${appUrn}: … Nothing was stopped.`));
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: false, rolledBack: true });
+      expect(result.message).toContain('Nothing was stopped');
+      expect(dockerService.composeApp).not.toHaveBeenCalled();
+      expect(backupManager.backupApp).not.toHaveBeenCalled();
     });
 
     it('snapshots the data when no backup was asked for, since the snapshot can be taken by a helper', async () => {

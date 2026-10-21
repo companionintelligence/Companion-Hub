@@ -117,6 +117,65 @@ describe.skipIf(!canEnforcePermissions)('FilesystemService and permissions it re
     });
   });
 
+  describe('findUnreadable', () => {
+    it('finds the database file a copy would stop at, a level down', async () => {
+      const { dataDir, secretFile } = await makeDatabaseDataDir();
+
+      await expect(service.findUnreadable(dataDir)).resolves.toEqual([secretFile]);
+    });
+
+    it('finds a folder it cannot list', async () => {
+      const dataDir = path.join(scratch, 'app-data');
+      const locked = path.join(dataDir, 'pgdata');
+      await fs.promises.mkdir(locked, { recursive: true });
+      await fs.promises.chmod(locked, 0o000);
+
+      await expect(service.findUnreadable(dataDir)).resolves.toEqual([locked]);
+    });
+
+    it('returns nothing for a folder it can read all of, and for one that does not exist', async () => {
+      const dataDir = path.join(scratch, 'ok');
+      await fs.promises.mkdir(path.join(dataDir, 'sub'), { recursive: true });
+      await fs.promises.writeFile(path.join(dataDir, 'sub', 'a.txt'), 'a');
+
+      await expect(service.findUnreadable(dataDir)).resolves.toEqual([]);
+      await expect(service.findUnreadable(path.join(scratch, 'missing'))).resolves.toEqual([]);
+    });
+
+    it('stops at maxFound and does not follow symbolic links', async () => {
+      const dataDir = path.join(scratch, 'many');
+      await fs.promises.mkdir(dataDir, { recursive: true });
+      for (const n of ['a', 'b', 'c', 'd']) {
+        const file = path.join(dataDir, n);
+        await fs.promises.writeFile(file, n);
+        await fs.promises.chmod(file, 0o000);
+      }
+      const locked = path.join(scratch, 'locked-elsewhere');
+      await fs.promises.mkdir(locked);
+      await fs.promises.chmod(locked, 0o000);
+      await fs.promises.symlink(locked, path.join(dataDir, 'link'));
+
+      const found = await service.findUnreadable(dataDir, { maxFound: 2 });
+
+      expect(found).toHaveLength(2);
+      expect(found.every((f) => !f.endsWith('link') && !f.includes('locked-elsewhere'))).toBe(true);
+    });
+
+    it('looks at no more than maxEntries entries', async () => {
+      const dataDir = path.join(scratch, 'bounded');
+      await fs.promises.mkdir(dataDir, { recursive: true });
+      for (let i = 0; i < 20; i++) await fs.promises.writeFile(path.join(dataDir, `ok-${i}`), 'x');
+      const late = path.join(dataDir, 'zz-locked');
+      await fs.promises.writeFile(late, 'x');
+      await fs.promises.chmod(late, 0o000);
+
+      await expect(service.findUnreadable(dataDir, { maxEntries: 5 })).resolves.toEqual([]);
+      await expect(service.findUnreadable(dataDir, { maxEntries: 100 })).resolves.toEqual([late]);
+    });
+  });
+
+  // The layout of a native-Linux Hub container: /data is root-owned (here: not writable by the test
+  // user) and only its subfolders are mounted from the host and owned by the Hub's user.
   describe('a data folder the Hub cannot write to, with a writable backups folder inside it', () => {
     it('cannot create a folder directly under it (what the old snapshot location did) but can under backups/', async () => {
       const dataDir = path.join(scratch, 'data');

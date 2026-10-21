@@ -371,54 +371,99 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
      * MariaDB keeps its files under uid 999 with its folders at 700, so a Hub running as uid 1000 cannot
      * read them and every manual backup of Kimai failed with EACCES. A file at 000 stands in for them.
      */
+    /*
+     * MariaDB keeps its files under uid 999 with its folders at 700, so a Hub running as uid 1000 cannot
+     * read them and every manual backup of Kimai failed with EACCES. A file at 000 stands in for them. The
+     * test cannot be root, so the helper's part (archive the staged parts and the live data with their
+     * owners) is done here with the test's own tar; what is checked is everything the Hub does around it.
+     */
     describe.skipIf(!canEnforcePermissions)('data the Hub cannot read', () => {
       const secret = () => path.join(appDataDir, 'data', 'db', 'mysql', 'ibdata1');
+      const stagingFor = (id: string) => path.join(dataDir, 'backups', '.backup-staging', 'test-store', 'test-app', id);
 
       beforeEach(async () => {
         await fs.promises.mkdir(path.dirname(secret()), { recursive: true });
         await fs.promises.writeFile(secret(), 'database rows');
         await fs.promises.chmod(secret(), 0o000);
+
+        docker.createBackupStagingDir.mockImplementation(async () => {
+          const dir = stagingFor('backup-test-app-1');
+          await fs.promises.mkdir(path.join(dir, 'stage', 'app-data'), { recursive: true });
+          await fs.promises.mkdir(path.join(dir, 'out'), { recursive: true });
+          return { id: 'backup-test-app-1', dir };
+        });
+        // What the helper does as root: the staged parts, with the live data mounted as app-data/.
+        docker.archiveBackupAsRoot.mockImplementation(async (_urn, id) => {
+          const dir = stagingFor(id);
+          await fs.promises.chmod(secret(), 0o644);
+          await fs.promises.cp(appDataDir, path.join(dir, 'stage', 'app-data'), { recursive: true });
+          await fs.promises.chmod(secret(), 0o000);
+          execFileSync('tar', ['-czf', path.join(dir, 'out', 'backup.tar.gz'), '-C', path.join(dir, 'stage'), '.']);
+          return path.join(dir, 'out', 'backup.tar.gz');
+        });
       });
 
       afterEach(async () => {
         await fs.promises.chmod(secret(), 0o644).catch(() => undefined);
       });
 
-      it('copies it through the root helper, so the backup holds the database', async () => {
-        let staging = '';
-        // What the helper does as root: copy everything into a folder under backups/ that the Hub owns.
-        docker.copyAppDataDirForBackupAsRoot.mockImplementation(async () => {
-          staging = path.join(dataDir, 'backups', '.backup-staging', 'test-store', 'test-app', 'backup-test-app-1');
-          await fs.promises.chmod(secret(), 0o644);
-          await fs.promises.cp(appDataDir, staging, { recursive: true });
-          await fs.promises.chmod(secret(), 0o000);
-          return staging;
-        });
-
+      it('has root archive it with its owners, marked so a restore puts them back, and cleans up the staging', async () => {
         const { filename } = await manager.backupApp(appUrn);
 
-        expect(docker.copyAppDataDirForBackupAsRoot).toHaveBeenCalledWith(appUrn);
-        const listing = execFileSync('tar', ['-tzf', path.join(backupDir, filename)], { encoding: 'utf8' });
-        expect(listing).toContain('./app-data/data/db/mysql/ibdata1');
+        expect(docker.archiveBackupAsRoot).toHaveBeenCalledWith(appUrn, 'backup-test-app-1');
+        const listing = execFileSync('tar', ['-tzf', path.join(backupDir, filename)], { encoding: 'utf8' }).split('\n');
+        expect(listing).toContain('./app-data.owners');
+        expect(listing).toContain('./app/docker-compose.json');
+        expect(listing).toContain('./user-config/app.env');
         expect(execFileSync('tar', ['-xzOf', path.join(backupDir, filename), './app-data/data/db/mysql/ibdata1'], { encoding: 'utf8' })).toBe(
           'database rows',
         );
-        // The staging copy is gone once the archive is written.
-        await expect(fs.promises.access(staging)).rejects.toThrow();
+        await expect(fs.promises.access(stagingFor('backup-test-app-1'))).rejects.toThrow();
       });
 
-      it('does not report a backup when the helper cannot copy it either', async () => {
-        docker.copyAppDataDirForBackupAsRoot.mockResolvedValue(null);
+      it('does not report a backup when root cannot archive it either, and cleans up the staging', async () => {
+        docker.archiveBackupAsRoot.mockResolvedValue(null);
 
-        await expect(manager.backupApp(appUrn)).rejects.toThrow('Failed to copy the app files for the backup');
+        await expect(manager.backupApp(appUrn)).rejects.toThrow('Failed to create the backup archive');
         await expect(fs.promises.access(backupDir)).rejects.toThrow();
+        await expect(fs.promises.access(stagingFor('backup-test-app-1'))).rejects.toThrow();
       });
+
+      it('says before anything is stopped that it cannot back up, when the helper cannot run', async () => {
+        docker.privilegedHelperAvailable.mockResolvedValue(false);
+
+        await expect(manager.assertBackupPossible(appUrn)).rejects.toThrow(`Cannot back up ${appUrn}`);
+        await expect(manager.assertBackupPossible(appUrn)).rejects.toThrow('Nothing was stopped');
+      });
+
+      it('lets the backup go ahead when the helper can run', async () => {
+        docker.privilegedHelperAvailable.mockResolvedValue(true);
+
+        await expect(manager.assertBackupPossible(appUrn)).resolves.toBeUndefined();
+      });
+    });
+
+    it('does not ask about the helper when the Hub can read everything', async () => {
+      await expect(manager.assertBackupPossible(appUrn)).resolves.toBeUndefined();
+
+      expect(docker.privilegedHelperAvailable).not.toHaveBeenCalled();
     });
 
     it('does not ask the root helper when the Hub can read everything', async () => {
       await manager.backupApp(appUrn);
 
-      expect(docker.copyAppDataDirForBackupAsRoot).not.toHaveBeenCalled();
+      expect(docker.createBackupStagingDir).not.toHaveBeenCalled();
+      expect(docker.archiveBackupAsRoot).not.toHaveBeenCalled();
+    });
+
+    it('clears what an earlier backup left in staging', async () => {
+      const leftover = path.join(dataDir, 'backups', '.backup-staging', 'test-store', 'test-app', 'backup-test-app-9', 'out');
+      await fs.promises.mkdir(leftover, { recursive: true });
+      await fs.promises.writeFile(path.join(leftover, 'backup.tar.gz'), 'half an archive');
+
+      await manager.backupApp(appUrn);
+
+      await expect(fs.promises.access(path.join(dataDir, 'backups', '.backup-staging', 'test-store', 'test-app'))).rejects.toThrow();
     });
 
     it('gives an app with no data folder an empty one in the archive, so the backup can be restored', async () => {
@@ -525,6 +570,53 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
       // Nothing of the backup was mixed into what is left and the installed files were not touched.
       await expect(fs.promises.readFile(path.join(appDataDir, 'data', 'kuma.db'), 'utf8')).resolves.toBe('reset-db');
       await expect(fs.promises.readFile(path.join(appInstalledDir, 'docker-compose.json'), 'utf8')).resolves.toBe('{"live":true}');
+    });
+  });
+
+  describe('a backup made with its owners', () => {
+    const OWNED_ENTRIES: TarEntry[] = [...VALID_ENTRIES, { name: './app-data.owners', content: '' }];
+
+    it('has root put its data back from the archive, not the Hub copy without owners', async () => {
+      // What the helper does as root: extract the data member over the emptied data folder.
+      docker.extractBackupAppDataAsRoot.mockImplementation(async (_urn, file, member) => {
+        const out = await fs.promises.mkdtemp(path.join(scratch, 'x-'));
+        execFileSync('tar', ['-C', out, '-xzf', path.join(backupDir, file), member]);
+        await fs.promises.cp(path.join(out, 'app-data'), appDataDir, { recursive: true });
+        return true;
+      });
+      const copy = vi.spyOn(filesystem, 'copyDirectory');
+      const name = await putArchive('owned.tar.gz', makeTarGz(OWNED_ENTRIES));
+
+      await manager.restoreApp(appUrn, name);
+
+      expect(docker.extractBackupAppDataAsRoot).toHaveBeenCalledWith(appUrn, 'owned.tar.gz', './app-data');
+      expect(copy).not.toHaveBeenCalledWith(expect.stringContaining('app-data'), appDataDir, expect.anything());
+      await expect(readLive()).resolves.toEqual({ data: 'restored-data', compose: '{"restored":true}', env: 'RESTORED=true\n' });
+    });
+
+    it('reports a restore whose data root could not put back', async () => {
+      docker.extractBackupAppDataAsRoot.mockResolvedValue(false);
+      const name = await putArchive('owned.tar.gz', makeTarGz(OWNED_ENTRIES));
+
+      await expect(manager.restoreApp(appUrn, name)).rejects.toThrow('Failed to restore the backup files');
+    });
+
+    it('restores a backup without the marker the way it always did', async () => {
+      const name = await putArchive('good.tar.gz', makeTarGz(VALID_ENTRIES));
+
+      await manager.restoreApp(appUrn, name);
+
+      expect(docker.extractBackupAppDataAsRoot).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a folder', { name: './app-data.owners/', type: '5' as const }],
+      ['a symbolic link', { name: './app-data.owners', type: '2' as const, linkname: '/etc/passwd' }],
+    ])('refuses a marker that is %s', async (_name, marker) => {
+      const name = await putArchive('bad-marker.tar.gz', makeTarGz([...VALID_ENTRIES, marker]));
+
+      await expect(manager.restoreApp(appUrn, name)).rejects.toThrow('unsupported file types');
+      await expectLiveUntouched();
     });
   });
 

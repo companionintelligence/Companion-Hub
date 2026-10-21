@@ -46,6 +46,7 @@ describe.skipIf(!canEnforcePermissions)('ResetAppCommand on data the Hub cannot 
   let scratch: string;
   let appDataDir: string;
   let docker: ReturnType<typeof mock<DockerService>>;
+  let appHelpers: ReturnType<typeof mock<AppHelpers>>;
   let command: InstanceType<typeof ResetAppCommand>;
 
   const kumaDb = () => path.join(appDataDir, 'data', 'kuma.db');
@@ -69,13 +70,14 @@ describe.skipIf(!canEnforcePermissions)('ResetAppCommand on data the Hub cannot 
     const envUtils = mock<EnvUtils>();
     envUtils.envStringToMap.mockReturnValue(new Map() as never);
     docker = mock<DockerService>();
+    appHelpers = mock<AppHelpers>();
 
     const services = new Map<unknown, unknown>([
       [LoggerService, logger],
       [AppFilesManager, appFilesManager],
       [DockerService, docker],
       [MarketplaceService, mock<MarketplaceService>()],
-      [AppHelpers, mock<AppHelpers>()],
+      [AppHelpers, appHelpers],
       [EnvUtils, envUtils],
       [FilesystemService, filesystem],
     ]);
@@ -159,6 +161,21 @@ describe.skipIf(!canEnforcePermissions)('ResetAppCommand on data the Hub cannot 
     expect(result.success).toBe(false);
     expect(result.message).toContain(`Could not delete the data of ${appUrn}, so it was not reset`);
     await expect(fs.promises.readFile(kumaDb(), 'utf8')).resolves.toBe('monitors and users');
+  });
+
+  // The containers are already down by then, and the Hub's own app.env went with the part of the data
+  // it could delete. Without it the app could not even be started again until the next Start rewrote it.
+  it('puts back what a Start needs when it could not delete the data', async () => {
+    docker.removeAppDataDirAsRoot.mockResolvedValue(false);
+    await fs.promises.writeFile(path.join(appDataDir, 'app.env'), 'OLD=1\n');
+
+    await command.execute(appUrn, {});
+
+    // Once before the containers go down, once again after the failed delete took the old one.
+    expect(appHelpers.generateEnvFile).toHaveBeenCalledTimes(2);
+    expect(appHelpers.generateEnvFile.mock.invocationCallOrder[1]).toBeGreaterThan(
+      docker.removeAppDataDirAsRoot.mock.invocationCallOrder[0] as number,
+    );
   });
 
   it('does not call the helper when the Hub can delete the data itself', async () => {

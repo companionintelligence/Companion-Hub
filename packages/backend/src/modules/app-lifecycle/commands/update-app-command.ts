@@ -73,6 +73,9 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       await dockerService.pullImages(this.imagesToPull(composeToInstall.content), { forcePull: true });
 
       if (this.performBackup) {
+        // Before the stop: data the Hub cannot read needs the root helper, and a backup that cannot be
+        // made must not cost the app its uptime first.
+        await backupManager.assertBackupPossible(appUrn);
         stoppedForBackup = true;
         await dockerService.composeApp(appUrn, 'stop');
         const backupRes = await backupManager.backupApp(appUrn);

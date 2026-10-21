@@ -228,6 +228,66 @@ export class FilesystemService {
     }
   }
 
+  /**
+   * Looks for entries under `dirPath` that this process cannot read: a folder it cannot list, or a
+   * file it cannot open. A copy made by the Hub stops at the first one, so a backup looks first: data
+   * like that needs the root helper, and finding out the helper cannot run after the app was stopped
+   * is downtime for nothing.
+   *
+   * Breadth first and bounded: a data folder can hold millions of files, and the ones this exists to
+   * find (a database's own, a level or two down) come early. It reports at most `maxFound` paths and
+   * looks at no more than `maxEntries` entries, so an empty answer means "none among the first
+   * entries", not a proof that every file is readable. Symbolic links are not followed.
+   */
+  async findUnreadable(dirPath: string, options: { maxEntries?: number; maxFound?: number } = {}): Promise<string[]> {
+    const maxEntries = options.maxEntries ?? 2000;
+    const maxFound = options.maxFound ?? 5;
+    const found: string[] = [];
+    const queue: string[] = [];
+    let seen = 0;
+
+    try {
+      queue.push(this.getSafeFilePath(dirPath));
+    } catch {
+      return found;
+    }
+
+    while (queue.length > 0 && seen < maxEntries && found.length < maxFound) {
+      const dir = queue.shift() as string;
+      let names: string[];
+
+      try {
+        names = await fs.promises.readdir(dir);
+      } catch (error) {
+        // A folder that does not exist is nothing to copy; one that exists but cannot be listed is the case this looks for.
+        if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') found.push(dir);
+        continue;
+      }
+
+      for (const name of names) {
+        if (seen >= maxEntries || found.length >= maxFound) break;
+        seen++;
+        const full = path.join(dir, name);
+
+        try {
+          const stat = await fs.promises.lstat(full);
+
+          if (stat.isSymbolicLink()) continue;
+
+          if (stat.isDirectory()) {
+            queue.push(full);
+          } else {
+            await fs.promises.access(full, fs.constants.R_OK);
+          }
+        } catch {
+          found.push(full);
+        }
+      }
+    }
+
+    return found;
+  }
+
   async removeDirectory(dirPath: string): Promise<boolean> {
     const { removed, error } = await this.tryRemoveDirectory(dirPath);
     if (!removed) this.logger.error(`Error removing directory ${dirPath}:`, error);

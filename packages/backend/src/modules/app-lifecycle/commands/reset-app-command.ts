@@ -41,6 +41,16 @@ export class ResetAppCommand extends AppLifecycleCommand {
       // the app: on a native-Linux Hub, everything a root container wrote survived the Hub's delete.
       const { appDataDir } = appFilesManager.getAppPaths(appUrn);
       if (!(await removeAppDataDirWithRootFallback({ filesystem, docker: dockerService, logger }, appUrn, appDataDir))) {
+        // The app is down and the Hub's own files (app.env first) may be gone with part of the data.
+        // Put back what a Start needs, so the app can be started again as it was instead of failing on
+        // a missing env file, and say the reset did not happen.
+        try {
+          await appFilesManager.createAppDataDir(appUrn);
+          await appHelpers.generateEnvFile(appUrn, form);
+          await appFilesManager.createVolumeHostDirs(appUrn);
+        } catch (err) {
+          logger.warn(`Could not put back the files ${appUrn} needs to start after the failed reset: ${err}`);
+        }
         throw new Error(`Could not delete the data of ${appUrn}, so it was not reset`);
       }
       await appFilesManager.createAppDataDir(appUrn);

@@ -15,6 +15,9 @@ export class BackupAppCommand extends AppLifecycleCommand {
     const config = this.moduleRef.get(ConfigurationService, { strict: false });
 
     try {
+      // Before the stop, so a backup that cannot be made costs no downtime.
+      await backupManager.assertBackupPossible(appUrn);
+
       logger.info(`Stopping app ${appUrn} for backup`);
       await dockerService.composeApp(appUrn, 'stop').catch((err) => {
         logger.error(`Failed to stop app ${appUrn}:`, err);
