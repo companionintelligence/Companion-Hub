@@ -24,7 +24,8 @@ interface MultiServiceState {
   addService: () => void;
   removeService: (index: number) => void;
   updateService: (index: number, serviceData: ServiceFormData) => void;
-  updateFromJson: (services: MultiServiceFormData['services']) => void;
+  /** Puts the JSON editor's services into the form. Returns them, or null (after a toast) when they fail validation. */
+  updateFromJson: (services: MultiServiceFormData['services']) => ServiceWithId[] | null;
   resetToDefaults: () => void;
   setIsDirty: (dirty: boolean) => void;
   setServices: (services: ServiceWithId[]) => void;
@@ -172,11 +173,11 @@ export const useMultiServiceStore = create<MultiServiceState>()((set, get) => ({
     const error = get().error;
     if (error) {
       toast.error(i18next.exists(error) ? i18next.t(error) : error);
-      return;
+      return null;
     }
 
     set({ services: servicesWithIds, isDirty: false });
-    toast.success(i18next.t('MULTI_SERVICE_JSON_UPDATE_SUCCESS'));
+    return servicesWithIds;
   },
   resetToDefaults: () =>
     set({

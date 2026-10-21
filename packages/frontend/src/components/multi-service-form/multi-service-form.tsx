@@ -163,6 +163,33 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
     }
   };
 
+  // Save JSON stores what the editor holds through onSubmit, as Save all does. Copying it into the form
+  // alone loses the change as soon as the page is left.
+  const saveJson = async () => {
+    form.clearErrors();
+
+    let parsed: { services?: z.infer<typeof dynamicComposeSchema>['services'] };
+    try {
+      parsed = JSON.parse(json.value);
+    } catch {
+      toast.error(t('MULTI_SERVICE_JSON_INVALID_FORMAT'));
+      return;
+    }
+
+    const applied = updateFromJson(parsed.services ?? []);
+    if (!applied) {
+      return;
+    }
+
+    if (!onSubmit) {
+      toast.success(t('MULTI_SERVICE_JSON_UPDATE_SUCCESS'));
+      return;
+    }
+
+    form.setValue('services', applied);
+    await form.handleSubmit(handleSubmit, () => toast.error(t('MULTI_SERVICE_ERROR_INVALID_CONFIGURATION')))();
+  };
+
   return (
     <form className="flex flex-col" onSubmit={form.handleSubmit(handleSubmit)}>
       <div className="bg-card border rounded-lg mt-4 m-0 p-0">
@@ -267,15 +294,7 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
           <Button disabled={jsonEditorOpen} type="submit" className={clsx({ hidden: jsonEditorOpen })}>
             {t('MULTI_SERVICE_VALIDATE_ALL_SERVICES')}
           </Button>
-          <Button
-            className={clsx({ hidden: !jsonEditorOpen })}
-            type="button"
-            disabled={Boolean(json.error)}
-            onClick={() => {
-              form.clearErrors();
-              updateFromJson(JSON.parse(json.value).services);
-            }}
-          >
+          <Button className={clsx({ hidden: !jsonEditorOpen })} type="button" disabled={Boolean(json.error)} onClick={() => void saveJson()}>
             {t('MULTI_SERVICE_JSON_SAVE')}
           </Button>
           <div
