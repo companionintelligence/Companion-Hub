@@ -72,6 +72,10 @@ describe('agent wake wiring in AppModule', () => {
     for (const [name, value] of Object.entries(HUB_ENV)) {
       vi.stubEnv(name, value);
     }
+    // `notify` reads these on every call, so a shell that turns wakes off or raises the floor
+    // must not fail these tests.
+    vi.stubEnv('AGENT_WEBHOOK_ENABLED', 'true');
+    vi.stubEnv('AGENT_WEBHOOK_MIN_URGENCY', 'low');
 
     moduleRef = await Test.createTestingModule({ imports: [AppModule, DiscoveryModule] })
       .overrideProvider(QueueFactory)

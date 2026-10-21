@@ -226,9 +226,15 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     const target = build.version ? selectReleaseTarget(build.version, tags) : null;
     const updateAvailable = target !== null && blocks.updateBlockedReason === null;
 
-    if (updateAvailable && target !== this.announcedUpdate) {
-      this.announcedUpdate = target;
-      this.agentNotifyService?.notify('system.update_available', { current, latest: target }, 'low');
+    if (updateAvailable && target !== this.announcedUpdate && this.agentNotifyService) {
+      const announcing = target;
+      this.announcedUpdate = announcing;
+      void this.agentNotifyService.notify('system.update_available', { current, latest: announcing }, 'low').then((woken) => {
+        // Nobody heard it (no agent installed yet, below the floor, unreachable): a later check tries again.
+        if (!woken && this.announcedUpdate === announcing) {
+          this.announcedUpdate = null;
+        }
+      });
     }
 
     return {
