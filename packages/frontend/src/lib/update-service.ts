@@ -266,9 +266,25 @@ async function resolveInstallerFromHub(
  * computer already runs the newest version. The download servers send no CORS headers, so the window
  * can't read them itself; `askHub` lets the Hub read them. An installer of any other version is
  * dropped, because the Desktop app card offers `version` by name.
+ *
+ * The Hub is asked only when this computer runs `version`. The desktop app picks this computer's own
+ * format (`.deb` on Ubuntu, `.rpm` on Fedora) and the Hub picks from all of them, so for a newer
+ * version the desktop app found nothing for, the Hub could only name another format, which the card
+ * would then install in one click. A release older than the running app gets no installer, because
+ * its steps would downgrade the app (a dev build ahead of its download server, for one).
  */
-async function findDesktopInstaller(version: string, platform: DesktopPlatform | null, osArch: string, askHub: boolean): Promise<string> {
-  const sources = askHub ? [resolveInstallerFromHub, resolveInstallerFromCdn] : [resolveInstallerFromCdn];
+async function findDesktopInstaller(
+  version: string,
+  running: string,
+  platform: DesktopPlatform | null,
+  osArch: string,
+  askHub: boolean,
+): Promise<string> {
+  const runs = semver.valid(running) ? running : null;
+  if (runs && semver.lt(version, runs)) {
+    return '';
+  }
+  const sources = askHub && runs && semver.eq(version, runs) ? [resolveInstallerFromHub, resolveInstallerFromCdn] : [resolveInstallerFromCdn];
   for (const source of sources) {
     try {
       const resolved = await source(platform, osArch);
@@ -309,15 +325,15 @@ export async function checkForUpdates(fallbackCurrentVersion?: string, options: 
           return null;
         }
 
+        const resolvedCurrent = semver.valid(nativeCurrentVersion) ? nativeCurrentVersion : currentVersion;
         let downloadUrl = nativeInfo.downloadUrl ?? '';
         if (downloadUrl && !isTrustedDownloadUrl(downloadUrl)) {
           downloadUrl = '';
         }
         if (!downloadUrl) {
-          downloadUrl = await findDesktopInstaller(latestVersion, desktopPlatform, osArch, options.askHubForInstaller === true);
+          downloadUrl = await findDesktopInstaller(latestVersion, resolvedCurrent, desktopPlatform, osArch, options.askHubForInstaller === true);
         }
 
-        const resolvedCurrent = semver.valid(nativeCurrentVersion) ? nativeCurrentVersion : currentVersion;
         return {
           currentVersion: resolvedCurrent || latestVersion,
           latestVersion,

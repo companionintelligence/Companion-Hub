@@ -725,6 +725,25 @@ describe('GeneralActionsContainer', () => {
       await waitFor(() => expect(mockPerformUpdate).toHaveBeenCalledWith(expect.objectContaining({ latestVersion: '0.3.6', downloadUrl })));
     });
 
+    it('promises no download when it has no installer to offer', async () => {
+      mockIsTauri.mockReturnValue(true);
+      mockGetInstalledDesktopVersion.mockResolvedValue('0.3.6');
+      mockCheckForUpdates.mockResolvedValue({
+        currentVersion: '0.3.6',
+        latestVersion: '0.3.6',
+        downloadUrl: '',
+        updateAvailable: false,
+        platform: 'linux',
+        manualDownload: true,
+      });
+
+      render(<GeneralActionsContainer />);
+
+      expect(await screen.findByText('This computer is already on the latest desktop app.')).toBeInTheDocument();
+      expect(screen.queryByText(/You can still download the installer/)).not.toBeInTheDocument();
+      expect(screen.queryByTestId('hub-shell-update-btn')).not.toBeInTheDocument();
+    });
+
     it('keeps the download when there is no newer version to install', async () => {
       mockIsTauri.mockReturnValue(true);
       mockGetInstalledDesktopVersion.mockResolvedValue('0.2.78');

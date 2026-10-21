@@ -771,8 +771,11 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
               {renderManualUpdateInstructions()}
             </>
           ) : (
+            // No installer to offer here, so the up-to-date line can't say there is one to download.
             <p className="text-sm text-muted-foreground">
-              {shellVersion && !shellUpdate?.updateAvailable ? t('SETTINGS_ACTIONS_SHELL_UP_TO_DATE') : t('SETTINGS_ACTIONS_UPDATE_NO_DOWNLOAD_URL')}
+              {shellVersion && !shellUpdate?.updateAvailable
+                ? t('SETTINGS_ACTIONS_SHELL_UP_TO_DATE_NO_DOWNLOAD')
+                : t('SETTINGS_ACTIONS_UPDATE_NO_DOWNLOAD_URL')}
             </p>
           )}
         </CardContent>

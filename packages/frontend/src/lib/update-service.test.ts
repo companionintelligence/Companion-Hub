@@ -232,6 +232,36 @@ describe('update-service', () => {
       });
     });
 
+    it('offers no installer older than the app that is running', async () => {
+      // A dev build ahead of its download server: the desktop app runs 0.3.7, the server's newest is 0.3.6.
+      mockInvoke.mockResolvedValue({ currentVersion: '0.3.7', latestVersion: '0.3.6', downloadUrl: '', updateAvailable: false });
+      mockGetDesktopRelease.mockResolvedValue(sdkOk({ latestVersion: '0.3.6', downloadUrl: DEB_036 }));
+
+      await expect(checkForUpdates('0.3.7', { askHubForInstaller: true })).resolves.toMatchObject({
+        currentVersion: '0.3.7',
+        latestVersion: '0.3.6',
+        downloadUrl: '',
+        updateAvailable: false,
+      });
+      expect(mockGetDesktopRelease).not.toHaveBeenCalled();
+      expect(corsBlockedFetch).not.toHaveBeenCalled();
+    });
+
+    it('leaves a newer version the desktop app found no installer for to the desktop app', async () => {
+      // On Fedora the desktop app takes only an .rpm or an AppImage. The Hub would name the .deb.
+      mockInvoke.mockResolvedValue({ currentVersion: '0.3.6', latestVersion: '0.3.7', downloadUrl: '', updateAvailable: true });
+      mockGetDesktopRelease.mockResolvedValue(
+        sdkOk({ latestVersion: '0.3.7', downloadUrl: 'https://dl.ci.computer/v0.3.7/linux/deb/x64/Companion%20Hub_0.3.7_amd64.deb' }),
+      );
+
+      await expect(checkForUpdates('0.3.6', { askHubForInstaller: true })).resolves.toMatchObject({
+        latestVersion: '0.3.7',
+        downloadUrl: '',
+        updateAvailable: true,
+      });
+      expect(mockGetDesktopRelease).not.toHaveBeenCalled();
+    });
+
     it('leaves the Hub alone for the update notice, which also runs on the signed-out pages', async () => {
       // A signed-out page gets a 401 from the Hub, and a 401 signs the page out.
       await expect(checkForUpdates()).resolves.toMatchObject({ latestVersion: '0.3.6', downloadUrl: '' });
