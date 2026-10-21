@@ -24,7 +24,7 @@ export const ChangeUsernameForm = ({ username }: Props) => {
   const { t } = useTranslation();
   const schema = z.object({
     newUsername: z.string().email(t('SETTINGS_SECURITY_CHANGE_USERNAME_FORM_INVALID_USERNAME')),
-    password: z.string().min(1),
+    password: z.string().min(1, t('AUTH_FORM_ERROR_PASSWORD_REQUIRED')),
   });
   const formId = useId();
   type FormValues = z.infer<typeof schema>;

@@ -16,7 +16,7 @@ export const ChangePasswordForm = () => {
 
   const schema = z
     .object({
-      currentPassword: z.string().min(1),
+      currentPassword: z.string().min(1, t('AUTH_FORM_ERROR_PASSWORD_REQUIRED')),
       newPassword: z.string().min(8, t('COMMON_PASSWORD_MIN_LENGTH')),
       newPasswordConfirm: z.string().min(8, t('COMMON_PASSWORD_MIN_LENGTH')),
     })

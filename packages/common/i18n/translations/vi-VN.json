@@ -689,7 +689,7 @@
   "SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN": "Bạn phải đăng nhập để thực hiện hành động này",
   "TIMEZONE_SELECTOR_LABEL": "Timezone",
   "TIMEZONE_SELECTOR_PLACEHOLDER": "Select a timezone",
-  "UPDATE_TOAST_AVAILABLE": "CI Hub {{version}} is available.",
+  "UPDATE_TOAST_AVAILABLE": "Companion Hub {{version}} is available.",
   "UPDATE_TOAST_LATER": "Later",
   "UPDATE_TOAST_OPEN_SETTINGS": "Open Settings",
   "USER_CONFIG_DOCKER_MERGE_DESCRIPTION": "This is a <a>docker merge</a> override file. It will be merged with the base <code>docker-compose</code> file of the app. You can find the base file in the <code>apps</code> folder.",

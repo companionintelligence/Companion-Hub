@@ -689,7 +689,7 @@
   "SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN": "Musisz być zalogowany, aby wykonać tę akcję",
   "TIMEZONE_SELECTOR_LABEL": "Strefa czasowa",
   "TIMEZONE_SELECTOR_PLACEHOLDER": "Wybierz strefę czasową",
-  "UPDATE_TOAST_AVAILABLE": "CI Hub {{version}} is available.",
+  "UPDATE_TOAST_AVAILABLE": "Companion Hub {{version}} is available.",
   "UPDATE_TOAST_LATER": "Later",
   "UPDATE_TOAST_OPEN_SETTINGS": "Open Settings",
   "USER_CONFIG_DOCKER_MERGE_DESCRIPTION": "To jest plik nadpisywania <a>docker merge</a>. Zostanie on połączony z bazowym plikiem <code>docker-compose</code> aplikacji. Możesz znaleźć plik bazowy w folderze <code>apps</code>.",

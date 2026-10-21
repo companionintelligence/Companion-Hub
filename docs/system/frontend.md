@@ -5,7 +5,7 @@
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-10-10 (onboarding engine choice and install order; Docker screen on the WSL engine, inlined logo)
+> **Last updated:** 2026-10-21 (Desktop app card offers the current installer in the desktop window; toasts sit at the top of the sign-in pages)
 > **Related:** docs/system/desktop.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/system/e2e.md
 
 ---
@@ -88,10 +88,15 @@ Settings → System → **Desktop app** offers the newest desktop installer for 
 - The architecture comes from Chromium's client hints (`getHighEntropyValues(['architecture'])`) where the browser has them, because every Mac browser's user agent says "Intel Mac". Safari and Firefox have none, so a Mac gets the Apple silicon installer there.
 - A phone or tablet browser gets no installer and does not ask the Hub. `isMobileUserAgent()` catches iPhone, iPod, Android, and an iPad, including an iPad that reports itself as a Mac (it has touch points). Without that check, an iPhone's user agent passes for macOS and an Android one for Linux.
 - The desktop app asks the Rust shell (`check_desktop_update_command`). When that fails it still reads the servers directly, and so does the phone app, which always lands there. Routing that fallback through the Hub would make the phone app offer desktop installers.
+- The Rust shell names an installer only when a newer version exists. When it names none, as on a computer that already runs the newest version, the Desktop app card asks the Hub for the installer (`checkForUpdates(version, { askHubForInstaller: true })`) and keeps it only when it is for the version the shell reported. The update notice in `use-update-checker.tsx` doesn't ask: it also runs on the signed-out pages, where the Hub answers with a 401 and a 401 signs the page out.
 - `desktop-release.ts` in `@ci-hub/common/types` holds the server choice, the installer choice, and the URL trust check for both the Hub and the page, so the page accepts the installer the Hub returns.
 - The install steps under the button never say to remove the app first. Removing the Linux package runs its cleanup (deb `postrm` on `remove`/`purge`, rpm `postun` at `0`), which deletes the Hub's database, every app with its data, and the Hub's folder. The steps install over it: `sudo apt install "./<file>"`, `sudo rpm -U "./<file>"`, or `chmod +x "./<file>"` for an AppImage. `<file>` is the download URL's last segment, decoded (`Companion Hub_0.2.78_amd64.deb`, with a space), and the step shows no command when the name has anything but letters, digits, spaces, `.`, `_`, `+` and `-`.
 - In the desktop window, an available update installs in one click: `installDesktopUpdate()` in `update-service.ts` calls the app's `perform_desktop_update_command` and reports `get_update_progress_command`. The updater stops the Hub during the update (older releases before they install, current ones once the update is installed), so `HubStatus` keeps the page while `isDesktopUpdateRunning()`, and a failed call starts the Hub again when its API doesn't answer. Then the card offers the download and the manual steps, unless the app had reported `done` or `relaunch`: the update is installed and only the restart failed, so the card says to quit and reopen the app. See [`DESKTOP-AUTO-UPDATE.md`](../DESKTOP-AUTO-UPDATE.md).
 - The card never says the desktop app isn't running. The Hub can't reach the listener of any desktop app up to 0.2.77, so an unreachable listener says nothing about the app. A browser gets where to update instead: Companion Hub on the computer that runs the Hub, or `companion-hub update` there.
+
+## Toasts on the sign-in pages
+
+Toasts sit at the bottom centre, except on the pages that show the sign-in card (`/login`, `/register`, `/reset-password`, `/device-registration`). There the bottom of the window holds the form's last rows, and the desktop app's restart notice stays until it is answered, so `toasterPlacement()` in `components/ui/Toaster/toaster-placement.ts` puts them at the top, below the title bar. `root.tsx` passes it to the Toaster for the current path, so a toast still open after signing in moves back to the bottom. `Toaster.tsx` itself stays as it is, in step with the Portal's copy.
 
 ## Styling
 

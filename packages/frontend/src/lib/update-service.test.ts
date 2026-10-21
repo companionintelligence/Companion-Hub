@@ -179,6 +179,66 @@ describe('update-service', () => {
     expect(mockGetDesktopRelease).not.toHaveBeenCalled();
   });
 
+  describe('when the desktop app names no installer because nothing is newer', () => {
+    const DEB_036 = 'https://dl.ci.computer/v0.3.6/linux/deb/x64/Companion%20Hub_0.3.6_amd64.deb';
+    // What the window sees when it reads a download server that sends no CORS headers.
+    const corsBlockedFetch = vi.fn(() => Promise.reject(new TypeError('Failed to fetch')));
+
+    beforeEach(() => {
+      Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+      mockPlatform.mockResolvedValue('linux');
+      mockArch.mockResolvedValue('x86_64');
+      mockInvoke.mockResolvedValue({ currentVersion: '0.3.6', latestVersion: '0.3.6', downloadUrl: '', updateAvailable: false });
+      vi.stubGlobal('fetch', corsBlockedFetch);
+    });
+
+    it('gets the installer of the version this computer runs from the Hub, for the signed-in Settings card', async () => {
+      mockGetDesktopRelease.mockResolvedValue(sdkOk({ latestVersion: 'v0.3.6', downloadUrl: DEB_036 }));
+
+      await expect(checkForUpdates('0.3.6', { askHubForInstaller: true })).resolves.toEqual({
+        currentVersion: '0.3.6',
+        latestVersion: '0.3.6',
+        downloadUrl: DEB_036,
+        updateAvailable: false,
+        platform: 'linux',
+        manualDownload: true,
+      });
+      expect(mockGetDesktopRelease).toHaveBeenCalledWith({ query: { environment: 'production', platform: 'linux', arch: 'x86_64' } });
+      expect(corsBlockedFetch).not.toHaveBeenCalled();
+    });
+
+    it("drops the Hub's installer when it is for another version than the one the card names", async () => {
+      mockGetDesktopRelease.mockResolvedValue(
+        sdkOk({ latestVersion: '0.3.7', downloadUrl: 'https://dl.ci.computer/v0.3.7/linux/deb/x64/Companion%20Hub_0.3.7_amd64.deb' }),
+      );
+
+      await expect(checkForUpdates('0.3.6', { askHubForInstaller: true })).resolves.toMatchObject({ latestVersion: '0.3.6', downloadUrl: '' });
+    });
+
+    it('drops an installer the window does not trust', async () => {
+      vi.stubEnv('CI_HUB_ENVIRONMENT', 'dev');
+      mockGetDesktopRelease.mockResolvedValue(sdkOk({ latestVersion: '0.3.6', downloadUrl: DEB_036 }));
+
+      await expect(checkForUpdates('0.3.6', { askHubForInstaller: true })).resolves.toMatchObject({ latestVersion: '0.3.6', downloadUrl: '' });
+    });
+
+    it('still reports the check when the Hub does not answer', async () => {
+      mockGetDesktopRelease.mockResolvedValue(sdkFail(500));
+
+      await expect(checkForUpdates('0.3.6', { askHubForInstaller: true })).resolves.toMatchObject({
+        latestVersion: '0.3.6',
+        downloadUrl: '',
+        updateAvailable: false,
+      });
+    });
+
+    it('leaves the Hub alone for the update notice, which also runs on the signed-out pages', async () => {
+      // A signed-out page gets a 401 from the Hub, and a 401 signs the page out.
+      await expect(checkForUpdates()).resolves.toMatchObject({ latestVersion: '0.3.6', downloadUrl: '' });
+      expect(mockGetDesktopRelease).not.toHaveBeenCalled();
+    });
+  });
+
   it('falls back to the fetch path when the native tauri update check fails', async () => {
     Object.defineProperty(window, '__TAURI_INTERNALS__', {
       value: {},

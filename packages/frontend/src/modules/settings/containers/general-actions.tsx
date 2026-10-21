@@ -204,7 +204,9 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
     const installedVersion = desktop ? await getInstalledDesktopVersion() : null;
     setShellVersion(installedVersion);
     setShellRestart(desktop ? await getDesktopRestartState() : null);
-    const info = await checkForUpdates(installedVersion ?? undefined);
+    // The desktop app names an installer only when a newer version exists. Settings is signed in, so
+    // the Hub can look up the installer of the version this computer already runs.
+    const info = await checkForUpdates(installedVersion ?? undefined, { askHubForInstaller: true });
     setShellUpdate(info);
     return info;
   }, [desktop]);

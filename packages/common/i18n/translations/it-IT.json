@@ -689,7 +689,7 @@
   "SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN": "Devi aver effettuato l'accesso per eseguire questa azione",
   "TIMEZONE_SELECTOR_LABEL": "Fuso Orario",
   "TIMEZONE_SELECTOR_PLACEHOLDER": "Seleziona un Fuso Orario",
-  "UPDATE_TOAST_AVAILABLE": "CI Hub {{version}} is available.",
+  "UPDATE_TOAST_AVAILABLE": "Companion Hub {{version}} is available.",
   "UPDATE_TOAST_LATER": "Later",
   "UPDATE_TOAST_OPEN_SETTINGS": "Open Settings",
   "USER_CONFIG_DOCKER_MERGE_DESCRIPTION": "Questo è un file di fusione <a>docker merge</a> . Sarà unito con il file iniziale di <code>docker-compose</code>. Puoi trovare il file iniziale nella cartella <code>apps</code>.",

@@ -689,7 +689,7 @@
   "SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN": "Vous devez être connecté pour réaliser cette action",
   "TIMEZONE_SELECTOR_LABEL": "Fuseau horaire",
   "TIMEZONE_SELECTOR_PLACEHOLDER": "Sélectionner un fuseau horaire",
-  "UPDATE_TOAST_AVAILABLE": "CI Hub {{version}} is available.",
+  "UPDATE_TOAST_AVAILABLE": "Companion Hub {{version}} is available.",
   "UPDATE_TOAST_LATER": "Later",
   "UPDATE_TOAST_OPEN_SETTINGS": "Open Settings",
   "USER_CONFIG_DOCKER_MERGE_DESCRIPTION": "Il s'agit d'un fichier de remplacement <a>docker fusionné</a>. Il sera fusionné avec le fichier de base <code>docker-compose</code> de l'application. Vous pouvez trouver le fichier de base dans le dossier <code>apps</code>.",

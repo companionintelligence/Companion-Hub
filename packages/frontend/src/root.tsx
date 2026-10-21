@@ -4,6 +4,7 @@ import { useUpdateChecker } from './hooks/use-update-checker';
 import { useDesktopRestartNotice } from './hooks/use-desktop-restart-notice';
 import { Suspense, useEffect, useRef, useState } from 'react';
 import { Toaster } from '@/components/ui/Toaster/Toaster';
+import { toasterPlacement } from '@/components/ui/Toaster/toaster-placement';
 import { Links, Meta, Navigate, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse, redirect, useLocation, useRevalidator } from 'react-router';
 import type { Route } from './+types/root';
 import { userContext } from './api-client';
@@ -731,7 +732,7 @@ export default function App({ loaderData }: Route.ComponentProps) {
   return (
     <Providers>
       <Outlet />
-      <Toaster />
+      <Toaster {...toasterPlacement(location.pathname)} />
     </Providers>
   );
 }

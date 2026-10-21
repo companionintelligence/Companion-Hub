@@ -688,7 +688,7 @@
   "SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN": "Error, você precisa está logado em sua conta",
   "TIMEZONE_SELECTOR_LABEL": "Fuso-horário",
   "TIMEZONE_SELECTOR_PLACEHOLDER": "Selecionar fuso horário",
-  "UPDATE_TOAST_AVAILABLE": "CI Hub {{version}} is available.",
+  "UPDATE_TOAST_AVAILABLE": "Companion Hub {{version}} is available.",
   "UPDATE_TOAST_LATER": "Later",
   "UPDATE_TOAST_OPEN_SETTINGS": "Open Settings",
   "USER_CONFIG_DOCKER_MERGE_DESCRIPTION": "Este é uma fusão <a>docker</a> arquivo de substituição. Será mesclado com o arquivo base <code>docker-compose</code> do aplicativo. Você pode encontrar o arquivo de base na pasta <code>apps</code>.",

@@ -689,7 +689,7 @@
   "SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN": "Вы должны войти для выполнения этого действия",
   "TIMEZONE_SELECTOR_LABEL": "Часовой пояс",
   "TIMEZONE_SELECTOR_PLACEHOLDER": "Выберите часовой пояс",
-  "UPDATE_TOAST_AVAILABLE": "CI Hub {{version}} is available.",
+  "UPDATE_TOAST_AVAILABLE": "Companion Hub {{version}} is available.",
   "UPDATE_TOAST_LATER": "Later",
   "UPDATE_TOAST_OPEN_SETTINGS": "Open Settings",
   "USER_CONFIG_DOCKER_MERGE_DESCRIPTION": "Это файл переопределения конфигурации с помощью <a>docker merge</a>. Он будет слит с базовым файлом <code>docker-compose</code> приложения. Базовый файл можно найти в папке <code>apps</code>.",

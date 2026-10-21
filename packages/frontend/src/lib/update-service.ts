@@ -261,7 +261,37 @@ async function resolveInstallerFromHub(
   return { latestVersion, downloadUrl: isTrustedDownloadUrl(downloadUrl) ? downloadUrl : '' };
 }
 
-export async function checkForUpdates(fallbackCurrentVersion?: string): Promise<UpdateInfo | null> {
+/**
+ * The installer of `version` when the desktop app's own check named none, which it does whenever this
+ * computer already runs the newest version. The download servers send no CORS headers, so the window
+ * can't read them itself; `askHub` lets the Hub read them. An installer of any other version is
+ * dropped, because the Desktop app card offers `version` by name.
+ */
+async function findDesktopInstaller(version: string, platform: DesktopPlatform | null, osArch: string, askHub: boolean): Promise<string> {
+  const sources = askHub ? [resolveInstallerFromHub, resolveInstallerFromCdn] : [resolveInstallerFromCdn];
+  for (const source of sources) {
+    try {
+      const resolved = await source(platform, osArch);
+      if (resolved?.downloadUrl && resolved.latestVersion === version) {
+        return resolved.downloadUrl;
+      }
+    } catch {
+      // Best effort: try the next source.
+    }
+  }
+  return '';
+}
+
+export interface CheckForUpdatesOptions {
+  /**
+   * In the desktop window, ask the Hub for the installer when the desktop app names none. Only for
+   * a signed-in page: the Hub answers a signed-out one with a 401, and a 401 signs the page out,
+   * which sends a page like `/register` to `/login`.
+   */
+  askHubForInstaller?: boolean;
+}
+
+export async function checkForUpdates(fallbackCurrentVersion?: string, options: CheckForUpdatesOptions = {}): Promise<UpdateInfo | null> {
   const currentVersion = (fallbackCurrentVersion ?? (await getCurrentVersion()) ?? '').replace(/^v/, '');
   const desktopPlatform = await getDesktopPlatform();
   const osArch = await getDesktopArch();
@@ -284,14 +314,7 @@ export async function checkForUpdates(fallbackCurrentVersion?: string): Promise<
           downloadUrl = '';
         }
         if (!downloadUrl) {
-          try {
-            const resolved = await resolveInstallerFromCdn(desktopPlatform, osArch);
-            if (resolved?.downloadUrl) {
-              downloadUrl = resolved.downloadUrl;
-            }
-          } catch {
-            // CDN is best-effort when the native check omitted a URL.
-          }
+          downloadUrl = await findDesktopInstaller(latestVersion, desktopPlatform, osArch, options.askHubForInstaller === true);
         }
 
         const resolvedCurrent = semver.valid(nativeCurrentVersion) ? nativeCurrentVersion : currentVersion;
@@ -308,8 +331,8 @@ export async function checkForUpdates(fallbackCurrentVersion?: string): Promise<
       }
     }
 
-    // Only a plain browser asks the Hub. The desktop and phone apps land here when their native check
-    // fails and keep their direct read, so the phone app does not start offering desktop installers.
+    // Only a plain browser asks the Hub here. The desktop and phone apps land here when their native
+    // check fails and keep their direct read, so the phone app does not start offering desktop installers.
     const resolved = isTauri() ? await resolveInstallerFromCdn(desktopPlatform, osArch) : await resolveInstallerFromHub(desktopPlatform, osArch);
     if (!resolved) return null;
 

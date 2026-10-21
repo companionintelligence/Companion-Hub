@@ -1,3 +1,4 @@
+import en from '@ci-hub/common/i18n/translations/en.json';
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderHook, waitFor } from '@/tests/test-utils';
@@ -268,5 +269,14 @@ describe('useUpdateChecker — desktop behaviour', () => {
     await act(async () => {
       await expect(result.current.recheck()).resolves.toBeNull();
     });
+  });
+});
+
+describe('useUpdateChecker — wording', () => {
+  it('names the desktop app as the restart notice and the Desktop app card do', () => {
+    // The two notices used to disagree: "CI Hub 0.3.6 is available." and then "Companion Hub 0.3.6 is installed".
+    expect(en.UPDATE_TOAST_AVAILABLE).toBe('Companion Hub {{version}} is available.');
+    expect(en.DESKTOP_RESTART_TOAST_TITLE).toBe('Companion Hub {{version}} is installed');
+    expect(en.SETTINGS_ACTIONS_SHELL_UPDATE_SUBTITLE_WITH_VERSION).toMatch(/^This computer has Companion Hub \{\{version\}\} installed\./);
   });
 });

@@ -21,12 +21,22 @@ import { toast } from 'sonner';
 import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import { GeneralActionsContainer } from './general-actions';
 
-const { getAutoUpdates, setAutoUpdates, checkHubForUpdatesApi, getUpdateBlocks, getDesktopRelease } = vi.hoisted(() => ({
+const { getAutoUpdates, setAutoUpdates, checkHubForUpdatesApi, getUpdateBlocks, getDesktopRelease, mockInvoke } = vi.hoisted(() => ({
   getAutoUpdates: vi.fn(),
   setAutoUpdates: vi.fn(),
   checkHubForUpdatesApi: vi.fn(),
   getUpdateBlocks: vi.fn(),
   getDesktopRelease: vi.fn(),
+  mockInvoke: vi.fn(),
+}));
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: (...args: unknown[]) => mockInvoke(...args),
+}));
+
+vi.mock('@tauri-apps/plugin-os', () => ({
+  arch: () => 'x86_64',
+  platform: () => 'linux',
 }));
 
 vi.mock('@/context/app-context', () => ({
@@ -106,6 +116,7 @@ describe('GeneralActionsContainer', () => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
     Object.defineProperty(window.navigator, 'userAgent', { value: jsdomUserAgent, configurable: true });
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
   beforeEach(() => {
@@ -678,6 +689,40 @@ describe('GeneralActionsContainer', () => {
       );
       expect(screen.queryByTestId('desktop-update-failed')).not.toBeInTheDocument();
       expect(screen.queryByTestId('manual-update-instructions')).not.toBeInTheDocument();
+    });
+
+    it('offers the download of the version this computer runs, which the desktop app names no installer for', async () => {
+      const downloadUrl = 'https://dl.ci.computer/v0.3.6/linux/deb/x64/Companion%20Hub_0.3.6_amd64.deb';
+      const actual = await vi.importActual<typeof import('@/lib/update-service')>('@/lib/update-service');
+      mockCheckForUpdates.mockImplementation(actual.checkForUpdates);
+      vi.stubEnv('CI_HUB_ENVIRONMENT', 'production');
+      Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+      mockIsTauri.mockReturnValue(true);
+      mockGetInstalledDesktopVersion.mockResolvedValue('0.3.6');
+      // The desktop app's own check names an installer only when a newer version exists.
+      mockInvoke.mockImplementation(async (command: string) =>
+        command === 'check_desktop_update_command'
+          ? { currentVersion: '0.3.6', latestVersion: '0.3.6', downloadUrl: '', updateAvailable: false }
+          : null,
+      );
+      // The window cannot read the download server itself: it sends no CORS headers.
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))),
+      );
+      getDesktopRelease.mockResolvedValue(sdkOk({ latestVersion: '0.3.6', downloadUrl }));
+      mockPerformUpdate.mockResolvedValue({ ok: true, messageKey: 'SETTINGS_ACTIONS_DOWNLOAD_INSTALLER_OPENED' });
+
+      render(<GeneralActionsContainer />);
+
+      const download = await screen.findByTestId('hub-shell-update-btn');
+      expect(download).toHaveTextContent('Download 0.3.6');
+      expect(screen.getByText('This computer is already on the latest desktop app. You can still download the installer.')).toBeInTheDocument();
+      expect(screen.getByTestId('manual-update-instructions')).toBeInTheDocument();
+      expect(screen.queryByTestId('hub-shell-install-btn')).not.toBeInTheDocument();
+
+      await userEvent.click(download);
+      await waitFor(() => expect(mockPerformUpdate).toHaveBeenCalledWith(expect.objectContaining({ latestVersion: '0.3.6', downloadUrl })));
     });
 
     it('keeps the download when there is no newer version to install', async () => {

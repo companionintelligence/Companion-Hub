@@ -1,4 +1,4 @@
-import { render } from '@/tests/test-utils';
+import { render, screen, userEvent, within } from '@/tests/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChangeUsernameForm } from './change-username-form';
 
@@ -34,6 +34,21 @@ describe('ChangeUsernameForm', () => {
       writable: true,
       configurable: true,
     });
+  });
+
+  it('says in words that the password is missing when the dialog is sent with nothing typed', async () => {
+    const mutate = vi.fn();
+    mockUseMutation.mockReturnValue({ mutate, isPending: false });
+    render(<ChangeUsernameForm username="old@example.com" />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'COMMON_CHANGE_USERNAME' }));
+    const dialog = await screen.findByRole('dialog');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'COMMON_CHANGE_USERNAME' }));
+
+    expect(await within(dialog).findByText('AUTH_FORM_ERROR_PASSWORD_REQUIRED')).toBeInTheDocument();
+    expect(within(dialog).getByText('SETTINGS_SECURITY_CHANGE_USERNAME_FORM_INVALID_USERNAME')).toBeInTheDocument();
+    expect(within(dialog).queryByText(/too small|expected string/i)).not.toBeInTheDocument();
+    expect(mutate).not.toHaveBeenCalled();
   });
 
   it('signs the client out after a successful change', () => {
