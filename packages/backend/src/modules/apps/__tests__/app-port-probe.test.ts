@@ -55,6 +55,25 @@ describe('probeAppPort', () => {
     await expect(probeAppPort('127.0.0.1', port, 2_000)).resolves.toBe('answered');
   });
 
+  // A one-byte length prefix reads `G` as a 71-byte message. The server waits for all of it before it
+  // says anything, so a request shorter than that looked like a hung app.
+  it('reports a server that frames messages with a one-byte length as answered', async () => {
+    const port = await listen(
+      net.createServer((socket) => {
+        let received = Buffer.alloc(0);
+        socket.on('data', (chunk) => {
+          received = Buffer.concat([received, chunk]);
+          const length = received[0] ?? Number.POSITIVE_INFINITY;
+          if (received.length > length) {
+            socket.destroy();
+          }
+        });
+      }),
+    );
+
+    await expect(probeAppPort('127.0.0.1', port, 1_000)).resolves.toBe('answered');
+  });
+
   it('reports a server that closes the connection as answered', async () => {
     const port = await listen(net.createServer((socket) => socket.destroy()));
 
