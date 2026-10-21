@@ -4,6 +4,26 @@
 set -eu
 
 CLI_LINK=/usr/bin/cihub
+PACKAGE=${DPKG_MAINTSCRIPT_PACKAGE:-companion-hub}
+
+# 0.3.5 and 0.3.6 shipped every entry owned by uid 1001, the build runner's user. dpkg sets the
+# owner of each file it unpacks, but it leaves a directory that already exists as it is. After an
+# upgrade "/usr/lib/Companion Hub" and its resources folder still belonged to that uid, which could
+# then swap the bundled cihub that /usr/bin/cihub points at. Hand everything this package installed
+# under /usr back to root. Symlinks are skipped and never followed.
+restore_root_ownership() {
+  dpkg-query -L "$PACKAGE" 2>/dev/null | while IFS= read -r path; do
+    case "$path" in /usr/*) ;; *) continue ;; esac
+    if [ -L "$path" ] || [ ! -e "$path" ]; then
+      continue
+    fi
+    if [ "$(stat -c '%u:%g' "$path" 2>/dev/null)" != "0:0" ]; then
+      chown -h root:root "$path" 2>/dev/null || true
+    fi
+  done
+}
+
+restore_root_ownership || true
 
 find_bundled_cli() {
   for dir in "/usr/lib/Companion Hub/resources" "/usr/lib/companion-hub/resources"; do

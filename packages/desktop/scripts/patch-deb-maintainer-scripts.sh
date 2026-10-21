@@ -43,12 +43,13 @@ find "$DESKTOP_DIR/src-tauri/target" -path '*/bundle/deb/*.deb' -type f 2>/dev/n
   (
     temp_dir=$(mktemp -d)
     trap 'rm -rf "$temp_dir"' EXIT
-    # mktemp makes the folder 0700. dpkg-deb records it as the package's ./ entry.
-    chmod 0755 "$temp_dir"
     rebuilt_path="$deb_path.rebuilt"
 
     echo "[deb-patch][INFO] Patching maintainer scripts into $deb_path"
     dpkg-deb -R "$deb_path" "$temp_dir"
+    # dpkg-deb records this folder as the package's ./ entry. mktemp makes it 0700, and -R gives it
+    # the mode of the ./ entry when the input has one (0700 in the 0.3.6 .deb), so set it after.
+    chmod 0755 "$temp_dir"
     install -Dm755 "$POSTRM_SOURCE" "$temp_dir/DEBIAN/postrm"
     install -Dm755 "$POSTINST_SOURCE" "$temp_dir/DEBIAN/postinst"
     install -Dm644 "$METAINFO_SOURCE" "$temp_dir/usr/share/metainfo/computer.ci.app.hub.metainfo.xml"
