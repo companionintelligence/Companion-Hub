@@ -61,10 +61,15 @@ export class MemoryConnectionRepository {
    * All apps currently in the `connected` state that hold a stored key — the
    * set the rotation sweep considers. `updatedAt` on each row is when the
    * current key was last stored (connect or rotate), i.e. the key's age.
+   * With `appUrn`, only that app's rows.
    */
-  async findAllConnected(): Promise<MemoryConnectionRow[]> {
+  async findAllConnected(appUrn?: string): Promise<MemoryConnectionRow[]> {
     return this.db.query.memoryConnection.findMany({
-      where: and(eq(memoryConnection.state, 'connected'), isNotNull(memoryConnection.encryptedKey)),
+      where: and(
+        eq(memoryConnection.state, 'connected'),
+        isNotNull(memoryConnection.encryptedKey),
+        appUrn === undefined ? undefined : eq(memoryConnection.appUrn, appUrn),
+      ),
     }) as Promise<MemoryConnectionRow[]>;
   }
 

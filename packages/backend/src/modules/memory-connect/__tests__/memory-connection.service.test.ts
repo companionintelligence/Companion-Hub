@@ -164,13 +164,4 @@ describe('MemoryConnectionService', () => {
 
     expect(repo.upsert).toHaveBeenCalledWith(expect.any(String), expect.any(Object), 7);
   });
-
-  it('isConnected requires both connected state and a stored key', async () => {
-    const { service, repo } = makeMocks();
-    repo.findByAppUrn.mockResolvedValueOnce(row({ state: 'connected', encryptedKey: 'enc(k)' }));
-    expect(await service.isConnected('a')).toBe(true);
-
-    repo.findByAppUrn.mockResolvedValueOnce(row({ state: 'connected', encryptedKey: null }));
-    expect(await service.isConnected('a')).toBe(false);
-  });
 });

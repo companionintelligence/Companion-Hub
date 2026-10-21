@@ -988,6 +988,47 @@ describe('MemoryConnectService with two Hub people', () => {
     expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: APP, skipPull: true, actor: { kind: 'system', reason: 'memory-connect' } });
   });
 
+  it('finishes the connect when the revoked row fails to clear', async () => {
+    const { service, exchange, connections, pending, logger } = withPerson2Connected();
+    pending.consume.mockReturnValue(CONSUMED_BY_1);
+    exchange.exchange.mockResolvedValue({ appUrn: APP, key: 'key-1', expiresAt: '2026-12-01T00:00:00.000Z' });
+    connections.clear.mockRejectedValueOnce(new Error('db blip'));
+
+    const result = await service.handleCallback('code-1', 'state-1', '1');
+
+    expect(result.error).toBeUndefined();
+    expect(connections.storeConnected).toHaveBeenCalledWith(APP, 'http://gateway:8642', 'key-1', '2026-12-01T00:00:00.000Z', '1');
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('could not clear'), expect.any(Error));
+  });
+
+  it('two people finishing Connect at once take turns, so the second revokes the first key before minting', async () => {
+    const ctx = makeService();
+    ctx.resolver.findProvider.mockResolvedValue(PROVIDER);
+    // A tiny memory_connection table, so each connect sees what the other stored.
+    const stored: Array<{ appUrn: string; hubUserId: number }> = [];
+    ctx.connections.listConnected.mockImplementation(async () => stored.map((row) => ({ ...row, state: 'connected' })));
+    ctx.connections.storeConnected.mockImplementation(async (appUrn: string, _url: string, _key: string, _expires: string, hubUserId: string) => {
+      stored.push({ appUrn, hubUserId: Number(hubUserId) });
+    });
+    ctx.connections.clear.mockImplementation(async (_appUrn: string, hubUserId: number) => {
+      const index = stored.findIndex((row) => row.hubUserId === Number(hubUserId));
+      if (index >= 0) {
+        stored.splice(index, 1);
+      }
+    });
+    ctx.pending.consume.mockReturnValueOnce(CONSUMED_BY_1).mockReturnValueOnce({ ...CONSUMED_BY_1, userId: '3' });
+    ctx.exchange.exchange.mockImplementation(async (_url: string, code: string) => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return { appUrn: APP, key: `key-${code}`, expiresAt: '2026-12-01T00:00:00.000Z' };
+    });
+
+    await Promise.all([ctx.service.handleCallback('code-1', 'state-1', '1'), ctx.service.handleCallback('code-3', 'state-3', '3')]);
+
+    // Without turns both find nobody connected, neither revokes and CI Memory ends up with two owners.
+    expect(ctx.exchange.revoke).toHaveBeenCalledTimes(1);
+    expect(stored).toEqual([{ appUrn: APP, hubUserId: 3 }]);
+  });
+
   it('person 2 reconnecting replaces only their own key (no revoke)', async () => {
     const { service, exchange, connections, pending } = withPerson2Connected();
     pending.consume.mockReturnValue({ ...CONSUMED_BY_1, userId: '2' });

@@ -19,8 +19,9 @@ import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.servi
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { TunnelHealthService } from '@/modules/cloudflare/tunnel-health.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
+import { AsyncMutex } from '@/utils/mutex/async-mutex';
 import { type MemoryConnectionState } from './memory-connection.repository';
-import { MemoryConnectionService } from './memory-connection.service';
+import { MemoryConnectionService, normalizeHubUserId } from './memory-connection.service';
 import { MemoryExchangeClient } from './memory-exchange.client';
 import { isMemoryProviderApp } from './memory-provider.predicate';
 import { MemoryProviderResolver, type MemoryProviderRuntimeStatus } from './memory-provider.resolver';
@@ -51,6 +52,11 @@ const DOWN_APP_STATUSES: readonly AppStatus[] = [
 ];
 
 type ApplyOutcome = 'restarted' | 'restarting' | 'deferred' | 'failed';
+
+/** Rows hold `normalizeHubUserId` of the id they were written with, so ids compare the same way. */
+function isSameHubUser(a: string | number | null | undefined, b: string | number | null | undefined): boolean {
+  return normalizeHubUserId(a) === normalizeHubUserId(b);
+}
 
 /** Machine-readable reasons let the UI explain a disabled Connect button. */
 export type ConnectBlockedReason =
@@ -118,6 +124,12 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
   private initialRotationTimer: ReturnType<typeof setTimeout> | null = null;
   /** Guards against a slow sweep (each rotation restarts an app) overlapping itself. */
   private rotating = false;
+  /**
+   * Per app, so two people finishing Connect at once cannot both find nobody else connected and
+   * both mint a key, and a Disconnect cannot revoke a key minted after its ownership check.
+   * Its own instance: the lifecycle mutex is keyed by app URN too, and the restarts run under it.
+   */
+  private readonly connectionMutex = new AsyncMutex();
 
   constructor(
     private readonly resolver: MemoryProviderResolver,
@@ -302,7 +314,13 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return { next: attempt.redirect };
     }
 
-    const result = await this.completeConnect(attempt.appUrn, attempt.next, code, currentUserId);
+    const release = await this.connectionMutex.acquire(attempt.appUrn);
+    let result: { next: string; error?: boolean };
+    try {
+      result = await this.completeConnect(attempt.appUrn, attempt.next, code, currentUserId);
+    } finally {
+      release();
+    }
 
     // Recording every outcome makes a replay preserve success, failure, and deferral.
     this.pending.recordOutcome(state, result.next);
@@ -364,7 +382,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * key rotation refuses. Their rows are cleared so their view stops claiming a connection.
    */
   private async releaseOtherConnections(appUrn: AppUrn, providerUrl: string, hubUserId: string): Promise<'none' | 'released' | 'failed'> {
-    const others = (await this.connections.listConnected()).filter((row) => row.appUrn === appUrn && String(row.hubUserId) !== String(hubUserId));
+    const others = (await this.connections.listConnected(appUrn)).filter((row) => !isSameHubUser(row.hubUserId, hubUserId));
 
     if (others.length === 0) {
       return 'none';
@@ -376,8 +394,14 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return 'failed';
     }
 
+    // The key is gone on CI Memory now, so a row that fails to clear must not abort the connect:
+    // its owner's next status read finds the dead key and clears it.
     for (const row of others) {
-      await this.connections.clear(appUrn, row.hubUserId);
+      try {
+        await this.connections.clear(appUrn, row.hubUserId);
+      } catch (err) {
+        this.logger.error(`[MemoryConnect] ${appUrn}: could not clear the revoked connection of Hub user ${row.hubUserId}`, err);
+      }
     }
 
     this.logger.info(
@@ -511,7 +535,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       state: effectiveState,
       ...launchers,
       keyExpiresAt,
-      connectedByOther: effectiveState !== 'connected' && !!hubUserId && !!active && String(active.hubUserId) !== String(hubUserId),
+      connectedByOther: effectiveState !== 'connected' && !!hubUserId && !!active && !isSameHubUser(active.hubUserId, hubUserId),
     };
   }
 
@@ -525,23 +549,31 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * If the provider no longer exists, clearing locally is sufficient.
    */
   async disconnect(appUrn: AppUrn, hubUserId?: string | null): Promise<void> {
-    const active = hubUserId ? await this.connections.getActiveConnection(appUrn) : undefined;
+    // Held until the row is cleared, not over the restart, so a waiting Connect callback answers fast.
+    const release = await this.connectionMutex.acquire(appUrn);
 
-    // CI Memory revokes by app, so this would take the key of whoever connected it.
-    if (active && String(active.hubUserId) !== String(hubUserId)) {
-      throw new ForbiddenException('Another person connected this app to CI Memory. Only they can disconnect it.');
-    }
+    try {
+      const active = hubUserId ? await this.connections.getActiveConnection(appUrn) : undefined;
 
-    const provider = await this.resolver.findProvider();
-
-    if (provider) {
-      const revoked = await this.exchange.revoke(provider.internalUrl, appUrn);
-      if (!revoked) {
-        throw new ServiceUnavailableException('Could not revoke the memory key on CI Memory; the app is still connected. Please try again.');
+      // CI Memory revokes by app, so this would take the key of whoever connected it.
+      if (active && !isSameHubUser(active.hubUserId, hubUserId)) {
+        throw new ForbiddenException('Another person connected this app to CI Memory. Only they can disconnect it.');
       }
+
+      const provider = await this.resolver.findProvider();
+
+      if (provider) {
+        const revoked = await this.exchange.revoke(provider.internalUrl, appUrn);
+        if (!revoked) {
+          throw new ServiceUnavailableException('Could not revoke the memory key on CI Memory; the app is still connected. Please try again.');
+        }
+      }
+
+      await this.connections.clear(appUrn, hubUserId);
+    } finally {
+      release();
     }
 
-    await this.connections.clear(appUrn, hubUserId);
     await this.applyConnection(appUrn, 'await');
   }
 

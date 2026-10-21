@@ -58,16 +58,9 @@ export class MemoryConnectionService {
     return latest?.state ?? 'unconfigured';
   }
 
-  /** All connected apps holding a stored key (for the key-rotation sweep). */
-  async listConnected(): Promise<MemoryConnectionRow[]> {
-    return this.repo.findAllConnected();
-  }
-
-  /** Whether the app currently has a stored, connected memory key. */
-  async isConnected(appUrn: string): Promise<boolean> {
-    const row = await this.repo.findByAppUrn(appUrn);
-
-    return row?.state === 'connected' && !!row.encryptedKey;
+  /** Connected rows holding a stored key (for the key-rotation sweep), or only one app's when given. */
+  async listConnected(appUrn?: string): Promise<MemoryConnectionRow[]> {
+    return this.repo.findAllConnected(appUrn);
   }
 
   /**
@@ -99,7 +92,7 @@ export class MemoryConnectionService {
    * generation).
    */
   async getInjectableCreds(appUrn: string): Promise<InjectableMemoryCreds | null> {
-    return this.credsFromRow(await this.repo.findLatestConnected(appUrn));
+    return this.credsFromRow(await this.getActiveConnection(appUrn));
   }
 
   /**
