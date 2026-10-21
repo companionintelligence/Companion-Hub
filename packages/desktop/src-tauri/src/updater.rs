@@ -241,6 +241,12 @@ pub struct DesktopUpdateInfo {
     pub expected_size: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expected_sha256: Option<String>,
+    /// The installer format this computer takes: `deb`, `rpm` or `appimage` on Linux, `dmg` on
+    /// macOS, `exe` on Windows. Its presence also tells the page that this app looks up its own
+    /// installer when nothing is newer, so the page doesn't ask the Hub, which can't tell an
+    /// Ubuntu from a Fedora.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package_format: Option<String>,
 }
 
 pub fn is_trusted_download_url(url: &str) -> bool {
@@ -374,14 +380,16 @@ fn platform_manifest_key(os: HostOs, arch: &str) -> String {
     }
 }
 
-fn platform_key() -> Option<String> {
-    let os = host_os()?;
-    let arch = if cfg!(target_arch = "aarch64") {
+fn host_arch() -> &'static str {
+    if cfg!(target_arch = "aarch64") {
         "aarch64"
     } else {
         "x86_64"
-    };
-    Some(platform_manifest_key(os, arch))
+    }
+}
+
+fn platform_key() -> Option<String> {
+    Some(platform_manifest_key(host_os()?, host_arch()))
 }
 
 fn linux_package_preference_from_os_release(content: &str) -> &'static str {
@@ -448,25 +456,31 @@ fn artifact_for_platform_data(
     }
 }
 
-fn artifact_for_platform(
-    platform_data: &serde_json::Value,
-    source: &UpdateSource,
-) -> Option<ResolvedArtifact> {
-    artifact_for_platform_data(
-        platform_data,
-        host_os()?,
-        linux_package_preference(),
-        source,
-    )
+/// This computer: its OS and, on Linux, the package format `/etc/os-release` points to.
+fn current_host() -> Option<(HostOs, &'static str)> {
+    host_os().map(|os| (os, linux_package_preference()))
 }
 
+/// The installer format the updater looks for first on `os`; see [`artifact_for_platform_data`].
+fn host_package_format(os: HostOs, linux_preference: &'static str) -> &'static str {
+    match os {
+        HostOs::Macos => "dmg",
+        HostOs::Windows => "exe",
+        HostOs::Linux => linux_preference,
+    }
+}
+
+/// The installer `manifest` lists for `host` (see [`current_host`]), in the format it takes.
 fn resolve_download_artifact(
     manifest: &ManifestJson,
     source: &UpdateSource,
+    host: Option<(HostOs, &'static str)>,
 ) -> Option<ResolvedArtifact> {
-    let key = platform_key()?;
-    let platform_data = manifest.platforms.get(&key)?;
-    artifact_for_platform(platform_data, source)
+    let (os, linux_preference) = host?;
+    let platform_data = manifest
+        .platforms
+        .get(&platform_manifest_key(os, host_arch()))?;
+    artifact_for_platform_data(platform_data, os, linux_preference, source)
 }
 
 fn lookup_artifact_in_manifest(
@@ -627,6 +641,15 @@ fn check_desktop_update_with_source(
     current_version: &str,
     source: &UpdateSource,
 ) -> Result<DesktopUpdateInfo, String> {
+    check_desktop_update_for_host(current_version, source, current_host())
+}
+
+/// [`check_desktop_update_with_source`] for a given computer (see [`current_host`]).
+fn check_desktop_update_for_host(
+    current_version: &str,
+    source: &UpdateSource,
+    host: Option<(HostOs, &'static str)>,
+) -> Result<DesktopUpdateInfo, String> {
     let client = source.http_client(Duration::from_secs(30))?;
 
     let latest_version = fetch_latest_version(&client, source)?;
@@ -634,7 +657,15 @@ fn check_desktop_update_with_source(
 
     let download_url = if update_available {
         let manifest = fetch_manifest(&client, &latest_version, source)?;
-        resolve_download_artifact(&manifest, source)
+        resolve_download_artifact(&manifest, source, host)
+    } else if !semver_compare_gt(current_version, &latest_version) {
+        // This computer already runs the newest version. Its installer is looked up anyway, so the
+        // Desktop app card can offer it again in this computer's own format (the `.rpm` on Fedora).
+        // The check doesn't depend on it: a failed read only leaves the installer out. A build ahead
+        // of the download server gets none, since the newest release there would downgrade it.
+        fetch_manifest(&client, &latest_version, source)
+            .ok()
+            .and_then(|manifest| resolve_download_artifact(&manifest, source, host))
     } else {
         None
     };
@@ -649,6 +680,8 @@ fn check_desktop_update_with_source(
         update_available,
         expected_size: download_url.as_ref().and_then(|a| a.size),
         expected_sha256: download_url.and_then(|a| a.sha256),
+        package_format: host
+            .map(|(os, linux_preference)| host_package_format(os, linux_preference).to_string()),
     })
 }
 
@@ -2478,8 +2511,9 @@ mod tests {
             version: "1.0.0".to_string(),
             platforms,
         };
-        let artifact = resolve_download_artifact(&manifest, &UpdateSource::default_cdn())
-            .expect("artifact for current platform");
+        let artifact =
+            resolve_download_artifact(&manifest, &UpdateSource::default_cdn(), current_host())
+                .expect("artifact for current platform");
         assert!(artifact
             .url
             .starts_with(&format!("{}/", default_update_cdn_base())));
@@ -2773,6 +2807,108 @@ mod tests {
         (base, sha)
     }
 
+    /// Serves `latest.json` naming `latest_version`, and the manifest `manifest` builds from the
+    /// server's base URL, when it builds one.
+    fn serve_release(
+        latest_version: &str,
+        manifest: impl FnOnce(&str) -> Option<serde_json::Value>,
+    ) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let base = format!(
+            "http://127.0.0.1:{}",
+            listener.local_addr().expect("addr").port()
+        );
+        let latest = format!("{{\"version\":\"{latest_version}\"}}");
+        let manifest_path = format!("/v{latest_version}/manifest.json");
+        let manifest = manifest(&base).map(|m| m.to_string());
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut buffer = [0u8; 2048];
+                let read = stream.read(&mut buffer).unwrap_or(0);
+                if read == 0 {
+                    continue;
+                }
+                let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+                let path = request.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let (status, body) = match (path.as_str(), &manifest) {
+                    ("/latest.json", _) => ("200 OK", latest.clone()),
+                    (p, Some(m)) if p == manifest_path => ("200 OK", m.clone()),
+                    _ => ("404 Not Found", "not found".to_string()),
+                };
+                let header = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(body.as_bytes());
+            }
+        });
+        base
+    }
+
+    /// A Linux release that lists all three package formats, each at its own URL.
+    fn linux_release(base: &str, version: &str) -> serde_json::Value {
+        let entry = |path: &str| serde_json::json!({ "url": format!("{base}/v{version}/{path}"), "size": 1 });
+        serde_json::json!({
+            "version": version,
+            "platforms": {
+                platform_manifest_key(HostOs::Linux, host_arch()): {
+                    "deb": entry("hub.deb"),
+                    "rpm": entry("hub.rpm"),
+                    "appimage": entry("hub.AppImage"),
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn up_to_date_check_names_this_computers_own_installer() {
+        let base = serve_release("1.2.3", |base| Some(linux_release(base, "1.2.3")));
+        let source = UpdateSource::from_base(&base).expect("test source");
+
+        // Fedora gets the .rpm and Ubuntu the .deb, even with nothing newer to install.
+        let fedora = check_desktop_update_for_host("1.2.3", &source, Some((HostOs::Linux, "rpm")))
+            .expect("check on Fedora");
+        assert!(!fedora.update_available);
+        assert!(
+            fedora.download_url.ends_with("/v1.2.3/hub.rpm"),
+            "{}",
+            fedora.download_url
+        );
+        assert_eq!(fedora.package_format.as_deref(), Some("rpm"));
+
+        let ubuntu = check_desktop_update_for_host("1.2.3", &source, Some((HostOs::Linux, "deb")))
+            .expect("check on Ubuntu");
+        assert!(
+            ubuntu.download_url.ends_with("/v1.2.3/hub.deb"),
+            "{}",
+            ubuntu.download_url
+        );
+        assert_eq!(ubuntu.package_format.as_deref(), Some("deb"));
+    }
+
+    #[test]
+    fn up_to_date_check_offers_nothing_older_and_survives_a_missing_manifest() {
+        let base = serve_release("1.2.3", |base| Some(linux_release(base, "1.2.3")));
+        let source = UpdateSource::from_base(&base).expect("test source");
+
+        // A build ahead of the download server would be downgraded by its newest release.
+        let ahead = check_desktop_update_for_host("1.3.0", &source, Some((HostOs::Linux, "rpm")))
+            .expect("check ahead of the server");
+        assert!(!ahead.update_available);
+        assert!(ahead.download_url.is_empty());
+
+        // Without a manifest the check still answers, only without an installer.
+        let no_manifest =
+            UpdateSource::from_base(&serve_release("1.2.3", |_| None)).expect("source");
+        let current =
+            check_desktop_update_for_host("1.2.3", &no_manifest, Some((HostOs::Linux, "deb")))
+                .expect("check without a manifest");
+        assert!(!current.update_available);
+        assert!(current.download_url.is_empty());
+        assert_eq!(current.package_format.as_deref(), Some("deb"));
+    }
+
     #[test]
     fn end_to_end_check_download_verify_against_local_server() {
         let artifact = b"fake-installer-bytes-for-e2e".to_vec();
@@ -2787,9 +2923,12 @@ mod tests {
         assert_eq!(info.expected_size, Some(artifact.len() as u64));
         assert_eq!(info.expected_sha256.as_deref(), Some(sha.as_str()));
 
-        // No update offered when already current.
+        // No update offered when already current, but this computer's installer is still named.
         let current = check_desktop_update_with_source("9.9.9", &source).expect("check current");
         assert!(!current.update_available);
+        assert_eq!(current.download_url, info.download_url);
+        assert_eq!(current.expected_sha256.as_deref(), Some(sha.as_str()));
+        assert!(current.package_format.is_some());
 
         // Download + integrity verification round-trip.
         let staging = tempfile::tempdir().expect("staging");

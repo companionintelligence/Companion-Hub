@@ -33,6 +33,12 @@ interface NativeDesktopUpdateInfo {
   latestVersion: string;
   downloadUrl: string;
   updateAvailable: boolean;
+  /**
+   * The installer format this computer takes (`deb`, `rpm`, `appimage`, `dmg`, `exe`). Desktop apps
+   * that send it look up their own installer when nothing is newer too, so a missing `downloadUrl`
+   * means the release has none for this computer.
+   */
+  packageFormat?: string;
 }
 
 export type DesktopPlatform = 'linux' | 'macos' | 'windows';
@@ -325,7 +331,10 @@ export async function checkForUpdates(fallbackCurrentVersion?: string, options: 
         if (downloadUrl && !isTrustedDownloadUrl(downloadUrl)) {
           downloadUrl = '';
         }
-        if (!downloadUrl) {
+        // Older desktop apps name no installer whenever nothing is newer, so the Hub is asked. It picks
+        // from every format (the `.deb` on Fedora too), so a desktop app that picked its own is never
+        // second-guessed.
+        if (!downloadUrl && !nativeInfo.packageFormat) {
           downloadUrl = await findDesktopInstaller(latestVersion, resolvedCurrent, desktopPlatform, osArch, options.askHubForInstaller === true);
         }
 

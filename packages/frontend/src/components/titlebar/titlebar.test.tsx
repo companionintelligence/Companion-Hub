@@ -32,14 +32,16 @@ describe('Titlebar', () => {
     expect(screen.getByRole('img', { name: 'Companion Hub' })).toBeInTheDocument();
   });
 
-  it('calls the app Companion Hub in every language, never CI Hub', () => {
+  it('calls the app Companion Hub in every language, never CI Hub or CI-Hub', () => {
     const files = Object.entries(TRANSLATIONS);
     expect(files.length).toBeGreaterThan(1);
 
     for (const [file, text] of files) {
       const strings = JSON.parse(text) as Record<string, string>;
       expect({ file, appName: strings.APP_NAME }).toEqual({ file, appName: 'Companion Hub' });
-      expect({ file, oldName: text.includes('CI Hub') }).toEqual({ file, oldName: false });
+      // Only what people read: the values. Commands like `cihub pool pair` keep their name.
+      const oldName = Object.entries(strings).filter(([, value]) => /\bCI[ -]Hub\b/.test(value));
+      expect({ file, oldName }).toEqual({ file, oldName: [] });
     }
   });
 });

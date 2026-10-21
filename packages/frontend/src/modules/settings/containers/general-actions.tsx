@@ -435,8 +435,15 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
       steps = [
         { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_DOWNLOAD') },
         fileName
-          ? { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_INSTALL'), command: `${install} "./${fileName}"` }
-          : { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_INSTALL_NO_COMMAND') },
+          ? {
+              text: t(reinstall ? 'SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_REINSTALL' : 'SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_INSTALL'),
+              command: `${install} "./${fileName}"`,
+            }
+          : {
+              text: t(
+                reinstall ? 'SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_REINSTALL_NO_COMMAND' : 'SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_INSTALL_NO_COMMAND',
+              ),
+            },
         { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_RELAUNCH') },
       ];
     } else if (kind === 'dmg' || platform === 'macos') {

@@ -273,6 +273,23 @@ describe('update-service', () => {
       expect(corsBlockedFetch).not.toHaveBeenCalled();
     });
 
+    it('takes a desktop app at its word when it says which format this computer installs', async () => {
+      // A desktop app that sends its package format looked up its own installer: none means the
+      // release has none for this computer. The Hub would name another format (a .deb on Fedora).
+      mockInvoke.mockResolvedValue({
+        currentVersion: '0.3.6',
+        latestVersion: '0.3.6',
+        downloadUrl: '',
+        updateAvailable: false,
+        packageFormat: 'rpm',
+      });
+      mockGetDesktopRelease.mockResolvedValue(sdkOk({ latestVersion: '0.3.6', downloadUrl: DEB_036 }));
+
+      await expect(checkForUpdates('0.3.6', { askHubForInstaller: true })).resolves.toMatchObject({ latestVersion: '0.3.6', downloadUrl: '' });
+      expect(mockGetDesktopRelease).not.toHaveBeenCalled();
+      expect(corsBlockedFetch).not.toHaveBeenCalled();
+    });
+
     it('leaves the Hub alone for the update notice, which also runs on the signed-out pages', async () => {
       // A signed-out page gets a 401 from the Hub and a 401 signs the page out.
       await expect(checkForUpdates()).resolves.toMatchObject({ latestVersion: '0.3.6', downloadUrl: '' });

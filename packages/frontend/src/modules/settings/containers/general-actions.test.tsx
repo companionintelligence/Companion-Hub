@@ -722,10 +722,61 @@ describe('GeneralActionsContainer', () => {
       expect(commandsIn(screen.getByTestId('manual-update-instructions'))).toEqual([
         'sudo apt install --reinstall "./Companion Hub_0.3.6_amd64.deb"',
       ]);
+      // It is the same version again, not a new one.
+      expect(screen.getByTestId('manual-update-instructions')).toHaveTextContent('Install this version again over the current one');
+      expect(screen.getByTestId('manual-update-instructions')).not.toHaveTextContent('Install the new version');
       expect(screen.queryByTestId('hub-shell-install-btn')).not.toBeInTheDocument();
 
       await userEvent.click(download);
       await waitFor(() => expect(mockPerformUpdate).toHaveBeenCalledWith(expect.objectContaining({ latestVersion: '0.3.6', downloadUrl })));
+    });
+
+    describe('on Fedora, with a desktop app that names its own installer when nothing is newer', () => {
+      const rpmUrl = 'https://dl.ci.computer/v0.3.6/linux/rpm/x64/Companion%20Hub-0.3.6-1.x86_64.rpm';
+
+      async function upToDate(downloadUrl: string) {
+        const actual = await vi.importActual<typeof import('@/lib/update-service')>('@/lib/update-service');
+        mockCheckForUpdates.mockImplementation(actual.checkForUpdates);
+        vi.stubEnv('CI_HUB_ENVIRONMENT', 'production');
+        Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+        mockIsTauri.mockReturnValue(true);
+        mockGetInstalledDesktopVersion.mockResolvedValue('0.3.6');
+        mockInvoke.mockImplementation(async (command: string) =>
+          command === 'check_desktop_update_command'
+            ? { currentVersion: '0.3.6', latestVersion: '0.3.6', downloadUrl, updateAvailable: false, packageFormat: 'rpm' }
+            : null,
+        );
+        vi.stubGlobal(
+          'fetch',
+          vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))),
+        );
+        // The Hub picks from every format, so it would name the .deb here.
+        getDesktopRelease.mockResolvedValue(
+          sdkOk({ latestVersion: '0.3.6', downloadUrl: 'https://dl.ci.computer/v0.3.6/linux/deb/x64/Companion%20Hub_0.3.6_amd64.deb' }),
+        );
+      }
+
+      it('offers the .rpm with rpm steps, and never asks the Hub', async () => {
+        await upToDate(rpmUrl);
+
+        render(<GeneralActionsContainer />);
+
+        expect(await screen.findByTestId('hub-shell-update-btn')).toHaveTextContent('Download 0.3.6');
+        expect(commandsIn(screen.getByTestId('manual-update-instructions'))).toEqual([
+          'sudo rpm -U --replacepkgs "./Companion Hub-0.3.6-1.x86_64.rpm"',
+        ]);
+        expect(getDesktopRelease).not.toHaveBeenCalled();
+      });
+
+      it('offers no .deb when the release has no .rpm', async () => {
+        await upToDate('');
+
+        render(<GeneralActionsContainer />);
+
+        expect(await screen.findByText('This computer is already on the latest desktop app.')).toBeInTheDocument();
+        expect(screen.queryByTestId('hub-shell-update-btn')).not.toBeInTheDocument();
+        expect(getDesktopRelease).not.toHaveBeenCalled();
+      });
     });
 
     it('promises no download when it has no installer to offer', async () => {
