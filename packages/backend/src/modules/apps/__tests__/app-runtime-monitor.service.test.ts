@@ -13,8 +13,10 @@ import { GpuProcessSamplerService } from '@/modules/inference/gpu-process-sample
 import { AppFilesManager } from '../app-files-manager';
 import { EnvUtils } from '@/modules/env/env.utils';
 import si from 'systeminformation';
+import { probeAppPort } from '../app-port-probe';
 
 vi.mock('systeminformation');
+vi.mock('../app-port-probe', () => ({ probeAppPort: vi.fn() }));
 
 describe('AppRuntimeMonitorService', () => {
   const originalHostname = process.env.HOSTNAME;
@@ -43,6 +45,8 @@ describe('AppRuntimeMonitorService', () => {
     // No manifest on disk, so no readiness endpoint: every test that predates the probe must
     // never see a fetch. The readiness block below declares one explicitly.
     appFilesManager.getInstalledAppInfo.mockResolvedValue(null);
+    // No compose on disk either, so a This Machine Only app's own port is never dialled unless a test says so.
+    appFilesManager.getDockerComposeJson.mockResolvedValue({ path: '', content: null });
 
     config.get.mockImplementation((key: string) => {
       if (key === 'userSettings') {
@@ -736,6 +740,137 @@ describe('AppRuntimeMonitorService', () => {
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('GPU VRAM attribution failed'));
     });
   });
+  /*
+   * `checkAppAvailability` answers "available" for a This Machine Only app without contacting it, so
+   * a hung local app could never be unresponsive, degraded or force-stoppable. The monitor asks the
+   * main container at its address on the Hub's app network instead, and holds it to the rule the
+   * proxied routes follow: only a connection the app took and never answered counts against it.
+   */
+  describe('This Machine Only apps', () => {
+    const busyContainer = {
+      containerId: 'abc',
+      name: 'cpu-hog__user-web-1',
+      state: 'running',
+      status: 'Up',
+      health: null,
+      exitCode: null,
+      cpuPercent: 200,
+      memoryUsageBytes: 100,
+      memoryLimitBytes: 1000,
+    };
+
+    beforeEach(() => {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        appName: 'cpu-hog',
+        appStoreSlug: '_user',
+        status: 'running',
+        exposureMode: 'local',
+        config: {},
+        updatedAt: new Date().toISOString(),
+      } as any);
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([busyContainer]);
+      appFilesManager.getDockerComposeJson.mockResolvedValue({
+        path: '/apps/_user/cpu-hog/docker-compose.json',
+        content: {
+          schemaVersion: 2,
+          services: [
+            { name: 'web', image: 'alpine:3.20', isMain: true, internalPort: 80 },
+            { name: 'cache', image: 'redis:7', internalPort: 6379 },
+          ],
+        },
+      });
+      dockerReadFacade.getServiceAddressOnHubNetwork.mockResolvedValue('10.200.0.7');
+    });
+
+    it('marks a busy app that takes connections and never answers degraded, with Force stop', async () => {
+      vi.mocked(probeAppPort).mockResolvedValue('silent');
+
+      await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      const result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+
+      expect(dockerReadFacade.getServiceAddressOnHubNetwork).toHaveBeenCalledWith('cpu-hog:_user', 'web');
+      expect(probeAppPort).toHaveBeenCalledWith('10.200.0.7', 80, 5_000);
+      // Cached like the route probe: one dial for the three samples.
+      expect(probeAppPort).toHaveBeenCalledTimes(1);
+      expect(appsService.checkAppAvailability).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        sustainedHighCpu: true,
+        responsive: false,
+        degraded: true,
+        forceStopEligible: true,
+        reason: 'The app accepted a connection on port 80 but did not answer within 5 seconds.',
+      });
+    });
+
+    it.each([
+      ['answers', 'answered'],
+      ['has nothing listening on its port yet', 'refused'],
+    ] as const)('keeps a busy app that %s responsive', async (_label, probe) => {
+      vi.mocked(probeAppPort).mockResolvedValue(probe);
+
+      await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      const result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+
+      expect(appsService.checkAppAvailability).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ sustainedHighCpu: true, responsive: true, degraded: false, forceStopEligible: false, reason: null });
+    });
+
+    it('falls back to the route verdict when the container cannot be reached from here', async () => {
+      vi.mocked(probeAppPort).mockResolvedValue('unreachable');
+      appsService.checkAppAvailability.mockResolvedValue({ available: true, stage: 'ready' } as any);
+
+      const result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+
+      expect(appsService.checkAppAvailability).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ responsive: true, degraded: false });
+    });
+
+    it('falls back to the route verdict when the main container has no address on the app network', async () => {
+      dockerReadFacade.getServiceAddressOnHubNetwork.mockResolvedValue(null);
+      appsService.checkAppAvailability.mockResolvedValue({ available: true, stage: 'ready' } as any);
+
+      const result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+
+      expect(probeAppPort).not.toHaveBeenCalled();
+      expect(appsService.checkAppAvailability).toHaveBeenCalledTimes(1);
+      expect(result.responsive).toBe(true);
+    });
+
+    it('does not dial an app that is not busy', async () => {
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([{ ...busyContainer, cpuPercent: 4 }]);
+
+      const result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+
+      expect(probeAppPort).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ responsive: true, degraded: false });
+    });
+
+    it('keeps asking the public route of a Public Web app', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        appName: 'cpu-hog',
+        appStoreSlug: '_user',
+        status: 'running',
+        exposureMode: 'cloudflare',
+        config: {},
+        updatedAt: new Date().toISOString(),
+      } as any);
+      appsService.checkAppAvailability.mockResolvedValue({
+        available: false,
+        errorCode: 'CONNECTION_TIMEOUT',
+        detail: 'Connection timed out reaching the app.',
+      } as any);
+
+      const result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+
+      expect(probeAppPort).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ responsive: false, reason: 'Connection timed out reaching the app.' });
+    });
+  });
+
   describe('readiness probe (hub_integration.readiness, CI-Hub#1556)', () => {
     const descriptor = { service: 'ci-hermes-gateway', port: 8642, path: '/health/detailed', bearer_env: 'APP_SEED' };
     const runningContainer = {

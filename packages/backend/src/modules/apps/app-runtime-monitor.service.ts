@@ -8,6 +8,7 @@ import type { App } from '@/core/database/drizzle/types';
 import si from 'systeminformation';
 import { AppFilesManager } from './app-files-manager';
 import { type AppReadiness, normalizeReadinessBody, unknownReadiness } from './app-readiness.helpers';
+import { probeAppPort } from './app-port-probe';
 import { AppsRepository } from './apps.repository';
 import { AppsService } from './apps.service';
 import { EnvUtils } from '../env/env.utils';
@@ -27,6 +28,8 @@ const SNAPSHOT_COLLECTION_DEADLINE_MS = 30_000;
 const PROCESS_SCAN_TIMEOUT_MS = 3_000;
 const STOPPING_GRACE_MS = 30_000;
 const AVAILABILITY_PROBE_CACHE_TTL_MS = 60_000;
+/** The same budget `apps.service.ts` gives a probe of an app's public route. */
+const LOCAL_APP_PROBE_TIMEOUT_MS = 5_000;
 /**
  * Upstream Hermes's own dashboard probe uses 1 s, and the first authenticated call on a cold
  * gateway can exceed it; 2 s tolerates that without letting one slow app hold the tick.
@@ -558,25 +561,83 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
     return cached;
   }
 
-  private async getAvailabilityForSuspiciousApp(appUrn: AppUrn): Promise<AvailabilityProbeCacheEntry> {
+  private async getAvailabilityForSuspiciousApp(app: App, appUrn: AppUrn): Promise<AvailabilityProbeCacheEntry> {
     const cached = this.getCachedAvailabilityProbe(appUrn);
     if (cached) {
       return cached;
     }
 
+    // `checkAppAvailability` reports a This Machine Only app as available without contacting it, which
+    // made such an app responsive whatever it did. It is asked at its own port instead.
+    const localVerdict = (app.exposureMode || 'local') === 'local' ? await this.probeLocalApp(appUrn) : null;
+    const nextEntry = localVerdict ?? (await this.probeAppRoute(appUrn));
+    this.availabilityProbeCache.set(appUrn, nextEntry);
+    return nextEntry;
+  }
+
+  private async probeAppRoute(appUrn: AppUrn): Promise<AvailabilityProbeCacheEntry> {
     const availability = await this.appsService.checkAppAvailability(appUrn);
     // The probe reads the app's public route. A verdict read from an answer that came back through the
     // tunnel (a Cloudflare error, the Hub's "is starting" page, the app's own 5xx) arrived in time, and
     // says as much about the tunnel or a model still loading as about a hung app. Only a probe that got
     // no answer at all counts against the app here.
     const responsive = availability.available || availability.reason === 'CLOUDFLARE';
-    const nextEntry: AvailabilityProbeCacheEntry = {
+    return {
       sampledAtMs: Date.now(),
       responsive,
       reason: responsive ? null : availability.detail || availability.errorCode || 'App availability probe failed',
     };
-    this.availabilityProbeCache.set(appUrn, nextEntry);
-    return nextEntry;
+  }
+
+  /**
+   * Asks a This Machine Only app's main container directly, at its address on the Hub's app network
+   * and the port its compose gives the main service, which is what the host port forwards to. Dialling
+   * the host port would miss apps whose port stays on loopback, as the Hub's own container can't
+   * reach the host's loopback. Only a connection the app took and never answered counts against it,
+   * which is the rule the proxied routes follow: an app that answers while it is busy is doing its
+   * work, not hanging. Null when the probe can't tell (no main service port, no address on the
+   * network, no route to it), and the route verdict decides as before.
+   */
+  private async probeLocalApp(appUrn: AppUrn): Promise<AvailabilityProbeCacheEntry | null> {
+    try {
+      const composeJson = await this.appFilesManager.getDockerComposeJson(appUrn);
+      if (!composeJson.content) {
+        return null;
+      }
+      const services = parseComposeJson(composeJson.content).services;
+      const main = services.find((entry) => entry.isMain) ?? (services.length === 1 ? services[0] : undefined);
+      const port = Number(main?.internalPort);
+      if (!main || !Number.isInteger(port) || port < 1 || port > 65535) {
+        return null;
+      }
+
+      const address = await this.dockerReadFacade.getServiceAddressOnHubNetwork(appUrn, main.name);
+      if (!address) {
+        return null;
+      }
+
+      const result = await probeAppPort(address, port, LOCAL_APP_PROBE_TIMEOUT_MS);
+      const sampledAtMs = Date.now();
+      switch (result) {
+        case 'silent':
+          return {
+            sampledAtMs,
+            responsive: false,
+            reason: `The app accepted a connection on port ${port} but did not answer within ${LOCAL_APP_PROBE_TIMEOUT_MS / 1000} seconds.`,
+          };
+        // A port nobody listens on yet is an app still starting (loading a model, running migrations)
+        // as often as a dead one. A proxied route gets the Hub's "is starting" page in that case,
+        // which doesn't count against the app either.
+        case 'answered':
+        case 'refused':
+          return { sampledAtMs, responsive: true, reason: null };
+        default:
+          return null;
+      }
+    } catch (error) {
+      this.logger.debug(`Local availability probe for ${appUrn} failed: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
   }
 
   private async collectAppRuntimeHealthForApp(app: App): Promise<AppRuntimeHealth> {
@@ -597,7 +658,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
       (app.status === 'running' || app.status === 'restarting') && (highCpu || healthUnhealthy || app.status === 'restarting');
 
     if (shouldProbeAvailability) {
-      const availability = await this.getAvailabilityForSuspiciousApp(appUrn);
+      const availability = await this.getAvailabilityForSuspiciousApp(app, appUrn);
       responsive = availability.responsive;
       reason = availability.reason;
     } else if (app.status === 'stopping' && containers.some((container) => container.state === 'running')) {
