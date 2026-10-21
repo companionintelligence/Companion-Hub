@@ -1,4 +1,6 @@
-import { DiscoveryModule, DiscoveryService } from '@nestjs/core';
+import { Logger } from '@nestjs/common';
+import { OPTIONAL_DEPS_METADATA, PARAMTYPES_METADATA, SELF_DECLARED_DEPS_METADATA } from '@nestjs/common/constants';
+import { DiscoveryModule, DiscoveryService, ModuleRef } from '@nestjs/core';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { fromPartial } from '@total-typescript/shoehorn';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -11,13 +13,17 @@ import { AppStatusSyncService } from '@/modules/app-lifecycle/app-status-sync.se
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { BackupsService } from '@/modules/backups/backups.service';
 import { DOCKERODE } from '@/modules/docker/constants';
+import { HubPoolIdentityRepository } from '@/modules/hub-pool/hub-pool-identity.repository';
+import { HubPoolIdentityService } from '@/modules/hub-pool/hub-pool-identity.service';
 import { McpService } from '@/modules/mcp/mcp.service';
 import { AppEventsQueue } from '@/modules/queue/entities/app-events';
 import { RepoEventsQueue } from '@/modules/queue/entities/repo-events';
 import { SystemEventsQueue } from '@/modules/queue/entities/system-events';
 import { QueueFactory } from '@/modules/queue/queue.factory';
 import { RegistrationService } from '@/modules/registration/registration.service';
+import { StatusReportService } from '@/modules/status-report/status-report.service';
 import { SystemUpdateService } from '@/modules/system-update/system-update.service';
+import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { AgentNotifyService } from '../agent-notify.service';
 
 /** What ConfigurationService refuses to start without. None of it is dialled: compile() opens no connections. */
@@ -58,14 +64,18 @@ const KNOWN_SENDERS = [AppStatusSyncService, AppLifecycleService, BackupsService
 
 /**
  * The real AppModule graph, so these tests see the module wiring the Hub runs with. Only what leaves
- * the process is replaced: RabbitMQ, Docker, the app rows in Postgres and the sqlite cache.
+ * the process is replaced: RabbitMQ, Docker, the app and pool identity rows in Postgres, Tailscale and
+ * the sqlite cache.
  */
-describe('agent wake wiring in AppModule', () => {
+describe('AppModule wiring', () => {
   let moduleRef: TestingModule;
   let notifier: AgentNotifyService;
   const appsRepository = mock<AppsRepository>();
   const appEventsQueue = mock<AppEventsQueue>();
   const docker = { listContainers: vi.fn() };
+  const poolIdentityRows = { get: vi.fn(), insertIfAbsent: vi.fn(), replaceKeys: vi.fn() };
+  const tailscale = mock<TailscaleService>();
+  tailscale.getStatusCached.mockResolvedValue(fromPartial({ connected: false }));
   const fetchMock = vi.fn();
 
   beforeAll(async () => {
@@ -92,6 +102,10 @@ describe('agent wake wiring in AppModule', () => {
       .useValue(appsRepository)
       .overrideProvider(CacheService)
       .useValue(mock<CacheService>())
+      .overrideProvider(HubPoolIdentityRepository)
+      .useValue(poolIdentityRows)
+      .overrideProvider(TailscaleService)
+      .useValue(tailscale)
       .compile();
 
     notifier = moduleRef.get(AgentNotifyService, { strict: false });
@@ -136,6 +150,68 @@ describe('agent wake wiring in AppModule', () => {
     for (const sender of KNOWN_SENDERS) {
       expect(found).toContain(sender);
     }
+  });
+
+  // `@Optional()` turns a dependency Nest cannot match into `undefined` without a word. That hid the
+  // notifier from five services (#2081) and the pool identity from the status file (#2099), whose
+  // `HubPoolIdentityService | undefined` parameter was emitted as `Object`.
+  it("resolves every optional dependency of the Hub's own providers", () => {
+    const unresolved: string[] = [];
+    for (const wrapper of moduleRef.get(DiscoveryService).getProviders()) {
+      const metatype = wrapper.metatype;
+      // Nest's own Logger takes an optional context string and options, which are never providers.
+      if (typeof metatype !== 'function' || wrapper.inject || !wrapper.instance || metatype === Logger) {
+        continue;
+      }
+      const optional: number[] = Reflect.getMetadata(OPTIONAL_DEPS_METADATA, metatype) ?? [];
+      const designTypes: unknown[] = Reflect.getMetadata(PARAMTYPES_METADATA, metatype) ?? [];
+      const declared: Array<{ index: number; param: unknown }> = Reflect.getMetadata(SELF_DECLARED_DEPS_METADATA, metatype) ?? [];
+      const held = Object.values(wrapper.instance as object);
+      for (const index of optional) {
+        const raw = declared.find((dep) => dep.index === index)?.param ?? designTypes[index];
+        const token = (raw as { forwardRef?: () => unknown } | undefined)?.forwardRef?.() ?? raw;
+        // Every module gets a ModuleRef of its own, so compare by kind rather than by instance.
+        if (token === ModuleRef) {
+          if (!held.some((value) => value instanceof ModuleRef)) unresolved.push(`${metatype.name} parameter ${index} (ModuleRef)`);
+          continue;
+        }
+        let dependency: unknown;
+        try {
+          dependency = token && token !== Object ? moduleRef.get(token as never, { strict: false }) : undefined;
+        } catch {
+          dependency = undefined;
+        }
+        if (!dependency || !held.includes(dependency)) {
+          const tokenName = typeof token === 'function' ? token.name : String(token);
+          unresolved.push(`${metatype.name} parameter ${index} (${tokenName})`);
+        }
+      }
+    }
+
+    expect(unresolved).toEqual([]);
+  });
+
+  it('gives the status file the shared pool identity, and reads its UUID without minting one', async () => {
+    const statusReport = moduleRef.get(StatusReportService, { strict: false });
+    expect(Object.values(statusReport)).toContain(moduleRef.get(HubPoolIdentityService, { strict: false }));
+    // The other sections read hardware, engines and containers, and take seconds without them.
+    const sections = ['readSystem', 'readInference', 'readWorkloads'].map((section) =>
+      vi.spyOn(statusReport as never as Record<string, () => Promise<unknown>>, section).mockResolvedValue(null),
+    );
+
+    poolIdentityRows.get.mockResolvedValue({
+      id: 'self',
+      nodeUuid: '2f8d0c8e-5c1a-4b7e-9f39-0d6a2b1c4e55',
+      publicKey: 'pk',
+      privateKeyEncrypted: 'sealed',
+    });
+    expect((await statusReport.buildReport()).connection?.poolNodeUuid).toBe('2f8d0c8e-5c1a-4b7e-9f39-0d6a2b1c4e55');
+
+    // Every Hub writes this file every quarter hour, and most never use Hub Pool.
+    poolIdentityRows.get.mockResolvedValue(undefined);
+    expect((await statusReport.buildReport()).connection?.poolNodeUuid).toBeNull();
+    expect(poolIdentityRows.insertIfAbsent).not.toHaveBeenCalled();
+    for (const spy of sections) spy.mockRestore();
   });
 
   it('wakes the agent when the status sync finds a running app crashed', async () => {

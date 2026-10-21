@@ -142,6 +142,18 @@ export class HubPoolIdentityService {
   }
 
   /**
+   * This node's pool UUID if it already has one, or null. Unlike {@link summary} it never mints an
+   * identity or decrypts a key, so a reader that runs on every Hub (the quarter-hourly status file)
+   * keeps the rule above: a Hub that never used Hub Pool never gets an identity.
+   */
+  async existingNodeUuid(): Promise<string | null> {
+    if (this.cached) {
+      return this.cached.nodeUuid;
+    }
+    return (await this.repo.get())?.nodeUuid ?? null;
+  }
+
+  /**
    * Replace the keypair, keeping the UUID.
    *
    * Destructive by design, and the caller (`HubPoolPeerService.rotateIdentity`) is responsible for
