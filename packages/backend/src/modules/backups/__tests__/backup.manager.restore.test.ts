@@ -14,6 +14,7 @@ import type { ConfigurationService } from '@/core/config/configuration.service';
 import type { LoggerService } from '@/core/logger/logger.service';
 import type { AppFilesManager } from '@/modules/apps/app-files-manager';
 import type { AppVolumeArchiveService } from '@/modules/docker/app-volume-archive.service';
+import type { DockerService } from '@/modules/docker/docker.service';
 import type { AppUrn } from '@ci-hub/common/types';
 
 vi.unmock('node:fs');
@@ -23,6 +24,9 @@ const fs = (await import('node:fs')).default;
 const { ArchiveService } = await import('@/core/archive/archive.service');
 const { FilesystemService } = await import('@/core/filesystem/filesystem.service');
 const { BackupManager } = await import('../backup.manager');
+
+// root ignores permission bits and Windows has none to speak of; there the Hub can delete anything.
+const canEnforcePermissions = process.platform !== 'win32' && typeof process.getuid === 'function' && process.getuid() !== 0;
 
 const hasTar = (() => {
   try {
@@ -69,6 +73,16 @@ function makeTarGz(entries: TarEntry[]): Buffer {
   return zlib.gzipSync(Buffer.concat(blocks));
 }
 
+/** Give the owner back write access everywhere under `dir`, as root would not need, so it can be deleted. */
+async function loosen(dir: string): Promise<void> {
+  const stat = await fs.promises.lstat(dir).catch(() => null);
+  if (!stat?.isDirectory()) return;
+  await fs.promises.chmod(dir, 0o755).catch(() => undefined);
+  for (const name of await fs.promises.readdir(dir).catch(() => [] as string[])) {
+    await loosen(path.join(dir, name));
+  }
+}
+
 const VALID_ENTRIES: TarEntry[] = [
   { name: './', type: '5' },
   { name: './app-data/', type: '5' },
@@ -93,6 +107,7 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
   let archive: InstanceType<typeof ArchiveService>;
   let logger: ReturnType<typeof mock<LoggerService>>;
   let appFilesManager: ReturnType<typeof mock<AppFilesManager>>;
+  let docker: ReturnType<typeof mock<DockerService>>;
   let manager: InstanceType<typeof BackupManager>;
 
   const putArchive = async (name: string, bytes: Buffer | string) => {
@@ -147,12 +162,14 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
     // An app with no named Docker volumes, which is every app outside a Windows Hub.
     const appVolumes = mock<AppVolumeArchiveService>();
     appVolumes.listAppVolumes.mockResolvedValue([]);
-    manager = new BackupManager(archive, logger, config, filesystem, appFilesManager, appVolumes);
+    docker = mock<DockerService>();
+    manager = new BackupManager(archive, logger, config, filesystem, appFilesManager, appVolumes, docker);
     manager.onApplicationShutdown(); // stop the constructor's weekly interval
   });
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    await loosen(scratch);
     await fs.promises.rm(scratch, { recursive: true, force: true });
     await Promise.all(tempDirs.map((dir) => fs.promises.rm(dir, { recursive: true, force: true })));
   });
@@ -402,6 +419,67 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
     vi.spyOn(filesystem, 'copyDirectory').mockResolvedValue(false);
 
     await expect(manager.restoreApp(appUrn, name)).rejects.toThrow('Failed to restore the backup files');
+  });
+
+  /*
+   * A container that runs as root writes files the Hub cannot delete. Uptime Kuma after Reset app
+   * re-creates `data/` as root:root 755 with `kuma.db` in it; the Hub (uid 1000) can read them but
+   * not unlink them, so the restore used to fail half-way with EACCES and "Failed to restore the
+   * backup files". Here a folder the test cannot write stands in for the root-owned one.
+   */
+  describe.skipIf(!canEnforcePermissions)('data the Hub cannot delete', () => {
+    const KUMA_ENTRIES: TarEntry[] = [
+      ...VALID_ENTRIES,
+      { name: './app-data/data/', type: '5' },
+      { name: './app-data/data/kuma.db', content: 'backed-up-db' },
+    ];
+
+    beforeEach(async () => {
+      const data = path.join(appDataDir, 'data');
+      await fs.promises.mkdir(path.join(data, 'docker-tls'), { recursive: true });
+      await fs.promises.writeFile(path.join(data, 'kuma.db'), 'reset-db');
+      await fs.promises.writeFile(path.join(data, 'docker-tls', 'ca.pem'), 'cert');
+      await fs.promises.chmod(path.join(data, 'docker-tls'), 0o555);
+      await fs.promises.chmod(data, 0o555);
+    });
+
+    it('empties it through the root helper, then restores the backup', async () => {
+      // What `find /target -mindepth 1 -delete` does as root: the contents go, the folder stays.
+      docker.removeAppDataDirAsRoot.mockImplementation(async () => {
+        await loosen(appDataDir);
+        for (const name of await fs.promises.readdir(appDataDir)) {
+          await fs.promises.rm(path.join(appDataDir, name), { recursive: true, force: true });
+        }
+        return true;
+      });
+      const name = await putArchive('kuma.tar.gz', makeTarGz(KUMA_ENTRIES));
+
+      await manager.restoreApp(appUrn, name);
+
+      expect(docker.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn);
+      await expect(fs.promises.readFile(path.join(appDataDir, 'data', 'kuma.db'), 'utf8')).resolves.toBe('backed-up-db');
+      await expect(fs.promises.access(path.join(appDataDir, 'data', 'docker-tls'))).rejects.toThrow();
+      await expect(readLive()).resolves.toEqual({ data: 'restored-data', compose: '{"restored":true}', env: 'RESTORED=true\n' });
+    });
+
+    it('stops before copying anything when the helper cannot empty it either', async () => {
+      docker.removeAppDataDirAsRoot.mockResolvedValue(false);
+      const name = await putArchive('kuma.tar.gz', makeTarGz(KUMA_ENTRIES));
+
+      await expect(manager.restoreApp(appUrn, name)).rejects.toThrow(`Could not remove the current data of ${appUrn} to restore the backup`);
+
+      // Nothing of the backup was mixed into what is left and the installed files were not touched.
+      await expect(fs.promises.readFile(path.join(appDataDir, 'data', 'kuma.db'), 'utf8')).resolves.toBe('reset-db');
+      await expect(fs.promises.readFile(path.join(appInstalledDir, 'docker-compose.json'), 'utf8')).resolves.toBe('{"live":true}');
+    });
+  });
+
+  it('does not call the root helper when the Hub can delete the data itself', async () => {
+    const name = await putArchive('good.tar.gz', makeTarGz(VALID_ENTRIES));
+
+    await manager.restoreApp(appUrn, name);
+
+    expect(docker.removeAppDataDirAsRoot).not.toHaveBeenCalled();
   });
 
   it('refuses a filename that is not a single segment before creating anything', async () => {

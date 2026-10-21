@@ -22,14 +22,29 @@ function shellQuotePath(value: string): string {
  * the historical `chmod -Rf a+rwx`; otherwise `find` prunes each excluded
  * path (so a private volume's whole subtree is skipped, not just its root)
  * and chmods the rest. Exported for its tests.
+ *
+ * `hubUid` is the uid the Hub runs as. When it is not root, the sweep only
+ * changes what that uid owns, because chmod refuses everything else. It also
+ * does not walk into a folder that belongs to another user and is closed to
+ * others (`-perm -005` is "others may list and enter"). Those are a
+ * database's own folders (MariaDB keeps its schemas at 700 under uid 999) and
+ * whatever a container running as root made: walking or chmodding them could
+ * only fail. Every such failure made the whole sweep report an error for an
+ * app that works. A root Hub can change everything, so it gets the sweep as
+ * it always was.
  */
-export function buildPermissionsCommand(appDataDir: string, excluded: readonly string[]): string {
+export function buildPermissionsCommand(appDataDir: string, excluded: readonly string[], hubUid?: number): string {
   const dir = shellQuotePath(appDataDir);
-  if (excluded.length === 0) {
+  const ownedOnly = hubUid !== undefined && Number.isInteger(hubUid) && hubUid > 0;
+  if (excluded.length === 0 && !ownedOnly) {
     return `chmod -Rf a+rwx ${dir}`;
   }
-  const prune = excluded.map((target) => `-path ${shellQuotePath(target)}`).join(' -o ');
-  return `find ${dir} \\( ${prune} \\) -prune -o -exec chmod -f a+rwx {} +`;
+  const prune = excluded.map((target) => `-path ${shellQuotePath(target)}`);
+  if (!ownedOnly) {
+    return `find ${dir} \\( ${prune.join(' -o ')} \\) -prune -o -exec chmod -f a+rwx {} +`;
+  }
+  prune.push(`-type d ! -user ${hubUid} ! -perm -005`);
+  return `find ${dir} \\( ${prune.join(' -o ')} \\) -prune -o -user ${hubUid} -exec chmod -f a+rwx {} +`;
 }
 
 @Injectable()
@@ -282,7 +297,8 @@ export class AppFilesManager {
 
     const privateRoots = await this.getPrivateVolumePaths(appUrn);
     const appEnvPath = path.join(appDataDir, 'app.env');
-    const { stderr } = await execAsync(buildPermissionsCommand(appDataDir, [...privateRoots, appEnvPath]));
+    const hubUid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+    const { stderr } = await execAsync(buildPermissionsCommand(appDataDir, [...privateRoots, appEnvPath], hubUid));
     if (stderr) {
       this.logger.error(`Error setting permissions for app ${appUrn}: ${stderr}`);
     }

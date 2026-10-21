@@ -20,6 +20,7 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import type { AppUrn } from '@ci-hub/common/types';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppVolumeArchiveService } from '../docker/app-volume-archive.service';
+import { DockerService } from '../docker/docker.service';
 
 @Injectable()
 export class BackupManager implements OnApplicationShutdown {
@@ -34,6 +35,7 @@ export class BackupManager implements OnApplicationShutdown {
     private readonly filesystem: FilesystemService,
     private readonly appFilesManager: AppFilesManager,
     private readonly appVolumes: AppVolumeArchiveService,
+    private readonly docker: DockerService,
   ) {
     this.retentionInterval = setInterval(
       () => this.enforceRetentionAllApps().catch((e) => this.logger.error('Weekly backup retention failed', e)),
@@ -265,7 +267,7 @@ export class BackupManager implements OnApplicationShutdown {
     const userConfigDir = path.join(dataDir, 'user-config', appStoreId, appName);
 
     // Remove old data directories
-    await this.filesystem.removeDirectory(appDataDir);
+    await this.removeLiveAppData(appUrn, appDataDir);
     await this.filesystem.removeDirectory(appInstalledDir);
     await this.filesystem.removeDirectory(userConfigDir);
 
@@ -287,6 +289,35 @@ export class BackupManager implements OnApplicationShutdown {
     if (copied.includes(false)) {
       throw new Error('Failed to restore the backup files');
     }
+  }
+
+  /**
+   * Delete the app's data folder so the backup's copy replaces it instead of being mixed into it.
+   *
+   * A container that runs as root writes files the Hub, a plain user on a native Linux host, cannot
+   * delete: Uptime Kuma re-creates its `data/` as root after Reset app. Root can, so a permission
+   * error goes to the helper uninstall uses, which empties the folder as root. Data that still
+   * cannot go stops the restore before anything is copied, since a copy over what is left would
+   * leave old and restored files side by side.
+   */
+  private async removeLiveAppData(appUrn: AppUrn, appDataDir: string) {
+    const first = await this.filesystem.removeDirectoryDetailed(appDataDir);
+
+    if (first.removed) {
+      return;
+    }
+
+    if (first.permissionDenied) {
+      this.logger.warn(`The Hub cannot delete some of the current data of ${appUrn} (written by its container as another user); emptying it as root`);
+
+      if (await this.docker.removeAppDataDirAsRoot(appUrn)) {
+        // The helper keeps the folder itself, now empty. The copy can go into it, so removing it is only tidying.
+        await this.filesystem.removeDirectory(appDataDir);
+        return;
+      }
+    }
+
+    throw new Error(`Could not remove the current data of ${appUrn} to restore the backup`);
   }
 
   /**
