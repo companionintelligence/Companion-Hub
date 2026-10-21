@@ -69,6 +69,15 @@ describe('ForceStopDialog', () => {
     expect(h.invalidateAppQueries).toHaveBeenCalledWith(h.queryClient, 'plane:ci-marketplace');
   });
 
+  // With throwOnError a failed fetch rejects too, and its TypeError text is not copy for the screen.
+  it('toasts the generic message for a network failure rather than the browser text', () => {
+    render(<ForceStopDialog info={app} isOpen onClose={vi.fn()} />);
+
+    h.opts?.onError?.(new TypeError('Failed to fetch'));
+
+    expect(h.toastError).toHaveBeenCalledWith('Something went wrong. Retry, or refresh the page if it keeps happening.');
+  });
+
   // The generated client resolves with `{ error }` on a non-2xx unless the call passes throwOnError, and
   // the mutation would then succeed, so the onError above (and its #909 re-sync) would never run.
   it('posts with throwOnError so a refused force-stop reaches onError', async () => {

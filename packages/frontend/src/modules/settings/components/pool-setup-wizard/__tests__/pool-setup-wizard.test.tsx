@@ -898,7 +898,8 @@ describe('connect step', () => {
     const row = await screen.findByTestId(`pool-setup-row-${HUB_B}`);
     await waitFor(() => expect(row).toHaveAttribute('data-state', 'failed'));
     const alert = within(row).getByRole('alert');
-    expect(alert).toHaveTextContent('The other Hub refused this PIN. Generate a new one there and try again.');
+    // Retry sends no PIN, so the row points at Back, where the PIN field is.
+    expect(alert).toHaveTextContent('hub-b refused this PIN. Generate a new one there, then go Back and enter it.');
     expect(alert).toHaveTextContent('A PIN works once and expires after 10 minutes.');
     expect(alert).not.toHaveTextContent('Refused as invalid.');
   });

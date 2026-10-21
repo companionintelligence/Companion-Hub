@@ -345,15 +345,18 @@ export const HubPoolSection = () => {
 
   /* Every call below passes `throwOnError`. Without it the generated client RESOLVES on a non-2xx,
      with `{ error }`, so react-query would run `onSuccess` and show the success toast for an action
-     that failed. The generated `*Mutation()` helpers, like the one Save uses here, set it themselves. */
+     that failed. The generated `*Mutation()` helpers, like the one Save uses here, set it themselves.
+     Each re-reads pool state in `onSettled`, failure included: a 404 or 409 usually means the row
+     moved under the card (approved elsewhere, expired, paired from the other Hub), and the
+     discovery list never polls, so a stale row would keep offering the action that just failed. */
   const settingsMutation = useMutation({
     ...updatePoolSettingsMutation(),
     onSuccess: () => {
       setDraft(null);
       toast.success(t('HUB_POOL_SETTINGS_SAVED'));
-      invalidatePool();
     },
     onError: toastPoolError('HUB_POOL_SETTINGS_ERROR'),
+    onSettled: invalidatePool,
   });
 
   /* The pin being composed: `''` as the model means the pool-wide default pin, and `'local'` as the
@@ -373,9 +376,9 @@ export const HubPoolSection = () => {
     onSuccess: () => {
       setPinDraft({ model: '', node: 'local' });
       toast.success(t('HUB_POOL_PINS_SAVED'));
-      invalidatePool();
     },
     onError: toastPoolError('HUB_POOL_PINS_ERROR'),
+    onSettled: invalidatePool,
   });
 
   const unpinMutation = useMutation({
@@ -383,9 +386,9 @@ export const HubPoolSection = () => {
       deletePoolPin({ query: { scope: pin.scope, ...(pin.model ? { model: pin.model } : {}) } as never, throwOnError: true }),
     onSuccess: () => {
       toast.success(t('HUB_POOL_PINS_REMOVED'));
-      invalidatePool();
     },
     onError: toastPoolError('HUB_POOL_PINS_ERROR'),
+    onSettled: invalidatePool,
   });
 
   /* The PIN an operator read off the OTHER Hub's screen. Optional: without one this is the
@@ -400,9 +403,9 @@ export const HubPoolSection = () => {
     onSuccess: () => {
       toast.success(t('HUB_POOL_PAIR_SUCCESS'));
       setPairingPinInput('');
-      invalidatePool();
     },
     onError: toastPoolError('HUB_POOL_PAIR_ERROR'),
+    onSettled: invalidatePool,
   });
   const requestPair = (nodeFqdn: string) => {
     if (pairingPinInput.length > 0 && !/^\d{6}$/.test(pairingPinInput)) {
@@ -417,18 +420,18 @@ export const HubPoolSection = () => {
     mutationFn: (id: string) => approvePeer({ path: { id }, throwOnError: true }),
     onSuccess: () => {
       toast.success(t('HUB_POOL_APPROVE_SUCCESS'));
-      invalidatePool();
     },
     onError: toastPoolError('HUB_POOL_APPROVE_ERROR'),
+    onSettled: invalidatePool,
   });
 
   const rejectMutation = useMutation({
     mutationFn: (id: string) => rejectPeer({ path: { id }, throwOnError: true }),
     onSuccess: () => {
       toast.success(t('HUB_POOL_REJECT_SUCCESS'));
-      invalidatePool();
     },
     onError: toastPoolError('HUB_POOL_REJECT_ERROR'),
+    onSettled: invalidatePool,
   });
 
   const removeMutation = useMutation({
@@ -436,9 +439,9 @@ export const HubPoolSection = () => {
     onSuccess: () => {
       setUnpairTarget(null);
       toast.success(t('HUB_POOL_UNPAIR_SUCCESS'));
-      invalidatePool();
     },
     onError: toastPoolError('HUB_POOL_UNPAIR_ERROR'),
+    onSettled: invalidatePool,
   });
 
   /* The two new directional switches. Sent through the generated client's low-level `patch` rather
@@ -451,9 +454,9 @@ export const HubPoolSection = () => {
       client.patch({ url: '/api/inference/pool/settings', body, throwOnError: true }),
     onSuccess: () => {
       toast.success(t('HUB_POOL_SETTINGS_SAVED'));
-      invalidatePool();
     },
     onError: toastPoolError('HUB_POOL_SETTINGS_ERROR'),
+    onSettled: invalidatePool,
   });
 
   /* The two per-peer verbs. Called through the generated client's low-level `post` rather than a
@@ -465,9 +468,9 @@ export const HubPoolSection = () => {
       client.post({ url: `/api/inference/pool/peers/${encodeURIComponent(id)}/${enabled ? 'enable' : 'disable'}`, throwOnError: true }),
     onSuccess: (_data, variables) => {
       toast.success(variables.enabled ? t('HUB_POOL_PEER_ENABLED') : t('HUB_POOL_PEER_DISABLED'));
-      invalidatePool();
     },
     onError: toastPoolError('HUB_POOL_PEER_TOGGLE_ERROR'),
+    onSettled: invalidatePool,
   });
 
   /* Pairing PIN. Through the generated client's low-level verbs for the same reason as the two
@@ -488,17 +491,17 @@ export const HubPoolSection = () => {
       const minted = response.data as { pin?: string; expiresAt?: string } | undefined;
       mintedPinSeenLive.current = false;
       setMintedPin(minted?.pin ? { pin: minted.pin, expiresAt: minted.expiresAt ?? '' } : null);
-      invalidatePool();
     },
     onError: toastPoolError('HUB_POOL_PIN_MINT_ERROR'),
+    onSettled: invalidatePool,
   });
   const cancelPinMutation = useMutation({
     mutationFn: () => client.delete({ url: '/api/inference/pool/pairing-pin', throwOnError: true }),
     onSuccess: () => {
       setMintedPin(null);
-      invalidatePool();
     },
     onError: toastPoolError('HUB_POOL_PIN_CANCEL_ERROR'),
+    onSettled: invalidatePool,
   });
 
   useEffect(() => {
@@ -539,9 +542,9 @@ export const HubPoolSection = () => {
     mutationFn: (id: string) => removePeer({ path: { id }, throwOnError: true }),
     onSuccess: () => {
       toast.success(t('HUB_POOL_CANCEL_REQUEST_SUCCESS'));
-      invalidatePool();
     },
     onError: toastPoolError('HUB_POOL_CANCEL_REQUEST_ERROR'),
+    onSettled: invalidatePool,
   });
 
   if (statusPending) {

@@ -239,7 +239,6 @@ export function statusOf(error: unknown, response?: { status?: number } | null):
  * the `message` of the parsed body when the call went through a client without it.
  */
 export function messageOf(error: unknown): string | undefined {
-  if (error instanceof Error) return error.message;
   const message = (error as { message?: unknown } | null | undefined)?.message;
   return typeof message === 'string' ? message : undefined;
 }

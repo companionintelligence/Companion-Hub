@@ -1622,6 +1622,19 @@ describe('HubPoolSection', () => {
       expect(screen.getByTestId('hub-pool-unpair-confirm-btn')).toBeInTheDocument();
     });
 
+    // A 409 here usually means the other Hub paired from its side, and the discovery list never polls.
+    it('re-reads the pool after a failed pairing, so a stale row stops offering Pair', async () => {
+      pairable();
+      fail(vi.mocked(pairPeer));
+      renderSection();
+      await waitFor(() => expect(fixtures.discoverableReads).toBe(1));
+
+      await userEvent.click(await screen.findByRole('button', { name: 'HUB_POOL_PAIR_BUTTON' }));
+
+      await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalledWith('HUB_POOL_PAIR_ERROR'));
+      await waitFor(() => expect(fixtures.discoverableReads).toBe(2));
+    });
+
     it('keeps the PIN on screen when Cancel PIN failed, since it is still live', async () => {
       fixtures.pinMint.mockResolvedValueOnce({ data: { pin: '481502', expiresAt: '2099-01-01T00:10:00.000Z' } });
       fail(fixtures.pinCancel);
