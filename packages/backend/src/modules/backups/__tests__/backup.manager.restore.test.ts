@@ -24,6 +24,7 @@ const fs = (await import('node:fs')).default;
 const { ArchiveService } = await import('@/core/archive/archive.service');
 const { FilesystemService } = await import('@/core/filesystem/filesystem.service');
 const { BackupManager } = await import('../backup.manager');
+const { AppCommandDeadline } = await import('@/common/helpers/app-command-deadline');
 
 // root ignores permission bits and Windows has none to speak of; there the Hub can delete anything.
 const canEnforcePermissions = process.platform !== 'win32' && typeof process.getuid === 'function' && process.getuid() !== 0;
@@ -410,7 +411,7 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
       it('has root archive it with its owners, marked so a restore puts them back, and cleans up the staging', async () => {
         const { filename } = await manager.backupApp(appUrn);
 
-        expect(docker.archiveBackupAsRoot).toHaveBeenCalledWith(appUrn, 'backup-test-app-1');
+        expect(docker.archiveBackupAsRoot).toHaveBeenCalledWith(appUrn, 'backup-test-app-1', expect.any(AppCommandDeadline));
         const listing = execFileSync('tar', ['-tzf', path.join(backupDir, filename)], { encoding: 'utf8' }).split('\n');
         expect(listing).toContain('./app-data.owners');
         expect(listing).toContain('./app/docker-compose.json');
@@ -419,6 +420,18 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
           'database rows',
         );
         await expect(fs.promises.access(stagingFor('backup-test-app-1'))).rejects.toThrow();
+      });
+
+      it('says the backup ran out of time when the archive uses up its budget', async () => {
+        docker.archiveBackupAsRoot.mockImplementation(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 1_100));
+          return null;
+        });
+
+        await expect(manager.backupApp(appUrn, AppCommandDeadline.after(1_000))).rejects.toThrow(
+          `Backing up ${appUrn} ran out of time: the root helpers it needs get 1 second in all`,
+        );
+        await expect(fs.promises.access(backupDir)).rejects.toThrow();
       });
 
       it('does not report a backup when root cannot archive it either, and cleans up the staging', async () => {
@@ -557,12 +570,41 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
     ];
 
     beforeEach(async () => {
+      docker.privilegedHelperAvailable.mockResolvedValue(true);
       const data = path.join(appDataDir, 'data');
       await fs.promises.mkdir(path.join(data, 'docker-tls'), { recursive: true });
       await fs.promises.writeFile(path.join(data, 'kuma.db'), 'reset-db');
       await fs.promises.writeFile(path.join(data, 'docker-tls', 'ca.pem'), 'cert');
       await fs.promises.chmod(path.join(data, 'docker-tls'), 0o555);
       await fs.promises.chmod(data, 0o555);
+    });
+
+    // A restore's root helpers share one budget that ends while the app queue still waits for the
+    // reply. Here the delete uses it all up.
+    it('fails with a clear message when the root helpers use up the restore budget', async () => {
+      docker.removeAppDataDirAsRoot.mockImplementation(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 1_100));
+        return false;
+      });
+      const name = await putArchive('kuma.tar.gz', makeTarGz(KUMA_ENTRIES));
+
+      await expect(manager.restoreApp(appUrn, name, AppCommandDeadline.after(1_000))).rejects.toThrow(
+        `Restoring ${appUrn} ran out of time: the root helpers it needs get 1 second in all`,
+      );
+      // Nothing of the backup went in, and the installed files were not touched.
+      await expect(fs.promises.readFile(path.join(appInstalledDir, 'docker-compose.json'), 'utf8')).resolves.toBe('{"live":true}');
+    });
+
+    it('checks the helper can run before it deletes anything', async () => {
+      docker.privilegedHelperAvailable.mockResolvedValue(false);
+      const name = await putArchive('kuma.tar.gz', makeTarGz(KUMA_ENTRIES));
+
+      await expect(manager.restoreApp(appUrn, name)).rejects.toThrow('Nothing was changed');
+
+      // The Hub used to delete what it could (data.txt, app.env) and only then find out root could not help.
+      await expect(fs.promises.readFile(path.join(appDataDir, 'data.txt'), 'utf8')).resolves.toBe('live-data');
+      await expect(fs.promises.readFile(path.join(appDataDir, 'data', 'kuma.db'), 'utf8')).resolves.toBe('reset-db');
+      expect(docker.removeAppDataDirAsRoot).not.toHaveBeenCalled();
     });
 
     it('empties it through the root helper, then restores the backup', async () => {
@@ -578,7 +620,7 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
 
       await manager.restoreApp(appUrn, name);
 
-      expect(docker.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn);
+      expect(docker.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn, expect.any(AppCommandDeadline));
       await expect(fs.promises.readFile(path.join(appDataDir, 'data', 'kuma.db'), 'utf8')).resolves.toBe('backed-up-db');
       await expect(fs.promises.access(path.join(appDataDir, 'data', 'docker-tls'))).rejects.toThrow();
       await expect(readLive()).resolves.toEqual({ data: 'restored-data', compose: '{"restored":true}', env: 'RESTORED=true\n' });
@@ -624,7 +666,7 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
 
       await manager.restoreApp(appUrn, name);
 
-      expect(docker.extractBackupAppDataAsRoot).toHaveBeenCalledWith(appUrn, 'backup-test-app-1', './app-data');
+      expect(docker.extractBackupAppDataAsRoot).toHaveBeenCalledWith(appUrn, 'backup-test-app-1', './app-data', expect.any(AppCommandDeadline));
       expect(copy).not.toHaveBeenCalledWith(expect.stringContaining('app-data'), appDataDir, expect.anything());
       await expect(readLive()).resolves.toEqual({ data: 'restored-data', compose: '{"restored":true}', env: 'RESTORED=true\n' });
       // The staged archive goes with the restore.
@@ -650,6 +692,19 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
       await manager.restoreApp(appUrn, name);
 
       await expect(fs.promises.readFile(path.join(appDataDir, 'data.txt'), 'utf8')).resolves.toBe('restored-data');
+    });
+
+    it('gives the delete and the extract one budget, 40 minutes unless the caller has its own', async () => {
+      docker.extractBackupAppDataAsRoot.mockResolvedValue(false);
+      const name = await putArchive('owned.tar.gz', makeTarGz(OWNED_ENTRIES));
+      const deadline = AppCommandDeadline.after(5 * 60_000);
+
+      await expect(manager.restoreApp(appUrn, name, deadline)).rejects.toThrow();
+      expect(docker.extractBackupAppDataAsRoot.mock.calls[0]?.[3]).toBe(deadline);
+
+      await expect(manager.restoreApp(appUrn, name)).rejects.toThrow();
+      const own = docker.extractBackupAppDataAsRoot.mock.calls[1]?.[3] as InstanceType<typeof AppCommandDeadline> | undefined;
+      expect(own?.budgetMs).toBe(40 * 60_000);
     });
 
     it('reports a restore whose data root could not put back', async () => {

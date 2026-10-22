@@ -1,3 +1,5 @@
+import { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
@@ -19,6 +21,9 @@ export class ResetAppCommand extends AppLifecycleCommand {
     const appHelpers = this.moduleRef.get(AppHelpers, { strict: false });
     const envUtils = this.moduleRef.get(EnvUtils, { strict: false });
     const filesystem = this.moduleRef.get(FilesystemService, { strict: false });
+    const configuration = this.moduleRef.get(ConfigurationService, { strict: false });
+    // The root delete gets what is left of the budget a command has, so the reset answers the queue in time.
+    const deadline = AppCommandDeadline.forAppCommand(configuration?.get('userSettings')?.eventsTimeout);
 
     try {
       logger.info(`Resetting app ${appUrn}`);
@@ -40,7 +45,7 @@ export class ResetAppCommand extends AppLifecycleCommand {
       // Delete app data directory. A reset that left the old data in place used to say it had reset
       // the app: on a native-Linux Hub, everything a root container wrote survived the Hub's delete.
       const { appDataDir } = appFilesManager.getAppPaths(appUrn);
-      if (!(await removeAppDataDirWithRootFallback({ filesystem, docker: dockerService, logger }, appUrn, appDataDir))) {
+      if (!(await removeAppDataDirWithRootFallback({ filesystem, docker: dockerService, logger }, appUrn, appDataDir, deadline))) {
         // The app is down and the Hub's own files (app.env first) may be gone with part of the data.
         // Put back what a Start needs, so the app can be started again as it was instead of failing on
         // a missing env file, and say the reset did not happen.
@@ -51,7 +56,11 @@ export class ResetAppCommand extends AppLifecycleCommand {
         } catch (err) {
           logger.warn(`Could not put back the files ${appUrn} needs to start after the failed reset: ${err}`);
         }
-        throw new Error(`Could not delete the data of ${appUrn}, so it was not reset`);
+        throw new Error(
+          deadline.expired
+            ? `Could not delete the data of ${appUrn} in the ${deadline.describe()} a reset has for it, so it was not reset`
+            : `Could not delete the data of ${appUrn}, so it was not reset`,
+        );
       }
       await appFilesManager.createAppDataDir(appUrn);
 

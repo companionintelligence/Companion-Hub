@@ -22,6 +22,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable, InternalServerErrorException, Inject } from '@nestjs/common';
+import type { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
 import { AppFilesManager } from '../apps/app-files-manager';
@@ -485,7 +486,7 @@ export class DockerService {
    * @returns Whether the helper succeeded. A failure returns `false` so the
    * caller can provide a manual cleanup command.
    */
-  public async removeAppDataDirAsRoot(appUrn: AppUrn): Promise<boolean> {
+  public async removeAppDataDirAsRoot(appUrn: AppUrn, deadline?: AppCommandDeadline): Promise<boolean> {
     const config = this.config.getConfig();
     const inputs = {
       ciHubAppDataPath: process.env.CI_HUB_APP_DATA_PATH,
@@ -530,6 +531,7 @@ export class DockerService {
       PRIVILEGED_DATA_TIMEOUT_MS,
       `emptying root-owned remnant in ${hostAppDataDir}`,
       '[app-data-cleanup]',
+      deadline,
     );
   }
 
@@ -594,6 +596,10 @@ export class DockerService {
    * The container is named, so a helper that outlives its time limit is removed with `docker rm -f`:
    * killing the CLI alone leaves the container running, still deleting or writing app data that the
    * caller has already given up on.
+   *
+   * With a `deadline`, the helper gets what is left of the command's budget (at most `timeoutMs`), and
+   * none at all once the budget is used up: the helpers of one restore share it, so the command still
+   * answers the queue in time.
    */
   private async runPrivilegedSnapshotHelper(
     mounts: string[],
@@ -601,14 +607,21 @@ export class DockerService {
     timeoutMs: number,
     what: string,
     tag = SNAPSHOT_AREA.tag,
+    deadline?: AppCommandDeadline,
   ): Promise<boolean> {
+    if (deadline?.expired) {
+      this.logger.error(`${tag} no time left for ${what}: the ${deadline.describe()} its command has for root helpers are used up`);
+      return false;
+    }
+
+    const limitMs = deadline ? Math.min(timeoutMs, deadline.remainingMs()) : timeoutMs;
     const image = privilegedHelperImage();
     const name = `ci-hub-helper-${crypto.randomBytes(6).toString('hex')}`;
     const args = ['run', '--rm', '--name', name, '--network', 'none', '--user', '0:0', ...mounts.flatMap((m) => ['-v', m]), image, ...command];
 
     this.logger.warn(`${tag} ${what} via a privileged ${image} helper`);
     try {
-      await this.runDockerCliCommand(args, timeoutMs);
+      await this.runDockerCliCommand(args, limitMs);
       return true;
     } catch (err) {
       this.logger.error(`${tag} privileged helper failed (${what}): ${err instanceof Error ? err.message : String(err)}`);
@@ -708,7 +721,7 @@ export class DockerService {
    *
    * @returns the archive as the Hub sees it, given to the Hub's user, or `null` (already logged).
    */
-  public async archiveBackupAsRoot(appUrn: AppUrn, stagingId: string): Promise<string | null> {
+  public async archiveBackupAsRoot(appUrn: AppUrn, stagingId: string, deadline?: AppCommandDeadline): Promise<string | null> {
     const owner = this.hubOwner();
 
     if (!owner) {
@@ -741,6 +754,7 @@ export class DockerService {
       PRIVILEGED_DATA_TIMEOUT_MS,
       `archiving ${paths.hostAppDataDir} for a backup`,
       BACKUP_STAGING_AREA.tag,
+      deadline,
     );
 
     return archived ? archive : null;
@@ -789,7 +803,7 @@ export class DockerService {
    * @param stagingId the id {@link createRestoreStagingDir} returned
    * @param member the data folder's name exactly as the archive lists it (`app-data` or `./app-data`)
    */
-  public async extractBackupAppDataAsRoot(appUrn: AppUrn, stagingId: string, member: string): Promise<boolean> {
+  public async extractBackupAppDataAsRoot(appUrn: AppUrn, stagingId: string, member: string, deadline?: AppCommandDeadline): Promise<boolean> {
     if (!/^(\.\/)*app-data$/.test(member)) {
       this.logger.error(`[restore] refusing privileged extract for ${appUrn}: ${member} is not the data folder of a backup`);
       return false;
@@ -825,6 +839,7 @@ export class DockerService {
       PRIVILEGED_DATA_TIMEOUT_MS,
       `restoring ${paths.hostAppDataDir} from ${paths.hostSnapshotDir}/in/backup.tar.gz with its owners`,
       '[restore]',
+      deadline,
     );
   }
 

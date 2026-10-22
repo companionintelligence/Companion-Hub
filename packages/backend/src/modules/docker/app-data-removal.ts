@@ -1,3 +1,4 @@
+import type { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import type { FilesystemService } from '@/core/filesystem/filesystem.service';
 import type { LoggerService } from '@/core/logger/logger.service';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -21,7 +22,12 @@ type AppDataRemovalDeps = {
  * @returns whether none of the old data is left: the folder is gone, or the helper emptied it and the Hub sees it empty. On
  * `false` the folder may be half emptied; the caller must not write new data over what is left.
  */
-export async function removeAppDataDirWithRootFallback(deps: AppDataRemovalDeps, appUrn: AppUrn, appDataDir: string): Promise<boolean> {
+export async function removeAppDataDirWithRootFallback(
+  deps: AppDataRemovalDeps,
+  appUrn: AppUrn,
+  appDataDir: string,
+  deadline?: AppCommandDeadline,
+): Promise<boolean> {
   const first = await deps.filesystem.removeDirectoryDetailed(appDataDir);
 
   if (first.removed) {
@@ -34,7 +40,7 @@ export async function removeAppDataDirWithRootFallback(deps: AppDataRemovalDeps,
 
   deps.logger.warn(`The Hub cannot delete some of the data of ${appUrn} (its container wrote it as another user); emptying it as root`);
 
-  if (!(await deps.docker.removeAppDataDirAsRoot(appUrn))) {
+  if (!(await deps.docker.removeAppDataDirAsRoot(appUrn, deadline))) {
     deps.logger.error(`Could not delete the data of ${appUrn}, as the Hub or as root`);
     return false;
   }

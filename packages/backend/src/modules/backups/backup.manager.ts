@@ -24,6 +24,7 @@ import { AppFilesManager } from '../apps/app-files-manager';
 import { AppVolumeArchiveService } from '../docker/app-volume-archive.service';
 import { removeAppDataDirWithRootFallback } from '../docker/app-data-removal';
 import { BACKUP_STAGING_DIRNAME, DockerService } from '../docker/docker.service';
+import { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 
 /**
  * How the Hub copies an app's data into a backup. Links are copied as links with their targets as
@@ -72,7 +73,11 @@ export class BackupManager implements OnApplicationShutdown {
     }
   }
 
-  public backupApp = async (appUrn: AppUrn) => {
+  /**
+   * @param deadline the budget the root helper may use, when the data needs one. A manual backup gets its own
+   *   ({@link AppCommandDeadline.forAppCommand}); a caller doing more than the backup passes its own.
+   */
+  public backupApp = async (appUrn: AppUrn, deadline: AppCommandDeadline = this.commandDeadline()) => {
     const { dataDir } = this.config.get('directories');
     const backupName = `${appUrn}-${Date.now()}`;
     const { appStoreId, appName } = extractAppUrn(appUrn);
@@ -151,10 +156,12 @@ export class BackupManager implements OnApplicationShutdown {
       let archivePath = `${tempDir}.tar.gz`;
 
       if (staging) {
-        const archived = await this.docker.archiveBackupAsRoot(appUrn, staging.id);
+        const archived = await this.docker.archiveBackupAsRoot(appUrn, staging.id, deadline);
 
         if (!archived) {
-          throw new Error('Failed to create the backup archive');
+          throw deadline.expired
+            ? this.outOfTime('Backing up', appUrn, deadline, 'No backup was made.')
+            : new Error('Failed to create the backup archive');
         }
 
         archivePath = archived;
@@ -252,7 +259,11 @@ export class BackupManager implements OnApplicationShutdown {
     }
   }
 
-  public restoreApp = async (appUrn: AppUrn, filename: string) => {
+  /**
+   * @param deadline the budget the restore's root helpers share (the delete, then the extract), so the command
+   *   still answers the queue in time on a big data folder. A caller doing more than the restore passes its own.
+   */
+  public restoreApp = async (appUrn: AppUrn, filename: string, deadline: AppCommandDeadline = this.commandDeadline()) => {
     const { dataDir } = this.config.get('directories');
     const { appStoreId, appName } = extractAppUrn(appUrn);
     const backupDir = path.join(dataDir, 'backups', appStoreId, appName);
@@ -344,7 +355,21 @@ export class BackupManager implements OnApplicationShutdown {
       // its files. A backup without volumes (made on Linux, or before they were included) never asks Docker.
       const volumes = volumeKeys.length > 0 ? await this.appVolumes.restoreTargets(appUrn, volumeKeys) : [];
 
-      await this.replaceAppFiles(appUrn, restoreDir, dataMember && staging ? { stagingId: staging.id, member: dataMember } : null);
+      // The same for a backup the Hub copies back itself, when what the app wrote can only be deleted as
+      // root. The Hub would otherwise delete what it can first and find out afterwards.
+      if (!dataMember) {
+        const { appDataDir } = this.appFilesManager.getAppPaths(appUrn);
+        const undeletable = await this.filesystem.findUndeletable(appDataDir);
+
+        if (undeletable.length > 0 && !(await this.docker.privilegedHelperAvailable(appUrn))) {
+          throw new Error(
+            `Cannot restore ${appUrn}: the Hub cannot delete what its container wrote in ${undeletable.slice(0, 3).join(', ')}, ` +
+              'and the helper that deletes it as root cannot run. Nothing was changed.',
+          );
+        }
+      }
+
+      await this.replaceAppFiles(appUrn, restoreDir, dataMember && staging ? { stagingId: staging.id, member: dataMember } : null, deadline);
 
       for (const volume of volumes) {
         this.logger.info(`Restoring Docker volume ${volume.name}...`);
@@ -433,14 +458,19 @@ export class BackupManager implements OnApplicationShutdown {
   }
 
   /** Swap the app's live folders for the (already validated) ones extracted from a backup. */
-  private async replaceAppFiles(appUrn: AppUrn, restoreDir: string, withOwners: { stagingId: string; member: string } | null) {
+  private async replaceAppFiles(
+    appUrn: AppUrn,
+    restoreDir: string,
+    withOwners: { stagingId: string; member: string } | null,
+    deadline: AppCommandDeadline,
+  ) {
     const { dataDir } = this.config.get('directories');
     const { appStoreId, appName } = extractAppUrn(appUrn);
     const { appInstalledDir, appDataDir } = this.appFilesManager.getAppPaths(appUrn);
     const userConfigDir = path.join(dataDir, 'user-config', appStoreId, appName);
 
     // Remove old data directories
-    await this.removeLiveAppData(appUrn, appDataDir);
+    await this.removeLiveAppData(appUrn, appDataDir, deadline);
     await this.filesystem.removeDirectory(appInstalledDir);
     await this.filesystem.removeDirectory(userConfigDir);
 
@@ -453,7 +483,7 @@ export class BackupManager implements OnApplicationShutdown {
     // made with its owners goes back through root from the same archive, which every check above passed.
     const copied = [
       withOwners
-        ? (await this.docker.extractBackupAppDataAsRoot(appUrn, withOwners.stagingId, withOwners.member)) &&
+        ? (await this.docker.extractBackupAppDataAsRoot(appUrn, withOwners.stagingId, withOwners.member, deadline)) &&
           (await this.rootRestoreLanded(appUrn, path.join(restoreDir, 'app-data'), appDataDir))
         : await this.filesystem.copyDirectory(path.join(restoreDir, 'app-data'), appDataDir, { verbatimSymlinks: true }),
       await this.filesystem.copyDirectory(path.join(restoreDir, 'app'), appInstalledDir),
@@ -464,7 +494,14 @@ export class BackupManager implements OnApplicationShutdown {
     }
 
     if (copied.includes(false)) {
-      throw new Error('Failed to restore the backup files');
+      throw deadline.expired
+        ? this.outOfTime(
+            'Restoring',
+            appUrn,
+            deadline,
+            'The backup is unchanged; the data the app has now may be incomplete until it is restored again.',
+          )
+        : new Error('Failed to restore the backup files');
     }
 
     // A backup taken before a folder existed does not bring it back, and Docker would create it as root.
@@ -495,10 +532,35 @@ export class BackupManager implements OnApplicationShutdown {
    * through the root helper. Data that still cannot go stops the restore before anything is copied,
    * since a copy over what is left would leave old and restored files side by side.
    */
-  private async removeLiveAppData(appUrn: AppUrn, appDataDir: string) {
-    if (!(await removeAppDataDirWithRootFallback({ filesystem: this.filesystem, docker: this.docker, logger: this.logger }, appUrn, appDataDir))) {
-      throw new Error(`Could not remove the current data of ${appUrn} to restore the backup`);
+  private async removeLiveAppData(appUrn: AppUrn, appDataDir: string, deadline: AppCommandDeadline) {
+    if (
+      !(await removeAppDataDirWithRootFallback(
+        { filesystem: this.filesystem, docker: this.docker, logger: this.logger },
+        appUrn,
+        appDataDir,
+        deadline,
+      ))
+    ) {
+      throw deadline.expired
+        ? this.outOfTime('Restoring', appUrn, deadline, 'The backup is unchanged; part of the current data may already be gone.')
+        : new Error(`Could not remove the current data of ${appUrn} to restore the backup`);
     }
+  }
+
+  /** The budget for one backup or restore command, from the same setting as the queue that waits for it. */
+  private commandDeadline(): AppCommandDeadline {
+    return AppCommandDeadline.forAppCommand(this.config.get('userSettings').eventsTimeout);
+  }
+
+  /**
+   * Said when the root helpers used up the command's budget. The helper was stopped at the limit, so
+   * nothing goes on writing after the command has answered.
+   */
+  private outOfTime(doing: string, appUrn: AppUrn, deadline: AppCommandDeadline, outcome: string): Error {
+    return new Error(
+      `${doing} ${appUrn} ran out of time: the root helpers it needs get ${deadline.describe()} in all, so that it can still report back ` +
+        `before the Hub stops waiting for it. ${outcome}`,
+    );
   }
 
   /**

@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import { ComposeCliUnavailableError, DockerService } from '../docker.service';
 import { DockerReadFacade } from '../docker-read.facade';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -1401,6 +1402,30 @@ describe('DockerService', () => {
       await expect(pending).resolves.toBeNull();
       const name = ((child_process.spawn as any).mock.calls[0][1] as string[])[3];
       expect(child_process.spawn).toHaveBeenLastCalledWith('docker', ['rm', '-f', name], { stdio: 'pipe' });
+    });
+
+    // The helpers of one restore share a budget that ends inside the app queue's wait.
+    it('gives a helper only what is left of the command budget, and removes it when that runs out', async () => {
+      vi.useFakeTimers();
+      const hung = createMockSpawnProcess();
+      hung.on = vi.fn().mockReturnValue(hung);
+      (child_process.spawn as any).mockReturnValueOnce(hung).mockReturnValue(createComposeProbeProcess(0));
+
+      const pending = service.removeAppDataDirAsRoot(urn, AppCommandDeadline.after(10_000));
+      await vi.advanceTimersByTimeAsync(10_001);
+      vi.useRealTimers();
+
+      await expect(pending).resolves.toBe(false);
+      const name = ((child_process.spawn as any).mock.calls[0][1] as string[])[3];
+      expect(child_process.spawn).toHaveBeenLastCalledWith('docker', ['rm', '-f', name], { stdio: 'pipe' });
+    });
+
+    it('starts no helper once the command budget is used up', async () => {
+      const deadline = AppCommandDeadline.after(0);
+
+      await expect(service.removeAppDataDirAsRoot(urn, deadline)).resolves.toBe(false);
+      await expect(service.extractBackupAppDataAsRoot(urn, 'backup-kimai-1792500000000', './app-data', deadline)).resolves.toBe(false);
+      expect(child_process.spawn).not.toHaveBeenCalled();
     });
 
     it('says the helper can run when its image is here, and pulls it when it is not', async () => {

@@ -293,6 +293,59 @@ export class FilesystemService {
     return found;
   }
 
+  /**
+   * Looks for folders under `dirPath` whose entries this process could not delete: a folder it cannot
+   * list, or one that holds something and that it cannot write into (a file is deleted through its
+   * folder, not by its owner). What a container running as root writes into a folder of its own looks
+   * like this to a Hub that runs as the host user. Bounded and breadth first like
+   * {@link findUnreadable}, with the same caveat: an empty answer covers the first entries only.
+   */
+  async findUndeletable(dirPath: string, options: { maxEntries?: number; maxFound?: number } = {}): Promise<string[]> {
+    const maxEntries = options.maxEntries ?? 2000;
+    const maxFound = options.maxFound ?? 5;
+    const found: string[] = [];
+    const queue: string[] = [];
+    let seen = 0;
+
+    try {
+      queue.push(this.getSafeFilePath(dirPath));
+    } catch {
+      return found;
+    }
+
+    while (queue.length > 0 && seen < maxEntries && found.length < maxFound) {
+      const dir = queue.shift() as string;
+      let names: string[];
+
+      try {
+        names = await fs.promises.readdir(dir);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') found.push(dir);
+        continue;
+      }
+
+      if (names.length > 0) {
+        try {
+          await fs.promises.access(dir, fs.constants.W_OK | fs.constants.X_OK);
+        } catch {
+          found.push(dir);
+          continue;
+        }
+      }
+
+      for (const name of names) {
+        if (seen >= maxEntries || found.length >= maxFound) break;
+        seen++;
+        const full = path.join(dir, name);
+        const stat = await fs.promises.lstat(full).catch(() => null);
+
+        if (stat?.isDirectory()) queue.push(full);
+      }
+    }
+
+    return found;
+  }
+
   async removeDirectory(dirPath: string): Promise<boolean> {
     const { removed, error } = await this.tryRemoveDirectory(dirPath);
     if (!removed) this.logger.error(`Error removing directory ${dirPath}:`, error);

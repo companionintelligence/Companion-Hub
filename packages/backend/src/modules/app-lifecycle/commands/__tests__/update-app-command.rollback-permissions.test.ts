@@ -146,7 +146,8 @@ describe.skipIf(!canEnforcePermissions)('UpdateAppCommand rollback over data the
     const result = await command.execute(appUrn, {});
 
     expect(result).toMatchObject({ success: false, rolledBack: true });
-    expect(docker.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn);
+    // No budget of its own yet: the whole-update deadline comes with #2107.
+    expect(docker.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn, undefined);
     await expect(fs.promises.readFile(kumaDb(), 'utf8')).resolves.toBe('before the update');
     // Any bind-mount folder the snapshot did not hold is made by the Hub, not by Docker as root.
     expect(appFilesManager.createVolumeHostDirs).toHaveBeenCalledWith(appUrn);

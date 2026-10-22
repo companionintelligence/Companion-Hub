@@ -10,6 +10,7 @@ import { AppHelpers } from '@/modules/apps/app.helpers';
 import { DockerService } from '@/modules/docker/docker.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
+import { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import type { AppUrn } from '@ci-hub/common/types';
 
 // Real files with real permission bits: the suite's memfs mock cannot refuse a delete, which is how a
@@ -106,7 +107,7 @@ describe.skipIf(!canEnforcePermissions)('ResetAppCommand on data the Hub cannot 
     const result = await command.execute(appUrn, {});
 
     expect(result).toEqual({ success: true, message: `App ${appUrn} reset successfully` });
-    expect(docker.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn);
+    expect(docker.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn, expect.any(AppCommandDeadline));
     await expect(fs.promises.access(kumaDb())).rejects.toThrow();
     await expect(fs.promises.readdir(appDataDir)).resolves.toEqual([]);
   });
@@ -165,6 +166,23 @@ describe.skipIf(!canEnforcePermissions)('ResetAppCommand on data the Hub cannot 
 
   // The containers are already down by then, and the Hub's own app.env went with the part of the data
   // it could delete. Without it the app could not even be started again until the next Start rewrote it.
+  it('says the reset ran out of time when the root delete uses up its budget', async () => {
+    process.env.CI_HUB_PRIVILEGED_HELPER_BUDGET_SECONDS = '1';
+    docker.removeAppDataDirAsRoot.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      return false;
+    });
+
+    try {
+      const result = await command.execute(appUrn, {});
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain(`Could not delete the data of ${appUrn} in the 1 second a reset has for it`);
+    } finally {
+      delete process.env.CI_HUB_PRIVILEGED_HELPER_BUDGET_SECONDS;
+    }
+  });
+
   it('puts back what a Start needs when it could not delete the data', async () => {
     docker.removeAppDataDirAsRoot.mockResolvedValue(false);
     await fs.promises.writeFile(path.join(appDataDir, 'app.env'), 'OLD=1\n');

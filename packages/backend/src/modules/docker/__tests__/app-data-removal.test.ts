@@ -35,7 +35,7 @@ describe('removeAppDataDirWithRootFallback', () => {
     docker.removeAppDataDirAsRoot.mockResolvedValue(true);
 
     await expect(run()).resolves.toBe(true);
-    expect(docker.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn);
+    expect(docker.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn, undefined);
     expect(filesystem.removeDirectoryDetailed).toHaveBeenCalledTimes(2);
     expect(logger.error).not.toHaveBeenCalled();
   });
