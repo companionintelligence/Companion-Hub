@@ -16,6 +16,7 @@ import {
   type SetupStep,
   type TailscaleSetupStatus,
   classifyPairFailure,
+  messageOf,
   needsPolling,
   normalizeNodeName,
   statusOf,
@@ -208,13 +209,13 @@ export function usePairingBatch() {
       // `as never`: the generated PairPeerBody is an index signature with no named fields.
       const result = await pairPeer({ body: { nodeFqdn: target.nodeFqdn, displayName: target.hostname, ...(pin ? { pin } : {}) } as never });
       if (result?.error) {
-        const failure = classifyPairFailure(statusOf(result.error, result.response));
+        const failure = classifyPairFailure(statusOf(result.error, result.response), messageOf(result.error));
         dispatch({ type: 'mark', nodeFqdn: target.nodeFqdn, patch: failure === 'already' ? { status: 'already' } : { status: 'failed', failure } });
       } else {
         dispatch({ type: 'mark', nodeFqdn: target.nodeFqdn, patch: { status: 'sent' } });
       }
     } catch (error) {
-      const failure = classifyPairFailure(statusOf(error));
+      const failure = classifyPairFailure(statusOf(error), messageOf(error));
       dispatch({ type: 'mark', nodeFqdn: target.nodeFqdn, patch: failure === 'already' ? { status: 'already' } : { status: 'failed', failure } });
     } finally {
       inFlight.current.delete(target.nodeFqdn);

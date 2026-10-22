@@ -76,7 +76,27 @@ export class AppOperationRegistry {
    */
   private readonly settledBeforeStart = new Set<string>();
 
+  /**
+   * Apps with a call to `AppLifecycleService.installApp` under way, from its first check until it
+   * answers. Kept apart from `preparing`, which a reinstall leaves early to end its cancel window.
+   */
+  private readonly installCalls = new Set<AppUrn>();
+
   constructor(private readonly logger: LoggerService) {}
+
+  /** Begin an install call for this app. False, and nothing begun, while another one is under way. */
+  beginInstallCall(appUrn: AppUrn): boolean {
+    if (this.installCalls.has(appUrn)) {
+      return false;
+    }
+    this.installCalls.add(appUrn);
+    return true;
+  }
+
+  /** End the install call that {@link beginInstallCall} began. */
+  endInstallCall(appUrn: AppUrn): void {
+    this.installCalls.delete(appUrn);
+  }
 
   /** Mark an install as running its pre-registration checks. */
   beginPreparingInstall(appUrn: AppUrn): PreparingInstall {
