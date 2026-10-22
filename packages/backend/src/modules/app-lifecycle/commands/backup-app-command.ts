@@ -7,7 +7,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { AppLifecycleCommand } from './command';
 
 export class BackupAppCommand extends AppLifecycleCommand {
-  public async execute(appUrn: AppUrn): Promise<{ success: boolean; message: string }> {
+  public async execute(appUrn: AppUrn): Promise<{ success: boolean; message: string; rolledBack?: boolean }> {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
     const dockerService = this.moduleRef.get(DockerService, { strict: false });
     const backupManager = this.moduleRef.get(BackupManager, { strict: false });
@@ -17,7 +17,12 @@ export class BackupAppCommand extends AppLifecycleCommand {
     try {
       // Before the stop, so a backup that cannot be made costs no downtime.
       await backupManager.assertBackupPossible(appUrn);
+    } catch (err) {
+      // Nothing was stopped, so the app keeps the status it had rather than the "stopped" of a failed backup.
+      return { ...(await this.handleAppError(err, appUrn, 'backup')), rolledBack: true };
+    }
 
+    try {
       logger.info(`Stopping app ${appUrn} for backup`);
       await dockerService.composeApp(appUrn, 'stop').catch((err) => {
         logger.error(`Failed to stop app ${appUrn}:`, err);

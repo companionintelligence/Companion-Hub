@@ -108,6 +108,19 @@ describe('BackupsService', () => {
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ status: 'stopped' }));
     });
 
+    // The command refused the backup before it stopped anything, so the app is still running.
+    it('keeps a running app running in the UI when the backup was refused before the stop', async () => {
+      const appUrn = 'test-app' as any;
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, name: 'test-app', status: 'running', config: {} } as any);
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'Cannot back up test-app', rolledBack: true } as any);
+      configService.get.mockReturnValue(false);
+
+      await service.backupApp({ appUrn, actor: GRANTED_ACTOR });
+      await vi.waitFor(() => expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'backup_error', appUrn, appStatus: 'running' }));
+
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(1, { status: 'running' });
+    });
+
     it('should throw if demo mode', async () => {
       configService.get.mockReturnValue(true);
       await expect(service.backupApp({ appUrn: 'test' as any, actor: GRANTED_ACTOR })).rejects.toThrow('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');

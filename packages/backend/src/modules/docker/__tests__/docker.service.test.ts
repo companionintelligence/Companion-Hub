@@ -1300,6 +1300,29 @@ describe('DockerService', () => {
       expect(args.slice(18)).toEqual(['sh', '1000:1000']);
     });
 
+    // tar keeps hard links as links and a restore refuses them, so such a backup could never go back.
+    it('fails the backup on hard-linked data instead of writing one a restore refuses', async () => {
+      await service.archiveBackupAsRoot(urn, 'backup-kimai-1792500000000');
+
+      const script = ((child_process.spawn as any).mock.calls[0][1] as string[])[17] as string;
+      expect(script).toContain('\\( -type f -o -type l \\) -links +1 -print');
+      expect(script.indexOf('-links +1')).toBeLessThan(script.indexOf('tar -czf'));
+    });
+
+    it('SECURITY: keeps the archive of data closed to other users closed to them too', async () => {
+      await service.archiveBackupAsRoot(urn, 'backup-kimai-1792500000000');
+
+      const script = ((child_process.spawn as any).mock.calls[0][1] as string[])[17] as string;
+      expect(script).toContain('chmod 600 /out/backup.tar.gz');
+    });
+
+    it('says the helper cannot run for an app whose host folders cannot be worked out, without asking Docker', async () => {
+      configService.getConfig.mockReturnValue({ userSettings: {}, rootFolderHost: '' } as any);
+
+      await expect(service.privilegedHelperAvailable(urn)).resolves.toBe(false);
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
     it('makes a restore staging folder for the archive root will read', async () => {
       await expect(service.createRestoreStagingDir(urn)).resolves.toEqual({
         id: 'backup-kimai-1792500000000',
@@ -1336,9 +1359,13 @@ describe('DockerService', () => {
           'tar -C /x -xpf /in/backup.tar.gz --numeric-owner "$1"; status=$?; ' +
             'find /x/app-data \\( -type b -o -type c -o -type p -o -type s \\) -delete || status=1; ' +
             'find /x/app-data -type f \\( -perm -4000 -o -perm -2000 \\) -exec chmod ug-s {} + || status=1; ' +
+            // The folder and app.env are the Hub's, whatever uid the archive gave them.
+            'chown "$2" /x/app-data || status=1; ' +
+            'if [ -f /x/app-data/app.env ] && [ ! -L /x/app-data/app.env ]; then chown "$2" /x/app-data/app.env || status=1; fi; ' +
             'exit $status',
           'sh',
           './app-data',
+          '1000:1000',
         ],
         { stdio: 'pipe' },
       );

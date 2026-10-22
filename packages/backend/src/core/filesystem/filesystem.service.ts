@@ -237,9 +237,13 @@ export class FilesystemService {
    * Breadth first and bounded: a data folder can hold millions of files, and the ones this exists to
    * find (a database's own, a level or two down) come early. It reports at most `maxFound` paths and
    * looks at no more than `maxEntries` entries, so an empty answer means "none among the first
-   * entries", not a proof that every file is readable. Symbolic links are not followed.
+   * entries", not a proof that every file is readable. Symbolic links are not followed. An entry
+   * `skip` accepts (one the caller's copy leaves out) is neither checked nor walked into.
    */
-  async findUnreadable(dirPath: string, options: { maxEntries?: number; maxFound?: number } = {}): Promise<string[]> {
+  async findUnreadable(
+    dirPath: string,
+    options: { maxEntries?: number; maxFound?: number; skip?: (entry: string) => boolean } = {},
+  ): Promise<string[]> {
     const maxEntries = options.maxEntries ?? 2000;
     const maxFound = options.maxFound ?? 5;
     const found: string[] = [];
@@ -266,8 +270,9 @@ export class FilesystemService {
 
       for (const name of names) {
         if (seen >= maxEntries || found.length >= maxFound) break;
-        seen++;
         const full = path.join(dir, name);
+        if (options.skip?.(full)) continue;
+        seen++;
 
         try {
           const stat = await fs.promises.lstat(full);

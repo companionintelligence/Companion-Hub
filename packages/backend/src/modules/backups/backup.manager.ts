@@ -38,6 +38,12 @@ const appDataCopyOptions = (appDataDir: string): fs.CopyOptions => ({
   filter: (src) => !path.relative(appDataDir, src).includes('backups'),
 });
 
+/**
+ * The same rule for a walk that meets one entry at a time and never enters what it skips: a path inside
+ * the data folder holds "backups" exactly when one of its names does.
+ */
+const leftOutOfBackups = (entry: string) => path.basename(entry).includes('backups');
+
 @Injectable()
 export class BackupManager implements OnApplicationShutdown {
   private static readonly DEFAULT_MAX_BACKUPS = 5;
@@ -92,11 +98,7 @@ export class BackupManager implements OnApplicationShutdown {
       const { appDataDir, appInstalledDir } = this.appFilesManager.getAppPaths(appUrn);
       const userConfigDir = path.join(dataDir, 'user-config', appStoreId, appName);
 
-      // An app that has not written anything yet may have no data folder. The archive still gets one,
-      // because a restore refuses a backup without it.
-      const data = (await this.filesystem.pathExists(appDataDir))
-        ? await this.filesystem.copyDirectoryDetailed(appDataDir, path.join(tempDir, 'app-data'), appDataCopyOptions(appDataDir))
-        : { copied: await this.filesystem.createDirectory(path.join(tempDir, 'app-data')), permissionDenied: false };
+      const data = await this.copyAppDataForBackup(appDataDir, path.join(tempDir, 'app-data'));
 
       // Where the rest of the backup is put together: the temp folder, or a staging folder root can read.
       let assembly = tempDir;
@@ -204,9 +206,9 @@ export class BackupManager implements OnApplicationShutdown {
    */
   public async assertBackupPossible(appUrn: AppUrn): Promise<void> {
     const { appDataDir } = this.appFilesManager.getAppPaths(appUrn);
-    const unreadable = await this.filesystem.findUnreadable(appDataDir);
+    const unreadable = await this.findUnreadableAppData(appDataDir);
 
-    if (unreadable.length === 0 || (await this.docker.privilegedHelperAvailable())) {
+    if (unreadable.length === 0 || (await this.docker.privilegedHelperAvailable(appUrn))) {
       return;
     }
 
@@ -214,6 +216,29 @@ export class BackupManager implements OnApplicationShutdown {
       `Cannot back up ${appUrn}: the Hub cannot read ${unreadable.slice(0, 3).join(', ')} (written by the app's own container as another user) ` +
         'and cannot run the helper that archives it as root. Nothing was stopped.',
     );
+  }
+
+  /**
+   * The Hub's own copy of the app's data for a backup. An app that has not written anything yet may have
+   * no data folder. The archive still gets one, because a restore refuses a backup without it. Data the
+   * Hub already knows it cannot read is not copied: the copy would stop at the first such file, after
+   * copying the rest for nothing, and root archives it instead.
+   */
+  private async copyAppDataForBackup(appDataDir: string, dest: string): Promise<{ copied: boolean; permissionDenied: boolean }> {
+    if (!(await this.filesystem.pathExists(appDataDir))) {
+      return { copied: await this.filesystem.createDirectory(dest), permissionDenied: false };
+    }
+
+    if ((await this.findUnreadableAppData(appDataDir)).length > 0) {
+      return { copied: false, permissionDenied: true };
+    }
+
+    return this.filesystem.copyDirectoryDetailed(appDataDir, dest, appDataCopyOptions(appDataDir));
+  }
+
+  /** What the Hub cannot read of the data a backup takes. What a backup leaves out never needs the root helper. */
+  private findUnreadableAppData(appDataDir: string): Promise<string[]> {
+    return this.filesystem.findUnreadable(appDataDir, { skip: leftOutOfBackups });
   }
 
   /** Remove whatever an earlier backup of this app left in staging. Everything there is the Hub's to delete. */
@@ -428,7 +453,8 @@ export class BackupManager implements OnApplicationShutdown {
     // made with its owners goes back through root from the same archive, which every check above passed.
     const copied = [
       withOwners
-        ? await this.docker.extractBackupAppDataAsRoot(appUrn, withOwners.stagingId, withOwners.member)
+        ? (await this.docker.extractBackupAppDataAsRoot(appUrn, withOwners.stagingId, withOwners.member)) &&
+          (await this.rootRestoreLanded(appUrn, path.join(restoreDir, 'app-data'), appDataDir))
         : await this.filesystem.copyDirectory(path.join(restoreDir, 'app-data'), appDataDir, { verbatimSymlinks: true }),
       await this.filesystem.copyDirectory(path.join(restoreDir, 'app'), appInstalledDir),
     ];
@@ -443,6 +469,24 @@ export class BackupManager implements OnApplicationShutdown {
 
     // A backup taken before a folder existed does not bring it back, and Docker would create it as root.
     await this.appFilesManager.createVolumeHostDirs(appUrn);
+  }
+
+  /**
+   * Whether the data root extracted is where the Hub looks for it. The helper writes to the host path it
+   * works out from the settings, not to the Hub's own mount, so its exit status alone does not prove the
+   * app got its data back. The Hub extracted the same archive into `extracted`, so the top-level names
+   * of the data folder must all be there.
+   */
+  private async rootRestoreLanded(appUrn: AppUrn, extracted: string, appDataDir: string): Promise<boolean> {
+    const present = new Set(await this.filesystem.listFiles(appDataDir));
+    const missing = (await this.filesystem.listFiles(extracted)).filter((name) => !present.has(name));
+
+    if (missing.length > 0) {
+      this.logger.error(`Root restored the data of ${appUrn}, but ${appDataDir} does not hold ${missing.slice(0, 3).join(', ')}`);
+      return false;
+    }
+
+    return true;
   }
 
   /**

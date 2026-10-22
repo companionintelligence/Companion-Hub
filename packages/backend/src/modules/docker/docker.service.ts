@@ -600,8 +600,14 @@ export class DockerService {
    * stopped for a backup that will need one, so a Hub that cannot run it (offline, no image) refuses the
    * backup while the app is still up instead of after.
    */
-  public async privilegedHelperAvailable(): Promise<boolean> {
+  public async privilegedHelperAvailable(appUrn?: AppUrn): Promise<boolean> {
     const image = privilegedHelperImage();
+
+    // The helper mounts host folders worked out from the settings. When they cannot be worked out for this
+    // app (a root folder on the host that is not an absolute path), no image makes the backup possible.
+    if (appUrn && !this.resolveSnapshotHostPaths(appUrn, this.newBackupStagingId(appUrn), 'backup', BACKUP_STAGING_AREA)) {
+      return false;
+    }
 
     try {
       await this.runDockerCliCommand(['image', 'inspect', image], PRIVILEGED_IMAGE_CHECK_TIMEOUT_MS);
@@ -645,13 +651,11 @@ export class DockerService {
    * @returns the staging folder as the Hub sees it and its id, or `null` (already logged).
    */
   public async createBackupStagingDir(appUrn: AppUrn): Promise<{ id: string; dir: string } | null> {
-    const { appName, appStoreId } = extractAppUrn(appUrn);
-    const id = `backup-${appName}-${Date.now()}`;
+    const id = this.newBackupStagingId(appUrn);
 
     if (!this.resolveSnapshotHostPaths(appUrn, id, 'backup', BACKUP_STAGING_AREA)) return null;
 
-    const { dataDir } = this.config.get('directories');
-    const dir = path.join(dataDir, 'backups', BACKUP_STAGING_DIRNAME, appStoreId, appName, id);
+    const dir = this.backupStagingDir(appUrn, id);
 
     if (
       !(await this.filesystem.createDirectory(path.join(dir, 'stage', 'app-data'))) ||
@@ -671,13 +675,15 @@ export class DockerService {
    * and device nodes, pipes and sockets, which hold no data and which a restore refuses. A device node
    * in particular must never travel: restored, it would open a host disk to its owner.
    *
+   * Data with hard links fails the backup. tar keeps them as links, which a restore refuses, so the
+   * backup could never be restored. The archive is 600: it holds data its owners kept from other users.
+   *
    * @returns the archive as the Hub sees it, given to the Hub's user, or `null` (already logged).
    */
   public async archiveBackupAsRoot(appUrn: AppUrn, stagingId: string): Promise<string | null> {
-    const uid = process.getuid?.();
-    const gid = process.getgid?.();
+    const owner = this.hubOwner();
 
-    if (uid === undefined || gid === undefined || !Number.isInteger(uid) || !Number.isInteger(gid)) {
+    if (!owner) {
       this.logger.error(`[backup] cannot archive the data of ${appUrn} as root: this platform has no uid for the Hub`);
       return null;
     }
@@ -685,9 +691,7 @@ export class DockerService {
     const paths = this.resolveSnapshotHostPaths(appUrn, stagingId, 'backup archive', BACKUP_STAGING_AREA);
     if (!paths) return null;
 
-    const { appName, appStoreId } = extractAppUrn(appUrn);
-    const { dataDir } = this.config.get('directories');
-    const archive = path.join(dataDir, 'backups', BACKUP_STAGING_DIRNAME, appStoreId, appName, stagingId, 'out', 'backup.tar.gz');
+    const archive = path.join(this.backupStagingDir(appUrn, stagingId), 'out', 'backup.tar.gz');
 
     const archived = await this.runPrivilegedSnapshotHelper(
       [`${paths.hostSnapshotDir}/stage:/stage:ro`, `${paths.hostAppDataDir}:/stage/app-data:ro`, `${paths.hostSnapshotDir}/out:/out:rw`],
@@ -697,12 +701,14 @@ export class DockerService {
         [
           'set -e',
           'cd /stage',
+          'if [ -n "$(find ./app-data -mindepth 1 -path "./app-data/*backups*" -prune -o \\( -type f -o -type l \\) -links +1 -print | head -n 1)" ]; then echo "the data holds hard links, which a restore refuses" >&2; exit 3; fi',
           '{ find . -path ./app-data -prune -o -print; echo ./app-data; find ./app-data -mindepth 1 -path "./app-data/*backups*" -prune -o ! -type b ! -type c ! -type p ! -type s -print; } > /tmp/entries',
           'tar -czf /out/backup.tar.gz --numeric-owner --no-recursion -T /tmp/entries',
           'chown "$1" /out/backup.tar.gz',
+          'chmod 600 /out/backup.tar.gz',
         ].join('; '),
         'sh',
-        `${uid}:${gid}`,
+        owner,
       ],
       PRIVILEGED_DATA_TIMEOUT_MS,
       `archiving ${paths.hostAppDataDir} for a backup`,
@@ -724,13 +730,11 @@ export class DockerService {
    * @returns the staging folder as the Hub sees it, its id and where the archive goes, or `null` (already logged).
    */
   public async createRestoreStagingDir(appUrn: AppUrn): Promise<{ id: string; dir: string; archive: string } | null> {
-    const { appName, appStoreId } = extractAppUrn(appUrn);
-    const id = `backup-${appName}-${Date.now()}`;
+    const id = this.newBackupStagingId(appUrn);
 
     if (!this.resolveSnapshotHostPaths(appUrn, id, 'restore', BACKUP_STAGING_AREA)) return null;
 
-    const { dataDir } = this.config.get('directories');
-    const dir = path.join(dataDir, 'backups', BACKUP_STAGING_DIRNAME, appStoreId, appName, id);
+    const dir = this.backupStagingDir(appUrn, id);
 
     if (!(await this.filesystem.createDirectory(path.join(dir, 'in')))) return null;
 
@@ -750,12 +754,23 @@ export class DockerService {
    * extracted in place. Without `-z`, tar finds out itself whether the file is compressed, as the Hub's
    * own extract does: an uploaded backup can be a plain tar.
    *
+   * The data folder itself and its `app.env` are the Hub's files, not the app's, so they go to this Hub's
+   * user whatever the archive says: a backup from a Hub with another uid, or an uploaded one that gives
+   * them to root, would otherwise leave the Hub unable to write the app's env file.
+   *
    * @param stagingId the id {@link createRestoreStagingDir} returned
    * @param member the data folder's name exactly as the archive lists it (`app-data` or `./app-data`)
    */
   public async extractBackupAppDataAsRoot(appUrn: AppUrn, stagingId: string, member: string): Promise<boolean> {
     if (!/^(\.\/)*app-data$/.test(member)) {
       this.logger.error(`[restore] refusing privileged extract for ${appUrn}: ${member} is not the data folder of a backup`);
+      return false;
+    }
+
+    const owner = this.hubOwner();
+
+    if (!owner) {
+      this.logger.error(`[restore] cannot restore the data of ${appUrn} as root: this platform has no uid for the Hub`);
       return false;
     }
 
@@ -771,15 +786,37 @@ export class DockerService {
           'tar -C /x -xpf /in/backup.tar.gz --numeric-owner "$1"; status=$?',
           'find /x/app-data \\( -type b -o -type c -o -type p -o -type s \\) -delete || status=1',
           'find /x/app-data -type f \\( -perm -4000 -o -perm -2000 \\) -exec chmod ug-s {} + || status=1',
+          'chown "$2" /x/app-data || status=1',
+          'if [ -f /x/app-data/app.env ] && [ ! -L /x/app-data/app.env ]; then chown "$2" /x/app-data/app.env || status=1; fi',
           'exit $status',
         ].join('; '),
         'sh',
         member,
+        owner,
       ],
       PRIVILEGED_DATA_TIMEOUT_MS,
       `restoring ${paths.hostAppDataDir} from ${paths.hostSnapshotDir}/in/backup.tar.gz with its owners`,
       '[restore]',
     );
+  }
+
+  /** A new staging id, `backup-<app>-<epoch ms>`, the shape {@link BACKUP_STAGING_ID_PATTERN} accepts. */
+  private newBackupStagingId(appUrn: AppUrn): string {
+    return `backup-${extractAppUrn(appUrn).appName}-${Date.now()}`;
+  }
+
+  /** `<dataDir>/backups/.backup-staging/<store>/<app>/<id>`, as the Hub sees it. */
+  private backupStagingDir(appUrn: AppUrn, id: string): string {
+    const { appName, appStoreId } = extractAppUrn(appUrn);
+    return path.join(this.config.get('directories').dataDir, 'backups', BACKUP_STAGING_DIRNAME, appStoreId, appName, id);
+  }
+
+  /** The Hub's own `uid:gid`, for a root helper to hand files back to, or `null` where the platform has none. */
+  private hubOwner(): string | null {
+    const uid = process.getuid?.();
+    const gid = process.getgid?.();
+
+    return uid !== undefined && gid !== undefined && Number.isInteger(uid) && Number.isInteger(gid) ? `${uid}:${gid}` : null;
   }
 
   /** Puts a snapshot made by {@link copyAppDataDirAsRoot} back over the app's data folder, as root, emptying it first. */

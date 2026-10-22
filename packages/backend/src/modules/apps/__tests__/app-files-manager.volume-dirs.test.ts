@@ -24,6 +24,7 @@ describe('AppFilesManager.createVolumeHostDirs', () => {
   let scratch: string;
   let appDataDir: string;
   let manager: InstanceType<typeof AppFilesManager>;
+  let logger: ReturnType<typeof mock<LoggerService>>;
 
   const writeCompose = async (volumes: Array<Record<string, unknown>>) => {
     const installed = path.join(scratch, 'data', 'apps', 'ci-marketplace', 'uptime-kuma');
@@ -41,7 +42,7 @@ describe('AppFilesManager.createVolumeHostDirs', () => {
     scratch = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'volume-dirs-'));
     appDataDir = path.join(scratch, 'app-data', 'ci-marketplace', 'uptime-kuma');
     await fs.promises.mkdir(appDataDir, { recursive: true });
-    const logger = mock<LoggerService>();
+    logger = mock<LoggerService>();
     const configuration = mock<ConfigurationService>();
     configuration.getConfig.mockReturnValue({
       directories: { dataDir: path.join(scratch, 'data'), appDataDir: path.join(scratch, 'app-data') },
@@ -125,6 +126,28 @@ describe('AppFilesManager.createVolumeHostDirs', () => {
       expect((await fs.promises.lstat(path.join(appDataDir, 'data', 'secrets'))).isSymbolicLink()).toBe(true);
     },
   );
+
+  // 36 marketplace apps mount single files (`data/nginx/nginx.conf`). Reset copies them in first.
+  it('leaves a file a mount names as it is, and does not warn about it', async () => {
+    await writeCompose([{ hostPath: '${APP_DATA_DIR}/data/nginx/nginx.conf', containerPath: '/etc/nginx/nginx.conf' }]);
+    await fs.promises.mkdir(path.join(appDataDir, 'data', 'nginx'), { recursive: true });
+    await fs.promises.writeFile(path.join(appDataDir, 'data', 'nginx', 'nginx.conf'), 'events {}');
+
+    await manager.createVolumeHostDirs(appUrn);
+
+    expect((await fs.promises.lstat(path.join(appDataDir, 'data', 'nginx', 'nginx.conf'))).isFile()).toBe(true);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('warns about, and makes nothing under, a mount whose path runs through a file', async () => {
+    await writeCompose([{ hostPath: '${APP_DATA_DIR}/data/config.yml/sub', containerPath: '/x' }]);
+    await fs.promises.mkdir(path.join(appDataDir, 'data'));
+    await fs.promises.writeFile(path.join(appDataDir, 'data', 'config.yml'), 'a: 1');
+
+    await manager.createVolumeHostDirs(appUrn);
+
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('runs through a symbolic link or a file'));
+  });
 
   it('does nothing for an app with no manifest', async () => {
     await expect(manager.createVolumeHostDirs(appUrn)).resolves.toBeUndefined();

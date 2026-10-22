@@ -230,6 +230,18 @@ export class AppFilesManager {
    */
   public async getPrivateVolumePaths(appUrn: AppUrn): Promise<string[]> {
     const { appDataDir } = this.getAppPaths(appUrn);
+    const mounts = await this.getAppDataBindMounts(appUrn);
+    const roots = new Set(mounts.filter((mount) => mount.private && mount.target !== appDataDir).map((mount) => mount.target));
+    return [...roots].sort();
+  }
+
+  /**
+   * The app's bind mounts that point into its data folder (or are that folder), resolved to this
+   * process's view of it. Anything outside it is ignored rather than trusted from the manifest. A
+   * manifest that cannot be read or parsed yields none.
+   */
+  private async getAppDataBindMounts(appUrn: AppUrn): Promise<Array<{ target: string; private: boolean }>> {
+    const { appDataDir } = this.getAppPaths(appUrn);
     const { content } = await this.getDockerComposeJson(appUrn);
     if (!content) {
       return [];
@@ -238,23 +250,23 @@ export class AppFilesManager {
     try {
       ({ services } = parseComposeJson(content));
     } catch (error) {
-      this.logger.debug(`Could not read private volumes for ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.debug(`Could not read the volumes of ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
       return [];
     }
-    const roots = new Set<string>();
+    const mounts: Array<{ target: string; private: boolean }> = [];
     for (const service of services) {
       for (const volume of service.volumes ?? []) {
-        if (volume.private !== true || typeof volume.hostPath !== 'string') {
+        // Named volumes carry no host path.
+        if (typeof volume.hostPath !== 'string') {
           continue;
         }
-        const resolved = path.resolve(volume.hostPath.replace(/\$\{APP_DATA_DIR\}/g, appDataDir));
-        if (resolved === appDataDir || !resolved.startsWith(`${appDataDir}${path.sep}`)) {
-          continue;
+        const target = path.resolve(volume.hostPath.replace(/\$\{APP_DATA_DIR\}/g, appDataDir));
+        if (target === appDataDir || target.startsWith(`${appDataDir}${path.sep}`)) {
+          mounts.push({ target, private: volume.private === true });
         }
-        roots.add(resolved);
       }
     }
-    return [...roots].sort();
+    return mounts;
   }
 
   /**
@@ -264,70 +276,64 @@ export class AppFilesManager {
    * user can then neither open it up for a container of another uid nor delete what the app writes
    * into it, so every later Reset, restore or backup needed the root helper. Install has always made
    * these folders first; Reset, a restore and an update rollback delete the data folder, so they make
-   * them again the same way. A folder that exists is left as it is, a path outside the app's data
-   * folder is ignored, and a `private: true` one starts at 700 (see {@link setAppDataDirPermissions}).
+   * them again the same way. A folder that exists is left as it is, and so is a file a mount names
+   * (`data/nginx/nginx.conf`). A path outside the app's data folder is ignored, and a `private: true`
+   * one starts at 700 (see {@link setAppDataDirPermissions}).
    */
   public async createVolumeHostDirs(appUrn: AppUrn): Promise<void> {
     const { appDataDir } = this.getAppPaths(appUrn);
-    const { content } = await this.getDockerComposeJson(appUrn);
-    if (!content) {
-      return;
-    }
-    let services: ReturnType<typeof parseComposeJson>['services'];
-    try {
-      ({ services } = parseComposeJson(content));
-    } catch (error) {
-      this.logger.debug(`Could not read the volumes of ${appUrn} to create their folders: ${error instanceof Error ? error.message : String(error)}`);
-      return;
-    }
-    for (const service of services) {
-      for (const volume of service.volumes ?? []) {
-        // Named volumes carry no host path to create.
-        if (typeof volume.hostPath !== 'string') {
-          continue;
-        }
-        const target = path.resolve(volume.hostPath.replace(/\$\{APP_DATA_DIR\}/g, appDataDir));
-        if (target !== appDataDir && !target.startsWith(`${appDataDir}${path.sep}`)) {
-          continue;
-        }
-        // The check above reads the path as written. A link on the way (a restored backup may hold
-        // `data/secrets -> /data/state`) would have the mkdir and the chmod act wherever it points.
-        if (await this.passesThroughLink(appDataDir, target)) {
-          this.logger.warn(`Not creating the folder of a volume of ${appUrn}: ${target} runs through a symbolic link or a file`);
-          continue;
-        }
-        await fs.promises.mkdir(target, { recursive: true }).catch(() => {
-          /* a path the app data mount refuses is Docker's to report at compose up */
+
+    for (const mount of await this.getAppDataBindMounts(appUrn)) {
+      // The containment check reads the path as written. A link on the way (a restored backup may hold
+      // `data/secrets -> /data/state`) would have the mkdir and the chmod act wherever it points.
+      const found = await this.inspectVolumeTarget(appDataDir, mount.target);
+      if (found === 'file') {
+        continue;
+      }
+      if (found === 'blocked') {
+        this.logger.warn(`Not creating the folder of a volume of ${appUrn}: ${mount.target} runs through a symbolic link or a file`);
+        continue;
+      }
+      await fs.promises.mkdir(mount.target, { recursive: true }).catch(() => {
+        /* a path the app data mount refuses is Docker's to report at compose up */
+      });
+      // A `private: true` mount is the app's own root-written directory (Memory's secrets); it
+      // starts, and stays, unreadable to other local accounts. The permissions sweep prunes it.
+      if (mount.private && process.platform !== 'win32') {
+        await fs.promises.chmod(mount.target, 0o700).catch(() => {
+          /* a mount that rejects chmod is the drvfs case handled elsewhere */
         });
-        // A `private: true` mount is the app's own root-written directory (Memory's secrets); it
-        // starts, and stays, unreadable to other local accounts. The permissions sweep prunes it.
-        if (volume.private === true && process.platform !== 'win32') {
-          await fs.promises.chmod(target, 0o700).catch(() => {
-            /* a mount that rejects chmod is the drvfs case handled elsewhere */
-          });
-        }
       }
     }
   }
 
-  /** Whether any part of `target` below `root` that exists is a symbolic link (or not a folder). */
-  private async passesThroughLink(root: string, target: string): Promise<boolean> {
+  /**
+   * What is on the way from `root` to `target`: `blocked` when a part of it that exists is a symbolic
+   * link, or a file before the end; `file` when `target` itself is a regular file (a mount of one file,
+   * nothing to create); `folders` when every part that exists is a folder.
+   */
+  private async inspectVolumeTarget(root: string, target: string): Promise<'blocked' | 'file' | 'folders'> {
+    const segments = path.relative(root, target).split(path.sep).filter(Boolean);
     let current = root;
 
-    for (const segment of path.relative(root, target).split(path.sep).filter(Boolean)) {
+    for (const [index, segment] of segments.entries()) {
       current = path.join(current, segment);
       const stat = await fs.promises.lstat(current).catch(() => null);
 
       if (!stat) {
-        return false;
+        return 'folders';
+      }
+
+      if (stat.isFile() && index === segments.length - 1) {
+        return 'file';
       }
 
       if (!stat.isDirectory()) {
-        return true;
+        return 'blocked';
       }
     }
 
-    return false;
+    return 'folders';
   }
 
   /**

@@ -4,7 +4,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import type { DockerService } from './docker.service';
 
 type AppDataRemovalDeps = {
-  filesystem: Pick<FilesystemService, 'removeDirectoryDetailed' | 'listFiles'>;
+  filesystem: Pick<FilesystemService, 'removeDirectoryDetailed' | 'listFiles' | 'findUnreadable'>;
   docker: Pick<DockerService, 'removeAppDataDirAsRoot'>;
   logger: Pick<LoggerService, 'warn' | 'error'>;
 };
@@ -51,6 +51,12 @@ export async function removeAppDataDirWithRootFallback(deps: AppDataRemovalDeps,
 
   if (left.length > 0) {
     deps.logger.error(`The root helper emptied the data of ${appUrn}, but ${appDataDir} still holds ${left.slice(0, 3).join(', ')}`);
+    return false;
+  }
+
+  // `listFiles` answers `[]` for a folder it cannot read as well, and that one may still hold the old data.
+  if ((await deps.filesystem.findUnreadable(appDataDir, { maxEntries: 1, maxFound: 1 })).length > 0) {
+    deps.logger.error(`The root helper emptied the data of ${appUrn}, but the Hub cannot list ${appDataDir} to see that it is empty`);
     return false;
   }
 

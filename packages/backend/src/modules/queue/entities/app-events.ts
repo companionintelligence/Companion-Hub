@@ -107,6 +107,7 @@ export const appEventResultSchema = z.object({
   // the record); reserved so Phase 2-4 ops can report where they landed.
   cancelledStatus: z.string().optional(),
   // Set by a failed update: the previous version is back in place (and running again, if it was running).
+  // Set by a backup refused before it stopped the app: the app is as it was.
   rolledBack: z.boolean().optional(),
 });
 

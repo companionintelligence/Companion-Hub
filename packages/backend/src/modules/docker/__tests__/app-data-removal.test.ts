@@ -43,9 +43,21 @@ describe('removeAppDataDirWithRootFallback', () => {
   it('counts an emptied folder as done even when the Hub cannot remove the folder itself', async () => {
     filesystem.removeDirectoryDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
     filesystem.listFiles.mockResolvedValue([]);
+    filesystem.findUnreadable.mockResolvedValue([]);
     docker.removeAppDataDirAsRoot.mockResolvedValue(true);
 
     await expect(run()).resolves.toBe(true);
+  });
+
+  // `listFiles` says `[]` for a folder it cannot read too, which proves nothing about what is in it.
+  it('fails when the Hub cannot list the folder to see that it is empty', async () => {
+    filesystem.removeDirectoryDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+    filesystem.listFiles.mockResolvedValue([]);
+    filesystem.findUnreadable.mockResolvedValue([appDataDir]);
+    docker.removeAppDataDirAsRoot.mockResolvedValue(true);
+
+    await expect(run()).resolves.toBe(false);
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining(`cannot list ${appDataDir}`));
   });
 
   // The helper mounts the host path it works out from the settings. If that is not the folder the Hub

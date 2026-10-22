@@ -440,7 +440,30 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
         docker.privilegedHelperAvailable.mockResolvedValue(true);
 
         await expect(manager.assertBackupPossible(appUrn)).resolves.toBeUndefined();
+        expect(docker.privilegedHelperAvailable).toHaveBeenCalledWith(appUrn);
       });
+
+      // The Hub's copy would stop at the database's first file, after copying everything before it.
+      it('does not start a Hub copy of data it already knows it cannot read', async () => {
+        const copy = vi.spyOn(filesystem, 'copyDirectoryDetailed');
+
+        await manager.backupApp(appUrn);
+
+        expect(copy).not.toHaveBeenCalled();
+        expect(docker.archiveBackupAsRoot).toHaveBeenCalled();
+      });
+    });
+
+    // A backup leaves out every path with "backups" in it, so what is unreadable there never needs root.
+    it.skipIf(!canEnforcePermissions)('does not ask about the helper for unreadable files a backup leaves out', async () => {
+      const skipped = path.join(appDataDir, 'data', 'backups', 'old.db');
+      await fs.promises.mkdir(path.dirname(skipped), { recursive: true });
+      await fs.promises.writeFile(skipped, 'old rows');
+      await fs.promises.chmod(skipped, 0o000);
+
+      await expect(manager.assertBackupPossible(appUrn)).resolves.toBeUndefined();
+
+      expect(docker.privilegedHelperAvailable).not.toHaveBeenCalled();
     });
 
     it('does not ask about the helper when the Hub can read everything', async () => {
@@ -634,6 +657,15 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
       const name = await putArchive('owned.tar.gz', makeTarGz(OWNED_ENTRIES));
 
       await expect(manager.restoreApp(appUrn, name)).rejects.toThrow('Failed to restore the backup files');
+    });
+
+    // The helper writes to the host path it works out from the settings, which can be another folder.
+    it('reports a restore whose data root put somewhere the Hub does not look', async () => {
+      docker.extractBackupAppDataAsRoot.mockResolvedValue(true);
+      const name = await putArchive('owned.tar.gz', makeTarGz(OWNED_ENTRIES));
+
+      await expect(manager.restoreApp(appUrn, name)).rejects.toThrow('Failed to restore the backup files');
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('does not hold data.txt'));
     });
 
     it('refuses before the live data is touched when the root helper cannot run', async () => {

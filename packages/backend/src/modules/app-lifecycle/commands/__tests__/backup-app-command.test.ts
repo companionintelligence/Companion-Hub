@@ -46,9 +46,19 @@ describe('BackupAppCommand', () => {
   it('does not stop the app for a backup that cannot be made', async () => {
     backups.assertBackupPossible.mockRejectedValue(new Error(`Cannot back up ${appUrn}: … Nothing was stopped.`));
 
-    await expect(command.execute(appUrn)).resolves.toMatchObject({ success: false });
+    // `rolledBack` tells the service the app is as it was, so a running app is not marked stopped.
+    await expect(command.execute(appUrn)).resolves.toMatchObject({ success: false, rolledBack: true });
 
     expect(docker.composeApp).not.toHaveBeenCalled();
     expect(backups.backupApp).not.toHaveBeenCalled();
+  });
+
+  it('reports a backup that failed after the stop as one that stopped the app', async () => {
+    backups.backupApp.mockRejectedValue(new Error('Failed to create the backup archive'));
+
+    const result = await command.execute(appUrn);
+
+    expect(result).toMatchObject({ success: false });
+    expect(result.rolledBack).toBeUndefined();
   });
 });
