@@ -9,7 +9,7 @@ import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { ForwardAuthSecretResolver } from '@/modules/auth/forward-auth-secret.resolver';
 import { EnvUtils } from '@/modules/env/env.utils';
-import { AppLifecycleService } from '../app-lifecycle.service';
+import { AppLifecycleService, RESTARTS_THAT_WAIT_FOR_THE_APP } from '../app-lifecycle.service';
 import { HubAccessService } from '../hub-access.service';
 
 /** Per-app operator surface for Hub trust material: status view + the rotation lever (#74). */
@@ -127,6 +127,14 @@ describe('HubAccessService', () => {
       // As the Hub: the rotation was the authorized act, and a refused restart would strand the app.
       expect(appLifecycle.restartApp).toHaveBeenCalledWith({ appUrn: urn, actor: { kind: 'system', reason: 'hub-access-rotate' } });
       expect(res).toEqual({ requestId: 'req-1' });
+    });
+
+    // The credentials are revoked before the restart, so a refused one stranded the app on them.
+    it('restarts as a restart that waits for an operation under way on the app, not one it refuses', async () => {
+      await service.rotate(urn);
+
+      const [{ actor }] = appLifecycle.restartApp.mock.calls[0] as unknown as [{ actor: { reason: 'hub-access-rotate' } }];
+      expect(RESTARTS_THAT_WAIT_FOR_THE_APP.has(actor.reason)).toBe(true);
     });
 
     it("clears Companion Memory's own forward-auth key too, so the restart mints a fresh one", async () => {

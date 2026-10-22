@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { RESTARTS_THAT_WAIT_FOR_THE_APP } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { MemoryConnectService } from '../memory-connect.service';
 
 /**
@@ -310,6 +311,8 @@ describe('MemoryConnectService.handleCallback', () => {
       actor: { kind: 'system', reason: 'memory-connect' },
     });
     expect(result).toEqual({ next: FINISHING_PATH });
+    // The connection is stored before this restart, so a refused one left the app on the old one.
+    expect(RESTARTS_THAT_WAIT_FOR_THE_APP.has('memory-connect')).toBe(true);
   });
 
   it('returns the app URL with error on app mismatch (does not store), so the user lands back on the app', async () => {
@@ -445,7 +448,7 @@ describe('MemoryConnectService side effects', () => {
 
     expect(exchange.revoke).toHaveBeenCalledWith('http://gateway:8642', 'ci-openclaw:local');
     expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local', undefined);
-    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local', skipPull: true });
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local', skipPull: true, waitForApp: true });
   });
 
   it('disconnect does not START an app the user had stopped, but DOES scrub its env', async () => {
@@ -523,7 +526,7 @@ describe('MemoryConnectService side effects', () => {
 
     expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local');
     // Must restart so the container drops the dead credential and re-prompts.
-    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local', skipPull: true });
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local', skipPull: true, waitForApp: true });
     expect(status.state).toBe('unconfigured');
     // The stale key's expiry is cleared alongside the connection.
     expect(status.keyExpiresAt).toBeNull();
@@ -606,7 +609,7 @@ describe('MemoryConnectService side effects', () => {
 
     expect(exchange.rotate).toHaveBeenCalledWith('http://gateway:8642', 'ci-openclaw:local');
     expect(connections.storeConnected).toHaveBeenCalledWith('ci-openclaw:local', 'http://gateway:8642', 'fresh-key', '2026-10-07T00:00:00.000Z', 3);
-    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local', skipPull: true });
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local', skipPull: true, waitForApp: true });
   });
 
   it('rotateDueKeys leaves a still-fresh key untouched', async () => {
@@ -699,8 +702,8 @@ describe('MemoryConnectService side effects', () => {
 
     // The second app still rotates despite the first throwing.
     expect(exchange.rotate).toHaveBeenCalledTimes(2);
-    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-hermes:local', skipPull: true });
-    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local', skipPull: true });
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-hermes:local', skipPull: true, waitForApp: true });
+    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local', skipPull: true, waitForApp: true });
   });
 
   it('getStatus returns the state and a launcher URL built from the Hub origin', async () => {
@@ -765,8 +768,8 @@ describe('MemoryConnectService side effects', () => {
     expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:ci-marketplace');
     expect(connections.clear).toHaveBeenCalledWith('ci-hermes:ci-marketplace');
     expect(connections.clear).not.toHaveBeenCalledWith('ci-memory:ci-marketplace');
-    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:ci-marketplace', skipPull: true });
-    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-hermes:ci-marketplace', skipPull: true });
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:ci-marketplace', skipPull: true, waitForApp: true });
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-hermes:ci-marketplace', skipPull: true, waitForApp: true });
   });
 
   it('re-arms the remaining consumers even when one fails, and never rejects the sweep (#906)', async () => {
@@ -784,8 +787,8 @@ describe('MemoryConnectService side effects', () => {
     await expect(service.handleUninstall('ci-memory:ci-marketplace')).resolves.toBeUndefined();
 
     // The healthy consumer is still cleared + restarted; the failed one never reached restart.
-    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-hermes:ci-marketplace', skipPull: true });
-    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalledWith({ appUrn: 'ci-openclaw:ci-marketplace', skipPull: true });
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-hermes:ci-marketplace', skipPull: true, waitForApp: true });
+    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalledWith({ appUrn: 'ci-openclaw:ci-marketplace', skipPull: true, waitForApp: true });
   });
 
   it('handleUninstall of a regular consumer does NOT cascade to other apps', async () => {

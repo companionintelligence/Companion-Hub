@@ -908,7 +908,8 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
         return 'restarting';
       }
 
-      const restarted = await lifecycle.restartAppAndWait({ appUrn, skipPull: true });
+      // Waits for an operation under way on the app: the env above is already rewritten.
+      const restarted = await lifecycle.restartAppAndWait({ appUrn, skipPull: true, waitForApp: true });
 
       return restarted ? 'restarted' : 'failed';
     } catch (err) {

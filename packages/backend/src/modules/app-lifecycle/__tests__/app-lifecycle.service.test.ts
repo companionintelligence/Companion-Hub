@@ -1,5 +1,5 @@
 import { HUB_ACTIONS, type HubAction } from '@/core/portal/hub-actions';
-import type { ActorCheckContext, LifecycleActor } from '@/core/portal/lifecycle-actor';
+import type { ActorCheckContext, LifecycleActor, SystemLifecycleReason } from '@/core/portal/lifecycle-actor';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ModuleRef } from '@nestjs/core';
@@ -1802,6 +1802,45 @@ describe('AppLifecycleService', () => {
       /** Lets installApp run up to the await the test is holding. */
       const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
       const cancelledEvents = () => sseService.emit.mock.calls.filter(([, data]) => (data as { event?: string }).event === 'install_cancelled');
+
+      // The page offers Cancel from the click; the grant check is the first thing the install waits on.
+      it('is held while the install still checks the grant, and nothing is fetched, written or queued', async () => {
+        const grant = held<void>();
+        vi.spyOn(service as unknown as { assertActorMayApplyForm: () => Promise<void> }, 'assertActorMayApplyForm').mockReturnValueOnce(
+          grant.promise,
+        );
+
+        const install = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+        await settle();
+        const cancel = await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
+        grant.release();
+        await install;
+
+        expect(cancel.outcome).toBe('cancelling');
+        expect(reposHelpers.downloadAppFiles).not.toHaveBeenCalled();
+        expect(appsRepository.createApp).not.toHaveBeenCalled();
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        expect(cancelledEvents()).toEqual([['app', expect.objectContaining({ event: 'install_cancelled', appUrn })]]);
+      });
+
+      it('drops a cancel held for an install whose grant check refused it', async () => {
+        const grant = held<void>();
+        vi.spyOn(service as unknown as { assertActorMayApplyForm: () => Promise<void> }, 'assertActorMayApplyForm').mockReturnValueOnce(
+          grant.promise.then(() => {
+            throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action: 'install' }, 403);
+          }),
+        );
+
+        const install = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }).catch((error: unknown) => error);
+        await settle();
+        await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
+        grant.release();
+        await install;
+
+        // The next install is not cancelled by it.
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'install', appUrn }));
+      });
 
       it('is held while the Portal bundle downloads, and nothing is written or queued', async () => {
         appStoreService.getAppStoreBySlug.mockResolvedValue({ slug: 'ci-marketplace', url: 'http://portal/api', type: 'ci_cloud_api' } as any);
@@ -7038,10 +7077,11 @@ describe('AppLifecycleService', () => {
       await service.restartApp({ actor: TEST_ACTOR, appUrn });
       await expect(service.restartApp({ actor: TEST_ACTOR, appUrn })).rejects.toThrow('APP_ERROR_RESTART_IN_PROGRESS');
       resolvePublish();
-      await flushMicrotasks();
 
+      await vi.waitFor(() => {
+        expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'restart_success', appUrn, appStatus: 'running' }));
+      });
       expect(appEventsQueue.publish).toHaveBeenCalledTimes(1);
-      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'restart_success', appUrn, appStatus: 'running' }));
     });
 
     it('stop then restart: the restart is refused while the stop runs, and the stop settles the app', async () => {
@@ -7215,6 +7255,136 @@ describe('AppLifecycleService', () => {
       reapplied.release({ requestId: 'r' });
       await vi.waitFor(() => expect(start).toHaveBeenCalledWith({ appUrn, skipPull: true }));
       expect(operationRegistry.liveOperation(appUrn)).toBeUndefined();
+    });
+
+    /*
+     * A restart the Hub owes the app (fresh credentials after a rotate, a device key, a Companion
+     * Memory connection, settings just saved) was refused while the app was starting. The rotate left
+     * the app on credentials it had just revoked, and the device-key refresh never retried.
+     */
+    describe('system restarts that wait for the operation under way', () => {
+      const systemRestart = (reason: SystemLifecycleReason) => service.restartApp({ appUrn, skipPull: true, actor: { kind: 'system', reason } });
+
+      it.each(['hub-access-rotate', 'memory-connect', 'device-key-refresh', 'restart-after-config-update'] as const)(
+        'a %s restart waits for the start under way, then restarts the app',
+        async (reason) => {
+          const start = held<{ success: boolean; message: string }>();
+          appEventsQueue.publish.mockReturnValueOnce(start.promise as any);
+          await commands.start();
+
+          let settled = false;
+          const restart = systemRestart(reason).finally(() => {
+            settled = true;
+          });
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          expect(settled).toBe(false);
+          expect(appEventsQueue.publish).toHaveBeenCalledTimes(1);
+
+          start.release({ success: true, message: 'OK' });
+
+          await expect(restart).resolves.toMatchObject({ requestId: expect.any(String) });
+          expect(appEventsQueue.publish).toHaveBeenLastCalledWith(expect.objectContaining({ command: 'restart', appUrn }));
+        },
+      );
+
+      it('lets the start write its outcome before the waiting restart writes its own', async () => {
+        const start = held<{ success: boolean; message: string }>();
+        appEventsQueue.publish.mockReturnValueOnce(start.promise as any);
+        await commands.start();
+        const restart = systemRestart('hub-access-rotate');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        appsRepository.updateAppById.mockClear();
+
+        start.release({ success: true, message: 'OK' });
+        await restart;
+
+        const statuses = appsRepository.updateAppById.mock.calls.map(([, data]) => (data as { status?: string }).status).filter(Boolean);
+        expect(statuses.slice(0, 2)).toEqual(['running', 'restarting']);
+      });
+
+      it('still refuses a restart a person asks for while the app starts', async () => {
+        const start = held<{ success: boolean; message: string }>();
+        appEventsQueue.publish.mockReturnValueOnce(start.promise as any);
+        await commands.start();
+
+        await expect(commands.restart()).rejects.toThrow('APP_ERROR_START_IN_PROGRESS');
+        start.release({ success: true, message: 'OK' });
+      });
+
+      // A sync restarts from inside other lifecycle work, which can be the very command holding the app.
+      it.each(['custom-domain-apply', 'sweep'] as const)('still refuses a %s restart rather than wait', async (reason) => {
+        const start = held<{ success: boolean; message: string }>();
+        appEventsQueue.publish.mockReturnValueOnce(start.promise as any);
+        await commands.start();
+
+        await expect(systemRestart(reason)).rejects.toThrow('APP_ERROR_START_IN_PROGRESS');
+        start.release({ success: true, message: 'OK' });
+      });
+
+      it('lets restartAppAndWait wait when asked to, and refuses it otherwise', async () => {
+        const start = held<{ success: boolean; message: string }>();
+        appEventsQueue.publish.mockReturnValueOnce(start.promise as any);
+        await commands.start();
+
+        await expect(service.restartAppAndWait({ appUrn, skipPull: true })).rejects.toThrow('APP_ERROR_START_IN_PROGRESS');
+        const waiting = service.restartAppAndWait({ appUrn, skipPull: true, waitForApp: true });
+        start.release({ success: true, message: 'OK' });
+
+        await expect(waiting).resolves.toBe(true);
+      });
+    });
+
+    // Settings saved while the app was starting: the start ran the old config, so the restart is still owed.
+    it('keeps the restart owed when settings were saved while the start ran', async () => {
+      const start = held<{ success: boolean; message: string }>();
+      appEventsQueue.publish.mockReturnValueOnce(start.promise as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, config: { port: 8080 } } as any);
+      await commands.start();
+      appsRepository.getAppById.mockResolvedValue({ ...fakeApp, config: { port: 9090 }, pendingRestart: true } as any);
+
+      start.release({ success: true, message: 'OK' });
+
+      await vi.waitFor(() => expect(appsRepository.updateAppById).toHaveBeenCalledWith(42, { status: 'running' }));
+      expect(appsRepository.updateAppById).not.toHaveBeenCalledWith(42, expect.objectContaining({ pendingRestart: false }));
+    });
+
+    it('clears the restart owed when the start ran the config the app has', async () => {
+      const start = held<{ success: boolean; message: string }>();
+      appEventsQueue.publish.mockReturnValueOnce(start.promise as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, config: { port: 8080 } } as any);
+      await commands.start();
+      appsRepository.getAppById.mockResolvedValue({ ...fakeApp, config: { port: 8080 }, pendingRestart: true } as any);
+
+      start.release({ success: true, message: 'OK' });
+
+      await vi.waitFor(() => expect(appsRepository.updateAppById).toHaveBeenCalledWith(42, { status: 'running', pendingRestart: false }));
+    });
+
+    // An event the queue refuses never reaches a worker, so nothing would settle its entry.
+    it.each(['start', 'stop', 'restart', 'reset', 'uninstall'] as const)('frees the app when the %s cannot be published', async (command) => {
+      appEventsQueue.publish.mockRejectedValueOnce(new Error('Invalid event data'));
+
+      await commands[command]();
+      await vi.waitFor(() => expect(operationRegistry.liveOperation(appUrn)).toBeUndefined());
+
+      await expect(commands.start()).resolves.toBeDefined();
+    });
+
+    it('frees the app when a restartAppAndWait cannot be published', async () => {
+      appEventsQueue.publish.mockRejectedValueOnce(new Error('Invalid event data'));
+
+      await expect(service.restartAppAndWait({ appUrn })).rejects.toThrow('Invalid event data');
+
+      expect(operationRegistry.liveOperation(appUrn)).toBeUndefined();
+    });
+
+    it("registers a force stop without taking another caller's claim", async () => {
+      appRuntimeMonitor.getAppRuntimeHealth.mockResolvedValue({ forceStopEligible: true } as any);
+      const register = vi.spyOn(operationRegistry, 'register');
+
+      await service.forceStopApp({ appUrn }).catch(() => undefined);
+
+      expect(register).toHaveBeenCalledWith(appUrn, expect.objectContaining({ command: 'stop' }), { takesOverClaim: false });
     });
   });
 

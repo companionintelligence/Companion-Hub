@@ -67,7 +67,7 @@ export class BackupsService {
     const requestId = crypto.randomUUID();
     this.operationRegistry.register(appUrn, { requestId, command: 'backup', tier: 'non_cancellable' });
 
-    this.appEventsQueue.publish({ appUrn, command: 'backup', requestId, form: app.config }).then(async ({ success, message }) => {
+    this.publishRegistered(appUrn, requestId, { appUrn, command: 'backup', requestId, form: app.config }).then(async ({ success, message }) => {
       if (success) {
         if (!this.operationRegistry.claimCompletion(appUrn, requestId)) {
           return;
@@ -95,6 +95,19 @@ export class BackupsService {
     return { requestId };
   }
 
+  /**
+   * Publish a backup or restore the registry already holds the app for. A publish that rejects (an
+   * event the queue's schema refuses) reaches no worker, so the entry is cleared here or it held the
+   * app for the whole stale window. Logged rather than thrown: the caller already has its answer.
+   */
+  private publishRegistered(appUrn: AppUrn, requestId: string, event: Parameters<AppEventsQueue['publish']>[0]) {
+    return this.appEventsQueue.publish(event).catch((error: unknown) => {
+      this.operationRegistry.clear(appUrn, requestId);
+      this.logger.error(`Could not queue ${event.command} for ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
+      return { success: false, message: error instanceof Error ? error.message : String(error) };
+    });
+  }
+
   public async restoreApp(params: { appUrn: AppUrn; filename: string; actor: LifecycleActor }) {
     const { appUrn, filename } = params;
 
@@ -119,34 +132,36 @@ export class BackupsService {
     const requestId = crypto.randomUUID();
     this.operationRegistry.register(appUrn, { requestId, command: 'restore', tier: 'non_cancellable' });
 
-    this.appEventsQueue.publish({ appUrn, command: 'restore', requestId, filename, form: app.config }).then(async ({ success, message }) => {
-      if (success) {
-        if (!this.operationRegistry.claimCompletion(appUrn, requestId)) {
-          return;
-        }
+    this.publishRegistered(appUrn, requestId, { appUrn, command: 'restore', requestId, filename, form: app.config }).then(
+      async ({ success, message }) => {
+        if (success) {
+          if (!this.operationRegistry.claimCompletion(appUrn, requestId)) {
+            return;
+          }
 
-        const restoredAppConfig = await this.appFilesManager.getInstalledAppInfo(appUrn);
+          const restoredAppConfig = await this.appFilesManager.getInstalledAppInfo(appUrn);
 
-        if (typeof restoredAppConfig?.cihub_app_version === 'number') {
-          await this.appsRepository.updateAppById(app.id, { version: restoredAppConfig.cihub_app_version });
-        }
+          if (typeof restoredAppConfig?.cihub_app_version === 'number') {
+            await this.appsRepository.updateAppById(app.id, { version: restoredAppConfig.cihub_app_version });
+          }
 
-        if (appStatusBeforeUpdate === 'running') {
-          // Part of the restore the caller was authorized for: the app only comes back to how it was.
-          await this.resumeApp(app.id, appUrn, 'resume-after-restore');
+          if (appStatusBeforeUpdate === 'running') {
+            // Part of the restore the caller was authorized for: the app only comes back to how it was.
+            await this.resumeApp(app.id, appUrn, 'resume-after-restore');
+          } else {
+            await this.appsRepository.updateAppById(app.id, { status: appStatusBeforeUpdate });
+            this.sseService.emit('app', { event: 'restore_success', appUrn, appStatus: appStatusBeforeUpdate });
+          }
         } else {
-          await this.appsRepository.updateAppById(app.id, { status: appStatusBeforeUpdate });
-          this.sseService.emit('app', { event: 'restore_success', appUrn, appStatus: appStatusBeforeUpdate });
+          this.logger.error(`Failed to restore app ${appUrn}: ${message}`);
+          if (this.operationRegistry.claimCompletion(appUrn, requestId)) {
+            await this.appsRepository.updateAppById(app.id, { status: 'stopped' });
+            this.sseService.emit('app', { event: 'restore_error', appUrn, appStatus: 'stopped' });
+            this.agentNotifyService?.notify('restore_error', { appUrn }, 'high');
+          }
         }
-      } else {
-        this.logger.error(`Failed to restore app ${appUrn}: ${message}`);
-        if (this.operationRegistry.claimCompletion(appUrn, requestId)) {
-          await this.appsRepository.updateAppById(app.id, { status: 'stopped' });
-          this.sseService.emit('app', { event: 'restore_error', appUrn, appStatus: 'stopped' });
-          this.agentNotifyService?.notify('restore_error', { appUrn }, 'high');
-        }
-      }
-    });
+      },
+    );
 
     return { requestId };
   }

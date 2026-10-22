@@ -96,6 +96,20 @@ describe('BackupsService', () => {
     });
   });
 
+  // An event the queue refuses never reaches a worker, so nothing would settle its entry.
+  it.each([
+    ['backupApp', () => service.backupApp({ appUrn: 'test-app:ci-marketplace' as any, actor: GRANTED_ACTOR })],
+    ['restoreApp', () => service.restoreApp({ appUrn: 'test-app:ci-marketplace' as any, filename: 'b.tar.gz', actor: GRANTED_ACTOR })],
+  ] as const)('%s frees the app when its command cannot be published', async (_method, call) => {
+    appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'running', config: {} } as any);
+    configService.get.mockReturnValue(false);
+    appEventsQueue.publish.mockRejectedValue(new Error('Invalid event data'));
+
+    const { requestId } = await call();
+
+    await vi.waitFor(() => expect(operationRegistry.clear).toHaveBeenCalledWith('test-app:ci-marketplace', requestId));
+  });
+
   describe('backupApp', () => {
     it('should backup app successfully', async () => {
       const appUrn = 'test-app' as any;

@@ -113,12 +113,22 @@ export class AppOperationRegistry {
    */
   private readonly claims = new Map<AppUrn, { command: OperationCommand; token: symbol; claimedAt: number }>();
 
+  /** Callers waiting for an app to be free again (`whenMaybeFree`), woken whenever its slot empties. */
+  private readonly freeWaiters = new Map<AppUrn, Set<() => void>>();
+
+  /**
+   * Install calls still in their grant check, before `beginInstallCall`, and whether a cancel came
+   * for them meanwhile. A cancel in that window found neither an entry nor a preparing install and
+   * was answered "nothing to cancel" while the install went on.
+   */
+  private readonly installGrantChecks = new Map<AppUrn, { calls: number; cancelRequested: boolean }>();
+
   constructor(
     private readonly logger: LoggerService,
     @Optional() private readonly configuration?: ConfigurationService,
   ) {}
 
-  private staleAfterMs(): number {
+  staleAfterMs(): number {
     return operationStaleAfterMs(this.configuration?.get('userSettings')?.eventsTimeout ?? 0);
   }
 
@@ -163,7 +173,69 @@ export class AppOperationRegistry {
   releaseClaim(appUrn: AppUrn, token: symbol): void {
     if (this.claims.get(appUrn)?.token === token) {
       this.claims.delete(appUrn);
+      this.wakeFreeWaiters(appUrn);
     }
+  }
+
+  /**
+   * Resolves once something may have freed the app (an entry cleared or claimed, a claim handed
+   * back), or after `timeoutMs`. A wake-up is not a claim: the caller claims again, and may have to
+   * wait again if another caller claimed first.
+   */
+  whenMaybeFree(appUrn: AppUrn, timeoutMs: number): Promise<void> {
+    return new Promise((resolve) => {
+      const waiters = this.freeWaiters.get(appUrn) ?? new Set<() => void>();
+      this.freeWaiters.set(appUrn, waiters);
+      const wake = () => {
+        clearTimeout(timer);
+        waiters.delete(wake);
+        if (waiters.size === 0 && this.freeWaiters.get(appUrn) === waiters) {
+          this.freeWaiters.delete(appUrn);
+        }
+        resolve();
+      };
+      const timer = setTimeout(wake, timeoutMs);
+      waiters.add(wake);
+    });
+  }
+
+  private wakeFreeWaiters(appUrn: AppUrn): void {
+    for (const wake of [...(this.freeWaiters.get(appUrn) ?? [])]) {
+      wake();
+    }
+  }
+
+  /** An `installApp` call for this app begins its grant check. */
+  beginInstallGrantCheck(appUrn: AppUrn): void {
+    const checks = this.installGrantChecks.get(appUrn) ?? { calls: 0, cancelRequested: false };
+    checks.calls += 1;
+    this.installGrantChecks.set(appUrn, checks);
+  }
+
+  /** The grant check is over. True, once, when a cancel came for the install during it. */
+  endInstallGrantCheck(appUrn: AppUrn): boolean {
+    const checks = this.installGrantChecks.get(appUrn);
+    if (!checks) {
+      return false;
+    }
+    const cancelRequested = checks.cancelRequested;
+    checks.cancelRequested = false;
+    checks.calls -= 1;
+    if (checks.calls <= 0) {
+      this.installGrantChecks.delete(appUrn);
+    }
+    return cancelRequested;
+  }
+
+  /** Hold a cancel for an install still in its grant check. False when none is. */
+  holdGrantCheckCancel(appUrn: AppUrn): boolean {
+    const checks = this.installGrantChecks.get(appUrn);
+    if (!checks) {
+      return false;
+    }
+    checks.cancelRequested = true;
+    this.logger.info(`[op-registry] cancel held for install ${appUrn}, which is still checking the caller's grant`);
+    return true;
   }
 
   /** True from the start of an `installApp` call for this app until it answers. */
@@ -226,8 +298,14 @@ export class AppOperationRegistry {
    * command to the queue so that a cancel arriving during the publish→dequeue window can still be
    * honoured (tier-A). Replaces any existing entry for the app, so callers claim the app first
    * ({@link claim}); only a force stop, the way out of a stop hung on Docker, registers over a live one.
+   * It does so with `takesOverClaim: false`, so a command another caller has claimed and not yet
+   * dispatched keeps its claim.
    */
-  register(appUrn: AppUrn, params: { requestId: string; command: OperationCommand; tier: CancellabilityTier }): OperationEntry {
+  register(
+    appUrn: AppUrn,
+    params: { requestId: string; command: OperationCommand; tier: CancellabilityTier },
+    options: { takesOverClaim?: boolean } = {},
+  ): OperationEntry {
     const entry: OperationEntry = {
       requestId: params.requestId,
       command: params.command,
@@ -239,7 +317,9 @@ export class AppOperationRegistry {
     };
     this.ops.set(appUrn, entry);
     // The command now holds the slot itself.
-    this.claims.delete(appUrn);
+    if (options.takesOverClaim !== false) {
+      this.claims.delete(appUrn);
+    }
     this.logger.info(`[op-registry] register ${params.command} ${appUrn} req=${params.requestId} tier=${params.tier}`);
     return entry;
   }
@@ -297,12 +377,30 @@ export class AppOperationRegistry {
     if (entry && entry.requestId === requestId) {
       this.ops.delete(appUrn);
       this.logger.debug(`[op-registry] clear ${appUrn} req=${requestId}`);
+      this.wakeFreeWaiters(appUrn);
     }
   }
 
   /** True when this requestId is still the latest dispatched command for the app. */
   ownsOutcome(appUrn: AppUrn, requestId: string): boolean {
     return this.ops.get(appUrn)?.requestId === requestId;
+  }
+
+  /**
+   * Claim a command's completion and keep the app claimed while the caller writes the outcome, in
+   * one step, so a command waiting for the app is not let in between. `null` when a newer command
+   * superseded this one. The caller hands the claim back with {@link releaseClaim}.
+   */
+  settleCompletion(appUrn: AppUrn, requestId: string): symbol | null {
+    const entry = this.ops.get(appUrn);
+    if (!entry || entry.requestId !== requestId) {
+      return null;
+    }
+    this.ops.delete(appUrn);
+    const token = Symbol(entry.command);
+    this.claims.set(appUrn, { command: entry.command, token, claimedAt: Date.now() });
+    this.logger.debug(`[op-registry] settle ${appUrn} req=${requestId} command=${entry.command}`);
+    return token;
   }
 
   /**
@@ -316,6 +414,7 @@ export class AppOperationRegistry {
     }
     this.ops.delete(appUrn);
     this.logger.debug(`[op-registry] claim ${appUrn} req=${requestId} command=${entry.command}`);
+    this.wakeFreeWaiters(appUrn);
     return true;
   }
 }

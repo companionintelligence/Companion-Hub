@@ -162,4 +162,70 @@ describe('AppOperationRegistry', () => {
       expect(registry.liveOperation(APP)).toBeUndefined();
     });
   });
+
+  describe('waiting for an app and settling an outcome', () => {
+    it('wakes a waiter when the operation holding the app settles', async () => {
+      registry.register(APP, { requestId: REQ, command: 'start', tier: 'safe' });
+      let woken = false;
+      const waiting = registry.whenMaybeFree(APP, 60_000).then(() => {
+        woken = true;
+      });
+
+      await Promise.resolve();
+      expect(woken).toBe(false);
+      registry.claimCompletion(APP, REQ);
+      await waiting;
+
+      expect(woken).toBe(true);
+    });
+
+    it('wakes a waiter after its timeout when nothing frees the app', async () => {
+      registry.register(APP, { requestId: REQ, command: 'start', tier: 'safe' });
+
+      await expect(registry.whenMaybeFree(APP, 10)).resolves.toBeUndefined();
+      expect(registry.liveOperation(APP)).toBeDefined();
+    });
+
+    it('keeps the app claimed while a settled outcome is written, and frees it once handed back', () => {
+      registry.register(APP, { requestId: REQ, command: 'start', tier: 'safe' });
+
+      const settling = registry.settleCompletion(APP, REQ);
+
+      expect(registry.get(APP)).toBeUndefined();
+      expect(registry.claim(APP, 'restart')).toEqual({ claimed: false, busy: { command: 'start', stage: 'claimed' } });
+      registry.releaseClaim(APP, settling as symbol);
+      expect(registry.claim(APP, 'restart').claimed).toBe(true);
+    });
+
+    it('settles nothing for a superseded request', () => {
+      registry.register(APP, { requestId: 'newer', command: 'stop', tier: 'safe' });
+
+      expect(registry.settleCompletion(APP, REQ)).toBeNull();
+      expect(registry.get(APP)?.requestId).toBe('newer');
+    });
+
+    // A force stop registers over a hung stop, but must not wipe another caller's pending claim.
+    it("keeps another caller's claim when a register does not take it over", () => {
+      registry.claim(APP, 'restart');
+      registry.register(APP, { requestId: 'force', command: 'stop', tier: 'safe' }, { takesOverClaim: false });
+      registry.claimCompletion(APP, 'force');
+
+      expect(registry.liveOperation(APP)).toEqual({ command: 'restart', stage: 'claimed' });
+    });
+  });
+
+  describe('a cancel sent while an install checks the grant', () => {
+    it('is held for the install and handed to it once, when its check ends', () => {
+      registry.beginInstallGrantCheck(APP);
+
+      expect(registry.holdGrantCheckCancel(APP)).toBe(true);
+      expect(registry.endInstallGrantCheck(APP)).toBe(true);
+      expect(registry.holdGrantCheckCancel(APP)).toBe(false);
+    });
+
+    it('finds nothing to hold once no install is checking', () => {
+      expect(registry.holdGrantCheckCancel(APP)).toBe(false);
+      expect(registry.endInstallGrantCheck(APP)).toBe(false);
+    });
+  });
 });
