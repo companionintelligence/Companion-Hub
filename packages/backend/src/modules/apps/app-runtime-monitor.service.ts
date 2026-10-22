@@ -18,10 +18,19 @@ import type { PoolContainerRollup, PoolContainerSampler } from '@/common/helpers
 import { HardwareInspectorService } from '@/modules/inference/hardware-inspector.service';
 import { type GpuProcessSampleSource, GpuProcessSamplerService } from '@/modules/inference/gpu-process-sampler.service';
 import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
+import { mergeArchitectureOverrides } from '@/common/helpers/compose-helpers';
 
 const HIGH_CPU_THRESHOLD_PERCENT = 90;
 const HIGH_CPU_SAMPLE_COUNT = 3;
 const MONITOR_INTERVAL_MS = 60_000;
+/**
+ * How long CPU must stay at or above the threshold to count as sustained: the span three of the
+ * monitor's own one-minute samples cover. The app page's 15 s poll and other readers add samples in
+ * between, so counting samples alone let a burst right after a start read as sustained in seconds.
+ */
+const SUSTAINED_HIGH_CPU_MS = (HIGH_CPU_SAMPLE_COUNT - 1) * MONITOR_INTERVAL_MS;
+/** Caps the samples kept per app when several pages poll at once. */
+const MAX_RUNTIME_SAMPLES = 120;
 const MONITOR_HISTORY_LIMIT = 24;
 const SNAPSHOT_CACHE_TTL_MS = 30_000;
 const SNAPSHOT_COLLECTION_DEADLINE_MS = 30_000;
@@ -156,12 +165,35 @@ export type AppRuntimeMonitorSnapshot = {
 
 const HUB_RUNTIME_URN = 'ci-hub:system';
 
+/**
+ * Whether the samples, oldest first, end in a run of high CPU that has lasted {@link SUSTAINED_HIGH_CPU_MS}
+ * over at least {@link HIGH_CPU_SAMPLE_COUNT} samples. The run starts after the newest sample below the
+ * threshold, so a single low sample starts the count again.
+ */
+function isSustainedHighCpu(samples: readonly RuntimeSample[]): boolean {
+  const newest = samples.at(-1);
+  if (!newest) {
+    return false;
+  }
+  let streakStartMs = newest.sampledAtMs;
+  let streakLength = 0;
+  for (let index = samples.length - 1; index >= 0; index--) {
+    const sample = samples[index];
+    if (!sample || sample.cpuPercent < HIGH_CPU_THRESHOLD_PERCENT) {
+      break;
+    }
+    streakStartMs = sample.sampledAtMs;
+    streakLength++;
+  }
+  return streakLength >= HIGH_CPU_SAMPLE_COUNT && newest.sampledAtMs - streakStartMs >= SUSTAINED_HIGH_CPU_MS;
+}
+
 @Injectable()
 export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, PoolContainerSampler {
   private readonly samples = new Map<string, RuntimeSample[]>();
   private readonly availabilityProbeCache = new Map<string, AvailabilityProbeCacheEntry>();
-  /** The probe running for each app, which a concurrent caller joins instead of dialling again. */
-  private readonly availabilityProbeInFlight = new Map<string, Promise<AvailabilityProbeCacheEntry>>();
+  /** The probe running for each app and the run it was started for. A concurrent caller joins it instead of dialling again. */
+  private readonly availabilityProbeInFlight = new Map<string, { run: AppRun | undefined; probe: Promise<AvailabilityProbeCacheEntry> }>();
   /** What each This Machine Only app's own port did last time, and at which address. See `probeLocalApp`. */
   private readonly lastLocalPortProbe = new Map<string, { address: string; result: AppPortProbeResult }>();
   /** Which run of each app the samples and the cached probe verdict above belong to (see {@link startNewRunIfChanged}). */
@@ -494,9 +526,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
         cpuPercent,
         responsive: true,
       });
-      const sustainedHighCpu =
-        recentSamples.length >= HIGH_CPU_SAMPLE_COUNT &&
-        recentSamples.slice(-HIGH_CPU_SAMPLE_COUNT).every((sample) => sample.cpuPercent >= HIGH_CPU_THRESHOLD_PERCENT);
+      const sustainedHighCpu = isSustainedHighCpu(recentSamples);
 
       return {
         appUrn: HUB_RUNTIME_URN,
@@ -553,9 +583,11 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
     return this.collectAppRuntimeHealthForApp(app);
   }
 
+  /** Keeps the samples that can still decide {@link isSustainedHighCpu}: the window, and one monitor interval before it. */
   private rememberSample(appUrn: string, sample: RuntimeSample) {
     const existing = this.samples.get(appUrn) ?? [];
-    const next = [...existing, sample].slice(-HIGH_CPU_SAMPLE_COUNT);
+    const keepFromMs = sample.sampledAtMs - SUSTAINED_HIGH_CPU_MS - MONITOR_INTERVAL_MS;
+    const next = [...existing, sample].filter((entry) => entry.sampledAtMs >= keepFromMs).slice(-MAX_RUNTIME_SAMPLES);
     this.samples.set(appUrn, next);
     return next;
   }
@@ -582,14 +614,20 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
 
     // The 60 s tick, the detail page's poll and a Force stop request can all miss the cache at once.
     // They share one dial, because each silent dial of a hung app also takes a slot in its accept queue.
+    const run = this.runs.get(appUrn);
     const inFlight = this.availabilityProbeInFlight.get(appUrn);
+    if (inFlight && inFlight.run === run) {
+      return inFlight.probe;
+    }
     if (inFlight) {
-      return inFlight;
+      // A dial for the run before this one is still open. This run's dial waits for it to end rather
+      // than open a second connection beside it, then asks afresh: that dial's verdict isn't kept.
+      const askAgain = () => this.getAvailabilityForSuspiciousApp(app, appUrn);
+      return inFlight.probe.then(askAgain, askAgain);
     }
 
     // A verdict for a run that ended while it was being taken describes processes that are gone.
-    const run = this.runs.get(appUrn);
-    const probe = this.probeAvailability(app, appUrn)
+    const probe = this.probeAvailability(app, appUrn, run)
       .then((nextEntry) => {
         if (this.runs.get(appUrn) === run) {
           this.availabilityProbeCache.set(appUrn, nextEntry);
@@ -597,18 +635,18 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
         return nextEntry;
       })
       .finally(() => {
-        if (this.availabilityProbeInFlight.get(appUrn) === probe) {
+        if (this.availabilityProbeInFlight.get(appUrn)?.probe === probe) {
           this.availabilityProbeInFlight.delete(appUrn);
         }
       });
-    this.availabilityProbeInFlight.set(appUrn, probe);
+    this.availabilityProbeInFlight.set(appUrn, { run, probe });
     return probe;
   }
 
-  private async probeAvailability(app: App, appUrn: AppUrn): Promise<AvailabilityProbeCacheEntry> {
+  private async probeAvailability(app: App, appUrn: AppUrn, run: AppRun | undefined): Promise<AvailabilityProbeCacheEntry> {
     // `checkAppAvailability` reports a This Machine Only app as available without contacting it, which
     // made such an app responsive whatever it did. It is asked at its own port instead.
-    const localVerdict = (app.exposureMode || 'local') === 'local' ? await this.probeLocalApp(appUrn) : null;
+    const localVerdict = (app.exposureMode || 'local') === 'local' ? await this.probeLocalApp(appUrn, run) : null;
     return localVerdict ?? (await this.probeAppRoute(appUrn));
   }
 
@@ -635,7 +673,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
    * work, not hanging. Null when the probe can't tell (no main service port, no address on the
    * network, no route to it). The route verdict then decides as before.
    */
-  private async probeLocalApp(appUrn: AppUrn): Promise<AvailabilityProbeCacheEntry | null> {
+  private async probeLocalApp(appUrn: AppUrn, run: AppRun | undefined): Promise<AvailabilityProbeCacheEntry | null> {
     try {
       const services = await this.readComposeServices(appUrn);
       if (!services) {
@@ -659,7 +697,9 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
       const previous = this.lastLocalPortProbe.get(appUrn);
       const queueFull = probed === 'unreachable' && previous?.address === address && previous.result === 'silent';
       const result = queueFull ? 'silent' : probed;
-      this.lastLocalPortProbe.set(appUrn, { address, result });
+      if (this.runs.get(appUrn) === run) {
+        this.lastLocalPortProbe.set(appUrn, { address, result });
+      }
 
       const sampledAtMs = Date.now();
       switch (result) {
@@ -687,8 +727,8 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
   }
 
   /**
-   * Forgets the CPU samples, the cached probe verdict, a probe still running and the last port
-   * result an app gathered in an earlier run. Every start, stop, restart, update or reset writes the
+   * Forgets the CPU samples, the cached probe verdict and the last port result an app gathered in
+   * an earlier run. Every start, stop, restart, update or reset writes the
    * app's row, which moves `updatedAt`, and a recreated container has a new id; either one means the
    * samples and the verdict describe processes that are gone. Kept, they let an app that was fixed
    * and started again inside the probe cache's minute keep the "degraded" verdict and Force Stop,
@@ -708,9 +748,10 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
 
     this.runs.set(appUrn, { rowKey, containerIds: new Set(containerIds) });
     if (current) {
+      // A probe still dialling for the old run is left to finish: its verdict isn't kept, and the new
+      // run's first dial waits for it (see getAvailabilityForSuspiciousApp).
       this.samples.delete(appUrn);
       this.availabilityProbeCache.delete(appUrn);
-      this.availabilityProbeInFlight.delete(appUrn);
       this.lastLocalPortProbe.delete(appUrn);
     }
   }
@@ -772,9 +813,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
       cpuPercent,
       responsive,
     });
-    const sustainedHighCpu =
-      recentSamples.length >= HIGH_CPU_SAMPLE_COUNT &&
-      recentSamples.slice(-HIGH_CPU_SAMPLE_COUNT).every((sample) => sample.cpuPercent >= HIGH_CPU_THRESHOLD_PERCENT);
+    const sustainedHighCpu = isSustainedHighCpu(recentSamples);
     const degraded = sustainedHighCpu && !responsive;
 
     // Only a running app is asked: a stopped or restarting one has nothing to say about its
@@ -885,10 +924,18 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
     return (await this.readComposeServices(appUrn))?.some((entry) => entry.name === service) ?? false;
   }
 
-  /** The services of the app's installed docker-compose.json, or null when there is none. Throws when it doesn't parse. */
+  /**
+   * The services of the app's installed docker-compose.json with this Hub's architecture overrides
+   * applied, as `compose-preparation.ts` runs them, or null when there is none. Throws when it
+   * doesn't parse.
+   */
   private async readComposeServices(appUrn: AppUrn) {
     const composeJson = await this.appFilesManager.getDockerComposeJson(appUrn);
-    return composeJson.content ? parseComposeJson(composeJson.content).services : null;
+    if (!composeJson.content) {
+      return null;
+    }
+    const { services, overrides } = parseComposeJson(composeJson.content);
+    return mergeArchitectureOverrides(services, overrides, this.config.get('architecture'));
   }
 
   private async hydrateHistoryFromDatabase() {

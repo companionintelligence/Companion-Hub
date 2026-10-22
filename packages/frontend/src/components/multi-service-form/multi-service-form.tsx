@@ -7,7 +7,7 @@ import { ArrowUpDown, Network, Plus, Server, Settings, Variable, X } from 'lucid
 import { useForm } from 'react-hook-form';
 import { JsonComposeEditor } from './json-compose-editor';
 import { useMultiServiceStore } from '@/stores/multiServiceStore';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import clsx from 'clsx';
 import { AdvancedConfig } from './elements/advanced';
 import { PortsConfig } from './elements/ports';
@@ -20,7 +20,8 @@ import i18next from 'i18next';
 import { deepClean } from '@/utils/objects';
 
 type Props = {
-  onSubmit?: (data: z.infer<typeof dynamicComposeSchema>) => void;
+  /** Saves the app. While the promise it returns is pending, Save all and Save JSON stay disabled. */
+  onSubmit?: (data: z.infer<typeof dynamicComposeSchema>) => unknown;
 };
 
 const cleanSchema = dynamicComposeFormSchema.transform((d) => deepClean(d));
@@ -35,6 +36,23 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
     error: undefined,
   });
   const [activeTab, setActiveTab] = useState('essentials');
+  // One save at a time: a double click on Save all or Save JSON sent the same request twice. The ref
+  // stops the second click before React has re-rendered the disabled button.
+  const saving = useRef(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const oneSaveAtATime = async (save: () => Promise<void>) => {
+    if (saving.current) {
+      return;
+    }
+    saving.current = true;
+    setIsSaving(true);
+    try {
+      await save();
+    } finally {
+      saving.current = false;
+      setIsSaving(false);
+    }
+  };
 
   const tabs = [
     {
@@ -152,11 +170,15 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
     );
   };
 
-  const handleSubmit = async (data: z.infer<typeof dynamicComposeSchema>) => {
+  const handleSubmit = async (formData: z.infer<typeof dynamicComposeSchema>) => {
+    // The form has no fields for the per-architecture overrides, so they come from the store: the saved
+    // config's, or the ones typed in the JSON editor. Without them a save dropped the block.
+    const { overrides } = useMultiServiceStore.getState();
+    const data = overrides ? { ...formData, overrides } : formData;
     const valid = validate(data);
 
     if (valid) {
-      onSubmit?.(data);
+      await onSubmit?.(data);
     } else {
       const latestError = useMultiServiceStore.getState().error;
       toast.error(i18next.exists(latestError) ? t(latestError) : latestError);
@@ -168,7 +190,7 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
   const saveJson = async () => {
     form.clearErrors();
 
-    let parsed: { services?: z.infer<typeof dynamicComposeSchema>['services'] };
+    let parsed: Partial<Pick<z.infer<typeof dynamicComposeSchema>, 'services' | 'overrides'>>;
     try {
       parsed = JSON.parse(json.value);
     } catch {
@@ -176,7 +198,7 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
       return;
     }
 
-    const applied = updateFromJson(parsed.services ?? []);
+    const applied = updateFromJson({ services: parsed.services ?? [], overrides: parsed.overrides });
     if (!applied) {
       return;
     }
@@ -191,7 +213,13 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
   };
 
   return (
-    <form className="flex flex-col" onSubmit={form.handleSubmit(handleSubmit)}>
+    <form
+      className="flex flex-col"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void oneSaveAtATime(() => form.handleSubmit(handleSubmit)());
+      }}
+    >
       <div className="bg-card border rounded-lg mt-4 m-0 p-0">
         {jsonEditorOpen && <JsonComposeEditor onChange={(json, jsonError) => setJson({ value: json, error: jsonError })} />}
         {!jsonEditorOpen && (
@@ -291,10 +319,15 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
           </div>
         )}
         <div className="flex items-center justify-between rounded-b-lg border-t border-border p-3">
-          <Button disabled={jsonEditorOpen} type="submit" className={clsx({ hidden: jsonEditorOpen })}>
+          <Button disabled={jsonEditorOpen || isSaving} type="submit" className={clsx({ hidden: jsonEditorOpen })}>
             {t('MULTI_SERVICE_VALIDATE_ALL_SERVICES')}
           </Button>
-          <Button className={clsx({ hidden: !jsonEditorOpen })} type="button" disabled={Boolean(json.error)} onClick={() => void saveJson()}>
+          <Button
+            className={clsx({ hidden: !jsonEditorOpen })}
+            type="button"
+            disabled={Boolean(json.error) || isSaving}
+            onClick={() => void oneSaveAtATime(saveJson)}
+          >
             {t('MULTI_SERVICE_JSON_SAVE')}
           </Button>
           <div

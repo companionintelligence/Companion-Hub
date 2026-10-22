@@ -16,12 +16,12 @@ type Props = {
 
 export const JsonComposeEditor = ({ onChange }: Props) => {
   const { t } = useTranslation();
-  const { services, isDirty, setIsDirty } = useMultiServiceStore();
+  const { services, overrides, isDirty, setIsDirty } = useMultiServiceStore();
   const [error, setError] = useState<string | undefined>(undefined);
 
   const servicesWithoutIds = services.map(({ _id, ...rest }) => rest);
 
-  const [value, setValue] = useState<string>(JSON.stringify({ services: servicesWithoutIds }, null, 2));
+  const [value, setValue] = useState<string>(JSON.stringify({ services: servicesWithoutIds, ...(overrides ? { overrides } : {}) }, null, 2));
 
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {

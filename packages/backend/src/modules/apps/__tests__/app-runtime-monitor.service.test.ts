@@ -781,19 +781,28 @@ describe('AppRuntimeMonitorService', () => {
         },
       });
       dockerReadFacade.getServiceAddressOnHubNetwork.mockResolvedValue('10.200.0.7');
+      vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-10-21T13:00:00Z') });
     });
+
+    /** Samples the app `times` times, `stepMs` apart, as the monitor's tick (one a minute) or the app page's poll would. */
+    async function sampleEvery(stepMs: number, times: number) {
+      let result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      for (let i = 1; i < times; i++) {
+        vi.setSystemTime(Date.now() + stepMs);
+        result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      }
+      return result;
+    }
 
     it('marks a busy app that takes connections and never answers degraded, with Force stop', async () => {
       vi.mocked(probeAppPort).mockResolvedValue('silent');
 
-      await service.getAppRuntimeHealth('cpu-hog:_user' as any);
-      await service.getAppRuntimeHealth('cpu-hog:_user' as any);
-      const result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      const result = await sampleEvery(60_000, 3);
 
       expect(dockerReadFacade.getServiceAddressOnHubNetwork).toHaveBeenCalledWith('cpu-hog:_user', 'web');
       expect(probeAppPort).toHaveBeenCalledWith('10.200.0.7', 80, 5_000);
-      // Cached like the route probe: one dial for the three samples.
-      expect(probeAppPort).toHaveBeenCalledTimes(1);
+      // Cached for a minute like the route probe: two dials over the two minutes.
+      expect(probeAppPort).toHaveBeenCalledTimes(2);
       expect(appsService.checkAppAvailability).not.toHaveBeenCalled();
       expect(result).toMatchObject({
         sustainedHighCpu: true,
@@ -822,15 +831,65 @@ describe('AppRuntimeMonitorService', () => {
       expect(results.map((result) => result.responsive)).toEqual([false, false]);
     });
 
+    // The app page polls every 15 s and other readers ask too, so three samples can land within
+    // seconds of a start. "Sustained" is two minutes of high CPU, the span of three monitor ticks.
+    it('does not call a burst of samples right after a start sustained', async () => {
+      vi.mocked(probeAppPort).mockResolvedValue('silent');
+
+      const burst = await sampleEvery(10_000, 3);
+      expect(burst).toMatchObject({ highCpu: true, responsive: false, sustainedHighCpu: false, degraded: false, forceStopEligible: false });
+
+      vi.setSystemTime(Date.now() + 100_000);
+      const twoMinutesIn = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      expect(twoMinutesIn).toMatchObject({ sustainedHighCpu: true, degraded: true, forceStopEligible: true });
+    });
+
+    it('starts counting again after one sample below the threshold', async () => {
+      vi.mocked(probeAppPort).mockResolvedValue('silent');
+      await sampleEvery(60_000, 2);
+
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValueOnce([{ ...busyContainer, cpuPercent: 40 }]);
+      vi.setSystemTime(Date.now() + 60_000);
+      await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+
+      const afterTheDip = await sampleEvery(60_000, 2);
+      expect(afterTheDip).toMatchObject({ sustainedHighCpu: false, degraded: false });
+      vi.setSystemTime(Date.now() + 60_000);
+      expect(await service.getAppRuntimeHealth('cpu-hog:_user' as any)).toMatchObject({ sustainedHighCpu: true, degraded: true });
+    });
+
+    // An arm64 Hub runs the arm64 override of the main service, which can listen on another port.
+    it('dials the main port of the override for this Hub architecture', async () => {
+      config.get.mockImplementation((key: string) => {
+        if (key === 'userSettings') return {} as any;
+        if (key === 'architecture') return 'arm64' as any;
+        return undefined as any;
+      });
+      appFilesManager.getDockerComposeJson.mockResolvedValue({
+        path: '/apps/_user/cpu-hog/docker-compose.json',
+        content: {
+          schemaVersion: 2,
+          services: [{ name: 'web', image: 'example/web:1', isMain: true, internalPort: 80 }],
+          overrides: [
+            { architecture: 'arm64', services: [{ name: 'web', image: 'example/web:1-arm64', internalPort: 8080 }] },
+            { architecture: 'amd64', services: [{ name: 'web', internalPort: 9090 }] },
+          ],
+        },
+      });
+      vi.mocked(probeAppPort).mockResolvedValue('answered');
+
+      await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+
+      expect(probeAppPort).toHaveBeenCalledWith('10.200.0.7', 8080, 5_000);
+    });
+
     it.each([
       ['answers', 'answered'],
       ['has nothing listening on its port yet', 'refused'],
     ] as const)('keeps a busy app that %s responsive', async (_label, probe) => {
       vi.mocked(probeAppPort).mockResolvedValue(probe);
 
-      await service.getAppRuntimeHealth('cpu-hog:_user' as any);
-      await service.getAppRuntimeHealth('cpu-hog:_user' as any);
-      const result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      const result = await sampleEvery(60_000, 3);
 
       expect(appsService.checkAppAvailability).not.toHaveBeenCalled();
       expect(result).toMatchObject({ sustainedHighCpu: true, responsive: true, degraded: false, forceStopEligible: false, reason: null });
@@ -844,11 +903,12 @@ describe('AppRuntimeMonitorService', () => {
         vi.mocked(probeAppPort).mockResolvedValueOnce('silent').mockResolvedValue('unreachable');
 
         await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+        await vi.advanceTimersByTimeAsync(61_000);
         await service.getAppRuntimeHealth('cpu-hog:_user' as any);
         await vi.advanceTimersByTimeAsync(61_000);
         const result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
 
-        expect(probeAppPort).toHaveBeenCalledTimes(2);
+        expect(probeAppPort).toHaveBeenCalledTimes(3);
         expect(appsService.checkAppAvailability).not.toHaveBeenCalled();
         expect(result).toMatchObject({
           responsive: false,
@@ -969,11 +1029,14 @@ describe('AppRuntimeMonitorService', () => {
         content: { schemaVersion: 2, services: [{ name: 'web', image: 'alpine:3.20', isMain: true, internalPort: 80 }] },
       });
       dockerReadFacade.getServiceAddressOnHubNetwork.mockResolvedValue('10.200.0.7');
+      vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-10-21T13:00:00Z') });
     });
 
+    /** Samples the app `times` times a minute apart, as the monitor's tick does; long enough for "sustained". */
     async function sample(times: number) {
       let result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
       for (let i = 1; i < times; i++) {
+        vi.setSystemTime(Date.now() + 60_000);
         result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
       }
       return result;
@@ -1008,7 +1071,8 @@ describe('AppRuntimeMonitorService', () => {
 
       const result = await sample(1);
 
-      expect(probeAppPort).toHaveBeenCalledTimes(2);
+      // Two dials over the hung run's two minutes, then one at once for the new run.
+      expect(probeAppPort).toHaveBeenCalledTimes(3);
       expect(result).toMatchObject({ responsive: true, sustainedHighCpu: false, degraded: false, forceStopEligible: false, reason: null });
     });
 
@@ -1022,9 +1086,14 @@ describe('AppRuntimeMonitorService', () => {
       appRow('2026-10-21 13:20:30');
       vi.mocked(probeAppPort).mockResolvedValue('silent');
 
-      const result = await sample(3);
+      const first = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      expect(probeAppPort).toHaveBeenCalledTimes(3);
+      expect(first).toMatchObject({ responsive: false, sustainedHighCpu: false, degraded: false });
 
-      expect(probeAppPort).toHaveBeenCalledTimes(2);
+      vi.setSystemTime(Date.now() + 60_000);
+      await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      vi.setSystemTime(Date.now() + 60_000);
+      const result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
       expect(result).toMatchObject({ responsive: false, degraded: true, forceStopEligible: true });
     });
 
@@ -1043,7 +1112,7 @@ describe('AppRuntimeMonitorService', () => {
 
       const result = await sample(1);
 
-      expect(appsService.checkAppAvailability).toHaveBeenCalledTimes(2);
+      expect(appsService.checkAppAvailability).toHaveBeenCalledTimes(3);
       expect(result).toMatchObject({ responsive: true, degraded: false, forceStopEligible: false });
     });
 
@@ -1052,10 +1121,46 @@ describe('AppRuntimeMonitorService', () => {
       dockerReadFacade.getAppRuntimeStats.mockResolvedValue([container('steady-run')]);
       vi.mocked(probeAppPort).mockResolvedValue('silent');
 
-      const result = await sample(5);
+      let result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      for (let i = 0; i < 4; i++) {
+        vi.setSystemTime(Date.now() + 15_000);
+        result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      }
 
+      // Five reads over a minute, as the app page polls: one dial.
       expect(probeAppPort).toHaveBeenCalledTimes(1);
-      expect(result).toMatchObject({ sustainedHighCpu: true, degraded: true });
+      expect(result).toMatchObject({ responsive: false });
+    });
+
+    // A hung app's dial waits out its 5 s timeout. A restart inside those seconds must not open a second
+    // connection beside it: each one takes a slot in the app's accept queue.
+    it('lets a dial for the previous run finish before the new run dials', async () => {
+      appRow('2026-10-21 14:10:00');
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([container('old-run')]);
+      let endOldDial: (result: 'silent') => void = () => {};
+      vi.mocked(probeAppPort).mockReturnValueOnce(
+        new Promise((resolve) => {
+          endOldDial = resolve;
+        }),
+      );
+      const oldRun = service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      await vi.waitFor(() => expect(probeAppPort).toHaveBeenCalledTimes(1));
+
+      appRow('2026-10-21 14:10:03');
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([container('new-run')]);
+      vi.mocked(probeAppPort).mockResolvedValue('answered');
+      const newRun = service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(probeAppPort).toHaveBeenCalledTimes(1);
+
+      endOldDial('silent');
+      const [oldResult, newResult] = await Promise.all([oldRun, newRun]);
+
+      expect(probeAppPort).toHaveBeenCalledTimes(2);
+      expect(oldResult.responsive).toBe(false);
+      expect(newResult).toMatchObject({ responsive: true, reason: null });
+      expect(await service.getAppRuntimeHealth('cpu-hog:_user' as any)).toMatchObject({ responsive: true });
+      expect(probeAppPort).toHaveBeenCalledTimes(2);
     });
 
     // getAppRuntimeStats skips a container whose inspect timed out. One sample without the sidecar is
@@ -1068,9 +1173,9 @@ describe('AppRuntimeMonitorService', () => {
       await sample(2);
 
       dockerReadFacade.getAppRuntimeStats.mockResolvedValueOnce([container('web-run')]);
-      const result = await sample(1);
+      vi.setSystemTime(Date.now() + 60_000);
+      const result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
 
-      expect(probeAppPort).toHaveBeenCalledTimes(1);
       expect(result).toMatchObject({ sustainedHighCpu: true, degraded: true });
     });
   });

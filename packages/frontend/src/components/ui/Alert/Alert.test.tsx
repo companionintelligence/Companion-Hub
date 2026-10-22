@@ -44,13 +44,13 @@ describe('Alert', () => {
     expect(screen.getByText('Under the heading')).toHaveClass('[.alert-heading+&]:text-muted-foreground');
   });
 
-  it('mixes the heading colour toward the text colour on the light theme only', () => {
+  // The accent alone is too faint for a heading in places: the red on a dark card is 4.2:1.
+  it('mixes the heading colour toward the text colour in both themes', () => {
     render(<Alert variant="danger">Text</Alert>);
 
-    expect(screen.getByRole('alert')).toHaveClass(
-      '[--alert-heading:color-mix(in_srgb,var(--alert-accent)_75%,var(--color-foreground))]',
-      'dark:[--alert-heading:var(--alert-accent)]',
-    );
+    const box = screen.getByRole('alert');
+    expect(box).toHaveClass('[--alert-heading:color-mix(in_srgb,var(--alert-accent)_75%,var(--color-foreground))]');
+    expect(box.className).not.toMatch(/dark:\[--alert-heading/);
   });
 
   it('leaves room for a close button when dismissible', () => {

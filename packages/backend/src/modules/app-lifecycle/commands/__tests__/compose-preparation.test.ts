@@ -383,6 +383,54 @@ describe('prepareAppComposeDir', () => {
     });
   });
 
+  // Compose refuses healthcheck.start_interval on Docker Engine older than 25, so such an app could not
+  // install or start there at all (#2110).
+  describe('health check start interval', () => {
+    const composeWithStartInterval = () => ({
+      schemaVersion: 2,
+      services: [
+        {
+          name: 'nextcloud',
+          image: 'nextcloud:29',
+          internalPort: 80,
+          isMain: true,
+          healthCheck: { test: 'curl -f http://localhost', interval: '30s', startInterval: '5s', startPeriod: '60s' },
+        },
+        { name: 'redis', image: 'redis:7', internalPort: 6379 },
+      ],
+    });
+
+    it('leaves it out on Docker Engine 24 and logs it', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.appFilesManager.getDockerComposeJson.mockResolvedValue({
+        path: '/data/apps/nextcloud/docker-compose.json',
+        content: composeWithStartInterval(),
+      });
+      stubs.resourceAllocator.getDockerCapacity.mockResolvedValue({ cpuCores: 16, memTotalMb: 32768, serverVersion: '24.0.9' });
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+      const nextcloud = lastComposeCall().services.find((service) => service.name === 'nextcloud');
+      expect(nextcloud?.healthCheck).toEqual({ test: 'curl -f http://localhost', interval: '30s', startPeriod: '60s' });
+      expect(stubs.logger.warn).toHaveBeenCalledWith(expect.stringMatching(/Docker Engine 24\.0\.9 .*start_interval.*nextcloud/));
+    });
+
+    it('keeps it on Docker Engine 25 and newer', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.appFilesManager.getDockerComposeJson.mockResolvedValue({
+        path: '/data/apps/nextcloud/docker-compose.json',
+        content: composeWithStartInterval(),
+      });
+      stubs.resourceAllocator.getDockerCapacity.mockResolvedValue({ cpuCores: 16, memTotalMb: 32768, serverVersion: '25.0.3' });
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+      const nextcloud = lastComposeCall().services.find((service) => service.name === 'nextcloud');
+      expect(nextcloud?.healthCheck).toMatchObject({ startInterval: '5s' });
+      expect(stubs.logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('start_interval'));
+    });
+  });
+
   describe('compose parsing failures', () => {
     it('turns a ZodError into a readable maintainer-facing message instead of leaking the raw Zod error', async () => {
       const { stubs, moduleRef, docker } = createHarness();

@@ -43,7 +43,60 @@ describe('MultiServiceForm Save JSON', () => {
     toastError.mockClear();
     act(() => {
       useMultiServiceStore.getState().setServices([{ _id: 'web-id', name: 'web', image: 'alpine:3.20', isMain: true, internalPort: 80 }]);
+      useMultiServiceStore.setState({ overrides: undefined } as never);
     });
+  });
+
+  const overrides = [{ architecture: 'arm64' as const, services: [{ name: 'web', image: 'alpine:3.20', internalPort: 8080 }] }];
+
+  it('keeps a typed overrides block when saving JSON', async () => {
+    const onSubmit = vi.fn();
+    render(<MultiServiceForm onSubmit={onSubmit} />);
+
+    openJsonEditorWith({ services: [{ name: 'web', image: 'alpine:3.20', isMain: true, internalPort: 80 }], overrides });
+    fireEvent.click(screen.getByRole('button', { name: 'Save JSON' }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ overrides });
+  });
+
+  it('keeps the saved overrides when Save all saves the form', async () => {
+    act(() => {
+      useMultiServiceStore.setState({ overrides } as never);
+    });
+    const onSubmit = vi.fn();
+    render(<MultiServiceForm onSubmit={onSubmit} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save all' }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ services: [expect.objectContaining({ name: 'web' })], overrides });
+  });
+
+  it.each(['Save JSON', 'Save all'])('sends one save for a double click on %s and keeps the button disabled until it settles', async (label) => {
+    let settle: () => void = () => {};
+    const onSubmit = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    render(<MultiServiceForm onSubmit={onSubmit} />);
+    if (label === 'Save JSON') {
+      openJsonEditorWith({ services: [{ name: 'web', image: 'alpine:3.20', isMain: true, internalPort: 80, command }] });
+    }
+
+    const button = screen.getByRole('button', { name: label });
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    await waitFor(() => expect(screen.getByRole('button', { name: label })).toBeDisabled());
+    fireEvent.click(screen.getByRole('button', { name: label }));
+    expect(onSubmit).toHaveBeenCalledOnce();
+
+    await act(async () => settle());
+    await waitFor(() => expect(screen.getByRole('button', { name: label })).toBeEnabled());
   });
 
   it('saves the edited JSON the way Save all does', async () => {

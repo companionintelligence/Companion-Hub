@@ -14,10 +14,11 @@ import { cn } from '@/lib/utils';
 const alertVariants = cva(
   [
     'alert relative flex w-full items-start gap-2.5 rounded-lg border px-4 py-3 text-sm text-foreground shadow-sm',
-    // The heading's colour. On the light theme the red and the blue are too light for 14px text on
-    // their own tint (3.3:1 and 3.4:1), so the heading takes three quarters accent and one quarter text
-    // colour there (4.8:1 or better). On the dark theme every accent reads on its own.
-    '[--alert-heading:color-mix(in_srgb,var(--alert-accent)_75%,var(--color-foreground))] dark:[--alert-heading:var(--alert-accent)]',
+    // The heading's colour: three quarters accent, one quarter text colour. The accents alone are too
+    // faint for a 14 px heading on their own tint in places: red and blue on the light theme (3.3:1 and
+    // 3.4:1), red on a dark card (4.2:1). Mixed, every variant reads at 4.5:1 or better on the page,
+    // a card and a popover in both themes. Icons keep the pure accent, which stays above 3:1.
+    '[--alert-heading:color-mix(in_srgb,var(--alert-accent)_75%,var(--color-foreground))]',
   ],
   {
     variants: {

@@ -14,6 +14,8 @@ interface ServiceWithId extends ServiceFormData {
 interface MultiServiceState {
   // State
   services: ServiceWithId[];
+  /** The compose's per-architecture overrides. The form has no fields for them, so they travel beside it: from the saved config, or typed in the JSON editor. */
+  overrides: MultiServiceFormData['overrides'];
   activeService: number | 'json';
   isDirty: boolean;
   error: string;
@@ -24,11 +26,12 @@ interface MultiServiceState {
   addService: () => void;
   removeService: (index: number) => void;
   updateService: (index: number, serviceData: ServiceFormData) => void;
-  /** Puts the JSON editor's services into the form. Returns them, or null (after a toast) when they fail validation. */
-  updateFromJson: (services: MultiServiceFormData['services']) => ServiceWithId[] | null;
+  /** Puts the JSON editor's services and overrides into the form. Returns the services, or null (after a toast) when they fail validation. */
+  updateFromJson: (compose: Pick<MultiServiceFormData, 'services' | 'overrides'>) => ServiceWithId[] | null;
   resetToDefaults: () => void;
   setIsDirty: (dirty: boolean) => void;
   setServices: (services: ServiceWithId[]) => void;
+  setOverrides: (overrides: MultiServiceFormData['overrides']) => void;
 }
 
 const defaultService: ServiceFormData = {
@@ -57,10 +60,12 @@ function generateId(): string {
 
 export const useMultiServiceStore = create<MultiServiceState>()((set, get) => ({
   services: defaultServices,
+  overrides: undefined,
   activeService: 0,
   isDirty: false,
   error: '',
   setServices: (services: ServiceWithId[]) => set({ services }),
+  setOverrides: (overrides: MultiServiceFormData['overrides']) => set({ overrides }),
   validate: (values: z.infer<typeof dynamicComposeSchema>) => {
     const res = dynamicComposeFormSchema.safeParse(values);
 
@@ -162,13 +167,13 @@ export const useMultiServiceStore = create<MultiServiceState>()((set, get) => ({
     }
   },
 
-  updateFromJson: (newServices: MultiServiceFormData['services']) => {
+  updateFromJson: ({ services: newServices, overrides }) => {
     const servicesWithIds = newServices.map((service, index) => ({
       ...service,
       _id: get().services[index]?._id || generateId(),
     }));
 
-    get().validate({ schemaVersion: 2, services: servicesWithIds });
+    get().validate({ schemaVersion: 2, services: servicesWithIds, overrides });
 
     const error = get().error;
     if (error) {
@@ -176,12 +181,13 @@ export const useMultiServiceStore = create<MultiServiceState>()((set, get) => ({
       return null;
     }
 
-    set({ services: servicesWithIds, isDirty: false });
+    set({ services: servicesWithIds, overrides, isDirty: false });
     return servicesWithIds;
   },
   resetToDefaults: () =>
     set({
       services: defaultServices.map((service) => ({ ...service, _id: generateId() })),
+      overrides: undefined,
       activeService: 0,
       error: '',
       isDirty: false,
