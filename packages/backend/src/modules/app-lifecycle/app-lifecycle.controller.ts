@@ -83,7 +83,8 @@ export class AppLifecycleController {
   @ApiResponse({ type: LifecycleRequestDto })
   async installApp(@Param('urn') urn: string, @Body() body: AppFormBody, @Req() req: Request) {
     const appUrn = castAppUrn(urn);
-    await this.whois.assertSessionAction(req, appUrn, 'install');
+    // No `assertSessionAction` here: `installApp` asks the same question of the same actor before it
+    // does anything else, and asking twice cost an install a second WhoIs round trip to the Portal.
     const res = await this.appLifecycleService.installApp({ appUrn, form: body, actor: this.whois.lifecycleActor(req, 'install') });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }

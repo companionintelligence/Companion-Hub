@@ -6,7 +6,7 @@ import type { AppFilesManager } from '@/modules/apps/app-files-manager';
 import type { AppsRepository } from '@/modules/apps/apps.repository';
 import { EnvUtils } from '@/modules/env/env.utils';
 import type { AppUrn } from '@ci-hub/common/types';
-import type { AppLifecycleService } from '../app-lifecycle.service';
+import { type AppLifecycleService, RESTARTS_THAT_WAIT_FOR_THE_APP } from '../app-lifecycle.service';
 import { DeviceKeyRefreshService } from '../device-key-refresh.service';
 
 const MEMORY = 'ci-memory:ci-marketplace' as AppUrn;
@@ -59,6 +59,13 @@ describe('DeviceKeyRefreshService', () => {
     expect(lifecycle.restartApp).toHaveBeenCalledTimes(1);
     expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: MEMORY, skipPull: true, actor: { kind: 'system', reason: 'device-key-refresh' } });
     expect(lifecycle.regenerateAppEnv).not.toHaveBeenCalled();
+  });
+
+  // The refresh does not come back to an app it dispatched, so a refused restart was never retried.
+  it('restarts as a restart that waits for an operation under way on the app, not one it refuses', async () => {
+    await service.refreshStaleDeviceKeys();
+
+    expect(RESTARTS_THAT_WAIT_FOR_THE_APP.has('device-key-refresh')).toBe(true);
   });
 
   it('rewrites the env of a stopped Memory without starting it', async () => {

@@ -867,7 +867,13 @@ describe('App lifecycle', () => {
       }
       expect((await appsRepository.getAppByUrn(appInfo.urn))?.customDomain).toBeNull();
 
-      await restartExposed(appInfo.urn);
+      // Dropping the domain restarts the app on the Hub's own account, as a revert must. A Restart
+      // sent by hand now would be refused while that restart holds the app, so wait for it instead.
+      await waitFor(async () => {
+        expect((await appsRepository.getAppByUrn(appInfo.urn))?.status).toBe('running');
+        expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe(`https://${platformHostname}`);
+        expect(exposureSyncService.isCloudflareSyncInFlight()).toBe(false);
+      });
 
       const revertedEnv = await readEnv(appInfo.urn);
       expect(revertedEnv.get('APP_PUBLIC_URL')).toBe(`https://${platformHostname}`);

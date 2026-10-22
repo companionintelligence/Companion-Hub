@@ -160,6 +160,19 @@ export class ImageSizeService {
     }
   }
 
+  /** The images the app's compose names, as the store's copy has them now. `null` when it cannot be read. */
+  async listAppImages(appUrn: AppUrn): Promise<string[] | null> {
+    try {
+      const { content } = await this.marketplaceService.getDockerComposeJson(appUrn);
+      const parsed = content as { services?: Array<{ image?: string }> | Record<string, { image?: string }> };
+      const services = Array.isArray(parsed?.services) ? parsed.services : Object.values(parsed?.services ?? {});
+      return [...new Set(services.map((s) => s?.image).filter((img): img is string => Boolean(img)))];
+    } catch (error) {
+      this.logger.warn(`Could not read compose for ${appUrn} to verify architecture: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+  }
+
   /**
    * Best-effort pre-install check that every image in an app actually
    * publishes a manifest for the given host architecture.
@@ -169,30 +182,31 @@ export class ImageSizeService {
    *   - { ok: false, image, available }       an image definitively lacks `arch`
    *   - null                                  could not inspect (network/registry/auth)
    *                                           — caller should NOT hard-block on this
+   *
+   * Every image's registry is asked at once. The refusal names the first image, in compose order,
+   * that lacks `arch`, as it did when they were asked one after another.
+   *
+   * `images` is a list the caller already read with {@link listAppImages}, so the check covers
+   * exactly those images; left out, the compose is read here.
    */
-  async verifyAppArchitecture(appUrn: AppUrn, arch: string): Promise<{ ok: true } | { ok: false; image: string; available: string[] } | null> {
-    let images: string[];
+  async verifyAppArchitecture(
+    appUrn: AppUrn,
+    arch: string,
+    images?: string[] | null,
+  ): Promise<{ ok: true } | { ok: false; image: string; available: string[] } | null> {
+    const checked = images === undefined ? await this.listAppImages(appUrn) : images;
 
-    try {
-      const { content } = await this.marketplaceService.getDockerComposeJson(appUrn);
-      const parsed = content as { services?: Array<{ image?: string }> | Record<string, { image?: string }> };
-      const services = Array.isArray(parsed?.services) ? parsed.services : Object.values(parsed?.services ?? {});
-      images = [...new Set(services.map((s) => s?.image).filter((img): img is string => Boolean(img)))];
-    } catch (error) {
-      this.logger.warn(`Could not read compose for ${appUrn} to verify architecture: ${error instanceof Error ? error.message : String(error)}`);
+    if (!checked || checked.length === 0) {
       return null;
     }
 
-    if (images.length === 0) {
-      return null;
-    }
-
+    const published = await Promise.all(checked.map((image) => this.getImageArchitectures(image)));
     let inspectedAny = false;
 
-    for (const image of images) {
-      const archs = await this.getImageArchitectures(image);
+    for (const [index, image] of checked.entries()) {
+      const archs = published[index];
 
-      if (archs === null) {
+      if (!archs) {
         // Couldn't inspect this image — skip it rather than false-blocking.
         continue;
       }

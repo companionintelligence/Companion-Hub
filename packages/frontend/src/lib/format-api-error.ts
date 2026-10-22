@@ -12,6 +12,11 @@ export function isI18nKey(message: string): boolean {
   return I18N_KEY_PATTERN.test(message);
 }
 
+/** A 409 from the API, such as an app refusing a change while another operation holds it. Its message says why. */
+export function isConflictError(error: unknown): error is TranslatableError {
+  return error instanceof TranslatableError && error.http?.status === 409;
+}
+
 /** Turn API or route errors into translated user-facing copy (fact + fix). Never surfaces raw backend English. */
 export function formatApiError(error: unknown, t: TFunction, status = 500): string {
   if (isChunkLoadError(error)) {

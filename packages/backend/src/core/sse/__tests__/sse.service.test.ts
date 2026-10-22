@@ -124,6 +124,19 @@ describe('SSEService app stream', () => {
       expect(JSON.parse(second.data as string)).toEqual(step('verifying'));
     });
 
+    // An install sent during the update is refused, and its call says so twice in `operation_change`.
+    it('still gets it after operation_change events for the app', async () => {
+      service.emit('app', step('verifying'));
+      service.emit('app', { event: 'operation_change', appUrn, operation: 'install' });
+      service.emit('app', { event: 'operation_change', appUrn, operation: 'update' });
+
+      const pending = collect(2);
+      service.emit('app', { event: 'install_queue', active: null, queued: [] });
+      const [, second] = await pending;
+
+      expect(JSON.parse(second.data as string)).toEqual(step('verifying'));
+    });
+
     it('stops getting it once the update was cancelled', async () => {
       service.emit('app', step('verifying'));
       service.emit('app', { event: 'update_cancelled', appUrn, appStatus: 'running' });

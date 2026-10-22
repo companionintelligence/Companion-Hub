@@ -61,8 +61,10 @@ export class SSEService implements OnApplicationShutdown {
     if (appUrn) {
       // We want to use this topic for a specific app
       formattedTopic = `${topic}:${appUrn}` as T;
-    } else if (topic === 'app' && 'appUrn' in data) {
+    } else if (topic === 'app' && 'appUrn' in data && data.event !== 'operation_change') {
       // An install's progress tick or an update's step: the latest one is replayed to new subscribers.
+      // Not `operation_change`, which says only what holds the app: an install refused during an update
+      // sends two, and they ended the update's replayed step.
       const replayed =
         data.event === 'status_change' &&
         ((data.appStatus === 'installing' && typeof data.progress === 'number') || (data.appStatus === 'updating' && data.updatePhase !== undefined));

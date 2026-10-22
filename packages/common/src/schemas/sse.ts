@@ -4,6 +4,20 @@ export type Topic = 'app' | 'app-logs' | 'ci-hub-logs';
 
 const appUrnSchema = z.string().refine((v) => v.split(':').length === 2);
 
+/** The lifecycle commands the Hub runs on an app, one at a time. `GET /api/apps/:urn` and `operation_change` name them. */
+export const lifecycleOperationSchema = z.enum([
+  'install',
+  'start',
+  'stop',
+  'restart',
+  'update',
+  'uninstall',
+  'reset',
+  'backup',
+  'restore',
+  'generate_env',
+]);
+
 const appStatusSchema = z.enum([
   'running',
   'stopped',
@@ -76,9 +90,14 @@ const appScopedEventSchema = z.object({
     // CI-Cloud published the app on another domain than the one it asked for,
     // and the Hub moved the app there. `hostname` is where it is served now.
     'public_domain_changed',
+    // An install call for the app began or ended its checks, which run before the app has a row.
+    // Carries no status, but `operation`: what the Hub has under way for the app now.
+    'operation_change',
   ]),
   appUrn: appUrnSchema,
   appStatus: appStatusSchema.optional(),
+  // `operation_change` only: the lifecycle command under way for the app, `null` for none.
+  operation: lifecycleOperationSchema.nullable().optional(),
   error: z.string().optional(),
   errorCode: z.string().optional(),
   errorDetail: z.string().optional(),

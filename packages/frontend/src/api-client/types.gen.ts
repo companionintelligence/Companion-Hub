@@ -1078,6 +1078,9 @@ export type GetAppDto = {
         pendingRestart: boolean;
         ignoredVersion: number;
     };
+    operation?: {
+        command: 'install' | 'start' | 'stop' | 'restart' | 'update' | 'uninstall' | 'reset' | 'backup' | 'restore' | 'generate_env';
+    };
     info: {
         id: string;
         urn: string;

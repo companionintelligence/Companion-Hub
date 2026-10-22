@@ -1,4 +1,6 @@
 import { castAppUrn } from '@/common/helpers/app-helpers';
+// The class only, as a ModuleRef token: AppsModule does not import AppLifecycleModule.
+import { AppOperationRegistry, type OperationCommand } from '../app-lifecycle/app-operation-registry';
 import { Controller, Get, Param, Patch, Post, Req, Res, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { ModuleRef } from '@nestjs/core';
@@ -149,7 +151,24 @@ export class AppsController {
     const res = await this.appsReadService.getApp(appUrn);
     const mcpExtras = await this.buildMcpExtras(appUrn, res.info);
     const app = req.hubPrincipal === 'qa-read' && res.app ? { ...res.app, config: undefined } : res.app;
-    return GetAppDto.parse({ ...res, app, ...mcpExtras }, { reportOnly: true });
+    return GetAppDto.parse({ ...res, app, operation: this.operationFor(appUrn), ...mcpExtras }, { reportOnly: true });
+  }
+
+  /** What the lifecycle has under way for the app, an install still in its checks included. */
+  private operationFor(appUrn: AppUrn): { command: OperationCommand } | null {
+    let registry: AppOperationRegistry | undefined;
+    try {
+      registry = this.moduleRef.get(AppOperationRegistry, { strict: false });
+    } catch {
+      return null;
+    }
+
+    const live = registry?.liveOperation(appUrn);
+    if (live) {
+      return { command: live.command };
+    }
+
+    return registry?.isInstallCallUnderWay(appUrn) ? { command: 'install' } : null;
   }
 
   private async buildMcpExtras(appUrn: AppUrn, info: { mcp?: unknown }) {

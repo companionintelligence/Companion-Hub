@@ -254,4 +254,18 @@ describe('useMemoryConnection disconnect()', () => {
       expect(toasts.error).toHaveBeenCalledWith("CI Memory didn't confirm the disconnect, so the app is still connected. Try again in a moment."),
     );
   });
+
+  // The Hub holds the app before it revokes anything, so a busy app refuses the disconnect with a 409.
+  it('says what holds the app when the disconnect is refused with a 409', async () => {
+    h.get.mockResolvedValue({ data: CONNECTED });
+    h.post.mockRejectedValue(
+      new TranslatableError('APP_ERROR_START_IN_PROGRESS', { id: 'plane' }, { status: 409, url: '/api/memory-connect/apps/x/disconnect' }),
+    );
+    const { result } = renderHook(() => useMemoryConnection(NORMAL), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.connected).toBe(true));
+
+    result.current.disconnect();
+
+    await waitFor(() => expect(toasts.error).toHaveBeenCalledWith('App plane is still starting. Try again in a moment.'));
+  });
 });

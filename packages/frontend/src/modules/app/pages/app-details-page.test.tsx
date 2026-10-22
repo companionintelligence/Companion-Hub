@@ -345,6 +345,29 @@ describe('AppDetailsPage', () => {
     expect(screen.getByTestId('app-status')).toBeInTheDocument();
   });
 
+  // #2101: the install another tab sent is still in the Hub's checks, so it has no row yet.
+  it('shows an install the Hub says is under way as installing, though this page sent none', () => {
+    useQuery.mockImplementation((options: { queryKey?: readonly unknown[] }) => {
+      if (options.queryKey?.[0] === 'app-image-size') {
+        return { data: { totalBytes: 1234, formatted: '1.2 KB' }, isLoading: false };
+      }
+
+      return {
+        data: {
+          info: { urn: 'test-app:community', name: 'Test App', categories: ['utilities'] },
+          app: null,
+          operation: { command: 'install' },
+          metadata: {},
+        },
+        isLoading: false,
+      };
+    });
+
+    render(<AppDetailsPage />);
+
+    expect(screen.getByTestId('app-actions')).toHaveAttribute('data-status', 'installing');
+  });
+
   it('shows the app as the Hub reports it once no install request is out', () => {
     useQuery.mockImplementation((options: { queryKey?: readonly unknown[] }) => {
       if (options.queryKey?.[0] === 'app-image-size') {

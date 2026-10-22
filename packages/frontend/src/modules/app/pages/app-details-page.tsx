@@ -133,11 +133,10 @@ export default () => {
   });
   const installRequestPending = useInstallRequestPending(appUrn);
   const fetchedRecord = getApp.isError ? undefined : getApp.data;
-  // An install still in the Hub's checks has no row yet; the page shows it as installing anyway.
-  const privateRecord = useMemo(
-    () => withInstallRequest(fetchedRecord, appUrn, installRequestPending),
-    [fetchedRecord, appUrn, installRequestPending],
-  );
+  // An install still in the Hub's checks has no row yet; the page shows it as installing anyway,
+  // whether this page sent it or another one did (the Hub names it in `operation`).
+  const installUnderWay = installRequestPending || fetchedRecord?.operation?.command === 'install';
+  const privateRecord = useMemo(() => withInstallRequest(fetchedRecord, appUrn, installUnderWay), [fetchedRecord, appUrn, installUnderWay]);
   const runtimeHealthEnabled = Boolean(privateRecord?.app && privateRecord.app.status !== 'uninstalling');
 
   const imageSize = useQuery({

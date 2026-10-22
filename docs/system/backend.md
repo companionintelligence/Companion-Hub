@@ -317,6 +317,41 @@ What cancelling an install (`AppLifecycleService.cancelOperation`) does depends 
 - A running install's abort reaches the pull or `compose up`, and the worker compensates and sends
   `install_cancelled`. From `finalizing` on, the cancel is refused.
 
+## One lifecycle operation per app
+
+Every lifecycle command (install, start, stop, restart, update, uninstall, reset, backup and
+restore) claims its app in `AppOperationRegistry` right after its grant check
+(`AppLifecycleService.withOperationClaim`) in one synchronous step. `register` takes the claim over
+once the command is queued. While another command holds the app, a new one is refused with a
+409 that names what holds it (`APP_ERROR_UNINSTALL_IN_PROGRESS`, `APP_ERROR_UPDATE_IN_PROGRESS` and
+the rest) before it reads or writes the row. An entry older than `operationStaleAfterMs`, the window
+the status sync also uses, no longer holds the app. A force stop registers over a live entry
+without dropping another command's claim. It still takes the per-app lock first, so it waits behind a
+command that holds it.
+
+The restarts the Hub owes an app after a settings save or a device key change
+(`RESTARTS_THAT_WAIT_FOR_THE_APP`) wait for the operation holding the app instead of taking its 409,
+and leave alone an app that operation left stopped. A credential change (a Hub access rotate, a
+Memory connect, disconnect or key rotation) holds the app first through
+`AppLifecycleService.withAppHeld`, so it is refused before anything is revoked and its restart runs
+under the same claim. The Memory connect callback, the key rotation sweep and the Memory status
+poll use `withAppHeldUnlessBusy`: the callback lands on `/?memoryConnect=busy&app=<urn>` and the
+other two try a busy app again on their next round. In `MemoryConnectService` the order is always
+the grant and an ownership read, then the app's hold, then the connection lock for the revoke and
+the rows, then the restart after the lock. Nothing waits for the app while holding that lock.
+
+`installApp` checks the grant first, then refuses a second install call for the same app
+(`beginInstallCall`), then reads the row. A row left `installing` with no operation under way is
+retried like a failed install; a row left `uninstalling` is refused. It claims the app right before
+it writes anything. `GET /api/apps/:urn` reports the operation under way in `operation`, an install
+still in its checks included. The `operation_change` event carries it to every open page.
+
+Before it registers, an install runs the bundle download and the image architecture check side by
+side. The check starts on the compose the store already holds and runs again only when the
+downloaded compose names other images. Each image's registry is asked at once. One
+`[install] <urn> took N ms (grant ..., bundle ..., architecture ...)` line per install call says how
+long each check took.
+
 ## Install lifecycle recovery
 
 The UI "install queue" is derived from DB rows with `status = 'installing'`, not a durable job table.

@@ -47,6 +47,11 @@ export class BackupsService {
       throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
     }
 
+    // Refused while the app has another operation under way, as every lifecycle command is.
+    return this.appLifecycle.withOperationClaim(appUrn, 'backup', () => this.dispatchBackup(appUrn));
+  }
+
+  private async dispatchBackup(appUrn: AppUrn) {
     const app = await this.appsRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -62,7 +67,7 @@ export class BackupsService {
     const requestId = crypto.randomUUID();
     this.operationRegistry.register(appUrn, { requestId, command: 'backup', tier: 'non_cancellable' });
 
-    this.appEventsQueue.publish({ appUrn, command: 'backup', requestId, form: app.config }).then(async (result) => {
+    this.publishRegistered(appUrn, requestId, { appUrn, command: 'backup', requestId, form: app.config }).then(async (result) => {
       const { success, message } = result;
       const rolledBack = 'rolledBack' in result && result.rolledBack === true;
 
@@ -95,11 +100,28 @@ export class BackupsService {
     return { requestId };
   }
 
+  /**
+   * Publish a backup or restore the registry already holds the app for. A publish that rejects (an
+   * event the queue's schema refuses) reaches no worker, so the entry is cleared here or it held the
+   * app for the whole stale window. Logged rather than thrown: the caller already has its answer.
+   */
+  private publishRegistered(appUrn: AppUrn, requestId: string, event: Parameters<AppEventsQueue['publish']>[0]) {
+    return this.appEventsQueue.publish(event).catch((error: unknown) => {
+      this.operationRegistry.clear(appUrn, requestId);
+      this.logger.error(`Could not queue ${event.command} for ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
+      return { success: false, message: error instanceof Error ? error.message : String(error) };
+    });
+  }
+
   public async restoreApp(params: { appUrn: AppUrn; filename: string; actor: LifecycleActor }) {
     const { appUrn, filename } = params;
 
     await this.appLifecycle.assertActorMay(params.actor, appUrn, 'restore');
 
+    return this.appLifecycle.withOperationClaim(appUrn, 'restore', () => this.dispatchRestore(appUrn, filename));
+  }
+
+  private async dispatchRestore(appUrn: AppUrn, filename: string) {
     const app = await this.appsRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -115,7 +137,8 @@ export class BackupsService {
     const requestId = crypto.randomUUID();
     this.operationRegistry.register(appUrn, { requestId, command: 'restore', tier: 'non_cancellable' });
 
-    this.appEventsQueue.publish({ appUrn, command: 'restore', requestId, filename, form: app.config }).then(async ({ success, message }) => {
+    const restore = { appUrn, command: 'restore' as const, requestId, filename, form: app.config };
+    this.publishRegistered(appUrn, requestId, restore).then(async ({ success, message }) => {
       if (success) {
         if (!this.operationRegistry.claimCompletion(appUrn, requestId)) {
           return;
