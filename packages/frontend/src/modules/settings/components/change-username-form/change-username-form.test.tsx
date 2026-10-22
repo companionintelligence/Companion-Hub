@@ -46,8 +46,13 @@ describe('ChangeUsernameForm', () => {
     await userEvent.click(within(dialog).getByRole('button', { name: 'COMMON_CHANGE_USERNAME' }));
 
     expect(await within(dialog).findByText('AUTH_FORM_ERROR_PASSWORD_REQUIRED')).toBeInTheDocument();
-    expect(within(dialog).getByText('SETTINGS_SECURITY_CHANGE_USERNAME_FORM_INVALID_USERNAME')).toBeInTheDocument();
+    // An empty username reads like the sign-in form's empty email, a malformed one like its bad one.
+    expect(within(dialog).getByText('AUTH_FORM_ERROR_EMAIL_REQUIRED')).toBeInTheDocument();
     expect(within(dialog).queryByText(/too small|expected string/i)).not.toBeInTheDocument();
+
+    await userEvent.type(within(dialog).getByPlaceholderText('SETTINGS_SECURITY_CHANGE_USERNAME_FORM_NEW_USERNAME'), 'owner@localhost');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'COMMON_CHANGE_USERNAME' }));
+    expect(await within(dialog).findByText('SETTINGS_SECURITY_CHANGE_USERNAME_FORM_INVALID_USERNAME')).toBeInTheDocument();
     expect(mutate).not.toHaveBeenCalled();
   });
 

@@ -454,13 +454,11 @@ fn artifact_for_platform_data(
     match os {
         HostOs::Macos => read("dmg"),
         HostOs::Windows => read("exe").or_else(|| read("msi")),
-        HostOs::Linux => match package_preference {
-            "deb" => read("deb").or_else(|| read("appimage")),
-            "rpm" => read("rpm").or_else(|| read("appimage")),
-            _ => read("appimage")
-                .or_else(|| read("deb"))
-                .or_else(|| read("rpm")),
-        },
+        // Only the format this computer installs. Another one installs a second copy beside this
+        // one, or not at all: releases build no AppImage, so a distro `/etc/os-release` doesn't
+        // place (Arch, for one) used to get the `.deb`, offered with `apt` steps. With nothing in
+        // its format, the Desktop app card points to the download page instead.
+        HostOs::Linux => read(package_preference),
     }
 }
 
@@ -489,26 +487,6 @@ fn resolve_download_artifact(
         .platforms
         .get(&platform_manifest_key(os, host_arch()))?;
     artifact_for_platform_data(platform_data, os, linux_preference, source)
-}
-
-/// The installer for installing the version this computer runs again. On Linux it comes only in
-/// this computer's own format. An update falls back to another format, but releases build no
-/// AppImage, so on Arch the fallback is the `.deb`, offered with `apt` steps, and on any distro
-/// another format of the same version only installs a second copy beside this one.
-fn resolve_reinstall_artifact(
-    manifest: &ManifestJson,
-    source: &UpdateSource,
-    host: Option<(HostOs, &'static str)>,
-) -> Option<ResolvedArtifact> {
-    let (os, linux_preference) = host?;
-    if os != HostOs::Linux {
-        return resolve_download_artifact(manifest, source, host);
-    }
-    manifest
-        .platforms
-        .get(&platform_manifest_key(os, host_arch()))?
-        .get(linux_preference)
-        .and_then(|value| parse_artifact(value, source))
 }
 
 fn lookup_artifact_in_manifest(
@@ -710,7 +688,7 @@ fn check_desktop_update_for_host(
         // of the download server gets none, since the newest release there would downgrade it.
         fetch_manifest(&client, &latest_version, source)
             .ok()
-            .and_then(|manifest| resolve_reinstall_artifact(&manifest, source, host))
+            .and_then(|manifest| resolve_download_artifact(&manifest, source, host))
     } else {
         None
     };
@@ -730,30 +708,74 @@ fn check_desktop_update_for_host(
     })
 }
 
+/// Where people download the desktop app when the release has no installer this computer takes.
+const DESKTOP_DOWNLOAD_PAGE: &str =
+    "https://github.com/companionintelligence/Companion-Hub/releases/latest";
+
+/// Whether `latest` takes precedence over `current`, by semver 2.0.0 (§11).
 fn semver_compare_gt(latest: &str, current: &str) -> bool {
-    // Numeric-prefix parse so a prerelease segment ("16-rc1") still contributes
-    // its numeric part instead of silently dropping the whole segment.
-    let parse = |v: &str| -> Vec<u64> {
-        v.split('.')
-            .map(|part| {
-                let digits: String = part.chars().take_while(char::is_ascii_digit).collect();
-                digits.parse::<u64>().unwrap_or(0)
-            })
-            .collect()
-    };
-    let l = parse(latest);
-    let c = parse(current);
-    for i in 0..l.len().max(c.len()) {
-        let lv = *l.get(i).unwrap_or(&0);
-        let cv = *c.get(i).unwrap_or(&0);
-        if lv > cv {
-            return true;
+    semver_precedence(latest, current) == std::cmp::Ordering::Greater
+}
+
+/// Semver precedence. Major, minor and patch compare as numbers. With those equal, a pre-release
+/// ranks below its release (`0.3.6-rc.1` < `0.3.6`), and two pre-releases compare identifier by
+/// identifier: numbers by value and below words, words in ASCII order, and more identifiers rank
+/// higher when the rest match (`rc` < `rc.1`). Build metadata (`+…`) doesn't count. A leading `v`
+/// is allowed, and a number part with anything after its digits counts its digits.
+fn semver_precedence(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+
+    fn split(version: &str) -> ([u64; 3], Option<&str>) {
+        let version = version.trim().trim_start_matches(['v', 'V']);
+        let version = version.split_once('+').map_or(version, |(v, _)| v);
+        let (core, pre) = match version.split_once('-') {
+            Some((core, pre)) => (core, Some(pre).filter(|p| !p.is_empty())),
+            None => (version, None),
+        };
+        let mut numbers = [0u64; 3];
+        for (slot, part) in numbers.iter_mut().zip(core.split('.')) {
+            let digits: String = part.chars().take_while(char::is_ascii_digit).collect();
+            *slot = digits.parse().unwrap_or(0);
         }
-        if lv < cv {
-            return false;
+        (numbers, pre)
+    }
+
+    fn identifier(a: &str, b: &str) -> Ordering {
+        let number = |s: &str| {
+            (!s.is_empty() && s.bytes().all(|c| c.is_ascii_digit()))
+                .then(|| s.parse::<u128>().ok())
+                .flatten()
+        };
+        match (number(a), number(b)) {
+            (Some(x), Some(y)) => x.cmp(&y),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => a.cmp(b),
         }
     }
-    false
+
+    let (a_core, a_pre) = split(a);
+    let (b_core, b_pre) = split(b);
+    a_core.cmp(&b_core).then_with(|| match (a_pre, b_pre) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(a_pre), Some(b_pre)) => {
+            let mut a_ids = a_pre.split('.');
+            let mut b_ids = b_pre.split('.');
+            loop {
+                match (a_ids.next(), b_ids.next()) {
+                    (None, None) => return Ordering::Equal,
+                    (None, Some(_)) => return Ordering::Less,
+                    (Some(_), None) => return Ordering::Greater,
+                    (Some(x), Some(y)) => match identifier(x, y) {
+                        Ordering::Equal => continue,
+                        other => return other,
+                    },
+                }
+            }
+        }
+    })
 }
 
 fn download_file(url: &str, dest: &Path, source: &UpdateSource) -> Result<(), String> {
@@ -1484,8 +1506,10 @@ pub fn run_update_cli(check_only: bool) -> Result<i32, String> {
     }
     if info.download_url.is_empty() {
         let platform = platform_key().unwrap_or_else(|| "unknown".to_string());
+        let format = info.package_format.as_deref().unwrap_or("unknown");
         return Err(format!(
-            "Update available but no download URL for this platform ({platform})"
+            "Update {} is available but has no {format} installer for this platform ({platform}). Download it from {DESKTOP_DOWNLOAD_PAGE}",
+            info.latest_version
         ));
     }
     println!("Updating from {} to {}…", current, info.latest_version);
@@ -2574,6 +2598,24 @@ mod tests {
     }
 
     #[test]
+    fn artifact_for_platform_offers_no_other_linux_format() {
+        let source = UpdateSource::default_cdn();
+        // What releases build: a .deb and a .rpm, no AppImage.
+        let release = serde_json::json!({
+            "deb": sample_artifact(&cdn_url("v1/linux/deb/x64/hub.deb")),
+            "rpm": sample_artifact(&cdn_url("v1/linux/rpm/x64/hub.rpm")),
+        });
+        // A distro /etc/os-release doesn't place (Arch) used to get the .deb.
+        assert!(artifact_for_platform_data(&release, HostOs::Linux, "appimage", &source).is_none());
+
+        let rpm_only = serde_json::json!({
+            "rpm": sample_artifact(&cdn_url("v1/linux/rpm/x64/hub.rpm")),
+            "appimage": sample_artifact(&cdn_url("v1/linux/appimage/x64/hub.AppImage")),
+        });
+        assert!(artifact_for_platform_data(&rpm_only, HostOs::Linux, "deb", &source).is_none());
+    }
+
+    #[test]
     fn resolve_download_artifact_uses_current_platform_key() {
         let Some(key) = platform_key() else {
             return;
@@ -2605,6 +2647,45 @@ mod tests {
         assert!(semver_compare_gt("0.3.0-beta.1", "0.2.18"));
         assert!(!semver_compare_gt("0.2.18-rc1", "0.2.18"));
         assert!(!semver_compare_gt("0.2.18", "0.3.0-beta.1"));
+    }
+
+    #[test]
+    fn semver_compare_ranks_a_prerelease_below_its_release() {
+        // A release candidate is older than the release it leads to, so a computer on the release
+        // isn't offered the candidate, and one on the candidate is offered the release.
+        assert!(!semver_compare_gt("0.3.6-rc.1", "0.3.6"));
+        assert!(semver_compare_gt("0.3.6", "0.3.6-rc.1"));
+        assert!(semver_compare_gt("0.3.7-rc.1", "0.3.6"));
+        assert!(!semver_compare_gt("0.3.6-rc.1", "0.3.6-rc.1"));
+    }
+
+    #[test]
+    fn semver_compare_follows_the_spec_order_of_prereleases() {
+        // The example in semver 2.0.0 section 11, lowest first.
+        let ordered = [
+            "1.0.0-alpha",
+            "1.0.0-alpha.1",
+            "1.0.0-alpha.beta",
+            "1.0.0-beta",
+            "1.0.0-beta.2",
+            "1.0.0-beta.11",
+            "1.0.0-rc.1",
+            "1.0.0",
+        ];
+        for (i, lower) in ordered.iter().enumerate() {
+            for higher in &ordered[i + 1..] {
+                assert!(semver_compare_gt(higher, lower), "{higher} > {lower}");
+                assert!(!semver_compare_gt(lower, higher), "{lower} < {higher}");
+            }
+        }
+    }
+
+    #[test]
+    fn semver_compare_ignores_build_metadata_and_a_leading_v() {
+        assert!(!semver_compare_gt("1.0.0+build.2", "1.0.0+build.1"));
+        assert!(!semver_compare_gt("v1.0.0", "1.0.0"));
+        assert!(semver_compare_gt("v1.0.1", "1.0.0"));
+        assert!(semver_compare_gt("1.0.0-rc.10", "1.0.0-rc.9"));
     }
 
     #[test]
@@ -3021,14 +3102,19 @@ mod tests {
         assert!(current.download_url.is_empty(), "{}", current.download_url);
         assert_eq!(current.package_format.as_deref(), Some("appimage"));
 
-        // An update still falls back to another format, as it did before.
+        // Nor in an update: another format would install a second copy, or not at all. The
+        // Desktop app card points to the download page instead.
         let update =
             check_desktop_update_for_host("1.0.0", &source, arch, true).expect("check on Arch");
         assert!(update.update_available);
+        assert!(update.download_url.is_empty(), "{}", update.download_url);
+        let fedora_update =
+            check_desktop_update_for_host("1.0.0", &source, Some((HostOs::Linux, "rpm")), false)
+                .expect("check on Fedora");
         assert!(
-            update.download_url.ends_with("/v1.2.3/hub.deb"),
+            fedora_update.download_url.ends_with("/v1.2.3/hub.rpm"),
             "{}",
-            update.download_url
+            fedora_update.download_url
         );
 
         // Fedora still gets its .rpm.

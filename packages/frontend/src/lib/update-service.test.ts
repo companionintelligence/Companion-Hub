@@ -10,6 +10,7 @@ import {
   isStackUpdateAvailable,
   isTrustedDownloadUrl,
   manualUpdateFileName,
+  openDesktopDownloadPage,
   performStackUpdate,
   performUpdate,
   requiresManualDesktopUpdate,
@@ -567,6 +568,11 @@ describe('update-service', () => {
       expect(requiresManualDesktopUpdate('windows')).toBe(true);
       expect(requiresManualDesktopUpdate(null)).toBe(true);
     });
+  });
+
+  it('opens the release page that lists every installer', async () => {
+    await openDesktopDownloadPage();
+    expect(mockOpenExternal).toHaveBeenCalledWith('https://github.com/companionintelligence/Companion-Hub/releases/latest');
   });
 
   it('opens a trusted installer URL instead of invoking the native updater', async () => {

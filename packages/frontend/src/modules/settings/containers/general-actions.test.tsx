@@ -9,6 +9,7 @@ import {
   getInstalledDesktopVersion,
   installDesktopUpdate,
   isTauri,
+  openDesktopDownloadPage,
   performUpdate,
   restartDesktopApp,
   type UpdateInfo,
@@ -73,6 +74,7 @@ vi.mock('@/lib/update-service', async () => {
     performUpdate: vi.fn(),
     restartDesktopApp: vi.fn(),
     installDesktopUpdate: vi.fn(),
+    openDesktopDownloadPage: vi.fn(),
   };
 });
 
@@ -102,6 +104,7 @@ const mockGetDesktopRestartState = vi.mocked(getDesktopRestartState);
 const mockRestartDesktopApp = vi.mocked(restartDesktopApp);
 const mockToastError = vi.mocked(toast.error);
 const mockInstallDesktopUpdate = vi.mocked(installDesktopUpdate);
+const mockOpenDesktopDownloadPage = vi.mocked(openDesktopDownloadPage);
 const mockToastSuccess = vi.mocked(toast.success);
 const mockFactoryReset = vi.mocked(factoryReset);
 const jsdomUserAgent = navigator.userAgent;
@@ -777,6 +780,40 @@ describe('GeneralActionsContainer', () => {
         expect(screen.queryByTestId('hub-shell-update-btn')).not.toBeInTheDocument();
         expect(getDesktopRelease).not.toHaveBeenCalled();
       });
+    });
+
+    it("sends an update with no installer in this computer's format to the download page", async () => {
+      // Arch: the desktop app takes an AppImage, and releases build only a .deb and a .rpm.
+      const actual = await vi.importActual<typeof import('@/lib/update-service')>('@/lib/update-service');
+      mockCheckForUpdates.mockImplementation(actual.checkForUpdates);
+      vi.stubEnv('CI_HUB_ENVIRONMENT', 'production');
+      Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+      mockIsTauri.mockReturnValue(true);
+      mockGetInstalledDesktopVersion.mockResolvedValue('0.3.6');
+      mockInvoke.mockImplementation(async (command: string) =>
+        command === 'check_desktop_update_command'
+          ? { currentVersion: '0.3.6', latestVersion: '0.3.7', downloadUrl: '', updateAvailable: true, packageFormat: 'appimage' }
+          : null,
+      );
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))),
+      );
+      getDesktopRelease.mockResolvedValue(
+        sdkOk({ latestVersion: '0.3.7', downloadUrl: 'https://dl.ci.computer/v0.3.7/linux/deb/x64/Companion%20Hub_0.3.7_amd64.deb' }),
+      );
+
+      render(<GeneralActionsContainer />);
+
+      const notice = await screen.findByTestId('desktop-update-no-installer');
+      expect(notice).toHaveTextContent('Companion Hub 0.3.7 is available, but not in a package format this computer installs.');
+      expect(screen.queryByTestId('hub-shell-install-btn')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('hub-shell-update-btn')).not.toBeInTheDocument();
+      expect(screen.queryByText('No download URL available for this platform.')).not.toBeInTheDocument();
+      expect(getDesktopRelease).not.toHaveBeenCalled();
+
+      await userEvent.click(screen.getByRole('button', { name: 'Open the download page' }));
+      expect(mockOpenDesktopDownloadPage).toHaveBeenCalledTimes(1);
     });
 
     it('promises no download when it has no installer to offer', async () => {

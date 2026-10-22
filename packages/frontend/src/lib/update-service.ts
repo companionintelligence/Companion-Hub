@@ -423,6 +423,16 @@ export async function fetchHostListenerStatus(): Promise<boolean | null> {
   }
 }
 
+/**
+ * Every desktop installer of the newest release, for a computer the release has no installer for in
+ * its own package format (see `packageFormat` on the desktop app's check).
+ */
+export const DESKTOP_DOWNLOAD_PAGE = 'https://github.com/companionintelligence/Companion-Hub/releases/latest';
+
+export async function openDesktopDownloadPage(): Promise<void> {
+  await openExternal(DESKTOP_DOWNLOAD_PAGE);
+}
+
 export async function performUpdate(info: UpdateInfo): Promise<UpdateActionResult> {
   if (!info.downloadUrl || !isTrustedDownloadUrl(info.downloadUrl)) {
     return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_NO_DOWNLOAD_URL' };

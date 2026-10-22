@@ -838,6 +838,8 @@
   "SETTINGS_ACTIONS_SHELL_UPDATE_SUBTITLE_WITH_VERSION": "This computer has Companion Hub {{version}} installed. Download replaces the app only — your Hub stack and data stay on disk.",
   "SETTINGS_ACTIONS_SHELL_UP_TO_DATE": "This computer is already on the latest desktop app. You can still download the installer.",
   "SETTINGS_ACTIONS_SHELL_UP_TO_DATE_NO_DOWNLOAD": "This computer is already on the latest desktop app.",
+  "SETTINGS_ACTIONS_SHELL_UPDATE_NO_INSTALLER": "Companion Hub {{version}} is available, but not in a package format this computer installs. Get it from the download page.",
+  "SETTINGS_ACTIONS_SHELL_OPEN_DOWNLOAD_PAGE": "Open the download page",
   "SETTINGS_ACTIONS_SHELL_RESTART_REQUIRED": "Companion Hub {{installed}} is installed, but this window is still running {{running}}. Restart the app to start using it.",
   "SETTINGS_ACTIONS_SHELL_RESTART_REQUIRED_UNKNOWN_VERSION": "A new version of Companion Hub is installed, but this window is still running {{running}}. Restart the app to start using it.",
   "SETTINGS_ACTIONS_SHELL_RESTART_HUB_NOTE": "The Hub keeps running. If the new version changes the Hub's setup, the Hub restarts too, which takes about a minute.",

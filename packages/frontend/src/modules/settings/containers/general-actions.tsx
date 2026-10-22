@@ -42,6 +42,7 @@ import {
   isTauri,
   manualUpdateArtifactKind,
   manualUpdateFileName,
+  openDesktopDownloadPage,
   performStackUpdate,
   performUpdate,
   restartDesktopApp,
@@ -780,6 +781,16 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
               {shellMessage ? <p className="mt-3 text-sm text-muted-foreground">{shellMessage}</p> : null}
               {renderManualUpdateInstructions()}
             </>
+          ) : desktopWindow && shellUpdate?.updateAvailable ? (
+            // A newer version with no installer in the format this computer installs, as on a distro
+            // the desktop app can't place. Another format would install a second copy or not at all,
+            // so the card sends people to the download page instead.
+            <div data-testid="desktop-update-no-installer">
+              <p className="text-sm mb-3">{t('SETTINGS_ACTIONS_SHELL_UPDATE_NO_INSTALLER', { version: shellUpdate.latestVersion })}</p>
+              <Button variant="outline" onClick={() => void openDesktopDownloadPage()} data-testid="desktop-download-page-btn">
+                {t('SETTINGS_ACTIONS_SHELL_OPEN_DOWNLOAD_PAGE')}
+              </Button>
+            </div>
           ) : (
             // No installer to offer here, so the up-to-date line can't say there is one to download. Only
             // a check that answered can call the app up to date: none has while it runs or after it failed.
