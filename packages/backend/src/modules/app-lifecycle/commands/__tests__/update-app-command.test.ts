@@ -387,6 +387,26 @@ describe('UpdateAppCommand', () => {
       expect(dockerService.composeApp).toHaveBeenLastCalledWith(appUrn, 'up --detach --force-recreate --remove-orphans');
     });
 
+    // app.env lives in the data folder, which this rollback does not touch. With no previous one to put
+    // back, the one the update built from the new version's files stayed beside the previous files.
+    it('builds app.env again from the previous files when there was none to put back', async () => {
+      appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/app-data/test-app/app.env', content: '' } as any);
+      marketplaceService.copyAppFromRepoToInstalled.mockResolvedValue(undefined as any);
+      dockerService.composeApp.mockImplementation(async (_appUrn, cmd) => {
+        if (cmd === 'pull') {
+          throw new Error('pull failed');
+        }
+        return undefined as any;
+      });
+
+      const result = await command.execute(appUrn, {});
+
+      const restoredAt = filesystem.copyDirectory.mock.invocationCallOrder.at(-1) ?? Number.POSITIVE_INFINITY;
+      expect(result).toMatchObject({ success: false, rolledBack: true });
+      expect(appFilesManager.writeAppEnv).not.toHaveBeenCalled();
+      expect(appHelpers.generateEnvFile.mock.invocationCallOrder.at(-1)).toBeGreaterThan(restoredAt);
+    });
+
     it('removes the snapshot once it has served', async () => {
       await command.execute(appUrn, {});
 

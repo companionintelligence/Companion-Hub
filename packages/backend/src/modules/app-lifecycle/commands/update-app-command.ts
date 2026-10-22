@@ -176,7 +176,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       // back is not enough: the data comes back too. Before that, the old data was never touched.
       const rolledBack = startedNewVersion
         ? await this.rollBackStartedVersion(appUrn, { backupFile, snapshotResult })
-        : await this.restorePreviousVersion(appUrn, { stoppedForBackup, replacingFiles, tookDown, snapshotResult, previousEnv });
+        : await this.restorePreviousVersion(appUrn, form, { stoppedForBackup, replacingFiles, tookDown, snapshotResult, previousEnv });
 
       // The snapshot is the last copy of the previous version when a rollback has not worked. It goes
       // only once the previous version is demonstrably back.
@@ -312,6 +312,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
    */
   private async restorePreviousVersion(
     appUrn: AppUrn,
+    form: AppEventFormInput,
     state: {
       stoppedForBackup: boolean;
       replacingFiles: boolean;
@@ -357,6 +358,10 @@ export class UpdateAppCommand extends AppLifecycleCommand {
 
       if (state.previousEnv) {
         await appFilesManager.writeAppEnv(appUrn, state.previousEnv);
+      } else {
+        // There was no app.env to put back, and the one on disk may already be the new version's.
+        // Built again from the restored files, it is the previous version's.
+        await this.moduleRef.get(AppHelpers, { strict: false }).generateEnvFile(appUrn, form);
       }
 
       if (this.wasRunning && (state.tookDown || state.stoppedForBackup)) {

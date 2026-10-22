@@ -2796,7 +2796,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           this.logger.error(`Failed to update app ${appUrn}: ${message}`);
           // A failed update that put the previous version back left it running if it was running.
           // Anything else is only known to be stopped.
-          const restoredStatus = rolledBack ? appStatusBeforeUpdate : appStatusBeforeUpdate === 'running' ? 'stopped' : appStatusBeforeUpdate;
+          const restoredStatus = rolledBack ? appStatusBeforeUpdate : wasRunning ? 'stopped' : appStatusBeforeUpdate;
           await this.settleCommandOutcome({
             appId: app.id,
             appUrn,

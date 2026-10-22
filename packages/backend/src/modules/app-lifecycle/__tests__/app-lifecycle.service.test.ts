@@ -6338,6 +6338,17 @@ describe('AppLifecycleService', () => {
       expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_error', appStatus: 'stopped' }));
     });
 
+    // The command started the new version of these too, so with no rollback they are no more running than a running one.
+    it.each(['starting', 'restarting'])('updateApp failure with no rollback reports an app that was %s as stopped', async (status) => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, status } as any);
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
+
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_error', appStatus: 'stopped' }));
+    });
+
     it('updateApp downloads fresh app files for ci_cloud_api stores before queueing (#915)', async () => {
       vi.spyOn(service, 'updateAppConfig').mockResolvedValue({ requestId: crypto.randomUUID() });
       appFilesManager.getInstalledAppInfo.mockResolvedValue({ cihub_app_version: 2 } as any);
