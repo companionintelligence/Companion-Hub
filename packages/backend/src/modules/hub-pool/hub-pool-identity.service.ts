@@ -180,7 +180,7 @@ export class HubPoolIdentityService {
       throw new Error('This node has no pool identity to rotate');
     }
     const material = generatePoolKeyPair();
-    await this.repo.replaceKeys(material.publicKey, this.encryption.encrypt(material.privateKey, existing.nodeUuid));
+    await this.repo.replaceKeys(material.publicKey, this.encryption.encrypt(material.privateKey, existing.nodeUuid), existing.nodeUuid);
     const rotated: LoadedPoolIdentity = {
       nodeUuid: existing.nodeUuid,
       publicKey: material.publicKey,

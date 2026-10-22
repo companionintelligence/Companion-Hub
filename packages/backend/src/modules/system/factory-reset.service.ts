@@ -179,9 +179,10 @@ export class FactoryResetService {
     await this.wipeDataMounts();
     await this.wipeDatabase();
     await this.clearRegistrationArtifacts();
-    await this.clearOldHubRequests();
     // `resetSettings` takes the device key, so a pairing this stops keeps none that Portal issued it.
     await this.registrationService.resetRegistration({ reason: 'manual', removesDeviceKey: true });
+    // After the pairing under way is stopped, which may have written its apps check meanwhile.
+    await this.clearOldHubRequests();
     await this.resetSettings();
     await this.forgetSettingsInMemory();
     await this.forgetInferenceState();
@@ -372,7 +373,7 @@ export class FactoryResetService {
     const hubLocalKey = newHubLocalKey();
     // After any save already under way, which would otherwise write the old settings back over these.
     await inSettingsFileTurn(async () => {
-      await writeSettingsJsonFile(settingsPath, `${JSON.stringify({ hubLocalKey }, null, 2)}`, this.logger);
+      await writeSettingsJsonFile(settingsPath, JSON.stringify({ hubLocalKey }, null, 2), this.logger);
       this.configuration.replaceHubLocalKey(hubLocalKey);
       // Not allowed to fail the reset: the cache and Bearer verdicts after this must still be cleared.
       await removeSettingsJsonCopies(settingsPath).catch((error: unknown) => {

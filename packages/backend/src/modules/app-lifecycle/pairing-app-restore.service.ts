@@ -76,6 +76,10 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
   private checkInFlight: Promise<PairingAppCheckOutcome> | null = null;
   private failures = 0;
   private retryAt = 0;
+  /** Bumped by {@link forget}. A pass that began before it neither writes a check nor builds a backoff. */
+  private generation = 0;
+  /** The generation the pass under way began in. One pass runs at a time (`runCheck`). */
+  private checkGeneration = 0;
   private lastCatalogPullAt = 0;
   /** Passes left in which to look for a device key an earlier re-pair left stale; see `tick`. */
   private startupKeyRefreshPasses = 20;
@@ -130,9 +134,11 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
 
   /**
    * Drop the backoff an earlier pairing's check built up, for a factory reset that removed that check.
-   * Left in place, it held the next pairing's check for up to five minutes.
+   * Left in place, it held the next pairing's check for up to five minutes. A pass still waiting on the
+   * Portal when the reset ran would otherwise write the check back, naming the old device's apps.
    */
   forget(): void {
+    this.generation++;
     this.failures = 0;
     this.retryAt = 0;
   }
@@ -149,6 +155,7 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
   }
 
   private async check(): Promise<PairingAppCheckOutcome> {
+    this.checkGeneration = this.generation;
     let pending = await readPairingAppCheck();
     if (!pending) {
       return 'none';
@@ -251,6 +258,9 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
     const installed = new Set(localApps.map((app) => app.appName));
     const missing = portalApps.filter((app) => !installed.has(app.name)).map((app) => app.name);
     const restoreChosen = await hasRestoreIntent();
+    if (this.checkGeneration !== this.generation) {
+      return 'none';
+    }
 
     if (missing.length === 0 && !restoreChosen) {
       // The Portal's apps are all here, but a sync that runs while one is still installing leaves it out.
@@ -310,6 +320,9 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
   }
 
   private hold(reason: string, error?: unknown): PairingAppCheckOutcome {
+    if (this.checkGeneration !== this.generation) {
+      return 'held';
+    }
     this.failures += 1;
     const delay = Math.min(PairingAppRestoreService.MAX_RETRY_DELAY_MS, PairingAppRestoreService.POLL_MS * 2 ** (this.failures - 1));
     this.retryAt = Date.now() + delay;

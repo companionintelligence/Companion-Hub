@@ -20,8 +20,8 @@ class FakeIdentityRepository {
     this.row ??= { id: 'self', createdAt: new Date().toISOString(), rotatedAt: null, ...values };
   }
 
-  async replaceKeys(publicKey: string, privateKeyEncrypted: string): Promise<void> {
-    if (this.row) {
+  async replaceKeys(publicKey: string, privateKeyEncrypted: string, nodeUuid?: string): Promise<void> {
+    if (this.row && (nodeUuid === undefined || this.row.nodeUuid === nodeUuid)) {
       this.row = { ...this.row, publicKey, privateKeyEncrypted, rotatedAt: new Date().toISOString() };
     }
   }
@@ -254,9 +254,9 @@ describe('HubPoolIdentityService', () => {
       release = resolve;
     });
     const replaceKeys = repo.replaceKeys.bind(repo);
-    vi.spyOn(repo, 'replaceKeys').mockImplementationOnce(async (publicKey: string, privateKeyEncrypted: string) => {
+    vi.spyOn(repo, 'replaceKeys').mockImplementationOnce(async (publicKey: string, privateKeyEncrypted: string, nodeUuid?: string) => {
       await held;
-      await replaceKeys(publicKey, privateKeyEncrypted);
+      await replaceKeys(publicKey, privateKeyEncrypted, nodeUuid);
     });
 
     const rotating = service.rotate();
@@ -267,5 +267,32 @@ describe('HubPoolIdentityService', () => {
     await rotating;
 
     expect((await service.get())?.nodeUuid).not.toBe(before?.nodeUuid);
+  });
+
+  // The reset Hub minted its identity while the rotation still held its key, salted with the old UUID.
+  it('does not write an overtaken rotation over the identity minted after a forget', async () => {
+    const service = build();
+    await service.get();
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const replaceKeys = repo.replaceKeys.bind(repo);
+    vi.spyOn(repo, 'replaceKeys').mockImplementationOnce(async (publicKey: string, privateKeyEncrypted: string, nodeUuid?: string) => {
+      await held;
+      await replaceKeys(publicKey, privateKeyEncrypted, nodeUuid);
+    });
+
+    const rotating = service.rotate();
+    await vi.waitFor(() => expect(repo.replaceKeys).toHaveBeenCalled());
+    repo.row = undefined;
+    service.forget();
+    const minted = await service.get();
+    const mintedRow = repo.row;
+    release();
+    await rotating;
+
+    expect(repo.row).toEqual(mintedRow);
+    expect((await service.get())?.publicKey).toBe(minted?.publicKey);
   });
 });

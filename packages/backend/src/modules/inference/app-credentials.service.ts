@@ -249,15 +249,13 @@ export class AppCredentialsService implements OnApplicationShutdown {
   async forgetHandouts(): Promise<void> {
     this.generation++;
     this.cache.clear();
+    // Cleared now rather than in the queued step, which would also take a record an app fetched after
+    // this call made. A read still under way adds nothing (see `loadPersistedHandouts`), and none is
+    // needed from now on: the file goes next.
+    this.handouts.clear();
+    this.handoutsLoaded = Promise.resolve();
     this.handoutWrites = this.handoutWrites
-      .then(async () => {
-        // A read still under way is waited for, so it cannot add the old records back afterwards. One
-        // that never started is not needed: the file goes next.
-        this.handoutsLoaded ??= Promise.resolve();
-        await this.handoutsLoaded;
-        this.handouts.clear();
-        await removeHandoutRecords();
-      })
+      .then(() => removeHandoutRecords())
       .catch((err) => {
         this.logger.warn(`[AppCredentials] could not remove the handout records: ${err instanceof Error ? err.message : String(err)}`);
       });
@@ -279,7 +277,10 @@ export class AppCredentialsService implements OnApplicationShutdown {
   }
 
   private loadPersistedHandouts(): Promise<void> {
+    const generation = this.generation;
     this.handoutsLoaded ??= readHandoutRecords().then((records) => {
+      // Read before {@link forgetHandouts}: these are the records it removed.
+      if (generation !== this.generation) return;
       for (const slug of SUPPORTED_APP_SLUGS) {
         const record = records[slug];
         // A record this process already made is newer than anything on disk.

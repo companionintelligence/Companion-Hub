@@ -750,6 +750,18 @@ describe('FactoryResetService: what the old Hub left for its operator and its la
     expect(restore.forget).toHaveBeenCalled();
   });
 
+  // A pairing under way writes its apps check until the registration reset stops it. Removed before
+  // that, the check the stopped pairing wrote stayed and held app sync on the reset Hub.
+  it('removes the apps check only once the pairing under way has been stopped', async () => {
+    const { service, registrationService } = resetOnDisk();
+
+    await service.execute();
+
+    const [stopped] = registrationService.resetRegistration.mock.invocationCallOrder;
+    const [cleared] = vi.mocked(clearPairingAppCheck).mock.invocationCallOrder;
+    expect(cleared).toBeGreaterThan(stopped);
+  });
+
   it('leaves both alone when a data folder could not be emptied, as it does users and pairing', async () => {
     vol.writeFileSync(PASSWORD_CHANGE_REQUEST, String(Date.now() / 1000));
     const service = resetWith();

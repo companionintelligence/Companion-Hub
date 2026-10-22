@@ -154,6 +154,27 @@ describe('PairingAppRestoreService', () => {
       expect(exposureSync.syncExposurePublic).not.toHaveBeenCalled();
     });
 
+    // A factory reset removed the check while the pass waited on the Portal. Written back, it named the old device's apps.
+    it('writes no check back when a forget overtook the pass', async () => {
+      let answer: (value: ReturnType<typeof portalApp>[]) => void = () => undefined;
+      cloudflare.getDeviceApplications.mockReturnValueOnce(
+        new Promise((resolve) => {
+          answer = resolve;
+        }) as never,
+      );
+
+      const pass = service.runCheck();
+      await vi.waitFor(() => expect(cloudflare.getDeviceApplications).toHaveBeenCalled());
+      state.check = null;
+      service.forget();
+      answer([portalApp('wordpress')]);
+
+      await expect(pass).resolves.toBe('none');
+      expect(state.check).toBeNull();
+      expect(state.restoreIntent).toBe(false);
+      expect(rehydration.executeRehydrate).not.toHaveBeenCalled();
+    });
+
     it('lifts the hold and syncs once the restored apps have settled', async () => {
       apps.getApps.mockResolvedValueOnce([]).mockResolvedValue([localApp('wordpress', 'installing')]);
       await service.runCheck();
