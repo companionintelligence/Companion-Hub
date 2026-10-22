@@ -316,6 +316,16 @@ export const SPEC_DECODE: Record<InferenceBackendType, SpecDecodeCapability> = {
     observable: null,
     evidence: 'Hub does not offer speculative decoding on oMLX. Chat and embeddings are the supported surface.',
   },
+  localai: {
+    backend: 'localai',
+    capable: 'unmeasured',
+    reach: 'launch-flag',
+    toggleOn: null,
+    offArm: null,
+    falseOffArm: null,
+    observable: null,
+    evidence: 'Hub does not offer speculative decoding on LocalAI. Chat, embeddings, and audio are the supported surface.',
+  },
 };
 
 // ─── Hidden reasoning: the per-driver spelling of "stop thinking" ────────────
@@ -379,6 +389,12 @@ export const THINKING_SUPPRESSION: Record<InferenceBackendType, ThinkingSuppress
     works: null,
     silentNoOp: null,
     evidence: 'Not measured on this fleet. oMLX is the Apple Silicon server; thinking suppression is not asserted here.',
+  },
+  localai: {
+    backend: 'localai',
+    works: null,
+    silentNoOp: null,
+    evidence: 'Not measured on this fleet. LocalAI is multi-backend; thinking suppression depends on the configured engine.',
   },
 };
 
@@ -474,6 +490,7 @@ export const DIMENSION_SKIPS: Partial<Record<ConformanceDimensionId, Partial<Rec
   'spec-decode-capability': {
     vllm: 'speculative decoding is configured with --speculative-config at server launch and no read-only route reports it — /v1/models carries the model id, max_model_len and permissions and nothing about drafting. Reading the state needs the launch argv from the host, which is outside a read-only HTTP surface.',
     omlx: 'not measured. Hub does not offer speculative decoding as an oMLX feature.',
+    localai: 'not measured. Hub does not offer speculative decoding as a LocalAI feature.',
   },
 };
 

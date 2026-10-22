@@ -795,23 +795,24 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     throw modelNotFound(`Model ${resolvedModel} not found or not available for completions`);
   }
 
-  /** Route TTS request */
+  /** Route TTS request across audio-capable backends (lemonade, localai), then cloud */
   async routeTts(body: Record<string, unknown>): Promise<{ data: Buffer; backend: string }> {
-    const lemonadeBackend = this.backends.tryGet('lemonade');
-    if (lemonadeBackend) {
-      const lemonadeHealth = await lemonadeBackend.healthCheck().catch(() => ({ running: false, healthy: false }));
-      if (lemonadeHealth.running && lemonadeHealth.healthy) {
+    const audioBackendTypes: readonly InferenceBackendType[] = ['lemonade', 'localai'];
+    for (const backendType of audioBackendTypes) {
+      const backend = this.backends.tryGet(backendType);
+      if (!backend) continue;
+      const health = await backend.healthCheck().catch(() => ({ running: false, healthy: false, modelsLoaded: [] }));
+      if (health.running && health.healthy) {
         try {
-          const response = await axios.post(`${lemonadeBackend.getBaseUrl()}/v1/audio/speech`, body, {
-            headers: backendAuthHeaders(lemonadeBackend),
+          const response = await axios.post(`${backend.getBaseUrl()}/v1/audio/speech`, body, {
+            headers: backendAuthHeaders(backend),
             responseType: 'arraybuffer',
             timeout: 60000,
           });
-          return { data: Buffer.from(response.data), backend: 'lemonade' };
+          return { data: Buffer.from(response.data), backend: backendType };
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          this._logger.error(`[Inference] TTS request to Lemonade failed: ${msg}`);
-          throw err;
+          this._logger.error(`[Inference] TTS request to ${backendType} failed: ${msg}`);
         }
       }
     }
@@ -825,22 +826,23 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     throw new Error('No TTS backend available');
   }
 
-  /** Route STT request */
+  /** Route STT request across audio-capable backends (lemonade, localai), then cloud */
   async routeStt(formData: FormData): Promise<{ data: unknown; backend: string }> {
-    const lemonadeBackend = this.backends.tryGet('lemonade');
-    if (lemonadeBackend) {
-      const lemonadeHealth = await lemonadeBackend.healthCheck().catch(() => ({ running: false, healthy: false }));
-      if (lemonadeHealth.running && lemonadeHealth.healthy) {
+    const audioBackendTypes: readonly InferenceBackendType[] = ['lemonade', 'localai'];
+    for (const backendType of audioBackendTypes) {
+      const backend = this.backends.tryGet(backendType);
+      if (!backend) continue;
+      const health = await backend.healthCheck().catch(() => ({ running: false, healthy: false, modelsLoaded: [] }));
+      if (health.running && health.healthy) {
         try {
-          const response = await axios.post(`${lemonadeBackend.getBaseUrl()}/v1/audio/transcriptions`, formData, {
-            headers: backendAuthHeaders(lemonadeBackend),
+          const response = await axios.post(`${backend.getBaseUrl()}/v1/audio/transcriptions`, formData, {
+            headers: backendAuthHeaders(backend),
             timeout: 120000,
           });
-          return { data: response.data, backend: 'lemonade' };
+          return { data: response.data, backend: backendType };
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          this._logger.error(`[Inference] STT request to Lemonade failed: ${msg}`);
-          throw err;
+          this._logger.error(`[Inference] STT request to ${backendType} failed: ${msg}`);
         }
       }
     }

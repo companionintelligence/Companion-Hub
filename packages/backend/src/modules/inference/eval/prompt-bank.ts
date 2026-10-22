@@ -28,9 +28,9 @@
  */
 
 /** The inference backends CI-Hub can front. See CI-Hub packages/backend/src/modules/inference/backends/. */
-export type LlmBackend = 'ollama' | 'vllm' | 'lemonade' | 'omlx';
+export type LlmBackend = 'ollama' | 'vllm' | 'lemonade' | 'omlx' | 'localai';
 
-export const LLM_BACKENDS: LlmBackend[] = ['ollama', 'vllm', 'lemonade', 'omlx'];
+export const LLM_BACKENDS: LlmBackend[] = ['ollama', 'vllm', 'lemonade', 'omlx', 'localai'];
 
 /**
  * Wire dialect. Base URLs never carry `/v1` — the dialect supplies the whole path, exactly the way
@@ -474,12 +474,12 @@ const ALL: LlmBackend[] = LLM_BACKENDS;
  * definition — it is what makes it a backend at all. Move them into a grouping when a run proves it.
  */
 /** Backends with a verified legacy `/v1/completions` route. dspark/lucebox are chat-shaped; don't guess. */
-const COMPLETION_CAPABLE: LlmBackend[] = ['ollama', 'vllm', 'lemonade'];
+const COMPLETION_CAPABLE: LlmBackend[] = ['ollama', 'vllm', 'lemonade', 'localai'];
 /**
  * Backends that actually serve embeddings. mtplx/lucebox front chat models only; dspark's absence of
  * `/v1/embeddings` is stated in CI-Hub's own dspark.backend.ts and has a regression test there.
  */
-const EMBEDDING_CAPABLE: LlmBackend[] = ['ollama', 'vllm', 'lemonade', 'omlx'];
+const EMBEDDING_CAPABLE: LlmBackend[] = ['ollama', 'vllm', 'lemonade', 'omlx', 'localai'];
 /** Ollama's own routes — nothing else in the fleet exposes `/api/*`. */
 const OLLAMA_ONLY: LlmBackend[] = ['ollama'];
 /**
@@ -488,13 +488,13 @@ const OLLAMA_ONLY: LlmBackend[] = ['ollama'];
  * override). mtplx/dspark/lucebox are unverified for it, and guessing would produce a red row that
  * means nothing.
  */
-const JSON_MODE_CAPABLE: LlmBackend[] = ['ollama', 'vllm', 'lemonade'];
+const JSON_MODE_CAPABLE: LlmBackend[] = ['ollama', 'vllm', 'lemonade', 'localai'];
 /**
  * Backends that can be asked for a tool call. Only Ollama is unconditional: vLLM needs
  * `--enable-auto-tool-choice --tool-call-parser` at launch and 400s otherwise, and Lemonade depends
  * on the model's own labels. Both carry overrides that accept the clean refusal.
  */
-const TOOL_CAPABLE: LlmBackend[] = ['ollama', 'vllm', 'lemonade'];
+const TOOL_CAPABLE: LlmBackend[] = ['ollama', 'vllm', 'lemonade', 'localai'];
 
 /** Shared tool definition. One shape for both dialects — Ollama-native accepts the OpenAI spelling. */
 const WEATHER_TOOL = {

@@ -9,6 +9,7 @@ import { InferenceBackendRegistry } from '../backends/backend-registry';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
+import { LocalAiBackend } from '../backends/localai.backend';
 import { OmlxBackend } from '../backends/omlx.backend';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -57,6 +58,7 @@ describe('InferenceRouterService', () => {
   let vllmBackend: MockProxy<VllmBackend>;
   let lemonadeBackend: MockProxy<LemonadeBackend>;
   let omlxBackend: MockProxy<OmlxBackend>;
+  let localaiBackend: MockProxy<LocalAiBackend>;
   let configuration: MockProxy<ConfigurationService>;
   /** Real: what the pool records as generating is exactly what a load must not evict. */
   let poolLoad: HubPoolLoadService;
@@ -82,6 +84,7 @@ describe('InferenceRouterService', () => {
     vllmBackend = mock<VllmBackend>();
     lemonadeBackend = mock<LemonadeBackend>();
     omlxBackend = mock<OmlxBackend>();
+    localaiBackend = mock<LocalAiBackend>();
     configuration = mock<ConfigurationService>();
     poolLoad = new HubPoolLoadService();
     // No operator preference by default, so every existing case resolves exactly as before.
@@ -107,6 +110,8 @@ describe('InferenceRouterService', () => {
     lemonadeBackend.getBaseUrl.mockReturnValue('http://ci-hub-lemonade:13305');
     omlxBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     omlxBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
+    localaiBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+    localaiBackend.getBaseUrl.mockReturnValue('http://localhost:8080');
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -121,6 +126,7 @@ describe('InferenceRouterService', () => {
         { provide: VllmBackend, useValue: vllmBackend },
         { provide: LemonadeBackend, useValue: lemonadeBackend },
         { provide: OmlxBackend, useValue: omlxBackend },
+        { provide: LocalAiBackend, useValue: localaiBackend },
         { provide: ConfigurationService, useValue: configuration },
         { provide: HubPoolLoadService, useValue: poolLoad },
         InferenceBackendRegistry,
@@ -246,7 +252,7 @@ describe('InferenceRouterService', () => {
       const status = await service.getStatus();
 
       expect(status.backends).toHaveLength(INFERENCE_BACKEND_TYPES.length);
-      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, omlxBackend]) {
+      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, omlxBackend, localaiBackend]) {
         expect(backend.healthCheck).toHaveBeenCalledTimes(1);
       }
     });
@@ -255,7 +261,7 @@ describe('InferenceRouterService', () => {
       const STALL_MS = 40;
       let inFlight = 0;
       let peakInFlight = 0;
-      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, omlxBackend]) {
+      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, omlxBackend, localaiBackend]) {
         backend.healthCheck.mockImplementation(async () => {
           inFlight += 1;
           peakInFlight = Math.max(peakInFlight, inFlight);
@@ -294,7 +300,7 @@ describe('InferenceRouterService', () => {
 
       await service.routeChatCompletion({ model: 'auto', messages: [] }).catch(() => undefined);
 
-      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, omlxBackend]) {
+      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, omlxBackend, localaiBackend]) {
         expect(backend.healthCheck.mock.calls.length).toBeLessThanOrEqual(1);
       }
     });
@@ -1445,6 +1451,28 @@ describe('InferenceRouterService', () => {
       const sttConfig = await transcribe();
       expect(sttConfig?.headers?.Authorization).toBeUndefined();
     });
+
+    it('routes TTS to LocalAI when Lemonade is unhealthy but LocalAI is healthy', async () => {
+      lemonadeBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      localaiBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['tts-1'] });
+      localaiBackend.getBaseUrl.mockReturnValue('http://ci-hub-localai:8080');
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: new ArrayBuffer(8), headers: {} });
+
+      const result = await service.routeTts({ model: 'tts-1', input: 'hello from localai' });
+      expect(result.backend).toBe('localai');
+      expect(axios.post).toHaveBeenCalledWith('http://ci-hub-localai:8080/v1/audio/speech', expect.anything(), expect.anything());
+    });
+
+    it('routes STT to LocalAI when Lemonade is unhealthy but LocalAI is healthy', async () => {
+      lemonadeBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      localaiBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['whisper-1'] });
+      localaiBackend.getBaseUrl.mockReturnValue('http://ci-hub-localai:8080');
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: { text: 'transcribed audio' }, headers: {} });
+
+      const result = await service.routeStt(new FormData());
+      expect(result.backend).toBe('localai');
+      expect(axios.post).toHaveBeenCalledWith('http://ci-hub-localai:8080/v1/audio/transcriptions', expect.any(FormData), expect.anything());
+    });
   });
 
   // ─── Tool-calling error preservation ─────────────────
@@ -1632,7 +1660,7 @@ describe('InferenceRouterService', () => {
 
     it('has nothing to set on an engine without a per-request keep_alive', () => {
       expect(typeof OllamaBackend.prototype.setResidentKeepAlive).toBe('function');
-      for (const engine of [LemonadeBackend, VllmBackend, OmlxBackend]) {
+      for (const engine of [LemonadeBackend, VllmBackend, OmlxBackend, LocalAiBackend]) {
         expect((engine.prototype as unknown as Record<string, unknown>).setResidentKeepAlive).toBeUndefined();
       }
     });
