@@ -6,6 +6,7 @@ import {
   type ServiceInput,
   serviceSchema,
   collectServiceSecurityViolations,
+  isReservedHubLabel,
   LOOPBACK_HOST_PORT_INTERFACE,
   TRUSTED_APP_SECURITY_ALLOWLIST,
 } from '@ci-hub/common/schemas';
@@ -529,8 +530,11 @@ export class DockerComposeBuilder {
       traefikLabels = traefikBuilder.build();
     }
 
+    // The Hub's own labels go last so nothing an app declares replaces them, and its extra labels lose
+    // any reserved key: the v2 schema refuses those, but a v1 compose never meets that check.
+    const extraLabels = Object.fromEntries(Object.entries(params.extraLabels ?? {}).filter(([key]) => !isReservedHubLabel(key)));
     service
-      .setLabels({ ...defaultLabels, ...traefikLabels, ...params.extraLabels })
+      .setLabels({ ...traefikLabels, ...extraLabels, ...defaultLabels })
       .interpolateVariables(`${appName}-${appStoreId}`, localDomain)
       // After interpolation, so a manifest's `{{CI_HUB_APP_ID}}` router is the same router as ours.
       .transformLabels(withAppStartingPage);

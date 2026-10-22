@@ -185,6 +185,16 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
     }
   };
 
+  // The form's own check refused a field. The store's check says which rule and where, as it does
+  // for the JSON editor, rather than a bare "Invalid configuration.".
+  const handleInvalid = () => {
+    const { overrides } = useMultiServiceStore.getState();
+    const values = form.getValues();
+    validate(overrides ? { ...values, overrides } : values);
+    const latestError = useMultiServiceStore.getState().error || 'MULTI_SERVICE_ERROR_INVALID_CONFIGURATION';
+    toast.error(i18next.exists(latestError) ? t(latestError) : latestError);
+  };
+
   // Save JSON stores what the editor holds through onSubmit, as Save all does. Copying it into the form
   // alone loses the change as soon as the page is left.
   const saveJson = async () => {
@@ -209,7 +219,7 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
     }
 
     form.setValue('services', applied);
-    await form.handleSubmit(handleSubmit, () => toast.error(t('MULTI_SERVICE_ERROR_INVALID_CONFIGURATION')))();
+    await form.handleSubmit(handleSubmit, handleInvalid)();
   };
 
   return (
@@ -217,7 +227,7 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
       className="flex flex-col"
       onSubmit={(event) => {
         event.preventDefault();
-        void oneSaveAtATime(() => form.handleSubmit(handleSubmit)());
+        void oneSaveAtATime(() => form.handleSubmit(handleSubmit, handleInvalid)());
       }}
     >
       <div className="bg-card border rounded-lg mt-4 m-0 p-0">

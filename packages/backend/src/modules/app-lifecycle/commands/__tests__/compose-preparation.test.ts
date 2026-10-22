@@ -166,7 +166,7 @@ interface Stubs {
   logger: { info: Stub; warn: Stub; error: Stub };
   subnetManager: { allocateSubnet: Stub };
   configService: { get: Stub; getConfig: Stub };
-  resourceAllocator: { getEffectiveAppDefaults: Stub; getDockerCapacity: Stub };
+  resourceAllocator: { getEffectiveAppDefaults: Stub; getDockerCapacity: Stub; getDockerServerVersion: Stub };
   registrationService: { getDeviceRegistrationInfo: Stub };
   appsRepository: { getAppCustomDomain: Stub };
   docker: { pruneContainers: Stub };
@@ -204,6 +204,7 @@ const createHarness = () => {
     resourceAllocator: {
       getEffectiveAppDefaults: vi.fn().mockResolvedValue({ cpuLimit: '4', memoryLimit: '8192M' }),
       getDockerCapacity: vi.fn().mockResolvedValue({ cpuCores: 16, memTotalMb: 32768 }),
+      getDockerServerVersion: vi.fn().mockResolvedValue('29.6.1'),
     },
     registrationService: { getDeviceRegistrationInfo: vi.fn().mockResolvedValue({ hubSubdomain: 'hub-desk-acme', slug: 'acme' }) },
     appsRepository: { getAppCustomDomain: vi.fn().mockResolvedValue(null) },
@@ -406,7 +407,7 @@ describe('prepareAppComposeDir', () => {
         path: '/data/apps/nextcloud/docker-compose.json',
         content: composeWithStartInterval(),
       });
-      stubs.resourceAllocator.getDockerCapacity.mockResolvedValue({ cpuCores: 16, memTotalMb: 32768, serverVersion: '24.0.9' });
+      stubs.resourceAllocator.getDockerServerVersion.mockResolvedValue('24.0.9');
 
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
 
@@ -421,7 +422,7 @@ describe('prepareAppComposeDir', () => {
         path: '/data/apps/nextcloud/docker-compose.json',
         content: composeWithStartInterval(),
       });
-      stubs.resourceAllocator.getDockerCapacity.mockResolvedValue({ cpuCores: 16, memTotalMb: 32768, serverVersion: '25.0.3' });
+      stubs.resourceAllocator.getDockerServerVersion.mockResolvedValue('25.0.3');
 
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
 

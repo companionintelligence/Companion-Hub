@@ -31,7 +31,7 @@ export interface AutoAppLimits {
 
 @Injectable()
 export class ResourceAllocatorService {
-  private dockerInfoCache: { value: DockerCapacity | null; expiresAt: number } | null = null;
+  private dockerInfoCache: { value: DockerCapacity | null; serverVersion: string | undefined; expiresAt: number } | null = null;
 
   constructor(
     private readonly logger: LoggerService,
@@ -47,25 +47,40 @@ export class ResourceAllocatorService {
    * containers can actually use.
    */
   public async getDockerCapacity(): Promise<DockerCapacity | null> {
+    return (await this.readDockerInfo()).value;
+  }
+
+  /**
+   * The engine's version as Docker reports it (`ServerVersion`), or undefined when it can't be read.
+   * Read with the capacity but kept apart from it: an engine that reports 0 CPUs or 0 memory still
+   * reports its version, and compose generation needs that to leave out what an old engine refuses.
+   */
+  public async getDockerServerVersion(): Promise<string | undefined> {
+    return (await this.readDockerInfo()).serverVersion;
+  }
+
+  private async readDockerInfo(): Promise<{ value: DockerCapacity | null; serverVersion: string | undefined }> {
     const now = Date.now();
     if (this.dockerInfoCache && this.dockerInfoCache.expiresAt > now) {
-      return this.dockerInfoCache.value;
+      return this.dockerInfoCache;
     }
 
     let capacity: DockerCapacity | null = null;
+    let serverVersion: string | undefined;
     try {
       const info = await this.docker.info();
+      serverVersion = typeof info.ServerVersion === 'string' && info.ServerVersion ? info.ServerVersion : undefined;
       const cpuCores = typeof info.NCPU === 'number' ? info.NCPU : 0;
       const memTotalMb = typeof info.MemTotal === 'number' ? Math.floor(info.MemTotal / 1024 / 1024) : 0;
       if (cpuCores > 0 && memTotalMb > 0) {
-        capacity = { cpuCores, memTotalMb, serverVersion: typeof info.ServerVersion === 'string' ? info.ServerVersion : undefined };
+        capacity = { cpuCores, memTotalMb, serverVersion };
       }
     } catch (error) {
       this.logger.warn(`Could not read Docker daemon capacity: ${error}`);
     }
 
-    this.dockerInfoCache = { value: capacity, expiresAt: now + DOCKER_INFO_CACHE_MS };
-    return capacity;
+    this.dockerInfoCache = { value: capacity, serverVersion, expiresAt: now + DOCKER_INFO_CACHE_MS };
+    return this.dockerInfoCache;
   }
 
   /**

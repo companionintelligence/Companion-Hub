@@ -73,6 +73,41 @@ describe('MultiServiceForm Save JSON', () => {
     expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ services: [expect.objectContaining({ name: 'web' })], overrides });
   });
 
+  // The editor's JSON schema can't express these rules, so the JSON passes it and the store's check
+  // refused it with a bare "Invalid configuration.".
+  it.each([
+    [
+      'a privileged arm64 override',
+      {
+        services: [{ name: 'web', image: 'nginx:alpine', isMain: true, internalPort: 80 }],
+        overrides: [{ architecture: 'arm64', services: [{ name: 'web', privileged: true }] }],
+      },
+      'Service web in the arm64 override: A custom app can\'t run a privileged container. Remove "privileged": true.',
+    ],
+    [
+      'a Docker socket mount in an override',
+      {
+        services: [{ name: 'web', image: 'nginx:alpine', isMain: true, internalPort: 80 }],
+        overrides: [{ services: [{ name: 'web', volumes: [{ hostPath: '/var/run/docker.sock', containerPath: '/var/run/docker.sock' }] }] }],
+      },
+      "Service web in an override: A custom app can't mount Docker's socket or a system folder such as /etc, /proc, /run or /var/lib/docker. Mount a folder in the app's data instead.",
+    ],
+    [
+      'a reserved label',
+      { services: [{ name: 'web', image: 'nginx:alpine', isMain: true, internalPort: 80, extraLabels: { 'ci-hub.appurn': 'n8n:ci-marketplace' } }] },
+      'Service web: Labels that start with ci-hub. or ci-os-hub. belong to the Hub, which uses them to tell apps apart. Remove ci-hub.appurn.',
+    ],
+  ])('names the rule %s breaks and saves nothing', async (_label, compose, message) => {
+    const onSubmit = vi.fn();
+    render(<MultiServiceForm onSubmit={onSubmit} />);
+
+    openJsonEditorWith(compose);
+    fireEvent.click(screen.getByRole('button', { name: 'Save JSON' }));
+
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith(message));
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it.each(['Save JSON', 'Save all'])('sends one save for a double click on %s and keeps the button disabled until it settles', async (label) => {
     let settle: () => void = () => {};
     const onSubmit = vi.fn(

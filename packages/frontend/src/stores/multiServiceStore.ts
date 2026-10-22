@@ -54,6 +54,35 @@ const defaultServices: ServiceWithId[] = [
   },
 ];
 
+type ComposeIssue = { message: string; path: PropertyKey[]; params?: Record<string, unknown> };
+
+/**
+ * The first refusal the schema gave, as a sentence that names the rule and where it was broken:
+ * "Service web in the arm64 override: A custom app can't run a privileged container." Falls back to
+ * "Invalid configuration." when no issue carries a message the Hub has words for.
+ */
+function describeComposeIssue(issues: readonly ComposeIssue[], values: Partial<MultiServiceFormData>): string {
+  const issue = issues.find((candidate) => i18next.exists(candidate.message));
+  if (!issue) {
+    return 'MULTI_SERVICE_ERROR_INVALID_CONFIGURATION';
+  }
+
+  const rule = i18next.t(issue.message, { ...issue.params });
+  const [section, index, inner, innerIndex] = issue.path;
+  if (section === 'services' && typeof index === 'number') {
+    const service = values.services?.[index]?.name || String(index + 1);
+    return i18next.t('MULTI_SERVICE_ERROR_IN_SERVICE', { service, message: rule });
+  }
+  if (section === 'overrides' && typeof index === 'number' && inner === 'services' && typeof innerIndex === 'number') {
+    const override = values.overrides?.[index];
+    const service = override?.services?.[innerIndex]?.name || String(innerIndex + 1);
+    return override?.architecture
+      ? i18next.t('MULTI_SERVICE_ERROR_IN_OVERRIDE', { service, architecture: override.architecture, message: rule })
+      : i18next.t('MULTI_SERVICE_ERROR_IN_ANY_OVERRIDE', { service, message: rule });
+  }
+  return rule;
+}
+
 function generateId(): string {
   return `service-${Math.random().toString(36).substring(2, 9)}`;
 }
@@ -70,7 +99,7 @@ export const useMultiServiceStore = create<MultiServiceState>()((set, get) => ({
     const res = dynamicComposeFormSchema.safeParse(values);
 
     if (!res.success) {
-      set({ error: 'MULTI_SERVICE_ERROR_INVALID_CONFIGURATION' });
+      set({ error: describeComposeIssue(res.error.issues, values) });
       return false;
     }
 

@@ -91,7 +91,7 @@ export async function prepareAppComposeDir(
     if (mergedServices.some((service) => service.healthCheck?.startInterval)) {
       let engineVersion: string | undefined;
       try {
-        engineVersion = (await moduleRef.get(ResourceAllocatorService, { strict: false }).getDockerCapacity())?.serverVersion;
+        engineVersion = await moduleRef.get(ResourceAllocatorService, { strict: false }).getDockerServerVersion();
       } catch {
         // Unknown engine: keep the setting.
       }
