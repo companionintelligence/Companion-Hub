@@ -1452,6 +1452,49 @@ describe('DockerService', () => {
       expect(child_process.spawn).toHaveBeenCalledTimes(1);
     });
 
+    // An update's rollback from a snapshot passes the update's deadline: a copy that ran its own 30
+    // minutes went on writing data after the reply was due.
+    it('gives a snapshot restore only what is left of the deadline, removes it then and says why', async () => {
+      vi.useFakeTimers();
+      const hung = createMockSpawnProcess();
+      hung.on = vi.fn().mockReturnValue(hung);
+      (child_process.spawn as any).mockReturnValueOnce(hung).mockReturnValue(createComposeProbeProcess(0));
+
+      const pending = service.restoreAppDataDirAsRoot(urn, 'pre-update-kimai-1792500000000', AppCommandDeadline.after(10_000));
+      await vi.advanceTimersByTimeAsync(10_001);
+      vi.useRealTimers();
+
+      await expect(pending).resolves.toBe(false);
+      const name = ((child_process.spawn as any).mock.calls[0][1] as string[])[3];
+      expect(child_process.spawn).toHaveBeenLastCalledWith('docker', ['rm', '-f', name], { stdio: 'pipe' });
+      expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('ran out of time restoring'));
+      expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('The snapshot is kept at'));
+    });
+
+    it('starts no snapshot helper once the deadline is used up and keeps 30 minutes without one', async () => {
+      const deadline = AppCommandDeadline.after(0);
+
+      await expect(service.restoreAppDataDirAsRoot(urn, 'pre-update-kimai-1792500000000', deadline)).resolves.toBe(false);
+      await expect(service.removeSnapshotDirAsRoot(urn, 'pre-update-kimai-1792500000000', deadline)).resolves.toBe(false);
+      await expect(service.copyAppDataDirAsRoot(urn, 'pre-update-kimai-1792500000000', deadline)).resolves.toBe(false);
+      expect(child_process.spawn).not.toHaveBeenCalled();
+
+      vi.useFakeTimers();
+      const hung = createMockSpawnProcess();
+      hung.on = vi.fn().mockReturnValue(hung);
+      (child_process.spawn as any).mockReturnValueOnce(hung).mockReturnValue(createComposeProbeProcess(0));
+      let settled = false;
+      const pending = service.restoreAppDataDirAsRoot(urn, 'pre-update-kimai-1792500000000').then((ok) => {
+        settled = true;
+        return ok;
+      });
+      await vi.advanceTimersByTimeAsync(29 * 60_000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(60_001);
+      vi.useRealTimers();
+      await expect(pending).resolves.toBe(false);
+    });
+
     it('starts no helper once the command budget is used up', async () => {
       const deadline = AppCommandDeadline.after(0);
 
@@ -1902,8 +1945,8 @@ describe('DockerService', () => {
       const s = (seconds: number) => seconds * 1_000;
       // Docker reports health check durations in nanoseconds.
       const ns = (seconds: number) => seconds * 1_000_000_000;
-      // Uptime Kuma 2.5.6's health check in the catalog: start period 180 s, interval 60 s, 5 retries.
-      const uptimeKumaHealthcheck = { Test: ['CMD-SHELL', 'extra/healthcheck'], StartPeriod: ns(180), Interval: ns(60), Retries: 5 };
+      // Uptime Kuma 2.5.6's health check in the catalog: start period 180 s, interval 60 s, timeout 30 s, 5 retries.
+      const uptimeKumaHealthcheck = { Test: ['CMD-SHELL', 'extra/healthcheck'], StartPeriod: ns(180), Interval: ns(60), Timeout: ns(30), Retries: 5 };
 
       type Snapshot = { state: 'running' | 'exited'; health?: 'starting' | 'healthy' | 'unhealthy'; exitCode?: number };
       type FakeContainer = { id: string; name: string; healthcheck?: Dockerode.HealthConfig; at: (elapsedMs: number) => Snapshot };
@@ -1975,7 +2018,7 @@ describe('DockerService', () => {
         expect(result.healthy).toBe(true);
         expect(settledAfterMs).toBe(s(16));
         expect(result.message).toBe(`All containers for ${testUrn} passed health probes after 16 s`);
-        expect(loggerService.info).toHaveBeenCalledWith(expect.stringMatching(/still starting after 8 s \(uptime-kuma\); waiting up to 480 s/));
+        expect(loggerService.info).toHaveBeenCalledWith(expect.stringMatching(/still starting after 8 s \(uptime-kuma\); waiting up to 630 s/));
       });
 
       it('fails as soon as Docker reports the container unhealthy, without waiting out its start period', async () => {
@@ -1995,17 +2038,17 @@ describe('DockerService', () => {
         expect(result.message).toBe(`Health probe failed for ${testUrn}: uptime-kuma (unhealthy)`);
       });
 
-      it('gives up on a container that never leaves starting after its start period plus its retries intervals', async () => {
+      it('gives up on a container that never leaves starting after its start period plus its retries checks', async () => {
         withContainers([
           { id: 'kuma', name: 'uptime-kuma', healthcheck: uptimeKumaHealthcheck, at: () => ({ state: 'running', health: 'starting' }) },
         ]);
 
         const { result, settledAfterMs } = await probe();
 
-        // 180 s + 5 × 60 s
+        // 180 s + 5 × (60 s interval + 30 s timeout): each check may run for its timeout before the next interval starts.
         expect(result.healthy).toBe(false);
-        expect(settledAfterMs).toBe(s(480));
-        expect(result.message).toBe(`Health probe failed for ${testUrn}: uptime-kuma (still starting after 480 s)`);
+        expect(settledAfterMs).toBe(s(630));
+        expect(result.message).toBe(`Health probe failed for ${testUrn}: uptime-kuma (still starting after 630 s)`);
       });
 
       it('gives a health check without a start period two minutes', async () => {
@@ -2063,6 +2106,51 @@ describe('DockerService', () => {
 
         expect(result.healthy).toBe(false);
         expect(settledAfterMs).toBe(s(8));
+      });
+
+      it("counts each check's own timeout in the wait, as Docker spends it", async () => {
+        withContainers([
+          {
+            id: 'web',
+            name: 'app-web',
+            healthcheck: { Test: ['CMD', 'true'], StartPeriod: ns(60), Interval: ns(10), Timeout: ns(20), Retries: 5 },
+            at: () => ({ state: 'running', health: 'starting' }),
+          },
+        ]);
+
+        const { result, settledAfterMs } = await probe();
+
+        // 60 s + 5 × (10 s + 20 s); without the timeouts it was the 2-minute floor.
+        expect(result.healthy).toBe(false);
+        expect(settledAfterMs).toBe(s(210));
+      });
+
+      it('stops at once with cancelled set when its signal is aborted', async () => {
+        withContainers([
+          { id: 'kuma', name: 'uptime-kuma', healthcheck: uptimeKumaHealthcheck, at: () => ({ state: 'running', health: 'starting' }) },
+        ]);
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(), s(21));
+
+        const { result, settledAfterMs } = await probe({ ...updateProbe, signal: controller.signal });
+
+        expect(result).toMatchObject({ healthy: false, cancelled: true });
+        expect(settledAfterMs).toBe(s(21));
+      });
+
+      it('ends the wait at waitUntil when the caller has to be done before the health check allows', async () => {
+        withContainers([
+          { id: 'kuma', name: 'uptime-kuma', healthcheck: uptimeKumaHealthcheck, at: () => ({ state: 'running', health: 'starting' }) },
+        ]);
+
+        const { result, settledAfterMs } = await probe({ ...updateProbe, waitUntil: probeStartedAt + s(100) });
+
+        expect(result.healthy).toBe(false);
+        expect(result.cancelled).toBeUndefined();
+        expect(settledAfterMs).toBe(s(100));
+        expect(loggerService.info).toHaveBeenCalledWith(
+          expect.stringContaining('waiting up to 100 s for its health check to pass, all the time the update has left'),
+        );
       });
 
       it('passes an app without a health check on the first look, as before', async () => {

@@ -57,4 +57,38 @@ describe('AppCommandDeadline', () => {
     expect(AppCommandDeadline.after(60_000).describe()).toBe('1 minute');
     expect(AppCommandDeadline.after(5_000).describe()).toBe('5 seconds');
   });
+
+  // A command waits in the queue before a worker takes it. The publisher's wait runs all the while.
+  describe('for a command taken from the queue', () => {
+    const MIN = 60_000;
+
+    it('ends five minutes before the reply is due, counted from when the command was queued', () => {
+      const enqueuedAt = Date.now();
+      vi.advanceTimersByTime(12 * MIN);
+
+      const deadline = AppCommandDeadline.untilReply(enqueuedAt, 45 * MIN);
+
+      expect(deadline.endsAt).toBe(enqueuedAt + 40 * MIN);
+      expect(deadline.remainingMs()).toBe(28 * MIN);
+    });
+
+    it('keeps a reserve free at its end for undoing the work', () => {
+      const deadline = AppCommandDeadline.untilReply(Date.now(), 45 * MIN);
+      const work = deadline.withReserve(10 * MIN);
+
+      expect(deadline.remainingBeforeMs(10 * MIN)).toBe(30 * MIN);
+      expect(work.remainingMs()).toBe(30 * MIN);
+
+      vi.advanceTimersByTime(35 * MIN);
+      expect(work.expired).toBe(true);
+      // The reserve itself is still there for the rollback.
+      expect(deadline.remainingMs()).toBe(5 * MIN);
+    });
+
+    it('is lowered by the helper budget override like any other', () => {
+      process.env.CI_HUB_PRIVILEGED_HELPER_BUDGET_SECONDS = '60';
+
+      expect(AppCommandDeadline.untilReply(Date.now(), 45 * MIN).remainingMs()).toBe(MIN);
+    });
+  });
 });

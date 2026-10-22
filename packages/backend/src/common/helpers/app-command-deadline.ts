@@ -28,20 +28,40 @@ const MIN_BUDGET_MS = 1_000;
  */
 export class AppCommandDeadline {
   private constructor(
-    private readonly endsAt: number,
+    /** Epoch ms by which the work this deadline covers must be over. */
+    readonly endsAt: number,
     readonly budgetMs: number,
   ) {}
 
   /** A budget that starts now and ends {@link QUEUE_REPLY_MARGIN_MS} before the queue stops waiting. */
   static forAppCommand(eventsTimeoutMinutes: number | undefined): AppCommandDeadline {
-    let budget = Math.max(MIN_BUDGET_MS, appEventsQueueTimeoutMs(eventsTimeoutMinutes) - QUEUE_REPLY_MARGIN_MS);
+    const budget = AppCommandDeadline.capped(appEventsQueueTimeoutMs(eventsTimeoutMinutes) - QUEUE_REPLY_MARGIN_MS);
+
+    return new AppCommandDeadline(Date.now() + budget, budget);
+  }
+
+  /**
+   * The deadline of a command the worker took from the queue: {@link QUEUE_REPLY_MARGIN_MS} before
+   * the publisher stops waiting for the reply. That wait began when the command was queued, so time
+   * spent waiting for a free worker counts. `replyTimeoutMs` is the queue's own timeout, which the
+   * RPC client read once at boot (a later change in Settings does not reach it).
+   */
+  static untilReply(enqueuedAt: number, replyTimeoutMs: number): AppCommandDeadline {
+    const budget = AppCommandDeadline.capped(replyTimeoutMs - QUEUE_REPLY_MARGIN_MS);
+
+    return new AppCommandDeadline(enqueuedAt + budget, budget);
+  }
+
+  /** `CI_HUB_PRIVILEGED_HELPER_BUDGET_SECONDS` can only lower a budget; no budget is under {@link MIN_BUDGET_MS}. */
+  private static capped(budgetMs: number): number {
+    let budget = Math.max(MIN_BUDGET_MS, budgetMs);
     const override = Number(process.env.CI_HUB_PRIVILEGED_HELPER_BUDGET_SECONDS);
 
     if (Number.isFinite(override) && override > 0) {
       budget = Math.max(MIN_BUDGET_MS, Math.min(budget, override * 1000));
     }
 
-    return new AppCommandDeadline(Date.now() + budget, budget);
+    return budget;
   }
 
   static after(budgetMs: number): AppCommandDeadline {
@@ -50,6 +70,19 @@ export class AppCommandDeadline {
 
   remainingMs(): number {
     return Math.max(0, this.endsAt - Date.now());
+  }
+
+  /** Milliseconds left for work that must end `reserveMs` before this deadline; 0 once that has passed. */
+  remainingBeforeMs(reserveMs: number): number {
+    return Math.max(0, this.endsAt - reserveMs - Date.now());
+  }
+
+  /**
+   * The part of this deadline that ends `reserveMs` sooner, for a step whose work may still have to
+   * be undone within the reserve (an update's backup, before its rollback).
+   */
+  withReserve(reserveMs: number): AppCommandDeadline {
+    return new AppCommandDeadline(this.endsAt - reserveMs, Math.max(0, this.budgetMs - reserveMs));
   }
 
   get expired(): boolean {

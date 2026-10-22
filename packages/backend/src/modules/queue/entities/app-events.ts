@@ -75,6 +75,8 @@ const updateAppCommandSchema = z.object({
   // Whether the app was running when the update was requested; a stopped one is updated and left stopped.
   // Defaults to true, the behaviour before the flag existed, for a message queued by an older Hub.
   wasRunning: z.boolean().optional().default(true),
+  // The app's status when the update was requested: where a cancelled update puts it back.
+  statusBeforeUpdate: z.string().optional(),
   requestId: z.uuid(),
 });
 
