@@ -325,13 +325,16 @@ describe('the inference route table', () => {
     }
 
     expect(routes).toEqual({
-      // ── InferenceController: the six v1 routes are the editor / SDK surface ──
+      // ── InferenceController: the v1 routes are the editor / SDK surface ──
       'InferenceController.v1ChatCompletions': 'POST v1/chat/completions → InferenceAccessGuard',
       'InferenceController.v1Completions': 'POST v1/completions → InferenceAccessGuard',
       'InferenceController.v1Embeddings': 'POST v1/embeddings → InferenceAccessGuard',
       'InferenceController.v1Models': 'GET v1/models → InferenceAccessGuard',
       'InferenceController.v1AudioSpeech': 'POST v1/audio/speech → InferenceAccessGuard',
       'InferenceController.v1AudioTranscriptions': 'POST v1/audio/transcriptions → InferenceAccessGuard',
+      'InferenceController.v1ImagesGenerations': 'POST v1/images/generations → InferenceAccessGuard',
+      'InferenceController.mediaAcquire': 'POST media/acquire → InferenceAccessGuard',
+      'InferenceController.mediaRelease': 'POST media/release → InferenceAccessGuard',
       'InferenceController.health': 'GET health → (none)',
       'InferenceController.getPreferences': 'GET preferences → AuthGuard',
       'InferenceController.updatePreferences': 'PATCH preferences → AuthGuard, HubManagerGuard',
