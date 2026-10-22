@@ -14,10 +14,10 @@ describe('AppRuntimeDegradedBanner', () => {
     render(<AppRuntimeDegradedBanner runtimeHealth={degraded} />);
 
     const banner = screen.getByRole('alert');
-    // `Alert`'s own `alert-warning` class has no stylesheet; these are TunnelStatusBanner's.
+    // The shared warning box of `Alert`, the one TunnelStatusBanner draws.
     expect(banner).toHaveClass('rounded-lg', 'border', 'border-warning/30', 'bg-warning/10', 'px-4', 'py-3');
-    expect(screen.getByRole('heading', { name: 'Hub is degraded by cpu-hog' })).toHaveClass('font-semibold', 'text-warning');
-    expect(screen.getByText(degraded.reason as string)).toHaveClass('text-muted-foreground');
+    expect(screen.getByRole('heading', { name: 'Hub is degraded by cpu-hog' })).toHaveClass('font-semibold', 'text-[color:var(--alert-heading)]');
+    expect(screen.getByText(degraded.reason as string)).toHaveClass('[.alert-heading+&]:text-muted-foreground');
   });
 
   it('says why the Hub calls the app degraded, or the general reason when it has none', () => {
