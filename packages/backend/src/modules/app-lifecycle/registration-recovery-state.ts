@@ -112,10 +112,21 @@ export async function clearRestoreIntent(): Promise<void> {
   }
 }
 
-/** Starts a new check after a pairing, replacing whatever an earlier pairing left. */
+/**
+ * Starts a new check after a pairing, replacing whatever an earlier pairing left, or records the
+ * restore it began (`restore`).
+ *
+ * A new check also clears the restore notice. `startRestoreNotice` keeps a notice it finds, and a
+ * re-pairing that does not reset the registration first (`cihub register` on a Hub the Portal is
+ * rejecting) leaves the rehydration state, and the notice with it, in place. The last pairing's
+ * acknowledged notice then kept this pairing's restore from being shown to anyone.
+ */
 export async function writePairingAppCheck(state: PairingAppCheckFile = { markedAt: new Date().toISOString() }): Promise<void> {
   await fs.mkdir(path.dirname(pairingAppCheckPath()), { recursive: true });
   await fs.writeFile(pairingAppCheckPath(), JSON.stringify(state, null, 2), 'utf-8');
+  if (!state.restore) {
+    await clearRestoreNotice();
+  }
 }
 
 /**

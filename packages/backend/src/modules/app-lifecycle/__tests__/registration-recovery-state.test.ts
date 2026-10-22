@@ -13,9 +13,14 @@ vi.mock('@/common/constants', async (importOriginal) => ({
   DATA_DIR: dataDir,
 }));
 
-const { acknowledgeRestoreNotice, clearRegistrationRecoveryArtifacts, clearRehydrationState, readRestoreNotice, startRestoreNotice } = await import(
-  '../registration-recovery-state'
-);
+const {
+  acknowledgeRestoreNotice,
+  clearRegistrationRecoveryArtifacts,
+  clearRehydrationState,
+  readRestoreNotice,
+  startRestoreNotice,
+  writePairingAppCheck,
+} = await import('../registration-recovery-state');
 
 describe('restore notice', () => {
   const noticeFile = path.join(dataDir, 'state', 'restore-notice.json');
@@ -62,6 +67,29 @@ describe('restore notice', () => {
     await startRestoreNotice();
     await clearRegistrationRecoveryArtifacts();
     await expect(readRestoreNotice()).resolves.toBeNull();
+  });
+
+  // A re-pairing that does not reset the registration keeps the rehydration state, so only the new check can clear it.
+  it("starts each pairing's notice afresh, so the last pairing's acknowledged notice does not hide this restore", async () => {
+    await startRestoreNotice();
+    await acknowledgeRestoreNotice();
+
+    await writePairingAppCheck();
+    await expect(readRestoreNotice()).resolves.toBeNull();
+    await startRestoreNotice();
+
+    const notice = await readRestoreNotice();
+    expect(notice?.startedAt).toEqual(expect.any(String));
+    expect(notice?.acknowledgedAt).toBeUndefined();
+  });
+
+  it('keeps the notice when the check only records the restore it began', async () => {
+    await startRestoreNotice();
+    const started = await readRestoreNotice();
+
+    await writePairingAppCheck({ markedAt: new Date().toISOString(), restore: { startedAt: new Date().toISOString(), portalAppNames: ['kimai'] } });
+
+    await expect(readRestoreNotice()).resolves.toEqual(started);
   });
 
   it('reads a damaged notice as none, so it cannot hold every sign-in on the restore page', async () => {
