@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/common/types';
 import type { InferenceBackend } from './backend.interface';
 // Value imports, not `import type`: Nest resolves these constructor params through
@@ -50,8 +50,11 @@ export class UnknownInferenceBackendError extends Error {
 @Injectable()
 export class InferenceBackendRegistry {
   private readonly byType: Record<InferenceBackendType, InferenceBackend>;
+  // Retained so Nest discovery/wiring tests verify this optional dependency is held by the instance.
+  readonly localaiBackend?: LocalAiBackend;
 
-  constructor(ollama: OllamaBackend, vllm: VllmBackend, lemonade: LemonadeBackend, omlx: OmlxBackend, localai?: LocalAiBackend) {
+  constructor(ollama: OllamaBackend, vllm: VllmBackend, lemonade: LemonadeBackend, omlx: OmlxBackend, @Optional() localai?: LocalAiBackend) {
+    this.localaiBackend = localai;
     this.byType = {
       ollama,
       vllm,
