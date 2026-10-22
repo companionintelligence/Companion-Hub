@@ -1,6 +1,7 @@
 import { createZodDto } from '@/common/zod-dto';
 import { MAX_INFERENCE_MAX_NUM_CTX, MIN_INFERENCE_MAX_NUM_CTX } from '@/common/helpers/inference-context-cap';
 import { MAX_INFERENCE_OLLAMA_SLOTS, MIN_INFERENCE_OLLAMA_SLOTS } from '@/common/helpers/inference-ollama-slots';
+import { MAX_INFERENCE_OLLAMA_KEEP_ALIVE_SECONDS, MIN_INFERENCE_OLLAMA_KEEP_ALIVE_SECONDS } from '@/common/helpers/inference-ollama-keep-alive';
 import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import { z } from 'zod';
 
@@ -45,6 +46,10 @@ export const inferencePreferencesSchema = z.object({
   // so the pool can tell a full engine from a half-empty one. `null` clears it, which ranks this
   // node by queue depth alone again.
   ollamaSlots: z.number().int().min(MIN_INFERENCE_OLLAMA_SLOTS).max(MAX_INFERENCE_OLLAMA_SLOTS).nullable().optional(),
+  // How long this node's Ollama keeps an idle model, in seconds. Set it to the daemon's
+  // `OLLAMA_KEEP_ALIVE` (-1 for forever) so an unpinned model goes back to that. `null` clears it.
+  // An unpin then names Ollama's built-in 5 minutes.
+  ollamaKeepAlive: z.number().int().min(MIN_INFERENCE_OLLAMA_KEEP_ALIVE_SECONDS).max(MAX_INFERENCE_OLLAMA_KEEP_ALIVE_SECONDS).nullable().optional(),
 });
 
 export class UpdateInferencePreferencesBody extends createZodDto(inferencePreferencesSchema) {}

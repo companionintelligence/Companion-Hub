@@ -45,6 +45,20 @@ describe('hardware-display', () => {
     expect(vram.sub).toBe('Shared · APU');
   });
 
+  it("shows what an APU's GPU can address, not all of RAM, when the driver said", () => {
+    // A Ryzen AI Max+ 395 with 125780 MB of RAM; amdgpu gives the GPU 512 MiB + 107.5 GiB.
+    const vram = resolveVramDisplay(makeHardware({ vramMb: 110_592 }, 125_780));
+    expect(vram.value).toBe('108.0 GB');
+    expect(vram.sub).toBe('Shared · APU');
+  });
+
+  it('shows an NVIDIA card by its VRAM and as Unknown when the Hub could not read it', () => {
+    const card = (vramMb: number) =>
+      makeHardware({ vendor: 'nvidia', model: 'NVIDIA GeForce RTX 3080 Laptop GPU', unifiedMemory: false, vramMb, runtimeAvailable: true }, 61_654);
+    expect(resolveVramDisplay(card(8192))).toEqual({ value: '8.0 GB' });
+    expect(resolveVramDisplay(card(0))).toEqual({ value: 'Unknown' });
+  });
+
   it('returns host ROCm ready notice when hostRocmKfdAvailable is true', () => {
     const notice = resolveAmdHostRocmNotice(makeHardware({ hostRocmKfdAvailable: true }));
     expect(notice?.tone).toBe('ready');

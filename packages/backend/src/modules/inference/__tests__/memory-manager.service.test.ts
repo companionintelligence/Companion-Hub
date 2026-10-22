@@ -634,6 +634,22 @@ describe('MemoryManagerService', () => {
       expect((await service.canFitModel(unified(live(61440)), 30000)).fits).toBe(false);
     });
 
+    it("never budgets an APU past what its GPU addresses (the driver's VRAM plus GTT), however much RAM is free", async () => {
+      // A Ryzen AI Max+ 395: 125780 MB of RAM with 115712 free. amdgpu gives the GPU 512 MiB + 107.5 GiB = 110592 MB.
+      const strixHalo: HardwareProfile = {
+        ...unified(live(115_712)),
+        gpu: { ...unified(live(115_712)).gpu, vramMb: 110_592 },
+        ram: { totalMb: 125_780, availableMb: 115_712, usedMb: 10_068, sampledAt: '2026-10-20T12:00:00.000Z' },
+      };
+
+      const budget = await service.calculateBudget(strixHalo);
+
+      expect(budget.modelBudgetRamMb).toBe(110_592);
+      expect(modelMemoryCeilingMb(strixHalo)).toBe(110_592);
+      expect((await service.canFitModel(strixHalo, 112_000)).fits).toBe(false);
+      expect((await service.canFitModel(strixHalo, 100_000)).fits).toBe(true);
+    });
+
     it('does not cap on a host-probe snapshot (no sampledAt): macOS/Windows keep the budget arithmetic', async () => {
       // The desktop probe's vm_stat free+inactive at app start on a busy Mac; it never refreshes,
       // and macOS would hand the memory over on demand. Capping on it would refuse loads that
@@ -675,6 +691,60 @@ describe('MemoryManagerService', () => {
       expect(result.canStart).toBe(true);
       expect(result.modelsToEvict).toEqual(['model-a']);
       expect(result.warning).toContain('evict');
+    });
+  });
+
+  // ─── A discrete card the Hub could not size ────────────────────────
+  // No nvidia-smi in the container and no nvidia.json from the host (a driver update without a
+  // reboot, or any nvidia-smi failure): the AI tab says VRAM Unknown and the profile carries 0.
+
+  describe('discrete card with unknown VRAM', () => {
+    const unknownCard = makeProfile({
+      gpu: { available: true, vendor: 'nvidia', model: 'GA104M', vramMb: 0, unifiedMemory: false, driverVersion: '', runtimeAvailable: true },
+      ram: { totalMb: 63_134, availableMb: 33_616, sampledAt: '2026-10-22T00:00:00.000Z' },
+      effectiveInferenceMemoryMb: 0,
+    });
+
+    it('lets a load through on system RAM instead of refusing it against 0 MB, so Ollama can place the model', async () => {
+      const fit = await service.canFitModel(unknownCard, 1348);
+
+      expect(fit.fits).toBe(true);
+      expect(fit.availableMb).toBe(33_616 - 2048);
+      expect(modelMemoryCeilingMb(unknownCard)).toBe(33_616 - 2048);
+    });
+
+    it('still budgets a card of known size on its VRAM, as before', async () => {
+      const known = makeProfile({
+        gpu: { ...unknownCard.gpu, vramMb: 8192 },
+        ram: unknownCard.ram,
+        effectiveInferenceMemoryMb: 8192,
+      });
+
+      expect(modelMemoryCeilingMb(known)).toBe(8192 - 512);
+      await expect(service.canFitModel(known, 9000)).resolves.toMatchObject({ fits: false, availableMb: 7680 });
+      await expect(service.canFitModel(known, 1348)).resolves.toMatchObject({ fits: true, availableMb: 7680 });
+    });
+
+    it('refuses a pin up front, with a reason that says what to do in plain text, since toasts show no markdown', async () => {
+      const result = await service.canPinModel(unknownCard, 1348);
+
+      expect(result).toMatchObject({ canPin: false, final: true });
+      expect(result.reason).toContain("doesn't know this GPU's memory yet");
+      expect(result.reason).toContain('VRAM Unknown');
+      expect(result.reason).toContain('run cihub up');
+      expect(result.reason).toContain('nvidia-smi');
+      expect(result.reason).not.toContain('`');
+    });
+
+    it('words the refusal for an AMD card without naming nvidia-smi', async () => {
+      const amd = makeProfile({ ...unknownCard, gpu: { ...unknownCard.gpu, vendor: 'amd', model: 'Radeon RX 7900 XTX' } });
+
+      const result = await service.canPinModel(amd, 1348);
+
+      expect(result).toMatchObject({ canPin: false, final: true });
+      expect(result.reason).toContain("doesn't know this GPU's memory yet");
+      expect(result.reason).not.toContain('nvidia-smi');
+      expect(result.reason).not.toContain('`');
     });
   });
 

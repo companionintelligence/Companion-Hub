@@ -155,6 +155,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
     );
     expect(result).toEqual({
       preferredBackend: 'lemonade',
@@ -207,6 +208,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
     );
     expect(result).toEqual({
       preferredBackend: 'ollama',
@@ -244,6 +246,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
     );
   }, 30_000);
 
@@ -268,6 +271,7 @@ describe('InferenceController — preferences', () => {
     // `undefined` is "leave it as stored"; `null` or an empty key still clears it.
     expect(configService.setInferencePreferences).toHaveBeenCalledWith(
       'vllm',
+      undefined,
       undefined,
       undefined,
       undefined,
@@ -366,6 +370,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       'http://192.168.1.50:8000',
+      undefined,
       undefined,
       undefined,
       undefined,
@@ -481,6 +486,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       16_384,
       undefined,
+      undefined,
     );
     expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
       2,
@@ -494,6 +500,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       null,
+      undefined,
       undefined,
     );
   }, 30_000);
@@ -528,6 +535,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       4,
+      undefined,
     );
     expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
       2,
@@ -542,6 +550,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       null,
+      undefined,
     );
     expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
       3,
@@ -556,6 +565,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       32_768,
       2,
+      undefined,
     );
   }, 30_000);
 
@@ -571,6 +581,28 @@ describe('InferenceController — preferences', () => {
     expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaSlots: 2.5 }).success).toBe(false);
     expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaSlots: 65 }).success).toBe(false);
     expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaSlots: '4' }).success).toBe(false);
+  });
+
+  it('passes the Ollama keep-alive through in its own position, a null clearing it', async () => {
+    configService.setInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama', ollamaKeepAlive: 86_400 } as never);
+
+    await controller.updatePreferences({ backend: 'ollama', ollamaKeepAlive: 86_400 });
+    await controller.updatePreferences({ backend: 'ollama', ollamaKeepAlive: null });
+
+    const keepAliveArg = (call: unknown[]) => call[11];
+    expect(keepAliveArg(configService.setInferencePreferences.mock.calls[0] ?? [])).toBe(86_400);
+    expect(keepAliveArg(configService.setInferencePreferences.mock.calls[1] ?? [])).toBeNull();
+  }, 30_000);
+
+  it('bounds the Ollama keep-alive in the preferences schema: whole seconds from -1 (forever) to a year, or null', () => {
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaKeepAlive: 86_400 }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaKeepAlive: -1 }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaKeepAlive: 0 }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaKeepAlive: null }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaKeepAlive: -2 }).success).toBe(false);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaKeepAlive: 1.5 }).success).toBe(false);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaKeepAlive: 366 * 86_400 }).success).toBe(false);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaKeepAlive: '24h' }).success).toBe(false);
   });
 
   it('rejects a retired backend name', () => {

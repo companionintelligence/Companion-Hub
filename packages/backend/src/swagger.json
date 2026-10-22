@@ -7268,6 +7268,11 @@
                 "minimum": 1,
                 "maximum": 64
               },
+              "inferenceOllamaKeepAlive": {
+                "type": "integer",
+                "minimum": -1,
+                "maximum": 31536000
+              },
               "hubPoolEnabled": {
                 "type": "boolean"
               },
@@ -7780,6 +7785,11 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 64
+          },
+          "inferenceOllamaKeepAlive": {
+            "type": "integer",
+            "minimum": -1,
+            "maximum": 31536000
           },
           "hubPoolEnabled": {
             "type": "boolean"
@@ -13526,6 +13536,12 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 64
+          },
+          "ollamaKeepAlive": {
+            "nullable": true,
+            "type": "integer",
+            "minimum": -1,
+            "maximum": 31536000
           }
         },
         "required": [
