@@ -200,6 +200,12 @@ function describeFloorShortfall(shortfall: FloorShortfall | null, wanted: number
  */
 @Injectable()
 export class InferenceRouterService implements OnApplicationBootstrap {
+  /**
+   * How long the factory reset's unloads wait for the model loads ahead of them. A queued Ollama load can
+   * take 120 s, and its evictions 30 s each, so this covers a few of them without leaving the old Hub's
+   * models in memory for good when a load hangs.
+   */
+  static readonly FACTORY_RESET_LOCK_WAIT_MS = 5 * 60_000;
   /** The tail of {@link loadTrackedModel}'s queue: every load on this node waits for the one before it. */
   private loadQueue: Promise<void> = Promise.resolve();
   /** Whether {@link warnSlotsUnstated} has spoken yet. */
@@ -244,24 +250,65 @@ export class InferenceRouterService implements OnApplicationBootstrap {
    *
    * - The pins still under way go too. The reset refuses them once their load ends (`pinTrackedModel`).
    *   Their model is then in memory at `keep_alive: -1` like any pinned one.
-   * - It runs under the load lock, so a load under way ends first: a model still loading is resident
-   *   only once it has loaded.
+   * - The unloads run under the load lock, so a load under way ends first: a model still loading is
+   *   resident only once it has loaded. They run after this resolves, in the background, because a load
+   *   ahead of them can hold the lock for minutes and the reset must answer the page before that. They
+   *   wait {@link InferenceRouterService.FACTORY_RESET_LOCK_WAIT_MS} at most, then unload what is in
+   *   memory without the lock.
    * - Only a model the engine lists under its own name, or `<name>:latest`, is unloaded. Ollama's usual
    *   match takes a prefix, which reads `nomic-embed-text-v2-moe` as `nomic-embed-text`. An unload of a
    *   model that is not in memory can make Ollama load it first.
    * - The engine is asked only at the address the Hub is configured with. When that does not answer,
    *   nothing is unloaded: a fallback address can be another engine, whose models are not the Hub's.
    *
-   * A failed unload costs a warning, never the reset.
+   * Resolves once the pins are forgotten. `unloads` settles when the unloads are done. It never
+   * rejects: a failed unload costs a warning, never the reset.
    */
-  async forgetPinnedModels(): Promise<void> {
+  async forgetPinnedModels(): Promise<{ unloads: Promise<void> }> {
     const underWay = [...this.pinsUnderWay.keys()];
     const unpinned = await this.modelRegistry.forgetPins();
-    await this.withLoadLock(async () => {
-      for (const catalogId of new Set([...unpinned, ...underWay])) {
+    const catalogIds = [...new Set([...unpinned, ...underWay])];
+    const unloads = this.unloadAfterFactoryReset(catalogIds).catch((err: unknown) => {
+      this._logger.warn(`[Inference] Factory reset could not unload the pinned models: ${err instanceof Error ? err.message : String(err)}`);
+    });
+    return { unloads };
+  }
+
+  /** Takes the load lock, or stops waiting for it after {@link InferenceRouterService.FACTORY_RESET_LOCK_WAIT_MS}, then unloads. */
+  private async unloadAfterFactoryReset(catalogIds: string[]): Promise<void> {
+    if (catalogIds.length === 0) return;
+
+    // A turn in the load queue that holds the lock until `release`. One given up on still comes round
+    // later and lets go at once, so the queue never runs these unloads twice.
+    let release: () => void = () => undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const locked = new Promise<boolean>((resolve) => {
+      void this.withLoadLock(async () => {
+        resolve(true);
+        await released;
+      });
+    });
+    let timer: NodeJS.Timeout | undefined;
+    const gaveUp = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), InferenceRouterService.FACTORY_RESET_LOCK_WAIT_MS);
+      timer.unref?.();
+    });
+
+    try {
+      if (!(await Promise.race([locked, gaveUp]))) {
+        this._logger.warn(
+          `[Inference] Factory reset waited ${InferenceRouterService.FACTORY_RESET_LOCK_WAIT_MS / 60_000} min for a model load ahead of it; unloading what is in memory now`,
+        );
+      }
+      for (const catalogId of catalogIds) {
         await this.unloadForFactoryReset(catalogId);
       }
-    });
+    } finally {
+      clearTimeout(timer);
+      release();
+    }
   }
 
   private async unloadForFactoryReset(catalogId: string): Promise<void> {

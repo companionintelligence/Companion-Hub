@@ -128,8 +128,11 @@ export class FactoryResetService {
    */
   private async forgetInferenceState(): Promise<void> {
     // The router also unloads the unpinned models from their engines, which hold them at `keep_alive: -1`.
-    const unloaded = await this.forgetIn(InferenceRouterService, 'the pinned models', (router) => router.forgetPinnedModels());
-    if (!unloaded) {
+    // Its unloads run in the background: they wait for any model load under way, and the page that asked
+    // for the reset is signed out meanwhile and leaves before an answer that waited for them. The router
+    // logs how they went.
+    const forgot = await this.forgetIn(InferenceRouterService, 'the pinned models', (router) => router.forgetPinnedModels());
+    if (!forgot) {
       await this.forgetIn(ModelRegistryService, 'the pinned models', (registry) => registry.forgetPins());
     }
     await this.forgetIn(AppCredentialsService, 'the record of what apps were handed', (credentials) => credentials.forgetHandouts());
