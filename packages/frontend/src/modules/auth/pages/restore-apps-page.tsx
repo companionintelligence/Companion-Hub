@@ -76,10 +76,11 @@ function RestoreAppsContent() {
 
   /**
    * Leaves for the Hub. The restore is recorded as seen first, or the next sign-in, from this browser or
-   * any other, would be sent back here; the restore choice is dropped for the same reason.
+   * any other, would be sent back here; the restore choice is dropped for the same reason. `seen` is the
+   * summary the person is leaving, when there is one.
    */
   const leaveForHub = useCallback(
-    async (to = '/home') => {
+    async (to = '/home', seen?: RestoreSummaryData) => {
       clearStoredDriftChoice();
       let recorded = false;
       try {
@@ -90,7 +91,7 @@ function RestoreAppsContent() {
       if (!recorded) {
         // Someone who may not manage the Hub cannot acknowledge it, though nor was the notice holding
         // them here. For anyone else this keeps an unrecorded Continue from bouncing straight back.
-        rememberRestoreSeen();
+        rememberRestoreSeen(seen);
       }
       await refreshAppContext();
       navigate(to, { replace: true });
@@ -309,7 +310,7 @@ function RestoreAppsContent() {
         style={{ minHeight: 'calc(100vh - var(--titlebar-height, 0px))' }}
         data-testid="restore-apps-page"
       >
-        <RestoreSummary summary={summary} onLeave={(to) => void leaveForHub(to)} />
+        <RestoreSummary summary={summary} onLeave={(to) => void leaveForHub(to, summary)} />
       </div>
     );
   }
@@ -330,7 +331,14 @@ function RestoreAppsContent() {
           {checkingSlow ? (
             <div className="space-y-3 text-sm text-muted-foreground">
               <p>{t('RESTORE_APPS_CHECKING_SLOW')}</p>
-              <Button intent="secondary" onClick={() => navigate('/onboarding', { replace: true })}>
+              <Button
+                intent="secondary"
+                onClick={() => {
+                  // Kept, the tab's restore choice sent it back here from Home once setup was done.
+                  clearStoredDriftChoice();
+                  navigate('/onboarding', { replace: true });
+                }}
+              >
                 {t('RESTORE_APPS_CONTINUE_TO_SETUP')}
               </Button>
             </div>

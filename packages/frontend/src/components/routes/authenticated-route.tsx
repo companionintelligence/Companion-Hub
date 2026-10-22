@@ -53,7 +53,7 @@ function AuthenticatedContent({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  const shouldRestoreApps = opensRestorePage(restoreStatus, getStoredDriftChoice(), restoreSeenInThisTab());
+  const shouldRestoreApps = opensRestorePage(restoreStatus, getStoredDriftChoice(), restoreSeenInThisTab(restoreStatus));
 
   const appLoadTimedOut = useMobileLoadTimeout(isAppLoading || !restoreRedirectChecked);
 

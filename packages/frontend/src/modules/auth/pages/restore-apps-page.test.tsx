@@ -319,7 +319,8 @@ describe('RestoreAppsPage', () => {
       await userEvent.click(await screen.findByTestId('restore-summary-continue'));
 
       await waitFor(() => expect(navigate).toHaveBeenCalledWith('/home', { replace: true }));
-      expect(sessionStorage.getItem('ci-hub-restore-notice-seen')).toBe('1');
+      // Named by the restore it saw, so the next pairing's restore is still shown in this tab.
+      expect(sessionStorage.getItem('ci-hub-restore-notice-seen')).toBe(summary.completedAt);
     });
 
     it('opens the App Store page of an app that was not restored, where its settings can be filled in', async () => {
@@ -432,6 +433,8 @@ describe('RestoreAppsPage', () => {
     });
 
     it('offers to go on to setup when the answer is slow', async () => {
+      // Kept, the choice sent this tab from Home back to this page once setup was done.
+      sessionStorage.setItem('ci-hub-registration-drift-choice', 'restore');
       getRehydrateStatus.mockResolvedValue(sdkOk({ completed: false, restoreIntent: false, checking: true, noticePending: false }));
 
       await act(async () => {
@@ -444,6 +447,7 @@ describe('RestoreAppsPage', () => {
 
       await userEvent.click(await screen.findByRole('button', { name: 'Continue to setup' }));
       expect(navigate).toHaveBeenCalledWith('/onboarding', { replace: true });
+      expect(sessionStorage.getItem('ci-hub-registration-drift-choice')).toBeNull();
     });
   });
 });

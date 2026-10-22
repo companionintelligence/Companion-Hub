@@ -30,22 +30,32 @@ export function opensRestorePage(status: RestoreStatus | null, driftChoice: Regi
 }
 
 const RESTORE_SEEN_KEY = 'ci-hub-restore-notice-seen';
+/** What a tab keeps for a restore it left while it was still under way, with no summary yet. */
+const SEEN_UNDER_WAY = 'under-way';
+
+const seenMarker = (summary: RestoreSummary | null | undefined) => summary?.completedAt || SEEN_UNDER_WAY;
 
 /**
- * Remembers in this tab that its person has seen the restore, for when the Hub could not record it.
+ * Remembers in this tab that its person has seen this restore, for when the Hub could not record it.
  * The notice would otherwise send every page of this tab back to the restore page.
+ *
+ * ⚠ IT NAMES THE RESTORE THAT WAS SEEN. A plain "seen" outlived it: a tab (the desktop app's window
+ * above all) that paired again later skipped the next restore's notice too, and its person got the
+ * setup wizard on a Hub that had its apps back.
  */
-export function rememberRestoreSeen(): void {
+export function rememberRestoreSeen(summary: RestoreSummary | null | undefined): void {
   try {
-    sessionStorage.setItem(RESTORE_SEEN_KEY, '1');
+    sessionStorage.setItem(RESTORE_SEEN_KEY, seenMarker(summary));
   } catch {
     // Without storage the Hub's own record is all there is.
   }
 }
 
-export function restoreSeenInThisTab(): boolean {
+/** Whether this tab's person has seen the restore `status` describes. Its summary, once it has one, is new to them. */
+export function restoreSeenInThisTab(status: RestoreStatus | null): boolean {
   try {
-    return sessionStorage.getItem(RESTORE_SEEN_KEY) === '1';
+    const seen = sessionStorage.getItem(RESTORE_SEEN_KEY);
+    return seen !== null && seen === seenMarker(status?.summary);
   } catch {
     return false;
   }

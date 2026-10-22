@@ -1,8 +1,10 @@
 import i18next from 'i18next';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import {
   describeRestoreFailure,
   opensRestorePage,
+  rememberRestoreSeen,
+  restoreSeenInThisTab,
   setupRoute,
   splitRestoreSummary,
   storePathFor,
@@ -43,6 +45,33 @@ describe('opensRestorePage', () => {
   it('stays out of the way otherwise', () => {
     expect(opensRestorePage(status({ completed: true }), null)).toBe(false);
     expect(opensRestorePage(null, 'restore')).toBe(false);
+  });
+});
+
+describe('restoreSeenInThisTab', () => {
+  const summary = (completedAt: string) => ({ completedAt, restored: [], notRestored: [], aiModelChosen: true });
+
+  beforeEach(() => {
+    sessionStorage.clear();
+  });
+
+  it('remembers the restore this tab saw, not every restore after it', () => {
+    rememberRestoreSeen(summary('2026-10-21T10:45:00.000Z'));
+
+    expect(restoreSeenInThisTab(status({ noticePending: true, summary: summary('2026-10-21T10:45:00.000Z') }))).toBe(true);
+    // The tab paired again later, and the Hub restored again.
+    expect(restoreSeenInThisTab(status({ noticePending: true, summary: summary('2026-10-22T08:00:00.000Z') }))).toBe(false);
+  });
+
+  it('shows a restore left while it was under way again once it has a summary', () => {
+    rememberRestoreSeen(undefined);
+
+    expect(restoreSeenInThisTab(status({ noticePending: true }))).toBe(true);
+    expect(restoreSeenInThisTab(status({ noticePending: true, summary: summary('2026-10-21T10:45:00.000Z') }))).toBe(false);
+  });
+
+  it('has seen nothing until it is told', () => {
+    expect(restoreSeenInThisTab(status({ noticePending: true }))).toBe(false);
   });
 });
 
