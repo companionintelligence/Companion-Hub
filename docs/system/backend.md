@@ -109,7 +109,7 @@ protected methods.
 
 `InferenceBackendRegistry` (`modules/inference/backends/backend-registry.ts`) is the single mapping
 from `InferenceBackendType` to a backend instance. `get(type)` resolves one; `entries()` walks all
-six in `INFERENCE_BACKEND_TYPES` order.
+backends (`ollama`, `vllm`, `lemonade`, `omlx`, `localai`) in `INFERENCE_BACKEND_TYPES` order.
 
 It replaced five byte-identical private `getBackend` switches in `model-puller`,
 `inference-env-resolver`, `inference-router`, `app-credentials`, and the controller. Two details are
@@ -117,10 +117,11 @@ deliberate and easy to undo by accident:
 
 - The map is a `Record` keyed by the union, not a `Map`. A missing backend is then a build error,
   and unlike an index signature it is not widened to `| undefined` by `noUncheckedIndexedAccess`.
-- The six backend classes are **value** imports, not `import type`. Nest resolves constructor
+- The backend classes are **value** imports, not `import type`. Nest resolves constructor
   parameters through `emitDecoratorMetadata`'s `design:paramtypes`, so a type-only import erases them
   to `undefined` at runtime with no compile error — and Biome's `useImportType` is off for this
   package, so nothing would flag it.
+- `localai` (`LocalAiBackend`) provides OpenAI-compatible inference, audio (TTS/STT), and image generation (`POST /v1/images/generations`). Active image/media tasks acquire a slot via `HubPoolLoadService.acquireMedia()`, reflecting host GPU occupancy in pool queue depth.
 
 `entries()` yields the type as the string from the source tuple rather than reading `backend.type`
 off the instance, because test doubles are mock proxies whose `type` is undefined.
