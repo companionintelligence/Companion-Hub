@@ -75,6 +75,9 @@ export interface RehydrationStateFile {
   skipped: RehydrationSkipped[];
 }
 
+/** Why an app the Portal lists for this device was not restored when no store on this Hub lists it. */
+export const UNLISTED_REASON = 'No matching marketplace app found for Portal application';
+
 /** An app the restore left alone because it is on the Hub already, which is not a failure to restore it. */
 export function isKeptAppSkip(entry: RehydrationSkipped): boolean {
   return entry.code === 'already_running' || entry.code === 'busy';
@@ -221,7 +224,7 @@ export function buildRehydrationPlan(input: {
       items.push({
         portalApp,
         action: 'skip_unresolved',
-        reason: 'No matching marketplace app found for Portal application',
+        reason: UNLISTED_REASON,
         hasExistingData: false,
         hasInstalledCompose: false,
       });

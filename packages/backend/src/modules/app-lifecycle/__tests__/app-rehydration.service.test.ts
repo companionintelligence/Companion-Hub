@@ -116,6 +116,18 @@ describe('AppRehydrationService.executeRehydrate', () => {
     expect(recovery.clearRestoreIntent).toHaveBeenCalled();
   });
 
+  // Dropped before the plan, such an app was missing from the record and so from the summary the next sign-in shows.
+  it('records an app the Portal lists that no store here does as not restored', async () => {
+    cloudflare.getDeviceApplications.mockResolvedValue([{ name: 'immich' }, { name: 'my-wiki' }] as never);
+    lifecycle.installApp.mockResolvedValue({ requestId: 'r' } as never);
+
+    const result = await service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR });
+
+    const unlisted = { name: 'my-wiki', reason: 'No matching marketplace app found for Portal application', code: 'unlisted' };
+    expect(result).toMatchObject({ queued: [appUrn], skipped: [unlisted] });
+    expect(recovery.writeRehydrationState).toHaveBeenCalledWith(expect.objectContaining({ queuedUrns: [appUrn], skipped: [unlisted] }));
+  });
+
   it('reports an install refused for this person, and does not record the run as done', async () => {
     lifecycle.installApp.mockRejectedValue(refusal());
 

@@ -27,6 +27,7 @@ import {
   resolvePortalAppToUrn,
   scanLocalAppData,
   skipCodeForAction,
+  UNLISTED_REASON,
   type RehydrationPlan,
   type RehydrationPlanItem,
   type RehydrationSkipped,
@@ -249,8 +250,8 @@ export class AppRehydrationService {
 
   async buildPlan(): Promise<RehydrationPlan> {
     await this.assertCanRehydrate();
-    const portalApps = await this.fetchPortalApplications();
-    return this.buildPlanFromPortalApps(portalApps);
+    const { listed } = await this.fetchPortalApplications();
+    return this.buildPlanFromPortalApps(listed);
   }
 
   async executeRehydrate(options: RehydrateOptions): Promise<RehydrationExecuteResult> {
@@ -302,12 +303,17 @@ export class AppRehydrationService {
       };
     }
 
-    const portalApps = await this.fetchPortalApplications();
-    const plan = await this.buildPlanFromPortalApps(portalApps);
+    const { listed, unlisted } = await this.fetchPortalApplications();
+    const plan = await this.buildPlanFromPortalApps(listed);
 
     const queued: string[] = [];
     const started: string[] = [];
-    const skipped: RehydrationSkipped[] = [];
+    /*
+     * An app the Portal lists that no store here does is not in the plan, but it was not restored
+     * either. Leaving it out of the record left it out of the summary the next sign-in shows, so
+     * nobody was told it did not come back.
+     */
+    const skipped: RehydrationSkipped[] = unlisted.map((portalApp) => ({ name: portalApp.name, reason: UNLISTED_REASON, code: 'unlisted' }));
     const refused: string[] = [];
 
     for (const item of plan.items) {
@@ -353,7 +359,7 @@ export class AppRehydrationService {
    */
   private async planForCompletedRun(): Promise<RehydrationPlan> {
     try {
-      return await this.buildPlanFromPortalApps(await this.fetchPortalApplications());
+      return await this.buildPlanFromPortalApps((await this.fetchPortalApplications()).listed);
     } catch (error) {
       this.logger.warn(`Could not rebuild the plan of a finished restore: ${error instanceof Error ? error.message : String(error)}`);
       return { items: [], portalAppCount: 0, localAppDataCount: 0 };
@@ -389,11 +395,14 @@ export class AppRehydrationService {
     }
   }
 
-  /** Throws when the Portal gives no answer (`CloudflareClientService.getDeviceApplications`). */
-  private async fetchPortalApplications(): Promise<PortalDeviceApplication[]> {
+  /**
+   * The device's apps from the Portal: those an enabled store here lists, and those none does. Throws
+   * when the Portal gives no answer (`CloudflareClientService.getDeviceApplications`).
+   */
+  private async fetchPortalApplications(): Promise<{ listed: PortalDeviceApplication[]; unlisted: PortalDeviceApplication[] }> {
     const apps = await this.cloudflareClientService.getDeviceApplications();
     if (apps.length === 0) {
-      return [];
+      return { listed: [], unlisted: [] };
     }
 
     // Precompute the set of available marketplace URNs once (one directory listing per
@@ -412,19 +421,19 @@ export class AppRehydrationService {
       );
     }
     const storeSlugs = await this.getStoreSlugsWithApps();
-    const resolved: PortalDeviceApplication[] = [];
+    const listed: PortalDeviceApplication[] = [];
+    const unlisted: PortalDeviceApplication[] = [];
 
     for (const portalApp of apps) {
-      const listed = storeSlugs.some((storeSlug) => availableUrns.has(createAppUrn(portalApp.name, storeSlug)));
-
-      if (listed) {
-        resolved.push(portalApp);
+      if (storeSlugs.some((storeSlug) => availableUrns.has(createAppUrn(portalApp.name, storeSlug)))) {
+        listed.push(portalApp);
       } else {
         this.logger.warn(`Portal app "${portalApp.name}" has no marketplace listing — skipping`);
+        unlisted.push(portalApp);
       }
     }
 
-    return resolved;
+    return { listed, unlisted };
   }
 
   private async buildPlanFromPortalApps(portalApps: PortalDeviceApplication[]): Promise<RehydrationPlan> {
