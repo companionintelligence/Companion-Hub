@@ -70,6 +70,7 @@ describe('AppRehydrationService.executeRehydrate', () => {
     vi.mocked(recovery.readRehydrationState).mockImplementation(async () => stateFile);
     vi.mocked(recovery.hasRestoreIntent).mockResolvedValue(true);
     vi.mocked(recovery.clearRestoreIntent).mockResolvedValue(undefined);
+    vi.mocked(recovery.readRestoreNotice).mockResolvedValue(null);
     vi.mocked(buildRehydrationPlan).mockReturnValue(installPlan);
 
     lifecycle = mock<AppLifecycleService>();
@@ -263,6 +264,18 @@ describe('AppRehydrationService.executeRehydrate', () => {
     expect(recovery.clearRestoreIntent).toHaveBeenCalled();
   });
 
+  // `cihub register` re-pairs without a registration reset, so the last pairing's record is still there.
+  it("restores again for this pairing when the only finished record is an earlier pairing's", async () => {
+    lifecycle.installApp.mockResolvedValue({ requestId: 'r' } as never);
+    await service.executeRehydrate({ actor: { kind: 'system', reason: 'restore-after-pairing' } });
+    vi.mocked(recovery.readRestoreNotice).mockResolvedValue({ startedAt: new Date(Date.now() + 60_000).toISOString() });
+
+    const result = await service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR });
+
+    expect(result.alreadyCompleted).toBeUndefined();
+    expect(lifecycle.installApp).toHaveBeenCalledTimes(2);
+  });
+
   it('reports a finished run even when the Portal cannot be asked for its plan', async () => {
     lifecycle.installApp.mockResolvedValue({ requestId: 'r' } as never);
     await service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR });
@@ -420,6 +433,27 @@ describe('AppRehydrationService restore status', () => {
     expect(status.summary).toBeUndefined();
   });
 
+  it("does not show an earlier pairing's restore while this pairing's is still running", async () => {
+    vi.mocked(recovery.readRestoreNotice).mockResolvedValue({ startedAt: new Date(Date.parse(finishedRun.completedAt) + 60_000).toISOString() });
+
+    const status = await service.getRestoreStatus(async () => true);
+
+    expect(status).toMatchObject({ noticePending: true });
+    expect(status.summary).toBeUndefined();
+  });
+
+  // Restore was chosen for a device the Portal lists no apps for. "Your apps could not be restored" said otherwise.
+  it('opens setup instead of a summary when the restore found no app to bring back', async () => {
+    vi.mocked(recovery.readRehydrationState).mockResolvedValue({ ...finishedRun, queuedUrns: [], startedUrns: [], skipped: [] });
+    const mayManage = vi.fn(async () => true);
+
+    const status = await service.getRestoreStatus(mayManage);
+
+    expect(status).toMatchObject({ completed: true, noticePending: false });
+    expect(status.summary).toBeUndefined();
+    expect(mayManage).not.toHaveBeenCalled();
+  });
+
   it('reports a pairing whose apps check has not decided yet', async () => {
     vi.mocked(recovery.readRehydrationState).mockResolvedValue(null);
     vi.mocked(recovery.readRestoreNotice).mockResolvedValue(null);
@@ -433,6 +467,15 @@ describe('AppRehydrationService restore status', () => {
 
     expect(recovery.acknowledgeRestoreNotice).toHaveBeenCalled();
     expect(users.markApplianceOnboardingComplete).toHaveBeenCalled();
+  });
+
+  it('leaves the setup wizard when the restore found no app to bring back', async () => {
+    vi.mocked(recovery.readRehydrationState).mockResolvedValue({ ...finishedRun, queuedUrns: [], startedUrns: [], skipped: [] });
+
+    await service.acknowledgeRestore();
+
+    expect(recovery.acknowledgeRestoreNotice).toHaveBeenCalled();
+    expect(users.markApplianceOnboardingComplete).not.toHaveBeenCalled();
   });
 
   it('leaves the setup wizard when the restore never finished', async () => {

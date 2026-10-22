@@ -40,6 +40,7 @@ import {
   readPairingAppCheck,
   readRestoreNotice,
   readRehydrationState as loadRehydrationStateFile,
+  type RestoreNoticeFile,
   writeRehydrationState as persistRehydrationStateFile,
 } from './registration-recovery-state';
 
@@ -140,6 +141,31 @@ function usesChatModel(appName: string, info: Parameters<typeof isAiAppInfo>[0] 
   return SUPPORTED_APP_SLUGS.some((slug) => bootstrapAppNamesForSlug(slug).includes(appName));
 }
 
+/**
+ * The finished run that belongs to this pairing's restore notice, or `null`.
+ *
+ * ⚠ A RECORD OLDER THAN THE NOTICE IS AN EARLIER PAIRING'S. A re-pairing that does not reset the
+ * registration first (`cihub register`) keeps the last record until this pairing's run replaces it.
+ * Read as this pairing's, it showed the last pairing's apps as restored while this restore was still
+ * running, and a Continue there acknowledged a restore nobody had seen.
+ */
+function runForNotice(state: RehydrationStateFile | null, notice: RestoreNoticeFile | null | undefined): RehydrationStateFile | null {
+  if (!state?.completedAt) {
+    return null;
+  }
+  if (!notice?.startedAt) {
+    return state;
+  }
+  const finished = Date.parse(state.completedAt);
+  const started = Date.parse(notice.startedAt);
+  return Number.isNaN(finished) || Number.isNaN(started) || finished >= started ? state : null;
+}
+
+/** A finished run with no app in it: the Portal listed none, so nothing came back and nothing failed. */
+function restoredNothing(state: RehydrationStateFile): boolean {
+  return state.queuedUrns.length === 0 && state.startedUrns.length === 0 && state.skipped.length === 0;
+}
+
 @Injectable()
 export class AppRehydrationService {
   /** The run under way, which a second caller joins rather than queueing the same installs again. */
@@ -170,6 +196,9 @@ export class AppRehydrationService {
    *
    * `mayManage` is asked only while a notice is unseen: the notice and its summary are for someone who
    * may manage the Hub, who is also the one the setup wizard would open for.
+   *
+   * A run that finished with no app in it (Restore was chosen for a device the Portal lists no apps
+   * for) leaves nothing to show, so it opens setup as a pairing with nothing to restore does.
    */
   async getRestoreStatus(mayManage: () => Promise<boolean>): Promise<RestoreStatus> {
     const [{ completed, state }, restoreIntent, pairingCheck, notice] = await Promise.all([
@@ -178,8 +207,10 @@ export class AppRehydrationService {
       readPairingAppCheck(),
       readRestoreNotice(),
     ]);
-    const noticePending = Boolean(notice?.startedAt && !notice.acknowledgedAt) && (await mayManage());
-    const summary = noticePending && state?.completedAt ? await this.buildRestoreSummary(state) : undefined;
+    const run = runForNotice(state, notice);
+    const unseen = Boolean(notice?.startedAt && !notice.acknowledgedAt) && !(run && restoredNothing(run));
+    const noticePending = unseen && (await mayManage());
+    const summary = noticePending && run ? await this.buildRestoreSummary(run) : undefined;
 
     return {
       completed,
@@ -193,11 +224,13 @@ export class AppRehydrationService {
 
   /**
    * The person who saw the restore goes on to the Hub. A restore that finished brought back a Hub that
-   * was set up before, so its setup wizard is not asked for again; one that never finished leaves it.
+   * was set up before, so its setup wizard is not asked for again; one that never finished, or found no
+   * app to restore, leaves it.
    */
   async acknowledgeRestore(): Promise<void> {
     await acknowledgeRestoreNotice();
-    if ((await this.readRehydrationState())?.completedAt) {
+    const state = await this.readRehydrationState();
+    if (state?.completedAt && !restoredNothing(state)) {
       await this.userRepository.markApplianceOnboardingComplete();
     }
   }
@@ -291,7 +324,9 @@ export class AppRehydrationService {
 
   private async runRehydrate(options: RehydrateOptions): Promise<RehydrationExecuteResult> {
     const existing = await this.readRehydrationState();
-    if (existing?.completedAt && !options?.force) {
+    // A record older than this pairing's restore notice is an earlier pairing's (see runForNotice), so it
+    // does not answer for this one.
+    if (existing?.completedAt && !options?.force && runForNotice(existing, await readRestoreNotice())) {
       return {
         success: true,
         message: 'Rehydration already completed for this registration epoch',
