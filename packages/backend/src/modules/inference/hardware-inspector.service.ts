@@ -398,8 +398,7 @@ export class HardwareInspectorService {
     };
 
     if (!isAppleSilicon) {
-      const apuMemoryMb = this.inferIntegratedGpuFromCpu(cpuInfo.model)?.vendor === 'amd' ? await this.detectAmdApuMemoryFromSysfs() : null;
-      gpu = this.applyIntegratedGpuInference(gpu, cpuInfo.model, ramInfo.totalMb, rocmSupport, apuMemoryMb);
+      gpu = await this.applyIntegratedGpuInference(gpu, cpuInfo.model, ramInfo.totalMb, rocmSupport);
     }
 
     if (gpu.vendor === 'amd') {
@@ -543,16 +542,16 @@ export class HardwareInspectorService {
   }
 
   /**
-   * `driverApuMemoryMb` is {@link detectAmdApuMemoryFromSysfs}: what the amdgpu driver lets the GPU
-   * address. It is the APU's `vramMb` when there is one; without it, the machine's RAM, as always.
+   * An AMD APU's `vramMb` is {@link detectAmdApuMemoryFromSysfs}, what the amdgpu driver lets the GPU
+   * address, when the driver states it; without it, the machine's RAM, as always. Sysfs is read only
+   * once the APU inference applies.
    */
-  private applyIntegratedGpuInference(
+  private async applyIntegratedGpuInference(
     gpu: HardwareProfile['gpu'],
     cpuModel: string,
     totalRamMb: number,
     rocmRuntimeAvailable: boolean,
-    driverApuMemoryMb: number | null = null,
-  ): HardwareProfile['gpu'] {
+  ): Promise<HardwareProfile['gpu']> {
     const integrated = this.inferIntegratedGpuFromCpu(cpuModel);
     const looksLikeDiscreteAmd = gpu.available && gpu.vendor === 'amd' && !gpu.unifiedMemory && gpu.vramMb >= MIN_PLAUSIBLE_DISCRETE_VRAM_MB;
 
@@ -572,7 +571,8 @@ export class HardwareInspectorService {
 
     const model = integrated.model || gpu.model || 'Integrated Graphics';
     const runtimeAvailable = integrated.vendor === 'amd' ? rocmRuntimeAvailable : gpu.runtimeAvailable;
-    const sharedMb = integrated.vendor === 'amd' && driverApuMemoryMb && driverApuMemoryMb > 0 ? driverApuMemoryMb : totalRamMb;
+    const driverApuMemoryMb = integrated.vendor === 'amd' ? await this.detectAmdApuMemoryFromSysfs() : null;
+    const sharedMb = driverApuMemoryMb || totalRamMb;
 
     this.logger.info(
       `[HardwareInspector] Inferred ${integrated.vendor.toUpperCase()} integrated GPU (${model}) from CPU "${cpuModel}" with ${sharedMb} MB shared memory${
@@ -1168,21 +1168,29 @@ export class HardwareInspectorService {
    */
   private async detectAmdCardsFromSysfs(): Promise<number[]> {
     try {
-      const entries = (await this.filesystem.listFiles('/sys/class/drm')) ?? [];
-      const cards = entries.filter((name) => /^card\d+$/.test(name));
       const sizesMb: number[] = [];
-      for (const card of cards) {
-        const raw = await this.filesystem.readTextFile(`/sys/class/drm/${card}/device/mem_info_vram_total`);
-        const vramBytes = Number.parseInt(raw?.trim() ?? '', 10);
-        if (!Number.isFinite(vramBytes) || vramBytes <= 0) {
-          continue;
+      for (const card of await this.listDrmCards()) {
+        const vramBytes = await this.readSysfsBytes(`/sys/class/drm/${card}/device/mem_info_vram_total`);
+        if (vramBytes > 0) {
+          sizesMb.push(Math.round(vramBytes / (1024 * 1024)));
         }
-        sizesMb.push(Math.round(vramBytes / (1024 * 1024)));
       }
       return sizesMb;
     } catch {
       return [];
     }
+  }
+
+  /** The `cardN` entries under `/sys/class/drm` (not their connectors or render nodes). */
+  private async listDrmCards(): Promise<string[]> {
+    const entries = (await this.filesystem.listFiles('/sys/class/drm')) ?? [];
+    return entries.filter((name) => /^card\d+$/.test(name));
+  }
+
+  /** A sysfs byte count, or 0 when the file is missing or says nothing usable. */
+  private async readSysfsBytes(file: string): Promise<number> {
+    const value = Number.parseInt((await this.filesystem.readTextFile(file))?.trim() ?? '', 10);
+    return Number.isFinite(value) && value > 0 ? value : 0;
   }
 
   /**
@@ -1197,16 +1205,11 @@ export class HardwareInspectorService {
    */
   private async detectAmdApuMemoryFromSysfs(): Promise<number | null> {
     try {
-      const entries = (await this.filesystem.listFiles('/sys/class/drm')) ?? [];
-      const readBytes = async (file: string): Promise<number> => {
-        const value = Number.parseInt((await this.filesystem.readTextFile(file))?.trim() ?? '', 10);
-        return Number.isFinite(value) && value > 0 ? value : 0;
-      };
       let largestBytes = 0;
-      for (const card of entries.filter((name) => /^card\d+$/.test(name))) {
+      for (const card of await this.listDrmCards()) {
         const [vramBytes, gttBytes] = await Promise.all([
-          readBytes(`/sys/class/drm/${card}/device/mem_info_vram_total`),
-          readBytes(`/sys/class/drm/${card}/device/mem_info_gtt_total`),
+          this.readSysfsBytes(`/sys/class/drm/${card}/device/mem_info_vram_total`),
+          this.readSysfsBytes(`/sys/class/drm/${card}/device/mem_info_gtt_total`),
         ]);
         if (vramBytes > 0 && gttBytes > 0) {
           largestBytes = Math.max(largestBytes, vramBytes + gttBytes);
