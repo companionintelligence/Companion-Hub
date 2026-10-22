@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import en from '@ci-hub/common/i18n/translations/en.json';
 import enUS from '@ci-hub/common/i18n/translations/en-US.json';
+import { TranslatableError } from '@/types/error.types';
 import { HubAccess } from './hub-access';
 
 // "Hub access" section of the app settings dialog: Hub-provisioned trust material (app key +
@@ -203,5 +204,19 @@ describe('HubAccess', () => {
     await user.click(screen.getByTestId('hub-access-rotate-confirm'));
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('APP_SETTINGS_HUB_ACCESS_ROTATE_ERROR'));
+  });
+
+  it('toasts what holds the app when the rotate is refused with a 409', async () => {
+    const user = userEvent.setup();
+    h.get.mockResolvedValue({ data: WITH_KEY });
+    h.post.mockRejectedValue(new TranslatableError('APP_ERROR_START_IN_PROGRESS', { id: 'importer' }, { status: 409, url: '/rotate' }));
+
+    renderHubAccess();
+    await waitFor(() => expect(screen.getByTestId('hub-access')).toBeTruthy());
+
+    await user.click(screen.getByTestId('hub-access-rotate'));
+    await user.click(screen.getByTestId('hub-access-rotate-confirm'));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('APP_ERROR_START_IN_PROGRESS'));
   });
 });

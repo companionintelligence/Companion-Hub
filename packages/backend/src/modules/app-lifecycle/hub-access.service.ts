@@ -71,50 +71,57 @@ export class HubAccessService {
    * where provisioning mints a fresh key (the old raw no longer resolves) and a fresh secret
    * (preserve-or-mint finds nothing to preserve). One lifecycle event flips the container and
    * the Hub's signing source together, so nothing is left verifying against a dead value.
+   *
+   * The app is held before anything is revoked, and a rotate sent while another operation holds it
+   * is refused with that operation's 409, the old credentials untouched. Revoking first and then
+   * waiting for the app left it on revoked credentials for as long as that operation lasted, and a
+   * second click revoked again.
    */
   async rotate(appUrn: AppUrn): Promise<{ requestId: string }> {
     await this.requireApp(appUrn);
 
-    await this.apiKeys.revokeManagedByApp(appUrn);
+    return this.appLifecycle.withAppHeld(appUrn, async (app) => {
+      await this.apiKeys.revokeManagedByApp(appUrn);
 
-    const appEnv = await this.appFilesManager.getAppEnv(appUrn);
-    const envMap = this.envUtils.envStringToMap(appEnv.content);
-    // Both forward-auth keys: Companion Memory's own one is the identity secret.
-    const cleared = [FORWARD_AUTH_SECRET_ENV, FORWARD_AUTH_IDENTITY_SECRET_ENV].filter((key) => envMap.delete(key));
-    if (cleared.length > 0) {
-      await this.appFilesManager.writeAppEnv(appUrn, this.envUtils.envMapToString(envMap));
-    }
+      const appEnv = await this.appFilesManager.getAppEnv(appUrn);
+      const envMap = this.envUtils.envStringToMap(appEnv.content);
+      // Both forward-auth keys: Companion Memory's own one is the identity secret.
+      const cleared = [FORWARD_AUTH_SECRET_ENV, FORWARD_AUTH_IDENTITY_SECRET_ENV].filter((key) => envMap.delete(key));
+      if (cleared.length > 0) {
+        await this.appFilesManager.writeAppEnv(appUrn, this.envUtils.envMapToString(envMap));
+      }
 
-    // Drop the resolver's cached signing secret for this app NOW. The old per-app secret may still
-    // be a valid, unexpired cache entry; without this, /api/auth/traefik would keep signing with it
-    // for up to a full TTL after the app restarts holding its freshly minted secret — 401ing every
-    // request in between. Resolved lazily via ModuleRef so AppLifecycleModule need not depend on
-    // AuthModule (mirrors uninstall-app-command's ApiKeyService lookup); a miss is non-fatal (the
-    // TTL then bounds the window as before).
-    try {
-      this.moduleRef.get(ForwardAuthSecretResolver, { strict: false })?.invalidateApp(appUrn);
-    } catch (error) {
-      this.logger.warn(
-        `[HubAccessService] could not flush forward-auth cache for ${appUrn}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
+      // Drop the resolver's cached signing secret for this app NOW. The old per-app secret may still
+      // be a valid, unexpired cache entry; without this, /api/auth/traefik would keep signing with it
+      // for up to a full TTL after the app restarts holding its freshly minted secret — 401ing every
+      // request in between. Resolved lazily via ModuleRef so AppLifecycleModule need not depend on
+      // AuthModule (mirrors uninstall-app-command's ApiKeyService lookup); a miss is non-fatal (the
+      // TTL then bounds the window as before).
+      try {
+        this.moduleRef.get(ForwardAuthSecretResolver, { strict: false })?.invalidateApp(appUrn);
+      } catch (error) {
+        this.logger.warn(
+          `[HubAccessService] could not flush forward-auth cache for ${appUrn}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
 
-    // The restart is what re-provisions: until it lands, the app still holds credentials the Hub
-    // has just stopped honouring. That ordering is forced (regeneration only happens on restart),
-    // so a failure here must be loud and must name the remedy — silently returning would leave the
-    // app authenticating against nothing with no indication that a manual restart fixes it.
-    try {
-      // As the Hub: the rotation was the authorized act (`configure`), and a refused restart would
-      // strand the app on the credentials just revoked.
-      const dispatched = await this.appLifecycle.restartApp({ appUrn, actor: { kind: 'system', reason: 'hub-access-rotate' } });
-      this.logger.info('Hub access material rotated', appUrn);
-      return dispatched;
-    } catch (error) {
-      this.logger.error(
-        `[HubAccessService] rotated Hub access for ${appUrn} but the restart could not be dispatched — the app is running with revoked credentials until it is restarted manually`,
-        error,
-      );
-      throw error;
-    }
+      // The restart is what re-provisions: until it lands, the app still holds credentials the Hub
+      // has just stopped honouring. That ordering is forced (regeneration only happens on restart),
+      // so a failure here must be loud and must name the remedy — silently returning would leave the
+      // app authenticating against nothing with no indication that a manual restart fixes it.
+      try {
+        // As the Hub: the rotation was the authorized act (`configure`), and a refused restart would
+        // strand the app on the credentials just revoked.
+        const dispatched = await app.restart({ reason: 'hub-access-rotate' });
+        this.logger.info('Hub access material rotated', appUrn);
+        return dispatched;
+      } catch (error) {
+        this.logger.error(
+          `[HubAccessService] rotated Hub access for ${appUrn} but the restart could not be dispatched — the app is running with revoked credentials until it is restarted manually`,
+          error,
+        );
+        throw error;
+      }
+    });
   }
 }

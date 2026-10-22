@@ -1,11 +1,20 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
+import { toast } from 'sonner';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { TranslatableError } from '@/types/error.types';
 import { useMemoryConnection, useMemoryProviderForceGate } from './use-memory-connection';
 
-const h = vi.hoisted(() => ({ get: vi.fn() }));
-vi.mock('@/api-client/client.gen', () => ({ client: { get: (...args: unknown[]) => h.get(...args) } }));
+const h = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
+vi.mock('@/api-client/client.gen', () => ({
+  client: { get: (...args: unknown[]) => h.get(...args), post: (...args: unknown[]) => h.post(...args) },
+}));
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock('react-i18next', () => {
+  const t = (key: string) => key;
+  return { useTranslation: () => ({ t }) };
+});
 
 const ext = vi.hoisted(() => ({ openExternalWithHubSession: vi.fn(), getTauriInvoke: vi.fn() }));
 vi.mock('@/lib/hub-browser-handoff', () => ({ openExternalWithHubSession: ext.openExternalWithHubSession }));
@@ -59,6 +68,35 @@ describe('useMemoryProviderForceGate', () => {
 
     expect(result.current.requiresForce).toBe(false);
     expect(h.get).not.toHaveBeenCalled();
+  });
+});
+
+describe('useMemoryConnection disconnect()', () => {
+  beforeEach(() => {
+    h.get.mockReset();
+    h.post.mockReset();
+    vi.mocked(toast.error).mockClear();
+    h.get.mockResolvedValue({ data: { applicable: true, state: 'connected' } });
+  });
+
+  it('toasts what holds the app when the disconnect is refused with a 409', async () => {
+    h.post.mockRejectedValue(new TranslatableError('APP_ERROR_UPDATE_IN_PROGRESS', { id: 'plane' }, { status: 409, url: '/disconnect' }));
+    const { result } = renderHook(() => useMemoryConnection(NORMAL), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.connected).toBe(true));
+
+    result.current.disconnect();
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('APP_ERROR_UPDATE_IN_PROGRESS'));
+  });
+
+  it('keeps the generic message for any other failure', async () => {
+    h.post.mockRejectedValue(new Error('boom'));
+    const { result } = renderHook(() => useMemoryConnection(NORMAL), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.connected).toBe(true));
+
+    result.current.disconnect();
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('MEMORY_CONNECT_DISCONNECT_ERROR'));
   });
 });
 

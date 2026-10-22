@@ -132,36 +132,35 @@ export class BackupsService {
     const requestId = crypto.randomUUID();
     this.operationRegistry.register(appUrn, { requestId, command: 'restore', tier: 'non_cancellable' });
 
-    this.publishRegistered(appUrn, requestId, { appUrn, command: 'restore', requestId, filename, form: app.config }).then(
-      async ({ success, message }) => {
-        if (success) {
-          if (!this.operationRegistry.claimCompletion(appUrn, requestId)) {
-            return;
-          }
-
-          const restoredAppConfig = await this.appFilesManager.getInstalledAppInfo(appUrn);
-
-          if (typeof restoredAppConfig?.cihub_app_version === 'number') {
-            await this.appsRepository.updateAppById(app.id, { version: restoredAppConfig.cihub_app_version });
-          }
-
-          if (appStatusBeforeUpdate === 'running') {
-            // Part of the restore the caller was authorized for: the app only comes back to how it was.
-            await this.resumeApp(app.id, appUrn, 'resume-after-restore');
-          } else {
-            await this.appsRepository.updateAppById(app.id, { status: appStatusBeforeUpdate });
-            this.sseService.emit('app', { event: 'restore_success', appUrn, appStatus: appStatusBeforeUpdate });
-          }
-        } else {
-          this.logger.error(`Failed to restore app ${appUrn}: ${message}`);
-          if (this.operationRegistry.claimCompletion(appUrn, requestId)) {
-            await this.appsRepository.updateAppById(app.id, { status: 'stopped' });
-            this.sseService.emit('app', { event: 'restore_error', appUrn, appStatus: 'stopped' });
-            this.agentNotifyService?.notify('restore_error', { appUrn }, 'high');
-          }
+    const restore = { appUrn, command: 'restore' as const, requestId, filename, form: app.config };
+    this.publishRegistered(appUrn, requestId, restore).then(async ({ success, message }) => {
+      if (success) {
+        if (!this.operationRegistry.claimCompletion(appUrn, requestId)) {
+          return;
         }
-      },
-    );
+
+        const restoredAppConfig = await this.appFilesManager.getInstalledAppInfo(appUrn);
+
+        if (typeof restoredAppConfig?.cihub_app_version === 'number') {
+          await this.appsRepository.updateAppById(app.id, { version: restoredAppConfig.cihub_app_version });
+        }
+
+        if (appStatusBeforeUpdate === 'running') {
+          // Part of the restore the caller was authorized for: the app only comes back to how it was.
+          await this.resumeApp(app.id, appUrn, 'resume-after-restore');
+        } else {
+          await this.appsRepository.updateAppById(app.id, { status: appStatusBeforeUpdate });
+          this.sseService.emit('app', { event: 'restore_success', appUrn, appStatus: appStatusBeforeUpdate });
+        }
+      } else {
+        this.logger.error(`Failed to restore app ${appUrn}: ${message}`);
+        if (this.operationRegistry.claimCompletion(appUrn, requestId)) {
+          await this.appsRepository.updateAppById(app.id, { status: 'stopped' });
+          this.sseService.emit('app', { event: 'restore_error', appUrn, appStatus: 'stopped' });
+          this.agentNotifyService?.notify('restore_error', { appUrn }, 'high');
+        }
+      }
+    });
 
     return { requestId };
   }

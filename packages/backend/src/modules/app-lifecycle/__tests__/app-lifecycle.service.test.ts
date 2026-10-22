@@ -4,6 +4,8 @@ import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service
 import { Test, TestingModule } from '@nestjs/testing';
 import { ModuleRef } from '@nestjs/core';
 import { AppLifecycleService } from '../app-lifecycle.service';
+import { HubAccessService } from '../hub-access.service';
+import { ForwardAuthSecretResolver } from '@/modules/auth/forward-auth-secret.resolver';
 import { AppInstallValidator } from '../app-install-validator.service';
 import { ExposureSyncService } from '../exposure-sync.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -43,7 +45,7 @@ import { assertHostDevicesAvailable } from '../commands/host-device-preflight';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import type { Request } from 'express';
-import type { ApiKeyContext } from '@/modules/api-keys/api-key.service';
+import type { ApiKeyContext, ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { mcpCallContext } from '@/modules/mcp/mcp-call-context';
 import { McpToolRegistry } from '@/modules/mcp/mcp-tool-registry.service';
 import { AppLifecycleTools } from '@/modules/mcp/tools/app-lifecycle.tools';
@@ -7265,7 +7267,7 @@ describe('AppLifecycleService', () => {
     describe('system restarts that wait for the operation under way', () => {
       const systemRestart = (reason: SystemLifecycleReason) => service.restartApp({ appUrn, skipPull: true, actor: { kind: 'system', reason } });
 
-      it.each(['hub-access-rotate', 'memory-connect', 'device-key-refresh', 'restart-after-config-update'] as const)(
+      it.each(['memory-connect', 'device-key-refresh', 'restart-after-config-update'] as const)(
         'a %s restart waits for the start under way, then restarts the app',
         async (reason) => {
           const start = held<{ success: boolean; message: string }>();
@@ -7291,7 +7293,7 @@ describe('AppLifecycleService', () => {
         const start = held<{ success: boolean; message: string }>();
         appEventsQueue.publish.mockReturnValueOnce(start.promise as any);
         await commands.start();
-        const restart = systemRestart('hub-access-rotate');
+        const restart = systemRestart('memory-connect');
         await new Promise((resolve) => setTimeout(resolve, 20));
         appsRepository.updateAppById.mockClear();
 
@@ -7359,6 +7361,110 @@ describe('AppLifecycleService', () => {
         await systemRestart('restart-after-config-update');
 
         expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'restart', appUrn }));
+      });
+    });
+
+    // A credential change holds the app before it revokes anything and restarts it under that hold.
+    describe('a change held through its restart', () => {
+      const apiKeys = mock<ApiKeyService>();
+      const hubAppFiles = mock<AppFilesManager>();
+      const forwardAuth = mock<ForwardAuthSecretResolver>();
+      let hubAccess: HubAccessService;
+      /** How a call stands 50 ms in: answered, refused (the error), or still open. */
+      const after50ms = (call: Promise<unknown>) =>
+        Promise.race([
+          call.then(
+            () => 'answered',
+            (error: unknown) => error,
+          ),
+          new Promise((resolve) => setTimeout(() => resolve('still open'), 50)),
+        ]);
+
+      beforeEach(() => {
+        apiKeys.revokeManagedByApp.mockReset();
+        hubAppFiles.getInstalledAppInfo.mockResolvedValue({ urn: appUrn } as any);
+        hubAppFiles.getAppEnv.mockResolvedValue({ path: '/x', content: 'CI_HUB_FORWARD_AUTH_SECRET=old\nOTHER=1\n' });
+        hubAppFiles.writeAppEnv.mockReset();
+        forwardAuth.invalidateApp.mockReset();
+        const moduleRef = mock<ModuleRef>();
+        moduleRef.get.mockReturnValue(forwardAuth);
+        hubAccess = new HubAccessService(apiKeys, hubAppFiles, service, new EnvUtils(), mock<LoggerService>(), moduleRef);
+      });
+
+      it("refuses a rotate while the app starts, with the start's 409, and leaves the old credentials working", async () => {
+        const start = held<{ success: boolean; message: string }>();
+        appEventsQueue.publish.mockReturnValueOnce(start.promise as any);
+        await commands.start();
+
+        const outcome = await after50ms(hubAccess.rotate(appUrn));
+
+        expect(outcome).toMatchObject({ status: 409, response: { message: 'APP_ERROR_START_IN_PROGRESS' } });
+        expect(apiKeys.revokeManagedByApp).not.toHaveBeenCalled();
+        expect(hubAppFiles.writeAppEnv).not.toHaveBeenCalled();
+        expect(forwardAuth.invalidateApp).not.toHaveBeenCalled();
+        start.release({ success: true, message: 'OK' });
+      });
+
+      it('keeps every other command out while the rotate revokes, then restarts the app under the same hold', async () => {
+        const revoke = held<void>();
+        apiKeys.revokeManagedByApp.mockReturnValueOnce(revoke.promise);
+
+        const rotation = hubAccess.rotate(appUrn);
+        await vi.waitFor(() => expect(apiKeys.revokeManagedByApp).toHaveBeenCalledWith(appUrn));
+        await expect(commands.start()).rejects.toThrow('APP_ERROR_RESTART_IN_PROGRESS');
+
+        revoke.release();
+        await expect(rotation).resolves.toMatchObject({ requestId: expect.any(String) });
+        expect(appEventsQueue.publish).toHaveBeenCalledTimes(1);
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'restart', appUrn }));
+      });
+
+      it('rotates an idle app: revokes the key, clears the secret and restarts it', async () => {
+        await expect(hubAccess.rotate(appUrn)).resolves.toMatchObject({ requestId: expect.any(String) });
+
+        expect(apiKeys.revokeManagedByApp).toHaveBeenCalledWith(appUrn);
+        expect(hubAppFiles.writeAppEnv).toHaveBeenCalledWith(appUrn, expect.not.stringContaining('CI_HUB_FORWARD_AUTH_SECRET'));
+        expect(forwardAuth.invalidateApp).toHaveBeenCalledWith(appUrn);
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'restart', appUrn }));
+      });
+
+      it('frees the app when the change fails before its restart', async () => {
+        apiKeys.revokeManagedByApp.mockRejectedValueOnce(new Error('db down'));
+
+        await expect(hubAccess.rotate(appUrn)).rejects.toThrow('db down');
+
+        expect(operationRegistry.liveOperation(appUrn)).toBeUndefined();
+        await expect(commands.start()).resolves.toMatchObject({ requestId: expect.any(String) });
+      });
+
+      it('answers busy without running anything when the app is held, for work that can wait for its next round', async () => {
+        const start = held<{ success: boolean; message: string }>();
+        appEventsQueue.publish.mockReturnValueOnce(start.promise as any);
+        await commands.start();
+        const run = vi.fn();
+
+        await expect(service.withAppHeldUnlessBusy(appUrn, run)).resolves.toEqual({ busy: 'start' });
+
+        expect(run).not.toHaveBeenCalled();
+        start.release({ success: true, message: 'OK' });
+      });
+
+      it('waits for a held restart to settle and frees the app after it', async () => {
+        await expect(service.withAppHeldUnlessBusy(appUrn, (app) => app.restartAndWait({ skipPull: true }))).resolves.toEqual({ result: true });
+
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'restart', appUrn }));
+        expect(operationRegistry.liveOperation(appUrn)).toBeUndefined();
+      });
+
+      it('refuses a second restart under one hold, which would register over the first', async () => {
+        await expect(
+          service.withAppHeld(appUrn, async (app) => {
+            await app.restart({ reason: 'memory-connect' });
+            return app.restart({ reason: 'memory-connect' });
+          }),
+        ).rejects.toThrow('already restarted under this hold');
+
+        expect(appEventsQueue.publish).toHaveBeenCalledTimes(1);
       });
     });
 

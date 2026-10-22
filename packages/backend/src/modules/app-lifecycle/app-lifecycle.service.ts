@@ -102,12 +102,12 @@ const OPERATION_BUSY_MESSAGES: Record<OperationCommand, keyof typeof messages> =
 
 /**
  * System restarts that wait for an operation under way instead of taking its 409: a caller that
- * cannot redo the restart, or that already changed what the restart is to apply (revoked the app's
- * credentials, wrote its env, saved its settings). Not the restarts a sync or a sweep makes, which run
- * inside other lifecycle work and would wait on the very command running them.
+ * cannot redo the restart, or that already changed what the restart is to apply (wrote its env,
+ * saved its settings, stored a key). Not the restarts a sync or a sweep makes, which run inside other
+ * lifecycle work and would wait on the very command running them. Nor a change that revokes
+ * credentials: that holds the app before it revokes anything ({@link AppLifecycleService.withAppHeld}).
  */
 export const RESTARTS_THAT_WAIT_FOR_THE_APP: ReadonlySet<SystemLifecycleReason> = new Set([
-  'hub-access-rotate',
   'memory-connect',
   'device-key-refresh',
   'restart-after-config-update',
@@ -115,6 +115,18 @@ export const RESTARTS_THAT_WAIT_FOR_THE_APP: ReadonlySet<SystemLifecycleReason> 
 
 /** How often a waiting command looks at the app again, besides being woken when its slot empties. */
 const OPERATION_WAIT_POLL_MS = 5_000;
+
+/**
+ * The restart a caller of {@link AppLifecycleService.withAppHeld} applies its change with, under the
+ * claim it already holds. One restart per hold: the restart takes the claim over, and once it has
+ * settled the app is free again.
+ */
+export interface HeldApp {
+  /** Queue the restart; resolves once it is queued, as `restartApp` does. */
+  restart(params: { skipPull?: boolean; reason: SystemLifecycleReason }): Promise<{ requestId: string }>;
+  /** Restart and resolve with whether the app came back, as `restartAppAndWait` does. */
+  restartAndWait(params: { skipPull?: boolean }): Promise<boolean>;
+}
 
 type ArchitectureCheck = Awaited<ReturnType<ImageSizeService['verifyAppArchitecture']>>;
 
@@ -3297,6 +3309,59 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     } finally {
       this.operationRegistry.releaseClaim(appUrn, claim.token);
     }
+  }
+
+  /**
+   * Hold an app for a change that only reaches it through a restart, such as revoking its
+   * credentials: the app is claimed before `run` changes anything, and the restart `run` is handed
+   * applies the change under that claim. While another operation holds the app this is refused with
+   * the usual 409 and nothing is changed.
+   *
+   * Revoking first and then waiting for the app to restart onto the change left it running on the
+   * revoked credentials for as long as the operation holding it lasted, and kept the request open as
+   * long: past about 100 s the public address answered 524 while the Hub went on rotating.
+   */
+  async withAppHeld<T>(appUrn: AppUrn, run: (app: HeldApp) => Promise<T>): Promise<T> {
+    return this.withOperationClaim(appUrn, 'restart', () => run(this.heldApp(appUrn)));
+  }
+
+  /**
+   * {@link withAppHeld} for work that can wait for its next round, such as a sweep's key rotation:
+   * `{ busy }` while another operation holds the app, with nothing run.
+   */
+  async withAppHeldUnlessBusy<T>(appUrn: AppUrn, run: (app: HeldApp) => Promise<T>): Promise<{ result: T } | { busy: OperationCommand }> {
+    const claim = this.operationRegistry.claim(appUrn, 'restart');
+    if (!claim.claimed) {
+      return { busy: claim.busy.command };
+    }
+    try {
+      return { result: await run(this.heldApp(appUrn)) };
+    } finally {
+      this.operationRegistry.releaseClaim(appUrn, claim.token);
+    }
+  }
+
+  private heldApp(appUrn: AppUrn): HeldApp {
+    let restarted = false;
+    const once = () => {
+      if (restarted) {
+        // The first restart took the claim over: a second would register over it.
+        throw new Error(`${appUrn} was already restarted under this hold`);
+      }
+      restarted = true;
+    };
+    return {
+      restart: async ({ skipPull, reason }) => {
+        once();
+        const actor: LifecycleActor = { kind: 'system', reason };
+        await this.assertActorMay(actor, appUrn, 'restart');
+        return this.dispatchRestart({ appUrn, skipPull, actor });
+      },
+      restartAndWait: async ({ skipPull }) => {
+        once();
+        return this.restartAndWaitClaimed({ appUrn, skipPull });
+      },
+    };
   }
 
   /**

@@ -8,7 +8,7 @@ import { buildHubLocalOrigin, buildHubPublicOrigin, buildHubTailnetOrigin, isPri
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { AppStatus } from '@/core/database/drizzle/types';
 import { LoggerService } from '@/core/logger/logger.service';
-import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
+import { AppLifecycleService, type HeldApp } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { TunnelHealthService } from '@/modules/cloudflare/tunnel-health.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
@@ -188,12 +188,25 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
             continue;
           }
 
-          const rotated = await this.exchange.rotate(provider.internalUrl, appUrn);
-          await this.connections.storeConnected(appUrn, provider.internalUrl, rotated.key, rotated.expiresAt, row.hubUserId);
+          // Held before the old key is retired. Rotating and then waiting for an app busy with another
+          // operation left it on the retired key for as long as that lasted. A busy app keeps its key,
+          // and its untouched `updatedAt` lets the next sweep try again.
+          const held = await this.lifecycle().withAppHeldUnlessBusy(appUrn, async (app) => {
+            const rotated = await this.exchange.rotate(provider.internalUrl, appUrn);
+            await this.connections.storeConnected(appUrn, provider.internalUrl, rotated.key, rotated.expiresAt, row.hubUserId);
 
-          // A running container uses the retired key until its environment is regenerated.
+            // A running container uses the retired key until its environment is regenerated.
+            return this.applyConnection(appUrn, 'await', app);
+          });
+
+          if ('busy' in held) {
+            this.logger.info(`[MemoryConnect] key rotation for ${appUrn} left to the next sweep: a ${held.busy} is under way`);
+
+            continue;
+          }
+
           // Retry once, then log loudly because the fresh `updatedAt` delays another rotation attempt.
-          let outcome = await this.applyConnection(appUrn, 'await');
+          let outcome = held.result;
 
           if (outcome === 'failed') {
             const retry = await this.applyConnection(appUrn, 'await');
@@ -430,11 +443,17 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       const creds = this.connections.credsFromRow(row);
       if (provider && creds && !(await this.exchange.isKeyValid(provider.internalUrl, creds.token))) {
         // Restarting removes the injected dead credential immediately instead of waiting for an unrelated restart.
-        await this.connections.clear(appUrn);
-        await this.applyConnection(appUrn, 'await');
-        effectiveState = 'unconfigured';
-        keyExpiresAt = null;
-        this.logger.info(`[MemoryConnect] cleared stale key for ${appUrn} (ci-memory rejected it)`);
+        // Held first, so a status poll never waits behind another operation: on a busy app a later poll clears it.
+        const held = await this.lifecycle().withAppHeldUnlessBusy(appUrn, async (app) => {
+          await this.connections.clear(appUrn);
+          await this.applyConnection(appUrn, 'await', app);
+        });
+
+        if (!('busy' in held)) {
+          effectiveState = 'unconfigured';
+          keyExpiresAt = null;
+          this.logger.info(`[MemoryConnect] cleared stale key for ${appUrn} (ci-memory rejected it)`);
+        }
       }
     }
 
@@ -472,16 +491,26 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return;
     }
 
-    const provider = await this.resolver.findProvider();
-    if (provider) {
-      const creds = this.connections.credsFromRow(latest);
-      if (creds) {
-        await this.exchange.revoke(provider.internalUrl, appUrn);
+    // Held before the revoke, as a disconnect is: on a busy app a later status poll tries again.
+    const held = await this.lifecycle().withAppHeldUnlessBusy(appUrn, async (app) => {
+      const provider = await this.resolver.findProvider();
+      if (provider) {
+        const creds = this.connections.credsFromRow(latest);
+        if (creds) {
+          await this.exchange.revoke(provider.internalUrl, appUrn);
+        }
       }
+
+      await this.connections.clear(appUrn, latest.hubUserId);
+      await this.applyConnection(appUrn, 'schedule', app);
+    });
+
+    if ('busy' in held) {
+      this.logger.debug(`[MemoryConnect] stale connect for ${appUrn} left to a later poll: a ${held.busy} is under way`);
+
+      return;
     }
 
-    await this.connections.clear(appUrn, latest.hubUserId);
-    await this.applyConnection(appUrn, 'schedule');
     this.logger.info(`[MemoryConnect] stale connect for ${appUrn}: token owner ${latest.hubUserId} ≠ current Hub user ${hubUserId}`);
   }
 
@@ -493,19 +522,24 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
   /**
    * Keep the local connection when revocation fails so the UI cannot claim a still-valid key is disconnected.
    * If the provider no longer exists, clearing locally is sufficient.
+   *
+   * The app is held before the revoke and a disconnect is refused with the usual 409 while another
+   * operation holds it, so the key is never revoked while the app can't be restarted onto the change.
    */
   async disconnect(appUrn: AppUrn, hubUserId?: string | null): Promise<void> {
-    const provider = await this.resolver.findProvider();
+    await this.lifecycle().withAppHeld(appUrn, async (app) => {
+      const provider = await this.resolver.findProvider();
 
-    if (provider) {
-      const revoked = await this.exchange.revoke(provider.internalUrl, appUrn);
-      if (!revoked) {
-        throw new ServiceUnavailableException('Could not revoke the memory key on CI Memory; the app is still connected. Please try again.');
+      if (provider) {
+        const revoked = await this.exchange.revoke(provider.internalUrl, appUrn);
+        if (!revoked) {
+          throw new ServiceUnavailableException('Could not revoke the memory key on CI Memory; the app is still connected. Please try again.');
+        }
       }
-    }
 
-    await this.connections.clear(appUrn, hubUserId);
-    await this.applyConnection(appUrn, 'await');
+      await this.connections.clear(appUrn, hubUserId);
+      await this.applyConnection(appUrn, 'await', app);
+    });
   }
 
   /**
@@ -881,12 +915,14 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * Down apps get a rewritten environment without a restart, preserving user intent while removing stale credentials.
    * Live apps restart; background callers await the real outcome, while browser callbacks return once restart is scheduled.
    * Every path skips pulls because this change needs only the existing image and must not depend on registry availability.
+   * With `held`, the caller holds the app already and the restart runs under that claim; without it, the restart waits
+   * for an operation under way.
    */
-  private async applyConnection(appUrn: AppUrn, restart: 'await'): Promise<'restarted' | 'deferred' | 'failed'>;
-  private async applyConnection(appUrn: AppUrn, restart: 'schedule'): Promise<'restarting' | 'deferred' | 'failed'>;
-  private async applyConnection(appUrn: AppUrn, restart: 'await' | 'schedule'): Promise<ApplyOutcome> {
+  private async applyConnection(appUrn: AppUrn, restart: 'await', held?: HeldApp): Promise<'restarted' | 'deferred' | 'failed'>;
+  private async applyConnection(appUrn: AppUrn, restart: 'schedule', held?: HeldApp): Promise<'restarting' | 'deferred' | 'failed'>;
+  private async applyConnection(appUrn: AppUrn, restart: 'await' | 'schedule', held?: HeldApp): Promise<ApplyOutcome> {
     try {
-      const lifecycle = this.moduleRef.get(AppLifecycleService, { strict: false });
+      const lifecycle = this.lifecycle();
 
       if (await this.isAppDown(appUrn)) {
         const applied = await lifecycle.regenerateAppEnv(appUrn);
@@ -903,13 +939,19 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       }
 
       if (restart === 'schedule') {
-        await lifecycle.restartApp({ appUrn, skipPull: true, actor: { kind: 'system', reason: 'memory-connect' } });
+        if (held) {
+          await held.restart({ skipPull: true, reason: 'memory-connect' });
+        } else {
+          await lifecycle.restartApp({ appUrn, skipPull: true, actor: { kind: 'system', reason: 'memory-connect' } });
+        }
 
         return 'restarting';
       }
 
-      // Waits for an operation under way on the app: the env above is already rewritten.
-      const restarted = await lifecycle.restartAppAndWait({ appUrn, skipPull: true, waitForApp: true });
+      // Unheld, waits for an operation under way on the app: the change is already stored.
+      const restarted = held
+        ? await held.restartAndWait({ skipPull: true })
+        : await lifecycle.restartAppAndWait({ appUrn, skipPull: true, waitForApp: true });
 
       return restarted ? 'restarted' : 'failed';
     } catch (err) {
@@ -917,6 +959,11 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
       return 'failed';
     }
+  }
+
+  /** Through ModuleRef, as this service has always reached it. */
+  private lifecycle(): AppLifecycleService {
+    return this.moduleRef.get(AppLifecycleService, { strict: false });
   }
 
   private async isAppDown(appUrn: AppUrn): Promise<boolean> {

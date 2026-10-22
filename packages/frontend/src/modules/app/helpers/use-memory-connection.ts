@@ -1,4 +1,5 @@
 import { client } from '@/api-client/client.gen';
+import { formatApiError, isConflictError } from '@/lib/format-api-error';
 import { openExternalWithHubSession } from '@/lib/hub-browser-handoff';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import { isMemoryProviderUrn } from '@/modules/app/helpers/memory-provider';
@@ -188,7 +189,8 @@ export function useMemoryConnection(appUrn: string) {
       toast.success(t('MEMORY_CONNECT_DISCONNECTED_TOAST'));
       await queryClient.invalidateQueries({ queryKey: memoryStatusQueryKey(appUrn) });
     },
-    onError: () => toast.error(t('MEMORY_CONNECT_DISCONNECT_ERROR')),
+    // A 409 names the operation holding the app; nothing was revoked and the app stays connected.
+    onError: (error) => toast.error(isConflictError(error) ? formatApiError(error, t, 409) : t('MEMORY_CONNECT_DISCONNECT_ERROR')),
   });
 
   const status = query.data ?? null;

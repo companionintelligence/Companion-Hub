@@ -325,8 +325,17 @@ restore) claims its app in `AppOperationRegistry` right after its grant check
 once the command is queued. While another command holds the app, a new one is refused with a
 409 that names what holds it (`APP_ERROR_UNINSTALL_IN_PROGRESS`, `APP_ERROR_UPDATE_IN_PROGRESS` and
 the rest) before it reads or writes the row. An entry older than `operationStaleAfterMs`, the window
-the status sync also uses, no longer holds the app. A force stop is the one command that registers
-over a live one, as it is the way out of a stop hung on Docker.
+the status sync also uses, no longer holds the app. A force stop registers over a live entry
+without dropping another command's claim. It still takes the per-app lock first, so it waits behind a
+command that holds it.
+
+The restarts the Hub owes an app after a settings save, a device key change or a Companion Memory
+connect (`RESTARTS_THAT_WAIT_FOR_THE_APP`) wait for the operation holding the app instead of taking
+its 409, and leave alone an app that operation left stopped. A change that revokes credentials (a
+Hub access rotate, a Memory disconnect or key rotation) holds the app first through
+`AppLifecycleService.withAppHeld`, so it is refused before anything is revoked and its restart runs
+under the same claim. The key rotation sweep and the Memory status poll use `withAppHeldUnlessBusy`
+and try a busy app again on their next round.
 
 `installApp` checks the grant first, then refuses a second install call for the same app
 (`beginInstallCall`), then reads the row. A row left `installing` with no operation under way is
