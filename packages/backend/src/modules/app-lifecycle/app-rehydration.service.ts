@@ -3,13 +3,16 @@ import path from 'node:path';
 import { Injectable } from '@nestjs/common';
 import { APP_DATA_DIR } from '@/common/constants';
 import { TranslatableError } from '@/common/error/translatable-error';
-import { createAppUrn } from '@/common/helpers/app-helpers';
+import { castAppUrn, createAppUrn } from '@/common/helpers/app-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppStoreService } from '@/modules/app-stores/app-store.service';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { CloudflareClientService, type PortalDeviceApplication } from '@/modules/cloudflare/cloudflare-client.service';
+import { isAiAppInfo } from '@/modules/apps/app.helpers';
+import { SUPPORTED_APP_SLUGS } from '@/modules/inference/app-credentials.service';
+import { bootstrapAppNamesForSlug } from '@/modules/inference/bootstrap-app-names';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { UserRepository } from '@/modules/user/user.repository';
@@ -20,16 +23,24 @@ import { AppLifecycleService } from './app-lifecycle.service';
 import {
   buildRehydrationPlan,
   filterLocalEntriesForPortalUrns,
+  isKeptAppSkip,
   resolvePortalAppToUrn,
   scanLocalAppData,
+  skipCodeForAction,
+  UNLISTED_REASON,
   type RehydrationPlan,
   type RehydrationPlanItem,
+  type RehydrationSkipped,
   type RehydrationStateFile,
 } from './app-rehydration';
 import {
+  acknowledgeRestoreNotice,
   clearRestoreIntent,
   hasRestoreIntent,
+  readPairingAppCheck,
+  readRestoreNotice,
   readRehydrationState as loadRehydrationStateFile,
+  type RestoreNoticeFile,
   writeRehydrationState as persistRehydrationStateFile,
 } from './registration-recovery-state';
 
@@ -45,7 +56,47 @@ export interface RehydrationExecuteResult {
   plan: RehydrationPlan;
   queued: string[];
   started: string[];
-  skipped: Array<{ name: string; reason: string }>;
+  skipped: RehydrationSkipped[];
+}
+
+/** One app a finished restore put back, as it stands now. */
+export interface RestoreSummaryApp {
+  name: string;
+  urn: string;
+  /** The app's status on this Hub now, or `missing` when its install never made a row. */
+  status: string;
+  /** The Hub hands this app a chat model (`usesChatModel`). */
+  usesAi: boolean;
+}
+
+/** An app a finished restore could not put back, with the reason. */
+export interface RestoreSummaryFailure {
+  name: string;
+  urn?: string;
+  reason: string;
+  code?: RehydrationSkipped['code'];
+  params?: Record<string, string>;
+}
+
+/** What the restore after this pairing brought back, for the person who signs in next. */
+export interface RestoreSummary {
+  completedAt: string;
+  restored: RestoreSummaryApp[];
+  notRestored: RestoreSummaryFailure[];
+  /** Whether anyone has chosen a chat model on this Hub. Until then AI apps get the setup wizard's Default. */
+  aiModelChosen: boolean;
+}
+
+export interface RestoreStatus {
+  completed: boolean;
+  state: RehydrationStateFile | null;
+  restoreIntent: boolean;
+  /** A pairing's apps check stands and has not yet decided whether there is anything to restore. */
+  checking: boolean;
+  /** This pairing's restore began or finished, nobody has seen it yet and the caller may manage the Hub. */
+  noticePending: boolean;
+  /** What the finished restore brought back, while `noticePending`. */
+  summary?: RestoreSummary;
 }
 
 interface RehydrateOptions {
@@ -61,6 +112,58 @@ interface RehydrateOptions {
  */
 function isGrantRefusal(error: unknown): boolean {
   return error instanceof TranslatableError && error.message === 'APP_ACTION_GRANT_DENIED';
+}
+
+/**
+ * The values a refusal's message key is written with. `APP_INSTALL_FORM_ERROR_INVALID` names the form
+ * fields it found missing in `fields`. That list is the reason a person can act on: the restore
+ * sends only what Companion Portal keeps for an app (its address and port), so a field with no
+ * default, such as Kimai's admin password, is missing on every restore.
+ */
+function messageParams(error: unknown): Record<string, string> | undefined {
+  if (!(error instanceof TranslatableError)) {
+    return undefined;
+  }
+  const response = error.getResponse() as { intlParams?: Record<string, string | undefined> };
+  const entries = Object.entries(response.intlParams ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === 'string');
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+/**
+ * Whether the Hub hands this app a chat model: by its listing (`isAiAppInfo`), or as an agent that
+ * fetches its credentials from the Hub. OpenClaw's listing is filed under `development` with no
+ * inference mapping, and it is the app most likely to be running on a model nobody chose.
+ */
+function usesChatModel(appName: string, info: Parameters<typeof isAiAppInfo>[0] | undefined): boolean {
+  if (info && isAiAppInfo(info)) {
+    return true;
+  }
+  return SUPPORTED_APP_SLUGS.some((slug) => bootstrapAppNamesForSlug(slug).includes(appName));
+}
+
+/**
+ * The finished run that belongs to this pairing's restore notice, or `null`.
+ *
+ * ⚠ A RECORD OLDER THAN THE NOTICE IS AN EARLIER PAIRING'S. A re-pairing that does not reset the
+ * registration first (`cihub register`) keeps the last record until this pairing's run replaces it.
+ * Read as this pairing's, it showed the last pairing's apps as restored while this restore was still
+ * running, and a Continue there acknowledged a restore nobody had seen.
+ */
+function runForNotice(state: RehydrationStateFile | null, notice: RestoreNoticeFile | null | undefined): RehydrationStateFile | null {
+  if (!state?.completedAt) {
+    return null;
+  }
+  if (!notice?.startedAt) {
+    return state;
+  }
+  const finished = Date.parse(state.completedAt);
+  const started = Date.parse(notice.startedAt);
+  return Number.isNaN(finished) || Number.isNaN(started) || finished >= started ? state : null;
+}
+
+/** A finished run with no app in it: the Portal listed none, so nothing came back and nothing failed. */
+function restoredNothing(state: RehydrationStateFile): boolean {
+  return state.queuedUrns.length === 0 && state.startedUrns.length === 0 && state.skipped.length === 0;
 }
 
 @Injectable()
@@ -86,10 +189,102 @@ export class AppRehydrationService {
     return { completed: Boolean(state?.completedAt), state };
   }
 
+  /**
+   * Where this pairing's restore stands, which decides what the next sign-in opens (see
+   * `RestoreNoticeFile`): the restore page while it runs, its summary once it has finished and until
+   * someone has seen it. Only then does it open the Hub or its setup wizard.
+   *
+   * `mayManage` is asked only while a notice is unseen: the notice and its summary are for someone who
+   * may manage the Hub, who is also the one the setup wizard would open for.
+   *
+   * A run that finished with no app in it (Restore was chosen for a device the Portal lists no apps
+   * for) leaves nothing to show, so it opens setup as a pairing with nothing to restore does.
+   */
+  async getRestoreStatus(mayManage: () => Promise<boolean>): Promise<RestoreStatus> {
+    const [{ completed, state }, restoreIntent, pairingCheck, notice] = await Promise.all([
+      this.getRehydrationStatus(),
+      hasRestoreIntent(),
+      readPairingAppCheck(),
+      readRestoreNotice(),
+    ]);
+    const run = runForNotice(state, notice);
+    const unseen = Boolean(notice?.startedAt && !notice.acknowledgedAt) && !(run && restoredNothing(run));
+    const noticePending = unseen && (await mayManage());
+    const summary = noticePending && run ? await this.buildRestoreSummary(run) : undefined;
+
+    return {
+      completed,
+      state,
+      restoreIntent,
+      checking: Boolean(pairingCheck && !pairingCheck.restore) && !notice,
+      noticePending,
+      ...(summary ? { summary } : {}),
+    };
+  }
+
+  /**
+   * The person who saw the restore goes on to the Hub. A restore that finished brought back a Hub that
+   * was set up before, so its setup wizard is not asked for again; one that never finished, or found no
+   * app to restore, leaves it.
+   */
+  async acknowledgeRestore(): Promise<void> {
+    await acknowledgeRestoreNotice();
+    const state = await this.readRehydrationState();
+    if (state?.completedAt && !restoredNothing(state)) {
+      await this.userRepository.markApplianceOnboardingComplete();
+    }
+  }
+
+  private async buildRestoreSummary(state: RehydrationStateFile): Promise<RestoreSummary> {
+    const rows = new Map<string, string>(
+      (await this.appsRepository.getApps()).map((app) => [createAppUrn(app.appName, app.appStoreSlug), app.status]),
+    );
+    const kept = state.skipped.filter((entry) => isKeptAppSkip(entry) && entry.appUrn).map((entry) => entry.appUrn as string);
+    const restoredUrns = [...new Set([...state.queuedUrns, ...state.startedUrns, ...kept])];
+
+    const restored = await Promise.all(
+      restoredUrns.map(async (urn) => {
+        const info = await this.appInfoFor(urn);
+        const appName = urn.split(':')[0] ?? urn;
+        return { name: info?.name || appName, urn, status: rows.get(urn) ?? 'missing', usesAi: usesChatModel(appName, info) };
+      }),
+    );
+    const notRestored = await Promise.all(
+      state.skipped
+        .filter((entry) => !isKeptAppSkip(entry))
+        .map(async (entry) => {
+          const info = entry.appUrn ? await this.appInfoFor(entry.appUrn) : undefined;
+          return {
+            name: info?.name || entry.name,
+            reason: entry.reason,
+            ...(entry.appUrn ? { urn: entry.appUrn } : {}),
+            ...(entry.code ? { code: entry.code } : {}),
+            ...(entry.params ? { params: entry.params } : {}),
+          };
+        }),
+    );
+
+    return {
+      completedAt: state.completedAt,
+      restored,
+      notRestored,
+      aiModelChosen: Boolean(this.config.getInferencePreferences().preferredModel),
+    };
+  }
+
+  /** The app's listing, for its name. A store that cannot be read only costs the name. */
+  private async appInfoFor(urn: string) {
+    try {
+      return await this.marketplaceService.getAppInfoFromAppStoreOrInstalled(castAppUrn(urn));
+    } catch {
+      return undefined;
+    }
+  }
+
   async buildPlan(): Promise<RehydrationPlan> {
     await this.assertCanRehydrate();
-    const portalApps = await this.fetchPortalApplications();
-    return this.buildPlanFromPortalApps(portalApps);
+    const { listed } = await this.fetchPortalApplications();
+    return this.buildPlanFromPortalApps(listed);
   }
 
   async executeRehydrate(options: RehydrateOptions): Promise<RehydrationExecuteResult> {
@@ -129,7 +324,9 @@ export class AppRehydrationService {
 
   private async runRehydrate(options: RehydrateOptions): Promise<RehydrationExecuteResult> {
     const existing = await this.readRehydrationState();
-    if (existing?.completedAt && !options?.force) {
+    // A record older than this pairing's restore notice is an earlier pairing's (see runForNotice), so it
+    // does not answer for this one.
+    if (existing?.completedAt && !options?.force && runForNotice(existing, await readRestoreNotice())) {
       return {
         success: true,
         message: 'Rehydration already completed for this registration epoch',
@@ -141,12 +338,17 @@ export class AppRehydrationService {
       };
     }
 
-    const portalApps = await this.fetchPortalApplications();
-    const plan = await this.buildPlanFromPortalApps(portalApps);
+    const { listed, unlisted } = await this.fetchPortalApplications();
+    const plan = await this.buildPlanFromPortalApps(listed);
 
     const queued: string[] = [];
     const started: string[] = [];
-    const skipped: Array<{ name: string; reason: string }> = [];
+    /*
+     * An app the Portal lists that no store here does is not in the plan, but it was not restored
+     * either. Leaving it out of the record left it out of the summary the next sign-in shows, so
+     * nobody was told it did not come back.
+     */
+    const skipped: RehydrationSkipped[] = unlisted.map((portalApp) => ({ name: portalApp.name, reason: UNLISTED_REASON, code: 'unlisted' }));
     const refused: string[] = [];
 
     for (const item of plan.items) {
@@ -192,15 +394,11 @@ export class AppRehydrationService {
    */
   private async planForCompletedRun(): Promise<RehydrationPlan> {
     try {
-      return await this.buildPlanFromPortalApps(await this.fetchPortalApplications());
+      return await this.buildPlanFromPortalApps((await this.fetchPortalApplications()).listed);
     } catch (error) {
       this.logger.warn(`Could not rebuild the plan of a finished restore: ${error instanceof Error ? error.message : String(error)}`);
       return { items: [], portalAppCount: 0, localAppDataCount: 0 };
     }
-  }
-
-  async hasRestoreIntent(): Promise<boolean> {
-    return hasRestoreIntent();
   }
 
   private summarize(queued: string[], started: string[], refused: string[], plan: RehydrationPlan): string {
@@ -232,11 +430,14 @@ export class AppRehydrationService {
     }
   }
 
-  /** Throws when the Portal gives no answer (`CloudflareClientService.getDeviceApplications`). */
-  private async fetchPortalApplications(): Promise<PortalDeviceApplication[]> {
+  /**
+   * The device's apps from the Portal: those an enabled store here lists, and those none does. Throws
+   * when the Portal gives no answer (`CloudflareClientService.getDeviceApplications`).
+   */
+  private async fetchPortalApplications(): Promise<{ listed: PortalDeviceApplication[]; unlisted: PortalDeviceApplication[] }> {
     const apps = await this.cloudflareClientService.getDeviceApplications();
     if (apps.length === 0) {
-      return [];
+      return { listed: [], unlisted: [] };
     }
 
     // Precompute the set of available marketplace URNs once (one directory listing per
@@ -255,19 +456,19 @@ export class AppRehydrationService {
       );
     }
     const storeSlugs = await this.getStoreSlugsWithApps();
-    const resolved: PortalDeviceApplication[] = [];
+    const listed: PortalDeviceApplication[] = [];
+    const unlisted: PortalDeviceApplication[] = [];
 
     for (const portalApp of apps) {
-      const listed = storeSlugs.some((storeSlug) => availableUrns.has(createAppUrn(portalApp.name, storeSlug)));
-
-      if (listed) {
-        resolved.push(portalApp);
+      if (storeSlugs.some((storeSlug) => availableUrns.has(createAppUrn(portalApp.name, storeSlug)))) {
+        listed.push(portalApp);
       } else {
         this.logger.warn(`Portal app "${portalApp.name}" has no marketplace listing — skipping`);
+        unlisted.push(portalApp);
       }
     }
 
-    return resolved;
+    return { listed, unlisted };
   }
 
   private async buildPlanFromPortalApps(portalApps: PortalDeviceApplication[]): Promise<RehydrationPlan> {
@@ -325,19 +526,20 @@ export class AppRehydrationService {
     item: RehydrationPlanItem,
     queued: string[],
     started: string[],
-    skipped: Array<{ name: string; reason: string }>,
+    skipped: RehydrationSkipped[],
     refused: string[],
     actor: LifecycleActor,
   ): Promise<void> {
     const label = item.portalApp.name;
+    const target = item.appUrn ? { appUrn: item.appUrn } : {};
 
     if (item.action === 'skip_unresolved' || item.action === 'skip_running' || item.action === 'skip_busy') {
-      skipped.push({ name: label, reason: item.reason ?? item.action });
+      skipped.push({ name: label, reason: item.reason ?? item.action, code: skipCodeForAction(item.action), ...target });
       return;
     }
 
     if (!item.appUrn || !item.form) {
-      skipped.push({ name: label, reason: 'Missing install target' });
+      skipped.push({ name: label, reason: 'Missing install target', code: 'no_target', ...target });
       return;
     }
 
@@ -355,8 +557,10 @@ export class AppRehydrationService {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`Rehydration failed for ${item.appUrn}: ${message}`);
-      skipped.push({ name: label, reason: message });
-      if (isGrantRefusal(error)) {
+      const refusal = isGrantRefusal(error);
+      const params = messageParams(error);
+      skipped.push({ name: label, reason: message, appUrn: item.appUrn, code: refusal ? 'refused' : 'failed', ...(params ? { params } : {}) });
+      if (refusal) {
         refused.push(item.appUrn);
       }
     }

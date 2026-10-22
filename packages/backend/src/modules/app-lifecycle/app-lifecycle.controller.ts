@@ -1,16 +1,20 @@
+import { TranslatableError } from '@/common/error/translatable-error';
 import { castAppUrn } from '@/common/helpers/app-helpers';
-import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpStatus, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { AuthGuard } from '../auth/auth.guard';
 import { AppLifecycleService } from './app-lifecycle.service';
 import { HubAccessService } from './hub-access.service';
 import { AppRehydrationService } from './app-rehydration.service';
+import { PairingAppRestoreService } from './pairing-app-restore.service';
 import {
+  AcknowledgeRestoreResponseDto,
   AppFormBody,
   CancelOperationBody,
   CancelOperationResponseDto,
   LifecycleRequestDto,
+  RehydrateStatusDto,
   ResetAppBody,
   UninstallAppBody,
   UpdateAppBody,
@@ -31,6 +35,7 @@ export class AppLifecycleController {
     private readonly appRehydrationService: AppRehydrationService,
     private readonly hubAccessService: HubAccessService,
     private readonly whois: MarketplaceWhoIsService,
+    private readonly pairingAppRestore: PairingAppRestoreService,
   ) {}
 
   @Get('rehydrate/plan')
@@ -38,13 +43,41 @@ export class AppLifecycleController {
     return this.appRehydrationService.buildPlan();
   }
 
+  /**
+   * What the next sign-in should open, from the Hub's own record of this pairing's restore rather than
+   * anything a browser kept. `noticePending` is only for someone who may manage the Hub: a member is
+   * not offered the setup wizard either (`AppController.getAppContext`) and may not acknowledge.
+   */
   @Get('rehydrate/status')
-  async getRehydrateStatus() {
-    const [status, restoreIntent] = await Promise.all([
-      this.appRehydrationService.getRehydrationStatus(),
-      this.appRehydrationService.hasRestoreIntent(),
-    ]);
-    return { ...status, restoreIntent };
+  @ApiResponse({ type: RehydrateStatusDto })
+  async getRehydrateStatus(@Req() req: Request) {
+    const { state, summary, ...status } = await this.appRehydrationService.getRestoreStatus(() => this.whois.hubManageHint(req));
+
+    if (status.checking) {
+      // Someone is waiting on the answer, so ask now rather than at the next 15 s pass. The service
+      // spaces these out, so a page polling this does not ask the Portal on every poll.
+      this.pairingAppRestore.requestCheck();
+    }
+
+    return RehydrateStatusDto.parse({ ...status, ...(state ? { state } : {}), ...(summary ? { summary } : {}) }, { reportOnly: true });
+  }
+
+  /**
+   * The person who saw this pairing's restore moves on. The next sign-in opens the Hub.
+   *
+   * ⚠ IT ASKS THE ROLE STORED AT SIGN-IN, AS `noticePending` DOES. The status route decides from
+   * `hubManageHint` who the restore page holds, so the same person must be able to let go of it.
+   * `HubManagerGuard` asks the Portal again: with the Portal unreachable the page could then neither be
+   * acknowledged nor left. Every Continue went to Home and straight back.
+   */
+  @Post('rehydrate/acknowledge')
+  @ApiResponse({ type: AcknowledgeRestoreResponseDto })
+  async acknowledgeRestore(@Req() req: Request) {
+    if (!(await this.whois.hubManageHint(req))) {
+      throw new TranslatableError('HUB_MANAGE_ROLE_REQUIRED', {}, HttpStatus.FORBIDDEN);
+    }
+    await this.appRehydrationService.acknowledgeRestore();
+    return AcknowledgeRestoreResponseDto.parse({ success: true }, { reportOnly: true });
   }
 
   @Post('rehydrate')

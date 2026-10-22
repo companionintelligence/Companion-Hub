@@ -18,6 +18,7 @@ import {
   hasRestoreIntent,
   readPairingAppCheck,
   readRehydrationState,
+  startRestoreNotice,
   writePairingAppCheck,
   writeRestoreIntent,
 } from './registration-recovery-state';
@@ -71,9 +72,12 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
   /** How long a restore's installs may hold app sync before it runs anyway. */
   static readonly SETTLE_DEADLINE_MS = 2 * 60 * 60_000;
   static readonly CATALOG_PULL_COOLDOWN_MS = 10 * 60_000;
+  /** The least time between two passes asked for by someone waiting on the answer (`requestCheck`). */
+  static readonly REQUEST_MIN_INTERVAL_MS = 5_000;
 
   private timer: NodeJS.Timeout | null = null;
   private checkInFlight: Promise<PairingAppCheckOutcome> | null = null;
+  private lastRequestedAt = 0;
   private failures = 0;
   private retryAt = 0;
   /** Bumped by {@link forget}. A pass that began before it neither writes a check nor builds a backoff. */
@@ -152,6 +156,23 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
     }
 
     return this.checkInFlight;
+  }
+
+  /**
+   * A pass now, for someone signed in and waiting on the answer, rather than at the next timer pass.
+   * At most one every `REQUEST_MIN_INTERVAL_MS`: an open restore page asks every 2 s, and a check that
+   * waits on apps to settle reads the device's apps from the Portal on every pass.
+   */
+  requestCheck(): void {
+    const now = Date.now();
+    if (now - this.lastRequestedAt < PairingAppRestoreService.REQUEST_MIN_INTERVAL_MS) {
+      return;
+    }
+    this.lastRequestedAt = now;
+
+    void this.runCheck().catch((error) => {
+      this.logger.error(`[PairingAppRestore] Check failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
   }
 
   private async check(): Promise<PairingAppCheckOutcome> {
@@ -287,6 +308,8 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
       restore: { startedAt: new Date().toISOString(), portalAppNames: portalApps.map((app) => app.name) },
     };
     await writeRestoreIntent();
+    // Before the run: whoever signs in while it is under way is shown it, not the setup wizard.
+    await startRestoreNotice();
     await writePairingAppCheck(withRestore);
 
     return withRestore;

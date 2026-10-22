@@ -51,11 +51,47 @@ export interface RehydrationPlan {
   localAppDataCount: number;
 }
 
+/**
+ * Why a restore left an app alone. `already_running` and `busy` are apps that are on the Hub anyway;
+ * the rest were not restored.
+ */
+export type RehydrationSkipCode = 'already_running' | 'busy' | 'unlisted' | 'no_target' | 'refused' | 'failed';
+
+export interface RehydrationSkipped {
+  /** The app's name as Companion Portal lists it for the device. */
+  name: string;
+  /** A message key when the install refused with one (`APP_INSTALL_FORM_ERROR_INVALID`), else plain text. */
+  reason: string;
+  appUrn?: string;
+  code?: RehydrationSkipCode;
+  /** The values the message key is written with, such as the `fields` an install form was missing. */
+  params?: Record<string, string>;
+}
+
 export interface RehydrationStateFile {
   completedAt: string;
   queuedUrns: string[];
   startedUrns: string[];
-  skipped: Array<{ name: string; reason: string }>;
+  skipped: RehydrationSkipped[];
+}
+
+/** Why an app the Portal lists for this device was not restored when no store on this Hub lists it. */
+export const UNLISTED_REASON = 'No matching marketplace app found for Portal application';
+
+/** An app the restore left alone because it is on the Hub already, which is not a failure to restore it. */
+export function isKeptAppSkip(entry: RehydrationSkipped): boolean {
+  return entry.code === 'already_running' || entry.code === 'busy';
+}
+
+const SKIP_CODES: Partial<Record<RehydrationAction, RehydrationSkipCode>> = {
+  skip_running: 'already_running',
+  skip_busy: 'busy',
+  skip_unresolved: 'unlisted',
+};
+
+/** The code a plan item that is not acted on is recorded with. */
+export function skipCodeForAction(action: RehydrationAction): RehydrationSkipCode {
+  return SKIP_CODES[action] ?? 'no_target';
 }
 
 /** Walk APP_DATA_DIR for installable app folders with optional data/ or app.env. */
@@ -188,7 +224,7 @@ export function buildRehydrationPlan(input: {
       items.push({
         portalApp,
         action: 'skip_unresolved',
-        reason: 'No matching marketplace app found for Portal application',
+        reason: UNLISTED_REASON,
         hasExistingData: false,
         hasInstalledCompose: false,
       });

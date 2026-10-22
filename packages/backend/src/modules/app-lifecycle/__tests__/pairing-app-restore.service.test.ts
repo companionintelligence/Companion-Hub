@@ -23,6 +23,7 @@ vi.mock('../registration-recovery-state', () => ({
   writeRestoreIntent: vi.fn(),
   clearRestoreIntent: vi.fn(),
   readRehydrationState: vi.fn(),
+  startRestoreNotice: vi.fn(),
 }));
 
 const portalApp = (name: string) => ({ id: `id-${name}`, name, slug: name, port: 80, publicDomain: null });
@@ -49,6 +50,7 @@ describe('PairingAppRestoreService', () => {
     check: PairingAppCheckFile | null;
     restoreIntent: boolean;
     rehydration: RehydrationStateFile | null;
+    noticeStarted: boolean;
   };
   let registration: MockProxy<RegistrationService>;
   let cloudflare: MockProxy<CloudflareClientService>;
@@ -67,7 +69,10 @@ describe('PairingAppRestoreService', () => {
     vi.clearAllMocks();
 
     // The state files, in memory, so what one pass writes the next one reads.
-    state = { check: { markedAt: pairedAt }, restoreIntent: false, rehydration: null };
+    state = { check: { markedAt: pairedAt }, restoreIntent: false, rehydration: null, noticeStarted: false };
+    vi.mocked(recovery.startRestoreNotice).mockImplementation(async () => {
+      state.noticeStarted = true;
+    });
     vi.mocked(recovery.readPairingAppCheck).mockImplementation(async () => state.check);
     vi.mocked(recovery.writePairingAppCheck).mockImplementation(async (check) => {
       state.check = check ?? { markedAt: new Date().toISOString() };
@@ -152,6 +157,20 @@ describe('PairingAppRestoreService', () => {
       expect(state.check?.restore?.portalAppNames).toEqual(['wordpress', 'ci-memory', 'ci-hermes']);
       // Syncing now would leave out every app still installing, and the Portal would release it.
       expect(exposureSync.syncExposurePublic).not.toHaveBeenCalled();
+    });
+
+    /*
+     * Nobody is signed in while this runs, so the person who signs in next was never on the restore
+     * page. What sent them there was a choice one browser had stored; everyone else got the setup
+     * wizard on a Hub that already had its apps. An app that failed was only in the log.
+     */
+    it('leaves a notice of the restore for whoever signs in next', async () => {
+      await service.runCheck();
+
+      expect(state.noticeStarted).toBe(true);
+      expect(vi.mocked(recovery.startRestoreNotice).mock.invocationCallOrder[0]).toBeLessThan(
+        rehydration.executeRehydrate.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+      );
     });
 
     // A factory reset removed the check while the pass waited on the Portal. Written back, it named the old device's apps.
@@ -290,6 +309,7 @@ describe('PairingAppRestoreService', () => {
 
     expect(state.check).toBeNull();
     expect(state.restoreIntent).toBe(false);
+    expect(state.noticeStarted).toBe(false);
     expect(rehydration.executeRehydrate).not.toHaveBeenCalled();
     expect(exposureSync.syncExposurePublic).toHaveBeenCalledTimes(1);
   });
@@ -401,5 +421,25 @@ describe('PairingAppRestoreService', () => {
 
     expect([first, second]).toEqual(['released', 'released']);
     expect(cloudflare.getDeviceApplications).toHaveBeenCalledTimes(1);
+  });
+
+  // The status route asks on every poll of an open restore page, every 2 s per tab.
+  it('runs at most one asked-for pass in each interval, however often a waiting page asks', () => {
+    let now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const run = vi.spyOn(service, 'runCheck').mockResolvedValue('waiting');
+    try {
+      service.requestCheck();
+      service.requestCheck();
+      now += PairingAppRestoreService.REQUEST_MIN_INTERVAL_MS - 1;
+      service.requestCheck();
+      expect(run).toHaveBeenCalledTimes(1);
+
+      now += 1;
+      service.requestCheck();
+      expect(run).toHaveBeenCalledTimes(2);
+    } finally {
+      clock.mockRestore();
+    }
   });
 });

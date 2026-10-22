@@ -1528,6 +1528,50 @@ export type PairingUpgradeBody = {
     publicKey: string;
 };
 
+export type RehydrateStatusDto = {
+    completed: boolean;
+    state?: {
+        completedAt: string;
+        queuedUrns: Array<string>;
+        startedUrns: Array<string>;
+        skipped: Array<{
+            name: string;
+            reason: string;
+            appUrn?: string;
+            code?: 'already_running' | 'busy' | 'unlisted' | 'no_target' | 'refused' | 'failed';
+            params?: {
+                [key: string]: string;
+            };
+        }>;
+    };
+    restoreIntent: boolean;
+    checking: boolean;
+    noticePending: boolean;
+    summary?: {
+        completedAt: string;
+        restored: Array<{
+            name: string;
+            urn: string;
+            status: string;
+            usesAi: boolean;
+        }>;
+        notRestored: Array<{
+            name: string;
+            urn?: string;
+            reason: string;
+            code?: 'already_running' | 'busy' | 'unlisted' | 'no_target' | 'refused' | 'failed';
+            params?: {
+                [key: string]: string;
+            };
+        }>;
+        aiModelChosen: boolean;
+    };
+};
+
+export type AcknowledgeRestoreResponseDto = {
+    success: boolean;
+};
+
 export type AppFormBody = {
     port?: number;
     exposed?: boolean;
@@ -5191,8 +5235,23 @@ export type GetRehydrateStatusData = {
 };
 
 export type GetRehydrateStatusResponses = {
-    200: unknown;
+    default: RehydrateStatusDto;
 };
+
+export type GetRehydrateStatusResponse = GetRehydrateStatusResponses[keyof GetRehydrateStatusResponses];
+
+export type AcknowledgeRestoreData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/app-lifecycle/rehydrate/acknowledge';
+};
+
+export type AcknowledgeRestoreResponses = {
+    default: AcknowledgeRestoreResponseDto;
+};
+
+export type AcknowledgeRestoreResponse = AcknowledgeRestoreResponses[keyof AcknowledgeRestoreResponses];
 
 export type ExecuteRehydrateData = {
     body: RehydrateBody;

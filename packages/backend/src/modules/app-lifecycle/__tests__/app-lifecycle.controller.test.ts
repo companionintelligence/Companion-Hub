@@ -7,6 +7,7 @@ import { AppLifecycleController } from '../app-lifecycle.controller';
 import { AppLifecycleService } from '../app-lifecycle.service';
 import { AppRehydrationService } from '../app-rehydration.service';
 import { HubAccessService } from '../hub-access.service';
+import { PairingAppRestoreService } from '../pairing-app-restore.service';
 
 /*
  * The service decides from the actor it is handed (CI-Hub#1397), so what matters
@@ -21,6 +22,7 @@ describe('AppLifecycleController — names the actor for every lifecycle call', 
   let lifecycle: MockProxy<AppLifecycleService>;
   let rehydration: MockProxy<AppRehydrationService>;
   let whois: MockProxy<MarketplaceWhoIsService>;
+  let pairingRestore: MockProxy<PairingAppRestoreService>;
   let controller: AppLifecycleController;
 
   beforeEach(() => {
@@ -30,7 +32,8 @@ describe('AppLifecycleController — names the actor for every lifecycle call', 
     whois.lifecycleActor.mockReturnValue(actor);
     lifecycle.installApp.mockResolvedValue({ requestId: 'r' } as never);
     lifecycle.updateAppConfig.mockResolvedValue({ requestId: 'r' } as never);
-    controller = new AppLifecycleController(lifecycle, rehydration, mock<HubAccessService>(), whois);
+    pairingRestore = mock<PairingAppRestoreService>();
+    controller = new AppLifecycleController(lifecycle, rehydration, mock<HubAccessService>(), whois, pairingRestore);
   });
 
   it('install', async () => {
@@ -89,5 +92,68 @@ describe('AppLifecycleController — names the actor for every lifecycle call', 
 
     expect(whois.lifecycleActor).toHaveBeenCalledWith(req, action);
     expect(lifecycle[sweep]).toHaveBeenCalledWith(actor);
+  });
+});
+
+describe('AppLifecycleController restore status', () => {
+  const req = { hubPrincipal: 'session', user: { id: 7 } } as unknown as Request;
+  const base = { completed: false, state: null, restoreIntent: false, checking: false, noticePending: false };
+
+  let rehydration: MockProxy<AppRehydrationService>;
+  let whois: MockProxy<MarketplaceWhoIsService>;
+  let pairingRestore: MockProxy<PairingAppRestoreService>;
+  let controller: AppLifecycleController;
+
+  beforeEach(() => {
+    rehydration = mock<AppRehydrationService>();
+    whois = mock<MarketplaceWhoIsService>();
+    pairingRestore = mock<PairingAppRestoreService>();
+    controller = new AppLifecycleController(mock<AppLifecycleService>(), rehydration, mock<HubAccessService>(), whois, pairingRestore);
+  });
+
+  it('asks whether this person may manage the Hub, from the role stored at their sign-in', async () => {
+    whois.hubManageHint.mockResolvedValue(true);
+    rehydration.getRestoreStatus.mockImplementation(async (mayManage) => ({ ...base, noticePending: await mayManage() }));
+
+    const status = await controller.getRehydrateStatus(req);
+
+    expect(whois.hubManageHint).toHaveBeenCalledWith(req);
+    expect(status).toMatchObject({ noticePending: true });
+    // `null` is not something the generated client can express.
+    expect(status).not.toHaveProperty('state');
+  });
+
+  // Someone is signed in and waiting on the answer; the next background pass is up to 15 s away.
+  it('asks the apps check to run now while a pairing waits on it', async () => {
+    rehydration.getRestoreStatus.mockResolvedValue({ ...base, checking: true });
+
+    await controller.getRehydrateStatus(req);
+
+    expect(pairingRestore.requestCheck).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves the apps check to its own schedule otherwise', async () => {
+    rehydration.getRestoreStatus.mockResolvedValue(base);
+
+    await controller.getRehydrateStatus(req);
+
+    expect(pairingRestore.requestCheck).not.toHaveBeenCalled();
+  });
+
+  it('records that the restore was seen by someone the status route held on the restore page', async () => {
+    whois.hubManageHint.mockResolvedValue(true);
+
+    await expect(controller.acknowledgeRestore(req)).resolves.toEqual({ success: true });
+
+    expect(whois.hubManageHint).toHaveBeenCalledWith(req);
+    expect(rehydration.acknowledgeRestore).toHaveBeenCalled();
+  });
+
+  it('refuses someone the notice was not for', async () => {
+    whois.hubManageHint.mockResolvedValue(false);
+
+    await expect(controller.acknowledgeRestore(req)).rejects.toThrow('HUB_MANAGE_ROLE_REQUIRED');
+
+    expect(rehydration.acknowledgeRestore).not.toHaveBeenCalled();
   });
 });

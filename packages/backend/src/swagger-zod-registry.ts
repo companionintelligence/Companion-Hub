@@ -29,10 +29,12 @@ import {
   VerifyTotpBody,
 } from './modules/auth/dto/auth.dto';
 import {
+  AcknowledgeRestoreResponseDto,
   AppFormBody,
   CancelOperationBody,
   CancelOperationResponseDto,
   LifecycleRequestDto,
+  RehydrateStatusDto,
   ResetAppBody,
   UninstallAppBody,
   UpdateAppBody,
@@ -141,6 +143,8 @@ export const SWAGGER_ZOD_DTOS: ZodDto[] = [
   CancelOperationBody,
   CancelOperationResponseDto,
   LifecycleRequestDto,
+  RehydrateStatusDto,
+  AcknowledgeRestoreResponseDto,
   ResetAppBody,
   UninstallAppBody,
   UpdateAppBody,

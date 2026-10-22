@@ -6,6 +6,72 @@ import type { RehydrationStateFile } from './app-rehydration';
 const restoreIntentPath = () => path.join(DATA_DIR, 'state', 'restore-intent.json');
 const rehydrationStatePath = () => path.join(DATA_DIR, 'state', 'rehydration.json');
 const pairingAppCheckPath = () => path.join(DATA_DIR, 'state', 'pairing-app-check.json');
+const restoreNoticePath = () => path.join(DATA_DIR, 'state', 'restore-notice.json');
+
+/**
+ * That this pairing's apps were restored, kept until someone who manages the Hub has seen what came back.
+ *
+ * ⚠ THE RESTORE RUNS WITH NOBODY SIGNED IN. `PairingAppRestoreService` restores a device's apps right
+ * after pairing, so the person who signs in next was never on the restore page. What sent them there
+ * was a choice one browser kept in `sessionStorage`; any other browser, the CLI, the desktop app or a
+ * restart got the setup wizard on a Hub that already had its apps. An app that failed to restore
+ * was only in the log. The Hub decides from this file instead.
+ *
+ * `startedAt` is set when a restore begins, `acknowledgedAt` once someone has seen it. A notice that was
+ * acknowledged before the restore began (the restore page ran it) is not started again. Pairing clears
+ * it along with the rehydration state, so a notice always belongs to the current pairing.
+ */
+export interface RestoreNoticeFile {
+  startedAt?: string;
+  acknowledgedAt?: string;
+}
+
+export async function readRestoreNotice(): Promise<RestoreNoticeFile | null> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(restoreNoticePath(), 'utf-8');
+  } catch {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as RestoreNoticeFile;
+    return {
+      ...(typeof parsed.startedAt === 'string' ? { startedAt: parsed.startedAt } : {}),
+      ...(typeof parsed.acknowledgedAt === 'string' ? { acknowledgedAt: parsed.acknowledgedAt } : {}),
+    };
+  } catch {
+    // A notice that cannot be read is not shown: it would hold every sign-in on the restore page.
+    return null;
+  }
+}
+
+async function writeRestoreNotice(notice: RestoreNoticeFile): Promise<void> {
+  await fs.mkdir(path.dirname(restoreNoticePath()), { recursive: true });
+  await fs.writeFile(restoreNoticePath(), JSON.stringify(notice, null, 2), 'utf-8');
+}
+
+/** Records that this pairing's restore began, unless a notice for it is already there. */
+export async function startRestoreNotice(): Promise<void> {
+  if (await readRestoreNotice()) {
+    return;
+  }
+  await writeRestoreNotice({ startedAt: new Date().toISOString() });
+}
+
+/** Records that someone has seen this pairing's restore, so the next sign-in goes on to the Hub. */
+export async function acknowledgeRestoreNotice(): Promise<void> {
+  const existing = await readRestoreNotice();
+  await writeRestoreNotice({ ...existing, acknowledgedAt: new Date().toISOString() });
+}
+
+export async function clearRestoreNotice(): Promise<void> {
+  try {
+    await fs.unlink(restoreNoticePath());
+  } catch {
+    // already cleared
+  }
+}
 
 /**
  * The apps check a pairing leaves for `PairingAppRestoreService`, and the hold it puts on app sync.
@@ -46,10 +112,21 @@ export async function clearRestoreIntent(): Promise<void> {
   }
 }
 
-/** Starts a new check after a pairing, replacing whatever an earlier pairing left. */
+/**
+ * Starts a new check after a pairing, replacing whatever an earlier pairing left, or records the
+ * restore it began (`restore`).
+ *
+ * A new check also clears the restore notice. `startRestoreNotice` keeps a notice it finds, and a
+ * re-pairing that does not reset the registration first (`cihub register` on a Hub the Portal is
+ * rejecting) leaves the rehydration state, and the notice with it, in place. The last pairing's
+ * acknowledged notice then kept this pairing's restore from being shown to anyone.
+ */
 export async function writePairingAppCheck(state: PairingAppCheckFile = { markedAt: new Date().toISOString() }): Promise<void> {
   await fs.mkdir(path.dirname(pairingAppCheckPath()), { recursive: true });
   await fs.writeFile(pairingAppCheckPath(), JSON.stringify(state, null, 2), 'utf-8');
+  if (!state.restore) {
+    await clearRestoreNotice();
+  }
 }
 
 /**
@@ -112,12 +189,14 @@ export async function writeRehydrationState(state: RehydrationStateFile): Promis
   await fs.writeFile(rehydrationStatePath(), JSON.stringify(state, null, 2), 'utf-8');
 }
 
+/** Also clears the restore notice, which describes the run this file records. */
 export async function clearRehydrationState(): Promise<void> {
   try {
     await fs.unlink(rehydrationStatePath());
   } catch {
     // already cleared
   }
+  await clearRestoreNotice();
 }
 
 export async function clearRegistrationRecoveryArtifacts(): Promise<void> {
