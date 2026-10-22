@@ -6665,6 +6665,36 @@ describe('AppLifecycleService', () => {
       expect(afterReply.mock.invocationCallOrder[0]).toBeGreaterThan(reply.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY);
     });
 
+    // A reply that fails (the queue's channel closed) must not leave the old snapshot on disk for good.
+    it("runs the command's tidying up when its reply failed", async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'update', tier: 'before_ponr' });
+      const execute = vi.fn().mockResolvedValue({ success: true, message: 'ok' });
+      const afterReply = vi.fn().mockResolvedValue(undefined);
+      commandFactory.createCommand.mockReturnValue({ execute, afterReply } as any);
+      const reply = vi.fn().mockRejectedValueOnce(new Error('channel closed')).mockResolvedValue(undefined);
+
+      await service.invokeCommand(update, reply);
+
+      expect(afterReply).toHaveBeenCalledTimes(1);
+    });
+
+    // The tidying up can take the helper's 30 minutes; the app's next operation must not wait for it.
+    it("frees the app before the command's tidying up has finished", async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'update', tier: 'before_ponr' });
+      const afterReply = vi.fn(() => new Promise<void>(() => undefined));
+      commandFactory.createCommand.mockReturnValueOnce({ execute: vi.fn().mockResolvedValue({ success: true, message: 'ok' }), afterReply } as any);
+      await service.invokeCommand(update, vi.fn());
+
+      const nextRequestId = '00000000-0000-4000-8000-000000000fed';
+      operationRegistry.register(appUrn, { requestId: nextRequestId, command: 'start', tier: 'safe' });
+      const next = vi.fn().mockResolvedValue({ success: true, message: 'started' });
+      commandFactory.createCommand.mockReturnValueOnce({ execute: next } as any);
+      await service.invokeCommand({ appUrn, command: 'start', requestId: nextRequestId, form: {} } as any, vi.fn());
+
+      expect(afterReply).toHaveBeenCalledTimes(1);
+      expect(next).toHaveBeenCalledTimes(1);
+    });
+
     it('gives the command a deadline that ends five minutes before the publisher stops waiting for its reply', async () => {
       const entry = operationRegistry.register(appUrn, { requestId, command: 'update', tier: 'before_ponr' });
       const execute = vi.fn().mockResolvedValue({ success: true, message: 'ok' });

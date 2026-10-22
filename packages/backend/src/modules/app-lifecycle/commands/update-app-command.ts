@@ -542,6 +542,12 @@ export class UpdateAppCommand extends AppLifecycleCommand {
 
   /** Leave {@link discardSnapshot} for after the reply (see `afterReply`). */
   private discardSnapshotAfterReply(snapshotResult: Awaited<ReturnType<DockerService['createPreUpdateVolumeSnapshot']>> | undefined): void {
+    if (snapshotResult?.snapshotBaseDir) {
+      // Said now, so a Hub stopped before the removal ran leaves a line naming the folder it left behind.
+      this.moduleRef
+        .get(LoggerService, { strict: false })
+        ?.info(`The pre-update snapshot ${snapshotResult.snapshotBaseDir} is no longer needed; it is removed once the reply is out`);
+    }
     this.afterReplyWork = () => this.discardSnapshot(snapshotResult);
   }
 
@@ -565,7 +571,9 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       }
       if ((await filesystem?.removeDirectory(snapshotResult.snapshotBaseDir)) === false) {
         logger.warn(`Could not remove the pre-update snapshot ${snapshotResult.snapshotBaseDir}; it is left on disk`);
+        return;
       }
+      logger.info(`Removed the pre-update snapshot ${snapshotResult.snapshotBaseDir}`);
     } catch (err) {
       logger.warn(`Could not remove the pre-update snapshot ${snapshotResult.snapshotBaseDir}: ${err}`);
     }

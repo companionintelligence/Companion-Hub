@@ -602,6 +602,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     const release = await this.mutex.acquire(data.appUrn);
+    // What the command left for after its reply (an update's old snapshot), started in `finally`.
+    let afterReply: (() => Promise<void>) | undefined;
 
     let job: LifecycleJob | null = null;
     if (this.lifecycleJobService) {
@@ -688,6 +690,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         : undefined;
 
       const command = this.commandFactory.createCommand(data);
+      afterReply = command.afterReply?.bind(command);
       // Only pass the context when there is one, so commands without cancellation see the original 2-arg call.
       const result = (await (ctx ? command.execute(data.appUrn, data.form, ctx) : command.execute(data.appUrn, data.form))) as z.output<
         typeof appEventResultSchema
@@ -727,14 +730,6 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       }
 
       await reply(result);
-
-      // Tidying up the command left for after its reply (an update's snapshot): not awaited, so it
-      // neither delays the reply nor holds the app's lock.
-      void command
-        .afterReply?.()
-        .catch((err: unknown) =>
-          this.logger.warn(`Tidying up after '${data.command}' for ${data.appUrn} failed: ${err instanceof Error ? err.message : String(err)}`),
-        );
     } catch (err) {
       if (job) {
         await this.lifecycleJobService?.failJob(job.id, err instanceof Error ? err : String(err)).catch(() => null);
@@ -753,6 +748,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       // transitional statuses (e.g. update -> start-after-update). Superseded handlers
       // still lose the claim when a newer op replaced the registry entry.
       release();
+      // Tidying up the command left for after its reply: not awaited, so it neither delays the reply
+      // nor holds the app's lock. Started here rather than after the reply, so a reply that failed
+      // does not leave it undone.
+      if (afterReply) {
+        void afterReply().catch((err: unknown) =>
+          this.logger.warn(`Tidying up after '${data.command}' for ${data.appUrn} failed: ${err instanceof Error ? err.message : String(err)}`),
+        );
+      }
       if (isInstall || data.command === 'update') {
         // Whatever the install's or update's last event was, a new tab must not be told it is still
         // installing or updating. An update can end with no event for the app: a superseded

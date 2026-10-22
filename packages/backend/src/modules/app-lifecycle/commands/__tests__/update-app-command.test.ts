@@ -646,10 +646,13 @@ describe('UpdateAppCommand', () => {
   it('removes the pre-update snapshot after a successful update, once the reply is out', async () => {
     const result = await command.execute(appUrn, {});
     expect(filesystem.removeDirectory).not.toHaveBeenCalledWith('/data/snapshots/test-app/snap-1');
+    // Said before the reply, so a Hub stopped before the removal leaves a line naming the folder.
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('/data/snapshots/test-app/snap-1 is no longer needed'));
     await command.afterReply();
 
     expect(result).toMatchObject({ success: true });
     expect(filesystem.removeDirectory).toHaveBeenCalledWith('/data/snapshots/test-app/snap-1');
+    expect(logger.info).toHaveBeenCalledWith('Removed the pre-update snapshot /data/snapshots/test-app/snap-1');
   });
 
   it('snapshots the data folder too when no backup was taken', async () => {
