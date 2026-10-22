@@ -688,12 +688,11 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
 
   /**
    * Forgets the CPU samples, the cached probe verdict, a probe still running and the last port
-   * result an app gathered in an earlier run. Every
-   * start, stop, restart, update or reset writes the app's row, which moves `updatedAt`, and a
-   * recreated container has a new id; either one means the samples and the verdict describe
-   * processes that are gone. Kept, they let an app that was fixed and started again inside the
-   * probe cache's minute keep the "degraded" verdict and Force Stop, and a newly broken one keep the
-   * healthy verdict.
+   * result an app gathered in an earlier run. Every start, stop, restart, update or reset writes the
+   * app's row, which moves `updatedAt`, and a recreated container has a new id; either one means the
+   * samples and the verdict describe processes that are gone. Kept, they let an app that was fixed
+   * and started again inside the probe cache's minute keep the "degraded" verdict and Force Stop,
+   * and a newly broken one keep the healthy verdict.
    *
    * Only a container id the run hasn't seen starts a new one. A container can drop out of a single
    * sample (`getAppRuntimeStats` skips one whose inspect timed out, which a busy host makes more
