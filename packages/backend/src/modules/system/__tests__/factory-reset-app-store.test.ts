@@ -260,6 +260,19 @@ describe('FactoryResetService: the app stores', () => {
     expect(vol.existsSync(path.join('/data', 'repos', 'my-store'))).toBe(false);
   });
 
+  // A catalog download that read the stores before the reset can write that store's folder back. The
+  // marketplace still held the store in memory until a restart, so its apps came back with the folder.
+  it('lists no app of a store a person added when its folder comes back after the reset', async () => {
+    const { reset, marketplace } = hub();
+    await marketplace.initialize();
+
+    await reset.execute();
+    await settle();
+    writeCatalog('my-store');
+
+    await expect(marketplace.getAvailableAppUrns()).resolves.not.toContain('my-wiki:my-store');
+  });
+
   // The restore after pairing again waited for the catalog for good: "App sync stays held because the apps
   // could not be restored: CI Portal lists 2 app(s) for this device, but the app catalog has not been
   // downloaded yet", until the Hub restarted.
