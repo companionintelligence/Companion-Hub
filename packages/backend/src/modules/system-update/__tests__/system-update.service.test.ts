@@ -249,6 +249,36 @@ describe('SystemUpdateService', () => {
       expect(agentNotifyService.notify).toHaveBeenLastCalledWith('system.update_available', { current: '0.2.70', latest: '0.2.72' }, 'low');
     });
 
+    it('does not wake agents about an older release when the registry briefly lists fewer tags', async () => {
+      const agentNotifyService = { notify: vi.fn().mockResolvedValue(true) };
+      service = new SystemUpdateService(mockLogger as never, mockConfig as never, mockRegistryService as never, agentNotifyService as never);
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core6Appliance(RELEASE_PIN));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71', '0.2.72']);
+
+      await service.checkForUpdates();
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+      await service.checkForUpdates();
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71', '0.2.72']);
+      await service.checkForUpdates();
+
+      expect(agentNotifyService.notify).toHaveBeenCalledTimes(1);
+      expect(agentNotifyService.notify).toHaveBeenCalledWith('system.update_available', { current: '0.2.70', latest: '0.2.72' }, 'low');
+    });
+
+    it('tries the same release again when sending the wake failed outright', async () => {
+      const agentNotifyService = { notify: vi.fn().mockRejectedValueOnce(new Error('boom')).mockResolvedValue(true) };
+      service = new SystemUpdateService(mockLogger as never, mockConfig as never, mockRegistryService as never, agentNotifyService as never);
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core6Appliance(RELEASE_PIN));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+
+      await service.checkForUpdates();
+      await service.checkForUpdates();
+
+      expect(agentNotifyService.notify).toHaveBeenCalledTimes(2);
+    });
+
     // Checked before an agent was installed, or while it was down: the release was never heard.
     it('wakes agents about the same release again when no agent heard it', async () => {
       const agentNotifyService = { notify: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true) };

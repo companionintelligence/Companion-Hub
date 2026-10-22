@@ -3,6 +3,7 @@ import { isIPv4 } from 'node:net';
 import path from 'node:path';
 import fs from 'node:fs';
 import axios from 'axios';
+import * as semver from 'semver';
 import {
   BadRequestException,
   ConflictException,
@@ -226,15 +227,23 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     const target = build.version ? selectReleaseTarget(build.version, tags) : null;
     const updateAvailable = target !== null && blocks.updateBlockedReason === null;
 
-    if (updateAvailable && target !== this.announcedUpdate && this.agentNotifyService) {
-      const announcing = target;
+    // Only a release newer than the announced one wakes agents again. A registry answer that briefly
+    // lists fewer tags (a stale mirror, a pulled release) must not wake them about an older one.
+    const announcing = updateAvailable ? target : null;
+    if (announcing !== null && this.agentNotifyService && (this.announcedUpdate === null || semver.gt(announcing, this.announcedUpdate))) {
       this.announcedUpdate = announcing;
-      void this.agentNotifyService.notify('system.update_available', { current, latest: announcing }, 'low').then((woken) => {
-        // Nobody heard it (no agent installed yet, below the floor, unreachable): a later check tries again.
-        if (!woken && this.announcedUpdate === announcing) {
-          this.announcedUpdate = null;
-        }
-      });
+      void this.agentNotifyService
+        .notify('system.update_available', { current, latest: announcing }, 'low')
+        .catch((error: unknown) => {
+          this.logger.warn(`Could not wake agents about Hub ${announcing}: ${error instanceof Error ? error.message : String(error)}`);
+          return false;
+        })
+        .then((woken) => {
+          // Nobody heard it (no agent installed yet, below the floor, unreachable): a later check tries again.
+          if (!woken && this.announcedUpdate === announcing) {
+            this.announcedUpdate = null;
+          }
+        });
     }
 
     return {
