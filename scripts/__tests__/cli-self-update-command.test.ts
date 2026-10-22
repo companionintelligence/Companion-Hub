@@ -9,7 +9,7 @@
 import { existsSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   downloadReleaseAsset: vi.fn(),
@@ -53,6 +53,11 @@ describe.skipIf(process.platform === 'win32')('cihub self-update download folder
     });
   });
 
+  // A failed self-update sets exitCode 1. Left set, it outlives the test that caused it.
+  afterEach(() => {
+    process.exitCode = undefined;
+  });
+
   it('downloads into a new folder only this user can open, installs from it and removes it', async () => {
     await runSelfUpdateCommand([], snapshot);
 
@@ -88,6 +93,5 @@ describe.skipIf(process.platform === 'win32')('cihub self-update download folder
     expect(existsSync(seenCacheDir as string)).toBe(false);
     expect(mocks.installBinaryOverSelf).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
-    process.exitCode = undefined;
   });
 });

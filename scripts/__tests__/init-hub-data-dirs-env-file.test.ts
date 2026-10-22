@@ -106,12 +106,13 @@ describe('initHubDataDirs on an appliance env file', () => {
   });
 
   it('keeps a uid the desktop app pinned when the socket is root-only and pins 0:0 only where none is set', () => {
+    // A non-zero uid, so overwriting it with the 0 this branch would pin cannot pass as keeping it.
     docker.socketRootOnly = true;
-    const envPath = writeEnv('.env.dev', `ROOT_FOLDER_HOST=${dir}\nCI_HUB_CONTAINER_UID=0\n`);
+    const envPath = writeEnv('.env.dev', `ROOT_FOLDER_HOST=${dir}\nCI_HUB_CONTAINER_UID=501\n`);
 
     initHubDataDirs({ appliance: true });
 
-    expect(readFileSync(envPath, 'utf-8')).toBe(`ROOT_FOLDER_HOST=${dir}\nCI_HUB_CONTAINER_UID=0\nCI_HUB_CONTAINER_GID=0\n`);
+    expect(readFileSync(envPath, 'utf-8')).toBe(`ROOT_FOLDER_HOST=${dir}\nCI_HUB_CONTAINER_UID=501\nCI_HUB_CONTAINER_GID=0\n`);
   });
 });
 
