@@ -118,6 +118,7 @@ describe('a registration reset that overtakes a pairing', () => {
       },
       setDomain: async () => undefined,
       forgetPersistedUserSettings: () => undefined,
+      replaceHubLocalKey: () => undefined,
     };
   }
 

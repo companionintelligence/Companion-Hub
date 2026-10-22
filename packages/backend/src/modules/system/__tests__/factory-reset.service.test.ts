@@ -7,26 +7,46 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { DOCKERODE } from '@/modules/docker/constants';
 import { Test } from '@nestjs/testing';
 import { ModuleRef } from '@nestjs/core';
-import type { SQLWrapper } from 'drizzle-orm';
-import { PgDialect } from 'drizzle-orm/pg-core';
+import { getTableName, is, type SQLWrapper } from 'drizzle-orm';
+import { PgDialect, PgTable } from 'drizzle-orm/pg-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { FactoryResetService } from '../factory-reset.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { BearerOrgMembershipCache } from '@/modules/auth/bearer-org-membership.cache';
+import { AuthMiddleware } from '@/modules/auth/auth.middleware';
+import { PairingAppRestoreService } from '@/modules/app-lifecycle/pairing-app-restore.service';
+import { clearPairingAppCheck } from '@/modules/app-lifecycle/registration-recovery-state';
 import { APP_DATA_DIR, TUNNEL_DIR } from '@/common/constants';
 import { TranslatableError } from '@/common/error/translatable-error';
+import * as schema from '@/core/database/drizzle/schema';
 import { app } from '@/core/database/drizzle/schema';
+import { ForwardAuthIdentityResolver } from '@/modules/auth/forward-auth-identity.resolver';
+import { HubPoolIdentityService } from '@/modules/hub-pool/hub-pool-identity.service';
+import { HubPoolPairingPinService } from '@/modules/hub-pool/hub-pool-pairing-pin.service';
+import { AppCredentialsService } from '@/modules/inference/app-credentials.service';
+import { HANDOUT_RECORDS_PATH, type RecordedHandout } from '@/modules/inference/app-handout-record';
 import { CloudFallbackService } from '@/modules/inference/cloud-fallback.service';
+import { InferenceRouterService } from '@/modules/inference/inference-router.service';
+import { ModelRegistryService } from '@/modules/inference/model-registry.service';
+import { PINNED_MODELS_PATH, writePinnedModels } from '@/modules/inference/pinned-models-record';
 import type { CloudProviderConfig } from '@ci-hub/common/types';
 import fs from 'node:fs';
 import path from 'node:path';
 import { vol } from 'memfs';
+import type { Request } from 'express';
 
 const uninstallExecute = vi.fn().mockResolvedValue({ success: true, message: 'ok' });
 
 /** `ConfigurationService.get` on a Hub whose data folder is `/data`, mounted from an ordinary ROOT_FOLDER_HOST. */
 const configurationValue = (key: string) => (key === 'rootFolderHost' ? '/opt/ci-hub' : { dataDir: '/data' });
+
+// These state files are written with `node:fs/promises`, which the suite's memfs does not cover.
+vi.mock('@/modules/app-lifecycle/registration-recovery-state', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/modules/app-lifecycle/registration-recovery-state')>()),
+  clearPairingAppCheck: vi.fn(async () => undefined),
+  clearRegistrationRecoveryArtifacts: vi.fn(async () => undefined),
+}));
 
 vi.mock('@/modules/app-lifecycle/commands/uninstall-app-command', () => ({
   UninstallAppCommand: class {
@@ -42,6 +62,7 @@ describe('FactoryResetService', () => {
   let sessionUserCache: SessionUserCache;
   let registrationService: MockProxy<RegistrationService>;
   let bearerOrgMembership: BearerOrgMembershipCache;
+  let moduleRefMock: MockProxy<ModuleRef>;
 
   beforeEach(async () => {
     uninstallExecute.mockClear();
@@ -52,7 +73,7 @@ describe('FactoryResetService', () => {
     };
     filesystem = mock<FilesystemService>();
     bearerOrgMembership = new BearerOrgMembershipCache();
-    const moduleRefMock = mock<ModuleRef>();
+    moduleRefMock = mock<ModuleRef>();
     moduleRefMock.get.mockImplementation((token: unknown) => (token === BearerOrgMembershipCache ? bearerOrgMembership : undefined) as never);
     cache = mock<CacheService>();
     registrationService = mock<RegistrationService>();
@@ -70,6 +91,7 @@ describe('FactoryResetService', () => {
           useValue: {
             get: vi.fn(configurationValue),
             forgetPersistedUserSettings: vi.fn(),
+            replaceHubLocalKey: vi.fn(),
           },
         },
         { provide: CacheService, useValue: cache },
@@ -148,6 +170,49 @@ describe('FactoryResetService', () => {
     expect(statement).toMatch(/\bapi_key\b/);
   });
 
+  /**
+   * A reset that named seven tables left the rest: Memory keys of the apps it removed, Hub Pool pairings
+   * and the key the peers pinned, the old organization's entitlements and the old Hub's job history.
+   * A table added later is emptied too, or this fails until someone says why it should stay.
+   */
+  it('MUST empty every table in the database', async () => {
+    await service.wipeDatabase();
+
+    const { sql: statement } = new PgDialect().sqlToQuery(db.execute.mock.calls[0][0]);
+    const emptied = /^TRUNCATE TABLE (.+) RESTART IDENTITY CASCADE$/
+      .exec(statement)?.[1]
+      .split(', ')
+      .map((name) => name.replaceAll('"', ''));
+    const tables = Object.values(schema)
+      .filter((value): value is PgTable => is(value, PgTable))
+      .map((table) => getTableName(table));
+
+    expect(tables).toEqual(expect.arrayContaining(['memory_connection', 'hub_pool_peer', 'hub_pool_identity', 'lifecycle_job']));
+    expect([...(emptied ?? [])].sort()).toEqual([...tables].sort());
+  });
+
+  // They cache rows of the tables the TRUNCATE empties. `RESTART IDENTITY` hands an old account's id
+  // to the next one: a cached public id was signed for that new person until a restart.
+  it('MUST forget the stable ids forward auth signs and the Hub Pool identity and PIN, even when the TRUNCATE rejects', async () => {
+    const resolver = { forget: vi.fn() };
+    const poolIdentity = { forget: vi.fn() };
+    const pairingPins = { cancel: vi.fn() };
+    const others = new Map<unknown, unknown>([
+      [BearerOrgMembershipCache, bearerOrgMembership],
+      [ForwardAuthIdentityResolver, resolver],
+      [HubPoolIdentityService, poolIdentity],
+      [HubPoolPairingPinService, pairingPins],
+    ]);
+    moduleRefMock.get.mockImplementation(((token: unknown) => others.get(token)) as never);
+    db.execute.mockRejectedValueOnce(new Error('ECONNRESET'));
+
+    await expect(service.wipeDatabase()).rejects.toThrow('ECONNRESET');
+
+    expect(resolver.forget).toHaveBeenCalled();
+    expect(poolIdentity.forget).toHaveBeenCalled();
+    expect(pairingPins.cancel).toHaveBeenCalled();
+  });
+
   it('MUST drop cached session users even when the TRUNCATE rejects on the way back', async () => {
     sessionUserCache.set(1, { id: 1, username: 'previous-operator' } as never);
     db.execute.mockRejectedValueOnce(new Error('ECONNRESET'));
@@ -181,7 +246,7 @@ describe('FactoryResetService', () => {
 
     await service.execute();
 
-    expect(vol.readFileSync(path.join(stateDir, 'settings.json'), 'utf8')).toBe('{}');
+    expect(Object.keys(JSON.parse(String(vol.readFileSync(path.join(stateDir, 'settings.json'), 'utf8'))))).toEqual(['hubLocalKey']);
     expect(vol.readdirSync(stateDir).filter((name) => String(name).startsWith('settings.json'))).toEqual(['settings.json']);
     expect(vol.existsSync(path.join(stateDir, 'seed'))).toBe(true);
   });
@@ -401,7 +466,9 @@ describe('FactoryResetService: data folders', () => {
  * (built without its constructor, which wants the whole appliance env). `moduleRef` hands out the
  * services the reset reaches that way.
  */
-function resetOnDisk(options: { rootFolderHost?: string; userSettings?: Record<string, unknown>; moduleRef?: ModuleRef } = {}) {
+function resetOnDisk(
+  options: { rootFolderHost?: string; userSettings?: Record<string, unknown>; fileSettings?: Record<string, string>; moduleRef?: ModuleRef } = {},
+) {
   const logger = mock<LoggerService>();
   const configuration = Object.assign(Object.create(ConfigurationService.prototype) as ConfigurationService, {
     logger,
@@ -410,6 +477,8 @@ function resetOnDisk(options: { rootFolderHost?: string; userSettings?: Record<s
       rootFolderHost: options.rootFolderHost ?? '/opt/ci-hub',
       directories: { dataDir: '/data' },
       userSettings: { ...options.userSettings },
+      // What boot lifts out of settings.json into the config itself (`ciHubApiKey`, `hubLocalKey`...).
+      ...options.fileSettings,
     },
   });
   const db = {
@@ -467,6 +536,7 @@ describe('FactoryResetService: settings the Hub holds in memory', () => {
     await cloudFallback.setProvider(GOOGLE);
 
     expect(onDisk()).toEqual({
+      hubLocalKey: configuration.get('hubLocalKey'),
       inferenceCloudProviders: [{ ...GOOGLE, baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai' }],
     });
   });
@@ -508,6 +578,218 @@ describe('FactoryResetService: settings the Hub holds in memory', () => {
     });
     expect(configuration.getInferencePreferences()).toMatchObject({ preferredBackend: null, preferredVllmApiKey: null });
     expect(configuration.getHubPoolPreferences()).toMatchObject({ poolMdnsEnabled: false, poolPins: [] });
+  });
+
+  /**
+   * Boot lifts these out of settings.json into the config itself. Only their copies in the user
+   * settings went. Until a restart the reset Hub asked Portal about its old device with the key (the
+   * pairing page offered Move this device). Its next pairing sent both keys as proof.
+   */
+  it('forgets the Portal device key, the move key and the organization id the config holds', async () => {
+    const pairing = { ciHubApiKey: 'portal-device-key', ciHubMoveKey: 'portal-move-key', ciHubOrganizationId: 'org-1' };
+    ({ service, configuration } = resetOnDisk({ fileSettings: pairing, userSettings: pairing }));
+
+    await service.execute();
+
+    expect(configuration.get('ciHubApiKey')).toBeNull();
+    expect(configuration.get('ciHubMoveKey')).toBeNull();
+    expect(configuration.get('ciHubOrganizationId')).toBeNull();
+    expect(configuration.get('userSettings')).not.toHaveProperty('ciHubApiKey');
+  });
+});
+
+describe('FactoryResetService: what the inference module keeps in state/', () => {
+  const handout: RecordedHandout = {
+    servedAt: '2026-10-20T10:00:00.000Z',
+    routedThroughPool: false,
+    chatModelId: 'gemma4-e4b',
+    chatModelError: null,
+    endpointUrl: 'http://host.docker.internal:11434/v1',
+    managedKeys: ['CI_LLM_MODEL'],
+    envDigests: { CI_LLM_MODEL: 'digest' },
+  };
+
+  const resetWith = (providers: Map<unknown, unknown>) => {
+    const moduleRef = mock<ModuleRef>();
+    moduleRef.get.mockImplementation(((token: unknown) => providers.get(token)) as never);
+    return resetOnDisk({ moduleRef }).service;
+  };
+
+  // The new Hub read them back at its next boot: "[ModelRegistry] Restored 3 pinned model(s)".
+  it('unpins the models and removes the pins file, so the next boot pins nothing', async () => {
+    await writePinnedModels({ pinned: ['gemma4-e4b', 'gemma3-1b', 'nomic-embed-text'] });
+    const registry = new ModelRegistryService(mock<LoggerService>());
+    await registry.onModuleInit();
+    registry.trackModel('gemma4-e4b', 'loaded');
+    expect(registry.getTrackedModel('gemma4-e4b')).toMatchObject({ state: 'pinned' });
+
+    await resetWith(new Map([[ModelRegistryService, registry]])).execute();
+
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+    expect(registry.getTrackedModel('gemma4-e4b')).toMatchObject({ state: 'loaded', pinned: false });
+    expect(vol.existsSync(PINNED_MODELS_PATH)).toBe(false);
+    const nextBoot = new ModelRegistryService(mock<LoggerService>());
+    await nextBoot.onModuleInit();
+    expect(nextBoot.getPinnedCatalogIds()).toEqual([]);
+  });
+
+  // The engines hold a model the Hub loaded at keep_alive -1, so unpinning alone left it in memory for good.
+  it('has the inference router unpin the models and unload the ones the engines still hold', async () => {
+    const router = { forgetPinnedModels: vi.fn(async () => undefined) };
+    const registry = { forgetPins: vi.fn(async () => []) };
+
+    await resetWith(
+      new Map<unknown, unknown>([
+        [InferenceRouterService, router],
+        [ModelRegistryService, registry],
+      ]),
+    ).execute();
+
+    expect(router.forgetPinnedModels).toHaveBeenCalledTimes(1);
+    expect(registry.forgetPins).not.toHaveBeenCalled();
+  });
+
+  it('forgets what each app was handed, which describes apps the reset removed', async () => {
+    vol.writeFileSync(HANDOUT_RECORDS_PATH, JSON.stringify({ openclaw: handout }));
+    const credentials = new AppCredentialsService(mock<LoggerService>(), mock(), mock(), mock(), mock(), mock(), mock(), mock());
+    await expect(credentials.lastHandout('openclaw')).resolves.toEqual(handout);
+
+    await resetWith(new Map([[AppCredentialsService, credentials]])).execute();
+
+    await expect(credentials.lastHandout('openclaw')).resolves.toBeNull();
+    expect(vol.existsSync(HANDOUT_RECORDS_PATH)).toBe(false);
+  });
+
+  it('keeps the footprint sightings, which describe this hardware, not the Hub', async () => {
+    const sightings = path.join('/data', 'state', 'inference-footprint-sightings.json');
+    vol.writeFileSync(sightings, '{"hardware":"cuda:0:8","sightings":[]}');
+
+    await resetWith(new Map()).execute();
+
+    expect(vol.readFileSync(sightings, 'utf8')).toBe('{"hardware":"cuda:0:8","sightings":[]}');
+  });
+
+  it('stops before the pins when a data folder could not be emptied, as it does before users and pairing', async () => {
+    await writePinnedModels({ pinned: ['gemma4-e4b'] });
+    const registry = new ModelRegistryService(mock<LoggerService>());
+    await registry.onModuleInit();
+    const service = resetWith(new Map([[ModelRegistryService, registry]]));
+    vi.spyOn(service, 'wipeDataMounts').mockRejectedValueOnce(
+      new TranslatableError('SETTINGS_FACTORY_RESET_FILES_LEFT', { count: '1', paths: 'backups/' }),
+    );
+
+    await expect(service.execute()).rejects.toBeInstanceOf(TranslatableError);
+
+    expect(registry.getPinnedCatalogIds()).toEqual(['gemma4-e4b']);
+    expect(vol.existsSync(PINNED_MODELS_PATH)).toBe(true);
+  });
+});
+
+describe('FactoryResetService: the host-local key', () => {
+  const OLD_KEY = 'a'.repeat(64);
+
+  /** The principal the running Hub's `AuthMiddleware` makes of `Authorization: Bearer <token>`. */
+  const principalFor = async (configuration: ConfigurationService, token: string) => {
+    const middleware = new AuthMiddleware(
+      { resolveSessionUserId: () => null, getSessionExpiresAt: () => null } as never,
+      configuration,
+      { getFirstOperator: async () => null } as never,
+      new SessionUserCache(),
+    );
+    const req = { cookies: {}, headers: { authorization: `Bearer ${token}` }, query: {}, get: () => undefined, method: 'GET' } as unknown as Request;
+    await middleware.use(req, {} as never, () => undefined);
+    return req.hubPrincipal;
+  };
+
+  /**
+   * `cihub` and the desktop app read the key from settings.json. The reset left the file `{}` and the
+   * running Hub on the old key, so neither found one until the next boot minted it, while the old
+   * key, which anyone who copied the file before the reset still holds, went on working.
+   */
+  it('writes a new key to settings.json, which the running Hub accepts and the old one no longer is', async () => {
+    vol.writeFileSync(SETTINGS_PATH, JSON.stringify({ hubLocalKey: OLD_KEY, ciHubApiKey: 'portal-device-key' }));
+    const { service, configuration } = resetOnDisk({ fileSettings: { hubLocalKey: OLD_KEY, ciHubApiKey: 'portal-device-key' } });
+    await expect(principalFor(configuration, OLD_KEY)).resolves.toBe('host-local');
+
+    await service.execute();
+
+    const { hubLocalKey } = onDisk();
+    expect(onDisk()).toEqual({ hubLocalKey });
+    expect(hubLocalKey).toMatch(/^[0-9a-f]{64}$/);
+    expect(hubLocalKey).not.toBe(OLD_KEY);
+    await expect(principalFor(configuration, hubLocalKey)).resolves.toBe('host-local');
+    await expect(principalFor(configuration, OLD_KEY)).resolves.toBeUndefined();
+  });
+
+  it('keeps the old key, on disk and in the Hub, when settings.json cannot be written', async () => {
+    vol.writeFileSync(SETTINGS_PATH, JSON.stringify({ hubLocalKey: OLD_KEY }));
+    const { service, configuration } = resetOnDisk({ fileSettings: { hubLocalKey: OLD_KEY } });
+    vi.spyOn(fs.promises, 'rename').mockRejectedValueOnce(Object.assign(new Error('EROFS: read-only file system'), { code: 'EROFS' }));
+
+    await expect(service.execute()).rejects.toThrow();
+
+    expect(onDisk()).toEqual({ hubLocalKey: OLD_KEY });
+    expect(configuration.get('hubLocalKey')).toBe(OLD_KEY);
+    vi.restoreAllMocks();
+  });
+});
+
+describe('FactoryResetService: what the old Hub left for its operator and its last pairing', () => {
+  const PASSWORD_CHANGE_REQUEST = path.join('/data', 'state', 'password-change-request');
+
+  const resetWith = (providers: Map<unknown, unknown> = new Map()) => {
+    const moduleRef = mock<ModuleRef>();
+    moduleRef.get.mockImplementation(((token: unknown) => providers.get(token)) as never);
+    return resetOnDisk({ moduleRef }).service;
+  };
+
+  beforeEach(() => {
+    vi.mocked(clearPairingAppCheck).mockClear();
+  });
+
+  // Asked for on the box within the last 15 minutes. Left in place, it set the password of whoever
+  // became the reset Hub's first operator in that time and turned off their 2FA.
+  it('removes a pending password change request', async () => {
+    vol.writeFileSync(PASSWORD_CHANGE_REQUEST, String(Date.now() / 1000));
+
+    await resetWith().execute();
+
+    expect(vol.existsSync(PASSWORD_CHANGE_REQUEST)).toBe(false);
+  });
+
+  // It held app sync and named the old device's apps for the restore after the next pairing.
+  it("removes the last pairing's apps check and the backoff it built up", async () => {
+    const restore = { forget: vi.fn() };
+
+    await resetWith(new Map([[PairingAppRestoreService, restore]])).execute();
+
+    expect(clearPairingAppCheck).toHaveBeenCalled();
+    expect(restore.forget).toHaveBeenCalled();
+  });
+
+  // A pairing under way writes its apps check until the registration reset stops it. Removed before
+  // that, the check the stopped pairing wrote stayed and held app sync on the reset Hub.
+  it('removes the apps check only once the pairing under way has been stopped', async () => {
+    const { service, registrationService } = resetOnDisk();
+
+    await service.execute();
+
+    const [stopped] = registrationService.resetRegistration.mock.invocationCallOrder;
+    const [cleared] = vi.mocked(clearPairingAppCheck).mock.invocationCallOrder;
+    expect(cleared).toBeGreaterThan(stopped);
+  });
+
+  it('leaves both alone when a data folder could not be emptied, as it does users and pairing', async () => {
+    vol.writeFileSync(PASSWORD_CHANGE_REQUEST, String(Date.now() / 1000));
+    const service = resetWith();
+    vi.spyOn(service, 'wipeDataMounts').mockRejectedValueOnce(
+      new TranslatableError('SETTINGS_FACTORY_RESET_FILES_LEFT', { count: '1', paths: 'backups/' }),
+    );
+
+    await expect(service.execute()).rejects.toBeInstanceOf(TranslatableError);
+
+    expect(vol.existsSync(PASSWORD_CHANGE_REQUEST)).toBe(true);
+    expect(clearPairingAppCheck).not.toHaveBeenCalled();
   });
 });
 

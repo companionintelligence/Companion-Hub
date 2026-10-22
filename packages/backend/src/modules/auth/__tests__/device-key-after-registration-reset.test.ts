@@ -82,7 +82,15 @@ function configOver(disk: Persisted) {
       Object.assign(disk.settings, patch);
     },
     setDomain: async () => undefined,
-    forgetPersistedUserSettings: () => undefined,
+    // As the factory reset leaves the running config: settings.json is `{}` and the pairing is forgotten.
+    forgetPersistedUserSettings: () => {
+      delete disk.settings.ciHubApiKey;
+      delete disk.settings.ciHubMoveKey;
+      delete disk.settings.ciHubOrganizationId;
+    },
+    replaceHubLocalKey: (key: string) => {
+      disk.settings.hubLocalKey = key;
+    },
   };
 }
 
@@ -335,7 +343,7 @@ describe('the Portal device key after a registration reset', () => {
     expect(await hub.answer(NEW_DEVICE_KEY)).toBe(401);
   });
 
-  it('refuses the device key after a factory reset, which leaves it in memory until a restart', async () => {
+  it('refuses the device key after a factory reset, which forgets it', async () => {
     const hub = await pairedHub();
     expect(await hub.answer(OLD_DEVICE_KEY)).toBe(401);
     const db = {
@@ -362,7 +370,7 @@ describe('the Portal device key after a registration reset', () => {
 
     await expect(factoryReset.execute()).resolves.toMatchObject({ success: true });
 
-    expect(disk.settings.ciHubApiKey).toBe(OLD_DEVICE_KEY);
+    expect(hub.config.get('ciHubApiKey')).toBeNull();
     expect(await hub.answer(OLD_DEVICE_KEY)).toBe(401);
     expect(await boot().answer(OLD_DEVICE_KEY)).toBe(401);
   });

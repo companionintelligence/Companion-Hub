@@ -36,7 +36,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import type { BackendResidency, HardwareProfile, InferenceBackendType } from '@ci-hub/common/types';
 import { LoggerService } from '@/core/logger/logger.service';
-import type { ConfigurationService } from '@/core/config/configuration.service';
+import { CacheService } from '@/core/cache/cache.service';
+import { SessionUserCache } from '@/core/cache/session-user.cache';
+import { ConfigurationService } from '@/core/config/configuration.service';
+import { FilesystemService } from '@/core/filesystem/filesystem.service';
+import { RegistrationService } from '@/modules/registration/registration.service';
+import { FactoryResetService } from '@/modules/system/factory-reset.service';
 import type { AppsRepository } from '@/modules/apps/apps.repository';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from '@/modules/hub-pool/hub-pool-load.service';
 import { handoutContextLength } from '../app-model-handout';
@@ -102,6 +107,10 @@ class FakeOllama {
   /** What `/api/tags` lists: on disk, loaded or not. */
   readonly installed = new Set(Object.keys(OLLAMA_MODELS));
   loads: { id: string; ctx: number }[] = [];
+  /** The factory reset's unloads, at the address the Hub is configured with. */
+  configuredUnloads: { id: string; embedding: boolean }[] = [];
+  /** The configured address does not answer, as with a Hub whose Ollama is down. */
+  configuredDown = false;
 
   constructor(
     private readonly defaultWindow: number,
@@ -141,9 +150,15 @@ class FakeOllama {
       type: this.type,
       getBaseUrl: () => 'http://fake-ollama:11434',
       healthCheck: async () => ({ running: true, healthy: true, modelsLoaded: [...this.installed] }),
-      isModelLoaded: async (id: string) => this.resident.has(id),
+      // As `OllamaBackend.matchesModel` does: a prefix counts, so nomic-embed-text-v2-moe reads as nomic-embed-text.
+      isModelLoaded: async (id: string) => [...this.resident.keys()].some((name) => name === id || name.startsWith(id)),
       loadModel: async (id: string, options?: { contextLength?: number }) => this.load(id, options?.contextLength ?? this.defaultWindow),
       unloadModel: async (id: string) => {
+        this.resident.delete(id);
+      },
+      residentAtConfiguredEndpoint: async () => (this.configuredDown ? null : [...this.resident.keys()]),
+      unloadAtConfiguredEndpoint: async (id: string, options?: { embedding?: boolean }) => {
+        this.configuredUnloads.push({ id, embedding: options?.embedding === true });
         this.resident.delete(id);
       },
       contextCostForModel: async (id: string) => {
@@ -305,7 +320,7 @@ function world(opts: {
     apps,
   );
   vi.spyOn(router as unknown as { delay: (ms: number) => Promise<void> }, 'delay').mockResolvedValue(undefined);
-  return { router, registry, memoryManager, logger, engines, hardwareInspector, poolLoad };
+  return { router, registry, memoryManager, logger, engines, hardwareInspector, poolLoad, puller };
 }
 
 describe('the load window on the fleet', () => {
@@ -839,5 +854,303 @@ describe('the load window on the fleet', () => {
     await expect(router.loadTrackedModel('qwen3-coder-30b', { origin: 'operator' })).resolves.toEqual({ loaded: true });
 
     expect([...engines.ollama.resident.keys()]).toEqual(['qwen3-coder:30b']);
+  });
+});
+
+// A factory reset forgets every pin while a pin may still be loading its model. That pin landed once the
+// load finished, so the reset Hub pinned the old Hub's model again and wrote it back to the pins file.
+describe('a factory reset while a pin is still loading its model', () => {
+  it('leaves the model loaded but not pinned', async () => {
+    const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+    const { router, registry, puller } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const load = vi.mocked(puller.loadModel).getMockImplementation();
+    vi.mocked(puller.loadModel).mockImplementationOnce(async (...args) => {
+      await held;
+      return load?.(...args);
+    });
+
+    const pinning = router.pinTrackedModel('gemma4-e4b', { origin: 'operator' });
+    await vi.waitFor(() => expect(puller.loadModel).toHaveBeenCalled());
+    await registry.forgetPins();
+    release();
+
+    await expect(pinning).resolves.toEqual({ pinned: false, reason: expect.stringContaining('a factory reset ran before this pin finished') });
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+    expect(registry.getTrackedModel('gemma4-e4b')).toMatchObject({ state: 'loaded', pinned: false });
+    expect([...ollama.resident.keys()]).toEqual(['gemma4:e4b']);
+  });
+
+  it('pins as before when no reset came in between', async () => {
+    const { router, registry } = world({ profile: BETA_RED, ollama: new FakeOllama(16_384, gemma4E4bHeld), ollamaSlots: 4 });
+    await registry.forgetPins();
+
+    await expect(router.pinTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toEqual({ pinned: true });
+    expect(registry.getPinnedCatalogIds()).toEqual(['gemma4-e4b']);
+  });
+
+  /** The pin of a model already in memory tells Ollama to keep it (`setResidentKeepAlive`), which the fake has no hook for. */
+  const withKeepAlive = (router: InferenceRouterService, keepAlive: (modelId: string, keep: 'pinned' | 'default') => Promise<string>) => {
+    const backend = (router as unknown as { backends: { get: (type: string) => Record<string, unknown> } }).backends.get('ollama');
+    const setResidentKeepAlive = vi.fn(keepAlive);
+    backend.setResidentKeepAlive = setResidentKeepAlive;
+    return setResidentKeepAlive;
+  };
+
+  // A reset that came while the pin waited for the lock: the model keeps the keep_alive it had.
+  it('asks Ollama nothing for a pin a reset overtook before it reached the model', async () => {
+    const { router, registry } = world({ profile: BETA_RED, ollama: new FakeOllama(16_384, gemma4E4bHeld), ollamaSlots: 4 });
+    await router.loadTrackedModel('gemma4-e4b', { origin: 'operator' });
+    const keepAlive = withKeepAlive(router, async () => 'set');
+
+    const pinning = router.pinTrackedModel('gemma4-e4b', { origin: 'operator' });
+    await registry.forgetPins();
+
+    await expect(pinning).resolves.toEqual({ pinned: false, reason: expect.stringContaining('a factory reset ran before this pin finished') });
+    expect(keepAlive).not.toHaveBeenCalled();
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+  });
+
+  // A reset that came while Ollama was asked to keep the model: the pin must not land after it.
+  it('refuses a pin when a reset ran while Ollama was asked to keep the model', async () => {
+    const { router, registry } = world({ profile: BETA_RED, ollama: new FakeOllama(16_384, gemma4E4bHeld), ollamaSlots: 4 });
+    await router.loadTrackedModel('gemma4-e4b', { origin: 'operator' });
+    const keepAlive = withKeepAlive(router, async () => {
+      await registry.forgetPins();
+      return 'set';
+    });
+
+    await expect(router.pinTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toEqual({
+      pinned: false,
+      reason: expect.stringContaining('a factory reset ran before this pin finished'),
+    });
+    expect(keepAlive).toHaveBeenCalledWith('gemma4:e4b', 'pinned', expect.anything());
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+    expect(registry.getTrackedModel('gemma4-e4b')).toMatchObject({ pinned: false });
+  });
+});
+
+// The Hub loads a model at keep_alive -1, so a model the reset only unpinned stayed in Ollama for good.
+describe('a factory reset unloads the models it unpins', () => {
+  it('unloads each pinned model the engine still holds and asks nothing of one it no longer holds', async () => {
+    const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+    const { router, registry, puller } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    await expect(router.pinTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toEqual({ pinned: true });
+    // Pinned too, but the engine dropped it: an unload naming it would make Ollama load it first.
+    registry.trackModel('gemma3-1b', 'pulled');
+    registry.pinModel('gemma3-1b');
+    expect([...ollama.resident.keys()]).toEqual(['gemma4:e4b']);
+    const loadsBefore = [...ollama.loads];
+
+    await (await router.forgetPinnedModels()).unloads;
+
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+    expect([...ollama.resident.keys()]).toEqual([]);
+    expect(ollama.configuredUnloads).toEqual([{ id: 'gemma4:e4b', embedding: false }]);
+    // Not through the usual path, which may resolve to a fallback address.
+    expect(puller.unloadModel).not.toHaveBeenCalled();
+    expect(ollama.loads).toEqual(loadsBefore);
+    expect(registry.getTrackedModel('gemma4-e4b')).toMatchObject({ state: 'pulled', pinned: false });
+  });
+
+  // Ollama's own match takes a prefix, so the reset sent `/api/embed {model: nomic-embed-text, keep_alive: 0}`
+  // with only nomic-embed-text-v2-moe in memory, which loads nomic-embed-text first. A 26 to 35B sibling
+  // loaded that way would evict whatever else the engine held.
+  it('takes no other model for a pinned one that shares its name as a prefix', async () => {
+    const ollama = new FakeOllama(16_384);
+    const { router, registry, puller } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    for (const catalogId of ['gemma4-26b', 'qwen3-8-27b', 'qwen3-6-35b', 'nomic-embed-text']) {
+      registry.trackModel(catalogId, 'pulled');
+      registry.pinModel(catalogId);
+    }
+    for (const sibling of [
+      'gemma4:26b-a4b-it-mtp-q4_K_M',
+      'qwen3.8:27b-mtp-q4_K_M',
+      'qwen3.6:35b-a3b-mtp-q4_K_M',
+      'nomic-embed-text-v2-moe:latest',
+    ]) {
+      ollama.hold(sibling, 16_384, 1000, 1500);
+    }
+
+    await (await router.forgetPinnedModels()).unloads;
+
+    expect(ollama.configuredUnloads).toEqual([]);
+    expect(puller.unloadModel).not.toHaveBeenCalled();
+    expect(ollama.loads).toEqual([]);
+    expect(ollama.resident.size).toBe(4);
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+  });
+
+  it('unloads a pinned model the engine lists as <name>:latest, under that name', async () => {
+    const ollama = new FakeOllama(16_384);
+    const { router, registry } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    registry.trackModel('nomic-embed-text', 'loaded');
+    registry.pinModel('nomic-embed-text');
+    ollama.hold('nomic-embed-text:latest', 2_048, 300, 500);
+    ollama.hold('nomic-embed-text-v2-moe:latest', 2_048, 300, 500);
+
+    await (await router.forgetPinnedModels()).unloads;
+
+    expect(ollama.configuredUnloads).toEqual([{ id: 'nomic-embed-text:latest', embedding: true }]);
+    expect([...ollama.resident.keys()]).toEqual(['nomic-embed-text-v2-moe:latest']);
+  });
+
+  // Not resident yet, so skipped, then loaded at keep_alive -1 once the reset had passed: gemma3:1b stayed.
+  it('waits for a pin still loading and unloads its model once it has loaded', async () => {
+    const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+    const { router, registry, puller } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const load = vi.mocked(puller.loadModel).getMockImplementation();
+    vi.mocked(puller.loadModel).mockImplementationOnce(async (...args) => {
+      await held;
+      return load?.(...args);
+    });
+
+    const pinning = router.pinTrackedModel('gemma4-e4b', { origin: 'operator' });
+    await vi.waitFor(() => expect(puller.loadModel).toHaveBeenCalled());
+    const forgetting = router.forgetPinnedModels();
+    release();
+
+    await expect(pinning).resolves.toMatchObject({ pinned: false });
+    await (await forgetting).unloads;
+    expect(ollama.configuredUnloads).toEqual([{ id: 'gemma4:e4b', embedding: false }]);
+    expect([...ollama.resident.keys()]).toEqual([]);
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+  });
+
+  // A fallback address (host.docker.internal, the docker0 gateway, localhost) can be another Ollama.
+  it('unloads nothing when the configured address does not answer and says so', async () => {
+    const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+    const { router, registry, puller, logger } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    await router.pinTrackedModel('gemma4-e4b', { origin: 'operator' });
+    ollama.configuredDown = true;
+
+    await (await router.forgetPinnedModels()).unloads;
+
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+    expect(ollama.configuredUnloads).toEqual([]);
+    expect(puller.unloadModel).not.toHaveBeenCalled();
+    expect([...ollama.resident.keys()]).toEqual(['gemma4:e4b']);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('did not answer at the address the Hub is configured with'));
+  });
+
+  it('still unpins everything when the engine refuses the unload', async () => {
+    const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+    const { router, registry, logger, engines } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    await router.pinTrackedModel('gemma4-e4b', { origin: 'operator' });
+    vi.spyOn(engines.ollama.configuredUnloads, 'push').mockImplementationOnce(() => {
+      throw new Error('connect ECONNREFUSED');
+    });
+
+    await expect((await router.forgetPinnedModels()).unloads).resolves.toBeUndefined();
+
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('could not unload gemma4-e4b'));
+  });
+
+  // The page polls while the reset runs, and the reset has signed it out: a reset that waited for a model
+  // load sent it to /login before the answer came, so the page never cleared what it keeps of the old Hub.
+  it('resolves while a model load holds the lock and unloads once that load is done', async () => {
+    const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+    const { router, registry, puller } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    registry.trackModel('qwen3-8-27b', 'loaded');
+    registry.pinModel('qwen3-8-27b');
+    ollama.hold('qwen3.8:27b', 16_384, 1000, 1500);
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const load = vi.mocked(puller.loadModel).getMockImplementation();
+    vi.mocked(puller.loadModel).mockImplementationOnce(async (...args) => {
+      await held;
+      return load?.(...args);
+    });
+    const pinning = router.pinTrackedModel('gemma4-e4b', { origin: 'operator' });
+    await vi.waitFor(() => expect(puller.loadModel).toHaveBeenCalled());
+
+    // Answered with the load still holding the lock, and nothing unloaded yet.
+    const { unloads } = await router.forgetPinnedModels();
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+    expect(ollama.configuredUnloads).toEqual([]);
+
+    release();
+    await expect(pinning).resolves.toMatchObject({ pinned: false });
+    await unloads;
+    expect(ollama.configuredUnloads).toEqual([
+      { id: 'qwen3.8:27b', embedding: false },
+      { id: 'gemma4:e4b', embedding: false },
+    ]);
+  });
+
+  it('stops waiting for a load that does not end and unloads what is in memory', async () => {
+    const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+    const { router, registry, puller, logger } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    registry.trackModel('qwen3-8-27b', 'loaded');
+    registry.pinModel('qwen3-8-27b');
+    ollama.hold('qwen3.8:27b', 16_384, 1000, 1500);
+    vi.mocked(puller.loadModel).mockImplementationOnce(() => new Promise<void>(() => undefined));
+    void router.pinTrackedModel('gemma4-e4b', { origin: 'operator' });
+    await vi.waitFor(() => expect(puller.loadModel).toHaveBeenCalled());
+    const cap = Object.getOwnPropertyDescriptor(InferenceRouterService, 'FACTORY_RESET_LOCK_WAIT_MS');
+    Object.defineProperty(InferenceRouterService, 'FACTORY_RESET_LOCK_WAIT_MS', { value: 20, configurable: true });
+    try {
+      await (await router.forgetPinnedModels()).unloads;
+    } finally {
+      if (cap) Object.defineProperty(InferenceRouterService, 'FACTORY_RESET_LOCK_WAIT_MS', cap);
+    }
+
+    // The pin that never loaded has nothing in memory to unload.
+    expect(ollama.configuredUnloads).toEqual([{ id: 'qwen3.8:27b', embedding: false }]);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('for a model load ahead of it; unloading what is in memory now'));
+  });
+  // The whole reset, with the real router: it answers while the load holds the lock, and the pinned
+  // model is unloaded once that load is done.
+  it('lets a factory reset answer while a model load holds the lock', async () => {
+    const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+    const { router, registry, puller } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    registry.trackModel('qwen3-8-27b', 'loaded');
+    registry.pinModel('qwen3-8-27b');
+    ollama.hold('qwen3.8:27b', 16_384, 1000, 1500);
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.mocked(puller.loadModel).mockImplementationOnce(async () => held);
+    const pinning = router.pinTrackedModel('gemma4-e4b', { origin: 'operator' });
+    await vi.waitFor(() => expect(puller.loadModel).toHaveBeenCalled());
+    const forget = vi.spyOn(router, 'forgetPinnedModels');
+
+    const logger = mock<LoggerService>();
+    const configuration = Object.assign(Object.create(ConfigurationService.prototype) as ConfigurationService, {
+      logger,
+      config: { demoMode: false, rootFolderHost: '/opt/ci-hub', directories: { dataDir: '/data' }, userSettings: {} },
+    });
+    const registration = mock<RegistrationService>();
+    registration.resetRegistration.mockResolvedValue(undefined);
+    const reset = new FactoryResetService(
+      { execute: vi.fn(async () => undefined), query: { app: { findMany: async () => [] } } } as never,
+      {} as never,
+      { get: (token: unknown) => (token === InferenceRouterService ? router : undefined) } as never,
+      new FilesystemService(logger),
+      configuration,
+      mock<CacheService>(),
+      new SessionUserCache(),
+      logger,
+      registration,
+    );
+
+    await expect(reset.execute()).resolves.toMatchObject({ success: true });
+    expect(ollama.configuredUnloads).toEqual([]);
+
+    release();
+    await pinning;
+    await (await forget.mock.results[0].value).unloads;
+    expect(ollama.configuredUnloads).toEqual([{ id: 'qwen3.8:27b', embedding: false }]);
   });
 });

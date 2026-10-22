@@ -154,6 +154,27 @@ describe('PairingAppRestoreService', () => {
       expect(exposureSync.syncExposurePublic).not.toHaveBeenCalled();
     });
 
+    // A factory reset removed the check while the pass waited on the Portal. Written back, it named the old device's apps.
+    it('writes no check back when a forget overtook the pass', async () => {
+      let answer: (value: ReturnType<typeof portalApp>[]) => void = () => undefined;
+      cloudflare.getDeviceApplications.mockReturnValueOnce(
+        new Promise((resolve) => {
+          answer = resolve;
+        }) as never,
+      );
+
+      const pass = service.runCheck();
+      await vi.waitFor(() => expect(cloudflare.getDeviceApplications).toHaveBeenCalled());
+      state.check = null;
+      service.forget();
+      answer([portalApp('wordpress')]);
+
+      await expect(pass).resolves.toBe('none');
+      expect(state.check).toBeNull();
+      expect(state.restoreIntent).toBe(false);
+      expect(rehydration.executeRehydrate).not.toHaveBeenCalled();
+    });
+
     it('lifts the hold and syncs once the restored apps have settled', async () => {
       apps.getApps.mockResolvedValueOnce([]).mockResolvedValue([localApp('wordpress', 'installing')]);
       await service.runCheck();
@@ -305,6 +326,31 @@ describe('PairingAppRestoreService', () => {
 
     expect(rehydration.executeRehydrate).toHaveBeenCalledTimes(1);
     expect(state.restoreIntent).toBe(false);
+  });
+
+  // A factory reset removes the check. The backoff stayed, so the next pairing's check waited up to five minutes.
+  it('runs the next pairing check at once after forget, whatever backoff the last one built up', async () => {
+    vi.useFakeTimers({ now: Date.now() });
+    try {
+      cloudflare.getDeviceApplications.mockRejectedValue(new Error('socket hang up'));
+      for (let pass = 0; pass < 5; pass++) {
+        await expect(service.runCheck()).resolves.toBe('held');
+        vi.advanceTimersByTime(PairingAppRestoreService.MAX_RETRY_DELAY_MS);
+      }
+      await expect(service.runCheck()).resolves.toBe('held');
+      // Inside the backoff now: the pass does not ask the Portal.
+      await expect(service.runCheck()).resolves.toBe('held');
+      const asked = cloudflare.getDeviceApplications.mock.calls.length;
+
+      service.forget();
+      state.check = { markedAt: new Date().toISOString() };
+      cloudflare.getDeviceApplications.mockResolvedValue([]);
+
+      await expect(service.runCheck()).resolves.toBe('released');
+      expect(cloudflare.getDeviceApplications).toHaveBeenCalledTimes(asked + 1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not hold app sync for a pairing that left no device key to ask with', async () => {

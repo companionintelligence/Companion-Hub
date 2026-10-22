@@ -196,7 +196,8 @@ export const user = pgTable(
  * signed as `X-CI-Hub-User-Issuer`), and it lives and dies with this database. An app keeping
  * links to Hub people can therefore tell "another person of this Hub" — a username handed on after
  * a rename, which must not inherit the account — from "a person of a Hub that no longer exists": a
- * backup restored onto a fresh Hub, whose people must be able to claim their accounts again.
+ * backup restored onto a fresh Hub, whose people must be able to claim their accounts again. A
+ * factory reset empties it with `user`, so the Hub it leaves is such a fresh Hub.
  */
 export const userDirectory = pgTable(
   'user_directory',
