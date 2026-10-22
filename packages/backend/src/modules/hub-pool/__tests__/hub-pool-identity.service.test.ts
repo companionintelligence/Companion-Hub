@@ -104,7 +104,7 @@ describe('HubPoolIdentityService', () => {
       expect(encryption.decrypt).not.toHaveBeenCalled();
     });
 
-    it('answers null on a Hub that never used Hub Pool, and leaves it without an identity', async () => {
+    it('answers null on a Hub that never used Hub Pool and leaves it without an identity', async () => {
       expect(await build().existingNodeUuid()).toBeNull();
 
       expect(repo.inserts).toBe(0);

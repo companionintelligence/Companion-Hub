@@ -191,10 +191,10 @@ describe('AppModule wiring', () => {
     expect(unresolved).toEqual([]);
   });
 
-  it('gives the status file the shared pool identity, and reads its UUID without minting one', async () => {
+  it('gives the status file the shared pool identity and reads its UUID without minting one', async () => {
     const statusReport = moduleRef.get(StatusReportService, { strict: false });
     expect(Object.values(statusReport)).toContain(moduleRef.get(HubPoolIdentityService, { strict: false }));
-    // The other sections read hardware, engines and containers, and take seconds without them.
+    // The other sections read hardware, engines and containers. They take seconds without them.
     const sections = ['readSystem', 'readInference', 'readWorkloads'].map((section) =>
       vi.spyOn(statusReport as never as Record<string, () => Promise<unknown>>, section).mockResolvedValue(null),
     );
@@ -207,7 +207,7 @@ describe('AppModule wiring', () => {
     });
     expect((await statusReport.buildReport()).connection?.poolNodeUuid).toBe('2f8d0c8e-5c1a-4b7e-9f39-0d6a2b1c4e55');
 
-    // Every Hub writes this file every quarter hour, and most never use Hub Pool.
+    // Every Hub writes this file every quarter hour. Most never use Hub Pool.
     poolIdentityRows.get.mockResolvedValue(undefined);
     expect((await statusReport.buildReport()).connection?.poolNodeUuid).toBeNull();
     expect(poolIdentityRows.insertIfAbsent).not.toHaveBeenCalled();
