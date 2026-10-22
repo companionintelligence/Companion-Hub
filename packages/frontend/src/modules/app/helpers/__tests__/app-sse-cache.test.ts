@@ -26,10 +26,10 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
 
 /**
  * Queries `invalidateAppQueries` refreshes for one app: installed apps, installed
- * urns, the app row, app context, and the Public Web report that says whether a
- * bound custom domain is still dark.
+ * urns, the app row, app context, the Public Web report that says whether a
+ * bound custom domain is still dark, and the app's runtime health.
  */
-const INVALIDATED_PER_APP_EVENT = 5;
+const INVALIDATED_PER_APP_EVENT = 6;
 
 describe('handleAppSseEvent', () => {
   let queryClient: {
@@ -256,6 +256,18 @@ describe('handleAppSseEvent', () => {
     });
 
     expect(queryClient.setQueryData).toHaveBeenCalledWith(['app-install-error', 'safeos:ci-marketplace'], null);
+  });
+
+  // The degraded banner, the "Needs attention" pill and Force Stop read runtime health, which only polls every 15 s.
+  it.each([
+    ['stop_success', 'stopped'],
+    ['start_success', 'running'],
+    ['restart_success', 'running'],
+    ['status_change', 'stopping'],
+  ])('refetches the runtime health on %s so the degraded banner follows the new state', (event, appStatus) => {
+    handleAppSseEvent(queryClient as unknown as QueryClient, { event, appUrn: 'cpu-hog:_user', appStatus } as never);
+
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['app-runtime-health', 'cpu-hog:_user'] });
   });
 
   it('does not touch the install-error cache on stop_success (app is not running)', () => {

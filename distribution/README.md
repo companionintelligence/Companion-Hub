@@ -144,7 +144,7 @@ Companion Hub now ships best-effort uninstall cleanup hooks/scripts for maintain
 - Linux: Debian `postrm`, AUR `post_remove`, and Snap `hooks/remove`
 - Shared script artifacts: `distribution/scripts/uninstall-cleanup.sh` and `distribution/scripts/uninstall-cleanup.ps1`
 
-Linux desktop `.deb` bundles receive the `postrm` maintainer script in a post-build repack step via `packages/desktop/scripts/patch-deb-maintainer-scripts.sh`.
+Linux desktop `.deb` bundles receive the `postrm` maintainer script in a post-build repack step via `packages/desktop/scripts/patch-deb-maintainer-scripts.sh`. The repack writes every entry as `root:root` (`dpkg-deb --root-owner-group`) and fails the build if one is not. Without it, 0.3.5 and 0.3.6 installed every file owned by uid 1001, the build runner's user. dpkg leaves the owner of a folder that already exists as it is, so on an upgrade from those releases `preinst` (before unpacking) and `postinst` hand the package's folders back to root.
 
 Both Windows packaged installers run the bundled cleanup script before removing the app. The script is shipped into the bundle as a Tauri resource (`resources/uninstall-cleanup.ps1`), sourced directly from `distribution/scripts/uninstall-cleanup.ps1`.
 

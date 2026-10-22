@@ -199,7 +199,7 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('cihub
   });
 
   it('cihub recreate does not start a Hub on the surviving data', async () => {
-    await recreateHub('prod', true, true);
+    await recreateHub('prod', { detached: true, attached: false }, true);
 
     expect(startHub).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);

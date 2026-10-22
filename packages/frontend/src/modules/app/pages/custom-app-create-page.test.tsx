@@ -13,7 +13,7 @@ vi.mock('@/components/multi-service-form/multi-service-form', () => ({
 }));
 
 vi.mock('@tanstack/react-query', () => ({
-  useMutation: () => ({ mutate: vi.fn(), isPending: false }),
+  useMutation: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(async () => undefined), isPending: false }),
 }));
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({

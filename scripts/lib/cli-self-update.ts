@@ -10,10 +10,10 @@
  *
  * Two constraints shape everything here:
  *
- * - **The releases are private.** A node cannot fetch them; `api.github.com/…/releases/latest`
- *   answers 404 unauthenticated, which is what broke a fifteen-node install on 2026-09-18. So this
- *   needs a token in the environment and says so plainly when there is none, rather than failing
- *   with a 404 that reads like a missing release.
+ * - **No token needed.** The releases were private until the repository went public on 2026-09-30,
+ *   and this used to refuse without GH_TOKEN or GITHUB_TOKEN. The release API and its assets now
+ *   answer without one. A token in the environment is still sent: it raises GitHub's limit of 60
+ *   unauthenticated API requests an hour.
  * - **A package manager's file is not ours to overwrite.** Writing a new binary into a Homebrew
  *   Cellar or a Scoop app directory leaves the manifest claiming a version that is not on disk, and
  *   the next `brew upgrade` silently reverts it. Those channels are refused with their own command.
@@ -22,13 +22,12 @@
  * {@link installBinaryOverSelf} is the only function that writes.
  */
 import { chmodSync, existsSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { type CliInstallChannel, cliUpdateInstructions, normalizeVersion } from './cli-version-skew.js';
 import { assetNameForPlatform, GITHUB_TOKEN_ENV_VARS, parseCihubVersionOutput } from './fleet-cihub-binary.js';
 
 export type SelfUpdatePlan =
-  | { ok: true; assetName: string; version: string; target: string; token: string; reason: string }
+  | { ok: true; assetName: string; version: string; target: string; token?: string; reason: string }
   | { ok: false; why: string; fix: string[] };
 
 export interface SelfUpdatePlanInput {
@@ -80,13 +79,6 @@ export function planSelfUpdate(input: SelfUpdatePlanInput): SelfUpdatePlan {
   }
 
   const token = GITHUB_TOKEN_ENV_VARS.map((name) => input.env[name]?.trim()).find(Boolean);
-  if (!token) {
-    return {
-      ok: false,
-      why: 'the CI-Hub releases are private, so fetching the cihub asset needs a GitHub token',
-      fix: ['GH_TOKEN="$(gh auth token)" cihub self-update', 'or copy the asset over by hand: cihub fleet install --cihub-binary <path>'],
-    };
-  }
 
   const requested = input.requestedVersion?.trim();
   if (requested && requested !== 'latest') {
@@ -201,6 +193,6 @@ export function selfUpdateUsage(baseCommand: string): string {
     '  --to <version>  install this release instead of the one the running stack is on',
     '  --check         report what would be installed and change nothing',
     '',
-    `Needs GH_TOKEN or GITHUB_TOKEN: ${path.basename(baseCommand)} releases are private.`,
+    'Downloads from the public GitHub release. GH_TOKEN or GITHUB_TOKEN, when set, is sent along (it raises the API rate limit).',
   ].join('\n');
 }

@@ -39,6 +39,17 @@ export class MemoryConnectionRepository {
     }) as Promise<MemoryConnectionRow | undefined>;
   }
 
+  /**
+   * The newest connected row holding a key, whoever it belongs to. Its key is the one the app's
+   * container gets, so a newer row in another state (someone's "Not now") does not unplug it.
+   */
+  async findLatestConnected(appUrn: string): Promise<MemoryConnectionRow | undefined> {
+    return this.db.query.memoryConnection.findFirst({
+      where: and(eq(memoryConnection.appUrn, appUrn), eq(memoryConnection.state, 'connected'), isNotNull(memoryConnection.encryptedKey)),
+      orderBy: [desc(memoryConnection.updatedAt)],
+    }) as Promise<MemoryConnectionRow | undefined>;
+  }
+
   /** Row for this app and Hub person, or undefined. */
   async findByAppUrnAndUser(appUrn: string, hubUserId: number): Promise<MemoryConnectionRow | undefined> {
     return this.db.query.memoryConnection.findFirst({
@@ -50,10 +61,15 @@ export class MemoryConnectionRepository {
    * All apps currently in the `connected` state that hold a stored key — the
    * set the rotation sweep considers. `updatedAt` on each row is when the
    * current key was last stored (connect or rotate), i.e. the key's age.
+   * With `appUrn`, only that app's rows.
    */
-  async findAllConnected(): Promise<MemoryConnectionRow[]> {
+  async findAllConnected(appUrn?: string): Promise<MemoryConnectionRow[]> {
     return this.db.query.memoryConnection.findMany({
-      where: and(eq(memoryConnection.state, 'connected'), isNotNull(memoryConnection.encryptedKey)),
+      where: and(
+        eq(memoryConnection.state, 'connected'),
+        isNotNull(memoryConnection.encryptedKey),
+        appUrn === undefined ? undefined : eq(memoryConnection.appUrn, appUrn),
+      ),
     }) as Promise<MemoryConnectionRow[]>;
   }
 

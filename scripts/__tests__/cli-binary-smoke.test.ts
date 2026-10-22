@@ -344,18 +344,19 @@ describe('compiled cihub binary', () => {
 
   /**
    * Without the desktop app, as on CI, `cihub update` updates the standalone binary itself instead.
-   * Nothing is inherited from the environment: a GH_TOKEN there would let the self-update download
-   * a release over this binary, and without one it stops at its refusal. The desktop app stubs sit
-   * in folders this PATH leaves out, so none of them may run.
+   * `--check`, because the release is public: a plain `update` needs no token any more. It would
+   * download a release over this binary and every test after this one. The desktop app stubs sit in
+   * folders this PATH leaves out, so none of them may run.
    */
   it.skipIf(skipSuite)('runs `cihub update` as a self-update on a machine without the desktop app', () => {
     const before = desktopAppCalls();
-    const { output, status } = runCli(['update'], { path: noDesktopBin, inheritEnv: false });
+    const { output, status } = runCli(['update', '--check'], { path: noDesktopBin, inheritEnv: false });
 
-    expectNoCrash(['update'], output);
+    expectNoCrash(['update', '--check'], output);
     expect(output).toContain('No desktop app on this machine');
-    expect(output).toContain('Cannot self-update');
-    expect(status).toBe(1);
+    expect(output).toContain('Self-update (check only)');
+    expect(output).toContain('Nothing was downloaded or replaced.');
+    expect(status).toBe(0);
     expect(desktopAppCalls()).toEqual(before);
   });
 
