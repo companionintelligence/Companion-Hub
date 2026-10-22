@@ -192,6 +192,34 @@ export class GitHubRequestError extends Error {
 }
 
 /**
+ * A GitHub request that got no answer at all: DNS, a refused connection, TLS. Node's fetch rejects
+ * with a TypeError then, but Bun's, which the standalone cihub runs on, rejects with a plain Error
+ * ("Unable to connect", code ConnectionRefused). Both are wrapped in this so callers can tell.
+ */
+export class GitHubUnreachableError extends Error {
+  constructor(url: string, cause: unknown) {
+    super(`could not reach ${hostOf(url)}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    this.name = 'GitHubUnreachableError';
+  }
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+async function githubFetch(fetchImpl: typeof fetch, url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetchImpl(url, init);
+  } catch (error) {
+    throw new GitHubUnreachableError(url, error);
+  }
+}
+
+/**
  * What to do after a release lookup or asset download failed. A rate limit is not a missing release:
  * "check the release exists" sent the operator looking for a tag that was there all along.
  * `fallback` is the way round GitHub (fleet install takes a file on disk) and `versionFlag` the flag
@@ -214,8 +242,8 @@ export function releaseFailureFix(
   }
   if (status === 401) return `Fix GH_TOKEN or GITHUB_TOKEN, or unset it since none is needed, or ${fallback}.`;
   if (status === 404) return `Check the release exists (${versionFlag}), or ${fallback}.`;
-  // fetch rejects with a TypeError when no answer came back at all (DNS, a refused connection, TLS).
-  if (error instanceof TypeError) return `Check this machine can reach api.github.com and run it again, or ${fallback}.`;
+  if (error instanceof GitHubUnreachableError || error instanceof TypeError)
+    return `Check this machine can reach api.github.com and run it again, or ${fallback}.`;
   return `Run it again, or ${fallback}.`;
 }
 
@@ -244,7 +272,7 @@ export async function lookupRelease(input: { token?: string; version: string; fe
     input.version === 'latest'
       ? `https://api.github.com/repos/${CIHUB_RELEASES_REPO}/releases/latest`
       : `https://api.github.com/repos/${CIHUB_RELEASES_REPO}/releases/tags/${input.version.startsWith('v') ? input.version : `v${input.version}`}`;
-  const releaseRes = await fetchImpl(releaseUrl, { headers: { ...githubHeaders(input.token), Accept: 'application/vnd.github+json' } });
+  const releaseRes = await githubFetch(fetchImpl, releaseUrl, { headers: { ...githubHeaders(input.token), Accept: 'application/vnd.github+json' } });
   if (!releaseRes.ok) {
     throw new GitHubRequestError(
       `GitHub release lookup failed: HTTP ${releaseRes.status} for ${releaseUrl}${releaseLookupHint(releaseRes.status, input.token, input.version)}`,
@@ -329,7 +357,7 @@ export async function downloadReleaseAsset(input: {
   const target = path.join(cacheDir, `${release.tag_name}-${input.assetName}`);
   if (expected && existsSync(target) && sha256File(target) !== expected) rmSync(target, { force: true });
   if (!existsSync(target) || statSync(target).size === 0) {
-    const assetRes = await fetchImpl(asset.url, { headers: { ...headers, Accept: 'application/octet-stream' }, redirect: 'follow' });
+    const assetRes = await githubFetch(fetchImpl, asset.url, { headers: { ...headers, Accept: 'application/octet-stream' }, redirect: 'follow' });
     if (!assetRes.ok) {
       throw new GitHubRequestError(
         `asset download failed: HTTP ${assetRes.status} for ${input.assetName}${githubStatusHint(assetRes.status, input.token)}`,

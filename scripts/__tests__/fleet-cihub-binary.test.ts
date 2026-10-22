@@ -11,6 +11,7 @@ import {
   compareCihubVersions,
   downloadReleaseAsset,
   GitHubRequestError,
+  GitHubUnreachableError,
   installCihubFromStdinScript,
   parseCihubVersionOutput,
   pinCihubReleaseSource,
@@ -467,6 +468,25 @@ describe('releaseFailureFix', () => {
 
   it('points at the network when no answer came back', () => {
     expect(releaseFailureFix(new TypeError('fetch failed'), undefined)).toMatch(/reach api\.github\.com/);
+  });
+
+  it('points at the network when fetch rejects with a plain Error, as Bun does in the standalone cihub', async () => {
+    // Bun's fetch rejects a refused connection or a failed DNS lookup with Error "Unable to connect",
+    // not Node's TypeError, so the run said only "Run it again".
+    const bunRefused = Object.assign(new Error('Unable to connect. Is the computer able to access the url?'), { code: 'ConnectionRefused' });
+    const offline = vi.fn(async () => {
+      throw bunRefused;
+    }) as unknown as typeof fetch;
+
+    const pinned = await pinCihubReleaseSource({ kind: 'release', version: 'latest' }, offline);
+
+    expect(pinned.kind === 'unavailable' && pinned.why).toBe(
+      'could not reach api.github.com: Unable to connect. Is the computer able to access the url?',
+    );
+    expect(pinned.kind === 'unavailable' && pinned.fix.join(' ')).toMatch(/^Check this machine can reach api\.github\.com/);
+    await expect(downloadReleaseAsset({ assetName: 'cihub-linux-x64', version: 'latest', fetchImpl: offline })).rejects.toBeInstanceOf(
+      GitHubUnreachableError,
+    );
   });
 });
 
