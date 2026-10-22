@@ -1,4 +1,4 @@
-import type { GetAppDto } from '@/api-client';
+import type { GetAppDto, MyAppsDto } from '@/api-client';
 import {
   getAppQueryKey,
   getInstalledAppsQueryKey,
@@ -9,12 +9,14 @@ import {
 import { tailscaleStatusQueryKey } from '@/lib/api-routes/named-status-routes';
 import { PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY } from '@/lib/cloudflare-api';
 import { getInstalledAppUrnsQueryKey } from '@/lib/installed-app-urns-query';
+import type { UpdatePhase } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { QueryClient } from '@tanstack/react-query';
 import { installQueueQueryKey, type InstallQueueState } from './install-queue';
 import { CI_MEMORY_APP_NAME } from './memory-provider';
 import { MEMORY_STATUS_QUERY_PREFIX } from './use-memory-connection';
 import { updateInstallationProgress } from './use-installation-progress';
+import { setUpdatePhase } from './use-update-phase';
 
 // Reserved app-directory name of Companion Memory (shared with the provider gate).
 // When ci-memory itself changes lifecycle state, every consumer app's
@@ -58,6 +60,8 @@ export type AppSsePayload = {
   /** Install ticks only, once Docker has reported layer sizes: the image download so far. */
   downloadedBytes?: number;
   totalBytes?: number;
+  /** An update's `status_change` only: the step it is in. */
+  updatePhase?: UpdatePhase;
   active?: InstallQueueState['active'];
   queued?: InstallQueueState['queued'];
 };
@@ -73,6 +77,7 @@ const LIFECYCLE_INVALIDATE_EVENTS = new Set([
   'restart_error',
   'update_success',
   'update_error',
+  'update_cancelled',
   'reset_success',
   'reset_error',
   'uninstall_success',
@@ -139,6 +144,12 @@ export function invalidateAppQueries(queryClient: QueryClient, appUrn: string) {
    * kept it silent for 30s after `custom_domain_changed` raised the flag.
    */
   void queryClient.invalidateQueries({ queryKey: PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY });
+  /*
+   * The degraded banner, the "Needs attention" pill and Force Stop read runtime health, which polls
+   * only every 15 s. Asked again on every lifecycle event, they follow a stop, start or restart at
+   * once instead of showing the previous run's verdict for up to a poll.
+   */
+  void queryClient.invalidateQueries({ queryKey: runtimeHealthQueryKey(appUrn) });
 }
 
 function setCachedAppStatus(
@@ -212,6 +223,19 @@ function updateInstallErrorCache(
   }
 
   queryClient.setQueryData(['app-install-error', appUrn], null);
+}
+
+/**
+ * The name the app page shows for an app, from the app or installed-apps queries already in the cache,
+ * for a toast about it. `fallback` (the id in its URN) when neither has it.
+ */
+export function cachedAppName(queryClient: Pick<QueryClient, 'getQueryData'>, appUrn: string, fallback: string): string {
+  const fromApp = queryClient.getQueryData<GetAppDto>(getAppQueryKey({ path: { urn: appUrn } }))?.info?.name;
+  if (fromApp) {
+    return fromApp;
+  }
+  const installed = queryClient.getQueryData<MyAppsDto>(getInstalledAppsQueryKey())?.installed;
+  return installed?.find((entry) => entry.info?.urn === appUrn)?.info?.name || fallback;
 }
 
 /**
@@ -308,6 +332,9 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
   }
 
   if (LIFECYCLE_INVALIDATE_EVENTS.has(event)) {
+    if (event === 'update_success' || event === 'update_error' || event === 'update_cancelled') {
+      setUpdatePhase(urn, null);
+    }
     setCachedAppStatus(queryClient, appUrn, appStatus, { allowDowngradeFromTransitional: true });
     // A `start_success`/`restart_success` (etc.) landing the app on `running` proves any earlier
     // install failure is stale — the same rule the `status_change` branch below already applies.
@@ -328,6 +355,13 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
     return;
   }
 
+  // An update's step: the app page shows it and whether the update can still be cancelled.
+  if (appStatus === 'updating' && data.updatePhase) {
+    setCachedAppStatus(queryClient, appUrn, appStatus);
+    setUpdatePhase(urn, data.updatePhase);
+    return;
+  }
+
   if (appStatus === 'installing' && typeof progress === 'number') {
     setCachedAppStatus(queryClient, appUrn, appStatus);
     const { downloadedBytes, totalBytes } = data;
@@ -345,6 +379,12 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
 
   if (appStatus && TERMINAL_PROGRESS_STATUSES.has(appStatus)) {
     updateInstallationProgress(urn, null);
+  }
+
+  // Any other status, `updating` included: a step-less `updating` is a new update starting, and a step
+  // left from one whose end this tab missed would otherwise show (and gate Cancel) until its first step.
+  if (appStatus) {
+    setUpdatePhase(urn, null);
   }
 
   if (appStatus === 'install_failed' && error) {

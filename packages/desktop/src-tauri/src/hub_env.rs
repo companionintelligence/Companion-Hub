@@ -318,7 +318,7 @@ fn is_prerelease_identifier(identifier: &str) -> bool {
 /// will happily pin `0.2.46-rc.2` over an `0.2.46-rc.1` build. Comparing cores alone
 /// called those equal, so the caller discarded the pin and reverted the upgrade on the
 /// next start: exactly the desktop-versus-updater fight this file exists to end.
-fn compare_semver(left: &str, right: &str) -> Ordering {
+pub(crate) fn compare_semver(left: &str, right: &str) -> Ordering {
     let left_parts = parse_semver_parts(left);
     let right_parts = parse_semver_parts(right);
     let max_len = left_parts.len().max(right_parts.len());
@@ -346,14 +346,14 @@ fn compare_semver(left: &str, right: &str) -> Ordering {
 
 /// Pre-release segment of a version tag (`0.2.46-rc.1` → `rc.1`), or `None` for a release.
 ///
-/// Build metadata is not handled because it cannot get here: [`is_version_image_tag`]
-/// rejects `+` outright, since it is not a legal Docker tag character.
+/// Build metadata (`+…`) is cut off first: it never counts for precedence. Image tags can't
+/// carry it ([`is_version_image_tag`] rejects `+`), but the desktop updater's versions can.
 fn prerelease_segment(version: &str) -> Option<&str> {
-    version
-        .trim()
-        .trim_start_matches('v')
-        .split_once('-')
-        .map(|(_, prerelease)| prerelease)
+    let version = version.trim().trim_start_matches('v');
+    let version = version
+        .split_once('+')
+        .map_or(version, |(version, _)| version);
+    version.split_once('-').map(|(_, prerelease)| prerelease)
 }
 
 /// Compare two pre-release segments by semver precedence rules.
@@ -611,6 +611,23 @@ mod tests {
         for tag in ["1.x", "0.2", "latest", "nightly", "2026-07-21", ""] {
             assert!(!is_version_image_tag(tag), "{tag} is not a version pin");
         }
+    }
+
+    #[test]
+    fn ignores_build_metadata_after_a_pre_release() {
+        // Semver leaves build metadata out of precedence, also after a pre-release.
+        assert_eq!(
+            compare_semver("1.0.0-rc.1+b2", "1.0.0-rc.1+b1"),
+            Ordering::Equal
+        );
+        assert_eq!(
+            compare_semver("1.0.0-rc.2+b1", "1.0.0-rc.10+b9"),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_semver("1.0.0+build.2", "1.0.0+build.1"),
+            Ordering::Equal
+        );
     }
 
     #[test]

@@ -470,12 +470,7 @@ export class OllamaBackend implements InferenceBackend {
   async unloadModel(modelId: string, options?: { embedding?: boolean }): Promise<void> {
     this.logger.info(`[Ollama] Unloading model: ${modelId}`);
     try {
-      const url = await this.resolveUrl();
-      if (options?.embedding) {
-        await axios.post(`${url}/api/embed`, { model: modelId, input: '', keep_alive: 0 }, { timeout: 30000 });
-      } else {
-        await axios.post(`${url}/api/generate`, { model: modelId, prompt: '', keep_alive: 0 }, { timeout: 30000 });
-      }
+      await this.requestUnload(await this.resolveUrl(), modelId, options);
       this.logger.info(`[Ollama] Model unloaded: ${modelId}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -483,6 +478,33 @@ export class OllamaBackend implements InferenceBackend {
       this.invalidateResolvedUrl();
       throw err;
     }
+  }
+
+  /** Ollama has no unload call, only a request with `keep_alive: 0`, which can load a model that is not in memory first. */
+  private async requestUnload(url: string, modelId: string, options?: { embedding?: boolean }): Promise<void> {
+    if (options?.embedding) {
+      await axios.post(`${url}/api/embed`, { model: modelId, input: '', keep_alive: 0 }, { timeout: 30000 });
+    } else {
+      await axios.post(`${url}/api/generate`, { model: modelId, prompt: '', keep_alive: 0 }, { timeout: 30000 });
+    }
+  }
+
+  /** The names in `/api/ps` at `OLLAMA_URL` alone. It tries no fallback. A failure resolves nothing anew. */
+  async residentAtConfiguredEndpoint(): Promise<string[] | null> {
+    try {
+      const response = await axios.get(`${this.configuredUrl}/api/ps`, { timeout: 5000 });
+      const models: unknown = response.data?.models;
+      if (!Array.isArray(models)) return null;
+      return models.map((model: { name?: unknown; model?: unknown }) => String(model?.name ?? model?.model ?? '')).filter(Boolean);
+    } catch {
+      return null;
+    }
+  }
+
+  async unloadAtConfiguredEndpoint(modelId: string, options?: { embedding?: boolean }): Promise<void> {
+    this.logger.info(`[Ollama] Unloading model at ${this.configuredUrl}: ${modelId}`);
+    await this.requestUnload(this.configuredUrl, modelId, options);
+    this.logger.info(`[Ollama] Model unloaded: ${modelId}`);
   }
 
   /**

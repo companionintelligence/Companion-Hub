@@ -25,10 +25,12 @@ export type CancellabilityTier = 'safe' | 'before_ponr' | 'non_cancellable';
  * - `preparing`: dequeued, before any destructive/irreversible work.
  * - `pulling`: image pull in flight.
  * - `composing`: `docker compose up/down` in flight.
+ * - `verifying`: the new containers run and the operation waits for their health checks; a cancel
+ *   now undoes what it changed (an update rolls back).
  * - `finalizing`: post-compose work (Traefik, webhooks, status) — past the point of no return.
  * - `committed`: an explicit point-of-no-return crossed; cancel must be refused.
  */
-export type OperationPhase = 'queued' | 'preparing' | 'pulling' | 'composing' | 'finalizing' | 'committed';
+export type OperationPhase = 'queued' | 'preparing' | 'pulling' | 'composing' | 'verifying' | 'finalizing' | 'committed';
 
 /** A single in-flight (or queued) lifecycle operation for one app. */
 export interface OperationEntry {

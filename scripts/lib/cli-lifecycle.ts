@@ -20,12 +20,13 @@ import { syncRabbitmqPasswordFromEnv } from '../sync-rabbitmq-password.js';
 import { usageAndExit } from './cli-args.js';
 import { buildEnvOverrides, ensureLocalDevRuntimeEnv, getComposeFiles, getEnvFileOrExit, renderConfigLines } from './cli-compose-env.js';
 import { ensureLocalDevPortsAvailable, run, runBestEffort, runScript } from './cli-proc.js';
-import { parseEnvFile } from '../env-file.js';
+import { parseEnvFile, restrictEnvFileMode } from '../env-file.js';
 import { isApplianceMode, requireRepoRoot } from './cli-repo-context.js';
 import { BASE_COMMAND, type HubEnv, type StartMode } from './cli-types.js';
 import { printMessageBox } from './cli-ui.js';
 import { requireDockerForHubStack } from './docker-versions.js';
 import { buildComposeBaseArgs, ensureApplianceInstall, envOverridesForContext, type HubContext, resolveHubContext } from './hub-context.js';
+import { applianceEnvFilePaths } from './paths.js';
 
 const POSTGRES_INFRA_SERVICES = ['ci-hub-queue', 'ci-hub-db'] as const;
 
@@ -171,7 +172,10 @@ async function startApplianceHub(ctx: HubContext, detachedMode: 'attached' | 'de
   // On the engine the Hub is pinned to, which envOverrides names, before anything is set up.
   requireDockerForHubStack(envOverrides);
 
-  await runScript('scripts/init-hub-data-dirs.ts', () => initHubDataDirs(), initEnv, dataDir);
+  // Both env files hold JWT_SECRET and the database and broker passwords. Desktop apps up to 0.3.6
+  // created them at the umask's 0664. A later write keeps the mode a file already has.
+  for (const envFile of applianceEnvFilePaths(dataDir)) restrictEnvFileMode(envFile);
+  await runScript('scripts/init-hub-data-dirs.ts', () => initHubDataDirs({ appliance: true }), initEnv, dataDir);
   // `state/traefik/config/traefik.yml` and `acme_storage.json` are FILE bind mounts, so on a data dir
   // that has never had them compose stops at "bind source path does not exist" before `ci-hub`
   // starts. The checkout path has always run this (see startHub); the appliance path never did,

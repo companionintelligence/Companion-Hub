@@ -4,6 +4,47 @@
 set -eu
 
 CLI_LINK=/usr/bin/cihub
+PACKAGE=${DPKG_MAINTSCRIPT_PACKAGE:-companion-hub}
+
+# BEGIN root-owned package folders (identical in preinst and postinst)
+# 0.3.5 and 0.3.6 shipped every entry owned by uid 1001, the build runner's user. dpkg sets the
+# owner of each file it unpacks, but it leaves a folder that already exists as it is. After an
+# upgrade "/usr/lib/Companion Hub" and its resources folder still belonged to that uid, which could
+# then swap the bundled cihub that /usr/bin/cihub points at. preinst hands the installed version's
+# folders back to root before the new files are unpacked into them. postinst does the same for
+# this version's. Only folders: a file dpkg unpacked is root's already, so one that is not was
+# swapped in and must not be made to look like a package file. Symlinks are never followed.
+# A symlink root does not own is removed: while its parent folder belonged to uid 1001 that
+# account could put one where the package has a folder, and dpkg unpacks through such a link
+# into whatever folder it names (Debian Policy 6.6) instead of creating its own.
+# Only the package's own folders, the ones no other installed package lists: dpkg created those
+# for 0.3.5 or 0.3.6, owned by uid 1001. A folder other packages list too (/usr/share/applications,
+# the hicolor icon folders) is theirs as well. Its owner is not this package's to change.
+# Paths are checked under DPKG_ROOT, which dpkg sets for an install with --root.
+package_owns_folder_alone() {
+  [ "$(dpkg-query -S -- "$1" 2>/dev/null)" = "$PACKAGE: $1" ]
+}
+
+restore_root_owned_folders() {
+  dpkg-query -L "$PACKAGE" 2>/dev/null | while IFS= read -r path; do
+    case "$path" in /usr/*) ;; *) continue ;; esac
+    on_disk="${DPKG_ROOT:-}$path"
+    if [ -L "$on_disk" ]; then
+      [ "$(stat -c '%u' "$on_disk" 2>/dev/null)" != "0" ] || continue
+      package_owns_folder_alone "$path" || continue
+      rm -f "$on_disk" 2>/dev/null || true
+      echo "companion-hub: removed $path, a symlink not owned by root where the package has a folder; if the app is missing files, run: apt install --reinstall $PACKAGE" >&2
+      continue
+    fi
+    [ -d "$on_disk" ] || continue
+    [ "$(stat -c '%u:%g' "$on_disk" 2>/dev/null)" != "0:0" ] || continue
+    package_owns_folder_alone "$path" || continue
+    chown -h root:root "$on_disk" 2>/dev/null || true
+  done
+}
+# END root-owned package folders
+
+restore_root_owned_folders || true
 
 find_bundled_cli() {
   for dir in "/usr/lib/Companion Hub/resources" "/usr/lib/companion-hub/resources"; do

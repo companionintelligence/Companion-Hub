@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { Button } from '@/components/ui/Button';
-import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
+import { Alert, AlertDescription, AlertIcon } from '@/components/ui/Alert/Alert';
 import { QrCode } from '@/components/ui/qr-code';
 import { AlertCircle, CheckCircle2, ChevronRight, Copy, Loader2, QrCode as QrCodeIcon } from 'lucide-react';
 import {
@@ -789,15 +789,15 @@ export default function DeviceRegistrationPage() {
 
         {statusError && (
           <Alert variant="warning" className="w-full text-left">
+            <AlertIcon>
+              <AlertCircle role="img" aria-label={t('COMMON_WARNING')} />
+            </AlertIcon>
             <AlertDescription>
-              <div className="flex items-start gap-2">
-                <AlertCircle role="img" aria-label={t('COMMON_WARNING')} className="mt-0.5 h-4 w-4 shrink-0" />
-                <span>
-                  {registrationStatus?.phase === 'paired' || registrationStatus?.phase === 'provisioning'
-                    ? t('DEVICE_REGISTRATION_PROGRESS_CONTACT_LOST')
-                    : statusError}
-                </span>
-              </div>
+              <span>
+                {registrationStatus?.phase === 'paired' || registrationStatus?.phase === 'provisioning'
+                  ? t('DEVICE_REGISTRATION_PROGRESS_CONTACT_LOST')
+                  : statusError}
+              </span>
             </AlertDescription>
           </Alert>
         )}
@@ -866,11 +866,11 @@ export default function DeviceRegistrationPage() {
 
       {registrationStatus && requiresPortalRePairing(registrationStatus) && (
         <Alert variant="warning">
+          <AlertIcon>
+            <AlertCircle role="img" aria-label={t('COMMON_WARNING')} />
+          </AlertIcon>
           <AlertDescription>
-            <div className="flex items-start gap-2">
-              <AlertCircle role="img" aria-label={t('COMMON_WARNING')} className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>{t('DEVICE_REGISTRATION_REPAIR_NOTICE_MESSAGE')}</span>
-            </div>
+            <span>{t('DEVICE_REGISTRATION_REPAIR_NOTICE_MESSAGE')}</span>
           </AlertDescription>
         </Alert>
       )}
@@ -1009,11 +1009,11 @@ export default function DeviceRegistrationPage() {
       {statusError && (
         <div className="space-y-3">
           <Alert variant="warning">
+            <AlertIcon>
+              <AlertCircle role="img" aria-label={t('COMMON_WARNING')} />
+            </AlertIcon>
             <AlertDescription>
-              <div className="flex items-start gap-2">
-                <AlertCircle role="img" aria-label={t('COMMON_WARNING')} className="mt-0.5 h-4 w-4 shrink-0" />
-                <span>{statusError}</span>
-              </div>
+              <span>{statusError}</span>
             </AlertDescription>
           </Alert>
           <Button variant="outline" onClick={() => void handleRetryStatus()}>
@@ -1024,11 +1024,11 @@ export default function DeviceRegistrationPage() {
 
       {deviceInfoError && (
         <Alert variant="danger">
+          <AlertIcon>
+            <AlertCircle role="img" aria-label={t('COMMON_ERROR')} />
+          </AlertIcon>
           <AlertDescription>
-            <div className="flex items-start gap-2">
-              <AlertCircle role="img" aria-label={t('COMMON_ERROR')} className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>{deviceInfoError}</span>
-            </div>
+            <span>{deviceInfoError}</span>
           </AlertDescription>
         </Alert>
       )}

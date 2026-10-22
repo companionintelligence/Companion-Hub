@@ -14,6 +14,7 @@ import type { ConfigurationService } from '@/core/config/configuration.service';
 import type { LoggerService } from '@/core/logger/logger.service';
 import type { AppFilesManager } from '@/modules/apps/app-files-manager';
 import type { AppVolumeArchiveService } from '@/modules/docker/app-volume-archive.service';
+import type { DockerService } from '@/modules/docker/docker.service';
 import type { AppUrn } from '@ci-hub/common/types';
 
 vi.unmock('node:fs');
@@ -23,6 +24,10 @@ const fs = (await import('node:fs')).default;
 const { ArchiveService } = await import('@/core/archive/archive.service');
 const { FilesystemService } = await import('@/core/filesystem/filesystem.service');
 const { BackupManager } = await import('../backup.manager');
+const { AppCommandDeadline } = await import('@/common/helpers/app-command-deadline');
+
+// root ignores permission bits and Windows has none to speak of; there the Hub can delete anything.
+const canEnforcePermissions = process.platform !== 'win32' && typeof process.getuid === 'function' && process.getuid() !== 0;
 
 const hasTar = (() => {
   try {
@@ -69,6 +74,16 @@ function makeTarGz(entries: TarEntry[]): Buffer {
   return zlib.gzipSync(Buffer.concat(blocks));
 }
 
+/** Give the owner back write access everywhere under `dir`, as root would not need, so it can be deleted. */
+async function loosen(dir: string): Promise<void> {
+  const stat = await fs.promises.lstat(dir).catch(() => null);
+  if (!stat?.isDirectory()) return;
+  await fs.promises.chmod(dir, 0o755).catch(() => undefined);
+  for (const name of await fs.promises.readdir(dir).catch(() => [] as string[])) {
+    await loosen(path.join(dir, name));
+  }
+}
+
 const VALID_ENTRIES: TarEntry[] = [
   { name: './', type: '5' },
   { name: './app-data/', type: '5' },
@@ -93,6 +108,7 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
   let archive: InstanceType<typeof ArchiveService>;
   let logger: ReturnType<typeof mock<LoggerService>>;
   let appFilesManager: ReturnType<typeof mock<AppFilesManager>>;
+  let docker: ReturnType<typeof mock<DockerService>>;
   let manager: InstanceType<typeof BackupManager>;
 
   const putArchive = async (name: string, bytes: Buffer | string) => {
@@ -147,12 +163,14 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
     // An app with no named Docker volumes, which is every app outside a Windows Hub.
     const appVolumes = mock<AppVolumeArchiveService>();
     appVolumes.listAppVolumes.mockResolvedValue([]);
-    manager = new BackupManager(archive, logger, config, filesystem, appFilesManager, appVolumes);
+    docker = mock<DockerService>();
+    manager = new BackupManager(archive, logger, config, filesystem, appFilesManager, appVolumes, docker);
     manager.onApplicationShutdown(); // stop the constructor's weekly interval
   });
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    await loosen(scratch);
     await fs.promises.rm(scratch, { recursive: true, force: true });
     await Promise.all(tempDirs.map((dir) => fs.promises.rm(dir, { recursive: true, force: true })));
   });
@@ -350,6 +368,140 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
       await expect(fs.promises.readFile(path.join(appDataDir, 'data.txt'), 'utf8')).resolves.toBe('live-data');
     });
 
+    /*
+     * MariaDB keeps its files under uid 999 with its folders at 700, so a Hub running as uid 1000 cannot
+     * read them and every manual backup of Kimai failed with EACCES. A file at 000 stands in for them.
+     */
+    /*
+     * MariaDB keeps its files under uid 999 with its folders at 700, so a Hub running as uid 1000 cannot
+     * read them and every manual backup of Kimai failed with EACCES. A file at 000 stands in for them. The
+     * test cannot be root, so the helper's part (archive the staged parts and the live data with their
+     * owners) is done here with the test's own tar; what is checked is everything the Hub does around it.
+     */
+    describe.skipIf(!canEnforcePermissions)('data the Hub cannot read', () => {
+      const secret = () => path.join(appDataDir, 'data', 'db', 'mysql', 'ibdata1');
+      const stagingFor = (id: string) => path.join(dataDir, 'backups', '.backup-staging', 'test-store', 'test-app', id);
+
+      beforeEach(async () => {
+        await fs.promises.mkdir(path.dirname(secret()), { recursive: true });
+        await fs.promises.writeFile(secret(), 'database rows');
+        await fs.promises.chmod(secret(), 0o000);
+
+        docker.createBackupStagingDir.mockImplementation(async () => {
+          const dir = stagingFor('backup-test-app-1');
+          await fs.promises.mkdir(path.join(dir, 'stage', 'app-data'), { recursive: true });
+          await fs.promises.mkdir(path.join(dir, 'out'), { recursive: true });
+          return { id: 'backup-test-app-1', dir };
+        });
+        // What the helper does as root: the staged parts, with the live data mounted as app-data/.
+        docker.archiveBackupAsRoot.mockImplementation(async (_urn, id) => {
+          const dir = stagingFor(id);
+          await fs.promises.chmod(secret(), 0o644);
+          await fs.promises.cp(appDataDir, path.join(dir, 'stage', 'app-data'), { recursive: true });
+          await fs.promises.chmod(secret(), 0o000);
+          execFileSync('tar', ['-czf', path.join(dir, 'out', 'backup.tar.gz'), '-C', path.join(dir, 'stage'), '.']);
+          return path.join(dir, 'out', 'backup.tar.gz');
+        });
+      });
+
+      afterEach(async () => {
+        await fs.promises.chmod(secret(), 0o644).catch(() => undefined);
+      });
+
+      it('has root archive it with its owners, marked so a restore puts them back, and cleans up the staging', async () => {
+        const { filename } = await manager.backupApp(appUrn);
+
+        expect(docker.archiveBackupAsRoot).toHaveBeenCalledWith(appUrn, 'backup-test-app-1', expect.any(AppCommandDeadline));
+        const listing = execFileSync('tar', ['-tzf', path.join(backupDir, filename)], { encoding: 'utf8' }).split('\n');
+        expect(listing).toContain('./app-data.owners');
+        expect(listing).toContain('./app/docker-compose.json');
+        expect(listing).toContain('./user-config/app.env');
+        expect(execFileSync('tar', ['-xzOf', path.join(backupDir, filename), './app-data/data/db/mysql/ibdata1'], { encoding: 'utf8' })).toBe(
+          'database rows',
+        );
+        await expect(fs.promises.access(stagingFor('backup-test-app-1'))).rejects.toThrow();
+      });
+
+      it('says the backup ran out of time when the archive uses up its budget', async () => {
+        docker.archiveBackupAsRoot.mockImplementation(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 1_100));
+          return null;
+        });
+
+        await expect(manager.backupApp(appUrn, AppCommandDeadline.after(1_000))).rejects.toThrow(
+          `Backing up ${appUrn} ran out of time: the root helpers it needs get 1 second in all`,
+        );
+        await expect(fs.promises.access(backupDir)).rejects.toThrow();
+      });
+
+      it('does not report a backup when root cannot archive it either, and cleans up the staging', async () => {
+        docker.archiveBackupAsRoot.mockResolvedValue(null);
+
+        await expect(manager.backupApp(appUrn)).rejects.toThrow('Failed to create the backup archive');
+        await expect(fs.promises.access(backupDir)).rejects.toThrow();
+        await expect(fs.promises.access(stagingFor('backup-test-app-1'))).rejects.toThrow();
+      });
+
+      it('says before anything is stopped that it cannot back up, when the helper cannot run', async () => {
+        docker.privilegedHelperAvailable.mockResolvedValue(false);
+
+        await expect(manager.assertBackupPossible(appUrn)).rejects.toThrow(`Cannot back up ${appUrn}`);
+        await expect(manager.assertBackupPossible(appUrn)).rejects.toThrow('Nothing was stopped');
+      });
+
+      it('lets the backup go ahead when the helper can run', async () => {
+        docker.privilegedHelperAvailable.mockResolvedValue(true);
+
+        await expect(manager.assertBackupPossible(appUrn)).resolves.toBeUndefined();
+        expect(docker.privilegedHelperAvailable).toHaveBeenCalledWith(appUrn);
+      });
+
+      // The Hub's copy would stop at the database's first file, after copying everything before it.
+      it('does not start a Hub copy of data it already knows it cannot read', async () => {
+        const copy = vi.spyOn(filesystem, 'copyDirectoryDetailed');
+
+        await manager.backupApp(appUrn);
+
+        expect(copy).not.toHaveBeenCalled();
+        expect(docker.archiveBackupAsRoot).toHaveBeenCalled();
+      });
+    });
+
+    // A backup leaves out every path with "backups" in it, so what is unreadable there never needs root.
+    it.skipIf(!canEnforcePermissions)('does not ask about the helper for unreadable files a backup leaves out', async () => {
+      const skipped = path.join(appDataDir, 'data', 'backups', 'old.db');
+      await fs.promises.mkdir(path.dirname(skipped), { recursive: true });
+      await fs.promises.writeFile(skipped, 'old rows');
+      await fs.promises.chmod(skipped, 0o000);
+
+      await expect(manager.assertBackupPossible(appUrn)).resolves.toBeUndefined();
+
+      expect(docker.privilegedHelperAvailable).not.toHaveBeenCalled();
+    });
+
+    it('does not ask about the helper when the Hub can read everything', async () => {
+      await expect(manager.assertBackupPossible(appUrn)).resolves.toBeUndefined();
+
+      expect(docker.privilegedHelperAvailable).not.toHaveBeenCalled();
+    });
+
+    it('does not ask the root helper when the Hub can read everything', async () => {
+      await manager.backupApp(appUrn);
+
+      expect(docker.createBackupStagingDir).not.toHaveBeenCalled();
+      expect(docker.archiveBackupAsRoot).not.toHaveBeenCalled();
+    });
+
+    it('clears what an earlier backup left in staging', async () => {
+      const leftover = path.join(dataDir, 'backups', '.backup-staging', 'test-store', 'test-app', 'backup-test-app-9', 'out');
+      await fs.promises.mkdir(leftover, { recursive: true });
+      await fs.promises.writeFile(path.join(leftover, 'backup.tar.gz'), 'half an archive');
+
+      await manager.backupApp(appUrn);
+
+      await expect(fs.promises.access(path.join(dataDir, 'backups', '.backup-staging', 'test-store', 'test-app'))).rejects.toThrow();
+    });
+
     it('gives an app with no data folder an empty one in the archive, so the backup can be restored', async () => {
       await fs.promises.rm(appDataDir, { recursive: true, force: true });
 
@@ -397,11 +549,276 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
     await expect(manager.getBackupPath(appUrn, 'linked.tar.gz')).rejects.toThrow('The backup file does not exist');
   });
 
+  // Data the Hub deletes and copies itself needs no root helper, so a used-up budget does not stop it.
+  it('restores data the Hub can delete itself whatever is left of the budget', async () => {
+    const name = await putArchive('good.tar.gz', makeTarGz(VALID_ENTRIES));
+
+    await manager.restoreApp(appUrn, name, AppCommandDeadline.after(0));
+
+    await expect(readLive()).resolves.toEqual({ data: 'restored-data', compose: '{"restored":true}', env: 'RESTORED=true\n' });
+  });
+
   it('reports a restore that could not write the data, instead of "succeeding"', async () => {
     const name = await putArchive('good.tar.gz', makeTarGz(VALID_ENTRIES));
     vi.spyOn(filesystem, 'copyDirectory').mockResolvedValue(false);
 
     await expect(manager.restoreApp(appUrn, name)).rejects.toThrow('Failed to restore the backup files');
+  });
+
+  /*
+   * A container that runs as root writes files the Hub cannot delete. Uptime Kuma after Reset app
+   * re-creates `data/` as root:root 755 with `kuma.db` in it; the Hub (uid 1000) can read them but
+   * not unlink them, so the restore used to fail half-way with EACCES and "Failed to restore the
+   * backup files". Here a folder the test cannot write stands in for the root-owned one.
+   */
+  describe.skipIf(!canEnforcePermissions)('data the Hub cannot delete', () => {
+    const KUMA_ENTRIES: TarEntry[] = [
+      ...VALID_ENTRIES,
+      { name: './app-data/data/', type: '5' },
+      { name: './app-data/data/kuma.db', content: 'backed-up-db' },
+    ];
+
+    beforeEach(async () => {
+      docker.privilegedHelperAvailable.mockResolvedValue(true);
+      const data = path.join(appDataDir, 'data');
+      await fs.promises.mkdir(path.join(data, 'docker-tls'), { recursive: true });
+      await fs.promises.writeFile(path.join(data, 'kuma.db'), 'reset-db');
+      await fs.promises.writeFile(path.join(data, 'docker-tls', 'ca.pem'), 'cert');
+      await fs.promises.chmod(path.join(data, 'docker-tls'), 0o555);
+      await fs.promises.chmod(data, 0o555);
+    });
+
+    // A restore's root helpers share one budget that ends while the app queue still waits for the
+    // reply. Here the delete uses it all up.
+    it('fails with a clear message when the root helpers use up the restore budget', async () => {
+      docker.removeAppDataDirAsRoot.mockImplementation(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 1_100));
+        return false;
+      });
+      const name = await putArchive('kuma.tar.gz', makeTarGz(KUMA_ENTRIES));
+
+      await expect(manager.restoreApp(appUrn, name, AppCommandDeadline.after(1_000))).rejects.toThrow(
+        `Restoring ${appUrn} ran out of time: the root helpers it needs get 1 second in all`,
+      );
+      // Nothing of the backup went in, and the installed files were not touched.
+      await expect(fs.promises.readFile(path.join(appInstalledDir, 'docker-compose.json'), 'utf8')).resolves.toBe('{"live":true}');
+    });
+
+    // The checks before the delete use the same budget. Used up there, the Hub would delete its own part of
+    // the data (app.env, data.txt) and only then have the root helper refuse to start.
+    it('changes nothing when the checks used up the budget before the root delete', async () => {
+      const name = await putArchive('kuma.tar.gz', makeTarGz(KUMA_ENTRIES));
+
+      await expect(manager.restoreApp(appUrn, name, AppCommandDeadline.after(0))).rejects.toThrow(
+        /^Restoring test-app:test-store ran out of time: .* Nothing was changed\.$/,
+      );
+
+      await expect(fs.promises.readFile(path.join(appDataDir, 'data.txt'), 'utf8')).resolves.toBe('live-data');
+      await expect(fs.promises.readFile(path.join(appDataDir, 'data', 'kuma.db'), 'utf8')).resolves.toBe('reset-db');
+      await expect(fs.promises.readFile(path.join(appInstalledDir, 'docker-compose.json'), 'utf8')).resolves.toBe('{"live":true}');
+      expect(docker.removeAppDataDirAsRoot).not.toHaveBeenCalled();
+    });
+
+    it('checks the helper can run before it deletes anything', async () => {
+      docker.privilegedHelperAvailable.mockResolvedValue(false);
+      const name = await putArchive('kuma.tar.gz', makeTarGz(KUMA_ENTRIES));
+
+      await expect(manager.restoreApp(appUrn, name)).rejects.toThrow('Nothing was changed');
+
+      // The Hub used to delete what it could (data.txt, app.env) and only then find out root could not help.
+      await expect(fs.promises.readFile(path.join(appDataDir, 'data.txt'), 'utf8')).resolves.toBe('live-data');
+      await expect(fs.promises.readFile(path.join(appDataDir, 'data', 'kuma.db'), 'utf8')).resolves.toBe('reset-db');
+      expect(docker.removeAppDataDirAsRoot).not.toHaveBeenCalled();
+    });
+
+    it('empties it through the root helper, then restores the backup', async () => {
+      // What `find /target -mindepth 1 -delete` does as root: the contents go, the folder stays.
+      docker.removeAppDataDirAsRoot.mockImplementation(async () => {
+        await loosen(appDataDir);
+        for (const name of await fs.promises.readdir(appDataDir)) {
+          await fs.promises.rm(path.join(appDataDir, name), { recursive: true, force: true });
+        }
+        return true;
+      });
+      const name = await putArchive('kuma.tar.gz', makeTarGz(KUMA_ENTRIES));
+
+      await manager.restoreApp(appUrn, name);
+
+      expect(docker.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn, expect.any(AppCommandDeadline));
+      await expect(fs.promises.readFile(path.join(appDataDir, 'data', 'kuma.db'), 'utf8')).resolves.toBe('backed-up-db');
+      await expect(fs.promises.access(path.join(appDataDir, 'data', 'docker-tls'))).rejects.toThrow();
+      await expect(readLive()).resolves.toEqual({ data: 'restored-data', compose: '{"restored":true}', env: 'RESTORED=true\n' });
+    });
+
+    it('stops before copying anything when the helper cannot empty it either', async () => {
+      docker.removeAppDataDirAsRoot.mockResolvedValue(false);
+      const name = await putArchive('kuma.tar.gz', makeTarGz(KUMA_ENTRIES));
+
+      await expect(manager.restoreApp(appUrn, name)).rejects.toThrow(`Could not remove the current data of ${appUrn} to restore the backup`);
+
+      // Nothing of the backup was mixed into what is left and the installed files were not touched.
+      await expect(fs.promises.readFile(path.join(appDataDir, 'data', 'kuma.db'), 'utf8')).resolves.toBe('reset-db');
+      await expect(fs.promises.readFile(path.join(appInstalledDir, 'docker-compose.json'), 'utf8')).resolves.toBe('{"live":true}');
+    });
+  });
+
+  describe('a backup made with its owners', () => {
+    const OWNED_ENTRIES: TarEntry[] = [...VALID_ENTRIES, { name: './app-data.owners', content: '' }];
+    let stagingDir: string;
+
+    beforeEach(() => {
+      stagingDir = path.join(dataDir, 'backups', '.backup-staging', 'test-store', 'test-app', 'backup-test-app-1');
+      docker.createRestoreStagingDir.mockImplementation(async () => {
+        await fs.promises.mkdir(path.join(stagingDir, 'in'), { recursive: true });
+        return { id: 'backup-test-app-1', dir: stagingDir, archive: path.join(stagingDir, 'in', 'backup.tar.gz') };
+      });
+      docker.privilegedHelperAvailable.mockResolvedValue(true);
+    });
+
+    /** What the helper does as root: extract the data member of the staged archive over the emptied data folder. */
+    const extractAsRoot = async (member: string) => {
+      const out = await fs.promises.mkdtemp(path.join(scratch, 'x-'));
+      execFileSync('tar', ['-C', out, '-xzf', path.join(stagingDir, 'in', 'backup.tar.gz'), member]);
+      await fs.promises.cp(path.join(out, 'app-data'), appDataDir, { recursive: true });
+      return true;
+    };
+
+    it('has root put its data back from the archive, not the Hub copy without owners', async () => {
+      docker.extractBackupAppDataAsRoot.mockImplementation(async (_urn, _id, member) => extractAsRoot(member));
+      const copy = vi.spyOn(filesystem, 'copyDirectory');
+      const name = await putArchive('owned.tar.gz', makeTarGz(OWNED_ENTRIES));
+
+      await manager.restoreApp(appUrn, name);
+
+      expect(docker.extractBackupAppDataAsRoot).toHaveBeenCalledWith(appUrn, 'backup-test-app-1', './app-data', expect.any(AppCommandDeadline));
+      expect(copy).not.toHaveBeenCalledWith(expect.stringContaining('app-data'), appDataDir, expect.anything());
+      await expect(readLive()).resolves.toEqual({ data: 'restored-data', compose: '{"restored":true}', env: 'RESTORED=true\n' });
+      // The staged archive goes with the restore.
+      await expect(fs.promises.access(stagingDir)).rejects.toThrow();
+    });
+
+    it('SECURITY: root reads the archive the Hub checked, even when its name is deleted and uploaded again during the restore', async () => {
+      const name = await putArchive('owned.tar.gz', makeTarGz(OWNED_ENTRIES));
+      docker.extractBackupAppDataAsRoot.mockImplementation(async (_urn, _id, member) => {
+        // A member deletes the backup and uploads another under the same name, after every check.
+        await fs.promises.rm(path.join(backupDir, name));
+        await putArchive(
+          name,
+          makeTarGz([
+            { name: './app-data/', type: '5' },
+            { name: './app-data/data.txt', content: 'swapped-in' },
+            { name: './app-data.owners', content: '' },
+          ]),
+        );
+        return extractAsRoot(member);
+      });
+
+      await manager.restoreApp(appUrn, name);
+
+      await expect(fs.promises.readFile(path.join(appDataDir, 'data.txt'), 'utf8')).resolves.toBe('restored-data');
+    });
+
+    it('changes nothing when the checks used up the budget, since root has to put the data back', async () => {
+      const name = await putArchive('owned.tar.gz', makeTarGz(OWNED_ENTRIES));
+
+      await expect(manager.restoreApp(appUrn, name, AppCommandDeadline.after(0))).rejects.toThrow('ran out of time');
+
+      await expectLiveUntouched();
+      expect(docker.extractBackupAppDataAsRoot).not.toHaveBeenCalled();
+    });
+
+    it('gives the delete and the extract one budget, 40 minutes unless the caller has its own', async () => {
+      docker.extractBackupAppDataAsRoot.mockResolvedValue(false);
+      const name = await putArchive('owned.tar.gz', makeTarGz(OWNED_ENTRIES));
+      const deadline = AppCommandDeadline.after(5 * 60_000);
+
+      await expect(manager.restoreApp(appUrn, name, deadline)).rejects.toThrow();
+      expect(docker.extractBackupAppDataAsRoot.mock.calls[0]?.[3]).toBe(deadline);
+
+      await expect(manager.restoreApp(appUrn, name)).rejects.toThrow();
+      const own = docker.extractBackupAppDataAsRoot.mock.calls[1]?.[3] as InstanceType<typeof AppCommandDeadline> | undefined;
+      expect(own?.budgetMs).toBe(40 * 60_000);
+    });
+
+    it('reports a restore whose data root could not put back', async () => {
+      docker.extractBackupAppDataAsRoot.mockResolvedValue(false);
+      const name = await putArchive('owned.tar.gz', makeTarGz(OWNED_ENTRIES));
+
+      await expect(manager.restoreApp(appUrn, name)).rejects.toThrow('Failed to restore the backup files');
+    });
+
+    // The helper writes to the host path it works out from the settings, which can be another folder.
+    it('reports a restore whose data root put somewhere the Hub does not look', async () => {
+      docker.extractBackupAppDataAsRoot.mockResolvedValue(true);
+      const name = await putArchive('owned.tar.gz', makeTarGz(OWNED_ENTRIES));
+
+      await expect(manager.restoreApp(appUrn, name)).rejects.toThrow('Failed to restore the backup files');
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('does not hold data.txt'));
+    });
+
+    it('refuses before the live data is touched when the root helper cannot run', async () => {
+      docker.privilegedHelperAvailable.mockResolvedValue(false);
+      const name = await putArchive('owned.tar.gz', makeTarGz(OWNED_ENTRIES));
+
+      await expect(manager.restoreApp(appUrn, name)).rejects.toThrow('Nothing was changed');
+
+      expect(docker.extractBackupAppDataAsRoot).not.toHaveBeenCalled();
+      await expectLiveUntouched();
+      await expect(fs.promises.access(stagingDir)).rejects.toThrow();
+    });
+
+    it('refuses before the live data is touched when the archive cannot be staged for root', async () => {
+      docker.createRestoreStagingDir.mockResolvedValue(null);
+      const name = await putArchive('owned.tar.gz', makeTarGz(OWNED_ENTRIES));
+
+      await expect(manager.restoreApp(appUrn, name)).rejects.toThrow('Nothing was changed');
+
+      expect(docker.extractBackupAppDataAsRoot).not.toHaveBeenCalled();
+      await expectLiveUntouched();
+    });
+
+    it('restores a backup without the marker the way it always did', async () => {
+      const name = await putArchive('good.tar.gz', makeTarGz(VALID_ENTRIES));
+
+      await manager.restoreApp(appUrn, name);
+
+      expect(docker.extractBackupAppDataAsRoot).not.toHaveBeenCalled();
+      expect(docker.createRestoreStagingDir).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a folder', { name: './app-data.owners/', type: '5' as const }],
+      ['a symbolic link', { name: './app-data.owners', type: '2' as const, linkname: '/etc/passwd' }],
+    ])('refuses a marker that is %s', async (_name, marker) => {
+      const name = await putArchive('bad-marker.tar.gz', makeTarGz([...VALID_ENTRIES, marker]));
+
+      await expect(manager.restoreApp(appUrn, name)).rejects.toThrow('unsupported file types');
+      await expectLiveUntouched();
+    });
+  });
+
+  it('makes the bind-mount folders the backup did not hold as the Hub, rather than leave them to Docker', async () => {
+    const name = await putArchive('good.tar.gz', makeTarGz(VALID_ENTRIES));
+
+    await manager.restoreApp(appUrn, name);
+
+    expect(appFilesManager.createVolumeHostDirs).toHaveBeenCalledWith(appUrn);
+  });
+
+  it('does not touch the folders when it refuses the archive', async () => {
+    const name = await putArchive('bad.tar.gz', 'this is not an archive');
+
+    await expect(manager.restoreApp(appUrn, name)).rejects.toThrow();
+
+    expect(appFilesManager.createVolumeHostDirs).not.toHaveBeenCalled();
+  });
+
+  it('does not call the root helper when the Hub can delete the data itself', async () => {
+    const name = await putArchive('good.tar.gz', makeTarGz(VALID_ENTRIES));
+
+    await manager.restoreApp(appUrn, name);
+
+    expect(docker.removeAppDataDirAsRoot).not.toHaveBeenCalled();
   });
 
   it('refuses a filename that is not a single segment before creating anything', async () => {

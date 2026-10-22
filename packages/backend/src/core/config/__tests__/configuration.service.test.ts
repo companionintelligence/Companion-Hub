@@ -919,6 +919,17 @@ describe('ConfigurationService.forgetPersistedUserSettings', () => {
     expect(svc.get('userSettings')).toEqual(bootWith({}).get('userSettings'));
   });
 
+  it('forgets the pairing as a boot with an empty settings.json has none: the device key, the move key and the organization id', () => {
+    const svc = bootWith({ ciHubApiKey: 'device-key', ciHubMoveKey: 'move-key', ciHubOrganizationId: 'org-1' });
+    expect(svc.get('ciHubApiKey')).toBe('device-key');
+
+    svc.forgetPersistedUserSettings();
+
+    expect(svc.get('ciHubApiKey')).toBeNull();
+    expect(svc.get('ciHubMoveKey')).toBeNull();
+    expect(svc.get('ciHubOrganizationId')).toBeNull();
+  });
+
   it('tells settings-change listeners, so the mDNS socket closes when the old settings had it open', () => {
     const svc = bootWith({ hubPoolMdnsEnabled: true });
     const seen: Array<{ mdnsKey: boolean; mdns: boolean }> = [];

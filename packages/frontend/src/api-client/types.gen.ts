@@ -83,6 +83,7 @@ export type AppContextDto = {
         inferenceEncodeEndpoint?: string;
         inferenceMaxNumCtx?: number;
         inferenceOllamaSlots?: number;
+        inferenceOllamaKeepAlive?: number;
         hubPoolEnabled?: boolean;
         hubPoolOutboundEnabled?: boolean;
         hubPoolInboundEnabled?: boolean;
@@ -141,6 +142,10 @@ export type AppContextDto = {
     tailscaleHttpsEnabled?: boolean;
 };
 
+export type HubAccessDto = {
+    manageHub: boolean;
+};
+
 export type UserSettingsBody = {
     advancedSettings?: boolean;
     allowAutoThemes?: boolean;
@@ -186,6 +191,7 @@ export type UserSettingsBody = {
     inferenceEncodeEndpoint?: string;
     inferenceMaxNumCtx?: number;
     inferenceOllamaSlots?: number;
+    inferenceOllamaKeepAlive?: number;
     hubPoolEnabled?: boolean;
     hubPoolOutboundEnabled?: boolean;
     hubPoolInboundEnabled?: boolean;
@@ -1402,6 +1408,10 @@ export type SearchAppsDto = {
     total: number;
 };
 
+export type AppListingDto = {
+    [key: string]: unknown;
+};
+
 export type AppMediaDto = {
     screenshots: Array<string>;
     demoVideoUrl: string;
@@ -1453,6 +1463,7 @@ export type UpdateInferencePreferencesBody = {
     encodeEndpoint?: string;
     maxNumCtx?: number;
     ollamaSlots?: number;
+    ollamaKeepAlive?: number;
 };
 
 export type UpdateRocmInstallStateBody = {
@@ -1655,6 +1666,10 @@ export type CreateCustomAppResponseDto = {
     appUrn: string;
     appName: string;
     storeId: string;
+};
+
+export type CustomAppAccessDto = {
+    actions: Array<'view' | 'start' | 'stop' | 'restart' | 'install' | 'update' | 'uninstall' | 'reset' | 'backup' | 'restore' | 'configure'>;
 };
 
 export type CreateCustomAppDto = {
@@ -2198,11 +2213,11 @@ export type McpInstallSchemaDto = {
 
 export type StreamAppLogsQueryDto = {
     appUrn: string;
-    maxLines?: number | unknown;
+    maxLines?: number;
 };
 
 export type StreamHubLogsQueryDto = {
-    maxLines?: number | unknown;
+    maxLines?: number;
 };
 
 export type OnboardingProfileQueryDto = {
@@ -2418,6 +2433,19 @@ export type AppContextResponses = {
 };
 
 export type AppContextResponse = AppContextResponses[keyof AppContextResponses];
+
+export type HubAccessData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/hub-access';
+};
+
+export type HubAccessResponses = {
+    default: HubAccessDto;
+};
+
+export type HubAccessResponse = HubAccessResponses[keyof HubAccessResponses];
 
 export type UpdateUserSettingsData = {
     body: UserSettingsBody;
@@ -3516,6 +3544,19 @@ export type ExchangePortalDesktopLoginResponses = {
 
 export type ExchangePortalDesktopLoginResponse = ExchangePortalDesktopLoginResponses[keyof ExchangePortalDesktopLoginResponses];
 
+export type EstablishPortalMobileSessionData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/portal/mobile-session';
+};
+
+export type EstablishPortalMobileSessionResponses = {
+    default: PortalDesktopExchangeDto;
+};
+
+export type EstablishPortalMobileSessionResponse = EstablishPortalMobileSessionResponses[keyof EstablishPortalMobileSessionResponses];
+
 export type PortalDesktopHandoffStatusData = {
     body?: never;
     path?: never;
@@ -3753,6 +3794,17 @@ export type GetGuestAppsResponses = {
 
 export type GetGuestAppsResponse = GetGuestAppsResponses[keyof GetGuestAppsResponses];
 
+export type GetAppStartingPageData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/apps/starting';
+};
+
+export type GetAppStartingPageResponses = {
+    200: unknown;
+};
+
 export type GetRandomPortData = {
     body?: never;
     path?: never;
@@ -3937,6 +3989,21 @@ export type SearchAppsResponses = {
 };
 
 export type SearchAppsResponse = SearchAppsResponses[keyof SearchAppsResponses];
+
+export type GetAppListingData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/marketplace/apps/{urn}/listing';
+};
+
+export type GetAppListingResponses = {
+    default: AppListingDto;
+};
+
+export type GetAppListingResponse = GetAppListingResponses[keyof GetAppListingResponses];
 
 export type GetImageData = {
     body?: never;
@@ -4394,6 +4461,19 @@ export type SetCloudProviderData = {
 
 export type SetCloudProviderResponses = {
     201: unknown;
+};
+
+export type RemoveCloudProviderData = {
+    body?: never;
+    path: {
+        provider: string;
+    };
+    query?: never;
+    url: '/api/inference/cloud-providers/{provider}';
+};
+
+export type RemoveCloudProviderResponses = {
+    200: unknown;
 };
 
 export type GetOnboardingProfileData = {
@@ -5485,7 +5565,7 @@ export type AppLogsEventsData = {
     path?: never;
     query: {
         appUrn: string;
-        maxLines?: number | unknown;
+        maxLines?: number;
     };
     url: '/api/sse/app-logs';
 };
@@ -5498,7 +5578,7 @@ export type HubLogsEventsData = {
     body?: never;
     path?: never;
     query?: {
-        maxLines?: number | unknown;
+        maxLines?: number;
     };
     url: '/api/sse/ci-hub-logs';
 };
@@ -5791,6 +5871,19 @@ export type CreatePortExposeAppResponses = {
 };
 
 export type CreatePortExposeAppResponse = CreatePortExposeAppResponses[keyof CreatePortExposeAppResponses];
+
+export type GetCustomAppAccessData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/custom-apps/access';
+};
+
+export type GetCustomAppAccessResponses = {
+    default: CustomAppAccessDto;
+};
+
+export type GetCustomAppAccessResponse = GetCustomAppAccessResponses[keyof GetCustomAppAccessResponses];
 
 export type CreateCustomAppData = {
     body: CreateCustomAppDto;

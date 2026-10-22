@@ -8,11 +8,11 @@ describe('SetupPageShell', () => {
   // loaded from the Hub (`/hub.png`) was a broken image there (CI-Hub#1935).
   it('shows a logo that comes with the page instead of one loaded from the Hub', () => {
     render(
-      <SetupPageShell title="CI Hub">
+      <SetupPageShell title="Companion Hub">
         <div />
       </SetupPageShell>,
     );
 
-    expect(screen.getByRole('img', { name: 'CI Hub logo' }).getAttribute('src')).toMatch(/^data:image\/png;base64,/);
+    expect(screen.getByRole('img', { name: 'Companion Hub logo' }).getAttribute('src')).toMatch(/^data:image\/png;base64,/);
   });
 });

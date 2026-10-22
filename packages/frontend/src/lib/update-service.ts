@@ -33,6 +33,12 @@ interface NativeDesktopUpdateInfo {
   latestVersion: string;
   downloadUrl: string;
   updateAvailable: boolean;
+  /**
+   * The installer format this computer takes (`deb`, `rpm`, `appimage`, `dmg`, `exe`). Desktop apps
+   * that send it look up their own installer when nothing is newer too, so a missing `downloadUrl`
+   * means the release has none for this computer.
+   */
+  packageFormat?: string;
 }
 
 export type DesktopPlatform = 'linux' | 'macos' | 'windows';
@@ -261,7 +267,47 @@ async function resolveInstallerFromHub(
   return { latestVersion, downloadUrl: isTrustedDownloadUrl(downloadUrl) ? downloadUrl : '' };
 }
 
-export async function checkForUpdates(fallbackCurrentVersion?: string): Promise<UpdateInfo | null> {
+/**
+ * The installer of `version` when the desktop app's own check named none, which it does whenever this
+ * computer already runs the newest version. The download servers send no CORS headers, so the window
+ * can't read them itself and the Hub reads them. An installer of any other version is dropped,
+ * because the Desktop app card offers `version` by name.
+ *
+ * Only the version this computer runs gets an installer from here. The desktop app picks this
+ * computer's own format (`.deb` on Ubuntu, `.rpm` on Fedora) while the Hub and the download server
+ * pick from all of them. For a newer version the desktop app found nothing for, either could only
+ * name another format, which the card would then install in one click. A release older than the
+ * running app would downgrade it (a dev build ahead of its download server, for one). Without
+ * `askHub` (the update notice, which only shows a newer version) nothing is looked up.
+ */
+async function findDesktopInstaller(
+  version: string,
+  running: string,
+  platform: DesktopPlatform | null,
+  osArch: string,
+  askHub: boolean,
+): Promise<string> {
+  if (!askHub || !semver.valid(running) || !semver.eq(version, running)) {
+    return '';
+  }
+  try {
+    const resolved = await resolveInstallerFromHub(platform, osArch);
+    return resolved?.downloadUrl && resolved.latestVersion === version ? resolved.downloadUrl : '';
+  } catch {
+    return '';
+  }
+}
+
+export interface CheckForUpdatesOptions {
+  /**
+   * In the desktop window, ask the Hub for the installer when the desktop app names none. Only for
+   * a signed-in page: the Hub answers a signed-out one with a 401 and a 401 signs the page out,
+   * which sends a page like `/register` to `/login`.
+   */
+  askHubForInstaller?: boolean;
+}
+
+export async function checkForUpdates(fallbackCurrentVersion?: string, options: CheckForUpdatesOptions = {}): Promise<UpdateInfo | null> {
   const currentVersion = (fallbackCurrentVersion ?? (await getCurrentVersion()) ?? '').replace(/^v/, '');
   const desktopPlatform = await getDesktopPlatform();
   const osArch = await getDesktopArch();
@@ -279,22 +325,18 @@ export async function checkForUpdates(fallbackCurrentVersion?: string): Promise<
           return null;
         }
 
+        const resolvedCurrent = semver.valid(nativeCurrentVersion) ? nativeCurrentVersion : currentVersion;
         let downloadUrl = nativeInfo.downloadUrl ?? '';
         if (downloadUrl && !isTrustedDownloadUrl(downloadUrl)) {
           downloadUrl = '';
         }
-        if (!downloadUrl) {
-          try {
-            const resolved = await resolveInstallerFromCdn(desktopPlatform, osArch);
-            if (resolved?.downloadUrl) {
-              downloadUrl = resolved.downloadUrl;
-            }
-          } catch {
-            // CDN is best-effort when the native check omitted a URL.
-          }
+        // Older desktop apps name no installer whenever nothing is newer, so the Hub is asked. It picks
+        // from every format (the `.deb` on Fedora too), so a desktop app that picked its own is never
+        // second-guessed.
+        if (!downloadUrl && !nativeInfo.packageFormat) {
+          downloadUrl = await findDesktopInstaller(latestVersion, resolvedCurrent, desktopPlatform, osArch, options.askHubForInstaller === true);
         }
 
-        const resolvedCurrent = semver.valid(nativeCurrentVersion) ? nativeCurrentVersion : currentVersion;
         return {
           currentVersion: resolvedCurrent || latestVersion,
           latestVersion,
@@ -308,8 +350,8 @@ export async function checkForUpdates(fallbackCurrentVersion?: string): Promise<
       }
     }
 
-    // Only a plain browser asks the Hub. The desktop and phone apps land here when their native check
-    // fails and keep their direct read, so the phone app does not start offering desktop installers.
+    // Only a plain browser asks the Hub here. The desktop and phone apps land here when their native
+    // check fails and keep their direct read, so the phone app does not start offering desktop installers.
     const resolved = isTauri() ? await resolveInstallerFromCdn(desktopPlatform, osArch) : await resolveInstallerFromHub(desktopPlatform, osArch);
     if (!resolved) return null;
 
@@ -379,6 +421,24 @@ export async function fetchHostListenerStatus(): Promise<boolean | null> {
   } catch {
     return null;
   }
+}
+
+const DESKTOP_RELEASES_PAGE = 'https://github.com/companionintelligence/Companion-Hub/releases';
+
+/**
+ * The GitHub release of `version`, which lists all its installers, for a computer the release has no
+ * installer for in its own package format (see `packageFormat` on the desktop app's check). Release
+ * tags are `v<version>` (Desktop Release's `tag` input). `/releases/latest` would skip pre-releases,
+ * which Desktop Release publishes by default, so it could show an older version than the card names.
+ * Without a version the card can name, the releases list it is.
+ */
+export function desktopReleasePage(version: string | null | undefined): string {
+  const tag = semver.valid(version?.trim().replace(/^v/, '') ?? '');
+  return tag ? `${DESKTOP_RELEASES_PAGE}/tag/v${encodeURIComponent(tag)}` : DESKTOP_RELEASES_PAGE;
+}
+
+export async function openDesktopDownloadPage(version: string | null | undefined): Promise<void> {
+  await openExternal(desktopReleasePage(version));
 }
 
 export async function performUpdate(info: UpdateInfo): Promise<UpdateActionResult> {

@@ -128,22 +128,37 @@ function isDeniedCustomAppHostPath(hostPath: string): boolean {
   );
 }
 
-function assertCustomAppServiceSecurity(service: { privileged?: boolean; volumes?: { hostPath?: string }[] }, ctx: z.RefinementCtx) {
+/**
+ * Label keys the Hub writes on every app container to know whose it is: `ci-hub.appurn`,
+ * `ci-hub.managed` and the `ci-os-hub.*` names an older Hub wrote. An app's `extraLabels` must not
+ * set them. A container labelled with another app's URN is taken for that app's container by every
+ * lookup that goes by label: status, the Traefik route, the runtime monitor's probe.
+ */
+const RESERVED_HUB_LABEL_PREFIXES = ['ci-hub.', 'ci-os-hub.'];
+
+export function isReservedHubLabel(key: string): boolean {
+  const lower = key.toLowerCase();
+  return RESERVED_HUB_LABEL_PREFIXES.some((prefix) => lower.startsWith(prefix));
+}
+
+type SecurityIssue = { message: string; path: PropertyKey[]; params?: Record<string, unknown> };
+
+function assertCustomAppServiceSecurity(
+  service: { privileged?: boolean; volumes?: { hostPath?: string }[]; extraLabels?: Record<string, unknown> },
+  report: (issue: SecurityIssue) => void,
+) {
   if (service.privileged === true) {
-    ctx.addIssue({
-      code: 'custom',
-      message: 'CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED',
-      path: ['privileged'],
-    });
+    report({ message: 'CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED', path: ['privileged'] });
+  }
+  for (const key of Object.keys(service.extraLabels ?? {})) {
+    if (isReservedHubLabel(key)) {
+      report({ message: 'CUSTOM_APP_ERROR_LABEL_RESERVED', path: ['extraLabels', key], params: { label: key } });
+    }
   }
   for (const [index, volume] of (service.volumes ?? []).entries()) {
     // Named volumes are docker-managed and expose no host path, so they cannot escape the sandbox.
     if (volume.hostPath !== undefined && isDeniedCustomAppHostPath(volume.hostPath)) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'CUSTOM_APP_ERROR_HOST_PATH_DENIED',
-        path: ['volumes', index, 'hostPath'],
-      });
+      report({ message: 'CUSTOM_APP_ERROR_HOST_PATH_DENIED', path: ['volumes', index, 'hostPath'] });
     }
   }
 }
@@ -716,7 +731,7 @@ const serviceSchemaV2Object = z.object({
 });
 
 export const serviceSchema = serviceSchemaV2Object.superRefine((service, ctx) => {
-  assertCustomAppServiceSecurity(service, ctx);
+  assertCustomAppServiceSecurity(service, (issue) => ctx.addIssue({ code: 'custom', ...issue }));
 });
 
 /**
@@ -742,9 +757,12 @@ export const dynamicComposeObject = z.object({
 });
 
 const assertComposeOverrideSecurity = (compose: { overrides?: { services: unknown[] }[] }, ctx: z.RefinementCtx) => {
-  for (const override of compose.overrides ?? []) {
-    for (const service of override.services) {
-      assertCustomAppServiceSecurity(service as Parameters<typeof assertCustomAppServiceSecurity>[0], ctx);
+  // Each issue's path leads to the override service that broke the rule, so the editor can name it.
+  for (const [overrideIndex, override] of (compose.overrides ?? []).entries()) {
+    for (const [serviceIndex, service] of override.services.entries()) {
+      assertCustomAppServiceSecurity(service as Parameters<typeof assertCustomAppServiceSecurity>[0], (issue) =>
+        ctx.addIssue({ code: 'custom', ...issue, path: ['overrides', overrideIndex, 'services', serviceIndex, ...issue.path] }),
+      );
     }
   }
 };

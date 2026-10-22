@@ -429,6 +429,18 @@ describe('LemonadeBackend', () => {
       await backend.listResident();
       expect(backend.engineCapabilities()).toBeNull();
     });
+
+    // What a factory reset unloads from: what it holds by name, or null when it cannot tell.
+    it('names what it holds for a factory reset but nothing when it cannot be asked or cannot say', async () => {
+      (axios.get as never) = vi.fn().mockResolvedValue({ data: health102 });
+      await expect(backend.residentAtConfiguredEndpoint()).resolves.toEqual(['Gemma-4-E4B-it-GGUF', 'nomic-embed-text-v1-GGUF']);
+
+      (axios.get as never) = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+      await expect(backend.residentAtConfiguredEndpoint()).resolves.toBeNull();
+
+      (axios.get as never) = vi.fn().mockResolvedValue({ data: { status: 'ok' } });
+      await expect(backend.residentAtConfiguredEndpoint()).resolves.toBeNull();
+    });
   });
 
   // #1685 × #1686. 10.2.0 lists — and knows only — the embedder the Hub registers as `user.<id>`, while

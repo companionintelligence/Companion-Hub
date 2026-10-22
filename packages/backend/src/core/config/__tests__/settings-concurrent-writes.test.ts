@@ -89,15 +89,19 @@ describe('settings.json when two saves overlap', () => {
   it('makes a factory reset wait for a save already under way, which would otherwise write the old settings back', async () => {
     seed({ ciHubApiKey: 'portal-device-key', guestDashboard: true });
     const configuration = configurationWith({});
-    const factoryReset = Object.assign(Object.create(FactoryResetService.prototype) as FactoryResetService, { logger: mock<LoggerService>() });
-    // The save is the slow write, the reset's `{}` the quick one.
-    const disk = slowDisk(({ data }) => (data === '{}' ? 5 : 50));
+    const factoryReset = Object.assign(Object.create(FactoryResetService.prototype) as FactoryResetService, {
+      logger: mock<LoggerService>(),
+      configuration,
+    });
+    // The save is the slow write, the reset's (only a new host-local key) the quick one.
+    const disk = slowDisk(({ data }) => (String(data).includes('hubLocalKey') ? 5 : 50));
 
     const save = configuration.setUserSettings({ allowAutoThemes: true });
     await factoryReset.resetSettings();
     await save;
     await disk.idle();
 
-    expect(onDisk()).toEqual({});
+    expect(onDisk()).toEqual({ hubLocalKey: configuration.get('hubLocalKey') });
+    expect(configuration.get('hubLocalKey')).toMatch(/^[0-9a-f]{64}$/);
   });
 });

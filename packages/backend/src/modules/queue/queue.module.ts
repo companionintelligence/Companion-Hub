@@ -1,4 +1,4 @@
-import { appCommandTimeoutMs } from '@/common/constants';
+import { appEventsQueueTimeoutMs } from '@/common/helpers/app-command-deadline';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { Module } from '@nestjs/common';
 import { TerminusModule } from '@nestjs/terminus';
@@ -16,8 +16,8 @@ import { QueueHealthIndicator } from './queue.health';
     {
       provide: AppEventsQueue,
       useFactory: async (queueFactory: QueueFactory, config: ConfigurationService) => {
-        // The operation registry and the status sync hold an app for this same window.
-        const timeout = appCommandTimeoutMs(config.get('userSettings').eventsTimeout);
+        // The root helpers of a restore, reset or backup share a budget that ends inside this timeout (AppCommandDeadline).
+        const timeout = appEventsQueueTimeoutMs(config.get('userSettings').eventsTimeout);
 
         return await queueFactory.createQueue({
           queueName: 'app-events-queue',

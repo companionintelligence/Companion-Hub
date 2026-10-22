@@ -81,7 +81,7 @@ export type AppCommandFailureResult = {
   cancelled?: boolean;
   /** Resting status a before-PONR cancel reverted to (e.g. 'stopped'); unused by install. */
   cancelledStatus?: string;
-  /** A failed update put the previous version back (and running again, if it was running). */
+  /** A failed update put the previous version back (and running again, if it was running), or a backup was refused before it stopped the app. */
   rolledBack?: boolean;
 };
 

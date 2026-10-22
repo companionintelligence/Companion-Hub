@@ -25,7 +25,7 @@ import {
   selectPoolChatModel,
   type PrePullDecision,
 } from './app-model-handout';
-import { handoutRecord, readHandoutRecords, writeHandoutRecords, type RecordedHandout } from './app-handout-record';
+import { handoutRecord, readHandoutRecords, removeHandoutRecords, writeHandoutRecords, type RecordedHandout } from './app-handout-record';
 import { catalogEmbedsOn, embedderEngineId, embeddingBackendFor, pickEmbeddingModel } from './embedder-handout';
 
 // Only Hub-managed sibling apps use the bootstrap credentials endpoints.
@@ -137,6 +137,8 @@ export class AppCredentialsService implements OnApplicationShutdown {
   private handouts = new Map<AppSlug, RecordedHandout>();
   private handoutsLoaded: Promise<void> | null = null;
   private handoutWrites: Promise<void> = Promise.resolve();
+  /** Bumped by {@link forgetHandouts}, so a fetch resolved before it is resolved again rather than cached. */
+  private generation = 0;
 
   constructor(
     private readonly logger: LoggerService,
@@ -191,7 +193,14 @@ export class AppCredentialsService implements OnApplicationShutdown {
       return cached.config;
     }
 
-    const config = await this.resolveCredentials(slug, apiVersion);
+    // Resolved again when a factory reset forgot the handouts meanwhile: this one may hold what the
+    // old Hub had, its cloud keys among it. Caching it handed them out for another 30 s.
+    let generation: number;
+    let config: AppCredentialsConfig;
+    do {
+      generation = this.generation;
+      config = await this.resolveCredentials(slug, apiVersion);
+    } while (generation !== this.generation);
     for (const decision of config.prePull) {
       this.logger.info(
         `[AppCredentials] pre-pull decision slug=${slug} ${decision.kind}=${decision.catalogId} pull=${decision.pull}: ${decision.reason}`,
@@ -232,6 +241,27 @@ export class AppCredentialsService implements OnApplicationShutdown {
     await this.handoutWrites;
   }
 
+  /**
+   * Forget what each app was handed (in memory and on disk) with the credentials cached for them: a
+   * factory reset removed the apps. The records described apps that were gone. The next app to fetch
+   * wrote them all back to the file beside its own.
+   */
+  async forgetHandouts(): Promise<void> {
+    this.generation++;
+    this.cache.clear();
+    // Cleared now rather than in the queued step, which would also take a record an app fetched after
+    // this call made. A read still under way adds nothing (see `loadPersistedHandouts`), and none is
+    // needed from now on: the file goes next.
+    this.handouts.clear();
+    this.handoutsLoaded = Promise.resolve();
+    this.handoutWrites = this.handoutWrites
+      .then(() => removeHandoutRecords())
+      .catch((err) => {
+        this.logger.warn(`[AppCredentials] could not remove the handout records: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    await this.handoutWrites;
+  }
+
   private recordHandout(slug: AppSlug, config: AppCredentialsConfig, now: number): void {
     this.handouts.set(slug, handoutRecord(config, new Date(now).toISOString()));
     // Chained so writes land in order, and loaded first so the first fetch after a restart does not
@@ -247,7 +277,10 @@ export class AppCredentialsService implements OnApplicationShutdown {
   }
 
   private loadPersistedHandouts(): Promise<void> {
+    const generation = this.generation;
     this.handoutsLoaded ??= readHandoutRecords().then((records) => {
+      // Read before {@link forgetHandouts}: these are the records it removed.
+      if (generation !== this.generation) return;
       for (const slug of SUPPORTED_APP_SLUGS) {
         const record = records[slug];
         // A record this process already made is newer than anything on disk.

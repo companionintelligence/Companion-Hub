@@ -3,11 +3,15 @@ import type { ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 
-const { mockNavigate, composeCurrent, mutationOptions, toastError } = vi.hoisted(() => ({
+const { mockNavigate, composeCurrent, mutationOptions, toastError, invalidateQueries, setOverrides } = vi.hoisted(() => ({
+  setOverrides: vi.fn(),
   mockNavigate: vi.fn(),
   composeCurrent: { value: '{' as string | undefined },
-  mutationOptions: { current: undefined as { onError?: (error: { message: string; intlParams?: Record<string, string> }) => void } | undefined },
+  mutationOptions: {
+    current: undefined as { onError?: (error: { message: string; intlParams?: Record<string, string> }) => void; onSuccess?: () => void } | undefined,
+  },
   toastError: vi.fn(),
+  invalidateQueries: vi.fn(),
 }));
 
 vi.mock('sonner', () => ({
@@ -27,8 +31,9 @@ vi.mock('@tanstack/react-query', () => ({
   useQuery: () => ({ data: composeCurrent.value ? { current: composeCurrent.value } : undefined }),
   useMutation: (options: typeof mutationOptions.current) => {
     mutationOptions.current = options;
-    return { mutate: vi.fn(), isPending: false };
+    return { mutate: vi.fn(), mutateAsync: vi.fn(async () => undefined), isPending: false };
   },
+  useQueryClient: () => ({ invalidateQueries }),
 }));
 
 vi.mock('@/components/multi-service-form/multi-service-form', () => ({
@@ -36,11 +41,12 @@ vi.mock('@/components/multi-service-form/multi-service-form', () => ({
 }));
 
 vi.mock('@/stores/multiServiceStore', () => ({
-  useMultiServiceStore: () => ({ setServices: vi.fn(), resetToDefaults: vi.fn() }),
+  useMultiServiceStore: () => ({ setServices: vi.fn(), setOverrides, resetToDefaults: vi.fn() }),
 }));
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getAppComposeDiffOptions: () => ({ queryKey: ['compose-diff'] }),
+  getAppComposeDiffQueryKey: (options: { path: { urn: string } }) => ['compose-diff', options.path.urn],
   updateCustomAppMutation: () => ({}),
 }));
 
@@ -101,6 +107,41 @@ describe('custom app edit', () => {
     mutationOptions.current?.onError?.({ message: 'APP_ACTION_GRANT_DENIED', intlParams: { action: 'configure', app: 'my-app' } });
 
     expect(toastError).toHaveBeenCalledWith('You are not allowed to configure this app.');
+  });
+
+  // The editor reads the stored compose from a query that stays fresh for 30 seconds. Coming back to it
+  // right after a save showed the config from before the save until that query was dropped.
+  it('drops the cached compose after a save so the editor shows what was saved', () => {
+    composeCurrent.value = undefined;
+    invalidateQueries.mockClear();
+    // The parse-error test above already navigated to the same path.
+    mockNavigate.mockClear();
+
+    render(
+      <MemoryRouter>
+        <EditPageContent {...pageProps(undefined)} />
+      </MemoryRouter>,
+    );
+    mutationOptions.current?.onSuccess?.();
+
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['compose-diff', 'my-app:_user'] });
+    expect(mockNavigate).toHaveBeenCalledWith('/apps/my-app');
+  });
+
+  // The form has no fields for per-architecture overrides. Unless the page keeps them beside it, the
+  // next save writes the compose back without them.
+  it('keeps the stored overrides for the next save', () => {
+    const overrides = [{ architecture: 'arm64', services: [{ name: 'web', internalPort: 8080 }] }];
+    const stored = JSON.stringify({ schemaVersion: 2, services: [{ name: 'web', image: 'alpine:3.20', isMain: true, internalPort: 80 }], overrides });
+    composeCurrent.value = stored;
+
+    render(
+      <MemoryRouter>
+        <EditPageContent {...pageProps({ composeDiff: { current: stored } })} />
+      </MemoryRouter>,
+    );
+
+    expect(setOverrides).toHaveBeenCalledWith(overrides);
   });
 
   // The compose holds the app's env values, so a member is refused it. A member who follows an old link

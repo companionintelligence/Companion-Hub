@@ -248,17 +248,18 @@ describe('runCli command routing', () => {
     },
     { argv: ['down'], expected: [{ handler: 'downHub', args: ['local'] }] },
     { argv: ['down', 'prod'], expected: [{ handler: 'downHub', args: ['prod'] }] },
-    { argv: ['restart'], expected: [{ handler: 'restartHub', args: ['local', false] }] },
-    { argv: ['restart', 'dev', '--detached'], expected: [{ handler: 'restartHub', args: ['dev', true] }] },
-    { argv: ['recreate'], expected: [{ handler: 'recreateHub', args: ['local', false, false] }] },
+    { argv: ['restart'], expected: [{ handler: 'restartHub', args: ['local', { detached: false, attached: false }] }] },
+    { argv: ['restart', 'dev', '--detached'], expected: [{ handler: 'restartHub', args: ['dev', { detached: true, attached: false }] }] },
+    { argv: ['restart', 'prod', '--attached'], expected: [{ handler: 'restartHub', args: ['prod', { detached: false, attached: true }] }] },
+    { argv: ['recreate'], expected: [{ handler: 'recreateHub', args: ['local', { detached: false, attached: false }, false] }] },
     {
       argv: ['recreate', 'staging', '--detached', '--yes'],
-      expected: [{ handler: 'recreateHub', args: ['staging', true, true] }],
+      expected: [{ handler: 'recreateHub', args: ['staging', { detached: true, attached: false }, true] }],
     },
-    // recreate is destructive, so its two booleans must never be interchangeable: the all-on and
-    // all-off rows above cannot tell `recreateHub(env, detached, force)` from `(env, force, detached)`.
-    { argv: ['recreate', 'dev', '--yes'], expected: [{ handler: 'recreateHub', args: ['dev', false, true] }] },
-    { argv: ['recreate', 'prod', '--detached'], expected: [{ handler: 'recreateHub', args: ['prod', true, false] }] },
+    // recreate is destructive, so `--detached` and `--yes` must never be interchangeable: the all-on
+    // and all-off rows above cannot tell them apart.
+    { argv: ['recreate', 'dev', '--yes'], expected: [{ handler: 'recreateHub', args: ['dev', { detached: false, attached: false }, true] }] },
+    { argv: ['recreate', 'prod', '--detached'], expected: [{ handler: 'recreateHub', args: ['prod', { detached: true, attached: false }, false] }] },
     { argv: ['status', 'dev'], expected: [{ handler: 'showStatus', args: ['dev'] }] },
     { argv: ['config', 'prod'], expected: [{ handler: 'printConfig', args: ['prod'] }] },
     { argv: ['doctor'], expected: [{ handler: 'doctorHub', args: ['local', { repairNetworks: false }] }] },

@@ -5,6 +5,7 @@ import {
   MIN_SCHEMA_VERSION,
   CURRENT_SCHEMA_VERSION,
   collectServiceSecurityViolations,
+  isReservedHubLabel,
   TRUSTED_APP_SECURITY_ALLOWLIST,
 } from './dynamic-compose.js';
 import { parseComposeJson } from './utils/convert-legacy-schema.js';
@@ -79,7 +80,7 @@ import type {
   AgentSkillConfig,
 } from './agent-config.js';
 
-import { type SSE, type Topic, lifecycleOperationSchema, sseSchema } from './sse.js';
+import { type SSE, type Topic, type UpdatePhase, lifecycleOperationSchema, sseSchema } from './sse.js';
 
 import { toJsonSchema } from './utils/to-json-schema.js';
 
@@ -90,6 +91,7 @@ export {
   serviceSchema,
   toJsonSchema,
   collectServiceSecurityViolations,
+  isReservedHubLabel,
   TRUSTED_APP_SECURITY_ALLOWLIST,
   MIN_SCHEMA_VERSION,
   CURRENT_SCHEMA_VERSION,
@@ -163,4 +165,5 @@ export {
   type AppCategory,
   type SSE,
   type Topic,
+  type UpdatePhase,
 };
