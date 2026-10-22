@@ -253,6 +253,8 @@ export class BackupManager implements OnApplicationShutdown {
       throw new Error('Failed to create temp directory');
     }
 
+    let staging: { id: string; dir: string; archive: string } | null = null;
+
     try {
       await this.filesystem.createDirectory(restoreDir);
 
@@ -260,20 +262,37 @@ export class BackupManager implements OnApplicationShutdown {
       // data before it writes the backup's, so an archive that turns out to be corrupt,
       // truncated, or hostile must be rejected while the live data is still there.
       // Each of these throws; none of them is advisory.
-      let dataMember: string | null;
+      const checkListing = async (file: string) => {
+        try {
+          return await this.checkArchiveListing(file);
+        } catch (error) {
+          this.logRejectedBackup(filename, error);
+          throw error;
+        }
+      };
 
-      try {
-        const entries = await this.archiveManager.listTarGz(archive);
-        validateRestoreArchiveEntries(entries);
-        // A backup the root helper archived carries the data's real owners, and root puts them back.
-        dataMember = appDataMemberWithOwners(entries);
-      } catch (error) {
-        this.logRejectedBackup(filename, error);
-        throw error;
+      let source = archive;
+      // A backup the root helper archived carries the data's real owners, and root puts them back.
+      let dataMember = await checkListing(source);
+
+      if (dataMember) {
+        // Root reads the archive once more, after the live data is gone. So from here on every step reads
+        // a link to this file in a folder only the Hub writes. The name in the backups folder can be
+        // deleted and uploaded again while the restore runs.
+        staging = await this.stageBackupForRootRestore(appUrn, archive);
+        source = staging.archive;
+        dataMember = await checkListing(source);
+      }
+
+      // Checked while the live data is still there, as a backup checks before it stops the app.
+      if (dataMember && !(await this.docker.privilegedHelperAvailable())) {
+        throw new Error(
+          `Cannot restore ${appUrn}: its data goes back as root with its owners, and the helper that does that cannot run. Nothing was changed.`,
+        );
       }
 
       this.logger.info('Extracting archive...');
-      const { stderr, stdout } = await this.archiveManager.extractTarGz(archive, restoreDir);
+      const { stderr, stdout } = await this.archiveManager.extractTarGz(source, restoreDir);
       this.logger.debug('--- archiveManager.extractTarGz ---');
       this.logger.debug('stderr:', stderr);
       this.logger.debug('stdout:', stdout);
@@ -300,7 +319,7 @@ export class BackupManager implements OnApplicationShutdown {
       // its files. A backup without volumes (made on Linux, or before they were included) never asks Docker.
       const volumes = volumeKeys.length > 0 ? await this.appVolumes.restoreTargets(appUrn, volumeKeys) : [];
 
-      await this.replaceAppFiles(appUrn, restoreDir, dataMember ? { filename, member: dataMember } : null);
+      await this.replaceAppFiles(appUrn, restoreDir, dataMember && staging ? { stagingId: staging.id, member: dataMember } : null);
 
       for (const volume of volumes) {
         this.logger.info(`Restoring Docker volume ${volume.name}...`);
@@ -310,8 +329,48 @@ export class BackupManager implements OnApplicationShutdown {
       // Always, including when validation or extraction threw: an unsafe upload would
       // otherwise leave its extracted contents in the temp folder indefinitely.
       await this.filesystem.removeDirectory(restoreDir);
+
+      if (staging) {
+        await this.filesystem.removeDirectory(staging.dir);
+      }
     }
   };
+
+  /**
+   * List the archive and refuse it if any entry is unsafe.
+   *
+   * @returns the name of its data folder when the backup was made with its owners, for root to extract, or `null`.
+   */
+  private async checkArchiveListing(archive: string): Promise<string | null> {
+    const entries = await this.archiveManager.listTarGz(archive);
+    validateRestoreArchiveEntries(entries);
+
+    return appDataMemberWithOwners(entries);
+  }
+
+  /**
+   * Keep the archive of a restore that root will read where only the Hub writes: a hard link, which the
+   * name in the backups folder going away does not affect, or a copy where the two are on different
+   * file systems.
+   */
+  private async stageBackupForRootRestore(appUrn: AppUrn, archive: string): Promise<{ id: string; dir: string; archive: string }> {
+    const staging = await this.docker.createRestoreStagingDir(appUrn);
+
+    if (!staging) {
+      throw new Error(`Could not prepare the restore of ${appUrn} as root. Nothing was changed.`);
+    }
+
+    try {
+      await fs.promises.link(archive, staging.archive);
+    } catch {
+      if (!(await this.filesystem.copyFile(archive, staging.archive))) {
+        await this.filesystem.removeDirectory(staging.dir);
+        throw new Error(`Could not prepare the restore of ${appUrn} as root. Nothing was changed.`);
+      }
+    }
+
+    return staging;
+  }
 
   /** Write each of the app's named Docker volumes into `dir` as `<key>.tar`. An app with none gets no folder. */
   private async archiveAppVolumes(appUrn: AppUrn, dir: string) {
@@ -349,7 +408,7 @@ export class BackupManager implements OnApplicationShutdown {
   }
 
   /** Swap the app's live folders for the (already validated) ones extracted from a backup. */
-  private async replaceAppFiles(appUrn: AppUrn, restoreDir: string, withOwners: { filename: string; member: string } | null) {
+  private async replaceAppFiles(appUrn: AppUrn, restoreDir: string, withOwners: { stagingId: string; member: string } | null) {
     const { dataDir } = this.config.get('directories');
     const { appStoreId, appName } = extractAppUrn(appUrn);
     const { appInstalledDir, appDataDir } = this.appFilesManager.getAppPaths(appUrn);
@@ -369,7 +428,7 @@ export class BackupManager implements OnApplicationShutdown {
     // made with its owners goes back through root from the same archive, which every check above passed.
     const copied = [
       withOwners
-        ? await this.docker.extractBackupAppDataAsRoot(appUrn, withOwners.filename, withOwners.member)
+        ? await this.docker.extractBackupAppDataAsRoot(appUrn, withOwners.stagingId, withOwners.member)
         : await this.filesystem.copyDirectory(path.join(restoreDir, 'app-data'), appDataDir, { verbatimSymlinks: true }),
       await this.filesystem.copyDirectory(path.join(restoreDir, 'app'), appInstalledDir),
     ];

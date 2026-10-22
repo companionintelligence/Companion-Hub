@@ -1300,8 +1300,20 @@ describe('DockerService', () => {
       expect(args.slice(18)).toEqual(['sh', '1000:1000']);
     });
 
-    it('extracts only the data member as root, keeping owners and dropping setuid and setgid', async () => {
-      await expect(service.extractBackupAppDataAsRoot(urn, 'kimai:ci-marketplace-1.tar.gz', './app-data')).resolves.toBe(true);
+    it('makes a restore staging folder for the archive root will read', async () => {
+      await expect(service.createRestoreStagingDir(urn)).resolves.toEqual({
+        id: 'backup-kimai-1792500000000',
+        dir: '/data/backups/.backup-staging/ci-marketplace/kimai/backup-kimai-1792500000000',
+        archive: '/data/backups/.backup-staging/ci-marketplace/kimai/backup-kimai-1792500000000/in/backup.tar.gz',
+      });
+      expect(filesystemService.createDirectory).toHaveBeenCalledWith(
+        '/data/backups/.backup-staging/ci-marketplace/kimai/backup-kimai-1792500000000/in',
+      );
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    it('extracts only the data member of the staged archive as root, keeping owners and dropping setuid, setgid and special files', async () => {
+      await expect(service.extractBackupAppDataAsRoot(urn, 'backup-kimai-1792500000000', './app-data')).resolves.toBe(true);
 
       expect(child_process.spawn).toHaveBeenCalledWith(
         'docker',
@@ -1315,15 +1327,17 @@ describe('DockerService', () => {
           '--user',
           '0:0',
           '-v',
-          '/host/root/backups/ci-marketplace/kimai:/in:ro',
+          `${hostStaging}/in:/in:ro`,
           '-v',
           `${hostAppData}:/x/app-data:rw`,
           'alpine:3.20',
           'sh',
           '-c',
-          'set -e; tar -C /x -xzpf "/in/$1" --numeric-owner "$2"; find /x/app-data -type f -perm +6000 -exec chmod ug-s {} +',
+          'tar -C /x -xpf /in/backup.tar.gz --numeric-owner "$1"; status=$?; ' +
+            'find /x/app-data \\( -type b -o -type c -o -type p -o -type s \\) -delete || status=1; ' +
+            'find /x/app-data -type f \\( -perm -4000 -o -perm -2000 \\) -exec chmod ug-s {} + || status=1; ' +
+            'exit $status',
           'sh',
-          'kimai:ci-marketplace-1.tar.gz',
           './app-data',
         ],
         { stdio: 'pipe' },
@@ -1331,17 +1345,18 @@ describe('DockerService', () => {
     });
 
     it.each([
-      ['a filename with a folder in it', '../other/x.tar.gz', 'app-data'],
-      ['a hidden filename', '.x.tar.gz', 'app-data'],
-      ['a member that is not the data folder', 'x.tar.gz', 'app'],
-      ['a member that climbs', 'x.tar.gz', '../app-data'],
-    ])('refuses to extract %s, and never spawns', async (_name, filename, member) => {
-      await expect(service.extractBackupAppDataAsRoot(urn, filename, member)).resolves.toBe(false);
+      ['a member that is not the data folder', 'backup-kimai-1792500000000', 'app'],
+      ['a member that climbs', 'backup-kimai-1792500000000', '../app-data'],
+      ['a staging id that climbs out of the staging folder', 'backup-kimai-1/../../../kimai', 'app-data'],
+      ['a staging id that is not one this service made', 'anything', 'app-data'],
+    ])('refuses to extract %s, and never spawns', async (_name, stagingId, member) => {
+      await expect(service.extractBackupAppDataAsRoot(urn, stagingId, member)).resolves.toBe(false);
       expect(child_process.spawn).not.toHaveBeenCalled();
     });
 
     it('refuses (and never spawns) for an app name that is not a plain name', async () => {
       await expect(service.createBackupStagingDir('..:ci-marketplace' as any)).resolves.toBeNull();
+      await expect(service.createRestoreStagingDir('..:ci-marketplace' as any)).resolves.toBeNull();
       await expect(service.archiveBackupAsRoot('..:ci-marketplace' as any, 'backup-x-1')).resolves.toBeNull();
       expect(child_process.spawn).not.toHaveBeenCalled();
     });

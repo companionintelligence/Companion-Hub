@@ -46,8 +46,8 @@ export type { AppContainerRuntimeStats, AppNetworkTarget, ManagedAppContainerVer
 export const PRE_UPDATE_SNAPSHOT_DIRNAME = '.pre-update-snapshots';
 
 /**
- * Where the root helper stages a copy of app data the Hub cannot read, for a backup, under
- * `<dataDir>/backups/` for the same reasons as {@link PRE_UPDATE_SNAPSHOT_DIRNAME}.
+ * Where the backup or the restore of app data the Hub cannot read is put together for the root helper,
+ * under `<dataDir>/backups/` for the same reasons as {@link PRE_UPDATE_SNAPSHOT_DIRNAME}.
  */
 export const BACKUP_STAGING_DIRNAME = '.backup-staging';
 
@@ -713,41 +713,71 @@ export class DockerService {
   }
 
   /**
-   * Puts the `app-data` of a backup made by {@link archiveBackupAsRoot} into the app's (empty) data
-   * folder as root, with the numeric owners and modes it was archived with. The archive was listed and
-   * extracted by the Hub first and passed every restore check; this extracts the same file again, only
-   * the data member. Setuid and setgid bits come off files: an uploaded archive could otherwise plant a
-   * root-owned setuid program in a folder an app container runs things from.
+   * Makes a staging folder under `backups/.backup-staging/<store>/<app>/` for restoring a backup made
+   * with its owners. The caller puts the archive it is about to check at `archive`, as a hard link or a
+   * copy, and {@link extractBackupAppDataAsRoot} reads it from there.
    *
-   * @param filename the backup in the app's own backups folder, already checked by `resolveBackupFilePath`
+   * Root reads the archive again only after the live data is gone. Read by its name in the backups
+   * folder, it would not have to be the file the Hub checked: a member can delete that name and upload
+   * another archive under it while the restore runs, and retention can delete it. Here only the Hub writes.
+   *
+   * @returns the staging folder as the Hub sees it, its id and where the archive goes, or `null` (already logged).
+   */
+  public async createRestoreStagingDir(appUrn: AppUrn): Promise<{ id: string; dir: string; archive: string } | null> {
+    const { appName, appStoreId } = extractAppUrn(appUrn);
+    const id = `backup-${appName}-${Date.now()}`;
+
+    if (!this.resolveSnapshotHostPaths(appUrn, id, 'restore', BACKUP_STAGING_AREA)) return null;
+
+    const { dataDir } = this.config.get('directories');
+    const dir = path.join(dataDir, 'backups', BACKUP_STAGING_DIRNAME, appStoreId, appName, id);
+
+    if (!(await this.filesystem.createDirectory(path.join(dir, 'in')))) return null;
+
+    return { id, dir, archive: path.join(dir, 'in', 'backup.tar.gz') };
+  }
+
+  /**
+   * Puts the `app-data` of a backup made by {@link archiveBackupAsRoot} into the app's (empty) data
+   * folder as root, with the numeric owners and modes it was archived with. It reads the archive the
+   * caller put in a folder from {@link createRestoreStagingDir}, after the Hub listed and extracted that
+   * same file and it passed every restore check, and extracts only the data member.
+   *
+   * Setuid and setgid bits come off files: an uploaded archive could otherwise plant a root-owned setuid
+   * program in a folder an app container runs things from. Device nodes, pipes and sockets go too, as
+   * a second line behind the checks, which refuse them: a device node owned by a user on the host opens
+   * a disk to that user. Both run even when tar fails part-way, since a failed restore leaves what it
+   * extracted in place. Without `-z`, tar finds out itself whether the file is compressed, as the Hub's
+   * own extract does: an uploaded backup can be a plain tar.
+   *
+   * @param stagingId the id {@link createRestoreStagingDir} returned
    * @param member the data folder's name exactly as the archive lists it (`app-data` or `./app-data`)
    */
-  public async extractBackupAppDataAsRoot(appUrn: AppUrn, filename: string, member: string): Promise<boolean> {
-    if (!/^[^/\0]+$/.test(filename) || filename.startsWith('.') || !/^(\.\/)*app-data$/.test(member)) {
-      this.logger.error(`[restore] refusing privileged extract for ${appUrn}: ${filename} / ${member} is not a backup and its data folder`);
+  public async extractBackupAppDataAsRoot(appUrn: AppUrn, stagingId: string, member: string): Promise<boolean> {
+    if (!/^(\.\/)*app-data$/.test(member)) {
+      this.logger.error(`[restore] refusing privileged extract for ${appUrn}: ${member} is not the data folder of a backup`);
       return false;
     }
 
-    const { appName, appStoreId } = extractAppUrn(appUrn);
-    // Any valid id: only the data path and the root folder are used.
-    const paths = this.resolveSnapshotHostPaths(appUrn, `backup-${appName}-0`, 'restore', BACKUP_STAGING_AREA);
-    const rootFolderHost = this.config.getConfig().rootFolderHost;
-    if (!paths || !rootFolderHost) return false;
-
-    const hostBackupDir = path.posix.join(rootFolderHost, 'backups', appStoreId, appName);
+    const paths = this.resolveSnapshotHostPaths(appUrn, stagingId, 'restore', BACKUP_STAGING_AREA);
+    if (!paths) return false;
 
     return this.runPrivilegedSnapshotHelper(
-      [`${hostBackupDir}:/in:ro`, `${paths.hostAppDataDir}:/x/app-data:rw`],
+      [`${paths.hostSnapshotDir}/in:/in:ro`, `${paths.hostAppDataDir}:/x/app-data:rw`],
       [
         'sh',
         '-c',
-        'set -e; tar -C /x -xzpf "/in/$1" --numeric-owner "$2"; find /x/app-data -type f -perm +6000 -exec chmod ug-s {} +',
+        [
+          'tar -C /x -xpf /in/backup.tar.gz --numeric-owner "$1"; status=$?',
+          'find /x/app-data \\( -type b -o -type c -o -type p -o -type s \\) -delete || status=1',
+          'find /x/app-data -type f \\( -perm -4000 -o -perm -2000 \\) -exec chmod ug-s {} + || status=1',
+          'exit $status',
+        ].join('; '),
         'sh',
-        filename,
         member,
       ],
       PRIVILEGED_DATA_TIMEOUT_MS,
-      `restoring ${paths.hostAppDataDir} from ${hostBackupDir}/${filename} with its owners`,
+      `restoring ${paths.hostAppDataDir} from ${paths.hostSnapshotDir}/in/backup.tar.gz with its owners`,
       '[restore]',
     );
   }
