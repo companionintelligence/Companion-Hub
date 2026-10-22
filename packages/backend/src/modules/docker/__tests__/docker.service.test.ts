@@ -1836,5 +1836,204 @@ describe('DockerService', () => {
       expect(result.healthy).toBe(false);
       expect(result.message).toContain('Health probe failed');
     });
+
+    // After an update the Hub probes 5 times, 2 s apart. An app whose health check still said
+    // `starting` then (Uptime Kuma 2 takes 7 to 10 s on a busy machine) used to count as broken and
+    // was rolled back, although Docker had not decided anything yet.
+    describe('with waitWhileStarting, as after an update', () => {
+      const updateProbe = { maxAttempts: 5, delayMs: 2_000, waitWhileStarting: true };
+      const s = (seconds: number) => seconds * 1_000;
+      // Docker reports health check durations in nanoseconds.
+      const ns = (seconds: number) => seconds * 1_000_000_000;
+      // Uptime Kuma 2.5.6's health check in the catalog: start period 180 s, interval 60 s, 5 retries.
+      const uptimeKumaHealthcheck = { Test: ['CMD-SHELL', 'extra/healthcheck'], StartPeriod: ns(180), Interval: ns(60), Retries: 5 };
+
+      type Snapshot = { state: 'running' | 'exited'; health?: 'starting' | 'healthy' | 'unhealthy'; exitCode?: number };
+      type FakeContainer = { id: string; name: string; healthcheck?: Dockerode.HealthConfig; at: (elapsedMs: number) => Snapshot };
+
+      let probeStartedAt: number;
+
+      // Each container's state follows `at(ms since the probe started)`, read on every inspect.
+      const withContainers = (containers: FakeContainer[]) => {
+        dockerode.listContainers.mockImplementation(async () => {
+          const elapsed = Date.now() - probeStartedAt;
+          return containers.map((c) => ({ Id: c.id, Names: [`/${c.name}`], State: c.at(elapsed).state, Status: '' })) as any;
+        });
+        dockerode.getContainer.mockImplementation((id: string) => {
+          const container = containers.find((c) => c.id === id);
+          return {
+            inspect: vi.fn(async () => {
+              if (!container) {
+                throw new Error(`no such container: ${id}`);
+              }
+              const now = container.at(Date.now() - probeStartedAt);
+              return {
+                State: {
+                  Status: now.state,
+                  Running: now.state === 'running',
+                  ExitCode: now.exitCode ?? 0,
+                  ...(now.health ? { Health: { Status: now.health, FailingStreak: 0, Log: [] } } : {}),
+                },
+                Config: { Healthcheck: container.healthcheck },
+              };
+            }),
+          } as any;
+        });
+      };
+
+      // Runs the probe on fake time and reports when it settled.
+      const probe = async (options: Parameters<DockerService['verifyContainerHealthProbe']>[1] = updateProbe) => {
+        let settledAfterMs = -1;
+        const pending = service.verifyContainerHealthProbe(testUrn, options).then((result) => {
+          settledAfterMs = Date.now() - probeStartedAt;
+          return result;
+        });
+        await vi.advanceTimersByTimeAsync(s(30 * 60));
+        // Still -1 here means the probe was still waiting after half an hour.
+        expect(settledAfterMs).toBeGreaterThanOrEqual(0);
+        return { result: await pending, settledAfterMs };
+      };
+
+      beforeEach(() => {
+        vi.useFakeTimers();
+        probeStartedAt = Date.now();
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('keeps checking a container that is starting for 15 s and passes once it is healthy', async () => {
+        withContainers([
+          {
+            id: 'kuma',
+            name: 'uptime-kuma',
+            healthcheck: uptimeKumaHealthcheck,
+            at: (elapsed) => ({ state: 'running', health: elapsed < s(15) ? 'starting' : 'healthy' }),
+          },
+        ]);
+
+        const { result, settledAfterMs } = await probe();
+
+        expect(result.healthy).toBe(true);
+        expect(settledAfterMs).toBe(s(16));
+        expect(result.message).toBe(`All containers for ${testUrn} passed health probes after 16 s`);
+        expect(loggerService.info).toHaveBeenCalledWith(expect.stringMatching(/still starting after 8 s \(uptime-kuma\); waiting up to 480 s/));
+      });
+
+      it('fails as soon as Docker reports the container unhealthy, without waiting out its start period', async () => {
+        withContainers([
+          {
+            id: 'kuma',
+            name: 'uptime-kuma',
+            healthcheck: uptimeKumaHealthcheck,
+            at: (elapsed) => ({ state: 'running', health: elapsed < s(20) ? 'starting' : 'unhealthy' }),
+          },
+        ]);
+
+        const { result, settledAfterMs } = await probe();
+
+        expect(result.healthy).toBe(false);
+        expect(settledAfterMs).toBe(s(20));
+        expect(result.message).toBe(`Health probe failed for ${testUrn}: uptime-kuma (unhealthy)`);
+      });
+
+      it('gives up on a container that never leaves starting after its start period plus its retries intervals', async () => {
+        withContainers([
+          { id: 'kuma', name: 'uptime-kuma', healthcheck: uptimeKumaHealthcheck, at: () => ({ state: 'running', health: 'starting' }) },
+        ]);
+
+        const { result, settledAfterMs } = await probe();
+
+        // 180 s + 5 × 60 s
+        expect(result.healthy).toBe(false);
+        expect(settledAfterMs).toBe(s(480));
+        expect(result.message).toBe(`Health probe failed for ${testUrn}: uptime-kuma (still starting after 480 s)`);
+      });
+
+      it('gives a health check without a start period two minutes', async () => {
+        withContainers([
+          {
+            id: 'web',
+            name: 'app-web',
+            healthcheck: { Test: ['CMD', 'true'], Interval: ns(5), Retries: 3 },
+            at: () => ({ state: 'running', health: 'starting' }),
+          },
+        ]);
+
+        const { result, settledAfterMs } = await probe();
+
+        expect(result.healthy).toBe(false);
+        expect(settledAfterMs).toBe(s(120));
+        expect(result.message).toContain('app-web (still starting after 120 s)');
+      });
+
+      it('never waits longer than 15 minutes, whatever start period the app declares', async () => {
+        withContainers([
+          {
+            id: 'tts',
+            name: 'slow-tts',
+            healthcheck: { Test: ['CMD', 'true'], StartPeriod: ns(30 * 60), Interval: ns(30), Retries: 3 },
+            at: () => ({ state: 'running', health: 'starting' }),
+          },
+        ]);
+
+        const { result, settledAfterMs } = await probe();
+
+        expect(result.healthy).toBe(false);
+        expect(settledAfterMs).toBe(s(15 * 60));
+      });
+
+      it('fails when another container exits while one is still starting', async () => {
+        withContainers([
+          { id: 'web', name: 'app-web', healthcheck: uptimeKumaHealthcheck, at: () => ({ state: 'running', health: 'starting' }) },
+          { id: 'worker', name: 'app-worker', at: (elapsed) => (elapsed < s(20) ? { state: 'running' } : { state: 'exited', exitCode: 1 }) },
+        ]);
+
+        const { result, settledAfterMs } = await probe();
+
+        expect(result.healthy).toBe(false);
+        expect(settledAfterMs).toBe(s(20));
+        expect(result.message).toBe(`Health probe failed for ${testUrn}: app-worker (exited)`);
+      });
+
+      it('does not wait for a container that stopped although its health status still says starting', async () => {
+        withContainers([
+          { id: 'web', name: 'app-web', healthcheck: uptimeKumaHealthcheck, at: () => ({ state: 'exited', health: 'starting', exitCode: 1 }) },
+        ]);
+
+        const { result, settledAfterMs } = await probe();
+
+        expect(result.healthy).toBe(false);
+        expect(settledAfterMs).toBe(s(8));
+      });
+
+      it('passes an app without a health check on the first look, as before', async () => {
+        withContainers([{ id: 'web', name: 'app-web', at: () => ({ state: 'running' }) }]);
+
+        const { result, settledAfterMs } = await probe();
+
+        expect(result.healthy).toBe(true);
+        expect(settledAfterMs).toBe(0);
+        expect(dockerode.listContainers).toHaveBeenCalledTimes(1);
+      });
+
+      it('still counts starting as failing after the attempts when the caller did not ask to wait', async () => {
+        withContainers([
+          {
+            id: 'kuma',
+            name: 'uptime-kuma',
+            healthcheck: uptimeKumaHealthcheck,
+            at: (elapsed) => ({ state: 'running', health: elapsed < s(15) ? 'starting' : 'healthy' }),
+          },
+        ]);
+
+        const { result, settledAfterMs } = await probe({ maxAttempts: 5, delayMs: 2_000 });
+
+        expect(result.healthy).toBe(false);
+        expect(settledAfterMs).toBe(s(8));
+        expect(result.message).toBe(`Health probe failed for ${testUrn}: uptime-kuma (starting)`);
+      });
+    });
   });
 });

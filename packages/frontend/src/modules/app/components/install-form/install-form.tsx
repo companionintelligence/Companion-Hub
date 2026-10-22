@@ -81,6 +81,12 @@ interface IProps {
   onValidityChange?: (isValid: boolean) => void;
   /** True while the operator has changed a field away from the value the form opened with. */
   onDirtyChange?: (hasEdits: boolean) => void;
+  /**
+   * True from the click on the submit button until the form either shows its errors or hands its
+   * values to `onSubmit`. On Public Web that includes a last DNS check, which can take seconds on a
+   * slow link, so the dialog's button shows its spinner from the click instead of from the request.
+   */
+  onSubmittingChange?: (submitting: boolean) => void;
   editingAppUrn?: string;
   /**
    * The form edits an app that is already installed (the settings dialog), rather
@@ -160,6 +166,7 @@ export const InstallForm: React.FC<IProps> = ({
   appStatus,
   onValidityChange,
   onDirtyChange,
+  onSubmittingChange,
   editingAppUrn,
   isEdit = false,
 }) => {
@@ -190,7 +197,7 @@ export const InstallForm: React.FC<IProps> = ({
   const {
     register,
     handleSubmit,
-    formState: { errors, isDirty, dirtyFields },
+    formState: { errors, isDirty, dirtyFields, isSubmitting },
     setValue,
     watch,
     getValues,
@@ -618,6 +625,10 @@ export const InstallForm: React.FC<IProps> = ({
   useEffect(() => {
     onDirtyChange?.(hasEdits);
   }, [hasEdits, onDirtyChange]);
+
+  useEffect(() => {
+    onSubmittingChange?.(isSubmitting);
+  }, [isSubmitting, onSubmittingChange]);
 
   useEffect(() => {
     // Detect when the form is reused for a different app so we can force-reset
@@ -1125,6 +1136,31 @@ export const InstallForm: React.FC<IProps> = ({
       validationErrors.port = { messageKey: 'APP_INSTALL_FORM_ERROR_REQUIRED', params: { label: t('COMMON_PORT') } };
     }
 
+    const showValidationErrors = () => {
+      for (const [key, value] of Object.entries(validationErrors)) {
+        if (value) {
+          setError(key, { message: t(value.messageKey, value.params) });
+        }
+      }
+
+      const failingLabels = formFields
+        .filter((f) => validationErrors[f.env_variable])
+        .map((f) => f.label)
+        .join(', ');
+      toast.error(
+        failingLabels
+          ? t('APP_INSTALL_FORM_ERROR_INVALID_FIELDS', { fields: failingLabels, defaultValue: `Fix these fields: ${failingLabels}` })
+          : t('APP_INSTALL_FORM_ERROR_INVALID'),
+      );
+    };
+
+    // What the form can tell by itself it says at once. The DNS check below goes to Companion Portal
+    // and takes seconds on a slow link, and its answer cannot make an invalid form valid.
+    if (Object.keys(validationErrors).length > 0) {
+      showValidationErrors();
+      return;
+    }
+
     // Check DNS availability synchronously if in production and exposable
     if (
       isProduction &&
@@ -1183,29 +1219,17 @@ export const InstallForm: React.FC<IProps> = ({
       }
     }
 
-    for (const [key, value] of Object.entries(validationErrors)) {
-      if (value) {
-        setError(key, { message: t(value.messageKey, value.params) });
-      }
+    // The DNS check can still find the subdomain taken.
+    if (Object.keys(validationErrors).length > 0) {
+      showValidationErrors();
+      return;
     }
 
-    if (Object.keys(validationErrors).length === 0) {
-      // Client-side "recently used" cache — mirrors community-scripts.org/generator's "Last used"
-      // list. Recorded at submission time (not after a backend round-trip), same as its export/copy
-      // actions. Secrets are stripped inside recordLastUsedConfig before anything touches storage.
-      setRecentConfigs(recordLastUsedConfig(info.id, formValues, formFields));
-      onSubmit(formValues);
-    } else {
-      const failingLabels = formFields
-        .filter((f) => validationErrors[f.env_variable])
-        .map((f) => f.label)
-        .join(', ');
-      toast.error(
-        failingLabels
-          ? t('APP_INSTALL_FORM_ERROR_INVALID_FIELDS', { fields: failingLabels, defaultValue: `Fix these fields: ${failingLabels}` })
-          : t('APP_INSTALL_FORM_ERROR_INVALID'),
-      );
-    }
+    // Client-side "recently used" cache — mirrors community-scripts.org/generator's "Last used"
+    // list. Recorded at submission time (not after a backend round-trip), same as its export/copy
+    // actions. Secrets are stripped inside recordLastUsedConfig before anything touches storage.
+    setRecentConfigs(recordLastUsedConfig(info.id, formValues, formFields));
+    onSubmit(formValues);
   };
 
   const onInvalid = () => {

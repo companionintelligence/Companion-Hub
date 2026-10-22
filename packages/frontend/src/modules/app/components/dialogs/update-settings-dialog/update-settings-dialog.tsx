@@ -25,6 +25,7 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
   const { t } = useTranslation();
   const formId = useId();
   const [hasChanges, setHasChanges] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const isRunning = status != null && RUNNING_STATUSES.includes(status);
 
@@ -82,6 +83,7 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
             appStatus={status}
             editingAppUrn={info.urn}
             onDirtyChange={setHasChanges}
+            onSubmittingChange={setIsSubmitting}
             isEdit
           />
 
@@ -91,7 +93,8 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
           <HubAccess appUrn={info.urn} hasUnsavedChanges={hasChanges} />
         </div>
         <DialogFooter>
-          <InstallFormButtons loading={updateConfig.isPending} isEdit formId={formId} disabled={!hasChanges} />
+          {/* From the click: on Public Web the form runs a last DNS check before the save goes out. */}
+          <InstallFormButtons loading={isSubmitting || updateConfig.isPending} isEdit formId={formId} disabled={!hasChanges} />
         </DialogFooter>
       </DialogContent>
     </Dialog>

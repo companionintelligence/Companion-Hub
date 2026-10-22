@@ -115,7 +115,23 @@ describe('UpdateAppCommand', () => {
     expect(dockerService.createPreUpdateVolumeSnapshot).toHaveBeenCalledWith(appUrn, { includeData: false });
     expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'pull');
     expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'up --detach --force-recreate --remove-orphans');
-    expect(dockerService.verifyContainerHealthProbe).toHaveBeenCalledWith(appUrn, { maxAttempts: 5, delayMs: 2000 });
+    // An app whose health check still says `starting` is waited for rather than rolled back.
+    expect(dockerService.verifyContainerHealthProbe).toHaveBeenCalledWith(appUrn, { maxAttempts: 5, delayMs: 2000, waitWhileStarting: true });
+  });
+
+  it('logs how long the new version took to pass its health check', async () => {
+    dockerService.verifyContainerHealthProbe.mockResolvedValue({
+      ok: true,
+      healthy: true,
+      containers: [],
+      message: `All containers for ${appUrn} passed health probes after 16 s`,
+    });
+
+    await command.execute(appUrn, {});
+
+    expect(logger.info).toHaveBeenCalledWith(
+      `Post-update health check passed for app ${appUrn}: All containers for ${appUrn} passed health probes after 16 s`,
+    );
   });
 
   it('triggers auto-rollback using backup when post-update health probe fails', async () => {

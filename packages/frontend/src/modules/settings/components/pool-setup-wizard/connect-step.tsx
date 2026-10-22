@@ -17,6 +17,7 @@ const STATUS_KEYS: Record<PairRowStatus, string> = {
 const FAILURE_KEYS: Record<Exclude<PairFailure, 'already'>, string> = {
   unreachable: 'HUB_POOL_SETUP_FAIL_UNREACHABLE',
   invalid: 'HUB_POOL_SETUP_FAIL_INVALID',
+  pin: 'HUB_POOL_SETUP_FAIL_PIN',
   generic: 'HUB_POOL_SETUP_FAIL_GENERIC',
 };
 

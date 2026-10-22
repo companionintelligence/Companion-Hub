@@ -103,6 +103,34 @@ const HUB_APP_NETWORK_CONSEQUENCE =
 const MANAGED_APP_STARTUP_MAX_ATTEMPTS = 6;
 const MANAGED_APP_STARTUP_DELAY_MS = 2_000;
 
+// What Docker uses for a health check that leaves these unset.
+const DOCKER_DEFAULT_HEALTH_INTERVAL_MS = 30_000;
+const DOCKER_DEFAULT_HEALTH_RETRIES = 3;
+// The least and the most time a health probe that waits for `starting` containers gives one of them.
+const HEALTH_STARTING_MIN_WAIT_MS = 2 * 60_000;
+const HEALTH_STARTING_MAX_WAIT_MS = 15 * 60_000;
+
+/**
+ * How long a container may report `starting` before a health probe stops waiting for it.
+ *
+ * Docker counts no failed check during the health check's start period. After it, Docker reports the
+ * container `unhealthy` only once `retries` checks in a row have failed, one per interval. Until then
+ * it says `starting`, so an app that declares a start period of three minutes is not broken at ten
+ * seconds. The wait is that start period plus `retries` intervals, at least two minutes (which is
+ * what a health check without a start period gets) and at most fifteen.
+ */
+function healthStartingWaitMs(healthcheck: Dockerode.HealthConfig | undefined): number {
+  // Docker reports these durations in nanoseconds; 0 means "use the default".
+  const toMs = (ns: number | undefined) => (ns && ns > 0 ? ns / 1_000_000 : 0);
+  const startPeriodMs = toMs(healthcheck?.StartPeriod);
+  const intervalMs = toMs(healthcheck?.Interval) || DOCKER_DEFAULT_HEALTH_INTERVAL_MS;
+  const retries = healthcheck?.Retries && healthcheck.Retries > 0 ? healthcheck.Retries : DOCKER_DEFAULT_HEALTH_RETRIES;
+
+  return Math.min(Math.max(startPeriodMs + retries * intervalMs, HEALTH_STARTING_MIN_WAIT_MS), HEALTH_STARTING_MAX_WAIT_MS);
+}
+
+const formatSeconds = (ms: number) => `${Math.round(ms / 100) / 10} s`;
+
 /** Grace period between SIGTERM and SIGKILL for a canceled Compose child process. */
 const COMPOSE_CANCEL_SIGKILL_GRACE_MS = 5_000;
 // Every privileged helper walks a whole data folder (a database, a media library): deleting, copying or
@@ -2560,17 +2588,29 @@ export class DockerService {
    * Containers with a health check defined in Docker/Compose must be in 'healthy' status.
    * Containers without a health check must be in a 'running' status.
    *
+   * The probe checks up to `maxAttempts` times, `delayMs` apart. It fails if anything is still not
+   * healthy then. With `waitWhileStarting`, a running container whose health check Docker still
+   * reports as `starting` does not count as failing until its own start period has had time to pass
+   * (see {@link healthStartingWaitMs}). The probe goes on checking for as long as every container
+   * that is not healthy yet is such a one. It fails as soon as one turns `unhealthy`, one exits or
+   * that time runs out. Apps without a health check are judged within the attempts, as before.
+   *
    * @param appUrn App URN.
-   * @param options Optional retry options (maxAttempts, delayMs).
+   * @param options Optional retry options (maxAttempts, delayMs, waitWhileStarting).
    */
-  public async verifyContainerHealthProbe(appUrn: AppUrn, options?: { maxAttempts?: number; delayMs?: number }): Promise<ContainerHealthProbeResult> {
+  public async verifyContainerHealthProbe(
+    appUrn: AppUrn,
+    options?: { maxAttempts?: number; delayMs?: number; waitWhileStarting?: boolean },
+  ): Promise<ContainerHealthProbeResult> {
     const projectName = this.getComposeProjectName(appUrn);
     const maxAttempts = options?.maxAttempts ?? 1;
     const delayMs = options?.delayMs ?? 1000;
+    const waitWhileStarting = options?.waitWhileStarting ?? false;
+    const probeStartedAt = Date.now();
+    let announcedStartingWait = false;
 
-    let lastResult: ContainerHealthProbeResult | undefined;
-
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    for (let attempt = 1; ; attempt++) {
+      const elapsedMs = Date.now() - probeStartedAt;
       let containers = await this.docker
         .listContainers({
           all: true,
@@ -2586,20 +2626,21 @@ export class DockerService {
       }
 
       if (containers.length === 0) {
-        lastResult = {
+        const noContainers: ContainerHealthProbeResult = {
           ok: false,
           healthy: false,
           containers: [],
           message: `No containers found for app ${appUrn}`,
         };
-        if (attempt < maxAttempts) {
-          await new Promise((resolve) => setTimeout(resolve, delayMs));
-          continue;
+        if (attempt >= maxAttempts) {
+          return noContainers;
         }
-        return lastResult;
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        continue;
       }
 
       const containerDetails: ContainerHealthProbeDetail[] = [];
+      const startingWaitMs = new Map<string, number>();
 
       for (const container of containers) {
         const dockerContainer = this.docker.getContainer(container.Id);
@@ -2631,13 +2672,23 @@ export class DockerService {
           failingStreak,
           log,
         });
+        startingWaitMs.set(container.Id, healthStartingWaitMs(inspect?.Config?.Healthcheck));
       }
+
+      // Docker has not made up its mind about a running container whose health check still says
+      // `starting`; while its start period lasts, that is no reason to fail the probe.
+      const isStarting = (c: ContainerHealthProbeDetail) =>
+        waitWhileStarting && c.hasHealthCheck && c.healthStatus === 'starting' && c.state === 'running';
+      const waitingFor = containerDetails.filter((c) => isStarting(c) && elapsedMs < (startingWaitMs.get(c.id) ?? HEALTH_STARTING_MIN_WAIT_MS));
 
       // A container without a health check must be running UNLESS it exited cleanly (code 0) —
       // that's a completed one-shot init job (migrate-database, setup-secrets, fix-db-permissions,
       // etc.), not a crashed long-running service. Mirrors the running+exitZero convention that
       // app-status-sync.service.ts / managed-app-containers.ts already use to decide app status.
       const unhealthyContainers = containerDetails.filter((c) => {
+        if (waitingFor.includes(c)) {
+          return false;
+        }
         if (c.hasHealthCheck) {
           return c.healthStatus !== 'healthy';
         }
@@ -2647,31 +2698,39 @@ export class DockerService {
         return !(c.state === 'exited' && c.exitCode === 0);
       });
 
-      const allHealthy = unhealthyContainers.length === 0;
+      if (unhealthyContainers.length === 0 && waitingFor.length === 0) {
+        return {
+          ok: true,
+          healthy: true,
+          containers: containerDetails,
+          message: `All containers for ${appUrn} passed health probes after ${formatSeconds(elapsedMs)}`,
+        };
+      }
 
-      lastResult = {
-        ok: allHealthy,
-        healthy: allHealthy,
-        containers: containerDetails,
-        message: allHealthy
-          ? `All containers for ${appUrn} passed health probes`
-          : `Health probe failed for ${appUrn}: ${unhealthyContainers.map((c) => `${c.name} (${c.healthStatus || c.state})`).join(', ')}`,
-      };
+      if (attempt >= maxAttempts) {
+        if (unhealthyContainers.length > 0) {
+          const describe = (c: ContainerHealthProbeDetail) =>
+            isStarting(c) ? `${c.name} (still starting after ${formatSeconds(elapsedMs)})` : `${c.name} (${c.healthStatus || c.state})`;
 
-      if (allHealthy || attempt >= maxAttempts) {
-        return lastResult;
+          return {
+            ok: false,
+            healthy: false,
+            containers: containerDetails,
+            message: `Health probe failed for ${appUrn}: ${unhealthyContainers.map(describe).join(', ')}`,
+          };
+        }
+
+        if (!announcedStartingWait) {
+          announcedStartingWait = true;
+          const waitMs = Math.max(...waitingFor.map((c) => startingWaitMs.get(c.id) ?? HEALTH_STARTING_MIN_WAIT_MS));
+          this.logger.info(
+            `${appUrn} is still starting after ${formatSeconds(elapsedMs)} (${waitingFor.map((c) => c.name).join(', ')}); ` +
+              `waiting up to ${formatSeconds(waitMs)} for its health check to pass`,
+          );
+        }
       }
 
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
-
-    return (
-      lastResult ?? {
-        ok: false,
-        healthy: false,
-        containers: [],
-        message: `Health probe timed out for ${appUrn}`,
-      }
-    );
   }
 }

@@ -122,11 +122,14 @@ export class UpdateAppCommand extends AppLifecycleCommand {
         startedNewVersion = true;
         await dockerService.composeApp(appUrn, 'up --detach --force-recreate --remove-orphans');
 
-        const probeResult = await dockerService.verifyContainerHealthProbe(appUrn, { maxAttempts: 5, delayMs: 2000 });
+        // An app whose health check still says `starting` is waited for, up to the start period it
+        // declares: rolling back an app that is still coming up undid good updates of slow starters.
+        const probeResult = await dockerService.verifyContainerHealthProbe(appUrn, { maxAttempts: 5, delayMs: 2000, waitWhileStarting: true });
         if (!probeResult.healthy) {
           logger.error(`Post-update health check failed for app ${appUrn}: ${probeResult.message}. Initiating auto-rollback...`);
           throw new Error(`Update failed health probe: ${probeResult.message}`);
         }
+        logger.info(`Post-update health check passed for app ${appUrn}: ${probeResult.message}`);
       }
 
       // The update just replaced the app's config.json, which is where the wake endpoint
