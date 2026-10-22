@@ -4,6 +4,7 @@ import path from 'node:path';
 import { type FileOnlySettings, type PersistedSettings, type UserSettingsBody, parsePersistedSettings, settingsFileSchema } from '@/app.dto';
 import { clampContextCap } from '@/common/helpers/inference-context-cap';
 import { clampOllamaSlots } from '@/common/helpers/inference-ollama-slots';
+import { clampOllamaKeepAliveSeconds } from '@/common/helpers/inference-ollama-keep-alive';
 import { APP_DATA_DIR, APP_DIR, ARCHITECTURES, DATA_DIR, DEFAULT_LOCAL_DOMAIN } from '@/common/constants';
 import { ensureSettingsJsonReady, resolveAllowErrorMonitoring, resolveHubDomain, writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import {
@@ -161,6 +162,7 @@ type PersistedSettingsValues = {
   inferenceEncodeEndpoint: string | undefined;
   inferenceMaxNumCtx: number | undefined;
   inferenceOllamaSlots: number | undefined;
+  inferenceOllamaKeepAlive: number | undefined;
   inferenceCloudProviders: CloudProviderConfig[] | undefined;
   hubPoolEnabled: boolean | undefined;
   hubPoolOutboundEnabled: boolean | undefined;
@@ -206,6 +208,7 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   inferenceEncodeEndpoint: undefined,
   inferenceMaxNumCtx: undefined,
   inferenceOllamaSlots: undefined,
+  inferenceOllamaKeepAlive: undefined,
   inferenceCloudProviders: undefined,
   hubPoolEnabled: undefined,
   hubPoolOutboundEnabled: undefined,
@@ -248,6 +251,7 @@ function userSettingsFromFile(settingsValues: PersistedSettingsValues) {
     inferenceEncodeEndpoint: settingsValues.inferenceEncodeEndpoint,
     inferenceMaxNumCtx: settingsValues.inferenceMaxNumCtx,
     inferenceOllamaSlots: settingsValues.inferenceOllamaSlots,
+    inferenceOllamaKeepAlive: settingsValues.inferenceOllamaKeepAlive,
     inferenceCloudProviders: settingsValues.inferenceCloudProviders,
     // Left tri-state on purpose: `undefined` (never touched) and `false` (operator turned it
     // off) mean the same thing to routing but different things to the UI, which distinguishes
@@ -367,6 +371,7 @@ export class ConfigurationService {
       inferenceEncodeEndpoint: settings.inferenceEncodeEndpoint,
       inferenceMaxNumCtx: settings.inferenceMaxNumCtx,
       inferenceOllamaSlots: settings.inferenceOllamaSlots,
+      inferenceOllamaKeepAlive: settings.inferenceOllamaKeepAlive,
       inferenceCloudProviders: settings.inferenceCloudProviders,
       hubPoolEnabled: settings.hubPoolEnabled,
       hubPoolOutboundEnabled: settings.hubPoolOutboundEnabled,
@@ -697,14 +702,17 @@ export class ConfigurationService {
       // `null` is not stated: the pool ranks this node by queue depth alone, as before slots existed.
       // Clamped on read for the reason the cap is. See `inference-ollama-slots.ts`.
       ollamaSlots: clampOllamaSlots(this.config.userSettings.inferenceOllamaSlots),
+      // `null` is not stated: an unpinned model is handed back with Ollama's 5-minute default.
+      // Clamped on read for the reason the cap is. See `inference-ollama-keep-alive.ts`.
+      ollamaKeepAlive: clampOllamaKeepAliveSeconds(this.config.userSettings.inferenceOllamaKeepAlive),
     };
   }
 
   /**
    * Persist inference preferences. `model` is the catalog id of the default model Companion agents
    * (Hermes, OpenClaw) and the Hub use by default. Pass `null` to clear it; omit it to leave it
-   * unchanged. `embeddingModel`, `visionModel`, `maxNumCtx` and `ollamaSlots` follow the same
-   * convention; a cleared `maxNumCtx` or `ollamaSlots` removes the key rather than storing a null,
+   * unchanged. `embeddingModel`, `visionModel`, `maxNumCtx`, `ollamaSlots` and `ollamaKeepAlive`
+   * follow the same convention; a cleared numeric one removes the key rather than storing a null,
    * like the pool prompt ceiling.
    */
   public async setInferencePreferences(
@@ -719,6 +727,7 @@ export class ConfigurationService {
     encodeEndpoint?: string | null,
     maxNumCtx?: number | null,
     ollamaSlots?: number | null,
+    ollamaKeepAlive?: number | null,
   ) {
     const settings: {
       inferenceBackend: InferenceBackendType;
@@ -732,6 +741,7 @@ export class ConfigurationService {
       inferenceEncodeEndpoint?: string;
       inferenceMaxNumCtx?: number;
       inferenceOllamaSlots?: number;
+      inferenceOllamaKeepAlive?: number;
     } = { inferenceBackend: backend };
     if (model !== undefined) {
       settings.inferenceModel = model ?? undefined;
@@ -762,6 +772,9 @@ export class ConfigurationService {
     }
     if (ollamaSlots !== undefined) {
       settings.inferenceOllamaSlots = ollamaSlots ?? undefined;
+    }
+    if (ollamaKeepAlive !== undefined) {
+      settings.inferenceOllamaKeepAlive = ollamaKeepAlive ?? undefined;
     }
     await this.setUserSettings(settings);
     return this.getInferencePreferences();

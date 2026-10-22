@@ -526,6 +526,59 @@ describe('ConfigurationService inference preferences — Ollama slots', () => {
   });
 });
 
+describe('ConfigurationService inference preferences: Ollama keep-alive', () => {
+  function makeService(userSettings: Record<string, unknown>) {
+    const svc = Object.create(ConfigurationService.prototype) as unknown as {
+      config: { demoMode: boolean; userSettings: Record<string, unknown> };
+      mergeSettingsToDisk: ReturnType<typeof vi.fn>;
+      logger: { warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn>; info: ReturnType<typeof vi.fn> };
+      getInferencePreferences: () => { ollamaKeepAlive: number | null };
+      setInferencePreferences: (...args: unknown[]) => Promise<{ ollamaKeepAlive: number | null }>;
+    };
+    svc.logger = { warn: vi.fn(), error: vi.fn(), info: vi.fn() };
+    svc.config = { demoMode: false, userSettings };
+    svc.mergeSettingsToDisk = vi.fn().mockResolvedValue(undefined);
+    return svc;
+  }
+
+  it("is null until an operator states one; an unpin then names Ollama's 5 minutes", () => {
+    expect(makeService({}).getInferencePreferences().ollamaKeepAlive).toBeNull();
+  });
+
+  it('reads 24 h, forever (-1) and 0 as stated; a value past a year or a fraction reads as not stated', () => {
+    expect(makeService({ inferenceOllamaKeepAlive: 86_400 }).getInferencePreferences().ollamaKeepAlive).toBe(86_400);
+    expect(makeService({ inferenceOllamaKeepAlive: -1 }).getInferencePreferences().ollamaKeepAlive).toBe(-1);
+    expect(makeService({ inferenceOllamaKeepAlive: 0 }).getInferencePreferences().ollamaKeepAlive).toBe(0);
+    expect(makeService({ inferenceOllamaKeepAlive: 366 * 86_400 }).getInferencePreferences().ollamaKeepAlive).toBeNull();
+    expect(makeService({ inferenceOllamaKeepAlive: 1.5 }).getInferencePreferences().ollamaKeepAlive).toBeNull();
+  });
+
+  it('sets, leaves alone and clears the keep-alive through setInferencePreferences', async () => {
+    const svc = makeService({ inferenceOllamaKeepAlive: 86_400 });
+    const untouched = [undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined];
+
+    expect((await svc.setInferencePreferences('ollama')).ollamaKeepAlive).toBe(86_400);
+    expect(svc.mergeSettingsToDisk).toHaveBeenLastCalledWith({ inferenceBackend: 'ollama' });
+
+    expect((await svc.setInferencePreferences('ollama', ...untouched, 3600)).ollamaKeepAlive).toBe(3600);
+    expect(svc.mergeSettingsToDisk).toHaveBeenLastCalledWith({ inferenceBackend: 'ollama', inferenceOllamaKeepAlive: 3600 });
+
+    expect((await svc.setInferencePreferences('ollama', ...untouched, null)).ollamaKeepAlive).toBeNull();
+    expect(svc.mergeSettingsToDisk).toHaveBeenLastCalledWith({ inferenceBackend: 'ollama', inferenceOllamaKeepAlive: undefined });
+  });
+});
+
+describe('settingsSchema: inference Ollama keep-alive', () => {
+  it('accepts seconds as a string, as a form would submit them; an out-of-range value degrades to "not stated"', () => {
+    expect(settingsSchema.partial().safeParse({ inferenceOllamaKeepAlive: '86400' }).data).toEqual({ inferenceOllamaKeepAlive: 86_400 });
+    for (const persisted of [{ inferenceOllamaKeepAlive: -2 }, { inferenceOllamaKeepAlive: 366 * 86_400 }, { inferenceOllamaKeepAlive: '24h' }]) {
+      const parsed = settingsSchema.partial().safeParse(persisted);
+      expect(parsed.success).toBe(true);
+      expect(parsed.success && parsed.data).toEqual({});
+    }
+  });
+});
+
 describe('ConfigurationService.readPersistedSettings', () => {
   function makeReader() {
     const svc = Object.create(ConfigurationService.prototype) as unknown as {

@@ -42,6 +42,7 @@ const NO_PREFERENCES: ReturnType<ConfigurationService['getInferencePreferences']
   preferredEncodeEndpoint: null,
   maxNumCtx: null,
   ollamaSlots: null,
+  ollamaKeepAlive: null,
 };
 
 describe('InferenceRouterService', () => {
@@ -1471,6 +1472,169 @@ describe('InferenceRouterService', () => {
       await expect(service.routeChatCompletion(bodyWithTools)).rejects.toThrow('Request failed with status code 400');
       // Must NOT have retried a second time with tools stripped
       expect(axios.post).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ─── Unpin ────────────────────────────────────────────────────────
+  // A pin loads the model at Ollama's keep_alive -1. Clearing the registry alone left it in memory
+  // with Forever, through the AI tab's "Unpin every model?" save as much as a single unpin.
+
+  describe('unpinTrackedModel', () => {
+    const smollm = {
+      id: 'gemma3-270m',
+      backend: 'ollama',
+      backendModelId: 'gemma3:270m',
+      modality: 'llm',
+      runtime: { memoryFootprintMb: 300, contextWindow: 32768 },
+    } as CuratedModel;
+    const tracked = (state: TrackedModel['state']) =>
+      ({ catalogId: smollm.id, backend: 'ollama', backendModelId: smollm.backendModelId, state, pinned: state === 'pinned' }) as TrackedModel;
+
+    beforeEach(() => {
+      modelRegistry.getCuratedModel.mockImplementation((id) => (id === smollm.id ? smollm : undefined));
+      modelRegistry.getTrackedModel.mockReturnValue(tracked('pinned'));
+      modelRegistry.isPinned.mockReturnValue(true);
+      ollamaBackend.setResidentKeepAlive.mockResolvedValue('set');
+    });
+
+    it("clears the pin and hands the model back to Ollama's default keep_alive, without unloading it", async () => {
+      await expect(service.unpinTrackedModel(smollm.id)).resolves.toEqual({ engine: 'set' });
+
+      expect(modelRegistry.unpinModel).toHaveBeenCalledWith(smollm.id);
+      expect(ollamaBackend.setResidentKeepAlive).toHaveBeenCalledWith('gemma3:270m', 'default', { embedding: false, defaultSeconds: null });
+      expect(ollamaBackend.unloadModel).not.toHaveBeenCalled();
+      expect(modelPuller.unloadModel).not.toHaveBeenCalled();
+    });
+
+    // The fleet runs Ollama at OLLAMA_KEEP_ALIVE=24h and states it to the Hub (`cihub fleet backends
+    // --ollama-keep-alive 24h` writes inferenceOllamaKeepAlive 86400). Ollama's API cannot say it.
+    it("hands an unpinned model back at this node's stated Ollama keep-alive when there is one", async () => {
+      configuration.getInferencePreferences.mockReturnValue({ ...NO_PREFERENCES, ollamaKeepAlive: 86_400 });
+
+      await service.unpinTrackedModel(smollm.id);
+
+      expect(ollamaBackend.setResidentKeepAlive).toHaveBeenCalledWith('gemma3:270m', 'default', { embedding: false, defaultSeconds: 86_400 });
+    });
+
+    it('tells Ollama an embedder is one, so the request goes through /api/embed', async () => {
+      const embedder = { ...smollm, id: 'nomic-embed-text', backendModelId: 'nomic-embed-text', modality: 'embedding' } as CuratedModel;
+      modelRegistry.getCuratedModel.mockReturnValue(embedder);
+      modelRegistry.getTrackedModel.mockReturnValue(undefined);
+
+      await service.unpinTrackedModel(embedder.id);
+
+      expect(ollamaBackend.setResidentKeepAlive).toHaveBeenCalledWith('nomic-embed-text', 'default', { embedding: true, defaultSeconds: null });
+    });
+
+    it('leaves the engine alone for a model that was not pinned', async () => {
+      modelRegistry.isPinned.mockReturnValue(false);
+
+      await expect(service.unpinTrackedModel(smollm.id)).resolves.toEqual({ engine: 'none' });
+
+      expect(modelRegistry.unpinModel).toHaveBeenCalledWith(smollm.id);
+      expect(ollamaBackend.setResidentKeepAlive).not.toHaveBeenCalled();
+    });
+
+    it('still unpins when Ollama cannot be told and says so in the log', async () => {
+      ollamaBackend.setResidentKeepAlive.mockRejectedValue(new Error('connect ECONNREFUSED'));
+
+      await expect(service.unpinTrackedModel(smollm.id)).resolves.toEqual({ engine: 'unreachable' });
+
+      expect(modelRegistry.unpinModel).toHaveBeenCalledWith(smollm.id);
+      expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('ECONNREFUSED'));
+    });
+
+    // Before, a pin of a model already in memory loaded nothing and told Ollama nothing: one an app had
+    // loaded through Ollama itself, or one unpinned a minute earlier, kept its 5-minute expiry pinned.
+    it('a pin of a model already in memory tells Ollama to hold it', async () => {
+      modelRegistry.getTrackedModel.mockReturnValue(tracked('loaded'));
+      memoryManager.canPinModel.mockResolvedValue({ canPin: true });
+
+      await expect(service.pinTrackedModel(smollm.id, { origin: 'operator' })).resolves.toEqual({ pinned: true });
+
+      expect(modelPuller.loadModel).not.toHaveBeenCalled();
+      expect(ollamaBackend.setResidentKeepAlive).toHaveBeenCalledWith('gemma3:270m', 'pinned', { embedding: false, defaultSeconds: null });
+      expect(modelRegistry.pinModel).toHaveBeenCalledWith(smollm.id);
+    });
+
+    // An unpinned model expires on Ollama's keep_alive while the registry still says `loaded`.
+    it('a pin the registry calls loaded but Ollama no longer holds loads the model before it pins it', async () => {
+      modelRegistry.getTrackedModel.mockReturnValue(tracked('loaded'));
+      memoryManager.canPinModel.mockResolvedValue({ canPin: true });
+      memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 1_000 });
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [smollm.backendModelId] });
+      ollamaBackend.isModelLoaded.mockResolvedValue(false);
+      ollamaBackend.setResidentKeepAlive.mockResolvedValue('not-resident');
+
+      await expect(service.pinTrackedModel(smollm.id, { origin: 'operator' })).resolves.toEqual({ pinned: true });
+
+      expect(modelPuller.loadModel).toHaveBeenCalledTimes(1);
+      expect(modelPuller.loadModel.mock.invocationCallOrder[0]).toBeLessThan(modelRegistry.pinModel.mock.invocationCallOrder[0] ?? 0);
+    });
+
+    it('a pin whose model is gone and cannot be loaded again is refused, not pinned', async () => {
+      modelRegistry.getTrackedModel.mockReturnValue(tracked('loaded'));
+      memoryManager.canPinModel.mockResolvedValue({ canPin: true });
+      memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 1_000 });
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [smollm.backendModelId] });
+      ollamaBackend.isModelLoaded.mockResolvedValue(false);
+      ollamaBackend.setResidentKeepAlive.mockResolvedValue('not-resident');
+      modelPuller.loadModel.mockRejectedValueOnce(new Error('model requires more system memory'));
+
+      const outcome = await service.pinTrackedModel(smollm.id, { origin: 'operator' });
+
+      expect(outcome.pinned).toBe(false);
+      expect(modelRegistry.pinModel).not.toHaveBeenCalled();
+    });
+
+    // With the card's memory unknown, a pin is refused before anything loads for it.
+    it('refuses a pin the budget calls final without measuring or loading anything', async () => {
+      modelRegistry.getTrackedModel.mockReturnValue(tracked('pulled'));
+      memoryManager.canPinModel.mockResolvedValue({
+        canPin: false,
+        final: true,
+        reason: "The Hub can't read this graphics card's memory (VRAM Unknown)",
+      });
+
+      const outcome = await service.pinTrackedModel(smollm.id, { origin: 'operator' });
+
+      expect(outcome).toEqual({ pinned: false, reason: "The Hub can't read this graphics card's memory (VRAM Unknown)" });
+      expect(memoryManager.footprintSighting).not.toHaveBeenCalled();
+      expect(modelPuller.loadModel).not.toHaveBeenCalled();
+      expect(modelRegistry.pinModel).not.toHaveBeenCalled();
+    });
+
+    it('waits for a pin of the same model queued ahead of it, so that pin is not written back after the unpin', async () => {
+      modelRegistry.getTrackedModel.mockReturnValue(tracked('pulled'));
+      memoryManager.canPinModel.mockResolvedValue({ canPin: true });
+      memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 1_000 });
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [smollm.backendModelId] });
+      ollamaBackend.isModelLoaded.mockResolvedValue(false);
+      let finishLoad!: () => void;
+      modelPuller.loadModel.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finishLoad = resolve;
+          }),
+      );
+
+      const pin = service.pinTrackedModel(smollm.id, { origin: 'operator' });
+      await vi.waitFor(() => expect(modelPuller.loadModel).toHaveBeenCalledTimes(1));
+      const unpin = service.unpinTrackedModel(smollm.id);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(modelRegistry.unpinModel).not.toHaveBeenCalled();
+
+      finishLoad();
+      await expect(pin).resolves.toEqual({ pinned: true });
+      await expect(unpin).resolves.toEqual({ engine: 'set' });
+      expect(modelRegistry.pinModel.mock.invocationCallOrder[0]).toBeLessThan(modelRegistry.unpinModel.mock.invocationCallOrder[0] ?? 0);
+    });
+
+    it('has nothing to set on an engine without a per-request keep_alive', () => {
+      expect(typeof OllamaBackend.prototype.setResidentKeepAlive).toBe('function');
+      for (const engine of [LemonadeBackend, VllmBackend, OmlxBackend]) {
+        expect((engine.prototype as unknown as Record<string, unknown>).setResidentKeepAlive).toBeUndefined();
+      }
     });
   });
 });

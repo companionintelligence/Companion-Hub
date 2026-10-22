@@ -4,7 +4,6 @@ import type { CloudProviderStatus } from '@ci-hub/common/types';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { HardwareInspectorService } from '@/modules/inference/hardware-inspector.service';
-import { ModelRegistryService } from '@/modules/inference/model-registry.service';
 import { MemoryManagerService } from '@/modules/inference/memory-manager.service';
 import { ModelPullerService } from '@/modules/inference/model-puller.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
@@ -38,7 +37,6 @@ describe('InferenceTools: hub_get_cloud_providers', () => {
       mock<LoggerService>(),
       registry,
       mock<HardwareInspectorService>(),
-      mock<ModelRegistryService>(),
       mock<MemoryManagerService>(),
       mock<ModelPullerService>(),
       mock<InferenceRouterService>(),

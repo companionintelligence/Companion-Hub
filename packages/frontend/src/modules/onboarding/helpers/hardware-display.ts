@@ -89,15 +89,23 @@ export function resolveAmdHostRocmNotice(hardware: HardwareProfile): AmdHostRocm
   };
 }
 
+/**
+ * The VRAM tile. On unified memory it is what the GPU can address (`gpu.vramMb`): on an AMD APU the
+ * driver's carve-out plus GTT, which is less than the machine's RAM; on Apple Silicon all of it. A
+ * discrete card whose memory the Hub could not read (`vramMb` 0) says so instead of "0 MB".
+ */
 export function resolveVramDisplay(hardware: HardwareProfile): { value: string; sub?: string } {
   if (!hardware.gpu.available) {
     return { value: i18next.t('COMMON_DASH') };
   }
   if (hardware.gpu.unifiedMemory) {
     return {
-      value: formatMemoryMb(hardware.ram.totalMb),
+      value: formatMemoryMb(hardware.gpu.vramMb > 0 ? hardware.gpu.vramMb : hardware.ram.totalMb),
       sub: isAmdApu(hardware) ? i18next.t('ONBOARDING_SHARED_APU') : i18next.t('ONBOARDING_UNIFIED_MEMORY'),
     };
+  }
+  if (hardware.gpu.vramMb <= 0) {
+    return { value: i18next.t('COMMON_UNKNOWN') };
   }
   return { value: formatMemoryMb(hardware.gpu.vramMb) };
 }

@@ -340,6 +340,57 @@ export class InferenceRouterService implements OnApplicationBootstrap {
   }
 
   /**
+   * Unpin a catalog model: the registry's pin and the persisted one, then the engine's hold on it.
+   * The REST unpin (which the AI tab's save calls for each model it unpins) and MCP `hub_unpin_model`
+   * both take this path.
+   *
+   * The pin loaded the model at Ollama's `keep_alive: -1`. Clearing the registry alone left it in
+   * memory with Forever until something unloaded it. An unpin hands it back to the engine's usual
+   * expiry instead of unloading it, since an app may be using it: this node's stated Ollama
+   * keep-alive (`inferenceOllamaKeepAlive`, which `cihub fleet backends --ollama-keep-alive` writes)
+   * when there is one, else Ollama's built-in 5 minutes, because the daemon's `OLLAMA_KEEP_ALIVE`
+   * cannot be read. It does so only when the engine holds it: see `InferenceBackend.setResidentKeepAlive`. An
+   * engine without that setting (Lemonade, vLLM, oMLX) has nothing to change. A model that was not
+   * pinned is only unpinned in the registry.
+   *
+   * Under the load lock, like the pin: a pin of the same model queued ahead finishes first, so its
+   * pin is not written back after this unpin.
+   */
+  async unpinTrackedModel(catalogId: string): Promise<{ engine: 'set' | 'not-resident' | 'unreachable' | 'none' }> {
+    return this.withLoadLock(async () => {
+      const wasPinned = this.modelRegistry.isPinned(catalogId);
+      this.modelRegistry.unpinModel(catalogId);
+      return { engine: wasPinned ? await this.setEngineKeepAlive(catalogId, 'default') : 'none' };
+    });
+  }
+
+  /**
+   * {@link InferenceBackend.setResidentKeepAlive} for a catalog model, never throwing: a pin or unpin
+   * stands in the registry whatever the engine answered. A failure is logged. `none` when the
+   * model's engine has no such setting.
+   */
+  private async setEngineKeepAlive(catalogId: string, keep: 'pinned' | 'default'): Promise<'set' | 'not-resident' | 'unreachable' | 'none'> {
+    const target = this.loadTarget(catalogId);
+    const backend = target ? this.backends.tryGet(target.backendType) : undefined;
+    if (!target || !backend?.setResidentKeepAlive) {
+      return 'none';
+    }
+    try {
+      const outcome = await backend.setResidentKeepAlive(target.backendModelId, keep, {
+        embedding: target.curated?.modality === 'embedding',
+        defaultSeconds: keep === 'default' ? (this.configuration?.getInferencePreferences()?.ollamaKeepAlive ?? null) : null,
+      });
+      if (outcome === 'set') this.memoryManager.invalidateObservation();
+      return outcome;
+    } catch (err) {
+      this._logger.warn(
+        `[Inference] ${keep === 'pinned' ? 'Pinned' : 'Unpinned'} ${catalogId}, but could not set its keep_alive on ${target.backendType}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return 'unreachable';
+    }
+  }
+
+  /**
    * Re-marks as pinned each model the operator pinned (persisted by the registry) that an engine still
    * holds, and returns the ones it found.
    *
@@ -1220,8 +1271,8 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       const profile = await this.hardwareInspector.getProfile();
       const first = await this.memoryManager.canPinModel(profile, catalogMb, model);
       if (!first.canPin) {
-        const measured = model ? await this.memoryManager.footprintSighting(profile, model.backend, model.backendModelId) : null;
-        if (measured || !model) {
+        const measured = first.final || !model ? null : await this.memoryManager.footprintSighting(profile, model.backend, model.backendModelId);
+        if (first.final || measured || !model) {
           return { pinned: false, reason: first.reason ?? `${catalogId} does not fit this node's pinned-model budget` };
         }
       }
@@ -1243,8 +1294,26 @@ export class InferenceRouterService implements OnApplicationBootstrap {
         }
       }
 
-      if (pinGeneration !== this.modelRegistry.currentPinGeneration()) {
-        return { pinned: false, reason: `${catalogId} is loaded, but not pinned: a factory reset ran before this pin finished` };
+      // A factory reset that ran while this pin waited or loaded refuses it, and leaves the model's
+      // keep_alive to the reset's unload. Asked again after the keep_alive call or the load below.
+      const overtaken = () => pinGeneration !== this.modelRegistry.currentPinGeneration();
+      const refusal = { pinned: false as const, reason: `${catalogId} is loaded, but not pinned: a factory reset ran before this pin finished` };
+      if (overtaken()) {
+        return refusal;
+      }
+
+      // A model the pin found in memory was not loaded by it, so it still has whatever keep_alive it
+      // had: Ollama's usual expiry after an unpin, or for a model an app loaded through Ollama itself.
+      // The registry's `loaded` can outlive the model: an unpinned one expires on Ollama's keep_alive
+      // without the registry hearing of it. Then the pin loads it, so it never pins a model that is gone.
+      if ((await this.setEngineKeepAlive(catalogId, 'pinned')) === 'not-resident') {
+        const outcome = await this.loadTrackedModelLocked(catalogId, { origin: options.origin });
+        if (!outcome.loaded) {
+          return { pinned: false, reason: outcome.reason };
+        }
+      }
+      if (overtaken()) {
+        return refusal;
       }
       this.modelRegistry.pinModel(catalogId);
       return { pinned: true };

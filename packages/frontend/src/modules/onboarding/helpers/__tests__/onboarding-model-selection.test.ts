@@ -77,6 +77,17 @@ describe('inferenceMemoryMb', () => {
       totalMb: 60_000,
       freeMb: 60_000,
     });
+    // A card the Hub could not size (VRAM Unknown) is budgeted on RAM, as the Hub budgets its loads.
+    expect(
+      inferenceMemoryMb({
+        hardware: { gpu: { available: true, unifiedMemory: false, vramMb: 0 } },
+        memoryBudget: { modelBudgetVramMb: 0, modelBudgetRamMb: 60_000 },
+        resourceEstimate: { availableMemoryMb: 31_000 },
+      }),
+    ).toEqual({
+      totalMb: 60_000,
+      freeMb: 31_000,
+    });
     expect(
       inferenceMemoryMb({
         hardware: { gpu: { available: false, unifiedMemory: false } },
