@@ -15,7 +15,13 @@ import { RegistrationService } from '@/modules/registration/registration.service
 import { UserRepository } from '@/modules/user/user.repository';
 import type { AppUrn } from '@ci-hub/common/types';
 import { AppLifecycleService } from '../app-lifecycle.service';
-import { buildRehydrationPlan, type RehydrationPlan, type RehydrationStateFile } from '../app-rehydration';
+import {
+  buildRehydrationPlan,
+  CATALOG_DOWNLOAD_WAIT_MS,
+  CatalogStillDownloadingError,
+  type RehydrationPlan,
+  type RehydrationStateFile,
+} from '../app-rehydration';
 import { AppRehydrationService } from '../app-rehydration.service';
 import * as recovery from '../registration-recovery-state';
 
@@ -57,6 +63,7 @@ describe('AppRehydrationService.executeRehydrate', () => {
   let users: MockProxy<UserRepository>;
   let cloudflare: MockProxy<CloudflareClientService>;
   let marketplace: MockProxy<MarketplaceService>;
+  let appStores: MockProxy<AppStoreService>;
   let service: AppRehydrationService;
 
   beforeEach(async () => {
@@ -81,7 +88,9 @@ describe('AppRehydrationService.executeRehydrate', () => {
     cloudflare.getDeviceApplications.mockResolvedValue([{ name: 'immich' }] as never);
     marketplace = mock<MarketplaceService>();
     marketplace.getAvailableAppUrns.mockResolvedValue([appUrn] as never);
-    const appStores = mock<AppStoreService>();
+    appStores = mock<AppStoreService>();
+    appStores.isDownloadingCatalog.mockReturnValue(false);
+    appStores.waitForCatalogDownloads.mockResolvedValue(true);
     appStores.getEnabledAppStores.mockResolvedValue([{ slug: 'ci-marketplace' }] as never);
     const apps = mock<AppsRepository>();
     apps.getApps.mockResolvedValue([]);
@@ -303,6 +312,55 @@ describe('AppRehydrationService.executeRehydrate', () => {
 
     expect(recovery.writeRehydrationState).not.toHaveBeenCalled();
     expect(lifecycle.installApp).not.toHaveBeenCalled();
+  });
+
+  /*
+   * After a factory reset the Hub downloads the catalog. The pairing after it came while that ran.
+   * The catalog listed only the apps it had reached, so the device's apps were skipped as unlisted. The
+   * run was recorded as done and the next sync released them.
+   */
+  describe('while the app catalog is still downloading', () => {
+    // Another app's folder is already there, so the catalog is not empty.
+    beforeEach(() => {
+      marketplace.getAvailableAppUrns.mockResolvedValue(['filler-01:ci-marketplace'] as never);
+    });
+
+    it('waits for the download to end, then restores from the whole catalog', async () => {
+      let downloaded: (done: boolean) => void = () => undefined;
+      appStores.waitForCatalogDownloads.mockReturnValueOnce(
+        new Promise((resolve) => {
+          downloaded = resolve;
+        }),
+      );
+      lifecycle.installApp.mockResolvedValue({ requestId: 'r' } as never);
+
+      const run = service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR });
+      await vi.waitFor(() => expect(appStores.waitForCatalogDownloads).toHaveBeenCalledWith(CATALOG_DOWNLOAD_WAIT_MS));
+      expect(marketplace.getAvailableAppUrns).not.toHaveBeenCalled();
+
+      marketplace.getAvailableAppUrns.mockResolvedValue([appUrn] as never);
+      downloaded(true);
+
+      await expect(run).resolves.toMatchObject({ success: true, queued: [appUrn], skipped: [] });
+    });
+
+    it('does not record a run or skip the apps the catalog has not reached yet when the download outlasts the wait', async () => {
+      appStores.waitForCatalogDownloads.mockResolvedValue(false);
+
+      await expect(service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR })).rejects.toThrow(CatalogStillDownloadingError);
+
+      expect(marketplace.getAvailableAppUrns).not.toHaveBeenCalled();
+      expect(recovery.writeRehydrationState).not.toHaveBeenCalled();
+      expect(lifecycle.installApp).not.toHaveBeenCalled();
+    });
+
+    it('counts a download that started while the catalog was being read', async () => {
+      appStores.isDownloadingCatalog.mockReturnValue(true);
+
+      await expect(service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR })).rejects.toThrow(CatalogStillDownloadingError);
+
+      expect(recovery.writeRehydrationState).not.toHaveBeenCalled();
+    });
   });
 });
 

@@ -78,6 +78,18 @@ export interface RehydrationStateFile {
 /** Why an app the Portal lists for this device was not restored when no store on this Hub lists it. */
 export const UNLISTED_REASON = 'No matching marketplace app found for Portal application';
 
+/**
+ * The restore met an app catalog download under way, which may not list every app yet. The download
+ * ends on its own, so the restore after pairing asks again at its next pass instead of backing off.
+ */
+export class CatalogStillDownloadingError extends Error {}
+
+/**
+ * How long a restore waits for a catalog download under way to end before it gives up for this pass.
+ * The restore page's request waits with it. A tunnel ends a request that has no answer in 100 s.
+ */
+export const CATALOG_DOWNLOAD_WAIT_MS = 60_000;
+
 /** An app the restore left alone because it is on the Hub already, which is not a failure to restore it. */
 export function isKeptAppSkip(entry: RehydrationSkipped): boolean {
   return entry.code === 'already_running' || entry.code === 'busy';

@@ -49,6 +49,10 @@ export class MarketplaceService implements OnModuleInit {
   /** How long a cold catalog request waits on Portal before answering from the synced snapshot. */
   private liveCatalogWaitMs = LIVE_CATALOG_WAIT_MS;
   private catalogSnapshot: Promise<PortalCatalogEntry[]> | null = null;
+  /** Bumped by each `initialize`. */
+  private initializeSeq = 0;
+  /** The `initialize` whose map `stores` holds. One that began before it does not swap its own in. */
+  private swappedSeq = 0;
 
   constructor(
     private readonly configuration: ConfigurationService,
@@ -64,18 +68,28 @@ export class MarketplaceService implements OnModuleInit {
   }
 
   async initialize() {
-    this.stores.clear();
-
+    // Built aside and swapped in whole. Emptied first, the map held no store while the table was read. An
+    // install or restore that looked one up then failed with "Store not found". One runs when a catalog
+    // download ends, at any time, such as the one a factory reset starts.
+    const seq = ++this.initializeSeq;
+    const next = new Map<string, AppStoreFilesManager>();
     const stores = await this.appStoreService.getAllAppStores();
+
+    // Calls overlap: a download ending beside a store being added or removed. One whose table read
+    // answered after a later call's would swap the older table in last. It returns with the newer map,
+    // so every caller finds at least the table it read.
+    if (seq < this.swappedSeq) {
+      return;
+    }
 
     for (const config of stores) {
       const store = new AppStoreFilesManager(this.configuration, this.filesystem, this.logger, config);
-      this.stores.set(config.slug, store);
+      next.set(config.slug, store);
     }
 
     // TODO: This is a temporary fix to ensure that internal app stores are always present.
     for (const reservedSlug of RESERVED_APP_STORE_SLUGS) {
-      if (!this.stores.has(reservedSlug)) {
+      if (!next.has(reservedSlug)) {
         const store = new AppStoreFilesManager(this.configuration, this.filesystem, this.logger, {
           branch: 'main',
           createdAt: '',
@@ -87,10 +101,12 @@ export class MarketplaceService implements OnModuleInit {
           updatedAt: '',
           type: 'git',
         });
-        this.stores.set(reservedSlug, store);
+        next.set(reservedSlug, store);
       }
     }
 
+    this.swappedSeq = seq;
+    this.stores = next;
     this.invalidateCache();
     void this.portalCatalog.warmCacheInBackground();
 

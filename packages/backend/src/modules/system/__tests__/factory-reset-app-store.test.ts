@@ -137,6 +137,8 @@ function hub() {
   const pulls: string[] = [];
   const repoHelpers = {
     getRepoHash: (url: string) => `hash-${url}`,
+    // The stand-in download below writes its whole catalog at once, so none is ever under way when asked.
+    isDownloadingCatalog: () => false,
     pullRepo: vi.fn(async (_url: string, slug: string) => {
       pulls.push(slug);
       writeCatalog(slug);

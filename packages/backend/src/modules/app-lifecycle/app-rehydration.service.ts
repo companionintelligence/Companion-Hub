@@ -22,6 +22,8 @@ import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
 import { AppLifecycleService } from './app-lifecycle.service';
 import {
   buildRehydrationPlan,
+  CATALOG_DOWNLOAD_WAIT_MS,
+  CatalogStillDownloadingError,
   filterLocalEntriesForPortalUrns,
   isKeptAppSkip,
   resolvePortalAppToUrn,
@@ -338,7 +340,7 @@ export class AppRehydrationService {
       };
     }
 
-    const { listed, unlisted } = await this.fetchPortalApplications();
+    const { listed, unlisted } = await this.fetchPortalApplications(CATALOG_DOWNLOAD_WAIT_MS);
     const plan = await this.buildPlanFromPortalApps(listed);
 
     const queued: string[] = [];
@@ -434,16 +436,38 @@ export class AppRehydrationService {
    * The device's apps from the Portal: those an enabled store here lists, and those none does. Throws
    * when the Portal gives no answer (`CloudflareClientService.getDeviceApplications`).
    */
-  private async fetchPortalApplications(): Promise<{ listed: PortalDeviceApplication[]; unlisted: PortalDeviceApplication[] }> {
+  private async fetchPortalApplications(
+    catalogDownloadWaitMs = 0,
+  ): Promise<{ listed: PortalDeviceApplication[]; unlisted: PortalDeviceApplication[] }> {
     const apps = await this.cloudflareClientService.getDeviceApplications();
     if (apps.length === 0) {
       return { listed: [], unlisted: [] };
+    }
+
+    /*
+     * ⚠ A CATALOG STILL DOWNLOADING IS MISSING APPS. The download writes the apps' folders a dozen at a
+     * time, so an app it has not reached yet was skipped below as unlisted. The run was recorded as done
+     * and the next sync released it. A pairing right after a factory reset met the reset's download. A retry
+     * 15 s after `PairingAppRestoreService` started one met that one. So a restore waits for the download
+     * to end first, for `catalogDownloadWaitMs`. Asked again after the listing, so a download that starts
+     * during it counts too.
+     */
+    const catalogStillDownloading = () =>
+      new CatalogStillDownloadingError(
+        `CI Portal lists ${apps.length} app(s) for this device, but the app catalog is still downloading, so they cannot be restored yet`,
+      );
+    if (!(await this.appStoreService.waitForCatalogDownloads(catalogDownloadWaitMs))) {
+      throw catalogStillDownloading();
     }
 
     // Precompute the set of available marketplace URNs once (one directory listing per
     // enabled store) and match in-memory, instead of an N×M per-app/per-store loop of
     // getAppInfoFromAppStore() disk reads.
     const availableUrns = new Set<string>(await this.marketplaceService.getAvailableAppUrns());
+
+    if (this.appStoreService.isDownloadingCatalog()) {
+      throw catalogStillDownloading();
+    }
 
     /*
      * ⚠ AN EMPTY CATALOG MATCHES NOTHING. On a Hub that has not downloaded its app catalog yet, every
