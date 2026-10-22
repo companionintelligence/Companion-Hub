@@ -7332,6 +7332,34 @@ describe('AppLifecycleService', () => {
 
         await expect(waiting).resolves.toBe(true);
       });
+
+      // Decided while the app ran, then a person stopped it: the restart must not bring it back.
+      it.each([
+        ['restartApp', () => systemRestart('restart-after-config-update')],
+        ['restartAppAndWait', () => service.restartAppAndWait({ appUrn, skipPull: true, waitForApp: true })],
+      ] as const)('%s does not restart an app the operation it waited for left stopped', async (_label, restart) => {
+        const stop = held<{ success: boolean; message: string }>();
+        appEventsQueue.publish.mockReturnValueOnce(stop.promise as any);
+        await commands.stop();
+        const waiting = restart();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, status: 'stopped' } as any);
+        stop.release({ success: true, message: 'OK' });
+        await waiting;
+
+        expect(appEventsQueue.publish).toHaveBeenCalledTimes(1);
+        expect(appsRepository.updateAppById).not.toHaveBeenCalledWith(fakeApp.id, { status: 'restarting' });
+        expect(operationRegistry.liveOperation(appUrn)).toBeUndefined();
+      });
+
+      it('restarts an app it did not wait for whatever its status, as a restart always has', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, status: 'stopped' } as any);
+
+        await systemRestart('restart-after-config-update');
+
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'restart', appUrn }));
+      });
     });
 
     // Settings saved while the app was starting: the start ran the old config, so the restart is still owed.

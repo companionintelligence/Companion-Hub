@@ -2055,15 +2055,21 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   public async restartApp(params: { appUrn: AppUrn; skipPull?: boolean; actor: LifecycleActor }) {
     await this.assertActorMay(params.actor, params.appUrn, 'restart');
     const waitForApp = params.actor.kind === 'system' && RESTARTS_THAT_WAIT_FOR_THE_APP.has(params.actor.reason);
-    return this.withOperationClaim(params.appUrn, 'restart', () => this.dispatchRestart(params), { waitForApp });
+    return this.withOperationClaim(params.appUrn, 'restart', (waited) => this.dispatchRestart({ ...params, onlyIfUp: waited }), { waitForApp });
   }
 
-  private async dispatchRestart(params: { appUrn: AppUrn; skipPull?: boolean; actor: LifecycleActor }) {
+  /** `onlyIfUp`: a Hub restart that waited for another operation; see {@link stoppedWhileWaiting}. */
+  private async dispatchRestart(params: { appUrn: AppUrn; skipPull?: boolean; actor: LifecycleActor; onlyIfUp?: boolean }) {
     const { appUrn, skipPull } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
+    }
+
+    if (params.onlyIfUp && this.stoppedWhileWaiting(appUrn, app.status)) {
+      // Names no operation: nothing was queued.
+      return { requestId: crypto.randomUUID() };
     }
 
     /*
@@ -2236,15 +2242,22 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    */
   /** `waitForApp`: wait for an operation under way rather than be refused, as the restarts in `RESTARTS_THAT_WAIT_FOR_THE_APP` do. */
   public async restartAppAndWait(params: { appUrn: AppUrn; skipPull?: boolean; waitForApp?: boolean }): Promise<boolean> {
-    return this.withOperationClaim(params.appUrn, 'restart', () => this.restartAndWaitClaimed(params), { waitForApp: params.waitForApp });
+    return this.withOperationClaim(params.appUrn, 'restart', (waited) => this.restartAndWaitClaimed({ ...params, onlyIfUp: waited }), {
+      waitForApp: params.waitForApp,
+    });
   }
 
-  private async restartAndWaitClaimed(params: { appUrn: AppUrn; skipPull?: boolean }): Promise<boolean> {
+  private async restartAndWaitClaimed(params: { appUrn: AppUrn; skipPull?: boolean; onlyIfUp?: boolean }): Promise<boolean> {
     const { appUrn, skipPull } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
+    }
+
+    // Nothing is owed to an app stopped meanwhile: it applies the change when it next starts.
+    if (params.onlyIfUp && this.stoppedWhileWaiting(appUrn, app.status)) {
+      return true;
     }
 
     await this.appRepository.updateAppById(app.id, { status: 'restarting' });
@@ -3262,9 +3275,16 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * sent during an uninstall took the uninstall's slot, its completion was dropped as superseded and
    * the row stayed behind with no containers.
    */
-  async withOperationClaim<T>(appUrn: AppUrn, command: OperationCommand, run: () => Promise<T>, options: { waitForApp?: boolean } = {}): Promise<T> {
+  async withOperationClaim<T>(
+    appUrn: AppUrn,
+    command: OperationCommand,
+    run: (waited: boolean) => Promise<T>,
+    options: { waitForApp?: boolean } = {},
+  ): Promise<T> {
     let claim = this.operationRegistry.claim(appUrn, command);
+    let waited = false;
     if (!claim.claimed && options.waitForApp) {
+      waited = true;
       claim = await this.waitForOperationClaim(appUrn, command, claim.busy.command);
     }
     if (!claim.claimed) {
@@ -3273,10 +3293,24 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     try {
-      return await run();
+      return await run(waited);
     } finally {
       this.operationRegistry.releaseClaim(appUrn, claim.token);
     }
+  }
+
+  /**
+   * Whether an app a Hub restart waited for is no longer up. The restart was decided while the app
+   * ran, and what it waited behind may have stopped it: a person's Stop, or a start that failed.
+   * Restarting it then brought back an app someone had just stopped. Its env is regenerated when it
+   * next starts, so the change the restart was for is not lost.
+   */
+  private stoppedWhileWaiting(appUrn: AppUrn, status: AppStatus): boolean {
+    if (!STATUSES_MEANING_NOT_RUNNING.has(status)) {
+      return false;
+    }
+    this.logger.info(`[lifecycle] restart for ${appUrn} not run: it is ${status} now, and picks the change up when it next starts`);
+    return true;
   }
 
   /**
