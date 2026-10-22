@@ -14,7 +14,7 @@ import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import { SSEService } from '@/core/sse/sse.service';
-import { OperationDeadline } from '../../operation-deadline';
+import { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import type { CommandExecutionContext } from '../command';
 import type { AppUrn } from '@ci-hub/common/types';
 import { parseComposeJson } from '@ci-hub/common/schemas';
@@ -116,7 +116,7 @@ describe('UpdateAppCommand', () => {
     const result = await command.execute(appUrn, {});
 
     expect(result).toEqual({ success: true, message: `App ${appUrn} updated successfully` });
-    expect(backupManager.backupApp).toHaveBeenCalledWith(appUrn);
+    expect(backupManager.backupApp).toHaveBeenCalledWith(appUrn, undefined);
     // A backup was taken, so the snapshot covers the installed files only.
     expect(dockerService.createPreUpdateVolumeSnapshot).toHaveBeenCalledWith(appUrn, { includeData: false });
     expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'pull');
@@ -151,7 +151,7 @@ describe('UpdateAppCommand', () => {
     const result = await command.execute(appUrn, {});
 
     expect(result.success).toBe(false);
-    expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz');
+    expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz', undefined);
     expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'down --remove-orphans');
     expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'up --detach --force-recreate --remove-orphans');
   });
@@ -413,7 +413,7 @@ describe('UpdateAppCommand', () => {
       expect(backupManager.assertBackupPossible.mock.invocationCallOrder[0]).toBeLessThan(
         dockerService.composeApp.mock.invocationCallOrder[stop] as number,
       );
-      expect(backupManager.backupApp).toHaveBeenCalledWith(appUrn);
+      expect(backupManager.backupApp).toHaveBeenCalledWith(appUrn, undefined);
     });
 
     it('stops nothing when the backup cannot be made (the helper for unreadable data cannot run)', async () => {
@@ -588,7 +588,7 @@ describe('UpdateAppCommand', () => {
       const result = await command.execute(appUrn, {});
 
       expect(result).toMatchObject({ success: false, rolledBack: true });
-      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz');
+      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz', undefined);
     });
 
     it('keeps the snapshot, and says it could not roll back, when the backup cannot be restored', async () => {
@@ -739,7 +739,7 @@ describe('UpdateAppCommand', () => {
 
     beforeEach(() => {
       controller = new AbortController();
-      ctx = { signal: controller.signal, setPhase: vi.fn(), deadline: new OperationDeadline(Date.now() + 45 * MIN) };
+      ctx = { signal: controller.signal, setPhase: vi.fn(), deadline: AppCommandDeadline.after(40 * MIN) };
     });
 
     it('shows each step of the update on the app page and tells the registry what a cancel may do', async () => {
@@ -759,8 +759,8 @@ describe('UpdateAppCommand', () => {
 
       const result = await command.execute(appUrn, {}, ctx);
 
-      expect(result).toMatchObject({ success: false, cancelled: true, rolledBack: true, cancelledStatus: 'running' });
-      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz');
+      expect(result).toMatchObject({ success: false, cancelled: true, rolledBack: true });
+      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz', ctx.deadline);
       expect(dockerService.composeApp).toHaveBeenLastCalledWith(appUrn, 'up --detach --force-recreate --remove-orphans');
       expect(phasesShown().at(-1)).toBe('rolling_back');
     });
@@ -773,7 +773,7 @@ describe('UpdateAppCommand', () => {
 
       const result = await command.execute(appUrn, {}, ctx);
 
-      expect(result).toMatchObject({ success: false, cancelled: true, rolledBack: true, cancelledStatus: 'running' });
+      expect(result).toMatchObject({ success: false, cancelled: true, rolledBack: true });
       expect(dockerService.composeApp).not.toHaveBeenCalled();
       expect(backupManager.backupApp).not.toHaveBeenCalled();
       expect(phasesShown()).not.toContain('rolling_back');
@@ -792,7 +792,7 @@ describe('UpdateAppCommand', () => {
 
       const result = await command.execute(appUrn, {}, ctx);
 
-      expect(result).toMatchObject({ cancelled: true, rolledBack: true, cancelledStatus: 'running' });
+      expect(result).toMatchObject({ cancelled: true, rolledBack: true });
       expect(marketplaceService.copyAppFromRepoToInstalled).toHaveBeenCalled();
       expect(dockerService.composeApp).not.toHaveBeenCalledWith(appUrn, 'pull');
       expect(dockerService.verifyContainerHealthProbe).not.toHaveBeenCalled();
@@ -802,8 +802,8 @@ describe('UpdateAppCommand', () => {
     });
 
     it('gives the pull and the health wait only the time the update has left before its rollback reserve', async () => {
-      const endsAt = Date.now() + 30 * MIN;
-      ctx.deadline = new OperationDeadline(endsAt);
+      ctx.deadline = AppCommandDeadline.after(30 * MIN);
+      const { endsAt } = ctx.deadline;
 
       await command.execute(appUrn, {}, ctx);
 
@@ -818,8 +818,42 @@ describe('UpdateAppCommand', () => {
       );
     });
 
+    // backupApp and restoreApp each started a fresh 40-minute budget of their own, so a rollback
+    // restore could run on to about minute 75 while the page already showed the update as failed.
+    it("gives the backup the update's work time, ending before the rollback reserve", async () => {
+      await command.execute(appUrn, {}, ctx);
+
+      const [, backupDeadline] = backupManager.backupApp.mock.calls[0] ?? [];
+      expect(backupDeadline?.endsAt).toBe((ctx.deadline?.endsAt ?? 0) - 10 * MIN);
+    });
+
+    it('gives the rollback restore only the time left until the reply is due', async () => {
+      dockerService.verifyContainerHealthProbe.mockResolvedValue({ ok: false, healthy: false, containers: [], message: 'unhealthy' });
+
+      await command.execute(appUrn, {}, ctx);
+
+      const [, file, restoreDeadline] = backupManager.restoreApp.mock.calls[0] ?? [];
+      expect(file).toBe('test-app-backup.tar.gz');
+      expect(restoreDeadline).toBe(ctx.deadline);
+      expect(restoreDeadline?.remainingMs()).toBeLessThanOrEqual(40 * MIN);
+    });
+
+    it('gives the root delete of a snapshot rollback the same deadline', async () => {
+      command = new UpdateAppCommand(moduleRef, docker, false);
+      (command as any).assertMarketplaceEntitlement = vi.fn().mockResolvedValue(undefined);
+      (command as any).ensureAppDir = vi.fn().mockResolvedValue(undefined);
+      filesystem.pathExists.mockResolvedValue(true);
+      filesystem.removeDirectoryDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
+      dockerService.removeAppDataDirAsRoot.mockResolvedValue(true);
+      dockerService.verifyContainerHealthProbe.mockResolvedValue({ ok: false, healthy: false, containers: [], message: 'unhealthy' });
+
+      await command.execute(appUrn, {}, ctx);
+
+      expect(dockerService.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn, ctx.deadline);
+    });
+
     it('does not start an update that waited in the queue until too little of its time was left', async () => {
-      ctx.deadline = new OperationDeadline(Date.now() + 12 * MIN);
+      ctx.deadline = AppCommandDeadline.after(12 * MIN);
 
       const result = await command.execute(appUrn, {}, ctx);
 
@@ -844,7 +878,7 @@ describe('UpdateAppCommand', () => {
 
       const result = await command.execute(appUrn, {}, ctx);
 
-      expect(result).toMatchObject({ success: false, cancelled: true, rolledBack: true, cancelledStatus: 'stopped' });
+      expect(result).toMatchObject({ success: false, cancelled: true, rolledBack: true });
       expect(filesystem.copyDirectory).toHaveBeenCalledWith('/data/snapshots/test-app/snap-1/app-files', '/data/installed/test-app');
       expect(phasesShown()).not.toContain('finalizing');
     });
@@ -857,15 +891,15 @@ describe('UpdateAppCommand', () => {
 
       const result = await command.execute(appUrn, {}, ctx);
 
-      expect(result).toMatchObject({ success: false, cancelled: true, rolledBack: true, cancelledStatus: 'running' });
-      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz');
+      expect(result).toMatchObject({ success: false, cancelled: true, rolledBack: true });
+      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz', ctx.deadline);
       expect(phasesShown()).not.toContain('finalizing');
     });
 
     it('rolls back when the time runs out during the backup', async () => {
-      ctx.deadline = new OperationDeadline(Date.now() + 20 * MIN);
+      ctx.deadline = AppCommandDeadline.after(20 * MIN);
       backupManager.backupApp.mockImplementation(async () => {
-        ctx.deadline = new OperationDeadline(Date.now() + 9 * MIN);
+        ctx.deadline = AppCommandDeadline.after(9 * MIN);
         return { filename: 'test-app-backup.tar.gz' } as any;
       });
 

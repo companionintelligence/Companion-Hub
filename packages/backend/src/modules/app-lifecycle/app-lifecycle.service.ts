@@ -1,3 +1,4 @@
+import { AppCommandDeadline, appEventsQueueTimeoutMs } from '@/common/helpers/app-command-deadline';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import messages from '@ci-hub/common/i18n/translations/en.json';
@@ -27,10 +28,9 @@ import { ImageSizeService } from '../marketplace/image-size.service';
 import { ReposHelpers } from '../app-stores/repos.helpers';
 import { AppStoreService } from '../app-stores/app-store.service';
 import { AppEventsQueue, appEventResultSchema, appEventSchema } from '../queue/entities/app-events';
-import { QUEUE_UNAVAILABLE_CODE, appEventsRpcTimeoutMs } from '../queue/queue.constants';
+import { QUEUE_UNAVAILABLE_CODE } from '../queue/queue.constants';
 import { AppLifecycleCommandFactory } from './app-lifecycle-command.factory';
 import { AppOperationRegistry, type CancellabilityTier, type OperationCommand, type PreparingInstall } from './app-operation-registry';
-import { OperationDeadline } from './operation-deadline';
 import type { AppStatus, LifecycleJob } from '@/core/database/drizzle/types';
 import { LifecycleJobService } from './lifecycle-job.service';
 import { toAppCommandFailureResult } from './commands/app-lifecycle-errors';
@@ -389,7 +389,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     @Optional() private readonly errorReportingService?: ErrorReportingService,
     @Optional() private readonly lifecycleJobService?: LifecycleJobService,
   ) {
-    this.appEventsReplyTimeoutMs = appEventsRpcTimeoutMs(this.config.get('userSettings')?.eventsTimeout ?? 0);
+    this.appEventsReplyTimeoutMs = appEventsQueueTimeoutMs(this.config.get('userSettings')?.eventsTimeout);
     this.logger.debug('Subscribing to app events...');
     this.appEventsQueue.onEvent((data, reply) => this.invokeCommand(data, reply));
   }
@@ -683,7 +683,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
               }
             },
             // The publisher's wait started when the entry was registered, just before the publish.
-            deadline: new OperationDeadline(entry.createdAt + this.appEventsReplyTimeoutMs),
+            deadline: AppCommandDeadline.untilReply(entry.createdAt, this.appEventsReplyTimeoutMs),
           }
         : undefined;
 
@@ -772,7 +772,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     message?: z.output<typeof appEventSchema>,
   ) {
     if (command === 'update') {
-      await this.finalizeCancelledUpdate(appUrn, result, message && 'wasRunning' in message ? message.wasRunning : true);
+      await this.finalizeCancelledUpdate(appUrn, result, message?.command === 'update' ? message : undefined);
       return;
     }
 
@@ -801,13 +801,22 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * its claim on the operation is gone once the worker clears it, so the app would stay `updating`. The command reports where the app landed (`cancelledStatus`); a cancel that arrived
    * while the update was still queued changed nothing, so the app is back as it was.
    */
-  private async finalizeCancelledUpdate(appUrn: AppUrn, result: z.output<typeof appEventResultSchema>, wasRunning: boolean) {
+  private async finalizeCancelledUpdate(
+    appUrn: AppUrn,
+    result: z.output<typeof appEventResultSchema>,
+    message: Extract<z.output<typeof appEventSchema>, { command: 'update' }> | undefined,
+  ) {
     const app = await this.appRepository.getAppByUrn(appUrn).catch(() => null);
     if (!app) {
       return;
     }
 
-    const status = (result.cancelledStatus as AppStatus | undefined) ?? (wasRunning ? 'running' : 'stopped');
+    // Where a failed update leaves the app (see `updateApp`): back to the status it had when the
+    // previous version is back, or when nothing had changed yet (a cancel while it was queued), and
+    // stopped when the previous version could not be put back after running.
+    const wasRunning = message?.wasRunning ?? true;
+    const before = (message?.statusBeforeUpdate as AppStatus | undefined) ?? (wasRunning ? 'running' : 'stopped');
+    const status: AppStatus = result.rolledBack === false && wasRunning ? 'stopped' : before;
     if (!(await this.appRepository.updateAppByIdIfStatus(app.id, 'updating', { status }))) {
       return;
     }
@@ -2808,6 +2817,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         command: 'update',
         appUrn,
         requestId,
+        statusBeforeUpdate: appStatusBeforeUpdate,
         form: app.config,
         performBackup,
         wasRunning: !STATUSES_MEANING_NOT_RUNNING.has(appStatusBeforeUpdate),

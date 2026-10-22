@@ -1,3 +1,4 @@
+import { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import { HUB_ACTIONS, type HubAction } from '@/core/portal/hub-actions';
 import type { ActorCheckContext, LifecycleActor } from '@/core/portal/lifecycle-actor';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
@@ -6272,6 +6273,15 @@ describe('AppLifecycleService', () => {
       expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_success', appStatus: 'stopped' }));
     });
 
+    it('updateApp tells the command the status the app had, for a cancel to put it back on', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, status: 'restarting' } as any);
+
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'update', statusBeforeUpdate: 'restarting' }));
+    });
+
     it('updateApp leaves a cancelled update to the worker, which settled it', async () => {
       appEventsQueue.publish.mockResolvedValue({
         success: false,
@@ -6640,7 +6650,7 @@ describe('AppLifecycleService', () => {
       expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'update_cancelled', appUrn, appStatus: 'running' });
     });
 
-    it('gives the command a deadline that ends when the publisher stops waiting for its reply', async () => {
+    it('gives the command a deadline that ends five minutes before the publisher stops waiting for its reply', async () => {
       const entry = operationRegistry.register(appUrn, { requestId, command: 'update', tier: 'before_ponr' });
       const execute = vi.fn().mockResolvedValue({ success: true, message: 'ok' });
       commandFactory.createCommand.mockReturnValue({ execute } as any);
@@ -6648,9 +6658,34 @@ describe('AppLifecycleService', () => {
       await service.invokeCommand(update, vi.fn());
 
       const ctx = execute.mock.calls[0]?.[2];
-      // No events timeout configured here: the app events queue waits the 45 minutes an image pull may take.
-      expect(ctx?.deadline?.endsAt).toBe(entry.createdAt + 45 * 60_000);
+      // No events timeout configured here: the app events queue waits the 45 minutes an image pull may
+      // take, counted from when the update was queued. The reply needs the last five.
+      expect(ctx?.deadline).toBeInstanceOf(AppCommandDeadline);
+      expect(ctx?.deadline?.endsAt).toBe(entry.createdAt + 40 * 60_000);
       expect(ctx?.signal).toBe(entry.abortController.signal);
+    });
+
+    // A failed update that put the previous version back leaves the app on the status it had (see
+    // updateApp); a cancelled one lands on the same.
+    it('puts a rolled-back app back on the status it had before the update', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'update', tier: 'before_ponr' });
+      const execute = vi.fn().mockResolvedValue({ success: false, cancelled: true, rolledBack: true, message: 'cancelled' });
+      commandFactory.createCommand.mockReturnValue({ execute } as any);
+
+      await service.invokeCommand({ ...update, statusBeforeUpdate: 'restarting' }, vi.fn());
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(9, 'updating', { status: 'restarting' });
+      expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'update_cancelled', appUrn, appStatus: 'restarting' });
+    });
+
+    it('leaves a stopped app stopped when its cancelled update could not be put back', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'update', tier: 'before_ponr' });
+      const execute = vi.fn().mockResolvedValue({ success: false, cancelled: true, rolledBack: false, message: 'could not be put back' });
+      commandFactory.createCommand.mockReturnValue({ execute } as any);
+
+      await service.invokeCommand({ ...update, wasRunning: false, statusBeforeUpdate: 'stopped' }, vi.fn());
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(9, 'updating', { status: 'stopped' });
     });
   });
 

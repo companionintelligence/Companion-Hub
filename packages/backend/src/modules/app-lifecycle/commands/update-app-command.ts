@@ -1,4 +1,5 @@
 import { DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES } from '@/common/constants';
+import type { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { mergeArchitectureOverrides } from '@/common/helpers/compose-helpers';
@@ -62,9 +63,16 @@ export class UpdateAppCommand extends AppLifecycleCommand {
     super(moduleRef, docker);
   }
 
+  /**
+   * The update's one time limit (`CommandExecutionContext.deadline`), kept for the rollback: its
+   * restore and the root helpers under it must end before the reply is due like everything else.
+   */
+  private deadline: AppCommandDeadline | undefined;
+
   public async execute(appUrn: AppUrn, form: AppEventFormInput, ctx?: CommandExecutionContext) {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
     const sseService = this.moduleRef.get(SSEService, { strict: false });
+    this.deadline = ctx?.deadline;
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
     const dockerService = this.moduleRef.get(DockerService, { strict: false });
     const marketplaceService = this.moduleRef.get(MarketplaceService, { strict: false });
@@ -100,8 +108,9 @@ export class UpdateAppCommand extends AppLifecycleCommand {
     };
 
     // ⚠ ONE DEADLINE FOR THE WHOLE UPDATE. The service waits for the reply for a fixed time from when
-    // it queued the update (`OperationDeadline`). The update's own work, the pull and the health wait
-    // included, ends `UPDATE_ROLLBACK_RESERVE_MS` before it, so a rollback still fits.
+    // it queued the update (`AppCommandDeadline.untilReply`). The update's own work, the pull, the
+    // backup and the health wait included, ends `UPDATE_ROLLBACK_RESERVE_MS` before that deadline, so
+    // a rollback still fits. The rollback's restore gets what is left of it.
     const workEndsAt = ctx?.deadline ? ctx.deadline.endsAt - UPDATE_ROLLBACK_RESERVE_MS : undefined;
     const workLeftMs = () => ctx?.deadline?.remainingBeforeMs(UPDATE_ROLLBACK_RESERVE_MS) ?? Number.POSITIVE_INFINITY;
 
@@ -148,7 +157,8 @@ export class UpdateAppCommand extends AppLifecycleCommand {
         stoppedForBackup = true;
         report('backing_up');
         await dockerService.composeApp(appUrn, 'stop');
-        const backupRes = await backupManager.backupApp(appUrn);
+        // The backup's root helpers get the update's work time, not a fresh budget of their own.
+        const backupRes = await backupManager.backupApp(appUrn, ctx?.deadline?.withReserve(UPDATE_ROLLBACK_RESERVE_MS));
         backupFile = backupRes?.filename;
         await this.applyBackupRetention(appUrn);
       }
@@ -265,7 +275,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       }
 
       if (cancelled) {
-        // Settled by the worker, which reads where the app landed from `cancelledStatus`.
+        // Settled by the worker (`finalizeCancelledUpdate`), which knows the status the app had before.
         logger.info(
           `${err instanceof Error ? err.message : `The update of ${appUrn} was cancelled`}; ${rolledBack ? 'the previous version is back' : 'the previous version could NOT be put back'}`,
         );
@@ -273,7 +283,6 @@ export class UpdateAppCommand extends AppLifecycleCommand {
           success: false,
           cancelled: true,
           rolledBack,
-          cancelledStatus: rolledBack && this.wasRunning ? 'running' : 'stopped',
           message: rolledBack
             ? `Update of ${appUrn} cancelled; the previous version is back`
             : `Update of ${appUrn} cancelled, but the previous version could not be put back. See the Hub logs.`,
@@ -322,7 +331,9 @@ export class UpdateAppCommand extends AppLifecycleCommand {
 
       if (state.backupFile) {
         try {
-          await backupManager.restoreApp(appUrn, state.backupFile);
+          // Until the reply is due, not a fresh budget: a restore that outlasted it went on writing data
+          // after the page had already shown the update as failed.
+          await backupManager.restoreApp(appUrn, state.backupFile, this.deadline);
           restored = true;
           logger.info(`Restored ${appUrn} app files and data from backup ${state.backupFile}`);
         } catch (restoreErr) {
@@ -370,7 +381,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
           // user (Uptime Kuma runs as root) it cannot delete: those go through the root helper. A copy
           // over data that is still there would mix the two versions, so it waits for the delete.
           const dockerService = this.moduleRef.get(DockerService, { strict: false });
-          const removed = await removeAppDataDirWithRootFallback({ filesystem, docker: dockerService, logger }, appUrn, appDataDir);
+          const removed = await removeAppDataDirWithRootFallback({ filesystem, docker: dockerService, logger }, appUrn, appDataDir, this.deadline);
           const copied = removed && (await filesystem.copyDirectory(snapshot.snapshotPath, appDataDir));
           ok = ok && removed && copied !== false;
         }

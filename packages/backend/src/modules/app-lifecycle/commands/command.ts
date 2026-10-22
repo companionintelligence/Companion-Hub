@@ -1,3 +1,4 @@
+import type { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import { MarketplaceEntitlementService } from '@/core/portal/marketplace-entitlement.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -5,7 +6,6 @@ import type { ModuleRef } from '@nestjs/core';
 import Dockerode from 'dockerode';
 import type { AppCommandFailureResult } from './app-lifecycle-errors';
 import type { OperationPhase } from '../app-operation-registry';
-import type { OperationDeadline } from '../operation-deadline';
 import { prepareAppComposeDir } from './compose-preparation';
 import { reportAndTranslateAppError } from './failure-reporting';
 import { assertHostDevicesAvailable } from './host-device-preflight';
@@ -25,8 +25,12 @@ export interface CommandExecutionContext {
   jobId?: string;
   /** Report progress percentage to durable job tracking. */
   updateProgress?(percent: number): Promise<void>;
-  /** When the operation's reply is due; a long command fits its steps inside it. */
-  deadline?: OperationDeadline;
+  /**
+   * The one time limit for the whole command, counted from when it was queued
+   * (`AppCommandDeadline.untilReply`). A long command fits every step inside it, the root helpers
+   * of a backup or restore included.
+   */
+  deadline?: AppCommandDeadline;
 }
 
 /**
