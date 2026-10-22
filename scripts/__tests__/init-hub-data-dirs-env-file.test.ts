@@ -18,6 +18,7 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, execSync: vi.fn(() => 'docker:x:981:someone\n') };
 });
 vi.mock('../heal-hub-bind-mounts', () => ({
+  dockerBindMountPath: (hostPath: string) => hostPath,
   dockerSocketIsRootOnlyInsideContainers: () => docker.socketRootOnly,
   ensureHubBindMountsWritable: () => ({ uid: 1000, gid: 1000, source: 'test' }),
   isDockerAvailable: () => false,
@@ -26,7 +27,8 @@ vi.mock('../heal-hub-bind-mounts', () => ({
   resolveHostDockerSocketPath: () => '/var/run/docker.sock',
 }));
 
-const { initHubDataDirs } = await import('../init-hub-data-dirs');
+const { DESKTOP_APP_ENV_FILE_MARKER, initHubDataDirs } = await import('../init-hub-data-dirs');
+const { renderApplianceEnvContent } = await import('../lib/seed-appliance');
 
 const uid = process.getuid?.() ?? 1000;
 const gid = process.getgid?.() ?? 1000;
@@ -108,11 +110,74 @@ describe('initHubDataDirs on an appliance env file', () => {
   it('keeps a uid the desktop app pinned when the socket is root-only and pins 0:0 only where none is set', () => {
     // A non-zero uid, so overwriting it with the 0 this branch would pin cannot pass as keeping it.
     docker.socketRootOnly = true;
-    const envPath = writeEnv('.env.dev', `ROOT_FOLDER_HOST=${dir}\nCI_HUB_CONTAINER_UID=501\n`);
+    const original = `${DESKTOP_APP_ENV_FILE_MARKER}\nROOT_FOLDER_HOST=${dir}\nCI_HUB_CONTAINER_UID=501\n`;
+    const envPath = writeEnv('.env.dev', original);
 
     initHubDataDirs({ appliance: true });
 
-    expect(readFileSync(envPath, 'utf-8')).toBe(`ROOT_FOLDER_HOST=${dir}\nCI_HUB_CONTAINER_UID=501\nCI_HUB_CONTAINER_GID=0\n`);
+    expect(readFileSync(envPath, 'utf-8')).toBe(`${original}CI_HUB_CONTAINER_GID=0\n`);
+  });
+
+  it("keeps the desktop app's DOCKER_GID even when it differs from the one cihub would compute", () => {
+    const original = desktopEnv(dir).replace('DOCKER_GID=981', 'DOCKER_GID=975');
+    const envPath = writeEnv('.env.dev', original);
+
+    initHubDataDirs({ appliance: true });
+
+    expect(readFileSync(envPath, 'utf-8')).toBe(original);
+  });
+});
+
+/**
+ * A file `cihub up` seeded on a headless node. No desktop app recomputes anything in it, so the keys
+ * cihub computes itself have to be refreshed by cihub, or a docker group that changed after the seed
+ * leaves the Hub without the Docker socket.
+ */
+describe('initHubDataDirs on an env file cihub seeded', () => {
+  const seeded = (dockerGid: string, extra = '') =>
+    `# Preserved (generated once, survive upgrades)\nROOT_FOLDER_HOST=${dir}\nPOSTGRES_PASSWORD=pg\n\n# Derived (recomputed for this CLI seed)\nENV_FILE=.env.dev\nDOCKER_GID=${dockerGid}\n${extra}`;
+
+  it('refreshes a stale DOCKER_GID and leaves ENV_FILE and every other line alone', () => {
+    const envPath = writeEnv('.env.dev', seeded('973'));
+
+    initHubDataDirs({ appliance: true });
+
+    expect(readFileSync(envPath, 'utf-8')).toBe(seeded('981'));
+  });
+
+  it('unpins a uid and gid equal to the current user, as in a checkout: no desktop app wrote them', () => {
+    const envPath = writeEnv('.env.dev', seeded('981', `CI_HUB_CONTAINER_UID=${uid}\nCI_HUB_CONTAINER_GID=${gid}\n`));
+
+    initHubDataDirs({ appliance: true });
+
+    expect(readFileSync(envPath, 'utf-8')).toBe(seeded('981'));
+  });
+
+  it('pins 0:0 over a seeded uid when the socket is root-only', () => {
+    docker.socketRootOnly = true;
+    const envPath = writeEnv('.env.dev', seeded('981', 'CI_HUB_CONTAINER_UID=501\n'));
+
+    initHubDataDirs({ appliance: true });
+
+    expect(readFileSync(envPath, 'utf-8')).toBe(seeded('981', 'CI_HUB_CONTAINER_UID=0\nCI_HUB_CONTAINER_GID=0\n'));
+  });
+});
+
+describe('telling the two writers apart', () => {
+  it("matches the line the desktop app's render writes but not the seed's", () => {
+    // Read from the Rust source so a reworded header there fails here instead of making every desktop
+    // file look seeded, which would let cihub overwrite the app's keys again.
+    const rust = readFileSync(path.resolve(import.meta.dirname, '../../packages/desktop/src-tauri/src/hub_manager/runtime_env.rs'), 'utf-8');
+    expect(rust).toContain(DESKTOP_APP_ENV_FILE_MARKER);
+    const seed = renderApplianceEnvContent({
+      dataDir: dir,
+      postgresPassword: 'pg',
+      jwtSecret: 'jwt',
+      rabbitmqPassword: 'mq',
+      hubImage: 'ghcr.io/companionintelligence/ci-hub:0.3.6',
+      hubVersion: '0.3.6',
+    });
+    expect(seed.split('\n')).not.toContain(DESKTOP_APP_ENV_FILE_MARKER);
   });
 });
 

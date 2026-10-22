@@ -39,7 +39,7 @@ vi.mock('../lib/fleet-cihub-binary.js', async (importOriginal) => ({
   sha256File: () => 'deadbeef',
 }));
 
-import type { CihubBinarySource } from '../lib/fleet-cihub-binary.js';
+import { type CihubBinarySource, GitHubRequestError } from '../lib/fleet-cihub-binary.js';
 import { type InstallOptions, installNode } from '../lib/fleet-install.js';
 
 const linuxFacts = {
@@ -166,6 +166,32 @@ describe('installNode with nothing comparable on offer', () => {
     expect(install?.detail).toContain('0.2.36 is older than 0.2.72; replacing it');
     expect(mocks.sshStreamFile.mock.calls[0]?.[2]).toBe('/home/op/cihub-linux-x64');
     expect(mocks.downloadReleaseAsset).not.toHaveBeenCalled();
+  });
+
+  it("says on the install line whether the download matched GitHub's published sha256", async () => {
+    nodeHas(undefined, '');
+    mocks.downloadReleaseAsset.mockResolvedValue({ path: '/tmp/v0.2.72-cihub-linux-x64', tag: 'v0.2.72', sha256: 'deadbeef', digest: 'matched' });
+    const matched = await installNode(node, { ...base, cihubBinary: release }, 'ci');
+    expect(matched.steps.find((s) => s.name === 'install cihub')?.detail).toBe(
+      'cihub-installed v0.2.72; its sha256 matches the one GitHub publishes for the asset',
+    );
+
+    mocks.downloadReleaseAsset.mockResolvedValue({
+      path: '/tmp/v0.2.72-cihub-linux-x64',
+      tag: 'v0.2.72',
+      sha256: 'deadbeef',
+      digest: 'not-published',
+    });
+    const unpublished = await installNode(node, { ...base, cihubBinary: release }, 'ci');
+    expect(unpublished.steps.find((s) => s.name === 'install cihub')?.detail).toContain('GitHub publishes no sha256 for this asset');
+  });
+
+  it('answers a rate-limited download with the limit, not with "run it again"', async () => {
+    nodeHas('0.2.36');
+    mocks.downloadReleaseAsset.mockRejectedValue(new GitHubRequestError('GitHub release lookup failed: HTTP 403', 403));
+    const report = await installNode(node, { ...base, cihubBinary: { kind: 'release', version: 'v0.2.72' } }, 'ci');
+    const install = report.steps.find((s) => s.name === 'install cihub');
+    expect(install?.detail).toMatch(/60 API requests an hour without a token: wait for the limit to reset/);
   });
 
   it('installs on a node with no cihub at all, without a compare to report', async () => {

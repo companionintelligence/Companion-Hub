@@ -290,7 +290,7 @@ cihub config [env]                                   # show resolved config valu
 ```
 
 - `--detached` runs the stack in the background (equivalent to `docker compose up -d`). Outside a CI-Hub checkout (the `cihub` a desktop install or a standalone binary puts on PATH), `up`, `restart` and `recreate` run detached unless you pass `--attached`. In a checkout they pick the mode `up` would: `dev` runs detached, other environments stay attached unless you pass `--detached`. In 0.3.6 and earlier, `restart` and `recreate` stayed attached in both places, `restart dev` in a checkout included. Attached, the command stays on `docker compose up`. Ctrl+C or a signal to it then makes Compose stop the containers, `cloudflared` included.
-- Outside a checkout, `up` and `restart` leave the keys the desktop app writes in the data dir's env file alone (`DOCKER_GID`, `CI_HUB_CONTAINER_UID`, `CI_HUB_CONTAINER_GID`) and add only the ones that are missing. Both env files there hold `JWT_SECRET`, `POSTGRES_PASSWORD` and `RABBITMQ_PASSWORD`. `cihub` restricts them to `0600` before it starts the stack. It leaves the mode alone when `CI_HUB_CONTAINER_UID` pins the Hub to a non-root uid other than the file's owner, since the Hub then reads the file as that uid.
+- Outside a checkout, `up` and `restart` leave the keys the desktop app writes in the data dir's env file alone (`DOCKER_GID`, `CI_HUB_CONTAINER_UID`, `CI_HUB_CONTAINER_GID`) and add only the ones that are missing. That is a file the desktop app wrote, whose header reads `# Derived (recomputed every launch from the current binary)`. In a file `cihub up` seeded on a headless node no app recomputes anything, so `cihub` refreshes the keys it computes itself: `DOCKER_GID` from the host's docker group plus the `0` uid and gid it pins under Docker Desktop. Both env files there hold `JWT_SECRET`, `POSTGRES_PASSWORD` and `RABBITMQ_PASSWORD`. `cihub` restricts them to `0600` before it starts the stack. It leaves the mode alone when `CI_HUB_CONTAINER_UID` pins the Hub to a non-root uid other than the file's owner, since the Hub then reads the file as that uid.
 - Before it starts the stack, `cihub up` checks the Docker versions the stack file needs. If Docker Compose is older than 2.33, which can't read the file, it stops and names the version it found. If Docker Engine is older than 28, which ignores the file's network priority, it warns that the Hub, Traefik, and the Tailscale helper may use the wrong network for internet and host traffic, and starts anyway. If it can't read a version, it says so and starts anyway. `restart` and `recreate` run the same check when they start the stack again. `cihub up local` (source dev) isn't checked.
 - After a reset (no `~/.local/share/companion-hub` seed), `cihub up prod` prompts interactively for a database password and writes a fresh install. Set `POSTGRES_PASSWORD` (or `CIHUB_POSTGRES_PASSWORD`) to skip the prompt.
 - The fresh install pins `CI_HUB_IMAGE` from exactly one of these, in order, and prints which:
@@ -400,6 +400,10 @@ It refuses, with the right command instead, when:
 It needs no GitHub token: the repository and its release assets are public. When `GH_TOKEN` or
 `GITHUB_TOKEN` is set it is sent along, which raises GitHub's limit of 60 unauthenticated API
 requests an hour.
+
+The download is checked against the sha256 GitHub publishes for the asset (the release API's
+`digest`) and refused when it differs. An asset GitHub publishes no digest for is still installed,
+and the completion box says only TLS vouched for it.
 
 Before anything is replaced, the downloaded asset is staged beside the target on the same
 filesystem, run once to make it identify itself, and checked against the version that was asked for.
@@ -1591,7 +1595,9 @@ ran `register` against 0.2.70 and 0.2.61 Hubs, and both codes were spent.
 
 The **`cihub` binary** comes from this machine, not from the node. The run fetches the release
 asset here (once per architecture, verified to be an ELF binary) and streams it down the SSH session
-it already holds. Or pass `--cihub-binary <path>` to a `cihub-linux-x64` /
+it already holds. The asset is checked against the sha256 GitHub publishes for it and refused when it
+differs. When GitHub publishes none it is installed anyway. The node's `install cihub` line then says
+only TLS vouched for it. Or pass `--cihub-binary <path>` to a `cihub-linux-x64` /
 `cihub-linux-arm64` asset already on disk. `--cihub-version <tag>` pins which release it fetches
 (default `latest`). No GitHub token is needed: the repository and its release assets have been
 public since 2026-09-30. A `GH_TOKEN` or `GITHUB_TOKEN` in this machine's environment is still sent

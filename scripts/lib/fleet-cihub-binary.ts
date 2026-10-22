@@ -16,6 +16,9 @@ import path from 'node:path';
 
 export const CIHUB_RELEASES_REPO = 'companionintelligence/CI-Hub';
 
+/** Where a person downloads a release asset by hand. */
+export const CIHUB_RELEASES_PAGE = 'https://github.com/companionintelligence/Companion-Hub/releases';
+
 /** Env vars an operator machine may already carry a GitHub token in — `gh` and Actions both set one. */
 export const GITHUB_TOKEN_ENV_VARS = ['GH_TOKEN', 'GITHUB_TOKEN'] as const;
 
@@ -142,6 +145,27 @@ export interface ReleaseAsset {
   name: string;
   url: string;
   size?: number;
+  /** `sha256:<hex>`, the digest GitHub computed when the asset was uploaded. Null or absent on older assets. */
+  digest?: string | null;
+}
+
+/**
+ * Whether a downloaded asset was held to the digest GitHub publishes for it. `not-published` means
+ * GitHub has none in a form cihub reads (only `sha256:<hex>`), so TLS is all that vouches for the bytes.
+ */
+export type AssetDigestCheck = 'matched' | 'not-published';
+
+/** The sha256 GitHub publishes for an asset, as lower-case hex, or undefined when there is none. */
+export function publishedSha256(asset: Pick<ReleaseAsset, 'digest'>): string | undefined {
+  const match = /^sha256:([0-9a-f]{64})$/i.exec(asset.digest?.trim() ?? '');
+  return match?.[1]?.toLowerCase();
+}
+
+/** One line for the operator: what the digest check found. */
+export function describeAssetDigestCheck(check: AssetDigestCheck): string {
+  return check === 'matched'
+    ? 'its sha256 matches the one GitHub publishes for the asset'
+    : 'GitHub publishes no sha256 for this asset, so only TLS vouches for the download';
 }
 
 export interface ReleaseInfo {
@@ -155,6 +179,45 @@ const githubHeaders = (token?: string) => ({
   'X-GitHub-Api-Version': '2022-11-28',
   'User-Agent': 'cihub-fleet',
 });
+
+/** A GitHub request that answered with an error status, kept so callers can say what to do about it. */
+export class GitHubRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = 'GitHubRequestError';
+  }
+}
+
+/**
+ * What to do after a release lookup or asset download failed. A rate limit is not a missing release:
+ * "check the release exists" sent the operator looking for a tag that was there all along.
+ * `fallback` is the way round GitHub (fleet install takes a file on disk) and `versionFlag` the flag
+ * that names a release, both for the command that failed.
+ */
+export function releaseFailureFix(
+  error: unknown,
+  token: string | undefined,
+  options: { fallback: string; versionFlag: string } = {
+    fallback: 'pass --cihub-binary <path> to a cihub-linux-x64 / cihub-linux-arm64 asset on disk',
+    versionFlag: '--cihub-version',
+  },
+): string {
+  const { fallback, versionFlag } = options;
+  const status = error instanceof GitHubRequestError ? error.status : undefined;
+  if (status === 403 || status === 429) {
+    return token
+      ? `GitHub is rate-limiting the token in GH_TOKEN or GITHUB_TOKEN: wait for the limit to reset and run it again, or ${fallback}.`
+      : `GitHub allows 60 API requests an hour without a token: wait for the limit to reset, or set GH_TOKEN or GITHUB_TOKEN and run it again, or ${fallback}.`;
+  }
+  if (status === 401) return `Fix GH_TOKEN or GITHUB_TOKEN, or unset it since none is needed, or ${fallback}.`;
+  if (status === 404) return `Check the release exists (${versionFlag}), or ${fallback}.`;
+  // fetch rejects with a TypeError when no answer came back at all (DNS, a refused connection, TLS).
+  if (error instanceof TypeError) return `Check this machine can reach api.github.com and run it again, or ${fallback}.`;
+  return `Run it again, or ${fallback}.`;
+}
 
 /** What a refused GitHub API request most likely means, appended to its error. */
 function githubStatusHint(status: number, token: string | undefined): string {
@@ -183,8 +246,9 @@ export async function lookupRelease(input: { token?: string; version: string; fe
       : `https://api.github.com/repos/${CIHUB_RELEASES_REPO}/releases/tags/${input.version.startsWith('v') ? input.version : `v${input.version}`}`;
   const releaseRes = await fetchImpl(releaseUrl, { headers: { ...githubHeaders(input.token), Accept: 'application/vnd.github+json' } });
   if (!releaseRes.ok) {
-    throw new Error(
+    throw new GitHubRequestError(
       `GitHub release lookup failed: HTTP ${releaseRes.status} for ${releaseUrl}${releaseLookupHint(releaseRes.status, input.token, input.version)}`,
+      releaseRes.status,
     );
   }
   return (await releaseRes.json()) as ReleaseInfo;
@@ -210,7 +274,7 @@ export async function pinCihubReleaseSource(source: CihubBinarySource, fetchImpl
     return {
       kind: 'unavailable',
       why: error instanceof Error ? error.message : String(error),
-      fix: ['Check the release exists (--cihub-version), or pass --cihub-binary <path> to a cihub-linux-x64 / cihub-linux-arm64 asset on disk.'],
+      fix: [releaseFailureFix(error, source.token)],
     };
   }
 }
@@ -248,7 +312,7 @@ export async function downloadReleaseAsset(input: {
   version: string;
   cacheDir?: string;
   fetchImpl?: typeof fetch;
-}): Promise<{ path: string; tag: string; sha256: string }> {
+}): Promise<{ path: string; tag: string; sha256: string; digest: AssetDigestCheck }> {
   const fetchImpl = input.fetchImpl ?? fetch;
   const headers = githubHeaders(input.token);
   const release = await lookupRelease({ token: input.token, version: input.version, fetchImpl });
@@ -256,19 +320,33 @@ export async function downloadReleaseAsset(input: {
   if (!asset)
     throw new Error(`release ${release.tag_name} has no asset named ${input.assetName} (has: ${release.assets.map((a) => a.name).join(', ')})`);
 
+  // Checked against what GitHub computed at upload, not only against TLS: a cached copy that differs
+  // is dropped and fetched again. A download that differs is refused before anything installs it.
+  const expected = publishedSha256(asset);
+  const digest: AssetDigestCheck = expected ? 'matched' : 'not-published';
   const cacheDir = input.cacheDir ?? defaultCacheDir();
   mkdirSync(cacheDir, { recursive: true });
   const target = path.join(cacheDir, `${release.tag_name}-${input.assetName}`);
+  if (expected && existsSync(target) && sha256File(target) !== expected) rmSync(target, { force: true });
   if (!existsSync(target) || statSync(target).size === 0) {
     const assetRes = await fetchImpl(asset.url, { headers: { ...headers, Accept: 'application/octet-stream' }, redirect: 'follow' });
     if (!assetRes.ok) {
-      throw new Error(`asset download failed: HTTP ${assetRes.status} for ${input.assetName}${githubStatusHint(assetRes.status, input.token)}`);
+      throw new GitHubRequestError(
+        `asset download failed: HTTP ${assetRes.status} for ${input.assetName}${githubStatusHint(assetRes.status, input.token)}`,
+        assetRes.status,
+      );
     }
     const bytes = Buffer.from(await assetRes.arrayBuffer());
     if (bytes.length === 0) throw new Error(`asset download for ${input.assetName} was empty`);
     // Refuse an HTML error page renamed to a binary — the failure this download had for its whole life.
     const formatError = assetFormatError(input.assetName, bytes);
     if (formatError) throw new Error(formatError);
+    const downloaded = createHash('sha256').update(bytes).digest('hex');
+    if (expected && downloaded !== expected) {
+      throw new Error(
+        `${input.assetName} from ${release.tag_name} does not match the sha256 GitHub publishes for it (published ${expected}, downloaded ${downloaded}); nothing was installed`,
+      );
+    }
     // Written beside the target and renamed, so a run cut off mid-write leaves no truncated binary
     // for the next run to reuse.
     const partial = `${target}.partial-${process.pid}`;
@@ -280,7 +358,7 @@ export async function downloadReleaseAsset(input: {
       throw error;
     }
   }
-  return { path: target, tag: release.tag_name, sha256: sha256File(target) };
+  return { path: target, tag: release.tag_name, sha256: sha256File(target), digest };
 }
 
 /**

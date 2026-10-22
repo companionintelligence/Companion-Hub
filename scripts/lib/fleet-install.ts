@@ -26,12 +26,15 @@ import { classifyStatusTimerOutput, describeStatusTimerOutcome, installStatusTim
 import { sshCapture, sshStreamFile, type SshTarget, stdinScriptCommand } from './fleet-ssh.js';
 import { isTooBusyForMaintenance, readHostFacts } from './fleet-hardware.js';
 import {
+  type AssetDigestCheck,
   assetNameForArch,
   type CihubBinarySource,
   compareCihubVersions,
+  describeAssetDigestCheck,
   downloadReleaseAsset,
   installCihubFromStdinScript,
   parseCihubVersionOutput,
+  releaseFailureFix,
   sha256File,
 } from './fleet-cihub-binary.js';
 import { tailscaleCertStep } from './fleet-tailscale-cert.js';
@@ -509,7 +512,7 @@ export interface InstallOptions {
   /** Where the `cihub` binary comes from when the node needs one. Absent: adopt or fail. */
   cihubBinary?: CihubBinarySource;
   /** Per-run cache of downloaded assets, keyed by asset name, shared across nodes. */
-  binaryCache?: Map<string, { path: string; sha256: string; label: string }>;
+  binaryCache?: Map<string, { path: string; sha256: string; label: string; digest?: AssetDigestCheck }>;
   /**
    * CI Account address to claim each Hub for, creating its first operator.
    *
@@ -536,7 +539,9 @@ export interface InstallOptions {
   touchesBoot?: boolean;
 }
 
-export type ResolvedBinary = { path: string; sha256: string; label: string; version?: string } | { why: string; fix: string[] };
+export type ResolvedBinary =
+  | { path: string; sha256: string; label: string; version?: string; digest?: AssetDigestCheck }
+  | { why: string; fix: string[] };
 
 /**
  * The file to stream to this node, for its architecture. Downloads happen at most once per asset
@@ -557,14 +562,11 @@ async function resolveBinaryForNode(opts: InstallOptions, arch: string): Promise
   if (cached) return { ...cached, version: cached.label };
   try {
     const asset = await downloadReleaseAsset({ token: source.token, assetName, version: source.version });
-    const entry = { path: asset.path, sha256: asset.sha256, label: asset.tag };
+    const entry = { path: asset.path, sha256: asset.sha256, label: asset.tag, digest: asset.digest };
     cache.set(assetName, entry);
     return { ...entry, version: asset.tag };
   } catch (error) {
-    return {
-      why: error instanceof Error ? error.message : String(error),
-      fix: ['Run it again, or pass --cihub-binary <path> to a cihub-linux-x64 / cihub-linux-arm64 asset already on disk.'],
-    };
+    return { why: error instanceof Error ? error.message : String(error), fix: [releaseFailureFix(error, source.token)] };
   }
 }
 
@@ -665,7 +667,12 @@ export async function installNode(
     const ms = Date.now() - started;
     const s: InstallStep =
       res.ok && res.out.includes(marker)
-        ? { name: 'install cihub', ok: true, detail: `${existing.present ? `${adopt.why}; ` : ''}${tail(res.out, 2)}`, ms }
+        ? {
+            name: 'install cihub',
+            ok: true,
+            detail: `${existing.present ? `${adopt.why}; ` : ''}${tail(res.out, 2)}${binary.digest ? `; ${describeAssetDigestCheck(binary.digest)}` : ''}`,
+            ms,
+          }
         : { name: 'install cihub', ok: false, detail: describeStepFailure(res.out, res.err, { code: res.code, marker }), ms };
     steps.push(s);
     if (!s.ok) return { node: node.name, ok: false, steps };

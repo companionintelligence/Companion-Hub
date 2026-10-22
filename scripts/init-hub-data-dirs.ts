@@ -6,7 +6,7 @@
  * /data/cache and /data/.docker must exist on the host before compose up.
  */
 import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { isDirectScriptRun } from './lib/is-direct-run';
 import { removeEnvVar, parseEnvFile, restrictEnvFileMode, upsertEnvVar } from './env-file';
@@ -59,14 +59,35 @@ function resolveDockerGid(): string {
 
 export type InitHubDataDirsOptions = {
   /**
-   * ENV_FILE is an appliance install's env file in the canonical data dir: the one the desktop app
-   * writes, with DOCKER_GID and CI_HUB_CONTAINER_UID/GID recomputed on every launch. Then a key is
-   * only added when it is missing and never replaced or removed. ENV_FILE is not written into the
-   * file either: compose gets it from the environment, as it does from the desktop app. `cihub restart
-   * prod` used to take the app's CI_HUB_CONTAINER_UID/GID out and add ENV_FILE. The app put them back.
+   * ENV_FILE is an appliance install's env file in the canonical data dir. ENV_FILE is not written
+   * into it: compose gets it from the environment, as it does from the desktop app.
+   *
+   * When the desktop app wrote the file ({@link isDesktopAppEnvFile}), it recomputes DOCKER_GID and
+   * CI_HUB_CONTAINER_UID/GID on every launch, so a key is only added when it is missing and never
+   * replaced or removed. `cihub restart prod` used to take the app's CI_HUB_CONTAINER_UID/GID out and
+   * add ENV_FILE. The app put them back. A file cihub seeded on a headless node has no app to
+   * recompute anything, so cihub refreshes the keys it computes itself, as in a checkout.
    */
   appliance?: boolean;
 };
+
+/**
+ * The line the desktop app's render puts in the env file it owns (`render_runtime_env_content_for_portal`
+ * in packages/desktop/src-tauri/src/hub_manager/runtime_env.rs). cihub's seed writes
+ * `# Derived (recomputed for this CLI seed)` instead. A desktop launch rewrites a seeded file with its
+ * own render, so the line names whoever owns the file now.
+ */
+export const DESKTOP_APP_ENV_FILE_MARKER = '# Derived (recomputed every launch from the current binary)';
+
+export function isDesktopAppEnvFile(envPath: string): boolean {
+  try {
+    return readFileSync(envPath, 'utf-8')
+      .split(/\r?\n/)
+      .some((line) => line.trim() === DESKTOP_APP_ENV_FILE_MARKER);
+  } catch {
+    return false;
+  }
+}
 
 function ensureContainerIdentityInEnvFile(cwd: string, options: InitHubDataDirsOptions): void {
   const envFile = process.env.ENV_FILE || '.env.dev';
@@ -75,8 +96,9 @@ function ensureContainerIdentityInEnvFile(cwd: string, options: InitHubDataDirsO
 
   restrictEnvFileMode(envFile);
   const appliance = options.appliance === true;
+  const desktopOwned = appliance && isDesktopAppEnvFile(envPath);
   const setVar = (key: string, value: string) => {
-    if (appliance && parseEnvFile(envFile)[key]?.trim()) return;
+    if (desktopOwned && parseEnvFile(envFile)[key]?.trim()) return;
     upsertEnvVar(envFile, key, value);
   };
 
@@ -102,7 +124,7 @@ function ensureContainerIdentityInEnvFile(cwd: string, options: InitHubDataDirsO
   setVar('DOCKER_GID', gid);
   // The desktop app pins its own uid and gid on every launch, so a value equal to ours there is the
   // app's, not this function's leftover.
-  if (appliance) return;
+  if (desktopOwned) return;
 
   // Deliberately NOT pinning CI_HUB_CONTAINER_UID/GID here in the ordinary case.
   //

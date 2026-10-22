@@ -108,7 +108,7 @@ import {
   parseOllamaBindProbe,
   planBindConsolidation,
 } from './fleet-ollama-bind.js';
-import { gpuProbeTimerStep, installNode, pullModelScript, updateHubScript } from './fleet-install.js';
+import { gpuProbeTimerStep, type InstallOptions, installNode, pullModelScript, updateHubScript } from './fleet-install.js';
 import { type CihubBinarySource, parseCihubVersionOutput, pinCihubReleaseSource, resolveCihubBinarySource } from './fleet-cihub-binary.js';
 import {
   assessKeptPairingCode,
@@ -2122,7 +2122,7 @@ async function runInstall(args: FleetArgs): Promise<void> {
   // exists, and so `latest` is one tag for the whole run.
   const binarySource = await resolveBinarySourceForRun(args);
   console.log(colorize(`  ${describeBinarySource(binarySource)}`, binarySource.kind === 'unavailable' ? 'yellow' : 'dim'));
-  const binaryCache = new Map<string, { path: string; sha256: string; label: string }>();
+  const binaryCache: NonNullable<InstallOptions['binaryCache']> = new Map();
   const pacing = describePairingPacing(args.pairingGapMs, run.length);
   if (pacing) console.log(colorize(`  ${pacing}`, 'dim'));
   // One for the whole run: Portal counts pairings per network address, and every node's Hub calls

@@ -23,7 +23,13 @@ import { describeTarget, installBinaryOverSelf, planSelfUpdate, selfUpdateUsage 
 import { classifyCliInstall, cliUpdateInstructions, gatherSkew, type SkewReport, type SkewSnapshot } from './cli-version-skew.js';
 import { resolveProdApplianceContext } from './paths.js';
 import { connectAgent, normalizeMemoryUrl, parseConnectArgs } from './connect-agent.js';
-import { downloadReleaseAsset } from './fleet-cihub-binary.js';
+import {
+  type AssetDigestCheck,
+  CIHUB_RELEASES_PAGE,
+  describeAssetDigestCheck,
+  downloadReleaseAsset,
+  releaseFailureFix,
+} from './fleet-cihub-binary.js';
 import { promptHiddenPassword } from './seed-appliance.js';
 
 /**
@@ -305,17 +311,21 @@ export async function runSelfUpdateCommand(args: string[], gathered?: SkewSnapsh
   // A folder only this user can open, removed again afterwards. A file already in a download cache is
   // used as it is. A fresh folder means nothing another account left behind is run or installed.
   let cacheDir: string | undefined;
-  let asset: { bytes: Buffer; tag: string };
+  let asset: { bytes: Buffer; tag: string; digest: AssetDigestCheck };
   try {
     cacheDir = mkdtempSync(path.join(tmpdir(), 'cihub-self-update-'));
     const downloaded = await downloadReleaseAsset({ token: plan.token, assetName: plan.assetName, version: plan.version, cacheDir });
-    asset = { bytes: readFileSync(downloaded.path), tag: downloaded.tag };
+    asset = { bytes: readFileSync(downloaded.path), tag: downloaded.tag, digest: downloaded.digest };
   } catch (error) {
     printMessageBox(
       'Self-update failed',
       [
         error instanceof Error ? error.message : String(error),
-        ...(plan.token ? ['', '  Check the token in GH_TOKEN or GITHUB_TOKEN is valid: gh auth status'] : []),
+        '',
+        `  ${releaseFailureFix(error, plan.token, {
+          fallback: `download ${plan.assetName} from ${CIHUB_RELEASES_PAGE} and replace ${plan.target} by hand`,
+          versionFlag: '--to',
+        })}`,
       ],
       'red',
     );
@@ -334,7 +344,12 @@ export async function runSelfUpdateCommand(args: string[], gathered?: SkewSnapsh
   });
   printMessageBox(
     installed.ok ? 'Self-update complete' : 'Self-update failed',
-    [installed.message, ...(installed.ok ? [`Release ${asset.tag}. Run \`${BASE_COMMAND} doctor\` to confirm it matches the stack.`] : [])],
+    [
+      installed.message,
+      ...(installed.ok
+        ? [`Release ${asset.tag}: ${describeAssetDigestCheck(asset.digest)}.`, `Run \`${BASE_COMMAND} doctor\` to confirm it matches the stack.`]
+        : []),
+    ],
     installed.ok ? 'green' : 'red',
   );
   if (!installed.ok) process.exitCode = 1;
