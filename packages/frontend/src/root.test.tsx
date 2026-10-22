@@ -155,6 +155,19 @@ describe('root clientLoader registration gating', () => {
     expect(result.headers.get('Location')).toBe('/login');
   });
 
+  // The memory-connect callback lands here when a connect failed after another person's
+  // connection was revoked for it. The dashboard can only say so if the marker survives this hop.
+  it('carries the memory-connect results it knows on to /home, and nothing else', async () => {
+    resolveRegistrationStatus.mockResolvedValue(makeStatus('locally_ready', true));
+    userContext.mockResolvedValue({ data: { isConfigured: true, isLoggedIn: true, isGuestDashboardEnabled: false } });
+
+    const removed = (await clientLoader({ request: new Request('http://localhost/?memoryConnect=previous_removed') } as never)) as Response;
+    const junk = (await clientLoader({ request: new Request('http://localhost/?memoryConnect=%3Cscript%3E') } as never)) as Response;
+
+    expect(removed.headers.get('Location')).toBe('/home?memoryConnect=previous_removed');
+    expect(junk.headers.get('Location')).toBe('/home');
+  });
+
   it('keeps a Mac / desktop client on the normal Hub path and never sends it to /connect', async () => {
     resolveRegistrationStatus.mockResolvedValue(makeStatus('locally_ready', true));
 

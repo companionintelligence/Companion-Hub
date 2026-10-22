@@ -212,10 +212,12 @@ describe('useMemoryConnection disconnect()', () => {
     expect(h.get).toHaveBeenCalledTimes(2);
   });
 
-  // The interceptor in root.tsx turns a 403 into a TranslatableError. "Try again" would fail forever.
-  it('says only the other person can disconnect when the Hub answers 403', async () => {
+  // The interceptor in root.tsx turns the Hub's answer into a TranslatableError carrying its key.
+  it('says only the other person can disconnect when the Hub refuses because it is their connection', async () => {
     h.get.mockResolvedValueOnce({ data: CONNECTED }).mockResolvedValue({ data: { ...CONNECTED, state: 'unconfigured', connectedByOther: true } });
-    h.post.mockRejectedValue(new TranslatableError('COMMON_AN_ERROR_OCCURRED', {}, { status: 403, url: '/api/memory-connect/apps/x/disconnect' }));
+    h.post.mockRejectedValue(
+      new TranslatableError('MEMORY_CONNECT_DISCONNECT_REFUSED', {}, { status: 403, url: '/api/memory-connect/apps/x/disconnect' }),
+    );
     const { result } = renderHook(() => useMemoryConnection(NORMAL), { wrapper: wrapper() });
     await waitFor(() => expect(result.current.connected).toBe(true));
 
@@ -223,5 +225,33 @@ describe('useMemoryConnection disconnect()', () => {
 
     await waitFor(() => expect(result.current.connectedByOther).toBe(true));
     expect(toasts.error).toHaveBeenCalledWith('Another person on this Hub connected this app to their CI Memory. Only they can disconnect it.');
+  });
+
+  // Any other 403 is not about another person, so it must not say it is.
+  it('names a different refusal for what it is', async () => {
+    h.get.mockResolvedValue({ data: CONNECTED });
+    h.post.mockRejectedValue(new TranslatableError('SYSTEM_ERROR_FORBIDDEN', {}, { status: 403, url: '/api/memory-connect/apps/x/disconnect' }));
+    const { result } = renderHook(() => useMemoryConnection(NORMAL), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.connected).toBe(true));
+
+    result.current.disconnect();
+
+    await waitFor(() => expect(toasts.error).toHaveBeenCalledWith("You don't have permission to perform this action"));
+    expect(toasts.error).not.toHaveBeenCalledWith(expect.stringContaining('Another person'));
+  });
+
+  it('says CI Memory did not confirm when the revoke was not confirmed', async () => {
+    h.get.mockResolvedValue({ data: CONNECTED });
+    h.post.mockRejectedValue(
+      new TranslatableError('MEMORY_CONNECT_DISCONNECT_NOT_CONFIRMED', {}, { status: 503, url: '/api/memory-connect/apps/x/disconnect' }),
+    );
+    const { result } = renderHook(() => useMemoryConnection(NORMAL), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.connected).toBe(true));
+
+    result.current.disconnect();
+
+    await waitFor(() =>
+      expect(toasts.error).toHaveBeenCalledWith("CI Memory didn't confirm the disconnect, so the app is still connected. Try again in a moment."),
+    );
   });
 });

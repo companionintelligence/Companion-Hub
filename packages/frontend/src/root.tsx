@@ -467,7 +467,7 @@ async function runClientLoader(request: Request) {
   // dashboard can surface it as a toast; without this the query is dropped here.
   // Whitelisted values only, so arbitrary query junk is never reflected onward.
   const memoryConnect = url.searchParams.get('memoryConnect');
-  if (memoryConnect === 'error' || memoryConnect === 'unavailable') {
+  if (memoryConnect === 'error' || memoryConnect === 'unavailable' || memoryConnect === 'previous_removed') {
     return redirect(`/home?memoryConnect=${memoryConnect}`);
   }
 

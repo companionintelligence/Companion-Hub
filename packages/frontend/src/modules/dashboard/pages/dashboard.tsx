@@ -30,6 +30,14 @@ type DashboardLocationState = {
 /** Stable identity for "no report yet", so the memos below actually memoize. */
 const NO_DIAGNOSTICS: PublicWebDiagnosticsApp[] = [];
 
+/** The memory-connect results the Hub's callback can land here with, and what each one says. */
+const MEMORY_CONNECT_RESULT_TOASTS: Record<string, string> = {
+  error: 'MEMORY_CONNECT_ERROR_TOAST',
+  unavailable: 'MEMORY_CONNECT_UNAVAILABLE_TOAST',
+  // The connect failed after another person's connection had been revoked for it.
+  previous_removed: 'MEMORY_CONNECT_PREVIOUS_REMOVED_TOAST',
+};
+
 export default () => {
   const { t } = useTranslation();
   const location = useLocation();
@@ -51,9 +59,10 @@ export default () => {
   // StrictMode's double-invoke), then strip the marker so a refresh doesn't repeat it.
   useEffect(() => {
     const marker = searchParams.get('memoryConnect');
-    if (marker !== 'error' && marker !== 'unavailable') return;
+    const messageKey = marker ? MEMORY_CONNECT_RESULT_TOASTS[marker] : undefined;
+    if (!messageKey) return;
 
-    toast.error(t(marker === 'unavailable' ? 'MEMORY_CONNECT_UNAVAILABLE_TOAST' : 'MEMORY_CONNECT_ERROR_TOAST'), { id: 'memory-connect-result' });
+    toast.error(t(messageKey), { id: 'memory-connect-result' });
 
     const next = new URLSearchParams(searchParams);
     next.delete('memoryConnect');

@@ -98,7 +98,7 @@ describe('Memory connect with two Hub people', () => {
     expect((await rowOf(1)).state).toBe('skipped');
     expect((await connections.getInjectableCreds(APP))?.token).toBe('key-of-2');
 
-    await expect(service.disconnect(APP, '1')).rejects.toThrow(/Only they can disconnect it/);
+    await expect(service.disconnect(APP, '1')).rejects.toMatchObject({ message: 'MEMORY_CONNECT_DISCONNECT_REFUSED', status: 403 });
     expect(exchange.revoke).not.toHaveBeenCalled();
     expect((await rowOf(2)).state).toBe('connected');
 
@@ -119,5 +119,34 @@ describe('Memory connect with two Hub people', () => {
     expect((await rowOf(1)).state).toBe('connected');
     expect((await connections.getInjectableCreds(APP))?.token).toBe('key-of-1');
     expect(await service.getUiStatus(APP, undefined, '2')).toMatchObject({ state: 'unconfigured', connectedByOther: true });
+  });
+
+  it("tells person 1 the truth when the connect fails after person 2's key was already revoked", async () => {
+    await finishConnect('2', 'key-of-2');
+    vi.clearAllMocks();
+    pending.consume.mockReturnValueOnce({ outcome: 'consumed', appUrn: APP, next: 'https://openclaw.example.org/', userId: '1' });
+    exchange.exchange.mockRejectedValueOnce(new Error('CI Memory answered 502'));
+
+    const result = await service.handleCallback('code-x', 'state-x', '1');
+
+    expect(result).toEqual({ next: '/?memoryConnect=previous_removed', error: true });
+    expect(await rowOf(2)).toMatchObject({ state: 'unconfigured', encryptedKey: null });
+    expect(await connections.getInjectableCreds(APP)).toBeNull();
+    expect(lifecycle.restartApp).toHaveBeenCalled();
+  });
+
+  it("treats a connection with no Hub person on it as nobody's", async () => {
+    // Stored the way rows from before per-person connections read: hub_user_id 0.
+    await connections.storeConnected(APP, PROVIDER.internalUrl, 'key-of-nobody', '2026-12-31T00:00:00.000Z');
+    expect((await rowOf(0)).state).toBe('connected');
+
+    expect(await service.getUiStatus(APP, undefined, '1')).toMatchObject({ state: 'connected', connectedByOther: false });
+    expect(await service.getStatus(APP, undefined, '1')).toMatchObject({ state: 'connected', connectedByOther: false });
+
+    await service.disconnect(APP, '1');
+
+    expect(exchange.revoke).toHaveBeenCalledTimes(1);
+    expect(await rowOf(0)).toMatchObject({ state: 'unconfigured', encryptedKey: null });
+    expect(await connections.getInjectableCreds(APP)).toBeNull();
   });
 });

@@ -2,6 +2,7 @@ import { client } from '@/api-client/client.gen';
 import { openExternalWithHubSession } from '@/lib/hub-browser-handoff';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import { isMemoryProviderUrn } from '@/modules/app/helpers/memory-provider';
+import { isI18nKey } from '@/lib/format-api-error';
 import { TranslatableError } from '@/types/error.types';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
@@ -40,6 +41,21 @@ const BLOCKED_REASON_KEYS: Record<ConnectBlockedReason, string> = {
  */
 export function resolveBlockedReasonKey(reason: ConnectBlockedReason | null | undefined): string | null {
   return reason ? (BLOCKED_REASON_KEYS[reason] ?? null) : null;
+}
+
+/**
+ * What a failed Disconnect says. The Hub names its own refusals with a translation key: another
+ * person's connection runs the app (`MEMORY_CONNECT_DISCONNECT_REFUSED`), CI Memory didn't confirm
+ * the revoke, or a 403 from anything else (`SYSTEM_ERROR_FORBIDDEN` and the like). Only the first
+ * talks about another person. A failure with no key of its own gets the plain "try again".
+ * Exported for tests.
+ */
+export function disconnectErrorKey(error: unknown): string {
+  if (error instanceof TranslatableError && isI18nKey(error.message) && error.message !== 'COMMON_AN_ERROR_OCCURRED') {
+    return error.message;
+  }
+
+  return 'MEMORY_CONNECT_DISCONNECT_ERROR';
 }
 
 /** Mirrors the backend MemoryConnectUiStatus (GET /api/memory-connect/apps/:urn/status). */
@@ -192,10 +208,7 @@ export function useMemoryConnection(appUrn: string) {
       await queryClient.invalidateQueries({ queryKey: memoryStatusQueryKey(appUrn) });
     },
     onError: async (error) => {
-      // A 403 means someone else's connection replaced this person's since the page loaded. Trying
-      // again can't help, so say whose it is instead of "try again".
-      const refused = error instanceof TranslatableError && error.http?.status === 403;
-      toast.error(t(refused ? 'MEMORY_CONNECT_DISCONNECT_REFUSED' : 'MEMORY_CONNECT_DISCONNECT_ERROR'));
+      toast.error(t(disconnectErrorKey(error), error instanceof TranslatableError ? error.intlParams : undefined));
       await queryClient.invalidateQueries({ queryKey: memoryStatusQueryKey(appUrn) });
     },
   });

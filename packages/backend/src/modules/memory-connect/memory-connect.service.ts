@@ -1,14 +1,8 @@
 import { createHash } from 'node:crypto';
-import {
-  BadRequestException,
-  ForbiddenException,
-  Injectable,
-  type OnApplicationBootstrap,
-  type OnModuleDestroy,
-  ServiceUnavailableException,
-} from '@nestjs/common';
+import { BadRequestException, HttpStatus, Injectable, type OnApplicationBootstrap, type OnModuleDestroy } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
+import { TranslatableError } from '@/common/error/translatable-error';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 import { buildHubLocalOrigin, buildHubPublicOrigin, buildHubTailnetOrigin, isPrivateHostname, isTailnetHostname } from '@/common/helpers/hub-origin';
@@ -20,7 +14,7 @@ import { AppsRepository } from '@/modules/apps/apps.repository';
 import { TunnelHealthService } from '@/modules/cloudflare/tunnel-health.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { AsyncMutex } from '@/utils/mutex/async-mutex';
-import { type MemoryConnectionRow, type MemoryConnectionState } from './memory-connection.repository';
+import { INSTALL_GLOBAL_HUB_USER_ID, type MemoryConnectionRow, type MemoryConnectionState } from './memory-connection.repository';
 import { MemoryConnectionService, normalizeHubUserId } from './memory-connection.service';
 import { MemoryExchangeClient } from './memory-exchange.client';
 import { isMemoryProviderApp } from './memory-provider.predicate';
@@ -58,6 +52,22 @@ function isSameHubUser(a: string | number | null | undefined, b: string | number
   return normalizeHubUserId(a) === normalizeHubUserId(b);
 }
 
+/**
+ * A connection with no Hub person on it (`hub_user_id` 0), from before connections were per person.
+ * It is nobody's, so it reads as the app's connection for everyone and anyone may disconnect it.
+ */
+function isInstallGlobal(row: Pick<MemoryConnectionRow, 'hubUserId'>): boolean {
+  return normalizeHubUserId(row.hubUserId) === INSTALL_GLOBAL_HUB_USER_ID;
+}
+
+/** Whether `row` belongs to a Hub person other than `hubUserId`. */
+function isAnotherPersons(row: Pick<MemoryConnectionRow, 'hubUserId'>, hubUserId: string | number | null | undefined): boolean {
+  return !isInstallGlobal(row) && !isSameHubUser(row.hubUserId, hubUserId);
+}
+
+/** Where a callback lands when the connect failed after another person's connection was revoked. */
+const PREVIOUS_CONNECTION_REMOVED_REDIRECT = '/?memoryConnect=previous_removed';
+
 /** Machine-readable reasons let the UI explain a disabled Connect button. */
 export type ConnectBlockedReason =
   /** ci-memory is not installed; there is nothing to connect to. */
@@ -88,6 +98,11 @@ export interface ConnectLaunchers {
 /** State + the browser-reachable launcher URLs a wrapper needs to render its gate. */
 export interface MemoryConnectStatus extends ConnectLaunchers {
   state: MemoryConnectionState;
+  /**
+   * The app runs with another Hub person's connection. `state` is the caller's own, so a page or
+   * gate can say so instead of calling the app unconnected; connecting replaces that person's key.
+   */
+  connectedByOther: boolean;
 }
 
 /** Preserves the request origin so the flow does not move across cookie scopes. */
@@ -108,11 +123,6 @@ export interface MemoryConnectUiStatus extends MemoryConnectStatus {
   providerStatus: MemoryProviderRuntimeStatus;
   /** The UI uses expiry only as a fallback because connected keys rotate automatically. */
   keyExpiresAt: string | null;
-  /**
-   * The app runs with another Hub person's connection. `state` is the caller's own, so the UI
-   * can say so instead of calling the app unconnected; connecting replaces that person's key.
-   */
-  connectedByOther: boolean;
 }
 
 /**
@@ -357,36 +367,68 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return { next, error: true };
     }
 
+    let exchanged: { appUrn: string; key: string; expiresAt: string };
+
     try {
-      const exchanged = await this.exchange.exchange(provider.internalUrl, code);
-
-      // Defense in depth: the code must be for the same app the flow started for.
-      if (exchanged.appUrn !== appUrn) {
-        this.logger.error(`[MemoryConnect] app mismatch on exchange: expected ${appUrn}, got ${exchanged.appUrn}`);
-
-        // Revoke a mismatched exchange so its unmanaged key does not remain valid.
-        await this.exchange.revoke(provider.internalUrl, exchanged.appUrn);
-        await this.dropReleasedKey(appUrn, released);
-
-        return { next, error: true };
-      }
-
-      // The container shares the Hub's internal network, so it stores the internal provider URL.
-      await this.connections.storeConnected(appUrn, provider.internalUrl, exchanged.key, exchanged.expiresAt, hubUserId);
-      const applied = await this.applyConnection(appUrn, 'schedule');
-
-      if (applied === 'restarting') {
-        return { next: this.buildFinishingPath(appUrn, next) };
-      }
-
-      // Without a scheduled restart, the interstitial has nothing to watch.
-      return { next };
+      exchanged = await this.exchange.exchange(provider.internalUrl, code);
     } catch (err) {
       this.logger.error(`[MemoryConnect] exchange failed for ${appUrn}`, err);
-      await this.dropReleasedKey(appUrn, released);
 
-      return { next, error: true };
+      return this.failConnect(appUrn, next, released);
     }
+
+    // Defense in depth: the code must be for the same app the flow started for.
+    if (exchanged.appUrn !== appUrn) {
+      this.logger.error(`[MemoryConnect] app mismatch on exchange: expected ${appUrn}, got ${exchanged.appUrn}`);
+
+      // Revoke a mismatched exchange so its unmanaged key does not remain valid.
+      await this.exchange.revoke(provider.internalUrl, exchanged.appUrn);
+
+      return this.failConnect(appUrn, next, released);
+    }
+
+    try {
+      // The container shares the Hub's internal network, so it stores the internal provider URL.
+      await this.connections.storeConnected(appUrn, provider.internalUrl, exchanged.key, exchanged.expiresAt, hubUserId);
+    } catch (err) {
+      // Nothing holds the new key, so revoke it rather than leave a valid key nobody can rotate or
+      // revoke from here. The exchange also replaced this person's own earlier key, if they had one.
+      this.logger.error(`[MemoryConnect] could not store the new key for ${appUrn}; revoking it`, err);
+      if (!(await this.exchange.revoke(provider.internalUrl, appUrn))) {
+        this.logger.error(`[MemoryConnect] ${appUrn}: the unstored key could not be revoked either; it stays valid on CI Memory until it expires`);
+      }
+
+      return this.failConnect(appUrn, next, released, true);
+    }
+
+    const applied = await this.applyConnection(appUrn, 'schedule');
+
+    if (applied === 'restarting') {
+      return { next: this.buildFinishingPath(appUrn, next) };
+    }
+
+    // Without a scheduled restart, the interstitial has nothing to watch.
+    return { next };
+  }
+
+  /**
+   * Ends a connect that failed. When another person's connection was already revoked for it, that
+   * connection is gone and cannot be brought back (CI Memory revokes by app), so the person lands on
+   * the dashboard with a message that says so instead of back on the app as if nothing happened. The
+   * app is restarted so it stops presenting a key CI Memory no longer accepts.
+   */
+  private async failConnect(appUrn: AppUrn, next: string, released: 'none' | 'released', keyDropped = false): Promise<{ next: string; error: true }> {
+    if (released === 'released' || keyDropped) {
+      await this.applyConnection(appUrn, 'schedule');
+    }
+
+    if (released === 'released') {
+      this.logger.warn(`[MemoryConnect] ${appUrn}: connect failed after the previous connection was revoked; the app has no Memory connection now`);
+
+      return { next: PREVIOUS_CONNECTION_REMOVED_REDIRECT, error: true };
+    }
+
+    return { next, error: true };
   }
 
   /**
@@ -443,13 +485,6 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     }
   }
 
-  /** After a failed connect the app still holds the key released above, which CI Memory no longer accepts. */
-  private async dropReleasedKey(appUrn: AppUrn, released: 'none' | 'released'): Promise<void> {
-    if (released === 'released') {
-      await this.applyConnection(appUrn, 'schedule');
-    }
-  }
-
   /** Tombstones make deny redirects refresh-safe, while foreign users learn neither the state nor app URL. */
   abandonConnect(state: string | undefined, currentUserId: string, error?: string): string {
     const attempt = this.pending.consume(state, currentUserId);
@@ -480,11 +515,17 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
   async getStatus(appUrn: AppUrn, origin?: RequestOriginContext, hubUserId?: string | null): Promise<MemoryConnectStatus> {
     // Read-only for other people's connections: whoever looks last must not take the app's key
     // away from the person who connected it (Companion-Hub#2080). Only a finished connect replaces it.
-    const [state, providerInfo] = await Promise.all([
+    const [ownState, active, providerInfo] = await Promise.all([
       this.connections.getState(appUrn, hubUserId),
+      hubUserId ? this.connections.getActiveConnection(appUrn) : Promise.resolve(undefined),
       // A transient provider lookup failure withholds launchers instead of failing the independent state poll.
       this.resolver.getProviderRuntimeInfo().catch(() => ({ status: 'absent' as const, localOnly: false })),
     ]);
+
+    // A gate that knows someone else connected the app can say so rather than ask again.
+    const nobodysConnection = ownState !== 'connected' && ownState !== 'manual' && !!active && isInstallGlobal(active);
+    const state = nobodysConnection ? 'connected' : ownState;
+    const connectedByOther = state !== 'connected' && !!hubUserId && !!active && isAnotherPersons(active, hubUserId);
 
     const launchers = await this.resolveLaunchers({
       appUrn,
@@ -494,7 +535,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     });
 
     // This blocking gate fails open for app access while retaining a reason for diagnostics.
-    return { state, ...launchers };
+    return { state, connectedByOther, ...launchers };
   }
 
   async getUiStatus(appUrn: AppUrn, origin?: RequestOriginContext, hubUserId?: string | null): Promise<MemoryConnectUiStatus> {
@@ -528,26 +569,30 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     const memoryInstalled = providerStatus !== 'absent';
     const memoryReady = providerStatus === 'ready';
 
-    let effectiveState = row?.state ?? 'unconfigured';
+    // The caller's own row decides, except that a connection with no person on it is the app's for everyone.
+    const shown = row?.state !== 'connected' && active && isInstallGlobal(active) ? active : row;
+
+    let effectiveState = shown?.state ?? 'unconfigured';
     // Safari rejects Postgres's space-separated timestamp, so never expose the raw value.
-    let keyExpiresAt = this.toIsoInstant(row?.keyExpiresAt);
+    let keyExpiresAt = this.toIsoInstant(shown?.keyExpiresAt);
 
     // Validate keys only while CI Memory is ready; otherwise every poll would pay a network timeout.
     // A rejected key is cleared so the app prompts again instead of silently using dead credentials.
     if (effectiveState === 'connected' && memoryReady) {
       const provider = await this.resolver.findProvider();
       // Decrypt from the row already loaded above — avoids a second findByAppUrn.
-      const creds = this.connections.credsFromRow(row);
-      if (row && provider && creds && !(await this.exchange.isKeyValid(provider.internalUrl, creds.token))) {
-        // Clear the row that was checked, not the app's newest row, which can belong to someone else.
-        await this.connections.clear(appUrn, row.hubUserId);
+      const creds = this.connections.credsFromRow(shown);
+      if (shown && provider && creds && !(await this.exchange.isKeyValid(provider.internalUrl, creds.token))) {
+        const cleared = await this.clearRejectedKey(appUrn, shown);
         // Restarting removes the injected dead credential immediately instead of waiting for an unrelated restart.
-        if (active?.id === row.id) {
+        if (cleared === 'cleared-active') {
           await this.applyConnection(appUrn, 'await');
         }
-        effectiveState = 'unconfigured';
-        keyExpiresAt = null;
-        this.logger.info(`[MemoryConnect] cleared stale key for ${appUrn} (ci-memory rejected it)`);
+        if (cleared !== 'changed') {
+          effectiveState = 'unconfigured';
+          keyExpiresAt = null;
+          this.logger.info(`[MemoryConnect] cleared stale key for ${appUrn} (ci-memory rejected it)`);
+        }
       }
     }
 
@@ -567,8 +612,29 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       state: effectiveState,
       ...launchers,
       keyExpiresAt,
-      connectedByOther: effectiveState !== 'connected' && !!hubUserId && !!active && !isSameHubUser(active.hubUserId, hubUserId),
+      connectedByOther: effectiveState !== 'connected' && !!hubUserId && !!active && isAnotherPersons(active, hubUserId),
     };
+  }
+
+  /**
+   * Clears a row whose key CI Memory rejected, under the app's lock and only if it still holds that
+   * key: a Connect that finished after the check stored a fresh one, which must not be wiped. Says
+   * whether the cleared row was the one the app runs with, so the caller knows to restart it. The
+   * restart itself runs after the lock, as in Disconnect, so a waiting Connect callback answers fast.
+   */
+  private async clearRejectedKey(appUrn: AppUrn, rejected: MemoryConnectionRow): Promise<'cleared-active' | 'cleared' | 'changed'> {
+    return this.withConnectionLock(appUrn, async () => {
+      const current = await this.connections.getRow(appUrn, rejected.hubUserId);
+
+      if (current?.state !== 'connected' || current.encryptedKey !== rejected.encryptedKey) {
+        return 'changed';
+      }
+
+      const active = await this.connections.getActiveConnection(appUrn);
+      await this.connections.clear(appUrn, rejected.hubUserId);
+
+      return active?.id === current.id ? 'cleared-active' : 'cleared';
+    });
   }
 
   /** Record that the user chose not to connect (do not re-prompt). */
@@ -585,9 +651,10 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     await this.withConnectionLock(appUrn, async () => {
       const active = hubUserId ? await this.connections.getActiveConnection(appUrn) : undefined;
 
-      // CI Memory revokes by app, so this would take the key of whoever connected it.
-      if (active && !isSameHubUser(active.hubUserId, hubUserId)) {
-        throw new ForbiddenException('Another person connected this app to CI Memory. Only they can disconnect it.');
+      // CI Memory revokes by app, so this would take the key of whoever connected it. A connection
+      // with no person on it is nobody's, so anyone who can open the app page may disconnect it.
+      if (active && isAnotherPersons(active, hubUserId)) {
+        throw new TranslatableError('MEMORY_CONNECT_DISCONNECT_REFUSED', {}, HttpStatus.FORBIDDEN);
       }
 
       const provider = await this.resolver.findProvider();
@@ -595,7 +662,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       if (provider) {
         const revoked = await this.exchange.revoke(provider.internalUrl, appUrn);
         if (!revoked) {
-          throw new ServiceUnavailableException('Could not revoke the memory key on CI Memory; the app is still connected. Please try again.');
+          throw new TranslatableError('MEMORY_CONNECT_DISCONNECT_NOT_CONFIRMED', {}, HttpStatus.SERVICE_UNAVAILABLE);
         }
       }
 

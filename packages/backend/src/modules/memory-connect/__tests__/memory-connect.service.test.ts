@@ -491,7 +491,7 @@ describe('MemoryConnectService side effects', () => {
     resolver.findProvider.mockResolvedValue(PROVIDER);
     exchange.revoke.mockResolvedValue(false); // CI-Server never confirmed revocation
 
-    await expect(service.disconnect('ci-openclaw:local')).rejects.toThrow(/still connected/);
+    await expect(service.disconnect('ci-openclaw:local')).rejects.toMatchObject({ message: 'MEMORY_CONNECT_DISCONNECT_NOT_CONFIRMED', status: 503 });
 
     // Must NOT falsely report disconnected while the key is still live server-side.
     expect(connections.clear).not.toHaveBeenCalled();
@@ -911,9 +911,11 @@ describe('MemoryConnectService with two Hub people', () => {
     ctx.resolver.findProvider.mockResolvedValue(PROVIDER);
     ctx.connections.getActiveConnection.mockResolvedValue(PERSON_2_ROW);
     ctx.connections.listConnected.mockResolvedValue([PERSON_2_ROW]);
-    ctx.connections.getRow.mockImplementation(async (_urn: string, hubUserId?: string | null) => (hubUserId === '1' ? undefined : PERSON_2_ROW));
+    ctx.connections.getRow.mockImplementation(async (_urn: string, hubUserId?: string | null) =>
+      String(hubUserId) === '1' ? undefined : PERSON_2_ROW,
+    );
     ctx.connections.getState.mockImplementation(async (_urn: string, hubUserId?: string | null) =>
-      hubUserId === '1' ? 'unconfigured' : 'connected',
+      String(hubUserId) === '1' ? 'unconfigured' : 'connected',
     );
 
     return ctx;
@@ -946,7 +948,7 @@ describe('MemoryConnectService with two Hub people', () => {
   it("person 1 who chose Not now still learns the app runs on person 2's memory", async () => {
     const { service, connections } = withPerson2Connected();
     connections.getRow.mockImplementation(async (_urn: string, hubUserId?: string | null) =>
-      hubUserId === '1' ? { id: 11, appUrn: APP, hubUserId: 1, state: 'skipped', encryptedKey: null, keyExpiresAt: null } : PERSON_2_ROW,
+      String(hubUserId) === '1' ? { id: 11, appUrn: APP, hubUserId: 1, state: 'skipped', encryptedKey: null, keyExpiresAt: null } : PERSON_2_ROW,
     );
 
     const status = await service.getUiStatus(APP, undefined, '1');
@@ -990,7 +992,9 @@ describe('MemoryConnectService with two Hub people', () => {
 
     const result = await service.handleCallback('code-1', 'state-1', '1');
 
-    expect(result.error).toBe(true);
+    // Person 2's connection is gone and cannot come back, so person 1 is told, not sent to the app.
+    expect(result).toEqual({ next: '/?memoryConnect=previous_removed', error: true });
+    expect(pending.recordOutcome).toHaveBeenCalledWith('state-1', '/?memoryConnect=previous_removed');
     expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: APP, skipPull: true, actor: { kind: 'system', reason: 'memory-connect' } });
   });
 
@@ -1050,7 +1054,7 @@ describe('MemoryConnectService with two Hub people', () => {
   it("refuses person 1's Disconnect of person 2's connection without touching it", async () => {
     const { service, exchange, connections, lifecycle } = withPerson2Connected();
 
-    await expect(service.disconnect(APP, '1')).rejects.toThrow(/Only they can disconnect it/);
+    await expect(service.disconnect(APP, '1')).rejects.toMatchObject({ message: 'MEMORY_CONNECT_DISCONNECT_REFUSED', status: 403 });
 
     expect(exchange.revoke).not.toHaveBeenCalled();
     expect(connections.clear).not.toHaveBeenCalled();
@@ -1070,7 +1074,7 @@ describe('MemoryConnectService with two Hub people', () => {
   it("clears person 1's own dead key without restarting the app that runs on person 2's", async () => {
     const { service, exchange, connections, lifecycle } = withPerson2Connected();
     connections.getRow.mockImplementation(async (_urn: string, hubUserId?: string | null) =>
-      hubUserId === '1' ? { id: 11, appUrn: APP, hubUserId: 1, state: 'connected', encryptedKey: 'enc-1', keyExpiresAt: null } : PERSON_2_ROW,
+      String(hubUserId) === '1' ? { id: 11, appUrn: APP, hubUserId: 1, state: 'connected', encryptedKey: 'enc-1', keyExpiresAt: null } : PERSON_2_ROW,
     );
     exchange.isKeyValid.mockResolvedValue(false);
 
@@ -1103,5 +1107,147 @@ describe('MemoryConnectService with two Hub people', () => {
 
     expect(connections.clear).toHaveBeenCalledWith(APP, '2');
     expect(connections.clear).toHaveBeenCalledWith(APP, 1);
+  });
+
+  it("tells OpenClaw's own gate that another person's connection runs the app", async () => {
+    const { service } = withPerson2Connected();
+
+    expect(await service.getStatus(APP, undefined, '1')).toMatchObject({ state: 'unconfigured', connectedByOther: true });
+    expect(await service.getStatus(APP, undefined, '2')).toMatchObject({ state: 'connected', connectedByOther: false });
+  });
+
+  it('lands on the app, not on a removed-connection message, when nothing was replaced', async () => {
+    const { service, exchange, connections, pending } = withPerson2Connected();
+    connections.listConnected.mockResolvedValue([]);
+    connections.getActiveConnection.mockResolvedValue(undefined);
+    pending.consume.mockReturnValue(CONSUMED_BY_1);
+    exchange.exchange.mockRejectedValue(new Error('ci-memory unreachable'));
+
+    expect(await service.handleCallback('code-1', 'state-1', '1')).toEqual({ next: 'https://app.example.org/', error: true });
+  });
+
+  it('revokes the new key when it cannot be stored, so no valid key is left that nobody holds', async () => {
+    const { service, exchange, connections, pending, lifecycle } = withPerson2Connected();
+    pending.consume.mockReturnValue(CONSUMED_BY_1);
+    exchange.exchange.mockResolvedValue({ appUrn: APP, key: 'key-1', expiresAt: '2026-12-01T00:00:00.000Z' });
+    connections.storeConnected.mockRejectedValue(new Error('db pool exhausted'));
+
+    const result = await service.handleCallback('code-1', 'state-1', '1');
+
+    // Once to replace person 2's connection, once more after the exchange for the key that was never stored.
+    expect(exchange.revoke).toHaveBeenCalledTimes(2);
+    expect(exchange.revoke.mock.invocationCallOrder[1]).toBeGreaterThan(exchange.exchange.mock.invocationCallOrder[0]);
+    expect(result).toEqual({ next: '/?memoryConnect=previous_removed', error: true });
+    expect(lifecycle.restartApp).toHaveBeenCalled();
+  });
+
+  it('revokes an unstored key on a plain connect too, and lands back on the app', async () => {
+    const { service, exchange, connections, pending, lifecycle } = withPerson2Connected();
+    connections.listConnected.mockResolvedValue([]);
+    connections.getActiveConnection.mockResolvedValue(undefined);
+    pending.consume.mockReturnValue(CONSUMED_BY_1);
+    exchange.exchange.mockResolvedValue({ appUrn: APP, key: 'key-1', expiresAt: '2026-12-01T00:00:00.000Z' });
+    connections.storeConnected.mockRejectedValue(new Error('db pool exhausted'));
+
+    const result = await service.handleCallback('code-1', 'state-1', '1');
+
+    expect(exchange.revoke).toHaveBeenCalledTimes(1);
+    expect(exchange.revoke.mock.invocationCallOrder[0]).toBeGreaterThan(exchange.exchange.mock.invocationCallOrder[0]);
+    expect(result).toEqual({ next: 'https://app.example.org/', error: true });
+    // The exchange replaced any earlier key of this person's, so the app must stop presenting it.
+    expect(lifecycle.restartApp).toHaveBeenCalled();
+  });
+
+  it('leaves a key alone that a Connect replaced while it was being checked', async () => {
+    const { service, exchange, connections, lifecycle } = withPerson2Connected();
+    const stale = { ...PERSON_2_ROW, encryptedKey: 'enc-2-old' };
+    // The status read loads the old key; by the time the cleanup holds the lock, a Connect stored a new one.
+    connections.getRow.mockResolvedValueOnce(stale).mockResolvedValue(PERSON_2_ROW);
+    connections.getActiveConnection.mockResolvedValue(stale);
+    exchange.isKeyValid.mockResolvedValue(false);
+
+    const status = await service.getUiStatus(APP, undefined, '2');
+
+    expect(connections.clear).not.toHaveBeenCalled();
+    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
+    expect(status.state).toBe('connected');
+  });
+
+  it('clears a rejected key only while holding the app lock', async () => {
+    const { service, exchange, connections } = withPerson2Connected();
+    exchange.isKeyValid.mockResolvedValue(false);
+    // A Disconnect holds the lock until CI Memory answers its revoke.
+    let answerRevoke: (revoked: boolean) => void = () => {};
+    exchange.revoke.mockReturnValueOnce(new Promise<boolean>((resolve) => (answerRevoke = resolve)));
+    const disconnecting = service.disconnect(APP, '2');
+    await vi.waitFor(() => expect(exchange.revoke).toHaveBeenCalled());
+
+    const reading = service.getUiStatus(APP, undefined, '2');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(connections.clear).not.toHaveBeenCalled();
+
+    answerRevoke(true);
+    await Promise.all([disconnecting, reading]);
+    expect(connections.clear).toHaveBeenCalled();
+  });
+});
+
+/**
+ * A connection with no Hub person on it (`hub_user_id` 0, from before connections were per person)
+ * is nobody's: it reads as connected for everyone and anyone who can open the app page may disconnect it.
+ */
+describe('MemoryConnectService with an install-global connection', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const APP = 'ci-openclaw:local';
+  const GLOBAL_ROW = {
+    id: 5,
+    appUrn: APP,
+    hubUserId: 0,
+    state: 'connected',
+    encryptedKey: 'enc-0',
+    serverUrl: 'http://gateway:8642',
+    keyExpiresAt: null,
+  };
+
+  function withGlobalConnection() {
+    const ctx = makeService();
+    ctx.resolver.findProvider.mockResolvedValue(PROVIDER);
+    ctx.connections.getActiveConnection.mockResolvedValue(GLOBAL_ROW);
+    ctx.connections.listConnected.mockResolvedValue([GLOBAL_ROW]);
+    ctx.connections.getRow.mockImplementation(async (_urn: string, hubUserId?: string | number | null) =>
+      hubUserId == null || Number(hubUserId) === 0 ? GLOBAL_ROW : undefined,
+    );
+    ctx.connections.getState.mockResolvedValue('unconfigured');
+
+    return ctx;
+  }
+
+  it("reads as connected, not as someone else's, on the app page and on the gate", async () => {
+    const { service } = withGlobalConnection();
+
+    expect(await service.getUiStatus(APP, undefined, '1')).toMatchObject({ state: 'connected', connectedByOther: false });
+    expect(await service.getStatus(APP, undefined, '1')).toMatchObject({ state: 'connected', connectedByOther: false });
+  });
+
+  it('lets anyone disconnect it', async () => {
+    const { service, exchange, connections, lifecycle } = withGlobalConnection();
+
+    await service.disconnect(APP, '1');
+
+    expect(exchange.revoke).toHaveBeenCalledWith('http://gateway:8642', APP);
+    expect(connections.clear).toHaveBeenCalledWith(APP, 0);
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: APP, skipPull: true });
+  });
+
+  it('clears its key when CI Memory rejects it, whoever is looking', async () => {
+    const { service, exchange, connections, lifecycle } = withGlobalConnection();
+    exchange.isKeyValid.mockResolvedValue(false);
+
+    const status = await service.getUiStatus(APP, undefined, '1');
+
+    expect(connections.clear).toHaveBeenCalledWith(APP, 0);
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalled();
+    expect(status).toMatchObject({ state: 'unconfigured', connectedByOther: false });
   });
 });
