@@ -13,9 +13,10 @@ import { buildPublicWebIdentity, normalizeStoredHostname, sanitizeAppSubdomain }
 import { publishesPublicWebRoute, resolveRoutingSubdomain, storedExposureForm } from '@ci-hub/common/types';
 import { useQuery } from '@tanstack/react-query';
 import { CheckCircle2, Copy, ExternalLink, Globe, Lock, MonitorSmartphone, QrCode as QrCodeIcon } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
+import { Tooltip } from 'react-tooltip';
 import { toast } from 'sonner';
 
 type AccessPointState = 'active' | 'available' | 'unavailable';
@@ -367,6 +368,8 @@ export const AppAccessPoints = ({ app, info }: Props) => {
   const { t } = useTranslation();
   const { userSettings, cloudflareAvailable, tailscaleAvailable, tailscaleNodeFqdn, tailscaleHttpsEnabled } = useAppContext();
   const [qrEntry, setQrEntry] = useState<AppAccessPoint | null>(null);
+  const idBase = useId();
+  const tooltipId = `${idBase}-tooltip`;
 
   const { data: serveStatus } = useQuery({
     ...getServeStatusOptions(),
@@ -447,6 +450,15 @@ export const AppAccessPoints = ({ app, info }: Props) => {
             // could not parse, and that case needs its own explanation.
             const isMalformed = isMalformedAccessUrl(entry.url);
             const canShare = isActive && Boolean(entry.url) && !isLoopback;
+            // Why a live address gets no QR code. Not a `disabled` button with a `title`: a disabled
+            // button takes no pointer events and no focus, so nobody could ever read the reason.
+            let qrRefusal: string | null = null;
+            if (isActive && isMalformed) {
+              qrRefusal = t('APP_DETAILS_ACCESS_QR_MALFORMED');
+            } else if (isActive && isLoopback) {
+              qrRefusal = t('APP_DETAILS_ACCESS_QR_LOOPBACK');
+            }
+            const qrRefusalId = `${idBase}-${entry.key}-qr-refusal`;
 
             return (
               <div key={entry.key} className="min-w-0 rounded-md border border-border/60 bg-muted/20 p-3 sm:p-4">
@@ -507,31 +519,46 @@ export const AppAccessPoints = ({ app, info }: Props) => {
                     onClick={() => isActive && entry.url && void copyToClipboard(entry.url)}
                     disabled={!isActive || !entry.url}
                     title={t('SETTINGS_GENERAL_COPY')}
+                    aria-label={t('SETTINGS_GENERAL_COPY')}
                   >
                     <Copy className="h-4 w-4" />
                   </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => canShare && setQrEntry(entry)}
-                    disabled={!canShare}
-                    title={
-                      isActive && isMalformed
-                        ? t('APP_DETAILS_ACCESS_QR_MALFORMED')
-                        : isActive && isLoopback
-                          ? t('APP_DETAILS_ACCESS_QR_LOOPBACK')
-                          : t('APP_DETAILS_ACCESS_SHOW_QR')
-                    }
-                    aria-label={t('APP_DETAILS_ACCESS_SHOW_QR')}
-                  >
-                    <QrCodeIcon className="h-4 w-4" />
-                  </Button>
+                  {qrRefusal ? (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-disabled="true"
+                      aria-label={t('APP_DETAILS_ACCESS_SHOW_QR')}
+                      aria-describedby={qrRefusalId}
+                      data-tooltip-id={tooltipId}
+                      data-tooltip-content={qrRefusal}
+                      className="cursor-not-allowed opacity-50 hover:bg-transparent"
+                    >
+                      <QrCodeIcon className="h-4 w-4" />
+                      <span id={qrRefusalId} className="sr-only">
+                        {qrRefusal}
+                      </span>
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => canShare && setQrEntry(entry)}
+                      disabled={!canShare}
+                      title={t('APP_DETAILS_ACCESS_SHOW_QR')}
+                      aria-label={t('APP_DETAILS_ACCESS_SHOW_QR')}
+                    >
+                      <QrCodeIcon className="h-4 w-4" />
+                    </Button>
+                  )}
                 </div>
               </div>
             );
           })}
         </div>
       </CardContent>
+
+      <Tooltip id={tooltipId} className="tooltip" positionStrategy="fixed" />
 
       <Dialog open={qrEntry !== null} onOpenChange={(open: boolean) => !open && setQrEntry(null)}>
         <DialogContent size="sm">
