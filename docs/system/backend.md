@@ -329,13 +329,16 @@ the status sync also uses, no longer holds the app. A force stop registers over 
 without dropping another command's claim. It still takes the per-app lock first, so it waits behind a
 command that holds it.
 
-The restarts the Hub owes an app after a settings save, a device key change or a Companion Memory
-connect (`RESTARTS_THAT_WAIT_FOR_THE_APP`) wait for the operation holding the app instead of taking
-its 409, and leave alone an app that operation left stopped. A change that revokes credentials (a
-Hub access rotate, a Memory disconnect or key rotation) holds the app first through
+The restarts the Hub owes an app after a settings save or a device key change
+(`RESTARTS_THAT_WAIT_FOR_THE_APP`) wait for the operation holding the app instead of taking its 409,
+and leave alone an app that operation left stopped. A credential change (a Hub access rotate, a
+Memory connect, disconnect or key rotation) holds the app first through
 `AppLifecycleService.withAppHeld`, so it is refused before anything is revoked and its restart runs
-under the same claim. The key rotation sweep and the Memory status poll use `withAppHeldUnlessBusy`
-and try a busy app again on their next round.
+under the same claim. The Memory connect callback, the key rotation sweep and the Memory status
+poll use `withAppHeldUnlessBusy`: the callback lands on `/?memoryConnect=busy&app=<urn>` and the
+other two try a busy app again on their next round. In `MemoryConnectService` the order is always
+the grant and an ownership read, then the app's hold, then the connection lock for the revoke and
+the rows, then the restart after the lock. Nothing waits for the app while holding that lock.
 
 `installApp` checks the grant first, then refuses a second install call for the same app
 (`beginInstallCall`), then reads the row. A row left `installing` with no operation under way is

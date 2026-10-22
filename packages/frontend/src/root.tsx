@@ -28,7 +28,7 @@ import {
   usesCloudConnect,
 } from '@/lib/mobile-connection';
 import { shouldTimeBoxMobileLoads } from '@/lib/use-mobile-load-timeout';
-import { memoryConnectResultToastKey } from '@/modules/app/helpers/memory-provider';
+import { memoryConnectResultApp, memoryConnectResultToastKey } from '@/modules/app/helpers/memory-provider';
 import { installMobileLoadWatchdog } from '@/lib/mobile-load-watchdog';
 import { installScrollbarHover } from '@/lib/scrollbar-hover';
 import type { RegistrationStatus } from './lib/registration-status';
@@ -469,7 +469,9 @@ async function runClientLoader(request: Request) {
   // Whitelisted values only, so arbitrary query junk is never reflected onward.
   const memoryConnect = url.searchParams.get('memoryConnect');
   if (memoryConnectResultToastKey(memoryConnect)) {
-    return redirect(`/home?memoryConnect=${memoryConnect}`);
+    // `busy` names the app it was about, so the dashboard can say which.
+    const app = memoryConnectResultApp(memoryConnect, url.searchParams.get('app'));
+    return redirect(`/home?memoryConnect=${memoryConnect}${app ? `&app=${encodeURIComponent(app)}` : ''}`);
   }
 
   return redirect('/home');

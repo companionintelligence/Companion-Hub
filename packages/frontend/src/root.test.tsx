@@ -166,6 +166,14 @@ describe('root clientLoader registration gating', () => {
     const inherited = (await clientLoader({ request: new Request('http://localhost/?memoryConnect=constructor') } as never)) as Response;
 
     expect(removed.headers.get('Location')).toBe('/home?memoryConnect=previous_removed');
+
+    // `busy` names its app, which goes along when it looks like an app id.
+    const busy = (await clientLoader({
+      request: new Request('http://localhost/?memoryConnect=busy&app=plane%3Aci-marketplace'),
+    } as never)) as Response;
+    const busyJunk = (await clientLoader({ request: new Request('http://localhost/?memoryConnect=busy&app=%3Cscript%3E') } as never)) as Response;
+    expect(busy.headers.get('Location')).toBe('/home?memoryConnect=busy&app=plane%3Aci-marketplace');
+    expect(busyJunk.headers.get('Location')).toBe('/home?memoryConnect=busy');
     expect(junk.headers.get('Location')).toBe('/home');
     expect(inherited.headers.get('Location')).toBe('/home');
   });

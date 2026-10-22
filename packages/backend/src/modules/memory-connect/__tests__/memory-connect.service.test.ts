@@ -1383,3 +1383,166 @@ describe('MemoryConnectService with an install-global connection', () => {
     expect(status).toMatchObject({ state: 'unconfigured', connectedByOther: false });
   });
 });
+
+/**
+ * A lifecycle with one hold per app, as AppLifecycleService has. A held app refuses `withAppHeld`
+ * with the holder's 409 and answers `withAppHeldUnlessBusy` with `busy`. A restart that is not
+ * held waits until nobody holds the app, as the unheld restarts do.
+ */
+function holdApps(lifecycle: ReturnType<typeof makeService>['lifecycle']) {
+  const holders = new Map<string, string>();
+  const waiters: Array<() => void> = [];
+  const free = (appUrn: string) => {
+    holders.delete(appUrn);
+    for (const wake of waiters.splice(0)) wake();
+  };
+  const untilFree = async (appUrn: string) => {
+    while (holders.has(appUrn)) await new Promise<void>((wake) => waiters.push(wake));
+  };
+  const refusal = (appUrn: string) =>
+    new TranslatableError(`APP_ERROR_${(holders.get(appUrn) ?? 'event').toUpperCase()}_IN_PROGRESS`, { id: appUrn }, HttpStatus.CONFLICT);
+  const hold = async (appUrn: string, run: (app: typeof lifecycle.held) => Promise<unknown>) => {
+    holders.set(appUrn, 'restart');
+    try {
+      return await run(lifecycle.held);
+    } finally {
+      free(appUrn);
+    }
+  };
+
+  lifecycle.withAppHeld.mockImplementation(async (appUrn, run) => {
+    if (holders.has(appUrn)) throw refusal(appUrn);
+    return hold(appUrn, run);
+  });
+  lifecycle.withAppHeldUnlessBusy.mockImplementation(async (appUrn, run) => {
+    const busy = holders.get(appUrn);
+    return busy ? { busy } : { result: await hold(appUrn, run) };
+  });
+  lifecycle.restartApp.mockImplementation(async ({ appUrn }: { appUrn: string }) => {
+    await untilFree(appUrn);
+    return { requestId: 'r-waited' };
+  });
+  lifecycle.restartAppAndWait.mockImplementation(async ({ appUrn }: { appUrn: string }) => {
+    await untilFree(appUrn);
+    return true;
+  });
+
+  return { startOperation: (appUrn: string) => holders.set(appUrn, 'start'), finishOperation: free };
+}
+
+/** How a call stands 50 ms in: what it resolved with, the error it threw, or 'still open'. */
+const after50ms = (call: Promise<unknown>) =>
+  Promise.race([call.catch((error: unknown) => error), new Promise((resolve) => setTimeout(() => resolve('still open'), 50))]);
+
+describe('MemoryConnectService with the app held', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const APP = 'ci-openclaw:local';
+  const FINISHING_PATH = '/memory-connect/finishing?app=ci-openclaw%3Alocal&next=https%3A%2F%2Fapp.example.org%2F';
+  const BUSY_REDIRECT = '/?memoryConnect=busy&app=ci-openclaw%3Alocal';
+  const CONSUMED = { outcome: 'consumed', appUrn: APP, next: 'https://app.example.org/', userId: '1', redirect: 'https://app.example.org/' };
+  const OWN_CONNECTION = { id: 7, appUrn: APP, state: 'connected', hubUserId: '1', encryptedKey: 'enc', serverUrl: 'http://gateway:8642' };
+  const EXCHANGED = { appUrn: APP, key: 'raw-key', expiresAt: '2026-12-01T00:00:00.000Z' };
+
+  function connectingService() {
+    const ctx = makeService();
+    ctx.pending.consume.mockReturnValue(CONSUMED);
+    ctx.resolver.findProvider.mockResolvedValue(PROVIDER);
+    ctx.connections.getActiveConnection.mockResolvedValue(OWN_CONNECTION);
+    ctx.connections.listConnected.mockResolvedValue([OWN_CONNECTION]);
+    return { ...ctx, apps: holdApps(ctx.lifecycle) };
+  }
+
+  // Held for anything else, the callback used to revoke, exchange and then wait for the app under the
+  // connection lock. A disconnect holding the app and waiting for that lock then never finished either.
+  it('sends a callback for an app another operation holds back with busy, revoking and exchanging nothing', async () => {
+    const { service, exchange, connections, pending, lifecycle, apps } = connectingService();
+    connections.listConnected.mockResolvedValue([{ ...OWN_CONNECTION, hubUserId: '2' }]);
+    apps.startOperation(APP);
+
+    const outcome = await after50ms(service.handleCallback('the-code', 'state-nonce', '1'));
+
+    expect(outcome).toEqual({ next: BUSY_REDIRECT, error: true });
+    expect(pending.recordOutcome).toHaveBeenCalledWith('state-nonce', BUSY_REDIRECT);
+    expect(exchange.revoke).not.toHaveBeenCalled();
+    expect(exchange.exchange).not.toHaveBeenCalled();
+    expect(connections.storeConnected).not.toHaveBeenCalled();
+    expect(lifecycle.held.restart).not.toHaveBeenCalled();
+    apps.finishOperation(APP);
+  });
+
+  it('refuses a disconnect for an app another operation holds with its 409, at once', async () => {
+    const { service, exchange, connections, apps } = connectingService();
+    apps.startOperation(APP);
+
+    const outcome = await after50ms(service.disconnect(APP, '1'));
+
+    expect(outcome).toMatchObject({ status: HttpStatus.CONFLICT, message: 'APP_ERROR_START_IN_PROGRESS' });
+    expect(exchange.revoke).not.toHaveBeenCalled();
+    expect(connections.clear).not.toHaveBeenCalled();
+    apps.finishOperation(APP);
+  });
+
+  it('lets a disconnect sent while a callback holds the app fail fast with 409, and the callback finish', async () => {
+    const { service, exchange, connections, lifecycle } = connectingService();
+    let finishExchange!: (value: typeof EXCHANGED) => void;
+    exchange.exchange.mockReturnValue(new Promise((resolve) => (finishExchange = resolve)));
+
+    const callback = service.handleCallback('the-code', 'state-nonce', '1');
+    await vi.waitFor(() => expect(exchange.exchange).toHaveBeenCalled());
+
+    expect(await after50ms(service.disconnect(APP, '1'))).toMatchObject({ status: HttpStatus.CONFLICT, message: 'APP_ERROR_RESTART_IN_PROGRESS' });
+    expect(exchange.revoke).not.toHaveBeenCalled();
+
+    finishExchange(EXCHANGED);
+    expect(await after50ms(callback)).toEqual({ next: FINISHING_PATH });
+    expect(connections.storeConnected).toHaveBeenCalledWith(APP, 'http://gateway:8642', 'raw-key', '2026-12-01T00:00:00.000Z', '1');
+    expect(lifecycle.held.restart).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends a callback that arrives while a disconnect holds the app back with busy, and lets the disconnect finish', async () => {
+    const { service, exchange, connections, lifecycle } = connectingService();
+    let confirmRevoke!: (revoked: boolean) => void;
+    exchange.revoke.mockReturnValueOnce(new Promise((resolve) => (confirmRevoke = resolve)));
+
+    const disconnect = service.disconnect(APP, '1');
+    await vi.waitFor(() => expect(exchange.revoke).toHaveBeenCalledTimes(1));
+
+    expect(await after50ms(service.handleCallback('the-code', 'state-nonce', '1'))).toEqual({ next: BUSY_REDIRECT, error: true });
+    expect(exchange.exchange).not.toHaveBeenCalled();
+    expect(exchange.revoke).toHaveBeenCalledTimes(1);
+
+    confirmRevoke(true);
+    expect(await after50ms(disconnect)).toBeUndefined();
+    expect(connections.clear).toHaveBeenCalledWith(APP, '1');
+    expect(lifecycle.held.restartAndWait).toHaveBeenCalledWith({ skipPull: true });
+  });
+
+  it('asks for the grant before it holds the app', async () => {
+    const { service, lifecycle } = connectingService();
+
+    const result = await service.handleCallback('the-code', 'state-nonce', '1', vi.fn().mockResolvedValue(false));
+
+    expect(result).toEqual({ next: '/?memoryConnect=denied', error: true });
+    expect(lifecycle.withAppHeldUnlessBusy).not.toHaveBeenCalled();
+  });
+
+  it("refuses a disconnect of someone else's connection before it holds the app", async () => {
+    const { service, connections, lifecycle } = connectingService();
+    connections.getActiveConnection.mockResolvedValue({ ...OWN_CONNECTION, hubUserId: '2' });
+
+    await expect(service.disconnect(APP, '1')).rejects.toMatchObject({ status: HttpStatus.FORBIDDEN });
+
+    expect(lifecycle.withAppHeld).not.toHaveBeenCalled();
+  });
+
+  // The owner read without the lock can go stale: a Connect by someone else may finish before the lock.
+  it('asks again under the connection lock whose connection it is', async () => {
+    const { service, exchange, connections } = connectingService();
+    connections.getActiveConnection.mockResolvedValueOnce(OWN_CONNECTION).mockResolvedValue({ ...OWN_CONNECTION, hubUserId: '2' });
+
+    await expect(service.disconnect(APP, '1')).rejects.toMatchObject({ status: HttpStatus.FORBIDDEN });
+
+    expect(exchange.revoke).not.toHaveBeenCalled();
+  });
+});
