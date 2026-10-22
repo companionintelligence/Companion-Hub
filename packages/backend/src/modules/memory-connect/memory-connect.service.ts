@@ -20,7 +20,7 @@ import { AppsRepository } from '@/modules/apps/apps.repository';
 import { TunnelHealthService } from '@/modules/cloudflare/tunnel-health.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { AsyncMutex } from '@/utils/mutex/async-mutex';
-import { type MemoryConnectionState } from './memory-connection.repository';
+import { type MemoryConnectionRow, type MemoryConnectionState } from './memory-connection.repository';
 import { MemoryConnectionService, normalizeHubUserId } from './memory-connection.service';
 import { MemoryExchangeClient } from './memory-exchange.client';
 import { isMemoryProviderApp } from './memory-provider.predicate';
@@ -126,8 +126,9 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
   private rotating = false;
   /**
    * Per app, so two people finishing Connect at once cannot both find nobody else connected and
-   * both mint a key, and a Disconnect cannot revoke a key minted after its ownership check.
-   * Its own instance: the lifecycle mutex is keyed by app URN too, and the restarts run under it.
+   * both mint a key. A Disconnect cannot revoke a key minted after its ownership check. A
+   * rotation cannot store its key over a connection that changed meanwhile. Its own instance:
+   * the lifecycle mutex is keyed by app URN too and the restarts run under it.
    */
   private readonly connectionMutex = new AsyncMutex();
 
@@ -212,8 +213,27 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
             continue;
           }
 
-          const rotated = await this.exchange.rotate(provider.internalUrl, appUrn);
-          await this.connections.storeConnected(appUrn, provider.internalUrl, rotated.key, rotated.expiresAt, row.hubUserId);
+          // CI Memory rotates by app. Only the connection the app runs with may rotate, checked again
+          // under the lock: a Connect or Disconnect that finished after the list was read would
+          // otherwise see its key replaced and handed to the person it replaced.
+          const rotated = await this.withConnectionLock(appUrn, async () => {
+            const active = await this.connections.getActiveConnection(appUrn);
+
+            if (!active || active.id !== row.id || active.encryptedKey !== row.encryptedKey) {
+              return false;
+            }
+
+            const fresh = await this.exchange.rotate(provider.internalUrl, appUrn);
+            await this.connections.storeConnected(appUrn, provider.internalUrl, fresh.key, fresh.expiresAt, row.hubUserId);
+
+            return true;
+          });
+
+          if (!rotated) {
+            this.logger.debug(`[MemoryConnect] skipping key rotation for ${appUrn}: its connection changed since the sweep began`);
+
+            continue;
+          }
 
           // A running container uses the retired key until its environment is regenerated.
           // Retry once, then log loudly because the fresh `updatedAt` delays another rotation attempt.
@@ -314,13 +334,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return { next: attempt.redirect };
     }
 
-    const release = await this.connectionMutex.acquire(attempt.appUrn);
-    let result: { next: string; error?: boolean };
-    try {
-      result = await this.completeConnect(attempt.appUrn, attempt.next, code, currentUserId);
-    } finally {
-      release();
-    }
+    const result = await this.withConnectionLock(attempt.appUrn, () => this.completeConnect(attempt.appUrn, attempt.next, code, currentUserId));
 
     // Recording every outcome makes a replay preserve success, failure, and deferral.
     this.pending.recordOutcome(state, result.next);
@@ -394,21 +408,39 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return 'failed';
     }
 
-    // The key is gone on CI Memory now, so a row that fails to clear must not abort the connect:
-    // its owner's next status read finds the dead key and clears it.
-    for (const row of others) {
-      try {
-        await this.connections.clear(appUrn, row.hubUserId);
-      } catch (err) {
-        this.logger.error(`[MemoryConnect] ${appUrn}: could not clear the revoked connection of Hub user ${row.hubUserId}`, err);
-      }
-    }
+    // The key is gone on CI Memory now, so a row that fails to clear must not abort the connect.
+    await this.clearRevokedConnections(appUrn, others);
 
     this.logger.info(
       `[MemoryConnect] ${appUrn}: Hub user ${hubUserId} replaces the connection of Hub user ${others.map((row) => row.hubUserId).join(', ')}`,
     );
 
     return 'released';
+  }
+
+  /**
+   * Clears connected rows whose key CI Memory already revoked. A row that fails to clear is logged,
+   * not thrown: the rotation sweep skips it and its owner's next status read finds the dead key.
+   */
+  private async clearRevokedConnections(appUrn: AppUrn, rows: readonly MemoryConnectionRow[]): Promise<void> {
+    for (const row of rows) {
+      try {
+        await this.connections.clear(appUrn, row.hubUserId);
+      } catch (err) {
+        this.logger.error(`[MemoryConnect] ${appUrn}: could not clear the revoked connection of Hub user ${row.hubUserId}`, err);
+      }
+    }
+  }
+
+  /** Runs `work` while holding this app's connection lock (see {@link connectionMutex}). */
+  private async withConnectionLock<T>(appUrn: AppUrn, work: () => Promise<T>): Promise<T> {
+    const release = await this.connectionMutex.acquire(appUrn);
+
+    try {
+      return await work();
+    } finally {
+      release();
+    }
   }
 
   /** After a failed connect the app still holds the key released above, which CI Memory no longer accepts. */
@@ -549,10 +581,8 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * If the provider no longer exists, clearing locally is sufficient.
    */
   async disconnect(appUrn: AppUrn, hubUserId?: string | null): Promise<void> {
-    // Held until the row is cleared, not over the restart, so a waiting Connect callback answers fast.
-    const release = await this.connectionMutex.acquire(appUrn);
-
-    try {
+    // Held until the rows are cleared, not over the restart, so a waiting Connect callback answers fast.
+    await this.withConnectionLock(appUrn, async () => {
       const active = hubUserId ? await this.connections.getActiveConnection(appUrn) : undefined;
 
       // CI Memory revokes by app, so this would take the key of whoever connected it.
@@ -570,9 +600,12 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       }
 
       await this.connections.clear(appUrn, hubUserId);
-    } finally {
-      release();
-    }
+
+      // The revoke took every key of the app. Another person's connected row left over from a
+      // replace whose clear failed is dead too. The restart below would give its key to the app.
+      const leftover = (await this.connections.listConnected(appUrn)).filter((row) => !isSameHubUser(row.hubUserId, hubUserId));
+      await this.clearRevokedConnections(appUrn, leftover);
+    });
 
     await this.applyConnection(appUrn, 'await');
   }

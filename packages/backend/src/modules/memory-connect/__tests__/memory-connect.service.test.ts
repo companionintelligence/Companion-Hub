@@ -606,10 +606,16 @@ describe('MemoryConnectService side effects', () => {
 
   const daysAgoIso = (days: number) => new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 
+  /** Due rows that are also the connection each app runs with, which the sweep requires before it rotates. */
+  function listDue(connections: ReturnType<typeof makeService>['connections'], rows: Array<{ appUrn: string } & Record<string, unknown>>) {
+    connections.listConnected.mockResolvedValue(rows);
+    connections.getActiveConnection.mockImplementation(async (urn: string) => rows.find((row) => row.appUrn === urn));
+  }
+
   it('rotateDueKeys rotates a key older than the threshold and restarts the app', async () => {
     const { service, resolver, exchange, connections, lifecycle } = makeService();
     resolver.findProvider.mockResolvedValue(PROVIDER);
-    connections.listConnected.mockResolvedValue([{ appUrn: 'ci-openclaw:local', hubUserId: 3, updatedAt: daysAgoIso(61) }]);
+    listDue(connections, [{ appUrn: 'ci-openclaw:local', hubUserId: 3, updatedAt: daysAgoIso(61) }]);
     exchange.rotate.mockResolvedValue({ appUrn: 'ci-openclaw:local', key: 'fresh-key', expiresAt: '2026-10-07T00:00:00.000Z' });
 
     await service.rotateDueKeys();
@@ -663,7 +669,7 @@ describe('MemoryConnectService side effects', () => {
     // the app would sit on the key CI-Server just retired.
     const { service, resolver, exchange, connections, lifecycle, logger } = makeService();
     resolver.findProvider.mockResolvedValue(PROVIDER);
-    connections.listConnected.mockResolvedValue([{ appUrn: 'ci-openclaw:local', updatedAt: daysAgoIso(61) }]);
+    listDue(connections, [{ appUrn: 'ci-openclaw:local', updatedAt: daysAgoIso(61) }]);
     exchange.rotate.mockResolvedValue({ appUrn: 'ci-openclaw:local', key: 'fresh-key', expiresAt: '2026-10-07T00:00:00.000Z' });
     lifecycle.restartAppAndWait.mockResolvedValue(false);
 
@@ -679,7 +685,7 @@ describe('MemoryConnectService side effects', () => {
     // that was RUNNING and that the sweep itself just knocked over onto a retired key.
     const { service, resolver, exchange, connections, lifecycle, appsRepository, logger } = makeService();
     resolver.findProvider.mockResolvedValue(PROVIDER);
-    connections.listConnected.mockResolvedValue([{ appUrn: 'ci-openclaw:local', updatedAt: daysAgoIso(61) }]);
+    listDue(connections, [{ appUrn: 'ci-openclaw:local', updatedAt: daysAgoIso(61) }]);
     exchange.rotate.mockResolvedValue({ appUrn: 'ci-openclaw:local', key: 'fresh-key', expiresAt: '2026-10-07T00:00:00.000Z' });
     // Running at rotation time; the failed restart then leaves it stopped.
     appsRepository.getAppByUrn
@@ -697,7 +703,7 @@ describe('MemoryConnectService side effects', () => {
   it('rotateDueKeys keeps going when one app fails to rotate', async () => {
     const { service, resolver, exchange, connections, lifecycle } = makeService();
     resolver.findProvider.mockResolvedValue(PROVIDER);
-    connections.listConnected.mockResolvedValue([
+    listDue(connections, [
       { appUrn: 'ci-openclaw:local', updatedAt: daysAgoIso(61) },
       { appUrn: 'ci-hermes:local', updatedAt: daysAgoIso(70) },
     ]);
@@ -1072,5 +1078,30 @@ describe('MemoryConnectService with two Hub people', () => {
 
     expect(connections.clear).toHaveBeenCalledWith(APP, 1);
     expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
+  });
+
+  it("does not rotate person 2's listed key once person 1's Connect replaced it, since CI Memory rotates by app", async () => {
+    const { service, exchange, connections } = withPerson2Connected();
+    const due = { ...PERSON_2_ROW, updatedAt: new Date(Date.now() - 61 * 24 * 60 * 60 * 1000).toISOString() };
+    connections.listConnected.mockResolvedValue([due]);
+    // Person 1 finished Connect after the sweep read its list: theirs is the connection the app runs with now.
+    connections.getActiveConnection.mockResolvedValue({ ...PERSON_2_ROW, id: 11, hubUserId: 1, encryptedKey: 'enc-1' });
+
+    await service.rotateDueKeys();
+
+    expect(exchange.rotate).not.toHaveBeenCalled();
+    expect(connections.storeConnected).not.toHaveBeenCalled();
+  });
+
+  it('clears a leftover connected row of person 1 when person 2 disconnects, so the app is not given its revoked key', async () => {
+    const { service, connections } = withPerson2Connected();
+    // Left behind when person 2's Connect replaced person 1 and clearing person 1's row failed.
+    const leftover = { ...PERSON_2_ROW, id: 11, hubUserId: 1, encryptedKey: 'enc-1' };
+    connections.listConnected.mockResolvedValue([PERSON_2_ROW, leftover]);
+
+    await service.disconnect(APP, '2');
+
+    expect(connections.clear).toHaveBeenCalledWith(APP, '2');
+    expect(connections.clear).toHaveBeenCalledWith(APP, 1);
   });
 });
