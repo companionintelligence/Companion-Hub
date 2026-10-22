@@ -392,22 +392,30 @@ fn platform_key() -> Option<String> {
     Some(platform_manifest_key(host_os()?, host_arch()))
 }
 
+/// `deb` for Debian, Ubuntu and the distros built on them, `rpm` for Fedora, RHEL and theirs,
+/// `appimage` for the rest. It reads `ID` and then each word of `ID_LIKE`, quoted or not, as the
+/// Docker installer's `is_distro` does: RHEL writes `ID="rhel"` and Rocky `ID_LIKE="rhel centos
+/// fedora"`, which a match on the bare text `id=rhel` missed.
 fn linux_package_preference_from_os_release(content: &str) -> &'static str {
-    let lower = content.to_lowercase();
-    if lower.contains("id=debian")
-        || lower.contains("id=ubuntu")
-        || lower.contains("id=linuxmint")
-        || lower.contains("id=pop")
-    {
-        return "deb";
-    }
-    if lower.contains("id=fedora")
-        || lower.contains("id=rhel")
-        || lower.contains("id=centos")
-        || lower.contains("id=rocky")
-        || lower.contains("id=almalinux")
-    {
-        return "rpm";
+    const DEB_FAMILY: [&str; 4] = ["debian", "ubuntu", "linuxmint", "pop"];
+    const RPM_FAMILY: [&str; 5] = ["fedora", "rhel", "centos", "rocky", "almalinux"];
+    let field = |key: &str| {
+        content
+            .lines()
+            .filter_map(|line| line.trim().split_once('='))
+            .find(|(name, _)| name.trim() == key)
+            .map(|(_, value)| value.trim().trim_matches(['"', '\'']).to_ascii_lowercase())
+            .unwrap_or_default()
+    };
+    let id = field("ID");
+    let id_like = field("ID_LIKE");
+    for name in std::iter::once(id.as_str()).chain(id_like.split_whitespace()) {
+        if DEB_FAMILY.contains(&name) {
+            return "deb";
+        }
+        if RPM_FAMILY.contains(&name) {
+            return "rpm";
+        }
     }
     "appimage"
 }
@@ -481,6 +489,26 @@ fn resolve_download_artifact(
         .platforms
         .get(&platform_manifest_key(os, host_arch()))?;
     artifact_for_platform_data(platform_data, os, linux_preference, source)
+}
+
+/// The installer for installing the version this computer runs again. On Linux it comes only in
+/// this computer's own format. An update falls back to another format, but releases build no
+/// AppImage, so on Arch the fallback is the `.deb`, offered with `apt` steps, and on any distro
+/// another format of the same version only installs a second copy beside this one.
+fn resolve_reinstall_artifact(
+    manifest: &ManifestJson,
+    source: &UpdateSource,
+    host: Option<(HostOs, &'static str)>,
+) -> Option<ResolvedArtifact> {
+    let (os, linux_preference) = host?;
+    if os != HostOs::Linux {
+        return resolve_download_artifact(manifest, source, host);
+    }
+    manifest
+        .platforms
+        .get(&platform_manifest_key(os, host_arch()))?
+        .get(linux_preference)
+        .and_then(|value| parse_artifact(value, source))
 }
 
 fn lookup_artifact_in_manifest(
@@ -682,7 +710,7 @@ fn check_desktop_update_for_host(
         // of the download server gets none, since the newest release there would downgrade it.
         fetch_manifest(&client, &latest_version, source)
             .ok()
-            .and_then(|manifest| resolve_download_artifact(&manifest, source, host))
+            .and_then(|manifest| resolve_reinstall_artifact(&manifest, source, host))
     } else {
         None
     };
@@ -2454,6 +2482,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn linux_package_preference_reads_quoted_ids_and_id_like() {
+        // The ID and ID_LIKE lines these distros ship in /etc/os-release.
+        let cases = [
+            (
+                "PRETTY_NAME=\"Ubuntu 24.04.1 LTS\"\nVERSION_ID=\"24.04\"\nID=ubuntu\nID_LIKE=debian\n",
+                "deb",
+            ),
+            ("NAME=\"Debian GNU/Linux\"\nVERSION_ID=\"12\"\nID=debian\n", "deb"),
+            ("NAME=\"Linux Mint\"\nID=linuxmint\nID_LIKE=\"ubuntu debian\"\n", "deb"),
+            ("NAME=\"Zorin OS\"\nID=zorin\nID_LIKE=ubuntu\n", "deb"),
+            ("NAME=\"Kali GNU/Linux\"\nID=kali\nID_LIKE=debian\n", "deb"),
+            ("NAME=\"Fedora Linux\"\nID=fedora\nVERSION_ID=40\nVARIANT_ID=workstation\n", "rpm"),
+            (
+                "NAME=\"Red Hat Enterprise Linux\"\nID=\"rhel\"\nID_LIKE=\"fedora\"\nVERSION_ID=\"9.4\"\nPLATFORM_ID=\"platform:el9\"\n",
+                "rpm",
+            ),
+            ("NAME=\"Rocky Linux\"\nID=\"rocky\"\nID_LIKE=\"rhel centos fedora\"\n", "rpm"),
+            ("NAME=\"AlmaLinux\"\nID=\"almalinux\"\nID_LIKE=\"rhel centos fedora\"\n", "rpm"),
+            ("NAME=\"CentOS Stream\"\nID=\"centos\"\nID_LIKE=\"rhel fedora\"\n", "rpm"),
+            ("NAME=\"Manjaro Linux\"\nID=manjaro\nID_LIKE=arch\n", "appimage"),
+            (
+                "NAME=\"openSUSE Tumbleweed\"\nID=\"opensuse-tumbleweed\"\nID_LIKE=\"opensuse suse\"\n",
+                "appimage",
+            ),
+            ("", "appimage"),
+        ];
+        for (os_release, expected) in cases {
+            assert_eq!(
+                linux_package_preference_from_os_release(os_release),
+                expected,
+                "{os_release}"
+            );
+        }
+    }
+
     fn sample_artifact(url: &str) -> serde_json::Value {
         serde_json::json!({
             "url": url,
@@ -2931,6 +2995,51 @@ mod tests {
         assert!(!current.update_available);
         assert!(current.download_url.is_empty());
         assert_eq!(current.package_format.as_deref(), Some("deb"));
+    }
+
+    #[test]
+    fn up_to_date_check_offers_no_other_format() {
+        // Like a real release: a .deb and an .rpm, no AppImage.
+        let deb_and_rpm = |base: &str| {
+            Some(serde_json::json!({
+                "version": "1.2.3",
+                "platforms": {
+                    platform_manifest_key(HostOs::Linux, host_arch()): {
+                        "deb": { "url": format!("{base}/v1.2.3/hub.deb"), "size": 1 },
+                        "rpm": { "url": format!("{base}/v1.2.3/hub.rpm"), "size": 1 },
+                    }
+                }
+            }))
+        };
+        let source = UpdateSource::from_base(&serve_release("1.2.3", deb_and_rpm)).expect("source");
+        let arch = Some((HostOs::Linux, "appimage"));
+
+        // Arch takes an AppImage, which the release lacks, so the .deb isn't offered in its place.
+        let current = check_desktop_update_for_host("1.2.3", &source, arch, true)
+            .expect("check on Arch, up to date");
+        assert!(!current.update_available);
+        assert!(current.download_url.is_empty(), "{}", current.download_url);
+        assert_eq!(current.package_format.as_deref(), Some("appimage"));
+
+        // An update still falls back to another format, as it did before.
+        let update =
+            check_desktop_update_for_host("1.0.0", &source, arch, true).expect("check on Arch");
+        assert!(update.update_available);
+        assert!(
+            update.download_url.ends_with("/v1.2.3/hub.deb"),
+            "{}",
+            update.download_url
+        );
+
+        // Fedora still gets its .rpm.
+        let fedora =
+            check_desktop_update_for_host("1.2.3", &source, Some((HostOs::Linux, "rpm")), true)
+                .expect("check on Fedora, up to date");
+        assert!(
+            fedora.download_url.ends_with("/v1.2.3/hub.rpm"),
+            "{}",
+            fedora.download_url
+        );
     }
 
     #[test]
