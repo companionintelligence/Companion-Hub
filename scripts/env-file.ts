@@ -39,6 +39,8 @@ const ENV_FILE_MODE = 0o600;
  * `writeFileSync`'s `mode` applies only when it creates the file, so an env file first written at the
  * umask's 0664 (by the desktop app, or by `cp .env.example`) kept that mode through every later write.
  * Only a file this user owns: taking bits off someone else's could lock its owner's Hub out of it.
+ * Not one whose CI_HUB_CONTAINER_UID pins the Hub to another non-root uid either: the Hub reads
+ * the file as that uid (docker-entrypoint.sh), through the group or other bits this would clear.
  */
 export function restrictEnvFileMode(envFileName: string): number | undefined {
   if (process.platform === 'win32') return undefined;
@@ -46,6 +48,8 @@ export function restrictEnvFileMode(envFileName: string): number | undefined {
   try {
     const stat = statSync(abs);
     if (!stat.isFile() || stat.uid !== process.getuid?.()) return undefined;
+    const pinnedUid = (process.env.CI_HUB_CONTAINER_UID || parseEnvFile(abs).CI_HUB_CONTAINER_UID)?.trim();
+    if (pinnedUid && pinnedUid !== '0' && pinnedUid !== String(stat.uid)) return undefined;
     const current = stat.mode & 0o777;
     const restricted = current & ENV_FILE_MODE;
     if (restricted === current) return undefined;

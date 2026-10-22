@@ -126,6 +126,27 @@ describe.skipIf(process.platform === 'win32')('env file mode', () => {
     expect(modeOf(p)).toBe(0o600);
   });
 
+  it('leaves the mode alone when CI_HUB_CONTAINER_UID pins the Hub to another non-root uid', () => {
+    // The Hub reads /data/.env as that uid, through the other bits.
+    const p = path.join(dir, '.env.prod');
+    const other = (process.getuid?.() ?? 1000) + 1;
+    writeFileSync(p, `CI_HUB_CONTAINER_UID=${other}\nJWT_SECRET=y\n`);
+    chmodSync(p, 0o644);
+
+    expect(restrictEnvFileMode(p)).toBeUndefined();
+    expect(modeOf(p)).toBe(0o644);
+  });
+
+  it('still restricts when the pin is root or the file owner', () => {
+    const p = path.join(dir, '.env.prod');
+    for (const pin of ['0', String(process.getuid?.() ?? 1000)]) {
+      writeFileSync(p, `CI_HUB_CONTAINER_UID=${pin}\nJWT_SECRET=y\n`);
+      chmodSync(p, 0o664);
+      expect(restrictEnvFileMode(p)).toBe(0o664);
+      expect(modeOf(p)).toBe(0o600);
+    }
+  });
+
   it('leaves a missing file missing', () => {
     const p = path.join(dir, '.env');
     expect(restrictEnvFileMode(p)).toBeUndefined();
