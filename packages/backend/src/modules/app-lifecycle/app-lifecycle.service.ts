@@ -975,6 +975,18 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     return oldJSON !== newJSON;
   }
 
+  /**
+   * The form a start publishes: the stored config with this start's options on top.
+   *
+   * `appFormSchema` passes unknown keys through into the stored config, so a stored
+   * `onlyRecreateChanged` would otherwise stop every dashboard start from force-recreating.
+   * Only the caller decides it: the Hub boot and the start after an update.
+   */
+  private startCommandForm(storedConfig: unknown, options: { skipPull?: boolean; onlyRecreateChanged?: boolean }): Record<string, unknown> {
+    const { onlyRecreateChanged: _storedRecreateMode, ...config } = (storedConfig ?? {}) as Record<string, unknown>;
+    return { ...config, skipPull: options.skipPull, ...(options.onlyRecreateChanged ? { onlyRecreateChanged: true } : {}) };
+  }
+
   async startApp(params: { appUrn: AppUrn; skipPull?: boolean; onlyRecreateChanged?: boolean; actor: LifecycleActor }) {
     const { appUrn, skipPull, onlyRecreateChanged } = params;
 
@@ -992,12 +1004,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'start');
-    // `appFormSchema` passes unknown keys through into the stored config, so a stored
-    // `onlyRecreateChanged` would otherwise stop every dashboard start from force-recreating.
-    // Only the boot path decides it.
-    const { onlyRecreateChanged: _storedRecreateMode, ...storedConfig } = (app.config ?? {}) as Record<string, unknown>;
     this.appEventsQueue
-      .publish({ appUrn, command: 'start', requestId, form: { ...storedConfig, skipPull, ...(onlyRecreateChanged ? { onlyRecreateChanged } : {}) } })
+      .publish({ appUrn, command: 'start', requestId, form: this.startCommandForm(app.config, { skipPull, onlyRecreateChanged }) })
       .then(async (raw) => {
         const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
@@ -1973,7 +1981,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       appUrn,
       command: 'start',
       requestId,
-      form: { ...app.config, skipPull, ...(onlyRecreateChanged ? { onlyRecreateChanged } : {}) },
+      form: this.startCommandForm(app.config, { skipPull, onlyRecreateChanged }),
     });
     const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
 
@@ -2743,6 +2751,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     await this.appRepository.updateAppById(app.id, { status: 'updating' });
 
     const appStatusBeforeUpdate = app.status;
+    // The command starts the new version of such an app, so the start below must run for the same set.
+    const wasRunning = !STATUSES_MEANING_NOT_RUNNING.has(appStatusBeforeUpdate);
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'updating' });
 
     const requestId = crypto.randomUUID();
@@ -2754,7 +2764,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         requestId,
         form: app.config,
         performBackup,
-        wasRunning: !STATUSES_MEANING_NOT_RUNNING.has(appStatusBeforeUpdate),
+        wasRunning,
       })
       .then(async (raw) => {
         const { success, message, errorCode, errorDetail, settingsPath, rolledBack } = raw as z.output<typeof appEventResultSchema>;
@@ -2764,7 +2774,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           }
 
           const appInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
-          const restoredStatus = appStatusBeforeUpdate === 'running' ? 'stopped' : appStatusBeforeUpdate;
+          const restoredStatus = wasRunning ? 'stopped' : appStatusBeforeUpdate;
 
           // Part of the update the caller was already authorized for; not a new decision.
           await this.updateAppConfig({ appUrn, form: app.config, actor: { kind: 'system', reason: 'update-reapply' } });
@@ -2772,7 +2782,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           this.sseService.emit('app', { event: 'update_success', appUrn, appStatus: restoredStatus });
           this.agentNotifyService?.notify('update_success', { appUrn }, 'info');
 
-          if (appStatusBeforeUpdate === 'running') {
+          if (wasRunning) {
             // The update command already started the new version and waited for its health check, so
             // this start must not recreate what it started: it records the app as running and applies
             // only what changed since, such as settings the update re-applied. A force-recreate here

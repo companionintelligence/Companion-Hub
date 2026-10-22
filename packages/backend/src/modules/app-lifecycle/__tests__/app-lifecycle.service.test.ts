@@ -5797,6 +5797,15 @@ describe('AppLifecycleService', () => {
       expect(forms[1]).toMatchObject({ skipPull: true, onlyRecreateChanged: true });
     });
 
+    it('startAppAndWait ignores an onlyRecreateChanged left in the stored config', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, config: { onlyRecreateChanged: true } } as any);
+
+      await service.startAppAndWait({ appUrn, skipPull: true });
+
+      const [form] = appEventsQueue.publish.mock.calls.map(([message]) => (message as any).form);
+      expect(form).not.toHaveProperty('onlyRecreateChanged');
+    });
+
     it('restartAppAndWait error: errorCode/errorDetail/settingsPath reach the emitted SSE event', async () => {
       appEventsQueue.publish.mockResolvedValue({
         success: false,
@@ -6258,6 +6267,19 @@ describe('AppLifecycleService', () => {
     });
 
     it('updateApp success starts a running app without pulling its images a second time', async () => {
+      vi.spyOn(service, 'updateAppConfig').mockResolvedValue({ requestId: crypto.randomUUID() });
+      const start = vi.spyOn(service, 'startAppAndWait').mockResolvedValue(true);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ cihub_app_version: 2 } as any);
+
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      expect(start).toHaveBeenCalledWith({ appUrn, skipPull: true, onlyRecreateChanged: true });
+    });
+
+    // The command starts the new version of these too, so the row has to be brought to `running` as well.
+    it.each(['starting', 'restarting'])('updateApp success records an app that was %s as running', async (status) => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, status } as any);
       vi.spyOn(service, 'updateAppConfig').mockResolvedValue({ requestId: crypto.randomUUID() });
       const start = vi.spyOn(service, 'startAppAndWait').mockResolvedValue(true);
       appFilesManager.getInstalledAppInfo.mockResolvedValue({ cihub_app_version: 2 } as any);

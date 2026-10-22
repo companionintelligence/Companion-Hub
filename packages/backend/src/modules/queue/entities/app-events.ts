@@ -25,8 +25,8 @@ const queueAppFormSchema = z
     skipEnv: z.boolean().default(false),
     skipPull: z.boolean().default(false),
     skipRun: z.boolean().default(false),
-    // Start only: let compose recreate just the services whose resolved definition changed. See
-    // `AppLifecycleService.restartRunningApps`.
+    // Start only: let compose recreate just the services whose resolved definition changed. Set by
+    // the Hub boot (`AppLifecycleService.restartRunningApps`) and the start after an update.
     onlyRecreateChanged: z.boolean().optional(),
     cpuLimit: optionalCpuLimitSchema,
     memoryLimit: optionalMemoryLimitSchema,
