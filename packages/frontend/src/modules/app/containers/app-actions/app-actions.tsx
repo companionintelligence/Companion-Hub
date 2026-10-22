@@ -289,8 +289,8 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
 
   // Clear the optimistic "cancelling" flags whenever the status moves, into `installing` too. A queued
   // install is cancelled at once, so install_cancelled can land before the reply that sets the flag,
-  // and the app's next install would then start out "Cancelling…" with Cancel disabled. A queued
-  // update is cancelled at once in the same way.
+  // and the app's next install would then start out "Cancelling…" with Cancel disabled. An update
+  // cancelled during its download can end as quickly, so its flag is cleared the same way.
   // biome-ignore lint/correctness/useExhaustiveDependencies: app?.status is the trigger, not an input.
   useEffect(() => {
     setIsCancellingInstall(false);

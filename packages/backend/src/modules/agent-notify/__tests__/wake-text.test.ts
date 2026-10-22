@@ -20,6 +20,7 @@ const HUB_EVENTS: Array<[string, Record<string, unknown>, Urgency]> = [
   ['backup_error', { appUrn: 'immich:ci-store' }, 'high'],
   ['restore_error', { appUrn: 'immich:ci-store' }, 'high'],
   ['update_success', { appUrn: 'immich:ci-store' }, 'info'],
+  ['update_cancelled', { appUrn: 'immich:ci-store' }, 'info'],
   ['system.update_available', { current: '1.2.0', latest: '1.3.0' }, 'low'],
   ['system.mcp_ready', { toolCount: 12 }, 'info'],
   ['registration.state_changed', { from: 'active', to: 'degraded', reasons: ['tunnel down'] }, 'high'],

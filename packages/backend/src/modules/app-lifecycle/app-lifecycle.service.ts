@@ -356,6 +356,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   private lastTailscaleConnected = false;
   private lastTailscaleHttpsAvailable = false;
 
+  /**
+   * How long the publisher of an app event waits for its reply. Read once, at boot, as `QueueModule`
+   * reads it for the queue's RPC client: a later change to the events timeout in Settings does not
+   * reach that client, so a deadline read from the live setting could outlast the real wait.
+   */
+  private readonly appEventsReplyTimeoutMs: number;
+
   constructor(
     private readonly logger: LoggerService,
     private readonly appEventsQueue: AppEventsQueue,
@@ -382,6 +389,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     @Optional() private readonly errorReportingService?: ErrorReportingService,
     @Optional() private readonly lifecycleJobService?: LifecycleJobService,
   ) {
+    this.appEventsReplyTimeoutMs = appEventsRpcTimeoutMs(this.config.get('userSettings')?.eventsTimeout ?? 0);
     this.logger.debug('Subscribing to app events...');
     this.appEventsQueue.onEvent((data, reply) => this.invokeCommand(data, reply));
   }
@@ -675,7 +683,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
               }
             },
             // The publisher's wait started when the entry was registered, just before the publish.
-            deadline: new OperationDeadline(entry.createdAt + appEventsRpcTimeoutMs(this.config.get('userSettings')?.eventsTimeout ?? 0)),
+            deadline: new OperationDeadline(entry.createdAt + this.appEventsReplyTimeoutMs),
           }
         : undefined;
 
@@ -737,9 +745,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       // transitional statuses (e.g. update -> start-after-update). Superseded handlers
       // still lose the claim when a newer op replaced the registry entry.
       release();
-      if (isInstall) {
-        // Whatever the install's last event was, a new tab must not be told it is still installing.
+      if (isInstall || data.command === 'update') {
+        // Whatever the install's or update's last event was, a new tab must not be told it is still
+        // installing or updating. An update can end with no event for the app: a superseded
+        // completion, or a cancel whose row had already left `updating`.
         this.sseService.forgetInstallProgress(data.appUrn);
+      }
+      if (isInstall) {
         this.installPipelineTracker.setActive(null);
         releasePipeline?.();
         void this.emitInstallQueueUpdate();
@@ -805,6 +817,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       // The previous version could not be put back: the person has to see that as the failure it is.
       this.sseService.emit('app', { event: 'update_error', appUrn, appStatus: status, error: result.message });
       this.agentNotifyService?.notify('update_error', { appUrn }, 'high');
+      // Reported as a failed update's rollback is: the command skipped its own report for a cancel.
+      this.reportAppFailure(appUrn, 'update', result.message || 'The cancelled update could not be rolled back', result.errorCode);
       return;
     }
     this.sseService.emit('app', { event: 'update_cancelled', appUrn, appStatus: status });

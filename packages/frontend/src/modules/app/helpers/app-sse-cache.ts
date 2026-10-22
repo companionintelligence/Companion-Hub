@@ -347,7 +347,9 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
     updateInstallationProgress(urn, null);
   }
 
-  if (appStatus && appStatus !== 'updating') {
+  // Any other status, `updating` included: a step-less `updating` is a new update starting, and a step
+  // left from one whose end this tab missed would otherwise show (and gate Cancel) until its first step.
+  if (appStatus) {
     setUpdatePhase(urn, null);
   }
 

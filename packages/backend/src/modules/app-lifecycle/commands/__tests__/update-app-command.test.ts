@@ -822,6 +822,39 @@ describe('UpdateAppCommand', () => {
       expect(result.message).toContain('too little of its time was left');
       expect(dockerService.pullImages).not.toHaveBeenCalled();
       expect(dockerService.composeApp).not.toHaveBeenCalled();
+      // The service may have settled it already; the page must not be told it is updating again.
+      expect(sseService.emit).not.toHaveBeenCalled();
+    });
+
+    it('rolls a stopped app back when the cancel arrived while its files were being replaced', async () => {
+      // A stopped app is not started again, so it has no safe point after this step.
+      command = new UpdateAppCommand(moduleRef, docker, true, false);
+      (command as any).assertMarketplaceEntitlement = vi.fn().mockResolvedValue(undefined);
+      (command as any).ensureAppDir = vi.fn().mockResolvedValue(undefined);
+      filesystem.pathExists.mockResolvedValue(true);
+      marketplaceService.copyAppFromRepoToInstalled.mockImplementation(async () => {
+        controller.abort();
+        return undefined as any;
+      });
+
+      const result = await command.execute(appUrn, {}, ctx);
+
+      expect(result).toMatchObject({ success: false, cancelled: true, rolledBack: true, cancelledStatus: 'stopped' });
+      expect(filesystem.copyDirectory).toHaveBeenCalledWith('/data/snapshots/test-app/snap-1/app-files', '/data/installed/test-app');
+      expect(phasesShown()).not.toContain('finalizing');
+    });
+
+    it('rolls back when the cancel landed just as the health check passed', async () => {
+      dockerService.verifyContainerHealthProbe.mockImplementation(async () => {
+        controller.abort();
+        return { ok: true, healthy: true, containers: [], message: 'All containers healthy' };
+      });
+
+      const result = await command.execute(appUrn, {}, ctx);
+
+      expect(result).toMatchObject({ success: false, cancelled: true, rolledBack: true, cancelledStatus: 'running' });
+      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz');
+      expect(phasesShown()).not.toContain('finalizing');
     });
 
     it('rolls back when the time runs out during the backup', async () => {

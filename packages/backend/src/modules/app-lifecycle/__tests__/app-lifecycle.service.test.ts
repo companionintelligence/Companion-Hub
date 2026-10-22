@@ -6608,6 +6608,23 @@ describe('AppLifecycleService', () => {
 
       expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(9, 'updating', { status: 'stopped' });
       expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_error', appStatus: 'stopped' }));
+      expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith(expect.objectContaining({ appUrn, phase: 'update' }));
+    });
+
+    // A cancel whose row had already left `updating` sends no event for the app, so the step the
+    // update last reported would be replayed to every new tab as if it were still running.
+    it('drops the replayed step however the update ended', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'update', tier: 'before_ponr' });
+      appsRepository.updateAppByIdIfStatus.mockResolvedValue(false);
+      const execute = vi
+        .fn()
+        .mockResolvedValue({ success: false, cancelled: true, rolledBack: true, cancelledStatus: 'running', message: 'cancelled' });
+      commandFactory.createCommand.mockReturnValue({ execute } as any);
+
+      await service.invokeCommand(update, vi.fn());
+
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_cancelled' }));
+      expect(sseService.forgetInstallProgress).toHaveBeenCalledWith(appUrn);
     });
 
     it('puts a running app back to running when the update is cancelled before a worker took it', async () => {

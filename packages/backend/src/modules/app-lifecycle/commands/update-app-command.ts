@@ -116,12 +116,14 @@ export class UpdateAppCommand extends AppLifecycleCommand {
     };
 
     try {
-      report('preparing');
+      // Checked before the first step is shown: an update a worker takes this late may be one the
+      // service has already settled, and telling the page it is updating would leave it spinning.
       if (workLeftMs() < UPDATE_MIN_WORK_MS) {
         throw new Error(
           `The update of ${appUrn} was not started: it waited for a free worker until too little of its time was left. Nothing was changed; try the update again.`,
         );
       }
+      report('preparing');
 
       await this.assertMarketplaceEntitlement(appUrn, 'update');
 
@@ -229,6 +231,13 @@ export class UpdateAppCommand extends AppLifecycleCommand {
           throw new Error(`Update failed health probe: ${probeResult.message}`);
         }
         logger.info(`Post-update health check passed for app ${appUrn}: ${probeResult.message}`);
+      }
+
+      // The registry accepts a cancel until `finalizing`, so one that arrived since the last safe point
+      // still counts. A stopped app has no safe point after its files were replaced, and a cancel can
+      // land just as the health check passes.
+      if (ctx?.signal.aborted) {
+        throw new UpdateCancelledError(`The update of ${appUrn} was cancelled before it was finished`);
       }
 
       // Past this point the update is done and is no longer cancelled.

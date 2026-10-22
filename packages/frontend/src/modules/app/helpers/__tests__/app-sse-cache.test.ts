@@ -115,6 +115,12 @@ describe('handleAppSseEvent', () => {
     expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
   });
 
+  it("forgets a previous update's step when a new update starts", () => {
+    handleAppSseEvent(queryClient as unknown as QueryClient, { event: 'status_change', appUrn: 'uptime-kuma:ci-marketplace', appStatus: 'updating' });
+
+    expect(setUpdatePhase).toHaveBeenCalledWith('uptime-kuma:ci-marketplace', null);
+  });
+
   it.each(['update_success', 'update_error', 'update_cancelled'])("forgets the update's step and refetches the app on %s", (event) => {
     handleAppSseEvent(queryClient as unknown as QueryClient, { event, appUrn: 'uptime-kuma:ci-marketplace', appStatus: 'running' });
 

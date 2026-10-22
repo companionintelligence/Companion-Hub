@@ -83,9 +83,10 @@ export class SSEService implements OnApplicationShutdown {
   }
 
   /**
-   * Drop an app's replayed progress tick once its install has ended. The worker calls this however
-   * the install ended, since not every ending sends an event for the app (a success whose row had
-   * already left `installing`, a failure whose row was gone).
+   * Drop an app's replayed progress tick or update step once its install or update has ended. The
+   * worker calls this however the operation ended, since not every ending sends an event for the app
+   * (a success whose row had already left `installing`, a failure whose row was gone, a superseded
+   * update).
    */
   forgetInstallProgress(appUrn: string): void {
     this.installProgress.delete(appUrn);

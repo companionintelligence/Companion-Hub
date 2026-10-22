@@ -10,7 +10,8 @@ import { InstallPipelineTracker } from '../apps/install-pipeline.tracker';
 import type { AppStatus } from '@/core/database/drizzle/types';
 import { StatusReportService } from '../status-report/status-report.service';
 import { SystemEventsQueue } from '../queue/entities/system-events';
-import { appUrnFromLabels, DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES } from '@/common/constants';
+import { appUrnFromLabels } from '@/common/constants';
+import { appEventsRpcTimeoutMs } from '../queue/queue.constants';
 import { listContainersMatchingAnyLabelSets, managedAppLabelSets } from '../docker/hub-container-query';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
@@ -371,7 +372,7 @@ export class AppStatusSyncService {
     const eventsTimeoutMinutes = this.configuration.get('userSettings').eventsTimeout;
     return {
       eventsTimeoutMs: eventsTimeoutMinutes * 60 * 1000,
-      queueTimeoutMs: Math.max(eventsTimeoutMinutes, Number(DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES)) * 60 * 1000,
+      queueTimeoutMs: appEventsRpcTimeoutMs(eventsTimeoutMinutes),
     };
   }
 }
