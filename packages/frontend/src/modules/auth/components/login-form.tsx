@@ -3,7 +3,7 @@ import { Input } from '@/components/ui/Input';
 import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
 import { zodResolver } from '@hookform/resolvers/zod';
 import type React from 'react';
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
@@ -45,10 +45,14 @@ export const LoginForm: React.FC<IProps> = ({
   allowPasswordLogin = true,
 }) => {
   const { t } = useTranslation();
-  const schema = z.object({
-    email: emailField(t),
-    password: z.string(),
-  });
+  const schema = useMemo(
+    () =>
+      z.object({
+        email: emailField(t),
+        password: z.string(),
+      }),
+    [t],
+  );
   const {
     register,
     handleSubmit,
