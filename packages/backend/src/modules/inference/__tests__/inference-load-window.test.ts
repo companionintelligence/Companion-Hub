@@ -891,6 +891,46 @@ describe('a factory reset while a pin is still loading its model', () => {
     await expect(router.pinTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toEqual({ pinned: true });
     expect(registry.getPinnedCatalogIds()).toEqual(['gemma4-e4b']);
   });
+
+  /** The pin of a model already in memory tells Ollama to keep it (`setResidentKeepAlive`), which the fake has no hook for. */
+  const withKeepAlive = (router: InferenceRouterService, keepAlive: (modelId: string, keep: 'pinned' | 'default') => Promise<string>) => {
+    const backend = (router as unknown as { backends: { get: (type: string) => Record<string, unknown> } }).backends.get('ollama');
+    const setResidentKeepAlive = vi.fn(keepAlive);
+    backend.setResidentKeepAlive = setResidentKeepAlive;
+    return setResidentKeepAlive;
+  };
+
+  // A reset that came while the pin waited for the lock: the model keeps the keep_alive it had.
+  it('asks Ollama nothing for a pin a reset overtook before it reached the model', async () => {
+    const { router, registry } = world({ profile: BETA_RED, ollama: new FakeOllama(16_384, gemma4E4bHeld), ollamaSlots: 4 });
+    await router.loadTrackedModel('gemma4-e4b', { origin: 'operator' });
+    const keepAlive = withKeepAlive(router, async () => 'set');
+
+    const pinning = router.pinTrackedModel('gemma4-e4b', { origin: 'operator' });
+    await registry.forgetPins();
+
+    await expect(pinning).resolves.toEqual({ pinned: false, reason: expect.stringContaining('a factory reset ran before this pin finished') });
+    expect(keepAlive).not.toHaveBeenCalled();
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+  });
+
+  // A reset that came while Ollama was asked to keep the model: the pin must not land after it.
+  it('refuses a pin when a reset ran while Ollama was asked to keep the model', async () => {
+    const { router, registry } = world({ profile: BETA_RED, ollama: new FakeOllama(16_384, gemma4E4bHeld), ollamaSlots: 4 });
+    await router.loadTrackedModel('gemma4-e4b', { origin: 'operator' });
+    const keepAlive = withKeepAlive(router, async () => {
+      await registry.forgetPins();
+      return 'set';
+    });
+
+    await expect(router.pinTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toEqual({
+      pinned: false,
+      reason: expect.stringContaining('a factory reset ran before this pin finished'),
+    });
+    expect(keepAlive).toHaveBeenCalledWith('gemma4:e4b', 'pinned', expect.anything());
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+    expect(registry.getTrackedModel('gemma4-e4b')).toMatchObject({ pinned: false });
+  });
 });
 
 // The Hub loads a model at keep_alive -1, so a model the reset only unpinned stayed in Ollama for good.
