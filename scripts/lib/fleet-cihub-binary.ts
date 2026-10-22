@@ -10,7 +10,7 @@
  * and it never reaches a node.
  */
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -165,9 +165,13 @@ function githubStatusHint(status: number, token: string | undefined): string {
   return '';
 }
 
-/** A 404 on the release lookup means the tag does not exist; the asset request gets only {@link githubStatusHint}. */
-function releaseLookupHint(status: number, token: string | undefined): string {
-  return status === 404 ? '. GitHub has no release with that tag' : githubStatusHint(status, token);
+/**
+ * A 404 on the release lookup means the tag does not exist, or for `latest` that nothing is published;
+ * the asset request gets only {@link githubStatusHint}.
+ */
+function releaseLookupHint(status: number, token: string | undefined, version: string): string {
+  if (status !== 404) return githubStatusHint(status, token);
+  return version === 'latest' ? '. GitHub has no published release to call latest' : '. GitHub has no release with that tag';
 }
 
 /** The release a version names: `latest` as GitHub resolves it right now, or one tag, `v` or not. */
@@ -179,7 +183,9 @@ export async function lookupRelease(input: { token?: string; version: string; fe
       : `https://api.github.com/repos/${CIHUB_RELEASES_REPO}/releases/tags/${input.version.startsWith('v') ? input.version : `v${input.version}`}`;
   const releaseRes = await fetchImpl(releaseUrl, { headers: { ...githubHeaders(input.token), Accept: 'application/vnd.github+json' } });
   if (!releaseRes.ok) {
-    throw new Error(`GitHub release lookup failed: HTTP ${releaseRes.status} for ${releaseUrl}${releaseLookupHint(releaseRes.status, input.token)}`);
+    throw new Error(
+      `GitHub release lookup failed: HTTP ${releaseRes.status} for ${releaseUrl}${releaseLookupHint(releaseRes.status, input.token, input.version)}`,
+    );
   }
   return (await releaseRes.json()) as ReleaseInfo;
 }
@@ -266,8 +272,13 @@ export async function downloadReleaseAsset(input: {
     // Written beside the target and renamed, so a run cut off mid-write leaves no truncated binary
     // for the next run to reuse.
     const partial = `${target}.partial-${process.pid}`;
-    writeFileSync(partial, bytes, { mode: 0o755 });
-    renameSync(partial, target);
+    try {
+      writeFileSync(partial, bytes, { mode: 0o755 });
+      renameSync(partial, target);
+    } catch (error) {
+      rmSync(partial, { force: true });
+      throw error;
+    }
   }
   return { path: target, tag: release.tag_name, sha256: sha256File(target) };
 }

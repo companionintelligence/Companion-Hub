@@ -255,6 +255,13 @@ describe('downloadReleaseAsset', () => {
     );
   });
 
+  it('does not name a tag when `latest` answers 404', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{"message":"Not Found"}', { status: 404 })) as unknown as typeof fetch;
+    await expect(downloadReleaseAsset({ assetName: 'cihub-linux-x64', version: 'latest', fetchImpl })).rejects.toThrow(
+      /HTTP 404 .*no published release to call latest$/,
+    );
+  });
+
   it('downloads without a token and sends no Authorization header: the repository is public', async () => {
     const cacheDir = mkdtempSync(join(tmpdir(), 'cihub-cache-'));
     dirs.push(cacheDir);
