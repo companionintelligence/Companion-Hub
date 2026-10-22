@@ -376,4 +376,24 @@ describe('PairingAppRestoreService', () => {
     expect([first, second]).toEqual(['released', 'released']);
     expect(cloudflare.getDeviceApplications).toHaveBeenCalledTimes(1);
   });
+
+  // The status route asks on every poll of an open restore page, every 2 s per tab.
+  it('runs at most one asked-for pass in each interval, however often a waiting page asks', () => {
+    let now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const run = vi.spyOn(service, 'runCheck').mockResolvedValue('waiting');
+    try {
+      service.requestCheck();
+      service.requestCheck();
+      now += PairingAppRestoreService.REQUEST_MIN_INTERVAL_MS - 1;
+      service.requestCheck();
+      expect(run).toHaveBeenCalledTimes(1);
+
+      now += 1;
+      service.requestCheck();
+      expect(run).toHaveBeenCalledTimes(2);
+    } finally {
+      clock.mockRestore();
+    }
+  });
 });

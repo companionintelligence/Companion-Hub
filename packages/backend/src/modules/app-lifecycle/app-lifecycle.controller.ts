@@ -54,9 +54,9 @@ export class AppLifecycleController {
     const { state, summary, ...status } = await this.appRehydrationService.getRestoreStatus(() => this.whois.hubManageHint(req));
 
     if (status.checking) {
-      // Someone is waiting on the answer, so ask now rather than at the next 15 s pass. A pass under
-      // way is shared, so a page polling this does not start more.
-      void this.pairingAppRestore.runCheck().catch(() => undefined);
+      // Someone is waiting on the answer, so ask now rather than at the next 15 s pass. The service
+      // spaces these out, so a page polling this does not ask the Portal on every poll.
+      this.pairingAppRestore.requestCheck();
     }
 
     return RehydrateStatusDto.parse({ ...status, ...(state ? { state } : {}), ...(summary ? { summary } : {}) }, { reportOnly: true });

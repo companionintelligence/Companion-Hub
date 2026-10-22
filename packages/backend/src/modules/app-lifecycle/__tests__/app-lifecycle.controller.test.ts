@@ -1,5 +1,5 @@
 import type { Request } from 'express';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
@@ -33,7 +33,6 @@ describe('AppLifecycleController — names the actor for every lifecycle call', 
     lifecycle.installApp.mockResolvedValue({ requestId: 'r' } as never);
     lifecycle.updateAppConfig.mockResolvedValue({ requestId: 'r' } as never);
     pairingRestore = mock<PairingAppRestoreService>();
-    pairingRestore.runCheck.mockResolvedValue('none');
     controller = new AppLifecycleController(lifecycle, rehydration, mock<HubAccessService>(), whois, pairingRestore);
   });
 
@@ -102,7 +101,6 @@ describe('AppLifecycleController restore status', () => {
     rehydration = mock<AppRehydrationService>();
     whois = mock<MarketplaceWhoIsService>();
     pairingRestore = mock<PairingAppRestoreService>();
-    pairingRestore.runCheck.mockResolvedValue('released');
     controller = new AppLifecycleController(mock<AppLifecycleService>(), rehydration, mock<HubAccessService>(), whois, pairingRestore);
   });
 
@@ -124,7 +122,7 @@ describe('AppLifecycleController restore status', () => {
 
     await controller.getRehydrateStatus(req);
 
-    await vi.waitFor(() => expect(pairingRestore.runCheck).toHaveBeenCalledTimes(1));
+    expect(pairingRestore.requestCheck).toHaveBeenCalledTimes(1);
   });
 
   it('leaves the apps check to its own schedule otherwise', async () => {
@@ -132,7 +130,7 @@ describe('AppLifecycleController restore status', () => {
 
     await controller.getRehydrateStatus(req);
 
-    expect(pairingRestore.runCheck).not.toHaveBeenCalled();
+    expect(pairingRestore.requestCheck).not.toHaveBeenCalled();
   });
 
   it('records that the restore was seen by someone the status route held on the restore page', async () => {
