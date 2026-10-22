@@ -73,6 +73,50 @@ describe.skipIf(!canEnforcePermissions)('FilesystemService and permissions it re
     });
   });
 
+  /*
+   * The detailed variants are for callers that hand a permission failure to a root helper and report
+   * the outcome themselves. An error line from the first try put a red line in the Logs tab for every
+   * restore, reset or backup that then worked as root.
+   */
+  describe('what a permission failure logs', () => {
+    let logger: ReturnType<typeof mock<LoggerService>>;
+
+    beforeEach(() => {
+      logger = mock<LoggerService>();
+      service = new FilesystemService(logger);
+    });
+
+    it('is debug only from removeDirectoryDetailed but still an error from removeDirectory', async () => {
+      const locked = path.join(scratch, 'locked');
+      await fs.promises.mkdir(locked);
+      await fs.promises.writeFile(path.join(locked, 'kuma.db'), 'x');
+      await fs.promises.chmod(locked, 0o555);
+
+      await expect(service.removeDirectoryDetailed(locked)).resolves.toEqual({ removed: false, permissionDenied: true });
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(logger.debug).toHaveBeenCalledWith(expect.stringContaining(`Could not remove ${locked}`), expect.anything());
+
+      await expect(service.removeDirectory(locked)).resolves.toBe(false);
+      expect(logger.error).toHaveBeenCalledWith(`Error removing directory ${locked}:`, expect.anything());
+    });
+
+    it('is debug only from copyDirectoryDetailed but still an error from copyDirectory', async () => {
+      const { dataDir } = await makeDatabaseDataDir();
+
+      await service.copyDirectoryDetailed(dataDir, path.join(scratch, 'copy'));
+      expect(logger.error).not.toHaveBeenCalled();
+
+      await service.copyDirectory(dataDir, path.join(scratch, 'copy2'));
+      expect(logger.error).toHaveBeenCalledTimes(1);
+    });
+
+    it('stays an error for a failure that is not about permissions', async () => {
+      await service.copyDirectoryDetailed(path.join(scratch, 'nope'), path.join(scratch, 'dest'));
+
+      expect(logger.error).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('findUnreadable', () => {
     it('finds the database file a copy would stop at, a level down', async () => {
       const { dataDir, secretFile } = await makeDatabaseDataDir();

@@ -22,14 +22,34 @@ function shellQuotePath(value: string): string {
  * the historical `chmod -Rf a+rwx`; otherwise `find` prunes each excluded
  * path (so a private volume's whole subtree is skipped, not just its root)
  * and chmods the rest. Exported for its tests.
+ *
+ * `hubUid` is the uid the Hub runs as. When it is not root, the sweep only
+ * changes what that uid owns, because chmod refuses everything else. It also
+ * does not walk into a folder that belongs to another user and is closed to
+ * others (`-perm -005` is "others may list and enter"). Those are a
+ * database's own folders (MariaDB keeps its schemas at 700 under uid 999) and
+ * whatever a container running as root made: walking or chmodding them could
+ * only fail. Every such failure made the whole sweep report an error for an
+ * app that works. A root Hub can change everything, so it gets the sweep as
+ * it always was.
+ *
+ * Symbolic links are never handed to chmod (`! -type l`). chmod follows a
+ * link named on its command line, so a link an app's container left in its
+ * data (`data/x -> /data/state/settings.json`) made that file, outside the
+ * app's folder, world-writable. `chmod -R` already skips the links it meets.
  */
-export function buildPermissionsCommand(appDataDir: string, excluded: readonly string[]): string {
+export function buildPermissionsCommand(appDataDir: string, excluded: readonly string[], hubUid?: number): string {
   const dir = shellQuotePath(appDataDir);
-  if (excluded.length === 0) {
+  const ownedOnly = hubUid !== undefined && Number.isInteger(hubUid) && hubUid > 0;
+  if (excluded.length === 0 && !ownedOnly) {
     return `chmod -Rf a+rwx ${dir}`;
   }
-  const prune = excluded.map((target) => `-path ${shellQuotePath(target)}`).join(' -o ');
-  return `find ${dir} \\( ${prune} \\) -prune -o -exec chmod -f a+rwx {} +`;
+  const prune = excluded.map((target) => `-path ${shellQuotePath(target)}`);
+  if (!ownedOnly) {
+    return `find ${dir} \\( ${prune.join(' -o ')} \\) -prune -o ! -type l -exec chmod -f a+rwx {} +`;
+  }
+  prune.push(`-type d ! -user ${hubUid} ! -perm -005`);
+  return `find ${dir} \\( ${prune.join(' -o ')} \\) -prune -o ! -type l -user ${hubUid} -exec chmod -f a+rwx {} +`;
 }
 
 @Injectable()
@@ -210,6 +230,18 @@ export class AppFilesManager {
    */
   public async getPrivateVolumePaths(appUrn: AppUrn): Promise<string[]> {
     const { appDataDir } = this.getAppPaths(appUrn);
+    const mounts = await this.getAppDataBindMounts(appUrn);
+    const roots = new Set(mounts.filter((mount) => mount.private && mount.target !== appDataDir).map((mount) => mount.target));
+    return [...roots].sort();
+  }
+
+  /**
+   * The app's bind mounts that point into its data folder (or are that folder), resolved to this
+   * process's view of it. Anything outside it is ignored rather than trusted from the manifest. A
+   * manifest that cannot be read or parsed yields none.
+   */
+  private async getAppDataBindMounts(appUrn: AppUrn): Promise<Array<{ target: string; private: boolean }>> {
+    const { appDataDir } = this.getAppPaths(appUrn);
     const { content } = await this.getDockerComposeJson(appUrn);
     if (!content) {
       return [];
@@ -218,23 +250,90 @@ export class AppFilesManager {
     try {
       ({ services } = parseComposeJson(content));
     } catch (error) {
-      this.logger.debug(`Could not read private volumes for ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.debug(`Could not read the volumes of ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
       return [];
     }
-    const roots = new Set<string>();
+    const mounts: Array<{ target: string; private: boolean }> = [];
     for (const service of services) {
       for (const volume of service.volumes ?? []) {
-        if (volume.private !== true || typeof volume.hostPath !== 'string') {
+        // Named volumes carry no host path.
+        if (typeof volume.hostPath !== 'string') {
           continue;
         }
-        const resolved = path.resolve(volume.hostPath.replace(/\$\{APP_DATA_DIR\}/g, appDataDir));
-        if (resolved === appDataDir || !resolved.startsWith(`${appDataDir}${path.sep}`)) {
-          continue;
+        const target = path.resolve(volume.hostPath.replace(/\$\{APP_DATA_DIR\}/g, appDataDir));
+        if (target === appDataDir || target.startsWith(`${appDataDir}${path.sep}`)) {
+          mounts.push({ target, private: volume.private === true });
         }
-        roots.add(resolved);
       }
     }
-    return [...roots].sort();
+    return mounts;
+  }
+
+  /**
+   * Create the host folders the app's bind mounts point at, as the Hub, before its containers start.
+   *
+   * Docker creates a missing bind-mount source itself, as root:root 755. A Hub that runs as the host
+   * user can then neither open it up for a container of another uid nor delete what the app writes
+   * into it, so every later Reset, restore or backup needed the root helper. Install has always made
+   * these folders first; Reset, a restore and an update rollback delete the data folder, so they make
+   * them again the same way. A folder that exists is left as it is, and so is a file a mount names
+   * (`data/nginx/nginx.conf`). A path outside the app's data folder is ignored, and a `private: true`
+   * one starts at 700 (see {@link setAppDataDirPermissions}).
+   */
+  public async createVolumeHostDirs(appUrn: AppUrn): Promise<void> {
+    const { appDataDir } = this.getAppPaths(appUrn);
+
+    for (const mount of await this.getAppDataBindMounts(appUrn)) {
+      // The containment check reads the path as written. A link on the way (a restored backup may hold
+      // `data/secrets -> /data/state`) would have the mkdir and the chmod act wherever it points.
+      const found = await this.inspectVolumeTarget(appDataDir, mount.target);
+      if (found === 'file') {
+        continue;
+      }
+      if (found === 'blocked') {
+        this.logger.warn(`Not creating the folder of a volume of ${appUrn}: ${mount.target} runs through a symbolic link or a file`);
+        continue;
+      }
+      await fs.promises.mkdir(mount.target, { recursive: true }).catch(() => {
+        /* a path the app data mount refuses is Docker's to report at compose up */
+      });
+      // A `private: true` mount is the app's own root-written directory (Memory's secrets); it
+      // starts, and stays, unreadable to other local accounts. The permissions sweep prunes it.
+      if (mount.private && process.platform !== 'win32') {
+        await fs.promises.chmod(mount.target, 0o700).catch(() => {
+          /* a mount that rejects chmod is the drvfs case handled elsewhere */
+        });
+      }
+    }
+  }
+
+  /**
+   * What is on the way from `root` to `target`: `blocked` when a part of it that exists is a symbolic
+   * link, or a file before the end; `file` when `target` itself is a regular file (a mount of one file,
+   * nothing to create); `folders` when every part that exists is a folder.
+   */
+  private async inspectVolumeTarget(root: string, target: string): Promise<'blocked' | 'file' | 'folders'> {
+    const segments = path.relative(root, target).split(path.sep).filter(Boolean);
+    let current = root;
+
+    for (const [index, segment] of segments.entries()) {
+      current = path.join(current, segment);
+      const stat = await fs.promises.lstat(current).catch(() => null);
+
+      if (!stat) {
+        return 'folders';
+      }
+
+      if (stat.isFile() && index === segments.length - 1) {
+        return 'file';
+      }
+
+      if (!stat.isDirectory()) {
+        return 'blocked';
+      }
+    }
+
+    return 'folders';
   }
 
   /**
@@ -282,7 +381,8 @@ export class AppFilesManager {
 
     const privateRoots = await this.getPrivateVolumePaths(appUrn);
     const appEnvPath = path.join(appDataDir, 'app.env');
-    const { stderr } = await execAsync(buildPermissionsCommand(appDataDir, [...privateRoots, appEnvPath]));
+    const hubUid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+    const { stderr } = await execAsync(buildPermissionsCommand(appDataDir, [...privateRoots, appEnvPath], hubUid));
     if (stderr) {
       this.logger.error(`Error setting permissions for app ${appUrn}: ${stderr}`);
     }

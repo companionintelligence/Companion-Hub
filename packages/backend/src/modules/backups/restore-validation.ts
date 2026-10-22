@@ -18,6 +18,14 @@ import type { ArchiveEntry } from '@/core/archive/archive.service';
 export const BACKUP_ROOT_FOLDERS = ['app-data', 'app', 'user-config', 'volumes'] as const;
 
 /**
+ * A plain file at the top of a backup that says its `app-data` carries the data's real numeric owners
+ * and modes: the root helper archived it because the Hub could not read it (a database's files). A
+ * restore of such a backup puts the data back as root, so the database is its own user's again rather
+ * than the Hub's. Its content is not read.
+ */
+export const BACKUP_OWNERS_MARKER = 'app-data.owners';
+
+/**
  * A file in `volumes`: one named Docker volume as a tar archive, named after the volume's key in the
  * app's compose file, which follows the rule a manifest's `volumeName` does. The restore streams the
  * file into a container unread, so that folder holds these files and nothing else.
@@ -86,6 +94,14 @@ export function validateRestoreArchiveEntries(entries: ArchiveEntry[]): void {
       continue;
     }
 
+    if (entryPath === BACKUP_OWNERS_MARKER) {
+      if (entry.type !== '-') {
+        throw unsafe(`${entry.path}: ${BACKUP_OWNERS_MARKER} is a plain file`);
+      }
+
+      continue;
+    }
+
     const rootFolder = entryPath.split('/')[0];
 
     if (!rootFolder || !(BACKUP_ROOT_FOLDERS as readonly string[]).includes(rootFolder)) {
@@ -120,6 +136,22 @@ export function validateRestoreArchiveEntries(entries: ArchiveEntry[]): void {
       }
     }
   }
+}
+
+/**
+ * For a backup whose listing (already validated) holds {@link BACKUP_OWNERS_MARKER}: the data folder's
+ * name exactly as tar lists it, to name it as the one member to extract (`app-data` or `./app-data`).
+ * `null` for every other backup, whose data the Hub copies back itself.
+ */
+export function appDataMemberWithOwners(entries: ArchiveEntry[]): string | null {
+  if (!entries.some((entry) => entry.type === '-' && normalizeArchiveEntryPath(entry.path) === BACKUP_OWNERS_MARKER)) {
+    return null;
+  }
+
+  const folder = entries.find((entry) => entry.type === 'd' && normalizeArchiveEntryPath(entry.path) === 'app-data');
+  const member = folder?.path.replace(/\/+$/, '');
+
+  return member && /^(\.\/)*app-data$/.test(member) ? member : null;
 }
 
 /** `volumes/<name>.tar`, directly in the folder. */

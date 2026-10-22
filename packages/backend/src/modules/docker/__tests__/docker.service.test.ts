@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import { ComposeCliUnavailableError, DockerService } from '../docker.service';
 import { DockerReadFacade } from '../docker-read.facade';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -1085,6 +1086,8 @@ describe('DockerService', () => {
         [
           'run',
           '--rm',
+          '--name',
+          expect.stringMatching(/^ci-hub-helper-[0-9a-f]{12}$/),
           '--network',
           'none',
           '--user',
@@ -1147,6 +1150,8 @@ describe('DockerService', () => {
         [
           'run',
           '--rm',
+          '--name',
+          expect.stringMatching(/^ci-hub-helper-[0-9a-f]{12}$/),
           '--network',
           'none',
           '--user',
@@ -1172,6 +1177,8 @@ describe('DockerService', () => {
         [
           'run',
           '--rm',
+          '--name',
+          expect.stringMatching(/^ci-hub-helper-[0-9a-f]{12}$/),
           '--network',
           'none',
           '--user',
@@ -1223,6 +1230,244 @@ describe('DockerService', () => {
       await expect(service.copyAppDataDirAsRoot(urn, snapshotId)).resolves.toBe(false);
 
       expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+  });
+
+  // A backup of a database's data: the Hub cannot read it, so root archives it with its owners, and a
+  // restore of that backup puts them back as root.
+  describe('backup and restore of data the Hub cannot read', () => {
+    const urn = 'kimai:ci-marketplace' as any;
+    const hostAppData = getAppDataHostPath(urn, { ciHubAppDataPath: undefined, appDataPath: undefined, rootFolderHost: '/host/root' });
+    const hostStaging = '/host/root/backups/.backup-staging/ci-marketplace/kimai/backup-kimai-1792500000000';
+    const helperName = expect.stringMatching(/^ci-hub-helper-[0-9a-f]{12}$/);
+
+    beforeEach(() => {
+      configService.getConfig.mockReturnValue({ userSettings: {}, rootFolderHost: '/host/root' } as any);
+      delete process.env.CI_HUB_APP_DATA_PATH;
+      delete process.env.CI_HUB_CLEANUP_IMAGE;
+      filesystemService.createDirectory.mockResolvedValue(true);
+      vi.spyOn(process, 'getuid').mockReturnValue(1000);
+      vi.spyOn(process, 'getgid').mockReturnValue(1000);
+      vi.spyOn(Date, 'now').mockReturnValue(1792500000000);
+      (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(0));
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('makes the staging folder and its data mount point as the Hub', async () => {
+      await expect(service.createBackupStagingDir(urn)).resolves.toEqual({
+        id: 'backup-kimai-1792500000000',
+        dir: '/data/backups/.backup-staging/ci-marketplace/kimai/backup-kimai-1792500000000',
+      });
+      expect(filesystemService.createDirectory).toHaveBeenCalledWith(
+        '/data/backups/.backup-staging/ci-marketplace/kimai/backup-kimai-1792500000000/stage/app-data',
+      );
+      expect(filesystemService.createDirectory).toHaveBeenCalledWith(
+        '/data/backups/.backup-staging/ci-marketplace/kimai/backup-kimai-1792500000000/out',
+      );
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    it('archives as root with numeric owners, the data read-only, special files and backups folders left out', async () => {
+      await expect(service.archiveBackupAsRoot(urn, 'backup-kimai-1792500000000')).resolves.toBe(
+        '/data/backups/.backup-staging/ci-marketplace/kimai/backup-kimai-1792500000000/out/backup.tar.gz',
+      );
+
+      const args = (child_process.spawn as any).mock.calls[0][1] as string[];
+      expect(args.slice(0, 15)).toEqual([
+        'run',
+        '--rm',
+        '--name',
+        helperName,
+        '--network',
+        'none',
+        '--user',
+        '0:0',
+        '-v',
+        `${hostStaging}/stage:/stage:ro`,
+        '-v',
+        `${hostAppData}:/stage/app-data:ro`,
+        '-v',
+        `${hostStaging}/out:/out:rw`,
+        'alpine:3.20',
+      ]);
+      const script = args[17] as string;
+      expect(script).toContain('! -type b ! -type c ! -type p ! -type s');
+      expect(script).toContain('-path "./app-data/*backups*" -prune');
+      expect(script).toContain('tar -czf /out/backup.tar.gz --numeric-owner --no-recursion -T /tmp/entries');
+      expect(script).toContain('chown "$1" /out/backup.tar.gz');
+      expect(args.slice(18)).toEqual(['sh', '1000:1000']);
+    });
+
+    // tar keeps hard links as links and a restore refuses them, so such a backup could never go back.
+    it('fails the backup on hard-linked data instead of writing one a restore refuses', async () => {
+      await service.archiveBackupAsRoot(urn, 'backup-kimai-1792500000000');
+
+      const script = ((child_process.spawn as any).mock.calls[0][1] as string[])[17] as string;
+      expect(script).toContain('\\( -type f -o -type l \\) -links +1 -print');
+      expect(script.indexOf('-links +1')).toBeLessThan(script.indexOf('tar -czf'));
+    });
+
+    it('SECURITY: keeps the archive of data closed to other users closed to them too', async () => {
+      await service.archiveBackupAsRoot(urn, 'backup-kimai-1792500000000');
+
+      const script = ((child_process.spawn as any).mock.calls[0][1] as string[])[17] as string;
+      expect(script).toContain('chmod 600 /out/backup.tar.gz');
+    });
+
+    it('says the helper cannot run for an app whose host folders cannot be worked out, without asking Docker', async () => {
+      configService.getConfig.mockReturnValue({ userSettings: {}, rootFolderHost: '' } as any);
+
+      await expect(service.privilegedHelperAvailable(urn)).resolves.toBe(false);
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    it('makes a restore staging folder for the archive root will read', async () => {
+      await expect(service.createRestoreStagingDir(urn)).resolves.toEqual({
+        id: 'backup-kimai-1792500000000',
+        dir: '/data/backups/.backup-staging/ci-marketplace/kimai/backup-kimai-1792500000000',
+        archive: '/data/backups/.backup-staging/ci-marketplace/kimai/backup-kimai-1792500000000/in/backup.tar.gz',
+      });
+      expect(filesystemService.createDirectory).toHaveBeenCalledWith(
+        '/data/backups/.backup-staging/ci-marketplace/kimai/backup-kimai-1792500000000/in',
+      );
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    it('extracts only the data member of the staged archive as root, keeping owners and dropping setuid, setgid and special files', async () => {
+      await expect(service.extractBackupAppDataAsRoot(urn, 'backup-kimai-1792500000000', './app-data')).resolves.toBe(true);
+
+      expect(child_process.spawn).toHaveBeenCalledWith(
+        'docker',
+        [
+          'run',
+          '--rm',
+          '--name',
+          helperName,
+          '--network',
+          'none',
+          '--user',
+          '0:0',
+          '-v',
+          `${hostStaging}/in:/in:ro`,
+          '-v',
+          `${hostAppData}:/x/app-data:rw`,
+          'alpine:3.20',
+          'sh',
+          '-c',
+          'tar -C /x -xpf /in/backup.tar.gz --numeric-owner "$1"; status=$?; ' +
+            'find /x/app-data \\( -type b -o -type c -o -type p -o -type s \\) -delete || status=1; ' +
+            'find /x/app-data -type f \\( -perm -4000 -o -perm -2000 \\) -exec chmod ug-s {} + || status=1; ' +
+            // The folder and app.env are the Hub's, whatever uid the archive gave them.
+            'chown "$2" /x/app-data || status=1; ' +
+            'if [ -f /x/app-data/app.env ] && [ ! -L /x/app-data/app.env ]; then chown "$2" /x/app-data/app.env || status=1; fi; ' +
+            'exit $status',
+          'sh',
+          './app-data',
+          '1000:1000',
+        ],
+        { stdio: 'pipe' },
+      );
+    });
+
+    it.each([
+      ['a member that is not the data folder', 'backup-kimai-1792500000000', 'app'],
+      ['a member that climbs', 'backup-kimai-1792500000000', '../app-data'],
+      ['a staging id that climbs out of the staging folder', 'backup-kimai-1/../../../kimai', 'app-data'],
+      ['a staging id that is not one this service made', 'anything', 'app-data'],
+    ])('refuses to extract %s, and never spawns', async (_name, stagingId, member) => {
+      await expect(service.extractBackupAppDataAsRoot(urn, stagingId, member)).resolves.toBe(false);
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    it('refuses (and never spawns) for an app name that is not a plain name', async () => {
+      await expect(service.createBackupStagingDir('..:ci-marketplace' as any)).resolves.toBeNull();
+      await expect(service.createRestoreStagingDir('..:ci-marketplace' as any)).resolves.toBeNull();
+      await expect(service.archiveBackupAsRoot('..:ci-marketplace' as any, 'backup-x-1')).resolves.toBeNull();
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    it('removes the helper container when the CLI hits its time limit', async () => {
+      vi.useFakeTimers();
+      const hung = createMockSpawnProcess();
+      hung.on = vi.fn().mockReturnValue(hung);
+      (child_process.spawn as any).mockReturnValueOnce(hung).mockReturnValue(createComposeProbeProcess(0));
+
+      const pending = service.archiveBackupAsRoot(urn, 'backup-kimai-1792500000000');
+      await vi.advanceTimersByTimeAsync(30 * 60_000 + 1);
+      vi.useRealTimers();
+
+      await expect(pending).resolves.toBeNull();
+      const name = ((child_process.spawn as any).mock.calls[0][1] as string[])[3];
+      expect(child_process.spawn).toHaveBeenLastCalledWith('docker', ['rm', '-f', name], { stdio: 'pipe' });
+    });
+
+    // The helpers of one restore share a budget that ends inside the app queue's wait.
+    it('gives a helper only what is left of the command budget, and removes it when that runs out', async () => {
+      vi.useFakeTimers();
+      const hung = createMockSpawnProcess();
+      hung.on = vi.fn().mockReturnValue(hung);
+      (child_process.spawn as any).mockReturnValueOnce(hung).mockReturnValue(createComposeProbeProcess(0));
+
+      const pending = service.removeAppDataDirAsRoot(urn, AppCommandDeadline.after(10_000));
+      await vi.advanceTimersByTimeAsync(10_001);
+      vi.useRealTimers();
+
+      await expect(pending).resolves.toBe(false);
+      const name = ((child_process.spawn as any).mock.calls[0][1] as string[])[3];
+      expect(child_process.spawn).toHaveBeenLastCalledWith('docker', ['rm', '-f', name], { stdio: 'pipe' });
+    });
+
+    // Removed at the limit, the extract never got to its own strip of what it had written.
+    it('strips setuid and setgid bits and special files from what an extract wrote before its budget ran out', async () => {
+      vi.useFakeTimers();
+      const hung = createMockSpawnProcess();
+      hung.on = vi.fn().mockReturnValue(hung);
+      (child_process.spawn as any).mockReturnValueOnce(hung).mockReturnValue(createComposeProbeProcess(0));
+
+      const pending = service.extractBackupAppDataAsRoot(urn, 'backup-kimai-1792500000000', './app-data', AppCommandDeadline.after(10_000));
+      await vi.advanceTimersByTimeAsync(10_001);
+      vi.useRealTimers();
+
+      await expect(pending).resolves.toBe(false);
+      const calls = (child_process.spawn as any).mock.calls.map((call: unknown[]) => call[1] as string[]);
+      expect(calls[1]).toEqual(['rm', '-f', calls[0][3]]);
+      const strip = calls[2];
+      expect(strip).toEqual(expect.arrayContaining(['-v', `${hostAppData}:/x/app-data:rw`]));
+      expect(strip).not.toContain(`${hostStaging}/in:/in:ro`);
+      expect(strip.at(-1)).toContain('-perm -4000 -o -perm -2000');
+      expect(strip.at(-1)).toContain('-type b -o -type c -o -type p -o -type s');
+    });
+
+    it('runs no second helper after an extract that failed in time', async () => {
+      (child_process.spawn as any).mockReset();
+      (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(1));
+
+      await expect(
+        service.extractBackupAppDataAsRoot(urn, 'backup-kimai-1792500000000', './app-data', AppCommandDeadline.after(60_000)),
+      ).resolves.toBe(false);
+
+      expect(child_process.spawn).toHaveBeenCalledTimes(1);
+    });
+
+    it('starts no helper once the command budget is used up', async () => {
+      const deadline = AppCommandDeadline.after(0);
+
+      await expect(service.removeAppDataDirAsRoot(urn, deadline)).resolves.toBe(false);
+      await expect(service.extractBackupAppDataAsRoot(urn, 'backup-kimai-1792500000000', './app-data', deadline)).resolves.toBe(false);
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    it('says the helper can run when its image is here, and pulls it when it is not', async () => {
+      await expect(service.privilegedHelperAvailable()).resolves.toBe(true);
+      expect(child_process.spawn).toHaveBeenCalledWith('docker', ['image', 'inspect', 'alpine:3.20'], { stdio: 'pipe' });
+
+      (child_process.spawn as any).mockReset();
+      (child_process.spawn as any).mockReturnValueOnce(createComposeProbeProcess(1)).mockReturnValueOnce(createComposeProbeProcess(1));
+      await expect(service.privilegedHelperAvailable()).resolves.toBe(false);
+      expect(child_process.spawn).toHaveBeenLastCalledWith('docker', ['pull', 'alpine:3.20'], { stdio: 'pipe' });
     });
   });
 
@@ -1395,6 +1640,8 @@ describe('DockerService', () => {
           [
             'run',
             '--rm',
+            '--name',
+            expect.stringMatching(/^ci-hub-helper-[0-9a-f]{12}$/),
             '--network',
             'none',
             '--user',

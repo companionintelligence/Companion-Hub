@@ -309,41 +309,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
       // so containers don't crash on first start due to root-owned mount dirs
       // (affects code-server, file-browser, forgejo, graylog, passbolt, vaultwarden)
       try {
-        // Parse compose to find all host volume paths and pre-create them
-        const preComposeJson = await appFilesManager.getDockerComposeJson(appUrn);
-        if (preComposeJson.content) {
-          try {
-            const { services: preServices } = parseComposeJson(preComposeJson.content);
-            const { appStoreId: preStoreId, appName: preName } = extractAppUrn(appUrn);
-            const preContainerAppDataPath = path.join(_config.getConfig().directories.appDataDir, preStoreId, preName);
-            for (const svc of preServices) {
-              if (svc.volumes) {
-                for (const vol of svc.volumes) {
-                  // Named volumes carry no host path to pre-create.
-                  if (typeof vol === 'object' && typeof vol.hostPath === 'string') {
-                    // Replace ${APP_DATA_DIR} with container path
-                    const hostPath = (vol.hostPath as string).replace(/\$\{APP_DATA_DIR\}/g, preContainerAppDataPath);
-                    if (hostPath.startsWith(preContainerAppDataPath)) {
-                      await fs.promises.mkdir(hostPath, { recursive: true }).catch(() => {
-                        /* ignore mkdir errors */
-                      });
-                      // A `private: true` mount is the app's own root-written directory (Memory's
-                      // secrets); it starts, and stays, unreadable to other local accounts. The
-                      // permissions sweep below prunes it — see setAppDataDirPermissions.
-                      if (vol.private === true && process.platform !== 'win32') {
-                        await fs.promises.chmod(hostPath, 0o700).catch(() => {
-                          /* a mount that rejects chmod is the drvfs case handled elsewhere */
-                        });
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          } catch (parseErr) {
-            logger.debug(`[AppDiag] Could not pre-create volume dirs: ${parseErr}`);
-          }
-        }
+        await appFilesManager.createVolumeHostDirs(appUrn);
         await appFilesManager.setAppDataDirPermissions(appUrn);
         logger.info(`[AppDiag] Pre-created volume dirs and set permissions for ${appUrn}`);
       } catch (permErr) {

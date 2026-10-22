@@ -34,8 +34,40 @@ describe('buildPermissionsCommand', () => {
     const cmd = buildPermissionsCommand('/app-data/store/app', ['/app-data/store/app/data/secrets', '/app-data/store/app/app.env']);
 
     expect(cmd).toBe(
-      "find '/app-data/store/app' \\( -path '/app-data/store/app/data/secrets' -o -path '/app-data/store/app/app.env' \\) -prune -o -exec chmod -f a+rwx {} +",
+      "find '/app-data/store/app' \\( -path '/app-data/store/app/data/secrets' -o -path '/app-data/store/app/app.env' \\) -prune -o ! -type l -exec chmod -f a+rwx {} +",
     );
+  });
+
+  /*
+   * A Hub that runs as a plain user cannot chmod what another user owns or list a folder
+   * another user closed. MariaDB keeps its schemas at 700 under uid 999 and a container running as
+   * root re-creates its folders as root, so the sweep failed on every start of those apps and logged
+   * "Error setting permissions" for apps that work.
+   */
+  it('for a Hub running as a plain user, changes only what that user owns and skips folders closed to it', () => {
+    const cmd = buildPermissionsCommand('/app-data/store/app', ['/app-data/store/app/app.env'], 1000);
+
+    expect(cmd).toBe(
+      "find '/app-data/store/app' \\( -path '/app-data/store/app/app.env' -o -type d ! -user 1000 ! -perm -005 \\) -prune -o ! -type l -user 1000 -exec chmod -f a+rwx {} +",
+    );
+  });
+
+  it('for a Hub running as a plain user with nothing excluded, still keeps to what it owns', () => {
+    expect(buildPermissionsCommand('/app-data/store/app', [], 1000)).toBe(
+      "find '/app-data/store/app' \\( -type d ! -user 1000 ! -perm -005 \\) -prune -o ! -type l -user 1000 -exec chmod -f a+rwx {} +",
+    );
+  });
+
+  it.each([0, undefined])('for a Hub running as root (uid %s), is the sweep it always was', (uid) => {
+    expect(buildPermissionsCommand('/app-data/store/app', [], uid)).toBe("chmod -Rf a+rwx '/app-data/store/app'");
+    expect(buildPermissionsCommand('/app-data/store/app', ['/app-data/store/app/app.env'], uid)).toBe(
+      "find '/app-data/store/app' \\( -path '/app-data/store/app/app.env' \\) -prune -o ! -type l -exec chmod -f a+rwx {} +",
+    );
+  });
+
+  it('never puts anything but a whole number into the shell as the uid', () => {
+    expect(buildPermissionsCommand('/app-data/store/app', [], Number.NaN)).toBe("chmod -Rf a+rwx '/app-data/store/app'");
+    expect(buildPermissionsCommand('/app-data/store/app', [], 1.5)).toBe("chmod -Rf a+rwx '/app-data/store/app'");
   });
 
   it('quotes a single quote in a path so it cannot end the shell word', () => {
@@ -67,6 +99,7 @@ describe('AppFilesManager.setAppDataDirPermissions', () => {
 
   afterEach(() => {
     setPlatform(originalPlatform);
+    vi.restoreAllMocks();
   });
 
   beforeEach(() => {
@@ -132,6 +165,17 @@ describe('AppFilesManager.setAppDataDirPermissions', () => {
     for (const call of chmod.mock.calls) {
       expect(String(call[0]).startsWith(`${appDataDir}${path.sep}`)).toBe(true);
     }
+  });
+
+  it("passes the Hub's own uid, so a Hub running as a plain user keeps to the files it owns", async () => {
+    filesystem.readJsonFile.mockResolvedValue(composeWith([]));
+    vi.spyOn(process, 'getuid').mockReturnValue(1000);
+
+    await manager.setAppDataDirPermissions(appUrn);
+
+    const cmd = execAsyncMock.mock.calls[0]?.[0] as string;
+    expect(cmd).toContain('-type d ! -user 1000 ! -perm -005');
+    expect(cmd).toContain('-o ! -type l -user 1000 -exec chmod -f a+rwx {} +');
   });
 
   it('falls back to the plain sweep of everything but app.env when the manifest is unreadable', async () => {
