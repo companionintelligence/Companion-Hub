@@ -100,6 +100,7 @@ describe('InstallAppCommand — pull policy', () => {
   let dockerService: any;
   let dockerReadFacade: any;
   let composeArgs: string[] = [];
+  let appFilesManager: ReturnType<typeof mock<AppFilesManager>>;
 
   const appUrn = 'urn:store:test-app' as AppUrn;
 
@@ -148,7 +149,7 @@ describe('InstallAppCommand — pull policy', () => {
       localDomain: 'local',
     });
 
-    const appFilesManager = mock<AppFilesManager>();
+    appFilesManager = mock<AppFilesManager>();
     appFilesManager.getDockerComposeJson.mockResolvedValue({ content: '{}', path: '/tmp/compose.json' });
     appFilesManager.getAppEnv.mockResolvedValue({ content: '', path: '/tmp/.env' });
     appFilesManager.getUserComposeFile.mockResolvedValue({ content: null, path: '/tmp/user-compose.yml' });
@@ -225,6 +226,16 @@ describe('InstallAppCommand — pull policy', () => {
     const upCommand = composeArgs.find((a) => a.includes('up'));
     expect(upCommand).toBeDefined();
     expect(upCommand).not.toContain('--pull never');
+  });
+
+  it('creates the bind-mount folders as the Hub, then opens them up, before compose up', async () => {
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(true);
+    expect(appFilesManager.createVolumeHostDirs).toHaveBeenCalledWith(appUrn);
+    const created = appFilesManager.createVolumeHostDirs.mock.invocationCallOrder[0] as number;
+    // The sweep that follows is what opens the new folders up for the app's own user.
+    expect(appFilesManager.setAppDataDirPermissions.mock.invocationCallOrder.some((order) => order > created)).toBe(true);
   });
 
   it('MUST omit --pull flag entirely when force_pull is false', async () => {

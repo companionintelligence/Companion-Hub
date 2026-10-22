@@ -95,7 +95,7 @@ describe('AgentNotifyService', () => {
 
     it('should not throw when disabled', async () => {
       delete process.env.AGENT_WEBHOOK_URL;
-      await expect(service.notify('test', {}, 'low')).resolves.toBeUndefined();
+      await expect(service.notify('test', {}, 'low')).resolves.toBe(false);
     });
 
     it('should log error when webhook POST fails with network error', async () => {
@@ -112,7 +112,11 @@ describe('AgentNotifyService', () => {
 
     it('should not throw when webhook POST fails', async () => {
       vi.mocked(fetch).mockRejectedValue(new Error('Network failure'));
-      await expect(service.notify('test', {}, 'low')).resolves.toBeUndefined();
+      await expect(service.notify('test', {}, 'low')).resolves.toBe(false);
+    });
+
+    it('resolves true once an agent accepted the wake', async () => {
+      await expect(service.notify('test', {}, 'low')).resolves.toBe(true);
     });
 
     it('should debounce identical events within 30-second window', async () => {

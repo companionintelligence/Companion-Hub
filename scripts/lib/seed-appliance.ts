@@ -20,6 +20,7 @@ import { packageVersion } from './cli-compose-env.js';
 import { BASE_COMMAND } from './cli-types.js';
 import { classifyCliInstall, isVersionTag, normalizeVersion, parseImageTag } from './cli-version-skew.js';
 import { compareCihubVersions } from './fleet-cihub-binary.js';
+import { applianceEnvFilePaths } from './paths.js';
 
 export const HUB_COMPOSE_FILENAME = 'docker-compose.prod.yml';
 export const HUB_STACK_IMAGE_REPO = 'ghcr.io/companionintelligence/ci-hub';
@@ -776,10 +777,7 @@ export function seedApplianceInstall(options: SeedApplianceOptions): SeedApplian
     ciCloudUrl: portal.url,
   });
 
-  const primaryName = process.platform === 'win32' ? '.env' : '.env.dev';
-  const compatName = process.platform === 'win32' ? '.env.dev' : '.env';
-  const envFilePath = path.join(dataDir, primaryName);
-  const compatPath = path.join(dataDir, compatName);
+  const [envFilePath, compatPath] = applianceEnvFilePaths(dataDir);
   writeFileSync(envFilePath, envContent, { encoding: 'utf8', mode: 0o600 });
   writeFileSync(compatPath, envContent, { encoding: 'utf8', mode: 0o600 });
 

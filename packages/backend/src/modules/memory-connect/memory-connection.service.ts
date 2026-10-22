@@ -58,16 +58,9 @@ export class MemoryConnectionService {
     return latest?.state ?? 'unconfigured';
   }
 
-  /** All connected apps holding a stored key (for the key-rotation sweep). */
-  async listConnected(): Promise<MemoryConnectionRow[]> {
-    return this.repo.findAllConnected();
-  }
-
-  /** Whether the app currently has a stored, connected memory key. */
-  async isConnected(appUrn: string): Promise<boolean> {
-    const row = await this.repo.findByAppUrn(appUrn);
-
-    return row?.state === 'connected' && !!row.encryptedKey;
+  /** Connected rows holding a stored key (for the key-rotation sweep), or only one app's when given. */
+  async listConnected(appUrn?: string): Promise<MemoryConnectionRow[]> {
+    return this.repo.findAllConnected(appUrn);
   }
 
   /**
@@ -99,7 +92,15 @@ export class MemoryConnectionService {
    * generation).
    */
   async getInjectableCreds(appUrn: string): Promise<InjectableMemoryCreds | null> {
-    return this.credsFromRow(await this.repo.findByAppUrn(appUrn));
+    return this.credsFromRow(await this.getActiveConnection(appUrn));
+  }
+
+  /**
+   * The connection whose key the app runs with (see {@link getInjectableCreds}), or undefined
+   * when nobody's key is injected. With several Hub people, this says whose connection it is.
+   */
+  async getActiveConnection(appUrn: string): Promise<MemoryConnectionRow | undefined> {
+    return this.repo.findLatestConnected(appUrn);
   }
 
   /**
@@ -174,9 +175,12 @@ export class MemoryConnectionService {
     }
   }
 
-  /** Raw row accessor (for callers that need the full record). */
+  /**
+   * Raw row accessor (for callers that need the full record). A number is a row's own
+   * `hub_user_id`, so 0 reads the install-global row rather than the app's newest row.
+   */
   async getRow(appUrn: string, hubUserId?: string | number | null): Promise<MemoryConnectionRow | undefined> {
-    if (hubUserId != null && normalizeHubUserId(hubUserId) > 0) {
+    if (typeof hubUserId === 'number' || (hubUserId != null && normalizeHubUserId(hubUserId) > 0)) {
       return this.repo.findByAppUrnAndUser(appUrn, normalizeHubUserId(hubUserId));
     }
 

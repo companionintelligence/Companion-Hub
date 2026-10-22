@@ -153,6 +153,14 @@ export type ProdApplianceContext = {
 };
 
 /**
+ * An appliance install's two env files, primary first: the desktop writes a primary env file plus a
+ * compat copy with identical content (`.env.dev` and `.env` on Unix, the other way round on Windows).
+ */
+export function applianceEnvFilePaths(dataDir: string, platform: NodeJS.Platform = process.platform): [primary: string, compat: string] {
+  return [path.join(dataDir, platform === 'win32' ? '.env' : '.env.dev'), path.join(dataDir, platform === 'win32' ? '.env.dev' : '.env')];
+}
+
+/**
  * Resolve the canonical prod data dir and the desktop-seeded `.env` / compose paths so the
  * CLI can manage a prod install from anywhere (no CI-Hub checkout required).
  */
@@ -162,9 +170,7 @@ export function resolveProdApplianceContext(
   home: string = homedir(),
 ): ProdApplianceContext {
   const dataDir = resolveCanonicalDataDir(env, platform, home);
-  // The desktop writes a primary env file plus a compat copy with identical content.
-  const primaryEnv = path.join(dataDir, platform === 'win32' ? '.env' : '.env.dev');
-  const compatEnv = path.join(dataDir, platform === 'win32' ? '.env.dev' : '.env');
+  const [primaryEnv, compatEnv] = applianceEnvFilePaths(dataDir, platform);
   const envFilePath = existsSync(primaryEnv) ? primaryEnv : existsSync(compatEnv) ? compatEnv : primaryEnv;
   const composePath = path.join(dataDir, 'docker-compose.prod.yml');
   const exists = existsSync(composePath) && (existsSync(primaryEnv) || existsSync(compatEnv));
