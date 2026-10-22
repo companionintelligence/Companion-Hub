@@ -270,14 +270,15 @@ async function resolveInstallerFromHub(
 /**
  * The installer of `version` when the desktop app's own check named none, which it does whenever this
  * computer already runs the newest version. The download servers send no CORS headers, so the window
- * can't read them itself; `askHub` lets the Hub read them. An installer of any other version is
- * dropped, because the Desktop app card offers `version` by name.
+ * can't read them itself and the Hub reads them. An installer of any other version is dropped,
+ * because the Desktop app card offers `version` by name.
  *
  * Only the version this computer runs gets an installer from here. The desktop app picks this
  * computer's own format (`.deb` on Ubuntu, `.rpm` on Fedora) while the Hub and the download server
  * pick from all of them. For a newer version the desktop app found nothing for, either could only
  * name another format, which the card would then install in one click. A release older than the
- * running app would downgrade it (a dev build ahead of its download server, for one).
+ * running app would downgrade it (a dev build ahead of its download server, for one). Without
+ * `askHub` (the update notice, which only shows a newer version) nothing is looked up.
  */
 async function findDesktopInstaller(
   version: string,
@@ -286,13 +287,11 @@ async function findDesktopInstaller(
   osArch: string,
   askHub: boolean,
 ): Promise<string> {
-  const runs = semver.valid(running) ? running : null;
-  if (runs && !semver.eq(version, runs)) {
+  if (!askHub || !semver.valid(running) || !semver.eq(version, running)) {
     return '';
   }
-  const source = askHub && runs ? resolveInstallerFromHub : resolveInstallerFromCdn;
   try {
-    const resolved = await source(platform, osArch);
+    const resolved = await resolveInstallerFromHub(platform, osArch);
     return resolved?.downloadUrl && resolved.latestVersion === version ? resolved.downloadUrl : '';
   } catch {
     return '';

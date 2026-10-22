@@ -633,15 +633,31 @@ fn fetch_manifest(
         })
 }
 
+/// Whether a newer version exists, and its installer. Callers that only act on an update (the
+/// CLI, the update listener, the install command) use this one.
 pub fn check_desktop_update(current_version: &str) -> Result<DesktopUpdateInfo, String> {
-    check_desktop_update_with_source(current_version, &UpdateSource::resolve())
+    check_desktop_update_with_source(current_version, &UpdateSource::resolve(), false)
+}
+
+/// [`check_desktop_update`] that also names this computer's installer when it already runs the
+/// newest version, for the Desktop app card. It costs a manifest read the other callers skip.
+pub fn check_desktop_update_naming_installer(
+    current_version: &str,
+) -> Result<DesktopUpdateInfo, String> {
+    check_desktop_update_with_source(current_version, &UpdateSource::resolve(), true)
 }
 
 fn check_desktop_update_with_source(
     current_version: &str,
     source: &UpdateSource,
+    name_current_installer: bool,
 ) -> Result<DesktopUpdateInfo, String> {
-    check_desktop_update_for_host(current_version, source, current_host())
+    check_desktop_update_for_host(
+        current_version,
+        source,
+        current_host(),
+        name_current_installer,
+    )
 }
 
 /// [`check_desktop_update_with_source`] for a given computer (see [`current_host`]).
@@ -649,6 +665,7 @@ fn check_desktop_update_for_host(
     current_version: &str,
     source: &UpdateSource,
     host: Option<(HostOs, &'static str)>,
+    name_current_installer: bool,
 ) -> Result<DesktopUpdateInfo, String> {
     let client = source.http_client(Duration::from_secs(30))?;
 
@@ -658,7 +675,7 @@ fn check_desktop_update_for_host(
     let download_url = if update_available {
         let manifest = fetch_manifest(&client, &latest_version, source)?;
         resolve_download_artifact(&manifest, source, host)
-    } else if !semver_compare_gt(current_version, &latest_version) {
+    } else if name_current_installer && !semver_compare_gt(current_version, &latest_version) {
         // This computer already runs the newest version. Its installer is looked up anyway, so the
         // Desktop app card can offer it again in this computer's own format (the `.rpm` on Fedora).
         // The check doesn't depend on it: a failed read only leaves the installer out. A build ahead
@@ -2867,8 +2884,9 @@ mod tests {
         let source = UpdateSource::from_base(&base).expect("test source");
 
         // Fedora gets the .rpm and Ubuntu the .deb, even with nothing newer to install.
-        let fedora = check_desktop_update_for_host("1.2.3", &source, Some((HostOs::Linux, "rpm")))
-            .expect("check on Fedora");
+        let fedora =
+            check_desktop_update_for_host("1.2.3", &source, Some((HostOs::Linux, "rpm")), true)
+                .expect("check on Fedora");
         assert!(!fedora.update_available);
         assert!(
             fedora.download_url.ends_with("/v1.2.3/hub.rpm"),
@@ -2877,8 +2895,9 @@ mod tests {
         );
         assert_eq!(fedora.package_format.as_deref(), Some("rpm"));
 
-        let ubuntu = check_desktop_update_for_host("1.2.3", &source, Some((HostOs::Linux, "deb")))
-            .expect("check on Ubuntu");
+        let ubuntu =
+            check_desktop_update_for_host("1.2.3", &source, Some((HostOs::Linux, "deb")), true)
+                .expect("check on Ubuntu");
         assert!(
             ubuntu.download_url.ends_with("/v1.2.3/hub.deb"),
             "{}",
@@ -2893,17 +2912,22 @@ mod tests {
         let source = UpdateSource::from_base(&base).expect("test source");
 
         // A build ahead of the download server would be downgraded by its newest release.
-        let ahead = check_desktop_update_for_host("1.3.0", &source, Some((HostOs::Linux, "rpm")))
-            .expect("check ahead of the server");
+        let ahead =
+            check_desktop_update_for_host("1.3.0", &source, Some((HostOs::Linux, "rpm")), true)
+                .expect("check ahead of the server");
         assert!(!ahead.update_available);
         assert!(ahead.download_url.is_empty());
 
         // Without a manifest the check still answers, only without an installer.
         let no_manifest =
             UpdateSource::from_base(&serve_release("1.2.3", |_| None)).expect("source");
-        let current =
-            check_desktop_update_for_host("1.2.3", &no_manifest, Some((HostOs::Linux, "deb")))
-                .expect("check without a manifest");
+        let current = check_desktop_update_for_host(
+            "1.2.3",
+            &no_manifest,
+            Some((HostOs::Linux, "deb")),
+            true,
+        )
+        .expect("check without a manifest");
         assert!(!current.update_available);
         assert!(current.download_url.is_empty());
         assert_eq!(current.package_format.as_deref(), Some("deb"));
@@ -2916,7 +2940,7 @@ mod tests {
         let source = UpdateSource::from_base(&base).expect("test source");
 
         // Check: newer version discovered, artifact resolved with expectations.
-        let info = check_desktop_update_with_source("0.2.27", &source).expect("check");
+        let info = check_desktop_update_with_source("0.2.27", &source, false).expect("check");
         assert!(info.update_available);
         assert_eq!(info.latest_version, "9.9.9");
         assert!(info.download_url.starts_with(&base));
@@ -2924,11 +2948,19 @@ mod tests {
         assert_eq!(info.expected_sha256.as_deref(), Some(sha.as_str()));
 
         // No update offered when already current, but this computer's installer is still named.
-        let current = check_desktop_update_with_source("9.9.9", &source).expect("check current");
+        let current =
+            check_desktop_update_with_source("9.9.9", &source, true).expect("check current");
         assert!(!current.update_available);
         assert_eq!(current.download_url, info.download_url);
         assert_eq!(current.expected_sha256.as_deref(), Some(sha.as_str()));
         assert!(current.package_format.is_some());
+
+        // The CLI, the update listener and the install command act only on an update, so their
+        // check reads no manifest for the version already running.
+        let current_only =
+            check_desktop_update_with_source("9.9.9", &source, false).expect("check current only");
+        assert!(!current_only.update_available);
+        assert!(current_only.download_url.is_empty());
 
         // Download + integrity verification round-trip.
         let staging = tempfile::tempdir().expect("staging");

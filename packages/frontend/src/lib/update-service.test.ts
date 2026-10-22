@@ -294,6 +294,8 @@ describe('update-service', () => {
       // A signed-out page gets a 401 from the Hub and a 401 signs the page out.
       await expect(checkForUpdates()).resolves.toMatchObject({ latestVersion: '0.3.6', downloadUrl: '' });
       expect(mockGetDesktopRelease).not.toHaveBeenCalled();
+      // The notice only shows a newer version, so the installer of this one isn't looked up at all.
+      expect(corsBlockedFetch).not.toHaveBeenCalled();
     });
   });
 

@@ -499,7 +499,7 @@ async fn check_desktop_update_command() -> Result<updater::DesktopUpdateInfo, St
         .unwrap_or(env!("CARGO_PKG_VERSION"))
         .trim_start_matches('v')
         .to_string();
-    tokio::task::spawn_blocking(move || updater::check_desktop_update(&current))
+    tokio::task::spawn_blocking(move || updater::check_desktop_update_naming_installer(&current))
         .await
         .map_err(|e| format!("Update check task failed: {}", e))?
 }
