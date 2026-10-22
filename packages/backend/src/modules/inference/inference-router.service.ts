@@ -237,6 +237,27 @@ export class InferenceRouterService implements OnApplicationBootstrap {
   }
 
   /**
+   * Unpin every model and unload each one its engine still holds, for a factory reset. The Hub loads a
+   * model at `keep_alive: -1`, so an unpin alone left the old Hub's pinned models in memory for good.
+   * Only what the engine reports resident is unloaded: Ollama loads a model that an unload names when
+   * it is not in memory. A failed unload costs a warning, never the reset.
+   */
+  async forgetPinnedModels(): Promise<void> {
+    for (const catalogId of await this.modelRegistry.forgetPins()) {
+      const target = this.loadTarget(catalogId);
+      if (!target) continue;
+      const resident = await this.backends
+        .get(target.backendType)
+        .isModelLoaded(target.backendModelId)
+        .catch(() => false);
+      if (!resident) continue;
+      await this.modelPuller.unloadModel(catalogId).catch((err: unknown) => {
+        this._logger.warn(`[Inference] Factory reset could not unload ${catalogId}: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }
+  }
+
+  /**
    * Re-marks as pinned each model the operator pinned (persisted by the registry) that an engine still
    * holds, and returns the ones it found.
    *
@@ -1140,7 +1161,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       }
 
       if (pinGeneration !== this.modelRegistry.currentPinGeneration()) {
-        return { pinned: false, reason: `${catalogId} is loaded, but not pinned: a factory reset ran while it loaded` };
+        return { pinned: false, reason: `${catalogId} is loaded, but not pinned: a factory reset ran before this pin finished` };
       }
       this.modelRegistry.pinModel(catalogId);
       return { pinned: true };

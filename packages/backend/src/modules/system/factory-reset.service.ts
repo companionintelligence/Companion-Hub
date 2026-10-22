@@ -42,6 +42,7 @@ import { HubPoolIdentityService } from '@/modules/hub-pool/hub-pool-identity.ser
 import { HubPoolPairingPinService } from '@/modules/hub-pool/hub-pool-pairing-pin.service';
 import { AppCredentialsService } from '@/modules/inference/app-credentials.service';
 import { CloudFallbackService } from '@/modules/inference/cloud-fallback.service';
+import { InferenceRouterService } from '@/modules/inference/inference-router.service';
 import { ModelRegistryService } from '@/modules/inference/model-registry.service';
 import { DOCKERODE } from '@/modules/docker/constants';
 import { Inject, Injectable, type Type } from '@nestjs/common';
@@ -126,23 +127,30 @@ export class FactoryResetService {
    * and in memory. The pins came back after the reset and pinned the old Hub's models again.
    */
   private async forgetInferenceState(): Promise<void> {
-    await this.forgetIn(ModelRegistryService, 'the pinned models', (registry) => registry.forgetPins());
+    // The router also unloads the unpinned models from their engines, which hold them at `keep_alive: -1`.
+    const unloaded = await this.forgetIn(InferenceRouterService, 'the pinned models', (router) => router.forgetPinnedModels());
+    if (!unloaded) {
+      await this.forgetIn(ModelRegistryService, 'the pinned models', (registry) => registry.forgetPins());
+    }
     await this.forgetIn(AppCredentialsService, 'the record of what apps were handed', (credentials) => credentials.forgetHandouts());
   }
 
   /**
    * Run `forget` on a provider of another module, resolved through `ModuleRef` because `SystemModule`
    * imports none of them. One that is missing or fails costs a warning, never the rest of the reset.
+   * Returns whether `forget` ran to the end.
    */
-  private async forgetIn<T>(token: Type<T>, what: string, forget: (provider: T) => unknown): Promise<void> {
+  private async forgetIn<T>(token: Type<T>, what: string, forget: (provider: T) => unknown): Promise<boolean> {
     try {
       const provider = this.moduleRef.get(token, { strict: false });
       if (provider) {
         await forget(provider);
+        return true;
       }
     } catch (error) {
       this.logger.warn(`Factory reset could not clear ${what}: ${error instanceof Error ? error.message : String(error)}`);
     }
+    return false;
   }
 
   /**

@@ -27,6 +27,7 @@ import { HubPoolPairingPinService } from '@/modules/hub-pool/hub-pool-pairing-pi
 import { AppCredentialsService } from '@/modules/inference/app-credentials.service';
 import { HANDOUT_RECORDS_PATH, type RecordedHandout } from '@/modules/inference/app-handout-record';
 import { CloudFallbackService } from '@/modules/inference/cloud-fallback.service';
+import { InferenceRouterService } from '@/modules/inference/inference-router.service';
 import { ModelRegistryService } from '@/modules/inference/model-registry.service';
 import { PINNED_MODELS_PATH, writePinnedModels } from '@/modules/inference/pinned-models-record';
 import type { CloudProviderConfig } from '@ci-hub/common/types';
@@ -630,6 +631,22 @@ describe('FactoryResetService: what the inference module keeps in state/', () =>
     const nextBoot = new ModelRegistryService(mock<LoggerService>());
     await nextBoot.onModuleInit();
     expect(nextBoot.getPinnedCatalogIds()).toEqual([]);
+  });
+
+  // The engines hold a model the Hub loaded at keep_alive -1, so unpinning alone left it in memory for good.
+  it('has the inference router unpin the models and unload the ones the engines still hold', async () => {
+    const router = { forgetPinnedModels: vi.fn(async () => undefined) };
+    const registry = { forgetPins: vi.fn(async () => []) };
+
+    await resetWith(
+      new Map<unknown, unknown>([
+        [InferenceRouterService, router],
+        [ModelRegistryService, registry],
+      ]),
+    ).execute();
+
+    expect(router.forgetPinnedModels).toHaveBeenCalledTimes(1);
+    expect(registry.forgetPins).not.toHaveBeenCalled();
   });
 
   it('forgets what each app was handed, which describes apps the reset removed', async () => {

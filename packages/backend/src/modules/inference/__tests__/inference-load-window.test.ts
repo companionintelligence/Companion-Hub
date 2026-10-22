@@ -863,7 +863,7 @@ describe('a factory reset while a pin is still loading its model', () => {
     await registry.forgetPins();
     release();
 
-    await expect(pinning).resolves.toEqual({ pinned: false, reason: expect.stringContaining('a factory reset ran while it loaded') });
+    await expect(pinning).resolves.toEqual({ pinned: false, reason: expect.stringContaining('a factory reset ran before this pin finished') });
     expect(registry.getPinnedCatalogIds()).toEqual([]);
     expect(registry.getTrackedModel('gemma4-e4b')).toMatchObject({ state: 'loaded', pinned: false });
     expect([...ollama.resident.keys()]).toEqual(['gemma4:e4b']);
@@ -875,5 +875,39 @@ describe('a factory reset while a pin is still loading its model', () => {
 
     await expect(router.pinTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toEqual({ pinned: true });
     expect(registry.getPinnedCatalogIds()).toEqual(['gemma4-e4b']);
+  });
+});
+
+// The Hub loads a model at keep_alive -1, so a model the reset only unpinned stayed in Ollama for good.
+describe('a factory reset unloads the models it unpins', () => {
+  it('unloads each pinned model the engine still holds and asks nothing of one it no longer holds', async () => {
+    const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+    const { router, registry, puller } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    await expect(router.pinTrackedModel('gemma4-e4b', { origin: 'operator' })).resolves.toEqual({ pinned: true });
+    // Pinned too, but the engine dropped it: an unload naming it would make Ollama load it first.
+    registry.trackModel('gemma3-1b', 'pulled');
+    registry.pinModel('gemma3-1b');
+    expect([...ollama.resident.keys()]).toEqual(['gemma4:e4b']);
+    const loadsBefore = [...ollama.loads];
+
+    await router.forgetPinnedModels();
+
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+    expect([...ollama.resident.keys()]).toEqual([]);
+    expect(vi.mocked(puller.unloadModel).mock.calls).toEqual([['gemma4-e4b']]);
+    expect(ollama.loads).toEqual(loadsBefore);
+    expect(registry.getTrackedModel('gemma4-e4b')).toMatchObject({ state: 'pulled', pinned: false });
+  });
+
+  it('still unpins everything when the engine refuses the unload', async () => {
+    const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+    const { router, registry, puller, logger } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    await router.pinTrackedModel('gemma4-e4b', { origin: 'operator' });
+    vi.mocked(puller.unloadModel).mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
+
+    await expect(router.forgetPinnedModels()).resolves.toBeUndefined();
+
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('could not unload gemma4-e4b'));
   });
 });

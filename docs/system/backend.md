@@ -521,9 +521,13 @@ pairing sends no device key or move key.
 `wipeDatabase` truncates every table in `schema.ts` (`FACTORY_RESET_TABLES`, which a test keeps
 complete) and then forgets the caches over them: the stable ids forward auth signs
 (`ForwardAuthIdentityResolver.forget()`), the Hub Pool identity and any pairing PIN. After the
-settings, `ModelRegistryService.forgetPins()` and `AppCredentialsService.forgetHandouts()` remove
-`state/inference-pinned-models.json` and `state/inference-handouts.json` with their copies in
-memory. A pin whose model is still loading when the reset runs is refused once the load ends
+settings, `InferenceRouterService.forgetPinnedModels()` (through `ModelRegistryService.forgetPins()`)
+and `AppCredentialsService.forgetHandouts()` remove `state/inference-pinned-models.json` and
+`state/inference-handouts.json` with their copies in memory. `forgetPinnedModels` then unloads each
+unpinned model its engine still reports resident (`isModelLoaded`, which is `/api/ps` on Ollama),
+because the Hub loads at `keep_alive: -1` and the engine would hold it for good. It never names a
+model the engine does not hold, since an Ollama unload of such a model loads it first. A pin still
+waiting or loading when the reset runs is refused once its load ends
 (`ModelRegistryService.currentPinGeneration()`), so it does not pin the old Hub's model again.
 `clearOldHubRequests` removes `state/password-change-request` and `state/pairing-app-check.json`
 and drops the backoff of that apps check (`PairingAppRestoreService.forget()`).
