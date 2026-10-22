@@ -60,6 +60,9 @@ vi.mock('../commands/host-device-preflight', () => ({
 /** Install mechanics, not authorization, are under test here — the gate itself is covered in its own block. */
 const TEST_ACTOR: LifecycleActor = { kind: 'exempt', principal: 'cli' };
 
+/** The Start a reinstall dispatches under the install's own claim on the app. */
+type ReinstallStart = { dispatchStart: (params: { appUrn: AppUrn }) => Promise<{ requestId: string }> };
+
 describe('AppLifecycleService', () => {
   let service: AppLifecycleService;
   let exposureSyncService: ExposureSyncService;
@@ -1721,7 +1724,7 @@ describe('AppLifecycleService', () => {
         await install;
 
         expect(cancel.outcome).toBe('cancelling');
-        expect(imageSizeService.verifyAppArchitecture).not.toHaveBeenCalled();
+        // The image check runs beside the download and only reads; nothing is written or queued.
         expect(appsRepository.createApp).not.toHaveBeenCalled();
         expect(appEventsQueue.publish).not.toHaveBeenCalled();
         expect(cancelledEvents()).toEqual([['app', expect.objectContaining({ event: 'install_cancelled', appUrn })]]);
@@ -1774,7 +1777,7 @@ describe('AppLifecycleService', () => {
       // The app is still installed, so `install_cancelled` would tell every tab it is gone.
       it('is not held for a reinstall of an installed app, which goes ahead', async () => {
         appsRepository.getAppByUrn.mockResolvedValue({ id: 3, status: 'running', config: {} } as any);
-        const startApp = vi.spyOn(service, 'startApp').mockResolvedValue({ requestId: 'start-1' });
+        const startApp = vi.spyOn(service as unknown as ReinstallStart, 'dispatchStart').mockResolvedValue({ requestId: 'start-1' });
         const archCheck = held<null>();
         imageSizeService.verifyAppArchitecture.mockReturnValue(archCheck.promise);
 
@@ -1858,7 +1861,7 @@ describe('AppLifecycleService', () => {
         appStoreService.getAppStoreBySlug.mockResolvedValue({ slug: 'ci-marketplace', url: 'http://portal/api', type: 'ci_cloud_api' } as any);
         appsRepository.getAppByUrn.mockResolvedValue({ id: 5, status: 'uninstalling', config: {} } as any);
         operationRegistry.register(appUrn, { requestId: 'uninstall-1', command: 'uninstall', tier: 'non_cancellable' });
-        const startApp = vi.spyOn(service, 'startApp');
+        const startApp = vi.spyOn(service as unknown as ReinstallStart, 'dispatchStart');
 
         const error = await refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
 
@@ -1882,7 +1885,7 @@ describe('AppLifecycleService', () => {
           .mockResolvedValueOnce({ id: 5, status: 'running', config: {} } as any)
           .mockResolvedValue({ id: 5, status: 'uninstalling', config: {} } as any);
         reposHelpers.downloadAppFiles.mockResolvedValue({ success: true, files: {} } as any);
-        const startApp = vi.spyOn(service, 'startApp');
+        const startApp = vi.spyOn(service as unknown as ReinstallStart, 'dispatchStart');
 
         const error = await refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
 
@@ -1896,7 +1899,7 @@ describe('AppLifecycleService', () => {
         const archCheck = held<null>();
         imageSizeService.verifyAppArchitecture.mockReturnValue(archCheck.promise);
         appsRepository.getAppByUrn.mockResolvedValue({ id: 5, status: 'running', port: 8080, exposedLocal: true, config: {} } as any);
-        const startApp = vi.spyOn(service, 'startApp');
+        const startApp = vi.spyOn(service as unknown as ReinstallStart, 'dispatchStart');
 
         const install = refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
         await settle();
@@ -1913,7 +1916,7 @@ describe('AppLifecycleService', () => {
       it('refuses a second install once the first has written its row', async () => {
         appsRepository.getAppByUrn.mockResolvedValue({ id: 6, status: 'installing', config: {} } as any);
         operationRegistry.register(appUrn, { requestId: 'install-1', command: 'install', tier: 'safe' });
-        const startApp = vi.spyOn(service, 'startApp');
+        const startApp = vi.spyOn(service as unknown as ReinstallStart, 'dispatchStart');
 
         const error = await refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
 
@@ -1927,7 +1930,7 @@ describe('AppLifecycleService', () => {
       it('refuses a second install sent while the first is still in its checks, and the first goes on', async () => {
         const archCheck = held<null>();
         imageSizeService.verifyAppArchitecture.mockReturnValue(archCheck.promise);
-        const startApp = vi.spyOn(service, 'startApp');
+        const startApp = vi.spyOn(service as unknown as ReinstallStart, 'dispatchStart');
 
         const first = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
         await settle();
@@ -1953,7 +1956,7 @@ describe('AppLifecycleService', () => {
         const archCheck = held<null>();
         imageSizeService.verifyAppArchitecture.mockReturnValue(archCheck.promise);
         appsRepository.getAppByUrn.mockResolvedValue({ id: 5, status: 'running', port: 8080, exposedLocal: true, config: {} } as any);
-        const startApp = vi.spyOn(service, 'startApp').mockResolvedValue({ requestId: 'start-1' });
+        const startApp = vi.spyOn(service as unknown as ReinstallStart, 'dispatchStart').mockResolvedValue({ requestId: 'start-1' });
 
         const first = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
         await settle();
@@ -1988,7 +1991,7 @@ describe('AppLifecycleService', () => {
         const archCheck = held<null>();
         imageSizeService.verifyAppArchitecture.mockReturnValue(archCheck.promise);
         appsRepository.getAppByUrn.mockResolvedValue({ id: 5, status: 'running', port: 8080, exposedLocal: true, config: {} } as any);
-        const startApp = vi.spyOn(service, 'startApp');
+        const startApp = vi.spyOn(service as unknown as ReinstallStart, 'dispatchStart');
 
         const install = refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
         await settle();
@@ -2033,9 +2036,184 @@ describe('AppLifecycleService', () => {
 
       it.each(['running', 'stopped', 'install_failed'] as const)('still takes an install of an app that is %s', async (status) => {
         appsRepository.getAppByUrn.mockResolvedValue({ id: 7, status, port: 8080, exposedLocal: true, config: {} } as any);
-        vi.spyOn(service, 'startApp').mockResolvedValue({ requestId: 'start-1' });
+        vi.spyOn(service as unknown as ReinstallStart, 'dispatchStart').mockResolvedValue({ requestId: 'start-1' });
 
         await expect(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} })).resolves.toBeDefined();
+      });
+    });
+
+    // #2101: the install's own busy states, by what is under way rather than by the row alone.
+    describe('while another operation runs on the app', () => {
+      const refusal = (promise: Promise<unknown>) =>
+        promise.then(
+          () => null,
+          (error: unknown) => error as TranslatableError,
+        );
+
+      it.each([
+        { command: 'update', status: 'updating', message: 'APP_ERROR_UPDATE_IN_PROGRESS' },
+        { command: 'restore', status: 'restoring', message: 'APP_ERROR_RESTORE_IN_PROGRESS' },
+        { command: 'backup', status: 'backing_up', message: 'APP_ERROR_BACKUP_IN_PROGRESS' },
+        { command: 'reset', status: 'resetting', message: 'APP_ERROR_RESET_IN_PROGRESS' },
+        { command: 'start', status: 'starting', message: 'APP_ERROR_START_IN_PROGRESS' },
+        { command: 'stop', status: 'stopping', message: 'APP_ERROR_STOP_IN_PROGRESS' },
+        { command: 'restart', status: 'restarting', message: 'APP_ERROR_RESTART_IN_PROGRESS' },
+      ] as const)('refuses an install while the app is $status, instead of taking it as a reinstall', async ({ command, status, message }) => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 8, status, port: 8080, exposedLocal: true, config: {} } as any);
+        operationRegistry.register(appUrn, { requestId: 'in-flight', command, tier: 'safe' });
+        const dispatchStart = vi.spyOn(service as unknown as ReinstallStart, 'dispatchStart');
+
+        const error = await refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
+
+        expect(error?.getStatus()).toBe(409);
+        expect(error?.message).toBe(message);
+        expect(dispatchStart).not.toHaveBeenCalled();
+        expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+        expect(operationRegistry.ownsOutcome(appUrn, 'in-flight')).toBe(true);
+      });
+
+      // Its worker died, or the Hub restarted before it finished: nothing is installing it any more.
+      it('retries an install whose row says installing when no install is under way', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 9, status: 'installing', port: 8080, exposedLocal: true, config: {} } as any);
+        const dispatchStart = vi.spyOn(service as unknown as ReinstallStart, 'dispatchStart');
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+
+        expect(dispatchStart).not.toHaveBeenCalled();
+        expect(appsRepository.createApp).not.toHaveBeenCalled();
+        expect(appsRepository.updateAppById).toHaveBeenCalledWith(9, expect.objectContaining({ status: 'installing' }));
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'install', appUrn }));
+      });
+
+      it('still refuses an install on a row left uninstalling, with no uninstall under way', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 10, status: 'uninstalling', config: {} } as any);
+
+        const error = await refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} }));
+
+        expect(error?.message).toBe('APP_ERROR_UNINSTALL_IN_PROGRESS');
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+
+      // An MCP caller reaches the service without the HTTP route's check. Told the app was busy, a
+      // caller without the grant learned what the app was doing.
+      it('refuses a caller without the install grant for that, before it says the app is busy', async () => {
+        const otherAppsKey: LifecycleActor = {
+          kind: 'mcp',
+          ownerAppUrn: 'ci-hermes:ci-marketplace' as AppUrn,
+          createdByUserId: null,
+          capability: 'write',
+        };
+        operationRegistry.beginInstallCall(appUrn);
+        operationRegistry.register(appUrn, { requestId: 'uninstall-1', command: 'uninstall', tier: 'non_cancellable' });
+
+        const error = await refusal(service.installApp({ actor: otherAppsKey, appUrn, form: {} }));
+
+        expect(error?.getStatus()).toBe(403);
+        expect(error?.message).toBe('APP_ACTION_GRANT_DENIED');
+      });
+
+      it('takes an install from a caller with the grant once the app is free again', async () => {
+        operationRegistry.register(appUrn, { requestId: 'uninstall-1', command: 'uninstall', tier: 'non_cancellable' });
+        expect((await refusal(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} })))?.message).toBe('APP_ERROR_UNINSTALL_IN_PROGRESS');
+
+        operationRegistry.claimCompletion(appUrn, 'uninstall-1');
+
+        await expect(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} })).resolves.toBeDefined();
+      });
+
+      // Other open pages read the app again when its install begins and ends its checks.
+      it('tells every page when an install begins and ends its checks', async () => {
+        // Queued, and the worker has not taken it yet.
+        appEventsQueue.publish.mockReturnValue(new Promise(() => {}));
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+
+        const changes = sseService.emit.mock.calls.filter(([, data]) => (data as { event?: string }).event === 'operation_change');
+        // The second names the install the Hub has now queued.
+        expect(changes).toEqual([
+          ['app', { event: 'operation_change', appUrn, operation: 'install' }],
+          ['app', { event: 'operation_change', appUrn, operation: 'install' }],
+        ]);
+      });
+
+      it('tells every page that nothing is under way when the install gave up', async () => {
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 10, status: 'uninstalling', config: {} } as any);
+
+        await expect(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} })).rejects.toThrow('APP_ERROR_UNINSTALL_IN_PROGRESS');
+
+        const changes = sseService.emit.mock.calls.filter(([, data]) => (data as { event?: string }).event === 'operation_change');
+        expect(changes.at(-1)).toEqual(['app', { event: 'operation_change', appUrn, operation: null }]);
+      });
+    });
+
+    // #2102: the checks an install runs before it registers, and how long each took.
+    describe('the checks before an install registers', () => {
+      const held = <T>() => {
+        let release!: (value: T) => void;
+        const promise = new Promise<T>((resolve) => {
+          release = resolve;
+        });
+        return { promise, release };
+      };
+      const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+      beforeEach(() => {
+        appStoreService.getAppStoreBySlug.mockResolvedValue({ slug: 'ci-marketplace', url: 'http://portal/api', type: 'ci_cloud_api' } as any);
+        imageSizeService.listAppImages.mockResolvedValue(['testapp/web:1.0']);
+        reposHelpers.downloadAppFiles.mockResolvedValue({ success: true, files: {} } as any);
+      });
+
+      it('checks the images while the bundle downloads, not after it', async () => {
+        const download = held<unknown>();
+        reposHelpers.downloadAppFiles.mockReturnValue(download.promise as any);
+        imageSizeService.verifyAppArchitecture.mockResolvedValue({ ok: true });
+
+        const install = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+        await settle();
+
+        expect(imageSizeService.verifyAppArchitecture).toHaveBeenCalledWith(appUrn, 'amd64');
+        download.release({ success: true, files: {} });
+        await install;
+
+        expect(imageSizeService.verifyAppArchitecture).toHaveBeenCalledTimes(1);
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'install', appUrn }));
+      });
+
+      it('checks the images again when the downloaded compose names other ones', async () => {
+        imageSizeService.listAppImages.mockResolvedValueOnce(['testapp/web:1.0']).mockResolvedValue(['testapp/web:2.0']);
+        imageSizeService.verifyAppArchitecture
+          .mockResolvedValueOnce({ ok: true })
+          .mockResolvedValueOnce({ ok: false, image: 'testapp/web:2.0', available: ['arm64'] });
+
+        const install = service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+
+        await expect(install).rejects.toThrow('APP_ERROR_ARCHITECTURE_NOT_SUPPORTED');
+        expect(imageSizeService.verifyAppArchitecture).toHaveBeenCalledTimes(2);
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+
+      it('asks nothing of the Portal or a registry for a caller without the grant', async () => {
+        const otherAppsKey: LifecycleActor = {
+          kind: 'mcp',
+          ownerAppUrn: 'ci-hermes:ci-marketplace' as AppUrn,
+          createdByUserId: null,
+          capability: 'write',
+        };
+
+        await expect(service.installApp({ actor: otherAppsKey, appUrn, form: {} })).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+
+        expect(reposHelpers.downloadAppFiles).not.toHaveBeenCalled();
+        expect(imageSizeService.verifyAppArchitecture).not.toHaveBeenCalled();
+      });
+
+      it('logs how long each check took', async () => {
+        imageSizeService.verifyAppArchitecture.mockResolvedValue({ ok: true });
+
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
+
+        // One line per install, the checks in the order they finished.
+        expect(logger.info).toHaveBeenCalledWith(
+          expect.stringMatching(/^\[install\] testapp:ci-marketplace took \d+ ms \(grant \d+ ms, (?=.*bundle \d+ ms)(?=.*architecture \d+ ms)/),
+        );
       });
     });
 
@@ -6716,41 +6894,156 @@ describe('AppLifecycleService', () => {
       appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
     });
 
-    it('overlapping restarts: the first success does not win when a second restart superseded it', async () => {
-      const resolvePublish = deferPublishResults({ success: true, message: 'OK' }, { success: false, message: 'compose failed' });
+    // A second command no longer supersedes the first: it is refused while the first is under way.
+    it('overlapping restarts: the second is refused and the first one settles the app', async () => {
+      const resolvePublish = deferPublishResults({ success: true, message: 'OK' });
 
       await service.restartApp({ actor: TEST_ACTOR, appUrn });
-      await service.restartApp({ actor: TEST_ACTOR, appUrn });
+      await expect(service.restartApp({ actor: TEST_ACTOR, appUrn })).rejects.toThrow('APP_ERROR_RESTART_IN_PROGRESS');
       resolvePublish();
       await flushMicrotasks();
 
-      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'restart_success' }));
-      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'restart_error', appUrn, appStatus: 'stopped' }));
-    });
-
-    it('stop-then-restart interleave: the surviving restart outcome wins over a superseded stop', async () => {
-      const resolvePublish = deferPublishResults({ success: true, message: 'OK' }, { success: true, message: 'OK' });
-
-      await service.stopApp({ actor: TEST_ACTOR, appUrn });
-      await service.restartApp({ actor: TEST_ACTOR, appUrn });
-      resolvePublish();
-      await flushMicrotasks();
-
-      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'stop_success' }));
+      expect(appEventsQueue.publish).toHaveBeenCalledTimes(1);
       expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'restart_success', appUrn, appStatus: 'running' }));
     });
 
+    it('stop then restart: the restart is refused while the stop runs, and the stop settles the app', async () => {
+      const resolvePublish = deferPublishResults({ success: true, message: 'OK' });
+
+      await service.stopApp({ actor: TEST_ACTOR, appUrn });
+      await expect(service.restartApp({ actor: TEST_ACTOR, appUrn })).rejects.toThrow('APP_ERROR_STOP_IN_PROGRESS');
+      resolvePublish();
+      await flushMicrotasks();
+
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ appStatus: 'restarting' }));
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'stop_success', appUrn, appStatus: 'stopped' }));
+    });
+
+    // A force stop still registers over a stop or restart hung on Docker, which is what it is for.
     it('superseded restart failure does not fire phantom failure alerts', async () => {
-      const resolvePublish = deferPublishResults({ success: false, message: 'compose interrupted' }, { success: true, message: 'OK' });
+      const resolvePublish = deferPublishResults({ success: false, message: 'compose interrupted' });
 
       await service.restartApp({ actor: TEST_ACTOR, appUrn });
-      await service.stopApp({ actor: TEST_ACTOR, appUrn });
+      operationRegistry.register(appUrn, { requestId: 'force-stop-1', command: 'stop', tier: 'safe' });
       resolvePublish();
       await flushMicrotasks();
 
       expect(agentNotifyService.notify).not.toHaveBeenCalledWith('restart_error', expect.anything(), expect.anything());
       expect(errorReportingService.reportAppFailure).not.toHaveBeenCalledWith(expect.objectContaining({ phase: 'restart' }));
-      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'stop_success', appUrn, appStatus: 'stopped' }));
+      expect(operationRegistry.ownsOutcome(appUrn, 'force-stop-1')).toBe(true);
+    });
+  });
+
+  /*
+   * #2101: every entry method registered over whatever held the app. A start, stop, restart, reset
+   * or update sent during an uninstall (by an agent through MCP, say) took the uninstall's slot, its
+   * completion was dropped as superseded, and the row stayed behind with no containers.
+   */
+  describe('one lifecycle operation per app', () => {
+    const appUrn = 'myapp:ci-marketplace' as AppUrn;
+    const fakeApp = { id: 42, appName: 'myapp', appStoreSlug: 'ci-marketplace', status: 'running', config: {}, exposedLocal: false };
+    const held = <T>() => {
+      let release!: (value: T) => void;
+      const promise = new Promise<T>((resolve) => {
+        release = resolve;
+      });
+      return { promise, release };
+    };
+    const commands = {
+      start: () => service.startApp({ actor: TEST_ACTOR, appUrn }),
+      stop: () => service.stopApp({ actor: TEST_ACTOR, appUrn }),
+      restart: () => service.restartApp({ actor: TEST_ACTOR, appUrn }),
+      reset: () => service.resetApp({ actor: TEST_ACTOR, appUrn }),
+      update: () => service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false }),
+      uninstall: () => service.uninstallApp({ actor: TEST_ACTOR, appUrn, deleteAllData: true }),
+    };
+
+    beforeEach(() => {
+      appsRepository.getAppByUrn.mockResolvedValue(fakeApp as any);
+      appsRepository.updateAppById.mockResolvedValue(fakeApp as any);
+      appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
+    });
+
+    it.each(['start', 'stop', 'restart', 'reset', 'update'] as const)(
+      'refuses a %s while the app is being removed, and the uninstall still removes the row',
+      async (command) => {
+        const uninstall = held<{ success: boolean; message: string }>();
+        appEventsQueue.publish.mockReturnValueOnce(uninstall.promise as any);
+        await commands.uninstall();
+        appsRepository.updateAppById.mockClear();
+        appEventsQueue.publish.mockClear();
+
+        await expect(commands[command]()).rejects.toMatchObject({
+          status: 409,
+          response: { message: 'APP_ERROR_UNINSTALL_IN_PROGRESS', intlParams: { id: 'myapp' } },
+        });
+        expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+
+        uninstall.release({ success: true, message: 'OK' });
+
+        await vi.waitFor(() => {
+          expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'uninstall_success', appUrn }));
+        });
+        expect(appsRepository.deleteAppById).toHaveBeenCalledWith(42);
+      },
+    );
+
+    it('names what the app is busy with', async () => {
+      const restart = held<{ success: boolean; message: string }>();
+      appEventsQueue.publish.mockReturnValueOnce(restart.promise as any);
+      await commands.restart();
+
+      await expect(commands.uninstall()).rejects.toThrow('APP_ERROR_RESTART_IN_PROGRESS');
+      await expect(commands.update()).rejects.toThrow('APP_ERROR_RESTART_IN_PROGRESS');
+      restart.release({ success: true, message: 'OK' });
+    });
+
+    // The entry methods read and write the row before they register, so a busy check alone let a
+    // second command through while the first was still on its way.
+    it('refuses the second of two starts sent together, before it writes anything', async () => {
+      const read = held<unknown>();
+      appsRepository.getAppByUrn.mockReturnValueOnce(read.promise as any);
+
+      const first = commands.start();
+      const second = commands.start().then(
+        () => null,
+        (error: unknown) => error,
+      );
+      read.release(fakeApp);
+      await first;
+
+      expect(await second).toMatchObject({ status: 409, message: 'APP_ERROR_START_IN_PROGRESS' });
+      expect(appEventsQueue.publish).toHaveBeenCalledTimes(1);
+    });
+
+    it('frees the app when a command fails before it is dispatched', async () => {
+      appsRepository.getAppByUrn.mockResolvedValueOnce(null as any);
+
+      await expect(commands.start()).rejects.toThrow('APP_ERROR_APP_NOT_FOUND');
+
+      expect(operationRegistry.liveOperation(appUrn)).toBeUndefined();
+      await expect(commands.start()).resolves.toBeDefined();
+    });
+
+    // A stop hung on Docker never clears its entry. Past the queue's own timeout it is not one.
+    it('lets a command through once the operation that held the app is older than the queue waits', async () => {
+      operationRegistry.register(appUrn, { requestId: 'hung-stop', command: 'stop', tier: 'safe' });
+      const entry = operationRegistry.get(appUrn);
+      if (entry) {
+        entry.createdAt = Date.now() - 46 * 60 * 1000;
+      }
+
+      await expect(commands.start()).resolves.toBeDefined();
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'start', appUrn }));
+    });
+
+    it('refuses a backup or a restore through the same claim', async () => {
+      operationRegistry.register(appUrn, { requestId: 'uninstall-1', command: 'uninstall', tier: 'non_cancellable' });
+      const run = vi.fn();
+
+      await expect(service.withOperationClaim(appUrn, 'backup', run)).rejects.toThrow('APP_ERROR_UNINSTALL_IN_PROGRESS');
+      expect(run).not.toHaveBeenCalled();
     });
   });
 
@@ -6838,31 +7131,39 @@ describe('AppLifecycleService', () => {
       },
     );
 
-    // A backup resumes its app with a start while the row says `backing_up`, and the
-    // public-route repair restarts apps that are still `starting`. The new command
-    // replaces that operation in the registry, so its completion is dropped as
-    // superseded and nothing would ever move the row off a restored spinner.
+    // A backup resumes its app with a start once it has settled its own outcome, while the row still
+    // says `backing_up`, and the public-route repair restarts apps whose row still says `starting`.
+    // Nothing but this command would ever move the row off that spinner again.
     it.each([
-      { command: 'start', statusBefore: 'backing_up', inFlight: 'backup' },
-      { command: 'restart', statusBefore: 'starting', inFlight: 'start' },
-    ] as const)(
-      'a $command the queue never took does not put back $statusBefore, which the $inFlight it replaced can no longer settle',
-      async ({ command, statusBefore, inFlight }) => {
-        givenApp(statusBefore);
-        operationRegistry.register(appUrn, { requestId: 'req-in-flight', command: inFlight, tier: 'safe' });
-        appEventsQueue.publish.mockResolvedValue({
-          success: false,
-          message: 'channel creation failed; connection is closing',
-          errorCode: QUEUE_UNAVAILABLE_CODE,
-        } as any);
+      { command: 'start', statusBefore: 'backing_up' },
+      { command: 'restart', statusBefore: 'starting' },
+    ] as const)('a $command the queue never took does not put back $statusBefore', async ({ command, statusBefore }) => {
+      givenApp(statusBefore);
+      appEventsQueue.publish.mockResolvedValue({
+        success: false,
+        message: 'channel creation failed; connection is closing',
+        errorCode: QUEUE_UNAVAILABLE_CODE,
+      } as any);
 
-        await run(command);
-        await flushMicrotasks();
+      await run(command);
+      await flushMicrotasks();
 
-        expect(operationRegistry.claimCompletion(appUrn, 'req-in-flight')).toBe(false);
-        expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, { status: 'stopped' });
-      },
-    );
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, { status: 'stopped' });
+    });
+
+    it.each([
+      { command: 'start', inFlight: 'backup' },
+      { command: 'restart', inFlight: 'start' },
+    ] as const)('a $command sent while a $inFlight is still under way is refused before it writes anything', async ({ command, inFlight }) => {
+      givenApp('running');
+      operationRegistry.register(appUrn, { requestId: 'req-in-flight', command: inFlight, tier: 'safe' });
+
+      await expect(run(command)).rejects.toMatchObject({ status: 409 });
+
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      expect(operationRegistry.ownsOutcome(appUrn, 'req-in-flight')).toBe(true);
+    });
 
     it.each([
       { waitFor: 'startAppAndWait', event: 'start_error' },

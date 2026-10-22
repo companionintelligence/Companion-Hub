@@ -80,6 +80,57 @@ type AppOutcomeSseEvent = Extract<Extract<SSE, { topic: 'app' }>['data'], { appU
  */
 const STATUSES_MEANING_NOT_RUNNING: ReadonlySet<string> = new Set(['stopped', 'stopping', 'missing', 'install_failed', 'uninstalling']);
 
+/** What a command refused for an app with another operation under way tells the caller, by that operation. */
+const OPERATION_BUSY_MESSAGES: Record<OperationCommand, keyof typeof messages> = {
+  install: 'APP_ERROR_INSTALL_IN_PROGRESS',
+  uninstall: 'APP_ERROR_UNINSTALL_IN_PROGRESS',
+  start: 'APP_ERROR_START_IN_PROGRESS',
+  stop: 'APP_ERROR_STOP_IN_PROGRESS',
+  restart: 'APP_ERROR_RESTART_IN_PROGRESS',
+  update: 'APP_ERROR_UPDATE_IN_PROGRESS',
+  reset: 'APP_ERROR_RESET_IN_PROGRESS',
+  backup: 'APP_ERROR_BACKUP_IN_PROGRESS',
+  restore: 'APP_ERROR_RESTORE_IN_PROGRESS',
+  generate_env: 'APP_ERROR_EVENT_IN_PROGRESS',
+};
+
+type ArchitectureCheck = Awaited<ReturnType<ImageSizeService['verifyAppArchitecture']>>;
+
+/** Whether two compose image lists name the same images. Two unreadable lists count as the same. */
+function sameImages(a: string[] | null | undefined, b: string[] | null | undefined): boolean {
+  if (!a || !b) {
+    return !a && !b;
+  }
+
+  const left = new Set(a);
+  return left.size === new Set(b).size && b.every((image) => left.has(image));
+}
+
+/** The claim `installApp` takes on the app right before it writes anything, for its `finally` to hand back. */
+type InstallSlot = { claim: symbol | null };
+
+/**
+ * Times the checks an install runs before it registers, for one log line per install call, so a
+ * slow one (WhoIs, the bundle download, a registry) shows which it was.
+ */
+class InstallCheckTimings {
+  private readonly startedAt = Date.now();
+  private readonly steps: string[] = [];
+
+  async time<T>(step: string, work: Promise<T>): Promise<T> {
+    const startedAt = Date.now();
+    try {
+      return await work;
+    } finally {
+      this.steps.push(`${step} ${Date.now() - startedAt} ms`);
+    }
+  }
+
+  summary(): string {
+    return `${Date.now() - this.startedAt} ms (${this.steps.join(', ') || 'no checks'})`;
+  }
+}
+
 function hasUpdateAvailableForInstalledApp(item: {
   app: { version: number | string; ignoredVersion?: number | string | null; status: string };
   info?: { version?: string | null } | null;
@@ -976,10 +1027,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   }
 
   async startApp(params: { appUrn: AppUrn; skipPull?: boolean; onlyRecreateChanged?: boolean; actor: LifecycleActor }) {
-    const { appUrn, skipPull, onlyRecreateChanged } = params;
-
     // Before the app is even read — see `assertActorMay`.
-    await this.assertActorMay(params.actor, appUrn, 'start');
+    await this.assertActorMay(params.actor, params.appUrn, 'start');
+    return this.withOperationClaim(params.appUrn, 'start', () => this.dispatchStart(params));
+  }
+
+  /** `startApp` past its grant check, with the app claimed: by this start, or by the install it is part of. */
+  private async dispatchStart(params: { appUrn: AppUrn; skipPull?: boolean; onlyRecreateChanged?: boolean }) {
+    const { appUrn, skipPull, onlyRecreateChanged } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -1289,60 +1344,112 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   }
 
   /**
-   * Refuse an install that would land on an install or uninstall of the same app that is still
-   * running. Taken as a reinstall, it patches the row and queues a Start, which replaces that
-   * operation in the registry: a second install restarts the app as soon as the first one finishes,
-   * and an uninstall never completes, leaving a row that "starts" with no containers behind it.
+   * The image check `installAppWhilePreparing` started beside the bundle download, or a new one when
+   * the downloaded compose names other images than those it checked.
    */
-  private refuseInstallWhileBusy(appUrn: AppUrn, status: AppStatus | undefined): void {
-    const { appName } = extractAppUrn(appUrn);
-
-    if (status === 'uninstalling') {
-      throw new TranslatableError('APP_ERROR_UNINSTALL_IN_PROGRESS', { id: appName }, HttpStatus.CONFLICT);
+  private async settleArchitectureCheck(
+    appUrn: AppUrn,
+    architecture: string,
+    started: { imagesBeforeDownload: string[] | null; earlyArchCheck: Promise<ArchitectureCheck> },
+    timings: InstallCheckTimings,
+  ): Promise<ArchitectureCheck> {
+    const imagesNow = await this.imageSizeService.listAppImages(appUrn);
+    if (sameImages(started.imagesBeforeDownload, imagesNow)) {
+      return started.earlyArchCheck;
     }
 
-    if (status === 'installing') {
-      throw new TranslatableError('APP_ERROR_INSTALL_IN_PROGRESS', { id: appName }, HttpStatus.CONFLICT);
+    return timings.time('architecture of the new images', this.imageSizeService.verifyAppArchitecture(appUrn, architecture));
+  }
+
+  /**
+   * Refuse an install that would land on another operation for the same app. Taken as a reinstall,
+   * it patched the row and queued a Start, which took over that operation's slot in the registry: a
+   * second install restarted the app as soon as the first one finished, and an uninstall never
+   * completed, leaving a row that "starts" with no containers behind it.
+   *
+   * A row left `installing` with no operation under way is not refused: the install that wrote it
+   * is gone (its worker died, or the Hub restarted before it finished), and this one retries it. A
+   * row left `uninstalling` is refused all the same, as that app is half removed and an install
+   * would start what is left of it.
+   */
+  private refuseInstallWhileBusy(appUrn: AppUrn, status: AppStatus | undefined): void {
+    const live = this.operationRegistry.liveOperation(appUrn);
+    if (live) {
+      throw this.operationBusyError(appUrn, live.command);
+    }
+
+    if (status === 'uninstalling') {
+      throw this.operationBusyError(appUrn, 'uninstall');
     }
   }
 
   async installApp(params: { appUrn: AppUrn; form: unknown; skipRun?: boolean; actor: LifecycleActor }) {
+    const timings = new InstallCheckTimings();
+
+    // Before anything is fetched, written or queued, and before the busy refusals below, so a caller
+    // without the grant is refused for that whatever the app is doing — see `assertActorMay`. The
+    // HTTP route leaves the check to here, so an install asks WhoIs once.
+    await timings.time('grant', this.assertActorMayApplyForm(params.actor, params.appUrn, params.form, 'install'));
+
     // A second install sent while the first is still in here gets past the status checks below: a
     // fresh install has no row yet, and a reinstall's row says `running` until its Start. Checked and
     // begun in one synchronous step, so two requests cannot both get through.
     if (!this.operationRegistry.beginInstallCall(params.appUrn)) {
-      throw new TranslatableError('APP_ERROR_INSTALL_IN_PROGRESS', { id: extractAppUrn(params.appUrn).appName }, HttpStatus.CONFLICT);
+      throw this.operationBusyError(params.appUrn, 'install');
     }
+
+    // Every open page of the app shows the install from here, not only the one that clicked.
+    this.sseService.emit('app', { event: 'operation_change', appUrn: params.appUrn, operation: 'install' });
 
     // The page offers Cancel as soon as Install is clicked, but the operation registers only after
     // the checks below, which take seconds. A cancel in that window is held and applied here.
     const preparing = this.operationRegistry.beginPreparingInstall(params.appUrn);
+    const slot: InstallSlot = { claim: null };
     try {
-      return await this.installAppWhilePreparing(params, preparing);
+      return await this.installAppWhilePreparing(params, preparing, slot, timings);
     } finally {
+      if (slot.claim) {
+        this.operationRegistry.releaseClaim(params.appUrn, slot.claim);
+      }
       this.operationRegistry.endPreparingInstall(params.appUrn, preparing);
       this.operationRegistry.endInstallCall(params.appUrn);
+      // The install now queued, or what else holds the app, or nothing when this install gave up.
+      const operation = this.operationRegistry.liveOperation(params.appUrn)?.command ?? null;
+      this.sseService.emit('app', { event: 'operation_change', appUrn: params.appUrn, operation });
+      this.logger.info(`[install] ${params.appUrn} took ${timings.summary()}`);
     }
   }
 
   private async installAppWhilePreparing(
     params: { appUrn: AppUrn; form: unknown; skipRun?: boolean; actor: LifecycleActor },
     preparing: PreparingInstall,
+    slot: InstallSlot,
+    timings: InstallCheckTimings,
   ) {
     const { appUrn, form, skipRun } = params;
-
-    // Before anything is fetched, written or queued — see `assertActorMay`.
-    await this.assertActorMayApplyForm(params.actor, appUrn, form, 'install');
     const { demoMode, architecture } = this.config.getConfig();
 
     // Check if we need to download files from Companion Portal
     const { appStoreId, appName } = extractAppUrn(appUrn);
     const store = await this.appStoreService.getAppStoreBySlug(appStoreId);
+    const downloadsBundle = store?.type === 'ci_cloud_api';
 
-    if (store && store.type === 'ci_cloud_api') {
+    if (downloadsBundle) {
       // Before the Portal download, which rewrites the app's store files and takes seconds.
       this.refuseInstallWhileBusy(appUrn, (await this.appRepository.getAppByUrn(appUrn))?.status);
-      const result = await this.repoHelpers.downloadAppFiles(store.url, store.slug, appName);
+    }
+
+    /*
+     * The image check asks each image's registry, the bundle download asks Companion Portal, and on a
+     * slow link each took seconds, one after the other. The check starts here, on the compose the
+     * store already holds (the catalog sync keeps it for every free app), and runs beside the
+     * download. If the downloaded compose names other images, they are checked once it is in.
+     */
+    const imagesBeforeDownload = await this.imageSizeService.listAppImages(appUrn);
+    const earlyArchCheck = timings.time('architecture', this.imageSizeService.verifyAppArchitecture(appUrn, architecture)).catch(() => null);
+
+    if (store && downloadsBundle) {
+      const result = await timings.time('bundle', this.repoHelpers.downloadAppFiles(store.url, store.slug, appName));
       if (!result.success) {
         const failure = this.describePortalBundleFailure(appUrn, 'install', result);
         this.sseService.emit('app', {
@@ -1359,13 +1466,15 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     const existingApp = await this.appRepository.getAppByUrn(appUrn);
-    // For an install or uninstall under way, including one that began during the download.
+    // For an operation under way, including one that began during the download.
     this.refuseInstallWhileBusy(appUrn, existingApp?.status);
+    // A failed install, or one that left its row `installing` and is gone (see `refuseInstallWhileBusy`).
+    const retrying = existingApp?.status === 'install_failed' || existingApp?.status === 'installing';
 
     // Reinstalling an app that is already there restarts it below, which nothing can cancel. Its
     // window ends here, and a cancel held for it is dropped: applying it would send
     // `install_cancelled` for an app that is still installed.
-    const reinstall = !!existingApp && existingApp.status !== 'install_failed';
+    const reinstall = !!existingApp && !retrying;
     if (reinstall) {
       this.operationRegistry.endPreparingInstall(appUrn, preparing);
       if (preparing.cancelRequested) {
@@ -1374,7 +1483,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
     const cancelHeld = () => preparing.cancelRequested && !reinstall;
     // A retry of a failed install, which a cancel puts back to failed rather than deleting.
-    const retriedRow = existingApp?.status === 'install_failed' ? { rowId: existingApp.id, rewritten: false } : null;
+    const retriedRow = existingApp && retrying ? { rowId: existingApp.id, rewritten: false } : null;
 
     if (cancelHeld()) {
       return this.endInstallCancelledBeforeQueue(appUrn, retriedRow);
@@ -1431,7 +1540,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     // "no matching manifest for linux/arm64/v8" mid-pull that previously
     // cascaded into an install_failed crash. Best-effort: a null result
     // (registry/network couldn't be inspected) does not block the install.
-    const archCheck = await this.imageSizeService.verifyAppArchitecture(appUrn, architecture);
+    const archCheck = await this.settleArchitectureCheck(appUrn, architecture, { imagesBeforeDownload, earlyArchCheck }, timings);
     if (archCheck && !archCheck.ok) {
       const canEmulateAmd64 = architecture === 'arm64' && archCheck.available.includes('amd64') && appInfo.supported_architectures?.includes('amd64');
 
@@ -1525,21 +1634,31 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
      * afterwards would park the operator's domain for a reinstall they were told
      * had failed.
      */
+    /*
+     * Once more before anything is written, for a fresh install, a reinstall and a retry alike. The
+     * checks since the last look reach the image registry and Companion Portal, and an operation that
+     * began meanwhile would lose its outcome to this install's Start or its queued install. A row
+     * that is gone was removed by an uninstall that finished. The app is claimed in the same step,
+     * so nothing else can begin on it until this install has registered or given up. Before the
+     * release, which must follow every refusal.
+     */
+    const current = existingApp ? await this.appRepository.getAppByUrn(appUrn) : undefined;
+    this.refuseInstallWhileBusy(appUrn, existingApp && !current ? 'uninstalling' : current?.status);
+    const claim = this.operationRegistry.claim(appUrn, 'install');
+    if (!claim.claimed) {
+      throw this.operationBusyError(appUrn, claim.busy.command);
+    }
+    slot.claim = claim.token;
+
     if (existingApp) {
-      // Once more before anything is written, for a reinstall and a retry alike. The checks since the
-      // last look reach the image registry and Companion Portal, and an uninstall that began meanwhile
-      // would lose its outcome to this install's Start or its queued install. Before the release,
-      // which must follow every refusal. A row that is gone was removed by an uninstall that finished.
-      const current = await this.appRepository.getAppByUrn(appUrn);
-      this.refuseInstallWhileBusy(appUrn, current ? current.status : 'uninstalling');
       await this.releaseClearedCustomDomain(appUrn, parsedForm, existingApp);
     }
 
-    if (existingApp && existingApp.status !== 'install_failed') {
+    if (existingApp && !retrying) {
       await this.appRepository.updateAppById(existingApp.id, buildInstallRowPatch(parsedForm));
       await this.claimCustomDomainIntent(existingApp.id, parsedForm.customDomain);
-      // Part of the install the caller was authorized for, not a new decision.
-      return this.startApp({ appUrn, actor: { kind: 'system', reason: 'reinstall-start' } });
+      // Part of the install the caller was authorized for, not a new decision. Under this install's claim.
+      return this.dispatchStart({ appUrn });
     }
 
     // min_hub_version enforcement intentionally disabled until Hub semver stabilizes (post-CIHub migration).
@@ -1547,6 +1666,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     let installRecord: InstallRow | undefined = existingApp
       ? { id: existingApp.id, status: existingApp.status, port: existingApp.port, exposedLocal: existingApp.exposedLocal }
       : undefined;
+    // A row this install did not create: a failed install, or one gone with its row left `installing`.
+    let retriesRow = !!existingApp;
     if (!installRecord) {
       try {
         const created = await this.appRepository.createApp({
@@ -1599,17 +1720,20 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           throw createError;
         }
 
-        this.refuseInstallWhileBusy(appUrn, raced.status);
+        if (raced.status === 'uninstalling') {
+          throw this.operationBusyError(appUrn, 'uninstall');
+        }
 
-        if (raced.status !== 'install_failed') {
+        if (raced.status !== 'install_failed' && raced.status !== 'installing') {
           // A reinstall after all, which nothing can cancel (see `reinstall` above).
           this.operationRegistry.endPreparingInstall(appUrn, preparing);
           await this.appRepository.updateAppById(raced.id, buildInstallRowPatch(parsedForm));
           await this.claimCustomDomainIntent(raced.id, parsedForm.customDomain);
-          return this.startApp({ appUrn, actor: { kind: 'system', reason: 'reinstall-start' } });
+          return this.dispatchStart({ appUrn });
         }
 
         installRecord = { id: raced.id, status: raced.status, port: raced.port, exposedLocal: raced.exposedLocal };
+        retriesRow = true;
       }
     }
 
@@ -1617,7 +1741,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       throw new Error(`Failed to create or load install record for ${appUrn}`);
     }
 
-    if (existingApp || installRecord.status === 'install_failed') {
+    if (retriesRow) {
       await this.appRepository.updateAppById(installRecord.id, {
         status: 'installing',
         config: toStoredConfig(parsedForm),
@@ -1655,8 +1779,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     // A cancel that came while the row was being written. Nothing is queued yet, so settle it here.
     if (cancelHeld()) {
-      // `installRecord.status` is the row's status from before this install rewrote it.
-      const retry = installRecord.status === 'install_failed' ? { rowId: installRecord.id, rewritten: true } : null;
+      // A row this install retried goes back to failed; one it created is deleted.
+      const retry = retriesRow ? { rowId: installRecord.id, rewritten: true } : null;
       return this.endInstallCancelledBeforeQueue(appUrn, retry, requestId);
     }
 
@@ -1725,10 +1849,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * Stop an app by its ID
    */
   public async stopApp(params: { appUrn: AppUrn; actor: LifecycleActor }) {
-    const { appUrn } = params;
-
     // Marked as stopping the app, which a managed key at `write` may do to any app; see `managedKeyMayOperate`.
-    await this.assertActorMay(params.actor, appUrn, 'stop', { stopsApp: true });
+    await this.assertActorMay(params.actor, params.appUrn, 'stop', { stopsApp: true });
+    return this.withOperationClaim(params.appUrn, 'stop', () => this.dispatchStop(params.appUrn));
+  }
+
+  private async dispatchStop(appUrn: AppUrn) {
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -1802,6 +1928,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     return { requestId };
   }
 
+  /**
+   * Not claimed like every other command: this is the way out of a stop hung on Docker, so it must
+   * get through while that stop still holds the app. It registers over it.
+   */
   public async forceStopApp(params: { appUrn: AppUrn }) {
     const { appUrn } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
@@ -1872,9 +2002,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * Restart an app by its ID
    */
   public async restartApp(params: { appUrn: AppUrn; skipPull?: boolean; actor: LifecycleActor }) {
-    const { appUrn, skipPull } = params;
+    await this.assertActorMay(params.actor, params.appUrn, 'restart');
+    return this.withOperationClaim(params.appUrn, 'restart', () => this.dispatchRestart(params));
+  }
 
-    await this.assertActorMay(params.actor, appUrn, 'restart');
+  private async dispatchRestart(params: { appUrn: AppUrn; skipPull?: boolean; actor: LifecycleActor }) {
+    const { appUrn, skipPull } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -1954,6 +2087,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * start outcome.
    */
   public async startAppAndWait(params: { appUrn: AppUrn; skipPull?: boolean }): Promise<boolean> {
+    return this.withOperationClaim(params.appUrn, 'start', () => this.startAndWaitClaimed(params));
+  }
+
+  private async startAndWaitClaimed(params: { appUrn: AppUrn; skipPull?: boolean }): Promise<boolean> {
     const { appUrn, skipPull } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
@@ -2044,6 +2181,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * Returns whether the restart succeeded; the status/SSE bookkeeping is identical.
    */
   public async restartAppAndWait(params: { appUrn: AppUrn; skipPull?: boolean }): Promise<boolean> {
+    return this.withOperationClaim(params.appUrn, 'restart', () => this.restartAndWaitClaimed(params));
+  }
+
+  private async restartAndWaitClaimed(params: { appUrn: AppUrn; skipPull?: boolean }): Promise<boolean> {
     const { appUrn, skipPull } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
@@ -2187,9 +2328,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * Uninstall an app by its ID
    */
   public async uninstallApp(params: { appUrn: AppUrn; deleteAllData: boolean; force?: boolean; actor: LifecycleActor }) {
-    const { appUrn, deleteAllData, force } = params;
+    await this.assertActorMay(params.actor, params.appUrn, 'uninstall');
+    return this.withOperationClaim(params.appUrn, 'uninstall', () => this.dispatchUninstall(params));
+  }
 
-    await this.assertActorMay(params.actor, appUrn, 'uninstall');
+  private async dispatchUninstall(params: { appUrn: AppUrn; deleteAllData: boolean; force?: boolean }) {
+    const { appUrn, deleteAllData, force } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -2331,9 +2475,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * Reset an app by its ID
    */
   public async resetApp(params: { appUrn: AppUrn; force?: boolean; actor: LifecycleActor }) {
-    const { appUrn, force } = params;
+    await this.assertActorMay(params.actor, params.appUrn, 'reset');
+    return this.withOperationClaim(params.appUrn, 'reset', () => this.dispatchReset(params));
+  }
 
-    await this.assertActorMay(params.actor, appUrn, 'reset');
+  private async dispatchReset(params: { appUrn: AppUrn; force?: boolean }) {
+    const { appUrn, force } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -2713,9 +2860,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   }
 
   public async updateApp(params: { appUrn: AppUrn; performBackup: boolean; actor: LifecycleActor }) {
-    const { appUrn, performBackup } = params;
+    await this.assertActorMay(params.actor, params.appUrn, 'update');
+    return this.withOperationClaim(params.appUrn, 'update', () => this.dispatchUpdate(params));
+  }
 
-    await this.assertActorMay(params.actor, appUrn, 'update');
+  private async dispatchUpdate(params: { appUrn: AppUrn; performBackup: boolean }) {
+    const { appUrn, performBackup } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -3038,6 +3188,33 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   private statusAfterFailedCommand(errorCode: string | undefined, statusBefore: AppStatus, statusOnFailure: AppStatus): AppStatus {
     const settled = statusBefore === 'running' || statusBefore === 'stopped';
     return errorCode === QUEUE_UNAVAILABLE_CODE && settled ? statusBefore : statusOnFailure;
+  }
+
+  /**
+   * Run a lifecycle command's dispatch with the app claimed for it, or refuse the command with a 409
+   * that says what the app is busy with.
+   *
+   * The one place every command (and `BackupsService`) goes through after its grant check. Each
+   * entry method used to register over whatever held the app: a start, stop, restart, reset or update
+   * sent during an uninstall took the uninstall's slot, its completion was dropped as superseded and
+   * the row stayed behind with no containers.
+   */
+  async withOperationClaim<T>(appUrn: AppUrn, command: OperationCommand, run: () => Promise<T>): Promise<T> {
+    const claim = this.operationRegistry.claim(appUrn, command);
+    if (!claim.claimed) {
+      this.logger.info(`[lifecycle] ${command} for ${appUrn} refused: ${claim.busy.command} is still under way`);
+      throw this.operationBusyError(appUrn, claim.busy.command);
+    }
+
+    try {
+      return await run();
+    } finally {
+      this.operationRegistry.releaseClaim(appUrn, claim.token);
+    }
+  }
+
+  private operationBusyError(appUrn: AppUrn, busy: OperationCommand): TranslatableError {
+    return new TranslatableError(OPERATION_BUSY_MESSAGES[busy], { id: extractAppUrn(appUrn).appName }, HttpStatus.CONFLICT);
   }
 
   private registerDispatchedCommand(appUrn: AppUrn, requestId: string, command: OperationCommand): void {

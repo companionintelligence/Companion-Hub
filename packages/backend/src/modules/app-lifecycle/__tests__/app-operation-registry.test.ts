@@ -97,4 +97,69 @@ describe('AppOperationRegistry', () => {
     expect(registry.ownsOutcome(APP, REQ)).toBe(false);
     expect(registry.ownsOutcome(APP, 'newer')).toBe(true);
   });
+
+  // #2101: every command claims the app before it reads or writes its row, and a second one is refused.
+  describe('claims', () => {
+    it('claims a free app, and names the claim to a second caller', () => {
+      const first = registry.claim(APP, 'uninstall');
+      const second = registry.claim(APP, 'start');
+
+      expect(first.claimed).toBe(true);
+      expect(second).toEqual({ claimed: false, busy: { command: 'uninstall', stage: 'claimed' } });
+    });
+
+    it('names a dispatched command to a caller', () => {
+      registry.register(APP, { requestId: REQ, command: 'update', tier: 'before_ponr' });
+
+      expect(registry.claim(APP, 'install')).toEqual({ claimed: false, busy: { command: 'update', stage: 'dispatched' } });
+    });
+
+    it('lets register take the claim over, so handing it back afterwards changes nothing', () => {
+      const claim = registry.claim(APP, 'start');
+      registry.register(APP, { requestId: REQ, command: 'start', tier: 'safe' });
+      if (claim.claimed) {
+        registry.releaseClaim(APP, claim.token);
+      }
+
+      expect(registry.liveOperation(APP)).toEqual({ command: 'start', stage: 'dispatched' });
+    });
+
+    it('frees the app when a claim is handed back before anything was dispatched', () => {
+      const claim = registry.claim(APP, 'reset');
+      if (claim.claimed) {
+        registry.releaseClaim(APP, claim.token);
+      }
+
+      expect(registry.liveOperation(APP)).toBeUndefined();
+      expect(registry.claim(APP, 'start').claimed).toBe(true);
+    });
+
+    it('does not let an old claim hand back a newer one', () => {
+      const old = registry.claim(APP, 'start');
+      registry.register(APP, { requestId: REQ, command: 'start', tier: 'safe' });
+      registry.claimCompletion(APP, REQ);
+      registry.claim(APP, 'stop');
+      if (old.claimed) {
+        registry.releaseClaim(APP, old.token);
+      }
+
+      expect(registry.liveOperation(APP)).toEqual({ command: 'stop', stage: 'claimed' });
+    });
+
+    it('stops counting an operation older than the queue waits for a command', () => {
+      registry.register(APP, { requestId: REQ, command: 'stop', tier: 'safe' });
+      const now = Date.now();
+
+      expect(registry.liveOperation(APP, now + 44 * 60 * 1000)).toBeDefined();
+      expect(registry.liveOperation(APP, now + 46 * 60 * 1000)).toBeUndefined();
+      expect(registry.claim(APP, 'start', now + 46 * 60 * 1000).claimed).toBe(true);
+    });
+
+    it('keeps an install call apart from the operations it checks against', () => {
+      registry.beginInstallCall(APP);
+
+      expect(registry.isInstallCallUnderWay(APP)).toBe(true);
+      expect(registry.liveOperation(APP)).toBeUndefined();
+    });
+  });
 });

@@ -65,9 +65,17 @@ const appScopedEventSchema = z.object({
     // CI-Cloud published the app on another domain than the one it asked for,
     // and the Hub moved the app there. `hostname` is where it is served now.
     'public_domain_changed',
+    // An install call for the app began or ended its checks, which run before the app has a row.
+    // Carries no status, but `operation`: what the Hub has under way for the app now.
+    'operation_change',
   ]),
   appUrn: appUrnSchema,
   appStatus: appStatusSchema.optional(),
+  // `operation_change` only: the lifecycle command under way for the app, `null` for none.
+  operation: z
+    .enum(['install', 'start', 'stop', 'restart', 'update', 'uninstall', 'reset', 'backup', 'restore', 'generate_env'])
+    .nullable()
+    .optional(),
   error: z.string().optional(),
   errorCode: z.string().optional(),
   errorDetail: z.string().optional(),

@@ -42,6 +42,8 @@ describe('BackupsService', () => {
     configService = mock<ConfigurationService>();
     appEventsQueue = mock<AppEventsQueue>();
     appLifecycle = mock<AppLifecycleService>();
+    // The app is free: the claim runs the dispatch it is given.
+    appLifecycle.withOperationClaim.mockImplementation((_appUrn, _command, run) => run());
     appFilesManager = mock<AppFilesManager>();
     backupManager = mock<BackupManager>();
     sseService = mock<SSEService>();
@@ -68,6 +70,30 @@ describe('BackupsService', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  // #2101: a backup or restore sent while the app has another operation under way.
+  describe('while the app is busy', () => {
+    const appUrn = 'test-app:ci-marketplace' as any;
+    const busy = Object.assign(new Error('APP_ERROR_UNINSTALL_IN_PROGRESS'), { status: 409 });
+
+    beforeEach(() => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'uninstalling', config: {} } as any);
+      configService.get.mockReturnValue(false);
+      appLifecycle.withOperationClaim.mockRejectedValue(busy);
+    });
+
+    it.each([
+      ['backupApp', 'backup', () => service.backupApp({ appUrn, actor: GRANTED_ACTOR })],
+      ['restoreApp', 'restore', () => service.restoreApp({ appUrn, filename: 'b.tar.gz', actor: GRANTED_ACTOR })],
+    ] as const)('%s asks the lifecycle for the app and writes nothing when refused', async (_method, command, call) => {
+      await expect(call()).rejects.toBe(busy);
+
+      expect(appLifecycle.withOperationClaim).toHaveBeenCalledWith(appUrn, command, expect.any(Function));
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(operationRegistry.register).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).not.toHaveBeenCalled();
+    });
   });
 
   describe('backupApp', () => {

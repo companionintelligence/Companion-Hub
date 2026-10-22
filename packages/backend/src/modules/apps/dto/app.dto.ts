@@ -125,6 +125,16 @@ const guestAppsSchema = z.object({
 
 const getAppSchema = z.object({
   app: appSchema.nullable().optional(),
+  /**
+   * The lifecycle operation the Hub has under way for the app, `null` when there is none. An install
+   * still in its checks has no row yet, so this is the only way another page can tell it is coming.
+   */
+  operation: z
+    .object({
+      command: z.enum(['install', 'start', 'stop', 'restart', 'update', 'uninstall', 'reset', 'backup', 'restore', 'generate_env']),
+    })
+    .nullable()
+    .optional(),
   info: appInfoSchemaRef,
   metadata: metadataSchema,
   appDataHostPath: z.string().nullable().optional(),

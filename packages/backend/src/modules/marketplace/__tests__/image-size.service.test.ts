@@ -236,3 +236,57 @@ describe('ImageSizeService.getAppImageSize', () => {
     expect(size.totalBytes).toBe(30_001_000);
   });
 });
+
+// #2102: the registries an install asks before it registers, which took seconds each on a slow link.
+describe('ImageSizeService.verifyAppArchitecture', () => {
+  function serviceWithImages(images: string[]) {
+    const marketplace = mock<MarketplaceService>();
+    marketplace.getDockerComposeJson.mockResolvedValue({
+      content: { schemaVersion: 2, services: images.map((image, index) => ({ name: `s${index}`, image })) },
+    } as never);
+    return new ImageSizeService(mock<LoggerService>(), marketplace, mock<ConfigurationService>());
+  }
+
+  const held = () => {
+    let release!: (archs: string[] | null) => void;
+    const promise = new Promise<string[] | null>((resolve) => {
+      release = resolve;
+    });
+    return { promise, release };
+  };
+
+  it("asks every image's registry at once, not one after another", async () => {
+    const service = serviceWithImages(['web:1', 'db:2']);
+    const web = held();
+    const db = held();
+    const ask = vi.spyOn(service, 'getImageArchitectures').mockImplementation((image) => (image === 'web:1' ? web.promise : db.promise));
+
+    const verdict = service.verifyAppArchitecture('app:ci-marketplace' as AppUrn, 'amd64');
+    await vi.waitFor(() => expect(ask).toHaveBeenCalledTimes(2));
+    web.release(['amd64']);
+    db.release(['amd64', 'arm64']);
+
+    await expect(verdict).resolves.toEqual({ ok: true });
+  });
+
+  it('names the first image, in compose order, that lacks the architecture', async () => {
+    const service = serviceWithImages(['web:1', 'db:2']);
+    const web = held();
+    const db = held();
+    vi.spyOn(service, 'getImageArchitectures').mockImplementation((image) => (image === 'web:1' ? web.promise : db.promise));
+
+    const verdict = service.verifyAppArchitecture('app:ci-marketplace' as AppUrn, 'amd64');
+    await Promise.resolve();
+    db.release(['arm64']);
+    web.release(['arm64']);
+
+    await expect(verdict).resolves.toEqual({ ok: false, image: 'web:1', available: ['arm64'] });
+  });
+
+  it('does not block on an image it could not inspect', async () => {
+    const service = serviceWithImages(['web:1', 'db:2']);
+    vi.spyOn(service, 'getImageArchitectures').mockImplementation(async (image) => (image === 'web:1' ? null : ['amd64']));
+
+    await expect(service.verifyAppArchitecture('app:ci-marketplace' as AppUrn, 'amd64')).resolves.toEqual({ ok: true });
+  });
+});

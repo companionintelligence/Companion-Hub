@@ -40,6 +40,13 @@ describe('AppLifecycleController — names the actor for every lifecycle call', 
     expect(lifecycle.installApp).toHaveBeenCalledWith(expect.objectContaining({ actor }));
   });
 
+  // `installApp` asks WhoIs itself before anything else. Asking here too cost a second round trip.
+  it('install leaves the grant check to the service, so WhoIs is asked once', async () => {
+    await controller.installApp(appUrn, { port: 8080 } as never, req);
+
+    expect(whois.assertSessionAction).not.toHaveBeenCalled();
+  });
+
   it('update-config', async () => {
     await controller.updateAppConfig(appUrn, { port: 8080 } as never, req);
 

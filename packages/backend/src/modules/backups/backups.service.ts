@@ -47,6 +47,11 @@ export class BackupsService {
       throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
     }
 
+    // Refused while the app has another operation under way, as every lifecycle command is.
+    return this.appLifecycle.withOperationClaim(appUrn, 'backup', () => this.dispatchBackup(appUrn));
+  }
+
+  private async dispatchBackup(appUrn: AppUrn) {
     const app = await this.appsRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -95,6 +100,10 @@ export class BackupsService {
 
     await this.appLifecycle.assertActorMay(params.actor, appUrn, 'restore');
 
+    return this.appLifecycle.withOperationClaim(appUrn, 'restore', () => this.dispatchRestore(appUrn, filename));
+  }
+
+  private async dispatchRestore(appUrn: AppUrn, filename: string) {
     const app = await this.appsRepository.getAppByUrn(appUrn);
 
     if (!app) {

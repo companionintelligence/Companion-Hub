@@ -1,5 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
+import { DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES } from '@/common/constants';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 
 /** Lifecycle commands that can flow through the operation registry. */
@@ -44,6 +46,26 @@ export interface OperationEntry {
   createdAt: number;
 }
 
+/**
+ * How long a lifecycle operation holds its app: as long as the queue waits for a command, which is
+ * the events timeout or the image pull timeout, whichever is longer. Past that its caller has given
+ * up on it, and an entry that never clears (a stop hung on Docker, say) must not hold the app for
+ * good. The status sync judges a transitional row by the same window.
+ */
+export function operationStaleAfterMs(eventsTimeoutMinutes: number): number {
+  return Math.max(eventsTimeoutMinutes, DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES) * 60 * 1000;
+}
+
+/** The operation an app has under way, as {@link AppOperationRegistry.liveOperation} reports it. */
+export interface LiveOperation {
+  command: OperationCommand;
+  /** `claimed`: an entry method is still on its way to dispatching it. `dispatched`: the queue has it. */
+  stage: 'claimed' | 'dispatched';
+}
+
+/** A claim on an app's slot, from {@link AppOperationRegistry.claim}. */
+export type OperationClaim = { claimed: true; token: symbol } | { claimed: false; busy: LiveOperation };
+
 /** An install still in the checks `AppLifecycleService.installApp` runs before it registers. */
 export interface PreparingInstall {
   /** Set by a cancel that arrived during the checks; `installApp` stops before its next write. */
@@ -82,7 +104,70 @@ export class AppOperationRegistry {
    */
   private readonly installCalls = new Set<AppUrn>();
 
-  constructor(private readonly logger: LoggerService) {}
+  /**
+   * Commands an entry method has claimed the app for and not dispatched yet. The method reads and
+   * writes the row between its busy check and `register`, so without a claim a second command sent
+   * in that time passed the check too, and the one that registered last took the slot.
+   */
+  private readonly claims = new Map<AppUrn, { command: OperationCommand; token: symbol; claimedAt: number }>();
+
+  constructor(
+    private readonly logger: LoggerService,
+    @Optional() private readonly configuration?: ConfigurationService,
+  ) {}
+
+  private staleAfterMs(): number {
+    return operationStaleAfterMs(this.configuration?.get('userSettings')?.eventsTimeout ?? 0);
+  }
+
+  /**
+   * The lifecycle operation this app has under way, or `undefined` when it has none: a command an
+   * entry method has claimed, or one dispatched to the queue that has not settled. An entry older
+   * than {@link operationStaleAfterMs} no longer counts. An install still in its checks is not an
+   * operation yet; see {@link isInstallCallUnderWay}.
+   */
+  liveOperation(appUrn: AppUrn, now = Date.now()): LiveOperation | undefined {
+    const staleAfterMs = this.staleAfterMs();
+    const entry = this.ops.get(appUrn);
+    if (entry && now - entry.createdAt < staleAfterMs) {
+      return { command: entry.command, stage: 'dispatched' };
+    }
+
+    const claim = this.claims.get(appUrn);
+    if (claim && now - claim.claimedAt < staleAfterMs) {
+      return { command: claim.command, stage: 'claimed' };
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Claim the app for `command`, or name the operation that already holds it. Checked and taken in
+   * one synchronous step, so two callers cannot both get it. `register` takes the claim over; a
+   * method that fails before it gets there hands it back with {@link releaseClaim}.
+   */
+  claim(appUrn: AppUrn, command: OperationCommand, now = Date.now()): OperationClaim {
+    const busy = this.liveOperation(appUrn, now);
+    if (busy) {
+      return { claimed: false, busy };
+    }
+
+    const token = Symbol(command);
+    this.claims.set(appUrn, { command, token, claimedAt: now });
+    return { claimed: true, token };
+  }
+
+  /** Hand back a claim that was never dispatched. A claim `register` already took over is left alone. */
+  releaseClaim(appUrn: AppUrn, token: symbol): void {
+    if (this.claims.get(appUrn)?.token === token) {
+      this.claims.delete(appUrn);
+    }
+  }
+
+  /** True from the start of an `installApp` call for this app until it answers. */
+  isInstallCallUnderWay(appUrn: AppUrn): boolean {
+    return this.installCalls.has(appUrn);
+  }
 
   /** Begin an install call for this app. False, and nothing begun, while another one is under way. */
   beginInstallCall(appUrn: AppUrn): boolean {
@@ -137,7 +222,8 @@ export class AppOperationRegistry {
   /**
    * Record a new operation for an app. Called by the service immediately before publishing the
    * command to the queue so that a cancel arriving during the publish→dequeue window can still be
-   * honoured (tier-A). Replaces any existing entry for the app (the per-app mutex prevents real overlap).
+   * honoured (tier-A). Replaces any existing entry for the app, so callers claim the app first
+   * ({@link claim}); only a force stop, the way out of a stop hung on Docker, registers over a live one.
    */
   register(appUrn: AppUrn, params: { requestId: string; command: OperationCommand; tier: CancellabilityTier }): OperationEntry {
     const entry: OperationEntry = {
@@ -150,6 +236,8 @@ export class AppOperationRegistry {
       createdAt: Date.now(),
     };
     this.ops.set(appUrn, entry);
+    // The command now holds the slot itself.
+    this.claims.delete(appUrn);
     this.logger.info(`[op-registry] register ${params.command} ${appUrn} req=${params.requestId} tier=${params.tier}`);
     return entry;
   }
