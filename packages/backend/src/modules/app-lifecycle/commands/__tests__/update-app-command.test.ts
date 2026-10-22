@@ -369,6 +369,7 @@ describe('UpdateAppCommand', () => {
 
     it('removes the snapshot once it has served', async () => {
       await command.execute(appUrn, {});
+      await command.afterReply();
 
       expect(filesystem.removeDirectory).toHaveBeenCalledWith('/data/snapshots/test-app/snap-1');
     });
@@ -494,9 +495,10 @@ describe('UpdateAppCommand', () => {
 
       it('empties the root-owned snapshot with the helper before removing it once the update has succeeded', async () => {
         const result = await command.execute(appUrn, {});
+        await command.afterReply();
 
         expect(result).toMatchObject({ success: true });
-        expect(dockerService.removeSnapshotDirAsRoot).toHaveBeenCalledWith(appUrn, 'pre-update-test-app-1', undefined);
+        expect(dockerService.removeSnapshotDirAsRoot).toHaveBeenCalledWith(appUrn, 'pre-update-test-app-1');
         expect(dockerService.removeSnapshotDirAsRoot.mock.invocationCallOrder[0]).toBeLessThan(
           filesystem.removeDirectory.mock.invocationCallOrder.at(-1) as number,
         );
@@ -641,8 +643,10 @@ describe('UpdateAppCommand', () => {
     expect(marketplaceService.copyAppFromRepoToInstalled).not.toHaveBeenCalled();
   });
 
-  it('removes the pre-update snapshot after a successful update', async () => {
+  it('removes the pre-update snapshot after a successful update, once the reply is out', async () => {
     const result = await command.execute(appUrn, {});
+    expect(filesystem.removeDirectory).not.toHaveBeenCalledWith('/data/snapshots/test-app/snap-1');
+    await command.afterReply();
 
     expect(result).toMatchObject({ success: true });
     expect(filesystem.removeDirectory).toHaveBeenCalledWith('/data/snapshots/test-app/snap-1');
@@ -917,15 +921,62 @@ describe('UpdateAppCommand', () => {
         }
       });
 
-      it('empties the snapshot it no longer needs within the same deadline', async () => {
-        await command.execute(appUrn, {}, ctx);
+      // Emptying a snapshot the update no longer needs must not wait for, or eat into, the reply. A
+      // snapshot left on disk because the deadline was used up would never be removed by anything.
+      it("empties a no-longer-needed snapshot after the reply, with the helper's own time, even when the rollback used the whole deadline", async () => {
+        vi.useFakeTimers();
+        try {
+          ctx.deadline = AppCommandDeadline.after(20 * MIN);
+          dockerService.verifyContainerHealthProbe.mockImplementation(async () => {
+            vi.advanceTimersByTime(10 * MIN);
+            return { ok: false, healthy: false, containers: [], message: 'unhealthy' };
+          });
+          dockerService.restoreAppDataDirAsRoot.mockImplementation(async () => {
+            // The rollback's copy back used everything that was left.
+            vi.advanceTimersByTime(10 * MIN);
+            return true;
+          });
+          let emptied: () => void = () => undefined;
+          dockerService.removeSnapshotDirAsRoot.mockImplementation(
+            () =>
+              new Promise<boolean>((resolve) => {
+                emptied = () => resolve(true);
+              }),
+          );
 
-        expect(dockerService.removeSnapshotDirAsRoot).toHaveBeenCalledWith(appUrn, 'pre-update-test-app-1', ctx.deadline);
+          const result = await command.execute(appUrn, {}, ctx);
+
+          // The reply is ready while the snapshot has not even been touched.
+          expect(result).toMatchObject({ success: false, rolledBack: true });
+          expect(ctx.deadline.expired).toBe(true);
+          expect(dockerService.removeSnapshotDirAsRoot).not.toHaveBeenCalled();
+
+          const tidying = command.afterReply();
+          await Promise.resolve();
+          // Started after the reply with no deadline, so it gets the helper's 30 minutes.
+          expect(dockerService.removeSnapshotDirAsRoot).toHaveBeenCalledWith(appUrn, 'pre-update-test-app-1');
+          emptied();
+          await tidying;
+          expect(filesystem.removeDirectory).toHaveBeenCalledWith(rootSnapshot.snapshotBaseDir);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('leaves the snapshot and says so when the helper cannot empty it', async () => {
+        dockerService.removeSnapshotDirAsRoot.mockResolvedValue(false);
+
+        await command.execute(appUrn, {}, ctx);
+        await command.afterReply();
+
+        expect(filesystem.removeDirectory).not.toHaveBeenCalledWith(rootSnapshot.snapshotBaseDir);
+        expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('it is left on disk'));
       });
     });
 
     it('does not start an update that waited in the queue until too little of its time was left', async () => {
-      ctx.deadline = AppCommandDeadline.after(12 * MIN);
+      // Queued 28 minutes ago with the usual 45-minute wait: 12 minutes of its deadline are left.
+      ctx.deadline = AppCommandDeadline.untilReply(Date.now() - 28 * MIN, 45 * MIN);
 
       const result = await command.execute(appUrn, {}, ctx);
 
@@ -935,6 +986,25 @@ describe('UpdateAppCommand', () => {
       expect(dockerService.composeApp).not.toHaveBeenCalled();
       // The service may have settled it already; the page must not be told it is updating again.
       expect(sseService.emit).not.toHaveBeenCalled();
+    });
+
+    // CI_HUB_PRIVILEGED_HELPER_BUDGET_SECONDS set below what an update needs refused every update as if
+    // it had waited too long for a worker, which was not the reason.
+    it('names the setting when the helper budget is too short for any update', async () => {
+      process.env.CI_HUB_PRIVILEGED_HELPER_BUDGET_SECONDS = '600';
+      try {
+        ctx.deadline = AppCommandDeadline.untilReply(Date.now(), 45 * MIN);
+
+        const result = await command.execute(appUrn, {}, ctx);
+
+        expect(result).toMatchObject({ success: false, rolledBack: true });
+        expect(result.message).toContain('CI_HUB_PRIVILEGED_HELPER_BUDGET_SECONDS gives an app command 600 s');
+        expect(result.message).toContain('An update needs at least 15 minutes');
+        expect(result.message).not.toContain('free worker');
+        expect(dockerService.pullImages).not.toHaveBeenCalled();
+      } finally {
+        delete process.env.CI_HUB_PRIVILEGED_HELPER_BUDGET_SECONDS;
+      }
     });
 
     it('rolls a stopped app back when the cancel arrived while its files were being replaced', async () => {

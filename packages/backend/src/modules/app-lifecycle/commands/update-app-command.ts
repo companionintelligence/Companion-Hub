@@ -70,6 +70,21 @@ export class UpdateAppCommand extends AppLifecycleCommand {
    */
   private deadline: AppCommandDeadline | undefined;
 
+  /** What the update leaves for after its reply (see `afterReply`). */
+  private afterReplyWork: (() => Promise<void>) | undefined;
+
+  /**
+   * Empty the snapshot the update no longer needs, once its reply has been sent. It is a delete that
+   * need not finish before the reply, so it gets the helper's own 30 minutes rather than whatever the
+   * update had left: a snapshot left on disk because a long rollback used up the deadline is never
+   * removed by anything else.
+   */
+  public async afterReply(): Promise<void> {
+    const work = this.afterReplyWork;
+    this.afterReplyWork = undefined;
+    await work?.();
+  }
+
   public async execute(appUrn: AppUrn, form: AppEventFormInput, ctx?: CommandExecutionContext) {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
     const sseService = this.moduleRef.get(SSEService, { strict: false });
@@ -129,6 +144,14 @@ export class UpdateAppCommand extends AppLifecycleCommand {
     try {
       // Checked before the first step is shown: an update a worker takes this late may be one the
       // service has already settled, and telling the page it is updating would leave it spinning.
+      // A budget lowered below what any update needs is a setting to change, not a queue to wait out.
+      if (ctx?.deadline && ctx.deadline.budgetMs - UPDATE_ROLLBACK_RESERVE_MS < UPDATE_MIN_WORK_MS) {
+        throw new Error(
+          `The update of ${appUrn} was not started: CI_HUB_PRIVILEGED_HELPER_BUDGET_SECONDS gives an app command ${Math.round(ctx.deadline.budgetMs / 1000)} s. ` +
+            `An update needs at least ${(UPDATE_MIN_WORK_MS + UPDATE_ROLLBACK_RESERVE_MS) / 60_000} minutes: ${UPDATE_MIN_WORK_MS / 60_000} to do its work ` +
+            `and ${UPDATE_ROLLBACK_RESERVE_MS / 60_000} to undo it. Nothing was changed; raise that setting or remove it.`,
+        );
+      }
       if (workLeftMs() < UPDATE_MIN_WORK_MS) {
         throw new Error(
           `The update of ${appUrn} was not started: it waited for a free worker until too little of its time was left. Nothing was changed; try the update again.`,
@@ -258,7 +281,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
         logger.warn(`Failed to refresh the agent webhook for ${appUrn}: ${hookErr}`);
       }
 
-      await this.discardSnapshot(snapshotResult);
+      this.discardSnapshotAfterReply(snapshotResult);
 
       return { success: true, message: `App ${appUrn} updated successfully` };
     } catch (err) {
@@ -277,7 +300,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       // The snapshot is the last copy of the previous version when a rollback has not worked. It goes
       // only once the previous version is demonstrably back.
       if (rolledBack) {
-        await this.discardSnapshot(snapshotResult);
+        this.discardSnapshotAfterReply(snapshotResult);
       }
 
       if (cancelled) {
@@ -517,6 +540,11 @@ export class UpdateAppCommand extends AppLifecycleCommand {
     }
   }
 
+  /** Leave {@link discardSnapshot} for after the reply (see `afterReply`). */
+  private discardSnapshotAfterReply(snapshotResult: Awaited<ReturnType<DockerService['createPreUpdateVolumeSnapshot']>> | undefined): void {
+    this.afterReplyWork = () => this.discardSnapshot(snapshotResult);
+  }
+
   /** The snapshot exists to undo a failed update; once there is nothing to undo it is a full copy of the app's files taking disk for good. */
   private async discardSnapshot(snapshotResult: Awaited<ReturnType<DockerService['createPreUpdateVolumeSnapshot']>> | undefined): Promise<void> {
     if (!snapshotResult?.snapshotBaseDir) {
@@ -530,9 +558,14 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       if (snapshotResult.dataSnapshotCopiedAsRoot) {
         // Its data copy belongs to other users and the Hub cannot delete it: a helper empties it first.
         const dockerService = this.moduleRef.get(DockerService, { strict: false });
-        await dockerService.removeSnapshotDirAsRoot(snapshotResult.appUrn, snapshotResult.snapshotId, this.deadline);
+        if (!(await dockerService.removeSnapshotDirAsRoot(snapshotResult.appUrn, snapshotResult.snapshotId))) {
+          logger.warn(`Could not empty the pre-update snapshot ${snapshotResult.snapshotBaseDir} as root; it is left on disk`);
+          return;
+        }
       }
-      await filesystem?.removeDirectory(snapshotResult.snapshotBaseDir);
+      if ((await filesystem?.removeDirectory(snapshotResult.snapshotBaseDir)) === false) {
+        logger.warn(`Could not remove the pre-update snapshot ${snapshotResult.snapshotBaseDir}; it is left on disk`);
+      }
     } catch (err) {
       logger.warn(`Could not remove the pre-update snapshot ${snapshotResult.snapshotBaseDir}: ${err}`);
     }

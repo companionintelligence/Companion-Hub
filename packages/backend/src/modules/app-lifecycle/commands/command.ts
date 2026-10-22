@@ -39,6 +39,11 @@ export interface CommandExecutionContext {
  */
 export interface LifecycleCommand {
   execute(appUrn: AppUrn, form: AppEventFormInput, ctx?: CommandExecutionContext): Promise<unknown>;
+  /**
+   * Tidying up the command left for after its reply has been sent (an update's snapshot it no longer
+   * needs). It must not delay the reply; the worker does not wait for it.
+   */
+  afterReply?(): Promise<void>;
 }
 
 /**

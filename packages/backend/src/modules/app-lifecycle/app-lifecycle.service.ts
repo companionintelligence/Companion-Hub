@@ -727,6 +727,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       }
 
       await reply(result);
+
+      // Tidying up the command left for after its reply (an update's snapshot): not awaited, so it
+      // neither delays the reply nor holds the app's lock.
+      void command
+        .afterReply?.()
+        .catch((err: unknown) =>
+          this.logger.warn(`Tidying up after '${data.command}' for ${data.appUrn} failed: ${err instanceof Error ? err.message : String(err)}`),
+        );
     } catch (err) {
       if (job) {
         await this.lifecycleJobService?.failJob(job.id, err instanceof Error ? err : String(err)).catch(() => null);

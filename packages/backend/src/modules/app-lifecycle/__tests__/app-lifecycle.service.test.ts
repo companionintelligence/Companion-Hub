@@ -6650,6 +6650,21 @@ describe('AppLifecycleService', () => {
       expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'update_cancelled', appUrn, appStatus: 'running' });
     });
 
+    // Emptying an update's old snapshot can take minutes; the reply must not wait for it.
+    it("runs the command's tidying up after its reply, without waiting for it", async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'update', tier: 'before_ponr' });
+      const execute = vi.fn().mockResolvedValue({ success: true, message: 'ok' });
+      const afterReply = vi.fn(() => new Promise<void>(() => undefined));
+      commandFactory.createCommand.mockReturnValue({ execute, afterReply } as any);
+      const reply = vi.fn();
+
+      await service.invokeCommand(update, reply);
+
+      expect(reply).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+      expect(afterReply).toHaveBeenCalledTimes(1);
+      expect(afterReply.mock.invocationCallOrder[0]).toBeGreaterThan(reply.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY);
+    });
+
     it('gives the command a deadline that ends five minutes before the publisher stops waiting for its reply', async () => {
       const entry = operationRegistry.register(appUrn, { requestId, command: 'update', tier: 'before_ponr' });
       const execute = vi.fn().mockResolvedValue({ success: true, message: 'ok' });
