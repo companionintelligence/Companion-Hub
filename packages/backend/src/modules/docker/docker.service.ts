@@ -87,6 +87,8 @@ export interface ContainerHealthProbeResult {
   healthy: boolean;
   containers: ContainerHealthProbeDetail[];
   message: string;
+  /** Set when the probe stopped because its `signal` was aborted, before it had an answer. */
+  cancelled?: boolean;
 }
 
 const HUB_APP_NETWORK_GAP = 'Not attaching the Hub to app networks';
@@ -98,6 +100,7 @@ const MANAGED_APP_STARTUP_DELAY_MS = 2_000;
 
 // What Docker uses for a health check that leaves these unset.
 const DOCKER_DEFAULT_HEALTH_INTERVAL_MS = 30_000;
+const DOCKER_DEFAULT_HEALTH_TIMEOUT_MS = 30_000;
 const DOCKER_DEFAULT_HEALTH_RETRIES = 3;
 // The least and the most time a health probe that waits for `starting` containers gives one of them.
 const HEALTH_STARTING_MIN_WAIT_MS = 2 * 60_000;
@@ -107,9 +110,10 @@ const HEALTH_STARTING_MAX_WAIT_MS = 15 * 60_000;
  * How long a container may report `starting` before a health probe stops waiting for it.
  *
  * Docker counts no failed check during the health check's start period. After it, Docker reports the
- * container `unhealthy` only once `retries` checks in a row have failed, one per interval. Until then
- * it says `starting`, so an app that declares a start period of three minutes is not broken at ten
- * seconds. The wait is that start period plus `retries` intervals, at least two minutes (which is
+ * container `unhealthy` only once `retries` checks in a row have failed. Each check starts an interval
+ * after the one before it ended and may run for up to its timeout. Until then Docker says `starting`,
+ * so an app that declares a start period of three minutes is not broken at ten seconds. The wait is
+ * that start period plus `retries` times an interval and a timeout, at least two minutes (which is
  * what a health check without a start period gets) and at most fifteen.
  */
 function healthStartingWaitMs(healthcheck: Dockerode.HealthConfig | undefined): number {
@@ -117,9 +121,27 @@ function healthStartingWaitMs(healthcheck: Dockerode.HealthConfig | undefined): 
   const toMs = (ns: number | undefined) => (ns && ns > 0 ? ns / 1_000_000 : 0);
   const startPeriodMs = toMs(healthcheck?.StartPeriod);
   const intervalMs = toMs(healthcheck?.Interval) || DOCKER_DEFAULT_HEALTH_INTERVAL_MS;
+  const timeoutMs = toMs(healthcheck?.Timeout) || DOCKER_DEFAULT_HEALTH_TIMEOUT_MS;
   const retries = healthcheck?.Retries && healthcheck.Retries > 0 ? healthcheck.Retries : DOCKER_DEFAULT_HEALTH_RETRIES;
 
-  return Math.min(Math.max(startPeriodMs + retries * intervalMs, HEALTH_STARTING_MIN_WAIT_MS), HEALTH_STARTING_MAX_WAIT_MS);
+  return Math.min(Math.max(startPeriodMs + retries * (intervalMs + timeoutMs), HEALTH_STARTING_MIN_WAIT_MS), HEALTH_STARTING_MAX_WAIT_MS);
+}
+
+/** Wait `ms`, or less when `signal` is aborted first. */
+function pause(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener('abort', done, { once: true });
+  });
 }
 
 const formatSeconds = (ms: number) => `${Math.round(ms / 100) / 10} s`;
@@ -2361,21 +2383,31 @@ export class DockerService {
    * that is not healthy yet is such a one. It fails as soon as one turns `unhealthy`, one exits or
    * that time runs out. Apps without a health check are judged within the attempts, as before.
    *
+   * `waitUntil` (epoch ms) ends that wait sooner when the caller has to be done by then. An aborted
+   * `signal` stops the probe at once with `cancelled` set.
+   *
    * @param appUrn App URN.
-   * @param options Optional retry options (maxAttempts, delayMs, waitWhileStarting).
+   * @param options Optional retry options (maxAttempts, delayMs, waitWhileStarting, waitUntil, signal).
    */
   public async verifyContainerHealthProbe(
     appUrn: AppUrn,
-    options?: { maxAttempts?: number; delayMs?: number; waitWhileStarting?: boolean },
+    options?: { maxAttempts?: number; delayMs?: number; waitWhileStarting?: boolean; waitUntil?: number; signal?: AbortSignal },
   ): Promise<ContainerHealthProbeResult> {
     const projectName = this.getComposeProjectName(appUrn);
     const maxAttempts = options?.maxAttempts ?? 1;
     const delayMs = options?.delayMs ?? 1000;
     const waitWhileStarting = options?.waitWhileStarting ?? false;
+    const signal = options?.signal;
     const probeStartedAt = Date.now();
+    // How long the caller can let a container stay `starting`, whatever its own health check allows.
+    const callerWaitMs = options?.waitUntil === undefined ? Number.POSITIVE_INFINITY : Math.max(0, options.waitUntil - probeStartedAt);
     let announcedStartingWait = false;
 
     for (let attempt = 1; ; attempt++) {
+      if (signal?.aborted) {
+        return { ok: false, healthy: false, cancelled: true, containers: [], message: `Health probe for ${appUrn} was cancelled` };
+      }
+
       const elapsedMs = Date.now() - probeStartedAt;
       let containers = await this.docker
         .listContainers({
@@ -2401,7 +2433,7 @@ export class DockerService {
         if (attempt >= maxAttempts) {
           return noContainers;
         }
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        await pause(delayMs, signal);
         continue;
       }
 
@@ -2438,7 +2470,7 @@ export class DockerService {
           failingStreak,
           log,
         });
-        startingWaitMs.set(container.Id, healthStartingWaitMs(inspect?.Config?.Healthcheck));
+        startingWaitMs.set(container.Id, Math.min(healthStartingWaitMs(inspect?.Config?.Healthcheck), callerWaitMs));
       }
 
       // Docker has not made up its mind about a running container whose health check still says
@@ -2491,12 +2523,12 @@ export class DockerService {
           const waitMs = Math.max(...waitingFor.map((c) => startingWaitMs.get(c.id) ?? HEALTH_STARTING_MIN_WAIT_MS));
           this.logger.info(
             `${appUrn} is still starting after ${formatSeconds(elapsedMs)} (${waitingFor.map((c) => c.name).join(', ')}); ` +
-              `waiting up to ${formatSeconds(waitMs)} for its health check to pass`,
+              `waiting up to ${formatSeconds(waitMs)} for its health check to pass${waitMs === callerWaitMs ? ', all the time the update has left' : ''}`,
           );
         }
       }
 
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      await pause(delayMs, signal);
     }
   }
 }

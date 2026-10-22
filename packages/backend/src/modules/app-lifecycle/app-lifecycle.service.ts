@@ -27,9 +27,10 @@ import { ImageSizeService } from '../marketplace/image-size.service';
 import { ReposHelpers } from '../app-stores/repos.helpers';
 import { AppStoreService } from '../app-stores/app-store.service';
 import { AppEventsQueue, appEventResultSchema, appEventSchema } from '../queue/entities/app-events';
-import { QUEUE_UNAVAILABLE_CODE } from '../queue/queue.constants';
+import { QUEUE_UNAVAILABLE_CODE, appEventsRpcTimeoutMs } from '../queue/queue.constants';
 import { AppLifecycleCommandFactory } from './app-lifecycle-command.factory';
 import { AppOperationRegistry, type CancellabilityTier, type OperationCommand, type PreparingInstall } from './app-operation-registry';
+import { OperationDeadline } from './operation-deadline';
 import type { AppStatus, LifecycleJob } from '@/core/database/drizzle/types';
 import { LifecycleJobService } from './lifecycle-job.service';
 import { toAppCommandFailureResult } from './commands/app-lifecycle-errors';
@@ -643,11 +644,16 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         if (job) {
           await this.lifecycleJobService?.cancelJob(job.id, 'Operation cancelled before it started').catch(() => null);
         }
-        await this.handleCancelledResult(data.command, data.appUrn, {
-          success: false,
-          cancelled: true,
-          message: 'Operation cancelled before it started',
-        });
+        await this.handleCancelledResult(
+          data.command,
+          data.appUrn,
+          {
+            success: false,
+            cancelled: true,
+            message: 'Operation cancelled before it started',
+          },
+          data,
+        );
         await reply({ success: false, cancelled: true, message: 'Operation cancelled before it started' });
         this.operationRegistry.clear(data.appUrn, data.requestId);
         return;
@@ -668,6 +674,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
                 await this.lifecycleJobService?.updateProgress(job.id, percent).catch(() => null);
               }
             },
+            // The publisher's wait started when the entry was registered, just before the publish.
+            deadline: new OperationDeadline(entry.createdAt + appEventsRpcTimeoutMs(this.config.get('userSettings')?.eventsTimeout ?? 0)),
           }
         : undefined;
 
@@ -686,7 +694,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         if (job) {
           await this.lifecycleJobService?.cancelJob(job.id, result.message || 'Operation was cancelled').catch(() => null);
         }
-        await this.handleCancelledResult(data.command, data.appUrn, result);
+        await this.handleCancelledResult(data.command, data.appUrn, result, data);
         this.operationRegistry.clear(data.appUrn, data.requestId);
       } else if (result.success) {
         if (job) {
@@ -745,7 +753,17 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * `install_cancelled` SSE event so the UI returns to the not-installed (store) state. Other
    * commands are wired in later phases; until then this is a safe no-op for them.
    */
-  private async handleCancelledResult(command: OperationCommand | string, appUrn: AppUrn, result: z.output<typeof appEventResultSchema>) {
+  private async handleCancelledResult(
+    command: OperationCommand | string,
+    appUrn: AppUrn,
+    result: z.output<typeof appEventResultSchema>,
+    message?: z.output<typeof appEventSchema>,
+  ) {
+    if (command === 'update') {
+      await this.finalizeCancelledUpdate(appUrn, result, message && 'wasRunning' in message ? message.wasRunning : true);
+      return;
+    }
+
     if (command === 'install') {
       const app = await this.appRepository.getAppByUrn(appUrn).catch(() => null);
       if (app) {
@@ -764,6 +782,33 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     // Other commands report a cancelled-status resting state in later phases; nothing to do yet.
     this.logger.info(`[lifecycle] '${command}' for ${appUrn} cancelled (no finalization wired yet)`);
+  }
+
+  /**
+   * Settle a cancelled update worker-side, as a cancelled install is. The publisher's handler cannot:
+   * its claim on the operation is gone once the worker clears it, so the app would stay `updating`. The command reports where the app landed (`cancelledStatus`); a cancel that arrived
+   * while the update was still queued changed nothing, so the app is back as it was.
+   */
+  private async finalizeCancelledUpdate(appUrn: AppUrn, result: z.output<typeof appEventResultSchema>, wasRunning: boolean) {
+    const app = await this.appRepository.getAppByUrn(appUrn).catch(() => null);
+    if (!app) {
+      return;
+    }
+
+    const status = (result.cancelledStatus as AppStatus | undefined) ?? (wasRunning ? 'running' : 'stopped');
+    if (!(await this.appRepository.updateAppByIdIfStatus(app.id, 'updating', { status }))) {
+      return;
+    }
+
+    this.logger.info(`[lifecycle] update of ${appUrn} cancelled; the app is ${status}${result.message ? `: ${result.message}` : ''}`);
+    if (result.rolledBack === false) {
+      // The previous version could not be put back: the person has to see that as the failure it is.
+      this.sseService.emit('app', { event: 'update_error', appUrn, appStatus: status, error: result.message });
+      this.agentNotifyService?.notify('update_error', { appUrn }, 'high');
+      return;
+    }
+    this.sseService.emit('app', { event: 'update_cancelled', appUrn, appStatus: status });
+    this.agentNotifyService?.notify('update_cancelled', { appUrn }, 'info');
   }
 
   /**
@@ -2754,7 +2799,11 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         wasRunning: !STATUSES_MEANING_NOT_RUNNING.has(appStatusBeforeUpdate),
       })
       .then(async (raw) => {
-        const { success, message, errorCode, errorDetail, settingsPath, rolledBack } = raw as z.output<typeof appEventResultSchema>;
+        const { success, message, errorCode, errorDetail, settingsPath, rolledBack, cancelled } = raw as z.output<typeof appEventResultSchema>;
+        if (cancelled) {
+          // Settled by the worker (`finalizeCancelledUpdate`), which knows where the app landed.
+          return;
+        }
         if (success) {
           if (!this.operationRegistry.claimCompletion(appUrn, requestId)) {
             return;

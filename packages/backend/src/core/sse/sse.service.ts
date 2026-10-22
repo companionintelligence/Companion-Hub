@@ -42,10 +42,11 @@ export class SSEService implements OnApplicationShutdown {
   private topics: Map<Topic, Subject<MessageEvent>> = new Map();
 
   /**
-   * The latest progress tick of each install that is still running, by app. A page opened
-   * mid-install has no tick of its own until the next one, which on a long download can be
-   * minutes away, so every new `app` subscriber gets these after the hello. Any other event
-   * for the app (success, error, cancel, a new attempt) ends the install's entry.
+   * The latest progress tick of each running install and the latest step of each running update,
+   * by app. A page opened mid-install has no tick of its own until the next one, which on a long
+   * download can be minutes away. An update can wait as long for its health checks. So every new
+   * `app` subscriber gets these after the hello. Any other event for the app (success, error,
+   * cancel, a new attempt) ends the entry.
    */
   private readonly installProgress = new Map<string, MessageEvent>();
 
@@ -61,7 +62,11 @@ export class SSEService implements OnApplicationShutdown {
       // We want to use this topic for a specific app
       formattedTopic = `${topic}:${appUrn}` as T;
     } else if (topic === 'app' && 'appUrn' in data) {
-      if (data.event === 'status_change' && data.appStatus === 'installing' && typeof data.progress === 'number') {
+      // An install's progress tick or an update's step: the latest one is replayed to new subscribers.
+      const replayed =
+        data.event === 'status_change' &&
+        ((data.appStatus === 'installing' && typeof data.progress === 'number') || (data.appStatus === 'updating' && data.updatePhase !== undefined));
+      if (replayed) {
         this.installProgress.set(data.appUrn, event);
       } else {
         this.installProgress.delete(data.appUrn);
@@ -123,7 +128,7 @@ export class SSEService implements OnApplicationShutdown {
    * is this Hub's version. See `hubHelloEventSchema` in `@ci-hub/common/schemas` for why
    * it exists. It is built per subscription, not emitted on the topic, because a Hub
    * that has just started has no subscribers to emit to — the clients are all mid-reconnect.
-   * The latest tick of any install still running follows the hello (`installProgress`).
+   * The latest tick of a running install or step of a running update follows the hello (`installProgress`).
    */
   getAppEventsObservable(): Observable<MessageEvent> {
     // `buildVersion` is the image stamp `GET /api/hub/build` serves, which image builds set to the

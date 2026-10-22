@@ -79,7 +79,7 @@ import type {
   AgentSkillConfig,
 } from './agent-config.js';
 
-import { type SSE, type Topic, sseSchema } from './sse.js';
+import { type SSE, type Topic, type UpdatePhase, sseSchema } from './sse.js';
 
 import { toJsonSchema } from './utils/to-json-schema.js';
 
@@ -162,4 +162,5 @@ export {
   type AppCategory,
   type SSE,
   type Topic,
+  type UpdatePhase,
 };

@@ -78,4 +78,25 @@ describe('CancelInstallDialog', () => {
     await user.click(confirm);
     expect(h.mutate).not.toHaveBeenCalled();
   });
+
+  describe('for an update', () => {
+    it('says the previous version comes back and sends the same cancel', async () => {
+      const user = userEvent.setup();
+      render(<CancelInstallDialog operation="update" info={info} isOpen onClose={vi.fn()} onCancelStart={vi.fn()} />);
+
+      expect(screen.getByText('Cancel updating Plane?')).toBeInTheDocument();
+      expect(screen.getByText(/puts the previous version back with its data/)).toBeInTheDocument();
+      await user.click(screen.getByText('Cancel update'));
+
+      expect(h.mutate).toHaveBeenCalledWith({ path: { urn: 'plane:ci-marketplace' }, body: {} });
+    });
+
+    it('says the update is finishing when the Hub refuses the cancel', () => {
+      render(<CancelInstallDialog operation="update" info={info} isOpen onClose={vi.fn()} onCancelStart={vi.fn()} />);
+
+      h.opts?.onSuccess?.({ outcome: 'refused' });
+
+      expect(mockToastError).toHaveBeenCalledWith('This update is finishing and can no longer be cancelled.');
+    });
+  });
 });

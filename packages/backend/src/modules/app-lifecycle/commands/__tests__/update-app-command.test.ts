@@ -13,6 +13,9 @@ import { DockerService } from '@/modules/docker/docker.service';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
+import { SSEService } from '@/core/sse/sse.service';
+import { OperationDeadline } from '../../operation-deadline';
+import type { CommandExecutionContext } from '../command';
 import type { AppUrn } from '@ci-hub/common/types';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 
@@ -35,6 +38,7 @@ describe('UpdateAppCommand', () => {
   let agentNotifyService: ReturnType<typeof mock<AgentNotifyService>>;
   let appsRepository: ReturnType<typeof mock<AppsRepository>>;
   let configService: ReturnType<typeof mock<ConfigurationService>>;
+  let sseService: ReturnType<typeof mock<SSEService>>;
 
   const appUrn = 'urn:store:test-app' as AppUrn;
 
@@ -51,6 +55,7 @@ describe('UpdateAppCommand', () => {
     agentNotifyService = mock<AgentNotifyService>();
     appsRepository = mock<AppsRepository>();
     configService = mock<ConfigurationService>();
+    sseService = mock<SSEService>();
     docker = {} as Dockerode;
 
     appFilesManager.deleteAppFolder.mockResolvedValue(true);
@@ -96,6 +101,7 @@ describe('UpdateAppCommand', () => {
       if (token === AgentNotifyService) return agentNotifyService;
       if (token === AppsRepository) return appsRepository;
       if (token === ConfigurationService) return configService;
+      if (token === SSEService) return sseService;
       return undefined as any;
     });
 
@@ -267,7 +273,7 @@ describe('UpdateAppCommand', () => {
     it('pulls the new images before it stops, backs up or tears anything down', async () => {
       await command.execute(appUrn, {});
 
-      expect(dockerService.pullImages).toHaveBeenCalledWith(expect.any(Array), { forcePull: true });
+      expect(dockerService.pullImages).toHaveBeenCalledWith(expect.any(Array), expect.objectContaining({ forcePull: true }));
       const pulled = order(dockerService.pullImages);
       const stopped = dockerService.composeApp.mock.calls.findIndex(([, cmd]) => cmd === 'stop');
       expect(pulled).toBeLessThan(dockerService.composeApp.mock.invocationCallOrder[stopped] as number);
@@ -712,6 +718,126 @@ describe('UpdateAppCommand', () => {
       const result = await command.execute(appUrn, {});
 
       expect(result).toEqual({ success: true, message: `App ${appUrn} updated successfully` });
+    });
+  });
+
+  // The health wait from #2104 can take minutes. The app page showed "Preparing..." all along. A
+  // cancel was answered "cancelling" and ignored. The steps' own limits added up to more than the
+  // service waits for the reply (#2107).
+  describe('progress, cancel and the deadline', () => {
+    const MIN = 60_000;
+    let controller: AbortController;
+    let ctx: CommandExecutionContext & { setPhase: ReturnType<typeof vi.fn> };
+
+    const phasesShown = () =>
+      sseService.emit.mock.calls.map(([, data]) => (data as any).updatePhase).filter((phase): phase is string => phase !== undefined);
+
+    beforeEach(() => {
+      controller = new AbortController();
+      ctx = { signal: controller.signal, setPhase: vi.fn(), deadline: new OperationDeadline(Date.now() + 45 * MIN) };
+    });
+
+    it('shows each step of the update on the app page and tells the registry what a cancel may do', async () => {
+      const result = await command.execute(appUrn, {}, ctx);
+
+      expect(result).toMatchObject({ success: true });
+      expect(phasesShown()).toEqual(['preparing', 'pulling', 'backing_up', 'starting', 'verifying', 'finalizing']);
+      expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'status_change', appUrn, appStatus: 'updating', updatePhase: 'verifying' });
+      expect(ctx.setPhase.mock.calls.map(([phase]) => phase)).toEqual(['preparing', 'pulling', 'preparing', 'composing', 'verifying', 'finalizing']);
+    });
+
+    it('rolls back to the previous version when cancelled during the health wait', async () => {
+      dockerService.verifyContainerHealthProbe.mockImplementation(async () => {
+        controller.abort();
+        return { ok: false, healthy: false, cancelled: true, containers: [], message: 'cancelled' };
+      });
+
+      const result = await command.execute(appUrn, {}, ctx);
+
+      expect(result).toMatchObject({ success: false, cancelled: true, rolledBack: true, cancelledStatus: 'running' });
+      expect(backupManager.restoreApp).toHaveBeenCalledWith(appUrn, 'test-app-backup.tar.gz');
+      expect(dockerService.composeApp).toHaveBeenLastCalledWith(appUrn, 'up --detach --force-recreate --remove-orphans');
+      expect(phasesShown().at(-1)).toBe('rolling_back');
+    });
+
+    it('stops at the next safe point when cancelled while downloading, before anything was stopped', async () => {
+      dockerService.pullImages.mockImplementation(async () => {
+        controller.abort();
+        throw new Error('pull aborted');
+      });
+
+      const result = await command.execute(appUrn, {}, ctx);
+
+      expect(result).toMatchObject({ success: false, cancelled: true, rolledBack: true, cancelledStatus: 'running' });
+      expect(dockerService.composeApp).not.toHaveBeenCalled();
+      expect(backupManager.backupApp).not.toHaveBeenCalled();
+      expect(phasesShown()).not.toContain('rolling_back');
+    });
+
+    it('finishes the step it is in when cancelled mid-step, then rolls back before the new version runs', async () => {
+      // The cancel arrives while the old version is being taken down. The update finishes replacing
+      // the files, stops before starting the new version and puts the previous files back; the data
+      // was never touched, so no restore from the backup is needed.
+      filesystem.pathExists.mockResolvedValue(true);
+      dockerService.composeApp.mockImplementation(async (_urn, cmd) => {
+        if (cmd === 'down --rmi local --remove-orphans') {
+          controller.abort();
+        }
+      });
+
+      const result = await command.execute(appUrn, {}, ctx);
+
+      expect(result).toMatchObject({ cancelled: true, rolledBack: true, cancelledStatus: 'running' });
+      expect(marketplaceService.copyAppFromRepoToInstalled).toHaveBeenCalled();
+      expect(dockerService.composeApp).not.toHaveBeenCalledWith(appUrn, 'pull');
+      expect(dockerService.verifyContainerHealthProbe).not.toHaveBeenCalled();
+      expect(backupManager.restoreApp).not.toHaveBeenCalled();
+      expect(filesystem.copyDirectory).toHaveBeenCalledWith('/data/snapshots/test-app/snap-1/app-files', '/data/installed/test-app');
+      expect(dockerService.composeApp).toHaveBeenLastCalledWith(appUrn, 'up --detach --force-recreate --remove-orphans');
+    });
+
+    it('gives the pull and the health wait only the time the update has left before its rollback reserve', async () => {
+      const endsAt = Date.now() + 30 * MIN;
+      ctx.deadline = new OperationDeadline(endsAt);
+
+      await command.execute(appUrn, {}, ctx);
+
+      const [, pullOptions] = dockerService.pullImages.mock.calls[0] ?? [];
+      expect(pullOptions?.signal).toBe(controller.signal);
+      // 30 minutes left, 10 kept for a rollback: the pull gets about 20, not its usual 45.
+      expect(pullOptions?.timeoutMs).toBeGreaterThan(19 * MIN);
+      expect(pullOptions?.timeoutMs).toBeLessThanOrEqual(20 * MIN);
+      expect(dockerService.verifyContainerHealthProbe).toHaveBeenCalledWith(
+        appUrn,
+        expect.objectContaining({ waitUntil: endsAt - 10 * MIN, signal: controller.signal }),
+      );
+    });
+
+    it('does not start an update that waited in the queue until too little of its time was left', async () => {
+      ctx.deadline = new OperationDeadline(Date.now() + 12 * MIN);
+
+      const result = await command.execute(appUrn, {}, ctx);
+
+      expect(result).toMatchObject({ success: false, rolledBack: true });
+      expect(result.message).toContain('too little of its time was left');
+      expect(dockerService.pullImages).not.toHaveBeenCalled();
+      expect(dockerService.composeApp).not.toHaveBeenCalled();
+    });
+
+    it('rolls back when the time runs out during the backup', async () => {
+      ctx.deadline = new OperationDeadline(Date.now() + 20 * MIN);
+      backupManager.backupApp.mockImplementation(async () => {
+        ctx.deadline = new OperationDeadline(Date.now() + 9 * MIN);
+        return { filename: 'test-app-backup.tar.gz' } as any;
+      });
+
+      const result = await command.execute(appUrn, {}, ctx);
+
+      expect(result).toMatchObject({ success: false, rolledBack: true });
+      expect(result.message).toContain('ran out of time');
+      // Stopped for the backup, so started again; nothing else was replaced.
+      expect(dockerService.composeApp).toHaveBeenLastCalledWith(appUrn, 'up --detach --remove-orphans');
+      expect(marketplaceService.copyAppFromRepoToInstalled).not.toHaveBeenCalled();
     });
   });
 });

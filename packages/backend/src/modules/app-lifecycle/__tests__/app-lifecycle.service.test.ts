@@ -6272,6 +6272,22 @@ describe('AppLifecycleService', () => {
       expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_success', appStatus: 'stopped' }));
     });
 
+    it('updateApp leaves a cancelled update to the worker, which settled it', async () => {
+      appEventsQueue.publish.mockResolvedValue({
+        success: false,
+        cancelled: true,
+        rolledBack: true,
+        cancelledStatus: 'running',
+        message: 'cancelled',
+      } as any);
+
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_error' }));
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_success' }));
+    });
+
     it('updateApp failure after the previous version was put back leaves a running app running', async () => {
       appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail', rolledBack: true } as any);
 
@@ -6552,6 +6568,72 @@ describe('AppLifecycleService', () => {
 
       expect(res.outcome).toBe('not_found');
       expect(abortSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // A cancelled update used to have nothing settling it: the worker cleared the operation, so the
+  // publisher's handler had no claim left and the app stayed `updating` (#2107).
+  describe('invokeCommand with a cancelled update', () => {
+    const appUrn = 'uptime-kuma:ci-marketplace' as any;
+    const requestId = '00000000-0000-4000-8000-000000000def';
+    const update = { appUrn, command: 'update', requestId, form: {}, performBackup: true, wasRunning: true } as any;
+
+    beforeEach(() => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 9, status: 'updating' } as any);
+      appsRepository.updateAppByIdIfStatus.mockResolvedValue(true);
+    });
+
+    it('puts the app back where the command says it landed and tells the page it was cancelled', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'update', tier: 'before_ponr' });
+      const execute = vi
+        .fn()
+        .mockResolvedValue({ success: false, cancelled: true, rolledBack: true, cancelledStatus: 'running', message: 'cancelled' });
+      commandFactory.createCommand.mockReturnValue({ execute } as any);
+
+      await service.invokeCommand(update, vi.fn());
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(9, 'updating', { status: 'running' });
+      expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'update_cancelled', appUrn, appStatus: 'running' });
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_error' }));
+    });
+
+    it('reports a cancel whose rollback failed as the failure it is', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'update', tier: 'before_ponr' });
+      const execute = vi
+        .fn()
+        .mockResolvedValue({ success: false, cancelled: true, rolledBack: false, cancelledStatus: 'stopped', message: 'could not be put back' });
+      commandFactory.createCommand.mockReturnValue({ execute } as any);
+
+      await service.invokeCommand(update, vi.fn());
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(9, 'updating', { status: 'stopped' });
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_error', appStatus: 'stopped' }));
+    });
+
+    it('puts a running app back to running when the update is cancelled before a worker took it', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'update', tier: 'before_ponr' });
+      operationRegistry.abort(appUrn);
+      const execute = vi.fn();
+      commandFactory.createCommand.mockReturnValue({ execute } as any);
+
+      await service.invokeCommand(update, vi.fn());
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(9, 'updating', { status: 'running' });
+      expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'update_cancelled', appUrn, appStatus: 'running' });
+    });
+
+    it('gives the command a deadline that ends when the publisher stops waiting for its reply', async () => {
+      const entry = operationRegistry.register(appUrn, { requestId, command: 'update', tier: 'before_ponr' });
+      const execute = vi.fn().mockResolvedValue({ success: true, message: 'ok' });
+      commandFactory.createCommand.mockReturnValue({ execute } as any);
+
+      await service.invokeCommand(update, vi.fn());
+
+      const ctx = execute.mock.calls[0]?.[2];
+      // No events timeout configured here: the app events queue waits the 45 minutes an image pull may take.
+      expect(ctx?.deadline?.endsAt).toBe(entry.createdAt + 45 * 60_000);
+      expect(ctx?.signal).toBe(entry.abortController.signal);
     });
   });
 

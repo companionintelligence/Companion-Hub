@@ -1,3 +1,5 @@
+import { DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES } from '@/common/constants';
+
 /**
  * Arguments applied to every hub work queue at ALL declaration sites — the
  * consumer (queue.entity.ts) and the RPC clients (queue.factory.ts). They MUST
@@ -38,3 +40,13 @@ export const HUB_QUEUE_ARGUMENTS: Record<string, number | string> = {
  * containers kept running.
  */
 export const QUEUE_UNAVAILABLE_CODE = 'queue_unavailable';
+
+/**
+ * How long the service that publishes an app event waits for its reply: the events timeout from the
+ * user settings, never less than one image pull may take. A command that is still running when
+ * it passes has its outcome decided without it, so long commands plan against this
+ * (see `OperationDeadline`). `QueueModule` sets the app events queue's timeout by the same rule.
+ */
+export function appEventsRpcTimeoutMs(eventsTimeoutMinutes: number): number {
+  return Math.max(eventsTimeoutMinutes, Number(DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES)) * 60_000;
+}

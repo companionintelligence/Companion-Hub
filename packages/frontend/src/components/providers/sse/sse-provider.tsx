@@ -196,6 +196,9 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
         case 'update_error':
           showLogsErrorToast('APP_ERROR_APP_FAILED_TO_UPDATE_TOAST', appName);
           break;
+        case 'update_cancelled':
+          toast.success(t('APP_UPDATE_CANCELLED', { id: appName }));
+          break;
         case 'reset_success':
           toast.success(t('APP_RESET_SUCCESS', { id: appName }));
           break;

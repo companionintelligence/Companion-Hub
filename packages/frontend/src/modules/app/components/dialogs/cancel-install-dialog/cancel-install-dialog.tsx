@@ -14,16 +14,38 @@ interface IProps {
   onClose: () => void;
   /** Called when the user confirms the cancel, so the parent can show a "cancelling" state. */
   onCancelStart?: () => void;
+  /** What is being cancelled; the request is the same, the words are not. */
+  operation?: 'install' | 'update';
 }
 
+const COPY = {
+  install: {
+    title: 'APP_CANCEL_INSTALL_TITLE',
+    body: 'APP_CANCEL_INSTALL_BODY',
+    submit: 'APP_CANCEL_INSTALL_SUBMIT',
+    refused: 'APP_ERROR_CANNOT_CANCEL',
+  },
+  // An update is stopped at its next safe point and rolled back, so the previous version comes back with its data.
+  update: {
+    title: 'APP_CANCEL_UPDATE_TITLE',
+    body: 'APP_CANCEL_UPDATE_BODY',
+    submit: 'APP_CANCEL_UPDATE_SUBMIT',
+    refused: 'APP_ERROR_CANNOT_CANCEL_UPDATE',
+  },
+} as const;
+
 /**
- * Confirmation dialog for cancelling an in-progress install. Unlike uninstall, there is no
+ * Confirmation dialog for cancelling an in-progress install or update (`operation`). The update copy
+ * says the previous version comes back; the rest of this note is about an install.
+ *
+ * Unlike uninstall, there is no
  * installed app or data to destroy yet — cancelling stops the download and removes the partial
  * install, so the copy is reassuring rather than a destructive warning. Sends the server-side
  * cancel for the app's active operation (no requestId — the backend resolves the active op).
  */
-export const CancelInstallDialog = ({ info, isOpen, onClose, onCancelStart }: IProps) => {
+export const CancelInstallDialog = ({ info, isOpen, onClose, onCancelStart, operation = 'install' }: IProps) => {
   const { t } = useTranslation();
+  const copy = COPY[operation];
 
   // While the request is in flight the confirm button shows a loading state and is disabled, which
   // prevents duplicate cancels (the dialog can still be dismissed via its close button/overlay). The
@@ -37,7 +59,7 @@ export const CancelInstallDialog = ({ info, isOpen, onClose, onCancelStart }: IP
         onCancelStart?.();
       } else {
         // refused / not_found — the install is past the point of no return or already finished.
-        toast.error(t('APP_ERROR_CANNOT_CANCEL'));
+        toast.error(t(copy.refused));
       }
       onClose();
     },
@@ -51,15 +73,15 @@ export const CancelInstallDialog = ({ info, isOpen, onClose, onCancelStart }: IP
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent type="danger" size="sm">
         <DialogHeader>
-          <DialogTitle>{t('APP_CANCEL_INSTALL_TITLE', { name: info.name })}</DialogTitle>
+          <DialogTitle>{t(copy.title, { name: info.name })}</DialogTitle>
         </DialogHeader>
         <DialogDescription className="text-center py-4">
           <CircleStop className="mb-2 text-destructive size-12 mx-auto" />
-          <span className="text-muted-foreground">{t('APP_CANCEL_INSTALL_BODY')}</span>
+          <span className="text-muted-foreground">{t(copy.body)}</span>
         </DialogDescription>
         <DialogFooter>
           <Button onClick={() => cancelMutation.mutate({ path: { urn: info.urn }, body: {} })} loading={cancelMutation.isPending} intent="danger">
-            {t('APP_CANCEL_INSTALL_SUBMIT')}
+            {t(copy.submit)}
           </Button>
         </DialogFooter>
       </DialogContent>
