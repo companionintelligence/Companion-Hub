@@ -428,16 +428,19 @@ fn linux_package_preference() -> &'static str {
 }
 
 /// The package format from `/etc/os-release`, and when that doesn't place the distro (an `ID`
-/// it doesn't know and no `ID_LIKE`, as on Deepin, or no file at all), from the package tool
-/// that is installed: `dpkg` first, then `rpm`. Only with neither does it stay `appimage`, which
-/// releases don't build, so the Desktop app card points to the download page.
+/// it doesn't know and no `ID_LIKE`, as on Deepin, or no file at all), from the package manager
+/// that is installed: `dpkg` with `apt` first, then `rpm` with `dnf` or `yum`. `dpkg` or `rpm`
+/// alone is not enough: Arch packages both as tools, and installing a `.deb` there with
+/// `dpkg -i` bypasses pacman. openSUSE (`rpm` with `zypper`) and ALT (`rpm` with apt-rpm) take
+/// `.rpm` files, but not one built for Fedora's package names. With neither pair it stays
+/// `appimage`, which releases don't build, so the Desktop app card points to the download page.
 fn linux_package_preference_from(
     os_release: &str,
     has_tool: impl Fn(&str) -> bool,
 ) -> &'static str {
     match linux_package_preference_from_os_release(os_release) {
-        "appimage" if has_tool("dpkg") => "deb",
-        "appimage" if has_tool("rpm") => "rpm",
+        "appimage" if has_tool("dpkg") && (has_tool("apt-get") || has_tool("apt")) => "deb",
+        "appimage" if has_tool("rpm") && (has_tool("dnf") || has_tool("yum")) => "rpm",
         preference => preference,
     }
 }
@@ -2479,19 +2482,39 @@ mod tests {
 
         // Deepin: Debian-based, but its ID isn't one the updater knows and it sets no ID_LIKE.
         assert_eq!(
-            linux_package_preference_from("ID=deepin\n", tools(&["dpkg"])),
+            linux_package_preference_from("ID=deepin\n", tools(&["dpkg", "apt-get"])),
             "deb"
         );
         // No /etc/os-release at all.
-        assert_eq!(linux_package_preference_from("", tools(&["rpm"])), "rpm");
+        assert_eq!(
+            linux_package_preference_from("", tools(&["rpm", "dnf"])),
+            "rpm"
+        );
         // dpkg wins when both are there, as on a Debian with rpm installed for alien.
         assert_eq!(
-            linux_package_preference_from("", tools(&["rpm", "dpkg"])),
+            linux_package_preference_from("", tools(&["rpm", "dpkg", "apt"])),
             "deb"
         );
         // Neither: the download page.
         assert_eq!(
             linux_package_preference_from("ID=arch\n", tools(&[])),
+            "appimage"
+        );
+        // dpkg and rpm as tools, without the package manager that goes with them: Arch with
+        // extra/dpkg and rpm-tools, openSUSE (zypper), ALT (apt-rpm, no dpkg).
+        assert_eq!(
+            linux_package_preference_from("ID=arch\n", tools(&["dpkg", "rpm"])),
+            "appimage"
+        );
+        assert_eq!(
+            linux_package_preference_from(
+                "ID=\"opensuse-tumbleweed\"\nID_LIKE=\"opensuse suse\"\n",
+                tools(&["rpm", "zypper"])
+            ),
+            "appimage"
+        );
+        assert_eq!(
+            linux_package_preference_from("ID=altlinux\n", tools(&["rpm", "apt-get"])),
             "appimage"
         );
         // A distro os-release places keeps its own format, whatever else is installed.
