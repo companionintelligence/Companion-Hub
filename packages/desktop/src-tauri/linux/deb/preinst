@@ -13,10 +13,20 @@ PACKAGE=${DPKG_MAINTSCRIPT_PACKAGE:-companion-hub}
 # folders back to root before the new files are unpacked into them. postinst does the same for
 # this version's. Only folders: a file dpkg unpacked is root's already, so one that is not was
 # swapped in and must not be made to look like a package file. Symlinks are never followed.
+# A symlink root does not own is removed: while its parent folder belonged to uid 1001 that
+# account could put one where the package has a folder, and dpkg unpacks through such a link
+# into whatever folder it names (Debian Policy 6.6) instead of creating its own.
 restore_root_owned_folders() {
   dpkg-query -L "$PACKAGE" 2>/dev/null | while IFS= read -r path; do
     case "$path" in /usr/*) ;; *) continue ;; esac
-    if [ -L "$path" ] || [ ! -d "$path" ]; then
+    if [ -L "$path" ]; then
+      if [ "$(stat -c '%u' "$path" 2>/dev/null)" != "0" ]; then
+        rm -f "$path" 2>/dev/null || true
+        echo "companion-hub: removed $path, a symlink not owned by root where the package has a folder; if the app is missing files, run: apt install --reinstall $PACKAGE" >&2
+      fi
+      continue
+    fi
+    if [ ! -d "$path" ]; then
       continue
     fi
     if [ "$(stat -c '%u:%g' "$path" 2>/dev/null)" != "0:0" ]; then
