@@ -575,6 +575,105 @@ describe('InstallForm', () => {
     expect(fetchDnsAvailability).not.toHaveBeenCalled();
   });
 
+  /*
+   * On Public Web the submit runs a last DNS check through Companion Portal, which took 4 to 7 s on
+   * a slow link. Nothing on screen moved in that time: a subdomain the form refuses by itself got
+   * its error only after the check, and the dialog's button had no spinner and still took clicks.
+   */
+  describe('submitting on Public Web in production', () => {
+    const INFO = { urn: 'cyberchef:ci-marketplace', form_fields: [], exposable: true, dynamic_config: true, port: 8080 } as unknown as AppInfo;
+    const CONTEXT = {
+      userSettings: {
+        ciHubOrganizationSlug: 'acme',
+        ciHubDeviceSlug: 'core2',
+        localDomain: 'ci.lan',
+        domain: 'companionintelligence.com',
+        maxBackups: 5,
+        guestDashboard: false,
+      },
+      user: { advancedMode: false },
+      isProduction: true,
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
+    } as unknown as ReturnType<typeof useAppContext>;
+
+    /** Every DNS check waits for `answerChecks`, as one does on a slow link. */
+    const pendingChecks: Array<(response: Response) => void> = [];
+    const answerChecks = () => {
+      for (const answer of pendingChecks.splice(0)) {
+        answer(new Response(JSON.stringify({ available: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+    };
+
+    beforeEach(() => {
+      MOCK_AVAILABLE_DOMAINS.domains = [{ id: 'd1', domain: 'companionintelligence.com', isDefault: true, offered: true }];
+      vi.mocked(useAppContext).mockReturnValue(CONTEXT);
+      fetchDnsAvailability.mockImplementation(() => new Promise<Response>((resolve) => pendingChecks.push(resolve)));
+    });
+
+    afterEach(() => {
+      answerChecks();
+      // `vi.clearAllMocks` keeps implementations, and later tests must not inherit a check that never answers.
+      fetchDnsAvailability.mockReset();
+    });
+
+    const renderForm = (localSubdomain: string, props: Partial<ComponentProps<typeof InstallForm>> = {}) =>
+      render(
+        <MemoryRouter>
+          <InstallForm
+            info={INFO}
+            onSubmit={vi.fn()}
+            formId="test-form"
+            formFields={[]}
+            initialValues={{ exposureMode: 'cloudflare', localSubdomain }}
+            isEdit
+            {...props}
+          />
+        </MemoryRouter>,
+      );
+
+    const submit = async (container: HTMLElement) => {
+      await act(async () => {
+        fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+      });
+    };
+
+    it('shows a subdomain it can refuse by itself at once, while the DNS check is still out', async () => {
+      const onSubmit = vi.fn();
+      const { container } = renderForm('My_App', { onSubmit });
+
+      await submit(container);
+
+      await waitFor(() => {
+        expect(toast.error).toHaveBeenCalledWith('APP_INSTALL_FORM_ERROR_INVALID');
+      });
+      expect(screen.getByText('APP_INSTALL_FORM_ERROR_LOCAL_SUBDOMAIN_FORMAT')).toBeInTheDocument();
+      expect(onSubmit).not.toHaveBeenCalled();
+    });
+
+    it('reports itself submitting from the submit until the DNS check answers', async () => {
+      const onSubmit = vi.fn();
+      const onSubmittingChange = vi.fn();
+      const { container } = renderForm('cyberchef', { onSubmit, onSubmittingChange });
+
+      await submit(container);
+
+      await waitFor(() => {
+        expect(onSubmittingChange).toHaveBeenLastCalledWith(true);
+      });
+      expect(onSubmit).not.toHaveBeenCalled();
+
+      // Answers every check that is out, the final one too once it has gone out.
+      await waitFor(() => {
+        answerChecks();
+        expect(onSubmit).toHaveBeenCalledOnce();
+      });
+      await waitFor(() => {
+        expect(onSubmittingChange).toHaveBeenLastCalledWith(false);
+      });
+    });
+  });
+
   describe('restarting for a newly connected custom domain', () => {
     /*
      * Connecting a domain to a running app leaves it on its old address until it

@@ -129,7 +129,8 @@ vi.mock('@/stores/app-store', () => ({
   useAppStoreState: () => mockStoreState,
 }));
 
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { pullAppStores } from '@/api-client/sdk.gen';
+import { useInfiniteQuery, useMutation, useQuery } from '@tanstack/react-query';
 import { useParams } from 'react-router';
 import AppStorePage from './app-store-page';
 
@@ -217,6 +218,22 @@ describe('AppStorePage — multi-store UX', () => {
     );
 
     expect(screen.queryAllByRole('button', { name: 'APP_STORE_CHECK_FOR_UPDATES' })).toHaveLength(canManage ? 1 : 0);
+  });
+
+  // The generated client resolves with `{ error }` on a non-2xx unless the call passes throwOnError,
+  // and the mutation would then succeed: a failed pull showed "updated" and never the error toast.
+  it('pulls the app stores with throwOnError so a failed pull reaches onError', async () => {
+    setupQueries();
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    const options = vi.mocked(useMutation).mock.calls[0]?.[0] as { mutationFn: () => Promise<unknown> };
+    await options.mutationFn();
+
+    expect(vi.mocked(pullAppStores)).toHaveBeenCalledWith({ throwOnError: true });
   });
 
   // Only an organization owner or admin may create a custom app, so a member is not offered the button.
