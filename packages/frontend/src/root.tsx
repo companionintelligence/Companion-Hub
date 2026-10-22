@@ -28,6 +28,7 @@ import {
   usesCloudConnect,
 } from '@/lib/mobile-connection';
 import { shouldTimeBoxMobileLoads } from '@/lib/use-mobile-load-timeout';
+import { memoryConnectResultToastKey } from '@/modules/app/helpers/memory-provider';
 import { installMobileLoadWatchdog } from '@/lib/mobile-load-watchdog';
 import { installScrollbarHover } from '@/lib/scrollbar-hover';
 import type { RegistrationStatus } from './lib/registration-status';
@@ -467,7 +468,7 @@ async function runClientLoader(request: Request) {
   // dashboard can surface it as a toast; without this the query is dropped here.
   // Whitelisted values only, so arbitrary query junk is never reflected onward.
   const memoryConnect = url.searchParams.get('memoryConnect');
-  if (memoryConnect === 'error' || memoryConnect === 'unavailable' || memoryConnect === 'previous_removed') {
+  if (memoryConnectResultToastKey(memoryConnect)) {
     return redirect(`/home?memoryConnect=${memoryConnect}`);
   }
 

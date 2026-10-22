@@ -22,3 +22,16 @@ export function isMemoryProviderUrn(urn: string): boolean {
     return false;
   }
 }
+
+/** What the dashboard says for each memory-connect result the Hub's callback can land there with. */
+const MEMORY_CONNECT_RESULT_TOASTS: Readonly<Record<string, string>> = {
+  error: 'MEMORY_CONNECT_ERROR_TOAST',
+  unavailable: 'MEMORY_CONNECT_UNAVAILABLE_TOAST',
+  // The connect failed after another person's connection had been revoked for it.
+  previous_removed: 'MEMORY_CONNECT_PREVIOUS_REMOVED_TOAST',
+};
+
+/** The toast key for a `?memoryConnect=` marker, or null for one the Hub never sends. */
+export function memoryConnectResultToastKey(marker: string | null): string | null {
+  return marker && Object.hasOwn(MEMORY_CONNECT_RESULT_TOASTS, marker) ? (MEMORY_CONNECT_RESULT_TOASTS[marker] ?? null) : null;
+}

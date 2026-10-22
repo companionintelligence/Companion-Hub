@@ -19,6 +19,7 @@ import { HorizontalAppList } from '../components/horizontal-app-list';
 import { PoolSetupCard } from '../components/pool-setup-card';
 import { QueuedInstallsIndicator } from '../components/queued-installs-indicator';
 import { useInstallQueue } from '@/modules/app/helpers/use-install-queue';
+import { memoryConnectResultToastKey } from '@/modules/app/helpers/memory-provider';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 import { Button } from '@/components/ui/Button';
 import { diskStatCopy } from './disk-stat';
@@ -29,14 +30,6 @@ type DashboardLocationState = {
 
 /** Stable identity for "no report yet", so the memos below actually memoize. */
 const NO_DIAGNOSTICS: PublicWebDiagnosticsApp[] = [];
-
-/** The memory-connect results the Hub's callback can land here with, and what each one says. */
-const MEMORY_CONNECT_RESULT_TOASTS: Record<string, string> = {
-  error: 'MEMORY_CONNECT_ERROR_TOAST',
-  unavailable: 'MEMORY_CONNECT_UNAVAILABLE_TOAST',
-  // The connect failed after another person's connection had been revoked for it.
-  previous_removed: 'MEMORY_CONNECT_PREVIOUS_REMOVED_TOAST',
-};
 
 export default () => {
   const { t } = useTranslation();
@@ -59,7 +52,7 @@ export default () => {
   // StrictMode's double-invoke), then strip the marker so a refresh doesn't repeat it.
   useEffect(() => {
     const marker = searchParams.get('memoryConnect');
-    const messageKey = marker ? MEMORY_CONNECT_RESULT_TOASTS[marker] : undefined;
+    const messageKey = memoryConnectResultToastKey(marker);
     if (!messageKey) return;
 
     toast.error(t(messageKey), { id: 'memory-connect-result' });

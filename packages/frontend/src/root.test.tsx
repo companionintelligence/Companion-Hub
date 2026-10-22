@@ -163,9 +163,11 @@ describe('root clientLoader registration gating', () => {
 
     const removed = (await clientLoader({ request: new Request('http://localhost/?memoryConnect=previous_removed') } as never)) as Response;
     const junk = (await clientLoader({ request: new Request('http://localhost/?memoryConnect=%3Cscript%3E') } as never)) as Response;
+    const inherited = (await clientLoader({ request: new Request('http://localhost/?memoryConnect=constructor') } as never)) as Response;
 
     expect(removed.headers.get('Location')).toBe('/home?memoryConnect=previous_removed');
     expect(junk.headers.get('Location')).toBe('/home');
+    expect(inherited.headers.get('Location')).toBe('/home');
   });
 
   it('keeps a Mac / desktop client on the normal Hub path and never sends it to /connect', async () => {
