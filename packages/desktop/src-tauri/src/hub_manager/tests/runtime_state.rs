@@ -143,6 +143,34 @@ fn restricting_never_adds_a_bit() {
 
 #[cfg(unix)]
 #[test]
+fn write_private_file_creates_an_owner_only_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let env = dir.path().join(".env.dev");
+
+    write_private_file(&env, "JWT_SECRET=x\n").expect("write");
+
+    assert_eq!(std::fs::read_to_string(&env).unwrap(), "JWT_SECRET=x\n");
+    assert_eq!(mode_of(&env), 0o600);
+}
+
+#[cfg(unix)]
+#[test]
+fn write_private_file_restricts_an_env_file_left_at_the_umask_mode() {
+    // `std::fs::write` keeps a file's mode, so both env files stayed 0o664 with the Hub secrets in them.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let env = state_file_with_mode(dir.path(), ".env", 0o664);
+
+    write_private_file(&env, "POSTGRES_PASSWORD=y\n").expect("write");
+
+    assert_eq!(
+        std::fs::read_to_string(&env).unwrap(),
+        "POSTGRES_PASSWORD=y\n"
+    );
+    assert_eq!(mode_of(&env), 0o600);
+}
+
+#[cfg(unix)]
+#[test]
 fn restricting_a_missing_file_is_a_no_op() {
     let dir = tempfile::tempdir().expect("tempdir");
     assert_eq!(restrict_private_state_file(&dir.path().join("seed")), None);
