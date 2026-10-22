@@ -218,7 +218,7 @@ describe('SystemUpdateService', () => {
     });
 
     it('still wakes agents when an update is available', async () => {
-      const agentNotifyService = { notify: vi.fn() };
+      const agentNotifyService = { notify: vi.fn().mockResolvedValue(true) };
       service = new SystemUpdateService(mockLogger as never, mockConfig as never, mockRegistryService as never, agentNotifyService as never);
       insideHubContainer(PINNED_ENV);
       await installDocker(core6Appliance(RELEASE_PIN));
@@ -227,6 +227,72 @@ describe('SystemUpdateService', () => {
       await service.checkForUpdates();
 
       expect(agentNotifyService.notify).toHaveBeenCalledWith('system.update_available', { current: '0.2.70', latest: '0.2.71' }, 'low');
+    });
+
+    // An agent that looks into the wake with hub_check_for_updates runs this same check.
+    it('wakes agents once per release, not on every check', async () => {
+      const agentNotifyService = { notify: vi.fn().mockResolvedValue(true) };
+      service = new SystemUpdateService(mockLogger as never, mockConfig as never, mockRegistryService as never, agentNotifyService as never);
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core6Appliance(RELEASE_PIN));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+
+      await service.checkForUpdates();
+      await service.checkForUpdates();
+
+      expect(agentNotifyService.notify).toHaveBeenCalledTimes(1);
+
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71', '0.2.72']);
+      await service.checkForUpdates();
+
+      expect(agentNotifyService.notify).toHaveBeenCalledTimes(2);
+      expect(agentNotifyService.notify).toHaveBeenLastCalledWith('system.update_available', { current: '0.2.70', latest: '0.2.72' }, 'low');
+    });
+
+    it('does not wake agents about an older release when the registry briefly lists fewer tags', async () => {
+      const agentNotifyService = { notify: vi.fn().mockResolvedValue(true) };
+      service = new SystemUpdateService(mockLogger as never, mockConfig as never, mockRegistryService as never, agentNotifyService as never);
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core6Appliance(RELEASE_PIN));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71', '0.2.72']);
+
+      await service.checkForUpdates();
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+      await service.checkForUpdates();
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71', '0.2.72']);
+      await service.checkForUpdates();
+
+      expect(agentNotifyService.notify).toHaveBeenCalledTimes(1);
+      expect(agentNotifyService.notify).toHaveBeenCalledWith('system.update_available', { current: '0.2.70', latest: '0.2.72' }, 'low');
+    });
+
+    it('tries the same release again when sending the wake failed outright', async () => {
+      const agentNotifyService = { notify: vi.fn().mockRejectedValueOnce(new Error('boom')).mockResolvedValue(true) };
+      service = new SystemUpdateService(mockLogger as never, mockConfig as never, mockRegistryService as never, agentNotifyService as never);
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core6Appliance(RELEASE_PIN));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+
+      await service.checkForUpdates();
+      await service.checkForUpdates();
+
+      expect(agentNotifyService.notify).toHaveBeenCalledTimes(2);
+    });
+
+    // Checked before an agent was installed, or while it was down: the release was never heard.
+    it('wakes agents about the same release again when no agent heard it', async () => {
+      const agentNotifyService = { notify: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true) };
+      service = new SystemUpdateService(mockLogger as never, mockConfig as never, mockRegistryService as never, agentNotifyService as never);
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core6Appliance(RELEASE_PIN));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+
+      await service.checkForUpdates();
+      await service.checkForUpdates();
+      await service.checkForUpdates();
+
+      expect(agentNotifyService.notify).toHaveBeenCalledTimes(2);
+      expect(agentNotifyService.notify).toHaveBeenLastCalledWith('system.update_available', { current: '0.2.70', latest: '0.2.71' }, 'low');
     });
 
     it('says the build is unknown outside a container instead of reporting CI_HUB_VERSION', async () => {
@@ -241,7 +307,7 @@ describe('SystemUpdateService', () => {
   // registry and woke every connected agent with system.update_available each time.
   describe('getUpdateBlocks', () => {
     it('answers for a Windows desktop install without the registry and without waking agents', async () => {
-      const agentNotifyService = { notify: vi.fn() };
+      const agentNotifyService = { notify: vi.fn().mockResolvedValue(true) };
       service = new SystemUpdateService(mockLogger as never, mockConfig as never, mockRegistryService as never, agentNotifyService as never);
       insideHubContainer(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:0.3.4\nCI_HUB_VERSION=0.3.4\n`);
       await installDocker(windowsDesktopWslEngine());
