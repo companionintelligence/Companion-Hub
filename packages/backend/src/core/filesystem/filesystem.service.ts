@@ -196,36 +196,54 @@ export class FilesystemService {
   }
 
   async copyDirectory(src: string, dest: string, options: fs.CopyOptions = {}): Promise<boolean> {
-    return (await this.copyDirectoryDetailed(src, dest, options)).copied;
+    const { copied, error } = await this.tryCopyDirectory(src, dest, options);
+    if (!copied) this.logger.error(`Error copying directory from ${src} to ${dest}:`, error);
+    return copied;
   }
 
   /**
    * Like {@link copyDirectory}, but tells the caller WHY a copy failed so it can escalate.
    * `permissionDenied` (EACCES/EPERM) is the signature of files a container created under another
    * user (every database image) that the Hub, a plain user on a native Linux host, cannot read.
+   * Every caller hands that case to a root helper and reports how it went, so it is logged at debug
+   * here: an error line for a copy that then succeeds as root is a red line for nothing.
    */
   async copyDirectoryDetailed(src: string, dest: string, options: fs.CopyOptions = {}): Promise<{ copied: boolean; permissionDenied: boolean }> {
+    const { copied, permissionDenied, error } = await this.tryCopyDirectory(src, dest, options);
+    if (!copied && permissionDenied) {
+      this.logger.debug(`Could not copy ${src} to ${dest} as the Hub's user:`, error);
+    } else if (!copied) {
+      this.logger.error(`Error copying directory from ${src} to ${dest}:`, error);
+    }
+    return { copied, permissionDenied };
+  }
+
+  private async tryCopyDirectory(src: string, dest: string, options: fs.CopyOptions) {
     try {
       await fs.promises.cp(this.getSafeFilePath(src), this.getSafeFilePath(dest), { recursive: true, ...options });
-      return { copied: true, permissionDenied: false };
+      return { copied: true, permissionDenied: false, error: undefined };
     } catch (error) {
-      this.logger.error(`Error copying directory from ${src} to ${dest}:`, error);
       const code = (error as NodeJS.ErrnoException | undefined)?.code;
-      return { copied: false, permissionDenied: code === 'EACCES' || code === 'EPERM' };
+      return { copied: false, permissionDenied: code === 'EACCES' || code === 'EPERM', error };
     }
   }
 
   /**
    * Looks for entries under `dirPath` that this process cannot read: a folder it cannot list, or a
-   * file it cannot open. A copy made by the Hub stops at the first one, after an update has already
-   * stopped the app, so callers look first.
+   * file it cannot open. A copy made by the Hub stops at the first one, so a backup looks first: data
+   * like that needs the root helper, and finding out the helper cannot run after the app was stopped
+   * is downtime for nothing.
    *
    * Breadth first and bounded: a data folder can hold millions of files, and the ones this exists to
    * find (a database's own, a level or two down) come early. It reports at most `maxFound` paths and
    * looks at no more than `maxEntries` entries, so an empty answer means "none among the first
-   * entries", not a proof that every file is readable. Symbolic links are not followed.
+   * entries", not a proof that every file is readable. Symbolic links are not followed. An entry
+   * `skip` accepts (one the caller's copy leaves out) is neither checked nor walked into.
    */
-  async findUnreadable(dirPath: string, options: { maxEntries?: number; maxFound?: number } = {}): Promise<string[]> {
+  async findUnreadable(
+    dirPath: string,
+    options: { maxEntries?: number; maxFound?: number; skip?: (entry: string) => boolean } = {},
+  ): Promise<string[]> {
     const maxEntries = options.maxEntries ?? 2000;
     const maxFound = options.maxFound ?? 5;
     const found: string[] = [];
@@ -252,8 +270,9 @@ export class FilesystemService {
 
       for (const name of names) {
         if (seen >= maxEntries || found.length >= maxFound) break;
-        seen++;
         const full = path.join(dir, name);
+        if (options.skip?.(full)) continue;
+        seen++;
 
         try {
           const stat = await fs.promises.lstat(full);
@@ -274,25 +293,90 @@ export class FilesystemService {
     return found;
   }
 
+  /**
+   * Looks for folders under `dirPath` whose entries this process could not delete: a folder it cannot
+   * list, or one that holds something and that it cannot write into (a file is deleted through its
+   * folder, not by its owner). What a container running as root writes into a folder of its own looks
+   * like this to a Hub that runs as the host user. Bounded and breadth first like
+   * {@link findUnreadable}, with the same caveat: an empty answer covers the first entries only.
+   */
+  async findUndeletable(dirPath: string, options: { maxEntries?: number; maxFound?: number } = {}): Promise<string[]> {
+    const maxEntries = options.maxEntries ?? 2000;
+    const maxFound = options.maxFound ?? 5;
+    const found: string[] = [];
+    const queue: string[] = [];
+    let seen = 0;
+
+    try {
+      queue.push(this.getSafeFilePath(dirPath));
+    } catch {
+      return found;
+    }
+
+    while (queue.length > 0 && seen < maxEntries && found.length < maxFound) {
+      const dir = queue.shift() as string;
+      let names: string[];
+
+      try {
+        names = await fs.promises.readdir(dir);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') found.push(dir);
+        continue;
+      }
+
+      if (names.length > 0) {
+        try {
+          await fs.promises.access(dir, fs.constants.W_OK | fs.constants.X_OK);
+        } catch {
+          found.push(dir);
+          continue;
+        }
+      }
+
+      for (const name of names) {
+        if (seen >= maxEntries || found.length >= maxFound) break;
+        seen++;
+        const full = path.join(dir, name);
+        const stat = await fs.promises.lstat(full).catch(() => null);
+
+        if (stat?.isDirectory()) queue.push(full);
+      }
+    }
+
+    return found;
+  }
+
   async removeDirectory(dirPath: string): Promise<boolean> {
-    return (await this.removeDirectoryDetailed(dirPath)).removed;
+    const { removed, error } = await this.tryRemoveDirectory(dirPath);
+    if (!removed) this.logger.error(`Error removing directory ${dirPath}:`, error);
+    return removed;
   }
 
   /**
    * Like {@link removeDirectory}, but tells the caller WHY a delete failed so it can
    * escalate. `permissionDenied` (EACCES/EPERM/EBUSY) is the signature of a path a
    * container created as root that the non-root Hub process cannot remove (e.g.
-   * MinIO's `.minio.sys`); the uninstall path uses it to fall back to a privileged
-   * cleanup. `force: true` means a missing dir is still a success (`removed: true`).
+   * MinIO's `.minio.sys`); uninstall, reset, restore and the update rollback use it to
+   * fall back to a privileged cleanup and report how that went, so this logs that case
+   * at debug only. `force: true` means a missing dir is still a success (`removed: true`).
    */
   async removeDirectoryDetailed(dirPath: string): Promise<{ removed: boolean; permissionDenied: boolean }> {
+    const { removed, permissionDenied, error } = await this.tryRemoveDirectory(dirPath);
+    if (!removed && permissionDenied) {
+      this.logger.debug(`Could not remove ${dirPath} as the Hub's user:`, error);
+    } else if (!removed) {
+      this.logger.error(`Error removing directory ${dirPath}:`, error);
+    }
+    return { removed, permissionDenied };
+  }
+
+  private async tryRemoveDirectory(dirPath: string) {
     try {
       await fs.promises.rm(this.getSafeFilePath(dirPath), { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
-      return { removed: true, permissionDenied: false };
+      return { removed: true, permissionDenied: false, error: undefined };
     } catch (error) {
-      this.logger.error(`Error removing directory ${dirPath}:`, error);
       const code = (error as NodeJS.ErrnoException | undefined)?.code;
-      return { removed: false, permissionDenied: code === 'EACCES' || code === 'EPERM' || code === 'EBUSY' };
+      return { removed: false, permissionDenied: code === 'EACCES' || code === 'EPERM' || code === 'EBUSY', error };
     }
   }
 
