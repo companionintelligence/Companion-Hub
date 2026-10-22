@@ -492,7 +492,9 @@ describe('OllamaBackend', () => {
         expect(axios.post).not.toHaveBeenCalled();
       });
 
-      it('matches the tag Ollama reports (`:latest`) and sets an embedder through /api/embed', async () => {
+      // The embedder's load names no window (loadModel). A request whose options differ from the
+      // load can make Ollama reload the model, so the keep-alive request names none either.
+      it('matches the tag Ollama reports (`:latest`) and sets an embedder through /api/embed, with no num_ctx, as its load sends none', async () => {
         psWith([{ ...pinned, name: 'nomic-embed-text:latest', model: 'nomic-embed-text:latest', context_length: 2048 }]);
         (axios.post as any) = vi.fn().mockResolvedValue({ data: {} });
 
@@ -500,7 +502,7 @@ describe('OllamaBackend', () => {
 
         expect(axios.post).toHaveBeenCalledWith(
           expect.stringContaining('/api/embed'),
-          { model: 'nomic-embed-text:latest', input: '', keep_alive: '5m', options: { num_ctx: 2048 } },
+          { model: 'nomic-embed-text:latest', input: '', keep_alive: '5m' },
           expect.any(Object),
         );
       });

@@ -141,20 +141,17 @@ if ($null -eq $gpu) { exit 3 };
             }
         };
 
-        if !output.status.success() {
-            clear_stale_probe();
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            let details = if stderr.is_empty() {
-                "nvidia-smi command failed".to_string()
-            } else {
-                format!("nvidia-smi command failed: {}", stderr)
-            };
-            let _ = append_desktop_log_for(data_dir, "gpu.probe", &details);
-            return;
-        }
-
-        let payload = match linux_nvidia_probe_payload(&String::from_utf8_lossy(&output.stdout)) {
-            Ok(payload) => payload,
+        let payload = match linux_nvidia_probe_from_output(
+            output.status.code(),
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        ) {
+            Ok((payload, note)) => {
+                if let Some(note) = note {
+                    let _ = append_desktop_log_for(data_dir, "gpu.probe", &note);
+                }
+                payload
+            }
             Err(details) => {
                 clear_stale_probe();
                 let _ = append_desktop_log_for(data_dir, "gpu.probe", &details);
@@ -247,6 +244,44 @@ pub(crate) fn windows_nvidia_probe_payload(raw_json: &str) -> Result<serde_json:
         &driver_version,
         source,
     ))
+}
+
+/// What one nvidia-smi run says for `nvidia.json`: the payload when its output lists a GPU, with a
+/// line to log when it did so with a non-zero exit code, or Err with the line to log.
+///
+/// The output decides, not the exit code. nvidia-smi exits non-zero when one GPU of several cannot be
+/// read. It still prints a row for each one it can. Run through `sh -lc '… | head -n 1'` the exit
+/// code was head's, so such a run wrote the file. Run directly, the same run would leave it missing.
+#[cfg(any(test, target_os = "linux"))]
+pub(crate) fn linux_nvidia_probe_from_output(
+    exit_code: Option<i32>,
+    stdout: &str,
+    stderr: &str,
+) -> Result<(serde_json::Value, Option<String>), String> {
+    let failed = exit_code != Some(0);
+    let exit = exit_code.map_or("a signal".to_string(), |code| format!("exit code {}", code));
+    match linux_nvidia_probe_payload(stdout) {
+        Ok(payload) => {
+            let note = failed.then(|| {
+                format!(
+                    "nvidia-smi ended with {} but listed a GPU; host NVIDIA probe cache written from its output{}",
+                    exit,
+                    if stderr.trim().is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({})", stderr.trim())
+                    }
+                )
+            });
+            Ok((payload, note))
+        }
+        Err(_) if failed => Err(if stderr.trim().is_empty() {
+            format!("nvidia-smi command failed with {}", exit)
+        } else {
+            format!("nvidia-smi command failed with {}: {}", exit, stderr.trim())
+        }),
+        Err(details) => Err(details),
+    }
 }
 
 /// nvidia-smi's CSV output (`name, memory.total, driver_version`, first GPU) as `nvidia.json`. Err

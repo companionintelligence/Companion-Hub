@@ -15,7 +15,11 @@ type NvidiaProbe = {
   updatedAt: string;
 };
 
-function runCapture(cmd: string, args: string[], extraEnv?: NodeJS.ProcessEnv): { ok: boolean; stdout: string; stderr: string; notFound: boolean } {
+function runCapture(
+  cmd: string,
+  args: string[],
+  extraEnv?: NodeJS.ProcessEnv,
+): { ok: boolean; status: number | null; stdout: string; stderr: string; notFound: boolean } {
   const result = spawnSync(cmd, args, {
     stdio: 'pipe',
     encoding: 'utf-8',
@@ -24,6 +28,7 @@ function runCapture(cmd: string, args: string[], extraEnv?: NodeJS.ProcessEnv): 
 
   return {
     ok: result.status === 0,
+    status: result.status,
     stdout: (result.stdout || '').toString(),
     stderr: (result.stderr || '').toString(),
     notFound: (result.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT',
@@ -288,7 +293,9 @@ const NVIDIA_SMI_QUERY = ['--query-gpu=name,memory.total,driver_version', '--for
  */
 export function collectHostNvidiaProbe(pick: 'first' | 'largest' = 'first'): NvidiaProbe | null {
   const probe = runHostTool('nvidia-smi', NVIDIA_SMI_QUERY);
-  if (!probe.ok) return null;
+  // The output decides, not the exit code: nvidia-smi exits non-zero when one card of several cannot
+  // be read and still lists the rest, as the desktop app's probe also allows. Through
+  // `sh -lc '… | head -n 1'` the exit code was head's, so such a run always wrote the file.
 
   const rows = probe.stdout
     .split('\n')
@@ -301,6 +308,12 @@ export function collectHostNvidiaProbe(pick: 'first' | 'largest' = 'first'): Nvi
     });
   const row = pick === 'largest' ? [...rows].sort((a, b) => b.vramMb - a.vramMb)[0] : rows[0];
   if (!row?.model) return null;
+  if (!probe.ok) {
+    const stderr = probe.stderr.trim();
+    console.warn(
+      `init-gpu-runtime: nvidia-smi ended with exit code ${probe.status ?? 'none (signal)'} but listed a GPU; writing the NVIDIA probe from its output${stderr ? ` (${stderr})` : ''}.`,
+    );
+  }
 
   return {
     model: row.model,

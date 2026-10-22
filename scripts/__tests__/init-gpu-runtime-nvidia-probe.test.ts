@@ -77,6 +77,28 @@ describe('collectHostNvidiaProbe', () => {
   });
 });
 
+// The output decides, not the exit code: nvidia-smi exits non-zero when one card of several cannot be
+// read and still lists the rest. Through `sh -lc '… | head -n 1'` the exit code was head's.
+describe('collectHostNvidiaProbe and nvidia-smi exit codes', () => {
+  beforeEach(() => {
+    spawn.calls = [];
+  });
+
+  it('writes the probe from a listed GPU even when nvidia-smi exits non-zero, logging the exit code', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    spawn.answer = (command) =>
+      command === 'nvidia-smi'
+        ? { status: 15, stdout: ROW, stderr: 'Unable to determine the device handle for GPU0002:00:00.0: Unknown Error' }
+        : { status: 1, stdout: '', stderr: '' };
+
+    const probe = collectHostNvidiaProbe();
+
+    expect(probe).toMatchObject({ model: 'NVIDIA GeForce RTX 3080 Laptop GPU', vramMb: 8192 });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('exit code 15'));
+    warn.mockRestore();
+  });
+});
+
 describe('initGpuRuntime on a Linux host whose ~/.profile stops a login shell', () => {
   const originalPlatform = process.platform;
   const savedStatePath = process.env.CI_HUB_STATE_PATH;

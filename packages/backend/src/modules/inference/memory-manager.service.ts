@@ -471,7 +471,20 @@ export class MemoryManagerService {
     profile: HardwareProfile,
     memoryFootprintMb: number,
     model?: { backend: InferenceBackendType; backendModelId: string },
-  ): Promise<{ canPin: boolean; reason?: string }> {
+  ): Promise<{ canPin: boolean; reason?: string; final?: true }> {
+    // A pin holds the model for good at the window the Hub picks. With the card's size unknown,
+    // nothing can say that it fits there: sized on RAM, a pin on the 8 GB card in #2078 would load at
+    // the 64K window that ran 70% on the CPU. Loads still go through on RAM (see modelPoolFor). A
+    // pin is refused before anything loads for it.
+    if (discreteVramUnknown(profile)) {
+      return {
+        canPin: false,
+        final: true,
+        reason:
+          "The Hub can't read this graphics card's memory (VRAM Unknown), so it can't tell whether a pinned model fits. " +
+          'Restart the desktop app, or run `cihub up`, so it can ask nvidia-smi on the host, then pin again.',
+      };
+    }
     const budget = await this.calculateBudget(profile);
     const pinnedMb = (model ? this.sightingOf(model.backend, model.backendModelId)?.footprintMb : undefined) ?? memoryFootprintMb;
 
@@ -772,9 +785,25 @@ function attributeSightings(
   return out;
 }
 
-/** Where models live on this node. Mirrors the branch the budget has always taken. */
+/**
+ * Where models live on this node, as far as the budget can tell. Mirrors the branch the budget has
+ * always taken, with one addition: a discrete card whose memory is unknown ({@link discreteVramUnknown})
+ * is budgeted on system RAM, like a node without a GPU. Budgeted on its 0 MB it refused every load
+ * ("needs 1348 MB but only 0 MB is free") while Ollama, which places what the card cannot take in
+ * RAM, could have served it.
+ */
 export function modelPoolFor(profile: HardwareProfile): 'vram' | 'ram' {
-  return profile.gpu.unifiedMemory || !profile.gpu.available ? 'ram' : 'vram';
+  return profile.gpu.unifiedMemory || !profile.gpu.available || discreteVramUnknown(profile) ? 'ram' : 'vram';
+}
+
+/**
+ * A discrete card the Hub found but could not size: no nvidia-smi figure in the container and no
+ * host probe (`nvidia.json`), which a driver update without a reboot, or any nvidia-smi failure,
+ * leaves missing. The AI tab says "VRAM Unknown"; loads are budgeted on RAM and pins refused.
+ */
+export function discreteVramUnknown(profile: HardwareProfile): boolean {
+  const { gpu } = profile;
+  return gpu.available && !gpu.unifiedMemory && !(gpu.vramMb > 0) && !((gpu.poolVramMb ?? 0) > 0);
 }
 
 /**

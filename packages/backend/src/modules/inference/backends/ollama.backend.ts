@@ -422,8 +422,9 @@ export class OllamaBackend implements InferenceBackend {
    * expiry stayed on it, pinned or not.
    *
    * Only for a model `/api/ps` lists, because the same empty request for one that is not in memory
-   * would load it. It names the window the model is resident at, because a request that names none
-   * reloads it at Ollama's default (see {@link loadModel}). It names the keep_alive too: a request
+   * would load it. For a text model it names the window the model is resident at, because a request
+   * that names none reloads it at Ollama's default (see {@link loadModel}). An embedder's load names no
+   * window, so its request names none either. It names the keep_alive too: a request
    * that names none leaves a loaded model's as it is, which on Ollama 0.22.0 kept an unpinned model at
    * Forever. A model already on the asked-for side (held, or with a finite expiry) gets no request.
    */
@@ -447,7 +448,10 @@ export class OllamaBackend implements InferenceBackend {
       return 'set';
     }
     const url = await this.resolveUrl();
-    const window = resident.contextLength && resident.contextLength > 0 ? { options: { num_ctx: resident.contextLength } } : {};
+    // Like the load each request matches: a text model's names the window it runs at, an embedder's
+    // names none (see loadModel). A request whose options differ from its load reloads it.
+    const window =
+      !options?.embedding && resident.contextLength && resident.contextLength > 0 ? { options: { num_ctx: resident.contextLength } } : {};
     try {
       if (options?.embedding) {
         await axios.post(`${url}/api/embed`, { model: resident.id, input: '', keep_alive: keepAlive, ...window }, { timeout: 30000 });

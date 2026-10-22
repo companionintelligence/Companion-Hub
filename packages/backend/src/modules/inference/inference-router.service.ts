@@ -1165,8 +1165,8 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       const profile = await this.hardwareInspector.getProfile();
       const first = await this.memoryManager.canPinModel(profile, catalogMb, model);
       if (!first.canPin) {
-        const measured = model ? await this.memoryManager.footprintSighting(profile, model.backend, model.backendModelId) : null;
-        if (measured || !model) {
+        const measured = first.final || !model ? null : await this.memoryManager.footprintSighting(profile, model.backend, model.backendModelId);
+        if (first.final || measured || !model) {
           return { pinned: false, reason: first.reason ?? `${catalogId} does not fit this node's pinned-model budget` };
         }
       }

@@ -28,7 +28,7 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
 import { InferenceRouterService } from './inference-router.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
-import { MemoryManagerService } from './memory-manager.service';
+import { MemoryManagerService, modelPoolFor } from './memory-manager.service';
 import { ModelRegistryService } from './model-registry.service';
 import { ModelResidencyService } from './model-residency.service';
 import { reconcileTrackedWithResidency, trackedPullsNotListed } from './tracked-residency';
@@ -751,10 +751,9 @@ export class InferenceController {
     const status = await this.router.getStatus();
 
     const totalMemoryMb = recommendedModels.reduce((sum, m) => sum + m.runtime.memoryFootprintMb, 0);
+    // The pool loads are budgeted against: RAM on a card whose memory is unknown, as on a CPU node.
     const availableMemoryMb =
-      profile.gpu.available && !profile.gpu.unifiedMemory
-        ? budget.modelBudgetVramMb - budget.modelUsedVramMb
-        : budget.modelBudgetRamMb - budget.modelUsedRamMb;
+      modelPoolFor(profile) === 'vram' ? budget.modelBudgetVramMb - budget.modelUsedVramMb : budget.modelBudgetRamMb - budget.modelUsedRamMb;
 
     const hostSection = await this.hostMetrics.readHostSection();
     const displayLoad = await this.hostMetrics.getDisplayLoad(0, 0);

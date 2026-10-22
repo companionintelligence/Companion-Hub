@@ -1587,6 +1587,23 @@ describe('InferenceRouterService', () => {
       expect(modelRegistry.pinModel).not.toHaveBeenCalled();
     });
 
+    // With the card's memory unknown, a pin is refused before anything loads for it.
+    it('refuses a pin the budget calls final without measuring or loading anything', async () => {
+      modelRegistry.getTrackedModel.mockReturnValue(tracked('pulled'));
+      memoryManager.canPinModel.mockResolvedValue({
+        canPin: false,
+        final: true,
+        reason: "The Hub can't read this graphics card's memory (VRAM Unknown)",
+      });
+
+      const outcome = await service.pinTrackedModel(smollm.id, { origin: 'operator' });
+
+      expect(outcome).toEqual({ pinned: false, reason: "The Hub can't read this graphics card's memory (VRAM Unknown)" });
+      expect(memoryManager.footprintSighting).not.toHaveBeenCalled();
+      expect(modelPuller.loadModel).not.toHaveBeenCalled();
+      expect(modelRegistry.pinModel).not.toHaveBeenCalled();
+    });
+
     it('waits for a pin of the same model queued ahead of it, so that pin is not written back after the unpin', async () => {
       modelRegistry.getTrackedModel.mockReturnValue(tracked('pulled'));
       memoryManager.canPinModel.mockResolvedValue({ canPin: true });
