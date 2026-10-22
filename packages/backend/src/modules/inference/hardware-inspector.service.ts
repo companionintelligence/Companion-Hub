@@ -88,6 +88,16 @@ interface MacOsHostProbe {
 }
 
 /**
+ * Whether a discrete card's memory is known. A card the Hub could not size (no nvidia-smi figure and
+ * no host probe) is budgeted on system RAM for its loads (`modelPoolFor` and `discreteVramUnknown` in
+ * memory-manager.service.ts), so its effective inference memory is the RAM free now, as for a node
+ * without a GPU, rather than the 0 it carries for VRAM.
+ */
+function discreteVramKnown(gpu: HardwareProfile['gpu']): boolean {
+  return gpu.vramMb > 0 || (gpu.poolVramMb ?? 0) > 0;
+}
+
+/**
  * What models may take on a unified-memory GPU right now: the RAM free now, but never more than the
  * GPU can address (`vramMb`). That is all of RAM on Apple Silicon and on an APU whose driver said
  * nothing, so only an AMD APU with a driver figure is capped. 0 or less is no figure.
@@ -202,7 +212,7 @@ export class HardwareInspectorService {
     };
     const effectiveInferenceMemoryMb = profile.gpu.unifiedMemory
       ? unifiedInferenceMemoryMb(profile.gpu, availableMb)
-      : profile.gpu.available
+      : profile.gpu.available && discreteVramKnown(profile.gpu)
         ? profile.effectiveInferenceMemoryMb
         : availableMb;
     return { ...profile, ram, effectiveInferenceMemoryMb };
@@ -441,7 +451,7 @@ export class HardwareInspectorService {
 
     const effectiveInferenceMemoryMb = gpu.unifiedMemory
       ? unifiedInferenceMemoryMb(gpu, ramInfo.availableMb)
-      : gpu.available
+      : gpu.available && discreteVramKnown(gpu)
         ? (gpu.poolVramMb ?? gpu.vramMb)
         : ramInfo.availableMb;
 

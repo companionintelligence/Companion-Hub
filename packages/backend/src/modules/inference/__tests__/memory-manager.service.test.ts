@@ -725,12 +725,26 @@ describe('MemoryManagerService', () => {
       await expect(service.canFitModel(known, 1348)).resolves.toMatchObject({ fits: true, availableMb: 7680 });
     });
 
-    it('refuses a pin up front, with a reason that says what to do', async () => {
+    it('refuses a pin up front, with a reason that says what to do in plain text, since toasts show no markdown', async () => {
       const result = await service.canPinModel(unknownCard, 1348);
 
       expect(result).toMatchObject({ canPin: false, final: true });
+      expect(result.reason).toContain("doesn't know this GPU's memory yet");
       expect(result.reason).toContain('VRAM Unknown');
+      expect(result.reason).toContain('run cihub up');
       expect(result.reason).toContain('nvidia-smi');
+      expect(result.reason).not.toContain('`');
+    });
+
+    it('words the refusal for an AMD card without naming nvidia-smi', async () => {
+      const amd = makeProfile({ ...unknownCard, gpu: { ...unknownCard.gpu, vendor: 'amd', model: 'Radeon RX 7900 XTX' } });
+
+      const result = await service.canPinModel(amd, 1348);
+
+      expect(result).toMatchObject({ canPin: false, final: true });
+      expect(result.reason).toContain("doesn't know this GPU's memory yet");
+      expect(result.reason).not.toContain('nvidia-smi');
+      expect(result.reason).not.toContain('`');
     });
   });
 

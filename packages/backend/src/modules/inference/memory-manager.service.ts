@@ -476,13 +476,15 @@ export class MemoryManagerService {
     // nothing can say that it fits there: sized on RAM, a pin on the 8 GB card in #2078 would load at
     // the 64K window that ran 70% on the CPU. Loads still go through on RAM (see modelPoolFor). A
     // pin is refused before anything loads for it.
+    // Plain text: the reason ends up in a toast, which shows markdown as typed.
     if (discreteVramUnknown(profile)) {
+      const askedBy = profile.gpu.vendor === 'nvidia' ? ' (nvidia-smi on the host)' : '';
       return {
         canPin: false,
         final: true,
         reason:
-          "The Hub can't read this graphics card's memory (VRAM Unknown), so it can't tell whether a pinned model fits. " +
-          'Restart the desktop app, or run `cihub up`, so it can ask nvidia-smi on the host, then pin again.',
+          "The Hub doesn't know this GPU's memory yet (VRAM Unknown), so it can't tell whether a pinned model fits. " +
+          `Restart the desktop app or run cihub up so the Hub can read it${askedBy}, then pin again.`,
       };
     }
     const budget = await this.calculateBudget(profile);

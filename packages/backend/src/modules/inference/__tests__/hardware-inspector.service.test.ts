@@ -1929,7 +1929,10 @@ describe('HardwareInspectorService', () => {
       expect(profile.gpu.available).toBe(true);
       expect(profile.gpu.vramMb).toBe(0);
       expect(profile.tier).toBe('low');
-      expect(profile.effectiveInferenceMemoryMb).toBe(0);
+      // Loads on such a card are budgeted on RAM (modelPoolFor), so /hardware reports the RAM free
+      // now, as for a node without a GPU, not the card's unknown 0.
+      expect(profile.effectiveInferenceMemoryMb).toBe(33_616);
+      expect((await service.getProfile()).effectiveInferenceMemoryMb).toBe(33_616);
     });
 
     it('SHALL take the card from the host nvidia.json: 8192 MB, its marketing name and the driver version', async () => {
