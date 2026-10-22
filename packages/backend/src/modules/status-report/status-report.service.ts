@@ -1,6 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import { Injectable, Optional } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 
 import { DATA_DIR } from '@/common/constants';
 import { createAppUrn } from '@/common/helpers/app-helpers';
@@ -46,7 +46,9 @@ export class StatusReportService {
     private readonly logger: LoggerService,
     private readonly apps: AppsReadService,
     private readonly hardware: HardwareInspectorService,
-    @Optional() private readonly poolIdentity: HubPoolIdentityService | undefined,
+    // Not `HubPoolIdentityService | undefined`: a union is emitted as `Object` in the constructor
+    // metadata, so Nest never matched it and the report always had no pool UUID (Companion-Hub#2099).
+    private readonly poolIdentity: HubPoolIdentityService,
     private readonly inference: InferenceRouterService,
     private readonly registration: RegistrationService,
     private readonly systemInspector: SystemInspectorService,
@@ -104,14 +106,14 @@ export class StatusReportService {
   }
 
   private async readConnection() {
-    const [registrationStatus, registrationInfo, deviceId, tailscaleStatus, poolIdentity] = await Promise.all([
+    const [registrationStatus, registrationInfo, deviceId, tailscaleStatus, poolNodeUuid] = await Promise.all([
       this.registration.getLiveRegistrationStatus().catch(() => null),
       this.registration.getDeviceRegistrationInfo().catch(() => null),
       this.registration.getDeviceId().catch(() => null),
       this.tailscale.getStatusCached().catch(() => null),
-      // Absent on a build without pooling, and on one that has never minted an
-      // identity. Either way the row reads as unknown rather than as "no pool".
-      this.poolIdentity?.summary().catch(() => null) ?? Promise.resolve(null),
+      // A Hub that has never minted a pool identity reads as unknown rather than as
+      // "no pool". Reading must not mint one: every Hub writes this file.
+      this.poolIdentity.existingNodeUuid().catch(() => null),
     ]);
 
     const apiPort = Number(process.env.API_PORT ?? process.env.BACKEND_PORT ?? '');
@@ -135,7 +137,7 @@ export class StatusReportService {
             tailnet: tailscaleStatus.tailnet ?? null,
           }
         : null,
-      poolNodeUuid: poolIdentity?.nodeUuid ?? null,
+      poolNodeUuid,
     };
   }
 

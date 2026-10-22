@@ -7267,7 +7267,7 @@ describe('AppLifecycleService', () => {
     describe('system restarts that wait for the operation under way', () => {
       const systemRestart = (reason: SystemLifecycleReason) => service.restartApp({ appUrn, skipPull: true, actor: { kind: 'system', reason } });
 
-      it.each(['memory-connect', 'device-key-refresh', 'restart-after-config-update'] as const)(
+      it.each(['device-key-refresh', 'restart-after-config-update'] as const)(
         'a %s restart waits for the start under way, then restarts the app',
         async (reason) => {
           const start = held<{ success: boolean; message: string }>();
@@ -7293,7 +7293,7 @@ describe('AppLifecycleService', () => {
         const start = held<{ success: boolean; message: string }>();
         appEventsQueue.publish.mockReturnValueOnce(start.promise as any);
         await commands.start();
-        const restart = systemRestart('memory-connect');
+        const restart = systemRestart('device-key-refresh');
         await new Promise((resolve) => setTimeout(resolve, 20));
         appsRepository.updateAppById.mockClear();
 

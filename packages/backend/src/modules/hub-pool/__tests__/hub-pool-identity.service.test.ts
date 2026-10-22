@@ -94,6 +94,25 @@ describe('HubPoolIdentityService', () => {
     expect(getSpy).not.toHaveBeenCalled();
   });
 
+  describe('existingNodeUuid', () => {
+    it('reads the stored UUID without minting or touching the key, for readers that run on every Hub', async () => {
+      const minted = await build().get();
+      encryption.decrypt.mockClear();
+
+      // A "restart": a fresh service over the same table, asked by the status file before anything else.
+      expect(await build().existingNodeUuid()).toBe(minted?.nodeUuid);
+      expect(encryption.decrypt).not.toHaveBeenCalled();
+    });
+
+    it('answers null on a Hub that never used Hub Pool and leaves it without an identity', async () => {
+      expect(await build().existingNodeUuid()).toBeNull();
+
+      expect(repo.inserts).toBe(0);
+      expect(repo.row).toBeUndefined();
+      expect(encryption.encrypt).not.toHaveBeenCalled();
+    });
+  });
+
   it('salts the private key with the node UUID, so a rename never makes it undecryptable', async () => {
     const identity = await build().get();
 

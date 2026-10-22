@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
-import { BadRequestException, Injectable, type OnApplicationBootstrap, type OnModuleDestroy, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, HttpStatus, Injectable, type OnApplicationBootstrap, type OnModuleDestroy } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
+import { TranslatableError } from '@/common/error/translatable-error';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { parseDbTimestampMs } from '@/common/helpers/db-timestamp';
 import { buildHubLocalOrigin, buildHubPublicOrigin, buildHubTailnetOrigin, isPrivateHostname, isTailnetHostname } from '@/common/helpers/hub-origin';
@@ -12,8 +13,9 @@ import { AppLifecycleService, type HeldApp } from '@/modules/app-lifecycle/app-l
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { TunnelHealthService } from '@/modules/cloudflare/tunnel-health.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
-import { type MemoryConnectionState } from './memory-connection.repository';
-import { MemoryConnectionService } from './memory-connection.service';
+import { AsyncMutex } from '@/utils/mutex/async-mutex';
+import { INSTALL_GLOBAL_HUB_USER_ID, type MemoryConnectionRow, type MemoryConnectionState } from './memory-connection.repository';
+import { MemoryConnectionService, normalizeHubUserId } from './memory-connection.service';
 import { MemoryExchangeClient } from './memory-exchange.client';
 import { isMemoryProviderApp } from './memory-provider.predicate';
 import { MemoryProviderResolver, type MemoryProviderRuntimeStatus } from './memory-provider.resolver';
@@ -45,6 +47,48 @@ const DOWN_APP_STATUSES: readonly AppStatus[] = [
 
 type ApplyOutcome = 'restarted' | 'restarting' | 'deferred' | 'failed';
 
+/**
+ * What a connect decided under the connection lock: where the person lands, and the restart that
+ * applies it, which runs after the lock is let go.
+ */
+interface ConnectOutcome {
+  next: string;
+  error?: true;
+  /** `finish`: connected, so restart and show the interstitial. `apply`: failed after keys were revoked, so restart to drop them. */
+  restart?: 'finish' | 'apply';
+}
+
+type ActiveConnection = Awaited<ReturnType<MemoryConnectionService['getActiveConnection']>>;
+
+/** Rows hold `normalizeHubUserId` of the id they were written with, so ids compare the same way. */
+function isSameHubUser(a: string | number | null | undefined, b: string | number | null | undefined): boolean {
+  return normalizeHubUserId(a) === normalizeHubUserId(b);
+}
+
+/**
+ * A connection with no Hub person on it (`hub_user_id` 0), from before connections were per person.
+ * It is nobody's, so it reads as the app's connection for everyone and anyone may disconnect it.
+ */
+function isInstallGlobal(row: Pick<MemoryConnectionRow, 'hubUserId'>): boolean {
+  return normalizeHubUserId(row.hubUserId) === INSTALL_GLOBAL_HUB_USER_ID;
+}
+
+/** Whether `row` belongs to a Hub person other than `hubUserId`. */
+function isAnotherPersons(row: Pick<MemoryConnectionRow, 'hubUserId'>, hubUserId: string | number | null | undefined): boolean {
+  return !isInstallGlobal(row) && !isSameHubUser(row.hubUserId, hubUserId);
+}
+
+/** Where a callback lands when the connect failed after another person's connection was revoked. */
+const PREVIOUS_CONNECTION_REMOVED_REDIRECT = '/?memoryConnect=previous_removed';
+
+/** Where a callback lands when the person no longer holds the grant that connecting takes. */
+const CONNECT_DENIED_REDIRECT = '/?memoryConnect=denied';
+
+/** Where a callback lands when another operation holds the app: nothing was revoked or exchanged. */
+function connectBusyRedirect(appUrn: AppUrn): string {
+  return `/?${new URLSearchParams({ memoryConnect: 'busy', app: appUrn }).toString()}`;
+}
+
 /** Machine-readable reasons let the UI explain a disabled Connect button. */
 export type ConnectBlockedReason =
   /** ci-memory is not installed; there is nothing to connect to. */
@@ -75,6 +119,11 @@ export interface ConnectLaunchers {
 /** State + the browser-reachable launcher URLs a wrapper needs to render its gate. */
 export interface MemoryConnectStatus extends ConnectLaunchers {
   state: MemoryConnectionState;
+  /**
+   * The app runs with another Hub person's connection. `state` is the caller's own, so a page or
+   * gate can say so instead of calling the app unconnected; connecting replaces that person's key.
+   */
+  connectedByOther: boolean;
 }
 
 /** Preserves the request origin so the flow does not move across cookie scopes. */
@@ -106,6 +155,17 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
   private initialRotationTimer: ReturnType<typeof setTimeout> | null = null;
   /** Guards against a slow sweep (each rotation restarts an app) overlapping itself. */
   private rotating = false;
+  /**
+   * Per app, so two people finishing Connect at once cannot both find nobody else connected and
+   * both mint a key. A Disconnect cannot revoke a key minted after its ownership check. A
+   * rotation cannot store its key over a connection that changed meanwhile. Its own instance:
+   * the lifecycle mutex is keyed by app URN too and the restarts run under it.
+   *
+   * Always taken inside the app's hold ({@link AppLifecycleService.withAppHeld}) and let go before
+   * the restart, so nothing waits for the app while holding it. Taking the two the other way round
+   * let a Connect callback and a Disconnect each hold what the other waited for.
+   */
+  private readonly connectionMutex = new AsyncMutex();
 
   constructor(
     private readonly resolver: MemoryProviderResolver,
@@ -192,11 +252,24 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
           // operation left it on the retired key for as long as that lasted. A busy app keeps its key,
           // and its untouched `updatedAt` lets the next sweep try again.
           const held = await this.lifecycle().withAppHeldUnlessBusy(appUrn, async (app) => {
-            const rotated = await this.exchange.rotate(provider.internalUrl, appUrn);
-            await this.connections.storeConnected(appUrn, provider.internalUrl, rotated.key, rotated.expiresAt, row.hubUserId);
+            // CI Memory rotates by app. Only the connection the app runs with may rotate, checked again
+            // under the lock: a Connect or Disconnect that finished after the list was read would
+            // otherwise see its key replaced and handed to the person it replaced.
+            const rotated = await this.withConnectionLock(appUrn, async () => {
+              const active = await this.connections.getActiveConnection(appUrn);
+
+              if (!active || active.id !== row.id || active.encryptedKey !== row.encryptedKey) {
+                return false;
+              }
+
+              const fresh = await this.exchange.rotate(provider.internalUrl, appUrn);
+              await this.connections.storeConnected(appUrn, provider.internalUrl, fresh.key, fresh.expiresAt, row.hubUserId);
+
+              return true;
+            });
 
             // A running container uses the retired key until its environment is regenerated.
-            return this.applyConnection(appUrn, 'await', app);
+            return rotated ? this.applyConnection(appUrn, 'await', app) : ('changed' as const);
           });
 
           if ('busy' in held) {
@@ -205,8 +278,17 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
             continue;
           }
 
+          const applied = held.result;
+
+          if (applied === 'changed') {
+            this.logger.debug(`[MemoryConnect] skipping key rotation for ${appUrn}: its connection changed since the sweep began`);
+
+            continue;
+          }
+
           // Retry once, then log loudly because the fresh `updatedAt` delays another rotation attempt.
-          let outcome = held.result;
+          // The retry claims the app afresh: the hold ended when the first restart settled.
+          let outcome = applied;
 
           if (outcome === 'failed') {
             const retry = await this.applyConnection(appUrn, 'await');
@@ -281,8 +363,16 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * The callback schedules rather than awaits the restart so browser navigation cannot time out.
    * Same-code replays reuse the recorded redirect, while foreign users receive an indistinguishable failure to prevent login CSRF and code injection.
    * Once the owner resolves the state, downstream failures return to the originating app instead of dead-ending on the Hub.
+   *
+   * `mayConnect` asks again for the grant `/start` checked. The callback is what restarts the app and
+   * ends another person's connection, and a grant can be taken away in the minutes consent takes.
    */
-  async handleCallback(code: string, state: string, currentUserId: string): Promise<{ next: string; error?: boolean }> {
+  async handleCallback(
+    code: string,
+    state: string,
+    currentUserId: string,
+    mayConnect?: (appUrn: AppUrn) => Promise<boolean>,
+  ): Promise<{ next: string; error?: boolean }> {
     const attempt = this.pending.consume(state, currentUserId, this.hashCode(code));
 
     if (attempt.outcome === 'unknown') {
@@ -303,15 +393,51 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return { next: attempt.redirect };
     }
 
-    const result = await this.completeConnect(attempt.appUrn, attempt.next, code, currentUserId);
+    // Refused before the exchange, so CI Memory never mints a key and nobody's connection is touched.
+    if (mayConnect && !(await mayConnect(attempt.appUrn))) {
+      this.logger.warn(`[MemoryConnect] connect refused at the callback for ${attempt.appUrn}: the restart grant is gone`);
+      this.pending.recordOutcome(state, CONNECT_DENIED_REDIRECT);
+
+      return { next: CONNECT_DENIED_REDIRECT, error: true };
+    }
+
+    // Held before anything is revoked or exchanged, and before the connection lock. A busy app sends
+    // the person back with `busy` at once: nothing is revoked and the request never waits for the
+    // app. The single-use code is spent, so connecting again goes through consent again.
+    const held = await this.lifecycle().withAppHeldUnlessBusy(attempt.appUrn, (app) =>
+      this.connectHeld(app, attempt.appUrn, attempt.next, code, currentUserId),
+    );
+
+    if ('busy' in held) {
+      this.logger.info(`[MemoryConnect] connect refused at the callback for ${attempt.appUrn}: a ${held.busy} is under way`);
+      const busy = connectBusyRedirect(attempt.appUrn);
+      this.pending.recordOutcome(state, busy);
+
+      return { next: busy, error: true };
+    }
 
     // Recording every outcome makes a replay preserve success, failure, and deferral.
-    this.pending.recordOutcome(state, result.next);
+    this.pending.recordOutcome(state, held.result.next);
 
-    return result;
+    return held.result;
   }
 
-  private async completeConnect(appUrn: AppUrn, next: string, code: string, hubUserId: string): Promise<{ next: string; error?: boolean }> {
+  /** A connect with the app held: its locked part, then the restart that applies it, under the hold and after the lock. */
+  private async connectHeld(app: HeldApp, appUrn: AppUrn, next: string, code: string, hubUserId: string): Promise<{ next: string; error?: boolean }> {
+    const outcome = await this.withConnectionLock(appUrn, () => this.completeConnect(appUrn, next, code, hubUserId));
+    const landing = outcome.error ? { next: outcome.next, error: true } : { next: outcome.next };
+
+    if (!outcome.restart) {
+      return landing;
+    }
+
+    const applied = await this.applyConnection(appUrn, 'schedule', app);
+
+    // Without a scheduled restart, the interstitial has nothing to watch.
+    return outcome.restart === 'finish' && applied === 'restarting' ? { next: this.buildFinishingPath(appUrn, outcome.next) } : landing;
+  }
+
+  private async completeConnect(appUrn: AppUrn, next: string, code: string, hubUserId: string): Promise<ConnectOutcome> {
     const provider = await this.resolver.findProvider();
 
     if (!provider) {
@@ -320,33 +446,135 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return { next, error: true };
     }
 
+    const released = await this.releaseOtherConnections(appUrn, provider.internalUrl, hubUserId);
+
+    if (released === 'failed') {
+      return { next, error: true };
+    }
+
+    let exchanged: { appUrn: string; key: string; expiresAt: string };
+
     try {
-      const exchanged = await this.exchange.exchange(provider.internalUrl, code);
-
-      // Defense in depth: the code must be for the same app the flow started for.
-      if (exchanged.appUrn !== appUrn) {
-        this.logger.error(`[MemoryConnect] app mismatch on exchange: expected ${appUrn}, got ${exchanged.appUrn}`);
-
-        // Revoke a mismatched exchange so its unmanaged key does not remain valid.
-        await this.exchange.revoke(provider.internalUrl, exchanged.appUrn);
-
-        return { next, error: true };
-      }
-
-      // The container shares the Hub's internal network, so it stores the internal provider URL.
-      await this.connections.storeConnected(appUrn, provider.internalUrl, exchanged.key, exchanged.expiresAt, hubUserId);
-      const applied = await this.applyConnection(appUrn, 'schedule');
-
-      if (applied === 'restarting') {
-        return { next: this.buildFinishingPath(appUrn, next) };
-      }
-
-      // Without a scheduled restart, the interstitial has nothing to watch.
-      return { next };
+      exchanged = await this.exchange.exchange(provider.internalUrl, code);
     } catch (err) {
       this.logger.error(`[MemoryConnect] exchange failed for ${appUrn}`, err);
 
-      return { next, error: true };
+      return this.failConnect(appUrn, next, hubUserId, released);
+    }
+
+    // Defense in depth: the code must be for the same app the flow started for.
+    if (exchanged.appUrn !== appUrn) {
+      this.logger.error(`[MemoryConnect] app mismatch on exchange: expected ${appUrn}, got ${exchanged.appUrn}`);
+
+      // Revoke a mismatched exchange so its unmanaged key does not remain valid.
+      await this.exchange.revoke(provider.internalUrl, exchanged.appUrn);
+
+      return this.failConnect(appUrn, next, hubUserId, released);
+    }
+
+    try {
+      // The container shares the Hub's internal network, so it stores the internal provider URL.
+      await this.connections.storeConnected(appUrn, provider.internalUrl, exchanged.key, exchanged.expiresAt, hubUserId);
+    } catch (err) {
+      // Nothing holds the new key, so revoke it rather than leave a valid key nobody can rotate or
+      // revoke from here. The exchange also replaced this person's own earlier key, if they had one.
+      this.logger.error(`[MemoryConnect] could not store the new key for ${appUrn}; revoking it`, err);
+      if (!(await this.exchange.revoke(provider.internalUrl, appUrn))) {
+        this.logger.error(`[MemoryConnect] ${appUrn}: the unstored key could not be revoked either; it stays valid on CI Memory until it expires`);
+      }
+
+      return this.failConnect(appUrn, next, hubUserId, released, true);
+    }
+
+    return { next, restart: 'finish' };
+  }
+
+  /**
+   * Ends a connect that failed. When another person's connection was already revoked for it, that
+   * connection is gone and cannot be brought back (CI Memory revokes by app), so the person lands on
+   * the dashboard with a message that says so instead of back on the app as if nothing happened. The
+   * app is restarted after the lock so it stops presenting a key CI Memory no longer accepts.
+   */
+  private async failConnect(
+    appUrn: AppUrn,
+    next: string,
+    hubUserId: string,
+    released: 'none' | 'released',
+    keyDropped = false,
+  ): Promise<ConnectOutcome> {
+    const restart = released === 'released' || keyDropped ? 'apply' : undefined;
+
+    if (restart) {
+      // Those revokes were by app, so they also took this person's own earlier key. Left connected,
+      // that row would be the newest connected one and the restart would hand its dead key back.
+      try {
+        const own = (await this.connections.listConnected(appUrn)).filter((row) => isSameHubUser(row.hubUserId, hubUserId));
+        await this.clearRevokedConnections(appUrn, own);
+      } catch (err) {
+        this.logger.error(`[MemoryConnect] ${appUrn}: could not clear the revoked connection of Hub user ${hubUserId}`, err);
+      }
+    }
+
+    if (released === 'released') {
+      this.logger.warn(`[MemoryConnect] ${appUrn}: connect failed after the previous connection was revoked; the app has no Memory connection now`);
+
+      return { next: PREVIOUS_CONNECTION_REMOVED_REDIRECT, error: true, restart };
+    }
+
+    return { next, error: true, restart };
+  }
+
+  /**
+   * Connecting replaces the connection the app runs with now. CI Memory revokes by app, not by
+   * person, so another person's key has to go before this person's is minted. Revoking afterwards
+   * would take the new key too. Keeping both leaves CI Memory two owners for one app, which its
+   * key rotation refuses. Their rows are cleared so their view stops claiming a connection.
+   */
+  private async releaseOtherConnections(appUrn: AppUrn, providerUrl: string, hubUserId: string): Promise<'none' | 'released' | 'failed'> {
+    const others = (await this.connections.listConnected(appUrn)).filter((row) => !isSameHubUser(row.hubUserId, hubUserId));
+
+    if (others.length === 0) {
+      return 'none';
+    }
+
+    if (!(await this.exchange.revoke(providerUrl, appUrn))) {
+      this.logger.error(`[MemoryConnect] could not revoke the current key for ${appUrn}; the existing connection stays`);
+
+      return 'failed';
+    }
+
+    // The key is gone on CI Memory now, so a row that fails to clear must not abort the connect.
+    await this.clearRevokedConnections(appUrn, others);
+
+    this.logger.info(
+      `[MemoryConnect] ${appUrn}: Hub user ${hubUserId} replaces the connection of Hub user ${others.map((row) => row.hubUserId).join(', ')}`,
+    );
+
+    return 'released';
+  }
+
+  /**
+   * Clears connected rows whose key CI Memory already revoked. A row that fails to clear is logged,
+   * not thrown: the rotation sweep skips it and its owner's next status read finds the dead key.
+   */
+  private async clearRevokedConnections(appUrn: AppUrn, rows: readonly MemoryConnectionRow[]): Promise<void> {
+    for (const row of rows) {
+      try {
+        await this.connections.clear(appUrn, row.hubUserId);
+      } catch (err) {
+        this.logger.error(`[MemoryConnect] ${appUrn}: could not clear the revoked connection of Hub user ${row.hubUserId}`, err);
+      }
+    }
+  }
+
+  /** Runs `work` while holding this app's connection lock (see {@link connectionMutex}). */
+  private async withConnectionLock<T>(appUrn: AppUrn, work: () => Promise<T>): Promise<T> {
+    const release = await this.connectionMutex.acquire(appUrn);
+
+    try {
+      return await work();
+    } finally {
+      release();
     }
   }
 
@@ -378,15 +606,19 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * The provider check stays DB-only because this method runs on the status-poll path.
    */
   async getStatus(appUrn: AppUrn, origin?: RequestOriginContext, hubUserId?: string | null): Promise<MemoryConnectStatus> {
-    if (hubUserId) {
-      await this.ensureCurrentUserOwnsRunningToken(appUrn, hubUserId);
-    }
-
-    const [state, providerInfo] = await Promise.all([
+    // Read-only for other people's connections: whoever looks last must not take the app's key
+    // away from the person who connected it (Companion-Hub#2080). Only a finished connect replaces it.
+    const [ownState, active, providerInfo] = await Promise.all([
       this.connections.getState(appUrn, hubUserId),
+      hubUserId ? this.connections.getActiveConnection(appUrn) : Promise.resolve(undefined),
       // A transient provider lookup failure withholds launchers instead of failing the independent state poll.
       this.resolver.getProviderRuntimeInfo().catch(() => ({ status: 'absent' as const, localOnly: false })),
     ]);
+
+    // A gate that knows someone else connected the app can say so rather than ask again.
+    const nobodysConnection = ownState !== 'connected' && ownState !== 'manual' && !!active && isInstallGlobal(active);
+    const state = nobodysConnection ? 'connected' : ownState;
+    const connectedByOther = state !== 'connected' && !!hubUserId && !!active && isAnotherPersons(active, hubUserId);
 
     const launchers = await this.resolveLaunchers({
       appUrn,
@@ -396,7 +628,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     });
 
     // This blocking gate fails open for app access while retaining a reason for diagnostics.
-    return { state, ...launchers };
+    return { state, connectedByOther, ...launchers };
   }
 
   async getUiStatus(appUrn: AppUrn, origin?: RequestOriginContext, hubUserId?: string | null): Promise<MemoryConnectUiStatus> {
@@ -413,17 +645,16 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
         connectable: false,
         reason: null,
         keyExpiresAt: null,
+        connectedByOther: false,
       };
     }
 
-    // A provider row that is still installing must not read as ready.
-    if (hubUserId) {
-      await this.ensureCurrentUserOwnsRunningToken(appUrn, hubUserId);
-    }
-
-    const [providerInfo, row] = await Promise.all([
+    // Read-only for other people's connections, as in getStatus. A provider row that is still
+    // installing must not read as ready.
+    const [providerInfo, row, active] = await Promise.all([
       this.resolver.getProviderRuntimeInfo().catch(() => ({ status: 'absent' as const, localOnly: false })),
       this.connections.getRow(appUrn, hubUserId),
+      this.connections.getActiveConnection(appUrn),
     ]);
 
     const providerStatus = providerInfo.status;
@@ -431,25 +662,33 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     const memoryInstalled = providerStatus !== 'absent';
     const memoryReady = providerStatus === 'ready';
 
-    let effectiveState = row?.state ?? 'unconfigured';
+    // The caller's own row decides, except that a connection with no person on it is the app's for everyone.
+    const shown = row?.state !== 'connected' && active && isInstallGlobal(active) ? active : row;
+
+    let effectiveState = shown?.state ?? 'unconfigured';
     // Safari rejects Postgres's space-separated timestamp, so never expose the raw value.
-    let keyExpiresAt = this.toIsoInstant(row?.keyExpiresAt);
+    let keyExpiresAt = this.toIsoInstant(shown?.keyExpiresAt);
 
     // Validate keys only while CI Memory is ready; otherwise every poll would pay a network timeout.
     // A rejected key is cleared so the app prompts again instead of silently using dead credentials.
     if (effectiveState === 'connected' && memoryReady) {
       const provider = await this.resolver.findProvider();
       // Decrypt from the row already loaded above — avoids a second findByAppUrn.
-      const creds = this.connections.credsFromRow(row);
-      if (provider && creds && !(await this.exchange.isKeyValid(provider.internalUrl, creds.token))) {
-        // Restarting removes the injected dead credential immediately instead of waiting for an unrelated restart.
-        // Held first, so a status poll never waits behind another operation: on a busy app a later poll clears it.
+      const creds = this.connections.credsFromRow(shown);
+      if (shown && provider && creds && !(await this.exchange.isKeyValid(provider.internalUrl, creds.token))) {
+        // Held before the lock, so a status poll never waits behind another operation: on a busy app a
+        // later poll clears the key.
         const held = await this.lifecycle().withAppHeldUnlessBusy(appUrn, async (app) => {
-          await this.connections.clear(appUrn);
-          await this.applyConnection(appUrn, 'await', app);
+          const cleared = await this.clearRejectedKey(appUrn, shown);
+          // Restarting removes the injected dead credential immediately instead of waiting for an unrelated restart.
+          if (cleared === 'cleared-active') {
+            await this.applyConnection(appUrn, 'await', app);
+          }
+
+          return cleared;
         });
 
-        if (!('busy' in held)) {
+        if (!('busy' in held) && held.result !== 'changed') {
           effectiveState = 'unconfigured';
           keyExpiresAt = null;
           this.logger.info(`[MemoryConnect] cleared stale key for ${appUrn} (ci-memory rejected it)`);
@@ -473,49 +712,39 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       state: effectiveState,
       ...launchers,
       keyExpiresAt,
+      connectedByOther: effectiveState !== 'connected' && !!hubUserId && !!active && isAnotherPersons(active, hubUserId),
     };
   }
 
   /**
-   * When the running container token belongs to a different Hub person, revoke
-   * it and return that row to unconfigured so the current person is prompted
-   * to connect as themselves.
+   * Clears a row whose key CI Memory rejected, under the app's lock and only if it still holds that
+   * key: a Connect that finished after the check stored a fresh one, which must not be wiped. Says
+   * whether the cleared row was the one the app runs with, so the caller knows to restart it. The
+   * restart itself runs after the lock, as in Disconnect, so nothing waits for the app under it.
    */
-  private async ensureCurrentUserOwnsRunningToken(appUrn: AppUrn, hubUserId: string): Promise<void> {
-    const latest = await this.connections.getRow(appUrn);
-    if (latest?.state !== 'connected' || !latest.hubUserId) {
-      return;
-    }
+  private async clearRejectedKey(appUrn: AppUrn, rejected: MemoryConnectionRow): Promise<'cleared-active' | 'cleared' | 'changed'> {
+    return this.withConnectionLock(appUrn, async () => {
+      const current = await this.connections.getRow(appUrn, rejected.hubUserId);
 
-    if (String(latest.hubUserId) === String(hubUserId)) {
-      return;
-    }
-
-    // Held before the revoke, as a disconnect is: on a busy app a later status poll tries again.
-    const held = await this.lifecycle().withAppHeldUnlessBusy(appUrn, async (app) => {
-      const provider = await this.resolver.findProvider();
-      if (provider) {
-        const creds = this.connections.credsFromRow(latest);
-        if (creds) {
-          await this.exchange.revoke(provider.internalUrl, appUrn);
-        }
+      if (current?.state !== 'connected' || current.encryptedKey !== rejected.encryptedKey) {
+        return 'changed';
       }
 
-      await this.connections.clear(appUrn, latest.hubUserId);
-      await this.applyConnection(appUrn, 'schedule', app);
+      const active = await this.connections.getActiveConnection(appUrn);
+      await this.connections.clear(appUrn, rejected.hubUserId);
+
+      return active?.id === current.id ? 'cleared-active' : 'cleared';
     });
-
-    if ('busy' in held) {
-      this.logger.debug(`[MemoryConnect] stale connect for ${appUrn} left to a later poll: a ${held.busy} is under way`);
-
-      return;
-    }
-
-    this.logger.info(`[MemoryConnect] stale connect for ${appUrn}: token owner ${latest.hubUserId} ≠ current Hub user ${hubUserId}`);
   }
 
   /** Record that the user chose not to connect (do not re-prompt). */
   async skip(appUrn: AppUrn, hubUserId?: string | null): Promise<void> {
+    // A skip with no Hub person on it lands on the install-global row. If that row is the app's
+    // connection, "Not now" would unplug it for everyone on the next restart.
+    if ((await this.connections.getRow(appUrn, normalizeHubUserId(hubUserId)))?.state === 'connected') {
+      return;
+    }
+
     await this.connections.markSkipped(appUrn, hubUserId);
   }
 
@@ -523,23 +752,49 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * Keep the local connection when revocation fails so the UI cannot claim a still-valid key is disconnected.
    * If the provider no longer exists, clearing locally is sufficient.
    *
-   * The app is held before the revoke and a disconnect is refused with the usual 409 while another
-   * operation holds it, so the key is never revoked while the app can't be restarted onto the change.
+   * In this order: whose connection it is, read without taking anything; the app's hold, refused with
+   * the usual 409 while another operation holds the app; the connection lock, for the revoke and the
+   * clear; then the restart, under the hold and after the lock. The key is never revoked while the app
+   * can't be restarted onto the change, and nothing waits for the app under the lock.
    */
   async disconnect(appUrn: AppUrn, hubUserId?: string | null): Promise<void> {
+    this.assertMayDisconnect(await this.connections.getActiveConnection(appUrn), hubUserId);
+
     await this.lifecycle().withAppHeld(appUrn, async (app) => {
-      const provider = await this.resolver.findProvider();
+      await this.withConnectionLock(appUrn, async () => {
+        // Asked again under the lock: a Connect may have finished since the read above.
+        this.assertMayDisconnect(await this.connections.getActiveConnection(appUrn), hubUserId);
 
-      if (provider) {
-        const revoked = await this.exchange.revoke(provider.internalUrl, appUrn);
-        if (!revoked) {
-          throw new ServiceUnavailableException('Could not revoke the memory key on CI Memory; the app is still connected. Please try again.');
+        const provider = await this.resolver.findProvider();
+
+        if (provider) {
+          const revoked = await this.exchange.revoke(provider.internalUrl, appUrn);
+          if (!revoked) {
+            throw new TranslatableError('MEMORY_CONNECT_DISCONNECT_NOT_CONFIRMED', {}, HttpStatus.SERVICE_UNAVAILABLE);
+          }
         }
-      }
 
-      await this.connections.clear(appUrn, hubUserId);
+        await this.connections.clear(appUrn, hubUserId);
+
+        // The revoke took every key of the app. Another person's connected row left over from a
+        // replace whose clear failed is dead too. The restart below would give its key to the app.
+        const leftover = (await this.connections.listConnected(appUrn)).filter((row) => !isSameHubUser(row.hubUserId, hubUserId));
+        await this.clearRevokedConnections(appUrn, leftover);
+      });
+
       await this.applyConnection(appUrn, 'await', app);
     });
+  }
+
+  /**
+   * CI Memory revokes by app, so a disconnect would take the key of whoever connected it. A connection
+   * with no person on it is nobody's, so anyone who can open the app page may disconnect it. A request
+   * with no Hub person on it owns nobody's connection, so it is refused too.
+   */
+  private assertMayDisconnect(active: ActiveConnection, hubUserId?: string | null): void {
+    if (active && isAnotherPersons(active, hubUserId)) {
+      throw new TranslatableError('MEMORY_CONNECT_DISCONNECT_REFUSED', {}, HttpStatus.FORBIDDEN);
+    }
   }
 
   /**
@@ -607,7 +862,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
         const consumerUrn = row.appUrn as AppUrn;
 
         try {
-          await this.connections.clear(consumerUrn);
+          await this.connections.clear(consumerUrn, row.hubUserId);
           await this.applyConnection(consumerUrn, 'await');
           this.logger.info(`[MemoryConnect] cleared ${consumerUrn}: CI Memory was uninstalled`);
         } catch (err) {
@@ -915,11 +1170,11 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * Down apps get a rewritten environment without a restart, preserving user intent while removing stale credentials.
    * Live apps restart; background callers await the real outcome, while browser callbacks return once restart is scheduled.
    * Every path skips pulls because this change needs only the existing image and must not depend on registry availability.
-   * With `held`, the caller holds the app already and the restart runs under that claim; without it, the restart waits
-   * for an operation under way.
+   * With `held`, the caller holds the app already and the restart runs under that claim. Without it, the restart waits
+   * for an operation under way, so it must never run under the connection lock.
    */
   private async applyConnection(appUrn: AppUrn, restart: 'await', held?: HeldApp): Promise<'restarted' | 'deferred' | 'failed'>;
-  private async applyConnection(appUrn: AppUrn, restart: 'schedule', held?: HeldApp): Promise<'restarting' | 'deferred' | 'failed'>;
+  private async applyConnection(appUrn: AppUrn, restart: 'schedule', held: HeldApp): Promise<'restarting' | 'deferred' | 'failed'>;
   private async applyConnection(appUrn: AppUrn, restart: 'await' | 'schedule', held?: HeldApp): Promise<ApplyOutcome> {
     try {
       const lifecycle = this.lifecycle();
@@ -938,17 +1193,12 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
         return 'deferred';
       }
 
-      if (restart === 'schedule') {
-        if (held) {
-          await held.restart({ skipPull: true, reason: 'memory-connect' });
-        } else {
-          await lifecycle.restartApp({ appUrn, skipPull: true, actor: { kind: 'system', reason: 'memory-connect' } });
-        }
+      if (restart === 'schedule' && held) {
+        await held.restart({ skipPull: true, reason: 'memory-connect' });
 
         return 'restarting';
       }
 
-      // Unheld, waits for an operation under way on the app: the change is already stored.
       const restarted = held
         ? await held.restartAndWait({ skipPull: true })
         : await lifecycle.restartAppAndWait({ appUrn, skipPull: true, waitForApp: true });

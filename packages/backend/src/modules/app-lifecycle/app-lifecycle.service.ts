@@ -103,15 +103,12 @@ const OPERATION_BUSY_MESSAGES: Record<OperationCommand, keyof typeof messages> =
 /**
  * System restarts that wait for an operation under way instead of taking its 409: a caller that
  * cannot redo the restart, or that already changed what the restart is to apply (wrote its env,
- * saved its settings, stored a key). Not the restarts a sync or a sweep makes, which run inside other
- * lifecycle work and would wait on the very command running them. Nor a change that revokes
- * credentials: that holds the app before it revokes anything ({@link AppLifecycleService.withAppHeld}).
+ * saved its settings). Not the restarts a sync or a sweep makes, which run inside other lifecycle
+ * work and would wait on the very command running them. Nor a credential change, such as a Hub
+ * access rotate or a Memory connect: that holds the app before it changes anything
+ * ({@link AppLifecycleService.withAppHeld}).
  */
-export const RESTARTS_THAT_WAIT_FOR_THE_APP: ReadonlySet<SystemLifecycleReason> = new Set([
-  'memory-connect',
-  'device-key-refresh',
-  'restart-after-config-update',
-]);
+export const RESTARTS_THAT_WAIT_FOR_THE_APP: ReadonlySet<SystemLifecycleReason> = new Set(['device-key-refresh', 'restart-after-config-update']);
 
 /** How often a waiting command looks at the app again, besides being woken when its slot empties. */
 const OPERATION_WAIT_POLL_MS = 5_000;

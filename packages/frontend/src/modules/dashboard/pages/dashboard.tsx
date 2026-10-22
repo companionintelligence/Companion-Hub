@@ -19,6 +19,7 @@ import { HorizontalAppList } from '../components/horizontal-app-list';
 import { PoolSetupCard } from '../components/pool-setup-card';
 import { QueuedInstallsIndicator } from '../components/queued-installs-indicator';
 import { useInstallQueue } from '@/modules/app/helpers/use-install-queue';
+import { memoryConnectResultToastKey } from '@/modules/app/helpers/memory-provider';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 import { Button } from '@/components/ui/Button';
 import { diskStatCopy } from './disk-stat';
@@ -51,9 +52,10 @@ export default () => {
   // StrictMode's double-invoke), then strip the marker so a refresh doesn't repeat it.
   useEffect(() => {
     const marker = searchParams.get('memoryConnect');
-    if (marker !== 'error' && marker !== 'unavailable') return;
+    const messageKey = memoryConnectResultToastKey(marker);
+    if (!messageKey) return;
 
-    toast.error(t(marker === 'unavailable' ? 'MEMORY_CONNECT_UNAVAILABLE_TOAST' : 'MEMORY_CONNECT_ERROR_TOAST'), { id: 'memory-connect-result' });
+    toast.error(t(messageKey), { id: 'memory-connect-result' });
 
     const next = new URLSearchParams(searchParams);
     next.delete('memoryConnect');

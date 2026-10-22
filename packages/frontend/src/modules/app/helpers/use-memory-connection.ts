@@ -1,8 +1,9 @@
 import { client } from '@/api-client/client.gen';
-import { formatApiError, isConflictError } from '@/lib/format-api-error';
 import { openExternalWithHubSession } from '@/lib/hub-browser-handoff';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import { isMemoryProviderUrn } from '@/modules/app/helpers/memory-provider';
+import { isI18nKey } from '@/lib/format-api-error';
+import { TranslatableError } from '@/types/error.types';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
@@ -42,6 +43,21 @@ export function resolveBlockedReasonKey(reason: ConnectBlockedReason | null | un
   return reason ? (BLOCKED_REASON_KEYS[reason] ?? null) : null;
 }
 
+/**
+ * What a failed Disconnect says. The Hub names its own refusals with a translation key: another
+ * person's connection runs the app (`MEMORY_CONNECT_DISCONNECT_REFUSED`), CI Memory didn't confirm
+ * the revoke, or a 403 from anything else (`SYSTEM_ERROR_FORBIDDEN` and the like). Only the first
+ * talks about another person. A failure with no key of its own gets the plain "try again".
+ * Exported for tests.
+ */
+export function disconnectErrorKey(error: unknown): string {
+  if (error instanceof TranslatableError && isI18nKey(error.message) && error.message !== 'COMMON_AN_ERROR_OCCURRED') {
+    return error.message;
+  }
+
+  return 'MEMORY_CONNECT_DISCONNECT_ERROR';
+}
+
 /** Mirrors the backend MemoryConnectUiStatus (GET /api/memory-connect/apps/:urn/status). */
 export interface MemoryConnectionStatus {
   applicable: boolean;
@@ -62,6 +78,8 @@ export interface MemoryConnectionStatus {
   reason: ConnectBlockedReason | null;
   /** ISO instant the key expires (when connected); the Hub auto-rotates before this. */
   keyExpiresAt: string | null;
+  /** The app runs with another Hub person's connection; `state` is this person's own. */
+  connectedByOther: boolean;
 }
 
 /** Query-key prefix, shared with the SSE cache so ci-memory events can invalidate every consumer's status. */
@@ -189,8 +207,10 @@ export function useMemoryConnection(appUrn: string) {
       toast.success(t('MEMORY_CONNECT_DISCONNECTED_TOAST'));
       await queryClient.invalidateQueries({ queryKey: memoryStatusQueryKey(appUrn) });
     },
-    // A 409 names the operation holding the app; nothing was revoked and the app stays connected.
-    onError: (error) => toast.error(isConflictError(error) ? formatApiError(error, t, 409) : t('MEMORY_CONNECT_DISCONNECT_ERROR')),
+    onError: async (error) => {
+      toast.error(t(disconnectErrorKey(error), error instanceof TranslatableError ? error.intlParams : undefined));
+      await queryClient.invalidateQueries({ queryKey: memoryStatusQueryKey(appUrn) });
+    },
   });
 
   const status = query.data ?? null;
@@ -266,6 +286,8 @@ export function useMemoryConnection(appUrn: string) {
     applicable: !query.isLoading && !!status?.applicable,
     isLoading: query.isLoading,
     connected: status?.state === 'connected',
+    /** Another Hub person's connection is the one the app runs with (see the backend's MemoryConnectUiStatus). */
+    connectedByOther: !!status?.connectedByOther,
     memoryInstalled: !!status?.memoryInstalled,
     /** ci-memory is running — a connect can succeed now. */
     memoryReady: !!status?.memoryReady,

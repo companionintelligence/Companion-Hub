@@ -145,7 +145,7 @@ interface IProps {
   allowedActions?: readonly string[];
 }
 
-/** The verb each action asks the Hub for. One not listed (Open, the data folder, Companion Memory) only reads. */
+/** The verb each action asks the Hub for. One not listed (Open, the data folder) only reads. */
 const ACTION_VERBS: Record<string, string> = {
   start: 'start',
   install: 'install',
@@ -161,6 +161,11 @@ const ACTION_VERBS: Record<string, string> = {
   update: 'update',
   'ignore-version': 'configure',
   'unignore-version': 'configure',
+  // Connecting or disconnecting Companion Memory restarts the app.
+  'memory-connect': 'restart',
+  'memory-connect-blocked': 'restart',
+  'memory-connect-pending': 'restart',
+  'memory-disconnect': 'restart',
 };
 
 interface BtnProps extends ButtonProps {
@@ -754,7 +759,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
           size="lg"
           className="launch-action-button memory-action-button"
           data-tooltip-id="app-actions-tooltip"
-          data-tooltip-content={t('MEMORY_CONNECT_DESC')}
+          data-tooltip-content={t(memory.connectedByOther ? 'MEMORY_CONNECT_REPLACE_OTHER_DESC' : 'MEMORY_CONNECT_DESC')}
         />
       );
     }

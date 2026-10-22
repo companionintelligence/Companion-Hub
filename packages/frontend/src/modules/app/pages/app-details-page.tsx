@@ -282,7 +282,9 @@ export default () => {
               </span>
 
               <div className="col-span-2 min-w-0 space-y-3 sm:flex-1 sm:space-y-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
+                {/* Beside the title from sm up, so a long Memory badge ("Memory connected by
+                    someone else") keeps its column instead of wrapping under the title at 985px. */}
+                <div className="flex flex-wrap items-start justify-between gap-3 sm:flex-nowrap">
                   <div className="min-w-0 space-y-2">
                     <h1 className="break-words text-2xl font-semibold tracking-tight sm:text-4xl">{info?.name}</h1>
                     {info?.author ? <p className="text-base font-medium text-emerald-800 dark:text-emerald-400 sm:text-lg">{info.author}</p> : null}
