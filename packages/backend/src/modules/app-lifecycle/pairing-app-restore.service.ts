@@ -7,7 +7,7 @@ import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { isOperational } from '@/modules/registration/registration-state';
-import { IN_FLIGHT_STATUSES } from './app-rehydration';
+import { CatalogStillDownloadingError, IN_FLIGHT_STATUSES } from './app-rehydration';
 import { AppRehydrationService } from './app-rehydration.service';
 import { DeviceKeyRefreshService } from './device-key-refresh.service';
 import { ExposureSyncService } from './exposure-sync.service';
@@ -139,12 +139,15 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
   /**
    * Drop the backoff an earlier pairing's check built up, for a factory reset that removed that check.
    * Left in place, it held the next pairing's check for up to five minutes. A pass still waiting on the
-   * Portal when the reset ran would otherwise write the check back, naming the old device's apps.
+   * Portal when the reset ran would otherwise write the check back, naming the old device's apps. The
+   * catalog download's cooldown goes too: the reset emptied `repos/`. A pairing within ten minutes of the
+   * last download found the catalog empty and could not start another.
    */
   forget(): void {
     this.generation++;
     this.failures = 0;
     this.retryAt = 0;
+    this.lastCatalogPullAt = 0;
   }
 
   /** One pass over the pending check. Concurrent callers share the pass under way. */
@@ -238,7 +241,16 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
         }
 
         this.logger.info(`[PairingAppRestore] ${result.message}`);
+
+        // A factory reset (`forget`) came while the restore ran, which can wait a minute on a catalog
+        // download. Releasing now would clear the next pairing's check and sync before its own restore.
+        if (this.checkGeneration !== this.generation) {
+          return 'none';
+        }
       } catch (error) {
+        if (error instanceof CatalogStillDownloadingError) {
+          return this.hold('the apps could not be restored', error, false);
+        }
         await this.pullCatalogIfEmpty();
         return this.hold('the apps could not be restored', error);
       }
@@ -342,12 +354,20 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
     return 'released';
   }
 
-  private hold(reason: string, error?: unknown): PairingAppCheckOutcome {
+  /**
+   * With `backoff` false the wait is one that ends on its own (a catalog download under way), so it does
+   * not count as a failure: counted, it pushed the restore out to minutes after the download ended.
+   */
+  private hold(reason: string, error?: unknown, backoff = true): PairingAppCheckOutcome {
     if (this.checkGeneration !== this.generation) {
       return 'held';
     }
-    this.failures += 1;
-    const delay = Math.min(PairingAppRestoreService.MAX_RETRY_DELAY_MS, PairingAppRestoreService.POLL_MS * 2 ** (this.failures - 1));
+    if (backoff) {
+      this.failures += 1;
+    }
+    const delay = backoff
+      ? Math.min(PairingAppRestoreService.MAX_RETRY_DELAY_MS, PairingAppRestoreService.POLL_MS * 2 ** (this.failures - 1))
+      : PairingAppRestoreService.REQUEST_MIN_INTERVAL_MS;
     this.retryAt = Date.now() + delay;
 
     const cause = error === undefined ? '' : `: ${error instanceof Error ? error.message : String(error)}`;
@@ -356,14 +376,24 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
     return 'held';
   }
 
-  /** A Hub that has not downloaded its app catalog cannot match any app to an install, so fetch it now. */
+  /**
+   * A Hub that has not downloaded its app catalog cannot match any app to an install, so fetch it now.
+   * Not while a download is under way already (the one a factory reset or a start began): the two wrote
+   * the same folders at once.
+   */
   private async pullCatalogIfEmpty(): Promise<void> {
     if (Date.now() - this.lastCatalogPullAt < PairingAppRestoreService.CATALOG_PULL_COOLDOWN_MS) {
       return;
     }
 
     try {
-      if ((await this.marketplaceService.getAvailableAppUrns()).length > 0) {
+      if (this.appStoreService.isDownloadingCatalog() || (await this.marketplaceService.getAvailableAppUrns()).length > 0) {
+        return;
+      }
+
+      // A pass that began before a factory reset (`forget`) can find the catalog the reset emptied. Its
+      // download could run before the reset puts the store back, fetch nothing and set the cooldown again.
+      if (this.checkGeneration !== this.generation) {
         return;
       }
 

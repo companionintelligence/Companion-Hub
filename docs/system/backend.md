@@ -573,6 +573,19 @@ and drops the backoff of that apps check (`PairingAppRestoreService.forget()`).
 `state/inference-footprint-sightings.json` and `state/tailscale-serve-ownership.json` stay: one
 describes this hardware and the other names the Tailscale Serve listeners this Hub published.
 
+The truncate takes `app_store` too, so the stores a person added go for good. Only boot writes the
+CI Marketplace row (`AppStoreService.registerCloudAppStore`), so `restoreCloudAppStore` writes it
+again right after the reset and rebuilds the marketplace from the table. The catalog it downloads
+then (`pullRepositories`, in the background as at boot) is what the restore after the next pairing
+installs from. A full download writes the folder of every app Portal lists, a dozen at a time, so a
+pairing soon after the reset can meet it half done. Read half done, the catalog lacked the apps the
+download had not reached, the restore skipped them as unlisted and the next sync released them. So the
+restore waits up to a minute for a download under way to end (`ReposHelpers.waitForCatalogDownloads`)
+before it reads the catalog. One still running then holds the apps check, which asks again 5 s later
+without backing off. `PairingAppRestoreService.forget()` also drops the cooldown of its own
+catalog download, which would otherwise keep a pairing within ten minutes of the last one from
+downloading the catalog the reset emptied.
+
 ## The four engines, or two endpoints
 
 Setup offers Ollama, oMLX, vLLM, or Lemonade, and only the ones the detected machine can run. The other path is a decode endpoint and an encode endpoint. Either URL may be set alone. From inside Docker the probe uses `host.docker.internal`, and the card shows that URL.

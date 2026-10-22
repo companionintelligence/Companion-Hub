@@ -29,6 +29,11 @@ export type RepoOperationResult = { success: true; message: string } | { success
 
 @Injectable()
 export class ReposHelpers {
+  /** CI Marketplace catalog downloads under way (`fetchCiCloudRepo`); see `isDownloadingCatalog`. */
+  private catalogDownloads = 0;
+  /** Callers of `waitForCatalogDownloads` to tell once none is under way. */
+  private catalogDownloadWaiters: Array<() => void> = [];
+
   constructor(
     private readonly logger: LoggerService,
     private readonly configuration: ConfigurationService,
@@ -352,7 +357,51 @@ export class ReposHelpers {
     }
   }
 
-  private async fetchCiCloudRepo(url: string, _id: string, repoPath: string) {
+  /**
+   * Whether a CI Marketplace catalog download is under way. Until it ends, the catalog on disk is half
+   * written: it writes the apps' folders a dozen at a time, so the apps it has not reached yet are not
+   * there. An app missing from it reads as one the catalog does not list.
+   */
+  public isDownloadingCatalog(): boolean {
+    return this.catalogDownloads > 0;
+  }
+
+  /** Wait until no CI Marketplace catalog download is under way. False when one still is after `timeoutMs`. */
+  public waitForCatalogDownloads(timeoutMs: number): Promise<boolean> {
+    if (this.catalogDownloads === 0) {
+      return Promise.resolve(true);
+    }
+
+    return new Promise((resolve) => {
+      const waiter = () => {
+        clearTimeout(timer);
+        resolve(true);
+      };
+      const timer = setTimeout(() => {
+        this.catalogDownloadWaiters = this.catalogDownloadWaiters.filter((other) => other !== waiter);
+        resolve(false);
+      }, timeoutMs);
+      this.catalogDownloadWaiters.push(waiter);
+    });
+  }
+
+  private async fetchCiCloudRepo(url: string, id: string, repoPath: string) {
+    this.catalogDownloads += 1;
+    try {
+      return await this.downloadCiCloudCatalog(url, id, repoPath);
+    } finally {
+      this.catalogDownloads -= 1;
+      if (this.catalogDownloads === 0) {
+        const waiters = this.catalogDownloadWaiters;
+        this.catalogDownloadWaiters = [];
+        for (const waiter of waiters) {
+          waiter();
+        }
+      }
+    }
+  }
+
+  private async downloadCiCloudCatalog(url: string, _id: string, repoPath: string) {
     try {
       this.logger.debug(`Fetching CI Cloud Repo from ${url} to ${repoPath}`);
 

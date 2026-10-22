@@ -13,7 +13,7 @@ import type { ExposureSyncService } from '../exposure-sync.service';
 import { PairingAppRestoreService } from '../pairing-app-restore.service';
 import * as recovery from '../registration-recovery-state';
 import type { PairingAppCheckFile } from '../registration-recovery-state';
-import type { RehydrationStateFile } from '../app-rehydration';
+import { CatalogStillDownloadingError, type RehydrationStateFile } from '../app-rehydration';
 
 vi.mock('../registration-recovery-state', () => ({
   readPairingAppCheck: vi.fn(),
@@ -269,6 +269,91 @@ describe('PairingAppRestoreService', () => {
       // Backed off: the next pass does not hammer the restore.
       await expect(service.runCheck()).resolves.toBe('held');
       expect(rehydration.executeRehydrate).toHaveBeenCalledTimes(1);
+    });
+
+    // A factory reset starts a catalog download. The pairing after it came while it ran. A second download wrote the same folders at once.
+    it('starts no second catalog download while one is under way', async () => {
+      rehydration.executeRehydrate.mockRejectedValue(
+        new Error('CI Portal lists 3 app(s) for this device, but the app catalog is still downloading, so they cannot be restored yet'),
+      );
+      marketplace.getAvailableAppUrns.mockResolvedValue([]);
+      appStores.isDownloadingCatalog.mockReturnValue(true);
+
+      await expect(service.runCheck()).resolves.toBe('held');
+
+      expect(appStores.pullRepositories).not.toHaveBeenCalled();
+      expect(state.check).not.toBeNull();
+      expect(exposureSync.syncExposurePublic).not.toHaveBeenCalled();
+    });
+
+    // The reset empties `repos/`. A pairing within ten minutes of the last pairing's download found the catalog empty and fetched none.
+    it('downloads the catalog for the next pairing after forget, inside the last download cooldown', async () => {
+      rehydration.executeRehydrate.mockRejectedValue(
+        new Error('CI Portal lists 3 app(s) for this device, but the app catalog has not been downloaded yet'),
+      );
+      marketplace.getAvailableAppUrns.mockResolvedValue([]);
+      await expect(service.runCheck()).resolves.toBe('held');
+      expect(appStores.pullRepositories).toHaveBeenCalledTimes(1);
+
+      service.forget();
+      state.check = { markedAt: new Date().toISOString() };
+
+      await expect(service.runCheck()).resolves.toBe('held');
+      expect(appStores.pullRepositories).toHaveBeenCalledTimes(2);
+    });
+
+    // A pass still waiting on the Portal when the reset ran found the catalog the reset emptied. Its download
+    // ran before the reset put the store back, fetched nothing and set the cooldown again.
+    it('starts no catalog download from a pass that began before forget', async () => {
+      rehydration.executeRehydrate.mockImplementationOnce(async () => {
+        service.forget();
+        throw new Error('CI Portal lists 3 app(s) for this device, but the app catalog has not been downloaded yet');
+      });
+      marketplace.getAvailableAppUrns.mockResolvedValue([]);
+
+      await expect(service.runCheck()).resolves.toBe('held');
+      expect(appStores.pullRepositories).not.toHaveBeenCalled();
+
+      rehydration.executeRehydrate.mockRejectedValue(
+        new Error('CI Portal lists 3 app(s) for this device, but the app catalog has not been downloaded yet'),
+      );
+      await expect(service.runCheck()).resolves.toBe('held');
+      expect(appStores.pullRepositories).toHaveBeenCalledTimes(1);
+    });
+
+    // The restore can wait a minute on a catalog download. A reset and the next pairing can come meanwhile.
+    it("leaves the next pairing's check alone when a reset came while the restore ran", async () => {
+      const nextPairing = { markedAt: new Date(Date.now() + 1_000).toISOString() };
+      rehydration.executeRehydrate.mockImplementationOnce(async () => {
+        service.forget();
+        state.check = nextPairing;
+        return completedRun();
+      });
+
+      await expect(service.runCheck()).resolves.toBe('none');
+
+      expect(state.check).toBe(nextPairing);
+      expect(exposureSync.syncExposurePublic).not.toHaveBeenCalled();
+    });
+
+    // A download under way ends on its own. Counted as a failure, each pass doubled the wait, up to five minutes.
+    it('asks again at the next pass, without backing off, while the catalog downloads', async () => {
+      vi.useFakeTimers({ now: Date.now() });
+      try {
+        rehydration.executeRehydrate.mockRejectedValue(
+          new CatalogStillDownloadingError('CI Portal lists 3 app(s) for this device, but the app catalog is still downloading'),
+        );
+        appStores.isDownloadingCatalog.mockReturnValue(true);
+
+        for (let pass = 1; pass <= 3; pass++) {
+          await expect(service.runCheck()).resolves.toBe('held');
+          expect(rehydration.executeRehydrate).toHaveBeenCalledTimes(pass);
+          vi.advanceTimersByTime(PairingAppRestoreService.REQUEST_MIN_INTERVAL_MS);
+        }
+        expect(appStores.pullRepositories).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

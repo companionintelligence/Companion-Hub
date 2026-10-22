@@ -32,6 +32,8 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { ConfigurationService, inSettingsFileTurn, newHubLocalKey } from '@/core/config/configuration.service';
 import { UninstallAppCommand } from '@/modules/app-lifecycle/commands/uninstall-app-command';
+import { AppStoreService } from '@/modules/app-stores/app-store.service';
+import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { PairingAppRestoreService } from '@/modules/app-lifecycle/pairing-app-restore.service';
 import { clearPairingAppCheck, clearRegistrationRecoveryArtifacts } from '@/modules/app-lifecycle/registration-recovery-state';
 import { RegistrationService } from '@/modules/registration/registration.service';
@@ -60,6 +62,8 @@ const FACTORY_RESET_TABLES = [
   app,
   portAllocation,
   deviceRegistration,
+  // The stores a person added go for good. The CI Marketplace store is written again right after the
+  // reset (`restoreCloudAppStore`), as boot writes it.
   appStore,
   // Named rather than left to CASCADE, which reaches both through `user`; see `wipeDatabase`.
   apiKey,
@@ -139,6 +143,33 @@ export class FactoryResetService {
   }
 
   /**
+   * Put back the CI Marketplace store, which only boot writes (`registerCloudAppStore`). The reset empties
+   * `app_store` and `repos/`, so until a restart no store downloaded the catalog. The restore after the
+   * next pairing waited for it for good. An install from the App Store failed too. The marketplace is
+   * then rebuilt from the table, which also drops the stores a person added from memory. The catalog
+   * downloads in the background, as at boot, so the reset answers first. A failure costs a warning,
+   * never the reset: the next boot registers the store again.
+   */
+  private async restoreCloudAppStore(): Promise<void> {
+    try {
+      const appStores = this.moduleRef.get(AppStoreService, { strict: false });
+      const marketplace = this.moduleRef.get(MarketplaceService, { strict: false });
+      if (!appStores || !marketplace) return;
+
+      await appStores.registerCloudAppStore();
+      await marketplace.initialize();
+      void appStores
+        .pullRepositories()
+        .then(() => marketplace.initialize())
+        .catch((error: unknown) => {
+          this.logger.warn(`Factory reset could not download the app catalog: ${error instanceof Error ? error.message : String(error)}`);
+        });
+    } catch (error) {
+      this.logger.warn(`Factory reset could not register the CI Marketplace store: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
    * Run `forget` on a provider of another module, resolved through `ModuleRef` because `SystemModule`
    * imports none of them. One that is missing or fails costs a warning, never the rest of the reset.
    * Returns whether `forget` ran to the end.
@@ -197,6 +228,7 @@ export class FactoryResetService {
     await this.resetSettings();
     await this.forgetSettingsInMemory();
     await this.forgetInferenceState();
+    await this.restoreCloudAppStore();
     this.cache.clear();
     await this.clearBearerOrgMembership();
 

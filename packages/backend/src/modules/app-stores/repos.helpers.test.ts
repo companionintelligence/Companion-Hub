@@ -344,6 +344,48 @@ describe('ReposHelpers', () => {
       expect(axiosMock.request).toHaveBeenCalledTimes(1);
     });
 
+    // The restore after a pairing reads the catalog, which a download writes a dozen apps at a time.
+    it('reports a catalog download as under way until it ends, answered or not', async () => {
+      let answer: (value: unknown) => void = () => undefined;
+      axiosMock.request.mockReturnValueOnce(
+        new Promise((resolve) => {
+          answer = resolve;
+        }) as never,
+      );
+
+      expect(service.isDownloadingCatalog()).toBe(false);
+      const pull = service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
+      await vi.waitFor(() => expect(axiosMock.request).toHaveBeenCalled());
+      expect(service.isDownloadingCatalog()).toBe(true);
+
+      answer({ status: 200, statusText: 'OK', data: [{ slug: 'app1', name: 'App 1' }] });
+      await expect(pull).resolves.toMatchObject({ success: true });
+      expect(service.isDownloadingCatalog()).toBe(false);
+
+      axiosMock.request.mockResolvedValueOnce({ status: 401, statusText: 'Unauthorized', data: {} });
+      await expect(service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api')).resolves.toMatchObject({ success: false });
+      expect(service.isDownloadingCatalog()).toBe(false);
+    });
+
+    it('lets a restore wait for the downloads under way to end, or for its own deadline', async () => {
+      await expect(service.waitForCatalogDownloads(1_000)).resolves.toBe(true);
+
+      let answer: (value: unknown) => void = () => undefined;
+      axiosMock.request.mockReturnValueOnce(
+        new Promise((resolve) => {
+          answer = resolve;
+        }) as never,
+      );
+      const pull = service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
+      await vi.waitFor(() => expect(axiosMock.request).toHaveBeenCalled());
+
+      await expect(service.waitForCatalogDownloads(10)).resolves.toBe(false);
+      const waiting = service.waitForCatalogDownloads(60_000);
+      answer({ status: 200, statusText: 'OK', data: [{ slug: 'app1', name: 'App 1' }] });
+      await pull;
+      await expect(waiting).resolves.toBe(true);
+    });
+
     describe('transport failures', () => {
       const transportError = (code: string, message: string) => Object.assign(new Error(message), { isAxiosError: true, code });
 
