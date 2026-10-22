@@ -47,9 +47,19 @@ export function modelMemoryCeilingMb(profile: HardwareProfile): number {
     return modelBudgetVramMbFor(profile);
   }
   if (profile.ram.sampledAt) {
-    return Math.max(0, profile.ram.availableMb - SYSTEM_RESERVED_RAM_MB);
+    return Math.max(0, Math.min(profile.ram.availableMb - SYSTEM_RESERVED_RAM_MB, unifiedGpuLimitMb(profile)));
   }
   return Math.max(0, profile.effectiveInferenceMemoryMb);
+}
+
+/**
+ * The most a unified-memory GPU can address, `vramMb`: on an AMD APU the driver's carve-out plus GTT
+ * (108 GiB of a Ryzen AI Max+ 395's 122.8 GB), on Apple Silicon all of RAM. Models on the RAM pool are never
+ * budgeted past it, whatever RAM is free. No limit off unified memory, or without a figure.
+ */
+function unifiedGpuLimitMb(profile: HardwareProfile): number {
+  const { gpu } = profile;
+  return gpu.available && gpu.unifiedMemory && gpu.vramMb > 0 ? gpu.vramMb : Number.POSITIVE_INFINITY;
 }
 
 /**
@@ -156,7 +166,7 @@ export class MemoryManagerService {
     const appContainerBudgetMb = dockerOverheadMb;
 
     const modelBudgetVramMb = totalVramMb > 0 ? modelBudgetVramMbFor(profile) : 0;
-    const modelBudgetRamMb = Math.max(0, totalRamMb - SYSTEM_RESERVED_RAM_MB - appContainerBudgetMb);
+    const modelBudgetRamMb = Math.max(0, Math.min(totalRamMb - SYSTEM_RESERVED_RAM_MB - appContainerBudgetMb, unifiedGpuLimitMb(profile)));
 
     const pool = modelPoolFor(profile);
     const usage = await this.observeUsage(profile);
@@ -461,7 +471,22 @@ export class MemoryManagerService {
     profile: HardwareProfile,
     memoryFootprintMb: number,
     model?: { backend: InferenceBackendType; backendModelId: string },
-  ): Promise<{ canPin: boolean; reason?: string }> {
+  ): Promise<{ canPin: boolean; reason?: string; final?: true }> {
+    // A pin holds the model for good at the window the Hub picks. With the card's size unknown,
+    // nothing can say that it fits there: sized on RAM, a pin on the 8 GB card in #2078 would load at
+    // the 64K window that ran 70% on the CPU. Loads still go through on RAM (see modelPoolFor). A
+    // pin is refused before anything loads for it.
+    // Plain text: the reason ends up in a toast, which shows markdown as typed.
+    if (discreteVramUnknown(profile)) {
+      const askedBy = profile.gpu.vendor === 'nvidia' ? ' (nvidia-smi on the host)' : '';
+      return {
+        canPin: false,
+        final: true,
+        reason:
+          "The Hub doesn't know this GPU's memory yet (VRAM Unknown), so it can't tell whether a pinned model fits. " +
+          `Restart the desktop app or run cihub up so the Hub can read it${askedBy}, then pin again.`,
+      };
+    }
     const budget = await this.calculateBudget(profile);
     const pinnedMb = (model ? this.sightingOf(model.backend, model.backendModelId)?.footprintMb : undefined) ?? memoryFootprintMb;
 
@@ -762,9 +787,25 @@ function attributeSightings(
   return out;
 }
 
-/** Where models live on this node. Mirrors the branch the budget has always taken. */
+/**
+ * Where models live on this node, as far as the budget can tell. Mirrors the branch the budget has
+ * always taken, with one addition: a discrete card whose memory is unknown ({@link discreteVramUnknown})
+ * is budgeted on system RAM, like a node without a GPU. Budgeted on its 0 MB it refused every load
+ * ("needs 1348 MB but only 0 MB is free") while Ollama, which places what the card cannot take in
+ * RAM, could have served it.
+ */
 export function modelPoolFor(profile: HardwareProfile): 'vram' | 'ram' {
-  return profile.gpu.unifiedMemory || !profile.gpu.available ? 'ram' : 'vram';
+  return profile.gpu.unifiedMemory || !profile.gpu.available || discreteVramUnknown(profile) ? 'ram' : 'vram';
+}
+
+/**
+ * A discrete card the Hub found but could not size: no nvidia-smi figure in the container and no
+ * host probe (`nvidia.json`), which a driver update without a reboot, or any nvidia-smi failure,
+ * leaves missing. The AI tab says "VRAM Unknown"; loads are budgeted on RAM and pins refused.
+ */
+export function discreteVramUnknown(profile: HardwareProfile): boolean {
+  const { gpu } = profile;
+  return gpu.available && !gpu.unifiedMemory && !(gpu.vramMb > 0) && !((gpu.poolVramMb ?? 0) > 0);
 }
 
 /**
