@@ -321,6 +321,21 @@ describe('PairingAppRestoreService', () => {
       expect(appStores.pullRepositories).toHaveBeenCalledTimes(1);
     });
 
+    // The restore can wait a minute on a catalog download. A reset and the next pairing can come meanwhile.
+    it("leaves the next pairing's check alone when a reset came while the restore ran", async () => {
+      const nextPairing = { markedAt: new Date(Date.now() + 1_000).toISOString() };
+      rehydration.executeRehydrate.mockImplementationOnce(async () => {
+        service.forget();
+        state.check = nextPairing;
+        return completedRun();
+      });
+
+      await expect(service.runCheck()).resolves.toBe('none');
+
+      expect(state.check).toBe(nextPairing);
+      expect(exposureSync.syncExposurePublic).not.toHaveBeenCalled();
+    });
+
     // A download under way ends on its own. Counted as a failure, each pass doubled the wait, up to five minutes.
     it('asks again at the next pass, without backing off, while the catalog downloads', async () => {
       vi.useFakeTimers({ now: Date.now() });

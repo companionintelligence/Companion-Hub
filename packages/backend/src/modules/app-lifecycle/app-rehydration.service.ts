@@ -439,7 +439,7 @@ export class AppRehydrationService {
   private async fetchPortalApplications(
     catalogDownloadWaitMs = 0,
   ): Promise<{ listed: PortalDeviceApplication[]; unlisted: PortalDeviceApplication[] }> {
-    const apps = await this.cloudflareClientService.getDeviceApplications();
+    let apps = await this.cloudflareClientService.getDeviceApplications();
     if (apps.length === 0) {
       return { listed: [], unlisted: [] };
     }
@@ -456,8 +456,17 @@ export class AppRehydrationService {
       new CatalogStillDownloadingError(
         `CI Portal lists ${apps.length} app(s) for this device, but the app catalog is still downloading, so they cannot be restored yet`,
       );
-    if (!(await this.appStoreService.waitForCatalogDownloads(catalogDownloadWaitMs))) {
-      throw catalogStillDownloading();
+    if (this.appStoreService.isDownloadingCatalog()) {
+      if (!(await this.appStoreService.waitForCatalogDownloads(catalogDownloadWaitMs))) {
+        throw catalogStillDownloading();
+      }
+
+      // Read again after the wait, with the device key the Hub holds now. A factory reset or a pairing
+      // onto another device may have come meanwhile. The list read before it was then the old device's.
+      apps = await this.cloudflareClientService.getDeviceApplications();
+      if (apps.length === 0) {
+        return { listed: [], unlisted: [] };
+      }
     }
 
     // Precompute the set of available marketplace URNs once (one directory listing per

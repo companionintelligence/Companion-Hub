@@ -241,6 +241,12 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
         }
 
         this.logger.info(`[PairingAppRestore] ${result.message}`);
+
+        // A factory reset (`forget`) came while the restore ran, which can wait a minute on a catalog
+        // download. Releasing now would clear the next pairing's check and sync before its own restore.
+        if (this.checkGeneration !== this.generation) {
+          return 'none';
+        }
       } catch (error) {
         if (error instanceof CatalogStillDownloadingError) {
           return this.hold('the apps could not be restored', error, false);

@@ -327,6 +327,7 @@ describe('AppRehydrationService.executeRehydrate', () => {
 
     it('waits for the download to end, then restores from the whole catalog', async () => {
       let downloaded: (done: boolean) => void = () => undefined;
+      appStores.isDownloadingCatalog.mockReturnValueOnce(true);
       appStores.waitForCatalogDownloads.mockReturnValueOnce(
         new Promise((resolve) => {
           downloaded = resolve;
@@ -344,7 +345,21 @@ describe('AppRehydrationService.executeRehydrate', () => {
       await expect(run).resolves.toMatchObject({ success: true, queued: [appUrn], skipped: [] });
     });
 
+    // A factory reset during the wait took the device key. A pairing after it may name another device.
+    it("reads the device's apps again after the wait", async () => {
+      appStores.isDownloadingCatalog.mockReturnValueOnce(true);
+      cloudflare.getDeviceApplications.mockResolvedValueOnce([{ name: 'immich' }] as never).mockResolvedValueOnce([{ name: 'paperless' }] as never);
+      lifecycle.installApp.mockResolvedValue({ requestId: 'r' } as never);
+
+      const result = await service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR });
+
+      expect(cloudflare.getDeviceApplications).toHaveBeenCalledTimes(2);
+      // The catalog lists neither, so the app the run names is the one read after the wait.
+      expect(result.skipped.map((entry) => entry.name)).toEqual(['paperless']);
+    });
+
     it('does not record a run or skip the apps the catalog has not reached yet when the download outlasts the wait', async () => {
+      appStores.isDownloadingCatalog.mockReturnValue(true);
       appStores.waitForCatalogDownloads.mockResolvedValue(false);
 
       await expect(service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR })).rejects.toThrow(CatalogStillDownloadingError);
@@ -355,10 +370,11 @@ describe('AppRehydrationService.executeRehydrate', () => {
     });
 
     it('counts a download that started while the catalog was being read', async () => {
-      appStores.isDownloadingCatalog.mockReturnValue(true);
+      appStores.isDownloadingCatalog.mockReturnValueOnce(false).mockReturnValue(true);
 
       await expect(service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR })).rejects.toThrow(CatalogStillDownloadingError);
 
+      expect(appStores.waitForCatalogDownloads).not.toHaveBeenCalled();
       expect(recovery.writeRehydrationState).not.toHaveBeenCalled();
     });
   });
