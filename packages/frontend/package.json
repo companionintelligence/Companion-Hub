@@ -76,7 +76,6 @@
   },
   "devDependencies": {
     "@faker-js/faker": "^10.6.0",
-    "@hey-api/openapi-ts": "^0.99.0",
     "@react-router/dev": "8.4.0",
     "@tailwindcss/typography": "^0.5.20",
     "@tailwindcss/vite": "^4.3.3",

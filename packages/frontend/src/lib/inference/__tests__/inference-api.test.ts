@@ -1,31 +1,37 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { updatePreferences, getCloudProviders, clientDelete, getVllmStatus, getOnboardingProfile, loadModel, unloadModel, pinModel, unpinModel } =
-  vi.hoisted(() => ({
-    updatePreferences: vi.fn(),
-    getCloudProviders: vi.fn(),
-    clientDelete: vi.fn(),
-    getVllmStatus: vi.fn(),
-    getOnboardingProfile: vi.fn(),
-    loadModel: vi.fn(),
-    unloadModel: vi.fn(),
-    pinModel: vi.fn(),
-    unpinModel: vi.fn(),
-  }));
-
-vi.mock('@/api-client/sdk.gen', () => ({
+const {
   updatePreferences,
   getCloudProviders,
+  removeCloudProvider,
   getVllmStatus,
   getOnboardingProfile,
   loadModel,
   unloadModel,
   pinModel,
   unpinModel,
+} = vi.hoisted(() => ({
+  updatePreferences: vi.fn(),
+  getCloudProviders: vi.fn(),
+  removeCloudProvider: vi.fn(),
+  getVllmStatus: vi.fn(),
+  getOnboardingProfile: vi.fn(),
+  loadModel: vi.fn(),
+  unloadModel: vi.fn(),
+  pinModel: vi.fn(),
+  unpinModel: vi.fn(),
 }));
 
-vi.mock('@/api-client/client.gen', () => ({
-  client: { delete: clientDelete },
+vi.mock('@/api-client/sdk.gen', () => ({
+  updatePreferences,
+  getCloudProviders,
+  removeCloudProvider,
+  getVllmStatus,
+  getOnboardingProfile,
+  loadModel,
+  unloadModel,
+  pinModel,
+  unpinModel,
 }));
 
 import {
@@ -185,15 +191,15 @@ describe('cloud provider keys', () => {
   });
 
   it('deletes a saved key at the route the Hub serves for it', async () => {
-    clientDelete.mockResolvedValue({ data: { success: true, removed: true } });
+    removeCloudProvider.mockResolvedValue({ data: { success: true, removed: true } });
 
     await removeCloudProviderConfig('github-copilot');
 
-    expect(clientDelete).toHaveBeenCalledWith({ url: '/api/inference/cloud-providers/github-copilot' });
+    expect(removeCloudProvider).toHaveBeenCalledWith({ path: { provider: 'github-copilot' } });
   });
 
   it('reports a failed delete instead of letting the save say it worked', async () => {
-    clientDelete.mockResolvedValue({ error: { message: 'Failed to set user settings' } });
+    removeCloudProvider.mockResolvedValue({ error: { message: 'Failed to set user settings' } });
 
     await expect(removeCloudProviderConfig('openai')).rejects.toThrow('Failed to set user settings');
   });
