@@ -283,6 +283,21 @@ function userSettingsFromFile(settingsValues: PersistedSettingsValues) {
  */
 const PAIRING_KEYS_IN_USER_SETTINGS = ['ciHubApiKey', 'ciHubMoveKey', 'ciHubOrganizationId'];
 
+export interface SetInferencePreferencesOptions {
+  backend: InferenceBackendType;
+  model?: string | null;
+  embeddingModel?: string | null;
+  visionModel?: string | null;
+  vllmApiKey?: string | null;
+  vllmUrl?: string | null;
+  omlxUrl?: string | null;
+  decodeEndpoint?: string | null;
+  encodeEndpoint?: string | null;
+  maxNumCtx?: number | null;
+  ollamaSlots?: number | null;
+  ollamaKeepAlive?: number | null;
+}
+
 @Injectable()
 export class ConfigurationService {
   private config: ReturnType<typeof this.configure>;
@@ -714,7 +729,10 @@ export class ConfigurationService {
    * unchanged. `embeddingModel`, `visionModel`, `maxNumCtx`, `ollamaSlots` and `ollamaKeepAlive`
    * follow the same convention; a cleared numeric one removes the key rather than storing a null,
    * like the pool prompt ceiling.
+   *
+   * Accepts either an options object or legacy positional arguments.
    */
+  public async setInferencePreferences(options: SetInferencePreferencesOptions): Promise<ReturnType<ConfigurationService['getInferencePreferences']>>;
   public async setInferencePreferences(
     backend: InferenceBackendType,
     model?: string | null,
@@ -728,7 +746,39 @@ export class ConfigurationService {
     maxNumCtx?: number | null,
     ollamaSlots?: number | null,
     ollamaKeepAlive?: number | null,
+  ): Promise<ReturnType<ConfigurationService['getInferencePreferences']>>;
+  public async setInferencePreferences(
+    backendOrOptions: InferenceBackendType | SetInferencePreferencesOptions,
+    model?: string | null,
+    embeddingModel?: string | null,
+    visionModel?: string | null,
+    vllmApiKey?: string | null,
+    vllmUrl?: string | null,
+    omlxUrl?: string | null,
+    decodeEndpoint?: string | null,
+    encodeEndpoint?: string | null,
+    maxNumCtx?: number | null,
+    ollamaSlots?: number | null,
+    ollamaKeepAlive?: number | null,
   ) {
+    const opts: SetInferencePreferencesOptions =
+      typeof backendOrOptions === 'object' && backendOrOptions !== null
+        ? backendOrOptions
+        : {
+            backend: backendOrOptions,
+            model,
+            embeddingModel,
+            visionModel,
+            vllmApiKey,
+            vllmUrl,
+            omlxUrl,
+            decodeEndpoint,
+            encodeEndpoint,
+            maxNumCtx,
+            ollamaSlots,
+            ollamaKeepAlive,
+          };
+
     const settings: {
       inferenceBackend: InferenceBackendType;
       inferenceModel?: string;
@@ -742,39 +792,39 @@ export class ConfigurationService {
       inferenceMaxNumCtx?: number;
       inferenceOllamaSlots?: number;
       inferenceOllamaKeepAlive?: number;
-    } = { inferenceBackend: backend };
-    if (model !== undefined) {
-      settings.inferenceModel = model ?? undefined;
+    } = { inferenceBackend: opts.backend };
+    if (opts.model !== undefined) {
+      settings.inferenceModel = opts.model ?? undefined;
     }
-    if (embeddingModel !== undefined) {
-      settings.inferenceEmbeddingModel = embeddingModel ?? undefined;
+    if (opts.embeddingModel !== undefined) {
+      settings.inferenceEmbeddingModel = opts.embeddingModel ?? undefined;
     }
-    if (visionModel !== undefined) {
-      settings.inferenceVisionModel = visionModel ?? undefined;
+    if (opts.visionModel !== undefined) {
+      settings.inferenceVisionModel = opts.visionModel ?? undefined;
     }
-    if (vllmApiKey !== undefined) {
-      settings.inferenceVllmApiKey = vllmApiKey?.trim() ? vllmApiKey.trim() : undefined;
+    if (opts.vllmApiKey !== undefined) {
+      settings.inferenceVllmApiKey = opts.vllmApiKey?.trim() ? opts.vllmApiKey.trim() : undefined;
     }
-    if (vllmUrl !== undefined) {
-      settings.inferenceVllmUrl = vllmUrl?.trim() ? vllmUrl.trim() : undefined;
+    if (opts.vllmUrl !== undefined) {
+      settings.inferenceVllmUrl = opts.vllmUrl?.trim() ? opts.vllmUrl.trim() : undefined;
     }
-    if (omlxUrl !== undefined) {
-      settings.inferenceOmlxUrl = omlxUrl?.trim() ? omlxUrl.trim() : undefined;
+    if (opts.omlxUrl !== undefined) {
+      settings.inferenceOmlxUrl = opts.omlxUrl?.trim() ? opts.omlxUrl.trim() : undefined;
     }
-    if (decodeEndpoint !== undefined) {
-      settings.inferenceDecodeEndpoint = decodeEndpoint?.trim() ? decodeEndpoint.trim() : undefined;
+    if (opts.decodeEndpoint !== undefined) {
+      settings.inferenceDecodeEndpoint = opts.decodeEndpoint?.trim() ? opts.decodeEndpoint.trim() : undefined;
     }
-    if (encodeEndpoint !== undefined) {
-      settings.inferenceEncodeEndpoint = encodeEndpoint?.trim() ? encodeEndpoint.trim() : undefined;
+    if (opts.encodeEndpoint !== undefined) {
+      settings.inferenceEncodeEndpoint = opts.encodeEndpoint?.trim() ? opts.encodeEndpoint.trim() : undefined;
     }
-    if (maxNumCtx !== undefined) {
-      settings.inferenceMaxNumCtx = maxNumCtx ?? undefined;
+    if (opts.maxNumCtx !== undefined) {
+      settings.inferenceMaxNumCtx = opts.maxNumCtx ?? undefined;
     }
-    if (ollamaSlots !== undefined) {
-      settings.inferenceOllamaSlots = ollamaSlots ?? undefined;
+    if (opts.ollamaSlots !== undefined) {
+      settings.inferenceOllamaSlots = opts.ollamaSlots ?? undefined;
     }
-    if (ollamaKeepAlive !== undefined) {
-      settings.inferenceOllamaKeepAlive = ollamaKeepAlive ?? undefined;
+    if (opts.ollamaKeepAlive !== undefined) {
+      settings.inferenceOllamaKeepAlive = opts.ollamaKeepAlive ?? undefined;
     }
     await this.setUserSettings(settings);
     return this.getInferencePreferences();

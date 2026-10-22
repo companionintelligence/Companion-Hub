@@ -1,5 +1,5 @@
 import { LoggerService } from '@/core/logger/logger.service';
-import { ConfigurationService } from '@/core/config/configuration.service';
+import { ConfigurationService, type SetInferencePreferencesOptions } from '@/core/config/configuration.service';
 import { Test } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
@@ -143,20 +143,7 @@ describe('InferenceController — preferences', () => {
 
     const result = await controller.updatePreferences({ backend: 'lemonade' });
 
-    expect(configService.setInferencePreferences).toHaveBeenCalledWith(
-      'lemonade',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-    );
+    expect(configService.setInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ backend: 'lemonade' }));
     expect(result).toEqual({
       preferredBackend: 'lemonade',
       preferredModel: null,
@@ -197,18 +184,12 @@ describe('InferenceController — preferences', () => {
     });
 
     expect(configService.setInferencePreferences).toHaveBeenCalledWith(
-      'ollama',
-      'hermes4-8b',
-      'nomic-embed-text',
-      'gemma4-27b',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
+      expect.objectContaining({
+        backend: 'ollama',
+        model: 'hermes4-8b',
+        embeddingModel: 'nomic-embed-text',
+        visionModel: 'gemma4-27b',
+      }),
     );
     expect(result).toEqual({
       preferredBackend: 'ollama',
@@ -235,18 +216,11 @@ describe('InferenceController — preferences', () => {
     });
 
     expect(configService.setInferencePreferences).toHaveBeenCalledWith(
-      'vllm',
-      undefined,
-      undefined,
-      undefined,
-      'vllm-local',
-      'http://192.168.1.50:8000',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
+      expect.objectContaining({
+        backend: 'vllm',
+        vllmApiKey: 'vllm-local',
+        vllmUrl: 'http://192.168.1.50:8000',
+      }),
     );
   }, 30_000);
 
@@ -270,18 +244,10 @@ describe('InferenceController — preferences', () => {
 
     // `undefined` is "leave it as stored"; `null` or an empty key still clears it.
     expect(configService.setInferencePreferences).toHaveBeenCalledWith(
-      'vllm',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
+      expect.objectContaining({
+        backend: 'vllm',
+        vllmApiKey: undefined,
+      }),
     );
     expect(result).toMatchObject({ preferredVllmApiKey: MASKED_API_KEY });
   }, 30_000);
@@ -291,7 +257,7 @@ describe('InferenceController — preferences', () => {
 
     await controller.updatePreferences({ backend: 'ollama', vllmApiKey: null });
 
-    expect(configService.setInferencePreferences.mock.calls[0]?.[4]).toBeNull();
+    expect((configService.setInferencePreferences.mock.calls[0]?.[0] as SetInferencePreferencesOptions)?.vllmApiKey).toBeNull();
   }, 30_000);
 
   // The stored key belongs to the server it was saved for. Re-check never sends it to another one,
@@ -315,7 +281,7 @@ describe('InferenceController — preferences', () => {
       else process.env.VLLM_URL = savedVllmEnv;
     });
 
-    const storedKeyArg = () => configService.setInferencePreferences.mock.calls[0]?.[4];
+    const storedKeyArg = () => (configService.setInferencePreferences.mock.calls[0]?.[0] as SetInferencePreferencesOptions)?.vllmApiKey;
 
     it('drops the stored key when the key comes back as the mask', async () => {
       await controller.updatePreferences({ backend: 'vllm', vllmApiKey: MASKED_API_KEY, vllmUrl: 'http://192.168.1.99:8000' });
@@ -363,18 +329,10 @@ describe('InferenceController — preferences', () => {
     });
 
     expect(configService.setInferencePreferences).toHaveBeenCalledWith(
-      'omlx',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      'http://192.168.1.50:8000',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
+      expect.objectContaining({
+        backend: 'omlx',
+        omlxUrl: 'http://192.168.1.50:8000',
+      }),
     );
   }, 30_000);
 
@@ -473,36 +431,8 @@ describe('InferenceController — preferences', () => {
     await controller.updatePreferences({ backend: 'ollama', maxNumCtx: 16_384 });
     await controller.updatePreferences({ backend: 'ollama', maxNumCtx: null });
 
-    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
-      1,
-      'ollama',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      16_384,
-      undefined,
-      undefined,
-    );
-    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
-      2,
-      'ollama',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      null,
-      undefined,
-      undefined,
-    );
+    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(1, expect.objectContaining({ backend: 'ollama', maxNumCtx: 16_384 }));
+    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(2, expect.objectContaining({ backend: 'ollama', maxNumCtx: null }));
   }, 30_000);
 
   it('bounds the context cap in the preferences schema: an integer from 2048 to 2^20, or null', () => {
@@ -522,50 +452,11 @@ describe('InferenceController — preferences', () => {
     // Both in one body: the cap and the slots land in their own positions, neither moves the other.
     await controller.updatePreferences({ backend: 'ollama', maxNumCtx: 32_768, ollamaSlots: 2 });
 
-    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
-      1,
-      'ollama',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      4,
-      undefined,
-    );
-    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
-      2,
-      'ollama',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      null,
-      undefined,
-    );
+    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(1, expect.objectContaining({ backend: 'ollama', ollamaSlots: 4 }));
+    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(2, expect.objectContaining({ backend: 'ollama', ollamaSlots: null }));
     expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
       3,
-      'ollama',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      32_768,
-      2,
-      undefined,
+      expect.objectContaining({ backend: 'ollama', maxNumCtx: 32_768, ollamaSlots: 2 }),
     );
   }, 30_000);
 
@@ -589,7 +480,7 @@ describe('InferenceController — preferences', () => {
     await controller.updatePreferences({ backend: 'ollama', ollamaKeepAlive: 86_400 });
     await controller.updatePreferences({ backend: 'ollama', ollamaKeepAlive: null });
 
-    const keepAliveArg = (call: unknown[]) => call[11];
+    const keepAliveArg = (call: unknown[]) => (call[0] as SetInferencePreferencesOptions)?.ollamaKeepAlive;
     expect(keepAliveArg(configService.setInferencePreferences.mock.calls[0] ?? [])).toBe(86_400);
     expect(keepAliveArg(configService.setInferencePreferences.mock.calls[1] ?? [])).toBeNull();
   }, 30_000);

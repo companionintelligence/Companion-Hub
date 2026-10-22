@@ -360,20 +360,20 @@ export class InferenceController {
   @UseGuards(AuthGuard, HubManagerGuard)
   @Patch('preferences')
   async updatePreferences(@Body() body: UpdateInferencePreferencesBody) {
-    const result = await this.configurationService.setInferencePreferences(
-      body.backend,
-      body.model,
-      body.embeddingModel,
-      body.visionModel,
-      this.vllmApiKeyToSave(body),
-      body.vllmUrl,
-      body.omlxUrl,
-      body.decodeEndpoint,
-      body.encodeEndpoint,
-      body.maxNumCtx,
-      body.ollamaSlots,
-      body.ollamaKeepAlive,
-    );
+    const result = await this.configurationService.setInferencePreferences({
+      backend: body.backend,
+      model: body.model,
+      embeddingModel: body.embeddingModel,
+      visionModel: body.visionModel,
+      vllmApiKey: this.vllmApiKeyToSave(body),
+      vllmUrl: body.vllmUrl,
+      omlxUrl: body.omlxUrl,
+      decodeEndpoint: body.decodeEndpoint,
+      encodeEndpoint: body.encodeEndpoint,
+      maxNumCtx: body.maxNumCtx,
+      ollamaSlots: body.ollamaSlots,
+      ollamaKeepAlive: body.ollamaKeepAlive,
+    });
 
     this.scheduleAiAppRestart('inference preferences changed');
 
