@@ -113,6 +113,8 @@ describe('custom app edit', () => {
   it('drops the cached compose after a save so the editor shows what was saved', () => {
     composeCurrent.value = undefined;
     invalidateQueries.mockClear();
+    // The parse-error test above already navigated to the same path.
+    mockNavigate.mockClear();
 
     render(
       <MemoryRouter>

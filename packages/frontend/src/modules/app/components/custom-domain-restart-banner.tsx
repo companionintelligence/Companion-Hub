@@ -76,7 +76,7 @@ export const CustomDomainRestartBanner = ({ apps, namesByUrn }: CustomDomainRest
           <AlertIcon>
             <RotateCw className="w-4 h-4 shrink-0" />
           </AlertIcon>
-          <AlertDescription className="min-w-0 flex-1 text-sm">
+          <AlertDescription className="min-w-0 flex-1">
             {t('MY_APPS_CUSTOM_DOMAIN_RESTART_BANNER_ONE', { domain: only.customDomain, name: nameFor(only) })}
           </AlertDescription>
           {restartButton(only)}
@@ -99,7 +99,7 @@ export const CustomDomainRestartBanner = ({ apps, namesByUrn }: CustomDomainRest
           <AlertIcon>
             <RotateCw className="w-4 h-4 shrink-0" />
           </AlertIcon>
-          <AlertDescription className="min-w-0 flex-1 text-sm">
+          <AlertDescription className="min-w-0 flex-1">
             {/*
              * `_COUNT` with i18next's own `_one`/`_other` suffixes, not a hand-rolled
              * `_MANY`: en.json is pushed to 30 locales, several of which have three to
