@@ -235,7 +235,7 @@ function registerAllTools(): McpToolRegistry {
   new AppAgentTools(m(), registry, m(), m(), m(), m(), m()).onModuleInit();
   new AppApiProxyTools(m(), registry, m(), m()).onModuleInit();
   new OperationsTools(registry, m(), m(), m()).onModuleInit();
-  new InferenceTools(m(), registry, m(), m(), m(), m(), m(), m(), m()).onModuleInit();
+  new InferenceTools(m(), registry, m(), m(), m(), m(), m(), m()).onModuleInit();
 
   return registry;
 }

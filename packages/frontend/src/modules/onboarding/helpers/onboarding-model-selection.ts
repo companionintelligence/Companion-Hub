@@ -82,15 +82,17 @@ export function isSelectionWithinBudget(selectedModels: CuratedModel[], installe
 
 /**
  * The inference memory the engines may use on this host, and how much of it is free right now —
- * VRAM on a discrete GPU, the model share of RAM otherwise. Mirrors `availableMemoryMb` in the
- * Hub's onboarding profile, which is the same budget minus what every engine holds.
+ * VRAM on a discrete GPU of known size, the model share of RAM otherwise (a card the Hub could not
+ * size is budgeted on RAM, like the Hub's `modelPoolFor`). Mirrors `availableMemoryMb` in the Hub's
+ * onboarding profile, which is the same budget minus what every engine holds.
  */
 export function inferenceMemoryMb(profile: {
-  hardware: { gpu: { available: boolean; unifiedMemory: boolean } };
+  hardware: { gpu: { available: boolean; unifiedMemory: boolean; vramMb?: number } };
   memoryBudget: { modelBudgetVramMb: number; modelBudgetRamMb: number };
   resourceEstimate: { availableMemoryMb: number };
 }): { totalMb: number; freeMb: number } {
   const { gpu } = profile.hardware;
-  const totalMb = gpu.available && !gpu.unifiedMemory ? profile.memoryBudget.modelBudgetVramMb : profile.memoryBudget.modelBudgetRamMb;
+  const onCard = gpu.available && !gpu.unifiedMemory && (gpu.vramMb === undefined || gpu.vramMb > 0);
+  const totalMb = onCard ? profile.memoryBudget.modelBudgetVramMb : profile.memoryBudget.modelBudgetRamMb;
   return { totalMb: Math.max(0, totalMb), freeMb: Math.max(0, Math.min(totalMb, profile.resourceEstimate.availableMemoryMb ?? 0)) };
 }

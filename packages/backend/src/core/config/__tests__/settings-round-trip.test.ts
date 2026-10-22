@@ -88,6 +88,8 @@ const ONE_OF_EVERY_KEY: Required<PersistedSettings> = {
   inferenceMaxNumCtx: 16384,
   // The node's Ollama slot count (fleet-qa B5, 2026-09-21). Non-default: the default is not stated.
   inferenceOllamaSlots: 4,
+  // The node's Ollama keep-alive in seconds (the fleet's 24h). Non-default: the default is not stated.
+  inferenceOllamaKeepAlive: 86400,
   hubPoolEnabled: false,
   hubPoolOutboundEnabled: false,
   hubPoolInboundEnabled: false,
