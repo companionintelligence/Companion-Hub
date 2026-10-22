@@ -64,6 +64,12 @@ type AvailabilityProbeCacheEntry = {
   reason: string | null;
 };
 
+/** One run of an app: the row as its last start, stop, restart, update or reset wrote it, and the containers seen since. */
+type AppRun = {
+  rowKey: string;
+  containerIds: Set<string>;
+};
+
 export type AppRuntimeHealth = {
   appUrn: string;
   appName: string;
@@ -159,7 +165,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
   /** What each This Machine Only app's own port did last time, and at which address. See `probeLocalApp`. */
   private readonly lastLocalPortProbe = new Map<string, { address: string; result: AppPortProbeResult }>();
   /** Which run of each app the samples and the cached probe verdict above belong to (see {@link startNewRunIfChanged}). */
-  private readonly runKeys = new Map<string, string>();
+  private readonly runs = new Map<string, AppRun>();
   /** Apps already warned about a readiness `service` their compose does not declare — once, not every tick. */
   private readonly readinessServiceWarned = new Set<string>();
   private readonly history: AppRuntimeHistorySample[] = [];
@@ -350,6 +356,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
   private async collectRuntimeMonitorSnapshotInner(): Promise<AppRuntimeMonitorSnapshot> {
     const sampledAt = new Date().toISOString();
     const apps = await this.appsRepository.getApps();
+    this.forgetRemovedApps(new Set(apps.map((app) => `${app.appName}:${app.appStoreSlug}`)));
     const snapshots = await Promise.all(apps.filter((app) => app.status !== 'missing').map((app) => this.collectAppRuntimeHealthForApp(app)));
     const hubRuntime = await this.collectHubRuntimeHealth(sampledAt);
     const entities = hubRuntime ? [...snapshots, hubRuntime] : snapshots;
@@ -581,10 +588,10 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
     }
 
     // A verdict for a run that ended while it was being taken describes processes that are gone.
-    const runKey = this.runKeys.get(appUrn);
+    const run = this.runs.get(appUrn);
     const probe = this.probeAvailability(app, appUrn)
       .then((nextEntry) => {
-        if (this.runKeys.get(appUrn) === runKey) {
+        if (this.runs.get(appUrn) === run) {
           this.availabilityProbeCache.set(appUrn, nextEntry);
         }
         return nextEntry;
@@ -630,11 +637,10 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
    */
   private async probeLocalApp(appUrn: AppUrn): Promise<AvailabilityProbeCacheEntry | null> {
     try {
-      const composeJson = await this.appFilesManager.getDockerComposeJson(appUrn);
-      if (!composeJson.content) {
+      const services = await this.readComposeServices(appUrn);
+      if (!services) {
         return null;
       }
-      const services = parseComposeJson(composeJson.content).services;
       const main = services.find((entry) => entry.isMain) ?? (services.length === 1 ? services[0] : undefined);
       const port = Number(main?.internalPort);
       if (!main || !Number.isInteger(port) || port < 1 || port > 65535) {
@@ -688,16 +694,43 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
    * processes that are gone. Kept, they let an app that was fixed and started again inside the
    * probe cache's minute keep the "degraded" verdict and Force Stop, and a newly broken one keep the
    * healthy verdict.
+   *
+   * Only a container id the run hasn't seen starts a new one. A container can drop out of a single
+   * sample (`getAppRuntimeStats` skips one whose inspect timed out, which a busy host makes more
+   * likely), and that must not reset "sustained" for a hung app.
    */
   private startNewRunIfChanged(appUrn: string, app: App, containers: AppContainerRuntimeStats[]) {
-    const runKey = [app.status, app.updatedAt, ...containers.map((container) => container.containerId).sort()].join('|');
-    const previous = this.runKeys.get(appUrn);
-    this.runKeys.set(appUrn, runKey);
-    if (previous !== undefined && previous !== runKey) {
+    const rowKey = `${app.status}|${app.updatedAt}`;
+    const containerIds = containers.map((container) => container.containerId);
+    const current = this.runs.get(appUrn);
+    if (current?.rowKey === rowKey && containerIds.every((id) => current.containerIds.has(id))) {
+      return;
+    }
+
+    this.runs.set(appUrn, { rowKey, containerIds: new Set(containerIds) });
+    if (current) {
       this.samples.delete(appUrn);
       this.availabilityProbeCache.delete(appUrn);
       this.availabilityProbeInFlight.delete(appUrn);
       this.lastLocalPortProbe.delete(appUrn);
+    }
+  }
+
+  /** Drops what the monitor holds for apps that are no longer installed, so the per-app maps don't grow with every uninstall. */
+  private forgetRemovedApps(installedAppUrns: ReadonlySet<string>) {
+    const perApp: Map<string, unknown>[] = [
+      this.samples,
+      this.availabilityProbeCache,
+      this.availabilityProbeInFlight,
+      this.lastLocalPortProbe,
+      this.runs,
+    ];
+    for (const map of perApp) {
+      for (const appUrn of map.keys()) {
+        if (appUrn !== HUB_RUNTIME_URN && !installedAppUrns.has(appUrn)) {
+          map.delete(appUrn);
+        }
+      }
     }
   }
 
@@ -850,11 +883,13 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
    * target is this app's own container, and "could not read the compose" is not that proof.
    */
   private async isOwnComposeService(appUrn: AppUrn, service: string): Promise<boolean> {
+    return (await this.readComposeServices(appUrn))?.some((entry) => entry.name === service) ?? false;
+  }
+
+  /** The services of the app's installed docker-compose.json, or null when there is none. Throws when it doesn't parse. */
+  private async readComposeServices(appUrn: AppUrn) {
     const composeJson = await this.appFilesManager.getDockerComposeJson(appUrn);
-    if (!composeJson.content) {
-      return false;
-    }
-    return parseComposeJson(composeJson.content).services.some((entry) => entry.name === service);
+    return composeJson.content ? parseComposeJson(composeJson.content).services : null;
   }
 
   private async hydrateHistoryFromDatabase() {

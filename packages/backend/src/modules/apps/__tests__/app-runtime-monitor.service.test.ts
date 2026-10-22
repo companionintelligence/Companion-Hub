@@ -1057,6 +1057,56 @@ describe('AppRuntimeMonitorService', () => {
       expect(probeAppPort).toHaveBeenCalledTimes(1);
       expect(result).toMatchObject({ sustainedHighCpu: true, degraded: true });
     });
+
+    // getAppRuntimeStats skips a container whose inspect timed out. One sample without the sidecar is
+    // the same run, so "sustained" keeps counting.
+    it('keeps the run when a container drops out of one sample', async () => {
+      appRow('2026-10-21 13:50:00');
+      const sidecar = { ...container('sidecar-run'), name: 'cpu-hog__user-cache-1' };
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([container('web-run'), sidecar]);
+      vi.mocked(probeAppPort).mockResolvedValue('silent');
+      await sample(2);
+
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValueOnce([container('web-run')]);
+      const result = await sample(1);
+
+      expect(probeAppPort).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ sustainedHighCpu: true, degraded: true });
+    });
+  });
+
+  it('forgets what it held for an app that is no longer installed', async () => {
+    const hog = {
+      id: 1,
+      appName: 'cpu-hog',
+      appStoreSlug: '_user',
+      status: 'running',
+      exposureMode: 'local',
+      config: {},
+      updatedAt: '2026-10-21 14:00:00',
+    };
+    appsRepository.getApps.mockResolvedValue([hog] as any);
+    dockerReadFacade.getAppRuntimeStats.mockResolvedValue([
+      {
+        containerId: 'abc',
+        name: 'cpu-hog__user-web-1',
+        state: 'running',
+        status: 'Up',
+        health: null,
+        exitCode: null,
+        cpuPercent: 4,
+        memoryUsageBytes: 1,
+        memoryLimitBytes: 1,
+      },
+    ]);
+    await service.getRuntimeMonitorSnapshot();
+    expect((service as any).samples.has('cpu-hog:_user')).toBe(true);
+
+    appsRepository.getApps.mockResolvedValue([]);
+    await (service as any).collectRuntimeMonitorSnapshot(true);
+
+    expect((service as any).samples.has('cpu-hog:_user')).toBe(false);
+    expect((service as any).runs.has('cpu-hog:_user')).toBe(false);
   });
 
   describe('readiness probe (hub_integration.readiness, CI-Hub#1556)', () => {
