@@ -201,18 +201,23 @@ export function unansweredTailnetDevices({
 
 /* ── Sending ────────────────────────────────────────────────────────────────────────────── */
 
-export type PairFailure = 'already' | 'invalid' | 'generic' | 'unreachable';
+export type PairFailure = 'already' | 'invalid' | 'pin' | 'generic' | 'unreachable';
+
+/** What the backend answers when the other Hub refused the PIN (`sendPairingRequest` in `hub-pool-peer.service.ts`). */
+const PIN_REFUSED_KEY = 'HUB_POOL_PAIR_ERROR_PIN_REFUSED';
 
 /**
  * What a failed `POST peers/pair` means, as far as the API lets anyone know.
  *
- * The backend throws a plain `Error` for a wrong PIN, a declined request, a TLS failure, a timeout, a
- * full pending queue and pairing with itself, and the exception filter turns every one of them into
- * the same 500. So 500 is read as "could not reach it, or it said no", and the copy lists causes
- * rather than naming one it cannot know. 409 is the one precise answer: a row for that Hub exists.
+ * Two answers are precise. 409 means a row for that Hub exists. A PIN the other Hub refused is a 400
+ * with its own key, which is what tells it apart from a 400 for a malformed name or PIN. A request the
+ * other Hub turned down for any other reason (pooling off, a full pending queue, pairing with itself)
+ * is a 502, and a TLS failure or a timeout is still a bare 500. Both read as "could not reach it, or
+ * it said no", and the copy lists causes rather than naming one it cannot know.
  */
-export function classifyPairFailure(status: number | undefined): PairFailure {
+export function classifyPairFailure(status: number | undefined, message?: string): PairFailure {
   if (status === 409) return 'already';
+  if (message === PIN_REFUSED_KEY) return 'pin';
   if (status === 400) return 'invalid';
   if (status === 401 || status === 403 || status === 404) return 'generic';
   return 'unreachable';
@@ -227,6 +232,15 @@ export function statusOf(error: unknown, response?: { status?: number } | null):
   const http = (error as { http?: { status?: unknown } } | null | undefined)?.http;
   if (typeof http?.status === 'number') return http.status;
   return typeof response?.status === 'number' ? response.status : undefined;
+}
+
+/**
+ * The message of a failed SDK call: the translation key on the interceptor's `TranslatableError`, or
+ * the `message` of the parsed body when the call went through a client without it.
+ */
+export function messageOf(error: unknown): string | undefined {
+  const message = (error as { message?: unknown } | null | undefined)?.message;
+  return typeof message === 'string' ? message : undefined;
 }
 
 /* ── Waiting and verifying ──────────────────────────────────────────────────────────────── */

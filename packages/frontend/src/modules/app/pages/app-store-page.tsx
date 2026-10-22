@@ -136,7 +136,8 @@ export default () => {
   }, [queryClient, catalogSearchEnabled, catalogSearchQuery]);
 
   const { mutate: pullApps, isPending: isPulling } = useMutation({
-    mutationFn: () => pullAppStores(),
+    // throwOnError: the generated client resolves on a non-2xx, which would run onSuccess for a failed pull.
+    mutationFn: () => pullAppStores({ throwOnError: true }),
     onSuccess: async () => {
       await invalidateStoreCatalogQueries(queryClient);
       toast.success(t('APP_STORES_UPDATE_SUCCESS'));
