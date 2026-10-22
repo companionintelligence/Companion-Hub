@@ -241,6 +241,12 @@ pub struct DesktopUpdateInfo {
     pub expected_size: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expected_sha256: Option<String>,
+    /// The installer format this computer takes: `deb`, `rpm` or `appimage` on Linux, `dmg` on
+    /// macOS, `exe` on Windows. Its presence also tells the page that this app looks up its own
+    /// installer when nothing is newer, so the page doesn't ask the Hub, which can't tell an
+    /// Ubuntu from a Fedora.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package_format: Option<String>,
 }
 
 pub fn is_trusted_download_url(url: &str) -> bool {
@@ -374,40 +380,78 @@ fn platform_manifest_key(os: HostOs, arch: &str) -> String {
     }
 }
 
-fn platform_key() -> Option<String> {
-    let os = host_os()?;
-    let arch = if cfg!(target_arch = "aarch64") {
+fn host_arch() -> &'static str {
+    if cfg!(target_arch = "aarch64") {
         "aarch64"
     } else {
         "x86_64"
-    };
-    Some(platform_manifest_key(os, arch))
+    }
 }
 
+fn platform_key() -> Option<String> {
+    Some(platform_manifest_key(host_os()?, host_arch()))
+}
+
+/// `deb` for Debian, Ubuntu and the distros built on them, `rpm` for Fedora, RHEL and theirs,
+/// `appimage` for the rest. It reads `ID` and then each word of `ID_LIKE`, quoted or not, as the
+/// Docker installer's `is_distro` does: RHEL writes `ID="rhel"` and Rocky `ID_LIKE="rhel centos
+/// fedora"`, which a match on the bare text `id=rhel` missed.
 fn linux_package_preference_from_os_release(content: &str) -> &'static str {
-    let lower = content.to_lowercase();
-    if lower.contains("id=debian")
-        || lower.contains("id=ubuntu")
-        || lower.contains("id=linuxmint")
-        || lower.contains("id=pop")
-    {
-        return "deb";
-    }
-    if lower.contains("id=fedora")
-        || lower.contains("id=rhel")
-        || lower.contains("id=centos")
-        || lower.contains("id=rocky")
-        || lower.contains("id=almalinux")
-    {
-        return "rpm";
+    const DEB_FAMILY: [&str; 4] = ["debian", "ubuntu", "linuxmint", "pop"];
+    const RPM_FAMILY: [&str; 5] = ["fedora", "rhel", "centos", "rocky", "almalinux"];
+    let field = |key: &str| {
+        content
+            .lines()
+            .filter_map(|line| line.trim().split_once('='))
+            .find(|(name, _)| name.trim() == key)
+            .map(|(_, value)| value.trim().trim_matches(['"', '\'']).to_ascii_lowercase())
+            .unwrap_or_default()
+    };
+    let id = field("ID");
+    let id_like = field("ID_LIKE");
+    for name in std::iter::once(id.as_str()).chain(id_like.split_whitespace()) {
+        if DEB_FAMILY.contains(&name) {
+            return "deb";
+        }
+        if RPM_FAMILY.contains(&name) {
+            return "rpm";
+        }
     }
     "appimage"
 }
 
 fn linux_package_preference() -> &'static str {
-    linux_package_preference_from_os_release(
+    linux_package_preference_from(
         &std::fs::read_to_string("/etc/os-release").unwrap_or_default(),
+        tool_on_path,
     )
+}
+
+/// The package format from `/etc/os-release`, and when that doesn't place the distro (an `ID`
+/// it doesn't know and no `ID_LIKE`, as on Deepin, or no file at all), from the package manager
+/// that is installed: `dpkg` with `apt` first, then `rpm` with `dnf` or `yum`. `dpkg` or `rpm`
+/// alone is not enough: Arch packages both as tools, and installing a `.deb` there with
+/// `dpkg -i` bypasses pacman. openSUSE (`rpm` with `zypper`) and ALT (`rpm` with apt-rpm) take
+/// `.rpm` files, but not one built for Fedora's package names. With neither pair it stays
+/// `appimage`, which releases don't build, so the Desktop app card points to the download page.
+fn linux_package_preference_from(
+    os_release: &str,
+    has_tool: impl Fn(&str) -> bool,
+) -> &'static str {
+    match linux_package_preference_from_os_release(os_release) {
+        "appimage" if has_tool("dpkg") && (has_tool("apt-get") || has_tool("apt")) => "deb",
+        "appimage" if has_tool("rpm") && (has_tool("dnf") || has_tool("yum")) => "rpm",
+        preference => preference,
+    }
+}
+
+/// Whether an executable named `name` is on `PATH` or in the usual system folders. An app
+/// started from a desktop launcher can have a short `PATH`.
+fn tool_on_path(name: &str) -> bool {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path)
+        .chain(["/usr/bin", "/bin", "/usr/sbin", "/sbin"].map(PathBuf::from))
+        .any(|dir| dir.join(name).is_file())
 }
 
 fn parse_artifact(value: &serde_json::Value, source: &UpdateSource) -> Option<ResolvedArtifact> {
@@ -438,35 +482,39 @@ fn artifact_for_platform_data(
     match os {
         HostOs::Macos => read("dmg"),
         HostOs::Windows => read("exe").or_else(|| read("msi")),
-        HostOs::Linux => match package_preference {
-            "deb" => read("deb").or_else(|| read("appimage")),
-            "rpm" => read("rpm").or_else(|| read("appimage")),
-            _ => read("appimage")
-                .or_else(|| read("deb"))
-                .or_else(|| read("rpm")),
-        },
+        // Only the format this computer installs. Another one installs a second copy beside this
+        // one, or not at all: releases build no AppImage, so a distro `/etc/os-release` doesn't
+        // place (Arch, for one) used to get the `.deb`, offered with `apt` steps. With nothing in
+        // its format, the Desktop app card points to the download page instead.
+        HostOs::Linux => read(package_preference),
     }
 }
 
-fn artifact_for_platform(
-    platform_data: &serde_json::Value,
-    source: &UpdateSource,
-) -> Option<ResolvedArtifact> {
-    artifact_for_platform_data(
-        platform_data,
-        host_os()?,
-        linux_package_preference(),
-        source,
-    )
+/// This computer: its OS and, on Linux, the package format `/etc/os-release` points to.
+fn current_host() -> Option<(HostOs, &'static str)> {
+    host_os().map(|os| (os, linux_package_preference()))
 }
 
+/// The installer format the updater looks for first on `os`; see [`artifact_for_platform_data`].
+fn host_package_format(os: HostOs, linux_preference: &'static str) -> &'static str {
+    match os {
+        HostOs::Macos => "dmg",
+        HostOs::Windows => "exe",
+        HostOs::Linux => linux_preference,
+    }
+}
+
+/// The installer `manifest` lists for `host` (see [`current_host`]), in the format it takes.
 fn resolve_download_artifact(
     manifest: &ManifestJson,
     source: &UpdateSource,
+    host: Option<(HostOs, &'static str)>,
 ) -> Option<ResolvedArtifact> {
-    let key = platform_key()?;
-    let platform_data = manifest.platforms.get(&key)?;
-    artifact_for_platform(platform_data, source)
+    let (os, linux_preference) = host?;
+    let platform_data = manifest
+        .platforms
+        .get(&platform_manifest_key(os, host_arch()))?;
+    artifact_for_platform_data(platform_data, os, linux_preference, source)
 }
 
 fn lookup_artifact_in_manifest(
@@ -619,13 +667,39 @@ fn fetch_manifest(
         })
 }
 
+/// Whether a newer version exists, and its installer. Callers that only act on an update (the
+/// CLI, the update listener, the install command) use this one.
 pub fn check_desktop_update(current_version: &str) -> Result<DesktopUpdateInfo, String> {
-    check_desktop_update_with_source(current_version, &UpdateSource::resolve())
+    check_desktop_update_with_source(current_version, &UpdateSource::resolve(), false)
+}
+
+/// [`check_desktop_update`] that also names this computer's installer when it already runs the
+/// newest version, for the Desktop app card. It costs a manifest read the other callers skip.
+pub fn check_desktop_update_naming_installer(
+    current_version: &str,
+) -> Result<DesktopUpdateInfo, String> {
+    check_desktop_update_with_source(current_version, &UpdateSource::resolve(), true)
 }
 
 fn check_desktop_update_with_source(
     current_version: &str,
     source: &UpdateSource,
+    name_current_installer: bool,
+) -> Result<DesktopUpdateInfo, String> {
+    check_desktop_update_for_host(
+        current_version,
+        source,
+        current_host(),
+        name_current_installer,
+    )
+}
+
+/// [`check_desktop_update_with_source`] for a given computer (see [`current_host`]).
+fn check_desktop_update_for_host(
+    current_version: &str,
+    source: &UpdateSource,
+    host: Option<(HostOs, &'static str)>,
+    name_current_installer: bool,
 ) -> Result<DesktopUpdateInfo, String> {
     let client = source.http_client(Duration::from_secs(30))?;
 
@@ -634,7 +708,15 @@ fn check_desktop_update_with_source(
 
     let download_url = if update_available {
         let manifest = fetch_manifest(&client, &latest_version, source)?;
-        resolve_download_artifact(&manifest, source)
+        resolve_download_artifact(&manifest, source, host)
+    } else if name_current_installer && !semver_compare_gt(current_version, &latest_version) {
+        // This computer already runs the newest version. Its installer is looked up anyway, so the
+        // Desktop app card can offer it again in this computer's own format (the `.rpm` on Fedora).
+        // The check doesn't depend on it: a failed read only leaves the installer out. A build ahead
+        // of the download server gets none, since the newest release there would downgrade it.
+        fetch_manifest(&client, &latest_version, source)
+            .ok()
+            .and_then(|manifest| resolve_download_artifact(&manifest, source, host))
     } else {
         None
     };
@@ -649,33 +731,35 @@ fn check_desktop_update_with_source(
         update_available,
         expected_size: download_url.as_ref().and_then(|a| a.size),
         expected_sha256: download_url.and_then(|a| a.sha256),
+        package_format: host
+            .map(|(os, linux_preference)| host_package_format(os, linux_preference).to_string()),
     })
 }
 
-fn semver_compare_gt(latest: &str, current: &str) -> bool {
-    // Numeric-prefix parse so a prerelease segment ("16-rc1") still contributes
-    // its numeric part instead of silently dropping the whole segment.
-    let parse = |v: &str| -> Vec<u64> {
-        v.split('.')
-            .map(|part| {
-                let digits: String = part.chars().take_while(char::is_ascii_digit).collect();
-                digits.parse::<u64>().unwrap_or(0)
-            })
-            .collect()
-    };
-    let l = parse(latest);
-    let c = parse(current);
-    for i in 0..l.len().max(c.len()) {
-        let lv = *l.get(i).unwrap_or(&0);
-        let cv = *c.get(i).unwrap_or(&0);
-        if lv > cv {
-            return true;
-        }
-        if lv < cv {
-            return false;
-        }
+/// The releases on GitHub, which list every installer of each version.
+const DESKTOP_RELEASES_PAGE: &str =
+    "https://github.com/companionintelligence/Companion-Hub/releases";
+
+/// The release page of `version`, for a computer it has no installer for in its own format.
+/// Release tags are `v<version>` (Desktop Release's `tag` input). Without a version the releases
+/// list it is. `/releases/latest` would skip pre-releases, which Desktop Release publishes by
+/// default, so it could name an older version than the one offered.
+fn desktop_release_page(version: &str) -> String {
+    let version = version.trim().trim_start_matches('v');
+    if version.is_empty()
+        || !version
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+    {
+        return DESKTOP_RELEASES_PAGE.to_string();
     }
-    false
+    format!("{DESKTOP_RELEASES_PAGE}/tag/v{version}")
+}
+
+/// Whether `latest` takes precedence over `current`, by semver 2.0.0 (§11); see
+/// [`crate::hub_env::compare_semver`].
+fn semver_compare_gt(latest: &str, current: &str) -> bool {
+    crate::hub_env::compare_semver(latest, current) == std::cmp::Ordering::Greater
 }
 
 fn download_file(url: &str, dest: &Path, source: &UpdateSource) -> Result<(), String> {
@@ -1406,8 +1490,11 @@ pub fn run_update_cli(check_only: bool) -> Result<i32, String> {
     }
     if info.download_url.is_empty() {
         let platform = platform_key().unwrap_or_else(|| "unknown".to_string());
+        let format = info.package_format.as_deref().unwrap_or("unknown");
         return Err(format!(
-            "Update available but no download URL for this platform ({platform})"
+            "Update {} is available but has no {format} installer for this platform ({platform}). Download it from {}",
+            info.latest_version,
+            desktop_release_page(&info.latest_version)
         ));
     }
     println!("Updating from {} to {}…", current, info.latest_version);
@@ -2389,6 +2476,79 @@ mod tests {
     }
 
     #[test]
+    fn linux_package_preference_asks_the_package_tool_when_os_release_is_inconclusive() {
+        let tools =
+            |installed: &'static [&'static str]| move |name: &str| installed.contains(&name);
+
+        // Deepin: Debian-based, but its ID isn't one the updater knows and it sets no ID_LIKE.
+        assert_eq!(
+            linux_package_preference_from("ID=deepin\n", tools(&["dpkg", "apt-get"])),
+            "deb"
+        );
+        // No /etc/os-release at all.
+        assert_eq!(
+            linux_package_preference_from("", tools(&["rpm", "dnf"])),
+            "rpm"
+        );
+        // dpkg wins when both are there, as on a Debian with rpm installed for alien.
+        assert_eq!(
+            linux_package_preference_from("", tools(&["rpm", "dpkg", "apt"])),
+            "deb"
+        );
+        // Neither: the download page.
+        assert_eq!(
+            linux_package_preference_from("ID=arch\n", tools(&[])),
+            "appimage"
+        );
+        // dpkg and rpm as tools, without the package manager that goes with them: Arch with
+        // extra/dpkg and rpm-tools, openSUSE (zypper), ALT (apt-rpm, no dpkg).
+        assert_eq!(
+            linux_package_preference_from("ID=arch\n", tools(&["dpkg", "rpm"])),
+            "appimage"
+        );
+        assert_eq!(
+            linux_package_preference_from(
+                "ID=\"opensuse-tumbleweed\"\nID_LIKE=\"opensuse suse\"\n",
+                tools(&["rpm", "zypper"])
+            ),
+            "appimage"
+        );
+        assert_eq!(
+            linux_package_preference_from("ID=altlinux\n", tools(&["rpm", "apt-get"])),
+            "appimage"
+        );
+        // A distro os-release places keeps its own format, whatever else is installed.
+        assert_eq!(
+            linux_package_preference_from("ID=fedora\n", tools(&["dpkg"])),
+            "rpm"
+        );
+        assert_eq!(
+            linux_package_preference_from("ID=ubuntu\n", tools(&["rpm"])),
+            "deb"
+        );
+    }
+
+    #[test]
+    fn release_page_names_the_offered_version() {
+        assert_eq!(
+            desktop_release_page("0.3.7"),
+            "https://github.com/companionintelligence/Companion-Hub/releases/tag/v0.3.7"
+        );
+        assert_eq!(
+            desktop_release_page("v0.3.7-rc.1"),
+            "https://github.com/companionintelligence/Companion-Hub/releases/tag/v0.3.7-rc.1"
+        );
+        assert_eq!(
+            desktop_release_page(""),
+            "https://github.com/companionintelligence/Companion-Hub/releases"
+        );
+        assert_eq!(
+            desktop_release_page("0.3.7/../x"),
+            "https://github.com/companionintelligence/Companion-Hub/releases"
+        );
+    }
+
+    #[test]
     fn linux_package_preference_detects_distro_families() {
         assert_eq!(
             linux_package_preference_from_os_release("ID=ubuntu\n"),
@@ -2402,6 +2562,42 @@ mod tests {
             linux_package_preference_from_os_release("ID=arch\n"),
             "appimage"
         );
+    }
+
+    #[test]
+    fn linux_package_preference_reads_quoted_ids_and_id_like() {
+        // The ID and ID_LIKE lines these distros ship in /etc/os-release.
+        let cases = [
+            (
+                "PRETTY_NAME=\"Ubuntu 24.04.1 LTS\"\nVERSION_ID=\"24.04\"\nID=ubuntu\nID_LIKE=debian\n",
+                "deb",
+            ),
+            ("NAME=\"Debian GNU/Linux\"\nVERSION_ID=\"12\"\nID=debian\n", "deb"),
+            ("NAME=\"Linux Mint\"\nID=linuxmint\nID_LIKE=\"ubuntu debian\"\n", "deb"),
+            ("NAME=\"Zorin OS\"\nID=zorin\nID_LIKE=ubuntu\n", "deb"),
+            ("NAME=\"Kali GNU/Linux\"\nID=kali\nID_LIKE=debian\n", "deb"),
+            ("NAME=\"Fedora Linux\"\nID=fedora\nVERSION_ID=40\nVARIANT_ID=workstation\n", "rpm"),
+            (
+                "NAME=\"Red Hat Enterprise Linux\"\nID=\"rhel\"\nID_LIKE=\"fedora\"\nVERSION_ID=\"9.4\"\nPLATFORM_ID=\"platform:el9\"\n",
+                "rpm",
+            ),
+            ("NAME=\"Rocky Linux\"\nID=\"rocky\"\nID_LIKE=\"rhel centos fedora\"\n", "rpm"),
+            ("NAME=\"AlmaLinux\"\nID=\"almalinux\"\nID_LIKE=\"rhel centos fedora\"\n", "rpm"),
+            ("NAME=\"CentOS Stream\"\nID=\"centos\"\nID_LIKE=\"rhel fedora\"\n", "rpm"),
+            ("NAME=\"Manjaro Linux\"\nID=manjaro\nID_LIKE=arch\n", "appimage"),
+            (
+                "NAME=\"openSUSE Tumbleweed\"\nID=\"opensuse-tumbleweed\"\nID_LIKE=\"opensuse suse\"\n",
+                "appimage",
+            ),
+            ("", "appimage"),
+        ];
+        for (os_release, expected) in cases {
+            assert_eq!(
+                linux_package_preference_from_os_release(os_release),
+                expected,
+                "{os_release}"
+            );
+        }
     }
 
     fn sample_artifact(url: &str) -> serde_json::Value {
@@ -2460,6 +2656,24 @@ mod tests {
     }
 
     #[test]
+    fn artifact_for_platform_offers_no_other_linux_format() {
+        let source = UpdateSource::default_cdn();
+        // What releases build: a .deb and a .rpm, no AppImage.
+        let release = serde_json::json!({
+            "deb": sample_artifact(&cdn_url("v1/linux/deb/x64/hub.deb")),
+            "rpm": sample_artifact(&cdn_url("v1/linux/rpm/x64/hub.rpm")),
+        });
+        // A distro /etc/os-release doesn't place (Arch) used to get the .deb.
+        assert!(artifact_for_platform_data(&release, HostOs::Linux, "appimage", &source).is_none());
+
+        let rpm_only = serde_json::json!({
+            "rpm": sample_artifact(&cdn_url("v1/linux/rpm/x64/hub.rpm")),
+            "appimage": sample_artifact(&cdn_url("v1/linux/appimage/x64/hub.AppImage")),
+        });
+        assert!(artifact_for_platform_data(&rpm_only, HostOs::Linux, "deb", &source).is_none());
+    }
+
+    #[test]
     fn resolve_download_artifact_uses_current_platform_key() {
         let Some(key) = platform_key() else {
             return;
@@ -2478,8 +2692,9 @@ mod tests {
             version: "1.0.0".to_string(),
             platforms,
         };
-        let artifact = resolve_download_artifact(&manifest, &UpdateSource::default_cdn())
-            .expect("artifact for current platform");
+        let artifact =
+            resolve_download_artifact(&manifest, &UpdateSource::default_cdn(), current_host())
+                .expect("artifact for current platform");
         assert!(artifact
             .url
             .starts_with(&format!("{}/", default_update_cdn_base())));
@@ -2490,6 +2705,45 @@ mod tests {
         assert!(semver_compare_gt("0.3.0-beta.1", "0.2.18"));
         assert!(!semver_compare_gt("0.2.18-rc1", "0.2.18"));
         assert!(!semver_compare_gt("0.2.18", "0.3.0-beta.1"));
+    }
+
+    #[test]
+    fn semver_compare_ranks_a_prerelease_below_its_release() {
+        // A release candidate is older than the release it leads to, so a computer on the release
+        // isn't offered the candidate, and one on the candidate is offered the release.
+        assert!(!semver_compare_gt("0.3.6-rc.1", "0.3.6"));
+        assert!(semver_compare_gt("0.3.6", "0.3.6-rc.1"));
+        assert!(semver_compare_gt("0.3.7-rc.1", "0.3.6"));
+        assert!(!semver_compare_gt("0.3.6-rc.1", "0.3.6-rc.1"));
+    }
+
+    #[test]
+    fn semver_compare_follows_the_spec_order_of_prereleases() {
+        // The example in semver 2.0.0 section 11, lowest first.
+        let ordered = [
+            "1.0.0-alpha",
+            "1.0.0-alpha.1",
+            "1.0.0-alpha.beta",
+            "1.0.0-beta",
+            "1.0.0-beta.2",
+            "1.0.0-beta.11",
+            "1.0.0-rc.1",
+            "1.0.0",
+        ];
+        for (i, lower) in ordered.iter().enumerate() {
+            for higher in &ordered[i + 1..] {
+                assert!(semver_compare_gt(higher, lower), "{higher} > {lower}");
+                assert!(!semver_compare_gt(lower, higher), "{lower} < {higher}");
+            }
+        }
+    }
+
+    #[test]
+    fn semver_compare_ignores_build_metadata_and_a_leading_v() {
+        assert!(!semver_compare_gt("1.0.0+build.2", "1.0.0+build.1"));
+        assert!(!semver_compare_gt("v1.0.0", "1.0.0"));
+        assert!(semver_compare_gt("v1.0.1", "1.0.0"));
+        assert!(semver_compare_gt("1.0.0-rc.10", "1.0.0-rc.9"));
     }
 
     #[test]
@@ -2773,6 +3027,165 @@ mod tests {
         (base, sha)
     }
 
+    /// Serves `latest.json` naming `latest_version`, and the manifest `manifest` builds from the
+    /// server's base URL, when it builds one.
+    fn serve_release(
+        latest_version: &str,
+        manifest: impl FnOnce(&str) -> Option<serde_json::Value>,
+    ) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let base = format!(
+            "http://127.0.0.1:{}",
+            listener.local_addr().expect("addr").port()
+        );
+        let latest = format!("{{\"version\":\"{latest_version}\"}}");
+        let manifest_path = format!("/v{latest_version}/manifest.json");
+        let manifest = manifest(&base).map(|m| m.to_string());
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut buffer = [0u8; 2048];
+                let read = stream.read(&mut buffer).unwrap_or(0);
+                if read == 0 {
+                    continue;
+                }
+                let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+                let path = request.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let (status, body) = match (path.as_str(), &manifest) {
+                    ("/latest.json", _) => ("200 OK", latest.clone()),
+                    (p, Some(m)) if p == manifest_path => ("200 OK", m.clone()),
+                    _ => ("404 Not Found", "not found".to_string()),
+                };
+                let header = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(body.as_bytes());
+            }
+        });
+        base
+    }
+
+    /// A Linux release that lists all three package formats, each at its own URL.
+    fn linux_release(base: &str, version: &str) -> serde_json::Value {
+        let entry = |path: &str| serde_json::json!({ "url": format!("{base}/v{version}/{path}"), "size": 1 });
+        serde_json::json!({
+            "version": version,
+            "platforms": {
+                platform_manifest_key(HostOs::Linux, host_arch()): {
+                    "deb": entry("hub.deb"),
+                    "rpm": entry("hub.rpm"),
+                    "appimage": entry("hub.AppImage"),
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn up_to_date_check_names_this_computers_own_installer() {
+        let base = serve_release("1.2.3", |base| Some(linux_release(base, "1.2.3")));
+        let source = UpdateSource::from_base(&base).expect("test source");
+
+        // Fedora gets the .rpm and Ubuntu the .deb, even with nothing newer to install.
+        let fedora =
+            check_desktop_update_for_host("1.2.3", &source, Some((HostOs::Linux, "rpm")), true)
+                .expect("check on Fedora");
+        assert!(!fedora.update_available);
+        assert!(
+            fedora.download_url.ends_with("/v1.2.3/hub.rpm"),
+            "{}",
+            fedora.download_url
+        );
+        assert_eq!(fedora.package_format.as_deref(), Some("rpm"));
+
+        let ubuntu =
+            check_desktop_update_for_host("1.2.3", &source, Some((HostOs::Linux, "deb")), true)
+                .expect("check on Ubuntu");
+        assert!(
+            ubuntu.download_url.ends_with("/v1.2.3/hub.deb"),
+            "{}",
+            ubuntu.download_url
+        );
+        assert_eq!(ubuntu.package_format.as_deref(), Some("deb"));
+    }
+
+    #[test]
+    fn up_to_date_check_offers_nothing_older_and_survives_a_missing_manifest() {
+        let base = serve_release("1.2.3", |base| Some(linux_release(base, "1.2.3")));
+        let source = UpdateSource::from_base(&base).expect("test source");
+
+        // A build ahead of the download server would be downgraded by its newest release.
+        let ahead =
+            check_desktop_update_for_host("1.3.0", &source, Some((HostOs::Linux, "rpm")), true)
+                .expect("check ahead of the server");
+        assert!(!ahead.update_available);
+        assert!(ahead.download_url.is_empty());
+
+        // Without a manifest the check still answers, only without an installer.
+        let no_manifest =
+            UpdateSource::from_base(&serve_release("1.2.3", |_| None)).expect("source");
+        let current = check_desktop_update_for_host(
+            "1.2.3",
+            &no_manifest,
+            Some((HostOs::Linux, "deb")),
+            true,
+        )
+        .expect("check without a manifest");
+        assert!(!current.update_available);
+        assert!(current.download_url.is_empty());
+        assert_eq!(current.package_format.as_deref(), Some("deb"));
+    }
+
+    #[test]
+    fn up_to_date_check_offers_no_other_format() {
+        // Like a real release: a .deb and an .rpm, no AppImage.
+        let deb_and_rpm = |base: &str| {
+            Some(serde_json::json!({
+                "version": "1.2.3",
+                "platforms": {
+                    platform_manifest_key(HostOs::Linux, host_arch()): {
+                        "deb": { "url": format!("{base}/v1.2.3/hub.deb"), "size": 1 },
+                        "rpm": { "url": format!("{base}/v1.2.3/hub.rpm"), "size": 1 },
+                    }
+                }
+            }))
+        };
+        let source = UpdateSource::from_base(&serve_release("1.2.3", deb_and_rpm)).expect("source");
+        let arch = Some((HostOs::Linux, "appimage"));
+
+        // Arch takes an AppImage, which the release lacks, so the .deb isn't offered in its place.
+        let current = check_desktop_update_for_host("1.2.3", &source, arch, true)
+            .expect("check on Arch, up to date");
+        assert!(!current.update_available);
+        assert!(current.download_url.is_empty(), "{}", current.download_url);
+        assert_eq!(current.package_format.as_deref(), Some("appimage"));
+
+        // Nor in an update: another format would install a second copy, or not at all. The
+        // Desktop app card points to the download page instead.
+        let update =
+            check_desktop_update_for_host("1.0.0", &source, arch, true).expect("check on Arch");
+        assert!(update.update_available);
+        assert!(update.download_url.is_empty(), "{}", update.download_url);
+        let fedora_update =
+            check_desktop_update_for_host("1.0.0", &source, Some((HostOs::Linux, "rpm")), false)
+                .expect("check on Fedora");
+        assert!(
+            fedora_update.download_url.ends_with("/v1.2.3/hub.rpm"),
+            "{}",
+            fedora_update.download_url
+        );
+
+        // Fedora still gets its .rpm.
+        let fedora =
+            check_desktop_update_for_host("1.2.3", &source, Some((HostOs::Linux, "rpm")), true)
+                .expect("check on Fedora, up to date");
+        assert!(
+            fedora.download_url.ends_with("/v1.2.3/hub.rpm"),
+            "{}",
+            fedora.download_url
+        );
+    }
+
     #[test]
     fn end_to_end_check_download_verify_against_local_server() {
         let artifact = b"fake-installer-bytes-for-e2e".to_vec();
@@ -2780,16 +3193,27 @@ mod tests {
         let source = UpdateSource::from_base(&base).expect("test source");
 
         // Check: newer version discovered, artifact resolved with expectations.
-        let info = check_desktop_update_with_source("0.2.27", &source).expect("check");
+        let info = check_desktop_update_with_source("0.2.27", &source, false).expect("check");
         assert!(info.update_available);
         assert_eq!(info.latest_version, "9.9.9");
         assert!(info.download_url.starts_with(&base));
         assert_eq!(info.expected_size, Some(artifact.len() as u64));
         assert_eq!(info.expected_sha256.as_deref(), Some(sha.as_str()));
 
-        // No update offered when already current.
-        let current = check_desktop_update_with_source("9.9.9", &source).expect("check current");
+        // No update offered when already current, but this computer's installer is still named.
+        let current =
+            check_desktop_update_with_source("9.9.9", &source, true).expect("check current");
         assert!(!current.update_available);
+        assert_eq!(current.download_url, info.download_url);
+        assert_eq!(current.expected_sha256.as_deref(), Some(sha.as_str()));
+        assert!(current.package_format.is_some());
+
+        // The CLI, the update listener and the install command act only on an update, so their
+        // check reads no manifest for the version already running.
+        let current_only =
+            check_desktop_update_with_source("9.9.9", &source, false).expect("check current only");
+        assert!(!current_only.update_available);
+        assert!(current_only.download_url.is_empty());
 
         // Download + integrity verification round-trip.
         let staging = tempfile::tempdir().expect("staging");

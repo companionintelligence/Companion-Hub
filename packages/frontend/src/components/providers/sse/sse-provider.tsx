@@ -2,7 +2,7 @@ import { appContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
 import { useSSE } from '@/lib/hooks/use-sse';
 import { applyHubHello } from '@/lib/hub-hello';
 import { usesSameOriginHubApi } from '@/lib/hub-runtime-mode';
-import { handleAppSseEvent, type AppSsePayload } from '@/modules/app/helpers/app-sse-cache';
+import { cachedAppName, handleAppSseEvent, type AppSsePayload } from '@/modules/app/helpers/app-sse-cache';
 import { extractAppUrn } from '@/utils/app-helpers';
 import type { AppUrn } from '@ci-hub/common/types';
 import { useQueryClient } from '@tanstack/react-query';
@@ -190,11 +190,15 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
         case 'uninstall_error':
           showLogsErrorToast('APP_ERROR_APP_FAILED_TO_UNINSTALL_TOAST', appName);
           break;
+        // The update toasts name the app as its page does ("Uptime Kuma"), not by its id ("uptime-kuma").
         case 'update_success':
-          toast.success(t('APP_UPDATE_SUCCESS', { id: appName }));
+          toast.success(t('APP_UPDATE_SUCCESS', { id: cachedAppName(queryClient, appUrn, appName) }));
           break;
         case 'update_error':
-          showLogsErrorToast('APP_ERROR_APP_FAILED_TO_UPDATE_TOAST', appName);
+          showLogsErrorToast('APP_ERROR_APP_FAILED_TO_UPDATE_TOAST', cachedAppName(queryClient, appUrn, appName));
+          break;
+        case 'update_cancelled':
+          toast.success(t('APP_UPDATE_CANCELLED', { id: cachedAppName(queryClient, appUrn, appName) }));
           break;
         case 'reset_success':
           toast.success(t('APP_RESET_SUCCESS', { id: appName }));

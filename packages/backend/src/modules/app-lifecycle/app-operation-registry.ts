@@ -2,7 +2,7 @@ import { Injectable, Optional } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { lifecycleOperationSchema } from '@ci-hub/common/schemas';
 import type { z } from 'zod';
-import { appCommandTimeoutMs } from '@/common/constants';
+import { appEventsQueueTimeoutMs } from '@/common/helpers/app-command-deadline';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 
@@ -25,10 +25,12 @@ export type CancellabilityTier = 'safe' | 'before_ponr' | 'non_cancellable';
  * - `preparing`: dequeued, before any destructive/irreversible work.
  * - `pulling`: image pull in flight.
  * - `composing`: `docker compose up/down` in flight.
+ * - `verifying`: the new containers run and the operation waits for their health checks; a cancel
+ *   now undoes what it changed (an update rolls back).
  * - `finalizing`: post-compose work (Traefik, webhooks, status) — past the point of no return.
  * - `committed`: an explicit point-of-no-return crossed; cancel must be refused.
  */
-export type OperationPhase = 'queued' | 'preparing' | 'pulling' | 'composing' | 'finalizing' | 'committed';
+export type OperationPhase = 'queued' | 'preparing' | 'pulling' | 'composing' | 'verifying' | 'finalizing' | 'committed';
 
 /** A single in-flight (or queued) lifecycle operation for one app. */
 export interface OperationEntry {
@@ -55,7 +57,7 @@ export interface OperationEntry {
  * good. The status sync judges a transitional row by the same window.
  */
 export function operationStaleAfterMs(eventsTimeoutMinutes: number): number {
-  return appCommandTimeoutMs(eventsTimeoutMinutes);
+  return appEventsQueueTimeoutMs(eventsTimeoutMinutes);
 }
 
 /** The operation an app has under way, as {@link AppOperationRegistry.liveOperation} reports it. */

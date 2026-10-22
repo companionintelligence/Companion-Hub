@@ -107,6 +107,35 @@ describe('SSEService app stream', () => {
     });
   });
 
+  // An update can wait minutes for its health checks with no event in between: a page opened then
+  // showed "Preparing..." until the update ended.
+  describe('a page opened mid-update', () => {
+    const appUrn = 'uptime-kuma:ci-marketplace';
+    const step = (updatePhase: 'pulling' | 'verifying') => ({ event: 'status_change', appUrn, appStatus: 'updating', updatePhase }) as const;
+
+    it('gets the step the update is in right after the hello', async () => {
+      service.emit('app', step('pulling'));
+      service.emit('app', step('verifying'));
+
+      const pending = collect(2);
+      service.emit('app', { event: 'install_queue', active: null, queued: [] });
+      const [, second] = await pending;
+
+      expect(JSON.parse(second.data as string)).toEqual(step('verifying'));
+    });
+
+    it('stops getting it once the update was cancelled', async () => {
+      service.emit('app', step('verifying'));
+      service.emit('app', { event: 'update_cancelled', appUrn, appStatus: 'running' });
+
+      const pending = collect(2);
+      service.emit('app', { event: 'install_queue', active: null, queued: [] });
+      const [, second] = await pending;
+
+      expect(JSON.parse(second.data as string).event).toBe('install_queue');
+    });
+  });
+
   it('greets a second subscriber independently (a reconnecting tab gets its own hello)', async () => {
     const a = await collect(1);
     const b = await collect(1);

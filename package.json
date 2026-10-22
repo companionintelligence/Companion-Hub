@@ -27,7 +27,7 @@
     "e2e:mcp": "bash e2e/pre-test-cleanup.sh && E2E_SUITE=mcp pnpm exec playwright test --config playwright.mcp.config.ts",
     "e2e:mcp:ci": "bash e2e/pre-test-cleanup.sh && E2E_SUITE=mcp pnpm exec playwright test --config playwright.mcp.config.ts --grep-invert \"Full OpenClaw install\"",
     "check": "pnpm run lint && turbo run tsc && turbo run build && turbo run test",
-    "gen:api-client": "pnpm --filter frontend exec openapi-ts -f openapi-ts.config.ts",
+    "gen:api-client": "openapi-ts -f openapi-ts.config.ts",
     "gen:swagger": "pnpm --filter backend run gen:swagger",
     "check:openapi": "node scripts/check-openapi-drift.cjs",
     "check:pr": "pnpm run lint:ci && pnpm run knip:ci && pnpm run tsc && pnpm run check:openapi && pnpm run test && cargo test --manifest-path packages/desktop/src-tauri/Cargo.toml --bin ci-os-hub-desktop",
@@ -78,7 +78,7 @@
   "license": "PolyForm-Noncommercial-1.0.0",
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
-    "@hey-api/openapi-ts": "^0.99.0",
+    "@hey-api/openapi-ts": "0.97.3",
     "@playwright/test": "^1.64.1",
     "cloudflare": "^7.3.0",
     "dotenv-cli": "^11.0.0",

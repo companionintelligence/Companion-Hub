@@ -19,6 +19,7 @@ import {
   planAppTeardown,
   removeManagedAppProjects,
 } from '../hub-cleanup-lib.js';
+import { resolveUpStartMode, type StartFlags } from './cli-args.js';
 import { buildEnvOverrides, getEnvFileOrExit } from './cli-compose-env.js';
 import { startHub } from './cli-lifecycle.js';
 import { run, runBestEffort, runCapture } from './cli-proc.js';
@@ -147,9 +148,17 @@ export function downHub(env: HubEnv, options?: { volumes?: boolean }) {
   removeProjectContainers('ci-hub', hubDocker(undefined));
 }
 
-export async function restartHub(env: HubEnv, detached = false) {
+const NO_START_FLAGS: StartFlags = { detached: false, attached: false };
+
+/**
+ * `restart` and `recreate` start the stack again with the mode `cihub up` would pick for the same
+ * flags ({@link resolveUpStartMode}): outside a checkout that is detached unless `--attached` was
+ * given. Attached, the command stays on `docker compose up`. A Ctrl+C or a signal to it then makes
+ * compose stop the containers.
+ */
+export async function restartHub(env: HubEnv, flags: StartFlags = NO_START_FLAGS) {
   downHub(env);
-  await startHub(env === 'local' ? 'local-dev' : detached ? 'detached' : 'attached', env);
+  await startHub(resolveUpStartMode(env, flags), env);
 }
 
 function pathIsWithin(base: string, target: string): boolean {
@@ -737,8 +746,8 @@ function resetIncompleteLines(env: HubEnv, dockerLeft: DockerLeftovers, hostData
   return lines;
 }
 
-export async function recreateHub(env: HubEnv, detached = false, force = false) {
+export async function recreateHub(env: HubEnv, flags: StartFlags = NO_START_FLAGS, force = false) {
   const resetComplete = await resetHub(env, force);
   if (!resetComplete) return;
-  await startHub(env === 'local' ? 'local-dev' : detached ? 'detached' : 'attached', env);
+  await startHub(resolveUpStartMode(env, flags), env);
 }

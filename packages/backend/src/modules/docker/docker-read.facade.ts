@@ -231,6 +231,27 @@ export class DockerReadFacade {
     return addresses;
   }
 
+  /**
+   * The address a running container of the app's compose `service` holds on the Hub's app network,
+   * the one Traefik reaches exposed apps through. Null when no such container runs or it isn't on
+   * that network (host networking, `network_mode: service:…`). Throws when Docker fails or takes
+   * longer than {@link DOCKER_INSPECT_TIMEOUT_MS}.
+   */
+  public async getServiceAddressOnHubNetwork(appUrn: AppUrn, service: string): Promise<string | null> {
+    const containers = await withTimeout(
+      listContainersMatchingAnyLabelSets(this.docker, appUrnLabelSets(appUrn, [`com.docker.compose.service=${service}`]), false),
+      DOCKER_INSPECT_TIMEOUT_MS,
+      `Docker container listing timed out for ${appUrn}`,
+    );
+    for (const container of containers) {
+      const address = container.State === 'running' ? ipOnHubNetwork(container.NetworkSettings?.Networks) : undefined;
+      if (address) {
+        return address;
+      }
+    }
+    return null;
+  }
+
   public async getAppNetworkTarget(appUrn: AppUrn): Promise<AppNetworkTarget | null> {
     const containers = await listContainersMatchingAnyLabelSets(this.docker, appUrnLabelSets(appUrn, ['traefik.enable=true']), false);
 

@@ -200,10 +200,18 @@ function describeFloorShortfall(shortfall: FloorShortfall | null, wanted: number
  */
 @Injectable()
 export class InferenceRouterService implements OnApplicationBootstrap {
+  /**
+   * How long the factory reset's unloads wait for the model loads ahead of them. A queued Ollama load can
+   * take 120 s, and its evictions 30 s each, so this covers a few of them without leaving the old Hub's
+   * models in memory for good when a load hangs.
+   */
+  static readonly FACTORY_RESET_LOCK_WAIT_MS = 5 * 60_000;
   /** The tail of {@link loadTrackedModel}'s queue: every load on this node waits for the one before it. */
   private loadQueue: Promise<void> = Promise.resolve();
   /** Whether {@link warnSlotsUnstated} has spoken yet. */
   private warnedSlotsUnstated = false;
+  /** The catalog ids of the pins asked for and not finished yet, for {@link forgetPinnedModels}. */
+  private readonly pinsUnderWay = new Map<string, number>();
 
   constructor(
     readonly _logger: LoggerService,
@@ -234,6 +242,101 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     void this.readoptPinnedModels().catch((err) => {
       this._logger.warn(`[Inference] Could not re-mark the pinned models after a restart: ${err instanceof Error ? err.message : String(err)}`);
     });
+  }
+
+  /**
+   * Unpin every model and unload each one its engine still holds, for a factory reset. The Hub loads a
+   * model at `keep_alive: -1`, so an unpin alone left the old Hub's pinned models in memory for good.
+   *
+   * - The pins still under way go too. The reset refuses them once their load ends (`pinTrackedModel`).
+   *   Their model is then in memory at `keep_alive: -1` like any pinned one.
+   * - The unloads run under the load lock, so a load under way ends first: a model still loading is
+   *   resident only once it has loaded. They run after this resolves, in the background, because a load
+   *   ahead of them can hold the lock for minutes and the reset must answer the page before that. They
+   *   wait {@link InferenceRouterService.FACTORY_RESET_LOCK_WAIT_MS} at most, then unload what is in
+   *   memory without the lock.
+   * - Only a model the engine lists under its own name, or `<name>:latest`, is unloaded. Ollama's usual
+   *   match takes a prefix, which reads `nomic-embed-text-v2-moe` as `nomic-embed-text`. An unload of a
+   *   model that is not in memory can make Ollama load it first.
+   * - The engine is asked only at the address the Hub is configured with. When that does not answer,
+   *   nothing is unloaded: a fallback address can be another engine, whose models are not the Hub's.
+   *
+   * Resolves once the pins are forgotten. `unloads` settles when the unloads are done. It never
+   * rejects: a failed unload costs a warning, never the reset.
+   */
+  async forgetPinnedModels(): Promise<{ unloads: Promise<void> }> {
+    const underWay = [...this.pinsUnderWay.keys()];
+    const unpinned = await this.modelRegistry.forgetPins();
+    const catalogIds = [...new Set([...unpinned, ...underWay])];
+    const unloads = this.unloadAfterFactoryReset(catalogIds).catch((err: unknown) => {
+      this._logger.warn(`[Inference] Factory reset could not unload the pinned models: ${err instanceof Error ? err.message : String(err)}`);
+    });
+    return { unloads };
+  }
+
+  /** Takes the load lock, or stops waiting for it after {@link InferenceRouterService.FACTORY_RESET_LOCK_WAIT_MS}, then unloads. */
+  private async unloadAfterFactoryReset(catalogIds: string[]): Promise<void> {
+    if (catalogIds.length === 0) return;
+
+    // A turn in the load queue that holds the lock until `release`. One given up on still comes round
+    // later and lets go at once, so the queue never runs these unloads twice.
+    let release: () => void = () => undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const locked = new Promise<boolean>((resolve) => {
+      void this.withLoadLock(async () => {
+        resolve(true);
+        await released;
+      });
+    });
+    let timer: NodeJS.Timeout | undefined;
+    const gaveUp = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), InferenceRouterService.FACTORY_RESET_LOCK_WAIT_MS);
+      timer.unref?.();
+    });
+
+    try {
+      if (!(await Promise.race([locked, gaveUp]))) {
+        this._logger.warn(
+          `[Inference] Factory reset waited ${InferenceRouterService.FACTORY_RESET_LOCK_WAIT_MS / 60_000} min for a model load ahead of it; unloading what is in memory now`,
+        );
+      }
+      for (const catalogId of catalogIds) {
+        await this.unloadForFactoryReset(catalogId);
+      }
+    } finally {
+      clearTimeout(timer);
+      release();
+    }
+  }
+
+  private async unloadForFactoryReset(catalogId: string): Promise<void> {
+    const target = this.loadTarget(catalogId);
+    if (!target) return;
+    const backend = this.backends.get(target.backendType);
+    if (!backend.residentAtConfiguredEndpoint || !backend.unloadAtConfiguredEndpoint) return;
+
+    const resident = await backend.residentAtConfiguredEndpoint().catch(() => null);
+    if (resident === null) {
+      this._logger.warn(
+        `[Inference] Factory reset left ${catalogId} as it was: ${target.backendType} did not answer at the address the Hub is configured with`,
+      );
+      return;
+    }
+    const names = new Set([backend.engineModelId?.(target.backendModelId) ?? target.backendModelId, target.backendModelId]);
+    const held = resident.find((name) => names.has(name) || [...names].some((own) => name === `${own}:latest`));
+    if (!held) return;
+
+    try {
+      await backend.unloadAtConfiguredEndpoint(held, { embedding: target.curated?.modality === 'embedding' });
+      this.modelRegistry.updateModelState(catalogId, 'pulled');
+      this._logger.info(`[Inference] Factory reset unloaded ${catalogId} (${held})`);
+    } catch (err) {
+      this._logger.warn(`[Inference] Factory reset could not unload ${catalogId}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      this.memoryManager.invalidateObservation();
+    }
   }
 
   /**
@@ -1156,7 +1259,10 @@ export class InferenceRouterService implements OnApplicationBootstrap {
    * then mark pinned a model that is no longer in memory.
    */
   async pinTrackedModel(catalogId: string, options: { origin: 'operator' | 'agent' }): Promise<{ pinned: true } | { pinned: false; reason: string }> {
-    return this.withLoadLock(async () => {
+    // Read before the lock, so a pin waiting behind another load when a factory reset runs is refused too.
+    const pinGeneration = this.modelRegistry.currentPinGeneration();
+    this.pinsUnderWay.set(catalogId, (this.pinsUnderWay.get(catalogId) ?? 0) + 1);
+    return this.withLoadLock<{ pinned: true } | { pinned: false; reason: string }>(async () => {
       const curated = this.modelRegistry.getCuratedModel(catalogId);
       const served = this.modelRegistry.getTrackedModel(catalogId) ?? curated;
       const model = served ? { backend: served.backend, backendModelId: served.backendModelId } : undefined;
@@ -1188,6 +1294,14 @@ export class InferenceRouterService implements OnApplicationBootstrap {
         }
       }
 
+      // A factory reset that ran while this pin waited or loaded refuses it, and leaves the model's
+      // keep_alive to the reset's unload. Asked again after the keep_alive call or the load below.
+      const overtaken = () => pinGeneration !== this.modelRegistry.currentPinGeneration();
+      const refusal = { pinned: false as const, reason: `${catalogId} is loaded, but not pinned: a factory reset ran before this pin finished` };
+      if (overtaken()) {
+        return refusal;
+      }
+
       // A model the pin found in memory was not loaded by it, so it still has whatever keep_alive it
       // had: Ollama's usual expiry after an unpin, or for a model an app loaded through Ollama itself.
       // The registry's `loaded` can outlive the model: an unpinned one expires on Ollama's keep_alive
@@ -1198,8 +1312,15 @@ export class InferenceRouterService implements OnApplicationBootstrap {
           return { pinned: false, reason: outcome.reason };
         }
       }
+      if (overtaken()) {
+        return refusal;
+      }
       this.modelRegistry.pinModel(catalogId);
       return { pinned: true };
+    }).finally(() => {
+      const left = (this.pinsUnderWay.get(catalogId) ?? 1) - 1;
+      if (left > 0) this.pinsUnderWay.set(catalogId, left);
+      else this.pinsUnderWay.delete(catalogId);
     });
   }
 

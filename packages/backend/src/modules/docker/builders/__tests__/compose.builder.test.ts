@@ -1272,3 +1272,45 @@ describe('DockerComposeBuilder network sandboxing and defense-in-depth', () => {
     expect(parsed.services.web.extra_hosts).toContain('ci-hub-db:127.0.0.1');
   });
 });
+
+/*
+ * The Hub finds an app's containers by `ci-hub.appurn` and the other labels it writes. An app's extra
+ * labels set after them could name another app, so the Hub took this container for that one. The
+ * Hub's own labels win, and reserved keys an app declares are left out.
+ */
+describe('DockerComposeBuilder — the Hub keeps its own labels', () => {
+  const customUrn = createAppUrn('my-app', '_user');
+
+  it('does not let extra labels replace or add Hub labels, and keeps the app’s other labels', async () => {
+    const result = await new DockerComposeBuilder('ci.computer', 'ci.lan').getDockerCompose(
+      [
+        {
+          name: 'web',
+          image: 'nginx:alpine',
+          isMain: true,
+          internalPort: 80,
+          extraLabels: {
+            'ci-hub.appurn': 'n8n:ci-marketplace',
+            'ci-hub.managed': false,
+            'ci-os-hub.appurn': 'n8n:ci-marketplace',
+            'ci-hub.extra': 'x',
+            'com.example.team': 'web',
+          },
+        },
+      ],
+      { exposureMode: 'local' },
+      customUrn,
+      subnet,
+    );
+    const labels = yaml.parse(result).services.web.labels as Record<string, string | boolean>;
+
+    expect(labels).toMatchObject({
+      'ci-hub.appurn': 'my-app:_user',
+      'ci-hub.managed': true,
+      'ci-os-hub.appurn': 'my-app:_user',
+      'ci-os-hub.managed': true,
+      'com.example.team': 'web',
+    });
+    expect(labels).not.toHaveProperty('ci-hub.extra');
+  });
+});

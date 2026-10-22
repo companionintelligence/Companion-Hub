@@ -25,6 +25,25 @@ vi.mock('react-tooltip', () => ({
 }));
 
 describe('LoginForm', () => {
+  it('says in words that the email address is not valid, instead of the validator message', async () => {
+    const onSubmit = vi.fn();
+    render(
+      <MemoryRouter>
+        <LoginForm loading={false} loginType="your local admin account" onSubmit={onSubmit} />
+      </MemoryRouter>,
+    );
+
+    // The browser accepts an address without a dot in its domain; the form's own check does not.
+    await userEvent.type(screen.getByLabelText('AUTH_FORM_EMAIL'), 'admin@localhost');
+    await userEvent.type(screen.getByLabelText('COMMON_PASSWORD'), 'secret');
+    await userEvent.click(screen.getByRole('button', { name: 'COMMON_LOGIN' }));
+
+    expect(await screen.findByText('SETTINGS_SECURITY_CHANGE_USERNAME_FORM_INVALID_USERNAME')).toBeInTheDocument();
+    // Zod's own wording ("Invalid email address") is English only.
+    expect(screen.queryByText(/invalid email/i)).not.toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it('toggles the password field visibility', async () => {
     render(
       <MemoryRouter>

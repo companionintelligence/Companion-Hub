@@ -63,7 +63,9 @@ export default () => {
     }
     setAppNameError(undefined);
 
-    createCustomApp.mutate({ body: { config: { ...data, schemaVersion: 2 }, name: displayName } });
+    // Awaited by the form, which keeps Save all and Save JSON disabled until it settles. A failure is
+    // reported by the mutation's onError.
+    return createCustomApp.mutateAsync({ body: { config: { ...data, schemaVersion: 2 }, name: displayName } }).catch(() => undefined);
   };
 
   return (

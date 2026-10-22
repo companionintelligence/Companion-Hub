@@ -8,10 +8,12 @@ import { ForwardAuthIdentityResolver } from '../forward-auth-identity.resolver';
 
 const DIRECTORY_ID = '6f1c2a4e-2f3b-4c5d-8e9f-0a1b2c3d4e5f';
 const PUBLIC_ID = '0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a6b';
+const NEW_DIRECTORY_ID = '7a2d3b5f-3a4c-4d6e-9fa0-1b2c3d4e5f60';
+const NEW_PUBLIC_ID = '0293b4c5-d6e7-4f80-8b1c-2d3e4f5a6b7c';
 const PORTAL = 'https://hub.ci.computer';
 
 /** A drizzle client answering only the two statements the resolver issues for the directory. */
-function fakeDb({ failInsert = 0 } = {}) {
+function fakeDb({ failInsert = 0, directory = () => DIRECTORY_ID } = {}) {
   let failuresLeft = failInsert;
   const insert = vi.fn(() => ({
     values: () => ({
@@ -23,7 +25,7 @@ function fakeDb({ failInsert = 0 } = {}) {
       },
     }),
   }));
-  const select = vi.fn(() => ({ from: () => ({ where: async () => [{ directoryId: DIRECTORY_ID }] }) }));
+  const select = vi.fn(() => ({ from: () => ({ where: async () => [{ directoryId: directory() }] }) }));
 
   return { insert, select };
 }
@@ -106,5 +108,68 @@ describe('ForwardAuthIdentityResolver', () => {
 
     await expect(make(fakeDb()).personForPortalSubject(PORTAL, 'portal-sub')).resolves.toBeNull();
     expect(logger.warn).toHaveBeenCalled();
+  });
+
+  // A factory reset empties `user` and `user_directory`. `RESTART IDENTITY` hands id 1 to the next
+  // account. The cached public id was then signed for that new person until a restart.
+  it('reads the directory and each public id again after forget', async () => {
+    let directoryId = DIRECTORY_ID;
+    const resolver = make(fakeDb({ directory: () => directoryId }));
+    await expect(resolver.stableIdFor(1)).resolves.toEqual({ issuer: `urn:ci-hub:${DIRECTORY_ID}`, userId: PUBLIC_ID });
+
+    directoryId = NEW_DIRECTORY_ID;
+    users.getPublicId.mockResolvedValue(NEW_PUBLIC_ID);
+    resolver.forget();
+
+    await expect(resolver.stableIdFor(1)).resolves.toEqual({ issuer: `urn:ci-hub:${NEW_DIRECTORY_ID}`, userId: NEW_PUBLIC_ID });
+  });
+
+  it('forgets which Hub person a Portal subject was', async () => {
+    federated.findByIssuerSubject.mockResolvedValueOnce({ userId: 1 } as never).mockResolvedValueOnce(undefined);
+    users.getUserDtoById.mockResolvedValue({ id: 1, username: 'owner@example.com', accessStatus: 'active' } as never);
+    const resolver = make(fakeDb());
+    await expect(resolver.personForPortalSubject(PORTAL, 'portal-sub')).resolves.toMatchObject({ username: 'owner@example.com' });
+
+    resolver.forget();
+
+    // Bound to nobody after the reset, although id 1 now belongs to someone.
+    await expect(resolver.personForPortalSubject(PORTAL, 'portal-sub')).resolves.toBeNull();
+  });
+
+  it('does not keep a public id read before forget', async () => {
+    let release: (id: string) => void = () => undefined;
+    users.getPublicId.mockImplementationOnce(() => new Promise<string>((resolve) => (release = resolve)));
+    const resolver = make(fakeDb());
+    const reading = resolver.stableIdFor(1);
+
+    resolver.forget();
+    release(PUBLIC_ID);
+    await reading;
+    users.getPublicId.mockResolvedValue(NEW_PUBLIC_ID);
+
+    await expect(resolver.stableIdFor(1)).resolves.toMatchObject({ userId: NEW_PUBLIC_ID });
+  });
+
+  it('keeps the directory read after forget when a read from before it fails late', async () => {
+    const db = fakeDb();
+    let fail: () => void = () => undefined;
+    db.insert.mockImplementationOnce(() => ({
+      values: () => ({
+        onConflictDoNothing: () =>
+          new Promise<void>((_, reject) => {
+            fail = () => reject(new Error('ci-hub-db went away'));
+          }),
+      }),
+    }));
+    const resolver = make(db);
+    const before = resolver.stableIdFor(7);
+
+    resolver.forget();
+    await resolver.stableIdFor(7);
+    fail();
+    await before;
+    await resolver.stableIdFor(7);
+
+    expect(db.select).toHaveBeenCalledTimes(1);
   });
 });

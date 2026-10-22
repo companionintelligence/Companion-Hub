@@ -40,10 +40,12 @@ import { UninstallDialog } from '../../components/dialogs/uninstall-dialog/unins
 import { UpdateSettingsDialog } from '../../components/dialogs/update-settings-dialog/update-settings-dialog';
 import { useAppStatus } from '../../helpers/use-app-status';
 import { useInstallationProgress } from '../../helpers/use-installation-progress';
+import { useUpdatePhase } from '../../helpers/use-update-phase';
 import { useMemoryConnection } from '../../helpers/use-memory-connection';
 import { useLocation, useNavigate, Link, useSearchParams } from 'react-router';
 import { invalidateAppQueries, type AppInstallErrorCache } from '../../helpers/app-sse-cache';
 import type { AppUrn } from '@ci-hub/common/types';
+import type { UpdatePhase } from '@ci-hub/common/schemas';
 import { openExternal } from '@/lib/helpers/open-external';
 import { canOpenFolderInFileExplorer, openPathInFileExplorer } from '@/lib/helpers/open-folder';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
@@ -214,6 +216,22 @@ const INSTALL_FINALIZING_PROGRESS = 99;
 /** Docker often reports a small layer first, so the sizes wait until they add up to a megabyte. */
 const DOWNLOAD_SIZE_SHOWN_FROM_BYTES = 1024 * 1024;
 
+// What the progress line under an update says in each step. `preparing` and an update whose step is
+// not known yet (a page opened before the stream replayed it) say "Preparing...".
+const UPDATE_PHASE_LABEL_KEYS: Record<UpdatePhase, string> = {
+  preparing: 'APP_ACTION_PREPARING',
+  pulling: 'APP_UPDATE_PHASE_PULLING',
+  backing_up: 'APP_UPDATE_PHASE_BACKING_UP',
+  replacing: 'APP_UPDATE_PHASE_REPLACING',
+  starting: 'APP_UPDATE_PHASE_STARTING',
+  verifying: 'APP_UPDATE_PHASE_VERIFYING',
+  finalizing: 'APP_UPDATE_PHASE_FINALIZING',
+  rolling_back: 'APP_UPDATE_PHASE_ROLLING_BACK',
+};
+
+// Steps in which the Hub refuses a cancel: the update is finishing or already rolling back.
+const UPDATE_PHASES_PAST_CANCEL = new Set<UpdatePhase>(['finalizing', 'rolling_back']);
+
 // In-progress statuses that render the LoadingButton, mapped to their status label key.
 const LOADING_STATUS_LABEL_KEYS: Partial<Record<AppStatus, string>> = {
   installing: 'APP_STATUS_INSTALLING',
@@ -230,6 +248,7 @@ const LOADING_STATUS_LABEL_KEYS: Partial<Record<AppStatus, string>> = {
 export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth, urlAvailability, layout = 'default', allowedActions }: IProps) => {
   const installDisclosure = useDisclosure();
   const cancelInstallDisclosure = useDisclosure();
+  const cancelUpdateDisclosure = useDisclosure();
   const stopDisclosure = useDisclosure();
   const forceStopDisclosure = useDisclosure();
   const restartDisclosure = useDisclosure();
@@ -242,12 +261,15 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   // Local optimistic flag while a cancel is in flight: the backend keeps the app in `installing`
   // until compensation finishes and the `install_cancelled` SSE lands, so we surface "Cancelling…".
   const [isCancellingInstall, setIsCancellingInstall] = useState(false);
+  // The same for an update: the Hub stops it at its next safe point and rolls it back.
+  const [isCancellingUpdate, setIsCancellingUpdate] = useState(false);
 
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { architecture } = useAppContext();
   const { setOptimisticStatus } = useAppStatus();
   const installationProgress = useInstallationProgress(app?.status === 'installing' ? (info.urn as AppUrn) : undefined);
+  const updatePhase = useUpdatePhase(app?.status === 'updating' ? (info.urn as AppUrn) : undefined);
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -271,12 +293,14 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   // fails open, so an unavailable handoff never blocks the open.
   const openExternalUrl = (url: string) => (memory.applicable ? openExternalWithHubSession(url) : openExternal(url));
 
-  // Clear the optimistic "cancelling" flag whenever the status moves, into `installing` too. A queued
+  // Clear the optimistic "cancelling" flags whenever the status moves, into `installing` too. A queued
   // install is cancelled at once, so install_cancelled can land before the reply that sets the flag,
-  // and the app's next install would then start out "Cancelling…" with Cancel disabled.
+  // and the app's next install would then start out "Cancelling…" with Cancel disabled. An update
+  // cancelled during its download can end as quickly, so its flag is cleared the same way.
   // biome-ignore lint/correctness/useExhaustiveDependencies: app?.status is the trigger, not an input.
   useEffect(() => {
     setIsCancellingInstall(false);
+    setIsCancellingUpdate(false);
   }, [app?.status]);
 
   const urnParts = info.urn.split(':');
@@ -414,12 +438,17 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     const progress = app?.status === 'installing' ? installationProgress : null;
     const progressValue = progress === null ? 12 : Math.max(8, Math.min(99, progress.percent));
 
-    const cancelling = isCancellingInstall && app?.status === 'installing';
+    const cancellingUpdate = isCancellingUpdate && app?.status === 'updating';
+    const cancelling = (isCancellingInstall && app?.status === 'installing') || cancellingUpdate;
     const statusLabel = cancelling ? t('APP_STATUS_CANCELLING') : t((app?.status && LOADING_STATUS_LABEL_KEYS[app.status]) ?? 'COMMON_INSTALLING');
 
     let stageText = t('APP_ACTION_PREPARING');
-    if (cancelling) {
+    if (app?.status === 'updating' && updatePhase === 'rolling_back') {
+      stageText = t(UPDATE_PHASE_LABEL_KEYS.rolling_back);
+    } else if (cancelling) {
       stageText = t('APP_STATUS_CANCELLING');
+    } else if (app?.status === 'updating' && updatePhase) {
+      stageText = t(UPDATE_PHASE_LABEL_KEYS[updatePhase], { name: info.name });
     } else if (progress !== null) {
       if (progress.percent >= INSTALL_FINALIZING_PROGRESS) stageText = t('APP_ACTION_FINALIZING');
       else if (progress.percent >= 60 && (progress.totalBytes ?? 0) >= DOWNLOAD_SIZE_SHOWN_FROM_BYTES)
@@ -967,11 +996,26 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
         />,
       );
       break;
+    case 'updating':
+      // An update can wait minutes for the new version's health checks. Cancel stops it at its next
+      // safe point and puts the previous version back; once it is finishing or rolling back, it can't.
+      buttons.push(LoadingButton);
+      secondaryActions.push(
+        <IconActionButton
+          key="cancel"
+          icon={CircleStop}
+          label={t('COMMON_CANCEL')}
+          onClick={cancelUpdateDisclosure.open}
+          disabled={isCancellingUpdate || (updatePhase !== null && UPDATE_PHASES_PAST_CANCEL.has(updatePhase))}
+        />,
+        <IconActionButton key="stop" icon={Pause} label={t('COMMON_STOP')} disabled />,
+        <IconActionButton key="restart" icon={RotateCw} label={t('COMMON_RESTART')} disabled />,
+      );
+      break;
     case 'uninstalling':
     case 'starting':
     case 'stopping':
     case 'restarting':
-    case 'updating':
     case 'resetting':
     case 'backing_up':
     case 'restoring':
@@ -1027,6 +1071,13 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
         onClose={cancelInstallDisclosure.close}
         info={info}
         onCancelStart={() => setIsCancellingInstall(true)}
+      />
+      <CancelInstallDialog
+        operation="update"
+        isOpen={cancelUpdateDisclosure.isOpen}
+        onClose={cancelUpdateDisclosure.close}
+        info={info}
+        onCancelStart={() => setIsCancellingUpdate(true)}
       />
       <StopDialog isOpen={stopDisclosure.isOpen} onClose={stopDisclosure.close} info={info} />
       <ForceStopDialog isOpen={forceStopDisclosure.isOpen} onClose={forceStopDisclosure.close} info={info} />

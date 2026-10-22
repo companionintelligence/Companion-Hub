@@ -7,9 +7,8 @@ vi.unmock('node:fs');
 vi.unmock('fs');
 
 const fs = (await import('node:fs')).default;
-const { readVolumeArchiveKeys, validateRestoreArchiveEntries, validateRestoreDirectory, UNSAFE_BACKUP_MESSAGE } = await import(
-  '../restore-validation'
-);
+const { appDataMemberWithOwners, readVolumeArchiveKeys, validateRestoreArchiveEntries, validateRestoreDirectory, UNSAFE_BACKUP_MESSAGE } =
+  await import('../restore-validation');
 
 const file = (p: string) => ({ path: p, type: '-' });
 const dir = (p: string) => ({ path: p, type: 'd' });
@@ -327,5 +326,27 @@ describe('readVolumeArchiveKeys', () => {
     await fs.promises.mkdir(path.join(root, 'data-mariadb.tar'));
 
     await expect(readVolumeArchiveKeys(root)).rejects.toThrow(UNSAFE_BACKUP_MESSAGE);
+  });
+});
+
+// The marker of a backup root archived with the data's real owners: a plain file at the top, nothing else.
+describe('the owners marker', () => {
+  const base = [dir('./'), dir('./app-data/'), file('./app-data/kuma.db'), dir('./app/'), file('./app/docker-compose.json')];
+
+  it('is accepted as a plain file at the top of the archive', () => {
+    expect(() => validateRestoreArchiveEntries([...base, file('./app-data.owners')])).not.toThrow();
+  });
+
+  it.each([
+    ['a folder', dir('./app-data.owners/')],
+    ['a link', { path: './app-data.owners', type: 'l' }],
+  ])('is refused as %s', (_name, marker) => {
+    expect(() => validateRestoreArchiveEntries([...base, marker])).toThrow(UNSAFE_BACKUP_MESSAGE);
+  });
+
+  it('names the data member exactly as the archive lists it, only when the marker is there', () => {
+    expect(appDataMemberWithOwners([...base, file('./app-data.owners')])).toBe('./app-data');
+    expect(appDataMemberWithOwners([dir('app-data/'), file('app-data/x'), dir('app/'), file('app-data.owners')])).toBe('app-data');
+    expect(appDataMemberWithOwners(base)).toBeNull();
   });
 });

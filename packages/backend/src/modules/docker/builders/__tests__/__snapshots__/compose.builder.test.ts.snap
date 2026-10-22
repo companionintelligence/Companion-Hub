@@ -23,14 +23,14 @@ exports[`DockerComposeBuilder > should be able to parse a compose.json file 1`] 
     depends_on:
       - ctfd-db
     labels:
-      ci-hub.managed: true
-      ci-hub.appurn: nginx:store-id
-      ci-os-hub.managed: true
-      ci-os-hub.appurn: nginx:store-id
       some-label: some-value
       nginx-store-id.service: true
       com.docker.compose.service: nginx-store-id
       nginx-store-id: nginx-store-id
+      ci-hub.managed: true
+      ci-hub.appurn: nginx:store-id
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: nginx:store-id
   ctfd-db:
     image: mariadb:10.4.12
     command:

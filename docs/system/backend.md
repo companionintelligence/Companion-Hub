@@ -547,6 +547,32 @@ the old keys until a restart, and the next provider saved wrote them all back to
 General settings keep their old values until the Hub restarts: boot resolved them into the process
 environment (`generateSystemEnvFile`), and nothing kept the environment as it was before that.
 
+The file is not quite empty: `resetSettings` writes a new `hubLocalKey` into it in the same settings
+turn and the running Hub switches to that key, so the old one is refused at once.
+`forgetPersistedUserSettings` also sets `ciHubApiKey`, `ciHubMoveKey` and `ciHubOrganizationId` in
+the running config to null, so the reset Hub stops calling Portal as its old device and its next
+pairing sends no device key or move key.
+
+`wipeDatabase` truncates every table in `schema.ts` (`FACTORY_RESET_TABLES`, which a test keeps
+complete) and then forgets the caches over them: the stable ids forward auth signs
+(`ForwardAuthIdentityResolver.forget()`), the Hub Pool identity and any pairing PIN. After the
+settings, `InferenceRouterService.forgetPinnedModels()` (through `ModelRegistryService.forgetPins()`)
+and `AppCredentialsService.forgetHandouts()` remove `state/inference-pinned-models.json` and
+`state/inference-handouts.json` with their copies in memory. `forgetPinnedModels` then takes the
+load lock so a load under way ends first. It unloads each unpinned model its engine holds, along with
+the model of each pin still under way. The Hub loads at `keep_alive: -1`, so the engine would hold it
+for good. It asks the engine only at the address the Hub is configured with
+(`residentAtConfiguredEndpoint`, `unloadAtConfiguredEndpoint`): a fallback address can be another
+Ollama on the host. When that address does not answer, nothing is unloaded. A model counts as held
+only under its own name or `<name>:latest`, not by the prefix `isModelLoaded` accepts, since an
+unload naming a model that is not in memory can make Ollama load it. A pin still
+waiting or loading when the reset runs is refused once its load ends
+(`ModelRegistryService.currentPinGeneration()`), so it does not pin the old Hub's model again.
+`clearOldHubRequests` removes `state/password-change-request` and `state/pairing-app-check.json`
+and drops the backoff of that apps check (`PairingAppRestoreService.forget()`).
+`state/inference-footprint-sightings.json` and `state/tailscale-serve-ownership.json` stay: one
+describes this hardware and the other names the Tailscale Serve listeners this Hub published.
+
 ## The four engines, or two endpoints
 
 Setup offers Ollama, oMLX, vLLM, or Lemonade, and only the ones the detected machine can run. The other path is a decode endpoint and an encode endpoint. Either URL may be set alone. From inside Docker the probe uses `host.docker.internal`, and the card shows that URL.

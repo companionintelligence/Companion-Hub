@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { redirect, useNavigate, useParams } from 'react-router';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { dynamicComposeFormSchema, type dynamicComposeSchema } from '@ci-hub/common/schemas';
 import type { z } from 'zod';
@@ -11,7 +11,7 @@ import { Card, CardContent } from '@/components/ui/Card';
 import type { TranslatableError } from '@/types/error.types';
 import { useEffect, useId, useState } from 'react';
 import { useMultiServiceStore } from '@/stores/multiServiceStore';
-import { getAppComposeDiffOptions, updateCustomAppMutation } from '@/api-client/@tanstack/react-query.gen';
+import { getAppComposeDiffOptions, getAppComposeDiffQueryKey, updateCustomAppMutation } from '@/api-client/@tanstack/react-query.gen';
 import type { Route } from './+types/custom-app-edit-page';
 import { getAppComposeDiff } from '@/api-client';
 
@@ -43,7 +43,8 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
   const params = useParams<{ appId: string }>();
 
   const [appName] = useState(params.appId);
-  const { setServices } = useMultiServiceStore();
+  const { setServices, setOverrides } = useMultiServiceStore();
+  const queryClient = useQueryClient();
 
   const { data: currentConfig } = useQuery({
     ...getAppComposeDiffOptions({ path: { urn: `${params.appId}:_user` } }),
@@ -72,16 +73,22 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
 
       setConfigError(null);
       setServices(servicesWithId);
+      // Kept beside the form, which has no fields for them, so a save writes them back.
+      setOverrides(parsed.data.overrides);
       setReady(true);
     } catch {
       setConfigError(t('CUSTOM_APP_INVALID_CONFIG'));
     }
-  }, [currentConfig, setServices, t, id]);
+  }, [currentConfig, setServices, setOverrides, t, id]);
 
   const updateCustomApp = useMutation({
     ...updateCustomAppMutation(),
     onSuccess: () => {
       toast.success(t('CUSTOM_APP_UPDATE_SUCCESS', { name: appName }));
+      // The editor fills itself from this query, which stays fresh for 30 seconds and wins over the
+      // loader's newer answer. Without this, opening the editor again right after a save showed the
+      // config from before it. Saving that view put the old config back.
+      void queryClient.invalidateQueries({ queryKey: getAppComposeDiffQueryKey({ path: { urn: `${params.appId}:_user` } }) });
       navigate(`/apps/${appName}`);
     },
     onError: (error: TranslatableError) => {
@@ -90,7 +97,11 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
   });
 
   const onSubmit = (data: z.infer<typeof dynamicComposeSchema>) => {
-    updateCustomApp.mutate({ body: { config: { ...data, schemaVersion: 2 } }, path: { urn: `${params.appId}:_user` } });
+    // Awaited by the form, which keeps Save all and Save JSON disabled until it settles. A failure is
+    // reported by the mutation's onError.
+    return updateCustomApp
+      .mutateAsync({ body: { config: { ...data, schemaVersion: 2 } }, path: { urn: `${params.appId}:_user` } })
+      .catch(() => undefined);
   };
 
   if (configError) {

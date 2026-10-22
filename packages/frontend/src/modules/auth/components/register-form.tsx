@@ -2,6 +2,7 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
 import { meetsPasswordComplexity } from '@ci-hub/common/validation';
+import { emailField } from '../helpers/email-field';
 import { zodResolver } from '@hookform/resolvers/zod';
 import type React from 'react';
 import { useForm } from 'react-hook-form';
@@ -24,7 +25,7 @@ export const RegisterForm: React.FC<IProps> = ({ onSubmit, loading, portalSignIn
   const { t } = useTranslation();
   const schema = z
     .object({
-      email: z.string().email(),
+      email: emailField(t),
       password: z.string().refine((value) => meetsPasswordComplexity(value), { message: t('AUTH_ERROR_INVALID_PASSWORD_COMPLEXITY') }),
       passwordConfirm: z.string().min(1, t('AUTH_FORM_PASSWORD_CONFIRMATION')),
     })

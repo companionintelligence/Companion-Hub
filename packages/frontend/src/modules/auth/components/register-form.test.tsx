@@ -38,6 +38,21 @@ describe('RegisterForm', () => {
     expect(confirmationInput.type).toBe('text');
   });
 
+  it('says in words that the email address is missing or not valid', async () => {
+    const onSubmit = vi.fn();
+    render(<RegisterForm loading={false} onSubmit={onSubmit} />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'AUTH_REGISTER_SUBMIT' }));
+    expect(await screen.findByText('AUTH_FORM_ERROR_EMAIL_REQUIRED')).toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText('AUTH_FORM_EMAIL'), 'owner@localhost');
+    await userEvent.click(screen.getByRole('button', { name: 'AUTH_REGISTER_SUBMIT' }));
+    expect(await screen.findByText('SETTINGS_SECURITY_CHANGE_USERNAME_FORM_INVALID_USERNAME')).toBeInTheDocument();
+
+    expect(screen.queryByText(/invalid email|too small/i)).not.toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it('shows the server password rule and refuses a password the server would reject', async () => {
     const onSubmit = vi.fn();
     render(<RegisterForm loading={false} onSubmit={onSubmit} />);
