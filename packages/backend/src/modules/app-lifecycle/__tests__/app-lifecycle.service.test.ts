@@ -42,6 +42,12 @@ import { HttpStatus } from '@nestjs/common';
 import { assertHostDevicesAvailable } from '../commands/host-device-preflight';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import { EnvUtils } from '@/modules/env/env.utils';
+import type { Request } from 'express';
+import type { ApiKeyContext } from '@/modules/api-keys/api-key.service';
+import { mcpCallContext } from '@/modules/mcp/mcp-call-context';
+import { McpToolRegistry } from '@/modules/mcp/mcp-tool-registry.service';
+import { AppLifecycleTools } from '@/modules/mcp/tools/app-lifecycle.tools';
+import { AppLifecycleController } from '../app-lifecycle.controller';
 
 // buildInstallPlan's image listing goes through extractComposeImages -> parseComposeJson; the
 // schema itself has its own coverage elsewhere, so keep this suite focused on plan orchestration.
@@ -1186,6 +1192,89 @@ describe('AppLifecycleService', () => {
           expect(appsRepository.createApp).toHaveBeenCalled();
           expect(roles.hasManagingRole).not.toHaveBeenCalled();
         });
+      });
+
+      /*
+       * The install route no longer asks WhoIs itself (#2102); the service's gate is the only one. These
+       * go in through the real route and the real MCP tool, so the actor each names is the one checked.
+       * The member here may install the app and is no organization owner or admin.
+       */
+      describe('behind the install route and hub_install_app', () => {
+        const people = { has: vi.fn(), hasManagingRole: vi.fn() };
+        const portalStore = { slug: 'ci-marketplace', url: 'http://portal/api', type: 'ci_cloud_api' };
+        const MEMBER_KEY: ApiKeyContext = { id: 3, name: 'member key', capability: 'full', ownerAppUrn: null, createdByUserId: 7 };
+        let controller: AppLifecycleController;
+        let tools: AppLifecycleTools;
+
+        const viaRoute = (form: Record<string, unknown>) =>
+          controller.installApp(appUrn, form as never, { hubPrincipal: 'session', user: { id: 7 } } as unknown as Request);
+        const viaMcp = (form: Record<string, unknown>) => mcpCallContext.run(MEMBER_KEY, () => tools.installApp({ appUrn, form }));
+        const transports = [
+          ['the install route', viaRoute],
+          ['hub_install_app', viaMcp],
+        ] as const;
+
+        /** Nothing an install does after its gate: no Portal, no registry, no row, no queue, no page told. */
+        const expectNothingReached = () => {
+          expect(reposHelpers.downloadAppFiles).not.toHaveBeenCalled();
+          expect(imageSizeService.listAppImages).not.toHaveBeenCalled();
+          expect(imageSizeService.verifyAppArchitecture).not.toHaveBeenCalled();
+          expect(appsRepository.createApp).not.toHaveBeenCalled();
+          expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+          expect(appEventsQueue.publish).not.toHaveBeenCalled();
+          expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'operation_change' }));
+        };
+
+        beforeEach(() => {
+          people.has.mockReset().mockImplementation(async (_userId: number, _urn: string, action: string) => action === 'install');
+          people.hasManagingRole.mockReset().mockResolvedValue(false);
+          vi.mocked((service as any).moduleRef.get).mockImplementation((token: unknown) => (token === MarketplaceWhoIsService ? people : undefined));
+          appStoreService.getAppStoreBySlug.mockResolvedValue(portalStore as any);
+          // `lifecycleActor` reads only the request, so the Portal, database and repositories are never reached.
+          const whois = new MarketplaceWhoIsService({} as never, {} as never, logger, {} as never, {} as never, {} as never);
+          controller = new AppLifecycleController(service, {} as never, {} as never, whois);
+          tools = new AppLifecycleTools(service, mock<McpToolRegistry>());
+        });
+
+        it.each(transports)('%s refuses a member without the install grant before anything else', async (_label, install) => {
+          people.has.mockResolvedValue(false);
+
+          const error = await install({ exposureMode: 'local' }).then(
+            () => null,
+            (e: TranslatableError) => e,
+          );
+
+          expect(error?.message).toBe('APP_ACTION_GRANT_DENIED');
+          expect(error?.status).toBe(HttpStatus.FORBIDDEN);
+          expect(people.has).toHaveBeenCalledWith(7, appUrn, 'install');
+          expectNothingReached();
+        });
+
+        it.each(transports)('%s refuses a member a form that moves the custom domain', async (_label, install) => {
+          const error = await install({ exposureMode: 'cloudflare', customDomain: 'shop.acme.com' }).then(
+            () => null,
+            (e: TranslatableError) => e,
+          );
+
+          expect(error?.message).toBe('CUSTOM_DOMAIN_ROLE_REQUIRED');
+          expect(error?.status).toBe(HttpStatus.FORBIDDEN);
+          expect(people.hasManagingRole).toHaveBeenCalledWith(7, appUrn);
+          expectNothingReached();
+        });
+
+        it.each(transports)(
+          '%s installs for that member when the form changes nothing it needs a role for, asking WhoIs once',
+          async (_label, install) => {
+            reposHelpers.downloadAppFiles.mockResolvedValue({ success: true, message: 'App files downloaded' });
+
+            await install({ exposureMode: 'local' });
+
+            expect(people.has).toHaveBeenCalledTimes(1);
+            expect(people.has).toHaveBeenCalledWith(7, appUrn, 'install');
+            expect(people.hasManagingRole).not.toHaveBeenCalled();
+            expect(appsRepository.createApp).toHaveBeenCalled();
+          },
+        );
       });
 
       /*
