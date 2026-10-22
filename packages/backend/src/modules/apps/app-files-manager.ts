@@ -290,6 +290,12 @@ export class AppFilesManager {
         if (target !== appDataDir && !target.startsWith(`${appDataDir}${path.sep}`)) {
           continue;
         }
+        // The check above reads the path as written. A link on the way (a restored backup may hold
+        // `data/secrets -> /data/state`) would have the mkdir and the chmod act wherever it points.
+        if (await this.passesThroughLink(appDataDir, target)) {
+          this.logger.warn(`Not creating the folder of a volume of ${appUrn}: ${target} runs through a symbolic link or a file`);
+          continue;
+        }
         await fs.promises.mkdir(target, { recursive: true }).catch(() => {
           /* a path the app data mount refuses is Docker's to report at compose up */
         });
@@ -302,6 +308,26 @@ export class AppFilesManager {
         }
       }
     }
+  }
+
+  /** Whether any part of `target` below `root` that exists is a symbolic link (or not a folder). */
+  private async passesThroughLink(root: string, target: string): Promise<boolean> {
+    let current = root;
+
+    for (const segment of path.relative(root, target).split(path.sep).filter(Boolean)) {
+      current = path.join(current, segment);
+      const stat = await fs.promises.lstat(current).catch(() => null);
+
+      if (!stat) {
+        return false;
+      }
+
+      if (!stat.isDirectory()) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   /**

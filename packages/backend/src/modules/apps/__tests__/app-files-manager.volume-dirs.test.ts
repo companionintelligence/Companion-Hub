@@ -102,6 +102,30 @@ describe('AppFilesManager.createVolumeHostDirs', () => {
     await expect(fs.promises.access(path.join(scratch, 'outside'))).rejects.toThrow();
   });
 
+  it.skipIf(process.platform === 'win32')(
+    'SECURITY: neither makes nor opens anything through a link a restored backup left in the data',
+    async () => {
+      // A backup may hold links below the top of app-data. Followed, `data/secrets -> <elsewhere>` would
+      // have the private chmod close a folder of the Hub's, and `data/up -> <elsewhere>` the mkdir make one there.
+      const elsewhere = path.join(scratch, 'elsewhere');
+      await fs.promises.mkdir(elsewhere, { mode: 0o755 });
+      await fs.promises.chmod(elsewhere, 0o755);
+      await fs.promises.mkdir(path.join(appDataDir, 'data'));
+      await fs.promises.symlink(elsewhere, path.join(appDataDir, 'data', 'secrets'));
+      await fs.promises.symlink(elsewhere, path.join(appDataDir, 'data', 'up'));
+      await writeCompose([
+        { hostPath: '${APP_DATA_DIR}/data/secrets', containerPath: '/run/secrets', private: true },
+        { hostPath: '${APP_DATA_DIR}/data/up/db', containerPath: '/var/lib/db' },
+      ]);
+
+      await manager.createVolumeHostDirs(appUrn);
+
+      expect((await fs.promises.stat(elsewhere)).mode & 0o777).toBe(0o755);
+      await expect(fs.promises.readdir(elsewhere)).resolves.toEqual([]);
+      expect((await fs.promises.lstat(path.join(appDataDir, 'data', 'secrets'))).isSymbolicLink()).toBe(true);
+    },
+  );
+
   it('does nothing for an app with no manifest', async () => {
     await expect(manager.createVolumeHostDirs(appUrn)).resolves.toBeUndefined();
     await expect(fs.promises.readdir(appDataDir)).resolves.toEqual([]);
