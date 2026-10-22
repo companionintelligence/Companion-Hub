@@ -289,6 +289,46 @@ describe('OllamaBackend', () => {
   // ─── Model Operations ──────────────────────────────────────────────
 
   describe('Model operations', () => {
+    // A factory reset unloads what the Hub pinned. Asked at a fallback address, it could reach another
+    // Ollama on the host, whose models are not the Hub's.
+    it('lists what is in memory at OLLAMA_URL only, even when calls resolved to a fallback address', async () => {
+      const state = inspectable();
+      state.configuredUrl = 'http://configured-ollama:11434';
+      state.resolvedUrl = 'http://host.docker.internal:11434';
+      state.urlResolved = true;
+      (axios.get as any) = vi.fn().mockResolvedValue({ data: { models: [{ name: 'nomic-embed-text-v2-moe:latest' }, { model: 'gemma3:270m' }] } });
+
+      await expect(backend.residentAtConfiguredEndpoint()).resolves.toEqual(['nomic-embed-text-v2-moe:latest', 'gemma3:270m']);
+      expect(axios.get).toHaveBeenCalledWith('http://configured-ollama:11434/api/ps', expect.any(Object));
+      expect(axios.get).toHaveBeenCalledTimes(1);
+    });
+
+    it('answers null when OLLAMA_URL does not answer and tries no fallback', async () => {
+      const state = inspectable();
+      state.configuredUrl = 'http://configured-ollama:11434';
+      (axios.get as any) = vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED'));
+
+      await expect(backend.residentAtConfiguredEndpoint()).resolves.toBeNull();
+      expect(axios.get).toHaveBeenCalledTimes(1);
+      expect(state.urlResolved).toBe(false);
+    });
+
+    it('unloads at OLLAMA_URL only, through /api/embed for an embedder', async () => {
+      const state = inspectable();
+      state.configuredUrl = 'http://configured-ollama:11434';
+      state.resolvedUrl = 'http://172.17.0.1:11434';
+      state.urlResolved = true;
+      (axios.post as any) = vi.fn().mockResolvedValue({ data: {} });
+
+      await backend.unloadAtConfiguredEndpoint('nomic-embed-text:latest', { embedding: true });
+
+      expect(axios.post).toHaveBeenCalledWith(
+        'http://configured-ollama:11434/api/embed',
+        { model: 'nomic-embed-text:latest', input: '', keep_alive: 0 },
+        expect.any(Object),
+      );
+    });
+
     it('should list models', async () => {
       (axios.get as any) = vi.fn().mockResolvedValue({
         data: { models: [{ name: 'phi4-mini', size: 2600000000 }] },

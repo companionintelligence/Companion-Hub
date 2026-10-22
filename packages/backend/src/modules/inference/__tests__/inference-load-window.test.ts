@@ -102,6 +102,10 @@ class FakeOllama {
   /** What `/api/tags` lists: on disk, loaded or not. */
   readonly installed = new Set(Object.keys(OLLAMA_MODELS));
   loads: { id: string; ctx: number }[] = [];
+  /** The factory reset's unloads, at the address the Hub is configured with. */
+  configuredUnloads: { id: string; embedding: boolean }[] = [];
+  /** The configured address does not answer, as with a Hub whose Ollama is down. */
+  configuredDown = false;
 
   constructor(
     private readonly defaultWindow: number,
@@ -141,9 +145,15 @@ class FakeOllama {
       type: this.type,
       getBaseUrl: () => 'http://fake-ollama:11434',
       healthCheck: async () => ({ running: true, healthy: true, modelsLoaded: [...this.installed] }),
-      isModelLoaded: async (id: string) => this.resident.has(id),
+      // As `OllamaBackend.matchesModel` does: a prefix counts, so nomic-embed-text-v2-moe reads as nomic-embed-text.
+      isModelLoaded: async (id: string) => [...this.resident.keys()].some((name) => name === id || name.startsWith(id)),
       loadModel: async (id: string, options?: { contextLength?: number }) => this.load(id, options?.contextLength ?? this.defaultWindow),
       unloadModel: async (id: string) => {
+        this.resident.delete(id);
+      },
+      residentAtConfiguredEndpoint: async () => (this.configuredDown ? null : [...this.resident.keys()]),
+      unloadAtConfiguredEndpoint: async (id: string, options?: { embedding?: boolean }) => {
+        this.configuredUnloads.push({ id, embedding: options?.embedding === true });
         this.resident.delete(id);
       },
       contextCostForModel: async (id: string) => {
@@ -894,16 +904,104 @@ describe('a factory reset unloads the models it unpins', () => {
 
     expect(registry.getPinnedCatalogIds()).toEqual([]);
     expect([...ollama.resident.keys()]).toEqual([]);
-    expect(vi.mocked(puller.unloadModel).mock.calls).toEqual([['gemma4-e4b']]);
+    expect(ollama.configuredUnloads).toEqual([{ id: 'gemma4:e4b', embedding: false }]);
+    // Not through the usual path, which may resolve to a fallback address.
+    expect(puller.unloadModel).not.toHaveBeenCalled();
     expect(ollama.loads).toEqual(loadsBefore);
     expect(registry.getTrackedModel('gemma4-e4b')).toMatchObject({ state: 'pulled', pinned: false });
   });
 
-  it('still unpins everything when the engine refuses the unload', async () => {
+  // Ollama's own match takes a prefix, so the reset sent `/api/embed {model: nomic-embed-text, keep_alive: 0}`
+  // with only nomic-embed-text-v2-moe in memory, which loads nomic-embed-text first. A 26 to 35B sibling
+  // loaded that way would evict whatever else the engine held.
+  it('takes no other model for a pinned one that shares its name as a prefix', async () => {
+    const ollama = new FakeOllama(16_384);
+    const { router, registry, puller } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    for (const catalogId of ['gemma4-26b', 'qwen3-8-27b', 'qwen3-6-35b', 'nomic-embed-text']) {
+      registry.trackModel(catalogId, 'pulled');
+      registry.pinModel(catalogId);
+    }
+    for (const sibling of [
+      'gemma4:26b-a4b-it-mtp-q4_K_M',
+      'qwen3.8:27b-mtp-q4_K_M',
+      'qwen3.6:35b-a3b-mtp-q4_K_M',
+      'nomic-embed-text-v2-moe:latest',
+    ]) {
+      ollama.hold(sibling, 16_384, 1000, 1500);
+    }
+
+    await router.forgetPinnedModels();
+
+    expect(ollama.configuredUnloads).toEqual([]);
+    expect(puller.unloadModel).not.toHaveBeenCalled();
+    expect(ollama.loads).toEqual([]);
+    expect(ollama.resident.size).toBe(4);
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+  });
+
+  it('unloads a pinned model the engine lists as <name>:latest, under that name', async () => {
+    const ollama = new FakeOllama(16_384);
+    const { router, registry } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    registry.trackModel('nomic-embed-text', 'loaded');
+    registry.pinModel('nomic-embed-text');
+    ollama.hold('nomic-embed-text:latest', 2_048, 300, 500);
+    ollama.hold('nomic-embed-text-v2-moe:latest', 2_048, 300, 500);
+
+    await router.forgetPinnedModels();
+
+    expect(ollama.configuredUnloads).toEqual([{ id: 'nomic-embed-text:latest', embedding: true }]);
+    expect([...ollama.resident.keys()]).toEqual(['nomic-embed-text-v2-moe:latest']);
+  });
+
+  // Not resident yet, so skipped, then loaded at keep_alive -1 once the reset had passed: gemma3:1b stayed.
+  it('waits for a pin still loading and unloads its model once it has loaded', async () => {
+    const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+    const { router, registry, puller } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const load = vi.mocked(puller.loadModel).getMockImplementation();
+    vi.mocked(puller.loadModel).mockImplementationOnce(async (...args) => {
+      await held;
+      return load?.(...args);
+    });
+
+    const pinning = router.pinTrackedModel('gemma4-e4b', { origin: 'operator' });
+    await vi.waitFor(() => expect(puller.loadModel).toHaveBeenCalled());
+    const forgetting = router.forgetPinnedModels();
+    release();
+
+    await expect(pinning).resolves.toMatchObject({ pinned: false });
+    await forgetting;
+    expect(ollama.configuredUnloads).toEqual([{ id: 'gemma4:e4b', embedding: false }]);
+    expect([...ollama.resident.keys()]).toEqual([]);
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+  });
+
+  // A fallback address (host.docker.internal, the docker0 gateway, localhost) can be another Ollama.
+  it('unloads nothing when the configured address does not answer and says so', async () => {
     const ollama = new FakeOllama(16_384, gemma4E4bHeld);
     const { router, registry, puller, logger } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
     await router.pinTrackedModel('gemma4-e4b', { origin: 'operator' });
-    vi.mocked(puller.unloadModel).mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
+    ollama.configuredDown = true;
+
+    await router.forgetPinnedModels();
+
+    expect(registry.getPinnedCatalogIds()).toEqual([]);
+    expect(ollama.configuredUnloads).toEqual([]);
+    expect(puller.unloadModel).not.toHaveBeenCalled();
+    expect([...ollama.resident.keys()]).toEqual(['gemma4:e4b']);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('did not answer at the address the Hub is configured with'));
+  });
+
+  it('still unpins everything when the engine refuses the unload', async () => {
+    const ollama = new FakeOllama(16_384, gemma4E4bHeld);
+    const { router, registry, logger, engines } = world({ profile: BETA_RED, ollama, ollamaSlots: 4 });
+    await router.pinTrackedModel('gemma4-e4b', { origin: 'operator' });
+    vi.spyOn(engines.ollama.configuredUnloads, 'push').mockImplementationOnce(() => {
+      throw new Error('connect ECONNREFUSED');
+    });
 
     await expect(router.forgetPinnedModels()).resolves.toBeUndefined();
 

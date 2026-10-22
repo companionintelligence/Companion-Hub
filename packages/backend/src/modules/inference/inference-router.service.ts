@@ -204,6 +204,8 @@ export class InferenceRouterService implements OnApplicationBootstrap {
   private loadQueue: Promise<void> = Promise.resolve();
   /** Whether {@link warnSlotsUnstated} has spoken yet. */
   private warnedSlotsUnstated = false;
+  /** The catalog ids of the pins asked for and not finished yet, for {@link forgetPinnedModels}. */
+  private readonly pinsUnderWay = new Map<string, number>();
 
   constructor(
     readonly _logger: LoggerService,
@@ -239,21 +241,54 @@ export class InferenceRouterService implements OnApplicationBootstrap {
   /**
    * Unpin every model and unload each one its engine still holds, for a factory reset. The Hub loads a
    * model at `keep_alive: -1`, so an unpin alone left the old Hub's pinned models in memory for good.
-   * Only what the engine reports resident is unloaded: Ollama loads a model that an unload names when
-   * it is not in memory. A failed unload costs a warning, never the reset.
+   *
+   * - The pins still under way go too. The reset refuses them once their load ends (`pinTrackedModel`).
+   *   Their model is then in memory at `keep_alive: -1` like any pinned one.
+   * - It runs under the load lock, so a load under way ends first: a model still loading is resident
+   *   only once it has loaded.
+   * - Only a model the engine lists under its own name, or `<name>:latest`, is unloaded. Ollama's usual
+   *   match takes a prefix, which reads `nomic-embed-text-v2-moe` as `nomic-embed-text`. An unload of a
+   *   model that is not in memory can make Ollama load it first.
+   * - The engine is asked only at the address the Hub is configured with. When that does not answer,
+   *   nothing is unloaded: a fallback address can be another engine, whose models are not the Hub's.
+   *
+   * A failed unload costs a warning, never the reset.
    */
   async forgetPinnedModels(): Promise<void> {
-    for (const catalogId of await this.modelRegistry.forgetPins()) {
-      const target = this.loadTarget(catalogId);
-      if (!target) continue;
-      const resident = await this.backends
-        .get(target.backendType)
-        .isModelLoaded(target.backendModelId)
-        .catch(() => false);
-      if (!resident) continue;
-      await this.modelPuller.unloadModel(catalogId).catch((err: unknown) => {
-        this._logger.warn(`[Inference] Factory reset could not unload ${catalogId}: ${err instanceof Error ? err.message : String(err)}`);
-      });
+    const underWay = [...this.pinsUnderWay.keys()];
+    const unpinned = await this.modelRegistry.forgetPins();
+    await this.withLoadLock(async () => {
+      for (const catalogId of new Set([...unpinned, ...underWay])) {
+        await this.unloadForFactoryReset(catalogId);
+      }
+    });
+  }
+
+  private async unloadForFactoryReset(catalogId: string): Promise<void> {
+    const target = this.loadTarget(catalogId);
+    if (!target) return;
+    const backend = this.backends.get(target.backendType);
+    if (!backend.residentAtConfiguredEndpoint || !backend.unloadAtConfiguredEndpoint) return;
+
+    const resident = await backend.residentAtConfiguredEndpoint().catch(() => null);
+    if (resident === null) {
+      this._logger.warn(
+        `[Inference] Factory reset left ${catalogId} as it was: ${target.backendType} did not answer at the address the Hub is configured with`,
+      );
+      return;
+    }
+    const names = new Set([backend.engineModelId?.(target.backendModelId) ?? target.backendModelId, target.backendModelId]);
+    const held = resident.find((name) => names.has(name) || [...names].some((own) => name === `${own}:latest`));
+    if (!held) return;
+
+    try {
+      await backend.unloadAtConfiguredEndpoint(held, { embedding: target.curated?.modality === 'embedding' });
+      this.modelRegistry.updateModelState(catalogId, 'pulled');
+      this._logger.info(`[Inference] Factory reset unloaded ${catalogId} (${held})`);
+    } catch (err) {
+      this._logger.warn(`[Inference] Factory reset could not unload ${catalogId}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      this.memoryManager.invalidateObservation();
     }
   }
 
@@ -1128,7 +1163,8 @@ export class InferenceRouterService implements OnApplicationBootstrap {
   async pinTrackedModel(catalogId: string, options: { origin: 'operator' | 'agent' }): Promise<{ pinned: true } | { pinned: false; reason: string }> {
     // Read before the lock, so a pin waiting behind another load when a factory reset runs is refused too.
     const pinGeneration = this.modelRegistry.currentPinGeneration();
-    return this.withLoadLock(async () => {
+    this.pinsUnderWay.set(catalogId, (this.pinsUnderWay.get(catalogId) ?? 0) + 1);
+    return this.withLoadLock<{ pinned: true } | { pinned: false; reason: string }>(async () => {
       const curated = this.modelRegistry.getCuratedModel(catalogId);
       const served = this.modelRegistry.getTrackedModel(catalogId) ?? curated;
       const model = served ? { backend: served.backend, backendModelId: served.backendModelId } : undefined;
@@ -1165,6 +1201,10 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       }
       this.modelRegistry.pinModel(catalogId);
       return { pinned: true };
+    }).finally(() => {
+      const left = (this.pinsUnderWay.get(catalogId) ?? 1) - 1;
+      if (left > 0) this.pinsUnderWay.set(catalogId, left);
+      else this.pinsUnderWay.delete(catalogId);
     });
   }
 

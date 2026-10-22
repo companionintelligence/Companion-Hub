@@ -454,6 +454,16 @@ export class LemonadeBackend implements InferenceBackend {
     }
   }
 
+  /** Lemonade has one address, `LEMONADE_URL`, so this is what {@link listResident} found there. */
+  async residentAtConfiguredEndpoint(): Promise<string[] | null> {
+    const residency = await this.listResident();
+    return residency.source === 'measured' && residency.models ? residency.models.map((model) => model.id) : null;
+  }
+
+  async unloadAtConfiguredEndpoint(modelId: string): Promise<void> {
+    await this.unloadModel(modelId);
+  }
+
   async unloadModel(modelId: string): Promise<void> {
     this.logger.info(`[Lemonade] Unloading model: ${modelId}`);
     const auth = this.authHeaders();

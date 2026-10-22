@@ -523,10 +523,14 @@ complete) and then forgets the caches over them: the stable ids forward auth sig
 (`ForwardAuthIdentityResolver.forget()`), the Hub Pool identity and any pairing PIN. After the
 settings, `InferenceRouterService.forgetPinnedModels()` (through `ModelRegistryService.forgetPins()`)
 and `AppCredentialsService.forgetHandouts()` remove `state/inference-pinned-models.json` and
-`state/inference-handouts.json` with their copies in memory. `forgetPinnedModels` then unloads each
-unpinned model its engine still reports resident (`isModelLoaded`, which is `/api/ps` on Ollama),
-because the Hub loads at `keep_alive: -1` and the engine would hold it for good. It never names a
-model the engine does not hold, since an Ollama unload of such a model loads it first. A pin still
+`state/inference-handouts.json` with their copies in memory. `forgetPinnedModels` then takes the
+load lock so a load under way ends first. It unloads each unpinned model its engine holds, along with
+the model of each pin still under way. The Hub loads at `keep_alive: -1`, so the engine would hold it
+for good. It asks the engine only at the address the Hub is configured with
+(`residentAtConfiguredEndpoint`, `unloadAtConfiguredEndpoint`): a fallback address can be another
+Ollama on the host. When that address does not answer, nothing is unloaded. A model counts as held
+only under its own name or `<name>:latest`, not by the prefix `isModelLoaded` accepts, since an
+unload naming a model that is not in memory can make Ollama load it. A pin still
 waiting or loading when the reset runs is refused once its load ends
 (`ModelRegistryService.currentPinGeneration()`), so it does not pin the old Hub's model again.
 `clearOldHubRequests` removes `state/password-change-request` and `state/pairing-app-check.json`
