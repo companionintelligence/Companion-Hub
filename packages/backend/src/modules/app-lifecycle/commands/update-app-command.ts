@@ -28,6 +28,12 @@ import { type UpdatePhase, parseComposeJson } from '@ci-hub/common/schemas';
 const UPDATE_ROLLBACK_RESERVE_MS = 10 * 60_000;
 /** An update with less than this left for its own work when a worker takes it is not started. */
 const UPDATE_MIN_WORK_MS = 5 * 60_000;
+/**
+ * Allowed for a worker to take an update off the queue when judging a lowered budget. Without it a
+ * budget of exactly the work time plus the reserve passed that check and then always failed the next
+ * one, by the seconds the update had spent queued, with a message about waiting for a worker.
+ */
+const UPDATE_PICKUP_SLACK_MS = 60_000;
 
 /**
  * What a cancel may still do in each step (see `OperationPhase`): up to and during the health wait
@@ -145,11 +151,12 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       // Checked before the first step is shown: an update a worker takes this late may be one the
       // service has already settled, and telling the page it is updating would leave it spinning.
       // A budget lowered below what any update needs is a setting to change, not a queue to wait out.
-      if (ctx?.deadline && ctx.deadline.budgetMs - UPDATE_ROLLBACK_RESERVE_MS < UPDATE_MIN_WORK_MS) {
+      if (ctx?.deadline && ctx.deadline.budgetMs - UPDATE_ROLLBACK_RESERVE_MS < UPDATE_MIN_WORK_MS + UPDATE_PICKUP_SLACK_MS) {
         throw new Error(
           `The update of ${appUrn} was not started: CI_HUB_PRIVILEGED_HELPER_BUDGET_SECONDS gives an app command ${Math.round(ctx.deadline.budgetMs / 1000)} s. ` +
-            `An update needs at least ${(UPDATE_MIN_WORK_MS + UPDATE_ROLLBACK_RESERVE_MS) / 60_000} minutes: ${UPDATE_MIN_WORK_MS / 60_000} to do its work ` +
-            `and ${UPDATE_ROLLBACK_RESERVE_MS / 60_000} to undo it. Nothing was changed; raise that setting or remove it.`,
+            `An update needs at least ${(UPDATE_MIN_WORK_MS + UPDATE_ROLLBACK_RESERVE_MS + UPDATE_PICKUP_SLACK_MS) / 60_000} minutes: ` +
+            `${UPDATE_MIN_WORK_MS / 60_000} to do its work, ${UPDATE_ROLLBACK_RESERVE_MS / 60_000} to undo it ` +
+            `and ${UPDATE_PICKUP_SLACK_MS / 60_000} for a worker to take it. Nothing was changed; raise that setting or remove it.`,
         );
       }
       if (workLeftMs() < UPDATE_MIN_WORK_MS) {

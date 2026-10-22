@@ -1002,9 +1002,39 @@ describe('UpdateAppCommand', () => {
 
         expect(result).toMatchObject({ success: false, rolledBack: true });
         expect(result.message).toContain('CI_HUB_PRIVILEGED_HELPER_BUDGET_SECONDS gives an app command 600 s');
-        expect(result.message).toContain('An update needs at least 15 minutes');
+        expect(result.message).toContain('An update needs at least 16 minutes');
         expect(result.message).not.toContain('free worker');
         expect(dockerService.pullImages).not.toHaveBeenCalled();
+      } finally {
+        delete process.env.CI_HUB_PRIVILEGED_HELPER_BUDGET_SECONDS;
+      }
+    });
+
+    // 900 s is the work time plus the reserve, so it passed the setting check and then always failed
+    // the next one by the seconds the update had spent queued, blaming the worker.
+    it('names the setting, not the worker, for a budget of exactly the work time plus the reserve', async () => {
+      process.env.CI_HUB_PRIVILEGED_HELPER_BUDGET_SECONDS = '900';
+      try {
+        ctx.deadline = AppCommandDeadline.untilReply(Date.now() - 2_000, 45 * MIN);
+
+        const result = await command.execute(appUrn, {}, ctx);
+
+        expect(result.message).toContain('CI_HUB_PRIVILEGED_HELPER_BUDGET_SECONDS gives an app command 900 s');
+        expect(result.message).not.toContain('free worker');
+      } finally {
+        delete process.env.CI_HUB_PRIVILEGED_HELPER_BUDGET_SECONDS;
+      }
+    });
+
+    it('starts an update whose lowered budget leaves room for a worker to take it', async () => {
+      process.env.CI_HUB_PRIVILEGED_HELPER_BUDGET_SECONDS = '1000';
+      try {
+        ctx.deadline = AppCommandDeadline.untilReply(Date.now() - 2_000, 45 * MIN);
+
+        const result = await command.execute(appUrn, {}, ctx);
+
+        expect(result.message).not.toContain('was not started');
+        expect(dockerService.pullImages).toHaveBeenCalled();
       } finally {
         delete process.env.CI_HUB_PRIVILEGED_HELPER_BUDGET_SECONDS;
       }
