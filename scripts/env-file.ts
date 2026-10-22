@@ -65,6 +65,7 @@ export function restrictEnvFileMode(envFileName: string): number | undefined {
 function writeEnvFile(abs: string, content: string): void {
   restrictEnvFileMode(abs);
   writeFileSync(abs, content, { encoding: 'utf-8', mode: ENV_FILE_MODE });
+  restrictEnvFileMode(abs);
 }
 
 export function upsertEnvVar(envFileName: string, key: string, value: string) {
