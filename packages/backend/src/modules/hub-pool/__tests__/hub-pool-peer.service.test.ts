@@ -1,6 +1,7 @@
 import { BadRequestException, ForbiddenException, NotFoundException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+import { TranslatableError } from '@/common/error/translatable-error';
 import { LoggerService } from '@/core/logger/logger.service';
 import { EncryptionService } from '@/core/encryption/encryption.service';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
@@ -211,6 +212,104 @@ describe('HubPoolPeerService', () => {
       await expect(service.initiatePairing('peer-hub.tailxyz.ts.net')).rejects.toThrow();
 
       expect(repo.delete).toHaveBeenCalledWith('rollback-me');
+    });
+
+    /**
+     * What the page gets back when the other Hub says no. A plain Error became a bare 500
+     * `INTERNAL_SERVER_ERROR`, so the card could only say that pairing failed. Each refusal now has a
+     * status below 500 or a 502 and a key the card can put under its own message.
+     */
+    describe('when the other Hub refuses', () => {
+      let logger: MockProxy<LoggerService>;
+      beforeEach(() => {
+        logger = mock<LoggerService>();
+        (service as unknown as { logger: LoggerService }).logger = logger;
+      });
+
+      const refusal = async (pin: string | undefined, answer: Response) => {
+        repo.findByNodeFqdn.mockResolvedValue(undefined);
+        repo.create.mockResolvedValue(mockPeer({ id: 'refused-row' }));
+        vi.mocked(global.fetch).mockResolvedValue(answer);
+        const error = await service.initiatePairing('peer-hub.tailxyz.ts.net', undefined, pin).then(
+          () => null,
+          (thrown: unknown) => thrown,
+        );
+        expect(error).toBeInstanceOf(TranslatableError);
+        expect(repo.delete).toHaveBeenCalledWith('refused-row');
+        const translatable = error as TranslatableError;
+        return { status: translatable.getStatus(), body: translatable.getResponse() };
+      };
+
+      it('answers a PIN the peer refused with 401 as a 400 that says to generate a new one', async () => {
+        const answer = new Response(JSON.stringify({ statusCode: 401, message: 'Invalid or expired pairing PIN' }), { status: 401 });
+
+        // Not 401: the page reads a 401 from its own Hub as a lapsed session and signs the operator out.
+        expect(await refusal('000000', answer)).toEqual({ status: 400, body: { message: 'HUB_POOL_PAIR_ERROR_PIN_REFUSED' } });
+        // The filter logs only 500s, so the service keeps the operator's log line itself.
+        expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('refused the pairing PIN'));
+      });
+
+      // The peer checks the tailnet after it has taken the PIN, so a fresh PIN would get the same 403.
+      it("reads the peer's 403 as a declined request with its reason, not as a refused PIN", async () => {
+        const answer = new Response(JSON.stringify({ statusCode: 403, message: 'Pairing requests are only accepted from devices on this tailnet' }), {
+          status: 403,
+        });
+
+        expect(await refusal('000000', answer)).toEqual({
+          status: 502,
+          body: {
+            message: 'HUB_POOL_PAIR_ERROR_PEER_DECLINED_REASON',
+            intlParams: { status: '403', detail: 'Pairing requests are only accepted from devices on this tailnet' },
+          },
+        });
+      });
+
+      it("drops a reason that is the peer's own translation key, which would show as the raw key", async () => {
+        const answer = new Response(JSON.stringify({ statusCode: 500, message: 'INTERNAL_SERVER_ERROR' }), { status: 500 });
+
+        expect(await refusal(undefined, answer)).toEqual({
+          status: 502,
+          body: { message: 'HUB_POOL_PAIR_ERROR_PEER_DECLINED', intlParams: { status: '500' } },
+        });
+      });
+
+      it("passes the peer's own reason on, as a 502, when it gave one", async () => {
+        const answer = new Response(
+          JSON.stringify({ statusCode: 503, message: 'Too many pairing requests are already awaiting approval on this node' }),
+          {
+            status: 503,
+          },
+        );
+
+        expect(await refusal(undefined, answer)).toEqual({
+          status: 502,
+          body: {
+            message: 'HUB_POOL_PAIR_ERROR_PEER_DECLINED_REASON',
+            intlParams: { status: '503', detail: 'Too many pairing requests are already awaiting approval on this node' },
+          },
+        });
+      });
+
+      it('names only the status when the peer gave no reason', async () => {
+        expect(await refusal(undefined, new Response('nope', { status: 404 }))).toEqual({
+          status: 502,
+          body: { message: 'HUB_POOL_PAIR_ERROR_PEER_DECLINED', intlParams: { status: '404' } },
+        });
+      });
+
+      it('reads a lockout after too many wrong PINs as a declined request, since a new PIN will not lift it', async () => {
+        const answer = new Response(
+          JSON.stringify({ statusCode: 429, message: 'Too many failed pairing attempts from this source; try again shortly' }),
+          {
+            status: 429,
+          },
+        );
+
+        expect(await refusal('000000', answer)).toMatchObject({
+          status: 502,
+          body: { message: 'HUB_POOL_PAIR_ERROR_PEER_DECLINED_REASON', intlParams: { status: '429' } },
+        });
+      });
     });
   });
 

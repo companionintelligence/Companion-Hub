@@ -1,5 +1,6 @@
 import { candidate, incomingPeer, poolPeer, poolStatus, poolWith, tailscaleStatus, waitingPeer } from '@/tests/pool-fixtures';
 import { sdkFail, sdkOk } from '@/tests/sdk-mock-helpers';
+import { TranslatableError } from '@/types/error.types';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -880,6 +881,27 @@ describe('connect step', () => {
     const rowD = screen.getByTestId('pool-setup-row-hub-d.example-tailnet.ts.net');
     expect(within(rowD).getByRole('alert')).toHaveTextContent("Couldn't reach hub-d, or it declined.");
     expect(screen.queryByText(/A PIN works once/)).not.toBeInTheDocument();
+  });
+
+  it('says the other Hub refused the PIN when it did, rather than calling the PIN invalid', async () => {
+    fixtures.pairPeer.mockImplementation(async () => ({
+      ...sdkFail(400),
+      error: new TranslatableError('HUB_POOL_PAIR_ERROR_PIN_REFUSED', {}, { status: 400, url: '/api/inference/pool/peers/pair' }),
+    }));
+    const user = userEvent.setup();
+    renderWizard();
+    await choose(user, 'hub-b');
+    await user.type(screen.getByLabelText('PIN from the other Hub'), '000000');
+
+    await user.click(sendButton());
+
+    const row = await screen.findByTestId(`pool-setup-row-${HUB_B}`);
+    await waitFor(() => expect(row).toHaveAttribute('data-state', 'failed'));
+    const alert = within(row).getByRole('alert');
+    // Retry sends no PIN, so the row points at Back, where the PIN field is.
+    expect(alert).toHaveTextContent('hub-b refused this PIN. Generate a new one there, then go Back and enter it.');
+    expect(alert).toHaveTextContent('A PIN works once and expires after 10 minutes.');
+    expect(alert).not.toHaveTextContent('Refused as invalid.');
   });
 
   it('shows the PIN hint on a failed request that carried a PIN', async () => {
