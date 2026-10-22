@@ -1952,9 +1952,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * {@link startApp} resolves once the command is published; this variant is for callers
    * (such as post-update restart) that must not proceed until the app reaches a terminal
    * start outcome.
+   *
+   * `onlyRecreateChanged` leaves containers whose definition is unchanged running instead of
+   * recreating them (see `startComposeCommand`).
    */
-  public async startAppAndWait(params: { appUrn: AppUrn; skipPull?: boolean }): Promise<boolean> {
-    const { appUrn, skipPull } = params;
+  public async startAppAndWait(params: { appUrn: AppUrn; skipPull?: boolean; onlyRecreateChanged?: boolean }): Promise<boolean> {
+    const { appUrn, skipPull, onlyRecreateChanged } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -1970,7 +1973,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       appUrn,
       command: 'start',
       requestId,
-      form: { ...app.config, skipPull },
+      form: { ...app.config, skipPull, ...(onlyRecreateChanged ? { onlyRecreateChanged } : {}) },
     });
     const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
 
@@ -2770,9 +2773,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           this.agentNotifyService?.notify('update_success', { appUrn }, 'info');
 
           if (appStatusBeforeUpdate === 'running') {
+            // The update command already started the new version and waited for its health check, so
+            // this start must not recreate what it started: it records the app as running and applies
+            // only what changed since, such as settings the update re-applied. A force-recreate here
+            // restarted the app seconds after its first start, which cut Uptime Kuma 2's data
+            // conversion off half-way and left it crash-looping.
             // The update command pulled the images before it stopped anything, so the start does not
             // need to ask for them again (it only matters for an app that always force-pulls).
-            await this.startAppAndWait({ appUrn, skipPull: true });
+            await this.startAppAndWait({ appUrn, skipPull: true, onlyRecreateChanged: true });
           }
         } else {
           this.logger.error(`Failed to update app ${appUrn}: ${message}`);

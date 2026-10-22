@@ -5788,6 +5788,15 @@ describe('AppLifecycleService', () => {
       );
     });
 
+    it('startAppAndWait recreates the containers unless asked to leave unchanged ones running', async () => {
+      await service.startAppAndWait({ appUrn, skipPull: true });
+      await service.startAppAndWait({ appUrn, skipPull: true, onlyRecreateChanged: true });
+
+      const forms = appEventsQueue.publish.mock.calls.map(([message]) => (message as any).form);
+      expect(forms[0]).not.toHaveProperty('onlyRecreateChanged');
+      expect(forms[1]).toMatchObject({ skipPull: true, onlyRecreateChanged: true });
+    });
+
     it('restartAppAndWait error: errorCode/errorDetail/settingsPath reach the emitted SSE event', async () => {
       appEventsQueue.publish.mockResolvedValue({
         success: false,
@@ -6256,7 +6265,24 @@ describe('AppLifecycleService', () => {
       await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
       await flushMicrotasks();
 
-      expect(start).toHaveBeenCalledWith({ appUrn, skipPull: true });
+      expect(start).toHaveBeenCalledWith({ appUrn, skipPull: true, onlyRecreateChanged: true });
+    });
+
+    // The update command has already started the new version and waited for its health check. A
+    // start that recreated it restarted the app a few seconds into its first start: Uptime Kuma 2,
+    // converting its data on that start, then crash-looped on "Aggregate table migration is already
+    // in progress" (#2106).
+    it('updateApp success does not recreate the containers the update command already started', async () => {
+      vi.spyOn(service, 'updateAppConfig').mockResolvedValue({ requestId: crypto.randomUUID() });
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ cihub_app_version: 2 } as any);
+
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      const starts = appEventsQueue.publish.mock.calls.map(([message]) => message as any).filter((message) => message.command === 'start');
+      expect(starts).toHaveLength(1);
+      expect(starts[0].form).toMatchObject({ skipPull: true, onlyRecreateChanged: true });
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'start_success', appStatus: 'running' }));
     });
 
     it('updateApp success leaves a stopped app stopped and does not start it', async () => {

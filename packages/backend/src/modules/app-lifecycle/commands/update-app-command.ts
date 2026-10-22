@@ -114,6 +114,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       // From here on the previous files and app.env are being replaced.
       replacingFiles = true;
       await this.ensureAppDir(appUrn, form);
+      // Written once here so a write that fails (a read-only app.env) fails while the old version still runs.
       await appHelpers.generateEnvFile(appUrn, form);
 
       tookDown = true;
@@ -129,6 +130,12 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       await marketplaceService.copyAppFromRepoToInstalled(appUrn);
 
       await this.ensureAppDir(appUrn, form);
+      // ⚠ AND AGAIN ONCE THE NEW FILES ARE IN. app.env is built from the installed config.json (its
+      // version, port and form defaults), so the write above gave the new version the previous version's
+      // environment. The start that follows a successful update rewrites app.env from the new files,
+      // so compose then saw a changed container and recreated it seconds into its first start, which
+      // cut Uptime Kuma 2's data conversion off half-way.
+      await appHelpers.generateEnvFile(appUrn, form);
 
       // An app that was stopped when the update began is updated and left stopped. Starting it here,
       // as every update did, switched on something its owner had switched off.

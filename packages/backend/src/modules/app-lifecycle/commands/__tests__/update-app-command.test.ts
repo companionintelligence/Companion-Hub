@@ -118,6 +118,19 @@ describe('UpdateAppCommand', () => {
     expect(dockerService.verifyContainerHealthProbe).toHaveBeenCalledWith(appUrn, { maxAttempts: 5, delayMs: 2000, waitWhileStarting: true });
   });
 
+  // app.env is built from the installed config.json. Written only before the copy, it gave the new
+  // version the previous version's environment (APP_IMAGE_TAG=latest for Uptime Kuma 2.5.6). The
+  // start after the update then rewrote it, so compose recreated the container mid-conversion (#2106).
+  it("writes app.env from the new version's files before starting it", async () => {
+    await command.execute(appUrn, {});
+
+    const copiedAt = marketplaceService.copyAppFromRepoToInstalled.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY;
+    const upIndex = dockerService.composeApp.mock.calls.findIndex(([, cmd]) => cmd === 'up --detach --force-recreate --remove-orphans');
+    const startedAt = dockerService.composeApp.mock.invocationCallOrder[upIndex] ?? Number.NEGATIVE_INFINITY;
+
+    expect(appHelpers.generateEnvFile.mock.invocationCallOrder.some((at) => at > copiedAt && at < startedAt)).toBe(true);
+  });
+
   it('logs how long the new version took to pass its health check', async () => {
     dockerService.verifyContainerHealthProbe.mockResolvedValue({
       ok: true,
