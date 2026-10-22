@@ -5789,6 +5789,24 @@ describe('AppLifecycleService', () => {
       );
     });
 
+    it('startAppAndWait recreates the containers unless asked to leave unchanged ones running', async () => {
+      await service.startAppAndWait({ appUrn, skipPull: true });
+      await service.startAppAndWait({ appUrn, skipPull: true, onlyRecreateChanged: true });
+
+      const forms = appEventsQueue.publish.mock.calls.map(([message]) => (message as any).form);
+      expect(forms[0]).not.toHaveProperty('onlyRecreateChanged');
+      expect(forms[1]).toMatchObject({ skipPull: true, onlyRecreateChanged: true });
+    });
+
+    it('startAppAndWait ignores an onlyRecreateChanged left in the stored config', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, config: { onlyRecreateChanged: true } } as any);
+
+      await service.startAppAndWait({ appUrn, skipPull: true });
+
+      const [form] = appEventsQueue.publish.mock.calls.map(([message]) => (message as any).form);
+      expect(form).not.toHaveProperty('onlyRecreateChanged');
+    });
+
     it('restartAppAndWait error: errorCode/errorDetail/settingsPath reach the emitted SSE event', async () => {
       appEventsQueue.publish.mockResolvedValue({
         success: false,
@@ -6257,7 +6275,37 @@ describe('AppLifecycleService', () => {
       await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
       await flushMicrotasks();
 
-      expect(start).toHaveBeenCalledWith({ appUrn, skipPull: true });
+      expect(start).toHaveBeenCalledWith({ appUrn, skipPull: true, onlyRecreateChanged: true });
+    });
+
+    // The command starts the new version of these too, so the row has to be brought to `running` as well.
+    it.each(['starting', 'restarting'])('updateApp success records an app that was %s as running', async (status) => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, status } as any);
+      vi.spyOn(service, 'updateAppConfig').mockResolvedValue({ requestId: crypto.randomUUID() });
+      const start = vi.spyOn(service, 'startAppAndWait').mockResolvedValue(true);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ cihub_app_version: 2 } as any);
+
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      expect(start).toHaveBeenCalledWith({ appUrn, skipPull: true, onlyRecreateChanged: true });
+    });
+
+    // The update command has already started the new version and waited for its health check. A
+    // start that recreated it restarted the app a few seconds into its first start: Uptime Kuma 2,
+    // converting its data on that start, then crash-looped on "Aggregate table migration is already
+    // in progress" (#2106).
+    it('updateApp success does not recreate the containers the update command already started', async () => {
+      vi.spyOn(service, 'updateAppConfig').mockResolvedValue({ requestId: crypto.randomUUID() });
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ cihub_app_version: 2 } as any);
+
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      const starts = appEventsQueue.publish.mock.calls.map(([message]) => message as any).filter((message) => message.command === 'start');
+      expect(starts).toHaveLength(1);
+      expect(starts[0].form).toMatchObject({ skipPull: true, onlyRecreateChanged: true });
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'start_success', appStatus: 'running' }));
     });
 
     it('updateApp success leaves a stopped app stopped and does not start it', async () => {
@@ -6308,6 +6356,17 @@ describe('AppLifecycleService', () => {
     });
 
     it('updateApp failure with no rollback still reports a previously running app as stopped', async () => {
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
+
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_error', appStatus: 'stopped' }));
+    });
+
+    // The command started the new version of these too, so with no rollback they are no more running than a running one.
+    it.each(['starting', 'restarting'])('updateApp failure with no rollback reports an app that was %s as stopped', async (status) => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, status } as any);
       appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
 
       await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });

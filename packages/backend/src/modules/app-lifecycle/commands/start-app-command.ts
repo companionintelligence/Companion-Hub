@@ -18,7 +18,9 @@ import { AppLifecycleCommand } from './command';
  *
  * `--force-recreate` stays the default, so a start from the dashboard, a sweep, a reset, or a
  * rehydration behaves as before. `onlyRecreateChanged` drops it so compose's own change detection
- * decides, which is what a Hub boot wants (see `AppLifecycleService.restartRunningApps`).
+ * decides, which is what a Hub boot wants (see `AppLifecycleService.restartRunningApps`) and what the
+ * start after an update wants, since the update command has just started the new version
+ * (see `AppLifecycleService.updateApp`).
  */
 export function startComposeCommand(options: { forcePull: boolean; onlyRecreateChanged?: boolean }): string {
   return ['up', '--detach', options.onlyRecreateChanged ? '' : '--force-recreate', '--remove-orphans', options.forcePull ? '--pull always' : '']

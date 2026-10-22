@@ -217,6 +217,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       // From here on the previous files and app.env are being replaced.
       replacingFiles = true;
       await this.ensureAppDir(appUrn, form);
+      // Written once here so a write that fails (a read-only app.env) fails while the old version still runs.
       await appHelpers.generateEnvFile(appUrn, form);
 
       tookDown = true;
@@ -232,6 +233,12 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       await marketplaceService.copyAppFromRepoToInstalled(appUrn);
 
       await this.ensureAppDir(appUrn, form);
+      // ⚠ AND AGAIN ONCE THE NEW FILES ARE IN. app.env is built from the installed config.json (its
+      // version, port and form defaults), so the write above gave the new version the previous version's
+      // environment. The start that follows a successful update rewrites app.env from the new files,
+      // so compose then saw a changed container and recreated it seconds into its first start, which
+      // cut Uptime Kuma 2's data conversion off half-way.
+      await appHelpers.generateEnvFile(appUrn, form);
 
       // An app that was stopped when the update began is updated and left stopped. Starting it here,
       // as every update did, switched on something its owner had switched off.
@@ -302,7 +309,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       // back is not enough: the data comes back too. Before that, the old data was never touched.
       const rolledBack = startedNewVersion
         ? await this.rollBackStartedVersion(appUrn, { backupFile, snapshotResult })
-        : await this.restorePreviousVersion(appUrn, { stoppedForBackup, replacingFiles, tookDown, snapshotResult, previousEnv });
+        : await this.restorePreviousVersion(appUrn, form, { stoppedForBackup, replacingFiles, tookDown, snapshotResult, previousEnv });
 
       // The snapshot is the last copy of the previous version when a rollback has not worked. It goes
       // only once the previous version is demonstrably back.
@@ -466,6 +473,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
    */
   private async restorePreviousVersion(
     appUrn: AppUrn,
+    form: AppEventFormInput,
     state: {
       stoppedForBackup: boolean;
       replacingFiles: boolean;
@@ -511,6 +519,18 @@ export class UpdateAppCommand extends AppLifecycleCommand {
 
       if (state.previousEnv) {
         await appFilesManager.writeAppEnv(appUrn, state.previousEnv);
+      } else {
+        // There was no app.env to put back, and the one on disk may already be the new version's.
+        // Built again from the restored files, it is the previous version's.
+        //
+        // Best effort: a rebuild that fails here most often fails for the reason the update did (an
+        // app.env that cannot be written), so nothing was written and app.env is as it was. Failing the
+        // rollback over it would leave an app the backup stopped down, and a running one reported stopped.
+        try {
+          await this.moduleRef.get(AppHelpers, { strict: false }).generateEnvFile(appUrn, form);
+        } catch (envErr) {
+          logger.warn(`Could not build app.env for the previous version of ${appUrn} again: ${envErr}`);
+        }
       }
 
       if (this.wasRunning && (state.tookDown || state.stoppedForBackup)) {
