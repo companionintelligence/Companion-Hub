@@ -2023,6 +2023,7 @@
   "RESTORE_APPS_REASON_SETTINGS_REQUIRED": "It needs settings your CI Account doesn't keep: {{fields}}. Install it from the App Store to fill them in.",
   "RESTORE_APPS_REASON_SETTINGS_REQUIRED_UNNAMED": "It needs settings your CI Account doesn't keep. Install it from the App Store to fill them in.",
   "RESTORE_APPS_REASON_UNLISTED": "This Hub's app store has no listing for it, so it can't be installed here.",
+  "RESTORE_APPS_REASON_INSTALL_FAILED": "Its install failed after the restore started it. Open it in the App Store to install it again.",
   "RESTORE_APPS_OPEN_IN_STORE": "Open in App Store",
   "RESTORE_APPS_AI_DEFAULT_NOTE_one": "No AI model is chosen on this Hub yet, so {{apps}} uses the one this Hub recommends for its hardware.",
   "RESTORE_APPS_AI_DEFAULT_NOTE_other": "No AI model is chosen on this Hub yet, so {{apps}} use the one this Hub recommends for its hardware.",

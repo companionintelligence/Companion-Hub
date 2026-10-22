@@ -1,6 +1,14 @@
 import i18next from 'i18next';
 import { describe, expect, it } from 'vitest';
-import { describeRestoreFailure, opensRestorePage, setupRoute, storePathFor, summaryIsSettling, type RestoreStatus } from './restore-status';
+import {
+  describeRestoreFailure,
+  opensRestorePage,
+  setupRoute,
+  splitRestoreSummary,
+  storePathFor,
+  summaryIsSettling,
+  type RestoreStatus,
+} from './restore-status';
 
 const status = (overrides: Partial<RestoreStatus> = {}): RestoreStatus => ({
   completed: false,
@@ -87,5 +95,34 @@ describe('summaryIsSettling', () => {
     expect(summaryIsSettling(summary(['running', 'installing']))).toBe(true);
     expect(summaryIsSettling(summary(['running', 'install_failed']))).toBe(false);
     expect(summaryIsSettling(null)).toBe(false);
+  });
+});
+
+describe('splitRestoreSummary', () => {
+  /*
+   * The Hub lists every install it queued as restored, with the app's status now. An image that could not
+   * be pulled leaves the row at install_failed, and the page used to list that app under "Restored" and
+   * title the page "Your apps are back on this Hub" when none was.
+   */
+  it('lists an install that failed after it was queued with the apps that were not restored', () => {
+    const app = (name: string, status: string) => ({ name, urn: `${name.toLowerCase()}:ci-marketplace`, status, usesAi: false });
+    const split = splitRestoreSummary({
+      completedAt: '',
+      restored: [app('Excalidraw', 'running'), app('CyberChef', 'install_failed'), app('Wiki', 'missing'), app('Paperless', 'installing')],
+      notRestored: [{ name: 'Kimai', urn: 'kimai:ci-marketplace', reason: 'APP_INSTALL_FORM_ERROR_INVALID', code: 'failed' }],
+      aiModelChosen: false,
+    });
+
+    expect(split.restored.map((entry) => entry.name)).toEqual(['Excalidraw', 'Paperless']);
+    expect(split.notRestored.map((entry) => entry.name)).toEqual(['Kimai', 'CyberChef', 'Wiki']);
+    expect(split.notRestored[1]).toEqual({
+      name: 'CyberChef',
+      urn: 'cyberchef:ci-marketplace',
+      reason: 'RESTORE_APPS_REASON_INSTALL_FAILED',
+      code: 'failed',
+    });
+    expect(describe_(split.notRestored[1] as Parameters<typeof describeRestoreFailure>[2])).toBe(
+      'Its install failed after the restore started it. Open it in the App Store to install it again.',
+    );
   });
 });

@@ -307,7 +307,7 @@ export class AppRehydrationService {
 
     const queued: string[] = [];
     const started: string[] = [];
-    const skipped: Array<{ name: string; reason: string }> = [];
+    const skipped: RehydrationSkipped[] = [];
     const refused: string[] = [];
 
     for (const item of plan.items) {

@@ -70,6 +70,25 @@ export function summaryIsSettling(summary: RestoreSummary | null | undefined): b
   return Boolean(summary?.restored.some((app) => isSettlingStatus(app.status)));
 }
 
+/** A queued install that failed afterwards, or whose row never appeared, did not bring the app back. */
+const FAILED_INSTALL_STATUSES = new Set(['install_failed', 'missing']);
+
+/**
+ * The summary as the page shows it. The Hub lists every app whose install it queued under `restored`,
+ * with the status the app has now. An install that failed after it was queued (an image that could not
+ * be pulled, say) has not brought the app back, so it is listed with the apps that were not restored.
+ */
+export function splitRestoreSummary(summary: RestoreSummary): { restored: RestoreSummary['restored']; notRestored: RestoreFailure[] } {
+  const failedInstalls = summary.restored.filter((app) => FAILED_INSTALL_STATUSES.has(app.status));
+  return {
+    restored: summary.restored.filter((app) => !FAILED_INSTALL_STATUSES.has(app.status)),
+    notRestored: [
+      ...summary.notRestored,
+      ...failedInstalls.map((app) => ({ name: app.name, urn: app.urn, reason: 'RESTORE_APPS_REASON_INSTALL_FAILED', code: 'failed' as const })),
+    ],
+  };
+}
+
 /**
  * Why an app was not restored, in words. The Hub records the message key an install was refused with
  * and its values, because the key alone (`APP_INSTALL_FORM_ERROR_INVALID`) told nobody anything.

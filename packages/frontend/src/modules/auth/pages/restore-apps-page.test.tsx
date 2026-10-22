@@ -277,6 +277,27 @@ describe('RestoreAppsPage', () => {
       expect(navigate).not.toHaveBeenCalled();
     });
 
+    it('does not call an app restored when its install failed after the restore queued it', async () => {
+      const failedEverywhere = {
+        ...summary,
+        restored: summary.restored.map((app) => ({ ...app, status: 'install_failed' })),
+      };
+      getRehydrateStatus.mockResolvedValue(
+        sdkOk({ completed: true, restoreIntent: false, checking: false, noticePending: true, summary: failedEverywhere }),
+      );
+
+      await act(async () => {
+        render(<RestoreAppsPage />);
+      });
+
+      expect(await screen.findByText('Your apps could not be restored')).toBeInTheDocument();
+      const notRestored = screen.getByTestId('restore-summary-not-restored');
+      expect(notRestored).toHaveTextContent('Excalidraw');
+      expect(notRestored).toHaveTextContent('Its install failed after the restore started it.');
+      // OpenClaw is not running on any model, so the note about its model would be wrong.
+      expect(screen.queryByText(/No AI model is chosen on this Hub yet/)).not.toBeInTheDocument();
+    });
+
     it('records that the restore was seen, then opens the Hub', async () => {
       await act(async () => {
         render(<RestoreAppsPage />);
