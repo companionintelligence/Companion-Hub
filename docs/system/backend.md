@@ -317,6 +317,29 @@ What cancelling an install (`AppLifecycleService.cancelOperation`) does depends 
 - A running install's abort reaches the pull or `compose up`, and the worker compensates and sends
   `install_cancelled`. From `finalizing` on, the cancel is refused.
 
+## One lifecycle operation per app
+
+Every lifecycle command (install, start, stop, restart, update, uninstall, reset, backup and
+restore) claims its app in `AppOperationRegistry` right after its grant check
+(`AppLifecycleService.withOperationClaim`) in one synchronous step. `register` takes the claim over
+once the command is queued. While another command holds the app, a new one is refused with a
+409 that names what holds it (`APP_ERROR_UNINSTALL_IN_PROGRESS`, `APP_ERROR_UPDATE_IN_PROGRESS` and
+the rest) before it reads or writes the row. An entry older than `operationStaleAfterMs`, the window
+the status sync also uses, no longer holds the app. A force stop is the one command that registers
+over a live one, as it is the way out of a stop hung on Docker.
+
+`installApp` checks the grant first, then refuses a second install call for the same app
+(`beginInstallCall`), then reads the row. A row left `installing` with no operation under way is
+retried like a failed install; a row left `uninstalling` is refused. It claims the app right before
+it writes anything. `GET /api/apps/:urn` reports the operation under way in `operation`, an install
+still in its checks included. The `operation_change` event carries it to every open page.
+
+Before it registers, an install runs the bundle download and the image architecture check side by
+side. The check starts on the compose the store already holds and runs again only when the
+downloaded compose names other images. Each image's registry is asked at once. One
+`[install] <urn> took N ms (grant ..., bundle ..., architecture ...)` line per install call says how
+long each check took.
+
 ## Install lifecycle recovery
 
 The UI "install queue" is derived from DB rows with `status = 'installing'`, not a durable job table.
