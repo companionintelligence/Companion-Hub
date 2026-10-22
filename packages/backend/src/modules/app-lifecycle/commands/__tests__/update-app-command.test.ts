@@ -594,6 +594,28 @@ describe('UpdateAppCommand', () => {
       // Not one container was touched, so none is taken down for the restore or started afterwards.
       expect(dockerService.composeApp).not.toHaveBeenCalled();
     });
+
+    // The rebuild fails for the reason the update did, and nothing was written, so app.env is as it was.
+    it('still counts the files as put back when there was no app.env and none can be built', async () => {
+      appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/app-data/test-app/app.env', content: '' } as any);
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: false, rolledBack: true });
+      expect(dockerService.composeApp).not.toHaveBeenCalled();
+    });
+
+    it('starts an app the backup stopped again when there was no app.env and none can be built', async () => {
+      command = new UpdateAppCommand(moduleRef, docker, true);
+      (command as any).assertMarketplaceEntitlement = vi.fn().mockResolvedValue(undefined);
+      (command as any).ensureAppDir = vi.fn().mockResolvedValue(undefined);
+      appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/app-data/test-app/app.env', content: '' } as any);
+
+      const result = await command.execute(appUrn, {});
+
+      expect(result).toMatchObject({ success: false, rolledBack: true });
+      expect(dockerService.composeApp).toHaveBeenLastCalledWith(appUrn, 'up --detach --force-recreate --remove-orphans');
+    });
   });
 
   describe('a failure when stopping the app for the backup', () => {

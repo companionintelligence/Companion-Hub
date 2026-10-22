@@ -361,7 +361,15 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       } else {
         // There was no app.env to put back, and the one on disk may already be the new version's.
         // Built again from the restored files, it is the previous version's.
-        await this.moduleRef.get(AppHelpers, { strict: false }).generateEnvFile(appUrn, form);
+        //
+        // Best effort: a rebuild that fails here most often fails for the reason the update did (an
+        // app.env that cannot be written), so nothing was written and app.env is as it was. Failing the
+        // rollback over it would leave an app the backup stopped down, and a running one reported stopped.
+        try {
+          await this.moduleRef.get(AppHelpers, { strict: false }).generateEnvFile(appUrn, form);
+        } catch (envErr) {
+          logger.warn(`Could not build app.env for the previous version of ${appUrn} again: ${envErr}`);
+        }
       }
 
       if (this.wasRunning && (state.tookDown || state.stoppedForBackup)) {
