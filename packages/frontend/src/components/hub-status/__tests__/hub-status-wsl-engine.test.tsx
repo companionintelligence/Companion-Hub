@@ -96,7 +96,7 @@ describe('HubStatus when Docker in WSL stops (CI-Hub#1935)', () => {
 
     expect(await screen.findByRole('heading', { name: "Docker in WSL isn't running" }, SCREEN_TIMEOUT)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Start engine' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { level: 1, name: 'CI Hub' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'Companion Hub' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Docker Required' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /Download Docker Desktop/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Auto-Install Docker Engine in WSL2' })).not.toBeInTheDocument();

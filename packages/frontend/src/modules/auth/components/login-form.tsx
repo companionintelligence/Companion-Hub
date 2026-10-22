@@ -3,19 +3,15 @@ import { Input } from '@/components/ui/Input';
 import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
 import { zodResolver } from '@hookform/resolvers/zod';
 import type React from 'react';
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 import z from 'zod';
+import { emailField } from '../helpers/email-field';
 import { PortalSignInSection } from './portal-sign-in-section';
 
 type FormValues = { email: string; password: string };
-
-const schema = z.object({
-  email: z.string().email(),
-  password: z.string(),
-});
 
 interface IProps {
   onSubmit: (values: FormValues) => void;
@@ -49,6 +45,14 @@ export const LoginForm: React.FC<IProps> = ({
   allowPasswordLogin = true,
 }) => {
   const { t } = useTranslation();
+  const schema = useMemo(
+    () =>
+      z.object({
+        email: emailField(t),
+        password: z.string(),
+      }),
+    [t],
+  );
   const {
     register,
     handleSubmit,
