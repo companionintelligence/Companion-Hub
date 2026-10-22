@@ -121,14 +121,28 @@ describe('UpdateAppCommand', () => {
   // app.env is built from the installed config.json. Written only before the copy, it gave the new
   // version the previous version's environment (APP_IMAGE_TAG=latest for Uptime Kuma 2.5.6). The
   // start after the update then rewrote it, so compose recreated the container mid-conversion (#2106).
-  it("writes app.env from the new version's files before starting it", async () => {
+  // `compose pull` reads app.env too (`--env-file`), so the write has to come before the pull as well as the start.
+  it("writes app.env from the new version's files before pulling and starting it", async () => {
     await command.execute(appUrn, {});
 
     const copiedAt = marketplaceService.copyAppFromRepoToInstalled.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY;
-    const upIndex = dockerService.composeApp.mock.calls.findIndex(([, cmd]) => cmd === 'up --detach --force-recreate --remove-orphans');
-    const startedAt = dockerService.composeApp.mock.invocationCallOrder[upIndex] ?? Number.NEGATIVE_INFINITY;
+    const pullIndex = dockerService.composeApp.mock.calls.findIndex(([, cmd]) => cmd === 'pull');
+    const pulledAt = dockerService.composeApp.mock.invocationCallOrder[pullIndex] ?? Number.NEGATIVE_INFINITY;
 
-    expect(appHelpers.generateEnvFile.mock.invocationCallOrder.some((at) => at > copiedAt && at < startedAt)).toBe(true);
+    expect(appHelpers.generateEnvFile.mock.invocationCallOrder.some((at) => at > copiedAt && at < pulledAt)).toBe(true);
+  });
+
+  it("puts the previous version back when app.env cannot be written from the new version's files", async () => {
+    filesystem.pathExists.mockResolvedValue(true);
+    appHelpers.generateEnvFile.mockResolvedValueOnce(undefined as any).mockRejectedValueOnce(new Error('Variable API key is required'));
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result).toMatchObject({ success: false, rolledBack: true });
+    expect(dockerService.composeApp).not.toHaveBeenCalledWith(appUrn, 'pull');
+    expect(filesystem.copyDirectory).toHaveBeenCalledWith('/data/snapshots/test-app/snap-1/app-files', '/data/installed/test-app');
+    expect(appFilesManager.writeAppEnv).toHaveBeenCalledWith(appUrn, 'PREVIOUS=1\n');
+    expect(dockerService.composeApp).toHaveBeenLastCalledWith(appUrn, 'up --detach --force-recreate --remove-orphans');
   });
 
   it('logs how long the new version took to pass its health check', async () => {
