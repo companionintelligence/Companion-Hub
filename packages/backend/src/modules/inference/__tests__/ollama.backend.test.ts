@@ -443,6 +443,27 @@ describe('OllamaBackend', () => {
         );
       });
 
+      it("unpin: names this node's stated keep-alive (24 h on the fleet) instead of Ollama's 5 minutes", async () => {
+        psWith([pinned]);
+        (axios.post as any) = vi.fn().mockResolvedValue({ data: {} });
+
+        expect(await backend.setResidentKeepAlive('gemma3:270m', 'default', { defaultSeconds: 86_400 })).toBe('set');
+
+        expect(axios.post).toHaveBeenCalledWith(
+          expect.stringContaining('/api/generate'),
+          { model: 'gemma3:270m', prompt: '', keep_alive: 86_400, options: { num_ctx: 16384 } },
+          expect.any(Object),
+        );
+      });
+
+      it('unpin: a stated keep-alive of -1 (forever) leaves a held model as it is, with no request', async () => {
+        psWith([pinned]);
+        (axios.post as any) = vi.fn().mockResolvedValue({ data: {} });
+
+        expect(await backend.setResidentKeepAlive('gemma3:270m', 'default', { defaultSeconds: -1 })).toBe('set');
+        expect(axios.post).not.toHaveBeenCalled();
+      });
+
       it('pin: holds a model already in memory with a finite expiry, at its window', async () => {
         psWith([{ ...pinned, expires_at: inFourMinutes() }]);
         (axios.post as any) = vi.fn().mockResolvedValue({ data: {} });

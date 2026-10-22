@@ -12,9 +12,8 @@ import { sameModelId } from '@/common/helpers/hub-pool';
 
 /**
  * Ollama's own default `keep_alive`, the one a model loaded with none gets while `OLLAMA_KEEP_ALIVE`
- * is unset. What an unpinned model is set to: the API does not say what the daemon's setting is, so
- * on a node that sets `OLLAMA_KEEP_ALIVE` (the fleet uses 24h) an unpinned model expires sooner than
- * a model the daemon loaded itself.
+ * is unset. What an unpinned model is set to when this node states no keep-alive of its own
+ * (`inferenceOllamaKeepAlive`): the API does not say what the daemon runs.
  */
 const OLLAMA_DEFAULT_KEEP_ALIVE = '5m';
 
@@ -411,8 +410,9 @@ export class OllamaBackend implements InferenceBackend {
   }
 
   /**
-   * How long Ollama keeps a model it already holds: `pinned` is `keep_alive: -1`, `default` is
-   * {@link OLLAMA_DEFAULT_KEEP_ALIVE}. Every Hub load holds a model at -1 (see {@link loadModel}), so
+   * How long Ollama keeps a model it already holds: `pinned` is `keep_alive: -1`, `default` is the
+   * daemon's keep-alive when the operator stated it (`defaultSeconds`, from `inferenceOllamaKeepAlive`)
+   * and {@link OLLAMA_DEFAULT_KEEP_ALIVE} when not. Every Hub load holds a model at -1 (see {@link loadModel}), so
    * after an unpin it stayed in memory, `ollama ps` saying Forever, until something unloaded it. And a
    * pin of a model already in memory loaded nothing, so a model Ollama had loaded with its usual
    * expiry stayed on it, pinned or not.
@@ -426,7 +426,7 @@ export class OllamaBackend implements InferenceBackend {
   async setResidentKeepAlive(
     modelId: string,
     keep: 'pinned' | 'default',
-    options?: { embedding?: boolean },
+    options?: { embedding?: boolean; defaultSeconds?: number | null },
   ): Promise<'set' | 'not-resident' | 'unreachable'> {
     const residency = await this.listResident();
     if (residency.models === null) {
@@ -437,11 +437,12 @@ export class OllamaBackend implements InferenceBackend {
     if (!resident) {
       return 'not-resident';
     }
-    if (heldForever(resident.expiresAt) === (keep === 'pinned')) {
+    const stated = options?.defaultSeconds;
+    const keepAlive = keep === 'pinned' ? -1 : typeof stated === 'number' ? stated : OLLAMA_DEFAULT_KEEP_ALIVE;
+    if (heldForever(resident.expiresAt) === (keepAlive === -1)) {
       return 'set';
     }
     const url = await this.resolveUrl();
-    const keepAlive = keep === 'pinned' ? -1 : OLLAMA_DEFAULT_KEEP_ALIVE;
     const window = resident.contextLength && resident.contextLength > 0 ? { options: { num_ctx: resident.contextLength } } : {};
     try {
       if (options?.embedding) {

@@ -17,6 +17,7 @@ import { spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   classifyHubContextCapOutput,
+  HUB_OLLAMA_KEEP_ALIVE_SETTING,
   HUB_OLLAMA_SLOTS_SETTING,
   classifyRuntimeApplyOutput,
   describeHubContextCapPlan,
@@ -26,6 +27,7 @@ import {
   hubContextCapShell,
   OLLAMA_RUNTIME_KEYS,
   OllamaRuntimeFlagError,
+  ollamaKeepAliveSeconds,
   ollamaRuntimeApplyShell,
   ollamaRuntimeDropinContent,
   parseOllamaRuntimeValue,
@@ -605,6 +607,134 @@ describe('hubContextCapShell for the slot count (--ollama-parallel)', () => {
     expect(describeHubContextCapPlan(4, HUB_OLLAMA_SLOTS_SETTING)).toContain('PATCH /api/user-settings');
     expect(describeHubContextCapPlan(null, HUB_OLLAMA_SLOTS_SETTING)).toContain('clear the slot count');
     expect(describeHubContextCapPlan(null, HUB_OLLAMA_SLOTS_SETTING)).toContain('ollamaSlots=null');
+  });
+});
+
+// The Hub hands an unpinned model back to Ollama by naming a keep_alive. Ollama's API does not
+// expose OLLAMA_KEEP_ALIVE, so --ollama-keep-alive tells the Hub too, in seconds.
+describe('the keep-alive Hub half (--ollama-keep-alive)', () => {
+  it("turns the flag's duration into whole seconds, the unit keep_alive takes as a number", () => {
+    expect(ollamaKeepAliveSeconds('24h')).toBe(86_400);
+    expect(ollamaKeepAliveSeconds('1h30m')).toBe(5400);
+    expect(ollamaKeepAliveSeconds('30m')).toBe(1800);
+    expect(ollamaKeepAliveSeconds('2.5h')).toBe(9000);
+    expect(ollamaKeepAliveSeconds('300')).toBe(300);
+    expect(ollamaKeepAliveSeconds('-1')).toBe(-1);
+    // Rounded up, never to the 0 that unloads.
+    expect(ollamaKeepAliveSeconds('500ms')).toBe(1);
+    expect(() => ollamaKeepAliveSeconds('soon')).toThrow(OllamaRuntimeFlagError);
+  });
+
+  const set = hubContextCapShell(86_400, '/srv/hub', HUB_OLLAMA_KEEP_ALIVE_SETTING);
+  const forever = hubContextCapShell(-1, '/srv/hub', HUB_OLLAMA_KEEP_ALIVE_SETTING);
+  const clear = hubContextCapShell(null, '/srv/hub', HUB_OLLAMA_KEEP_ALIVE_SETTING);
+
+  it('reads ollamaKeepAlive, sets inferenceOllamaKeepAlive, clears ollamaKeepAlive', () => {
+    expect(set).toContain(`grep -q '"ollamaKeepAlive"'`);
+    expect(set).toContain(`-X PATCH -d '{"inferenceOllamaKeepAlive":86400}' "$cihub_cap_url/user-settings"`);
+    expect(forever).toContain(`-X PATCH -d '{"inferenceOllamaKeepAlive":-1}' "$cihub_cap_url/user-settings"`);
+    expect(forever).toContain('if [ "$cihub_cap_now" = -1 ] || [ "$cihub_cap_now" = absent ]; then');
+    expect(clear).toContain('{\\"backend\\":\\"$cihub_cap_backend\\",\\"ollamaKeepAlive\\":null}');
+    for (const script of [set, forever, clear]) expect(script).not.toMatch(/echo[^\n]*\$cihub_cap_key/);
+  });
+
+  it('reports the keep-alive in its own words, including forever', () => {
+    const k = HUB_OLLAMA_KEEP_ALIVE_SETTING;
+    const m = HUB_CONTEXT_CAP_MARKERS;
+    const run = (now: string, write: string, after?: string) =>
+      [
+        `${m.key} present`,
+        `${m.get} 200`,
+        `${m.now} ${now}`,
+        `${m.write} ${write}`,
+        ...(after === undefined ? [] : [`${m.after} ${after}`]),
+        m.complete,
+      ].join('\n');
+    expect(classifyHubContextCapOutput(run('none', '200', '86400'), '', 86_400, k).why).toBe(
+      'keep-alive none → 86400 (PATCH /api/user-settings 200)',
+    );
+    expect(classifyHubContextCapOutput(run('-1', 'skipped'), '', -1, k)).toMatchObject({
+      outcome: 'unchanged',
+      before: -1,
+      why: 'keep-alive already -1',
+    });
+    expect(classifyHubContextCapOutput(run('86400', '200', '-1'), '', -1, k)).toMatchObject({ outcome: 'applied', before: 86_400, after: -1 });
+    expect(classifyHubContextCapOutput(run('none', '400'), '', 86_400, k).why).toContain('-1 to 31536000 seconds');
+    expect(describeHubContextCapPlan(86_400, k)).toContain('inferenceOllamaKeepAlive=86400');
+  });
+});
+
+describe.skipIf(!bash)('hubContextCapShell for the keep-alive (sandboxed bash)', () => {
+  const sandboxes: string[] = [];
+  afterEach(() => {
+    for (const dir of sandboxes.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A stub Hub that stores `ollamaKeepAlive` (negative values included) and logs each write. */
+  function sandbox(preferences: Record<string, unknown>) {
+    const root = mkdtempSync(path.join(tmpdir(), 'cihub-keepalive-'));
+    sandboxes.push(root);
+    const bin = path.join(root, 'bin');
+    mkdirSync(bin);
+    mkdirSync(path.join(root, 'data', 'state'), { recursive: true });
+    writeFileSync(path.join(root, 'data', 'state', 'settings.json'), JSON.stringify({ ciHubApiKey: 'k-secret-123' }));
+    const state = path.join(root, 'hub.json');
+    const log = path.join(root, 'calls.log');
+    writeFileSync(state, JSON.stringify(preferences));
+    const stub = (name: string, body: string) => {
+      writeFileSync(path.join(bin, name), `#!/bin/sh\n${body}\n`);
+      chmodSync(path.join(bin, name), 0o755);
+    };
+    stub('docker', 'exit 1');
+    stub(
+      'curl',
+      [
+        'out=""; method=GET; data=""; url=""',
+        'while [ $# -gt 0 ]; do case "$1" in',
+        '  -o) out="$2"; shift 2;; -X) method="$2"; shift 2;; -d) data="$2"; shift 2;;',
+        '  -w|--max-time|-H) shift 2;; -s) shift;; *) url="$1"; shift;;',
+        'esac; done',
+        `echo "$method $url $data" >> '${log}'`,
+        'case "$method $url" in',
+        `  "GET "*inference/preferences) cat '${state}' > "$out"; printf 200;;`,
+        `  "PATCH "*user-settings) n=$(echo "$data" | sed -n 's/.*"inferenceOllamaKeepAlive":\\(-\\{0,1\\}[0-9]*\\).*/\\1/p'); sed "s/\\"ollamaKeepAlive\\":[^,}]*/\\"ollamaKeepAlive\\":$n/" '${state}' > '${state}.tmp' && mv '${state}.tmp' '${state}'; : > "$out"; printf 200;;`,
+        '  *) printf 404;;',
+        'esac',
+      ].join('\n'),
+    );
+    const run = (seconds: number | null) =>
+      spawnSync(bash as string, ['-c', hubContextCapShell(seconds, path.join(root, 'data'), HUB_OLLAMA_KEEP_ALIVE_SETTING)], {
+        env: { PATH: `${bin}:/usr/bin:/bin`, HOME: '/tmp' },
+        encoding: 'utf-8',
+      });
+    return {
+      run,
+      patches: () =>
+        readFileSync(log, 'utf-8')
+          .trim()
+          .split('\n')
+          .filter((c) => c.startsWith('PATCH')),
+      state: () => JSON.parse(readFileSync(state, 'utf-8')),
+    };
+  }
+
+  it('sets 24 h, then forever; it reads -1 back as -1, so a second run writes nothing', () => {
+    const box = sandbox({ preferredBackend: 'ollama', ollamaKeepAlive: null });
+    const k = HUB_OLLAMA_KEEP_ALIVE_SETTING;
+
+    const day = box.run(86_400);
+    expect(classifyHubContextCapOutput(day.stdout, day.stderr, 86_400, k)).toMatchObject({ outcome: 'applied', before: null, after: 86_400 });
+
+    const forever = box.run(-1);
+    expect(classifyHubContextCapOutput(forever.stdout, forever.stderr, -1, k)).toMatchObject({ outcome: 'applied', before: 86_400, after: -1 });
+    expect(box.state().ollamaKeepAlive).toBe(-1);
+
+    const again = box.run(-1);
+    expect(classifyHubContextCapOutput(again.stdout, again.stderr, -1, k)).toMatchObject({ outcome: 'unchanged', before: -1 });
+    expect(box.patches()).toEqual([
+      'PATCH http://127.0.0.1:5002/api/user-settings {"inferenceOllamaKeepAlive":86400}',
+      'PATCH http://127.0.0.1:5002/api/user-settings {"inferenceOllamaKeepAlive":-1}',
+    ]);
   });
 });
 
