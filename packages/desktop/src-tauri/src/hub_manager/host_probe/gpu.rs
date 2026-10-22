@@ -252,6 +252,11 @@ pub(crate) fn windows_nvidia_probe_payload(raw_json: &str) -> Result<serde_json:
 /// The output decides, not the exit code. nvidia-smi exits non-zero when one GPU of several cannot be
 /// read. It still prints a row for each one it can. Run through `sh -lc '… | head -n 1'` the exit
 /// code was head's, so such a run wrote the file. Run directly, the same run would leave it missing.
+///
+/// nvidia-smi prints its errors on stdout too ("No devices were found", exit 6; "Failed to initialize
+/// NVML: Driver/library version mismatch", exit 18). After a failed run only a line shaped like the
+/// query's CSV, a name and a whole number of MiB, counts as a GPU, or that message would be written
+/// as the card and stamped as proof that the driver answered.
 #[cfg(any(test, target_os = "linux"))]
 pub(crate) fn linux_nvidia_probe_from_output(
     exit_code: Option<i32>,
@@ -260,7 +265,16 @@ pub(crate) fn linux_nvidia_probe_from_output(
 ) -> Result<(serde_json::Value, Option<String>), String> {
     let failed = exit_code != Some(0);
     let exit = exit_code.map_or("a signal".to_string(), |code| format!("exit code {}", code));
-    match linux_nvidia_probe_payload(stdout) {
+    let listed = if failed {
+        stdout
+            .lines()
+            .filter(|line| is_nvidia_smi_gpu_row(line))
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        stdout.to_string()
+    };
+    match linux_nvidia_probe_payload(&listed) {
         Ok(payload) => {
             let note = failed.then(|| {
                 format!(
@@ -275,13 +289,25 @@ pub(crate) fn linux_nvidia_probe_from_output(
             });
             Ok((payload, note))
         }
-        Err(_) if failed => Err(if stderr.trim().is_empty() {
-            format!("nvidia-smi command failed with {}", exit)
-        } else {
-            format!("nvidia-smi command failed with {}: {}", exit, stderr.trim())
+        // nvidia-smi says why on stdout as often as on stderr.
+        Err(_) if failed => Err(match (stderr.trim(), stdout.trim()) {
+            ("", "") => format!("nvidia-smi command failed with {}", exit),
+            ("", said) | (said, _) => format!("nvidia-smi command failed with {}: {}", exit, said),
         }),
         Err(details) => Err(details),
     }
+}
+
+/// Whether a line of `--query-gpu=name,memory.total,… --format=csv,noheader,nounits` output is a GPU
+/// row: a name, then the memory as a whole number of MiB. nvidia-smi's own error lines are neither.
+#[cfg(any(test, target_os = "linux"))]
+fn is_nvidia_smi_gpu_row(line: &str) -> bool {
+    let mut fields = line.split(',').map(str::trim);
+    let named = fields.next().is_some_and(|name| !name.is_empty());
+    named
+        && fields
+            .next()
+            .is_some_and(|memory| memory.parse::<u64>().is_ok())
 }
 
 /// nvidia-smi's CSV output (`name, memory.total, driver_version`, first GPU) as `nvidia.json`. Err

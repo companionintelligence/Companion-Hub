@@ -97,6 +97,27 @@ describe('collectHostNvidiaProbe and nvidia-smi exit codes', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('exit code 15'));
     warn.mockRestore();
   });
+
+  // nvidia-smi prints these on stdout, with stderr empty.
+  it.each([
+    [6, 'No devices were found\n'],
+    [18, 'Failed to initialize NVML: Driver/library version mismatch\nNVML library version: 595.99\n'],
+  ])('writes no probe from an error line after exit code %i', (status, stdout) => {
+    spawn.answer = (command) => (command === 'nvidia-smi' ? { status, stdout, stderr: '' } : { status: 1, stdout: '', stderr: '' });
+
+    expect(collectHostNvidiaProbe()).toBeNull();
+  });
+
+  it('still takes a real row that follows an error line', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    spawn.answer = (command) =>
+      command === 'nvidia-smi'
+        ? { status: 15, stdout: `Unable to determine the device handle for GPU0002:00:00.0: Unknown Error\n${ROW}`, stderr: '' }
+        : { status: 1, stdout: '', stderr: '' };
+
+    expect(collectHostNvidiaProbe()).toMatchObject({ model: 'NVIDIA GeForce RTX 3080 Laptop GPU', vramMb: 8192 });
+    warn.mockRestore();
+  });
 });
 
 describe('initGpuRuntime on a Linux host whose ~/.profile stops a login shell', () => {

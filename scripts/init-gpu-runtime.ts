@@ -297,6 +297,10 @@ export function collectHostNvidiaProbe(pick: 'first' | 'largest' = 'first'): Nvi
   // be read and still lists the rest, as the desktop app's probe also allows. Through
   // `sh -lc '… | head -n 1'` the exit code was head's, so such a run always wrote the file.
 
+  // nvidia-smi prints its errors on stdout too ("No devices were found", exit 6; "Failed to initialize
+  // NVML: Driver/library version mismatch", exit 18). After a failed run only a row shaped like the
+  // query's CSV, a name and a whole number of MiB, counts, or that message would be written as the
+  // card and stamped as proof that the driver answered.
   const rows = probe.stdout
     .split('\n')
     .map((v) => v.trim())
@@ -304,8 +308,14 @@ export function collectHostNvidiaProbe(pick: 'first' | 'largest' = 'first'): Nvi
     .map((line) => {
       const [modelRaw, memoryRaw, driverRaw] = line.split(',').map((v) => v.trim());
       const vramMb = Number.parseInt(memoryRaw || '', 10);
-      return { model: modelRaw || '', vramMb: Number.isFinite(vramMb) && vramMb > 0 ? vramMb : 0, driverVersion: driverRaw || '' };
-    });
+      return {
+        model: modelRaw || '',
+        vramMb: Number.isFinite(vramMb) && vramMb > 0 ? vramMb : 0,
+        driverVersion: driverRaw || '',
+        sized: /^\d+$/.test(memoryRaw ?? ''),
+      };
+    })
+    .filter((row) => probe.ok || (row.model && row.sized));
   const row = pick === 'largest' ? [...rows].sort((a, b) => b.vramMb - a.vramMb)[0] : rows[0];
   if (!row?.model) return null;
   if (!probe.ok) {

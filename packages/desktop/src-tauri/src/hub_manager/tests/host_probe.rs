@@ -106,3 +106,28 @@ fn linux_probe_with_a_clean_exit_logs_nothing_extra_and_a_failed_run_with_no_row
     assert!(refused.contains("exit code 9"), "{}", refused);
     assert!(refused.contains("couldn't communicate"), "{}", refused);
 }
+
+#[test]
+fn linux_probe_after_a_failed_run_does_not_take_an_nvidia_smi_error_line_for_a_gpu() {
+    // nvidia-smi prints these on stdout, with stderr empty.
+    for (code, stdout) in [
+        (6, "No devices were found\n"),
+        (18, "Failed to initialize NVML: Driver/library version mismatch\nNVML library version: 595.99\n"),
+    ] {
+        let refused = linux_nvidia_probe_from_output(Some(code), stdout, "")
+            .expect_err("an error line is not a GPU");
+        assert!(refused.contains(&format!("exit code {}", code)), "{}", refused);
+        assert!(refused.contains(stdout.lines().next().unwrap()), "{}", refused);
+    }
+
+    // A real row after an error line still counts.
+    let (payload, note) = linux_nvidia_probe_from_output(
+        Some(15),
+        "Unable to determine the device handle for GPU0002:00:00.0: Unknown Error\nNVIDIA RTX A1000, 8188, 595.91.07\n",
+        "",
+    )
+    .expect("the readable card is written");
+    assert_eq!(payload["model"], "NVIDIA RTX A1000");
+    assert_eq!(payload["vramMb"], 8188);
+    assert!(note.is_some());
+}
