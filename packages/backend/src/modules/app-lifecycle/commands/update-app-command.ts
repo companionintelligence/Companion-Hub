@@ -167,7 +167,11 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       // The data is already in the backup when there is one; copying it again here is a second full
       // copy of the app's data folder that nothing reads. The installed files are always snapshotted:
       // they are what a rollback puts back.
-      snapshotResult = await dockerService.createPreUpdateVolumeSnapshot(appUrn, { includeData: !backupFile });
+      // A copy of the data as root is part of the update's work, so it gets the work time like the backup.
+      snapshotResult = await dockerService.createPreUpdateVolumeSnapshot(appUrn, {
+        includeData: !backupFile,
+        deadline: ctx?.deadline?.withReserve(UPDATE_ROLLBACK_RESERVE_MS),
+      });
 
       // An update that cannot be undone is not started. Nothing has been changed yet, so refusing here
       // costs nothing; going on would put a failed or partial snapshot in charge of the rollback.
@@ -377,7 +381,8 @@ export class UpdateAppCommand extends AppLifecycleCommand {
           // The copy keeps the owners of the original (a database's files), so the Hub could neither
           // read it nor write it back; the helper empties the data folder and copies the snapshot over it.
           const dockerService = this.moduleRef.get(DockerService, { strict: false });
-          ok = ok && (await dockerService.restoreAppDataDirAsRoot(appUrn, snapshot.snapshotId));
+          // Until the reply is due, like the restore from a backup: not 30 minutes of its own.
+          ok = ok && (await dockerService.restoreAppDataDirAsRoot(appUrn, snapshot.snapshotId, this.deadline));
         } else {
           // The Hub could read the data, so it copied it, but what the app's container wrote as another
           // user (Uptime Kuma runs as root) it cannot delete: those go through the root helper. A copy
@@ -525,7 +530,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       if (snapshotResult.dataSnapshotCopiedAsRoot) {
         // Its data copy belongs to other users and the Hub cannot delete it: a helper empties it first.
         const dockerService = this.moduleRef.get(DockerService, { strict: false });
-        await dockerService.removeSnapshotDirAsRoot(snapshotResult.appUrn, snapshotResult.snapshotId);
+        await dockerService.removeSnapshotDirAsRoot(snapshotResult.appUrn, snapshotResult.snapshotId, this.deadline);
       }
       await filesystem?.removeDirectory(snapshotResult.snapshotBaseDir);
     } catch (err) {

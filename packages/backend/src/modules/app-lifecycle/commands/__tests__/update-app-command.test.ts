@@ -470,7 +470,7 @@ describe('UpdateAppCommand', () => {
         const result = await command.execute(appUrn, {});
 
         expect(result.success).toBe(false);
-        expect(dockerService.restoreAppDataDirAsRoot).toHaveBeenCalledWith(appUrn, 'pre-update-test-app-1');
+        expect(dockerService.restoreAppDataDirAsRoot).toHaveBeenCalledWith(appUrn, 'pre-update-test-app-1', undefined);
         // The Hub itself could neither empty nor write a database's files.
         expect(filesystem.copyDirectory).not.toHaveBeenCalledWith(expect.stringContaining('/app-data'), '/data/app-data/test-app');
       });
@@ -496,7 +496,7 @@ describe('UpdateAppCommand', () => {
         const result = await command.execute(appUrn, {});
 
         expect(result).toMatchObject({ success: true });
-        expect(dockerService.removeSnapshotDirAsRoot).toHaveBeenCalledWith(appUrn, 'pre-update-test-app-1');
+        expect(dockerService.removeSnapshotDirAsRoot).toHaveBeenCalledWith(appUrn, 'pre-update-test-app-1', undefined);
         expect(dockerService.removeSnapshotDirAsRoot.mock.invocationCallOrder[0]).toBeLessThan(
           filesystem.removeDirectory.mock.invocationCallOrder.at(-1) as number,
         );
@@ -860,6 +860,68 @@ describe('UpdateAppCommand', () => {
       await command.execute(appUrn, {}, ctx);
 
       expect(dockerService.removeAppDataDirAsRoot).toHaveBeenCalledWith(appUrn, ctx.deadline);
+    });
+
+    // A rollback with no backup copies the snapshot back as root. That helper had 30 minutes of its own,
+    // so an update that failed near the end of its work time could go on copying data past the reply,
+    // while the page already showed it failed and stopped.
+    describe('with a root-owned data snapshot and no backup', () => {
+      const rootSnapshot = {
+        appUrn,
+        snapshotId: 'pre-update-test-app-1',
+        timestamp: new Date().toISOString(),
+        snapshotBaseDir: '/data/backups/.pre-update-snapshots/store/test-app/pre-update-test-app-1',
+        snapshotPath: '/data/backups/.pre-update-snapshots/store/test-app/pre-update-test-app-1/app-data',
+        appFilesSnapshotPath: '/data/backups/.pre-update-snapshots/store/test-app/pre-update-test-app-1/app-files',
+        dataSnapshotCopiedAsRoot: true,
+        volumes: [],
+        success: true,
+      };
+
+      beforeEach(() => {
+        command = new UpdateAppCommand(moduleRef, docker, false);
+        (command as any).assertMarketplaceEntitlement = vi.fn().mockResolvedValue(undefined);
+        (command as any).ensureAppDir = vi.fn().mockResolvedValue(undefined);
+        filesystem.pathExists.mockResolvedValue(true);
+        dockerService.createPreUpdateVolumeSnapshot.mockResolvedValue(rootSnapshot);
+        dockerService.restoreAppDataDirAsRoot.mockResolvedValue(true);
+        dockerService.removeSnapshotDirAsRoot.mockResolvedValue(true);
+      });
+
+      it("copies the data into the snapshot within the update's work time", async () => {
+        await command.execute(appUrn, {}, ctx);
+
+        const [, options] = dockerService.createPreUpdateVolumeSnapshot.mock.calls[0] ?? [];
+        expect(options).toMatchObject({ includeData: true });
+        expect(options?.deadline?.endsAt).toBe((ctx.deadline?.endsAt ?? 0) - 10 * MIN);
+      });
+
+      it('copies the snapshot back within the time left until the reply, near the deadline too', async () => {
+        vi.useFakeTimers();
+        try {
+          ctx.deadline = AppCommandDeadline.after(20 * MIN);
+          dockerService.verifyContainerHealthProbe.mockImplementation(async () => {
+            // The health wait used the whole work time: the rollback starts with the reserve left.
+            vi.advanceTimersByTime(10 * MIN);
+            return { ok: false, healthy: false, containers: [], message: 'unhealthy' };
+          });
+
+          await command.execute(appUrn, {}, ctx);
+
+          const [, , restoreDeadline] = dockerService.restoreAppDataDirAsRoot.mock.calls[0] ?? [];
+          expect(restoreDeadline).toBe(ctx.deadline);
+          // What the helper gets is what is left until the reply is due, not 30 minutes of its own.
+          expect(restoreDeadline?.remainingMs()).toBeLessThanOrEqual(10 * MIN);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('empties the snapshot it no longer needs within the same deadline', async () => {
+        await command.execute(appUrn, {}, ctx);
+
+        expect(dockerService.removeSnapshotDirAsRoot).toHaveBeenCalledWith(appUrn, 'pre-update-test-app-1', ctx.deadline);
+      });
     });
 
     it('does not start an update that waited in the queue until too little of its time was left', async () => {

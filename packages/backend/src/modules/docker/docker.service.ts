@@ -703,8 +703,10 @@ export class DockerService {
    * Copies an app's data folder into its pre-update snapshot as root, keeping owners and modes, for
    * data the Hub itself cannot read (a database's files). `cp -a` rather than `fs.cp`, so the copy is
    * a faithful image that {@link restoreAppDataDirAsRoot} can put back unchanged.
+   *
+   * With a `deadline` (an update's), the copy gets what is left of it instead of its own 30 minutes.
    */
-  public async copyAppDataDirAsRoot(appUrn: AppUrn, snapshotId: string): Promise<boolean> {
+  public async copyAppDataDirAsRoot(appUrn: AppUrn, snapshotId: string, deadline?: AppCommandDeadline): Promise<boolean> {
     const paths = this.resolveSnapshotHostPaths(appUrn, snapshotId, 'copy');
     if (!paths) return false;
 
@@ -713,6 +715,8 @@ export class DockerService {
       ['cp', '-a', '/src/.', '/dest/'],
       PRIVILEGED_DATA_TIMEOUT_MS,
       `copying ${paths.hostAppDataDir} into ${paths.hostSnapshotDir}`,
+      SNAPSHOT_AREA.tag,
+      deadline,
     );
   }
 
@@ -911,33 +915,62 @@ export class DockerService {
     return uid !== undefined && gid !== undefined && Number.isInteger(uid) && Number.isInteger(gid) ? `${uid}:${gid}` : null;
   }
 
-  /** Puts a snapshot made by {@link copyAppDataDirAsRoot} back over the app's data folder, as root, emptying it first. */
-  public async restoreAppDataDirAsRoot(appUrn: AppUrn, snapshotId: string): Promise<boolean> {
+  /**
+   * Puts a snapshot made by {@link copyAppDataDirAsRoot} back over the app's data folder, as root, emptying it first.
+   *
+   * ⚠ WITHIN THE UPDATE'S TIME. A rollback passes the update's `deadline`. The helper gets what is
+   * left of it instead of its own 30 minutes: a copy that ran on past the reply went on writing data
+   * after the page already showed the update as failed. Stopped for time, the data folder may be only
+   * partly restored and this says so; the snapshot stays where it is.
+   */
+  public async restoreAppDataDirAsRoot(appUrn: AppUrn, snapshotId: string, deadline?: AppCommandDeadline): Promise<boolean> {
     const paths = this.resolveSnapshotHostPaths(appUrn, snapshotId, 'restore');
     if (!paths) return false;
 
-    return this.runPrivilegedSnapshotHelper(
+    const restored = await this.runPrivilegedSnapshotHelper(
       [`${paths.hostSnapshotDir}/app-data:/src:ro`, `${paths.hostAppDataDir}:/dest:rw`],
       ['sh', '-c', 'find /dest -mindepth 1 -delete && cp -a /src/. /dest/'],
       PRIVILEGED_DATA_TIMEOUT_MS,
       `restoring ${paths.hostAppDataDir} from ${paths.hostSnapshotDir}`,
+      SNAPSHOT_AREA.tag,
+      deadline,
     );
+
+    if (!restored && deadline?.expired) {
+      this.logger.error(
+        `${SNAPSHOT_AREA.tag} ran out of time restoring ${paths.hostAppDataDir} for ${appUrn}: the data folder may be only partly restored. ` +
+          `The snapshot is kept at ${paths.hostSnapshotDir}.`,
+      );
+    }
+
+    return restored;
   }
 
   /**
    * Empties a snapshot folder as root. Its data copy keeps the owners of the original, so the Hub
    * cannot delete it; the Hub removes the emptied folder itself afterwards.
+   *
+   * With a `deadline` (inside an update), the helper gets what is left of it instead of its own 30
+   * minutes; a snapshot not emptied in time is left where it is and its path logged.
    */
-  public async removeSnapshotDirAsRoot(appUrn: AppUrn, snapshotId: string): Promise<boolean> {
+  public async removeSnapshotDirAsRoot(appUrn: AppUrn, snapshotId: string, deadline?: AppCommandDeadline): Promise<boolean> {
     const paths = this.resolveSnapshotHostPaths(appUrn, snapshotId, 'removal');
     if (!paths) return false;
 
-    return this.runPrivilegedSnapshotHelper(
+    const removed = await this.runPrivilegedSnapshotHelper(
       [`${paths.hostSnapshotDir}:/target:rw`],
       ['find', '/target', '-mindepth', '1', '-delete'],
       PRIVILEGED_DATA_TIMEOUT_MS,
       `emptying ${paths.hostSnapshotDir}`,
+      SNAPSHOT_AREA.tag,
+      deadline,
     );
+
+    if (!removed && deadline?.expired) {
+      this.logger.warn(`${SNAPSHOT_AREA.tag} no time left to empty ${paths.hostSnapshotDir} for ${appUrn}; it is left on disk`);
+    }
+
+    return removed;
   }
 
   /**
@@ -2507,7 +2540,10 @@ export class DockerService {
    * @param appUrn App URN to snapshot.
    * @returns Snapshot result including snapshotted paths and volumes.
    */
-  public async createPreUpdateVolumeSnapshot(appUrn: AppUrn, options: { includeData?: boolean } = {}): Promise<PreUpdateVolumeSnapshotResult> {
+  public async createPreUpdateVolumeSnapshot(
+    appUrn: AppUrn,
+    options: { includeData?: boolean; deadline?: AppCommandDeadline } = {},
+  ): Promise<PreUpdateVolumeSnapshotResult> {
     const includeData = options.includeData ?? true;
     const projectName = this.getComposeProjectName(appUrn);
     const { appName, appStoreId } = extractAppUrn(appUrn);
@@ -2539,7 +2575,7 @@ export class DockerService {
           // A database's files belong to the user its container ran as, and the Hub (a plain user on a
           // native Linux host) cannot read them. Copy as root through the same hardened helper that
           // uninstall uses; a failure that is not a permission one is not something root would fix.
-          if (copy.permissionDenied && (await this.copyAppDataDirAsRoot(appUrn, snapshotId))) {
+          if (copy.permissionDenied && (await this.copyAppDataDirAsRoot(appUrn, snapshotId, options.deadline))) {
             dataCopiedAsRoot = true;
           } else {
             throw new Error(`Could not copy ${appDataDir} into the snapshot`);
@@ -2630,7 +2666,7 @@ export class DockerService {
       // owners and the Hub cannot delete it, so a helper empties it first.
       if (snapshotBaseDir) {
         if (dataCopiedAsRoot) {
-          await this.removeSnapshotDirAsRoot(appUrn, snapshotId).catch(() => false);
+          await this.removeSnapshotDirAsRoot(appUrn, snapshotId, options.deadline).catch(() => false);
         }
         await this.filesystem.removeDirectory(snapshotBaseDir).catch(() => undefined);
       }

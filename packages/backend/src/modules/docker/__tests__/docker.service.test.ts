@@ -1452,6 +1452,49 @@ describe('DockerService', () => {
       expect(child_process.spawn).toHaveBeenCalledTimes(1);
     });
 
+    // An update's rollback from a snapshot passes the update's deadline: a copy that ran its own 30
+    // minutes went on writing data after the reply was due.
+    it('gives a snapshot restore only what is left of the deadline, removes it then and says why', async () => {
+      vi.useFakeTimers();
+      const hung = createMockSpawnProcess();
+      hung.on = vi.fn().mockReturnValue(hung);
+      (child_process.spawn as any).mockReturnValueOnce(hung).mockReturnValue(createComposeProbeProcess(0));
+
+      const pending = service.restoreAppDataDirAsRoot(urn, 'pre-update-kimai-1792500000000', AppCommandDeadline.after(10_000));
+      await vi.advanceTimersByTimeAsync(10_001);
+      vi.useRealTimers();
+
+      await expect(pending).resolves.toBe(false);
+      const name = ((child_process.spawn as any).mock.calls[0][1] as string[])[3];
+      expect(child_process.spawn).toHaveBeenLastCalledWith('docker', ['rm', '-f', name], { stdio: 'pipe' });
+      expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('ran out of time restoring'));
+      expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('The snapshot is kept at'));
+    });
+
+    it('starts no snapshot helper once the deadline is used up and keeps 30 minutes without one', async () => {
+      const deadline = AppCommandDeadline.after(0);
+
+      await expect(service.restoreAppDataDirAsRoot(urn, 'pre-update-kimai-1792500000000', deadline)).resolves.toBe(false);
+      await expect(service.removeSnapshotDirAsRoot(urn, 'pre-update-kimai-1792500000000', deadline)).resolves.toBe(false);
+      await expect(service.copyAppDataDirAsRoot(urn, 'pre-update-kimai-1792500000000', deadline)).resolves.toBe(false);
+      expect(child_process.spawn).not.toHaveBeenCalled();
+
+      vi.useFakeTimers();
+      const hung = createMockSpawnProcess();
+      hung.on = vi.fn().mockReturnValue(hung);
+      (child_process.spawn as any).mockReturnValueOnce(hung).mockReturnValue(createComposeProbeProcess(0));
+      let settled = false;
+      const pending = service.restoreAppDataDirAsRoot(urn, 'pre-update-kimai-1792500000000').then((ok) => {
+        settled = true;
+        return ok;
+      });
+      await vi.advanceTimersByTimeAsync(29 * 60_000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(60_001);
+      vi.useRealTimers();
+      await expect(pending).resolves.toBe(false);
+    });
+
     it('starts no helper once the command budget is used up', async () => {
       const deadline = AppCommandDeadline.after(0);
 
