@@ -108,7 +108,7 @@ package manager's own `licenses` command.
 83. [`@arethetypeswrong/cli`](https://github.com/arethetypeswrong/arethetypeswrong.github.io) `0.18.5` — dev
 84. [`@changesets/cli`](https://changesets.dev) `3.0.3` — dev
 85. [`@faker-js/faker`](https://fakerjs.dev) `10.6.0` — dev
-86. [`@hey-api/openapi-ts`](https://heyapi.dev/docs/openapi/typescript/get-started) `0.99.0` — dev
+86. [`@hey-api/openapi-ts`](https://heyapi.dev/docs/openapi/typescript/get-started) `0.97.3` — dev
 87. [`@nestjs/testing`](https://nestjs.com) `12.0.4` — dev
 88. [`@react-router/dev`](https://reactrouter.com) `8.4.0` — dev
 89. [`@tailwindcss/typography`](https://github.com/tailwindlabs/tailwindcss-typography#readme) `0.5.20` — dev
