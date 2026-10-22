@@ -423,14 +423,22 @@ export async function fetchHostListenerStatus(): Promise<boolean | null> {
   }
 }
 
-/**
- * Every desktop installer of the newest release, for a computer the release has no installer for in
- * its own package format (see `packageFormat` on the desktop app's check).
- */
-export const DESKTOP_DOWNLOAD_PAGE = 'https://github.com/companionintelligence/Companion-Hub/releases/latest';
+const DESKTOP_RELEASES_PAGE = 'https://github.com/companionintelligence/Companion-Hub/releases';
 
-export async function openDesktopDownloadPage(): Promise<void> {
-  await openExternal(DESKTOP_DOWNLOAD_PAGE);
+/**
+ * The GitHub release of `version`, which lists all its installers, for a computer the release has no
+ * installer for in its own package format (see `packageFormat` on the desktop app's check). Release
+ * tags are `v<version>` (Desktop Release's `tag` input). `/releases/latest` would skip pre-releases,
+ * which Desktop Release publishes by default, so it could show an older version than the card names.
+ * Without a version the card can name, the releases list it is.
+ */
+export function desktopReleasePage(version: string | null | undefined): string {
+  const tag = semver.valid(version?.trim().replace(/^v/, '') ?? '');
+  return tag ? `${DESKTOP_RELEASES_PAGE}/tag/v${encodeURIComponent(tag)}` : DESKTOP_RELEASES_PAGE;
+}
+
+export async function openDesktopDownloadPage(version: string | null | undefined): Promise<void> {
+  await openExternal(desktopReleasePage(version));
 }
 
 export async function performUpdate(info: UpdateInfo): Promise<UpdateActionResult> {

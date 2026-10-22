@@ -813,7 +813,7 @@ describe('GeneralActionsContainer', () => {
       expect(getDesktopRelease).not.toHaveBeenCalled();
 
       await userEvent.click(screen.getByRole('button', { name: 'Open the download page' }));
-      expect(mockOpenDesktopDownloadPage).toHaveBeenCalledTimes(1);
+      expect(mockOpenDesktopDownloadPage).toHaveBeenCalledWith('0.3.7');
     });
 
     it('promises no download when it has no installer to offer', async () => {

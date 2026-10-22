@@ -570,9 +570,19 @@ describe('update-service', () => {
     });
   });
 
-  it('opens the release page that lists every installer', async () => {
-    await openDesktopDownloadPage();
-    expect(mockOpenExternal).toHaveBeenCalledWith('https://github.com/companionintelligence/Companion-Hub/releases/latest');
+  it('opens the release the card names, which lists every installer of that version', async () => {
+    // Not /releases/latest: it skips pre-releases, so it could show an older version.
+    await openDesktopDownloadPage('0.3.7');
+    expect(mockOpenExternal).toHaveBeenLastCalledWith('https://github.com/companionintelligence/Companion-Hub/releases/tag/v0.3.7');
+
+    await openDesktopDownloadPage('v0.3.7-rc.1');
+    expect(mockOpenExternal).toHaveBeenLastCalledWith('https://github.com/companionintelligence/Companion-Hub/releases/tag/v0.3.7-rc.1');
+
+    // A version the card can't name gets the list of every release.
+    await openDesktopDownloadPage('');
+    expect(mockOpenExternal).toHaveBeenLastCalledWith('https://github.com/companionintelligence/Companion-Hub/releases');
+    await openDesktopDownloadPage('0.3.7/../../x');
+    expect(mockOpenExternal).toHaveBeenLastCalledWith('https://github.com/companionintelligence/Companion-Hub/releases');
   });
 
   it('opens a trusted installer URL instead of invoking the native updater', async () => {

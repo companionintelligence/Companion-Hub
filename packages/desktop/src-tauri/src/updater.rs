@@ -421,9 +421,34 @@ fn linux_package_preference_from_os_release(content: &str) -> &'static str {
 }
 
 fn linux_package_preference() -> &'static str {
-    linux_package_preference_from_os_release(
+    linux_package_preference_from(
         &std::fs::read_to_string("/etc/os-release").unwrap_or_default(),
+        tool_on_path,
     )
+}
+
+/// The package format from `/etc/os-release`, and when that doesn't place the distro (an `ID`
+/// it doesn't know and no `ID_LIKE`, as on Deepin, or no file at all), from the package tool
+/// that is installed: `dpkg` first, then `rpm`. Only with neither does it stay `appimage`, which
+/// releases don't build, so the Desktop app card points to the download page.
+fn linux_package_preference_from(
+    os_release: &str,
+    has_tool: impl Fn(&str) -> bool,
+) -> &'static str {
+    match linux_package_preference_from_os_release(os_release) {
+        "appimage" if has_tool("dpkg") => "deb",
+        "appimage" if has_tool("rpm") => "rpm",
+        preference => preference,
+    }
+}
+
+/// Whether an executable named `name` is on `PATH` or in the usual system folders. An app
+/// started from a desktop launcher can have a short `PATH`.
+fn tool_on_path(name: &str) -> bool {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path)
+        .chain(["/usr/bin", "/bin", "/usr/sbin", "/sbin"].map(PathBuf::from))
+        .any(|dir| dir.join(name).is_file())
 }
 
 fn parse_artifact(value: &serde_json::Value, source: &UpdateSource) -> Option<ResolvedArtifact> {
@@ -708,74 +733,30 @@ fn check_desktop_update_for_host(
     })
 }
 
-/// Where people download the desktop app when the release has no installer this computer takes.
-const DESKTOP_DOWNLOAD_PAGE: &str =
-    "https://github.com/companionintelligence/Companion-Hub/releases/latest";
+/// The releases on GitHub, which list every installer of each version.
+const DESKTOP_RELEASES_PAGE: &str =
+    "https://github.com/companionintelligence/Companion-Hub/releases";
 
-/// Whether `latest` takes precedence over `current`, by semver 2.0.0 (§11).
-fn semver_compare_gt(latest: &str, current: &str) -> bool {
-    semver_precedence(latest, current) == std::cmp::Ordering::Greater
+/// The release page of `version`, for a computer it has no installer for in its own format.
+/// Release tags are `v<version>` (Desktop Release's `tag` input). Without a version the releases
+/// list it is. `/releases/latest` would skip pre-releases, which Desktop Release publishes by
+/// default, so it could name an older version than the one offered.
+fn desktop_release_page(version: &str) -> String {
+    let version = version.trim().trim_start_matches('v');
+    if version.is_empty()
+        || !version
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+    {
+        return DESKTOP_RELEASES_PAGE.to_string();
+    }
+    format!("{DESKTOP_RELEASES_PAGE}/tag/v{version}")
 }
 
-/// Semver precedence. Major, minor and patch compare as numbers. With those equal, a pre-release
-/// ranks below its release (`0.3.6-rc.1` < `0.3.6`), and two pre-releases compare identifier by
-/// identifier: numbers by value and below words, words in ASCII order, and more identifiers rank
-/// higher when the rest match (`rc` < `rc.1`). Build metadata (`+…`) doesn't count. A leading `v`
-/// is allowed, and a number part with anything after its digits counts its digits.
-fn semver_precedence(a: &str, b: &str) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-
-    fn split(version: &str) -> ([u64; 3], Option<&str>) {
-        let version = version.trim().trim_start_matches(['v', 'V']);
-        let version = version.split_once('+').map_or(version, |(v, _)| v);
-        let (core, pre) = match version.split_once('-') {
-            Some((core, pre)) => (core, Some(pre).filter(|p| !p.is_empty())),
-            None => (version, None),
-        };
-        let mut numbers = [0u64; 3];
-        for (slot, part) in numbers.iter_mut().zip(core.split('.')) {
-            let digits: String = part.chars().take_while(char::is_ascii_digit).collect();
-            *slot = digits.parse().unwrap_or(0);
-        }
-        (numbers, pre)
-    }
-
-    fn identifier(a: &str, b: &str) -> Ordering {
-        let number = |s: &str| {
-            (!s.is_empty() && s.bytes().all(|c| c.is_ascii_digit()))
-                .then(|| s.parse::<u128>().ok())
-                .flatten()
-        };
-        match (number(a), number(b)) {
-            (Some(x), Some(y)) => x.cmp(&y),
-            (Some(_), None) => Ordering::Less,
-            (None, Some(_)) => Ordering::Greater,
-            (None, None) => a.cmp(b),
-        }
-    }
-
-    let (a_core, a_pre) = split(a);
-    let (b_core, b_pre) = split(b);
-    a_core.cmp(&b_core).then_with(|| match (a_pre, b_pre) {
-        (None, None) => Ordering::Equal,
-        (None, Some(_)) => Ordering::Greater,
-        (Some(_), None) => Ordering::Less,
-        (Some(a_pre), Some(b_pre)) => {
-            let mut a_ids = a_pre.split('.');
-            let mut b_ids = b_pre.split('.');
-            loop {
-                match (a_ids.next(), b_ids.next()) {
-                    (None, None) => return Ordering::Equal,
-                    (None, Some(_)) => return Ordering::Less,
-                    (Some(_), None) => return Ordering::Greater,
-                    (Some(x), Some(y)) => match identifier(x, y) {
-                        Ordering::Equal => continue,
-                        other => return other,
-                    },
-                }
-            }
-        }
-    })
+/// Whether `latest` takes precedence over `current`, by semver 2.0.0 (§11); see
+/// [`crate::hub_env::compare_semver`].
+fn semver_compare_gt(latest: &str, current: &str) -> bool {
+    crate::hub_env::compare_semver(latest, current) == std::cmp::Ordering::Greater
 }
 
 fn download_file(url: &str, dest: &Path, source: &UpdateSource) -> Result<(), String> {
@@ -1508,8 +1489,9 @@ pub fn run_update_cli(check_only: bool) -> Result<i32, String> {
         let platform = platform_key().unwrap_or_else(|| "unknown".to_string());
         let format = info.package_format.as_deref().unwrap_or("unknown");
         return Err(format!(
-            "Update {} is available but has no {format} installer for this platform ({platform}). Download it from {DESKTOP_DOWNLOAD_PAGE}",
-            info.latest_version
+            "Update {} is available but has no {format} installer for this platform ({platform}). Download it from {}",
+            info.latest_version,
+            desktop_release_page(&info.latest_version)
         ));
     }
     println!("Updating from {} to {}…", current, info.latest_version);
@@ -2487,6 +2469,59 @@ mod tests {
         assert_eq!(
             platform_manifest_key(HostOs::Linux, "x86_64"),
             "linux-x86_64"
+        );
+    }
+
+    #[test]
+    fn linux_package_preference_asks_the_package_tool_when_os_release_is_inconclusive() {
+        let tools =
+            |installed: &'static [&'static str]| move |name: &str| installed.contains(&name);
+
+        // Deepin: Debian-based, but its ID isn't one the updater knows and it sets no ID_LIKE.
+        assert_eq!(
+            linux_package_preference_from("ID=deepin\n", tools(&["dpkg"])),
+            "deb"
+        );
+        // No /etc/os-release at all.
+        assert_eq!(linux_package_preference_from("", tools(&["rpm"])), "rpm");
+        // dpkg wins when both are there, as on a Debian with rpm installed for alien.
+        assert_eq!(
+            linux_package_preference_from("", tools(&["rpm", "dpkg"])),
+            "deb"
+        );
+        // Neither: the download page.
+        assert_eq!(
+            linux_package_preference_from("ID=arch\n", tools(&[])),
+            "appimage"
+        );
+        // A distro os-release places keeps its own format, whatever else is installed.
+        assert_eq!(
+            linux_package_preference_from("ID=fedora\n", tools(&["dpkg"])),
+            "rpm"
+        );
+        assert_eq!(
+            linux_package_preference_from("ID=ubuntu\n", tools(&["rpm"])),
+            "deb"
+        );
+    }
+
+    #[test]
+    fn release_page_names_the_offered_version() {
+        assert_eq!(
+            desktop_release_page("0.3.7"),
+            "https://github.com/companionintelligence/Companion-Hub/releases/tag/v0.3.7"
+        );
+        assert_eq!(
+            desktop_release_page("v0.3.7-rc.1"),
+            "https://github.com/companionintelligence/Companion-Hub/releases/tag/v0.3.7-rc.1"
+        );
+        assert_eq!(
+            desktop_release_page(""),
+            "https://github.com/companionintelligence/Companion-Hub/releases"
+        );
+        assert_eq!(
+            desktop_release_page("0.3.7/../x"),
+            "https://github.com/companionintelligence/Companion-Hub/releases"
         );
     }
 

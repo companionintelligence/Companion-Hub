@@ -787,7 +787,11 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
             // so the card sends people to the download page instead.
             <div data-testid="desktop-update-no-installer">
               <p className="text-sm mb-3">{t('SETTINGS_ACTIONS_SHELL_UPDATE_NO_INSTALLER', { version: shellUpdate.latestVersion })}</p>
-              <Button variant="outline" onClick={() => void openDesktopDownloadPage()} data-testid="desktop-download-page-btn">
+              <Button
+                variant="outline"
+                onClick={() => void openDesktopDownloadPage(shellUpdate.latestVersion)}
+                data-testid="desktop-download-page-btn"
+              >
                 {t('SETTINGS_ACTIONS_SHELL_OPEN_DOWNLOAD_PAGE')}
               </Button>
             </div>
