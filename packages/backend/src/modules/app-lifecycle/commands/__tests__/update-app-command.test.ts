@@ -751,6 +751,16 @@ describe('UpdateAppCommand', () => {
       expect(ctx.setPhase.mock.calls.map(([phase]) => phase)).toEqual(['preparing', 'pulling', 'preparing', 'composing', 'verifying', 'finalizing']);
     });
 
+    it('says a stopped app is getting its new files, not that it is being started', async () => {
+      command = new UpdateAppCommand(moduleRef, docker, true, false);
+      (command as any).assertMarketplaceEntitlement = vi.fn().mockResolvedValue(undefined);
+      (command as any).ensureAppDir = vi.fn().mockResolvedValue(undefined);
+
+      await command.execute(appUrn, {}, ctx);
+
+      expect(phasesShown()).toEqual(['preparing', 'pulling', 'backing_up', 'replacing', 'finalizing']);
+    });
+
     it('rolls back to the previous version when cancelled during the health wait', async () => {
       dockerService.verifyContainerHealthProbe.mockImplementation(async () => {
         controller.abort();

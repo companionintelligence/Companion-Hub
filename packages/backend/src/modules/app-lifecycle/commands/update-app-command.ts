@@ -38,6 +38,7 @@ const REGISTRY_PHASE: Record<UpdatePhase, OperationPhase> = {
   preparing: 'preparing',
   pulling: 'pulling',
   backing_up: 'preparing',
+  replacing: 'composing',
   starting: 'composing',
   verifying: 'verifying',
   finalizing: 'finalizing',
@@ -177,7 +178,8 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       checkpoint('before replacing the app files');
 
       logger.info(`Updating app ${appUrn}`);
-      report('starting');
+      // A stopped app is updated and left stopped, so its page must not say it is being started.
+      report(this.wasRunning ? 'starting' : 'replacing');
       // From here on the previous files and app.env are being replaced.
       replacingFiles = true;
       await this.ensureAppDir(appUrn, form);

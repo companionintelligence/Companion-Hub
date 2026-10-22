@@ -1,4 +1,4 @@
-import type { GetAppDto } from '@/api-client';
+import type { GetAppDto, MyAppsDto } from '@/api-client';
 import {
   getAppQueryKey,
   getInstalledAppsQueryKey,
@@ -213,6 +213,19 @@ function updateInstallErrorCache(
   }
 
   queryClient.setQueryData(['app-install-error', appUrn], null);
+}
+
+/**
+ * The name the app page shows for an app, from the app or installed-apps queries already in the cache,
+ * for a toast about it. `fallback` (the id in its URN) when neither has it.
+ */
+export function cachedAppName(queryClient: Pick<QueryClient, 'getQueryData'>, appUrn: string, fallback: string): string {
+  const fromApp = queryClient.getQueryData<GetAppDto>(getAppQueryKey({ path: { urn: appUrn } }))?.info?.name;
+  if (fromApp) {
+    return fromApp;
+  }
+  const installed = queryClient.getQueryData<MyAppsDto>(getInstalledAppsQueryKey())?.installed;
+  return installed?.find((entry) => entry.info?.urn === appUrn)?.info?.name || fallback;
 }
 
 /**

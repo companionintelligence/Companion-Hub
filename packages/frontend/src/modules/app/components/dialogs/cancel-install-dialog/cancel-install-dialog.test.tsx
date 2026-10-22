@@ -98,5 +98,13 @@ describe('CancelInstallDialog', () => {
 
       expect(mockToastError).toHaveBeenCalledWith('This update is finishing and can no longer be cancelled.');
     });
+
+    it('says the update had already ended when there was nothing left to cancel', () => {
+      render(<CancelInstallDialog operation="update" info={info} isOpen onClose={vi.fn()} onCancelStart={vi.fn()} />);
+
+      h.opts?.onSuccess?.({ outcome: 'not_found' });
+
+      expect(mockToastError).toHaveBeenCalledWith('This update had already ended, so there was nothing to cancel.');
+    });
   });
 });

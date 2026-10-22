@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { QueryClient } from '@tanstack/react-query';
 import { PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY } from '@/lib/cloudflare-api';
-import { handleAppSseEvent } from '../app-sse-cache';
+import { cachedAppName, handleAppSseEvent } from '../app-sse-cache';
 import { installQueueQueryKey } from '../install-queue';
 import { updateInstallationProgress } from '../use-installation-progress';
 import { setUpdatePhase } from '../use-update-phase';
@@ -126,6 +126,27 @@ describe('handleAppSseEvent', () => {
 
     expect(setUpdatePhase).toHaveBeenCalledWith('uptime-kuma:ci-marketplace', null);
     expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(INVALIDATED_PER_APP_EVENT);
+  });
+
+  describe('the name a toast gives an app', () => {
+    const urn = 'uptime-kuma:ci-marketplace';
+    const cacheWith = (entries: Record<string, unknown>) => ({ getQueryData: (key: unknown) => entries[JSON.stringify(key)] });
+
+    it('is the name its page shows, from the cached app', () => {
+      const cache = cacheWith({ [JSON.stringify(['getApp', urn])]: { info: { name: 'Uptime Kuma' } } });
+
+      expect(cachedAppName(cache as unknown as QueryClient, urn, 'uptime-kuma')).toBe('Uptime Kuma');
+    });
+
+    it('comes from the installed apps when the app itself is not cached', () => {
+      const cache = cacheWith({ [JSON.stringify(['getInstalledApps'])]: { installed: [{ info: { urn, name: 'Uptime Kuma' } }] } });
+
+      expect(cachedAppName(cache as unknown as QueryClient, urn, 'uptime-kuma')).toBe('Uptime Kuma');
+    });
+
+    it('falls back to the id in its URN', () => {
+      expect(cachedAppName(cacheWith({}) as unknown as QueryClient, urn, 'uptime-kuma')).toBe('uptime-kuma');
+    });
   });
 
   it('invalidates installed and app queries on status transition without progress', () => {

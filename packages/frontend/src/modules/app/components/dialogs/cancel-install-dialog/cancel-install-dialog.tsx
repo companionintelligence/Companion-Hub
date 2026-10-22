@@ -24,6 +24,7 @@ const COPY = {
     body: 'APP_CANCEL_INSTALL_BODY',
     submit: 'APP_CANCEL_INSTALL_SUBMIT',
     refused: 'APP_ERROR_CANNOT_CANCEL',
+    notFound: 'APP_ERROR_CANNOT_CANCEL',
   },
   // An update is stopped at its next safe point and rolled back, so the previous version comes back with its data.
   update: {
@@ -31,6 +32,8 @@ const COPY = {
     body: 'APP_CANCEL_UPDATE_BODY',
     submit: 'APP_CANCEL_UPDATE_SUBMIT',
     refused: 'APP_ERROR_CANNOT_CANCEL_UPDATE',
+    // The update ended (or was settled) before the cancel reached it: it is not "finishing".
+    notFound: 'APP_ERROR_CANCEL_UPDATE_ALREADY_ENDED',
   },
 } as const;
 
@@ -58,8 +61,8 @@ export const CancelInstallDialog = ({ info, isOpen, onClose, onCancelStart, oper
       if (data?.outcome === 'cancelling' || data?.outcome === 'cancelled_queued') {
         onCancelStart?.();
       } else {
-        // refused / not_found — the install is past the point of no return or already finished.
-        toast.error(t(copy.refused));
+        // refused: past the point of no return. not_found: already over, so there was nothing to cancel.
+        toast.error(t(data?.outcome === 'not_found' ? copy.notFound : copy.refused));
       }
       onClose();
     },

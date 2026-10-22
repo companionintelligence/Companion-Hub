@@ -217,6 +217,7 @@ const UPDATE_PHASE_LABEL_KEYS: Record<UpdatePhase, string> = {
   preparing: 'APP_ACTION_PREPARING',
   pulling: 'APP_UPDATE_PHASE_PULLING',
   backing_up: 'APP_UPDATE_PHASE_BACKING_UP',
+  replacing: 'APP_UPDATE_PHASE_REPLACING',
   starting: 'APP_UPDATE_PHASE_STARTING',
   verifying: 'APP_UPDATE_PHASE_VERIFYING',
   finalizing: 'APP_UPDATE_PHASE_FINALIZING',

@@ -33,10 +33,12 @@ const installQueueEventSchema = z.object({
 });
 
 /**
- * The steps of an app update, as its app page shows them. `verifying` is the wait for the new
- * version's health checks, which can take minutes; cancelling is possible up to and during it.
+ * The steps of an app update, as its app page shows them. `replacing` is a stopped app's files being
+ * replaced (it is not started); `starting` covers that and the start for a running one. `verifying`
+ * is the wait for the new version's health checks, which can take minutes; cancelling is possible up
+ * to and during it.
  */
-const updatePhaseSchema = z.enum(['preparing', 'pulling', 'backing_up', 'starting', 'verifying', 'finalizing', 'rolling_back']);
+const updatePhaseSchema = z.enum(['preparing', 'pulling', 'backing_up', 'replacing', 'starting', 'verifying', 'finalizing', 'rolling_back']);
 export type UpdatePhase = z.infer<typeof updatePhaseSchema>;
 
 const appScopedEventSchema = z.object({
