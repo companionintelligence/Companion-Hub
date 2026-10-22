@@ -1514,43 +1514,6 @@ export type PairingUpgradeBody = {
     publicKey: string;
 };
 
-export type AppFormBody = {
-    port?: number;
-    exposed?: boolean;
-    exposedLocal?: boolean;
-    exposureMode?: 'local' | 'cloudflare' | 'tailscale';
-    openPort?: boolean;
-    domain?: string;
-    isVisibleOnGuestDashboard?: boolean;
-    enableAuth?: boolean;
-    autoRestartOnDomainChange?: boolean;
-    localSubdomain?: string;
-    publicDomain?: string;
-    customDomain?: string;
-    customDomainTakeover?: boolean;
-    customDomainExpected?: string;
-    maxBackups?: number;
-    cpuLimit?: string;
-    memoryLimit?: string;
-    skipEnv?: boolean;
-    skipPull?: boolean;
-    skipRun?: boolean;
-    [key: string]: unknown;
-};
-
-export type LifecycleRequestDto = {
-    requestId: string;
-};
-
-export type ValidateConfigResultDto = {
-    valid: boolean;
-    errors: Array<{
-        env_variable: string;
-        label: string;
-        messageKey: string;
-    }>;
-};
-
 export type RehydrateStatusDto = {
     completed: boolean;
     state?: {
@@ -1593,6 +1556,43 @@ export type RehydrateStatusDto = {
 
 export type AcknowledgeRestoreResponseDto = {
     success: boolean;
+};
+
+export type AppFormBody = {
+    port?: number;
+    exposed?: boolean;
+    exposedLocal?: boolean;
+    exposureMode?: 'local' | 'cloudflare' | 'tailscale';
+    openPort?: boolean;
+    domain?: string;
+    isVisibleOnGuestDashboard?: boolean;
+    enableAuth?: boolean;
+    autoRestartOnDomainChange?: boolean;
+    localSubdomain?: string;
+    publicDomain?: string;
+    customDomain?: string;
+    customDomainTakeover?: boolean;
+    customDomainExpected?: string;
+    maxBackups?: number;
+    cpuLimit?: string;
+    memoryLimit?: string;
+    skipEnv?: boolean;
+    skipPull?: boolean;
+    skipRun?: boolean;
+    [key: string]: unknown;
+};
+
+export type LifecycleRequestDto = {
+    requestId: string;
+};
+
+export type ValidateConfigResultDto = {
+    valid: boolean;
+    errors: Array<{
+        env_variable: string;
+        label: string;
+        messageKey: string;
+    }>;
 };
 
 export type UninstallAppBody = {
