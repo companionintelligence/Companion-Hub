@@ -185,21 +185,28 @@ export class ImageSizeService {
    *
    * Every image's registry is asked at once. The refusal names the first image, in compose order,
    * that lacks `arch`, as it did when they were asked one after another.
+   *
+   * `images` is a list the caller already read with {@link listAppImages}, so the check covers
+   * exactly those images; left out, the compose is read here.
    */
-  async verifyAppArchitecture(appUrn: AppUrn, arch: string): Promise<{ ok: true } | { ok: false; image: string; available: string[] } | null> {
-    const images = await this.listAppImages(appUrn);
+  async verifyAppArchitecture(
+    appUrn: AppUrn,
+    arch: string,
+    images?: string[] | null,
+  ): Promise<{ ok: true } | { ok: false; image: string; available: string[] } | null> {
+    const checked = images === undefined ? await this.listAppImages(appUrn) : images;
 
-    if (!images || images.length === 0) {
+    if (!checked || checked.length === 0) {
       return null;
     }
 
-    const published = await Promise.all(images.map((image) => this.getImageArchitectures(image)));
+    const published = await Promise.all(checked.map((image) => this.getImageArchitectures(image)));
     let inspectedAny = false;
 
-    for (const [index, image] of images.entries()) {
+    for (const [index, image] of checked.entries()) {
       const archs = published[index];
 
-      if (archs === null || archs === undefined) {
+      if (!archs) {
         // Couldn't inspect this image — skip it rather than false-blocking.
         continue;
       }

@@ -4,6 +4,20 @@ export type Topic = 'app' | 'app-logs' | 'ci-hub-logs';
 
 const appUrnSchema = z.string().refine((v) => v.split(':').length === 2);
 
+/** The lifecycle commands the Hub runs on an app, one at a time. `GET /api/apps/:urn` and `operation_change` name them. */
+export const lifecycleOperationSchema = z.enum([
+  'install',
+  'start',
+  'stop',
+  'restart',
+  'update',
+  'uninstall',
+  'reset',
+  'backup',
+  'restore',
+  'generate_env',
+]);
+
 const appStatusSchema = z.enum([
   'running',
   'stopped',
@@ -72,10 +86,7 @@ const appScopedEventSchema = z.object({
   appUrn: appUrnSchema,
   appStatus: appStatusSchema.optional(),
   // `operation_change` only: the lifecycle command under way for the app, `null` for none.
-  operation: z
-    .enum(['install', 'start', 'stop', 'restart', 'update', 'uninstall', 'reset', 'backup', 'restore', 'generate_env'])
-    .nullable()
-    .optional(),
+  operation: lifecycleOperationSchema.nullable().optional(),
   error: z.string().optional(),
   errorCode: z.string().optional(),
   errorDetail: z.string().optional(),

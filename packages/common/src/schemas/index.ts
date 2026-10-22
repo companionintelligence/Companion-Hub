@@ -79,7 +79,7 @@ import type {
   AgentSkillConfig,
 } from './agent-config.js';
 
-import { type SSE, type Topic, sseSchema } from './sse.js';
+import { type SSE, type Topic, lifecycleOperationSchema, sseSchema } from './sse.js';
 
 import { toJsonSchema } from './utils/to-json-schema.js';
 
@@ -129,6 +129,7 @@ export {
   type MarketplaceMcp,
   type McpTransport,
   sseSchema,
+  lifecycleOperationSchema,
   frontmatterSchema,
   isPortExposeApp,
   PORT_EXPOSE_KIND,

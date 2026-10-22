@@ -209,6 +209,10 @@ export const DEFAULT_PERSIST_TRAEFIK_CONFIG = 'false';
 export const DEFAULT_QUEUE_TIMEOUT_IN_MINUTES = '5';
 /** Minimum RPC/status grace for app install while large images pull (e.g. OpenClaw ~1GB). */
 export const DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES = 45;
+/** How long the app-events queue waits for a command's reply: the events timeout or the image pull timeout, whichever is longer. */
+export function appCommandTimeoutMs(eventsTimeoutMinutes: number): number {
+  return Math.max(eventsTimeoutMinutes, DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES) * 60 * 1000;
+}
 /** Stall timeout for a hung image pull with no progress events. */
 export const DEFAULT_APP_IMAGE_PULL_INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000;
 /** How long one image's pull may go without its first event from Docker before it fails as never started. */

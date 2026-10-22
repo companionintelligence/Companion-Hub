@@ -743,14 +743,16 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         if (job) {
           await this.lifecycleJobService?.completeJob(job.id).catch(() => null);
         }
-        this.logger.debug('Command executed successfully, triggering Cloudflare sync...');
-        // Trigger sync to ensure cloud state matches local state (exposed apps)
-        await this.syncExposure();
         // Install success is finalized worker-side (markInstallSucceeded); the publisher-side
-        // handler only performs optional follow-up work.
+        // handler only performs optional follow-up work. Cleared before the sync below: the app is
+        // `running` already, and an entry left over the Portal round trips refused every command
+        // sent to it as "already being installed", the sync's own custom-domain restart included.
         if (isInstall) {
           this.operationRegistry.clear(data.appUrn, data.requestId);
         }
+        this.logger.debug('Command executed successfully, triggering Cloudflare sync...');
+        // Trigger sync to ensure cloud state matches local state (exposed apps)
+        await this.syncExposure();
       } else {
         if (job) {
           await this.lifecycleJobService?.failJob(job.id, result.message || 'Operation failed').catch(() => null);
@@ -1358,7 +1360,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       return started.earlyArchCheck;
     }
 
-    return timings.time('architecture of the new images', this.imageSizeService.verifyAppArchitecture(appUrn, architecture));
+    return timings.time('architecture of the new images', this.imageSizeService.verifyAppArchitecture(appUrn, architecture, imagesNow));
   }
 
   /**
@@ -1381,13 +1383,22 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     if (status === 'uninstalling') {
       throw this.operationBusyError(appUrn, 'uninstall');
     }
+
+    // An install queued behind others outlives the stale window from the time it registered, and its
+    // worker still runs it. The status sync and the boot recovery treat it as live the same way.
+    if (
+      status === 'installing' &&
+      (this.operationRegistry.get(appUrn)?.command === 'install' || this.installPipelineTracker.getActive() === appUrn)
+    ) {
+      throw this.operationBusyError(appUrn, 'install');
+    }
   }
 
   async installApp(params: { appUrn: AppUrn; form: unknown; skipRun?: boolean; actor: LifecycleActor }) {
     const timings = new InstallCheckTimings();
 
     // Before anything is fetched, written or queued, and before the busy refusals below, so a caller
-    // without the grant is refused for that whatever the app is doing — see `assertActorMay`. The
+    // without the grant is refused for that whatever the app is doing (see `assertActorMay`). The
     // HTTP route leaves the check to here, so an install asks WhoIs once.
     await timings.time('grant', this.assertActorMayApplyForm(params.actor, params.appUrn, params.form, 'install'));
 
@@ -1446,7 +1457,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
      * download. If the downloaded compose names other images, they are checked once it is in.
      */
     const imagesBeforeDownload = await this.imageSizeService.listAppImages(appUrn);
-    const earlyArchCheck = timings.time('architecture', this.imageSizeService.verifyAppArchitecture(appUrn, architecture)).catch(() => null);
+    // On exactly the images read here: a second read of the compose could land on the download's writes.
+    const earlyArchCheck = timings
+      .time('architecture', this.imageSizeService.verifyAppArchitecture(appUrn, architecture, imagesBeforeDownload))
+      .catch(() => null);
 
     if (store && downloadsBundle) {
       const result = await timings.time('bundle', this.repoHelpers.downloadAppFiles(store.url, store.slug, appName));
@@ -1482,8 +1496,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       }
     }
     const cancelHeld = () => preparing.cancelRequested && !reinstall;
-    // A retry of a failed install, which a cancel puts back to failed rather than deleting.
-    const retriedRow = existingApp && retrying ? { rowId: existingApp.id, rewritten: false } : null;
+    // A retry of a failed install, which a cancel puts back to failed rather than deleting. A row left
+    // `installing` is written back too: the cancel tells every page it failed, and a reload must agree.
+    const retriedRow = existingApp && retrying ? { rowId: existingApp.id, rewritten: existingApp.status === 'installing' } : null;
 
     if (cancelHeld()) {
       return this.endInstallCancelledBeforeQueue(appUrn, retriedRow);
@@ -2910,14 +2925,24 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             return;
           }
 
-          const appInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
+          // The update still holds the app while it reapplies the config, in the same step it settled
+          // its entry: a command sent meanwhile took the app and the start below was refused, leaving
+          // the updated app stopped. Handed back right before that start claims the app itself.
+          const followUp = this.operationRegistry.claim(appUrn, 'update');
           const restoredStatus = appStatusBeforeUpdate === 'running' ? 'stopped' : appStatusBeforeUpdate;
+          try {
+            const appInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
 
-          // Part of the update the caller was already authorized for; not a new decision.
-          await this.updateAppConfig({ appUrn, form: app.config, actor: { kind: 'system', reason: 'update-reapply' } });
-          await this.appRepository.updateAppById(app.id, { version: appInfo?.cihub_app_version, status: restoredStatus });
-          this.sseService.emit('app', { event: 'update_success', appUrn, appStatus: restoredStatus });
-          this.agentNotifyService?.notify('update_success', { appUrn }, 'info');
+            // Part of the update the caller was already authorized for; not a new decision.
+            await this.updateAppConfig({ appUrn, form: app.config, actor: { kind: 'system', reason: 'update-reapply' } });
+            await this.appRepository.updateAppById(app.id, { version: appInfo?.cihub_app_version, status: restoredStatus });
+            this.sseService.emit('app', { event: 'update_success', appUrn, appStatus: restoredStatus });
+            this.agentNotifyService?.notify('update_success', { appUrn }, 'info');
+          } finally {
+            if (followUp.claimed) {
+              this.operationRegistry.releaseClaim(appUrn, followUp.token);
+            }
+          }
 
           if (appStatusBeforeUpdate === 'running') {
             // The update command pulled the images before it stopped anything, so the start does not

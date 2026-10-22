@@ -2,7 +2,7 @@ import { APP_STATUS } from '@/core/database/drizzle/types';
 import { MetadataDto } from '@/modules/marketplace/dto/marketplace.dto';
 import { z } from 'zod';
 import { createZodDto } from '@/common/zod-dto';
-import { appInfoSchema } from '@ci-hub/common/schemas';
+import { appInfoSchema, lifecycleOperationSchema } from '@ci-hub/common/schemas';
 
 const metadataSchema = (MetadataDto as unknown as { schema: z.ZodType }).schema;
 const appInfoSchemaRef = appInfoSchema;
@@ -129,12 +129,7 @@ const getAppSchema = z.object({
    * The lifecycle operation the Hub has under way for the app, `null` when there is none. An install
    * still in its checks has no row yet, so this is the only way another page can tell it is coming.
    */
-  operation: z
-    .object({
-      command: z.enum(['install', 'start', 'stop', 'restart', 'update', 'uninstall', 'reset', 'backup', 'restore', 'generate_env']),
-    })
-    .nullable()
-    .optional(),
+  operation: z.object({ command: lifecycleOperationSchema }).nullable().optional(),
   info: appInfoSchemaRef,
   metadata: metadataSchema,
   appDataHostPath: z.string().nullable().optional(),

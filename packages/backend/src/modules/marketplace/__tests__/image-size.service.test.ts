@@ -283,6 +283,28 @@ describe('ImageSizeService.verifyAppArchitecture', () => {
     await expect(verdict).resolves.toEqual({ ok: false, image: 'web:1', available: ['arm64'] });
   });
 
+  // An install reads the images before the bundle download rewrites the compose, and checks those.
+  it('checks the images it is given without reading the compose again', async () => {
+    const service = serviceWithImages(['web:1']);
+    const ask = vi.spyOn(service, 'getImageArchitectures').mockResolvedValue(['amd64']);
+    const listed = vi.spyOn(service, 'listAppImages');
+
+    await expect(service.verifyAppArchitecture('app:ci-marketplace' as AppUrn, 'amd64', ['db:2'])).resolves.toEqual({ ok: true });
+
+    expect(listed).not.toHaveBeenCalled();
+    expect(ask).toHaveBeenCalledWith('db:2');
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not check a compose the caller could not read', async () => {
+    const service = serviceWithImages(['web:1']);
+    const ask = vi.spyOn(service, 'getImageArchitectures');
+
+    await expect(service.verifyAppArchitecture('app:ci-marketplace' as AppUrn, 'amd64', null)).resolves.toBeNull();
+
+    expect(ask).not.toHaveBeenCalled();
+  });
+
   it('does not block on an image it could not inspect', async () => {
     const service = serviceWithImages(['web:1', 'db:2']);
     vi.spyOn(service, 'getImageArchitectures').mockImplementation(async (image) => (image === 'web:1' ? null : ['amd64']));

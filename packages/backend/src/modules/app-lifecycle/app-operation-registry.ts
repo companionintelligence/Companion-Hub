@@ -1,11 +1,13 @@
 import { Injectable, Optional } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
-import { DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES } from '@/common/constants';
+import type { lifecycleOperationSchema } from '@ci-hub/common/schemas';
+import type { z } from 'zod';
+import { appCommandTimeoutMs } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 
 /** Lifecycle commands that can flow through the operation registry. */
-export type OperationCommand = 'install' | 'start' | 'stop' | 'restart' | 'update' | 'uninstall' | 'reset' | 'backup' | 'restore' | 'generate_env';
+export type OperationCommand = z.infer<typeof lifecycleOperationSchema>;
 
 /**
  * Coarse cancellability tier, derived from the command when the op is registered.
@@ -53,7 +55,7 @@ export interface OperationEntry {
  * good. The status sync judges a transitional row by the same window.
  */
 export function operationStaleAfterMs(eventsTimeoutMinutes: number): number {
-  return Math.max(eventsTimeoutMinutes, DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES) * 60 * 1000;
+  return appCommandTimeoutMs(eventsTimeoutMinutes);
 }
 
 /** The operation an app has under way, as {@link AppOperationRegistry.liveOperation} reports it. */
