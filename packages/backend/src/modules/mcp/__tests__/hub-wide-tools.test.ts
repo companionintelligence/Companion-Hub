@@ -144,7 +144,7 @@ describe('Hub-wide MCP tools', () => {
     lifecycle.startApp.mockResolvedValue({ requestId: 'start-1' } as never);
     const m = () => mock() as never;
     new SystemTools(mock<SystemService>(), systemUpdate, docker, registry).onModuleInit();
-    new InferenceTools(mock<LoggerService>(), registry, m(), m(), m(), modelPuller, m(), cloudFallback, m()).onModuleInit();
+    new InferenceTools(mock<LoggerService>(), registry, m(), m(), modelPuller, m(), cloudFallback, m()).onModuleInit();
     new MarketplaceTools(mock<MarketplaceService>(), mock<AppStoreService>(), registry).onModuleInit();
     new AppLifecycleTools(lifecycle, registry).onModuleInit();
   });

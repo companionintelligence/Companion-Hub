@@ -29,6 +29,7 @@ import {
 import { INFERENCE_SUPERVISION_MODES, MAX_SUPERVISION_POLL_SECONDS, MIN_SUPERVISION_POLL_SECONDS } from '@/common/helpers/inference-supervision';
 import { MAX_INFERENCE_MAX_NUM_CTX, MIN_INFERENCE_MAX_NUM_CTX } from '@/common/helpers/inference-context-cap';
 import { MAX_INFERENCE_OLLAMA_SLOTS, MIN_INFERENCE_OLLAMA_SLOTS } from '@/common/helpers/inference-ollama-slots';
+import { MAX_INFERENCE_OLLAMA_KEEP_ALIVE_SECONDS, MIN_INFERENCE_OLLAMA_KEEP_ALIVE_SECONDS } from '@/common/helpers/inference-ollama-keep-alive';
 
 import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import { userSchema } from './modules/user/dto/user.dto';
@@ -101,6 +102,13 @@ const inferenceMaxNumCtxSchema = z
 const inferenceOllamaSlotsSchema = z
   .union([z.number().int(), z.string().transform(Number)])
   .pipe(z.number().int().min(MIN_INFERENCE_OLLAMA_SLOTS).max(MAX_INFERENCE_OLLAMA_SLOTS));
+/**
+ * This node's Ollama keep-alive in seconds (`OLLAMA_KEEP_ALIVE`), encoded like the slot count above.
+ * Out of range degrades to "not stated" on the read path. An unpin then names Ollama's default.
+ */
+const inferenceOllamaKeepAliveSchema = z
+  .union([z.number().int(), z.string().transform(Number)])
+  .pipe(z.number().int().min(MIN_INFERENCE_OLLAMA_KEEP_ALIVE_SECONDS).max(MAX_INFERENCE_OLLAMA_KEEP_ALIVE_SECONDS));
 /** Same read/write split as the two pool knobs above, for the inference observation interval. */
 const inferenceSupervisionPollSecondsSchema = z
   .union([z.number().int(), z.string().transform(Number)])
@@ -186,6 +194,9 @@ export const settingsSchema = z.object({
   // stated it. Absent means not stated, which ranks exactly as the build before it. Same read-path
   // `.catch(undefined)` as the cap above.
   inferenceOllamaSlots: inferenceOllamaSlotsSchema.optional().catch(undefined),
+  // How long this node's Ollama keeps an idle model (`OLLAMA_KEEP_ALIVE`), in seconds, as the
+  // operator stated it. What an unpinned model is handed back to; absent means Ollama's 5 minutes.
+  inferenceOllamaKeepAlive: inferenceOllamaKeepAliveSchema.optional().catch(undefined),
   // Multi-Hub inference pooling. `hubPoolEnabled` is opt-out (absent = on) and is the in-product
   // half of the kill switch; `HUB_POOL_USER_DISABLED=true` in the environment still overrides it
   // (see resolveHubPoolEnabled). Absent numeric values fall back to the DEFAULT_POOL_* constants.
@@ -439,6 +450,7 @@ const APP_CONTEXT_SETTINGS = {
   inferenceEncodeEndpoint: true,
   inferenceMaxNumCtx: true,
   inferenceOllamaSlots: true,
+  inferenceOllamaKeepAlive: true,
   hubPoolEnabled: true,
   hubPoolOutboundEnabled: true,
   hubPoolInboundEnabled: true,
@@ -521,6 +533,7 @@ export class UserSettingsBody extends createZodDto(
     inferenceSupervisionPollSeconds: inferenceSupervisionPollSecondsSchema.optional(),
     inferenceMaxNumCtx: inferenceMaxNumCtxSchema.optional(),
     inferenceOllamaSlots: inferenceOllamaSlotsSchema.optional(),
+    inferenceOllamaKeepAlive: inferenceOllamaKeepAliveSchema.optional(),
     hubPoolPins: poolPinsSchema.optional(),
   }),
 ) {}

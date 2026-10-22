@@ -1,12 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import type { CuratedModel, HardwareProfile } from '@ci-hub/common/types';
+import type { HardwareProfile } from '@ci-hub/common/types';
 import type { LifecycleActorFor } from '@/core/portal/lifecycle-actor';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { ApiKeyContext } from '@/modules/api-keys/api-key.service';
 import { HardwareInspectorService } from '@/modules/inference/hardware-inspector.service';
-import { ModelRegistryService } from '@/modules/inference/model-registry.service';
 import { MemoryManagerService } from '@/modules/inference/memory-manager.service';
 import { ModelPullerService } from '@/modules/inference/model-puller.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
@@ -33,7 +32,6 @@ const callTool = (registry: McpToolRegistry, name: string, params: Record<string
 describe('InferenceTools — loading and pinning', () => {
   let registry: McpToolRegistry;
   let router: MockProxy<InferenceRouterService>;
-  let modelRegistry: MockProxy<ModelRegistryService>;
   let memoryManager: MockProxy<MemoryManagerService>;
 
   const call = (name: string, params: Record<string, unknown>) => callTool(registry, name, params);
@@ -41,18 +39,15 @@ describe('InferenceTools — loading and pinning', () => {
   beforeEach(() => {
     registry = new McpToolRegistry();
     router = mock<InferenceRouterService>();
-    modelRegistry = mock<ModelRegistryService>();
     memoryManager = mock<MemoryManagerService>();
     const hardware = mock<HardwareInspectorService>();
     hardware.getProfile.mockResolvedValue({ tier: 'high' } as HardwareProfile);
-    modelRegistry.getCuratedModel.mockReturnValue({ runtime: { memoryFootprintMb: 6_640 } } as CuratedModel);
     memoryManager.canPinModel.mockResolvedValue({ canPin: true });
     router.loadTrackedModel.mockResolvedValue({ loaded: true });
     new InferenceTools(
       mock<LoggerService>(),
       registry,
       hardware,
-      modelRegistry,
       memoryManager,
       mock<ModelPullerService>(),
       router,
@@ -119,6 +114,18 @@ describe('InferenceTools — loading and pinning', () => {
       });
     });
   });
+
+  describe('hub_unpin_model', () => {
+    it("unpins through the router, which also hands the model back to Ollama's default keep_alive", async () => {
+      router.unpinTrackedModel.mockResolvedValue({ engine: 'set' });
+
+      await expect(asOperator(() => call('hub_unpin_model', { modelId: 'gemma4-e2b' }))).resolves.toEqual({
+        success: true,
+        message: 'Model gemma4-e2b unpinned',
+      });
+      expect(router.unpinTrackedModel).toHaveBeenCalledWith('gemma4-e2b');
+    });
+  });
 });
 
 // The schema requires `apiKey`, so a call that means "keep the stored key" sends an empty string. That
@@ -140,7 +147,6 @@ describe('InferenceTools: hub_set_cloud_provider', () => {
       mock<LoggerService>(),
       registry,
       mock<HardwareInspectorService>(),
-      mock<ModelRegistryService>(),
       mock<MemoryManagerService>(),
       mock<ModelPullerService>(),
       mock<InferenceRouterService>(),
