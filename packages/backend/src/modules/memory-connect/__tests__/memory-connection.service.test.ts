@@ -12,6 +12,7 @@ function makeMocks() {
   const repo = {
     findByAppUrn: vi.fn(),
     findByAppUrnAndUser: vi.fn(),
+    findLatestConnected: vi.fn(),
     upsert: vi.fn().mockResolvedValue(undefined),
     deleteByAppUrn: vi.fn().mockResolvedValue(1),
   };
@@ -71,7 +72,7 @@ describe('MemoryConnectionService', () => {
 
   it('getInjectableCreds decrypts and returns url + token when connected', async () => {
     const { service, repo } = makeMocks();
-    repo.findByAppUrn.mockResolvedValue(row({ state: 'connected', encryptedKey: 'enc(raw-key)', serverUrl: 'http://gateway:8642' }));
+    repo.findLatestConnected.mockResolvedValue(row({ state: 'connected', encryptedKey: 'enc(raw-key)', serverUrl: 'http://gateway:8642' }));
 
     expect(await service.getInjectableCreds('ci-openclaw:local')).toEqual({
       url: 'http://gateway:8642',
@@ -79,11 +80,24 @@ describe('MemoryConnectionService', () => {
     });
   });
 
-  it('getInjectableCreds returns null when not connected', async () => {
+  it('getInjectableCreds returns null when nobody is connected', async () => {
     const { service, repo } = makeMocks();
-    repo.findByAppUrn.mockResolvedValue(row({ state: 'skipped' }));
+    repo.findLatestConnected.mockResolvedValue(undefined);
 
     expect(await service.getInjectableCreds('ci-openclaw:local')).toBeNull();
+  });
+
+  it("getInjectableCreds reads the newest CONNECTED row, so another person's newer skip does not unplug the app", async () => {
+    // Person 2 connected; person 1 later chose "Not now", which makes person 1's skipped row the
+    // app's newest. The app must keep person 2's key, not lose it at its next restart.
+    const { service, repo } = makeMocks();
+    repo.findByAppUrn.mockResolvedValue(row({ id: 2, hubUserId: 1, state: 'skipped' }));
+    repo.findLatestConnected.mockResolvedValue(
+      row({ id: 1, hubUserId: 2, state: 'connected', encryptedKey: 'enc(key-2)', serverUrl: 'http://gateway:8642' }),
+    );
+
+    expect(await service.getInjectableCreds('ci-openclaw:local')).toEqual({ url: 'http://gateway:8642', token: 'key-2' });
+    expect(repo.findByAppUrn).not.toHaveBeenCalled();
   });
 
   it('getInjectableCreds degrades to null (never throws) when decryption fails', async () => {
@@ -91,7 +105,7 @@ describe('MemoryConnectionService', () => {
     encryption.decrypt.mockImplementation(() => {
       throw new Error('bad ciphertext');
     });
-    repo.findByAppUrn.mockResolvedValue(row({ state: 'connected', encryptedKey: 'corrupt', serverUrl: 'http://gateway:8642' }));
+    repo.findLatestConnected.mockResolvedValue(row({ state: 'connected', encryptedKey: 'corrupt', serverUrl: 'http://gateway:8642' }));
 
     expect(await service.getInjectableCreds('ci-openclaw:local')).toBeNull();
   });
@@ -143,20 +157,21 @@ describe('MemoryConnectionService', () => {
     expect(repo.findByAppUrnAndUser).toHaveBeenCalledWith('ci-openclaw:local', 2);
   });
 
+  it("getRow with a row's hub_user_id 0 reads the install-global row, not the app's newest row", async () => {
+    const { service, repo } = makeMocks();
+    repo.findByAppUrn.mockResolvedValue(row({ hubUserId: 1, state: 'skipped' }));
+    repo.findByAppUrnAndUser.mockResolvedValue(row({ hubUserId: 0, state: 'connected', encryptedKey: 'enc(k)' }));
+
+    expect(await service.getRow('ci-openclaw:local', 0)).toMatchObject({ hubUserId: 0, state: 'connected' });
+    expect(repo.findByAppUrnAndUser).toHaveBeenCalledWith('ci-openclaw:local', 0);
+    expect(repo.findByAppUrn).not.toHaveBeenCalled();
+  });
+
   it('storeConnected persists the Hub person who consented', async () => {
     const { service, repo } = makeMocks();
 
     await service.storeConnected('ci-openclaw:local', 'http://gateway:8642', 'raw-key', '2026-10-07T00:00:00.000Z', '7');
 
     expect(repo.upsert).toHaveBeenCalledWith(expect.any(String), expect.any(Object), 7);
-  });
-
-  it('isConnected requires both connected state and a stored key', async () => {
-    const { service, repo } = makeMocks();
-    repo.findByAppUrn.mockResolvedValueOnce(row({ state: 'connected', encryptedKey: 'enc(k)' }));
-    expect(await service.isConnected('a')).toBe(true);
-
-    repo.findByAppUrn.mockResolvedValueOnce(row({ state: 'connected', encryptedKey: null }));
-    expect(await service.isConnected('a')).toBe(false);
   });
 });

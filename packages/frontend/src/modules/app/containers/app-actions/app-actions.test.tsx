@@ -24,6 +24,7 @@ const hoisted = vi.hoisted(() => ({
   memory: {
     applicable: false,
     connected: false,
+    connectedByOther: false,
     memoryInstalled: false,
     memoryReady: false,
     connectable: false,
@@ -51,6 +52,10 @@ const hoisted = vi.hoisted(() => ({
   installationProgress: null as null | { percent: number; downloadedBytes?: number; totalBytes?: number },
   /** Props the cancel-install confirmation was last rendered with. */
   cancelInstallProps: undefined as undefined | { onCancelStart?: () => void },
+  /** Props the cancel-update confirmation (the same dialog, `operation="update"`) was last rendered with. */
+  cancelUpdateProps: undefined as undefined | { onCancelStart?: () => void },
+  /** The step of a running update, as the SSE stream left it. */
+  updatePhase: null as null | string,
 }));
 
 vi.mock('@/modules/app/helpers/use-memory-connection', () => ({
@@ -134,6 +139,10 @@ vi.mock('@/modules/app/helpers/use-installation-progress', () => ({
   useInstallationProgress: () => hoisted.installationProgress,
 }));
 
+vi.mock('@/modules/app/helpers/use-update-phase', () => ({
+  useUpdatePhase: (urn?: string) => (urn ? hoisted.updatePhase : null),
+}));
+
 vi.mock('@/context/app-context', () => ({
   useAppContext: () => ({
     architecture: hoisted.architecture,
@@ -183,8 +192,12 @@ vi.mock('../../components/dialogs/install-dialog/install-dialog', () => ({
   },
 }));
 vi.mock('../../components/dialogs/cancel-install-dialog/cancel-install-dialog', () => ({
-  CancelInstallDialog: (props: { onCancelStart?: () => void }) => {
-    hoisted.cancelInstallProps = props;
+  CancelInstallDialog: (props: { onCancelStart?: () => void; operation?: 'install' | 'update' }) => {
+    if (props.operation === 'update') {
+      hoisted.cancelUpdateProps = props;
+    } else {
+      hoisted.cancelInstallProps = props;
+    }
     return null;
   },
 }));
@@ -302,6 +315,7 @@ describe('AppActions', () => {
     Object.assign(hoisted.memory, {
       applicable: false,
       connected: false,
+      connectedByOther: false,
       memoryInstalled: false,
       memoryReady: false,
       connectable: false,
@@ -718,6 +732,21 @@ describe('AppActions', () => {
       }
     });
 
+    // Connecting or disconnecting Companion Memory restarts the app, so it takes the restart grant.
+    it('shows no Memory button to a person who may not restart the app', () => {
+      Object.assign(hoisted.memory, { applicable: true, memoryInstalled: true, memoryReady: true, connectable: true });
+      renderCustom('running', ['view']);
+
+      expect(screen.queryByTestId('action-memory_connect_action_connect_memory')).not.toBeInTheDocument();
+    });
+
+    it('shows the Memory buttons to a person who may restart the app', () => {
+      Object.assign(hoisted.memory, { applicable: true, memoryInstalled: true, memoryReady: true, connectable: true });
+      renderCustom('running', ['view', 'restart']);
+
+      expect(screen.getByTestId('action-memory_connect_action_connect_memory')).toBeInTheDocument();
+    });
+
     it('offers an account with no linked Portal identity start, stop and restart, and no change', () => {
       renderCustom('running', ['view', 'start', 'stop', 'restart']);
 
@@ -767,6 +796,74 @@ describe('AppActions', () => {
 
       expect(screen.getAllByText('APP_STATUS_CANCELLING').length).toBeGreaterThan(0);
       expect(screen.getByTestId('icon-action-common_cancel')).toBeDisabled();
+    });
+  });
+
+  // An update can wait minutes for the new version's health checks. The page said "Preparing..." the
+  // whole time and offered no way out (#2107).
+  describe('an update in progress', () => {
+    const renderUpdating = () =>
+      render(
+        <MemoryRouter>
+          <AppActions app={makeApp({ status: 'updating' })} metadata={metadata} info={info} urlAvailability={idleAvailability} />
+        </MemoryRouter>,
+      );
+
+    afterEach(() => {
+      hoisted.updatePhase = null;
+    });
+
+    it.each([
+      ['pulling', 'APP_UPDATE_PHASE_PULLING'],
+      ['backing_up', 'APP_UPDATE_PHASE_BACKING_UP'],
+      ['replacing', 'APP_UPDATE_PHASE_REPLACING'],
+      ['starting', 'APP_UPDATE_PHASE_STARTING'],
+      ['verifying', 'APP_UPDATE_PHASE_VERIFYING'],
+      ['finalizing', 'APP_UPDATE_PHASE_FINALIZING'],
+      ['rolling_back', 'APP_UPDATE_PHASE_ROLLING_BACK'],
+    ])('says what the update is doing while it is %s', (phase, key) => {
+      hoisted.updatePhase = phase;
+
+      renderUpdating();
+
+      expect(screen.getByText(key)).toBeInTheDocument();
+      expect(screen.queryByText('APP_ACTION_PREPARING')).not.toBeInTheDocument();
+    });
+
+    it('offers Cancel while the update waits for the new version and opens the confirmation', async () => {
+      hoisted.updatePhase = 'verifying';
+
+      renderUpdating();
+
+      const cancel = screen.getByTestId('icon-action-common_cancel');
+      expect(cancel).toBeEnabled();
+      await userEvent.click(cancel);
+      expect(disclosureOpen).toHaveBeenCalled();
+    });
+
+    it.each(['finalizing', 'rolling_back'])('does not offer Cancel once the update is %s', (phase) => {
+      hoisted.updatePhase = phase;
+
+      renderUpdating();
+
+      expect(screen.getByTestId('icon-action-common_cancel')).toBeDisabled();
+    });
+
+    it('shows Cancelling once the cancel was accepted, then the rollback', () => {
+      hoisted.updatePhase = 'verifying';
+      const { rerender } = renderUpdating();
+
+      act(() => hoisted.cancelUpdateProps?.onCancelStart?.());
+      expect(screen.getAllByText('APP_STATUS_CANCELLING').length).toBeGreaterThan(0);
+      expect(screen.getByTestId('icon-action-common_cancel')).toBeDisabled();
+
+      hoisted.updatePhase = 'rolling_back';
+      rerender(
+        <MemoryRouter>
+          <AppActions app={makeApp({ status: 'updating' })} metadata={metadata} info={info} urlAvailability={idleAvailability} />
+        </MemoryRouter>,
+      );
+      expect(screen.getByText('APP_UPDATE_PHASE_ROLLING_BACK')).toBeInTheDocument();
     });
   });
 
@@ -987,6 +1084,17 @@ describe('AppActions', () => {
       renderRunning();
 
       expect(screen.getByTestId('action-memory_connect_action_connect_memory')).toBeEnabled();
+    });
+
+    it('warns that Connect replaces the connection another person made and offers no Disconnect of it', () => {
+      Object.assign(hoisted.memory, { applicable: true, memoryInstalled: true, memoryReady: true, connectable: true, connectedByOther: true });
+
+      renderRunning();
+
+      const button = screen.getByTestId('action-memory_connect_action_connect_memory');
+      expect(button).toBeEnabled();
+      expect(button.closest('[data-tooltip-id="app-actions-tooltip"]')).toHaveAttribute('data-tooltip-content', 'MEMORY_CONNECT_REPLACE_OTHER_DESC');
+      expect(screen.queryByTestId('action-memory_connect_action_disconnect_memory')).not.toBeInTheDocument();
     });
 
     it('keeps Connect visible but disabled — with the REASON — when this browser cannot start one', () => {

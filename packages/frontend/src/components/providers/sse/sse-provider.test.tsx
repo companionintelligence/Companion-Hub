@@ -21,6 +21,8 @@ vi.mock('@/lib/hooks/use-sse', () => ({
 
 vi.mock('@/modules/app/helpers/app-sse-cache', () => ({
   handleAppSseEvent: (...args: unknown[]) => mockHandleAppSseEvent(...args),
+  // The page's name for the app, as the cache would give it.
+  cachedAppName: (_queryClient: unknown, appUrn: string, fallback: string) => (appUrn === 'uptime-kuma:ci-marketplace' ? 'Uptime Kuma' : fallback),
 }));
 
 vi.mock('sonner', () => ({
@@ -337,6 +339,14 @@ describe('SSEProvider: a cancelled install of a custom app', () => {
     send({ event: 'install_cancelled', appUrn: 'my-tool:_user', appStatus: 'missing' });
 
     expect(screen.getByTestId('where')).toHaveTextContent('/store');
+  });
+
+  it('names the app as its page does when its update was cancelled, not by its id', () => {
+    const send = renderOnAppPage();
+
+    send({ event: 'update_cancelled', appUrn: 'uptime-kuma:ci-marketplace', appStatus: 'running' });
+
+    expect(mockToastSuccess).toHaveBeenCalledWith("Update of Uptime Kuma cancelled. It's back on its previous version.");
   });
 
   // A retry of a failed install that is cancelled before it is queued stays install_failed.

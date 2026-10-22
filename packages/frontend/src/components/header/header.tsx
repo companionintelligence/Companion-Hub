@@ -50,7 +50,7 @@ export const Header = (props: HeaderProps) => {
 
   const deviceName = useMemo(() => {
     const source = userSettings?.ciHubDeviceSlug?.trim();
-    if (!source) return 'CI HUB';
+    if (!source) return 'COMPANION HUB';
     return source.replace(/[-_]+/g, ' ').toUpperCase();
   }, [userSettings?.ciHubDeviceSlug]);
 

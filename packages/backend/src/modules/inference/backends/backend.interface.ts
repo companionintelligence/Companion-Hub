@@ -81,6 +81,17 @@ export interface InferenceBackend {
   isModelLoaded(modelId: string): Promise<boolean>;
 
   /**
+   * For a factory reset: the engine's names for what it holds in memory, asked at the address the Hub
+   * is configured with and nowhere else, or null when it does not answer there. A fallback address can
+   * be another engine, a shared one on the host, whose models are not the Hub's to unload. Absent on an
+   * engine that cannot unload one model on request (vLLM, oMLX).
+   */
+  residentAtConfiguredEndpoint?(): Promise<string[] | null>;
+
+  /** Unload `modelId`, as the engine names it, at the configured address only. See {@link residentAtConfiguredEndpoint}. */
+  unloadAtConfiguredEndpoint?(modelId: string, options?: { embedding?: boolean }): Promise<void>;
+
+  /**
    * What is IN MEMORY right now, and how the backend knows.
    *
    * Optional, and the optionality is the point. An engine that cannot answer must be able to

@@ -1,3 +1,4 @@
+import type { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import { MarketplaceEntitlementService } from '@/core/portal/marketplace-entitlement.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -24,6 +25,12 @@ export interface CommandExecutionContext {
   jobId?: string;
   /** Report progress percentage to durable job tracking. */
   updateProgress?(percent: number): Promise<void>;
+  /**
+   * The one time limit for the whole command, counted from when it was queued
+   * (`AppCommandDeadline.untilReply`). A long command fits every step inside it, the root helpers
+   * of a backup or restore included.
+   */
+  deadline?: AppCommandDeadline;
 }
 
 /**
@@ -32,6 +39,11 @@ export interface CommandExecutionContext {
  */
 export interface LifecycleCommand {
   execute(appUrn: AppUrn, form: AppEventFormInput, ctx?: CommandExecutionContext): Promise<unknown>;
+  /**
+   * Tidying up the command left for after its reply has been sent (an update's snapshot it no longer
+   * needs). It must not delay the reply; the worker does not wait for it.
+   */
+  afterReply?(): Promise<void>;
 }
 
 /**

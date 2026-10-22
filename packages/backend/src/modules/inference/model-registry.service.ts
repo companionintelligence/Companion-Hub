@@ -13,7 +13,7 @@ import type {
 import { CURATED_MODELS } from './catalog/curated-models';
 // A value import: Nest reads the constructor's parameter types from emitted decorator metadata.
 import { LemonadeBackend } from './backends/lemonade.backend';
-import { readPinnedModels, writePinnedModels } from './pinned-models-record';
+import { readPinnedModels, removePinnedModels, writePinnedModels } from './pinned-models-record';
 
 // ─── Hardware-fit selection tuning ──────────────────────────────────────────
 // The curated catalog (CURATED_MODELS) is the single source of truth for model sizing.
@@ -156,6 +156,8 @@ export class ModelRegistryService implements OnModuleInit {
   private pinsRead: Promise<void> = Promise.resolve();
   /** Writes in the order they were asked for, each of the whole set as it stands when it runs. */
   private pinsWrite: Promise<void> = Promise.resolve();
+  /** Bumped by {@link forgetPins}. See {@link currentPinGeneration}. */
+  private pinGeneration = 0;
 
   /**
    * `@Optional()` so the many tests that build a registry from the logger alone keep working; with no
@@ -192,6 +194,46 @@ export class ModelRegistryService implements OnModuleInit {
         this.logger.warn(`[ModelRegistry] Could not read the persisted pins: ${error instanceof Error ? error.message : String(error)}`);
       });
     return this.pinsRead;
+  }
+
+  /**
+   * Unpin every model and remove the persisted pins, for a factory reset. Without it the reset Hub
+   * read the old pins back at its next boot and pinned them again. Returns the catalog ids it unpinned.
+   * The models stay in memory, as after an unpin. `InferenceRouterService.forgetPinnedModels` unloads
+   * them from their engines.
+   */
+  async forgetPins(): Promise<string[]> {
+    this.pinGeneration++;
+    // A boot still reading the file would add the old pins back after they were cleared.
+    await this.pinsRead;
+    const forgotten = new Set(this.pins);
+    if (this.pins.size > 0) {
+      this.logger.info(`[ModelRegistry] Unpinned ${this.pins.size} model(s) for the factory reset: ${[...this.pins].join(', ')}`);
+    }
+    this.pins.clear();
+    for (const [catalogId, tracked] of this.trackedModels) {
+      if (tracked.pinned) {
+        forgotten.add(catalogId);
+        tracked.pinned = false;
+        if (tracked.state === 'pinned') tracked.state = 'loaded';
+      }
+    }
+    // Behind the writes already queued, so none of them puts the old pins back afterwards.
+    this.pinsWrite = this.pinsWrite
+      .then(() => removePinnedModels())
+      .catch((error) => {
+        this.logger.warn(`[ModelRegistry] Could not remove the persisted pins: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    await this.pinsWrite;
+    return [...forgotten];
+  }
+
+  /**
+   * Read when a pin is asked for and compared before it lands. A pin whose model was still loading
+   * when a factory reset forgot the pins would otherwise pin it again on the reset Hub.
+   */
+  currentPinGeneration(): number {
+    return this.pinGeneration;
   }
 
   /** Resolves once every pin change made so far has been written (or failed to be). */

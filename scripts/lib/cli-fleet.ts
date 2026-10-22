@@ -110,7 +110,7 @@ import {
   parseOllamaBindProbe,
   planBindConsolidation,
 } from './fleet-ollama-bind.js';
-import { gpuProbeTimerStep, installNode, pullModelScript, updateHubScript } from './fleet-install.js';
+import { gpuProbeTimerStep, type InstallOptions, installNode, pullModelScript, updateHubScript } from './fleet-install.js';
 import { type CihubBinarySource, parseCihubVersionOutput, pinCihubReleaseSource, resolveCihubBinarySource } from './fleet-cihub-binary.js';
 import {
   assessKeptPairingCode,
@@ -266,7 +266,7 @@ export interface FleetArgs {
   /** A cihub-linux-* release asset on this machine, streamed to every node that needs one. */
   cihubBinary?: string;
   /**
-   * Release tag to fetch with GH_TOKEN when no --cihub-binary is given (default: latest, resolved to
+   * Release tag to fetch from GitHub when no --cihub-binary is given (default: latest, resolved to
    * its tag before any node is dialled); with --cihub-binary, what the file is when it will not run here.
    */
   cihubVersion?: string;
@@ -1937,7 +1937,7 @@ function readLocalCihubVersion(binaryPath: string): string | undefined {
 /**
  * The source, decided once per run and pinned to a version: a `latest` becomes the tag GitHub
  * resolves it to right now, so every node compares against — and installs — the same release, and a
- * token that cannot see the repository is one line here rather than a silent adopt on every node.
+ * lookup that fails is one line here rather than a silent adopt on every node.
  */
 async function resolveBinarySourceForRun(args: FleetArgs): Promise<CihubBinarySource> {
   return pinCihubReleaseSource(
@@ -1950,7 +1950,7 @@ function describeBinarySource(source: CihubBinarySource): string {
     case 'local':
       return `cihub binary: ${source.path}${source.version ? ` (${source.version})` : ' (version unknown: it would not run here — is it executable? — and --cihub-version can say what it is)'}, streamed to nodes that need one`;
     case 'release':
-      return `cihub binary: release ${source.version}${source.resolvedFrom ? ` (${source.resolvedFrom})` : ''}, fetched here with the GitHub token and streamed to nodes that need one`;
+      return `cihub binary: release ${source.version}${source.resolvedFrom ? ` (${source.resolvedFrom})` : ''}, fetched here ${source.token ? 'with the GitHub token in GH_TOKEN or GITHUB_TOKEN' : 'from the public GitHub release'} and streamed to nodes that need one`;
     case 'unavailable':
       return `${source.why} — nodes that already have a cihub are adopted without a version check; the rest fail at 'install cihub'. ${source.fix.join(' ')}`;
   }
@@ -2148,7 +2148,7 @@ async function runInstall(args: FleetArgs): Promise<void> {
   // exists, and so `latest` is one tag for the whole run.
   const binarySource = await resolveBinarySourceForRun(args);
   console.log(colorize(`  ${describeBinarySource(binarySource)}`, binarySource.kind === 'unavailable' ? 'yellow' : 'dim'));
-  const binaryCache = new Map<string, { path: string; sha256: string; label: string }>();
+  const binaryCache: NonNullable<InstallOptions['binaryCache']> = new Map();
   const pacing = describePairingPacing(args.pairingGapMs, run.length);
   if (pacing) console.log(colorize(`  ${pacing}`, 'dim'));
   // One for the whole run: Portal counts pairings per network address, and every node's Hub calls

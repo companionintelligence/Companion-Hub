@@ -32,6 +32,15 @@ const installQueueEventSchema = z.object({
   queued: z.array(installQueueEntrySchema),
 });
 
+/**
+ * The steps of an app update, as its app page shows them. `replacing` is a stopped app's files being
+ * replaced (it is not started); `starting` covers that and the start for a running one. `verifying`
+ * is the wait for the new version's health checks, which can take minutes; cancelling is possible up
+ * to and during it.
+ */
+const updatePhaseSchema = z.enum(['preparing', 'pulling', 'backing_up', 'replacing', 'starting', 'verifying', 'finalizing', 'rolling_back']);
+export type UpdatePhase = z.infer<typeof updatePhaseSchema>;
+
 const appScopedEventSchema = z.object({
   event: z.enum([
     'status_change',
@@ -44,6 +53,8 @@ const appScopedEventSchema = z.object({
     'reset_error',
     'update_success',
     'update_error',
+    // The person cancelled an update and it put the previous version back.
+    'update_cancelled',
     'start_success',
     'start_error',
     'stop_success',
@@ -77,6 +88,8 @@ const appScopedEventSchema = z.object({
   // An install's image download so far, beside `progress`, once Docker has reported layer sizes.
   downloadedBytes: z.number().nonnegative().optional(),
   totalBytes: z.number().nonnegative().optional(),
+  // What an update is doing, on a `status_change` with `appStatus: 'updating'`.
+  updatePhase: updatePhaseSchema.optional(),
   // Identifier for a non-fatal caveat on an otherwise-successful op (e.g. uninstall
   // completed but a root-owned path could not be fully removed). The client maps it
   // to a warning toast — a discriminator like errorCode, not rendered as a raw key.

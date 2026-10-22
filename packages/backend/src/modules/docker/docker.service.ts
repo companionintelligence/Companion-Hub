@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { abortError, isAbortError, throwIfAborted } from '@/common/abort';
@@ -21,6 +22,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable, InternalServerErrorException, Inject } from '@nestjs/common';
+import type { AppCommandDeadline } from '@/common/helpers/app-command-deadline';
 import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
 import { AppFilesManager } from '../apps/app-files-manager';
@@ -43,6 +45,12 @@ export type { AppContainerRuntimeStats, AppNetworkTarget, ManagedAppContainerVer
  * that user. The leading dot keeps the backup lister from reading it as an app store.
  */
 export const PRE_UPDATE_SNAPSHOT_DIRNAME = '.pre-update-snapshots';
+
+/**
+ * Where the backup or the restore of app data the Hub cannot read is put together for the root helper,
+ * under `<dataDir>/backups/` for the same reasons as {@link PRE_UPDATE_SNAPSHOT_DIRNAME}.
+ */
+export const BACKUP_STAGING_DIRNAME = '.backup-staging';
 
 export interface PreUpdateVolumeSnapshotResult {
   appUrn: AppUrn;
@@ -87,6 +95,8 @@ export interface ContainerHealthProbeResult {
   healthy: boolean;
   containers: ContainerHealthProbeDetail[];
   message: string;
+  /** Set when the probe stopped because its `signal` was aborted, before it had an answer. */
+  cancelled?: boolean;
 }
 
 const HUB_APP_NETWORK_GAP = 'Not attaching the Hub to app networks';
@@ -98,6 +108,7 @@ const MANAGED_APP_STARTUP_DELAY_MS = 2_000;
 
 // What Docker uses for a health check that leaves these unset.
 const DOCKER_DEFAULT_HEALTH_INTERVAL_MS = 30_000;
+const DOCKER_DEFAULT_HEALTH_TIMEOUT_MS = 30_000;
 const DOCKER_DEFAULT_HEALTH_RETRIES = 3;
 // The least and the most time a health probe that waits for `starting` containers gives one of them.
 const HEALTH_STARTING_MIN_WAIT_MS = 2 * 60_000;
@@ -107,9 +118,10 @@ const HEALTH_STARTING_MAX_WAIT_MS = 15 * 60_000;
  * How long a container may report `starting` before a health probe stops waiting for it.
  *
  * Docker counts no failed check during the health check's start period. After it, Docker reports the
- * container `unhealthy` only once `retries` checks in a row have failed, one per interval. Until then
- * it says `starting`, so an app that declares a start period of three minutes is not broken at ten
- * seconds. The wait is that start period plus `retries` intervals, at least two minutes (which is
+ * container `unhealthy` only once `retries` checks in a row have failed. Each check starts an interval
+ * after the one before it ended and may run for up to its timeout. Until then Docker says `starting`,
+ * so an app that declares a start period of three minutes is not broken at ten seconds. The wait is
+ * that start period plus `retries` times an interval and a timeout, at least two minutes (which is
  * what a health check without a start period gets) and at most fifteen.
  */
 function healthStartingWaitMs(healthcheck: Dockerode.HealthConfig | undefined): number {
@@ -117,21 +129,65 @@ function healthStartingWaitMs(healthcheck: Dockerode.HealthConfig | undefined): 
   const toMs = (ns: number | undefined) => (ns && ns > 0 ? ns / 1_000_000 : 0);
   const startPeriodMs = toMs(healthcheck?.StartPeriod);
   const intervalMs = toMs(healthcheck?.Interval) || DOCKER_DEFAULT_HEALTH_INTERVAL_MS;
+  const timeoutMs = toMs(healthcheck?.Timeout) || DOCKER_DEFAULT_HEALTH_TIMEOUT_MS;
   const retries = healthcheck?.Retries && healthcheck.Retries > 0 ? healthcheck.Retries : DOCKER_DEFAULT_HEALTH_RETRIES;
 
-  return Math.min(Math.max(startPeriodMs + retries * intervalMs, HEALTH_STARTING_MIN_WAIT_MS), HEALTH_STARTING_MAX_WAIT_MS);
+  return Math.min(Math.max(startPeriodMs + retries * (intervalMs + timeoutMs), HEALTH_STARTING_MIN_WAIT_MS), HEALTH_STARTING_MAX_WAIT_MS);
+}
+
+/** Wait `ms`, or less when `signal` is aborted first. */
+function pause(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener('abort', done, { once: true });
+  });
 }
 
 const formatSeconds = (ms: number) => `${Math.round(ms / 100) / 10} s`;
 
 /** Grace period between SIGTERM and SIGKILL for a canceled Compose child process. */
 const COMPOSE_CANCEL_SIGKILL_GRACE_MS = 5_000;
-// Bound privileged uninstall cleanup, including the helper image pull and deletion.
-const PRIVILEGED_CLEANUP_TIMEOUT_MS = 120_000;
-// A privileged copy moves a whole data folder (a database, a media library), so it gets far longer than a delete.
-const PRIVILEGED_COPY_TIMEOUT_MS = 30 * 60_000;
+// Every privileged helper walks a whole data folder (a database, a media library): deleting, copying or
+// archiving it. Uninstall, Reset, a restore and an update rollback all wait on one, so they get the same
+// bound, which also covers pulling the helper image on a Hub that does not have it yet.
+const PRIVILEGED_DATA_TIMEOUT_MS = 30 * 60_000;
+// Checking that the helper image is there, or pulling it, before an app is stopped for a backup.
+const PRIVILEGED_IMAGE_CHECK_TIMEOUT_MS = 120_000;
 // `pre-update-<app>-<epoch ms>`, as createPreUpdateVolumeSnapshot names a snapshot.
 const SNAPSHOT_ID_PATTERN = /^pre-update-[A-Za-z0-9][A-Za-z0-9._-]*-\d+$/;
+// `backup-<app>-<epoch ms>`, as createBackupStagingDir names a staging folder.
+const BACKUP_STAGING_ID_PATTERN = /^backup-[A-Za-z0-9][A-Za-z0-9._-]*-\d+$/;
+
+/** A folder under `backups/` that the privileged helpers may write one app's copy into and how its entries are named. */
+type PrivilegedCopyArea = { dirname: string; idPattern: RegExp; tag: string };
+const SNAPSHOT_AREA: PrivilegedCopyArea = { dirname: PRE_UPDATE_SNAPSHOT_DIRNAME, idPattern: SNAPSHOT_ID_PATTERN, tag: '[pre-update-snapshot]' };
+const BACKUP_STAGING_AREA: PrivilegedCopyArea = { dirname: BACKUP_STAGING_DIRNAME, idPattern: BACKUP_STAGING_ID_PATTERN, tag: '[backup]' };
+
+/**
+ * Run as root over a restored data folder: device nodes, pipes and sockets go (the checks refuse them;
+ * a device node owned by a user on the host opens a disk to that user), and setuid and setgid bits come
+ * off files (an uploaded archive could otherwise plant a root-owned setuid program). Sets `status=1`
+ * when a step fails.
+ */
+const STRIP_RESTORED_SPECIAL_FILES = [
+  'find /x/app-data \\( -type b -o -type c -o -type p -o -type s \\) -delete || status=1',
+  'find /x/app-data -type f \\( -perm -4000 -o -perm -2000 \\) -exec chmod ug-s {} + || status=1',
+].join('; ');
+
+/** The image every privileged helper runs. */
+const privilegedHelperImage = () => process.env.CI_HUB_CLEANUP_IMAGE || 'alpine:3.20';
+
+/** A `docker` CLI call that ran past its time limit and was killed. */
+class DockerCliTimeoutError extends Error {}
 
 /**
  * Bounds `docker compose up <service>`.
@@ -463,7 +519,7 @@ export class DockerService {
    * @returns Whether the helper succeeded. A failure returns `false` so the
    * caller can provide a manual cleanup command.
    */
-  public async removeAppDataDirAsRoot(appUrn: AppUrn): Promise<boolean> {
+  public async removeAppDataDirAsRoot(appUrn: AppUrn, deadline?: AppCommandDeadline): Promise<boolean> {
     const config = this.config.getConfig();
     const inputs = {
       ciHubAppDataPath: process.env.CI_HUB_APP_DATA_PATH,
@@ -477,7 +533,7 @@ export class DockerService {
       hostAppDataDir = getAppDataHostPath(appUrn, inputs);
       appDataRoot = resolveAppDataHostRoot(inputs);
     } catch (err) {
-      this.logger.error(`[uninstall-cleanup] cannot resolve host app-data path for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger.error(`[app-data-cleanup] cannot resolve host app-data path for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
 
@@ -497,48 +553,36 @@ export class DockerService {
       p.basename(p.dirname(hostAppDataDir)) !== appStoreId ||
       hostAppDataDir.split('/').filter(Boolean).length < 3
     ) {
-      this.logger.error(`[uninstall-cleanup] refusing privileged delete for ${appUrn}: resolved path ${hostAppDataDir} failed validation`);
+      this.logger.error(`[app-data-cleanup] refusing privileged delete for ${appUrn}: resolved path ${hostAppDataDir} failed validation`);
       return false;
     }
 
-    const image = process.env.CI_HUB_CLEANUP_IMAGE || 'alpine:3.20';
     // Mount only this app directory and preserve the mount point itself.
-    const args = [
-      'run',
-      '--rm',
-      '--network',
-      'none',
-      '--user',
-      '0:0',
-      '-v',
-      `${hostAppDataDir}:/target:rw`,
-      image,
-      'find',
-      '/target',
-      '-mindepth',
-      '1',
-      '-delete',
-    ];
-
-    this.logger.warn(`[uninstall-cleanup] emptying root-owned remnant in ${hostAppDataDir} via a privileged ${image} helper`);
-    try {
-      await this.runDockerCliCommand(args, PRIVILEGED_CLEANUP_TIMEOUT_MS);
-      return true;
-    } catch (err) {
-      this.logger.error(`[uninstall-cleanup] privileged cleanup failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
-      return false;
-    }
+    return this.runPrivilegedSnapshotHelper(
+      [`${hostAppDataDir}:/target:rw`],
+      ['find', '/target', '-mindepth', '1', '-delete'],
+      PRIVILEGED_DATA_TIMEOUT_MS,
+      `emptying root-owned remnant in ${hostAppDataDir}`,
+      '[app-data-cleanup]',
+      deadline,
+    );
   }
 
   /**
    * Resolves the two host folders a privileged snapshot helper touches, refusing anything that is not
-   * exactly `{app-data-root}/{store}/{app}` and `{root}/backups/.pre-update-snapshots/{store}/{app}/{snapshotId}`.
-   * Both are recomputed from the app URN and the snapshot id, never taken from a caller, and every
-   * segment must be a plain name, so the helper can only ever read one app's data and write one snapshot.
+   * exactly `{app-data-root}/{store}/{app}` and `{root}/backups/.pre-update-snapshots/{store}/{app}/{snapshotId}`
+   * (or `.backup-staging` for a backup's copy). Both are recomputed from the app URN and the id, never
+   * taken from a caller. Every segment must be a plain name, so the helper can only ever read one
+   * app's data and write one copy of it.
    *
    * @returns the host paths, or `null` (already logged) when anything fails validation.
    */
-  private resolveSnapshotHostPaths(appUrn: AppUrn, snapshotId: string, action: string): { hostAppDataDir: string; hostSnapshotDir: string } | null {
+  private resolveSnapshotHostPaths(
+    appUrn: AppUrn,
+    snapshotId: string,
+    action: string,
+    area: PrivilegedCopyArea = SNAPSHOT_AREA,
+  ): { hostAppDataDir: string; hostSnapshotDir: string } | null {
     const config = this.config.getConfig();
     const inputs = {
       ciHubAppDataPath: process.env.CI_HUB_APP_DATA_PATH,
@@ -558,12 +602,12 @@ export class DockerService {
         throw new Error(`the Hub's root folder on the host is not an absolute path (${rootFolderHost || 'unset'})`);
       }
 
-      const hostSnapshotDir = p.join(rootFolderHost, 'backups', PRE_UPDATE_SNAPSHOT_DIRNAME, appStoreId, appName, snapshotId);
+      const hostSnapshotDir = p.join(rootFolderHost, 'backups', area.dirname, appStoreId, appName, snapshotId);
 
       if (
         !isSafeSegment(appStoreId) ||
         !isSafeSegment(appName) ||
-        !SNAPSHOT_ID_PATTERN.test(snapshotId) ||
+        !area.idPattern.test(snapshotId) ||
         p.normalize(appDataRoot) === '/' ||
         p.normalize(hostAppDataDir) !== p.normalize(p.join(appDataRoot, appStoreId, appName)) ||
         hostAppDataDir.split('/').filter(Boolean).length < 3
@@ -573,7 +617,7 @@ export class DockerService {
 
       return { hostAppDataDir, hostSnapshotDir };
     } catch (err) {
-      this.logger.error(`[pre-update-snapshot] refusing privileged ${action} for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger.error(`${area.tag} refusing privileged ${action} for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
       return null;
     }
   }
@@ -581,17 +625,76 @@ export class DockerService {
   /**
    * Runs one privileged, no-network, `--rm` helper container as root. The caller supplies the exact
    * argument list after the image, so no value is ever passed through a shell by this method.
+   *
+   * The container is named, so a helper that outlives its time limit is removed with `docker rm -f`:
+   * killing the CLI alone leaves the container running, still deleting or writing app data that the
+   * caller has already given up on.
+   *
+   * With a `deadline`, the helper gets what is left of the command's budget (at most `timeoutMs`), and
+   * none at all once the budget is used up: the helpers of one restore share it, so the command still
+   * answers the queue in time.
    */
-  private async runPrivilegedSnapshotHelper(mounts: string[], command: string[], timeoutMs: number, what: string): Promise<boolean> {
-    const image = process.env.CI_HUB_CLEANUP_IMAGE || 'alpine:3.20';
-    const args = ['run', '--rm', '--network', 'none', '--user', '0:0', ...mounts.flatMap((m) => ['-v', m]), image, ...command];
+  private async runPrivilegedSnapshotHelper(
+    mounts: string[],
+    command: string[],
+    timeoutMs: number,
+    what: string,
+    tag = SNAPSHOT_AREA.tag,
+    deadline?: AppCommandDeadline,
+  ): Promise<boolean> {
+    if (deadline?.expired) {
+      this.logger.error(`${tag} no time left for ${what}: the ${deadline.describe()} its command has for root helpers are used up`);
+      return false;
+    }
 
-    this.logger.warn(`[pre-update-snapshot] ${what} via a privileged ${image} helper`);
+    const limitMs = deadline ? Math.min(timeoutMs, deadline.remainingMs()) : timeoutMs;
+    const image = privilegedHelperImage();
+    const name = `ci-hub-helper-${crypto.randomBytes(6).toString('hex')}`;
+    const args = ['run', '--rm', '--name', name, '--network', 'none', '--user', '0:0', ...mounts.flatMap((m) => ['-v', m]), image, ...command];
+
+    this.logger.warn(`${tag} ${what} via a privileged ${image} helper`);
     try {
-      await this.runDockerCliCommand(args, timeoutMs);
+      await this.runDockerCliCommand(args, limitMs);
       return true;
     } catch (err) {
-      this.logger.error(`[pre-update-snapshot] privileged helper failed (${what}): ${err instanceof Error ? err.message : String(err)}`);
+      this.logger.error(`${tag} privileged helper failed (${what}): ${err instanceof Error ? err.message : String(err)}`);
+      if (err instanceof DockerCliTimeoutError) {
+        await this.runDockerCliCommand(['rm', '-f', name], PRIVILEGED_IMAGE_CHECK_TIMEOUT_MS).catch((rmErr) =>
+          this.logger.error(
+            `${tag} could not remove the helper container ${name} after its time limit: ${rmErr instanceof Error ? rmErr.message : String(rmErr)}`,
+          ),
+        );
+      }
+      return false;
+    }
+  }
+
+  /**
+   * Whether a privileged helper can run now: the image is here or can be pulled. Asked before an app is
+   * stopped for a backup that will need one, so a Hub that cannot run it (offline, no image) refuses the
+   * backup while the app is still up instead of after.
+   */
+  public async privilegedHelperAvailable(appUrn?: AppUrn): Promise<boolean> {
+    const image = privilegedHelperImage();
+
+    // The helper mounts host folders worked out from the settings. When they cannot be worked out for this
+    // app (a root folder on the host that is not an absolute path), no image makes the backup possible.
+    if (appUrn && !this.resolveSnapshotHostPaths(appUrn, this.newBackupStagingId(appUrn), 'backup', BACKUP_STAGING_AREA)) {
+      return false;
+    }
+
+    try {
+      await this.runDockerCliCommand(['image', 'inspect', image], PRIVILEGED_IMAGE_CHECK_TIMEOUT_MS);
+      return true;
+    } catch {
+      // Not here yet: what the first helper run would do anyway.
+    }
+
+    try {
+      await this.runDockerCliCommand(['pull', image], PRIVILEGED_IMAGE_CHECK_TIMEOUT_MS);
+      return true;
+    } catch (err) {
+      this.logger.warn(`The privileged helper image ${image} is not available: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
   }
@@ -600,46 +703,274 @@ export class DockerService {
    * Copies an app's data folder into its pre-update snapshot as root, keeping owners and modes, for
    * data the Hub itself cannot read (a database's files). `cp -a` rather than `fs.cp`, so the copy is
    * a faithful image that {@link restoreAppDataDirAsRoot} can put back unchanged.
+   *
+   * With a `deadline` (an update's), the copy gets what is left of it instead of its own 30 minutes.
    */
-  public async copyAppDataDirAsRoot(appUrn: AppUrn, snapshotId: string): Promise<boolean> {
+  public async copyAppDataDirAsRoot(appUrn: AppUrn, snapshotId: string, deadline?: AppCommandDeadline): Promise<boolean> {
     const paths = this.resolveSnapshotHostPaths(appUrn, snapshotId, 'copy');
     if (!paths) return false;
 
     return this.runPrivilegedSnapshotHelper(
       [`${paths.hostAppDataDir}:/src:ro`, `${paths.hostSnapshotDir}/app-data:/dest:rw`],
       ['cp', '-a', '/src/.', '/dest/'],
-      PRIVILEGED_COPY_TIMEOUT_MS,
+      PRIVILEGED_DATA_TIMEOUT_MS,
       `copying ${paths.hostAppDataDir} into ${paths.hostSnapshotDir}`,
+      SNAPSHOT_AREA.tag,
+      deadline,
     );
   }
 
-  /** Puts a snapshot made by {@link copyAppDataDirAsRoot} back over the app's data folder, as root, emptying it first. */
-  public async restoreAppDataDirAsRoot(appUrn: AppUrn, snapshotId: string): Promise<boolean> {
+  /**
+   * Makes a staging folder under `backups/.backup-staging/<store>/<app>/` for a backup whose data the
+   * Hub cannot read. The Hub writes the parts it can read into `stage/` (`app/`, `user-config/`,
+   * `volumes/`, the owners marker), then {@link archiveBackupAsRoot} archives them together with the
+   * app's data. Both folders are made by the Hub, so Docker mounts them instead of creating them as root.
+   *
+   * @returns the staging folder as the Hub sees it and its id, or `null` (already logged).
+   */
+  public async createBackupStagingDir(appUrn: AppUrn): Promise<{ id: string; dir: string } | null> {
+    const id = this.newBackupStagingId(appUrn);
+
+    if (!this.resolveSnapshotHostPaths(appUrn, id, 'backup', BACKUP_STAGING_AREA)) return null;
+
+    const dir = this.backupStagingDir(appUrn, id);
+
+    if (
+      !(await this.filesystem.createDirectory(path.join(dir, 'stage', 'app-data'))) ||
+      !(await this.filesystem.createDirectory(path.join(dir, 'out')))
+    ) {
+      return null;
+    }
+
+    return { id, dir };
+  }
+
+  /**
+   * Archives a staged backup as root, with the app's live data in it as `app-data/`: numeric owners and
+   * modes as the app left them, so a restore of it ({@link extractBackupAppDataAsRoot}) puts back a
+   * database owned by its own user rather than by the Hub. The archive has the layout of every other
+   * backup. Left out of the data, as the Hub's own copy leaves them out: any path with `backups` in it,
+   * and device nodes, pipes and sockets, which hold no data and which a restore refuses. A device node
+   * in particular must never travel: restored, it would open a host disk to its owner.
+   *
+   * Data with hard links fails the backup. tar keeps them as links, which a restore refuses, so the
+   * backup could never be restored. The archive is 600: it holds data its owners kept from other users.
+   *
+   * @returns the archive as the Hub sees it, given to the Hub's user, or `null` (already logged).
+   */
+  public async archiveBackupAsRoot(appUrn: AppUrn, stagingId: string, deadline?: AppCommandDeadline): Promise<string | null> {
+    const owner = this.hubOwner();
+
+    if (!owner) {
+      this.logger.error(`[backup] cannot archive the data of ${appUrn} as root: this platform has no uid for the Hub`);
+      return null;
+    }
+
+    const paths = this.resolveSnapshotHostPaths(appUrn, stagingId, 'backup archive', BACKUP_STAGING_AREA);
+    if (!paths) return null;
+
+    const archive = path.join(this.backupStagingDir(appUrn, stagingId), 'out', 'backup.tar.gz');
+
+    const archived = await this.runPrivilegedSnapshotHelper(
+      [`${paths.hostSnapshotDir}/stage:/stage:ro`, `${paths.hostAppDataDir}:/stage/app-data:ro`, `${paths.hostSnapshotDir}/out:/out:rw`],
+      [
+        'sh',
+        '-c',
+        [
+          'set -e',
+          'cd /stage',
+          'if [ -n "$(find ./app-data -mindepth 1 -path "./app-data/*backups*" -prune -o \\( -type f -o -type l \\) -links +1 -print | head -n 1)" ]; then echo "the data holds hard links, which a restore refuses" >&2; exit 3; fi',
+          '{ find . -path ./app-data -prune -o -print; echo ./app-data; find ./app-data -mindepth 1 -path "./app-data/*backups*" -prune -o ! -type b ! -type c ! -type p ! -type s -print; } > /tmp/entries',
+          'tar -czf /out/backup.tar.gz --numeric-owner --no-recursion -T /tmp/entries',
+          'chown "$1" /out/backup.tar.gz',
+          'chmod 600 /out/backup.tar.gz',
+        ].join('; '),
+        'sh',
+        owner,
+      ],
+      PRIVILEGED_DATA_TIMEOUT_MS,
+      `archiving ${paths.hostAppDataDir} for a backup`,
+      BACKUP_STAGING_AREA.tag,
+      deadline,
+    );
+
+    return archived ? archive : null;
+  }
+
+  /**
+   * Makes a staging folder under `backups/.backup-staging/<store>/<app>/` for restoring a backup made
+   * with its owners. The caller puts the archive it is about to check at `archive`, as a hard link or a
+   * copy, and {@link extractBackupAppDataAsRoot} reads it from there.
+   *
+   * Root reads the archive again only after the live data is gone. Read by its name in the backups
+   * folder, it would not have to be the file the Hub checked: a member can delete that name and upload
+   * another archive under it while the restore runs, and retention can delete it. Here only the Hub writes.
+   *
+   * @returns the staging folder as the Hub sees it, its id and where the archive goes, or `null` (already logged).
+   */
+  public async createRestoreStagingDir(appUrn: AppUrn): Promise<{ id: string; dir: string; archive: string } | null> {
+    const id = this.newBackupStagingId(appUrn);
+
+    if (!this.resolveSnapshotHostPaths(appUrn, id, 'restore', BACKUP_STAGING_AREA)) return null;
+
+    const dir = this.backupStagingDir(appUrn, id);
+
+    if (!(await this.filesystem.createDirectory(path.join(dir, 'in')))) return null;
+
+    return { id, dir, archive: path.join(dir, 'in', 'backup.tar.gz') };
+  }
+
+  /**
+   * Puts the `app-data` of a backup made by {@link archiveBackupAsRoot} into the app's (empty) data
+   * folder as root, with the numeric owners and modes it was archived with. It reads the archive the
+   * caller put in a folder from {@link createRestoreStagingDir}, after the Hub listed and extracted that
+   * same file and it passed every restore check, and extracts only the data member.
+   *
+   * Setuid and setgid bits come off files: an uploaded archive could otherwise plant a root-owned setuid
+   * program in a folder an app container runs things from. Device nodes, pipes and sockets go too, as
+   * a second line behind the checks, which refuse them: a device node owned by a user on the host opens
+   * a disk to that user. Both run even when tar fails part-way, since a failed restore leaves what it
+   * extracted in place. Without `-z`, tar finds out itself whether the file is compressed, as the Hub's
+   * own extract does: an uploaded backup can be a plain tar.
+   *
+   * The data folder itself and its `app.env` are the Hub's files, not the app's, so they go to this Hub's
+   * user whatever the archive says: a backup from a Hub with another uid, or an uploaded one that gives
+   * them to root, would otherwise leave the Hub unable to write the app's env file.
+   *
+   * @param stagingId the id {@link createRestoreStagingDir} returned
+   * @param member the data folder's name exactly as the archive lists it (`app-data` or `./app-data`)
+   */
+  public async extractBackupAppDataAsRoot(appUrn: AppUrn, stagingId: string, member: string, deadline?: AppCommandDeadline): Promise<boolean> {
+    if (!/^(\.\/)*app-data$/.test(member)) {
+      this.logger.error(`[restore] refusing privileged extract for ${appUrn}: ${member} is not the data folder of a backup`);
+      return false;
+    }
+
+    const owner = this.hubOwner();
+
+    if (!owner) {
+      this.logger.error(`[restore] cannot restore the data of ${appUrn} as root: this platform has no uid for the Hub`);
+      return false;
+    }
+
+    const paths = this.resolveSnapshotHostPaths(appUrn, stagingId, 'restore', BACKUP_STAGING_AREA);
+    if (!paths) return false;
+
+    // An extract that never starts (no budget left) writes nothing, so it needs no strip afterwards.
+    const startsInTime = !deadline?.expired;
+    const extracted = await this.runPrivilegedSnapshotHelper(
+      [`${paths.hostSnapshotDir}/in:/in:ro`, `${paths.hostAppDataDir}:/x/app-data:rw`],
+      [
+        'sh',
+        '-c',
+        [
+          'tar -C /x -xpf /in/backup.tar.gz --numeric-owner "$1"; status=$?',
+          STRIP_RESTORED_SPECIAL_FILES,
+          'chown "$2" /x/app-data || status=1',
+          'if [ -f /x/app-data/app.env ] && [ ! -L /x/app-data/app.env ]; then chown "$2" /x/app-data/app.env || status=1; fi',
+          'exit $status',
+        ].join('; '),
+        'sh',
+        member,
+        owner,
+      ],
+      PRIVILEGED_DATA_TIMEOUT_MS,
+      `restoring ${paths.hostAppDataDir} from ${paths.hostSnapshotDir}/in/backup.tar.gz with its owners`,
+      '[restore]',
+      deadline,
+    );
+
+    // Stopped at the budget's end, the extract never reached its own strip, and what it wrote stays until
+    // the next restore. The bits and the special files go now, in a short helper of their own that the
+    // used-up budget does not stop: it runs in the time the budget keeps back for the reply.
+    if (startsInTime && !extracted && deadline?.expired) {
+      await this.runPrivilegedSnapshotHelper(
+        [`${paths.hostAppDataDir}:/x/app-data:rw`],
+        ['sh', '-c', `status=0; ${STRIP_RESTORED_SPECIAL_FILES}; exit $status`],
+        PRIVILEGED_IMAGE_CHECK_TIMEOUT_MS,
+        `removing setuid and setgid bits and special files from the part of ${paths.hostAppDataDir} restored in time`,
+        '[restore]',
+      );
+    }
+
+    return extracted;
+  }
+
+  /** A new staging id, `backup-<app>-<epoch ms>`, the shape {@link BACKUP_STAGING_ID_PATTERN} accepts. */
+  private newBackupStagingId(appUrn: AppUrn): string {
+    return `backup-${extractAppUrn(appUrn).appName}-${Date.now()}`;
+  }
+
+  /** `<dataDir>/backups/.backup-staging/<store>/<app>/<id>`, as the Hub sees it. */
+  private backupStagingDir(appUrn: AppUrn, id: string): string {
+    const { appName, appStoreId } = extractAppUrn(appUrn);
+    return path.join(this.config.get('directories').dataDir, 'backups', BACKUP_STAGING_DIRNAME, appStoreId, appName, id);
+  }
+
+  /** The Hub's own `uid:gid`, for a root helper to hand files back to, or `null` where the platform has none. */
+  private hubOwner(): string | null {
+    const uid = process.getuid?.();
+    const gid = process.getgid?.();
+
+    return uid !== undefined && gid !== undefined && Number.isInteger(uid) && Number.isInteger(gid) ? `${uid}:${gid}` : null;
+  }
+
+  /**
+   * Puts a snapshot made by {@link copyAppDataDirAsRoot} back over the app's data folder, as root, emptying it first.
+   *
+   * ⚠ WITHIN THE UPDATE'S TIME. A rollback passes the update's `deadline`. The helper gets what is
+   * left of it instead of its own 30 minutes: a copy that ran on past the reply went on writing data
+   * after the page already showed the update as failed. Stopped for time, the data folder may be only
+   * partly restored and this says so; the snapshot stays where it is.
+   */
+  public async restoreAppDataDirAsRoot(appUrn: AppUrn, snapshotId: string, deadline?: AppCommandDeadline): Promise<boolean> {
     const paths = this.resolveSnapshotHostPaths(appUrn, snapshotId, 'restore');
     if (!paths) return false;
 
-    return this.runPrivilegedSnapshotHelper(
+    const restored = await this.runPrivilegedSnapshotHelper(
       [`${paths.hostSnapshotDir}/app-data:/src:ro`, `${paths.hostAppDataDir}:/dest:rw`],
       ['sh', '-c', 'find /dest -mindepth 1 -delete && cp -a /src/. /dest/'],
-      PRIVILEGED_COPY_TIMEOUT_MS,
+      PRIVILEGED_DATA_TIMEOUT_MS,
       `restoring ${paths.hostAppDataDir} from ${paths.hostSnapshotDir}`,
+      SNAPSHOT_AREA.tag,
+      deadline,
     );
+
+    if (!restored && deadline?.expired) {
+      this.logger.error(
+        `${SNAPSHOT_AREA.tag} ran out of time restoring ${paths.hostAppDataDir} for ${appUrn}: the data folder may be only partly restored. ` +
+          `The snapshot is kept at ${paths.hostSnapshotDir}.`,
+      );
+    }
+
+    return restored;
   }
 
   /**
    * Empties a snapshot folder as root. Its data copy keeps the owners of the original, so the Hub
    * cannot delete it; the Hub removes the emptied folder itself afterwards.
+   *
+   * With a `deadline` (inside an update), the helper gets what is left of it instead of its own 30
+   * minutes; a snapshot not emptied in time is left where it is and its path logged.
    */
-  public async removeSnapshotDirAsRoot(appUrn: AppUrn, snapshotId: string): Promise<boolean> {
+  public async removeSnapshotDirAsRoot(appUrn: AppUrn, snapshotId: string, deadline?: AppCommandDeadline): Promise<boolean> {
     const paths = this.resolveSnapshotHostPaths(appUrn, snapshotId, 'removal');
     if (!paths) return false;
 
-    return this.runPrivilegedSnapshotHelper(
+    const removed = await this.runPrivilegedSnapshotHelper(
       [`${paths.hostSnapshotDir}:/target:rw`],
       ['find', '/target', '-mindepth', '1', '-delete'],
-      PRIVILEGED_CLEANUP_TIMEOUT_MS,
+      PRIVILEGED_DATA_TIMEOUT_MS,
       `emptying ${paths.hostSnapshotDir}`,
+      SNAPSHOT_AREA.tag,
+      deadline,
     );
+
+    if (!removed && deadline?.expired) {
+      this.logger.warn(`${SNAPSHOT_AREA.tag} no time left to empty ${paths.hostSnapshotDir} for ${appUrn}; it is left on disk`);
+    }
+
+    return removed;
   }
 
   /**
@@ -661,7 +992,7 @@ export class DockerService {
       };
       const timer = setTimeout(() => {
         child.kill('SIGKILL');
-        finish(() => reject(new Error(`docker ${args[0]} timed out after ${timeoutMs}ms`)));
+        finish(() => reject(new DockerCliTimeoutError(`docker ${args[0]} timed out after ${timeoutMs}ms`)));
       }, timeoutMs);
       child.stderr?.on('data', (chunk) => stderr.push(String(chunk)));
       child.on('error', (err) => finish(() => reject(err)));
@@ -2209,7 +2540,10 @@ export class DockerService {
    * @param appUrn App URN to snapshot.
    * @returns Snapshot result including snapshotted paths and volumes.
    */
-  public async createPreUpdateVolumeSnapshot(appUrn: AppUrn, options: { includeData?: boolean } = {}): Promise<PreUpdateVolumeSnapshotResult> {
+  public async createPreUpdateVolumeSnapshot(
+    appUrn: AppUrn,
+    options: { includeData?: boolean; deadline?: AppCommandDeadline } = {},
+  ): Promise<PreUpdateVolumeSnapshotResult> {
     const includeData = options.includeData ?? true;
     const projectName = this.getComposeProjectName(appUrn);
     const { appName, appStoreId } = extractAppUrn(appUrn);
@@ -2241,7 +2575,7 @@ export class DockerService {
           // A database's files belong to the user its container ran as, and the Hub (a plain user on a
           // native Linux host) cannot read them. Copy as root through the same hardened helper that
           // uninstall uses; a failure that is not a permission one is not something root would fix.
-          if (copy.permissionDenied && (await this.copyAppDataDirAsRoot(appUrn, snapshotId))) {
+          if (copy.permissionDenied && (await this.copyAppDataDirAsRoot(appUrn, snapshotId, options.deadline))) {
             dataCopiedAsRoot = true;
           } else {
             throw new Error(`Could not copy ${appDataDir} into the snapshot`);
@@ -2332,7 +2666,7 @@ export class DockerService {
       // owners and the Hub cannot delete it, so a helper empties it first.
       if (snapshotBaseDir) {
         if (dataCopiedAsRoot) {
-          await this.removeSnapshotDirAsRoot(appUrn, snapshotId).catch(() => false);
+          await this.removeSnapshotDirAsRoot(appUrn, snapshotId, options.deadline).catch(() => false);
         }
         await this.filesystem.removeDirectory(snapshotBaseDir).catch(() => undefined);
       }
@@ -2361,21 +2695,31 @@ export class DockerService {
    * that is not healthy yet is such a one. It fails as soon as one turns `unhealthy`, one exits or
    * that time runs out. Apps without a health check are judged within the attempts, as before.
    *
+   * `waitUntil` (epoch ms) ends that wait sooner when the caller has to be done by then. An aborted
+   * `signal` stops the probe at once with `cancelled` set.
+   *
    * @param appUrn App URN.
-   * @param options Optional retry options (maxAttempts, delayMs, waitWhileStarting).
+   * @param options Optional retry options (maxAttempts, delayMs, waitWhileStarting, waitUntil, signal).
    */
   public async verifyContainerHealthProbe(
     appUrn: AppUrn,
-    options?: { maxAttempts?: number; delayMs?: number; waitWhileStarting?: boolean },
+    options?: { maxAttempts?: number; delayMs?: number; waitWhileStarting?: boolean; waitUntil?: number; signal?: AbortSignal },
   ): Promise<ContainerHealthProbeResult> {
     const projectName = this.getComposeProjectName(appUrn);
     const maxAttempts = options?.maxAttempts ?? 1;
     const delayMs = options?.delayMs ?? 1000;
     const waitWhileStarting = options?.waitWhileStarting ?? false;
+    const signal = options?.signal;
     const probeStartedAt = Date.now();
+    // How long the caller can let a container stay `starting`, whatever its own health check allows.
+    const callerWaitMs = options?.waitUntil === undefined ? Number.POSITIVE_INFINITY : Math.max(0, options.waitUntil - probeStartedAt);
     let announcedStartingWait = false;
 
     for (let attempt = 1; ; attempt++) {
+      if (signal?.aborted) {
+        return { ok: false, healthy: false, cancelled: true, containers: [], message: `Health probe for ${appUrn} was cancelled` };
+      }
+
       const elapsedMs = Date.now() - probeStartedAt;
       let containers = await this.docker
         .listContainers({
@@ -2401,7 +2745,7 @@ export class DockerService {
         if (attempt >= maxAttempts) {
           return noContainers;
         }
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        await pause(delayMs, signal);
         continue;
       }
 
@@ -2438,7 +2782,7 @@ export class DockerService {
           failingStreak,
           log,
         });
-        startingWaitMs.set(container.Id, healthStartingWaitMs(inspect?.Config?.Healthcheck));
+        startingWaitMs.set(container.Id, Math.min(healthStartingWaitMs(inspect?.Config?.Healthcheck), callerWaitMs));
       }
 
       // Docker has not made up its mind about a running container whose health check still says
@@ -2491,12 +2835,12 @@ export class DockerService {
           const waitMs = Math.max(...waitingFor.map((c) => startingWaitMs.get(c.id) ?? HEALTH_STARTING_MIN_WAIT_MS));
           this.logger.info(
             `${appUrn} is still starting after ${formatSeconds(elapsedMs)} (${waitingFor.map((c) => c.name).join(', ')}); ` +
-              `waiting up to ${formatSeconds(waitMs)} for its health check to pass`,
+              `waiting up to ${formatSeconds(waitMs)} for its health check to pass${waitMs === callerWaitMs ? ', all the time the update has left' : ''}`,
           );
         }
       }
 
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      await pause(delayMs, signal);
     }
   }
 }

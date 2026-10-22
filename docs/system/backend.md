@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-10-01 (failed outbound requests name their cause; 2 s per-address connect time)
+> **Last updated:** 2026-10-21 (Memory connect: page views are read-only, a finished connect takes over)
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -512,6 +512,32 @@ the old keys until a restart, and the next provider saved wrote them all back to
 General settings keep their old values until the Hub restarts: boot resolved them into the process
 environment (`generateSystemEnvFile`), and nothing kept the environment as it was before that.
 
+The file is not quite empty: `resetSettings` writes a new `hubLocalKey` into it in the same settings
+turn and the running Hub switches to that key, so the old one is refused at once.
+`forgetPersistedUserSettings` also sets `ciHubApiKey`, `ciHubMoveKey` and `ciHubOrganizationId` in
+the running config to null, so the reset Hub stops calling Portal as its old device and its next
+pairing sends no device key or move key.
+
+`wipeDatabase` truncates every table in `schema.ts` (`FACTORY_RESET_TABLES`, which a test keeps
+complete) and then forgets the caches over them: the stable ids forward auth signs
+(`ForwardAuthIdentityResolver.forget()`), the Hub Pool identity and any pairing PIN. After the
+settings, `InferenceRouterService.forgetPinnedModels()` (through `ModelRegistryService.forgetPins()`)
+and `AppCredentialsService.forgetHandouts()` remove `state/inference-pinned-models.json` and
+`state/inference-handouts.json` with their copies in memory. `forgetPinnedModels` then takes the
+load lock so a load under way ends first. It unloads each unpinned model its engine holds, along with
+the model of each pin still under way. The Hub loads at `keep_alive: -1`, so the engine would hold it
+for good. It asks the engine only at the address the Hub is configured with
+(`residentAtConfiguredEndpoint`, `unloadAtConfiguredEndpoint`): a fallback address can be another
+Ollama on the host. When that address does not answer, nothing is unloaded. A model counts as held
+only under its own name or `<name>:latest`, not by the prefix `isModelLoaded` accepts, since an
+unload naming a model that is not in memory can make Ollama load it. A pin still
+waiting or loading when the reset runs is refused once its load ends
+(`ModelRegistryService.currentPinGeneration()`), so it does not pin the old Hub's model again.
+`clearOldHubRequests` removes `state/password-change-request` and `state/pairing-app-check.json`
+and drops the backoff of that apps check (`PairingAppRestoreService.forget()`).
+`state/inference-footprint-sightings.json` and `state/tailscale-serve-ownership.json` stay: one
+describes this hardware and the other names the Tailscale Serve listeners this Hub published.
+
 ## The four engines, or two endpoints
 
 Setup offers Ollama, oMLX, vLLM, or Lemonade, and only the ones the detected machine can run. The other path is a decode endpoint and an encode endpoint. Either URL may be set alone. From inside Docker the probe uses `host.docker.internal`, and the card shows that URL.
@@ -803,7 +829,7 @@ with the app's `detail` (`app-readiness.tsx`).
 
 Human dashboard login (password and Portal SSO) goes through `AuthService.admitHubPerson`. Each Portal `(issuer, subject)` that is a member of the paired org gets their own Hub `user` row (`operator: true`). Device-key Bearer and CLI JWT still map to the bootstrap operator.
 
-`memory_connection` is unique on `(app_urn, hub_user_id)`. Env generation injects the latest connected key; opening an app as a different Hub person revokes the previous Memory key and re-prompts connect. Hermes and OpenClaw declare `hub_integration.memory` so Hub can inject `CI_SERVER_URL` / `CI_SERVER_TOKEN` for the current person.
+`memory_connection` is unique on `(app_urn, hub_user_id)`. Env generation injects the newest connected key, so an app runs with the connection of the person who connected it last. Looking at the app, its Hub page or its connect gate, or choosing **Not now**, never changes that. Only a finished connect does. It revokes the previous person's key on CI Memory before the exchange mints the new one, because CI Memory revokes by app and its key rotation refuses an app with two owners. If the exchange or the store fails after that revoke, the previous connection is gone for good, so the callback lands on the dashboard with `?memoryConnect=previous_removed` and a toast that says so; a key that was minted but not stored is revoked. Disconnect is refused with `MEMORY_CONNECT_DISCONNECT_REFUSED` (403) to anyone but the person whose connection the app runs with (Companion-Hub#2080). A connected row with `hub_user_id` 0, from before connections were per person, is nobody's: it reads as connected for everyone and anyone may disconnect it. Connecting and disconnecting restart the app, so `/start` and `/disconnect` first take the app's `restart` grant, as the restart route does: `/disconnect` answers 403 `APP_ACTION_GRANT_DENIED`, and `/start`, a browser navigation, lands on `/?memoryConnect=denied`. The callback asks again before the exchange, so a grant taken away while the person is on the consent page ends the connect there, on the same marker. Both status routes report `connectedByOther` (the app page's `/status` and the app gate's `/state`). The app page shows **Memory connected by someone else**. Hermes and OpenClaw declare `hub_integration.memory` so Hub can inject `CI_SERVER_URL` / `CI_SERVER_TOKEN` from that connection.
 
 ## Per-app grants
 

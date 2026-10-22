@@ -20,8 +20,8 @@ class FakeIdentityRepository {
     this.row ??= { id: 'self', createdAt: new Date().toISOString(), rotatedAt: null, ...values };
   }
 
-  async replaceKeys(publicKey: string, privateKeyEncrypted: string): Promise<void> {
-    if (this.row) {
+  async replaceKeys(publicKey: string, privateKeyEncrypted: string, nodeUuid?: string): Promise<void> {
+    if (this.row && (nodeUuid === undefined || this.row.nodeUuid === nodeUuid)) {
       this.row = { ...this.row, publicKey, privateKeyEncrypted, rotatedAt: new Date().toISOString() };
     }
   }
@@ -92,6 +92,25 @@ describe('HubPoolIdentityService', () => {
     await service.summary();
 
     expect(getSpy).not.toHaveBeenCalled();
+  });
+
+  describe('existingNodeUuid', () => {
+    it('reads the stored UUID without minting or touching the key, for readers that run on every Hub', async () => {
+      const minted = await build().get();
+      encryption.decrypt.mockClear();
+
+      // A "restart": a fresh service over the same table, asked by the status file before anything else.
+      expect(await build().existingNodeUuid()).toBe(minted?.nodeUuid);
+      expect(encryption.decrypt).not.toHaveBeenCalled();
+    });
+
+    it('answers null on a Hub that never used Hub Pool and leaves it without an identity', async () => {
+      expect(await build().existingNodeUuid()).toBeNull();
+
+      expect(repo.inserts).toBe(0);
+      expect(repo.row).toBeUndefined();
+      expect(encryption.encrypt).not.toHaveBeenCalled();
+    });
   });
 
   it('salts the private key with the node UUID, so a rename never makes it undecryptable', async () => {
@@ -182,5 +201,117 @@ describe('HubPoolIdentityService', () => {
 
     expect(service.takeObservedPeerFqdn('peer-1')).toBe('hub-new.example-tailnet.ts.net');
     expect(service.takeObservedPeerFqdn('peer-1')).toBeUndefined();
+  });
+
+  // A factory reset empties the table. Until a restart the reset Hub signed with the key its old peers pinned.
+  it('mints a new identity after forget, once the table is emptied', async () => {
+    const service = build();
+    const before = await service.get();
+    service.noteObservedPeerFqdn('peer-1', 'hub-new.example-tailnet.ts.net');
+
+    repo.row = undefined;
+    service.forget();
+    const after = await service.get();
+
+    expect(after?.nodeUuid).toMatch(/^[0-9a-f-]{36}$/);
+    expect(after?.nodeUuid).not.toBe(before?.nodeUuid);
+    expect(after?.publicKey).not.toBe(before?.publicKey);
+    expect(repo.row?.nodeUuid).toBe(after?.nodeUuid);
+    expect(service.takeObservedPeerFqdn('peer-1')).toBeUndefined();
+  });
+
+  it('does not keep the identity a load still under way at the forget read', async () => {
+    const service = build();
+    await build().get();
+    const old = repo.row;
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // The first read of the row returns the old one, but only after the reset.
+    vi.spyOn(repo, 'get').mockImplementationOnce(async () => {
+      await held;
+      return old;
+    });
+
+    const loading = service.get();
+    repo.row = undefined;
+    service.forget();
+    release();
+    await loading;
+
+    expect((await service.get())?.nodeUuid).not.toBe(old?.nodeUuid);
+  });
+
+  // The failure of a load from before the reset used to set the one-minute retry wait the reset had cleared.
+  it('mints at once after forget when a load from before it fails late', async () => {
+    const service = build();
+    let fail: () => void = () => undefined;
+    vi.spyOn(repo, 'get').mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          fail = () => reject(new Error('connection terminated'));
+        }),
+    );
+
+    const loading = service.get();
+    service.forget();
+    fail();
+    await expect(loading).resolves.toBeNull();
+
+    const after = await service.get();
+    expect(after?.nodeUuid).toMatch(/^[0-9a-f-]{36}$/);
+    await expect(service.summary()).resolves.toMatchObject({ nodeUuid: after?.nodeUuid, identityError: null });
+  });
+
+  // A rotation still writing its key when the reset ran cached the old node UUID over the forget.
+  it('does not keep a rotation that a forget overtook', async () => {
+    const service = build();
+    const before = await service.get();
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const replaceKeys = repo.replaceKeys.bind(repo);
+    vi.spyOn(repo, 'replaceKeys').mockImplementationOnce(async (publicKey: string, privateKeyEncrypted: string, nodeUuid?: string) => {
+      await held;
+      await replaceKeys(publicKey, privateKeyEncrypted, nodeUuid);
+    });
+
+    const rotating = service.rotate();
+    await vi.waitFor(() => expect(repo.replaceKeys).toHaveBeenCalled());
+    repo.row = undefined;
+    service.forget();
+    release();
+    await rotating;
+
+    expect((await service.get())?.nodeUuid).not.toBe(before?.nodeUuid);
+  });
+
+  // The reset Hub minted its identity while the rotation still held its key, salted with the old UUID.
+  it('does not write an overtaken rotation over the identity minted after a forget', async () => {
+    const service = build();
+    await service.get();
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const replaceKeys = repo.replaceKeys.bind(repo);
+    vi.spyOn(repo, 'replaceKeys').mockImplementationOnce(async (publicKey: string, privateKeyEncrypted: string, nodeUuid?: string) => {
+      await held;
+      await replaceKeys(publicKey, privateKeyEncrypted, nodeUuid);
+    });
+
+    const rotating = service.rotate();
+    await vi.waitFor(() => expect(repo.replaceKeys).toHaveBeenCalled());
+    repo.row = undefined;
+    service.forget();
+    const minted = await service.get();
+    const mintedRow = repo.row;
+    release();
+    await rotating;
+
+    expect(repo.row).toEqual(mintedRow);
+    expect((await service.get())?.publicKey).toBe(minted?.publicKey);
   });
 });

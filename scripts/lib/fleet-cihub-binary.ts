@@ -1,19 +1,23 @@
 /**
  * Where the `cihub` binary a fleet install puts on a node comes from.
  *
- * The release assets live in a private GitHub repository. The first version of the installer had
- * each node `curl` `api.github.com/…/releases/latest` unauthenticated, which answers 404 for a private
- * repo — so it failed on every node of a fifteen-node fleet, on 2026-09-18, before anything else could
- * run. The node has no GitHub credential and should not be given one. The operator's machine can
- * fetch the asset (a token in its environment, or a file already on disk) and the SSH session the
- * install holds can carry the bytes down. That is what this module does; nothing here runs on a node.
+ * The operator's machine fetches the release asset (or takes a file already on disk) and the SSH
+ * session the install holds carries the bytes down. That is what this module does; nothing here runs
+ * on a node. The first version of the installer had each node `curl` `api.github.com/…/releases/latest`
+ * itself. While the repository was private that answered 404, so it failed on every node of a
+ * fifteen-node fleet on 2026-09-18 before anything else could run. The repository has been public
+ * since 2026-09-30, so no token is needed any more; one in the operator's environment is still sent,
+ * and it never reaches a node.
  */
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 export const CIHUB_RELEASES_REPO = 'companionintelligence/CI-Hub';
+
+/** Where a person downloads a release asset by hand. */
+export const CIHUB_RELEASES_PAGE = 'https://github.com/companionintelligence/Companion-Hub/releases';
 
 /** Env vars an operator machine may already carry a GitHub token in — `gh` and Actions both set one. */
 export const GITHUB_TOKEN_ENV_VARS = ['GH_TOKEN', 'GITHUB_TOKEN'] as const;
@@ -25,11 +29,11 @@ export type CihubBinarySource =
    */
   | { kind: 'local'; path: string; version?: string }
   /**
-   * Fetched from the GitHub release on the operator machine with a token, once per architecture.
-   * `version` is a tag once `pinCihubReleaseSource` has run; `resolvedFrom` then keeps what the flag
-   * said (`latest`) for the run's own summary line.
+   * Fetched from the GitHub release on the operator machine, once per architecture, with the token
+   * from its environment when there is one. `version` is a tag once `pinCihubReleaseSource` has run;
+   * `resolvedFrom` then keeps what the flag said (`latest`) for the run's own summary line.
    */
-  | { kind: 'release'; token: string; version: string; resolvedFrom?: string }
+  | { kind: 'release'; token?: string; version: string; resolvedFrom?: string }
   /** Nothing to install from. `why` and `fix` are what the node's line will say. */
   | { kind: 'unavailable'; why: string; fix: string[] };
 
@@ -53,9 +57,9 @@ export function assetNameForPlatform(platform: NodeJS.Platform, arch: string): s
  * Is this actually an executable for the platform the asset name claims?
  *
  * The check exists because the failure it catches is the one this download had for its whole life:
- * a private-repo API error is served as an HTML page with a 200, written to disk under the asset's
- * name, and installed. Per-platform rather than ELF-only so the macOS and Windows assets
- * `cihub self-update` fetches are held to the same bar — `<html>` is not a Mach-O either.
+ * while the repository was private, an API error was served as an HTML page with a 200, written to
+ * disk under the asset's name and installed. Per-platform rather than ELF-only so the macOS and
+ * Windows assets `cihub self-update` fetches are held to the same bar — `<html>` is not a Mach-O either.
  */
 export function assetFormatError(assetName: string, bytes: Buffer): string | undefined {
   const head = bytes.subarray(0, 4);
@@ -112,16 +116,11 @@ export function resolveCihubBinarySource(input: {
     const declared = input.version && input.version !== 'latest' ? input.version : undefined;
     return { kind: 'local', path: input.binaryPath, version: input.readVersion?.(input.binaryPath) ?? declared };
   }
+  // The release is public, so no token is needed; one in the environment is still sent (it raises
+  // GitHub's limit of 60 unauthenticated API requests an hour). It used to be required: a run
+  // without one could only adopt whatever cihub each node already had.
   const token = GITHUB_TOKEN_ENV_VARS.map((name) => env[name]?.trim()).find(Boolean);
-  if (token) return { kind: 'release', token, version: input.version ?? 'latest' };
-  return {
-    kind: 'unavailable',
-    why: `no cihub binary to install: ${CIHUB_RELEASES_REPO} releases are private, and a node cannot fetch them`,
-    fix: [
-      `Set GH_TOKEN (e.g. GH_TOKEN="$(gh auth token)") so this machine fetches the release and streams it to each node,`,
-      'or pass --cihub-binary <path> to a cihub-linux-x64 / cihub-linux-arm64 asset already on disk.',
-    ],
-  };
+  return { kind: 'release', ...(token ? { token } : {}), version: input.version ?? 'latest' };
 }
 
 export function sha256File(filePath: string): string {
@@ -146,6 +145,27 @@ export interface ReleaseAsset {
   name: string;
   url: string;
   size?: number;
+  /** `sha256:<hex>`, the digest GitHub computed when the asset was uploaded. Null or absent on older assets. */
+  digest?: string | null;
+}
+
+/**
+ * Whether a downloaded asset was held to the digest GitHub publishes for it. `not-published` means
+ * GitHub has none in a form cihub reads (only `sha256:<hex>`), so TLS is all that vouches for the bytes.
+ */
+export type AssetDigestCheck = 'matched' | 'not-published';
+
+/** The sha256 GitHub publishes for an asset, as lower-case hex, or undefined when there is none. */
+export function publishedSha256(asset: Pick<ReleaseAsset, 'digest'>): string | undefined {
+  const match = /^sha256:([0-9a-f]{64})$/i.exec(asset.digest?.trim() ?? '');
+  return match?.[1]?.toLowerCase();
+}
+
+/** One line for the operator: what the digest check found. */
+export function describeAssetDigestCheck(check: AssetDigestCheck): string {
+  return check === 'matched'
+    ? 'its sha256 matches the one GitHub publishes for the asset'
+    : 'GitHub publishes no sha256 for this asset, so only TLS vouches for the download';
 }
 
 export interface ReleaseInfo {
@@ -153,19 +173,110 @@ export interface ReleaseInfo {
   assets: ReleaseAsset[];
 }
 
-const githubHeaders = (token: string) => ({ Authorization: `Bearer ${token}`, 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'cihub-fleet' });
+/** No token is fine: the repository is public. One still raises GitHub's limit of 60 unauthenticated API requests an hour. */
+const githubHeaders = (token?: string) => ({
+  ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  'X-GitHub-Api-Version': '2022-11-28',
+  'User-Agent': 'cihub-fleet',
+});
+
+/** A GitHub request that answered with an error status, kept so callers can say what to do about it. */
+export class GitHubRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = 'GitHubRequestError';
+  }
+}
+
+/**
+ * A GitHub request that got no answer at all: DNS, a refused connection, TLS. Node's fetch rejects
+ * with a TypeError then, but Bun's, which the standalone cihub runs on, rejects with a plain Error
+ * ("Unable to connect", code ConnectionRefused). Both are wrapped in this so callers can tell.
+ */
+export class GitHubUnreachableError extends Error {
+  constructor(url: string, cause: unknown) {
+    super(`could not reach ${hostOf(url)}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    this.name = 'GitHubUnreachableError';
+  }
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+async function githubFetch(fetchImpl: typeof fetch, url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetchImpl(url, init);
+  } catch (error) {
+    throw new GitHubUnreachableError(url, error);
+  }
+}
+
+/**
+ * What to do after a release lookup or asset download failed. A rate limit is not a missing release:
+ * "check the release exists" sent the operator looking for a tag that was there all along.
+ * `fallback` is the way round GitHub (fleet install takes a file on disk) and `versionFlag` the flag
+ * that names a release, both for the command that failed.
+ */
+export function releaseFailureFix(
+  error: unknown,
+  token: string | undefined,
+  options: { fallback: string; versionFlag: string } = {
+    fallback: 'pass --cihub-binary <path> to a cihub-linux-x64 / cihub-linux-arm64 asset on disk',
+    versionFlag: '--cihub-version',
+  },
+): string {
+  const { fallback, versionFlag } = options;
+  const status = error instanceof GitHubRequestError ? error.status : undefined;
+  if (status === 403 || status === 429) {
+    return token
+      ? `GitHub is rate-limiting the token in GH_TOKEN or GITHUB_TOKEN: wait for the limit to reset and run it again, or ${fallback}.`
+      : `GitHub allows 60 API requests an hour without a token: wait for the limit to reset, or set GH_TOKEN or GITHUB_TOKEN and run it again, or ${fallback}.`;
+  }
+  if (status === 401) return `Fix GH_TOKEN or GITHUB_TOKEN, or unset it since none is needed, or ${fallback}.`;
+  if (status === 404) return `Check the release exists (${versionFlag}), or ${fallback}.`;
+  if (error instanceof GitHubUnreachableError || error instanceof TypeError)
+    return `Check this machine can reach api.github.com and run it again, or ${fallback}.`;
+  return `Run it again, or ${fallback}.`;
+}
+
+/** What a refused GitHub API request most likely means, appended to its error. */
+function githubStatusHint(status: number, token: string | undefined): string {
+  if (status === 401 && token) return '. GitHub refused the token in GH_TOKEN or GITHUB_TOKEN; fix it, or unset it since none is needed';
+  if ((status === 403 || status === 429) && !token) {
+    return '. GitHub allows 60 API requests an hour without a token; set GH_TOKEN or GITHUB_TOKEN to raise that';
+  }
+  return '';
+}
+
+/**
+ * A 404 on the release lookup means the tag does not exist, or for `latest` that nothing is published;
+ * the asset request gets only {@link githubStatusHint}.
+ */
+function releaseLookupHint(status: number, token: string | undefined, version: string): string {
+  if (status !== 404) return githubStatusHint(status, token);
+  return version === 'latest' ? '. GitHub has no published release to call latest' : '. GitHub has no release with that tag';
+}
 
 /** The release a version names: `latest` as GitHub resolves it right now, or one tag, `v` or not. */
-export async function lookupRelease(input: { token: string; version: string; fetchImpl?: typeof fetch }): Promise<ReleaseInfo> {
+export async function lookupRelease(input: { token?: string; version: string; fetchImpl?: typeof fetch }): Promise<ReleaseInfo> {
   const fetchImpl = input.fetchImpl ?? fetch;
   const releaseUrl =
     input.version === 'latest'
       ? `https://api.github.com/repos/${CIHUB_RELEASES_REPO}/releases/latest`
       : `https://api.github.com/repos/${CIHUB_RELEASES_REPO}/releases/tags/${input.version.startsWith('v') ? input.version : `v${input.version}`}`;
-  const releaseRes = await fetchImpl(releaseUrl, { headers: { ...githubHeaders(input.token), Accept: 'application/vnd.github+json' } });
+  const releaseRes = await githubFetch(fetchImpl, releaseUrl, { headers: { ...githubHeaders(input.token), Accept: 'application/vnd.github+json' } });
   if (!releaseRes.ok) {
-    throw new Error(
-      `GitHub release lookup failed: HTTP ${releaseRes.status} for ${releaseUrl}${releaseRes.status === 404 ? ' — does the token see the private repo?' : ''}`,
+    throw new GitHubRequestError(
+      `GitHub release lookup failed: HTTP ${releaseRes.status} for ${releaseUrl}${releaseLookupHint(releaseRes.status, input.token, input.version)}`,
+      releaseRes.status,
     );
   }
   return (await releaseRes.json()) as ReleaseInfo;
@@ -178,8 +289,9 @@ export async function lookupRelease(input: { token: string; version: string; fet
  * compares versions: handed `latest`, it could only adopt whatever was on PATH. On 2026-09-20 that
  * was a July 0.2.36 in `~/.local/bin`, kept on a node the run had a current release for, and its
  * `cihub up` did not know the headless seed path. Resolving here also means fourteen nodes install
- * the one tag this run saw, not whichever release lands mid-pass, and a token that cannot see the
- * repository is reported once on the summary line rather than adopted around on every node.
+ * the one tag this run saw, not whichever release lands mid-pass, and a lookup that fails (no such
+ * tag, a refused token, a rate limit) is reported once on the summary line rather than adopted around
+ * on every node.
  */
 export async function pinCihubReleaseSource(source: CihubBinarySource, fetchImpl?: typeof fetch): Promise<CihubBinarySource> {
   if (source.kind !== 'release') return source;
@@ -190,25 +302,45 @@ export async function pinCihubReleaseSource(source: CihubBinarySource, fetchImpl
     return {
       kind: 'unavailable',
       why: error instanceof Error ? error.message : String(error),
-      fix: ['Check GH_TOKEN can read the private repository, or pass --cihub-binary.'],
+      fix: [releaseFailureFix(error, source.token)],
     };
   }
 }
 
 /**
- * Fetch one release asset with the operator's token into a per-run cache, and return its path.
+ * The default download cache: one folder per user under the system temp dir, at 0700.
+ *
+ * A file already in the cache is used as it is, then streamed to every node and installed there as
+ * root. One shared `/tmp` folder let any account on the operator machine create it first and leave
+ * its own binary in it. A folder this user doesn't own, or that others can open, is refused.
+ */
+function defaultCacheDir(): string {
+  const uid = process.getuid?.();
+  if (uid === undefined) return path.join(tmpdir(), 'cihub-fleet-binaries');
+  const dir = path.join(tmpdir(), `cihub-fleet-binaries-${uid}`);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const stat = lstatSync(dir);
+  if (!stat.isDirectory() || stat.uid !== uid || (stat.mode & 0o077) !== 0) {
+    throw new Error(`refusing to use ${dir} as the cihub download cache: it must be a folder only this user can open (remove it and run again)`);
+  }
+  return dir;
+}
+
+/**
+ * Fetch one release asset into a cache and return its path. The token is optional: the
+ * repository has been public since 2026-09-30. Its release API and assets answer without one.
  *
  * Two requests: the release (by tag, or `latest`), then the asset by its API URL with
- * `Accept: application/octet-stream`, which is the only form that serves a private repository's
- * asset bytes. The browser download URL does not, whatever the token.
+ * `Accept: application/octet-stream`, which serves the bytes with or without a token. While the
+ * repository was private it was the only form that did; the browser download URL did not.
  */
 export async function downloadReleaseAsset(input: {
-  token: string;
+  token?: string;
   assetName: string;
   version: string;
   cacheDir?: string;
   fetchImpl?: typeof fetch;
-}): Promise<{ path: string; tag: string; sha256: string }> {
+}): Promise<{ path: string; tag: string; sha256: string; digest: AssetDigestCheck }> {
   const fetchImpl = input.fetchImpl ?? fetch;
   const headers = githubHeaders(input.token);
   const release = await lookupRelease({ token: input.token, version: input.version, fetchImpl });
@@ -216,20 +348,45 @@ export async function downloadReleaseAsset(input: {
   if (!asset)
     throw new Error(`release ${release.tag_name} has no asset named ${input.assetName} (has: ${release.assets.map((a) => a.name).join(', ')})`);
 
-  const cacheDir = input.cacheDir ?? path.join(tmpdir(), 'cihub-fleet-binaries');
+  // Checked against what GitHub computed at upload, not only against TLS: a cached copy that differs
+  // is dropped and fetched again. A download that differs is refused before anything installs it.
+  const expected = publishedSha256(asset);
+  const digest: AssetDigestCheck = expected ? 'matched' : 'not-published';
+  const cacheDir = input.cacheDir ?? defaultCacheDir();
   mkdirSync(cacheDir, { recursive: true });
   const target = path.join(cacheDir, `${release.tag_name}-${input.assetName}`);
+  if (expected && existsSync(target) && sha256File(target) !== expected) rmSync(target, { force: true });
   if (!existsSync(target) || statSync(target).size === 0) {
-    const assetRes = await fetchImpl(asset.url, { headers: { ...headers, Accept: 'application/octet-stream' }, redirect: 'follow' });
-    if (!assetRes.ok) throw new Error(`asset download failed: HTTP ${assetRes.status} for ${input.assetName}`);
+    const assetRes = await githubFetch(fetchImpl, asset.url, { headers: { ...headers, Accept: 'application/octet-stream' }, redirect: 'follow' });
+    if (!assetRes.ok) {
+      throw new GitHubRequestError(
+        `asset download failed: HTTP ${assetRes.status} for ${input.assetName}${githubStatusHint(assetRes.status, input.token)}`,
+        assetRes.status,
+      );
+    }
     const bytes = Buffer.from(await assetRes.arrayBuffer());
     if (bytes.length === 0) throw new Error(`asset download for ${input.assetName} was empty`);
     // Refuse an HTML error page renamed to a binary — the failure this download had for its whole life.
     const formatError = assetFormatError(input.assetName, bytes);
     if (formatError) throw new Error(formatError);
-    writeFileSync(target, bytes, { mode: 0o755 });
+    const downloaded = createHash('sha256').update(bytes).digest('hex');
+    if (expected && downloaded !== expected) {
+      throw new Error(
+        `${input.assetName} from ${release.tag_name} does not match the sha256 GitHub publishes for it (published ${expected}, downloaded ${downloaded}); nothing was installed`,
+      );
+    }
+    // Written beside the target and renamed, so a run cut off mid-write leaves no truncated binary
+    // for the next run to reuse.
+    const partial = `${target}.partial-${process.pid}`;
+    try {
+      writeFileSync(partial, bytes, { mode: 0o755 });
+      renameSync(partial, target);
+    } catch (error) {
+      rmSync(partial, { force: true });
+      throw error;
+    }
   }
-  return { path: target, tag: release.tag_name, sha256: sha256File(target) };
+  return { path: target, tag: release.tag_name, sha256: sha256File(target), digest };
 }
 
 /**

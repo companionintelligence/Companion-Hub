@@ -6,24 +6,80 @@ import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR } from '@/common/constants';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { isHomeFolder, isTopOrHomeFolder } from '@/common/helpers/home-folder';
 import { linkedMountSource, type MountInfoEntry, mountedDataRoot, mountedFromFolder, parseMountInfo } from '@/common/helpers/mount-source';
-import { app } from '@/core/database/drizzle/schema';
+import {
+  apiKey,
+  app,
+  appStore,
+  deviceRegistration,
+  entitlementCache,
+  federatedIdentity,
+  hostEventLog,
+  hostTelemetrySample,
+  hubPoolIdentity,
+  hubPoolPeer,
+  lifecycleJob,
+  link,
+  memoryConnection,
+  portAllocation,
+  user,
+  userDirectory,
+  whoisCache,
+} from '@/core/database/drizzle/schema';
 import { DATABASE, type Database } from '@/core/database/database.module';
 import { CacheService } from '@/core/cache/cache.service';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { LoggerService } from '@/core/logger/logger.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
-import { ConfigurationService, inSettingsFileTurn } from '@/core/config/configuration.service';
+import { ConfigurationService, inSettingsFileTurn, newHubLocalKey } from '@/core/config/configuration.service';
 import { UninstallAppCommand } from '@/modules/app-lifecycle/commands/uninstall-app-command';
-import { clearRegistrationRecoveryArtifacts } from '@/modules/app-lifecycle/registration-recovery-state';
+import { PairingAppRestoreService } from '@/modules/app-lifecycle/pairing-app-restore.service';
+import { clearPairingAppCheck, clearRegistrationRecoveryArtifacts } from '@/modules/app-lifecycle/registration-recovery-state';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { removeTunnelRegistrationMarker } from '@/modules/registration/tunnel-markers';
 import { BearerOrgMembershipCache } from '@/modules/auth/bearer-org-membership.cache';
+import { ForwardAuthIdentityResolver } from '@/modules/auth/forward-auth-identity.resolver';
+import { HubPoolIdentityService } from '@/modules/hub-pool/hub-pool-identity.service';
+import { HubPoolPairingPinService } from '@/modules/hub-pool/hub-pool-pairing-pin.service';
+import { AppCredentialsService } from '@/modules/inference/app-credentials.service';
 import { CloudFallbackService } from '@/modules/inference/cloud-fallback.service';
+import { InferenceRouterService } from '@/modules/inference/inference-router.service';
+import { ModelRegistryService } from '@/modules/inference/model-registry.service';
 import { DOCKERODE } from '@/modules/docker/constants';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, type Type } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type Dockerode from 'dockerode';
-import { asc, eq, sql } from 'drizzle-orm';
+import { asc, eq, getTableName, sql } from 'drizzle-orm';
+
+/**
+ * Every table in the Hub's database. A factory reset empties them all, so the Hub it leaves keeps no
+ * row of the one before. The comments say why for the tables whose rows outlive the people, apps and
+ * pairing that made them.
+ */
+const FACTORY_RESET_TABLES = [
+  link,
+  app,
+  portAllocation,
+  deviceRegistration,
+  appStore,
+  // Named rather than left to CASCADE, which reaches both through `user`; see `wipeDatabase`.
+  apiKey,
+  federatedIdentity,
+  user,
+  // The next read mints a new directory, so an app backup restored after the reset sees a new Hub's people.
+  userDirectory,
+  // Memory keys of apps the reset removed: an app installed again under the same name was handed the old one.
+  memoryConnection,
+  // What the old organization bought and may use.
+  entitlementCache,
+  whoisCache,
+  // Hub Pool pairings with their tokens and this node's key that the peers pinned.
+  hubPoolPeer,
+  hubPoolIdentity,
+  // History of apps that are gone.
+  lifecycleJob,
+  hostEventLog,
+  hostTelemetrySample,
+];
 
 @Injectable()
 export class FactoryResetService {
@@ -48,29 +104,56 @@ export class FactoryResetService {
    * Resolved through `ModuleRef` rather than injected because `SystemModule` does not import
    * `AuthModule`, and a reset must not fail if that provider is somehow unavailable.
    */
-  private clearBearerOrgMembership(): void {
-    try {
-      this.moduleRef.get(BearerOrgMembershipCache, { strict: false })?.clear();
-    } catch (error) {
-      this.logger.warn(`Factory reset could not clear Bearer org-membership verdicts: ${error instanceof Error ? error.message : String(error)}`);
-    }
+  private async clearBearerOrgMembership(): Promise<void> {
+    await this.forgetIn(BearerOrgMembershipCache, 'Bearer org-membership verdicts', (verdicts) => verdicts.clear());
   }
 
   /**
-   * settings.json is `{}` now, but what was in it is still in memory: the cloud provider keys in
-   * `CloudFallbackService`, and the user settings in `ConfigurationService`. Until a restart, apps
-   * were handed the old keys, and the next provider saved wrote them all back to the file.
+   * settings.json holds only the new host-local key now, but what was in it is still in memory: the
+   * cloud provider keys in `CloudFallbackService` and the user settings in `ConfigurationService`.
+   * Until a restart, apps were handed the old keys. The next provider saved wrote them all back to
+   * the file.
    *
    * Resolved through `ModuleRef`, as the Bearer verdicts are, because `SystemModule` does not import
    * `InferenceModule`.
    */
-  private forgetSettingsInMemory(): void {
+  private async forgetSettingsInMemory(): Promise<void> {
     this.configuration.forgetPersistedUserSettings();
-    try {
-      this.moduleRef.get(CloudFallbackService, { strict: false })?.forgetProviders();
-    } catch (error) {
-      this.logger.warn(`Factory reset could not clear the cloud provider keys in memory: ${error instanceof Error ? error.message : String(error)}`);
+    await this.forgetIn(CloudFallbackService, 'the cloud provider keys in memory', (cloudFallback) => cloudFallback.forgetProviders());
+  }
+
+  /**
+   * The model pins and the record of what each app was handed, kept in `state/` beside settings.json
+   * and in memory. The pins came back after the reset and pinned the old Hub's models again.
+   */
+  private async forgetInferenceState(): Promise<void> {
+    // The router also unloads the unpinned models from their engines, which hold them at `keep_alive: -1`.
+    // Its unloads run in the background: they wait for any model load under way, and the page that asked
+    // for the reset is signed out meanwhile and leaves before an answer that waited for them. The router
+    // logs how they went.
+    const forgot = await this.forgetIn(InferenceRouterService, 'the pinned models', (router) => router.forgetPinnedModels());
+    if (!forgot) {
+      await this.forgetIn(ModelRegistryService, 'the pinned models', (registry) => registry.forgetPins());
     }
+    await this.forgetIn(AppCredentialsService, 'the record of what apps were handed', (credentials) => credentials.forgetHandouts());
+  }
+
+  /**
+   * Run `forget` on a provider of another module, resolved through `ModuleRef` because `SystemModule`
+   * imports none of them. One that is missing or fails costs a warning, never the rest of the reset.
+   * Returns whether `forget` ran to the end.
+   */
+  private async forgetIn<T>(token: Type<T>, what: string, forget: (provider: T) => unknown): Promise<boolean> {
+    try {
+      const provider = this.moduleRef.get(token, { strict: false });
+      if (provider) {
+        await forget(provider);
+        return true;
+      }
+    } catch (error) {
+      this.logger.warn(`Factory reset could not clear ${what}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return false;
   }
 
   /**
@@ -109,10 +192,13 @@ export class FactoryResetService {
     await this.clearRegistrationArtifacts();
     // `resetSettings` takes the device key, so a pairing this stops keeps none that Portal issued it.
     await this.registrationService.resetRegistration({ reason: 'manual', removesDeviceKey: true });
+    // After the pairing under way is stopped, which may have written its apps check meanwhile.
+    await this.clearOldHubRequests();
     await this.resetSettings();
-    this.forgetSettingsInMemory();
+    await this.forgetSettingsInMemory();
+    await this.forgetInferenceState();
     this.cache.clear();
-    this.clearBearerOrgMembership();
+    await this.clearBearerOrgMembership();
 
     this.logger.warn('Factory reset complete — Hub is ready for first-operator setup');
 
@@ -153,17 +239,13 @@ export class FactoryResetService {
       // `created_by_user_id` anyway: a reset has to take every key, and that must not hang on a
       // foreign key. A key acts with its creator's grants, and `RESTART IDENTITY` hands the next
       // account that creator's id, so a key that survived would act as whoever signs in first.
-      await this.db.execute(sql`
-        TRUNCATE TABLE
-          link,
-          app,
-          port_allocation,
-          device_registration,
-          app_store,
-          api_key,
-          "user"
-        RESTART IDENTITY CASCADE
-      `);
+      // `federated_identity` is named for the same reason: a binding that survived would sign its
+      // Portal account in as the next person given that id.
+      const tables = sql.join(
+        FACTORY_RESET_TABLES.map((table) => sql.identifier(getTableName(table))),
+        sql`, `,
+      );
+      await this.db.execute(sql`TRUNCATE TABLE ${tables} RESTART IDENTITY CASCADE`);
     } finally {
       // In `finally` because the TRUNCATE can commit and still reject on the way back: a wiped
       // user table whose cached DTOs and sessions survived is the worst of both states.
@@ -175,6 +257,12 @@ export class FactoryResetService {
       // that cookie names, and it would be admitted as the new operator.
       this.sessionUserCache.invalidate();
       this.cache.clear();
+      // Here for the same reason: they cache rows of the tables above. The stable id forward auth
+      // signs is cached by user id, which `RESTART IDENTITY` hands to the next account.
+      await this.forgetIn(ForwardAuthIdentityResolver, 'the stable ids forward auth signs', (resolver) => resolver.forget());
+      await this.forgetIn(HubPoolIdentityService, 'the Hub Pool identity in memory', (identity) => identity.forget());
+      // A PIN the old operator minted would still let a node ask the reset Hub to pair for ten minutes.
+      await this.forgetIn(HubPoolPairingPinService, 'the outstanding Hub Pool pairing PIN', (pins) => pins.cancel());
     }
   }
 
@@ -268,11 +356,36 @@ export class FactoryResetService {
     await clearRegistrationRecoveryArtifacts();
   }
 
+  /**
+   * What the old Hub left in `state/` for its own operator and its last pairing.
+   *
+   * - `password-change-request`: a password change asked for on the box. Within its 15 minutes it
+   *   would set the password of whoever becomes the reset Hub's first operator and turn off their 2FA.
+   * - `pairing-app-check.json`: the apps check of the last pairing. It holds app sync and may name the
+   *   old device's apps to restore. The next pairing writes its own.
+   */
+  public async clearOldHubRequests(): Promise<void> {
+    const passwordChangeRequest = path.join(DATA_DIR, 'state', 'password-change-request');
+    await fs.promises.rm(passwordChangeRequest, { force: true }).catch((error: unknown) => {
+      this.logger.warn(`Factory reset could not remove ${passwordChangeRequest}: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    await clearPairingAppCheck();
+    await this.forgetIn(PairingAppRestoreService, 'the backoff of the last pairing apps check', (restore) => restore.forget());
+  }
+
+  /**
+   * Empty settings.json but for a new host-local key, which the running Hub accepts from then on.
+   * `cihub` and the desktop app read the key from this file, so an empty file left them none until
+   * the next boot minted one, while the Hub went on accepting the old key, which anyone who copied
+   * the file before the reset still holds.
+   */
   public async resetSettings(): Promise<void> {
     const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
-    // After any save already under way, which would otherwise write the old settings back over `{}`.
+    const hubLocalKey = newHubLocalKey();
+    // After any save already under way, which would otherwise write the old settings back over these.
     await inSettingsFileTurn(async () => {
-      await writeSettingsJsonFile(settingsPath, '{}', this.logger);
+      await writeSettingsJsonFile(settingsPath, JSON.stringify({ hubLocalKey }, null, 2), this.logger);
+      this.configuration.replaceHubLocalKey(hubLocalKey);
       // Not allowed to fail the reset: the cache and Bearer verdicts after this must still be cleared.
       await removeSettingsJsonCopies(settingsPath).catch((error: unknown) => {
         this.logger.warn(

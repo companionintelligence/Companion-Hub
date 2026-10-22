@@ -42,6 +42,7 @@ import {
   isTauri,
   manualUpdateArtifactKind,
   manualUpdateFileName,
+  openDesktopDownloadPage,
   performStackUpdate,
   performUpdate,
   restartDesktopApp,
@@ -204,7 +205,9 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
     const installedVersion = desktop ? await getInstalledDesktopVersion() : null;
     setShellVersion(installedVersion);
     setShellRestart(desktop ? await getDesktopRestartState() : null);
-    const info = await checkForUpdates(installedVersion ?? undefined);
+    // The desktop app names an installer only when a newer version exists. Settings is signed in, so
+    // the Hub can look up the installer of the version this computer already runs.
+    const info = await checkForUpdates(installedVersion ?? undefined, { askHubForInstaller: true });
     setShellUpdate(info);
     return info;
   }, [desktop]);
@@ -426,12 +429,22 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
       // Install over the current app, never remove it first. Removing the package runs its cleanup,
       // which deletes the Hub's database, every app with its data, and the Hub's folder. An install
       // in place skips that: the old package's deb `postrm` sees `upgrade`, its rpm `postun` sees 1.
-      const install = kind === 'deb' ? 'sudo apt install' : 'sudo rpm -U';
+      // The version this computer already runs is installed again: apt skips it as "already the
+      // newest version" and `rpm -U` refuses it as "already installed" without these flags.
+      const reinstall = shellVersion !== null && shellUpdate.latestVersion === shellVersion;
+      const install = kind === 'deb' ? `sudo apt install${reinstall ? ' --reinstall' : ''}` : `sudo rpm -U${reinstall ? ' --replacepkgs' : ''}`;
       steps = [
         { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_DOWNLOAD') },
         fileName
-          ? { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_INSTALL'), command: `${install} "./${fileName}"` }
-          : { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_INSTALL_NO_COMMAND') },
+          ? {
+              text: t(reinstall ? 'SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_REINSTALL' : 'SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_INSTALL'),
+              command: `${install} "./${fileName}"`,
+            }
+          : {
+              text: t(
+                reinstall ? 'SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_REINSTALL_NO_COMMAND' : 'SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_INSTALL_NO_COMMAND',
+              ),
+            },
         { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_RELAUNCH') },
       ];
     } else if (kind === 'dmg' || platform === 'macos') {
@@ -768,9 +781,27 @@ export const GeneralActionsContainer = ({ manageHub = true }: { manageHub?: bool
               {shellMessage ? <p className="mt-3 text-sm text-muted-foreground">{shellMessage}</p> : null}
               {renderManualUpdateInstructions()}
             </>
+          ) : desktopWindow && shellUpdate?.updateAvailable ? (
+            // A newer version with no installer in the format this computer installs, as on a distro
+            // the desktop app can't place. Another format would install a second copy or not at all,
+            // so the card sends people to the download page instead.
+            <div data-testid="desktop-update-no-installer">
+              <p className="text-sm mb-3">{t('SETTINGS_ACTIONS_SHELL_UPDATE_NO_INSTALLER', { version: shellUpdate.latestVersion })}</p>
+              <Button
+                variant="outline"
+                onClick={() => void openDesktopDownloadPage(shellUpdate.latestVersion)}
+                data-testid="desktop-download-page-btn"
+              >
+                {t('SETTINGS_ACTIONS_SHELL_OPEN_DOWNLOAD_PAGE')}
+              </Button>
+            </div>
           ) : (
+            // No installer to offer here, so the up-to-date line can't say there is one to download. Only
+            // a check that answered can call the app up to date: none has while it runs or after it failed.
             <p className="text-sm text-muted-foreground">
-              {shellVersion && !shellUpdate?.updateAvailable ? t('SETTINGS_ACTIONS_SHELL_UP_TO_DATE') : t('SETTINGS_ACTIONS_UPDATE_NO_DOWNLOAD_URL')}
+              {shellVersion && shellUpdate && !shellUpdate.updateAvailable
+                ? t('SETTINGS_ACTIONS_SHELL_UP_TO_DATE_NO_DOWNLOAD')
+                : t('SETTINGS_ACTIONS_UPDATE_NO_DOWNLOAD_URL')}
             </p>
           )}
         </CardContent>

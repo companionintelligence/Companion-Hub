@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { DATABASE, type Database } from '@/core/database/database.module';
 import { hubPoolIdentity } from '@/core/database/drizzle/schema';
 
@@ -39,12 +39,16 @@ export class HubPoolIdentityRepository {
       .execute();
   }
 
-  /** Replace the keypair while keeping `nodeUuid` — a rotation changes the key, never the identity. */
-  async replaceKeys(publicKey: string, privateKeyEncrypted: string): Promise<void> {
+  /**
+   * Replace the keypair while keeping `nodeUuid` — a rotation changes the key, never the identity.
+   * Only the row of `nodeUuid`: a factory reset may have replaced it with a new identity meanwhile,
+   * whose key this one (encrypted with the old UUID as salt) must not overwrite.
+   */
+  async replaceKeys(publicKey: string, privateKeyEncrypted: string, nodeUuid: string): Promise<void> {
     await this.db
       .update(hubPoolIdentity)
       .set({ publicKey, privateKeyEncrypted, rotatedAt: new Date().toISOString() })
-      .where(eq(hubPoolIdentity.id, HUB_POOL_IDENTITY_ID))
+      .where(and(eq(hubPoolIdentity.id, HUB_POOL_IDENTITY_ID), eq(hubPoolIdentity.nodeUuid, nodeUuid)))
       .execute();
   }
 }

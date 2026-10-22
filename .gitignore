@@ -27,6 +27,8 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+# crash report from a failed `pnpm run gen:api-client`, written to the repo root
+openapi-ts-error-*.log
 # local env files
 .env*.local
 # vercel

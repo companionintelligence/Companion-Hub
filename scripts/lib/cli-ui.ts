@@ -68,10 +68,10 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
   {
     title: 'Hub lifecycle',
     entries: [
-      { command: `${BASE_COMMAND} up [env] [--detached]`, description: 'Start the hub stack (prompts for a password after a reset)' },
+      { command: `${BASE_COMMAND} up [env] [--detached|--attached]`, description: 'Start the hub stack (prompts for a password after a reset)' },
       { command: `${BASE_COMMAND} down [env]`, description: 'Stop the hub stack' },
-      { command: `${BASE_COMMAND} restart [env]`, description: 'Restart the hub stack' },
-      { command: `${BASE_COMMAND} recreate [env] [--detached] [--yes]`, description: 'Reset the target environment and start it again' },
+      { command: `${BASE_COMMAND} restart [env] [--detached|--attached]`, description: 'Restart the hub stack' },
+      { command: `${BASE_COMMAND} recreate [env] [--detached|--attached] [--yes]`, description: 'Reset the target environment and start it again' },
       { command: `${BASE_COMMAND} status [env]`, description: 'Containers, Cloudflare tunnel, Tailscale VPN, and models' },
       { command: `${BASE_COMMAND} logs [env] [service]`, description: 'Stream compose logs for the target environment' },
       { command: `${BASE_COMMAND} config [env]`, description: 'Show resolved configuration values' },
@@ -86,7 +86,7 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
       },
       {
         command: `${BASE_COMMAND} self-update [--to <version>] [--check]`,
-        description: 'Replace a standalone cihub binary with the release this Hub stack runs (needs GH_TOKEN)',
+        description: 'Replace a standalone cihub binary with the release this Hub stack runs',
       },
       {
         command: `${BASE_COMMAND} version [--short]`,

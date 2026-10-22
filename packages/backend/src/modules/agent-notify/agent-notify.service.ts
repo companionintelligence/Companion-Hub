@@ -203,32 +203,37 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
    * Wakes agents for a Hub event after applying the urgency floor and debounce. The Hub
    * converts its event vocabulary to text for OpenClaw's native hook, which can coalesce
    * bursts during its heartbeat window (CI-Hub#897).
+   *
+   * Resolves true when at least one agent accepted the wake, so a caller that sends an event once
+   * can try again later when nobody heard it.
    */
-  async notify(event: string, data: Record<string, unknown>, urgency: Urgency): Promise<void> {
+  async notify(event: string, data: Record<string, unknown>, urgency: Urgency): Promise<boolean> {
     const enabled = process.env.AGENT_WEBHOOK_ENABLED !== 'false';
     if (!enabled) {
-      return;
+      return false;
     }
 
     const minUrgency = this.resolveMinUrgency();
     if (!passesUrgency(urgency, minUrgency)) {
       this.logger.debug(`Agent wake skipped: ${event} (${urgency}) is below the ${minUrgency} floor`);
-      return;
+      return false;
     }
 
     const targets = this.getAllTargets();
     if (targets.length === 0) {
-      return;
+      return false;
     }
 
     const debounceKey = this.buildDebounceKey(event, data);
     if (this.isDuplicateWithinWindow(debounceKey)) {
-      return;
+      return false;
     }
     this.debounceMap.set(debounceKey, Date.now());
 
     // `now` avoids waiting up to 30 minutes for the next scheduled heartbeat.
-    await Promise.allSettled(targets.map((target) => this.postWake(target, buildWakeText(event, data, urgency))));
+    const results = await Promise.allSettled(targets.map((target) => this.postWake(target, buildWakeText(event, data, urgency))));
+
+    return results.some((result) => result.status === 'fulfilled' && result.value);
   }
 
   private async postWake(target: { url: string; token?: string }, text: string): Promise<boolean> {

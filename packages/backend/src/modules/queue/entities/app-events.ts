@@ -25,8 +25,8 @@ const queueAppFormSchema = z
     skipEnv: z.boolean().default(false),
     skipPull: z.boolean().default(false),
     skipRun: z.boolean().default(false),
-    // Start only: let compose recreate just the services whose resolved definition changed. See
-    // `AppLifecycleService.restartRunningApps`.
+    // Start only: let compose recreate just the services whose resolved definition changed. Set by
+    // the Hub boot (`AppLifecycleService.restartRunningApps`) and the start after an update.
     onlyRecreateChanged: z.boolean().optional(),
     cpuLimit: optionalCpuLimitSchema,
     memoryLimit: optionalMemoryLimitSchema,
@@ -75,6 +75,8 @@ const updateAppCommandSchema = z.object({
   // Whether the app was running when the update was requested; a stopped one is updated and left stopped.
   // Defaults to true, the behaviour before the flag existed, for a message queued by an older Hub.
   wasRunning: z.boolean().optional().default(true),
+  // The app's status when the update was requested: where a cancelled update puts it back.
+  statusBeforeUpdate: z.string().optional(),
   requestId: z.uuid(),
 });
 
@@ -107,6 +109,7 @@ export const appEventResultSchema = z.object({
   // the record); reserved so Phase 2-4 ops can report where they landed.
   cancelledStatus: z.string().optional(),
   // Set by a failed update: the previous version is back in place (and running again, if it was running).
+  // Set by a backup refused before it stopped the app: the app is as it was.
   rolledBack: z.boolean().optional(),
 });
 

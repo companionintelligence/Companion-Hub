@@ -7,9 +7,10 @@
  * one and the Hub stack image on another, and nothing used to notice when they drifted apart. Every
  * update entry point now opens with that answer; see cli-version-skew.ts.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { stdin as input, stdout as output } from 'node:process';
 import { createInterface } from 'node:readline/promises';
 import { parseEnvFile } from '../env-file.js';
@@ -22,7 +23,13 @@ import { describeTarget, installBinaryOverSelf, planSelfUpdate, selfUpdateUsage 
 import { classifyCliInstall, cliUpdateInstructions, gatherSkew, type SkewReport, type SkewSnapshot } from './cli-version-skew.js';
 import { resolveProdApplianceContext } from './paths.js';
 import { connectAgent, normalizeMemoryUrl, parseConnectArgs } from './connect-agent.js';
-import { downloadReleaseAsset } from './fleet-cihub-binary.js';
+import {
+  type AssetDigestCheck,
+  CIHUB_RELEASES_PAGE,
+  describeAssetDigestCheck,
+  downloadReleaseAsset,
+  releaseFailureFix,
+} from './fleet-cihub-binary.js';
 import { promptHiddenPassword } from './seed-appliance.js';
 
 /**
@@ -254,9 +261,9 @@ export async function runHostUpdate(args: string[]) {
 /**
  * `cihub self-update` — replace this standalone binary with the release the stack runs.
  *
- * See cli-self-update.ts for why the package-manager channels are refused and why this needs a
- * token. Nothing here touches the Hub stack: `cihub pool update` is that half, and keeping them
- * apart is what lets an operator fix one without recreating containers to do it.
+ * See cli-self-update.ts for why the package-manager channels are refused. Nothing here touches the
+ * Hub stack: `cihub pool update` is that half, and keeping them apart is what lets an operator fix
+ * one without recreating containers to do it.
  */
 export async function runSelfUpdateCommand(args: string[], gathered?: SkewSnapshot) {
   for (const arg of args) {
@@ -301,21 +308,35 @@ export async function runSelfUpdateCommand(args: string[], gathered?: SkewSnapsh
     return;
   }
 
-  let asset: { path: string; tag: string };
+  // A folder only this user can open, removed again afterwards. A file already in a download cache is
+  // used as it is. A fresh folder means nothing another account left behind is run or installed.
+  let cacheDir: string | undefined;
+  let asset: { bytes: Buffer; tag: string; digest: AssetDigestCheck };
   try {
-    asset = await downloadReleaseAsset({ token: plan.token, assetName: plan.assetName, version: plan.version });
+    cacheDir = mkdtempSync(path.join(tmpdir(), 'cihub-self-update-'));
+    const downloaded = await downloadReleaseAsset({ token: plan.token, assetName: plan.assetName, version: plan.version, cacheDir });
+    asset = { bytes: readFileSync(downloaded.path), tag: downloaded.tag, digest: downloaded.digest };
   } catch (error) {
     printMessageBox(
       'Self-update failed',
-      [error instanceof Error ? error.message : String(error), '', '  Check the token can read the private repository: gh auth status'],
+      [
+        error instanceof Error ? error.message : String(error),
+        '',
+        `  ${releaseFailureFix(error, plan.token, {
+          fallback: `download ${plan.assetName} from ${CIHUB_RELEASES_PAGE} and replace ${plan.target} by hand`,
+          versionFlag: '--to',
+        })}`,
+      ],
       'red',
     );
     process.exitCode = 1;
     return;
+  } finally {
+    if (cacheDir) rmSync(cacheDir, { recursive: true, force: true });
   }
 
   const installed = installBinaryOverSelf({
-    sourceBytes: readFileSync(asset.path),
+    sourceBytes: asset.bytes,
     targetPath: plan.target,
     // `latest` is a pointer, not a claim about what the asset reports, so only a named version is
     // held to matching. The binary still has to run and identify itself either way.
@@ -323,7 +344,12 @@ export async function runSelfUpdateCommand(args: string[], gathered?: SkewSnapsh
   });
   printMessageBox(
     installed.ok ? 'Self-update complete' : 'Self-update failed',
-    [installed.message, ...(installed.ok ? [`Release ${asset.tag}. Run \`${BASE_COMMAND} doctor\` to confirm it matches the stack.`] : [])],
+    [
+      installed.message,
+      ...(installed.ok
+        ? [`Release ${asset.tag}: ${describeAssetDigestCheck(asset.digest)}.`, `Run \`${BASE_COMMAND} doctor\` to confirm it matches the stack.`]
+        : []),
+    ],
     installed.ok ? 'green' : 'red',
   );
   if (!installed.ok) process.exitCode = 1;

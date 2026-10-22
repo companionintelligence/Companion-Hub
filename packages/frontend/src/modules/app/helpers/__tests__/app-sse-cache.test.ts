@@ -1,12 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { QueryClient } from '@tanstack/react-query';
 import { PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY } from '@/lib/cloudflare-api';
-import { handleAppSseEvent } from '../app-sse-cache';
+import { cachedAppName, handleAppSseEvent } from '../app-sse-cache';
 import { installQueueQueryKey } from '../install-queue';
 import { updateInstallationProgress } from '../use-installation-progress';
+import { setUpdatePhase } from '../use-update-phase';
 
 vi.mock('../use-installation-progress', () => ({
   updateInstallationProgress: vi.fn(),
+}));
+
+vi.mock('../use-update-phase', () => ({
+  setUpdatePhase: vi.fn(),
 }));
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
@@ -21,10 +26,10 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
 
 /**
  * Queries `invalidateAppQueries` refreshes for one app: installed apps, installed
- * urns, the app row, app context, and the Public Web report that says whether a
- * bound custom domain is still dark.
+ * urns, the app row, app context, the Public Web report that says whether a
+ * bound custom domain is still dark, and the app's runtime health.
  */
-const INVALIDATED_PER_APP_EVENT = 5;
+const INVALIDATED_PER_APP_EVENT = 6;
 
 describe('handleAppSseEvent', () => {
   let queryClient: {
@@ -95,6 +100,53 @@ describe('handleAppSseEvent', () => {
     });
 
     expect(updateInstallationProgress).toHaveBeenCalledWith('plane:ci-marketplace', { percent: 70, downloadedBytes: 400, totalBytes: 1_500 });
+  });
+
+  // An update reports each step, so the app page can say what it waits for and whether Cancel still works (#2107).
+  it("records an update's step without refetching anything", () => {
+    handleAppSseEvent(queryClient as unknown as QueryClient, {
+      event: 'status_change',
+      appUrn: 'uptime-kuma:ci-marketplace',
+      appStatus: 'updating',
+      updatePhase: 'verifying',
+    });
+
+    expect(setUpdatePhase).toHaveBeenCalledWith('uptime-kuma:ci-marketplace', 'verifying');
+    expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
+  });
+
+  it("forgets a previous update's step when a new update starts", () => {
+    handleAppSseEvent(queryClient as unknown as QueryClient, { event: 'status_change', appUrn: 'uptime-kuma:ci-marketplace', appStatus: 'updating' });
+
+    expect(setUpdatePhase).toHaveBeenCalledWith('uptime-kuma:ci-marketplace', null);
+  });
+
+  it.each(['update_success', 'update_error', 'update_cancelled'])("forgets the update's step and refetches the app on %s", (event) => {
+    handleAppSseEvent(queryClient as unknown as QueryClient, { event, appUrn: 'uptime-kuma:ci-marketplace', appStatus: 'running' });
+
+    expect(setUpdatePhase).toHaveBeenCalledWith('uptime-kuma:ci-marketplace', null);
+    expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(INVALIDATED_PER_APP_EVENT);
+  });
+
+  describe('the name a toast gives an app', () => {
+    const urn = 'uptime-kuma:ci-marketplace';
+    const cacheWith = (entries: Record<string, unknown>) => ({ getQueryData: (key: unknown) => entries[JSON.stringify(key)] });
+
+    it('is the name its page shows, from the cached app', () => {
+      const cache = cacheWith({ [JSON.stringify(['getApp', urn])]: { info: { name: 'Uptime Kuma' } } });
+
+      expect(cachedAppName(cache as unknown as QueryClient, urn, 'uptime-kuma')).toBe('Uptime Kuma');
+    });
+
+    it('comes from the installed apps when the app itself is not cached', () => {
+      const cache = cacheWith({ [JSON.stringify(['getInstalledApps'])]: { installed: [{ info: { urn, name: 'Uptime Kuma' } }] } });
+
+      expect(cachedAppName(cache as unknown as QueryClient, urn, 'uptime-kuma')).toBe('Uptime Kuma');
+    });
+
+    it('falls back to the id in its URN', () => {
+      expect(cachedAppName(cacheWith({}) as unknown as QueryClient, urn, 'uptime-kuma')).toBe('uptime-kuma');
+    });
   });
 
   it('invalidates installed and app queries on status transition without progress', () => {
@@ -204,6 +256,18 @@ describe('handleAppSseEvent', () => {
     });
 
     expect(queryClient.setQueryData).toHaveBeenCalledWith(['app-install-error', 'safeos:ci-marketplace'], null);
+  });
+
+  // The degraded banner, the "Needs attention" pill and Force Stop read runtime health, which only polls every 15 s.
+  it.each([
+    ['stop_success', 'stopped'],
+    ['start_success', 'running'],
+    ['restart_success', 'running'],
+    ['status_change', 'stopping'],
+  ])('refetches the runtime health on %s so the degraded banner follows the new state', (event, appStatus) => {
+    handleAppSseEvent(queryClient as unknown as QueryClient, { event, appUrn: 'cpu-hog:_user', appStatus } as never);
+
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['app-runtime-health', 'cpu-hog:_user'] });
   });
 
   it('does not touch the install-error cache on stop_success (app is not running)', () => {

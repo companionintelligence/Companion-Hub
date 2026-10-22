@@ -1,3 +1,4 @@
+import { AppCommandDeadline, appEventsQueueTimeoutMs } from '@/common/helpers/app-command-deadline';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import messages from '@ci-hub/common/i18n/translations/en.json';
@@ -355,6 +356,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   private lastTailscaleConnected = false;
   private lastTailscaleHttpsAvailable = false;
 
+  /**
+   * How long the publisher of an app event waits for its reply. Read once, at boot, as `QueueModule`
+   * reads it for the queue's RPC client: a later change to the events timeout in Settings does not
+   * reach that client, so a deadline read from the live setting could outlast the real wait.
+   */
+  private readonly appEventsReplyTimeoutMs: number;
+
   constructor(
     private readonly logger: LoggerService,
     private readonly appEventsQueue: AppEventsQueue,
@@ -381,6 +389,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     @Optional() private readonly errorReportingService?: ErrorReportingService,
     @Optional() private readonly lifecycleJobService?: LifecycleJobService,
   ) {
+    this.appEventsReplyTimeoutMs = appEventsQueueTimeoutMs(this.config.get('userSettings')?.eventsTimeout);
     this.logger.debug('Subscribing to app events...');
     this.appEventsQueue.onEvent((data, reply) => this.invokeCommand(data, reply));
   }
@@ -593,6 +602,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     const release = await this.mutex.acquire(data.appUrn);
+    // What the command left for after its reply (an update's old snapshot), started in `finally`.
+    let afterReply: (() => Promise<void>) | undefined;
 
     let job: LifecycleJob | null = null;
     if (this.lifecycleJobService) {
@@ -643,11 +654,16 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         if (job) {
           await this.lifecycleJobService?.cancelJob(job.id, 'Operation cancelled before it started').catch(() => null);
         }
-        await this.handleCancelledResult(data.command, data.appUrn, {
-          success: false,
-          cancelled: true,
-          message: 'Operation cancelled before it started',
-        });
+        await this.handleCancelledResult(
+          data.command,
+          data.appUrn,
+          {
+            success: false,
+            cancelled: true,
+            message: 'Operation cancelled before it started',
+          },
+          data,
+        );
         await reply({ success: false, cancelled: true, message: 'Operation cancelled before it started' });
         this.operationRegistry.clear(data.appUrn, data.requestId);
         return;
@@ -668,10 +684,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
                 await this.lifecycleJobService?.updateProgress(job.id, percent).catch(() => null);
               }
             },
+            // The publisher's wait started when the entry was registered, just before the publish.
+            deadline: AppCommandDeadline.untilReply(entry.createdAt, this.appEventsReplyTimeoutMs),
           }
         : undefined;
 
       const command = this.commandFactory.createCommand(data);
+      afterReply = command.afterReply?.bind(command);
       // Only pass the context when there is one, so commands without cancellation see the original 2-arg call.
       const result = (await (ctx ? command.execute(data.appUrn, data.form, ctx) : command.execute(data.appUrn, data.form))) as z.output<
         typeof appEventResultSchema
@@ -686,7 +705,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         if (job) {
           await this.lifecycleJobService?.cancelJob(job.id, result.message || 'Operation was cancelled').catch(() => null);
         }
-        await this.handleCancelledResult(data.command, data.appUrn, result);
+        await this.handleCancelledResult(data.command, data.appUrn, result, data);
         this.operationRegistry.clear(data.appUrn, data.requestId);
       } else if (result.success) {
         if (job) {
@@ -729,9 +748,21 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       // transitional statuses (e.g. update -> start-after-update). Superseded handlers
       // still lose the claim when a newer op replaced the registry entry.
       release();
-      if (isInstall) {
-        // Whatever the install's last event was, a new tab must not be told it is still installing.
+      // Tidying up the command left for after its reply: not awaited, so it neither delays the reply
+      // nor holds the app's lock. Started here rather than after the reply, so a reply that failed
+      // does not leave it undone.
+      if (afterReply) {
+        void afterReply().catch((err: unknown) =>
+          this.logger.warn(`Tidying up after '${data.command}' for ${data.appUrn} failed: ${err instanceof Error ? err.message : String(err)}`),
+        );
+      }
+      if (isInstall || data.command === 'update') {
+        // Whatever the install's or update's last event was, a new tab must not be told it is still
+        // installing or updating. An update can end with no event for the app: a superseded
+        // completion, or a cancel whose row had already left `updating`.
         this.sseService.forgetInstallProgress(data.appUrn);
+      }
+      if (isInstall) {
         this.installPipelineTracker.setActive(null);
         releasePipeline?.();
         void this.emitInstallQueueUpdate();
@@ -745,7 +776,17 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * `install_cancelled` SSE event so the UI returns to the not-installed (store) state. Other
    * commands are wired in later phases; until then this is a safe no-op for them.
    */
-  private async handleCancelledResult(command: OperationCommand | string, appUrn: AppUrn, result: z.output<typeof appEventResultSchema>) {
+  private async handleCancelledResult(
+    command: OperationCommand | string,
+    appUrn: AppUrn,
+    result: z.output<typeof appEventResultSchema>,
+    message?: z.output<typeof appEventSchema>,
+  ) {
+    if (command === 'update') {
+      await this.finalizeCancelledUpdate(appUrn, result, message?.command === 'update' ? message : undefined);
+      return;
+    }
+
     if (command === 'install') {
       const app = await this.appRepository.getAppByUrn(appUrn).catch(() => null);
       if (app) {
@@ -764,6 +805,44 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     // Other commands report a cancelled-status resting state in later phases; nothing to do yet.
     this.logger.info(`[lifecycle] '${command}' for ${appUrn} cancelled (no finalization wired yet)`);
+  }
+
+  /**
+   * Settle a cancelled update worker-side, as a cancelled install is. The publisher's handler cannot:
+   * its claim on the operation is gone once the worker clears it, so the app would stay `updating`. The command reports where the app landed (`cancelledStatus`); a cancel that arrived
+   * while the update was still queued changed nothing, so the app is back as it was.
+   */
+  private async finalizeCancelledUpdate(
+    appUrn: AppUrn,
+    result: z.output<typeof appEventResultSchema>,
+    message: Extract<z.output<typeof appEventSchema>, { command: 'update' }> | undefined,
+  ) {
+    const app = await this.appRepository.getAppByUrn(appUrn).catch(() => null);
+    if (!app) {
+      return;
+    }
+
+    // Where a failed update leaves the app (see `updateApp`): back to the status it had when the
+    // previous version is back, or when nothing had changed yet (a cancel while it was queued), and
+    // stopped when the previous version could not be put back after running.
+    const wasRunning = message?.wasRunning ?? true;
+    const before = (message?.statusBeforeUpdate as AppStatus | undefined) ?? (wasRunning ? 'running' : 'stopped');
+    const status: AppStatus = result.rolledBack === false && wasRunning ? 'stopped' : before;
+    if (!(await this.appRepository.updateAppByIdIfStatus(app.id, 'updating', { status }))) {
+      return;
+    }
+
+    this.logger.info(`[lifecycle] update of ${appUrn} cancelled; the app is ${status}${result.message ? `: ${result.message}` : ''}`);
+    if (result.rolledBack === false) {
+      // The previous version could not be put back: the person has to see that as the failure it is.
+      this.sseService.emit('app', { event: 'update_error', appUrn, appStatus: status, error: result.message });
+      this.agentNotifyService?.notify('update_error', { appUrn }, 'high');
+      // Reported as a failed update's rollback is: the command skipped its own report for a cancel.
+      this.reportAppFailure(appUrn, 'update', result.message || 'The cancelled update could not be rolled back', result.errorCode);
+      return;
+    }
+    this.sseService.emit('app', { event: 'update_cancelled', appUrn, appStatus: status });
+    this.agentNotifyService?.notify('update_cancelled', { appUrn }, 'info');
   }
 
   /**
@@ -975,6 +1054,18 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     return oldJSON !== newJSON;
   }
 
+  /**
+   * The form a start publishes: the stored config with this start's options on top.
+   *
+   * `appFormSchema` passes unknown keys through into the stored config, so a stored
+   * `onlyRecreateChanged` would otherwise stop every dashboard start from force-recreating.
+   * Only the caller decides it: the Hub boot and the start after an update.
+   */
+  private startCommandForm(storedConfig: unknown, options: { skipPull?: boolean; onlyRecreateChanged?: boolean }): Record<string, unknown> {
+    const { onlyRecreateChanged: _storedRecreateMode, ...config } = (storedConfig ?? {}) as Record<string, unknown>;
+    return { ...config, skipPull: options.skipPull, ...(options.onlyRecreateChanged ? { onlyRecreateChanged: true } : {}) };
+  }
+
   async startApp(params: { appUrn: AppUrn; skipPull?: boolean; onlyRecreateChanged?: boolean; actor: LifecycleActor }) {
     const { appUrn, skipPull, onlyRecreateChanged } = params;
 
@@ -992,12 +1083,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'start');
-    // `appFormSchema` passes unknown keys through into the stored config, so a stored
-    // `onlyRecreateChanged` would otherwise stop every dashboard start from force-recreating.
-    // Only the boot path decides it.
-    const { onlyRecreateChanged: _storedRecreateMode, ...storedConfig } = (app.config ?? {}) as Record<string, unknown>;
     this.appEventsQueue
-      .publish({ appUrn, command: 'start', requestId, form: { ...storedConfig, skipPull, ...(onlyRecreateChanged ? { onlyRecreateChanged } : {}) } })
+      .publish({ appUrn, command: 'start', requestId, form: this.startCommandForm(app.config, { skipPull, onlyRecreateChanged }) })
       .then(async (raw) => {
         const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
@@ -1952,9 +2039,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * {@link startApp} resolves once the command is published; this variant is for callers
    * (such as post-update restart) that must not proceed until the app reaches a terminal
    * start outcome.
+   *
+   * `onlyRecreateChanged` leaves containers whose definition is unchanged running instead of
+   * recreating them (see `startComposeCommand`).
    */
-  public async startAppAndWait(params: { appUrn: AppUrn; skipPull?: boolean }): Promise<boolean> {
-    const { appUrn, skipPull } = params;
+  public async startAppAndWait(params: { appUrn: AppUrn; skipPull?: boolean; onlyRecreateChanged?: boolean }): Promise<boolean> {
+    const { appUrn, skipPull, onlyRecreateChanged } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -1970,7 +2060,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       appUrn,
       command: 'start',
       requestId,
-      form: { ...app.config, skipPull },
+      form: this.startCommandForm(app.config, { skipPull, onlyRecreateChanged }),
     });
     const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
 
@@ -2740,6 +2830,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     await this.appRepository.updateAppById(app.id, { status: 'updating' });
 
     const appStatusBeforeUpdate = app.status;
+    // The command starts the new version of such an app, so the start below must run for the same set.
+    const wasRunning = !STATUSES_MEANING_NOT_RUNNING.has(appStatusBeforeUpdate);
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'updating' });
 
     const requestId = crypto.randomUUID();
@@ -2749,19 +2841,24 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         command: 'update',
         appUrn,
         requestId,
+        statusBeforeUpdate: appStatusBeforeUpdate,
         form: app.config,
         performBackup,
-        wasRunning: !STATUSES_MEANING_NOT_RUNNING.has(appStatusBeforeUpdate),
+        wasRunning,
       })
       .then(async (raw) => {
-        const { success, message, errorCode, errorDetail, settingsPath, rolledBack } = raw as z.output<typeof appEventResultSchema>;
+        const { success, message, errorCode, errorDetail, settingsPath, rolledBack, cancelled } = raw as z.output<typeof appEventResultSchema>;
+        if (cancelled) {
+          // Settled by the worker (`finalizeCancelledUpdate`), which knows where the app landed.
+          return;
+        }
         if (success) {
           if (!this.operationRegistry.claimCompletion(appUrn, requestId)) {
             return;
           }
 
           const appInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
-          const restoredStatus = appStatusBeforeUpdate === 'running' ? 'stopped' : appStatusBeforeUpdate;
+          const restoredStatus = wasRunning ? 'stopped' : appStatusBeforeUpdate;
 
           // Part of the update the caller was already authorized for; not a new decision.
           await this.updateAppConfig({ appUrn, form: app.config, actor: { kind: 'system', reason: 'update-reapply' } });
@@ -2769,16 +2866,21 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           this.sseService.emit('app', { event: 'update_success', appUrn, appStatus: restoredStatus });
           this.agentNotifyService?.notify('update_success', { appUrn }, 'info');
 
-          if (appStatusBeforeUpdate === 'running') {
+          if (wasRunning) {
+            // The update command already started the new version and waited for its health check, so
+            // this start must not recreate what it started: it records the app as running and applies
+            // only what changed since, such as settings the update re-applied. A force-recreate here
+            // restarted the app seconds after its first start, which cut Uptime Kuma 2's data
+            // conversion off half-way and left it crash-looping.
             // The update command pulled the images before it stopped anything, so the start does not
             // need to ask for them again (it only matters for an app that always force-pulls).
-            await this.startAppAndWait({ appUrn, skipPull: true });
+            await this.startAppAndWait({ appUrn, skipPull: true, onlyRecreateChanged: true });
           }
         } else {
           this.logger.error(`Failed to update app ${appUrn}: ${message}`);
           // A failed update that put the previous version back left it running if it was running.
           // Anything else is only known to be stopped.
-          const restoredStatus = rolledBack ? appStatusBeforeUpdate : appStatusBeforeUpdate === 'running' ? 'stopped' : appStatusBeforeUpdate;
+          const restoredStatus = rolledBack ? appStatusBeforeUpdate : wasRunning ? 'stopped' : appStatusBeforeUpdate;
           await this.settleCommandOutcome({
             appId: app.id,
             appUrn,

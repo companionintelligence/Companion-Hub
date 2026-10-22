@@ -3,7 +3,7 @@ import type { AppRuntimeHealth } from '@/lib/app-runtime-monitor';
 import { AlertTriangle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-export function AppRuntimeDegradedBanner({ runtimeHealth }: { runtimeHealth?: AppRuntimeHealth | null }) {
+export function AppRuntimeDegradedBanner({ runtimeHealth, className }: { runtimeHealth?: AppRuntimeHealth | null; className?: string }) {
   const { t } = useTranslation();
 
   if (!runtimeHealth?.degraded) {
@@ -11,9 +11,9 @@ export function AppRuntimeDegradedBanner({ runtimeHealth }: { runtimeHealth?: Ap
   }
 
   return (
-    <Alert variant="warning">
+    <Alert variant="warning" data-testid="app-runtime-degraded-banner" className={className}>
       <AlertIcon>
-        <AlertTriangle strokeWidth={2} />
+        <AlertTriangle aria-hidden />
       </AlertIcon>
       <div>
         <AlertHeading>{t('APP_RUNTIME_DEGRADED_TITLE', { appName: runtimeHealth.appName })}</AlertHeading>

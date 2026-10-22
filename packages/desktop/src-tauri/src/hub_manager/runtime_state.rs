@@ -112,6 +112,30 @@ pub(crate) fn restrict_private_state_file(_path: &Path) -> Option<u32> {
     None
 }
 
+/// Writes a file that holds credentials, such as the Hub env files (JWT_SECRET, POSTGRES_PASSWORD,
+/// RABBITMQ_PASSWORD). A new one is created at [`PRIVATE_STATE_FILE_MODE`]. An existing one is
+/// restricted first, because `std::fs::write` keeps the mode a file already has: both env files
+/// were 0o664 under a desktop user's umask.
+pub(crate) fn write_private_file(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    let _ = restrict_private_state_file(path);
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(PRIVATE_STATE_FILE_MODE)
+            .open(path)?;
+        file.write_all(contents.as_ref())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, contents)
+    }
+}
+
 fn restrict_private_state_files(data_dir: &Path) {
     for (subdir, file) in HUB_STATE_FILES_NEED_WRITE {
         let path = data_dir.join(subdir).join(file);

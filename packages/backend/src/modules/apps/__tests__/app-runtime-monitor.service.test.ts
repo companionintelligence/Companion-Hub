@@ -13,8 +13,10 @@ import { GpuProcessSamplerService } from '@/modules/inference/gpu-process-sample
 import { AppFilesManager } from '../app-files-manager';
 import { EnvUtils } from '@/modules/env/env.utils';
 import si from 'systeminformation';
+import { probeAppPort } from '../app-port-probe';
 
 vi.mock('systeminformation');
+vi.mock('../app-port-probe', () => ({ probeAppPort: vi.fn() }));
 
 describe('AppRuntimeMonitorService', () => {
   const originalHostname = process.env.HOSTNAME;
@@ -43,6 +45,8 @@ describe('AppRuntimeMonitorService', () => {
     // No manifest on disk, so no readiness endpoint: every test that predates the probe must
     // never see a fetch. The readiness block below declares one explicitly.
     appFilesManager.getInstalledAppInfo.mockResolvedValue(null);
+    // No compose on disk either, so a This Machine Only app's own port is never dialled unless a test says so.
+    appFilesManager.getDockerComposeJson.mockResolvedValue({ path: '', content: null });
 
     config.get.mockImplementation((key: string) => {
       if (key === 'userSettings') {
@@ -736,6 +740,480 @@ describe('AppRuntimeMonitorService', () => {
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('GPU VRAM attribution failed'));
     });
   });
+  /*
+   * `checkAppAvailability` answers "available" for a This Machine Only app without contacting it, so
+   * a hung local app could never be unresponsive, degraded or force-stoppable. The monitor asks the
+   * main container at its address on the Hub's app network instead. It holds the app to the rule the
+   * proxied routes follow: only a connection the app took and never answered counts against it.
+   */
+  describe('This Machine Only apps', () => {
+    const busyContainer = {
+      containerId: 'abc',
+      name: 'cpu-hog__user-web-1',
+      state: 'running',
+      status: 'Up',
+      health: null,
+      exitCode: null,
+      cpuPercent: 200,
+      memoryUsageBytes: 100,
+      memoryLimitBytes: 1000,
+    };
+
+    beforeEach(() => {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        appName: 'cpu-hog',
+        appStoreSlug: '_user',
+        status: 'running',
+        exposureMode: 'local',
+        config: {},
+        updatedAt: new Date().toISOString(),
+      } as any);
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([busyContainer]);
+      appFilesManager.getDockerComposeJson.mockResolvedValue({
+        path: '/apps/_user/cpu-hog/docker-compose.json',
+        content: {
+          schemaVersion: 2,
+          services: [
+            { name: 'web', image: 'alpine:3.20', isMain: true, internalPort: 80 },
+            { name: 'cache', image: 'redis:7', internalPort: 6379 },
+          ],
+        },
+      });
+      dockerReadFacade.getServiceAddressOnHubNetwork.mockResolvedValue('10.200.0.7');
+      vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-10-21T13:00:00Z') });
+    });
+
+    /** Samples the app `times` times, `stepMs` apart, as the monitor's tick (one a minute) or the app page's poll would. */
+    async function sampleEvery(stepMs: number, times: number) {
+      let result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      for (let i = 1; i < times; i++) {
+        vi.setSystemTime(Date.now() + stepMs);
+        result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      }
+      return result;
+    }
+
+    it('marks a busy app that takes connections and never answers degraded, with Force stop', async () => {
+      vi.mocked(probeAppPort).mockResolvedValue('silent');
+
+      const result = await sampleEvery(60_000, 3);
+
+      expect(dockerReadFacade.getServiceAddressOnHubNetwork).toHaveBeenCalledWith('cpu-hog:_user', 'web');
+      expect(probeAppPort).toHaveBeenCalledWith('10.200.0.7', 80, 5_000);
+      // Cached for a minute like the route probe: two dials over the two minutes.
+      expect(probeAppPort).toHaveBeenCalledTimes(2);
+      expect(appsService.checkAppAvailability).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        sustainedHighCpu: true,
+        responsive: false,
+        degraded: true,
+        forceStopEligible: true,
+        reason: 'The app accepted a connection on port 80 but did not answer within 5 seconds.',
+      });
+    });
+
+    it('dials once when the tick and a page poll ask at the same time', async () => {
+      let answer: (result: 'silent') => void = () => {};
+      vi.mocked(probeAppPort).mockReturnValue(
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+      );
+
+      const first = service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      const second = service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      await vi.waitFor(() => expect(probeAppPort).toHaveBeenCalled());
+      answer('silent');
+      const results = await Promise.all([first, second]);
+
+      expect(probeAppPort).toHaveBeenCalledTimes(1);
+      expect(results.map((result) => result.responsive)).toEqual([false, false]);
+    });
+
+    // The app page polls every 15 s and other readers ask too, so three samples can land within
+    // seconds of a start. "Sustained" is two minutes of high CPU, the span of three monitor ticks.
+    it('does not call a burst of samples right after a start sustained', async () => {
+      vi.mocked(probeAppPort).mockResolvedValue('silent');
+
+      const burst = await sampleEvery(10_000, 3);
+      expect(burst).toMatchObject({ highCpu: true, responsive: false, sustainedHighCpu: false, degraded: false, forceStopEligible: false });
+
+      vi.setSystemTime(Date.now() + 100_000);
+      const twoMinutesIn = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      expect(twoMinutesIn).toMatchObject({ sustainedHighCpu: true, degraded: true, forceStopEligible: true });
+    });
+
+    it('starts counting again after one sample below the threshold', async () => {
+      vi.mocked(probeAppPort).mockResolvedValue('silent');
+      await sampleEvery(60_000, 2);
+
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValueOnce([{ ...busyContainer, cpuPercent: 40 }]);
+      vi.setSystemTime(Date.now() + 60_000);
+      await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+
+      const afterTheDip = await sampleEvery(60_000, 2);
+      expect(afterTheDip).toMatchObject({ sustainedHighCpu: false, degraded: false });
+      vi.setSystemTime(Date.now() + 60_000);
+      expect(await service.getAppRuntimeHealth('cpu-hog:_user' as any)).toMatchObject({ sustainedHighCpu: true, degraded: true });
+    });
+
+    // An arm64 Hub runs the arm64 override of the main service, which can listen on another port.
+    it('dials the main port of the override for this Hub architecture', async () => {
+      config.get.mockImplementation((key: string) => {
+        if (key === 'userSettings') return {} as any;
+        if (key === 'architecture') return 'arm64' as any;
+        return undefined as any;
+      });
+      appFilesManager.getDockerComposeJson.mockResolvedValue({
+        path: '/apps/_user/cpu-hog/docker-compose.json',
+        content: {
+          schemaVersion: 2,
+          services: [{ name: 'web', image: 'example/web:1', isMain: true, internalPort: 80 }],
+          overrides: [
+            { architecture: 'arm64', services: [{ name: 'web', image: 'example/web:1-arm64', internalPort: 8080 }] },
+            { architecture: 'amd64', services: [{ name: 'web', internalPort: 9090 }] },
+          ],
+        },
+      });
+      vi.mocked(probeAppPort).mockResolvedValue('answered');
+
+      await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+
+      expect(probeAppPort).toHaveBeenCalledWith('10.200.0.7', 8080, 5_000);
+    });
+
+    it.each([
+      ['answers', 'answered'],
+      ['has nothing listening on its port yet', 'refused'],
+    ] as const)('keeps a busy app that %s responsive', async (_label, probe) => {
+      vi.mocked(probeAppPort).mockResolvedValue(probe);
+
+      const result = await sampleEvery(60_000, 3);
+
+      expect(appsService.checkAppAvailability).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ sustainedHighCpu: true, responsive: true, degraded: false, forceStopEligible: false, reason: null });
+    });
+
+    // A hung listener never accepts, so each silent dial stays in its accept queue. With a small backlog
+    // the queue fills and later dials never open, which must not read as the app recovering.
+    it('keeps a hung app degraded once its accept queue is full', async () => {
+      vi.useFakeTimers();
+      try {
+        vi.mocked(probeAppPort).mockResolvedValueOnce('silent').mockResolvedValue('unreachable');
+
+        await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+        await vi.advanceTimersByTimeAsync(61_000);
+        await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+        await vi.advanceTimersByTimeAsync(61_000);
+        const result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+
+        expect(probeAppPort).toHaveBeenCalledTimes(3);
+        expect(appsService.checkAppAvailability).not.toHaveBeenCalled();
+        expect(result).toMatchObject({
+          responsive: false,
+          degraded: true,
+          forceStopEligible: true,
+          reason: 'The app stopped taking connections on port 80 after leaving earlier ones unanswered.',
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not carry a silent verdict over to a new container address', async () => {
+      vi.useFakeTimers();
+      try {
+        vi.mocked(probeAppPort).mockResolvedValueOnce('silent').mockResolvedValue('unreachable');
+        appsService.checkAppAvailability.mockResolvedValue({ available: true, stage: 'ready' } as any);
+
+        await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+        dockerReadFacade.getServiceAddressOnHubNetwork.mockResolvedValue('10.200.0.9');
+        await vi.advanceTimersByTimeAsync(61_000);
+        const result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+
+        expect(appsService.checkAppAvailability).toHaveBeenCalledTimes(1);
+        expect(result.responsive).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('falls back to the route verdict when the container cannot be reached from here', async () => {
+      vi.mocked(probeAppPort).mockResolvedValue('unreachable');
+      appsService.checkAppAvailability.mockResolvedValue({ available: true, stage: 'ready' } as any);
+
+      const result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+
+      expect(appsService.checkAppAvailability).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ responsive: true, degraded: false });
+    });
+
+    it('falls back to the route verdict when the main container has no address on the app network', async () => {
+      dockerReadFacade.getServiceAddressOnHubNetwork.mockResolvedValue(null);
+      appsService.checkAppAvailability.mockResolvedValue({ available: true, stage: 'ready' } as any);
+
+      const result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+
+      expect(probeAppPort).not.toHaveBeenCalled();
+      expect(appsService.checkAppAvailability).toHaveBeenCalledTimes(1);
+      expect(result.responsive).toBe(true);
+    });
+
+    it('does not dial an app that is not busy', async () => {
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([{ ...busyContainer, cpuPercent: 4 }]);
+
+      const result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+
+      expect(probeAppPort).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ responsive: true, degraded: false });
+    });
+
+    it('keeps asking the public route of a Public Web app', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        appName: 'cpu-hog',
+        appStoreSlug: '_user',
+        status: 'running',
+        exposureMode: 'cloudflare',
+        config: {},
+        updatedAt: new Date().toISOString(),
+      } as any);
+      appsService.checkAppAvailability.mockResolvedValue({
+        available: false,
+        errorCode: 'CONNECTION_TIMEOUT',
+        detail: 'Connection timed out reaching the app.',
+      } as any);
+
+      const result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+
+      expect(probeAppPort).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ responsive: false, reason: 'Connection timed out reaching the app.' });
+    });
+  });
+
+  /*
+   * The probe verdict is cached for a minute and the CPU samples behind "sustained" are kept per app.
+   * Both describe one run of the app. A stop and start, a restart or an edit within that minute must
+   * not hand the new run the old one's verdict: a fixed app kept the banner and Force Stop, and a
+   * newly broken one kept looking healthy.
+   */
+  describe('a new run of the app', () => {
+    const container = (containerId: string) => ({
+      containerId,
+      name: 'cpu-hog__user-web-1',
+      state: 'running',
+      status: 'Up',
+      health: null,
+      exitCode: null,
+      cpuPercent: 200,
+      memoryUsageBytes: 100,
+      memoryLimitBytes: 1000,
+    });
+
+    function appRow(updatedAt: string, exposureMode = 'local') {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        appName: 'cpu-hog',
+        appStoreSlug: '_user',
+        status: 'running',
+        exposureMode,
+        config: {},
+        updatedAt,
+      } as any);
+    }
+
+    beforeEach(() => {
+      appFilesManager.getDockerComposeJson.mockResolvedValue({
+        path: '/apps/_user/cpu-hog/docker-compose.json',
+        content: { schemaVersion: 2, services: [{ name: 'web', image: 'alpine:3.20', isMain: true, internalPort: 80 }] },
+      });
+      dockerReadFacade.getServiceAddressOnHubNetwork.mockResolvedValue('10.200.0.7');
+      vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-10-21T13:00:00Z') });
+    });
+
+    /** Samples the app `times` times a minute apart, as the monitor's tick does; long enough for "sustained". */
+    async function sample(times: number) {
+      let result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      for (let i = 1; i < times; i++) {
+        vi.setSystemTime(Date.now() + 60_000);
+        result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      }
+      return result;
+    }
+
+    // Docker often hands a restarted container the address the old one had. A dial that can't open on
+    // the new run says nothing about the old run's full queue.
+    it('does not keep a full-queue verdict from the previous run at the same address', async () => {
+      appRow('2026-10-21 13:14:00');
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([container('hung-run')]);
+      vi.mocked(probeAppPort).mockResolvedValue('silent');
+      expect(await sample(3)).toMatchObject({ degraded: true });
+
+      appRow('2026-10-21 13:16:00');
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([container('new-run')]);
+      vi.mocked(probeAppPort).mockResolvedValue('unreachable');
+      appsService.checkAppAvailability.mockResolvedValue({ available: true, stage: 'ready' } as any);
+
+      expect(await sample(3)).toMatchObject({ responsive: true, degraded: false });
+    });
+
+    it('drops the degraded verdict when a fixed app is started again', async () => {
+      appRow('2026-10-21 13:14:00');
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([container('hung-run')]);
+      vi.mocked(probeAppPort).mockResolvedValue('silent');
+      expect(await sample(3)).toMatchObject({ degraded: true, forceStopEligible: true });
+
+      // Force stopped, edited and started again: the row moved and compose made a new container.
+      appRow('2026-10-21 13:14:40');
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([container('fixed-run')]);
+      vi.mocked(probeAppPort).mockResolvedValue('answered');
+
+      const result = await sample(1);
+
+      // Two dials over the hung run's two minutes, then one at once for the new run.
+      expect(probeAppPort).toHaveBeenCalledTimes(3);
+      expect(result).toMatchObject({ responsive: true, sustainedHighCpu: false, degraded: false, forceStopEligible: false, reason: null });
+    });
+
+    it('asks a restarted app again instead of keeping its healthy verdict', async () => {
+      appRow('2026-10-21 13:20:00');
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([container('same-container')]);
+      vi.mocked(probeAppPort).mockResolvedValue('answered');
+      expect(await sample(3)).toMatchObject({ responsive: true, degraded: false });
+
+      // A restart keeps the container but writes the row twice (restarting, then running).
+      appRow('2026-10-21 13:20:30');
+      vi.mocked(probeAppPort).mockResolvedValue('silent');
+
+      const first = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      expect(probeAppPort).toHaveBeenCalledTimes(3);
+      expect(first).toMatchObject({ responsive: false, sustainedHighCpu: false, degraded: false });
+
+      vi.setSystemTime(Date.now() + 60_000);
+      await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      vi.setSystemTime(Date.now() + 60_000);
+      const result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      expect(result).toMatchObject({ responsive: false, degraded: true, forceStopEligible: true });
+    });
+
+    it('asks the public route again after a Public Web app restarts', async () => {
+      appRow('2026-10-21 13:30:00', 'cloudflare');
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([container('public-run')]);
+      appsService.checkAppAvailability.mockResolvedValue({
+        available: false,
+        errorCode: 'CONNECTION_TIMEOUT',
+        detail: 'Connection timed out reaching the app.',
+      } as any);
+      expect(await sample(3)).toMatchObject({ degraded: true });
+
+      appRow('2026-10-21 13:30:45', 'cloudflare');
+      appsService.checkAppAvailability.mockResolvedValue({ available: true, stage: 'ready' } as any);
+
+      const result = await sample(1);
+
+      expect(appsService.checkAppAvailability).toHaveBeenCalledTimes(3);
+      expect(result).toMatchObject({ responsive: true, degraded: false, forceStopEligible: false });
+    });
+
+    it('keeps the cached verdict while the same run goes on', async () => {
+      appRow('2026-10-21 13:40:00');
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([container('steady-run')]);
+      vi.mocked(probeAppPort).mockResolvedValue('silent');
+
+      let result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      for (let i = 0; i < 4; i++) {
+        vi.setSystemTime(Date.now() + 15_000);
+        result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      }
+
+      // Five reads over a minute, as the app page polls: one dial.
+      expect(probeAppPort).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ responsive: false });
+    });
+
+    // A hung app's dial waits out its 5 s timeout. A restart inside those seconds must not open a second
+    // connection beside it: each one takes a slot in the app's accept queue.
+    it('lets a dial for the previous run finish before the new run dials', async () => {
+      appRow('2026-10-21 14:10:00');
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([container('old-run')]);
+      let endOldDial: (result: 'silent') => void = () => {};
+      vi.mocked(probeAppPort).mockReturnValueOnce(
+        new Promise((resolve) => {
+          endOldDial = resolve;
+        }),
+      );
+      const oldRun = service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      await vi.waitFor(() => expect(probeAppPort).toHaveBeenCalledTimes(1));
+
+      appRow('2026-10-21 14:10:03');
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([container('new-run')]);
+      vi.mocked(probeAppPort).mockResolvedValue('answered');
+      const newRun = service.getAppRuntimeHealth('cpu-hog:_user' as any);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(probeAppPort).toHaveBeenCalledTimes(1);
+
+      endOldDial('silent');
+      const [oldResult, newResult] = await Promise.all([oldRun, newRun]);
+
+      expect(probeAppPort).toHaveBeenCalledTimes(2);
+      expect(oldResult.responsive).toBe(false);
+      expect(newResult).toMatchObject({ responsive: true, reason: null });
+      expect(await service.getAppRuntimeHealth('cpu-hog:_user' as any)).toMatchObject({ responsive: true });
+      expect(probeAppPort).toHaveBeenCalledTimes(2);
+    });
+
+    // getAppRuntimeStats skips a container whose inspect timed out. One sample without the sidecar is
+    // the same run, so "sustained" keeps counting.
+    it('keeps the run when a container drops out of one sample', async () => {
+      appRow('2026-10-21 13:50:00');
+      const sidecar = { ...container('sidecar-run'), name: 'cpu-hog__user-cache-1' };
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([container('web-run'), sidecar]);
+      vi.mocked(probeAppPort).mockResolvedValue('silent');
+      await sample(2);
+
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValueOnce([container('web-run')]);
+      vi.setSystemTime(Date.now() + 60_000);
+      const result = await service.getAppRuntimeHealth('cpu-hog:_user' as any);
+
+      expect(result).toMatchObject({ sustainedHighCpu: true, degraded: true });
+    });
+  });
+
+  it('forgets what it held for an app that is no longer installed', async () => {
+    const hog = {
+      id: 1,
+      appName: 'cpu-hog',
+      appStoreSlug: '_user',
+      status: 'running',
+      exposureMode: 'local',
+      config: {},
+      updatedAt: '2026-10-21 14:00:00',
+    };
+    appsRepository.getApps.mockResolvedValue([hog] as any);
+    dockerReadFacade.getAppRuntimeStats.mockResolvedValue([
+      {
+        containerId: 'abc',
+        name: 'cpu-hog__user-web-1',
+        state: 'running',
+        status: 'Up',
+        health: null,
+        exitCode: null,
+        cpuPercent: 4,
+        memoryUsageBytes: 1,
+        memoryLimitBytes: 1,
+      },
+    ]);
+    await service.getRuntimeMonitorSnapshot();
+    expect((service as any).samples.has('cpu-hog:_user')).toBe(true);
+
+    appsRepository.getApps.mockResolvedValue([]);
+    await (service as any).collectRuntimeMonitorSnapshot(true);
+
+    expect((service as any).samples.has('cpu-hog:_user')).toBe(false);
+    expect((service as any).runs.has('cpu-hog:_user')).toBe(false);
+  });
+
   describe('readiness probe (hub_integration.readiness, CI-Hub#1556)', () => {
     const descriptor = { service: 'ci-hermes-gateway', port: 8642, path: '/health/detailed', bearer_env: 'APP_SEED' };
     const runningContainer = {

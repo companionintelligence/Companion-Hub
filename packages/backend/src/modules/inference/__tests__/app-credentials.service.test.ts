@@ -1,6 +1,6 @@
 import { Test, type TestingModule } from '@nestjs/testing';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { AppCredentialsService } from '../app-credentials.service';
 import { HardwareInspectorService } from '../hardware-inspector.service';
@@ -1299,6 +1299,71 @@ describe('AppCredentialsService', () => {
 
       cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-rotated' });
       expect(differingHandoutKeys(record as RecordedHandout, await restarted.previewCredentials('openclaw'))).toEqual(['CI_CLOUD_OPENAI_API_KEY']);
+    });
+
+    // A factory reset removes the apps. The records stayed and the next app to fetch wrote them back.
+    it('forgets every record (in memory and on disk) with the credentials it cached', async () => {
+      cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-before-the-reset' });
+      await service.getCredentials('openclaw');
+      expect((await service.getCredentials('hermes-agent')).env).toHaveProperty('CI_CLOUD_OPENAI_API_KEY', 'sk-before-the-reset');
+      await service.onApplicationShutdown();
+      expect(fs.existsSync(HANDOUT_RECORDS_PATH)).toBe(true);
+
+      await service.forgetHandouts();
+
+      expect(await service.lastHandout('openclaw')).toBeNull();
+      expect(fs.existsSync(HANDOUT_RECORDS_PATH)).toBe(false);
+
+      // Resolved again rather than served from the cache, which held the key from before the reset.
+      cloudFallback.toAppEnv.mockReturnValue({});
+      expect((await service.getCredentials('hermes-agent')).env).not.toHaveProperty('CI_CLOUD_OPENAI_API_KEY');
+      await service.onApplicationShutdown();
+      expect(Object.keys(JSON.parse(await fs.promises.readFile(HANDOUT_RECORDS_PATH, 'utf8')))).toEqual(['hermes-agent']);
+    });
+
+    // A fetch still resolving at the reset read the old Hub's keys. Cached, they went to the next app for 30 s.
+    it('resolves again a fetch that was under way when the handouts were forgotten', async () => {
+      let release: () => void = () => undefined;
+      hardwareInspector.getProfile.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = () => resolve(baseProfile);
+          }),
+      );
+      cloudFallback.toAppEnv.mockReturnValueOnce({ CI_CLOUD_OPENAI_API_KEY: 'sk-before-the-reset' }).mockReturnValue({});
+      const fetching = service.getCredentials('openclaw');
+
+      await service.forgetHandouts();
+      release();
+
+      expect((await fetching).env).not.toHaveProperty('CI_CLOUD_OPENAI_API_KEY');
+      expect((await service.getCredentials('openclaw')).env).not.toHaveProperty('CI_CLOUD_OPENAI_API_KEY');
+      expect(hardwareInspector.getProfile).toHaveBeenCalledTimes(2);
+    });
+
+    // The forget waited behind a write still reading the file, then cleared the record of an app that fetched after the reset.
+    it('keeps the record of an app that fetched after the forget while an older write was still queued', async () => {
+      let release: () => void = () => undefined;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const readFile = fs.promises.readFile;
+      const read = vi.spyOn(fs.promises, 'readFile').mockImplementationOnce(async (...args: Parameters<typeof readFile>) => {
+        await held;
+        return readFile(...args);
+      });
+
+      await service.getCredentials('openclaw');
+      await vi.waitFor(() => expect(read).toHaveBeenCalled());
+      const forgetting = service.forgetHandouts();
+      await service.getCredentials('hermes-agent');
+      release();
+      await forgetting;
+      await service.onApplicationShutdown();
+
+      expect(await service.lastHandout('openclaw')).toBeNull();
+      expect(await service.lastHandout('hermes-agent')).not.toBeNull();
+      expect(Object.keys(JSON.parse(await fs.promises.readFile(HANDOUT_RECORDS_PATH, 'utf8')))).toEqual(['hermes-agent']);
     });
   });
 

@@ -136,7 +136,7 @@
     icon.alt = '';
     const title = document.createElement('span');
     title.className = 'titlebar-title';
-    title.textContent = 'CI Hub';
+    title.textContent = 'Companion Hub';
     drag.append(icon, title);
 
     // The drag region above never waits on IPC: if the window commands are
@@ -447,22 +447,22 @@
     if (wslEngineDown) {
       return [
         "Docker in WSL isn't running",
-        'WSL stopped the Docker engine this Hub runs on. CI Hub starts it again by itself unless you stopped the Hub.',
+        'WSL stopped the Docker engine this Hub runs on. Companion Hub starts it again by itself unless you stopped the Hub.',
       ];
     }
     switch (access?.state) {
       case 'not_installed':
-        return ["Docker isn't installed", 'CI Hub runs on Docker. Install it and CI Hub will carry on from here.'];
+        return ["Docker isn't installed", 'Companion Hub runs on Docker. Install it and Companion Hub will carry on from here.'];
       case 'permission_denied':
-        return ["CI Hub can't use Docker", "Your account isn't allowed to use Docker. Add it to the docker group, then log out and back in."];
+        return ["Companion Hub can't use Docker", "Your account isn't allowed to use Docker. Add it to the docker group, then log out and back in."];
       case 'error':
-        return ["CI Hub can't reach Docker", access.detail || "Docker didn't answer. Check that it's running."];
+        return ["Companion Hub can't reach Docker", access.detail || "Docker didn't answer. Check that it's running."];
       default:
         return [
           "Docker isn't running",
           osType() === 'linux'
-            ? 'CI Hub runs on Docker. Start Docker and CI Hub will carry on from here.'
-            : 'CI Hub runs on Docker. Open Docker Desktop and CI Hub will carry on from here.',
+            ? 'Companion Hub runs on Docker. Start Docker and Companion Hub will carry on from here.'
+            : 'Companion Hub runs on Docker. Open Docker Desktop and Companion Hub will carry on from here.',
         ];
     }
   }
@@ -470,34 +470,34 @@
   function headFor(view, progress, core, elapsed) {
     switch (view) {
       case 'checking':
-        return ['Checking CI Hub', "Looking at Docker and the Hub's services…"];
+        return ['Checking Companion Hub', "Looking at Docker and the Hub's services…"];
       case 'docker':
         return dockerHead(progress.docker_access, wslEngineStopped(progress));
       case 'failed': {
         const failed = failedService(core);
-        if (!failed) return ["CI Hub couldn't start", "CI Hub won't retry on its own until you try again."];
+        if (!failed) return ["Companion Hub couldn't start", "Companion Hub won't retry on its own until you try again."];
         const phrase = SERVICE_PHRASE[failed.container] ?? `the ${failed.label.toLowerCase()}`;
-        return ["CI Hub couldn't start", `Docker couldn't start ${phrase}. CI Hub won't retry on its own.`];
+        return ["Companion Hub couldn't start", `Docker couldn't start ${phrase}. Companion Hub won't retry on its own.`];
       }
       case 'stopped': {
-        if (!progress.user_stopped) return ["CI Hub isn't running", 'Start it to use CI Hub and your apps.'];
+        if (!progress.user_stopped) return ["Companion Hub isn't running", 'Start it to use Companion Hub and your apps.'];
         const at = progress.user_stopped_at_ms;
         const when = at ? ` on ${dayOf(at)} at ${timeOf(at)}` : '';
-        return ['CI Hub is stopped', `You stopped it${when}. It stays stopped until you start it again.`];
+        return ['Companion Hub is stopped', `You stopped it${when}. It stays stopped until you start it again.`];
       }
       case 'stuck': {
         const service = stuckService(core);
         const waited = Math.max(1, Math.floor((service ? stuckSecs(service) : elapsed) / 60));
         return [
-          "CI Hub hasn't finished starting",
-          `${service ? service.label : 'CI Hub'} has been starting for ${minutes(waited)}. Restarting the Hub often clears this.`,
+          "Companion Hub hasn't finished starting",
+          `${service ? service.label : 'Companion Hub'} has been starting for ${minutes(waited)}. Restarting the Hub often clears this.`,
         ];
       }
       default:
         return [
-          'Starting CI Hub',
+          'Starting Companion Hub',
           downloading(progress)
-            ? 'Downloading what CI Hub needs. The first start after an install or update can take a few minutes.'
+            ? 'Downloading what Companion Hub needs. The first start after an install or update can take a few minutes.'
             : 'Services are coming online…',
         ];
     }
@@ -583,7 +583,7 @@
       return `Docker is installed. Restart to finish using it.${detail}`;
     }
     if (result?.state === 'completed') {
-      return result.detail || 'Docker is installed. CI Hub will carry on once Docker is running.';
+      return result.detail || 'Docker is installed. Companion Hub will carry on once Docker is running.';
     }
     return 'Service status shows here once Docker is running.';
   }
@@ -788,8 +788,8 @@
       if (!(await hubMayGoAway()) && (await isHubLive(baseUrl))) {
         // The in-app StartupScreen picks the story up from here.
         page.navigating = true;
-        el.title.textContent = 'CI Hub is ready';
-        el.status.textContent = 'Opening CI Hub…';
+        el.title.textContent = 'Companion Hub is ready';
+        el.status.textContent = 'Opening Companion Hub…';
         window.location.replace(`${baseUrl.replace(/\/$/, '')}/`);
         return;
       }

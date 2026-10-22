@@ -192,7 +192,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
     let old_content = std::fs::read_to_string(&env_path).unwrap_or_default();
     // Strip port vars from old content for comparison (port manager manages those)
     let env_changed = strip_port_vars(&old_content) != env_content;
-    std::fs::write(
+    write_private_file(
         &env_path,
         launch_env_file_content(&env_content, &old_content),
     )
@@ -204,7 +204,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
 
     let compat_env_path = compat_hub_env_path_for(&data_dir);
     if compat_env_path != env_path {
-        let _ = std::fs::write(&compat_env_path, &env_content);
+        let _ = write_private_file(&compat_env_path, &env_content);
     }
 
     log_lines.push(format!("  {} changed: {}", env_path.display(), env_changed));

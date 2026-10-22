@@ -62,7 +62,10 @@ export class BackupsService {
     const requestId = crypto.randomUUID();
     this.operationRegistry.register(appUrn, { requestId, command: 'backup', tier: 'non_cancellable' });
 
-    this.appEventsQueue.publish({ appUrn, command: 'backup', requestId, form: app.config }).then(async ({ success, message }) => {
+    this.appEventsQueue.publish({ appUrn, command: 'backup', requestId, form: app.config }).then(async (result) => {
+      const { success, message } = result;
+      const rolledBack = 'rolledBack' in result && result.rolledBack === true;
+
       if (success) {
         if (!this.operationRegistry.claimCompletion(appUrn, requestId)) {
           return;
@@ -78,10 +81,12 @@ export class BackupsService {
       } else {
         this.logger.error(`Failed to backup app ${appUrn}: ${message}`);
         if (this.operationRegistry.claimCompletion(appUrn, requestId)) {
-          await this.appsRepository.updateAppById(app.id, { status: 'stopped' });
-          // The DB row moves to 'stopped'; without this the page keeps showing "backing up" and the person is
-          // never told it failed (the client already has a toast for this event, but nothing sent it).
-          this.sseService.emit('app', { event: 'backup_error', appUrn, appStatus: 'stopped' });
+          // A backup refused before the stop left the app as it was. Any other failure stopped it.
+          const status = rolledBack ? appStatusBeforeUpdate : 'stopped';
+          await this.appsRepository.updateAppById(app.id, { status });
+          // Without this the page keeps showing "backing up" and the person is never told it failed
+          // (the client already has a toast for this event, but nothing sent it).
+          this.sseService.emit('app', { event: 'backup_error', appUrn, appStatus: status });
           this.agentNotifyService?.notify('backup_error', { appUrn }, 'high');
         }
       }

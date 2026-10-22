@@ -4,6 +4,7 @@ import { useUpdateChecker } from './hooks/use-update-checker';
 import { useDesktopRestartNotice } from './hooks/use-desktop-restart-notice';
 import { Suspense, useEffect, useRef, useState } from 'react';
 import { Toaster } from '@/components/ui/Toaster/Toaster';
+import { toasterPlacement } from '@/components/ui/Toaster/toaster-placement';
 import { Links, Meta, Navigate, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse, redirect, useLocation, useRevalidator } from 'react-router';
 import type { Route } from './+types/root';
 import { userContext } from './api-client';
@@ -28,6 +29,7 @@ import {
   usesCloudConnect,
 } from '@/lib/mobile-connection';
 import { shouldTimeBoxMobileLoads } from '@/lib/use-mobile-load-timeout';
+import { memoryConnectResultToastKey } from '@/modules/app/helpers/memory-provider';
 import { installMobileLoadWatchdog } from '@/lib/mobile-load-watchdog';
 import { installScrollbarHover } from '@/lib/scrollbar-hover';
 import type { RegistrationStatus } from './lib/registration-status';
@@ -467,7 +469,7 @@ async function runClientLoader(request: Request) {
   // dashboard can surface it as a toast; without this the query is dropped here.
   // Whitelisted values only, so arbitrary query junk is never reflected onward.
   const memoryConnect = url.searchParams.get('memoryConnect');
-  if (memoryConnect === 'error' || memoryConnect === 'unavailable') {
+  if (memoryConnectResultToastKey(memoryConnect)) {
     return redirect(`/home?memoryConnect=${memoryConnect}`);
   }
 
@@ -492,7 +494,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   // recovery strands the prerendered gate as a dead full-screen overlay. Stay
   // identical to the prerender for the first render, then flip in an effect.
   const [apiReady, setApiReady] = useState(false);
-  const [documentTitle, setDocumentTitle] = useState(() => (i18next.isInitialized ? i18next.t('APP_NAME') : 'CI Hub'));
+  const [documentTitle, setDocumentTitle] = useState(() => (i18next.isInitialized ? i18next.t('APP_NAME') : 'Companion Hub'));
   const [documentLang, setDocumentLang] = useState(() => i18next.resolvedLanguage || i18next.language || 'en');
   // The document is PRERENDERED in Node, where isMobileClient() is false, so the
   // emitted <html>/<body> carry no mobile classes. Rendering them on the very
@@ -545,7 +547,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const syncDocumentTitle = () => {
-      setDocumentTitle(i18next.isInitialized ? i18next.t('APP_NAME') : 'CI Hub');
+      setDocumentTitle(i18next.isInitialized ? i18next.t('APP_NAME') : 'Companion Hub');
       setDocumentLang(i18next.resolvedLanguage || i18next.language || 'en');
     };
 
@@ -731,7 +733,7 @@ export default function App({ loaderData }: Route.ComponentProps) {
   return (
     <Providers>
       <Outlet />
-      <Toaster />
+      <Toaster {...toasterPlacement(location.pathname)} />
     </Providers>
   );
 }

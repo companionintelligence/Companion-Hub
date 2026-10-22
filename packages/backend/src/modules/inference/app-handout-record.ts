@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from '@/common/constants';
+import { removeWithTemporary } from '@/common/helpers/file-helpers';
 
 /**
  * What an app was last actually handed over `bootstrap.env`, kept so the staleness check can tell
@@ -98,6 +99,11 @@ export async function readHandoutRecords(file = HANDOUT_RECORDS_PATH): Promise<R
   }
   if (!parsed || typeof parsed !== 'object') return {};
   return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, RecordedHandout] => isRecordedHandout(entry[1])));
+}
+
+/** Remove the persisted records with any write a crash left behind. */
+export function removeHandoutRecords(file = HANDOUT_RECORDS_PATH): Promise<void> {
+  return removeWithTemporary(file);
 }
 
 export async function writeHandoutRecords(records: Record<string, RecordedHandout>, file = HANDOUT_RECORDS_PATH): Promise<void> {

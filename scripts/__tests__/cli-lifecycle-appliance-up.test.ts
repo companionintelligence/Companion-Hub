@@ -71,6 +71,7 @@ const { initTraefik } = await import('../init-traefik.js');
 const { runScript } = await import('../lib/cli-proc.js');
 const { requireDockerForHubStack } = await import('../lib/docker-versions.js');
 const { runDockerComposeUpOnce } = await import('../compose-up.js');
+const { initHubDataDirs } = await import('../init-hub-data-dirs.js');
 
 describe('cihub up on an appliance', () => {
   beforeEach(() => {
@@ -121,6 +122,12 @@ describe('cihub up on an appliance', () => {
     // Compose passes both to the daemon as bind-mount sources, so it gets the engine's form.
     const composeOptions = vi.mocked(runDockerComposeUpOnce).mock.calls[0]?.[1];
     expect(composeOptions?.envOverrides).toMatchObject({ ENV_FILE: enginePaths.envFile, ROOT_FOLDER_HOST: enginePaths.dataDir });
+  });
+
+  it("tells init-hub-data-dirs the env file is the desktop app's, so it keeps the app's keys", async () => {
+    // `cihub restart prod` took the app's CI_HUB_CONTAINER_UID/GID out of .env.dev and added ENV_FILE.
+    await startHub('detached', 'prod');
+    expect(initHubDataDirs).toHaveBeenCalledWith({ appliance: true });
   });
 
   it('pulls a floating Hub image before compose, so `pull_policy: if_not_present` cannot keep a stale :latest', async () => {

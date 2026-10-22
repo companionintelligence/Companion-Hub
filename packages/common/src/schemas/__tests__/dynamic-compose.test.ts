@@ -348,6 +348,65 @@ schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
           expect(result.success).toBe(false);
         });
 
+        // The Hub finds an app's containers by these labels. One that names another app's URN made the
+        // Hub take this container for that app's.
+        it.each(['ci-hub.appurn', 'ci-hub.managed', 'ci-os-hub.appurn', 'CI-Hub.appurn', 'ci-hub.anything'])(
+          'should reject the reserved label %s and name it',
+          (label) => {
+            const service = { image: 'nginx:latest', name: 'web', extraLabels: { [label]: 'n8n:ci-marketplace', 'my.label': 'kept' } };
+
+            const result = serviceSchema.safeParse(service);
+            expect(result.success).toBe(false);
+            expect(result.error?.issues).toEqual([
+              expect.objectContaining({ message: 'CUSTOM_APP_ERROR_LABEL_RESERVED', path: ['extraLabels', label], params: { label } }),
+            ]);
+          },
+        );
+
+        it('should accept labels outside the Hub namespace', () => {
+          const service = {
+            image: 'nginx:latest',
+            name: 'web',
+            extraLabels: { 'traefik.http.routers.web.middlewares': 'auth', 'com.example.ci-hub.appurn': 'x', 'ci-hubx.appurn': 'y' },
+          };
+
+          expect(serviceSchema.safeParse(service).success).toBe(true);
+        });
+
+        it('should reject a reserved label in an architecture override', () => {
+          const compose = {
+            schemaVersion: 2,
+            services: [{ image: 'nginx:latest', name: 'web', isMain: true }],
+            overrides: [{ architecture: 'arm64', services: [{ name: 'web', extraLabels: { 'ci-hub.appurn': 'n8n:ci-marketplace' } }] }],
+          };
+
+          const result = dynamicComposeSchema.safeParse(compose);
+          expect(result.success).toBe(false);
+          expect(result.error?.issues).toContainEqual(
+            expect.objectContaining({
+              message: 'CUSTOM_APP_ERROR_LABEL_RESERVED',
+              path: ['overrides', 0, 'services', 0, 'extraLabels', 'ci-hub.appurn'],
+            }),
+          );
+        });
+
+        // The editor names the service and the override from this path. It was the compose's root.
+        it('should point a refused override at the override service', () => {
+          const compose = {
+            schemaVersion: 2,
+            services: [{ image: 'nginx:latest', name: 'web', isMain: true }],
+            overrides: [
+              { architecture: 'amd64', services: [{ name: 'web', image: 'nginx:1' }] },
+              { architecture: 'arm64', services: [{ name: 'web', privileged: true }] },
+            ],
+          };
+
+          const result = dynamicComposeSchema.safeParse(compose);
+          expect(result.error?.issues).toEqual([
+            expect.objectContaining({ message: 'CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED', path: ['overrides', 1, 'services', 0, 'privileged'] }),
+          ]);
+        });
+
         it('should reject docker.sock host mounts', () => {
           const service = {
             image: 'nginx:latest',

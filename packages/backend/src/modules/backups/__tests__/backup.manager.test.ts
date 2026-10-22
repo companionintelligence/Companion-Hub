@@ -9,6 +9,7 @@ import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import type { AppVolumeArchiveService } from '@/modules/docker/app-volume-archive.service';
+import type { DockerService } from '@/modules/docker/docker.service';
 import { BackupManager } from '../backup.manager';
 
 describe('BackupManager.enforceRetentionAllApps', () => {
@@ -65,6 +66,7 @@ describe('BackupManager.enforceRetentionAllApps', () => {
       filesystem,
       mock<AppFilesManager>(),
       mock<AppVolumeArchiveService>(),
+      mock<DockerService>(),
     );
     manager.onApplicationShutdown(); // stop the constructor's weekly interval
   });
@@ -124,6 +126,7 @@ describe('BackupManager.getAppBackupsHostDir', () => {
       mock<FilesystemService>(),
       mock<AppFilesManager>(),
       mock<AppVolumeArchiveService>(),
+      mock<DockerService>(),
     );
     manager.onApplicationShutdown();
     return manager;
@@ -167,6 +170,7 @@ describe('BackupManager.uploadBackup', () => {
       filesystem,
       mock<AppFilesManager>(),
       mock<AppVolumeArchiveService>(),
+      mock<DockerService>(),
     );
     manager.onApplicationShutdown();
   });
@@ -307,7 +311,7 @@ describe('BackupManager: named Docker volumes', () => {
       engine.set(target.name, { key: target.key, files: JSON.parse(await fs.promises.readFile(file, 'utf8')) });
     });
 
-    manager = new BackupManager(archive, mock<LoggerService>(), config, filesystem, appFilesManager, appVolumes);
+    manager = new BackupManager(archive, mock<LoggerService>(), config, filesystem, appFilesManager, appVolumes, mock<DockerService>());
     manager.onApplicationShutdown();
   });
 
