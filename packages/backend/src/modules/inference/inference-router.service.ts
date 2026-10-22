@@ -266,7 +266,7 @@ export class InferenceRouterService implements OnApplicationBootstrap {
    */
   private async setEngineKeepAlive(catalogId: string, keep: 'pinned' | 'default'): Promise<'set' | 'not-resident' | 'unreachable' | 'none'> {
     const target = this.loadTarget(catalogId);
-    const backend = target ? this.backends.get(target.backendType) : undefined;
+    const backend = target ? this.backends.tryGet(target.backendType) : undefined;
     if (!target || !backend?.setResidentKeepAlive) {
       return 'none';
     }

@@ -175,9 +175,13 @@ export class OllamaBackend implements InferenceBackend {
     }
   }
 
-  /** Ollama reports fully-qualified tags (`gemma3:1b`); callers may hold either that or the bare name. */
+  /**
+   * Ollama reports fully-qualified tags (`gemma3:1b`); callers may hold either that or the bare name,
+   * which means `:latest`. Not a prefix match: `qwen3` is not `qwen3:8b`, and a pin that took one for
+   * the other recorded a model Ollama did not hold (see {@link setResidentKeepAlive}).
+   */
   private matchesModel(reportedName: string, modelId: string): boolean {
-    return reportedName === modelId || reportedName.startsWith(modelId);
+    return sameModelId(reportedName, modelId);
   }
 
   /**

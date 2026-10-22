@@ -511,6 +511,16 @@ describe('OllamaBackend', () => {
       expect(loaded).toBe(true);
     });
 
+    it('matches the implicit :latest tag, but not another tag that shares a prefix', async () => {
+      (axios.get as any) = vi.fn().mockResolvedValue({
+        data: { models: [{ name: 'qwen3:8b' }, { name: 'nomic-embed-text:latest' }] },
+      });
+
+      expect(await backend.isModelLoaded('nomic-embed-text')).toBe(true);
+      expect(await backend.isModelLoaded('qwen3')).toBe(false);
+      expect(await backend.isModelLoaded('qwen3:8b')).toBe(true);
+    });
+
     it('should invalidate the cached URL when isModelLoaded fails', async () => {
       const state = inspectable();
       state.resolvedUrl = 'http://cached:11434';
