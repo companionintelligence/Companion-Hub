@@ -240,6 +240,64 @@ describe('AppCredentialsService', () => {
     await service.onApplicationShutdown();
   });
 
+  /*
+   * Until someone chooses a model, an agent runs on the model the setup wizard marks Default. A Hub
+   * restored after pairing skips the wizard, and OpenClaw was handed the top of the recommendation list,
+   * MiniMax M2 230B (61.6 GB), where the wizard marks Gemma 4 E4B.
+   */
+  describe('with no model chosen', () => {
+    const minimax = makeCapableLlm('minimax-m2-community-230b', 'gabegoodhart/minimax-m2:230b', {
+      tools: true,
+      contextWindow: 196608,
+      intelligenceIndex: 18.6,
+    });
+    const qwen = makeCapableLlm('qwen3-6-35b', 'qwen3.6:35b', { tools: true, contextWindow: 262144, intelligenceIndex: 18.2 });
+    const gemmaE2b = makeCapableLlm('gemma4-e2b', 'gemma4:e2b', { tools: true, contextWindow: 131072 });
+    const gemmaE4b = makeCapableLlm('gemma4-e4b', 'gemma4:e4b', { tools: true, contextWindow: 131072 });
+
+    beforeEach(() => {
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([minimax, qwen]);
+      // Catalog order, which is the order the wizard ticks what the engine has.
+      modelRegistry.getModelsForHardware.mockReturnValue([gemmaE2b, gemmaE4b, qwen, minimax]);
+      modelRegistry.getCuratedModel.mockImplementation((id) => [minimax, qwen, gemmaE2b, gemmaE4b].find((model) => model.id === id));
+      service.invalidateCache();
+    });
+
+    it("hands an agent the setup wizard's default instead of the top recommended model", async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['gabegoodhart/minimax-m2:230b', 'qwen3.6:35b', 'gemma4:e4b'],
+      });
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.env.DEFAULT_MODEL).toBe('gemma4:e4b');
+      expect(config.prePull.find((d) => d.kind === 'chat')).toMatchObject({ catalogId: 'gemma4-e4b', pull: false });
+      expect(logger.info).toHaveBeenCalledWith(
+        "[AppCredentials] openclaw: no chat model chosen yet; handing out the setup wizard's default gemma4:e4b",
+      );
+    });
+
+    it('keeps the recommendation list when the engine has none of the models the wizard could mark', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gabegoodhart/minimax-m2:230b'] });
+      modelRegistry.getModelsForHardware.mockReturnValue([gemmaE2b, gemmaE4b]);
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.env.DEFAULT_MODEL).toBe('gabegoodhart/minimax-m2:230b');
+    });
+
+    it('hands out the model someone chose', async () => {
+      configurationService.getInferencePreferences.mockReturnValue({ preferredBackend: null, preferredModel: 'qwen3-6-35b' } as never);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['qwen3.6:35b', 'gemma4:e4b'] });
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.env.DEFAULT_MODEL).toBe('qwen3.6:35b');
+    });
+  });
+
   describe('getCredentials — local (direct Ollama) path', () => {
     it('throws NotFoundException for unknown slugs', async () => {
       await expect(service.getCredentials('unknown-app')).rejects.toThrow(NotFoundException);

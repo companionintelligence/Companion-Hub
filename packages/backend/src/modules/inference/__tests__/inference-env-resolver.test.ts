@@ -1113,6 +1113,83 @@ describe('InferenceEnvResolver', () => {
     });
   });
 
+  /*
+   * Until someone chooses a model, apps run on the model the setup wizard marks Default. A Hub restored
+   * after pairing skips the wizard, and Memory and OpenClaw ran on the top of the recommendation list,
+   * MiniMax M2 230B (61.6 GB), where the wizard marks Gemma 4 E4B.
+   */
+  describe('with no model chosen', () => {
+    const minimax = makeCapableLlm('minimax-m2-community-230b', 'gabegoodhart/minimax-m2:230b', { tools: true, contextWindow: 196608 });
+    const qwen = makeCapableLlm('qwen3-6-35b', 'qwen3.6:35b', { tools: true, contextWindow: 262144 });
+    const gemmaE2b = makeCapableLlm('gemma4-e2b', 'gemma4:e2b', { tools: true, contextWindow: 131072 });
+    const gemmaE4b = makeCapableLlm('gemma4-e4b', 'gemma4:e4b', { tools: true, contextWindow: 131072 });
+    const unifiedAmd: HardwareProfile = {
+      gpu: { available: true, vendor: 'amd', model: 'Radeon 8060S', vramMb: 0, unifiedMemory: true, driverVersion: '', runtimeAvailable: true },
+      npu: { available: false, model: '' },
+      ram: { totalMb: 125747, availableMb: 110000 },
+      cpu: { arch: 'x86_64', cores: 32, model: 'AMD Ryzen AI Max+ 395' },
+      effectiveInferenceMemoryMb: 88000,
+      tier: 'high',
+    };
+
+    beforeEach(() => {
+      hardwareInspector.getProfile.mockResolvedValue(unifiedAmd);
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([minimax, qwen]);
+      // Catalog order, which is the order the wizard ticks what the engine has.
+      modelRegistry.getModelsForHardware.mockReturnValue([gemmaE2b, gemmaE4b, qwen, minimax]);
+      ollamaBackend.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['gabegoodhart/minimax-m2:230b', 'qwen3.6:35b', 'gemma4:e4b'],
+      });
+    });
+
+    it("hands out the setup wizard's default instead of the top recommended model", async () => {
+      const env = await service.resolve({ appSlug: 'ci-memory' });
+
+      expect(env.CI_CHAT_MODEL).toBe('gemma4:e4b');
+      expect(modelRegistry.getModelsForHardware).toHaveBeenCalledWith('high', unifiedAmd, { includeRemoteHostBackends: true });
+      expect(logger.info).toHaveBeenCalledWith(
+        "[InferenceEnvResolver] ci-memory: no chat model chosen yet; handing out the setup wizard's default gemma4:e4b",
+      );
+    });
+
+    it('passes over a default the app cannot use for the next model in the same order', async () => {
+      modelRegistry.getModelsForHardware.mockReturnValue([
+        makeCapableLlm('gemma4-e4b', 'gemma4:e4b', { tools: false, contextWindow: 131072 }),
+        qwen,
+        minimax,
+      ]);
+
+      const env = await service.resolve({ appSlug: 'openclaw' });
+
+      expect(env.CI_CHAT_MODEL).toBe('qwen3.6:35b');
+    });
+
+    it('keeps the recommendation list when the engine has none of the models the wizard could mark', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gabegoodhart/minimax-m2:230b'] });
+      modelRegistry.getModelsForHardware.mockReturnValue([gemmaE2b, gemmaE4b]);
+
+      const env = await service.resolve({ appSlug: 'ci-memory' });
+
+      expect(env.CI_CHAT_MODEL).toBe('gabegoodhart/minimax-m2:230b');
+    });
+
+    it('hands out the model someone chose', async () => {
+      config.getInferencePreferences.mockReturnValue({
+        preferredBackend: null,
+        preferredModel: 'qwen3-6-35b',
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      });
+      modelRegistry.getCuratedModel.mockImplementation((id) => (id === 'qwen3-6-35b' ? qwen : undefined));
+
+      const env = await service.resolve({ appSlug: 'ci-memory' });
+
+      expect(env.CI_CHAT_MODEL).toBe('qwen3.6:35b');
+    });
+  });
+
   describe('app requirements without pooling', () => {
     it('skips an installed model the app cannot use and emits the next suitable one', async () => {
       const gemma1b = makeCapableLlm('gemma3-1b', 'gemma3:1b', { tools: false, contextWindow: 32768 });

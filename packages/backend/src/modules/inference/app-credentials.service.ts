@@ -27,6 +27,7 @@ import {
 } from './app-model-handout';
 import { handoutRecord, readHandoutRecords, writeHandoutRecords, type RecordedHandout } from './app-handout-record';
 import { catalogEmbedsOn, embedderEngineId, embeddingBackendFor, pickEmbeddingModel } from './embedder-handout';
+import { installedDefaultChatModel, onboardingTier } from './default-chat-model-handout';
 
 // Only Hub-managed sibling apps use the bootstrap credentials endpoints.
 // Standalone services (for example companion-memory / CI-Server) receive
@@ -291,8 +292,27 @@ export class AppCredentialsService implements OnApplicationShutdown {
           });
     const ollamaEndpointReady = !!(ollamaHealth.running && ollamaHealth.healthy);
 
-    const candidates = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile).filter((m) => m.backend === backendType);
     const preferredModelId = preferences.preferredModel;
+    const recommended = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile).filter((m) => m.backend === backendType);
+    // With no model chosen, the setup wizard's Default leads while the engine has it, as on the app.env
+    // path (`InferenceEnvResolver`): the top of the recommendation list is a model nobody was offered.
+    const wizardDefault = preferredModelId
+      ? undefined
+      : installedDefaultChatModel({
+          available:
+            this.modelRegistry.getModelsForHardware(
+              onboardingTier(profile, (gpu, ram) => this.hardwareInspector.computeTier(gpu, ram)),
+              profile,
+              { includeRemoteHostBackends: true },
+            ) ?? [],
+          backend: backendType,
+          isInstalled: (model) => this.isCuratedModelAvailable(model, endpointHealth.modelsLoaded, backendType, endpointReady),
+          accept: (model) => checkModelRequirements(model, requirements).verdict !== 'fails',
+        });
+    if (wizardDefault) {
+      this.logger.info(`[AppCredentials] ${slug}: no chat model chosen yet; handing out the setup wizard's default ${wizardDefault.backendModelId}`);
+    }
+    const candidates = wizardDefault ? [wizardDefault, ...recommended.filter((m) => m.id !== wizardDefault.id)] : recommended;
     const recommendedLlm = this.resolveRecommendedLlm(candidates, preferredModelId, profile.tier, profile, slug, requirements);
     // The same engine the app.env resolver picks (`embeddingBackendFor`), so an app is never handed one
     // embedder here and another there: this path used to hand Ollama's `nomic-embed-text` to a

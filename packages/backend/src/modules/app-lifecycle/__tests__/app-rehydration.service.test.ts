@@ -398,7 +398,7 @@ describe('AppRehydrationService restore status', () => {
     });
   });
 
-  it('says whether a chat model has been chosen, since restored AI apps use the recommended one until then', async () => {
+  it("says whether a chat model has been chosen, since restored AI apps use the setup wizard's default until then", async () => {
     preferredModel = 'gemma3-270m';
 
     const status = await service.getRestoreStatus(async () => true);

@@ -83,7 +83,7 @@ export interface RestoreSummary {
   completedAt: string;
   restored: RestoreSummaryApp[];
   notRestored: RestoreSummaryFailure[];
-  /** Whether anyone has chosen a chat model on this Hub. Until then AI apps get the one it recommends. */
+  /** Whether anyone has chosen a chat model on this Hub. Until then AI apps get the setup wizard's Default. */
   aiModelChosen: boolean;
 }
 
