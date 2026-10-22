@@ -2445,6 +2445,7 @@
   "MEMORY_CONNECT_OFFLINE_DESC": "CI Memory is not running.",
   "MEMORY_CONNECT_UNAVAILABLE_TOAST": "CI Memory isn't ready to connect yet. Please try again once it's running.",
   "MEMORY_CONNECT_ERROR_TOAST": "Couldn't connect to CI Memory. Please try again.",
+  "MEMORY_CONNECT_DENIED_TOAST": "Connecting an app to CI Memory restarts it. You don't have permission to restart this app.",
   "MEMORY_CONNECT_PREVIOUS_REMOVED_TOAST": "Couldn't connect to CI Memory. The connection another person had made was already removed, so the app has no Memory connection now. Try connecting again.",
   "MEMORY_CONNECT_DISCONNECTED_TOAST": "Disconnected from CI Memory.",
   "MEMORY_CONNECT_DISCONNECT_ERROR": "Could not disconnect. Please try again.",

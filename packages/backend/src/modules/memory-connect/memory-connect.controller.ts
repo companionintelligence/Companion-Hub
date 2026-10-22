@@ -1,7 +1,9 @@
-import { BadRequestException, Body, Controller, Get, Param, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, HttpException, HttpStatus, Param, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import type { AppUrn } from '@ci-hub/common/types';
+import { castAppUrn } from '@/common/helpers/app-helpers';
 import { LoggerService } from '@/core/logger/logger.service';
+import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AuthGuard } from '../auth/auth.guard';
 import {
@@ -29,7 +31,8 @@ import { MemoryConnectService } from './memory-connect.service';
  *   POST /api/memory-connect/apps/:urn/skip   → wrapper: mark skipped
  *   POST /api/memory-connect/apps/:urn/disconnect → browser: revoke + clear + restart
  *
- * Browser routes are session-guarded (the user is signed into the Hub). The
+ * Browser routes are session-guarded (the user is signed into the Hub). `start` and
+ * `disconnect` restart the app, so they also take its `restart` grant. The
  * wrapper-facing state/skip routes are authorized by {@link ManagedAppKeyGuard}
  * (the app presents its own managed key, bound to its URN) — that is the real
  * boundary. {@link InternalNetworkGuard} is layered on as best-effort defense in
@@ -45,6 +48,7 @@ export class MemoryConnectController {
     private readonly users: UserRepository,
     private readonly appFiles: AppFilesManager,
     private readonly envUtils: EnvUtils,
+    private readonly whois: MarketplaceWhoIsService,
   ) {}
 
   @Get('start')
@@ -62,6 +66,16 @@ export class MemoryConnectController {
 
     if (!app) {
       throw new BadRequestException('app is required');
+    }
+
+    // Connecting restarts the app, so it takes the grant the restart route asks for. Refused like
+    // the route's other refusals: a top-level navigation lands on the Hub with a marker, never on
+    // a raw 403 body.
+    if (!(await this.mayRestart(req, this.parseAppUrn(app)))) {
+      this.logger.warn(`[MemoryConnect] connect refused for ${app}: no restart grant`);
+      res.redirect('/?memoryConnect=denied');
+
+      return;
     }
 
     // `next` is validated server-side in startConnect (origin-allowlisted against
@@ -188,9 +202,36 @@ export class MemoryConnectController {
   @UseGuards(AuthGuard)
   @Post('apps/:urn/disconnect')
   async disconnect(@Param('urn') urn: string, @Req() req: Request, @Body() _body: unknown) {
-    await this.service.disconnect(this.decodeUrn(urn), this.currentUserId(req));
+    const appUrn = this.decodeUrn(urn);
+    // Disconnecting restarts the app too. Who may disconnect whose connection is decided after this.
+    await this.whois.assertSessionAction(req, this.parseAppUrn(appUrn), 'restart');
+    await this.service.disconnect(appUrn, this.currentUserId(req));
 
     return { ok: true };
+  }
+
+  /** A malformed id is the caller's mistake (400), not a server error. */
+  private parseAppUrn(raw: string): AppUrn {
+    try {
+      return castAppUrn(raw);
+    } catch {
+      throw new BadRequestException('app is not a valid app id');
+    }
+  }
+
+  /** Whether this person holds the app's `restart` grant. Only a refusal is false; anything else throws. */
+  private async mayRestart(req: Request, appUrn: AppUrn): Promise<boolean> {
+    try {
+      await this.whois.assertSessionAction(req, appUrn, 'restart');
+
+      return true;
+    } catch (err) {
+      if (err instanceof HttpException && err.getStatus() === HttpStatus.FORBIDDEN) {
+        return false;
+      }
+
+      throw err;
+    }
   }
 
   /**

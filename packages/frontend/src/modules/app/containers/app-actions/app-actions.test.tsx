@@ -720,6 +720,21 @@ describe('AppActions', () => {
       }
     });
 
+    // Connecting or disconnecting Companion Memory restarts the app, so it takes the restart grant.
+    it('shows no Memory button to a person who may not restart the app', () => {
+      Object.assign(hoisted.memory, { applicable: true, memoryInstalled: true, memoryReady: true, connectable: true });
+      renderCustom('running', ['view']);
+
+      expect(screen.queryByTestId('action-memory_connect_action_connect_memory')).not.toBeInTheDocument();
+    });
+
+    it('shows the Memory buttons to a person who may restart the app', () => {
+      Object.assign(hoisted.memory, { applicable: true, memoryInstalled: true, memoryReady: true, connectable: true });
+      renderCustom('running', ['view', 'restart']);
+
+      expect(screen.getByTestId('action-memory_connect_action_connect_memory')).toBeInTheDocument();
+    });
+
     it('offers an account with no linked Portal identity start, stop and restart, and no change', () => {
       renderCustom('running', ['view', 'start', 'stop', 'restart']);
 

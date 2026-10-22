@@ -6,6 +6,7 @@ describe('memoryConnectResultToastKey', () => {
     expect(memoryConnectResultToastKey('error')).toBe('MEMORY_CONNECT_ERROR_TOAST');
     expect(memoryConnectResultToastKey('unavailable')).toBe('MEMORY_CONNECT_UNAVAILABLE_TOAST');
     expect(memoryConnectResultToastKey('previous_removed')).toBe('MEMORY_CONNECT_PREVIOUS_REMOVED_TOAST');
+    expect(memoryConnectResultToastKey('denied')).toBe('MEMORY_CONNECT_DENIED_TOAST');
   });
 
   // A link can carry any marker. Object's own properties must not read as a toast.

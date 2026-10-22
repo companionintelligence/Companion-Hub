@@ -29,6 +29,8 @@ const MEMORY_CONNECT_RESULT_TOASTS: Readonly<Record<string, string>> = {
   unavailable: 'MEMORY_CONNECT_UNAVAILABLE_TOAST',
   // The connect failed after another person's connection had been revoked for it.
   previous_removed: 'MEMORY_CONNECT_PREVIOUS_REMOVED_TOAST',
+  // Connecting restarts the app, and this person may not restart it.
+  denied: 'MEMORY_CONNECT_DENIED_TOAST',
 };
 
 /** The toast key for a `?memoryConnect=` marker, or null for one the Hub never sends. */
