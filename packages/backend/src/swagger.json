@@ -3128,6 +3128,48 @@
         ]
       }
     },
+    "/api/inference/v1/images/generations": {
+      "post": {
+        "operationId": "v1ImagesGenerations",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/media/acquire": {
+      "post": {
+        "operationId": "mediaAcquire",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/media/release": {
+      "post": {
+        "operationId": "mediaRelease",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
     "/api/inference/health": {
       "get": {
         "operationId": "health",
@@ -3206,7 +3248,8 @@
                 "ollama",
                 "vllm",
                 "lemonade",
-                "omlx"
+                "omlx",
+                "localai"
               ]
             }
           }
@@ -3564,7 +3607,8 @@
                 "ollama",
                 "vllm",
                 "lemonade",
-                "omlx"
+                "omlx",
+                "localai"
               ]
             }
           },
@@ -7234,7 +7278,8 @@
                   "ollama",
                   "vllm",
                   "lemonade",
-                  "omlx"
+                  "omlx",
+                  "localai"
                 ]
               },
               "inferenceModel": {
@@ -7749,7 +7794,8 @@
               "ollama",
               "vllm",
               "lemonade",
-              "omlx"
+              "omlx",
+              "localai"
             ]
           },
           "inferenceModel": {
@@ -13483,7 +13529,8 @@
               "ollama",
               "vllm",
               "lemonade",
-              "omlx"
+              "omlx",
+              "localai"
             ]
           },
           "model": {
@@ -13584,7 +13631,8 @@
               "ollama",
               "vllm",
               "lemonade",
-              "omlx"
+              "omlx",
+              "localai"
             ]
           }
         },
@@ -13605,7 +13653,8 @@
               "ollama",
               "vllm",
               "lemonade",
-              "omlx"
+              "omlx",
+              "localai"
             ]
           }
         },
@@ -16982,7 +17031,8 @@
               "ollama",
               "vllm",
               "lemonade",
-              "omlx"
+              "omlx",
+              "localai"
             ]
           },
           "vllmUrl": {
@@ -17013,7 +17063,8 @@
               "ollama",
               "vllm",
               "lemonade",
-              "omlx"
+              "omlx",
+              "localai"
             ]
           }
         },

@@ -73,7 +73,7 @@ export type AppContextDto = {
         ciHubOrganizationLabel?: string;
         ciHubDeviceSlug?: string;
         ciHubHubSubdomain?: string;
-        inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
+        inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx' | 'localai';
         inferenceModel?: string;
         inferenceEmbeddingModel?: string;
         inferenceVisionModel?: string;
@@ -180,7 +180,7 @@ export type UserSettingsBody = {
     ciHubOrganizationLabel?: string;
     ciHubDeviceSlug?: string;
     ciHubHubSubdomain?: string;
-    inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
+    inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx' | 'localai';
     inferenceModel?: string;
     inferenceEmbeddingModel?: string;
     inferenceVisionModel?: string;
@@ -1449,7 +1449,7 @@ export type UpdateAppStoreDto = {
 };
 
 export type UpdateInferencePreferencesBody = {
-    backend: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
+    backend: 'ollama' | 'vllm' | 'lemonade' | 'omlx' | 'localai';
     model?: string;
     embeddingModel?: string;
     visionModel?: string;
@@ -1470,12 +1470,12 @@ export type UpdateRocmInstallStateBody = {
 
 export type LoadModelBody = {
     modelId: string;
-    backend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
+    backend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx' | 'localai';
 };
 
 export type UnloadModelBody = {
     modelId: string;
-    backend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
+    backend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx' | 'localai';
 };
 
 export type UpdateHubPoolPreferencesBody = {
@@ -2218,7 +2218,7 @@ export type StreamHubLogsQueryDto = {
 };
 
 export type OnboardingProfileQueryDto = {
-    backend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
+    backend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx' | 'localai';
     vllmUrl?: string;
     omlxUrl?: string;
     decodeEndpoint?: string;
@@ -2226,7 +2226,7 @@ export type OnboardingProfileQueryDto = {
 };
 
 export type RuntimeModelsQueryDto = {
-    backend: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
+    backend: 'ollama' | 'vllm' | 'lemonade' | 'omlx' | 'localai';
 };
 
 export type RoutingLogQueryDto = {
@@ -4216,6 +4216,39 @@ export type V1AudioTranscriptionsResponses = {
     200: unknown;
 };
 
+export type V1ImagesGenerationsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/v1/images/generations';
+};
+
+export type V1ImagesGenerationsResponses = {
+    200: unknown;
+};
+
+export type MediaAcquireData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/media/acquire';
+};
+
+export type MediaAcquireResponses = {
+    200: unknown;
+};
+
+export type MediaReleaseData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/media/release';
+};
+
+export type MediaReleaseResponses = {
+    200: unknown;
+};
+
 export type HealthData = {
     body?: never;
     path?: never;
@@ -4264,7 +4297,7 @@ export type GetRuntimeModelsData = {
     body?: never;
     path?: never;
     query: {
-        backend: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
+        backend: 'ollama' | 'vllm' | 'lemonade' | 'omlx' | 'localai';
     };
     url: '/api/inference/models/runtime';
 };
@@ -4487,7 +4520,7 @@ export type GetOnboardingProfileData = {
     };
     path?: never;
     query?: {
-        backend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
+        backend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx' | 'localai';
         vllmUrl?: string;
         omlxUrl?: string;
         decodeEndpoint?: string;

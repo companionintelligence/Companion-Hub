@@ -17,6 +17,7 @@ const BACKEND_HINT_KEYS: Record<InferenceBackendType, string> = {
   vllm: ONBOARDING_BACKEND_VLLM_HINT,
   lemonade: ONBOARDING_BACKEND_LEMONADE_HINT,
   omlx: ONBOARDING_BACKEND_OMLX_HINT,
+  localai: ONBOARDING_BACKEND_OLLAMA_HINT,
 };
 
 const BACKEND_INFO: Record<InferenceBackendType, { label: string; descriptionKey?: string }> = {
@@ -24,6 +25,7 @@ const BACKEND_INFO: Record<InferenceBackendType, { label: string; descriptionKey
   vllm: { label: BACKEND_DISPLAY_NAMES.vllm, descriptionKey: 'ONBOARDING_BACKEND_VLLM_DESC' },
   lemonade: { label: BACKEND_DISPLAY_NAMES.lemonade, descriptionKey: 'ONBOARDING_BACKEND_LEMONADE_DESC' },
   omlx: { label: BACKEND_DISPLAY_NAMES.omlx, descriptionKey: 'ONBOARDING_BACKEND_OMLX_DESC' },
+  localai: { label: BACKEND_DISPLAY_NAMES.localai, descriptionKey: 'ONBOARDING_BACKEND_OLLAMA_DESC' },
 };
 
 const BACKEND_ORDER: InferenceBackendType[] = ['ollama', 'omlx', 'vllm', 'lemonade'];

@@ -11,6 +11,7 @@ export const SUPERVISION_CONTAINER_CANDIDATES: Record<InferenceBackendType, read
   ollama: ['ci-hub-ollama'],
   vllm: ['ci-hub-vllm'],
   lemonade: ['ci-hub-lemonade'],
+  localai: ['ci-hub-localai', 'localai'],
   omlx: [],
 };
 
