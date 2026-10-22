@@ -65,14 +65,16 @@ export interface InferenceBackend {
   /**
    * How long the engine keeps a model it already holds, on an engine where that is set per request
    * (Ollama's `keep_alive`): `pinned` until told otherwise, `default` its usual expiry. A pin sets
-   * `pinned` on a model already in memory, an unpin `default`. A model the engine does not hold is
-   * left alone, never loaded. `unreachable` when the engine could not say what it holds. Engines
-   * without such a setting (Lemonade, vLLM, oMLX) leave this out.
+   * `pinned` on a model already in memory, an unpin `default`. `defaultSeconds` is that usual expiry
+   * when the operator stated it (`inferenceOllamaKeepAlive`, -1 for forever); null leaves the
+   * engine's built-in default. A model the engine does not hold is left alone, never loaded.
+   * `unreachable` when the engine could not say what it holds. Engines without such a setting
+   * (Lemonade, vLLM, oMLX) leave this out.
    */
   setResidentKeepAlive?(
     modelId: string,
     keep: 'pinned' | 'default',
-    options?: { embedding?: boolean },
+    options?: { embedding?: boolean; defaultSeconds?: number | null },
   ): Promise<'set' | 'not-resident' | 'unreachable'>;
 
   /** Check if a specific model is loaded */

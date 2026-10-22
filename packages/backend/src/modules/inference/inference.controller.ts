@@ -372,6 +372,7 @@ export class InferenceController {
       body.encodeEndpoint,
       body.maxNumCtx,
       body.ollamaSlots,
+      body.ollamaKeepAlive,
     );
 
     this.scheduleAiAppRestart('inference preferences changed');

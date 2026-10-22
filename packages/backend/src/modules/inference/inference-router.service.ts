@@ -243,8 +243,10 @@ export class InferenceRouterService implements OnApplicationBootstrap {
    *
    * The pin loaded the model at Ollama's `keep_alive: -1`. Clearing the registry alone left it in
    * memory with Forever until something unloaded it. An unpin hands it back to the engine's usual
-   * expiry (Ollama's default 5-minute `keep_alive`) instead of unloading it, since an app may be using
-   * it. It does so only when the engine holds it: see `InferenceBackend.setResidentKeepAlive`. An
+   * expiry instead of unloading it, since an app may be using it: this node's stated Ollama
+   * keep-alive (`inferenceOllamaKeepAlive`, which `cihub fleet backends --ollama-keep-alive` writes)
+   * when there is one, else Ollama's built-in 5 minutes, because the daemon's `OLLAMA_KEEP_ALIVE`
+   * cannot be read. It does so only when the engine holds it: see `InferenceBackend.setResidentKeepAlive`. An
    * engine without that setting (Lemonade, vLLM, oMLX) has nothing to change. A model that was not
    * pinned is only unpinned in the registry.
    *
@@ -271,7 +273,10 @@ export class InferenceRouterService implements OnApplicationBootstrap {
       return 'none';
     }
     try {
-      const outcome = await backend.setResidentKeepAlive(target.backendModelId, keep, { embedding: target.curated?.modality === 'embedding' });
+      const outcome = await backend.setResidentKeepAlive(target.backendModelId, keep, {
+        embedding: target.curated?.modality === 'embedding',
+        defaultSeconds: keep === 'default' ? (this.configuration?.getInferencePreferences()?.ollamaKeepAlive ?? null) : null,
+      });
       if (outcome === 'set') this.memoryManager.invalidateObservation();
       return outcome;
     } catch (err) {

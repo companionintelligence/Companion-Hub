@@ -83,11 +83,13 @@ import {
 import {
   describeHubContextCapPlan,
   HUB_CONTEXT_CAP_SETTING,
+  HUB_OLLAMA_KEEP_ALIVE_SETTING,
   HUB_OLLAMA_SLOTS_SETTING,
   describeRuntimeEnvironment,
   describeRuntimeTransition,
   type HubContextCap,
   type HubInferenceSetting,
+  ollamaKeepAliveSeconds,
   OllamaRuntimeFlagError,
   type OllamaRuntimePlan,
   type OllamaRuntimeSettings,
@@ -365,6 +367,14 @@ export interface FleetArgs {
    */
   hubOllamaSlots?: HubContextCap;
   /**
+   * `backends` only: the Hub's half of `--ollama-keep-alive`, in seconds (-1 for forever). Written as
+   * `inferenceOllamaKeepAlive` on each node's Hub after the runtime drop-in applies, so a model the
+   * operator unpins goes back to the daemon's keep-alive, which Ollama's API does not expose. `null`
+   * (`--ollama-keep-alive unset`) clears it; the Hub then names Ollama's 5 minutes. Absent when
+   * the flag was not given, on the same terms as the cap above.
+   */
+  hubOllamaKeepAlive?: HubContextCap;
+  /**
    * `backends` only: the Ollama tag llama-server serves (`--llamacpp-model`). Absent means each
    * node's own Hub is asked which model it hands out for `auto`, and that tag is used — so a fleet
    * whose nodes pin different models gets each node's own. Ignored unless `--backends` names llamacpp.
@@ -375,15 +385,22 @@ export interface FleetArgs {
 /** The two Hub halves a runtime flag carries, in the order they are planned and applied after the drop-in. */
 interface HubHalf {
   /** The `FleetArgs` field, and the key the JSON report carries the outcome under. */
-  key: 'hubContextCap' | 'hubOllamaSlots';
+  key: 'hubContextCap' | 'hubOllamaSlots' | 'hubOllamaKeepAlive';
   value: HubContextCap;
   setting: HubInferenceSetting;
 }
 
-function hubHalvesOf(args: FleetArgs): HubHalf[] {
+/**
+ * `llamacpp` is the llama-server half: its slots and context are the same two numbers as Ollama's,
+ * but the keep-alive is Ollama's alone, so it is left out there.
+ */
+function hubHalvesOf(args: FleetArgs, engine: 'ollama' | 'llamacpp' = 'ollama'): HubHalf[] {
   const halves: HubHalf[] = [];
   if (args.hubContextCap !== undefined) halves.push({ key: 'hubContextCap', value: args.hubContextCap, setting: HUB_CONTEXT_CAP_SETTING });
   if (args.hubOllamaSlots !== undefined) halves.push({ key: 'hubOllamaSlots', value: args.hubOllamaSlots, setting: HUB_OLLAMA_SLOTS_SETTING });
+  if (args.hubOllamaKeepAlive !== undefined && engine === 'ollama') {
+    halves.push({ key: 'hubOllamaKeepAlive', value: args.hubOllamaKeepAlive, setting: HUB_OLLAMA_KEEP_ALIVE_SETTING });
+  }
   return halves;
 }
 
@@ -456,6 +473,7 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     ollamaRuntime: undefined,
     hubContextCap: undefined,
     hubOllamaSlots: undefined,
+    hubOllamaKeepAlive: undefined,
   };
 
   const rest = [...argv];
@@ -557,8 +575,11 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
           runtime.parallel = parseOllamaRuntimeValue(flag, readValue(flag));
           // The same number goes to the node's Hub as `inferenceOllamaSlots`; `unset` clears it there too.
           args.hubOllamaSlots = runtime.parallel ?? null;
-        } else if (flag === '--ollama-keep-alive') runtime.keepAlive = parseOllamaRuntimeValue(flag, readValue(flag));
-        else if (flag === '--ollama-context') {
+        } else if (flag === '--ollama-keep-alive') {
+          runtime.keepAlive = parseOllamaRuntimeValue(flag, readValue(flag));
+          // The same keep-alive goes to the node's Hub as `inferenceOllamaKeepAlive`, in seconds; `unset` clears it there too.
+          args.hubOllamaKeepAlive = runtime.keepAlive === undefined ? null : ollamaKeepAliveSeconds(runtime.keepAlive);
+        } else if (flag === '--ollama-context') {
           runtime.contextLength = parseOllamaRuntimeValue(flag, readValue(flag));
           // The same number goes to the node's Hub as `inferenceMaxNumCtx`; `unset` clears it there too.
           args.hubContextCap = runtime.contextLength ?? null;
@@ -1698,7 +1719,12 @@ async function runBackends(args: FleetArgs): Promise<void> {
         // in the run they follow llama-server, whose slots × context are the same two numbers —
         // when it was named; a run that did not name it plans nothing on the Hub for it.
         const llamacppHub = plan.backend === 'llamacpp' && llamacppNamed && plan.action !== 'skip';
-        const hubHalves = (plan.backend === 'ollama' && bindPlan?.runtime !== undefined) || (llamacppHub && !ollamaInRun) ? hubHalvesOf(args) : [];
+        const hubHalves =
+          plan.backend === 'ollama' && bindPlan?.runtime !== undefined
+            ? hubHalvesOf(args)
+            : llamacppHub && !ollamaInRun
+              ? hubHalvesOf(args, 'llamacpp')
+              : [];
         if (llamacppHub) console.log(colorize(`            ${describeHubLlamacppUrlPlan()}`, 'green'));
         for (const half of hubHalves) console.log(colorize(`            ${describeHubContextCapPlan(half.value, half.setting)}`, 'green'));
         // What is loaded and where, on every readable Ollama — the plan's one line that can say a
@@ -1781,7 +1807,7 @@ async function runBackends(args: FleetArgs): Promise<void> {
         const shapeRead =
           plan.llamacpp && result.llamacpp?.totalSlots === plan.llamacpp.parallel && result.llamacpp?.nCtx === plan.llamacpp.contextLength;
         if (!ollamaInRun && shapeRead) {
-          for (const half of hubHalvesOf(args)) {
+          for (const half of hubHalvesOf(args, 'llamacpp')) {
             const cap = await applyHubContextCap(target, half.value, args.dataDir, undefined, half.setting);
             if (cap.outcome === 'failed') failed += 1;
             const capTone = cap.outcome === 'failed' ? 'red' : cap.outcome === 'applied' ? 'green' : 'dim';

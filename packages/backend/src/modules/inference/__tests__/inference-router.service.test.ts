@@ -42,6 +42,7 @@ const NO_PREFERENCES: ReturnType<ConfigurationService['getInferencePreferences']
   preferredEncodeEndpoint: null,
   maxNumCtx: null,
   ollamaSlots: null,
+  ollamaKeepAlive: null,
 };
 
 describe('InferenceRouterService', () => {
@@ -1500,9 +1501,19 @@ describe('InferenceRouterService', () => {
       await expect(service.unpinTrackedModel(smollm.id)).resolves.toEqual({ engine: 'set' });
 
       expect(modelRegistry.unpinModel).toHaveBeenCalledWith(smollm.id);
-      expect(ollamaBackend.setResidentKeepAlive).toHaveBeenCalledWith('gemma3:270m', 'default', { embedding: false });
+      expect(ollamaBackend.setResidentKeepAlive).toHaveBeenCalledWith('gemma3:270m', 'default', { embedding: false, defaultSeconds: null });
       expect(ollamaBackend.unloadModel).not.toHaveBeenCalled();
       expect(modelPuller.unloadModel).not.toHaveBeenCalled();
+    });
+
+    // The fleet runs Ollama at OLLAMA_KEEP_ALIVE=24h and states it to the Hub (`cihub fleet backends
+    // --ollama-keep-alive 24h` writes inferenceOllamaKeepAlive 86400). Ollama's API cannot say it.
+    it("hands an unpinned model back at this node's stated Ollama keep-alive when there is one", async () => {
+      configuration.getInferencePreferences.mockReturnValue({ ...NO_PREFERENCES, ollamaKeepAlive: 86_400 });
+
+      await service.unpinTrackedModel(smollm.id);
+
+      expect(ollamaBackend.setResidentKeepAlive).toHaveBeenCalledWith('gemma3:270m', 'default', { embedding: false, defaultSeconds: 86_400 });
     });
 
     it('tells Ollama an embedder is one, so the request goes through /api/embed', async () => {
@@ -1512,7 +1523,7 @@ describe('InferenceRouterService', () => {
 
       await service.unpinTrackedModel(embedder.id);
 
-      expect(ollamaBackend.setResidentKeepAlive).toHaveBeenCalledWith('nomic-embed-text', 'default', { embedding: true });
+      expect(ollamaBackend.setResidentKeepAlive).toHaveBeenCalledWith('nomic-embed-text', 'default', { embedding: true, defaultSeconds: null });
     });
 
     it('leaves the engine alone for a model that was not pinned', async () => {
@@ -1542,7 +1553,7 @@ describe('InferenceRouterService', () => {
       await expect(service.pinTrackedModel(smollm.id, { origin: 'operator' })).resolves.toEqual({ pinned: true });
 
       expect(modelPuller.loadModel).not.toHaveBeenCalled();
-      expect(ollamaBackend.setResidentKeepAlive).toHaveBeenCalledWith('gemma3:270m', 'pinned', { embedding: false });
+      expect(ollamaBackend.setResidentKeepAlive).toHaveBeenCalledWith('gemma3:270m', 'pinned', { embedding: false, defaultSeconds: null });
       expect(modelRegistry.pinModel).toHaveBeenCalledWith(smollm.id);
     });
 
