@@ -549,6 +549,15 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
     await expect(manager.getBackupPath(appUrn, 'linked.tar.gz')).rejects.toThrow('The backup file does not exist');
   });
 
+  // Data the Hub deletes and copies itself needs no root helper, so a used-up budget does not stop it.
+  it('restores data the Hub can delete itself whatever is left of the budget', async () => {
+    const name = await putArchive('good.tar.gz', makeTarGz(VALID_ENTRIES));
+
+    await manager.restoreApp(appUrn, name, AppCommandDeadline.after(0));
+
+    await expect(readLive()).resolves.toEqual({ data: 'restored-data', compose: '{"restored":true}', env: 'RESTORED=true\n' });
+  });
+
   it('reports a restore that could not write the data, instead of "succeeding"', async () => {
     const name = await putArchive('good.tar.gz', makeTarGz(VALID_ENTRIES));
     vi.spyOn(filesystem, 'copyDirectory').mockResolvedValue(false);
@@ -593,6 +602,21 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
       );
       // Nothing of the backup went in, and the installed files were not touched.
       await expect(fs.promises.readFile(path.join(appInstalledDir, 'docker-compose.json'), 'utf8')).resolves.toBe('{"live":true}');
+    });
+
+    // The checks before the delete use the same budget. Used up there, the Hub would delete its own part of
+    // the data (app.env, data.txt) and only then have the root helper refuse to start.
+    it('changes nothing when the checks used up the budget before the root delete', async () => {
+      const name = await putArchive('kuma.tar.gz', makeTarGz(KUMA_ENTRIES));
+
+      await expect(manager.restoreApp(appUrn, name, AppCommandDeadline.after(0))).rejects.toThrow(
+        /^Restoring test-app:test-store ran out of time: .* Nothing was changed\.$/,
+      );
+
+      await expect(fs.promises.readFile(path.join(appDataDir, 'data.txt'), 'utf8')).resolves.toBe('live-data');
+      await expect(fs.promises.readFile(path.join(appDataDir, 'data', 'kuma.db'), 'utf8')).resolves.toBe('reset-db');
+      await expect(fs.promises.readFile(path.join(appInstalledDir, 'docker-compose.json'), 'utf8')).resolves.toBe('{"live":true}');
+      expect(docker.removeAppDataDirAsRoot).not.toHaveBeenCalled();
     });
 
     it('checks the helper can run before it deletes anything', async () => {
@@ -692,6 +716,15 @@ describe.skipIf(!hasTar)('BackupManager (real filesystem and tar)', () => {
       await manager.restoreApp(appUrn, name);
 
       await expect(fs.promises.readFile(path.join(appDataDir, 'data.txt'), 'utf8')).resolves.toBe('restored-data');
+    });
+
+    it('changes nothing when the checks used up the budget, since root has to put the data back', async () => {
+      const name = await putArchive('owned.tar.gz', makeTarGz(OWNED_ENTRIES));
+
+      await expect(manager.restoreApp(appUrn, name, AppCommandDeadline.after(0))).rejects.toThrow('ran out of time');
+
+      await expectLiveUntouched();
+      expect(docker.extractBackupAppDataAsRoot).not.toHaveBeenCalled();
     });
 
     it('gives the delete and the extract one budget, 40 minutes unless the caller has its own', async () => {

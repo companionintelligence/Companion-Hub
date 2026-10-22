@@ -1420,6 +1420,38 @@ describe('DockerService', () => {
       expect(child_process.spawn).toHaveBeenLastCalledWith('docker', ['rm', '-f', name], { stdio: 'pipe' });
     });
 
+    // Removed at the limit, the extract never got to its own strip of what it had written.
+    it('strips setuid and setgid bits and special files from what an extract wrote before its budget ran out', async () => {
+      vi.useFakeTimers();
+      const hung = createMockSpawnProcess();
+      hung.on = vi.fn().mockReturnValue(hung);
+      (child_process.spawn as any).mockReturnValueOnce(hung).mockReturnValue(createComposeProbeProcess(0));
+
+      const pending = service.extractBackupAppDataAsRoot(urn, 'backup-kimai-1792500000000', './app-data', AppCommandDeadline.after(10_000));
+      await vi.advanceTimersByTimeAsync(10_001);
+      vi.useRealTimers();
+
+      await expect(pending).resolves.toBe(false);
+      const calls = (child_process.spawn as any).mock.calls.map((call: unknown[]) => call[1] as string[]);
+      expect(calls[1]).toEqual(['rm', '-f', calls[0][3]]);
+      const strip = calls[2];
+      expect(strip).toEqual(expect.arrayContaining(['-v', `${hostAppData}:/x/app-data:rw`]));
+      expect(strip).not.toContain(`${hostStaging}/in:/in:ro`);
+      expect(strip.at(-1)).toContain('-perm -4000 -o -perm -2000');
+      expect(strip.at(-1)).toContain('-type b -o -type c -o -type p -o -type s');
+    });
+
+    it('runs no second helper after an extract that failed in time', async () => {
+      (child_process.spawn as any).mockReset();
+      (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(1));
+
+      await expect(
+        service.extractBackupAppDataAsRoot(urn, 'backup-kimai-1792500000000', './app-data', AppCommandDeadline.after(60_000)),
+      ).resolves.toBe(false);
+
+      expect(child_process.spawn).toHaveBeenCalledTimes(1);
+    });
+
     it('starts no helper once the command budget is used up', async () => {
       const deadline = AppCommandDeadline.after(0);
 

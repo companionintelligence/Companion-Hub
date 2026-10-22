@@ -150,6 +150,17 @@ type PrivilegedCopyArea = { dirname: string; idPattern: RegExp; tag: string };
 const SNAPSHOT_AREA: PrivilegedCopyArea = { dirname: PRE_UPDATE_SNAPSHOT_DIRNAME, idPattern: SNAPSHOT_ID_PATTERN, tag: '[pre-update-snapshot]' };
 const BACKUP_STAGING_AREA: PrivilegedCopyArea = { dirname: BACKUP_STAGING_DIRNAME, idPattern: BACKUP_STAGING_ID_PATTERN, tag: '[backup]' };
 
+/**
+ * Run as root over a restored data folder: device nodes, pipes and sockets go (the checks refuse them;
+ * a device node owned by a user on the host opens a disk to that user), and setuid and setgid bits come
+ * off files (an uploaded archive could otherwise plant a root-owned setuid program). Sets `status=1`
+ * when a step fails.
+ */
+const STRIP_RESTORED_SPECIAL_FILES = [
+  'find /x/app-data \\( -type b -o -type c -o -type p -o -type s \\) -delete || status=1',
+  'find /x/app-data -type f \\( -perm -4000 -o -perm -2000 \\) -exec chmod ug-s {} + || status=1',
+].join('; ');
+
 /** The image every privileged helper runs. */
 const privilegedHelperImage = () => process.env.CI_HUB_CLEANUP_IMAGE || 'alpine:3.20';
 
@@ -819,15 +830,16 @@ export class DockerService {
     const paths = this.resolveSnapshotHostPaths(appUrn, stagingId, 'restore', BACKUP_STAGING_AREA);
     if (!paths) return false;
 
-    return this.runPrivilegedSnapshotHelper(
+    // An extract that never starts (no budget left) writes nothing, so it needs no strip afterwards.
+    const startsInTime = !deadline?.expired;
+    const extracted = await this.runPrivilegedSnapshotHelper(
       [`${paths.hostSnapshotDir}/in:/in:ro`, `${paths.hostAppDataDir}:/x/app-data:rw`],
       [
         'sh',
         '-c',
         [
           'tar -C /x -xpf /in/backup.tar.gz --numeric-owner "$1"; status=$?',
-          'find /x/app-data \\( -type b -o -type c -o -type p -o -type s \\) -delete || status=1',
-          'find /x/app-data -type f \\( -perm -4000 -o -perm -2000 \\) -exec chmod ug-s {} + || status=1',
+          STRIP_RESTORED_SPECIAL_FILES,
           'chown "$2" /x/app-data || status=1',
           'if [ -f /x/app-data/app.env ] && [ ! -L /x/app-data/app.env ]; then chown "$2" /x/app-data/app.env || status=1; fi',
           'exit $status',
@@ -841,6 +853,21 @@ export class DockerService {
       '[restore]',
       deadline,
     );
+
+    // Stopped at the budget's end, the extract never reached its own strip, and what it wrote stays until
+    // the next restore. The bits and the special files go now, in a short helper of their own that the
+    // used-up budget does not stop: it runs in the time the budget keeps back for the reply.
+    if (startsInTime && !extracted && deadline?.expired) {
+      await this.runPrivilegedSnapshotHelper(
+        [`${paths.hostAppDataDir}:/x/app-data:rw`],
+        ['sh', '-c', `status=0; ${STRIP_RESTORED_SPECIAL_FILES}; exit $status`],
+        PRIVILEGED_IMAGE_CHECK_TIMEOUT_MS,
+        `removing setuid and setgid bits and special files from the part of ${paths.hostAppDataDir} restored in time`,
+        '[restore]',
+      );
+    }
+
+    return extracted;
   }
 
   /** A new staging id, `backup-<app>-<epoch ms>`, the shape {@link BACKUP_STAGING_ID_PATTERN} accepts. */

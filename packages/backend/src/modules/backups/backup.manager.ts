@@ -357,16 +357,26 @@ export class BackupManager implements OnApplicationShutdown {
 
       // The same for a backup the Hub copies back itself, when what the app wrote can only be deleted as
       // root. The Hub would otherwise delete what it can first and find out afterwards.
+      let needsRoot = Boolean(dataMember);
+
       if (!dataMember) {
         const { appDataDir } = this.appFilesManager.getAppPaths(appUrn);
         const undeletable = await this.filesystem.findUndeletable(appDataDir);
+        needsRoot = undeletable.length > 0;
 
-        if (undeletable.length > 0 && !(await this.docker.privilegedHelperAvailable(appUrn))) {
+        if (needsRoot && !(await this.docker.privilegedHelperAvailable(appUrn))) {
           throw new Error(
             `Cannot restore ${appUrn}: the Hub cannot delete what its container wrote in ${undeletable.slice(0, 3).join(', ')}, ` +
               'and the helper that deletes it as root cannot run. Nothing was changed.',
           );
         }
+      }
+
+      // The checks above count against the budget too, and on a big backup they can use all of it. A root
+      // helper would then refuse to start, after the Hub had already deleted its own part of the data
+      // (app.env first), so the restore stops here instead, with the data as it was.
+      if (needsRoot && deadline.expired) {
+        throw this.outOfTime('Restoring', appUrn, deadline, 'Nothing was changed.');
       }
 
       await this.replaceAppFiles(appUrn, restoreDir, dataMember && staging ? { stagingId: staging.id, member: dataMember } : null, deadline);
