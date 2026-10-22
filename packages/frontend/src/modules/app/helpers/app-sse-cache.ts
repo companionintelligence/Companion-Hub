@@ -135,6 +135,12 @@ export function invalidateAppQueries(queryClient: QueryClient, appUrn: string) {
    * kept it silent for 30s after `custom_domain_changed` raised the flag.
    */
   void queryClient.invalidateQueries({ queryKey: PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY });
+  /*
+   * The degraded banner, the "Needs attention" pill and Force Stop read runtime health, which polls
+   * only every 15 s. Asked again on every lifecycle event, they follow a stop, start or restart at
+   * once instead of showing the previous run's verdict for up to a poll.
+   */
+  void queryClient.invalidateQueries({ queryKey: runtimeHealthQueryKey(appUrn) });
 }
 
 function setCachedAppStatus(

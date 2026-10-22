@@ -67,26 +67,16 @@ export const CustomDomainRestartBanner = ({ apps, namesByUrn }: CustomDomainRest
     return dialog;
   }
 
-  /*
-   * Styled here rather than through `Alert variant="warning"`: that variant only
-   * emits the class names `alert`/`alert-warning`, and this design system defines
-   * no rule for either — the banner would render as ordinary body text inside the
-   * dashboard card, which for the one warning worth interrupting someone over is
-   * the same as not showing it. `border-warning/30 bg-warning/10 text-warning` is
-   * what every other warning surface in this frontend uses.
-   */
-  const frame = 'mb-3 rounded-md border border-warning/30 bg-warning/10 px-3 py-2.5 text-warning';
-
   const only = waiting.length === 1 ? waiting[0] : undefined;
 
   if (only) {
     return (
       <>
-        <Alert variant="warning" className={`${frame} flex flex-wrap items-center gap-3`} data-testid="custom-domain-restart-banner">
+        <Alert variant="warning" className="mb-3 flex-wrap items-center gap-3" data-testid="custom-domain-restart-banner">
           <AlertIcon>
             <RotateCw className="w-4 h-4 shrink-0" />
           </AlertIcon>
-          <AlertDescription className="min-w-0 flex-1 text-sm">
+          <AlertDescription className="min-w-0 flex-1">
             {t('MY_APPS_CUSTOM_DOMAIN_RESTART_BANNER_ONE', { domain: only.customDomain, name: nameFor(only) })}
           </AlertDescription>
           {restartButton(only)}
@@ -104,12 +94,12 @@ export const CustomDomainRestartBanner = ({ apps, namesByUrn }: CustomDomainRest
    */
   return (
     <>
-      <Alert variant="warning" className={`${frame} space-y-2`} data-testid="custom-domain-restart-banner">
+      <Alert variant="warning" className="mb-3 flex-col items-stretch gap-2" data-testid="custom-domain-restart-banner">
         <div className="flex items-center gap-3">
           <AlertIcon>
             <RotateCw className="w-4 h-4 shrink-0" />
           </AlertIcon>
-          <AlertDescription className="min-w-0 flex-1 text-sm">
+          <AlertDescription className="min-w-0 flex-1">
             {/*
              * `_COUNT` with i18next's own `_one`/`_other` suffixes, not a hand-rolled
              * `_MANY`: en.json is pushed to 30 locales, several of which have three to

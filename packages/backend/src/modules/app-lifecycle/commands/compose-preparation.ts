@@ -13,6 +13,7 @@ import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import { ResourceAllocatorService } from '@/modules/system/resource-allocator.service';
+import { HEALTHCHECK_START_INTERVAL_MIN_ENGINE_MAJOR, withoutUnsupportedStartInterval } from '@/modules/docker/healthcheck-start-interval';
 import { hostPortStaysOnLoopback, parseComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { buildOriginServerName, buildPublicWebIdentity, normalizeStoredHostname, resolvePublicDomainRoot } from '@ci-hub/common/types';
@@ -83,6 +84,22 @@ export async function prepareAppComposeDir(
     // forgot "stdinOpen": true.
     if (appInfo?.mcp?.transport === 'stdio') {
       mergedServices = mergedServices.map((service) => (service.isMain ? { ...service, stdinOpen: true } : service));
+    }
+
+    // Compose refuses a health check's start_interval on Docker Engine older than 25, which left any
+    // app that sets one unable to install or start there. The engine is read only when a service sets it.
+    if (mergedServices.some((service) => service.healthCheck?.startInterval)) {
+      let engineVersion: string | undefined;
+      try {
+        engineVersion = await moduleRef.get(ResourceAllocatorService, { strict: false }).getDockerServerVersion();
+      } catch {
+        // Unknown engine: keep the setting.
+      }
+      mergedServices = withoutUnsupportedStartInterval(mergedServices, engineVersion, (service) => {
+        logger.warn(
+          `[compose] Docker Engine ${engineVersion} can't use a health check start_interval (it needs Engine ${HEALTHCHECK_START_INTERVAL_MIN_ENGINE_MAJOR} or newer); ${appUrn} service ${service.name} starts without it`,
+        );
+      });
     }
 
     // Read app env file to get DOMAIN and LOCAL_DOMAIN for Traefik label interpolation
