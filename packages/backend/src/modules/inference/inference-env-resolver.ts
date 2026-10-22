@@ -20,6 +20,7 @@ import { MemoryManagerService, modelMemoryCeilingMb } from './memory-manager.ser
 import { appBearerFor } from './engine-credential-scope';
 import { catalogEmbedsOn, embedderEngineId, embeddingBackendFor, pickEmbeddingModel } from './embedder-handout';
 import { pickUtilityModel } from './utility-handout';
+import { installedDefaultChatModel, onboardingTier } from './default-chat-model-handout';
 import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
 
 /**
@@ -465,7 +466,19 @@ export class InferenceEnvResolver {
     if (backendPreferredCurated && this.isInstalled(backendPreferredCurated, modelsLoaded, listedBy) && suitable(backendPreferredCurated)) {
       chatCurated = backendPreferredCurated;
     } else {
-      chatCurated = llmCandidates.find((m) => this.isInstalled(m, modelsLoaded, listedBy) && suitable(m));
+      /*
+       * ⚠ WITH NO MODEL CHOSEN, THE SETUP WIZARD'S DEFAULT, NOT THE TOP OF THE RECOMMENDATION LIST.
+       * The list ranks by capability: on a 128 GB unified-memory machine it starts with MiniMax M2
+       * 230B, a 61.6 GB load, where the wizard marks Gemma 4 E4B. A Hub restored after pairing skips
+       * the wizard, so its apps ran on a model nobody had been offered (`installedDefaultChatModel`).
+       */
+      const wizardDefault = preferredId ? undefined : this.wizardDefault(backendType, modelsLoaded, listedBy, profile, suitable);
+      if (wizardDefault) {
+        this.logger.info(
+          `[InferenceEnvResolver] ${appLabel}: no chat model chosen yet; handing out the setup wizard's default ${wizardDefault.backendModelId}`,
+        );
+      }
+      chatCurated = wizardDefault ?? llmCandidates.find((m) => this.isInstalled(m, modelsLoaded, listedBy) && suitable(m));
     }
     if (!chatCurated) {
       chatCurated = [backendPreferredCurated, ...llmCandidates].find((m) => suitable(m));
@@ -497,6 +510,23 @@ export class InferenceEnvResolver {
       return { error: describeNoSuitableChatModel({ appSlug: appLabel, requirements, rejected, scope: 'local' }) };
     }
     return { curated: chatCurated, engineId };
+  }
+
+  /** The setup wizard's Default among the models this backend has, skipping ones `suitable` rules out. */
+  private wizardDefault(
+    backendType: InferenceBackendType,
+    modelsLoaded: string[],
+    listedBy: InferenceBackendType | null,
+    profile: Awaited<ReturnType<HardwareInspectorService['getProfile']>>,
+    suitable: (model: CuratedModel) => boolean,
+  ): CuratedModel | undefined {
+    const tier = onboardingTier(profile, (gpu, ram) => this.hardwareInspector.computeTier(gpu, ram));
+    return installedDefaultChatModel({
+      available: this.modelRegistry.getModelsForHardware(tier, profile, { includeRemoteHostBackends: true }) ?? [],
+      backend: backendType,
+      isInstalled: (model) => this.isInstalled(model, modelsLoaded, listedBy),
+      accept: suitable,
+    });
   }
 
   /** The catalog's verdict on a host-served engine id, or `unverified` when no catalog row matches it. */

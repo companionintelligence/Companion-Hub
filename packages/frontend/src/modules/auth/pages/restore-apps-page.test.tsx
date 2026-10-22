@@ -312,13 +312,15 @@ describe('RestoreAppsPage', () => {
       expect(acknowledgeRestore).toHaveBeenCalled();
     });
 
-    it('says restored AI apps use the recommended model until one is chosen', async () => {
+    it("says restored AI apps use the setup wizard's default until a model is chosen", async () => {
       await act(async () => {
         render(<RestoreAppsPage />);
       });
 
       expect(
-        await screen.findByText('No AI model is chosen on this Hub yet, so OpenClaw uses the one this Hub recommends for its hardware.'),
+        await screen.findByText(
+          'No AI model is chosen on this Hub yet, so OpenClaw uses the model the setup wizard marks Default for this computer.',
+        ),
       ).toBeInTheDocument();
       await userEvent.click(screen.getByRole('button', { name: 'Choose a model' }));
       await waitFor(() => expect(navigate).toHaveBeenCalledWith('/settings?tab=ai', { replace: true }));

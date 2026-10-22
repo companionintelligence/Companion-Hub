@@ -24,7 +24,7 @@ import {
   type VllmStatus,
   type RemoteAccessMode,
 } from '../helpers/ai-setup-types';
-import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
+import { type CuratedModel, defaultChatModelId, type InferenceBackendType } from '@ci-hub/common/types';
 import { AgentFrameworkCard } from './ai-setup/agent-apps-card';
 import { AccessMethodsCard } from './ai-setup/access-methods-card';
 import { CompanionAppsCard } from './ai-setup/companion-apps-card';
@@ -150,20 +150,17 @@ export const AiSetupStep = ({
   const preferredModelIdRef = useRef(preferredModelId);
   preferredModelIdRef.current = preferredModelId;
 
-  // Both agent frameworks share one default, so use the highest-ranked selected or
-  // installable LLM instead of catalog order.
+  // Both agent frameworks share one default: the first ticked chat model, which at first is the
+  // first one the engine has in catalog order. The Hub hands AI apps the same model until someone
+  // saves one (`defaultChatModelId`), so a Hub that skipped this wizard runs on what it would mark.
   const getDefaultPreferredModelId = (data: HardwareProfileResponse, backend: InferenceBackendType, selectedIds?: string[]): string | undefined => {
     const installed = new Set(data.installedCatalogIds ?? []);
-    const selected = selectedIds ?? data.availableModels.filter((m) => m.backend === backend && installed.has(m.id)).map((m) => m.id);
-    const fromSelected = selected.find((id) => {
-      const model = data.availableModels.find((m) => m.id === id);
-      return model && model.backend === backend && isAgentModel(model);
+    return defaultChatModelId({
+      backend,
+      availableModels: data.availableModels,
+      recommendedModels: data.recommendedModels,
+      candidateIds: selectedIds ?? data.availableModels.filter((m) => m.backend === backend && installed.has(m.id)).map((m) => m.id),
     });
-    if (fromSelected) return fromSelected;
-
-    const installableAgentIds = new Set(data.availableModels.filter((m) => m.backend === backend && isAgentModel(m)).map((m) => m.id));
-    const topRecommended = data.recommendedModels.find((m) => m.backend === backend && isAgentModel(m) && installableAgentIds.has(m.id));
-    return topRecommended?.id ?? data.availableModels.find((m) => m.backend === backend && isAgentModel(m))?.id;
   };
 
   const getDefaultPreferredAuxModelId = (

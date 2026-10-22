@@ -54,6 +54,7 @@ export { buildTailscaleNodeFqdn, buildTailscalePortHost, buildTailscalePortUrl, 
 export type { DesktopReleaseManifest } from './desktop-release.js';
 export { desktopInstallerUrl, desktopReleaseCdn, isTrustedDownloadUrlForHost, platformManifestKey } from './desktop-release.js';
 export { INFERENCE_BACKEND_TYPES } from './inference.js';
+export { defaultChatModelId } from '../inference/default-chat-model.js';
 export { OPERATOR_MINTABLE_SCOPES } from './api-key-scopes.js';
 export type { OperatorMintableScope } from './api-key-scopes.js';
 export type {
