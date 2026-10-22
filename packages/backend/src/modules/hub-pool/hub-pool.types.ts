@@ -462,6 +462,8 @@ export interface PoolStatusLocalNode {
   tailscaleConnected: boolean;
   /** Requests this node's own engines are serving — its apps' and its peers' alike. */
   inFlightRequests: number;
+  /** Active media generation workloads (e.g. ComfyUI or diffusion) on this node's GPU. */
+  mediaInFlight?: number;
   hardwareTier: string | null;
   backends: PoolPeerBackendCapability[];
   /** Why the local inventory is empty, when it is — a down backend must read differently from a node with no models. */

@@ -47,6 +47,7 @@ describe('InferenceController — preferences', () => {
   let inferenceRefresh: { requestRefresh: ReturnType<typeof vi.fn> };
   let appCredentials: MockProxy<AppCredentialsService>;
   let cloudFallback: MockProxy<CloudFallbackService>;
+  let router: MockProxy<InferenceRouterService>;
 
   beforeEach(async () => {
     inferenceRefresh = { requestRefresh: vi.fn() };
@@ -95,6 +96,7 @@ describe('InferenceController — preferences', () => {
     lemonadeBackend = moduleRef.get(LemonadeBackend);
     modelRegistry = moduleRef.get(ModelRegistryService);
     cloudFallback = moduleRef.get(CloudFallbackService);
+    router = moduleRef.get(InferenceRouterService);
   });
 
   it('returns nulls when global preferences are unset', async () => {
@@ -673,6 +675,36 @@ describe('InferenceController — preferences', () => {
       for (const provider of providers) {
         expect(provider).not.toHaveProperty('baseUrl');
       }
+    });
+  });
+
+  describe('images and media endpoints', () => {
+    it('routes v1ImagesGenerations to router.routeImageGen', async () => {
+      router.routeImageGen.mockResolvedValueOnce({ data: { created: 100, data: [{ url: 'http://img.png' }] }, backend: 'localai' });
+      const res = {
+        json: vi.fn(),
+        status: vi.fn().mockReturnThis(),
+        setHeader: vi.fn(),
+        on: vi.fn(),
+        once: vi.fn(),
+        writableEnded: false,
+      } as any;
+
+      await controller.v1ImagesGenerations({ prompt: 'test image' }, res);
+      expect(router.routeImageGen).toHaveBeenCalledWith({ prompt: 'test image' }, expect.any(AbortSignal));
+      expect(res.json).toHaveBeenCalledWith({ created: 100, data: [{ url: 'http://img.png' }] });
+    });
+
+    it('handles mediaAcquire and mediaRelease calls', async () => {
+      router.activeMediaWork.mockReturnValueOnce(1);
+      const acqResult = await controller.mediaAcquire({ kind: 'comfyui', model: 'flux' });
+      expect(router.acquireMediaWork).toHaveBeenCalledWith({ kind: 'comfyui', model: 'flux' });
+      expect(acqResult).toEqual({ ok: true, activeMediaWork: 1 });
+
+      router.activeMediaWork.mockReturnValueOnce(0);
+      const relResult = await controller.mediaRelease({ kind: 'comfyui', model: 'flux' });
+      expect(router.releaseMediaWork).toHaveBeenCalledWith({ kind: 'comfyui', model: 'flux' });
+      expect(relResult).toEqual({ ok: true, activeMediaWork: 0 });
     });
   });
 });

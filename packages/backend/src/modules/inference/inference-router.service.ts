@@ -37,7 +37,7 @@ import type { InferenceBackend } from './backends/backend.interface';
 import { isCatalogModelInstalled, isServedModelForCatalog, resolveInstalledCatalogIds, trackedPullCounts } from './model-availability.util';
 import { InferenceRouteError, modelNotFound } from './inference-error-reply';
 import { firstByteBudgetMs, forwardBudgetMs } from '@/modules/hub-pool/hub-pool-budget';
-import { HubPoolLoadService } from '@/modules/hub-pool/hub-pool-load.service';
+import { HubPoolLoadService, type LocalMediaWork } from '@/modules/hub-pool/hub-pool-load.service';
 import { BUDGET_SETTINGS_HINT, postStreamUnderHeaderDeadline } from './upstream-stream';
 
 /** How long {@link InferenceRouterService.loadTrackedModel} waits for evicted memory to show as free: 10 × 1 s. */
@@ -854,6 +854,58 @@ export class InferenceRouterService implements OnApplicationBootstrap {
     }
 
     throw new Error('No STT backend available');
+  }
+
+  /** Route image generation request across image/media-capable backends (localai), then cloud */
+  async routeImageGen(body: Record<string, unknown>, clientClosed?: AbortSignal): Promise<{ data: unknown; backend: string }> {
+    const mediaBackendTypes: readonly InferenceBackendType[] = ['localai'];
+    for (const backendType of mediaBackendTypes) {
+      const backend = this.backends.tryGet(backendType);
+      if (!backend) continue;
+      const health = await backend.healthCheck().catch(() => ({ running: false, healthy: false, modelsLoaded: [] }));
+      if (health.running && health.healthy) {
+        this.poolLoad?.acquireMedia({ kind: 'image', model: typeof body.model === 'string' ? body.model : undefined });
+        try {
+          const response = await axios.post(`${backend.getBaseUrl()}/v1/images/generations`, body, {
+            headers: {
+              ...backendAuthHeaders(backend),
+              'Content-Type': 'application/json',
+            },
+            timeout: 180000,
+            signal: clientClosed,
+          });
+          return { data: response.data, backend: backendType };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this._logger.error(`[Inference] Image generation request to ${backendType} failed: ${msg}`);
+        } finally {
+          this.poolLoad?.releaseMedia({ kind: 'image', model: typeof body.model === 'string' ? body.model : undefined });
+        }
+      }
+    }
+
+    const provider = this.cloudFallback.getEnabledProviders()[0];
+    if (provider) {
+      const res = await this.cloudFallback.proxyImageGeneration(provider, body);
+      return { data: res.data, backend: `cloud:${provider.provider}` };
+    }
+
+    throw new Error('No image generation backend available');
+  }
+
+  /** Record media generation work on this host (e.g. ComfyUI or diffusion) to reflect GPU occupancy in the pool queue. */
+  acquireMediaWork(work?: LocalMediaWork): void {
+    this.poolLoad?.acquireMedia(work);
+  }
+
+  /** Release previously acquired media generation work. */
+  releaseMediaWork(work?: LocalMediaWork): void {
+    this.poolLoad?.releaseMedia(work);
+  }
+
+  /** Total active media generation jobs running on this host. */
+  activeMediaWork(): number {
+    return this.poolLoad?.activeMediaWork() ?? 0;
   }
 
   /**

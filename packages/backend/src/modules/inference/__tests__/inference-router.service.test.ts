@@ -1475,6 +1475,78 @@ describe('InferenceRouterService', () => {
     });
   });
 
+  // ─── Image generation and media pool routing ────────────
+  describe('Image generation and media pool routing', () => {
+    it('routes image generation to LocalAI and tracks media in HubPoolLoadService', async () => {
+      localaiBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['stablediffusion'] });
+      localaiBackend.getBaseUrl.mockReturnValue('http://ci-hub-localai:8080');
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: { created: 1234, data: [{ url: 'http://ci-hub-localai:8080/image.png' }] }, headers: {} });
+
+      const acquireSpy = vi.spyOn(poolLoad, 'acquireMedia');
+      const releaseSpy = vi.spyOn(poolLoad, 'releaseMedia');
+
+      const result = await service.routeImageGen({ prompt: 'a cute cat', model: 'stablediffusion' });
+      expect(result.backend).toBe('localai');
+      expect(result.data).toEqual({ created: 1234, data: [{ url: 'http://ci-hub-localai:8080/image.png' }] });
+      expect(axios.post).toHaveBeenCalledWith(
+        'http://ci-hub-localai:8080/v1/images/generations',
+        expect.objectContaining({ prompt: 'a cute cat' }),
+        expect.anything(),
+      );
+
+      expect(acquireSpy).toHaveBeenCalledWith({ kind: 'image', model: 'stablediffusion' });
+      expect(releaseSpy).toHaveBeenCalledWith({ kind: 'image', model: 'stablediffusion' });
+      expect(poolLoad.activeMediaWork()).toBe(0);
+    });
+
+    it('releases media work even if LocalAI image generation fails', async () => {
+      localaiBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['stablediffusion'] });
+      localaiBackend.getBaseUrl.mockReturnValue('http://ci-hub-localai:8080');
+      vi.mocked(axios.post).mockRejectedValueOnce(new Error('GPU OOM'));
+
+      const acquireSpy = vi.spyOn(poolLoad, 'acquireMedia');
+      const releaseSpy = vi.spyOn(poolLoad, 'releaseMedia');
+
+      await expect(service.routeImageGen({ prompt: 'heavy render', model: 'stablediffusion' })).rejects.toThrow(
+        'No image generation backend available',
+      );
+      expect(acquireSpy).toHaveBeenCalled();
+      expect(releaseSpy).toHaveBeenCalled();
+      expect(poolLoad.activeMediaWork()).toBe(0);
+    });
+
+    it('falls back to cloud provider when LocalAI is unhealthy', async () => {
+      localaiBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      cloudFallback.getEnabledProviders.mockReturnValue([{ provider: 'openai', apiKey: 'sk-test' } as any]);
+      cloudFallback.proxyImageGeneration.mockResolvedValueOnce({ data: { data: [{ url: 'cloud.png' }] }, headers: {} });
+
+      const result = await service.routeImageGen({ prompt: 'cloud render' });
+      expect(result.backend).toBe('cloud:openai');
+      expect(result.data).toEqual({ data: [{ url: 'cloud.png' }] });
+      expect(cloudFallback.proxyImageGeneration).toHaveBeenCalled();
+    });
+
+    it('throws when no image generation backend is available', async () => {
+      localaiBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      cloudFallback.getEnabledProviders.mockReturnValue([]);
+
+      await expect(service.routeImageGen({ prompt: 'render' })).rejects.toThrow('No image generation backend available');
+    });
+
+    it('tracks external media workloads via acquireMediaWork and releaseMediaWork', () => {
+      expect(service.activeMediaWork()).toBe(0);
+      expect(poolLoad.localInFlight()).toBe(0);
+
+      service.acquireMediaWork({ kind: 'comfyui' });
+      expect(service.activeMediaWork()).toBe(1);
+      expect(poolLoad.localInFlight()).toBe(1);
+
+      service.releaseMediaWork({ kind: 'comfyui' });
+      expect(service.activeMediaWork()).toBe(0);
+      expect(poolLoad.localInFlight()).toBe(0);
+    });
+  });
+
   // ─── Tool-calling error preservation ─────────────────
   describe('tool calling error preservation', () => {
     it('preserves 400 errors from backend instead of silently stripping tools and retrying', async () => {

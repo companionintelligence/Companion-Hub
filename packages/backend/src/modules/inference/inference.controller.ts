@@ -333,6 +333,35 @@ export class InferenceController {
     }
   }
 
+  @UseGuards(InferenceAccessGuard)
+  @Post('v1/images/generations')
+  @HttpCode(200)
+  async v1ImagesGenerations(@Body() body: Record<string, unknown>, @Res() res: Response) {
+    const clientClosed = abortWhenClientCloses(res);
+    try {
+      const result = await this.router.routeImageGen(body, clientClosed);
+      res.json(result.data);
+    } catch (err) {
+      await sendRouteError(res, err);
+    }
+  }
+
+  @UseGuards(InferenceAccessGuard)
+  @Post('media/acquire')
+  @HttpCode(200)
+  async mediaAcquire(@Body() body: { kind?: 'image' | 'video' | 'comfyui'; model?: string }) {
+    this.router.acquireMediaWork({ kind: body?.kind ?? 'comfyui', model: body?.model });
+    return { ok: true, activeMediaWork: this.router.activeMediaWork() };
+  }
+
+  @UseGuards(InferenceAccessGuard)
+  @Post('media/release')
+  @HttpCode(200)
+  async mediaRelease(@Body() body: { kind?: 'image' | 'video' | 'comfyui'; model?: string }) {
+    this.router.releaseMediaWork({ kind: body?.kind ?? 'comfyui', model: body?.model });
+    return { ok: true, activeMediaWork: this.router.activeMediaWork() };
+  }
+
   // ─── Health ───────────────────────────────────────────────────────────
 
   @Get('health')
