@@ -1158,6 +1158,20 @@ describe('MemoryConnectService with two Hub people', () => {
     expect(lifecycle.restartApp).toHaveBeenCalled();
   });
 
+  it("clears this person's own earlier connection when the new key cannot be stored, so the restart does not hand its revoked key back", async () => {
+    const { service, exchange, connections, pending } = withPerson2Connected();
+    const ownEarlier = { ...PERSON_2_ROW, id: 11, hubUserId: 1, encryptedKey: 'enc-1-old' };
+    connections.listConnected.mockResolvedValue([ownEarlier]);
+    connections.getActiveConnection.mockResolvedValue(ownEarlier);
+    pending.consume.mockReturnValue(CONSUMED_BY_1);
+    exchange.exchange.mockResolvedValue({ appUrn: APP, key: 'key-1', expiresAt: '2026-12-01T00:00:00.000Z' });
+    connections.storeConnected.mockRejectedValue(new Error('db pool exhausted'));
+
+    await service.handleCallback('code-1', 'state-1', '1');
+
+    expect(connections.clear).toHaveBeenCalledWith(APP, 1);
+  });
+
   it('leaves a key alone that a Connect replaced while it was being checked', async () => {
     const { service, exchange, connections, lifecycle } = withPerson2Connected();
     const stale = { ...PERSON_2_ROW, encryptedKey: 'enc-2-old' };
@@ -1238,6 +1252,22 @@ describe('MemoryConnectService with an install-global connection', () => {
     expect(exchange.revoke).toHaveBeenCalledWith('http://gateway:8642', APP);
     expect(connections.clear).toHaveBeenCalledWith(APP, 0);
     expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: APP, skipPull: true });
+  });
+
+  it('keeps it when a gate with no Hub person on it chooses Not now', async () => {
+    const { service, connections } = withGlobalConnection();
+
+    await service.skip(APP, null);
+
+    expect(connections.markSkipped).not.toHaveBeenCalled();
+  });
+
+  it("refuses a Disconnect with no Hub person on it once a person's connection runs the app", async () => {
+    const { service, exchange, connections } = withGlobalConnection();
+    connections.getActiveConnection.mockResolvedValue({ ...GLOBAL_ROW, id: 6, hubUserId: 2 });
+
+    await expect(service.disconnect(APP, '')).rejects.toMatchObject({ message: 'MEMORY_CONNECT_DISCONNECT_REFUSED', status: 403 });
+    expect(exchange.revoke).not.toHaveBeenCalled();
   });
 
   it('clears its key when CI Memory rejects it, whoever is looking', async () => {

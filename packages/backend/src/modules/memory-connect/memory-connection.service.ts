@@ -175,9 +175,12 @@ export class MemoryConnectionService {
     }
   }
 
-  /** Raw row accessor (for callers that need the full record). */
+  /**
+   * Raw row accessor (for callers that need the full record). A number is a row's own
+   * `hub_user_id`, so 0 reads the install-global row rather than the app's newest row.
+   */
   async getRow(appUrn: string, hubUserId?: string | number | null): Promise<MemoryConnectionRow | undefined> {
-    if (hubUserId != null && normalizeHubUserId(hubUserId) > 0) {
+    if (typeof hubUserId === 'number' || (hubUserId != null && normalizeHubUserId(hubUserId) > 0)) {
       return this.repo.findByAppUrnAndUser(appUrn, normalizeHubUserId(hubUserId));
     }
 

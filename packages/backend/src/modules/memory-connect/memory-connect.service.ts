@@ -374,7 +374,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     } catch (err) {
       this.logger.error(`[MemoryConnect] exchange failed for ${appUrn}`, err);
 
-      return this.failConnect(appUrn, next, released);
+      return this.failConnect(appUrn, next, hubUserId, released);
     }
 
     // Defense in depth: the code must be for the same app the flow started for.
@@ -384,7 +384,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       // Revoke a mismatched exchange so its unmanaged key does not remain valid.
       await this.exchange.revoke(provider.internalUrl, exchanged.appUrn);
 
-      return this.failConnect(appUrn, next, released);
+      return this.failConnect(appUrn, next, hubUserId, released);
     }
 
     try {
@@ -398,7 +398,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
         this.logger.error(`[MemoryConnect] ${appUrn}: the unstored key could not be revoked either; it stays valid on CI Memory until it expires`);
       }
 
-      return this.failConnect(appUrn, next, released, true);
+      return this.failConnect(appUrn, next, hubUserId, released, true);
     }
 
     const applied = await this.applyConnection(appUrn, 'schedule');
@@ -417,8 +417,23 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * the dashboard with a message that says so instead of back on the app as if nothing happened. The
    * app is restarted so it stops presenting a key CI Memory no longer accepts.
    */
-  private async failConnect(appUrn: AppUrn, next: string, released: 'none' | 'released', keyDropped = false): Promise<{ next: string; error: true }> {
+  private async failConnect(
+    appUrn: AppUrn,
+    next: string,
+    hubUserId: string,
+    released: 'none' | 'released',
+    keyDropped = false,
+  ): Promise<{ next: string; error: true }> {
     if (released === 'released' || keyDropped) {
+      // Those revokes were by app, so they also took this person's own earlier key. Left connected,
+      // that row would be the newest connected one and the restart would hand its dead key back.
+      try {
+        const own = (await this.connections.listConnected(appUrn)).filter((row) => isSameHubUser(row.hubUserId, hubUserId));
+        await this.clearRevokedConnections(appUrn, own);
+      } catch (err) {
+        this.logger.error(`[MemoryConnect] ${appUrn}: could not clear the revoked connection of Hub user ${hubUserId}`, err);
+      }
+
       await this.applyConnection(appUrn, 'schedule');
     }
 
@@ -639,6 +654,12 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
   /** Record that the user chose not to connect (do not re-prompt). */
   async skip(appUrn: AppUrn, hubUserId?: string | null): Promise<void> {
+    // A skip with no Hub person on it lands on the install-global row. If that row is the app's
+    // connection, "Not now" would unplug it for everyone on the next restart.
+    if ((await this.connections.getRow(appUrn, normalizeHubUserId(hubUserId)))?.state === 'connected') {
+      return;
+    }
+
     await this.connections.markSkipped(appUrn, hubUserId);
   }
 
@@ -649,10 +670,11 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
   async disconnect(appUrn: AppUrn, hubUserId?: string | null): Promise<void> {
     // Held until the rows are cleared, not over the restart, so a waiting Connect callback answers fast.
     await this.withConnectionLock(appUrn, async () => {
-      const active = hubUserId ? await this.connections.getActiveConnection(appUrn) : undefined;
+      const active = await this.connections.getActiveConnection(appUrn);
 
       // CI Memory revokes by app, so this would take the key of whoever connected it. A connection
       // with no person on it is nobody's, so anyone who can open the app page may disconnect it.
+      // A request with no Hub person on it owns nobody's connection, so it is refused too.
       if (active && isAnotherPersons(active, hubUserId)) {
         throw new TranslatableError('MEMORY_CONNECT_DISCONNECT_REFUSED', {}, HttpStatus.FORBIDDEN);
       }

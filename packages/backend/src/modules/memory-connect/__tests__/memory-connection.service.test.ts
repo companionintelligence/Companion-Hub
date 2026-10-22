@@ -157,6 +157,16 @@ describe('MemoryConnectionService', () => {
     expect(repo.findByAppUrnAndUser).toHaveBeenCalledWith('ci-openclaw:local', 2);
   });
 
+  it("getRow with a row's hub_user_id 0 reads the install-global row, not the app's newest row", async () => {
+    const { service, repo } = makeMocks();
+    repo.findByAppUrn.mockResolvedValue(row({ hubUserId: 1, state: 'skipped' }));
+    repo.findByAppUrnAndUser.mockResolvedValue(row({ hubUserId: 0, state: 'connected', encryptedKey: 'enc(k)' }));
+
+    expect(await service.getRow('ci-openclaw:local', 0)).toMatchObject({ hubUserId: 0, state: 'connected' });
+    expect(repo.findByAppUrnAndUser).toHaveBeenCalledWith('ci-openclaw:local', 0);
+    expect(repo.findByAppUrn).not.toHaveBeenCalled();
+  });
+
   it('storeConnected persists the Hub person who consented', async () => {
     const { service, repo } = makeMocks();
 
