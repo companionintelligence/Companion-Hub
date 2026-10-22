@@ -77,6 +77,15 @@ describe('initGpuRuntime on a Windows install', () => {
     expect(Number.isFinite(Date.parse(probe.updatedAt))).toBe(true);
   });
 
+  it('takes the largest card nvidia-smi.exe lists, as the desktop app does', () => {
+    nvidiaSmi.row = `NVIDIA GeForce GT 1030, 2048, 581.80\n${GPU_NAME}, 24564, 581.80\n`;
+
+    initGpuRuntime();
+
+    const probe = JSON.parse(String(writeFileSync.mock.calls[0]?.[1]));
+    expect(probe).toMatchObject({ model: GPU_NAME, vramMb: 24564 });
+  });
+
   it('falls back to WMI without nvidia-smi.exe, still stamped', () => {
     initGpuRuntime();
 

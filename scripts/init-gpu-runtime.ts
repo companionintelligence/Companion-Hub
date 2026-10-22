@@ -142,7 +142,8 @@ function setupNvidiaToolkitInWslDistro(distro: string): boolean {
  */
 function runHostTool(cmd: string, args: string[]): ReturnType<typeof runCapture> {
   const direct = runCapture(cmd, args);
-  if (direct.ok || !direct.notFound) return direct;
+  // Windows has no login shell to fall back to; a `sh` there is Git Bash, which knows no more tools.
+  if (direct.ok || !direct.notFound || process.platform === 'win32') return direct;
   return runCapture('sh', ['-lc', [cmd, ...args].join(' ')]);
 }
 
@@ -281,25 +282,30 @@ function clearNvidiaProbe(): void {
 
 const NVIDIA_SMI_QUERY = ['--query-gpu=name,memory.total,driver_version', '--format=csv,noheader,nounits'];
 
-/** The host card as nvidia-smi names and sizes it, for `nvidia.json`. See {@link runHostTool}. */
-export function collectHostNvidiaProbe(): NvidiaProbe | null {
+/**
+ * The host card as nvidia-smi names and sizes it, for `nvidia.json`. See {@link runHostTool}. The first
+ * GPU by default, as the desktop app's Linux probe takes; `largest` is what its Windows probe takes.
+ */
+export function collectHostNvidiaProbe(pick: 'first' | 'largest' = 'first'): NvidiaProbe | null {
   const probe = runHostTool('nvidia-smi', NVIDIA_SMI_QUERY);
   if (!probe.ok) return null;
 
-  const line = probe.stdout
+  const rows = probe.stdout
     .split('\n')
     .map((v) => v.trim())
-    .find((v) => v.length > 0);
-  if (!line) return null;
-
-  const [modelRaw, memoryRaw, driverRaw] = line.split(',').map((v) => v.trim());
-  const vramMb = Number.parseInt(memoryRaw || '', 10);
-  if (!modelRaw) return null;
+    .filter((v) => v.length > 0)
+    .map((line) => {
+      const [modelRaw, memoryRaw, driverRaw] = line.split(',').map((v) => v.trim());
+      const vramMb = Number.parseInt(memoryRaw || '', 10);
+      return { model: modelRaw || '', vramMb: Number.isFinite(vramMb) && vramMb > 0 ? vramMb : 0, driverVersion: driverRaw || '' };
+    });
+  const row = pick === 'largest' ? [...rows].sort((a, b) => b.vramMb - a.vramMb)[0] : rows[0];
+  if (!row?.model) return null;
 
   return {
-    model: modelRaw,
-    vramMb: Number.isFinite(vramMb) && vramMb > 0 ? vramMb : 0,
-    driverVersion: driverRaw || '',
+    model: row.model,
+    vramMb: row.vramMb,
+    driverVersion: row.driverVersion,
     source: 'host-nvidia-smi',
     updatedAt: new Date().toISOString(),
   };
@@ -311,7 +317,7 @@ export function collectHostNvidiaProbe(): NvidiaProbe | null {
  * nvidia-smi.exe is not on PATH.
  */
 function collectHostNvidiaProbeWindows(): NvidiaProbe | null {
-  const fromSmi = collectHostNvidiaProbe();
+  const fromSmi = collectHostNvidiaProbe('largest');
   if (fromSmi) return fromSmi;
   const probe = runCapture('powershell.exe', [
     '-NoProfile',
