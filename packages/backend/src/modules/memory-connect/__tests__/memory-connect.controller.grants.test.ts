@@ -21,7 +21,7 @@ describe('MemoryConnectController per-app grants', () => {
   // Person 7 holds OpenClaw's restart grant; person 8 may only look at it.
   const GRANTS: Record<string, string[]> = { 'portal-7': ['view', 'start', 'stop', 'restart'], 'portal-8': ['view'] };
 
-  let service: { startConnect: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> };
+  let service: { startConnect: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn>; handleCallback: ReturnType<typeof vi.fn> };
   let controller: MemoryConnectController;
 
   const session = (userId: number) => ({ hubPrincipal: 'session', user: { id: userId }, headers: { host: 'hub.example.com' } }) as unknown as Request;
@@ -52,6 +52,10 @@ describe('MemoryConnectController per-app grants', () => {
     service = {
       startConnect: vi.fn().mockResolvedValue('https://memory.example.org/api/connect?app=ci-openclaw%3Aci-marketplace&state=s'),
       disconnect: vi.fn().mockResolvedValue(undefined),
+      // Like the real one: the grant is asked for the app the flow started for, before any exchange.
+      handleCallback: vi.fn(async (_code: string, _state: string, _userId: string, mayConnect: (appUrn: string) => Promise<boolean>) =>
+        (await mayConnect(APP)) ? { next: '/memory-connect/finishing' } : { next: '/?memoryConnect=denied', error: true },
+      ),
     };
     controller = new MemoryConnectController(
       service as never,
@@ -91,5 +95,23 @@ describe('MemoryConnectController per-app grants', () => {
     await expect(controller.disconnect(APP, session(7), {})).resolves.toEqual({ ok: true });
 
     expect(service.disconnect).toHaveBeenCalledWith(APP, '7');
+  });
+
+  // The grant can be taken away while the person is on CI Memory's consent page.
+  it('asks for the restart grant again at the callback and sends a refused person to the Hub', async () => {
+    const res = response();
+
+    await controller.callback('the-code', 'state', undefined, session(8), res);
+
+    expect(service.handleCallback).toHaveBeenCalledWith('the-code', 'state', '8', expect.any(Function));
+    expect(res.redirect).toHaveBeenCalledWith('/?memoryConnect=denied');
+  });
+
+  it('lets the callback finish for a person who still holds the restart grant', async () => {
+    const res = response();
+
+    await controller.callback('the-code', 'state', undefined, session(7), res);
+
+    expect(res.redirect).toHaveBeenCalledWith('/memory-connect/finishing');
   });
 });

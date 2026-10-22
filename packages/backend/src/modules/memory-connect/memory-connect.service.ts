@@ -68,6 +68,9 @@ function isAnotherPersons(row: Pick<MemoryConnectionRow, 'hubUserId'>, hubUserId
 /** Where a callback lands when the connect failed after another person's connection was revoked. */
 const PREVIOUS_CONNECTION_REMOVED_REDIRECT = '/?memoryConnect=previous_removed';
 
+/** Where a callback lands when the person no longer holds the grant that connecting takes. */
+const CONNECT_DENIED_REDIRECT = '/?memoryConnect=denied';
+
 /** Machine-readable reasons let the UI explain a disabled Connect button. */
 export type ConnectBlockedReason =
   /** ci-memory is not installed; there is nothing to connect to. */
@@ -322,8 +325,16 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * The callback schedules rather than awaits the restart so browser navigation cannot time out.
    * Same-code replays reuse the recorded redirect, while foreign users receive an indistinguishable failure to prevent login CSRF and code injection.
    * Once the owner resolves the state, downstream failures return to the originating app instead of dead-ending on the Hub.
+   *
+   * `mayConnect` asks again for the grant `/start` checked. The callback is what restarts the app and
+   * ends another person's connection, and a grant can be taken away in the minutes consent takes.
    */
-  async handleCallback(code: string, state: string, currentUserId: string): Promise<{ next: string; error?: boolean }> {
+  async handleCallback(
+    code: string,
+    state: string,
+    currentUserId: string,
+    mayConnect?: (appUrn: AppUrn) => Promise<boolean>,
+  ): Promise<{ next: string; error?: boolean }> {
     const attempt = this.pending.consume(state, currentUserId, this.hashCode(code));
 
     if (attempt.outcome === 'unknown') {
@@ -342,6 +353,14 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
       // Reuse the recorded redirect rather than assuming the replayed attempt succeeded.
       return { next: attempt.redirect };
+    }
+
+    // Refused before the exchange, so CI Memory never mints a key and nobody's connection is touched.
+    if (mayConnect && !(await mayConnect(attempt.appUrn))) {
+      this.logger.warn(`[MemoryConnect] connect refused at the callback for ${attempt.appUrn}: the restart grant is gone`);
+      this.pending.recordOutcome(state, CONNECT_DENIED_REDIRECT);
+
+      return { next: CONNECT_DENIED_REDIRECT, error: true };
     }
 
     const result = await this.withConnectionLock(attempt.appUrn, () => this.completeConnect(attempt.appUrn, attempt.next, code, currentUserId));

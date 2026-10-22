@@ -31,8 +31,8 @@ import { MemoryConnectService } from './memory-connect.service';
  *   POST /api/memory-connect/apps/:urn/skip   → wrapper: mark skipped
  *   POST /api/memory-connect/apps/:urn/disconnect → browser: revoke + clear + restart
  *
- * Browser routes are session-guarded (the user is signed into the Hub). `start` and
- * `disconnect` restart the app, so they also take its `restart` grant. The
+ * Browser routes are session-guarded (the user is signed into the Hub). `start`, `callback`
+ * and `disconnect` restart the app, so they also take its `restart` grant. The
  * wrapper-facing state/skip routes are authorized by {@link ManagedAppKeyGuard}
  * (the app presents its own managed key, bound to its URN) — that is the real
  * boundary. {@link InternalNetworkGuard} is layered on as best-effort defense in
@@ -141,7 +141,8 @@ export class MemoryConnectController {
       // aborted navigation) resolves to the interstitial too, without a second
       // exchange. The current user must match the one who started the flow
       // (login-CSRF guard).
-      const { next } = await this.service.handleCallback(code, state, this.currentUserId(req));
+      // The grant `/start` checked is asked again, since this is what restarts the app.
+      const { next } = await this.service.handleCallback(code, state, this.currentUserId(req), (appUrn) => this.mayRestart(req, appUrn));
       res.redirect(next);
     } catch (err) {
       // Only an unknown/expired state reaches here (no app to return to).

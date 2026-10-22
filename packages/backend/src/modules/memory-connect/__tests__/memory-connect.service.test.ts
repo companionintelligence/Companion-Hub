@@ -226,6 +226,36 @@ describe('MemoryConnectService.handleCallback', () => {
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('failed to apply the connection change'), expect.any(Error));
   });
 
+  // A grant can be taken away while the person is on CI Memory's consent page.
+  it('refuses at the callback, before any exchange, when the restart grant is gone', async () => {
+    const { service, resolver, exchange, connections, pending, lifecycle } = makeService();
+    pending.consume.mockReturnValue(CONSUMED);
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    const mayConnect = vi.fn().mockResolvedValue(false);
+
+    const result = await service.handleCallback('the-code', 'state-nonce', 'user-1', mayConnect);
+
+    expect(mayConnect).toHaveBeenCalledWith('ci-openclaw:local');
+    expect(exchange.exchange).not.toHaveBeenCalled();
+    expect(exchange.revoke).not.toHaveBeenCalled();
+    expect(connections.storeConnected).not.toHaveBeenCalled();
+    expect(lifecycle.restartApp).not.toHaveBeenCalled();
+    expect(pending.recordOutcome).toHaveBeenCalledWith('state-nonce', '/?memoryConnect=denied');
+    expect(result).toEqual({ next: '/?memoryConnect=denied', error: true });
+  });
+
+  it('finishes the connect when the person still holds the restart grant', async () => {
+    const { service, resolver, exchange, pending } = makeService();
+    pending.consume.mockReturnValue(CONSUMED);
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    exchange.exchange.mockResolvedValue({ appUrn: 'ci-openclaw:local', key: 'raw-key', expiresAt: '2026-10-07T00:00:00.000Z' });
+
+    const result = await service.handleCallback('the-code', 'state-nonce', 'user-1', vi.fn().mockResolvedValue(true));
+
+    expect(exchange.exchange).toHaveBeenCalledWith('http://gateway:8642', 'the-code');
+    expect(result).toEqual({ next: FINISHING_PATH });
+  });
+
   it('rejects an invalid/expired state without exchanging', async () => {
     const { service, pending, exchange } = makeService();
     pending.consume.mockReturnValue({ outcome: 'unknown' });
