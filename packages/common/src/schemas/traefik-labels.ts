@@ -21,6 +21,9 @@
 /** The app id the Hub writes into label keys and values: see `ServiceBuilder.interpolateVariables`. */
 const APP_ID_PLACEHOLDER = /^\{\{\s*(?:CI_HUB_APP_ID|RUNTIPI_APP_ID|RUNCIHUB_APP_ID)\s*\}\}/;
 
+/** Every one of those placeholders in a name, as `ServiceBuilder.interpolateVariables` replaces them. */
+const APP_ID_PLACEHOLDERS = /\{\{\s*(?:CI_HUB_APP_ID|RUNTIPI_APP_ID|RUNCIHUB_APP_ID)\s*\}\}/g;
+
 /** How the refusals spell the app id for the person fixing the labels. */
 const APP_ID_PLACEHOLDER_TEXT = '{{CI_HUB_APP_ID}}';
 
@@ -110,13 +113,18 @@ export function collectTraefikLabelIssues(
   appId?: string,
   options: TraefikLabelCheckOptions = {},
 ): TraefikLabelIssue[] {
+  const entries = Object.entries(labels ?? {});
+  // Most services set no Traefik label, and the claims below go over every id the Hub knows.
+  if (!entries.some(([label]) => label.toLowerCase().startsWith('traefik.'))) {
+    return [];
+  }
   const hubNetworks = options.hubNetworks ?? HUB_APP_NETWORK_NAMES;
   const ownHosts = options.hostVariables
     ? new Set([...options.hostVariables].map((name) => `\${${name}}`).filter((host) => OWN_HOSTS.has(host)))
     : OWN_HOSTS;
   const ownership: Ownership = { appId, claims: appId ? claimsOver(appId, options.knownAppIds) : [], ownHosts };
   const issues: TraefikLabelIssue[] = [];
-  for (const [label, value] of Object.entries(labels ?? {})) {
+  for (const [label, value] of entries) {
     const issue = traefikLabelIssue(label, value, ownership, hubNetworks);
     if (issue) {
       issues.push(issue);
@@ -303,7 +311,8 @@ function ownerOf(name: string, ownership: Ownership, valueSide: boolean): typeof
     return undefined;
   }
   if (appId) {
-    const resolved = `${appId}${rest}`.toLowerCase();
+    // The name as Traefik gets it: the builder writes the id in for every placeholder in it.
+    const resolved = `${appId}${rest.replace(APP_ID_PLACEHOLDERS, appId)}`.toLowerCase();
     const claim = ownership.claims.find(({ name: claimed }) => resolved === claimed || resolved.startsWith(`${claimed}-`));
     if (claim !== undefined) {
       return claim.owner;

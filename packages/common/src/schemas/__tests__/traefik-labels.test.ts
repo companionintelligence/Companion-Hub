@@ -350,6 +350,28 @@ describe('collectTraefikLabelIssues', () => {
       ).toEqual([['traefik.http.routers.{{CI_HUB_APP_ID}}-lab-east-web.rule', 'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN', 'app-home-lab-east']]);
     });
 
+    // The builder writes the id in for every placeholder in a name, not only the first.
+    it('decides by the name the builder writes, with the id in place of every placeholder', () => {
+      expect(
+        owned(
+          {
+            'traefik.http.services.{{CI_HUB_APP_ID}}-{{CI_HUB_APP_ID}}.loadbalancer.server.port': '80',
+            'traefik.http.routers.{{CI_HUB_APP_ID}}-web.service': '{{CI_HUB_APP_ID}}-{{ RUNTIPI_APP_ID }}',
+          },
+          'app-home',
+          ['app-home-app'],
+        ),
+      ).toEqual([
+        [
+          'traefik.http.services.{{CI_HUB_APP_ID}}-{{CI_HUB_APP_ID}}.loadbalancer.server.port',
+          'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN',
+          'app-home-app',
+        ],
+        ['traefik.http.routers.{{CI_HUB_APP_ID}}-web.service', 'CUSTOM_APP_ERROR_TRAEFIK_SERVICE_NOT_OWN', 'app-home-app'],
+      ]);
+      expect(owned({ 'traefik.http.services.{{CI_HUB_APP_ID}}-{{CI_HUB_APP_ID}}.loadbalancer.server.port': '80' }, 'app-home', [])).toEqual([]);
+    });
+
     it('reads the ids without regard to case, as Traefik reads names', () => {
       expect(owned({ 'traefik.http.routers.{{CI_HUB_APP_ID}}-LAB-web.rule': 'Host(`${APP_DOMAIN}`)' }, 'app-home', ['App-Home-Lab'])).toEqual([
         ['traefik.http.routers.{{CI_HUB_APP_ID}}-LAB-web.rule', 'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN', 'app-home-lab'],
