@@ -212,9 +212,9 @@ describe('collectTraefikLabelIssues', () => {
   });
 
   /*
-   * An app's id is its name and its store's slug joined by a dash, and both may hold dashes. The
-   * same app in stores `home` and `home-lab` is `app-home` and `app-home-lab`, so `app-home` and a
-   * dash begin the other app's id, and so do its other names.
+   * An app's id is its name and its store's slug joined by a dash. Both may hold dashes. The same app
+   * in stores `home` and `home-lab` is `app-home` and `app-home-lab`, so `app-home` and a dash begin
+   * the other app's id. So do its other names.
    */
   describe('with the ids of the other apps the Hub knows', () => {
     const owned = (labels: Record<string, string | boolean>, appId: string, knownAppIds: string[]) =>

@@ -26,7 +26,12 @@ describe('assertAppIdFree', () => {
     expect(() => assertAppIdFree(createAppUrn('a-b', '_user'), installed(['a', 'b-_user']))).toThrow('APP_ERROR_APP_ID_IN_USE');
   });
 
-  it('lets an app be installed again, and ids that only start alike', () => {
+  // Traefik reads router, service and middleware names without regard to case.
+  it('refuses an id another app has spelled in another case', () => {
+    expect(() => assertAppIdFree(createAppUrn('a', 'b-c'), installed(['A-b', 'c']))).toThrow('APP_ERROR_APP_ID_IN_USE');
+  });
+
+  it('lets an app be installed again and ids that only start alike', () => {
     expect(() => assertAppIdFree(createAppUrn('a', 'b-c'), installed(['a', 'b-c'], ['a', 'b-c-d'], ['a', 'b'], ['x-a', 'b-c']))).not.toThrow();
   });
 });

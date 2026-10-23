@@ -35,7 +35,7 @@ describe('CustomAppService', () => {
     filesystem.writeTextFile.mockResolvedValue(true);
     filesystem.writeBinaryFile.mockResolvedValue(true);
 
-    // No other app is installed. Nothing holds a port, and the port manager hands out 10000 for
+    // No other app is installed. Nothing holds a port and the port manager hands out 10000 for
     // whatever it is asked.
     appsRepository.getApps.mockResolvedValue([]);
     appsRepository.getAppsByPort.mockResolvedValue([] as any);

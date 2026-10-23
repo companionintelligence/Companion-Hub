@@ -296,7 +296,7 @@ describe('prepareAppComposeDir', () => {
 
   /*
    * The builder gives a Traefik name to the app with the longest id that covers it, so it needs every
-   * id the Hub knows: an app installed from any store, a custom app, and an app a store lists that
+   * id the Hub knows: an app installed from any store, a custom app and an app a store lists that
    * is not installed yet, which may be installed after this app.
    */
   it('hands the builder the id of every installed app and every app the stores list', async () => {
@@ -315,6 +315,21 @@ describe('prepareAppComposeDir', () => {
       'nextcloud-migrated',
       'nextcloud-migrated-lab',
     ]);
+  });
+
+  // A store's listing is what any store publishes: it must not stop an app from starting.
+  it('skips a listed name that is no app URN and keeps the installed ids when the listing fails', async () => {
+    const { stubs, moduleRef, docker } = createHarness();
+    stubs.appsRepository.getApps.mockResolvedValue([{ appName: 'nextcloud', appStoreSlug: 'migrated' }]);
+    stubs.marketplaceService.listedAppUrns.mockResolvedValueOnce([':odd', 'app:home-lab']);
+
+    await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+    expect([...(lastConstruction().options?.knownAppIds ?? [])].sort()).toEqual(['app-home-lab', 'nextcloud-migrated']);
+
+    stubs.marketplaceService.listedAppUrns.mockRejectedValueOnce(new Error('EACCES: permission denied'));
+    await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+    expect([...(lastConstruction().options?.knownAppIds ?? [])]).toEqual(['nextcloud-migrated']);
+    expect(stubs.logger.warn).toHaveBeenCalledWith(expect.stringContaining('EACCES: permission denied'));
   });
 
   describe('domain resolution', () => {

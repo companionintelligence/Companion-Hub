@@ -75,12 +75,12 @@ export interface TraefikLabelIssue {
  * `appId` is the app's interpolated id, for a caller that knows it. Names may then also start with
  * the id itself, as well as with `{{CI_HUB_APP_ID}}`.
  *
- * `knownAppIds` are the ids of the apps the Hub knows about, for a caller that has them. An
- * app's id is its name and its store's slug joined by a dash, and both may hold dashes, so one app's
- * id and a dash can begin another app's id: the same app in stores `home` and `home-lab` is
- * `app-home` and `app-home-lab`. A name belongs to the app with the longest id it is, or starts with
- * followed by a dash, and it is this app's own only when that app is this one. For `app-home`, the
- * name `{{CI_HUB_APP_ID}}-lab-web` is `app-home-lab`'s.
+ * `knownAppIds` are the ids of the apps the Hub knows about, for a caller that has them. An app's
+ * id is its name and its store's slug joined by a dash. Both may hold dashes, so one app's id and a
+ * dash can begin another app's id: the same app in stores `home` and `home-lab` is `app-home` and
+ * `app-home-lab`. A name belongs to the app with the longest id it is, or starts with followed by a
+ * dash. It is this app's own only when that app is this one. For `app-home`, the name
+ * `{{CI_HUB_APP_ID}}-lab-web` is `app-home-lab`'s.
  */
 export function collectTraefikLabelIssues(
   labels: Record<string, unknown> | undefined,
@@ -99,7 +99,7 @@ export function collectTraefikLabelIssues(
 }
 
 /**
- * The app the names are checked for: its id, when the caller knows it, and the other apps' ids that
+ * The app the names are checked for: its id (when the caller knows it) and the other apps' ids that
  * are this id followed by a dash and more, in lower case.
  */
 type Ownership = { appId: string | undefined; longerIds: string[] };
@@ -208,8 +208,8 @@ const OWN = Symbol('own');
  * Whose a router, service or middleware name is: {@link OWN}, the id of the longer-id app it belongs
  * to, or `undefined` when it is plainly not this app's.
  *
- * It is the app's own when it is the app's id alone or followed by a dash, a dash so
- * `{{CI_HUB_APP_ID}}x` can't become another app's id, and no other app's longer id covers it the
+ * It is the app's own when it is the app's id alone or followed by a dash (a dash so
+ * `{{CI_HUB_APP_ID}}x` can't become another app's id) and no other app's longer id covers it the
  * same way (see {@link collectTraefikLabelIssues}).
  */
 function ownerOf(name: string, ownership: Ownership, valueSide: boolean): typeof OWN | string | undefined {

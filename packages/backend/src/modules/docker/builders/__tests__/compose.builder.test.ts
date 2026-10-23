@@ -1438,13 +1438,13 @@ describe('DockerComposeBuilder — an app’s Traefik labels stay inside the app
 });
 
 /*
- * An app's id is its name and its store's slug joined by a dash, and both may hold dashes. The same
- * app in stores `home` and `home-lab` is `app-home` and `app-home-lab`, so `{{CI_HUB_APP_ID}}-lab`
- * from `app-home` is the other app's main Traefik service, and Traefik's Docker provider merges a
- * service of one name across containers. The builder gives each name to the app with the longest
- * id that covers it, among every app the Hub knows.
+ * An app's id is its name and its store's slug joined by a dash. Both may hold dashes. The same app
+ * in stores `home` and `home-lab` is `app-home` and `app-home-lab`, so `{{CI_HUB_APP_ID}}-lab` from
+ * `app-home` is the other app's main Traefik service. Traefik's Docker provider merges a service of
+ * one name across containers. The builder gives each name to the app with the longest id that covers
+ * it, among every app the Hub knows.
  */
-describe('DockerComposeBuilder — a name that starts with this app’s id can be another app’s', () => {
+describe('DockerComposeBuilder: a name that starts with this app’s id can be another app’s', () => {
   const ORIGIN = 'app-hub1-acme.ci.lan';
 
   const build = async (appUrn: ReturnType<typeof createAppUrn>, knownAppIds: string[] | undefined, extraLabels: Record<string, string | boolean>) => {

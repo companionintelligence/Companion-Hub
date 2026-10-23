@@ -341,7 +341,7 @@ describe('PortalCatalogService', () => {
     expect(service.hasCatalog()).toBe(false);
   });
 
-  it('heldCatalogSlugs names every app in the held answer, deprecated ones too, and fetches nothing', async () => {
+  it('heldCatalogSlugs names every app in the held answer (deprecated ones too) and fetches nothing', async () => {
     expect(service.heldCatalogSlugs()).toEqual([]);
     expect(portalClient.fetchStoreCatalog).not.toHaveBeenCalled();
 
