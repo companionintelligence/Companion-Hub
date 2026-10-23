@@ -811,13 +811,25 @@ export const appInfoSchema = z.preprocess(normalizeAppInfoInput, appInfoObjectSc
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const isHubOwnedEnvName = (value: unknown): boolean => typeof value === 'string' && HUB_OWNED_APP_ENV_VARS.has(value);
 
+/** What {@link withoutHubOwnedEnvNames} left out of a manifest. */
+type LeftOut = {
+  /** What went, for the log. */
+  leftOut: string[];
+  /**
+   * The default each field that writes `APP_BASE_URL` had, by the field's variable. A value an
+   * earlier env build took from it is the manifest's, not the person's (see `parseInstalledAppInfo`).
+   */
+  baseUrlDefaults: Record<string, string>;
+};
+
 /**
  * A manifest without what {@link appInfoSchema} refuses about the values the Hub sets for every app:
  * a form field or alias named for one of {@link HUB_OWNED_APP_ENV_VARS}, a Hub integration that names
- * one and a default on a field that writes `APP_BASE_URL`. `leftOut` says what went.
+ * one and a default on a field that writes `APP_BASE_URL`.
  */
-function withoutHubOwnedEnvNames(config: Record<string, unknown>): { config: Record<string, unknown>; leftOut: string[] } {
+function withoutHubOwnedEnvNames(config: Record<string, unknown>): LeftOut & { config: Record<string, unknown> } {
   const leftOut: string[] = [];
+  const baseUrlDefaults: Record<string, string> = {};
   let result = config;
 
   if (Array.isArray(config.form_fields)) {
@@ -839,6 +851,7 @@ function withoutHubOwnedEnvNames(config: Record<string, unknown>): { config: Rec
       }
       if (writesAppBaseUrl(kept) && hasDefault(kept)) {
         leftOut.push(`the default of form field ${String(field.env_variable)}`);
+        baseUrlDefaults[String(field.env_variable)] = String(kept.default);
         const { default: _default, ...withoutDefault } = kept;
         kept = withoutDefault;
       }
@@ -874,7 +887,7 @@ function withoutHubOwnedEnvNames(config: Record<string, unknown>): { config: Rec
     result = { ...result, hub_integration: kept };
   }
 
-  return { config: result, leftOut };
+  return { config: result, leftOut, baseUrlDefaults };
 }
 
 /**
@@ -883,14 +896,15 @@ function withoutHubOwnedEnvNames(config: Record<string, unknown>): { config: Rec
  * A store's manifest that names a value the Hub sets for every app is refused
  * (`HUB_OWNED_APP_ENV_VARS`). An installed copy from before that rule is read with those names left
  * out, so the app keeps starting and gets the Hub's values, as the env builder would give it anyway.
- * `leftOut` says what was left out, for the log.
+ * `leftOut` says what was left out, for the log. `baseUrlDefaults` holds the defaults left out of
+ * fields that write `APP_BASE_URL`, by the field's variable: an earlier env build wrote such a default
+ * into the app's env, and the env builder drops a value that is still that default.
  */
-export function parseInstalledAppInfo(config: Record<string, unknown>): {
+export function parseInstalledAppInfo(config: Record<string, unknown>): LeftOut & {
   parsed: ReturnType<typeof appInfoSchema.safeParse>;
-  leftOut: string[];
 } {
-  const { config: kept, leftOut } = withoutHubOwnedEnvNames(config);
-  return { parsed: appInfoSchema.safeParse(kept), leftOut };
+  const { config: kept, leftOut, baseUrlDefaults } = withoutHubOwnedEnvNames(config);
+  return { parsed: appInfoSchema.safeParse(kept), leftOut, baseUrlDefaults };
 }
 
 export type AppInfoInput = z.input<typeof appInfoObjectSchema>;

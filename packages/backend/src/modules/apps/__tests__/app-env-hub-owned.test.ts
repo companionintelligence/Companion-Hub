@@ -1,6 +1,7 @@
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
+import { LoggerService } from '@/core/logger/logger.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { InferenceEnvResolver } from '@/modules/inference/inference-env-resolver';
 import { MemoryConnectionService } from '@/modules/memory-connect/memory-connection.service';
@@ -31,6 +32,7 @@ describe('AppHelpers.generateEnvFile keeps the values the Hub sets for the app',
   let memoryConnection = mock<MemoryConnectionService>();
   let deviceRegistrationRepository = mock<DeviceRegistrationRepository>();
   let filesystem = mock<FilesystemService>();
+  let logger = mock<LoggerService>();
   let written = '';
 
   const appInfo = (overrides: Partial<AppInfo> = {}): AppInfo =>
@@ -66,6 +68,7 @@ describe('AppHelpers.generateEnvFile keeps the values the Hub sets for the app',
     config = moduleRef.get(ConfigurationService);
     inferenceEnv = moduleRef.get(InferenceEnvResolver);
     memoryConnection = moduleRef.get(MemoryConnectionService);
+    logger = moduleRef.get(LoggerService);
 
     const realEnvUtils = new EnvUtils();
     const envUtils = moduleRef.get(EnvUtils);
@@ -250,5 +253,91 @@ describe('AppHelpers.generateEnvFile keeps the values the Hub sets for the app',
       APP_BASE_URL: 'https://app.example.org',
     });
     expect(typed.get('APP_BASE_HOST')).toBe('app.example.org');
+  });
+
+  /*
+   * An app installed before a field that writes APP_BASE_URL lost its default has that default in
+   * app.env, and in the form the install dialog saved. The installed manifest is read without it
+   * (parseInstalledAppInfo), and a value that is still that default goes too.
+   */
+  describe('a base URL that is still the default the installed manifest gave it', () => {
+    const DEFAULT = 'http://ci-hub.local';
+    const baseUrlField = field({ type: 'app_base_url', env_variable: 'APP_BASE_URL', alias_env_variables: ['NEXTAUTH_URL'] });
+    const logged = (level: 'warn' | 'info') => logger[level].mock.calls.map(([line]) => String(line));
+
+    beforeEach(() => {
+      appFilesManager.getInstalledBaseUrlDefaults.mockResolvedValue(new Map([['APP_BASE_URL', DEFAULT]]));
+    });
+
+    const hubAddress = async () => {
+      const env = await generate(appInfo({ form_fields: [baseUrlField] }));
+      logger.warn.mockClear();
+      logger.info.mockClear();
+      return { url: env.get('APP_BASE_URL'), host: env.get('APP_BASE_HOST') };
+    };
+
+    it('gives the app the Hub’s address in place of the one app.env still holds', async () => {
+      const hub = await hubAddress();
+      appFilesManager.getAppEnv.mockResolvedValue({ path: '/x/app.env', content: `APP_BASE_URL=${DEFAULT}/\nAPP_BASE_HOST=ci-hub.local\n` });
+
+      const env = await generate(appInfo({ form_fields: [baseUrlField] }));
+
+      expect(hub.host).toBe('app-home-acme.example.com');
+      expect([env.get('APP_BASE_URL'), env.get('APP_BASE_HOST'), env.get('NEXTAUTH_URL')]).toEqual([hub.url, hub.host, hub.url]);
+      expect(logged('warn')).toContainEqual(expect.stringContaining('APP_BASE_URL held the default its installed manifest gave it'));
+    });
+
+    it('gives the app the Hub’s address in place of the one its saved form holds', async () => {
+      const hub = await hubAddress();
+      appFilesManager.getAppEnv.mockResolvedValue({ path: '/x/app.env', content: `APP_BASE_URL=${DEFAULT}\n` });
+
+      const base = await generate(appInfo({ form_fields: [baseUrlField] }), { exposedLocal: true, APP_BASE_URL: DEFAULT });
+      const plain = await generate(appInfo({ form_fields: [field({ env_variable: 'APP_BASE_URL' })] }), {
+        exposedLocal: true,
+        APP_BASE_URL: DEFAULT,
+      });
+
+      expect([base.get('APP_BASE_URL'), base.get('APP_BASE_HOST')]).toEqual([hub.url, hub.host]);
+      expect([plain.get('APP_BASE_URL'), plain.get('APP_BASE_HOST')]).toEqual([hub.url, hub.host]);
+    });
+
+    it('says nothing more once app.env holds the Hub’s address', async () => {
+      await generate(appInfo({ form_fields: [baseUrlField] }), { exposedLocal: true, APP_BASE_URL: DEFAULT });
+      appFilesManager.getAppEnv.mockResolvedValue({ path: '/x/app.env', content: written });
+      logger.warn.mockClear();
+      logger.info.mockClear();
+
+      await generate(appInfo({ form_fields: [baseUrlField] }), { exposedLocal: true, APP_BASE_URL: DEFAULT });
+
+      expect([...logged('warn'), ...logged('info')].filter((line) => line.includes('APP_BASE_URL'))).toEqual([]);
+    });
+
+    it('keeps a value the person entered, in the form or in app.env', async () => {
+      const typed = await generate(appInfo({ form_fields: [baseUrlField] }), { exposedLocal: true, APP_BASE_URL: 'https://app.example.org' });
+      expect([typed.get('APP_BASE_URL'), typed.get('APP_BASE_HOST')]).toEqual(['https://app.example.org', 'app.example.org']);
+      expect(logged('info')).toContainEqual(expect.stringContaining('APP_BASE_URL keeps the value the person entered'));
+      expect(logged('warn').filter((line) => line.includes('APP_BASE_URL held'))).toEqual([]);
+
+      appFilesManager.getAppEnv.mockResolvedValue({ path: '/x/app.env', content: 'APP_BASE_URL=https://app.example.org\n' });
+      const carried = await generate(appInfo({ form_fields: [baseUrlField] }));
+      expect(carried.get('APP_BASE_HOST')).toBe('app.example.org');
+
+      const plain = await generate(appInfo({ form_fields: [field({ env_variable: 'APP_BASE_URL' })] }), {
+        exposedLocal: true,
+        APP_BASE_URL: 'https://app.example.org',
+      });
+      expect(plain.get('APP_BASE_HOST')).toBe('app.example.org');
+    });
+
+    it('goes by the installed manifest’s own default only', async () => {
+      appFilesManager.getInstalledBaseUrlDefaults.mockResolvedValue(new Map());
+      appFilesManager.getAppEnv.mockResolvedValue({ path: '/x/app.env', content: `APP_BASE_URL=${DEFAULT}\n` });
+
+      expect((await generate(appInfo({ form_fields: [baseUrlField] }))).get('APP_BASE_HOST')).toBe('ci-hub.local');
+
+      // Another field's default doesn't count for this one.
+      appFilesManager.getInstalledBaseUrlDefaults.mockResolvedValue(new Map([['DOCS_URL', DEFAULT]]));
+      expect((await generate(appInfo({ form_fields: [baseUrlField] }))).get('APP_BASE_HOST')).toBe('ci-hub.local');
+    });
   });
 });

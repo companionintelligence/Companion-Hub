@@ -634,6 +634,32 @@ export class AppHelpers {
       this.logger.warn(`[AppHelpers] ${appUrn}: ${source} names ${name}, which the Hub sets for the app; the Hub's value is kept`);
     };
 
+    /*
+     * The defaults the installed manifest gave its fields that write APP_BASE_URL, which the Hub no
+     * longer takes: its host would be one of the app's own hosts (APP_BASE_HOST). An env build from
+     * before that rule wrote such a default into app.env, and a form saved by the install dialog holds
+     * it too. A value that is still that default is the manifest's, so it is dropped and the Hub
+     * gives the app its own address. A value the person entered is kept.
+     */
+    const leftOutBaseUrlDefaults = (await this.appFilesManager.getInstalledBaseUrlDefaults(appUrn)) ?? new Map<string, string>();
+    const isLeftOutBaseUrlDefault = (envVar: string, value: unknown): boolean => {
+      const leftOutDefault = leftOutBaseUrlDefaults.get(envVar);
+      return (
+        leftOutDefault !== undefined &&
+        value !== undefined &&
+        value !== null &&
+        String(value).replace(/\/+$/, '') === leftOutDefault.replace(/\/+$/, '')
+      );
+    };
+    const sayDefaultDropped = (envVar: string) => {
+      this.logger.warn(
+        `[AppHelpers] ${appUrn}: ${envVar} held the default its installed manifest gave it, which the Hub no longer takes; the app gets the Hub's address`,
+      );
+    };
+    const sayEnteredValueKept = (envVar: string) => {
+      this.logger.info(`[AppHelpers] ${appUrn}: ${envVar} keeps the value the person entered, not the default its installed manifest gave it`);
+    };
+
     if (config.generate_vapid_keys) {
       if (existingAppEnvMap.has('VAPID_PUBLIC_KEY') && existingAppEnvMap.has('VAPID_PRIVATE_KEY')) {
         envMap.set('VAPID_PUBLIC_KEY', existingAppEnvMap.get('VAPID_PUBLIC_KEY') as string);
@@ -655,7 +681,15 @@ export class AppHelpers {
         leaveOutManifestEnv(envVar, 'a form field');
         continue;
       }
-      const formValue = manifestDefaultMayDecide(field) ? mergedForm[envVar] : form[envVar];
+      let formValue = manifestDefaultMayDecide(field) ? mergedForm[envVar] : form[envVar];
+      if (leftOutBaseUrlDefaults.has(envVar) && field.type !== 'random') {
+        if (isLeftOutBaseUrlDefault(envVar, formValue)) {
+          sayDefaultDropped(envVar);
+          formValue = undefined;
+        } else if (formValue !== undefined && formValue !== null && formValue !== '') {
+          sayEnteredValueKept(envVar);
+        }
+      }
 
       if (field.type === 'random') {
         if (existingAppEnvMap.has(envVar)) {
@@ -903,18 +937,29 @@ export class AppHelpers {
         continue;
       }
       const formValue = form[envVar];
-      const hasValidFormValue = formValue !== undefined && formValue !== '' && formValue !== null;
+      const formHoldsDefault = isLeftOutBaseUrlDefault(envVar, formValue);
+      const envHoldsDefault = isLeftOutBaseUrlDefault(envVar, existingAppEnvMap.get(envVar));
+      const hasValidFormValue = formValue !== undefined && formValue !== '' && formValue !== null && !formHoldsDefault;
+      const carriesValue = existingAppEnvMap.has(envVar) && !envHoldsDefault;
 
       let resolvedBaseUrl: string | undefined;
 
       if (hasValidFormValue) {
         resolvedBaseUrl = followExposedIdentity(String(formValue).replace(/\/+$/, ''));
-      } else if (existingAppEnvMap.has(envVar)) {
+      } else if (carriesValue) {
         resolvedBaseUrl = followExposedIdentity(String(existingAppEnvMap.get(envVar)).replace(/\/+$/, ''));
       } else if (field.default !== undefined && String(field.default).trim() !== '' && manifestDefaultMayDecide(field)) {
         resolvedBaseUrl = String(field.default).replace(/\/+$/, '');
       } else if (defaultAppBaseUrl) {
         resolvedBaseUrl = defaultAppBaseUrl;
+      }
+
+      if (leftOutBaseUrlDefaults.has(envVar)) {
+        if (!hasValidFormValue && !carriesValue && (formHoldsDefault || envHoldsDefault)) {
+          sayDefaultDropped(envVar);
+        } else if (resolvedBaseUrl && resolvedBaseUrl !== defaultAppBaseUrl) {
+          sayEnteredValueKept(envVar);
+        }
       }
 
       if (!resolvedBaseUrl) {

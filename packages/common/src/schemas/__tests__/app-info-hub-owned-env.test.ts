@@ -196,6 +196,22 @@ describe('parseInstalledAppInfo', () => {
     ]);
   });
 
+  // An earlier env build wrote such a default into app.env, and the env builder drops a value that is
+  // still it.
+  it('says which defaults it left out of fields that write APP_BASE_URL', () => {
+    const { baseUrlDefaults } = installed({
+      form_fields: [
+        { type: 'app_base_url', label: 'Public URL', env_variable: 'APP_BASE_URL', default: 'http://ci-hub.local/' },
+        { type: 'app_base_url', label: 'Site URL', env_variable: 'SITE_URL', alias_env_variables: ['APP_BASE_URL'], default: 'https://site.example' },
+        { type: 'app_base_url', label: 'Docs URL', env_variable: 'DOCS_URL', default: 'https://docs.example' },
+        { type: 'text', label: 'Site name', env_variable: 'SITE_NAME', default: 'Mine' },
+      ],
+    });
+
+    expect(baseUrlDefaults).toEqual({ APP_BASE_URL: 'http://ci-hub.local/', SITE_URL: 'https://site.example' });
+    expect(installed({ form_fields: [{ type: 'app_base_url', label: 'Public URL', env_variable: 'APP_BASE_URL' }] }).baseUrlDefaults).toEqual({});
+  });
+
   it('reads a manifest the rules accept as it is', () => {
     const input = {
       form_fields: [{ type: 'app_base_url', label: 'Public URL', env_variable: 'APP_BASE_URL', alias_env_variables: ['APP_URL'] }],

@@ -140,6 +140,24 @@ export class AppFilesManager {
   }
 
   /**
+   * The defaults the installed manifest gave its fields that write `APP_BASE_URL`, by the field's
+   * variable, which `getInstalledAppInfo` reads it without (`parseInstalledAppInfo`). Empty when the
+   * manifest gives none or can't be read.
+   */
+  public async getInstalledBaseUrlDefaults(appUrn: AppUrn): Promise<ReadonlyMap<string, string>> {
+    try {
+      const configPath = path.join(this.getAppPaths(appUrn).appInstalledDir, 'config.json');
+      if (await this.filesystem.pathExists(configPath)) {
+        const config = JSON.parse((await this.filesystem.readTextFile(configPath)) ?? '{}');
+        return new Map(Object.entries(parseInstalledAppInfo({ ...config, urn: appUrn }).baseUrlDefaults));
+      }
+    } catch {
+      // Read as having none, as `getInstalledAppInfo` reads a manifest it can't parse as no manifest.
+    }
+    return new Map();
+  }
+
+  /**
    * Get the docker-compose.json file content from the installed app
    * @param appUrn - The app id
    * @returns The content of docker-compose.yml as a string, or null if not found
