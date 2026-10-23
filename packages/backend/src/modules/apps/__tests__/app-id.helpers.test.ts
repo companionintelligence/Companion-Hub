@@ -31,6 +31,16 @@ describe('assertAppIdFree', () => {
     expect(() => assertAppIdFree(createAppUrn('a', 'b-c'), installed(['A-b', 'c']))).toThrow('APP_ERROR_APP_ID_IN_USE');
   });
 
+  // App `ci` from a store `hub` would name its main router and service `ci-hub`, as the Hub does.
+  it.each([
+    ['ci', 'hub'],
+    ['CI', 'Hub'],
+    ['ci-os', 'hub'],
+    ['hub', 'service'],
+  ])('refuses %s from store %s, whose id is one of the Hub’s Traefik names', (appName, store) => {
+    expect(() => assertAppIdFree(createAppUrn(appName, store), installed())).toThrow('APP_ERROR_APP_ID_RESERVED');
+  });
+
   it('lets an app be installed again and ids that only start alike', () => {
     expect(() => assertAppIdFree(createAppUrn('a', 'b-c'), installed(['a', 'b-c'], ['a', 'b-c-d'], ['a', 'b'], ['x-a', 'b-c']))).not.toThrow();
   });

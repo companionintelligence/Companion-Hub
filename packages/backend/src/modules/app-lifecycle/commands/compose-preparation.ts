@@ -23,6 +23,9 @@ import Dockerode from 'dockerode';
 import { ZodError } from 'zod';
 import { fromError } from 'zod-validation-error';
 
+/** The app's own hosts in its env, which its Traefik router rules may name. */
+const OWN_HOST_VARIABLES = ['APP_DOMAIN', 'APP_LOCAL_DOMAIN', 'APP_BASE_HOST'];
+
 /**
  * The id of every app the Hub knows about: each installed app (custom apps among them) and each app
  * the enabled stores list, so that an app installed later counts too. The compose builder gives a
@@ -260,6 +263,9 @@ export async function prepareAppComposeDir(
       manifest: appInfo ?? undefined,
       defaultAppCpuLimit,
       knownAppIds: await knownAppIds(moduleRef, logger),
+      // The hosts the Hub set for this app. compose expands one it left unset from the Hub's own
+      // environment or a user env file, so an app's router rule may name only these.
+      hostVariables: OWN_HOST_VARIABLES.filter((name) => (envMap.get(name) ?? '').trim() !== ''),
     });
     const subnet = await subnetManager.allocateSubnet(appUrn, 0, options?.excludeSubnets ?? []);
 

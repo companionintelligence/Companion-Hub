@@ -34,7 +34,7 @@ interface BuilderConstruction {
   domain: string;
   localDomain: string;
   posixPermissionsSupported: boolean;
-  options?: { loopbackHostPort?: boolean; defaultAppCpuLimit?: string; knownAppIds?: Iterable<string> };
+  options?: { loopbackHostPort?: boolean; defaultAppCpuLimit?: string; knownAppIds?: Iterable<string>; hostVariables?: Iterable<string> };
 }
 
 const { builderSpy, posixProbe, schemaSpy } = vi.hoisted(() => ({
@@ -315,6 +315,22 @@ describe('prepareAppComposeDir', () => {
       'nextcloud-migrated',
       'nextcloud-migrated-lab',
     ]);
+  });
+
+  // compose expands a host the Hub left unset from wherever else it finds it, so a rule may name only
+  // the ones the app's env holds.
+  it('hands the builder the hosts the Hub set in the app’s env', async () => {
+    const { stubs, moduleRef, docker } = createHarness();
+    stubs.appFilesManager.getAppEnv.mockResolvedValue({
+      path: APP_ENV_PATH,
+      content: [APP_ENV_CONTENT, 'APP_DOMAIN=nextcloud-desk-acme.companion.example', 'APP_LOCAL_DOMAIN=', 'APP_BASE_HOST=cloud.example.org'].join(
+        '\n',
+      ),
+    });
+
+    await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+    expect(lastConstruction().options?.hostVariables).toEqual(['APP_DOMAIN', 'APP_BASE_HOST']);
   });
 
   // A store's listing is what any store publishes: it must not stop an app from starting.
@@ -785,7 +801,7 @@ describe('prepareAppComposeDir', () => {
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm({ exposureMode: 'local' }));
 
       // The manifest rides along so the route builder can fall back to its edge-auth default.
-      expect(lastConstruction().options).toEqual({ loopbackHostPort: true, manifest, knownAppIds: [] });
+      expect(lastConstruction().options).toEqual({ loopbackHostPort: true, manifest, knownAppIds: [], hostVariables: [] });
     });
 
     it('keeps the host port on loopback for an app that asks for edge auth', async () => {
@@ -800,7 +816,7 @@ describe('prepareAppComposeDir', () => {
       // The stored enableAuth is no opt-out: an install that never decided also reads `false`.
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm({ exposureMode: 'local', enableAuth: false }));
 
-      expect(lastConstruction().options).toEqual({ loopbackHostPort: true, manifest, knownAppIds: [] });
+      expect(lastConstruction().options).toEqual({ loopbackHostPort: true, manifest, knownAppIds: [], hostVariables: [] });
     });
 
     it('publishes on every interface for an app with neither', async () => {
@@ -810,7 +826,7 @@ describe('prepareAppComposeDir', () => {
 
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm({ exposureMode: 'local', enableAuth: true }));
 
-      expect(lastConstruction().options).toEqual({ loopbackHostPort: false, manifest, knownAppIds: [] });
+      expect(lastConstruction().options).toEqual({ loopbackHostPort: false, manifest, knownAppIds: [], hostVariables: [] });
     });
 
     it('keeps the all-interfaces default and says so when the listing cannot be resolved', async () => {
@@ -820,7 +836,7 @@ describe('prepareAppComposeDir', () => {
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
 
       // No manifest to hand the route builder either: it decides from the form and the port alone.
-      expect(lastConstruction().options).toEqual({ loopbackHostPort: false, manifest: undefined, knownAppIds: [] });
+      expect(lastConstruction().options).toEqual({ loopbackHostPort: false, manifest: undefined, knownAppIds: [], hostVariables: [] });
       expect(stubs.logger.warn).toHaveBeenCalledWith(expect.stringContaining(`No manifest for ${APP_URN}`));
     });
   });

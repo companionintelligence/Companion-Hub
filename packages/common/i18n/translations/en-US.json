@@ -205,6 +205,7 @@
   "APP_ERROR_INVALID_CONFIG": "App {{id}} has an invalid config.json file",
   "APP_ERROR_PORT_ALREADY_IN_USE": "Port {{port}} is already in use by app {{id}}",
   "APP_ERROR_APP_ID_IN_USE": "{{other}} already has the app id {{appId}}, which {{id}} would get too. An app's id is its name and its store's name joined by a dash, so two apps can end up with the same one. Remove {{other}} to install this app.",
+  "APP_ERROR_APP_ID_RESERVED": "{{id}} would get the app id {{appId}}, a name the Hub's own routes use. An app's id is its name and its store's name joined by a dash. Add the store under another name to install this app.",
   "APP_ERROR_EVENT_IN_PROGRESS": "An event is already in progress for app {{id}}. Please wait until it finishes or for it to timeout.",
   "APP_ERROR_INSTALL_IN_PROGRESS": "App {{id}} is already being installed. Wait for that install to finish.",
   "APP_ERROR_UNINSTALL_IN_PROGRESS": "App {{id}} is still being removed. Try again in a moment.",

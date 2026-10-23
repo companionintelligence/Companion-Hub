@@ -69,6 +69,18 @@ export interface TraefikLabelIssue {
   params: Record<string, string>;
 }
 
+/** What a caller that builds the app's compose knows about it and the Hub, for {@link collectTraefikLabelIssues}. */
+export interface TraefikLabelContext {
+  /** The ids of the apps the Hub knows about. */
+  knownAppIds?: Iterable<string>;
+  /**
+   * Which of `APP_DOMAIN`, `APP_LOCAL_DOMAIN` and `APP_BASE_HOST` the Hub set in the app's env. A rule
+   * may name only those: compose would expand one the Hub left unset from wherever else it finds it,
+   * or to nothing.
+   */
+  hostVariables?: Iterable<string>;
+}
+
 /**
  * The labels in `labels` an app may not set, each with the rule it breaks.
  *
@@ -80,14 +92,18 @@ export interface TraefikLabelIssue {
  * dash can begin another app's id: the same app in stores `home` and `home-lab` is `app-home` and
  * `app-home-lab`. A name belongs to the app with the longest id it is, or starts with followed by a
  * dash. It is this app's own only when that app is this one. For `app-home`, the name
- * `{{CI_HUB_APP_ID}}-lab-web` is `app-home-lab`'s.
+ * `{{CI_HUB_APP_ID}}-lab-web` is `app-home-lab`'s. The Hub's own names count the same way and win
+ * over an app's id of the same length (see {@link HUB_TRAEFIK_NAMES}).
  */
 export function collectTraefikLabelIssues(
   labels: Record<string, unknown> | undefined,
   appId?: string,
-  knownAppIds?: Iterable<string>,
+  context: TraefikLabelContext = {},
 ): TraefikLabelIssue[] {
-  const ownership: Ownership = { appId, longerIds: appId ? idsExtending(appId, knownAppIds) : [] };
+  const ownHosts = context.hostVariables
+    ? new Set([...context.hostVariables].map((name) => `\${${name}}`).filter((host) => OWN_HOSTS.has(host)))
+    : OWN_HOSTS;
+  const ownership: Ownership = { appId, claims: appId ? claimsOver(appId, context.knownAppIds) : [], ownHosts };
   const issues: TraefikLabelIssue[] = [];
   for (const [label, value] of Object.entries(labels ?? {})) {
     const issue = traefikLabelIssue(label, value, ownership);
@@ -99,22 +115,59 @@ export function collectTraefikLabelIssues(
 }
 
 /**
- * The app the names are checked for: its id (when the caller knows it) and the other apps' ids that
- * are this id followed by a dash and more, in lower case.
+ * Router, service and middleware names the Hub's own Traefik configuration defines.
+ *
+ * The Hub container's labels define the router, service and middleware `ci-hub` and the router
+ * `ci-os-hub` on the Docker provider (docker-compose.prod.yml and the desktop app's copy). Its files
+ * define `ci-hub`, `ci-hub-edge-headers`, `ci-hub-app-starting`, `hub-public` and `hub-service` on
+ * the file provider (assets/traefik/dynamic/dynamic.yml and `TraefikConfigService`), which also holds
+ * a copy of every app's routers, services and middlewares. An app may not define one: a name that is
+ * one of these, or starts with one followed by a dash, is the Hub's unless an app's longer id covers
+ * it, and the Hub's when that id is just as long.
  */
-type Ownership = { appId: string | undefined; longerIds: string[] };
+export const HUB_TRAEFIK_NAMES: readonly string[] = [
+  'ci-hub',
+  'ci-os-hub',
+  'ci-hub-edge-headers',
+  'ci-hub-app-starting',
+  'hub-public',
+  'hub-service',
+];
 
-/** The ids in `knownAppIds` that start with `appId` and a dash, in lower case, the longest first. */
-function idsExtending(appId: string, knownAppIds: Iterable<string> | undefined): string[] {
-  const prefix = `${appId.toLowerCase()}-`;
-  const ids = new Set<string>();
-  for (const id of knownAppIds ?? []) {
-    const lower = id.toLowerCase();
-    if (lower.startsWith(prefix)) {
-      ids.add(lower);
+/** Who a claimed name belongs to when it is the Hub's. */
+const HUB_OWNER = 'the Hub';
+
+/** A name longer than or as long as the app's id that covers some of its names, and whose it is. */
+type Claim = { name: string; owner: string };
+
+/**
+ * The app the names are checked for: its id (when the caller knows it) and the claims on names that
+ * start with it: the Hub's names and the other apps' ids that are this id followed by a dash and
+ * more, in lower case.
+ */
+type Ownership = { appId: string | undefined; claims: Claim[]; ownHosts: ReadonlySet<string> };
+
+/**
+ * The Hub's names that are `appId` or start with it and a dash, and the ids in `knownAppIds` that
+ * start with it and a dash, in lower case and the longest first. A Hub name comes before an app id
+ * of the same spelling.
+ */
+function claimsOver(appId: string, knownAppIds: Iterable<string> | undefined): Claim[] {
+  const id = appId.toLowerCase();
+  const prefix = `${id}-`;
+  const claims = new Map<string, Claim>();
+  for (const name of HUB_TRAEFIK_NAMES) {
+    if (name === id || name.startsWith(prefix)) {
+      claims.set(name, { name, owner: HUB_OWNER });
     }
   }
-  return [...ids].sort((a, b) => b.length - a.length);
+  for (const known of knownAppIds ?? []) {
+    const lower = known.toLowerCase();
+    if (lower.startsWith(prefix) && !claims.has(lower)) {
+      claims.set(lower, { name: lower, owner: lower });
+    }
+  }
+  return [...claims.values()].sort((a, b) => b.name.length - a.name.length);
 }
 
 function traefikLabelIssue(label: string, value: unknown, ownership: Ownership): TraefikLabelIssue | undefined {
@@ -154,7 +207,9 @@ function traefikLabelIssue(label: string, value: unknown, ownership: Ownership):
   // way, so `routers.<name>.x.rule` is a rule there whatever Traefik's Docker provider makes of it.
   const lastOption = optionLower.slice(optionLower.lastIndexOf('.') + 1);
   if (kindLower === 'routers' && lastOption === 'rule') {
-    return ruleKeepsToOwnHosts(value) ? undefined : { label, message: 'CUSTOM_APP_ERROR_TRAEFIK_RULE_NOT_OWN_HOST', params: { label } };
+    return ruleKeepsToOwnHosts(value, ownership.ownHosts)
+      ? undefined
+      : { label, message: 'CUSTOM_APP_ERROR_TRAEFIK_RULE_NOT_OWN_HOST', params: { label } };
   }
   if (lastOption === 'service') {
     // A router's service, and an `errors` middleware's, which answers in the app's place.
@@ -206,11 +261,11 @@ const OWN = Symbol('own');
 
 /**
  * Whose a router, service or middleware name is: {@link OWN}, the id of the longer-id app it belongs
- * to, or `undefined` when it is plainly not this app's.
+ * to or {@link HUB_OWNER}, or `undefined` when it is plainly not this app's.
  *
  * It is the app's own when it is the app's id alone or followed by a dash (a dash so
- * `{{CI_HUB_APP_ID}}x` can't become another app's id) and no other app's longer id covers it the
- * same way (see {@link collectTraefikLabelIssues}).
+ * `{{CI_HUB_APP_ID}}x` can't become another app's id) and no claim covers it the same way (see
+ * {@link collectTraefikLabelIssues}).
  */
 function ownerOf(name: string, ownership: Ownership, valueSide: boolean): typeof OWN | string | undefined {
   const { appId } = ownership;
@@ -228,9 +283,9 @@ function ownerOf(name: string, ownership: Ownership, valueSide: boolean): typeof
   }
   if (appId) {
     const resolved = `${appId}${rest}`.toLowerCase();
-    const longer = ownership.longerIds.find((id) => resolved === id || resolved.startsWith(`${id}-`));
-    if (longer !== undefined) {
-      return longer;
+    const claim = ownership.claims.find(({ name: claimed }) => resolved === claimed || resolved.startsWith(`${claimed}-`));
+    if (claim !== undefined) {
+      return claim.owner;
     }
   }
   return OWN;
@@ -264,12 +319,12 @@ const MAX_RULE_DEPTH = 32;
  * is any `$` but the own-host expansions: compose expands the rule before Traefik reads it, so
  * another expansion could change it after this check.
  */
-function ruleKeepsToOwnHosts(value: unknown): boolean {
+function ruleKeepsToOwnHosts(value: unknown, ownHosts: ReadonlySet<string>): boolean {
   if (typeof value !== 'string') {
     return false;
   }
   let withoutOwnHosts = value;
-  for (const host of OWN_HOSTS) {
+  for (const host of ownHosts) {
     withoutOwnHosts = withoutOwnHosts.split(host).join('');
   }
   if (withoutOwnHosts.includes('$')) {
@@ -285,7 +340,7 @@ function ruleKeepsToOwnHosts(value: unknown): boolean {
   if (!rule || parser.position !== tokens.length) {
     return false;
   }
-  return !namesOtherHost(rule) && restrictsToOwnHost(rule);
+  return !namesOtherHost(rule, ownHosts) && restrictsToOwnHost(rule, ownHosts);
 }
 
 function tokenizeRule(rule: string): RuleToken[] | undefined {
@@ -423,26 +478,26 @@ function isHostPatternMatcher(name: string): boolean {
   return lower === 'hostregexp' || lower === 'hostsni' || lower === 'hostsniregexp';
 }
 
-function namesOtherHost(node: RuleNode): boolean {
+function namesOtherHost(node: RuleNode, ownHosts: ReadonlySet<string>): boolean {
   switch (node.kind) {
     case 'matcher':
-      return isHostPatternMatcher(node.name) || (isHostMatcher(node.name) && node.args.some((host) => !OWN_HOSTS.has(host)));
+      return isHostPatternMatcher(node.name) || (isHostMatcher(node.name) && node.args.some((host) => !ownHosts.has(host)));
     case 'not':
-      return namesOtherHost(node.operand);
+      return namesOtherHost(node.operand, ownHosts);
     default:
-      return node.operands.some(namesOtherHost);
+      return node.operands.some((operand) => namesOtherHost(operand, ownHosts));
   }
 }
 
-function restrictsToOwnHost(node: RuleNode): boolean {
+function restrictsToOwnHost(node: RuleNode, ownHosts: ReadonlySet<string>): boolean {
   switch (node.kind) {
     case 'matcher':
-      return isHostMatcher(node.name) && node.args.length > 0 && node.args.every((host) => OWN_HOSTS.has(host));
+      return isHostMatcher(node.name) && node.args.length > 0 && node.args.every((host) => ownHosts.has(host));
     case 'not':
       return false;
     case 'and':
-      return node.operands.some(restrictsToOwnHost);
+      return node.operands.some((operand) => restrictsToOwnHost(operand, ownHosts));
     default:
-      return node.operands.every(restrictsToOwnHost);
+      return node.operands.every((operand) => restrictsToOwnHost(operand, ownHosts));
   }
 }

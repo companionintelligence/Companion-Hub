@@ -1517,6 +1517,50 @@ describe('DockerComposeBuilder: a name that starts with this app’s id can be a
     });
   });
 
+  it('leaves out a rule that names a host the Hub didn’t set for the app', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const result = await new DockerComposeBuilder('ci.computer', 'ci.lan', true, {
+        knownAppIds: ['app-home'],
+        hostVariables: ['APP_DOMAIN', 'APP_BASE_HOST'],
+      }).getDockerCompose(
+        [
+          {
+            name: 'web',
+            image: 'nginx:alpine',
+            isMain: true,
+            internalPort: 80,
+            extraLabels: {
+              'traefik.http.routers.{{CI_HUB_APP_ID}}.rule': 'Host(`${APP_LOCAL_DOMAIN}`) || Host(`${APP_BASE_HOST}`)',
+              'traefik.http.routers.{{CI_HUB_APP_ID}}-api.rule': 'Host(`${APP_DOMAIN}`) && PathPrefix(`/api`)',
+            },
+          },
+        ],
+        { exposureMode: 'cloudflare', enableAuth: true },
+        createAppUrn('app', 'home'),
+        subnet,
+        'ci.computer',
+        'ci.lan',
+        undefined,
+        ORIGIN,
+      );
+      const labels = yaml.parse(result).services.web.labels as Record<string, string | boolean>;
+
+      // The Hub's own rule stays on its router.
+      expect(labels['traefik.http.routers.app-home.rule']).toBe(`Host(\`${ORIGIN}\`)`);
+      expect(labels['traefik.http.routers.app-home-api.rule']).toBe('Host(`${APP_DOMAIN}`) && PathPrefix(`/api`)');
+      expect(warn.mock.calls.map(([line]) => String(line))).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(
+            /label traefik\.http\.routers\.\{\{CI_HUB_APP_ID\}\}\.rule was left out \[CUSTOM_APP_ERROR_TRAEFIK_RULE_NOT_OWN_HOST\]/,
+          ),
+        ]),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   // A store whose slug splits an official app's id at a dash: app `app` in a store `ci` is `app-ci`.
   it('gives the official store app its names when another store’s app id begins them', async () => {
     const labels = await build(createAppUrn('app', 'ci'), ['app-ci', `app-${CI_MARKETPLACE_STORE_SLUG}`], {

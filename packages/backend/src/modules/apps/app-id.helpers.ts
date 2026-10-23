@@ -1,5 +1,6 @@
 import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import { TranslatableError } from '@/common/error/translatable-error';
+import { HUB_TRAEFIK_NAMES } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { HttpStatus } from '@nestjs/common';
 
@@ -9,7 +10,9 @@ export function appIdOf(appName: string, appStoreSlug: string): string {
 }
 
 /**
- * Refuse an app whose id another installed app already has.
+ * Refuse an app whose id another installed app already has, or that is one of the names the Hub's
+ * own Traefik routes use (`HUB_TRAEFIK_NAMES`): the Hub names the app's main router and service by
+ * its id, so they would be the Hub's.
  *
  * Both halves of an app's id may hold dashes, so app `a-b` from store `c` and app `a` from store
  * `b-c` are both `a-b-c`. The Hub names an app's Traefik routers, services and middlewares by its
@@ -20,6 +23,9 @@ export function appIdOf(appName: string, appStoreSlug: string): string {
 export function assertAppIdFree(appUrn: AppUrn, installed: ReadonlyArray<{ appName: string; appStoreSlug: string }>): void {
   const { appName, appStoreId } = extractAppUrn(appUrn);
   const appId = appIdOf(appName, appStoreId);
+  if (HUB_TRAEFIK_NAMES.includes(appId.toLowerCase())) {
+    throw new TranslatableError('APP_ERROR_APP_ID_RESERVED', { id: appUrn, appId }, HttpStatus.CONFLICT);
+  }
   const other = installed.find(
     (app) =>
       appIdOf(app.appName, app.appStoreSlug).toLowerCase() === appId.toLowerCase() && (app.appName !== appName || app.appStoreSlug !== appStoreId),
