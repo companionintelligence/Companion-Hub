@@ -2,7 +2,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { withTimeout } from '@/common/helpers/with-timeout';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { Injectable, NotFoundException, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
-import { parseComposeJson } from '@ci-hub/common/schemas';
+import { parseInstalledComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { App } from '@/core/database/drizzle/types';
 import si from 'systeminformation';
@@ -934,7 +934,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
     if (!composeJson.content) {
       return null;
     }
-    const { services, overrides } = parseComposeJson(composeJson.content);
+    const { services, overrides } = parseInstalledComposeJson(composeJson.content);
     return mergeArchitectureOverrides(services, overrides, this.config.get('architecture'));
   }
 

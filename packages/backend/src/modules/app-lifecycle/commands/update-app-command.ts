@@ -19,7 +19,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
 import type { OperationPhase } from '../app-operation-registry';
 import { AppLifecycleCommand, type CommandExecutionContext } from './command';
-import { type UpdatePhase, parseComposeJson } from '@ci-hub/common/schemas';
+import { type UpdatePhase, parseInstalledComposeJson } from '@ci-hub/common/schemas';
 
 /**
  * Kept free at the end of an update's time (`CommandExecutionContext.deadline`) for undoing it:
@@ -104,7 +104,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
     let composeToInstall: Awaited<ReturnType<MarketplaceService['getDockerComposeJson']>>;
     try {
       composeToInstall = await marketplaceService.getDockerComposeJson(appUrn);
-      parseComposeJson(composeToInstall.content);
+      parseInstalledComposeJson(composeToInstall.content);
     } catch (err) {
       logger.error(`Error parsing docker-compose.yml for app ${appUrn} from marketplace repository. Are you running the latest version of CI Hub?`);
       // Nothing has been touched: the running app is exactly as it was.
@@ -342,7 +342,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
    */
   private imagesToPull(composeContent: unknown): string[] {
     const configService = this.moduleRef.get(ConfigurationService, { strict: false });
-    const { services, overrides } = parseComposeJson(composeContent);
+    const { services, overrides } = parseInstalledComposeJson(composeContent);
     const merged = mergeArchitectureOverrides(services, overrides, configService?.get('architecture'));
 
     return [...new Set(merged.map((service) => service.image?.trim()).filter((image): image is string => Boolean(image)))];

@@ -8,7 +8,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
-import { appInfoSchema, parseComposeJson } from '@ci-hub/common/schemas';
+import { appInfoSchema, parseInstalledComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 
 /** Single-quote a path for `sh`. */
@@ -246,9 +246,9 @@ export class AppFilesManager {
     if (!content) {
       return [];
     }
-    let services: ReturnType<typeof parseComposeJson>['services'];
+    let services: ReturnType<typeof parseInstalledComposeJson>['services'];
     try {
-      ({ services } = parseComposeJson(content));
+      ({ services } = parseInstalledComposeJson(content));
     } catch (error) {
       this.logger.debug(`Could not read the volumes of ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
       return [];

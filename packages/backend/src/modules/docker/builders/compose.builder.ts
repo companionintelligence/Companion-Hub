@@ -532,16 +532,20 @@ export class DockerComposeBuilder {
     }
 
     // The Hub's own labels go last so nothing an app declares replaces them. Its extra labels lose any
-    // reserved key and any Traefik label that reaches past the app itself: the v2 schema refuses
-    // those, but a v1 compose never meets that check.
+    // reserved key and any Traefik label that reaches past the app itself. A save refuses those, but
+    // a v1 compose never meets that check, and an installed compose saved before a rule existed is
+    // read with them kept (`parseInstalledComposeJson`), so this is where they are left out.
     const appId = `${appName}-${appStoreId}`;
-    const refusedTraefikLabels = new Map(collectTraefikLabelIssues(params.extraLabels, appId).map((issue) => [issue.label, issue.message]));
-    for (const [label, rule] of refusedTraefikLabels) {
+    const leftOutLabels = new Map(collectTraefikLabelIssues(params.extraLabels, appId).map((issue) => [issue.label, issue.message]));
+    for (const key of Object.keys(params.extraLabels ?? {})) {
+      if (isReservedHubLabel(key)) {
+        leftOutLabels.set(key, 'CUSTOM_APP_ERROR_LABEL_RESERVED');
+      }
+    }
+    for (const [label, rule] of leftOutLabels) {
       console.warn(`! App "${appName}" service "${params.name}": label ${label} was left out [${rule}]`);
     }
-    const extraLabels = Object.fromEntries(
-      Object.entries(params.extraLabels ?? {}).filter(([key]) => !isReservedHubLabel(key) && !refusedTraefikLabels.has(key)),
-    );
+    const extraLabels = Object.fromEntries(Object.entries(params.extraLabels ?? {}).filter(([key]) => !leftOutLabels.has(key)));
     service
       .setLabels({ ...traefikLabels, ...extraLabels, ...defaultLabels })
       .interpolateVariables(appId, localDomain)

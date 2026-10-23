@@ -2,7 +2,7 @@
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import { CI_MARKETPLACE_STORE_SLUG } from '@/core/portal/portal.constants';
 import type { ServiceInput } from '@ci-hub/common/schemas';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import yaml from 'yaml';
 import { DockerComposeBuilder } from '../compose.builder';
 import { ServiceBuilder } from '../service.builder';
@@ -1388,6 +1388,33 @@ describe('DockerComposeBuilder — an app’s Traefik labels stay inside the app
       'ci-hub-edge-headers@file,ci-hub@file,my-app-_user-gzip@docker,my-app-_user-proto@docker,ci-hub-app-starting@file',
     );
     expect(labels).not.toHaveProperty('traefik.http.routers.my-app-_user-insecure.MIDDLEWARES');
+  });
+
+  // What an app saved before the label rules reaches the builder with: it leaves out both kinds and
+  // says which.
+  it('leaves out the Hub’s own labels and refused Traefik labels and logs each', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const labels = await labelsFor(
+        { exposureMode: 'cloudflare', enableAuth: true },
+        { 'traefik.docker.network': 'another_network', 'ci-hub.appurn': 'other-app:ci-marketplace', 'com.example.team': 'web' },
+      );
+
+      // The Hub's own value, not the app's.
+      expect(labels['traefik.docker.network']).not.toBe('another_network');
+      expect(labels['traefik.docker.network']).toMatch(/_network$/);
+      expect(labels['ci-hub.appurn']).toBe('my-app:_user');
+      expect(labels['com.example.team']).toBe('web');
+      const logged = warn.mock.calls.map(([line]) => String(line));
+      expect(logged).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/label traefik\.docker\.network was left out \[CUSTOM_APP_ERROR_TRAEFIK_LABEL_NOT_ALLOWED\]/),
+          expect.stringMatching(/label ci-hub\.appurn was left out \[CUSTOM_APP_ERROR_LABEL_RESERVED\]/),
+        ]),
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('keeps names that spell the app id out, as a compose written for this app may', async () => {

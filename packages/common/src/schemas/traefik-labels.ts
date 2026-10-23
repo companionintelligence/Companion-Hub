@@ -53,6 +53,15 @@ const HUB_MIDDLEWARES = new Set([...HUB_FORWARD_AUTH_MIDDLEWARES, 'ci-hub-edge-h
 /** `traefik.http.<routers|services|middlewares>.<name>.<option>`. Traefik reads labels without regard to case. */
 const HTTP_OBJECT_LABEL = /^traefik\.http\.(routers|services|middlewares)\.([^.]+)\.(.+)$/i;
 
+/** Every refusal {@link collectTraefikLabelIssues} gives, by its message. */
+export const TRAEFIK_LABEL_REFUSALS: ReadonlySet<string> = new Set([
+  'CUSTOM_APP_ERROR_TRAEFIK_LABEL_NOT_ALLOWED',
+  'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN',
+  'CUSTOM_APP_ERROR_TRAEFIK_SERVICE_NOT_OWN',
+  'CUSTOM_APP_ERROR_TRAEFIK_MIDDLEWARE_NOT_OWN',
+  'CUSTOM_APP_ERROR_TRAEFIK_RULE_NOT_OWN_HOST',
+]);
+
 export interface TraefikLabelIssue {
   label: string;
   message: string;
