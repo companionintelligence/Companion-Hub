@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { resetMobileClientCacheForTests } from '@/lib/mobile-connection';
@@ -203,6 +203,81 @@ const vllmProfile = (installedCatalogIds: string[] = []): HardwareProfileRespons
     availableModels: [vllmModel],
     installedCatalogIds,
   }) as any;
+
+/** A catalog row on Ollama, shaped like the onboarding profile lists it. */
+const ollamaModel = (
+  id: string,
+  displayName: string,
+  options: { modality?: 'llm' | 'embedding'; vision?: boolean; memoryFootprintMb?: number; parameterScale?: number } = {},
+) => ({
+  id,
+  displayName,
+  description: '',
+  modality: options.modality ?? 'llm',
+  purpose: 'general',
+  backend: 'ollama',
+  parameterScale: options.parameterScale ?? 4,
+  metadata: { capabilities: { tools: options.modality !== 'embedding', vision: options.vision === true } },
+  runtime: { backendModelId: id, input: ['text'], pinnedByDefault: false, memoryFootprintMb: options.memoryFootprintMb ?? 4096 },
+  requirements: { minTier: 'low', diskMb: options.memoryFootprintMb ?? 4096 },
+  tiers: { high: 'available', medium: 'available', low: 'available', cpuOnly: 'available' },
+});
+
+const gemmaE2b = ollamaModel('gemma4-e2b', 'Gemma 4 E2B', { vision: true, memoryFootprintMb: 3300, parameterScale: 2 });
+const gemmaE4b = ollamaModel('gemma4-e4b', 'Gemma 4 E4B', { vision: true, memoryFootprintMb: 4362 });
+const gemma12b = ollamaModel('gemma4-12b', 'Gemma 4 12B', { vision: true, memoryFootprintMb: 8560, parameterScale: 12 });
+const gemma26b = ollamaModel('gemma4-26b', 'Gemma 4 26B', { vision: true, memoryFootprintMb: 18780, parameterScale: 26 });
+const qwen35b = ollamaModel('qwen3-6-35b', 'Qwen 3.6 35B', { vision: true, memoryFootprintMb: 25456, parameterScale: 35 });
+const qwen08b = ollamaModel('qwen3-5-0-8b', 'Qwen 3.5 0.8B', { vision: true, memoryFootprintMb: 1100, parameterScale: 0.8 });
+const qwen4b = ollamaModel('qwen3-5-4b', 'Qwen 3.5 4B', { vision: true, memoryFootprintMb: 3830 });
+const nemotron4b = ollamaModel('nemotron-3-nano-4b', 'Nemotron 3 Nano 4B', { memoryFootprintMb: 3154 });
+const deepseek8b = ollamaModel('deepseek-r1-8b', 'DeepSeek R1 8B', { memoryFootprintMb: 5858, parameterScale: 8 });
+const qwen8b = ollamaModel('qwen3-8b', 'Qwen 3 8B', { memoryFootprintMb: 5858, parameterScale: 8 });
+const gemma270m = ollamaModel('gemma3-270m', 'Gemma 3 270M', { memoryFootprintMb: 550, parameterScale: 0.27 });
+const minimax = ollamaModel('minimax-m2-community-230b', 'MiniMax M2 230B', { memoryFootprintMb: 63078, parameterScale: 230 });
+const nomicEmbed = ollamaModel('nomic-embed-text', 'Nomic Embed Text', { modality: 'embedding', memoryFootprintMb: 500 });
+const embeddingGemma = ollamaModel('embeddinggemma', 'EmbeddingGemma', { modality: 'embedding', memoryFootprintMb: 700 });
+
+/**
+ * The issue's laptop: an 8 GB card whose model budget is 7.5 GB, with the lists the onboarding profile
+ * gave it. `availableModels` is in catalog order, which lists each family smallest first, and
+ * `recommendedModels` is best first.
+ */
+const laptopProfile = (installedCatalogIds: string[]): HardwareProfileResponse =>
+  ({
+    ...highTierProfile,
+    hardware: {
+      ...highTierProfile.hardware,
+      gpu: { ...highTierProfile.hardware.gpu, model: 'RTX 3080 Mobile', vramMb: 8192 },
+      effectiveInferenceMemoryMb: 7680,
+      tier: 'medium',
+    },
+    tier: 'medium',
+    recommendedModels: [qwen4b, gemmaE4b, deepseek8b, nemotron4b, qwen8b, nomicEmbed],
+    availableModels: [gemmaE4b, qwen08b, qwen4b, nemotron4b, deepseek8b, qwen8b, gemma270m, nomicEmbed, embeddingGemma],
+    memoryBudget: { ...highTierProfile.memoryBudget, totalVramMb: 8192, modelBudgetVramMb: 7680 },
+    resourceEstimate: { totalDiskMb: 0, totalMemoryMb: 0, availableMemoryMb: 7680, availableDiskMb: 25600, diskTotalMb: 327680 },
+    installedCatalogIds,
+  }) as any;
+
+/** A 128 GB unified-memory machine, whose recommended list starts with MiniMax M2 230B (61.6 GB). */
+const unified128Profile = (installedCatalogIds: string[]): HardwareProfileResponse =>
+  ({
+    ...highTierProfile,
+    hardware: {
+      ...highTierProfile.hardware,
+      gpu: { ...highTierProfile.hardware.gpu, vendor: 'amd', model: 'Radeon 8060S', vramMb: 131072, unifiedMemory: true },
+      ram: { totalMb: 131072, availableMb: 110000 },
+      effectiveInferenceMemoryMb: 91750,
+    },
+    recommendedModels: [minimax, qwen35b, gemma26b, gemma12b, nomicEmbed],
+    availableModels: [gemmaE2b, gemmaE4b, gemma12b, gemma26b, qwen35b, minimax, nomicEmbed],
+    installedCatalogIds,
+  }) as any;
+
+const isTicked = (id: string) => (screen.getByTestId(`model-checkbox-${id}`) as HTMLInputElement).checked;
+/** Whether a model's grid card or table row carries the Default badge. */
+const isMarkedDefault = (id: string) => within(screen.getByTestId(`model-row-${id}`)).queryByText(/default/i) !== null;
 
 // Mutable API state read by the default mock; tests tweak it before rendering.
 let api: {
@@ -443,6 +518,158 @@ describe('AiSetupStep', () => {
     expect((screen.getByTestId('model-checkbox-phi-4-mini') as HTMLInputElement).checked).toBe(false);
     // No install-block-reason: selecting no models is allowed (users can add AI later in Settings).
     expect(screen.queryByTestId('install-block-reason')).not.toBeInTheDocument();
+  });
+
+  /*
+   * #2113: the wizard ticked every model the engine had and marked the first in catalog order Default,
+   * so the Qwen 3.5 0.8B a Hub happened to have beat the recommended Qwen 3.5 4B, and finishing pinned
+   * all of them. Now it ticks the installed models it recommends, marks the highest of them Default,
+   * and ticks the first installed chat model as the Default only when none of those is installed.
+   */
+  describe('which installed models start ticked and which is Default', () => {
+    const continueWith = async (onComplete: ReturnType<typeof vi.fn>) => {
+      await userEvent.setup().click(screen.getByTestId('ai-continue-btn'));
+      return onComplete.mock.calls[0]?.[0];
+    };
+
+    it("marks the recommended 4B Default and ticks only recommended models, on the issue's 7.5 GB card", async () => {
+      api.profile = laptopProfile(['qwen3-5-0-8b', 'qwen3-5-4b', 'gemma3-270m', 'nomic-embed-text']);
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      expect(isTicked('qwen3-5-4b')).toBe(true);
+      expect(isMarkedDefault('qwen3-5-4b')).toBe(true);
+      expect(screen.getByText('2 models selected')).toBeInTheDocument();
+      expect(screen.queryByText('4 models selected')).not.toBeInTheDocument();
+
+      const config = await continueWith(onComplete);
+      expect(config).toMatchObject({
+        selectedModels: ['qwen3-5-4b', 'nomic-embed-text'],
+        ollamaSelectedModelIds: ['qwen3-5-4b', 'nomic-embed-text'],
+        preferredModelId: 'qwen3-5-4b',
+        preferredEmbeddingModelId: 'nomic-embed-text',
+        preferredVisionModelId: 'qwen3-5-4b',
+      });
+    });
+
+    it('marks MiniMax M2 Default on 128 GB when the engine has it and Gemma 4 E4B, and leaves Gemma unticked', async () => {
+      api.profile = unified128Profile(['gemma4-e4b', 'minimax-m2-community-230b']);
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      expect(isMarkedDefault('minimax-m2-community-230b')).toBe(true);
+      expect(screen.getByText('1 model selected')).toBeInTheDocument();
+      const config = await continueWith(onComplete);
+      expect(config).toMatchObject({ selectedModels: ['minimax-m2-community-230b'], preferredModelId: 'minimax-m2-community-230b' });
+      // Nothing ticked sees images, so the vision model the engine has is still saved, without a pin.
+      expect(config.preferredVisionModelId).toBe('gemma4-e4b');
+      expect(config.preferredEmbeddingModelId).toBeUndefined();
+    });
+
+    it('ticks the first installed chat model as Default when the engine has none of the recommended ones', async () => {
+      api.profile = laptopProfile(['gemma3-270m', 'qwen3-5-0-8b']);
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      expect(screen.getByText('1 model selected')).toBeInTheDocument();
+      expect(screen.getByTestId('model-checkbox-qwen3-5-4b')).not.toBeChecked();
+      const config = await continueWith(onComplete);
+      expect(config).toMatchObject({ selectedModels: ['qwen3-5-0-8b'], preferredModelId: 'qwen3-5-0-8b' });
+    });
+
+    it('keeps an embedder off the list ticked when the engine has no recommended one', async () => {
+      api.profile = laptopProfile(['qwen3-5-4b', 'embeddinggemma']);
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      const config = await continueWith(onComplete);
+      expect(config).toMatchObject({ selectedModels: ['qwen3-5-4b', 'embeddinggemma'], preferredEmbeddingModelId: 'embeddinggemma' });
+    });
+
+    it('ticks only the recommended embedder when the engine has another one too', async () => {
+      api.profile = laptopProfile(['qwen3-5-4b', 'nomic-embed-text', 'embeddinggemma']);
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      const config = await continueWith(onComplete);
+      expect(config).toMatchObject({ selectedModels: ['qwen3-5-4b', 'nomic-embed-text'], preferredEmbeddingModelId: 'nomic-embed-text' });
+    });
+
+    it('ticks nothing and offers the best recommended model when the engine has nothing', async () => {
+      api.profile = laptopProfile([]);
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      expect(isMarkedDefault('qwen3-5-4b')).toBe(true);
+      expect(isTicked('qwen3-5-4b')).toBe(false);
+      const config = await continueWith(onComplete);
+      expect(config.selectedModels).toEqual([]);
+      expect(config.preferredModelId).toBeUndefined();
+    });
+
+    it('moves the Default to the highest recommended model still ticked when the Default is unticked', async () => {
+      api.profile = laptopProfile(['qwen3-5-0-8b', 'qwen3-5-4b', 'qwen3-8b']);
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      await user.click(screen.getByTestId('other-group-small'));
+      await user.click(screen.getByTestId('model-checkbox-qwen3-5-0-8b'));
+      await user.click(screen.getByTestId('model-checkbox-qwen3-5-4b'));
+
+      // Qwen 3.5 0.8B comes first in the catalog; Qwen 3 8B is on the recommended list.
+      expect(isMarkedDefault('qwen3-8b')).toBe(true);
+      expect(isMarkedDefault('qwen3-5-0-8b')).toBe(false);
+      expect((await continueWith(onComplete)).preferredModelId).toBe('qwen3-8b');
+    });
+
+    it('saves the highest recommended model ticked when the Default card itself is not ticked', async () => {
+      api.profile = laptopProfile([]);
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      await user.click(screen.getByTestId('model-checkbox-qwen3-8b'));
+      await user.click(screen.getByTestId('other-group-small'));
+      await user.click(screen.getByTestId('model-checkbox-qwen3-5-0-8b'));
+
+      expect((await continueWith(onComplete)).preferredModelId).toBe('qwen3-8b');
+    });
+
+    it("keeps the person's ticks and Default through a re-check that finds new models", async () => {
+      api.profile = laptopProfile(['qwen3-5-0-8b', 'qwen3-5-4b', 'qwen3-8b', 'nomic-embed-text']);
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      await user.click(screen.getByTestId('other-group-small'));
+      await user.click(screen.getByTestId('model-checkbox-qwen3-5-0-8b'));
+      await user.click(screen.getByTestId('model-checkbox-qwen3-5-4b'));
+      await user.click(screen.getByTestId('model-checkbox-nomic-embed-text'));
+      expect(isMarkedDefault('qwen3-8b')).toBe(true);
+
+      // Gemma 4 E4B (recommended, above Qwen 3 8B) and Gemma 3 270M (not recommended) arrive meanwhile.
+      api.profile = laptopProfile(['qwen3-5-0-8b', 'qwen3-5-4b', 'qwen3-8b', 'nomic-embed-text', 'gemma4-e4b', 'gemma3-270m']);
+      await user.click(screen.getByTestId('ollama-recheck-btn'));
+      await waitFor(() => expect(isTicked('gemma4-e4b')).toBe(true));
+
+      expect(isMarkedDefault('qwen3-8b')).toBe(true);
+      const config = await continueWith(onComplete);
+      expect(config).toMatchObject({ selectedModels: ['gemma4-e4b', 'qwen3-5-0-8b', 'qwen3-8b'], preferredModelId: 'qwen3-8b' });
+    });
+
+    it('ticks a model a re-check finds as the Default when nothing else is ticked, as the first load would', async () => {
+      api.profile = laptopProfile([]);
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      api.profile = laptopProfile(['gemma3-270m']);
+      await user.click(screen.getByTestId('ollama-recheck-btn'));
+      await waitFor(() => expect(screen.getByText('1 model selected')).toBeInTheDocument());
+
+      expect(await continueWith(onComplete)).toMatchObject({ selectedModels: ['gemma3-270m'], preferredModelId: 'gemma3-270m' });
+    });
   });
 
   it('submits only Ollama-backed models with the agent framework and exposure', async () => {
