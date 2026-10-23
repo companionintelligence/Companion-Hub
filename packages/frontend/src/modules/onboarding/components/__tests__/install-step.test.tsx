@@ -447,9 +447,50 @@ describe('InstallStep', () => {
 
       const failures = await screen.findByTestId('pin-models-failures');
       expect(failures).toHaveTextContent("nomic-embed-text is not pinned: nomic-embed-text does not fit this node's pinned-model budget");
+      // One refusal is said on its line: there is nothing to say once.
+      expect(screen.queryByTestId('pin-models-refusal')).not.toBeInTheDocument();
       const row = screen.getByTestId('pin-models-row');
       expect(within(row).getByText('✕')).toBeInTheDocument();
       expect(within(row).queryByText('✓')).not.toBeInTheDocument();
+    });
+
+    it('says a refusal the Hub gave every model once, above the list, instead of on each line', async () => {
+      const unknownVram =
+        "The Hub doesn't know this GPU's memory yet (VRAM Unknown), so it can't tell whether a pinned model fits. " +
+        'Restart the desktop app or run cihub up so the Hub can read it (nvidia-smi on the host), then pin again.';
+      fetchTrackedModels.mockResolvedValue([]);
+      pinInferenceModel.mockRejectedValue(new Error(unknownVram));
+
+      render(<InstallStep apps={[]} onComplete={onComplete} aiSetupConfig={onDiskConfig} />);
+
+      const failures = await screen.findByTestId('pin-models-failures');
+      expect(within(failures).getAllByText(unknownVram)).toHaveLength(1);
+      expect(screen.getByTestId('pin-models-refusal')).toHaveTextContent(unknownVram);
+      expect(
+        within(failures)
+          .getAllByRole('listitem')
+          .map((line) => line.textContent),
+      ).toEqual(['gemma3-270m is not pinned.', 'nomic-embed-text is not pinned.']);
+    });
+
+    it('keeps each reason on its line when the Hub refused the models for different reasons', async () => {
+      fetchTrackedModels.mockResolvedValue([]);
+      pinInferenceModel.mockImplementation(async (modelId: string) => {
+        throw new Error(`Pinning ${modelId} would use more than the pinned-model budget`);
+      });
+
+      render(<InstallStep apps={[]} onComplete={onComplete} aiSetupConfig={onDiskConfig} />);
+
+      const failures = await screen.findByTestId('pin-models-failures');
+      expect(screen.queryByTestId('pin-models-refusal')).not.toBeInTheDocument();
+      expect(
+        within(failures)
+          .getAllByRole('listitem')
+          .map((line) => line.textContent),
+      ).toEqual([
+        'gemma3-270m is not pinned: Pinning gemma3-270m would use more than the pinned-model budget',
+        'nomic-embed-text is not pinned: Pinning nomic-embed-text would use more than the pinned-model budget',
+      ]);
     });
 
     it('says a model that was still downloading was not pinned, instead of checking the row', async () => {
