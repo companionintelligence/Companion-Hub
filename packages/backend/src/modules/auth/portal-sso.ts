@@ -34,8 +34,18 @@ export interface PortalSsoState {
   binding: string;
 }
 
-/** Name of the httpOnly cookie that binds a Portal sign-in to its initiating browser. */
-export const PORTAL_SSO_BINDING_COOKIE_NAME = 'ci_hub_portal_sso';
+/**
+ * Prefix of the httpOnly cookie that binds a Portal sign-in to its initiating browser. Each
+ * sign-in gets its own cookie, named after its `state`, so two sign-ins started in one browser
+ * (two tabs, or a desktop sign-in button clicked twice, which opens two browser tabs) do not
+ * overwrite each other's binding.
+ */
+const PORTAL_SSO_BINDING_COOKIE_PREFIX = 'ci_hub_portal_sso_';
+
+/** The binding cookie for one sign-in. Only called with a `state` this Hub minted. */
+export function portalBindingCookieName(state: string): string {
+  return `${PORTAL_SSO_BINDING_COOKIE_PREFIX}${state}`;
+}
 
 /** Scope the binding cookie to the Portal sign-in routes; both `/start` and `/callback` live here. */
 export const PORTAL_SSO_COOKIE_PATH = '/api/auth/portal';
@@ -46,9 +56,10 @@ export const PORTAL_SSO_STATE_TTL_SECONDS = 10 * 60;
 /**
  * Constant-time check that the browser presented the same binding the `/start` state stored.
  * Returns false when either side is missing so a state without a stored binding fails closed.
+ * Both sides are `unknown` because cookie-parser turns a `j:`-prefixed cookie into an object.
  */
-export function portalBindingMatches(stored: string | null | undefined, presented: string | null | undefined): boolean {
-  if (!stored || !presented) {
+export function portalBindingMatches(stored: unknown, presented: unknown): boolean {
+  if (typeof stored !== 'string' || typeof presented !== 'string' || !stored || !presented) {
     return false;
   }
   const storedBytes = Buffer.from(stored);

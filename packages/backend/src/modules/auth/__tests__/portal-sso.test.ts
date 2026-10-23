@@ -596,5 +596,11 @@ describe('portal-sso helpers', () => {
       expect(portalBindingMatches('', '')).toBe(false);
       expect(portalBindingMatches(null, null)).toBe(false);
     });
+
+    it('refuses a presented value that cookie-parser decoded into an object', () => {
+      // A `j:`-prefixed cookie arrives as parsed JSON, which Buffer.from would throw on.
+      expect(portalBindingMatches('abc123', { length: 6 })).toBe(false);
+      expect(portalBindingMatches('abc123', ['a', 'b', 'c', '1', '2', '3'])).toBe(false);
+    });
   });
 });
