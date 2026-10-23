@@ -6,6 +6,7 @@ import {
   type ServiceInput,
   serviceSchema,
   collectServiceSecurityViolations,
+  collectTraefikLabelIssues,
   isReservedHubLabel,
   LOOPBACK_HOST_PORT_INTERFACE,
   TRUSTED_APP_SECURITY_ALLOWLIST,
@@ -13,7 +14,7 @@ import {
 import type { AppUrn } from '@ci-hub/common/types';
 import * as yaml from 'yaml';
 import { type BuiltService, ServiceBuilder } from './service.builder';
-import { TraefikLabelsBuilder, withAppStartingPage } from './traefik-labels.builder';
+import { TraefikLabelsBuilder, withAppStartingPage, withHubMiddlewaresFirst } from './traefik-labels.builder';
 import { publishesHostPort } from '@/modules/apps/app-exposure.helpers';
 import { requiresHubLoginOnPublicRoute } from '@/modules/apps/app-public-routing.helpers';
 import { isOfficialStoreApp } from '@/modules/apps/official-store.predicate';
@@ -530,13 +531,22 @@ export class DockerComposeBuilder {
       traefikLabels = traefikBuilder.build();
     }
 
-    // The Hub's own labels go last so nothing an app declares replaces them, and its extra labels lose
-    // any reserved key: the v2 schema refuses those, but a v1 compose never meets that check.
-    const extraLabels = Object.fromEntries(Object.entries(params.extraLabels ?? {}).filter(([key]) => !isReservedHubLabel(key)));
+    // The Hub's own labels go last so nothing an app declares replaces them. Its extra labels lose any
+    // reserved key and any Traefik label that reaches past the app itself: the v2 schema refuses
+    // those, but a v1 compose never meets that check.
+    const appId = `${appName}-${appStoreId}`;
+    const refusedTraefikLabels = new Map(collectTraefikLabelIssues(params.extraLabels, appId).map((issue) => [issue.label, issue.message]));
+    for (const [label, rule] of refusedTraefikLabels) {
+      console.warn(`! App "${appName}" service "${params.name}": label ${label} was left out [${rule}]`);
+    }
+    const extraLabels = Object.fromEntries(
+      Object.entries(params.extraLabels ?? {}).filter(([key]) => !isReservedHubLabel(key) && !refusedTraefikLabels.has(key)),
+    );
     service
       .setLabels({ ...traefikLabels, ...extraLabels, ...defaultLabels })
-      .interpolateVariables(`${appName}-${appStoreId}`, localDomain)
+      .interpolateVariables(appId, localDomain)
       // After interpolation, so a manifest's `{{CI_HUB_APP_ID}}` router is the same router as ours.
+      .transformLabels((labels) => withHubMiddlewaresFirst(labels, traefikLabels))
       .transformLabels(withAppStartingPage);
 
     return service.build();

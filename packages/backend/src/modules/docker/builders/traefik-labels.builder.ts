@@ -27,15 +27,65 @@ export const APP_STARTING_MIDDLEWARE = 'ci-hub-app-starting@file';
 /** `traefik.http.routers.<router>.<option>`. Traefik reads option names without regard to case. */
 const HTTP_ROUTER_LABEL = /^traefik\.http\.routers\.([^.]+)\.(.+)$/i;
 
+/** The Hub's forward auth. The Hub's own container also defines it for the Docker provider. */
+const FORWARD_AUTH_MIDDLEWARES = new Set(['ci-hub@file', 'ci-hub@docker']);
+
+function middlewareChain(value: string | boolean | undefined): string[] {
+  return typeof value === 'string'
+    ? value
+        .split(',')
+        .map((name) => name.trim())
+        .filter(Boolean)
+    : [];
+}
+
+/**
+ * Puts the middlewares this builder gave each of its routers at the head of that router's chain,
+ * whatever chain an app's `extraLabels` set there, so a manifest can't drop the edge header strip or
+ * the Hub login. Donetick, Firefly III and OnlyOffice set chains on these routers: theirs now follow
+ * ours, and their forward auth under the other provider counts as ours, so it isn't run twice.
+ * Runs after interpolation and compares keys without regard to case, as Traefik reads them.
+ */
+export function withHubMiddlewaresFirst(
+  labels: Record<string, string | boolean>,
+  hubLabels: Record<string, string | boolean>,
+): Record<string, string | boolean> {
+  const hubChains = new Map<string, string[]>();
+  for (const [key, value] of Object.entries(hubLabels)) {
+    if (HTTP_ROUTER_LABEL.exec(key)?.[2]?.toLowerCase() === 'middlewares') {
+      hubChains.set(key.toLowerCase(), middlewareChain(value));
+    }
+  }
+
+  const result = { ...labels };
+  for (const [key, value] of Object.entries(labels)) {
+    const hubChain = hubChains.get(key.toLowerCase());
+    if (!hubChain) {
+      continue;
+    }
+    const chain = [...hubChain];
+    const hasForwardAuth = chain.some((name) => FORWARD_AUTH_MIDDLEWARES.has(name.toLowerCase()));
+    for (const name of middlewareChain(value)) {
+      const lower = name.toLowerCase();
+      const known = chain.some((existing) => existing.toLowerCase() === lower);
+      if (!known && !(hasForwardAuth && FORWARD_AUTH_MIDDLEWARES.has(lower))) {
+        chain.push(name);
+      }
+    }
+    result[key] = chain.join(',');
+  }
+  return result;
+}
+
 /**
  * Ends every HTTP router in an app container's labels with {@link APP_STARTING_MIDDLEWARE}.
  *
  * Every router, whoever declared it. The ones this builder adds are only some of them: a manifest's
- * `extraLabels` can replace a router's whole middleware chain (Donetick does), add a host to one
- * (Kimai's LAN name) or declare routers of its own, and each of those showed the same bare page
- * while the app started. So this runs on the merged labels, after the app id is interpolated into
- * their keys: run before, a manifest's `{{CI_HUB_APP_ID}}` router would get a chain of its own that
- * then overwrote this builder's, forward auth included.
+ * `extraLabels` can add middlewares to a router's chain (Donetick does), add a host to one (Kimai's
+ * LAN name) or declare routers of its own, and each of those showed the same bare page while the
+ * app started. So this runs on the merged labels, after the app id is interpolated into their keys:
+ * run before, a manifest's `{{CI_HUB_APP_ID}}` router would get a chain of its own that then
+ * overwrote this builder's.
  *
  * Last in the chain, so it only ever sees the app's own answer. Forward auth runs before it, and its
  * 401s, redirects and 5xx reach the visitor untouched: someone who is not signed in gets the login,
@@ -65,14 +115,7 @@ export function withAppStartingPage(labels: Record<string, string | boolean>): R
   const result = { ...labels };
   for (const router of routers) {
     const key = chainKeys.get(router) ?? `traefik.http.routers.${router}.middlewares`;
-    const current = result[key];
-    const chain =
-      typeof current === 'string'
-        ? current
-            .split(',')
-            .map((name) => name.trim())
-            .filter(Boolean)
-        : [];
+    const chain = middlewareChain(result[key]);
     if (!chain.includes(APP_STARTING_MIDDLEWARE)) {
       chain.push(APP_STARTING_MIDDLEWARE);
     }

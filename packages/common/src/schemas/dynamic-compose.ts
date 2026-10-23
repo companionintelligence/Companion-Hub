@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { collectTraefikLabelIssues } from './traefik-labels.js';
 import { dynamicComposeSchemaV1 } from './utils/converters/v1.js';
 
 const DENIED_CUSTOM_APP_HOST_PATHS = [
@@ -154,6 +155,9 @@ function assertCustomAppServiceSecurity(
     if (isReservedHubLabel(key)) {
       report({ message: 'CUSTOM_APP_ERROR_LABEL_RESERVED', path: ['extraLabels', key], params: { label: key } });
     }
+  }
+  for (const issue of collectTraefikLabelIssues(service.extraLabels)) {
+    report({ message: issue.message, path: ['extraLabels', issue.label], params: issue.params });
   }
   for (const [index, volume] of (service.volumes ?? []).entries()) {
     // Named volumes are docker-managed and expose no host path, so they cannot escape the sandbox.

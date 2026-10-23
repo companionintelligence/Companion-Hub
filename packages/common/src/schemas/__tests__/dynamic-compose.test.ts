@@ -367,10 +367,48 @@ schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
           const service = {
             image: 'nginx:latest',
             name: 'web',
-            extraLabels: { 'traefik.http.routers.web.middlewares': 'auth', 'com.example.ci-hub.appurn': 'x', 'ci-hubx.appurn': 'y' },
+            extraLabels: {
+              'traefik.http.routers.{{CI_HUB_APP_ID}}.middlewares': '{{CI_HUB_APP_ID}}-auth@docker',
+              'com.example.ci-hub.appurn': 'x',
+              'ci-hubx.appurn': 'y',
+            },
           };
 
           expect(serviceSchema.safeParse(service).success).toBe(true);
+        });
+
+        // One Traefik reads every app's labels. A router of this app's that sent its traffic to
+        // another app's service reached that app's backend with no Hub login.
+        it('should reject a Traefik label that reaches another app and name it', () => {
+          const label = 'traefik.http.routers.{{CI_HUB_APP_ID}}.service';
+          const service = { image: 'nginx:latest', name: 'web', extraLabels: { [label]: 'n8n-ci-marketplace', 'my.label': 'kept' } };
+
+          const result = serviceSchema.safeParse(service);
+          expect(result.success).toBe(false);
+          expect(result.error?.issues).toEqual([
+            expect.objectContaining({
+              message: 'CUSTOM_APP_ERROR_TRAEFIK_SERVICE_NOT_OWN',
+              path: ['extraLabels', label],
+              params: { label, target: 'n8n-ci-marketplace', placeholder: '{{CI_HUB_APP_ID}}' },
+            }),
+          ]);
+        });
+
+        it('should reject a Traefik rule for another host in an architecture override', () => {
+          const label = 'traefik.http.routers.{{CI_HUB_APP_ID}}-admin.rule';
+          const compose = {
+            schemaVersion: 2,
+            services: [{ image: 'nginx:latest', name: 'web', isMain: true }],
+            overrides: [{ architecture: 'arm64', services: [{ name: 'web', extraLabels: { [label]: 'Host(`n8n.example.com`)' } }] }],
+          };
+
+          const result = dynamicComposeSchema.safeParse(compose);
+          expect(result.error?.issues).toEqual([
+            expect.objectContaining({
+              message: 'CUSTOM_APP_ERROR_TRAEFIK_RULE_NOT_OWN_HOST',
+              path: ['overrides', 0, 'services', 0, 'extraLabels', label],
+            }),
+          ]);
         });
 
         it('should reject a reserved label in an architecture override', () => {
