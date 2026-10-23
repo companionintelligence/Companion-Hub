@@ -2,15 +2,17 @@ import { useTranslation } from 'react-i18next';
 import { redirect, useNavigate, useParams } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { dynamicComposeFormSchema, type dynamicComposeSchema } from '@ci-hub/common/schemas';
+import { dynamicComposeFormSchema, safeParseKeepingBuilderEnforcedLabels, type dynamicComposeSchema } from '@ci-hub/common/schemas';
 import type { z } from 'zod';
+import { AlertCircle } from 'lucide-react';
 import { MultiServiceForm } from '@/components/multi-service-form/multi-service-form';
+import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
 import { Input } from '@/components/ui/Input/Input';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
 import type { TranslatableError } from '@/types/error.types';
 import { useEffect, useId, useState } from 'react';
-import { useMultiServiceStore } from '@/stores/multiServiceStore';
+import { describeComposeIssue, useMultiServiceStore } from '@/stores/multiServiceStore';
 import { getAppComposeDiffOptions, getAppComposeDiffQueryKey, updateCustomAppMutation } from '@/api-client/@tanstack/react-query.gen';
 import type { Route } from './+types/custom-app-edit-page';
 import { getAppComposeDiff } from '@/api-client';
@@ -36,10 +38,12 @@ export async function clientLoader({ params }: Route.ActionArgs) {
 }
 
 export default function EditPageContent({ loaderData }: Route.ComponentProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const [ready, setReady] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
+  /** The first label the saved config holds that a save now refuses, in the words the save uses. */
+  const [refusedLabel, setRefusedLabel] = useState<string | null>(null);
   const params = useParams<{ appId: string }>();
 
   const [appName] = useState(params.appId);
@@ -60,7 +64,9 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
     }
 
     try {
-      const parsed = dynamicComposeFormSchema.safeParse(JSON.parse(currentConfig.current));
+      // A config saved before a label rule existed still opens, with those labels in it, so they can be
+      // removed here. The Hub leaves them out of the running app meanwhile.
+      const parsed = safeParseKeepingBuilderEnforcedLabels(dynamicComposeFormSchema, JSON.parse(currentConfig.current));
       if (!parsed.success) {
         setConfigError(t('CUSTOM_APP_INVALID_CONFIG'));
         return;
@@ -75,6 +81,12 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
       setServices(servicesWithId);
       // Kept beside the form, which has no fields for them, so a save writes them back.
       setOverrides(parsed.data.overrides);
+      // In the sentence a save gives for the first of them.
+      setRefusedLabel(
+        parsed.labelIssues.length > 0
+          ? describeComposeIssue(parsed.labelIssues, { services: servicesWithId, overrides: parsed.data.overrides })
+          : null,
+      );
       setReady(true);
     } catch {
       setConfigError(t('CUSTOM_APP_INVALID_CONFIG'));
@@ -121,6 +133,18 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
 
   return (
     <div className="page-scroller-edge-0 relative h-full overflow-y-auto" data-page-scroller="custom-app-edit">
+      {refusedLabel && (
+        <Alert variant="danger" className="mb-4" data-testid="custom-app-edit-refused-label">
+          <AlertIcon>
+            <AlertCircle strokeWidth={2} />
+          </AlertIcon>
+          <div>
+            <AlertHeading>{t('CUSTOM_APP_EDIT_REFUSED_LABELS_TITLE')}</AlertHeading>
+            <AlertDescription>{i18n.exists(refusedLabel) ? t(refusedLabel) : refusedLabel}</AlertDescription>
+            <AlertDescription>{t('CUSTOM_APP_EDIT_REFUSED_LABELS_HINT')}</AlertDescription>
+          </div>
+        </Alert>
+      )}
       <Card>
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

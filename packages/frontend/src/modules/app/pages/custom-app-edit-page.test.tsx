@@ -3,8 +3,9 @@ import type { ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 
-const { mockNavigate, composeCurrent, mutationOptions, toastError, invalidateQueries, setOverrides } = vi.hoisted(() => ({
+const { mockNavigate, composeCurrent, mutationOptions, toastError, invalidateQueries, setOverrides, setServices } = vi.hoisted(() => ({
   setOverrides: vi.fn(),
+  setServices: vi.fn(),
   mockNavigate: vi.fn(),
   composeCurrent: { value: '{' as string | undefined },
   mutationOptions: {
@@ -40,8 +41,9 @@ vi.mock('@/components/multi-service-form/multi-service-form', () => ({
   MultiServiceForm: () => <div data-testid="edit-form" />,
 }));
 
-vi.mock('@/stores/multiServiceStore', () => ({
-  useMultiServiceStore: () => ({ setServices: vi.fn(), setOverrides, resetToDefaults: vi.fn() }),
+vi.mock('@/stores/multiServiceStore', async () => ({
+  ...(await vi.importActual<typeof import('@/stores/multiServiceStore')>('@/stores/multiServiceStore')),
+  useMultiServiceStore: () => ({ setServices, setOverrides, resetToDefaults: vi.fn() }),
 }));
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
@@ -142,6 +144,65 @@ describe('custom app edit', () => {
     );
 
     expect(setOverrides).toHaveBeenCalledWith(overrides);
+  });
+
+  // A config saved before a label rule existed. The Hub leaves those labels out of the running app; the
+  // editor opens it with them, so they can be removed, and says which one a save refuses.
+  it('opens a saved config that holds a label a save now refuses, and names that label', () => {
+    const extraLabels = { 'com.example.team': 'web', 'traefik.docker.network': 'ci-hub_network' };
+    const stored = JSON.stringify({
+      schemaVersion: 2,
+      services: [{ name: 'web', image: 'nginx:1.27-alpine', isMain: true, internalPort: 80, extraLabels }],
+    });
+    composeCurrent.value = stored;
+    setServices.mockClear();
+
+    render(
+      <MemoryRouter>
+        <EditPageContent {...pageProps({ composeDiff: { current: stored } })} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId('edit-form')).toBeInTheDocument();
+    expect(screen.queryByText('Invalid configuration. Please check your services.')).not.toBeInTheDocument();
+    expect(setServices).toHaveBeenCalledWith([expect.objectContaining({ name: 'web', extraLabels })]);
+    const notice = screen.getByTestId('custom-app-edit-refused-label');
+    expect(notice).toHaveTextContent('This app has labels the Hub no longer accepts');
+    expect(notice).toHaveTextContent('Service web:');
+    expect(notice).toHaveTextContent('Remove traefik.docker.network.');
+  });
+
+  it('still refuses to open a saved config with a privileged service', () => {
+    const stored = JSON.stringify({
+      schemaVersion: 2,
+      services: [
+        { name: 'web', image: 'nginx:1.27-alpine', isMain: true, internalPort: 80, privileged: true, extraLabels: { 'traefik.docker.network': 'x' } },
+      ],
+    });
+    composeCurrent.value = stored;
+
+    render(
+      <MemoryRouter>
+        <EditPageContent {...pageProps({ composeDiff: { current: stored } })} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('Invalid configuration. Please check your services.')).toBeInTheDocument();
+    expect(screen.queryByTestId('edit-form')).not.toBeInTheDocument();
+  });
+
+  it('shows no notice for a saved config that breaks no rule', () => {
+    const stored = JSON.stringify({ schemaVersion: 2, services: [{ name: 'web', image: 'nginx:1.27-alpine', isMain: true, internalPort: 80 }] });
+    composeCurrent.value = stored;
+
+    render(
+      <MemoryRouter>
+        <EditPageContent {...pageProps({ composeDiff: { current: stored } })} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId('edit-form')).toBeInTheDocument();
+    expect(screen.queryByTestId('custom-app-edit-refused-label')).not.toBeInTheDocument();
   });
 
   // The compose holds the app's env values, so a member is refused it. A member who follows an old link
