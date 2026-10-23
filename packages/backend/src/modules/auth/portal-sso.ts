@@ -29,9 +29,10 @@ export interface PortalSsoState {
    * stores it here and also drops it as a short-lived httpOnly cookie. `/callback`
    * only completes the sign-in when the request carries the same value back, so a
    * callback opened in a different browser cannot finish this flow or take over the
-   * initiating browser's session.
+   * initiating browser's session. Optional because states issued before this field
+   * existed may still be in flight; those fail closed at the callback.
    */
-  binding: string;
+  binding?: string;
 }
 
 /**
@@ -47,8 +48,12 @@ export function portalBindingCookieName(state: string): string {
   return `${PORTAL_SSO_BINDING_COOKIE_PREFIX}${state}`;
 }
 
-/** Scope the binding cookie to the Portal sign-in routes; both `/start` and `/callback` live here. */
-export const PORTAL_SSO_COOKIE_PATH = '/api/auth/portal';
+/**
+ * Scope the binding cookie to the callback, the only route that reads it. `/start` may set a
+ * cookie for another path, and a wider scope would send every in-flight binding along with the
+ * polled `/api/auth/portal/*` routes (session-hint, desktop-handoff-status).
+ */
+export const PORTAL_SSO_COOKIE_PATH = '/api/auth/portal/callback';
 
 /** Lifetime of a Portal sign-in state and its binding cookie. Keep both in step. */
 export const PORTAL_SSO_STATE_TTL_SECONDS = 10 * 60;

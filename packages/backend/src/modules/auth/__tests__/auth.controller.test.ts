@@ -2153,9 +2153,9 @@ describe('AuthController', () => {
 
       const { cookieCall } = startedSignIn(res);
       expect(cookieCall).toBeDefined();
-      // The cookie carries exactly the value stored with the state, and it is httpOnly and path-scoped.
+      // The cookie carries the value stored with the state. It is httpOnly and scoped to the callback.
       expect(cookieCall?.[1]).toBe(storedBinding);
-      expect(cookieCall?.[2]).toMatchObject({ httpOnly: true, sameSite: 'lax', path: '/api/auth/portal' });
+      expect(cookieCall?.[2]).toMatchObject({ httpOnly: true, sameSite: 'lax', path: '/api/auth/portal/callback' });
     });
 
     it('/start flags the binding cookie Secure on a public https Hub', async () => {
@@ -2183,7 +2183,7 @@ describe('AuthController', () => {
 
       const { cookieCall } = startedSignIn(res);
       expect(cookieCall).toBeDefined();
-      expect(cookieCall?.[2]).toMatchObject({ httpOnly: true, sameSite: 'lax', path: '/api/auth/portal', secure: true });
+      expect(cookieCall?.[2]).toMatchObject({ httpOnly: true, sameSite: 'lax', path: '/api/auth/portal/callback', secure: true });
       expect(cookieCall?.[2]).not.toHaveProperty('domain');
     });
 
@@ -2215,7 +2215,7 @@ describe('AuthController', () => {
       await authController.startPortalLogin(lanRequest(), startRes);
 
       const { state, cookieCall } = startedSignIn(startRes);
-      expect(cookieCall?.[2]).toMatchObject({ httpOnly: true, sameSite: 'lax', path: '/api/auth/portal', secure: false });
+      expect(cookieCall?.[2]).toMatchObject({ httpOnly: true, sameSite: 'lax', path: '/api/auth/portal/callback', secure: false });
       expect(cookieCall?.[2]).not.toHaveProperty('domain');
 
       // The callback clears it with the same attributes, or the browser would keep it.
@@ -2225,7 +2225,7 @@ describe('AuthController', () => {
       await authController.portalCallback(lanRequest(), callbackRes, 'auth-code', state);
 
       const clearCall = vi.mocked(callbackRes.clearCookie).mock.calls.find(([name]) => name === portalBindingCookieName(state));
-      expect(clearCall?.[1]).toMatchObject({ httpOnly: true, sameSite: 'lax', path: '/api/auth/portal', secure: false });
+      expect(clearCall?.[1]).toMatchObject({ httpOnly: true, sameSite: 'lax', path: '/api/auth/portal/callback', secure: false });
       expect(clearCall?.[1]).not.toHaveProperty('domain');
     });
 
@@ -2262,7 +2262,9 @@ describe('AuthController', () => {
       expect(res.redirect).toHaveBeenCalledWith('http://localhost:5002/login?portal_error=state_expired');
     });
 
-    it('completes a callback whose binding cookie matches, and clears the cookie on success', async () => {
+    it('completes a callback whose binding cookie matches and clears the cookie on success', async () => {
+      // A module-level mock: clear the calls earlier tests made so the assertion below is about this one.
+      vi.mocked(exchangePortalAuthorizationCode).mockClear();
       cache.get.mockReturnValue(cachedStateWithBinding());
       configWithPortal();
       vi.mocked(exchangePortalAuthorizationCode).mockResolvedValue({
@@ -2306,7 +2308,10 @@ describe('AuthController', () => {
       expect(res.redirect).toHaveBeenCalledWith('http://localhost:5002/login?portal_error=state_expired');
     });
 
-    it('lets two sign-ins started in one browser both complete, in either order', async () => {
+    it.each([
+      ['in the order they started', false],
+      ['in reverse order', true],
+    ])('lets two sign-ins started in one browser both complete %s', async (_label, reverse) => {
       // A desktop sign-in button clicked twice opens two browser tabs, so two /start requests run
       // before either callback. Neither may overwrite or clear the other's binding.
       const store = new Map<string, string>();
@@ -2348,13 +2353,16 @@ describe('AuthController', () => {
         [portalBindingCookieName(second.state)]: second.cookieCall?.[1] as string,
       };
 
-      const firstRes = callbackRes();
-      await authController.portalCallback(callbackReqWithCookies(jar), firstRes, 'auth-code', first.state);
-      const secondRes = callbackRes();
-      await authController.portalCallback(callbackReqWithCookies(jar), secondRes, 'auth-code', second.state);
+      for (const signIn of reverse ? [second, first] : [first, second]) {
+        const res = callbackRes();
+        await authController.portalCallback(callbackReqWithCookies(jar), res, 'auth-code', signIn.state);
 
-      expect(firstRes.redirect).toHaveBeenCalledWith('http://localhost:5002/home');
-      expect(secondRes.redirect).toHaveBeenCalledWith('http://localhost:5002/home');
+        expect(res.redirect).toHaveBeenCalledWith('http://localhost:5002/home');
+        // Each callback clears only its own binding, so the other sign-in's cookie survives it.
+        expect(res.clearCookie).toHaveBeenCalledTimes(1);
+        expect(res.clearCookie).toHaveBeenCalledWith(portalBindingCookieName(signIn.state), expect.any(Object));
+        delete jar[portalBindingCookieName(signIn.state)];
+      }
     });
 
     it('clears the binding cookie when the sign-in fails after the binding matched', async () => {
