@@ -2159,8 +2159,9 @@ describe('AuthController', () => {
     });
 
     it('/start flags the binding cookie Secure on a public https Hub', async () => {
-      // The default (non-insecureCookie) branch derives Secure/Domain from the request, like the
-      // session cookie. Without Secure the binding would travel in cleartext to the callback.
+      // The default (non-insecureCookie) branch derives Secure from the request, like the session
+      // cookie. Without Secure the binding would travel in cleartext to the callback.
+      authService.getCookieDomain.mockImplementation(((host?: string) => (host ? `.${host}` : undefined)) as never);
       config.get.mockImplementation((key: string) => {
         if (key === 'ciCloudUrl') {
           return 'https://hub.ci.computer';
@@ -2183,6 +2184,49 @@ describe('AuthController', () => {
       const { cookieCall } = startedSignIn(res);
       expect(cookieCall).toBeDefined();
       expect(cookieCall?.[2]).toMatchObject({ httpOnly: true, sameSite: 'lax', path: '/api/auth/portal', secure: true });
+      expect(cookieCall?.[2]).not.toHaveProperty('domain');
+    });
+
+    it('keeps the binding cookie host-only and unflagged on a plain-http LAN Hub at the domain root', async () => {
+      // The session cookie on `ci.lan` is `Domain=.ci.lan` so every `<app>.ci.lan` shares it. The
+      // binding must not follow it there: the callback always returns to the host that served
+      // /start, so no app host has any use for it. Over plain http a Secure flag would make the
+      // browser drop the cookie and fail every sign-in.
+      config.get.mockImplementation((key: string) => {
+        if (key === 'ciCloudUrl') {
+          return 'https://hub.ci.computer';
+        }
+        if (key === 'userSettings') {
+          return { experimental: { insecureCookie: false } };
+        }
+        return '';
+      });
+      authService.getCookieDomain.mockImplementation(((host?: string) => (host ? `.${host}` : undefined)) as never);
+
+      const lanRequest = () =>
+        ({
+          protocol: 'http',
+          headers: { 'x-forwarded-proto': 'http', 'x-forwarded-host': 'ci.lan' },
+          get: vi.fn((header: string) => (header === 'host' ? 'ci.lan' : undefined)),
+          cookies: {},
+        }) as unknown as Request;
+      const startRes = { redirect: vi.fn(), cookie: vi.fn() } as unknown as Response;
+
+      await authController.startPortalLogin(lanRequest(), startRes);
+
+      const { state, cookieCall } = startedSignIn(startRes);
+      expect(cookieCall?.[2]).toMatchObject({ httpOnly: true, sameSite: 'lax', path: '/api/auth/portal', secure: false });
+      expect(cookieCall?.[2]).not.toHaveProperty('domain');
+
+      // The callback clears it with the same attributes, or the browser would keep it.
+      const stateCall = vi.mocked(cache.set).mock.calls.find(([key]) => key === `portal_sso:${state}`);
+      cache.get.mockReturnValue(stateCall?.[1] as string);
+      const callbackRes = { redirect: vi.fn(), cookie: vi.fn(), clearCookie: vi.fn() } as unknown as Response;
+      await authController.portalCallback(lanRequest(), callbackRes, 'auth-code', state);
+
+      const clearCall = vi.mocked(callbackRes.clearCookie).mock.calls.find(([name]) => name === portalBindingCookieName(state));
+      expect(clearCall?.[1]).toMatchObject({ httpOnly: true, sameSite: 'lax', path: '/api/auth/portal', secure: false });
+      expect(clearCall?.[1]).not.toHaveProperty('domain');
     });
 
     it('refuses a callback that carries no binding cookie, before any code exchange', async () => {

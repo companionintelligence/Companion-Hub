@@ -220,8 +220,8 @@ export class AuthController {
   }
 
   /**
-   * Secure/Domain for the Hub's own cookies (session and Portal sign-in binding): dev insecure-cookie
-   * mode drops Secure and the Domain, otherwise both follow the forwarded origin.
+   * Secure/Domain for the Hub's session cookie (the Portal sign-in binding takes only Secure): dev
+   * insecure-cookie mode drops Secure and the Domain, otherwise both follow the forwarded origin.
    */
   private cookieSecurity(req: Request): { secure: boolean; domain?: string } {
     if (this.config.get('userSettings').experimental.insecureCookie) {
@@ -250,6 +250,9 @@ export class AuthController {
   /**
    * Drop the binding cookie that ties one Portal sign-in to the browser that ran `/start`.
    * Scoped to the Portal sign-in path, with a lifetime that matches the sign-in state's cache TTL.
+   * Host-only (no Domain), unlike the session cookie: the callback always returns to the host that
+   * served `/start`, because the redirect URI is built from that request's origin, so no other host
+   * needs to see it.
    */
   private setPortalBindingCookie(res: Response, req: Request, name: string, value: string) {
     res.cookie(name, value, {
@@ -257,17 +260,17 @@ export class AuthController {
       sameSite: 'lax',
       path: PORTAL_SSO_COOKIE_PATH,
       maxAge: PORTAL_SSO_STATE_TTL_SECONDS * 1000,
-      ...this.cookieSecurity(req),
+      secure: this.cookieSecurity(req).secure,
     });
   }
 
-  /** Must pass the same Path/Domain/Secure flags as Set-Cookie or the browser keeps the stale binding. */
+  /** Must pass the same Path/Secure flags as Set-Cookie (and no Domain) or the browser keeps the stale binding. */
   private clearPortalBindingCookie(res: Response, req: Request, name: string) {
     res.clearCookie(name, {
       httpOnly: true,
       sameSite: 'lax',
       path: PORTAL_SSO_COOKIE_PATH,
-      ...this.cookieSecurity(req),
+      secure: this.cookieSecurity(req).secure,
     });
   }
 
