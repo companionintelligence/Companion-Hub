@@ -2,8 +2,8 @@
 import { describe, expect, it } from 'vitest';
 import { collectTraefikLabelIssues } from '../traefik-labels.js';
 
-const messages = (labels: Record<string, string | boolean>, appId?: string) =>
-  collectTraefikLabelIssues(labels, appId).map(({ label, message }) => [label, message]);
+const messages = (labels: Record<string, string | boolean>, appId?: string, hubNetworks?: readonly string[]) =>
+  collectTraefikLabelIssues(labels, appId, { hubNetworks }).map(({ label, message }) => [label, message]);
 
 describe('collectTraefikLabelIssues', () => {
   // The shapes the store apps that set Traefik labels use, one per kind.
@@ -80,12 +80,41 @@ describe('collectTraefikLabelIssues', () => {
     expect(messages({ [label]: 'x' })).toEqual([[label, 'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN']]);
   });
 
+  // A container on more than one network needs it, or Traefik may pick one it can't reach.
+  it.each(['ci-hub_network', 'ci-os-hub_network'])('keeps traefik.docker.network set to the Hub network %s', (network) => {
+    expect(messages({ 'traefik.docker.network': network, 'Traefik.Docker.Network': network })).toEqual([]);
+  });
+
+  it.each([['another-app_network'], ['ci-hub_network2'], [' ci-hub_network'], ['${HUB_NET}'], [true]])(
+    'refuses traefik.docker.network set to %s',
+    (network) => {
+      expect(collectTraefikLabelIssues({ 'traefik.docker.network': network })).toEqual([
+        {
+          label: 'traefik.docker.network',
+          message: 'CUSTOM_APP_ERROR_TRAEFIK_NETWORK_NOT_HUB',
+          params: { label: 'traefik.docker.network', networks: 'ci-hub_network, ci-os-hub_network' },
+        },
+      ]);
+    },
+  );
+
+  it('takes the Hub networks the container is on from the caller', () => {
+    expect(messages({ 'traefik.docker.network': 'hub2_network' }, undefined, ['hub2_network'])).toEqual([]);
+    expect(messages({ 'traefik.docker.network': 'ci-hub_network' }, undefined, ['hub2_network'])).toEqual([
+      ['traefik.docker.network', 'CUSTOM_APP_ERROR_TRAEFIK_NETWORK_NOT_HUB'],
+    ]);
+    // A service the Hub keeps off its networks has none to name.
+    expect(messages({ 'traefik.docker.network': 'ci-hub_network' }, undefined, [])).toEqual([
+      ['traefik.docker.network', 'CUSTOM_APP_ERROR_TRAEFIK_NETWORK_NOT_HUB'],
+    ]);
+  });
+
   it.each([
     // Matched before every HTTP router on the same entry point.
     'traefik.tcp.routers.{{CI_HUB_APP_ID}}.rule',
     'Traefik.TCP.Routers.{{CI_HUB_APP_ID}}.rule',
     'traefik.udp.services.{{CI_HUB_APP_ID}}.loadbalancer.server.port',
-    'traefik.docker.network',
+    'traefik.docker.allownonrunning',
     'traefik.http.services.{{CI_HUB_APP_ID}}.loadbalancer.server.url',
     'traefik.http.services.{{CI_HUB_APP_ID}}.weighted.services[0].name',
     // The Hub's login is the only forward auth on an app's routes.
@@ -147,6 +176,9 @@ describe('collectTraefikLabelIssues', () => {
     ],
     ['traefik.http.routers.{{CI_HUB_APP_ID}}.middlewares', '{{CI_HUB_APP_ID}}-a, other@file', 'other@file'],
     ['traefik.http.middlewares.{{CI_HUB_APP_ID}}-all.chain.middlewares', 'n8n-ci-marketplace-errors', 'n8n-ci-marketplace-errors'],
+    // A compose expansion after the id: compose expands it after the check, so it can't be checked.
+    ['traefik.http.routers.{{CI_HUB_APP_ID}}.middlewares', '${APP_ID}-${M}', '${APP_ID}-${M}'],
+    ['traefik.http.routers.{{CI_HUB_APP_ID}}.middlewares', '{{CI_HUB_APP_ID}}-${M}@docker', '{{CI_HUB_APP_ID}}-${M}@docker'],
   ])('refuses %s set to %s', (label, value, target) => {
     expect(collectTraefikLabelIssues({ [label]: value })).toEqual([
       { label, message: 'CUSTOM_APP_ERROR_TRAEFIK_MIDDLEWARE_NOT_OWN', params: { label, target, placeholder: '{{CI_HUB_APP_ID}}' } },

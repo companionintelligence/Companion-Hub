@@ -1,7 +1,8 @@
 /** biome-ignore-all lint/suspicious/noTemplateCurlyInString: intended */
+import { HUB_NETWORK_NAMES, hubNetworkName } from '@/common/constants';
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import { CI_MARKETPLACE_STORE_SLUG } from '@/core/portal/portal.constants';
-import type { ServiceInput } from '@ci-hub/common/schemas';
+import { HUB_APP_NETWORK_NAMES, type ServiceInput } from '@ci-hub/common/schemas';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import yaml from 'yaml';
 import { DockerComposeBuilder } from '../compose.builder';
@@ -1408,7 +1409,7 @@ describe('DockerComposeBuilder — an app’s Traefik labels stay inside the app
       const logged = warn.mock.calls.map(([line]) => String(line));
       expect(logged).toEqual(
         expect.arrayContaining([
-          expect.stringMatching(/label traefik\.docker\.network was left out \[CUSTOM_APP_ERROR_TRAEFIK_LABEL_NOT_ALLOWED\]/),
+          expect.stringMatching(/label traefik\.docker\.network was left out \[CUSTOM_APP_ERROR_TRAEFIK_NETWORK_NOT_HUB\]/),
           expect.stringMatching(/label ci-hub\.appurn was left out \[CUSTOM_APP_ERROR_LABEL_RESERVED\]/),
         ]),
       );
@@ -1434,6 +1435,104 @@ describe('DockerComposeBuilder — an app’s Traefik labels stay inside the app
       'traefik.http.routers.my-app-_user-admin.service': 'my-app-_user-admin',
       'traefik.http.services.my-app-_user-admin.loadbalancer.server.port': '8080',
     });
+  });
+
+  // A container on the app's network and the Hub's needs the pin, or Traefik may pick the network it
+  // isn't on. A local app with routers of its own gets no pin from the Hub.
+  it('keeps an app’s pin to a Hub network its container is on, and no other', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const own = {
+        'traefik.enable': true,
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-lan.rule': 'Host(`${APP_LOCAL_DOMAIN}`)',
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-lan.entrypoints': 'web',
+        'traefik.http.services.{{CI_HUB_APP_ID}}.loadbalancer.server.port': '80',
+      };
+      const pinned = await labelsFor({ exposureMode: 'local' }, { ...own, 'traefik.docker.network': hubNetworkName() });
+      const elsewhere = await labelsFor({ exposureMode: 'local' }, { ...own, 'traefik.docker.network': 'another-app_network' });
+
+      expect(pinned['traefik.docker.network']).toBe(hubNetworkName());
+      expect(pinned['traefik.http.routers.my-app-_user-lan.rule']).toBe('Host(`${APP_LOCAL_DOMAIN}`)');
+      expect(elsewhere).not.toHaveProperty('traefik.docker.network');
+      expect(elsewhere['traefik.http.routers.my-app-_user-lan.rule']).toBe('Host(`${APP_LOCAL_DOMAIN}`)');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('leaves out the pin of a service the Hub keeps off its networks', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const result = await new DockerComposeBuilder('ci.computer', 'ci.lan').getDockerCompose(
+        [
+          { name: 'web', image: 'nginx:alpine', isMain: true, internalPort: 80 },
+          { name: 'worker', image: 'nginx:alpine', extraLabels: { 'traefik.docker.network': hubNetworkName() } },
+        ],
+        { exposureMode: 'local' },
+        customUrn,
+        subnet,
+        'ci.computer',
+        'ci.lan',
+      );
+      const { web, worker } = yaml.parse(result).services;
+
+      expect(web.networks).toHaveProperty(hubNetworkName());
+      expect(worker.networks).not.toHaveProperty(hubNetworkName());
+      expect(worker.labels).not.toHaveProperty('traefik.docker.network');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('checks the pin against the networks the Hub uses', () => {
+    expect([...HUB_APP_NETWORK_NAMES]).toEqual([...HUB_NETWORK_NAMES]);
+  });
+
+  // A router keeps all of its labels or none: the chain it asked for may hold the Hub login.
+  it('leaves out the whole of a router whose chain it leaves out', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const labels = await labelsFor(
+        { exposureMode: 'cloudflare', enableAuth: true },
+        {
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-api.rule': 'Host(`${APP_LOCAL_DOMAIN}`) && PathPrefix(`/api`)',
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-api.entrypoints': 'web',
+          'traefik.http.routers.my-app-_user-api.service': 'my-app-_user',
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-api.middlewares': 'ci-hub@file,authelia-ci-marketplace@docker',
+          // On the Hub's router, only the app's labels go: the Hub's own keep it and its chain.
+          'traefik.http.routers.{{CI_HUB_APP_ID}}.middlewares': 'ci-hub@file,authelia-ci-marketplace@docker',
+          'traefik.http.routers.{{CI_HUB_APP_ID}}.rule': 'Host(`${APP_LOCAL_DOMAIN}`)',
+        },
+      );
+
+      expect(Object.keys(labels).filter((key) => key.includes('-api'))).toEqual([]);
+      expect(labels['traefik.http.routers.my-app-_user.rule']).toBe(`Host(\`${ORIGIN}\`)`);
+      expect(labels['traefik.http.routers.my-app-_user.middlewares']).toBe('ci-hub-edge-headers@file,ci-hub@file,ci-hub-app-starting@file');
+      expect(warn.mock.calls.map(([line]) => String(line))).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(
+            /label traefik\.http\.routers\.my-app-_user-api\.service was left out \[CUSTOM_APP_ERROR_TRAEFIK_MIDDLEWARE_NOT_OWN on /,
+          ),
+        ]),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // Traefik reads a router spelled two ways as one router and only one of its two chains.
+  it('gives a router spelled in another case no second chain', async () => {
+    const labels = await labelsFor(
+      { exposureMode: 'cloudflare', enableAuth: true },
+      { 'traefik.http.routers.MY-APP-_user.entrypoints': 'websecure' },
+    );
+
+    expect(
+      Object.keys(labels)
+        .filter((key) => key.toLowerCase().endsWith('.middlewares'))
+        .sort(),
+    ).toEqual(['traefik.http.routers.my-app-_user-insecure.middlewares', 'traefik.http.routers.my-app-_user.middlewares']);
+    expect(labels['traefik.http.routers.my-app-_user.middlewares']).toBe('ci-hub-edge-headers@file,ci-hub@file,ci-hub-app-starting@file');
   });
 });
 

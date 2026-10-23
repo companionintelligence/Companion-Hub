@@ -14,7 +14,7 @@ import {
 import type { AppUrn } from '@ci-hub/common/types';
 import * as yaml from 'yaml';
 import { type BuiltService, ServiceBuilder } from './service.builder';
-import { TraefikLabelsBuilder, withAppStartingPage, withHubMiddlewaresFirst } from './traefik-labels.builder';
+import { labelsOfRoutersLosingTheirChain, TraefikLabelsBuilder, withAppStartingPage, withHubMiddlewaresFirst } from './traefik-labels.builder';
 import { publishesHostPort } from '@/modules/apps/app-exposure.helpers';
 import { requiresHubLoginOnPublicRoute } from '@/modules/apps/app-public-routing.helpers';
 import { isOfficialStoreApp } from '@/modules/apps/official-store.predicate';
@@ -508,11 +508,11 @@ export class DockerComposeBuilder {
       service.setEnvFile([envFile]);
     }
 
-    if ((params.isMain || params.addToMainNetwork) && !isolation?.disableMainNetwork) {
-      hubAppNetworkNames().forEach((networkName, index) => {
-        service.setNetwork(networkName, index === 0 ? 1 : 0);
-      });
-    }
+    // The Hub networks this service's container is on, which its labels may pin Traefik to.
+    const hubNetworks = (params.isMain || params.addToMainNetwork) && !isolation?.disableMainNetwork ? hubAppNetworkNames() : [];
+    hubNetworks.forEach((networkName, index) => {
+      service.setNetwork(networkName, index === 0 ? 1 : 0);
+    });
 
     const effectiveExposureMode = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
 
@@ -557,14 +557,22 @@ export class DockerComposeBuilder {
     // read with them kept (`parseInstalledComposeJson`), so this is where they are left out.
     const appId = `${appName}-${appStoreId}`;
     const leftOutLabels = new Map(
-      collectTraefikLabelIssues(params.extraLabels, appId, { knownAppIds: this.knownAppIds, hostVariables: this.hostVariables }).map((issue) => [
-        issue.label,
-        issue.params.owner ? `${issue.message}, it is ${issue.params.owner}'s` : issue.message,
-      ]),
+      collectTraefikLabelIssues(params.extraLabels, appId, {
+        hubNetworks,
+        knownAppIds: this.knownAppIds,
+        hostVariables: this.hostVariables,
+      }).map((issue) => [issue.label, issue.params.owner ? `${issue.message}, it is ${issue.params.owner}'s` : issue.message]),
     );
     for (const key of Object.keys(params.extraLabels ?? {})) {
       if (isReservedHubLabel(key)) {
         leftOutLabels.set(key, 'CUSTOM_APP_ERROR_LABEL_RESERVED');
+      }
+    }
+    // A router left without the chain it asked for would serve without the Hub login that chain may
+    // have held, so the rest of that router goes too.
+    for (const [label, chainLabel] of labelsOfRoutersLosingTheirChain(leftOutLabels.keys(), params.extraLabels ?? {}, appId)) {
+      if (!leftOutLabels.has(label)) {
+        leftOutLabels.set(label, `${leftOutLabels.get(chainLabel)} on ${chainLabel}`);
       }
     }
     for (const [label, rule] of leftOutLabels) {

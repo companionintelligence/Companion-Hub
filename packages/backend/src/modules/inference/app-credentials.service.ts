@@ -27,7 +27,7 @@ import {
 } from './app-model-handout';
 import { handoutRecord, readHandoutRecords, removeHandoutRecords, writeHandoutRecords, type RecordedHandout } from './app-handout-record';
 import { catalogEmbedsOn, embedderEngineId, embeddingBackendFor, pickEmbeddingModel } from './embedder-handout';
-import { installedDefaultChatModel, onboardingTier } from './default-chat-model-handout';
+import { installedDefaultChatModel } from './default-chat-model-handout';
 
 // Only Hub-managed sibling apps use the bootstrap credentials endpoints.
 // Standalone services (for example companion-memory / CI-Server) receive
@@ -328,16 +328,15 @@ export class AppCredentialsService implements OnApplicationShutdown {
     const preferredModelId = preferences.preferredModel;
     const recommended = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile).filter((m) => m.backend === backendType);
     // With no model chosen, the setup wizard's Default leads while the engine has it, as on the app.env
-    // path (`InferenceEnvResolver`): the top of the recommendation list is a model nobody was offered.
+    // path (`InferenceEnvResolver`). It is ranked by the lists the wizard shows on this Hub, read at the
+    // onboarding tier: `recommended` above is read at `profile.tier`, which for a card the container
+    // runtime cannot reach yet is another tier than the wizard's.
     const wizardDefault = preferredModelId
       ? undefined
       : installedDefaultChatModel({
-          available:
-            this.modelRegistry.getModelsForHardware(
-              onboardingTier(profile, (gpu, ram) => this.hardwareInspector.computeTier(gpu, ram)),
-              profile,
-              { includeRemoteHostBackends: true },
-            ) ?? [],
+          registry: this.modelRegistry,
+          profile,
+          computeTier: (gpu, ram) => this.hardwareInspector.computeTier(gpu, ram),
           backend: backendType,
           isInstalled: (model) => this.isCuratedModelAvailable(model, endpointHealth.modelsLoaded, backendType, endpointReady),
           accept: (model) => checkModelRequirements(model, requirements).verdict !== 'fails',

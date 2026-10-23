@@ -1,4 +1,5 @@
 import { type CuratedModel, defaultChatModelId, type HardwareProfile, type HardwareTier, type InferenceBackendType } from '@ci-hub/common/types';
+import type { ModelRegistryService } from './model-registry.service';
 
 /** The engine the setup wizard starts on for this hardware (`GET /api/inference/onboarding-profile`). */
 export function recommendedInferenceBackend(profile: HardwareProfile): InferenceBackendType {
@@ -37,23 +38,30 @@ export function onboardingTier(
 
 /**
  * The chat model an app is handed while nobody has chosen one: the setup wizard's Default among the
- * models the engine has (`defaultChatModelId`). `available` is the wizard's list, the catalog rows
- * the hardware may run in catalog order. A model `accept` rules out, one the app cannot use, is passed
- * over for the next in that order. Undefined when the engine has none of them, which leaves the
- * caller to its recommendation list.
+ * models the engine has (`defaultChatModelId`). It reads the wizard's lists for this Hub itself, at
+ * {@link onboardingTier} as `GET /api/inference/onboarding-profile` reads them, so no caller can rank
+ * by another list: the catalog rows the hardware may run (in catalog order) and the recommendations
+ * (best first). The installed model highest on the recommendations wins, else the first installed in
+ * catalog order. A model `accept` rules out, one the app cannot use, is passed over for the next.
+ * Undefined when the engine has none of them, which leaves the caller to its recommendation list.
  */
 export function installedDefaultChatModel(options: {
-  available: readonly CuratedModel[];
+  registry: Pick<ModelRegistryService, 'getModelsForHardware' | 'getRecommendedModelsForHardware'>;
+  profile: HardwareProfile;
+  computeTier: (gpu: HardwareProfile['gpu'], ram: HardwareProfile['ram']) => HardwareTier;
   backend: InferenceBackendType;
   isInstalled: (model: CuratedModel) => boolean;
   accept: (model: CuratedModel) => boolean;
 }): CuratedModel | undefined {
-  const { available, backend } = options;
+  const { registry, profile, backend } = options;
+  const tier = onboardingTier(profile, options.computeTier);
+  const available = registry.getModelsForHardware(tier, profile, { includeRemoteHostBackends: true }) ?? [];
   const id = defaultChatModelId({
     backend,
     availableModels: available,
+    recommendedModels: registry.getRecommendedModelsForHardware(tier, profile) ?? [],
     candidateIds: available.filter((model) => model.backend === backend && options.isInstalled(model)).map((model) => model.id),
-    installedOnly: true,
+    candidatesOnly: true,
     accept: options.accept,
   });
   return id ? available.find((model) => model.id === id) : undefined;
