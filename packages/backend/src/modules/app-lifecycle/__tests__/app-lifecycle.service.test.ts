@@ -2521,6 +2521,14 @@ describe('AppLifecycleService', () => {
       });
     });
 
+    // `testapp-ci-marketplace` is also the id of app `testapp-ci` from a store `marketplace`.
+    it('refuses an app whose id another installed app already has, before anything is written', async () => {
+      appsRepository.getApps.mockResolvedValue([{ appName: 'testapp-ci', appStoreSlug: 'marketplace' }] as any);
+
+      await expect(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} })).rejects.toThrow('APP_ERROR_APP_ID_IN_USE');
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
+    });
+
     it('MUST normalize local exposure to openPort=true before duplicate-port checks', async () => {
       appsRepository.getAppsByPort.mockResolvedValue([{ appName: 'taken-port' }] as any);
 

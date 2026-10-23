@@ -15,6 +15,7 @@ import { type CustomDomainForm, type CustomDomainState, requestsCustomDomainChan
 import { customDomainAuditLine } from './custom-domain-audit';
 import validator from 'validator';
 import { AppFilesManager } from '../apps/app-files-manager';
+import { assertAppIdFree } from '../apps/app-id.helpers';
 import { AppRuntimeMonitorService } from '../apps/app-runtime-monitor.service';
 import { AppsRepository } from '../apps/apps.repository';
 import { AppsService } from '../apps/apps.service';
@@ -1654,6 +1655,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     if (demoMode && apps.length >= 6) {
       throw new TranslatableError('SYSTEM_ERROR_DEMO_MODE_LIMIT');
     }
+
+    assertAppIdFree(appUrn, apps);
 
     // Prevent exposing to internet in production - use exposedLocal with Cloudflare tunnel instead
     const { isProduction } = this.config.getConfig();

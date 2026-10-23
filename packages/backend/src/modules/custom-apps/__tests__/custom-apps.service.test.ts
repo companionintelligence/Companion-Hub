@@ -35,7 +35,9 @@ describe('CustomAppService', () => {
     filesystem.writeTextFile.mockResolvedValue(true);
     filesystem.writeBinaryFile.mockResolvedValue(true);
 
-    // Nothing holds a port, and the port manager hands out 10000 for whatever it is asked.
+    // No other app is installed. Nothing holds a port, and the port manager hands out 10000 for
+    // whatever it is asked.
+    appsRepository.getApps.mockResolvedValue([]);
     appsRepository.getAppsByPort.mockResolvedValue([] as any);
     portManager.isPortAvailable.mockResolvedValue(true);
     portManager.getAllAllocations.mockResolvedValue([]);
@@ -124,6 +126,16 @@ describe('CustomAppService', () => {
     it('should throw if duplicate', async () => {
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
       await expect(service.createCustomApp({ name: 'myapp', config: '' as any as any })).rejects.toThrow('CUSTOM_APP_ERROR_DUPLICATE_NAME');
+    });
+
+    // `a-b` here is `a-b-_user`, the id of app `a` from a store `b-_user`.
+    it('refuses a name whose app id an installed app already has, before anything is written', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      appsRepository.getApps.mockResolvedValue([{ appName: 'a', appStoreSlug: 'b-_user' }] as any);
+
+      await expect(service.createCustomApp({ name: 'a-b', config: { services: [] } as any })).rejects.toThrow('APP_ERROR_APP_ID_IN_USE');
+      expect(filesystem.createDirectory).not.toHaveBeenCalled();
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
     });
   });
 
