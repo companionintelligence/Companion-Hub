@@ -43,17 +43,41 @@ export interface PortalSsoState {
  */
 const PORTAL_SSO_BINDING_COOKIE_PREFIX = 'ci_hub_portal_sso_';
 
-/** The binding cookie for one sign-in. Only called with a `state` this Hub minted. */
+/** The plain-http name of one sign-in's binding cookie. Only called with a `state` this Hub minted. */
 export function portalBindingCookieName(state: string): string {
   return `${PORTAL_SSO_BINDING_COOKIE_PREFIX}${state}`;
 }
 
 /**
- * Scope the binding cookie to the callback, the only route that reads it. `/start` may set a
- * cookie for another path, and a wider scope would send every in-flight binding along with the
- * polled `/api/auth/portal/*` routes (session-hint, desktop-handoff-status).
+ * Where the plain-http binding cookie is sent: the callback, the only route that reads it. `/start`
+ * may set a cookie for another path, and a wider scope would send every in-flight binding along with
+ * the polled `/api/auth/portal/*` routes (session-hint, desktop-handoff-status).
  */
-export const PORTAL_SSO_COOKIE_PATH = '/api/auth/portal/callback';
+const PORTAL_SSO_COOKIE_PATH = '/api/auth/portal/callback';
+
+/**
+ * Name, Path and Secure of one sign-in's binding cookie, for a request that is (`secure`) or is not
+ * served over https. `/start` sets it and the callback reads and clears it with the same answer.
+ *
+ * Over https the cookie is a `__Host-` cookie: Secure, Path=/ and no Domain. A browser stores a
+ * cookie with that prefix only when the host that is answering sets it that way, so no other host
+ * under the same parent domain (another Hub or app in a shared zone, which can set cookies for that
+ * zone) can put one in the browser with this name. The prefix requires Path=/, so over https the
+ * cookie goes with every request to this host until the callback clears it or it expires. Plain http
+ * cannot use the prefix, because it requires Secure, so there the name is unprefixed and the cookie
+ * stays on the callback path.
+ *
+ * The callback reads only the name its own scheme gives and never falls back to the other one. A
+ * `/start` and callback that disagree on the scheme (a proxy that forwards the protocol for one and
+ * not the other) therefore find no cookie and are refused like any other mismatch: accepting the
+ * plain name on an https callback would accept a cookie that any host under the parent can set.
+ */
+export function portalBindingCookie(state: string, secure: boolean): { name: string; path: string; secure: boolean } {
+  if (secure) {
+    return { name: `__Host-${portalBindingCookieName(state)}`, path: '/', secure: true };
+  }
+  return { name: portalBindingCookieName(state), path: PORTAL_SSO_COOKIE_PATH, secure: false };
+}
 
 /** Lifetime of a Portal sign-in state and its binding cookie. Keep both in step. */
 export const PORTAL_SSO_STATE_TTL_SECONDS = 10 * 60;

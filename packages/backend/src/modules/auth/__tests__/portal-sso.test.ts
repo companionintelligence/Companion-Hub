@@ -20,6 +20,7 @@ import {
   resolveSameOriginRedirectUrl,
   resolveTrustedReturnOrigin,
   toDesktopRedirectPath,
+  portalBindingCookie,
   portalBindingMatches,
 } from '../portal-sso';
 import { HUB_FAVICON_LINK_TAG, HUB_FAVICON_PATH } from '../hub-favicon';
@@ -601,6 +602,16 @@ describe('portal-sso helpers', () => {
       // A `j:`-prefixed cookie arrives as parsed JSON, which Buffer.from would throw on.
       expect(portalBindingMatches('abc123', { length: 6 })).toBe(false);
       expect(portalBindingMatches('abc123', ['a', 'b', 'c', '1', '2', '3'])).toBe(false);
+    });
+  });
+
+  describe('portalBindingCookie', () => {
+    it('is a __Host- cookie, Secure with Path=/, over https', () => {
+      expect(portalBindingCookie('s-1', true)).toEqual({ name: '__Host-ci_hub_portal_sso_s-1', path: '/', secure: true });
+    });
+
+    it('is the plain cookie on the callback path over http', () => {
+      expect(portalBindingCookie('s-1', false)).toEqual({ name: 'ci_hub_portal_sso_s-1', path: '/api/auth/portal/callback', secure: false });
     });
   });
 });

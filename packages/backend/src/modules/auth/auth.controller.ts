@@ -94,9 +94,8 @@ import {
   isDesktopSignInWaitProof,
   isDirectLoopbackRequest,
   probePortalReachable,
-  portalBindingCookieName,
+  portalBindingCookie,
   portalBindingMatches,
-  PORTAL_SSO_COOKIE_PATH,
   PORTAL_SSO_STATE_TTL_SECONDS,
   type PortalDesktopExchange,
   type PortalSsoErrorCode,
@@ -253,29 +252,34 @@ export class AuthController {
   }
 
   /**
-   * Drop the binding cookie that ties one Portal sign-in to the browser that ran `/start`.
-   * Scoped to the callback path, with a lifetime that matches the sign-in state's cache TTL.
-   * Host-only (no Domain), unlike the session cookie: the callback always returns to the host that
-   * served `/start`, because the redirect URI is built from that request's origin, so no other host
-   * needs to see it.
+   * The binding cookie that ties one Portal sign-in to the browser that ran `/start`, for this
+   * request's scheme: a `__Host-` cookie over https, a plain one on the callback path over http (see
+   * portalBindingCookie). Insecure-cookie dev mode gets the http form. Host-only (no Domain), unlike
+   * the session cookie: the callback always returns to the host that served `/start`, because the
+   * redirect URI is built from that request's origin, so no other host needs to see it.
    */
-  private setPortalBindingCookie(res: Response, req: Request, name: string, value: string) {
-    res.cookie(name, value, {
+  private portalBindingCookieFor(req: Request, state: string) {
+    return portalBindingCookie(state, this.cookieSecurity(req).secure);
+  }
+
+  /** Set with a lifetime that matches the sign-in state's cache TTL. */
+  private setPortalBindingCookie(res: Response, cookie: ReturnType<typeof portalBindingCookie>, value: string) {
+    res.cookie(cookie.name, value, {
       httpOnly: true,
       sameSite: 'lax',
-      path: PORTAL_SSO_COOKIE_PATH,
+      path: cookie.path,
       maxAge: PORTAL_SSO_STATE_TTL_SECONDS * 1000,
-      secure: this.cookieSecurity(req).secure,
+      secure: cookie.secure,
     });
   }
 
   /** Must pass the same Path/Secure flags as Set-Cookie (and no Domain) or the browser keeps the stale binding. */
-  private clearPortalBindingCookie(res: Response, req: Request, name: string) {
-    res.clearCookie(name, {
+  private clearPortalBindingCookie(res: Response, cookie: ReturnType<typeof portalBindingCookie>) {
+    res.clearCookie(cookie.name, {
       httpOnly: true,
       sameSite: 'lax',
-      path: PORTAL_SSO_COOKIE_PATH,
-      secure: this.cookieSecurity(req).secure,
+      path: cookie.path,
+      secure: cookie.secure,
     });
   }
 
@@ -737,7 +741,7 @@ export class AuthController {
     authorizeUrl.searchParams.set('state', state);
 
     this.cache.set(`portal_sso:${state}`, JSON.stringify(portalState), PORTAL_SSO_STATE_TTL_SECONDS);
-    this.setPortalBindingCookie(res, req, portalBindingCookieName(state), binding);
+    this.setPortalBindingCookie(res, this.portalBindingCookieFor(req, state), binding);
 
     return res.redirect(authorizeUrl.toString());
   }
@@ -799,9 +803,11 @@ export class AuthController {
       // anywhere else never reaches the code exchange or replaces that browser's session. The state
       // is spent either way, so its cookie is cleared on every exit from here on; other sign-ins
       // keep theirs. Earlier exits (no code, unknown state) leave it to expire with the state TTL.
-      const bindingCookieName = portalBindingCookieName(state);
-      const presentedBinding: unknown = req.cookies?.[bindingCookieName];
-      this.clearPortalBindingCookie(res, req, bindingCookieName);
+      // Read under the name this request's scheme gives, never the other one: a scheme that changed
+      // since `/start` finds no cookie and is refused (see portalBindingCookie).
+      const bindingCookie = this.portalBindingCookieFor(req, state);
+      const presentedBinding: unknown = req.cookies?.[bindingCookie.name];
+      this.clearPortalBindingCookie(res, bindingCookie);
       if (!portalBindingMatches(binding, presentedBinding)) {
         this.logger.warn('Portal OAuth callback rejected: sign-in was not completed in the browser that started it', { hubOrigin });
         return redirectError(hubOrigin, 'state_expired');

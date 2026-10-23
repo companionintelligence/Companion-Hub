@@ -18,7 +18,13 @@ import { ForwardAuthSecretResolver } from '../forward-auth-secret.resolver';
 import { BearerOrgMembershipCache } from '../bearer-org-membership.cache';
 import { AuthService } from '../auth.service';
 import { HUB_FAVICON_LINK_TAG, HUB_FAVICON_PATH, HUB_FAVICON_PNG } from '../hub-favicon';
-import { desktopSignInWaitProof, exchangePortalAuthorizationCode, fetchPortalSessionEmail, portalBindingCookieName } from '../portal-sso';
+import {
+  desktopSignInWaitProof,
+  exchangePortalAuthorizationCode,
+  fetchPortalSessionEmail,
+  portalBindingCookie,
+  portalBindingCookieName,
+} from '../portal-sso';
 import { verifyPortalIdToken } from '../portal-token';
 import { SessionManager } from '../session.manager';
 import { signForwardAuthAssertion, signForwardAuthUser, signForwardAuthUserId } from '../utils/forward-auth-signing';
@@ -2088,12 +2094,42 @@ describe('AuthController', () => {
     const STORED_BINDING = 'browser-binding-xyz';
     const BINDING_COOKIE = portalBindingCookieName('state-123');
 
-    /** The binding cookie `/start` set, found by the state it put in the authorize URL. */
+    /** The `__Host-` name an https Hub gives one sign-in's binding cookie. */
+    const hostPrefixedName = (state: string) => `__Host-${portalBindingCookieName(state)}`;
+
+    /** The binding cookie `/start` set (either form), found by the state it put in the authorize URL. */
     const startedSignIn = (res: Response) => {
       const authorizeUrl = new URL(vi.mocked(res.redirect).mock.calls.at(-1)?.[0] as unknown as string);
       const state = authorizeUrl.searchParams.get('state') ?? '';
-      const cookieCall = vi.mocked(res.cookie).mock.calls.find(([name]) => name === portalBindingCookieName(state));
-      return { state, cookieCall };
+      const cookieCall = vi
+        .mocked(res.cookie)
+        .mock.calls.find(([name]) => name === portalBindingCookieName(state) || name === hostPrefixedName(state));
+      return { state, cookieCall, name: cookieCall?.[0] as string | undefined };
+    };
+
+    /** Real cookie attributes (no insecure-cookie dev mode), with a Domain the session cookie would take. */
+    const configWithRealCookies = (insecureCookie = false) => {
+      authService.getCookieDomain.mockImplementation(((host?: string) => (host ? `.${host}` : undefined)) as never);
+      config.get.mockImplementation((key: string) => {
+        if (key === 'ciCloudUrl') {
+          return 'https://hub.ci.computer';
+        }
+        if (key === 'userSettings') {
+          return { experimental: { insecureCookie } };
+        }
+        return '';
+      });
+    };
+
+    /** A request behind the Hub's proxy, over https or plain http, carrying `cookies`. */
+    const proxiedRequest = (scheme: 'https' | 'http', cookies: Record<string, string> = {}) => {
+      const host = scheme === 'https' ? 'hub.example.com' : 'ci.lan';
+      return {
+        protocol: 'http',
+        headers: { 'x-forwarded-proto': scheme, 'x-forwarded-host': host },
+        get: vi.fn((header: string) => (header === 'host' ? host : undefined)),
+        cookies,
+      } as unknown as Request;
     };
 
     const cachedStateWithBinding = () =>
@@ -2158,33 +2194,140 @@ describe('AuthController', () => {
       expect(cookieCall?.[2]).toMatchObject({ httpOnly: true, sameSite: 'lax', path: '/api/auth/portal/callback' });
     });
 
-    it('/start flags the binding cookie Secure on a public https Hub', async () => {
+    it('/start sets a __Host- binding cookie, Secure with Path=/ and no Domain, on an https Hub', async () => {
       // The default (non-insecureCookie) branch derives Secure from the request, like the session
-      // cookie. Without Secure the binding would travel in cleartext to the callback.
-      authService.getCookieDomain.mockImplementation(((host?: string) => (host ? `.${host}` : undefined)) as never);
-      config.get.mockImplementation((key: string) => {
-        if (key === 'ciCloudUrl') {
-          return 'https://hub.ci.computer';
-        }
-        if (key === 'userSettings') {
-          return { experimental: { insecureCookie: false } };
-        }
-        return '';
-      });
-
-      const req = {
-        protocol: 'http',
-        headers: { 'x-forwarded-proto': 'https', 'x-forwarded-host': 'hub-device-org.example.com' },
-        get: vi.fn((header: string) => (header === 'host' ? 'hub-device-org.example.com' : undefined)),
-      } as unknown as Request;
+      // cookie. Over https the cookie takes the `__Host-` prefix, which the browser only stores when
+      // it is Secure, has Path=/ and no Domain, so no other host under the same parent domain can
+      // set a cookie with this name.
+      configWithRealCookies();
       const res = { redirect: vi.fn(), cookie: vi.fn() } as unknown as Response;
 
-      await authController.startPortalLogin(req, res);
+      await authController.startPortalLogin(proxiedRequest('https'), res);
 
-      const { cookieCall } = startedSignIn(res);
-      expect(cookieCall).toBeDefined();
-      expect(cookieCall?.[2]).toMatchObject({ httpOnly: true, sameSite: 'lax', path: '/api/auth/portal/callback', secure: true });
-      expect(cookieCall?.[2]).not.toHaveProperty('domain');
+      const { state, cookieCall, name } = startedSignIn(res);
+      expect(name).toBe(hostPrefixedName(state));
+      expect(cookieCall?.[2]).toEqual({ httpOnly: true, sameSite: 'lax', path: '/', secure: true, maxAge: 600_000 });
+      expect(portalBindingCookie(state, true)).toEqual({ name: hostPrefixedName(state), path: '/', secure: true });
+    });
+
+    it('/start sets the plain binding cookie on the callback path on a plain-http Hub', async () => {
+      // The prefix needs Secure, which plain http cannot have, so http keeps the unprefixed name.
+      configWithRealCookies();
+      const res = { redirect: vi.fn(), cookie: vi.fn() } as unknown as Response;
+
+      await authController.startPortalLogin(proxiedRequest('http'), res);
+
+      const { state, cookieCall, name } = startedSignIn(res);
+      expect(name).toBe(portalBindingCookieName(state));
+      expect(cookieCall?.[2]).toEqual({ httpOnly: true, sameSite: 'lax', path: '/api/auth/portal/callback', secure: false, maxAge: 600_000 });
+    });
+
+    it('uses the plain-http form in insecure-cookie mode, even over https', async () => {
+      // Dev insecure-cookie mode drops Secure, and a `__Host-` cookie without Secure is never stored.
+      configWithRealCookies(true);
+      const res = { redirect: vi.fn(), cookie: vi.fn() } as unknown as Response;
+
+      await authController.startPortalLogin(proxiedRequest('https'), res);
+
+      const { state, cookieCall, name } = startedSignIn(res);
+      expect(name).toBe(portalBindingCookieName(state));
+      expect(cookieCall?.[2]).toMatchObject({ path: '/api/auth/portal/callback', secure: false });
+    });
+
+    it('completes an https callback that carries the __Host- binding and clears that cookie', async () => {
+      vi.mocked(exchangePortalAuthorizationCode).mockClear();
+      configWithRealCookies();
+      cache.get.mockReturnValue(
+        JSON.stringify({
+          codeVerifier: 'verifier',
+          redirectUrl: null,
+          hubOrigin: 'https://hub.example.com',
+          desktop: false,
+          binding: STORED_BINDING,
+        }),
+      );
+      vi.mocked(exchangePortalAuthorizationCode).mockResolvedValue({
+        ok: true,
+        accessToken: 'access-token',
+        email: 'operator@example.com',
+        emailVerified: true,
+        subject: 'portal-user-1',
+        issuer: 'https://hub.ci.computer',
+      });
+      authService.admitHubPerson.mockResolvedValue({ id: 9, username: 'operator@example.com' } as never);
+      sessionManager.createSession.mockResolvedValue('session-999');
+      const res = callbackRes();
+
+      await authController.portalCallback(
+        proxiedRequest('https', { [hostPrefixedName('state-123')]: STORED_BINDING }),
+        res,
+        'auth-code',
+        'state-123',
+      );
+
+      expect(exchangePortalAuthorizationCode).toHaveBeenCalled();
+      expect(res.redirect).toHaveBeenCalledWith('https://hub.example.com/home');
+      expect(res.clearCookie).toHaveBeenCalledTimes(1);
+      expect(res.clearCookie).toHaveBeenCalledWith(hostPrefixedName('state-123'), { httpOnly: true, sameSite: 'lax', path: '/', secure: true });
+    });
+
+    it('refuses an https callback whose binding arrives only under the plain name', async () => {
+      // Any host under the same parent domain can set a cookie with the plain name for that parent,
+      // so over https only the `__Host-` name counts, whatever value the plain one holds.
+      vi.mocked(exchangePortalAuthorizationCode).mockReset();
+      configWithRealCookies();
+      cache.get.mockReturnValue(
+        JSON.stringify({
+          codeVerifier: 'verifier',
+          redirectUrl: null,
+          hubOrigin: 'https://hub.example.com',
+          desktop: false,
+          binding: STORED_BINDING,
+        }),
+      );
+      const res = callbackRes();
+
+      await authController.portalCallback(
+        proxiedRequest('https', { [portalBindingCookieName('state-123')]: STORED_BINDING }),
+        res,
+        'auth-code',
+        'state-123',
+      );
+
+      expect(exchangePortalAuthorizationCode).not.toHaveBeenCalled();
+      expect(sessionManager.createSession).not.toHaveBeenCalled();
+      expect(res.redirect).toHaveBeenCalledWith('https://hub.example.com/login?portal_error=state_expired');
+      // Only the cookie this scheme sets is cleared.
+      expect(res.clearCookie).toHaveBeenCalledTimes(1);
+      expect(res.clearCookie).toHaveBeenCalledWith(hostPrefixedName('state-123'), expect.objectContaining({ path: '/', secure: true }));
+    });
+
+    it.each([
+      ['https at /start, http at the callback', 'https', 'http'],
+      ['http at /start, https at the callback', 'http', 'https'],
+    ] as const)('refuses a sign-in whose scheme changed between /start and the callback (%s)', async (_label, startScheme, callbackScheme) => {
+      // A proxy that forwards the protocol for one request and not the other. The callback reads only
+      // the name its own scheme gives, so the cookie /start set is not found and the sign-in fails closed.
+      vi.mocked(exchangePortalAuthorizationCode).mockReset();
+      const store = new Map<string, string>();
+      cache.get.mockImplementation((key: string) => store.get(key));
+      cache.set.mockImplementation((key: string, value: string) => {
+        store.set(key, value);
+      });
+      cache.del.mockImplementation((key: string) => {
+        store.delete(key);
+      });
+      configWithRealCookies();
+      const startRes = { redirect: vi.fn(), cookie: vi.fn() } as unknown as Response;
+      await authController.startPortalLogin(proxiedRequest(startScheme), startRes);
+      const { state, name, cookieCall } = startedSignIn(startRes);
+      const res = callbackRes();
+
+      await authController.portalCallback(proxiedRequest(callbackScheme, { [name as string]: cookieCall?.[1] as string }), res, 'auth-code', state);
+
+      expect(exchangePortalAuthorizationCode).not.toHaveBeenCalled();
+      expect(sessionManager.createSession).not.toHaveBeenCalled();
+      expect(vi.mocked(res.redirect).mock.calls[0]?.[0]).toContain('/login?portal_error=state_expired');
     });
 
     it('keeps the binding cookie host-only and unflagged on a plain-http LAN Hub at the domain root', async () => {
@@ -2309,9 +2452,11 @@ describe('AuthController', () => {
     });
 
     it.each([
-      ['in the order they started', false],
-      ['in reverse order', true],
-    ])('lets two sign-ins started in one browser both complete %s', async (_label, reverse) => {
+      ['in the order they started, over https', false, 'https'],
+      ['in reverse order, over https', true, 'https'],
+      ['in the order they started, over http', false, 'http'],
+      ['in reverse order, over http', true, 'http'],
+    ] as const)('lets two sign-ins started in one browser both complete %s', async (_label, reverse, scheme) => {
       // A desktop sign-in button clicked twice opens two browser tabs, so two /start requests run
       // before either callback. Neither may overwrite or clear the other's binding.
       const store = new Map<string, string>();
@@ -2322,7 +2467,7 @@ describe('AuthController', () => {
       cache.del.mockImplementation((key: string) => {
         store.delete(key);
       });
-      configWithPortal();
+      configWithRealCookies();
       vi.mocked(exchangePortalAuthorizationCode).mockResolvedValue({
         ok: true,
         accessToken: 'access-token',
@@ -2334,34 +2479,30 @@ describe('AuthController', () => {
       authService.admitHubPerson.mockResolvedValue({ id: 9, username: 'operator@example.com' } as never);
       sessionManager.createSession.mockResolvedValue('session-999');
 
-      const startRequest = () =>
-        ({
-          protocol: 'http',
-          get: vi.fn((header: string) => (header === 'host' ? 'localhost:5002' : undefined)),
-          headers: {},
-        }) as unknown as Request;
       const firstStart = { redirect: vi.fn(), cookie: vi.fn() } as unknown as Response;
       const secondStart = { redirect: vi.fn(), cookie: vi.fn() } as unknown as Response;
-      await authController.startPortalLogin(startRequest(), firstStart);
-      await authController.startPortalLogin(startRequest(), secondStart);
+      await authController.startPortalLogin(proxiedRequest(scheme), firstStart);
+      await authController.startPortalLogin(proxiedRequest(scheme), secondStart);
 
       const first = startedSignIn(firstStart);
       const second = startedSignIn(secondStart);
       expect(first.state).not.toBe(second.state);
-      const jar = {
-        [portalBindingCookieName(first.state)]: first.cookieCall?.[1] as string,
-        [portalBindingCookieName(second.state)]: second.cookieCall?.[1] as string,
+      const expectedName = (state: string) => (scheme === 'https' ? hostPrefixedName(state) : portalBindingCookieName(state));
+      expect(first.name).toBe(expectedName(first.state));
+      const jar: Record<string, string> = {
+        [first.name as string]: first.cookieCall?.[1] as string,
+        [second.name as string]: second.cookieCall?.[1] as string,
       };
 
       for (const signIn of reverse ? [second, first] : [first, second]) {
         const res = callbackRes();
-        await authController.portalCallback(callbackReqWithCookies(jar), res, 'auth-code', signIn.state);
+        await authController.portalCallback(proxiedRequest(scheme, { ...jar }), res, 'auth-code', signIn.state);
 
-        expect(res.redirect).toHaveBeenCalledWith('http://localhost:5002/home');
+        expect(res.redirect).toHaveBeenCalledWith(scheme === 'https' ? 'https://hub.example.com/home' : 'http://ci.lan/home');
         // Each callback clears only its own binding, so the other sign-in's cookie survives it.
         expect(res.clearCookie).toHaveBeenCalledTimes(1);
-        expect(res.clearCookie).toHaveBeenCalledWith(portalBindingCookieName(signIn.state), expect.any(Object));
-        delete jar[portalBindingCookieName(signIn.state)];
+        expect(res.clearCookie).toHaveBeenCalledWith(expectedName(signIn.state), expect.any(Object));
+        delete jar[signIn.name as string];
       }
     });
 
