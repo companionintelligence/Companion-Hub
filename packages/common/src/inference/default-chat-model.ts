@@ -18,14 +18,14 @@ type ModelRow = Pick<CuratedModel, 'id' | 'backend' | 'modality'>;
  *
  * With no candidate, the wizard falls back to the best recommended chat model the hardware may run,
  * then the first in the catalog. Both would have to be downloaded, which the wizard then does. A
- * handout never names a model that is not there, and when someone unticks the Default the wizard
- * looks only among the models still ticked, so those pass `candidatesOnly` and get `undefined`.
+ * handout never names a model that is not there. When someone unticks the Default, the wizard looks
+ * only among the models still ticked. Both pass `candidatesOnly` and get `undefined`.
  */
 export function defaultChatModelId<T extends ModelRow>(options: {
   backend: InferenceBackendType;
   /** The catalog rows this hardware may run, in catalog order (the onboarding profile's `availableModels`). */
   availableModels: readonly T[];
-  /** Best first (the onboarding profile's `recommendedModels`). Ranks the candidates, and with none, names the model to download. */
+  /** Best first (the onboarding profile's `recommendedModels`). Ranks the candidates. With none and no `candidatesOnly`, names the model to download. */
   recommendedModels?: readonly T[];
   /** The models to choose from. */
   candidateIds: readonly string[];
