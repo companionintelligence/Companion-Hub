@@ -88,6 +88,11 @@ describe('collectTraefikLabelIssues', () => {
     'traefik.docker.network',
     'traefik.http.services.{{CI_HUB_APP_ID}}.loadbalancer.server.url',
     'traefik.http.services.{{CI_HUB_APP_ID}}.weighted.services[0].name',
+    // The Hub's login is the only forward auth on an app's routes.
+    'traefik.http.middlewares.{{CI_HUB_APP_ID}}-auth.forwardauth.address',
+    'traefik.http.middlewares.{{CI_HUB_APP_ID}}-auth.forwardAuth.trustForwardHeader',
+    // A request keeps the host the visitor asked for, which the Hub's login goes by.
+    'traefik.http.middlewares.{{CI_HUB_APP_ID}}-host.headers.customrequestheaders.Host',
   ])('refuses %s whatever it holds', (label) => {
     expect(messages({ [label]: 'http://ci-hub:5002' })).toEqual([[label, 'CUSTOM_APP_ERROR_TRAEFIK_LABEL_NOT_ALLOWED']]);
   });
@@ -105,6 +110,27 @@ describe('collectTraefikLabelIssues', () => {
     expect(collectTraefikLabelIssues({ [label]: target })).toEqual([
       { label, message: 'CUSTOM_APP_ERROR_TRAEFIK_SERVICE_NOT_OWN', params: { label, target, placeholder: '{{CI_HUB_APP_ID}}' } },
     ]);
+  });
+
+  // TraefikConfigService copies routers into the file provider by the option's last part.
+  it.each([
+    ['traefik.http.routers.{{CI_HUB_APP_ID}}-x.extra.rule', 'Host(`n8n-hub1-acme.ci.lan`)', 'CUSTOM_APP_ERROR_TRAEFIK_RULE_NOT_OWN_HOST'],
+    [
+      'traefik.http.routers.{{CI_HUB_APP_ID}}-x.extra.middlewares',
+      'n8n-ci-marketplace-public-host@docker',
+      'CUSTOM_APP_ERROR_TRAEFIK_MIDDLEWARE_NOT_OWN',
+    ],
+  ])('refuses %s, which the Hub’s file-provider copy reads as the option it ends with', (label, value, message) => {
+    expect(messages({ [label]: value })).toEqual([[label, message]]);
+  });
+
+  it('keeps headers other than Host on the app’s own middlewares', () => {
+    expect(
+      collectTraefikLabelIssues({
+        'traefik.http.middlewares.{{CI_HUB_APP_ID}}-h.headers.customrequestheaders.X-Forwarded-Host': '${APP_BASE_HOST}',
+        'traefik.http.middlewares.{{CI_HUB_APP_ID}}-h.headers.customresponseheaders.Host': 'x',
+      }),
+    ).toEqual([]);
   });
 
   it('refuses an errors middleware that answers with another app’s service', () => {

@@ -11,7 +11,8 @@
  * - a router's `service`, and an `errors` middleware's, is one of the app's own services;
  * - a `middlewares` list names the app's own middlewares or the Hub's shared ones;
  * - a router's `rule` keeps it to the app's own hosts;
- * - a service's server is the app's own container, never a `url`.
+ * - a service's server is the app's own container, never a `url`;
+ * - no middleware calls out with `forwardAuth` or sets the request's `Host`.
  *
  * Every store app that sets Traefik labels already keeps to this.
  */
@@ -40,11 +41,14 @@ const OWN_HOSTS = new Set([
   '${APP_BASE_HOST}',
 ]);
 
+/** The Hub's forward auth: assets/traefik/dynamic/dynamic.yml, and the Hub container's labels for the Docker provider. */
+export const HUB_FORWARD_AUTH_MIDDLEWARES: ReadonlySet<string> = new Set(['ci-hub@file', 'ci-hub@docker']);
+
 /**
  * The Hub's middlewares any app may put in a chain: forward auth under both providers, the edge
  * header strip and the starting page (assets/traefik/dynamic/dynamic.yml).
  */
-const HUB_MIDDLEWARES = new Set(['ci-hub@file', 'ci-hub@docker', 'ci-hub-edge-headers@file', 'ci-hub-app-starting@file']);
+const HUB_MIDDLEWARES = new Set([...HUB_FORWARD_AUTH_MIDDLEWARES, 'ci-hub-edge-headers@file', 'ci-hub-app-starting@file']);
 
 /** `traefik.http.<routers|services|middlewares>.<name>.<option>`. Traefik reads labels without regard to case. */
 const HTTP_OBJECT_LABEL = /^traefik\.http\.(routers|services|middlewares)\.([^.]+)\.(.+)$/i;
@@ -97,23 +101,40 @@ function traefikLabelIssue(label: string, value: unknown, appId: string | undefi
       ? { label, message: 'CUSTOM_APP_ERROR_TRAEFIK_LABEL_NOT_ALLOWED', params: { label } }
       : undefined;
   }
-  if (kindLower === 'routers' && optionLower === 'rule') {
+  if (kindLower === 'middlewares' && isOutwardMiddlewareOption(optionLower)) {
+    return { label, message: 'CUSTOM_APP_ERROR_TRAEFIK_LABEL_NOT_ALLOWED', params: { label } };
+  }
+  // Read by the option's last part: TraefikConfigService copies routers into the file provider that
+  // way, so `routers.<name>.x.rule` is a rule there whatever Traefik's Docker provider makes of it.
+  const lastOption = optionLower.slice(optionLower.lastIndexOf('.') + 1);
+  if (kindLower === 'routers' && lastOption === 'rule') {
     return ruleKeepsToOwnHosts(value) ? undefined : { label, message: 'CUSTOM_APP_ERROR_TRAEFIK_RULE_NOT_OWN_HOST', params: { label } };
   }
-  if (optionLower === 'service' || optionLower.endsWith('.service')) {
+  if (lastOption === 'service') {
     // A router's service, and an `errors` middleware's, which answers in the app's place.
     const target = String(value).trim();
     return isOwnReference(target, appId)
       ? undefined
       : { label, message: 'CUSTOM_APP_ERROR_TRAEFIK_SERVICE_NOT_OWN', params: { label, target, placeholder: APP_ID_PLACEHOLDER_TEXT } };
   }
-  if (optionLower === 'middlewares' || optionLower === 'chain.middlewares') {
+  if (lastOption === 'middlewares') {
     const target = middlewareList(value).find((middleware) => !HUB_MIDDLEWARES.has(middleware.toLowerCase()) && !isOwnReference(middleware, appId));
     return target === undefined
       ? undefined
       : { label, message: 'CUSTOM_APP_ERROR_TRAEFIK_MIDDLEWARE_NOT_OWN', params: { label, target, placeholder: APP_ID_PLACEHOLDER_TEXT } };
   }
   return undefined;
+}
+
+/**
+ * Middleware options an app's own middlewares may not use:
+ * - `forwardAuth`: the Hub's login is the only forward auth on an app's routes;
+ * - a `Host` request header: a request keeps the host the visitor asked for, which is the host the
+ *   Hub's login goes by.
+ */
+function isOutwardMiddlewareOption(optionLower: string): boolean {
+  const [type, group, header, ...rest] = optionLower.split('.');
+  return type === 'forwardauth' || (type === 'headers' && group === 'customrequestheaders' && header === 'host' && rest.length === 0);
 }
 
 function middlewareList(value: unknown): string[] {

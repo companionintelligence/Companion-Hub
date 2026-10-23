@@ -9,7 +9,7 @@ import {
   TRUSTED_APP_SECURITY_ALLOWLIST,
 } from './dynamic-compose.js';
 import { parseComposeJson } from './utils/convert-legacy-schema.js';
-import { collectTraefikLabelIssues } from './traefik-labels.js';
+import { collectTraefikLabelIssues, HUB_FORWARD_AUTH_MIDDLEWARES } from './traefik-labels.js';
 import type { AppSecurityGrants, DependsOn, DynamicCompose, Service, ServiceInput, ServiceSecurityViolation } from './dynamic-compose.js';
 
 import {
@@ -94,6 +94,7 @@ export {
   collectServiceSecurityViolations,
   isReservedHubLabel,
   collectTraefikLabelIssues,
+  HUB_FORWARD_AUTH_MIDDLEWARES,
   TRUSTED_APP_SECURITY_ALLOWLIST,
   MIN_SCHEMA_VERSION,
   CURRENT_SCHEMA_VERSION,

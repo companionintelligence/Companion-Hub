@@ -2234,7 +2234,7 @@
   "TITLEBAR_CLOSE_WINDOW": "Close window",
   "MULTI_SERVICE_ERROR_INVALID_CONFIGURATION": "Invalid configuration.",
   "CUSTOM_APP_ERROR_LABEL_RESERVED": "Labels that start with ci-hub. or ci-os-hub. belong to the Hub, which uses them to tell apps apart. Remove {{label}}.",
-  "CUSTOM_APP_ERROR_TRAEFIK_LABEL_NOT_ALLOWED": "An app's Traefik labels can only set traefik.enable and the app's own HTTP routers, middlewares and load balancer settings, without a url. Remove {{label}}.",
+  "CUSTOM_APP_ERROR_TRAEFIK_LABEL_NOT_ALLOWED": "An app's Traefik labels can only set traefik.enable and the app's own HTTP routers, middlewares and load balancer settings, with no url, forward auth or Host header. Remove {{label}}.",
   "CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN": "Traefik router, service and middleware names must start with {{placeholder}}, so they can't be another app's. Rename {{name}} in {{label}}.",
   "CUSTOM_APP_ERROR_TRAEFIK_SERVICE_NOT_OWN": "{{label}} sends traffic to {{target}}, which isn't one of this app's services. Use a service whose name starts with {{placeholder}}.",
   "CUSTOM_APP_ERROR_TRAEFIK_MIDDLEWARE_NOT_OWN": "{{label}} uses {{target}}, which isn't one of this app's middlewares or the Hub's. Use a middleware whose name starts with {{placeholder}}.",
