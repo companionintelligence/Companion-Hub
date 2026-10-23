@@ -1436,3 +1436,94 @@ describe('DockerComposeBuilder — an app’s Traefik labels stay inside the app
     });
   });
 });
+
+/*
+ * An app's id is its name and its store's slug joined by a dash, and both may hold dashes. The same
+ * app in stores `home` and `home-lab` is `app-home` and `app-home-lab`, so `{{CI_HUB_APP_ID}}-lab`
+ * from `app-home` is the other app's main Traefik service, and Traefik's Docker provider merges a
+ * service of one name across containers. The builder gives each name to the app with the longest
+ * id that covers it, among every app the Hub knows.
+ */
+describe('DockerComposeBuilder — a name that starts with this app’s id can be another app’s', () => {
+  const ORIGIN = 'app-hub1-acme.ci.lan';
+
+  const build = async (appUrn: ReturnType<typeof createAppUrn>, knownAppIds: string[] | undefined, extraLabels: Record<string, string | boolean>) => {
+    const result = await new DockerComposeBuilder('ci.computer', 'ci.lan', true, knownAppIds ? { knownAppIds } : undefined).getDockerCompose(
+      [{ name: 'web', image: 'nginx:alpine', isMain: true, internalPort: 80, extraLabels }],
+      { exposureMode: 'cloudflare', enableAuth: true },
+      appUrn,
+      subnet,
+      'ci.computer',
+      'ci.lan',
+      undefined,
+      ORIGIN,
+    );
+    return yaml.parse(result).services.web.labels as Record<string, string | boolean>;
+  };
+
+  const reachingLabels = {
+    'traefik.http.routers.{{CI_HUB_APP_ID}}-side.rule': 'Host(`${APP_DOMAIN}`) && PathPrefix(`/side`)',
+    'traefik.http.routers.{{CI_HUB_APP_ID}}-side.service': '{{CI_HUB_APP_ID}}-lab',
+    'traefik.http.services.{{CI_HUB_APP_ID}}-lab.loadbalancer.server.port': '80',
+    'traefik.http.routers.{{CI_HUB_APP_ID}}-web.service': '{{CI_HUB_APP_ID}}-web',
+    'traefik.http.services.{{CI_HUB_APP_ID}}-web.loadbalancer.server.port': '8080',
+  };
+
+  it('leaves out the labels that name the other app’s service and says whose they are', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const labels = await build(createAppUrn('app', 'home'), ['app-home', 'app-home-lab'], reachingLabels);
+
+      expect(labels).toMatchObject({
+        'traefik.http.routers.app-home-side.rule': 'Host(`${APP_DOMAIN}`) && PathPrefix(`/side`)',
+        'traefik.http.routers.app-home-web.service': 'app-home-web',
+        'traefik.http.services.app-home-web.loadbalancer.server.port': '8080',
+        // The Hub's own route for the app is untouched.
+        'traefik.http.routers.app-home.service': 'app-home',
+        'traefik.http.services.app-home.loadbalancer.server.port': '80',
+      });
+      expect(labels).not.toHaveProperty('traefik.http.routers.app-home-side.service');
+      expect(Object.keys(labels).filter((key) => key.includes('app-home-lab'))).toEqual([]);
+      expect(warn.mock.calls.map(([line]) => String(line))).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(
+            /label traefik\.http\.routers\.\{\{CI_HUB_APP_ID\}\}-side\.service was left out \[CUSTOM_APP_ERROR_TRAEFIK_SERVICE_NOT_OWN, it is app-home-lab's\]/,
+          ),
+          expect.stringMatching(/label traefik\.http\.services\.\{\{CI_HUB_APP_ID\}\}-lab\.loadbalancer\.server\.port was left out/),
+        ]),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('keeps them without the other app’s id, as before', async () => {
+    const labels = await build(createAppUrn('app', 'home'), undefined, reachingLabels);
+
+    expect(labels['traefik.http.routers.app-home-side.service']).toBe('app-home-lab');
+    expect(labels['traefik.http.services.app-home-lab.loadbalancer.server.port']).toBe('80');
+  });
+
+  it('leaves the app with the longer id all of its own names', async () => {
+    const labels = await build(createAppUrn('app', 'home-lab'), ['app-home', 'app-home-lab'], {
+      'traefik.http.routers.{{CI_HUB_APP_ID}}-web.rule': 'Host(`${APP_DOMAIN}`)',
+      'traefik.http.routers.{{CI_HUB_APP_ID}}-web.service': '{{CI_HUB_APP_ID}}',
+    });
+
+    expect(labels).toMatchObject({
+      'traefik.http.routers.app-home-lab-web.rule': 'Host(`${APP_DOMAIN}`)',
+      'traefik.http.routers.app-home-lab-web.service': 'app-home-lab',
+      'traefik.http.routers.app-home-lab.service': 'app-home-lab',
+    });
+  });
+
+  // A store whose slug splits an official app's id at a dash: app `app` in a store `ci` is `app-ci`.
+  it('gives the official store app its names when another store’s app id begins them', async () => {
+    const labels = await build(createAppUrn('app', 'ci'), ['app-ci', `app-${CI_MARKETPLACE_STORE_SLUG}`], {
+      'traefik.http.routers.{{CI_HUB_APP_ID}}-marketplace-insecure.rule': 'Host(`${APP_DOMAIN}`)',
+      'traefik.http.routers.{{CI_HUB_APP_ID}}-marketplace-insecure.priority': '9999',
+    });
+
+    expect(Object.keys(labels).filter((key) => key.includes('marketplace'))).toEqual([]);
+  });
+});

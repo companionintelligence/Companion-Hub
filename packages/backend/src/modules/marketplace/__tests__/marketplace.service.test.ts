@@ -159,6 +159,31 @@ describe('MarketplaceService', () => {
     });
   });
 
+  // The compose builder checks an app's Traefik names against every app the stores list.
+  describe('listedAppUrns', () => {
+    const official = { slug: 'ci-marketplace', name: 'CI Marketplace', url: 'https://portal.example.com/api', type: 'ci_cloud_api', branch: 'main' };
+
+    it('lists each enabled store’s apps and the official catalog Portal last returned, without fetching it', async () => {
+      appStoreService.getAllAppStores.mockResolvedValue([
+        { slug: 'store-1', name: 'Store 1', url: 'http://store1.com', enabled: true, type: 'git', branch: 'main' },
+        { ...official, enabled: true },
+      ] as any);
+      portalCatalog.heldCatalogSlugs.mockReturnValue(['app-new', 'app-1']);
+      await service.initialize();
+
+      await expect(service.listedAppUrns()).resolves.toEqual(['app-1:store-1', 'app-new:ci-marketplace', 'app-1:ci-marketplace']);
+      expect(portalCatalog.getCatalogEntries).not.toHaveBeenCalled();
+    });
+
+    it('leaves out the official catalog when the official store is turned off', async () => {
+      appStoreService.getAllAppStores.mockResolvedValue([{ ...official, enabled: false }] as any);
+      portalCatalog.heldCatalogSlugs.mockReturnValue(['app-new']);
+      await service.initialize();
+
+      await expect(service.listedAppUrns()).resolves.toEqual([]);
+    });
+  });
+
   describe('refreshPortalCatalog', () => {
     it('invalidates then awaits a forced portal catalog fetch', async () => {
       await service.initialize();

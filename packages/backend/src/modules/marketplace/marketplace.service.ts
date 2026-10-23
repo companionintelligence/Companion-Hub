@@ -1,4 +1,4 @@
-import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import { notEmpty, pLimit } from '@/common/helpers/file-helpers';
 import { withTimeout } from '@/common/helpers/with-timeout';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -192,6 +192,21 @@ export class MarketplaceService implements OnModuleInit {
       }
     }
     return allUrns.sort((a, b) => a.localeCompare(b));
+  }
+
+  /**
+   * Every app the enabled stores list, without fetching anything: the apps in each store's synced
+   * folder, and for the official store also the apps in the Portal catalog answer held in memory,
+   * which can be newer than the folder. Deprecated and unavailable apps are included.
+   */
+  async listedAppUrns(): Promise<AppUrn[]> {
+    const urns = new Set<AppUrn>(await this.getAvailableAppUrns());
+    if (this.stores.get(CI_MARKETPLACE_STORE_SLUG)?.storeConfig.enabled) {
+      for (const slug of this.portalCatalog.heldCatalogSlugs()) {
+        urns.add(createAppUrn(slug, CI_MARKETPLACE_STORE_SLUG));
+      }
+    }
+    return [...urns];
   }
 
   /**

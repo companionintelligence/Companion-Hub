@@ -7,7 +7,8 @@
  * then reached that app's backend with no Hub login, showed in place of that app or took it offline.
  *
  * An app's Traefik labels may set `traefik.enable` and its own HTTP routers, middlewares and
- * load-balanced services, under names that start with the app's id:
+ * load-balanced services, under names that start with the app's id and that no other app's longer id
+ * covers:
  * - a router's `service`, and an `errors` middleware's, is one of the app's own services;
  * - a `middlewares` list names the app's own middlewares or the Hub's shared ones;
  * - a router's `rule` keeps it to the app's own hosts;
@@ -73,11 +74,23 @@ export interface TraefikLabelIssue {
  *
  * `appId` is the app's interpolated id, for a caller that knows it. Names may then also start with
  * the id itself, as well as with `{{CI_HUB_APP_ID}}`.
+ *
+ * `knownAppIds` are the ids of the apps the Hub knows about, for a caller that has them. An
+ * app's id is its name and its store's slug joined by a dash, and both may hold dashes, so one app's
+ * id and a dash can begin another app's id: the same app in stores `home` and `home-lab` is
+ * `app-home` and `app-home-lab`. A name belongs to the app with the longest id it is, or starts with
+ * followed by a dash, and it is this app's own only when that app is this one. For `app-home`, the
+ * name `{{CI_HUB_APP_ID}}-lab-web` is `app-home-lab`'s.
  */
-export function collectTraefikLabelIssues(labels: Record<string, unknown> | undefined, appId?: string): TraefikLabelIssue[] {
+export function collectTraefikLabelIssues(
+  labels: Record<string, unknown> | undefined,
+  appId?: string,
+  knownAppIds?: Iterable<string>,
+): TraefikLabelIssue[] {
+  const ownership: Ownership = { appId, longerIds: appId ? idsExtending(appId, knownAppIds) : [] };
   const issues: TraefikLabelIssue[] = [];
   for (const [label, value] of Object.entries(labels ?? {})) {
-    const issue = traefikLabelIssue(label, value, appId);
+    const issue = traefikLabelIssue(label, value, ownership);
     if (issue) {
       issues.push(issue);
     }
@@ -85,7 +98,26 @@ export function collectTraefikLabelIssues(labels: Record<string, unknown> | unde
   return issues;
 }
 
-function traefikLabelIssue(label: string, value: unknown, appId: string | undefined): TraefikLabelIssue | undefined {
+/**
+ * The app the names are checked for: its id, when the caller knows it, and the other apps' ids that
+ * are this id followed by a dash and more, in lower case.
+ */
+type Ownership = { appId: string | undefined; longerIds: string[] };
+
+/** The ids in `knownAppIds` that start with `appId` and a dash, in lower case, the longest first. */
+function idsExtending(appId: string, knownAppIds: Iterable<string> | undefined): string[] {
+  const prefix = `${appId.toLowerCase()}-`;
+  const ids = new Set<string>();
+  for (const id of knownAppIds ?? []) {
+    const lower = id.toLowerCase();
+    if (lower.startsWith(prefix)) {
+      ids.add(lower);
+    }
+  }
+  return [...ids].sort((a, b) => b.length - a.length);
+}
+
+function traefikLabelIssue(label: string, value: unknown, ownership: Ownership): TraefikLabelIssue | undefined {
   const lower = label.toLowerCase();
   if (!lower.startsWith('traefik.') || lower === 'traefik.enable') {
     return undefined;
@@ -97,8 +129,13 @@ function traefikLabelIssue(label: string, value: unknown, appId: string | undefi
   if (!kind || !name || !option) {
     return { label, message: 'CUSTOM_APP_ERROR_TRAEFIK_LABEL_NOT_ALLOWED', params: { label } };
   }
-  if (!isOwnName(name, appId, false)) {
-    return { label, message: 'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN', params: { label, name, placeholder: APP_ID_PLACEHOLDER_TEXT } };
+  const nameOwner = ownerOf(name, ownership, false);
+  if (nameOwner !== OWN) {
+    return {
+      label,
+      message: 'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN',
+      params: { label, name, placeholder: APP_ID_PLACEHOLDER_TEXT, ...ownerParam(nameOwner) },
+    };
   }
 
   const kindLower = kind.toLowerCase();
@@ -122,15 +159,26 @@ function traefikLabelIssue(label: string, value: unknown, appId: string | undefi
   if (lastOption === 'service') {
     // A router's service, and an `errors` middleware's, which answers in the app's place.
     const target = String(value).trim();
-    return isOwnReference(target, appId)
+    const targetOwner = referenceOwner(target, ownership);
+    return targetOwner === OWN
       ? undefined
-      : { label, message: 'CUSTOM_APP_ERROR_TRAEFIK_SERVICE_NOT_OWN', params: { label, target, placeholder: APP_ID_PLACEHOLDER_TEXT } };
+      : {
+          label,
+          message: 'CUSTOM_APP_ERROR_TRAEFIK_SERVICE_NOT_OWN',
+          params: { label, target, placeholder: APP_ID_PLACEHOLDER_TEXT, ...ownerParam(targetOwner) },
+        };
   }
   if (lastOption === 'middlewares') {
-    const target = middlewareList(value).find((middleware) => !HUB_MIDDLEWARES.has(middleware.toLowerCase()) && !isOwnReference(middleware, appId));
-    return target === undefined
-      ? undefined
-      : { label, message: 'CUSTOM_APP_ERROR_TRAEFIK_MIDDLEWARE_NOT_OWN', params: { label, target, placeholder: APP_ID_PLACEHOLDER_TEXT } };
+    for (const middleware of middlewareList(value)) {
+      const middlewareOwner = HUB_MIDDLEWARES.has(middleware.toLowerCase()) ? OWN : referenceOwner(middleware, ownership);
+      if (middlewareOwner !== OWN) {
+        return {
+          label,
+          message: 'CUSTOM_APP_ERROR_TRAEFIK_MIDDLEWARE_NOT_OWN',
+          params: { label, target: middleware, placeholder: APP_ID_PLACEHOLDER_TEXT, ...ownerParam(middlewareOwner) },
+        };
+      }
+    }
   }
   return undefined;
 }
@@ -153,11 +201,19 @@ function middlewareList(value: unknown): string[] {
     .filter(Boolean);
 }
 
+/** A name that is the app's own. */
+const OWN = Symbol('own');
+
 /**
- * Whether a router, service or middleware name is the app's own: its id alone or followed by a dash.
- * A dash, so `{{CI_HUB_APP_ID}}x` can't become another app's id.
+ * Whose a router, service or middleware name is: {@link OWN}, the id of the longer-id app it belongs
+ * to, or `undefined` when it is plainly not this app's.
+ *
+ * It is the app's own when it is the app's id alone or followed by a dash, a dash so
+ * `{{CI_HUB_APP_ID}}x` can't become another app's id, and no other app's longer id covers it the
+ * same way (see {@link collectTraefikLabelIssues}).
  */
-function isOwnName(name: string, appId: string | undefined, valueSide: boolean): boolean {
+function ownerOf(name: string, ownership: Ownership, valueSide: boolean): typeof OWN | string | undefined {
+  const { appId } = ownership;
   let rest: string | undefined;
   const placeholder = APP_ID_PLACEHOLDER.exec(name);
   if (placeholder) {
@@ -167,15 +223,30 @@ function isOwnName(name: string, appId: string | undefined, valueSide: boolean):
   } else if (appId && name.toLowerCase().startsWith(appId.toLowerCase())) {
     rest = name.slice(appId.length);
   }
-  return rest !== undefined && (rest === '' || rest.startsWith('-'));
+  if (rest === undefined || (rest !== '' && !rest.startsWith('-'))) {
+    return undefined;
+  }
+  if (appId) {
+    const resolved = `${appId}${rest}`.toLowerCase();
+    const longer = ownership.longerIds.find((id) => resolved === id || resolved.startsWith(`${id}-`));
+    if (longer !== undefined) {
+      return longer;
+    }
+  }
+  return OWN;
 }
 
-/** A reference to one of the app's own services or middlewares, on the Docker provider. */
-function isOwnReference(reference: string, appId: string | undefined): boolean {
+/** Whose a reference to a service or middleware is. Only the Docker provider holds the app's own. */
+function referenceOwner(reference: string, ownership: Ownership): typeof OWN | string | undefined {
   const at = reference.indexOf('@');
   const name = at === -1 ? reference : reference.slice(0, at);
   const provider = at === -1 ? 'docker' : reference.slice(at + 1).toLowerCase();
-  return provider === 'docker' && isOwnName(name, appId, true);
+  return provider === 'docker' ? ownerOf(name, ownership, true) : undefined;
+}
+
+/** The app a refused name belongs to, when it is another app's by the longer id. */
+function ownerParam(owner: typeof OWN | string | undefined): { owner?: string } {
+  return typeof owner === 'string' ? { owner } : {};
 }
 
 type RuleNode = { kind: 'matcher'; name: string; args: string[] } | { kind: 'not'; operand: RuleNode } | { kind: 'and' | 'or'; operands: RuleNode[] };

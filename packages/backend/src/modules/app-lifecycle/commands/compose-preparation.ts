@@ -23,6 +23,24 @@ import { ZodError } from 'zod';
 import { fromError } from 'zod-validation-error';
 
 /**
+ * The id of every app the Hub knows about: each installed app, custom apps among them, and each app
+ * the enabled stores list, so that an app installed later counts too. The compose builder gives a
+ * Traefik name to the app with the longest of these ids that covers it.
+ */
+async function knownAppIds(moduleRef: ModuleRef): Promise<string[]> {
+  const [installed, listed] = await Promise.all([
+    moduleRef.get(AppsRepository, { strict: false }).getApps(),
+    moduleRef.get(MarketplaceService, { strict: false }).listedAppUrns(),
+  ]);
+  const ids = new Set(installed.map((app) => `${app.appName}-${app.appStoreSlug}`));
+  for (const urn of listed) {
+    const { appName, appStoreId } = extractAppUrn(urn);
+    ids.add(`${appName}-${appStoreId}`);
+  }
+  return [...ids];
+}
+
+/**
  * Generates an app's docker-compose.yml from its marketplace manifest.
  *
  * Shared by install, update, start, and restart: each of them must regenerate compose before
@@ -228,6 +246,7 @@ export async function prepareAppComposeDir(
       loopbackHostPort,
       manifest: appInfo ?? undefined,
       defaultAppCpuLimit,
+      knownAppIds: await knownAppIds(moduleRef),
     });
     const subnet = await subnetManager.allocateSubnet(appUrn, 0, options?.excludeSubnets ?? []);
 

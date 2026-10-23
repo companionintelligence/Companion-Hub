@@ -341,6 +341,21 @@ describe('PortalCatalogService', () => {
     expect(service.hasCatalog()).toBe(false);
   });
 
+  it('heldCatalogSlugs names every app in the held answer, deprecated ones too, and fetches nothing', async () => {
+    expect(service.heldCatalogSlugs()).toEqual([]);
+    expect(portalClient.fetchStoreCatalog).not.toHaveBeenCalled();
+
+    portalClient.fetchStoreCatalog.mockResolvedValueOnce([
+      { slug: 'ghost', name: 'Ghost' },
+      { slug: 'old-app', name: 'Old app', deprecated: true },
+    ] as any);
+    await service.getCatalogEntries(true);
+    expect(service.heldCatalogSlugs()).toEqual(['ghost', 'old-app']);
+
+    service.invalidateCache();
+    expect(service.heldCatalogSlugs()).toEqual([]);
+  });
+
   it('says why the catalog fetch failed when no address of the Portal accepted the connection', async () => {
     // The error's own message is empty here, so the line used to end at "failed:".
     portalClient.fetchStoreCatalog.mockRejectedValueOnce(axiosEveryAddressFailed());
