@@ -149,8 +149,13 @@ export const AiSetupStep = ({
   selectedModelIdsRef.current = selectedModelIds;
   const preferredModelIdRef = useRef(preferredModelId);
   preferredModelIdRef.current = preferredModelId;
-  // Models the person unticked. A vision model among them is not saved as the vision model by default.
+  // Models the person unticked since the selection was last reset. A re-check does not tick one that
+  // arrives, and a vision model among them is not saved as the vision model by default.
   const untickedModelIdsRef = useRef(new Set<string>());
+  // Set when the person unticked the last ticked chat model and so left no Default. A profile that
+  // offers no chat model leaves none either, but that is not the person's choice: a re-check or a
+  // rescan then names the Default a first load would.
+  const defaultClearedRef = useRef(false);
 
   // Both agent frameworks share one default: among the ticked chat models (or, with `selectedIds` left
   // out, the ones the engine has), the highest on the recommended list, else the first in catalog
@@ -252,16 +257,22 @@ export const AiSetupStep = ({
       };
       const engineKept = isRescan && resolvedBackend === backend;
       const keptSelection = engineKept ? selectedModelIdsRef.current.filter(modelStillListed) : null;
+      if (keptSelection === null) {
+        // A fresh selection: earlier unticks belong to the one it replaces.
+        untickedModelIdsRef.current = new Set();
+        defaultClearedRef.current = false;
+      }
       const defaultSelected = keptSelection ?? getDefaultSelectedModelIds(data, resolvedBackend);
       setSelectedModelIds(defaultSelected);
       const keptPreferred = preferredModelIdRef.current;
       // As on a re-check: someone who unticked every chat model keeps no Default through a rescan, so
       // the badge does not land on a card left unticked.
-      setPreferredModelId(
+      const nextPreferred =
         keptSelection && keptPreferred && defaultSelected.includes(keptPreferred)
           ? keptPreferred
-          : getDefaultPreferredModelId(data, resolvedBackend, defaultSelected, keptSelection !== null && !keptPreferred),
-      );
+          : getDefaultPreferredModelId(data, resolvedBackend, defaultSelected, keptSelection !== null && defaultClearedRef.current);
+      if (nextPreferred) defaultClearedRef.current = false;
+      setPreferredModelId(nextPreferred);
     } catch (e) {
       // Same rule for the failure path: a newer request is already in flight and may well succeed,
       // so raising the error screen on its behalf would discard a setup that is about to be fine.
@@ -374,13 +385,19 @@ export const AiSetupStep = ({
       // Only with no chat model ticked is a new one ticked as the Default. The new models are ranked
       // among themselves, so a model the person unticked earlier does not decide which one that is.
       const standingDefault = keptPreferred ?? getDefaultPreferredModelId(data, backend, stillSelected, true);
-      const newlyInstalled = { ...data, installedCatalogIds: [...nextInstalled].filter((id) => !previouslyInstalled.has(id)) };
+      // A model the person unticked stays unticked when it arrives.
+      const newlyInstalled = {
+        ...data,
+        installedCatalogIds: [...nextInstalled].filter((id) => !previouslyInstalled.has(id) && !untickedModelIdsRef.current.has(id)),
+      };
       const newlySelectable = getDefaultSelectedModelIds(newlyInstalled, backend, standingDefault, stillSelected);
       const nextSelected = [...new Set([...stillSelected, ...newlySelectable])];
       setSelectedModelIds(nextSelected);
       // Someone who unticked every chat model left no Default. The re-check keeps it that way unless it
       // ticked a model, so the Default never lands on a card left unticked.
-      setPreferredModelId(keptPreferred ?? getDefaultPreferredModelId(data, backend, nextSelected, !preferred));
+      const nextPreferred = keptPreferred ?? getDefaultPreferredModelId(data, backend, nextSelected, defaultClearedRef.current);
+      if (nextPreferred) defaultClearedRef.current = false;
+      setPreferredModelId(nextPreferred);
     } catch (e) {
       // Keep the in-progress setup after a secondary refresh fails, but retain a diagnostic.
       console.warn('Re-check could not refresh the installed model list', e);
@@ -465,6 +482,8 @@ export const AiSetupStep = ({
       // Ignore a slower response from an earlier backend choice.
       if (profileRequestId.current === requestId) {
         setProfile(data);
+        untickedModelIdsRef.current = new Set();
+        defaultClearedRef.current = false;
         const defaultSelected = getDefaultSelectedModelIds(data, backend);
         setSelectedModelIds(defaultSelected);
         setPreferredModelId(getDefaultPreferredModelId(data, backend, defaultSelected));
@@ -501,10 +520,14 @@ export const AiSetupStep = ({
     const isAgent = model.backend === selectedBackend && isAgentModel(model);
     if (isRemoving && modelId === preferredModelId) {
       // The agent's preferred model was removed: the same rule picks the next among the ticked ones.
+      const nextPreferred = getDefaultPreferredModelId(profile, selectedBackend, next, true);
+      defaultClearedRef.current = nextPreferred === undefined;
+      setPreferredModelId(nextPreferred);
+    } else if (!isRemoving && isAgent && !(preferredModelId && next.includes(preferredModelId))) {
+      // A chat model ticked while the Default is unticked (none, or a card offered for download) moves
+      // the badge to what Continue saves: the highest of the ticked chat models.
+      defaultClearedRef.current = false;
       setPreferredModelId(getDefaultPreferredModelId(profile, selectedBackend, next, true));
-    } else if (!isRemoving && isAgent && !preferredModelId) {
-      // First agent model added back — make it the preferred default.
-      setPreferredModelId(modelId);
     }
   };
 
@@ -560,15 +583,17 @@ export const AiSetupStep = ({
     // A vision model off the recommended list is a whole chat model, so it is not ticked (and pinned)
     // for this. With nothing ticked that sees images, the one the engine has is still saved, as it was
     // while every installed model was ticked; otherwise apps are handed one that may not be there. One
-    // the person unticked stays out, as it did then.
+    // the person unticked stays out, as it did then, and so does every one when no chat model is ticked.
     const effectivePreferredVisionModelId =
       getDefaultPreferredAuxModelId(profile, selectedBackend, isVisionModel, selectedModels) ??
-      getDefaultPreferredAuxModelId(
-        profile,
-        selectedBackend,
-        isVisionModel,
-        installedCatalogIds.filter((id) => !untickedModelIdsRef.current.has(id)),
-      );
+      (effectivePreferredModelId
+        ? getDefaultPreferredAuxModelId(
+            profile,
+            selectedBackend,
+            isVisionModel,
+            installedCatalogIds.filter((id) => !untickedModelIdsRef.current.has(id)),
+          )
+        : undefined);
 
     return {
       agentFrameworks,

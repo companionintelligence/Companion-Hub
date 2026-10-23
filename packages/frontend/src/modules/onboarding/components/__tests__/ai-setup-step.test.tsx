@@ -783,6 +783,66 @@ describe('AiSetupStep', () => {
       expect(await continueWith(onComplete)).toMatchObject({ selectedModels: ['gemma3-270m'], preferredModelId: 'gemma3-270m' });
     });
 
+    it('does not tick a model the person unticked when a re-check finds it installed', async () => {
+      api.profile = laptopProfile(['qwen3-5-4b', 'nomic-embed-text']);
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      // Qwen 3 8B is ticked to download and then unticked. It arrives anyway.
+      await user.click(screen.getByTestId('model-checkbox-qwen3-8b'));
+      await user.click(screen.getByTestId('model-checkbox-qwen3-8b'));
+      api.profile = laptopProfile(['qwen3-5-4b', 'nomic-embed-text', 'qwen3-8b']);
+      await user.click(screen.getByTestId('ollama-recheck-btn'));
+      await waitFor(() => expect(within(screen.getByTestId('model-row-qwen3-8b')).getByText('Installed')).toBeInTheDocument());
+
+      expect(isTicked('qwen3-8b')).toBe(false);
+      expect(await continueWith(onComplete)).toMatchObject({ selectedModels: ['qwen3-5-4b', 'nomic-embed-text'] });
+    });
+
+    it('saves no vision model when the person unticked every model', async () => {
+      api.profile = laptopProfile(['qwen3-8b', 'qwen3-5-0-8b', 'nomic-embed-text']);
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      // Qwen 3.5 0.8B sees images but is off the list, so it was never ticked.
+      await user.click(screen.getByTestId('model-checkbox-qwen3-8b'));
+      await user.click(screen.getByTestId('model-checkbox-nomic-embed-text'));
+
+      const config = await continueWith(onComplete);
+      expect(config.selectedModels).toEqual([]);
+      expect(config.preferredModelId).toBeUndefined();
+      expect(config.preferredVisionModelId).toBeUndefined();
+    });
+
+    it('moves the Default to a ticked chat model when the Default card is left unticked', async () => {
+      api.profile = laptopProfile([]);
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+      expect(isMarkedDefault('qwen3-5-4b')).toBe(true);
+
+      await user.click(screen.getByTestId('model-checkbox-qwen3-8b'));
+
+      expect(isMarkedDefault('qwen3-8b')).toBe(true);
+      expect(isMarkedDefault('qwen3-5-4b')).toBe(false);
+      expect((await continueWith(onComplete)).preferredModelId).toBe('qwen3-8b');
+    });
+
+    it('marks the Default a first load would after a rescan of a profile that offered no chat model', async () => {
+      api.profile = { ...laptopProfile([]), recommendedModels: [nomicEmbed], availableModels: [nomicEmbed] } as any;
+      const user = userEvent.setup();
+      renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      api.profile = laptopProfile([]);
+      await user.click(screen.getByTestId('rescan-btn'));
+      await waitFor(() => expect(screen.getByTestId('model-row-qwen3-5-4b')).toBeInTheDocument());
+
+      expect(isMarkedDefault('qwen3-5-4b')).toBe(true);
+    });
+
     it('does not save a vision model the person unticked', async () => {
       api.profile = laptopProfile(['qwen3-8b', 'gemma4-e4b', 'nomic-embed-text']);
       const user = userEvent.setup();
