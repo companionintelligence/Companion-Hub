@@ -338,7 +338,8 @@ const MAX_RULE_DEPTH = 32;
  * It must name a host, and only the app's: an AND with a `Host()` of its own hosts, or an OR whose
  * every branch is one. `HostRegexp()` and the SNI matchers can't be checked and are refused, and so
  * is any `$` but the own-host expansions: compose expands the rule before Traefik reads it, so
- * another expansion could change it after this check.
+ * another expansion could change it after this check. `ownHosts` are the own-host expansions the Hub
+ * set for the app, so one it left unset counts as any other `$`.
  */
 function ruleKeepsToOwnHosts(value: unknown, ownHosts: ReadonlySet<string>): boolean {
   if (typeof value !== 'string') {
@@ -361,7 +362,7 @@ function ruleKeepsToOwnHosts(value: unknown, ownHosts: ReadonlySet<string>): boo
   if (!rule || parser.position !== tokens.length) {
     return false;
   }
-  return !namesOtherHost(rule, ownHosts) && restrictsToOwnHost(rule, ownHosts);
+  return !namesOtherHost(rule) && restrictsToOwnHost(rule);
 }
 
 function tokenizeRule(rule: string): RuleToken[] | undefined {
@@ -499,26 +500,26 @@ function isHostPatternMatcher(name: string): boolean {
   return lower === 'hostregexp' || lower === 'hostsni' || lower === 'hostsniregexp';
 }
 
-function namesOtherHost(node: RuleNode, ownHosts: ReadonlySet<string>): boolean {
+function namesOtherHost(node: RuleNode): boolean {
   switch (node.kind) {
     case 'matcher':
-      return isHostPatternMatcher(node.name) || (isHostMatcher(node.name) && node.args.some((host) => !ownHosts.has(host)));
+      return isHostPatternMatcher(node.name) || (isHostMatcher(node.name) && node.args.some((host) => !OWN_HOSTS.has(host)));
     case 'not':
-      return namesOtherHost(node.operand, ownHosts);
+      return namesOtherHost(node.operand);
     default:
-      return node.operands.some((operand) => namesOtherHost(operand, ownHosts));
+      return node.operands.some(namesOtherHost);
   }
 }
 
-function restrictsToOwnHost(node: RuleNode, ownHosts: ReadonlySet<string>): boolean {
+function restrictsToOwnHost(node: RuleNode): boolean {
   switch (node.kind) {
     case 'matcher':
-      return isHostMatcher(node.name) && node.args.length > 0 && node.args.every((host) => ownHosts.has(host));
+      return isHostMatcher(node.name) && node.args.length > 0 && node.args.every((host) => OWN_HOSTS.has(host));
     case 'not':
       return false;
     case 'and':
-      return node.operands.some((operand) => restrictsToOwnHost(operand, ownHosts));
+      return node.operands.some(restrictsToOwnHost);
     default:
-      return node.operands.every((operand) => restrictsToOwnHost(operand, ownHosts));
+      return node.operands.every(restrictsToOwnHost);
   }
 }

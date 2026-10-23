@@ -265,7 +265,7 @@ export async function prepareAppComposeDir(
       knownAppIds: await knownAppIds(moduleRef, logger),
       // The hosts the Hub set for this app. compose expands one it left unset from the Hub's own
       // environment or a user env file, so an app's router rule may name only these.
-      hostVariables: OWN_HOST_VARIABLES.filter((name) => (envMap.get(name) ?? '').trim() !== ''),
+      hostVariables: OWN_HOST_VARIABLES.filter((name) => envMap.has(name)),
     });
     const subnet = await subnetManager.allocateSubnet(appUrn, 0, options?.excludeSubnets ?? []);
 

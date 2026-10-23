@@ -239,8 +239,9 @@ describe('collectTraefikLabelIssues', () => {
       ['Host(`${APP_LOCAL_DOMAIN}`)', ['APP_DOMAIN', 'APP_BASE_HOST']],
       ['Host(`${APP_LOCAL_DOMAIN}`) || Host(`${APP_BASE_HOST}`)', ['APP_BASE_HOST']],
       ['Host(`${APP_DOMAIN}`) && PathPrefix(`/api`)', []],
-      // Only the three host variables count as hosts.
+      // Only the three host variables count as hosts, and only they may be expanded in a rule.
       ['Host(`${APP_ID}`)', ['APP_ID', 'APP_DOMAIN']],
+      ['Host(`${APP_DOMAIN}`) && Header(`X-App`, `${APP_ID}`)', ['APP_ID', 'APP_DOMAIN']],
     ])('refuses %s when the Hub set only %j', (value, hostVariables) => {
       expect(rules(value, hostVariables)).toEqual(['CUSTOM_APP_ERROR_TRAEFIK_RULE_NOT_OWN_HOST']);
     });
