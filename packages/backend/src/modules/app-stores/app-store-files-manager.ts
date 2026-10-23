@@ -4,7 +4,7 @@ import type { ConfigurationService } from '@/core/config/configuration.service';
 import type { AppStore } from '@/core/database/drizzle/types';
 import type { FilesystemService } from '@/core/filesystem/filesystem.service';
 import type { LoggerService } from '@/core/logger/logger.service';
-import { APP_CATEGORIES, appInfoSchema } from '@ci-hub/common/schemas';
+import { APP_CATEGORIES, appInfoSchema, parseInstalledAppInfo } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 
 const KNOWN_APP_CATEGORIES = new Set<string>(APP_CATEGORIES);
@@ -157,7 +157,10 @@ export class AppStoreFilesManager {
       const configFile = await this.filesystem.readTextFile(path.join(appInstalledDir, 'config.json'));
 
       const config = normalizeAppConfigCategories(JSON.parse(configFile ?? '{}') as Record<string, unknown>);
-      const parsedConfig = appInfoSchema.safeParse({ ...config, urn: appUrn });
+      const { parsed: parsedConfig, leftOut } = parseInstalledAppInfo({ ...config, urn: appUrn });
+      if (leftOut.length > 0) {
+        this.logger.warn(`App ${appUrn}: its installed config.json names values the Hub sets for every app, read without ${leftOut.join(', ')}`);
+      }
 
       if (!parsedConfig.success) {
         this.logger.debug(`App ${appUrn} installed config error:`);

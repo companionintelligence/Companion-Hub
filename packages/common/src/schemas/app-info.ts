@@ -6,11 +6,11 @@ import { agentConfigSchema } from './agent-config.js';
  * Values the Hub writes into every app's env that its checks take as the app's own.
  *
  * The Traefik label check takes `${APP_ID}` as the app's id and `${APP_DOMAIN}`,
- * `${APP_LOCAL_DOMAIN}` and `${APP_BASE_HOST}` as its hosts, and the sandbox takes
- * `${APP_DATA_DIR}` as its data directory. `APP_NAME`, `APP_STORE_ID` and `APP_URN` say which app it
- * is. The Hub sets them before it writes the manifest's form fields, so a field of the same name,
- * its default or an alias would replace them, and a Hub integration that names one would too. A
- * manifest may name none of them, and the Hub writes none of them from a manifest.
+ * `${APP_LOCAL_DOMAIN}` and `${APP_BASE_HOST}` as its hosts. The sandbox takes `${APP_DATA_DIR}` as
+ * its data directory. `APP_NAME`, `APP_STORE_ID` and `APP_URN` say which app it is. The Hub sets them
+ * before it writes the manifest's form fields, so a field of the same name, its default or an alias
+ * would replace them. So would a Hub integration that names one. A manifest may name none of them
+ * and the Hub writes none of them from a manifest.
  */
 export const HUB_OWNED_APP_ENV_VARS: ReadonlySet<string> = new Set([
   'APP_ID',
@@ -22,6 +22,23 @@ export const HUB_OWNED_APP_ENV_VARS: ReadonlySet<string> = new Set([
   'APP_BASE_HOST',
   'APP_DATA_DIR',
 ]);
+
+/**
+ * Whether a form field writes `APP_BASE_URL`: as its own variable, or as an alias of a base URL
+ * field, the only type whose aliases the Hub writes. The Hub takes the host of that URL as one of
+ * the app's own hosts (`APP_BASE_HOST`).
+ */
+export function writesAppBaseUrl(field: { type?: unknown; env_variable?: unknown; alias_env_variables?: unknown }): boolean {
+  return (
+    field.env_variable === 'APP_BASE_URL' ||
+    (field.type === 'app_base_url' && Array.isArray(field.alias_env_variables) && field.alias_env_variables.includes('APP_BASE_URL'))
+  );
+}
+
+/** A form field default that would decide a value: set and not blank. */
+function hasDefault(field: { default?: unknown }): boolean {
+  return field.default !== undefined && String(field.default).trim() !== '';
+}
 
 /** An env variable a manifest has the Hub write for the app: never one of {@link HUB_OWNED_APP_ENV_VARS}. */
 function appWrittenEnvName(schema: z.ZodString): z.ZodString {
@@ -675,8 +692,7 @@ export const formFieldSchema = z
   .superRefine((field, ctx) => {
     // The Hub takes the host of `APP_BASE_URL` as one of the app's own hosts (`APP_BASE_HOST`), so
     // the URL is the operator's or the Hub's, never a manifest default.
-    const writesBaseUrl = field.env_variable === 'APP_BASE_URL' || (field.alias_env_variables ?? []).includes('APP_BASE_URL');
-    if (writesBaseUrl && field.default !== undefined && String(field.default).trim() !== '') {
+    if (writesAppBaseUrl(field) && hasDefault(field)) {
       ctx.addIssue({
         code: 'custom',
         path: ['default'],
@@ -791,6 +807,91 @@ export const appInfoObjectSchema = z.object({
 });
 
 export const appInfoSchema = z.preprocess(normalizeAppInfoInput, appInfoObjectSchema);
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+const isHubOwnedEnvName = (value: unknown): boolean => typeof value === 'string' && HUB_OWNED_APP_ENV_VARS.has(value);
+
+/**
+ * A manifest without what {@link appInfoSchema} refuses about the values the Hub sets for every app:
+ * a form field or alias named for one of {@link HUB_OWNED_APP_ENV_VARS}, a Hub integration that names
+ * one and a default on a field that writes `APP_BASE_URL`. `leftOut` says what went.
+ */
+function withoutHubOwnedEnvNames(config: Record<string, unknown>): { config: Record<string, unknown>; leftOut: string[] } {
+  const leftOut: string[] = [];
+  let result = config;
+
+  if (Array.isArray(config.form_fields)) {
+    const fields: unknown[] = [];
+    for (const field of config.form_fields) {
+      if (!isRecord(field)) {
+        fields.push(field);
+        continue;
+      }
+      if (isHubOwnedEnvName(field.env_variable)) {
+        leftOut.push(`form field ${field.env_variable}`);
+        continue;
+      }
+      let kept = field;
+      const aliases = Array.isArray(field.alias_env_variables) ? field.alias_env_variables : [];
+      if (aliases.some(isHubOwnedEnvName)) {
+        leftOut.push(...aliases.filter(isHubOwnedEnvName).map((alias) => `alias ${alias} of form field ${String(field.env_variable)}`));
+        kept = { ...kept, alias_env_variables: aliases.filter((alias) => !isHubOwnedEnvName(alias)) };
+      }
+      if (writesAppBaseUrl(kept) && hasDefault(kept)) {
+        leftOut.push(`the default of form field ${String(field.env_variable)}`);
+        const { default: _default, ...withoutDefault } = kept;
+        kept = withoutDefault;
+      }
+      fields.push(kept);
+    }
+    result = { ...result, form_fields: fields };
+  }
+
+  const integration = config.hub_integration;
+  if (isRecord(integration)) {
+    const kept: Record<string, unknown> = { ...integration };
+    if (isRecord(integration.inference)) {
+      const entries = Object.entries(integration.inference);
+      for (const [key, name] of entries.filter(([, name]) => isHubOwnedEnvName(name))) {
+        leftOut.push(`hub_integration.inference.${key} (${String(name)})`);
+      }
+      kept.inference = Object.fromEntries(entries.filter(([, name]) => !isHubOwnedEnvName(name)));
+    }
+    if (isRecord(integration.inference_provider) && isHubOwnedEnvName(integration.inference_provider.env)) {
+      leftOut.push(`hub_integration.inference_provider (${String(integration.inference_provider.env)})`);
+      delete kept.inference_provider;
+    }
+    if (isRecord(integration.oidc) && isHubOwnedEnvName(integration.oidc.issuer_env)) {
+      leftOut.push(`hub_integration.oidc (${String(integration.oidc.issuer_env)})`);
+      delete kept.oidc;
+    }
+    // The URL and the key go together: the Hub writes neither without the other.
+    if (isRecord(integration.memory) && (isHubOwnedEnvName(integration.memory.url_env) || isHubOwnedEnvName(integration.memory.token_env))) {
+      const { url_env, token_env, ...memory } = integration.memory;
+      leftOut.push(`hub_integration.memory (${[url_env, token_env].filter(isHubOwnedEnvName).join(', ')})`);
+      kept.memory = memory;
+    }
+    result = { ...result, hub_integration: kept };
+  }
+
+  return { config: result, leftOut };
+}
+
+/**
+ * Parses the manifest copied into an installed app's folder.
+ *
+ * A store's manifest that names a value the Hub sets for every app is refused
+ * (`HUB_OWNED_APP_ENV_VARS`). An installed copy from before that rule is read with those names left
+ * out, so the app keeps starting and gets the Hub's values, as the env builder would give it anyway.
+ * `leftOut` says what was left out, for the log.
+ */
+export function parseInstalledAppInfo(config: Record<string, unknown>): {
+  parsed: ReturnType<typeof appInfoSchema.safeParse>;
+  leftOut: string[];
+} {
+  const { config: kept, leftOut } = withoutHubOwnedEnvNames(config);
+  return { parsed: appInfoSchema.safeParse(kept), leftOut };
+}
 
 export type AppInfoInput = z.input<typeof appInfoObjectSchema>;
 export type AppInfo = z.output<typeof appInfoObjectSchema>;

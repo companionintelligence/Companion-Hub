@@ -8,7 +8,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
-import { appInfoSchema, parseInstalledComposeJson } from '@ci-hub/common/schemas';
+import { parseInstalledAppInfo, parseInstalledComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 
 /** Single-quote a path for `sh`. */
@@ -89,7 +89,10 @@ export class AppFilesManager {
         const configFile = await this.filesystem.readTextFile(path.join(appInstalledDir, 'config.json'));
 
         const config = JSON.parse(configFile ?? '{}');
-        const parsedConfig = appInfoSchema.safeParse({ ...config, urn: appUrn });
+        const { parsed: parsedConfig, leftOut } = parseInstalledAppInfo({ ...config, urn: appUrn });
+        if (leftOut.length > 0) {
+          this.logger.warn(`App ${appUrn}: its config.json names values the Hub sets for every app, read without ${leftOut.join(', ')}`);
+        }
 
         if (!parsedConfig.success) {
           this.logger.error(`App ${appUrn} config error:`);

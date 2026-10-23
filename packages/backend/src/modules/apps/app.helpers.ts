@@ -10,7 +10,14 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { Injectable } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import { type AppInfo, type FormField, HUB_OWNED_APP_ENV_VARS, type MemoryUrlStyle, type HubIntegration } from '@ci-hub/common/schemas';
+import {
+  type AppInfo,
+  type FormField,
+  HUB_OWNED_APP_ENV_VARS,
+  type MemoryUrlStyle,
+  type HubIntegration,
+  writesAppBaseUrl,
+} from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { normalizeStoredHostname } from '@ci-hub/common/types';
 import { buildFqdnSubdomain, buildPublicWebIdentity, extractDeviceSlug, resolvePublicDomainRoot, sanitizeAppSubdomain } from '@ci-hub/common/types';
@@ -124,8 +131,9 @@ export function appInheritableHubEnvKeys(config: Pick<AppInfo, 'hub_integration'
 
 /**
  * Whether a manifest may have the Hub write `name` into the app's env: not a value the Hub sets for
- * the app itself (`HUB_OWNED_APP_ENV_VARS`). The manifest schema refuses those names already; this is
- * for a manifest that reaches the env some other way.
+ * the app itself (`HUB_OWNED_APP_ENV_VARS`). The manifest schema refuses those names and an installed
+ * copy is read without them (`parseInstalledAppInfo`). This is for a manifest that reaches the env
+ * some other way.
  */
 function manifestMayWriteEnv(name: string): boolean {
   return !HUB_OWNED_APP_ENV_VARS.has(name);
@@ -136,8 +144,8 @@ function manifestMayWriteEnv(name: string): boolean {
  * `APP_BASE_URL`: the Hub takes the host of that URL as one of the app's own hosts
  * (`APP_BASE_HOST`), so it comes from the operator or from the Hub, never from the manifest.
  */
-function manifestDefaultMayDecide(field: Pick<FormField, 'env_variable' | 'alias_env_variables'>): boolean {
-  return field.env_variable !== 'APP_BASE_URL' && !(field.alias_env_variables ?? []).includes('APP_BASE_URL');
+function manifestDefaultMayDecide(field: Pick<FormField, 'type' | 'env_variable' | 'alias_env_variables'>): boolean {
+  return !writesAppBaseUrl(field);
 }
 
 /**

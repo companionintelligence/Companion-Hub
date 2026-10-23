@@ -15,10 +15,10 @@ import { AppFilesManager } from '../app-files-manager';
 import { AppHelpers } from '../app.helpers';
 
 /*
- * The Hub writes the app's id, name, store, URN, hosts and data directory into its env, and its
- * Traefik label check and its sandbox take them as the app's own. The manifest schema refuses a
- * manifest that names one; these tests hand the env builder such a manifest directly, as one that
- * reached it some other way, and check the Hub's value is what the app gets.
+ * The Hub writes the app's id, name, store, URN, hosts and data directory into its env. Its Traefik
+ * label check and its sandbox take them as the app's own. The manifest schema refuses a manifest
+ * that names one. These tests hand the env builder such a manifest directly (as one that reached it
+ * some other way) and check the Hub's value is what the app gets.
  */
 describe('AppHelpers.generateEnvFile keeps the values the Hub sets for the app', () => {
   const appUrn: AppUrn = createAppUrn('app', 'home');
@@ -166,7 +166,7 @@ describe('AppHelpers.generateEnvFile keeps the values the Hub sets for the app',
     });
 
     it('and sets none where the Hub sets none', async () => {
-      // A local app with no port: no host for it, and no LAN name.
+      // A local app with no port: no host for it and no LAN name.
       const local = appInfo({ port: undefined, exposable: false, form_fields: [field({ env_variable: name, default: OTHER })] });
       const expected = (await generate(appInfo({ port: undefined, exposable: false }), {})).get(name);
       expect((await generate(local, { [name]: OTHER })).get(name)).toBe(expected);

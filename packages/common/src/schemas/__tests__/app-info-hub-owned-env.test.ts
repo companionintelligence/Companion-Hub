@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { appInfoSchema, HUB_OWNED_APP_ENV_VARS } from '../app-info.js';
+import { appInfoSchema, HUB_OWNED_APP_ENV_VARS, parseInstalledAppInfo } from '../app-info.js';
 
 const baseApp = {
   id: 'app',
@@ -18,8 +18,8 @@ const issuesOf = (input: Record<string, unknown>) => {
 };
 
 /*
- * The Hub writes these into every app's env before the manifest's form fields, and its Traefik
- * label check and its sandbox take them as the app's own. A manifest that named one would replace
+ * The Hub writes these into every app's env before the manifest's form fields. Its Traefik label
+ * check and its sandbox take them as the app's own. A manifest that named one would replace
  * the Hub's value with its own.
  */
 describe('appInfoSchema: values the Hub sets for every app', () => {
@@ -124,7 +124,7 @@ describe('appInfoSchema: a field that writes APP_BASE_URL', () => {
     expect(issuesOf({ form_fields: [field] })).toEqual([['form_fields.0.default', refused]]);
   });
 
-  it('may leave the default out, and another base URL field may have one', () => {
+  it('may leave the default out and another base URL field may have one', () => {
     expect(
       issuesOf({
         form_fields: [
@@ -133,5 +133,88 @@ describe('appInfoSchema: a field that writes APP_BASE_URL', () => {
         ],
       }),
     ).toEqual([]);
+  });
+
+  // Only a base URL field writes its aliases, so another field's alias is never APP_BASE_URL's value.
+  it('lets a field of another type keep its default when it lists APP_BASE_URL as an alias', () => {
+    expect(
+      issuesOf({
+        form_fields: [
+          { type: 'text', label: 'Site URL', env_variable: 'SITE_URL', alias_env_variables: ['APP_BASE_URL'], default: 'https://example.com' },
+        ],
+      }),
+    ).toEqual([]);
+  });
+});
+
+/*
+ * An installed app keeps the manifest it was installed with. One installed before these rules is
+ * read with what they refuse left out, so the app keeps starting with the Hub's values.
+ */
+describe('parseInstalledAppInfo', () => {
+  const installed = (input: Record<string, unknown>) => parseInstalledAppInfo({ ...baseApp, ...input });
+
+  it('reads a manifest the rules refuse without the names they refuse', () => {
+    const { parsed, leftOut } = installed({
+      form_fields: [
+        { type: 'text', label: 'Site name', env_variable: 'APP_NAME', default: 'Mine' },
+        {
+          type: 'app_base_url',
+          label: 'Public URL',
+          env_variable: 'APP_BASE_URL',
+          alias_env_variables: ['APP_URL', 'APP_DOMAIN'],
+          default: 'https://other.example',
+        },
+        { type: 'random', label: 'Secret', env_variable: 'APP_SECRET' },
+      ],
+      hub_integration: {
+        inference: { chat_model: 'APP_ID', embedding_model: 'EMBED_MODEL' },
+        inference_provider: { env: 'APP_DOMAIN', ollama: 'ollama', openai_compatible: 'openai' },
+        oidc: { issuer_env: 'APP_URN' },
+        memory: { url_env: 'APP_LOCAL_DOMAIN', token_env: 'MEMORY_TOKEN', url_style: 'api_base' },
+      },
+    });
+
+    expect(parsed.success).toBe(true);
+    const app = parsed.success ? parsed.data : undefined;
+    expect(app?.form_fields.map((field) => [field.env_variable, field.alias_env_variables, field.default])).toEqual([
+      ['APP_BASE_URL', ['APP_URL'], undefined],
+      ['APP_SECRET', undefined, undefined],
+    ]);
+    expect(app?.hub_integration?.inference).toEqual({ embedding_model: 'EMBED_MODEL' });
+    expect(app?.hub_integration?.inference_provider).toBeUndefined();
+    expect(app?.hub_integration?.oidc).toBeUndefined();
+    expect(app?.hub_integration?.memory).toEqual({ url_style: 'api_base' });
+    expect(leftOut).toEqual([
+      'form field APP_NAME',
+      'alias APP_DOMAIN of form field APP_BASE_URL',
+      'the default of form field APP_BASE_URL',
+      'hub_integration.inference.chat_model (APP_ID)',
+      'hub_integration.inference_provider (APP_DOMAIN)',
+      'hub_integration.oidc (APP_URN)',
+      'hub_integration.memory (APP_LOCAL_DOMAIN)',
+    ]);
+  });
+
+  it('reads a manifest the rules accept as it is', () => {
+    const input = {
+      form_fields: [{ type: 'app_base_url', label: 'Public URL', env_variable: 'APP_BASE_URL', alias_env_variables: ['APP_URL'] }],
+      hub_integration: { inference: { chat_model: 'LLM_MODEL' }, oidc: { issuer_env: 'OIDC_ISSUER' } },
+    };
+    const { parsed, leftOut } = installed(input);
+
+    expect(leftOut).toEqual([]);
+    expect(parsed.success && parsed.data).toEqual(appInfoSchema.parse({ ...baseApp, ...input }));
+  });
+
+  it('still refuses what is wrong for another reason', () => {
+    expect(
+      installed({
+        form_fields: [
+          { type: 'text', env_variable: 'APP_NAME' },
+          { type: 'text', env_variable: 'SITE' },
+        ],
+      }).parsed.success,
+    ).toBe(false);
   });
 });
