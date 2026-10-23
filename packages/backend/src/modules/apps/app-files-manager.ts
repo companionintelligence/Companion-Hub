@@ -11,6 +11,26 @@ import { Injectable } from '@nestjs/common';
 import { parseInstalledAppInfo, parseInstalledComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 
+/** What was last logged as left out of each app's installed manifest. */
+const loggedLeftOut = new Map<string, string>();
+
+/**
+ * Logs what `parseInstalledAppInfo` left out of an app's installed manifest, once until that changes.
+ * The manifest is read on every app list, status check and env build, and it says the same thing
+ * until the app is updated.
+ */
+export function warnHubOwnedEnvLeftOut(logger: Pick<LoggerService, 'warn'>, appUrn: AppUrn, leftOut: readonly string[], file: string): void {
+  if (leftOut.length === 0) {
+    return;
+  }
+  const said = leftOut.join(', ');
+  if (loggedLeftOut.get(appUrn) === said) {
+    return;
+  }
+  loggedLeftOut.set(appUrn, said);
+  logger.warn(`App ${appUrn}: its ${file} names values the Hub sets for every app, read without ${said}`);
+}
+
 /** Single-quote a path for `sh`. */
 function shellQuotePath(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
@@ -90,9 +110,7 @@ export class AppFilesManager {
 
         const config = JSON.parse(configFile ?? '{}');
         const { parsed: parsedConfig, leftOut } = parseInstalledAppInfo({ ...config, urn: appUrn });
-        if (leftOut.length > 0) {
-          this.logger.warn(`App ${appUrn}: its config.json names values the Hub sets for every app, read without ${leftOut.join(', ')}`);
-        }
+        warnHubOwnedEnvLeftOut(this.logger, appUrn, leftOut, 'config.json');
 
         if (!parsedConfig.success) {
           this.logger.error(`App ${appUrn} config error:`);

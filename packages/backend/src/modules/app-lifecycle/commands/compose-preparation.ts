@@ -34,11 +34,15 @@ const OWN_HOST_VARIABLES = ['APP_DOMAIN', 'APP_LOCAL_DOMAIN', 'APP_BASE_HOST'];
  * A store's listing is a folder of names any store can publish. One that is no app URN is skipped.
  * A listing that can't be read leaves the installed apps' ids. Neither stops the app starting.
  */
-async function knownAppIds(moduleRef: ModuleRef, logger: Pick<LoggerService, 'warn'>): Promise<string[]> {
+async function knownAppIds(
+  moduleRef: ModuleRef,
+  marketplaceService: Pick<MarketplaceService, 'listedAppUrns'>,
+  logger: Pick<LoggerService, 'warn'>,
+): Promise<string[]> {
   const [installed, listed] = await Promise.all([
     moduleRef.get(AppsRepository, { strict: false }).getApps(),
     Promise.resolve()
-      .then(() => moduleRef.get(MarketplaceService, { strict: false }).listedAppUrns())
+      .then(() => marketplaceService.listedAppUrns())
       .catch((error: unknown): AppUrn[] => {
         logger.warn(`[compose] Could not list the stores' apps, so Traefik names are checked against installed apps only: ${String(error)}`);
         return [];
@@ -102,6 +106,13 @@ export async function prepareAppComposeDir(
 
   try {
     const { services, overrides } = parseInstalledComposeJson(composeJson.content);
+
+    // A database read and a listing of every store's folder, which the builder needs only at the end:
+    // started now so it runs beside the reads below. Handled at once so a failure that stops the
+    // build first is not left unhandled.
+    const knownAppIdsLookup = knownAppIds(moduleRef, marketplaceService, logger);
+    knownAppIdsLookup.catch(() => undefined);
+
     const architecture = configService.get('architecture');
 
     // Merge architecture-specific overrides with base services
@@ -262,7 +273,7 @@ export async function prepareAppComposeDir(
       loopbackHostPort,
       manifest: appInfo ?? undefined,
       defaultAppCpuLimit,
-      knownAppIds: await knownAppIds(moduleRef, logger),
+      knownAppIds: await knownAppIdsLookup,
       // The hosts the Hub set for this app. compose expands one it left unset from the Hub's own
       // environment or a user env file, so an app's router rule may name only these.
       hostVariables: OWN_HOST_VARIABLES.filter((name) => envMap.has(name)),
