@@ -10,7 +10,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { Injectable } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import type { AppInfo, MemoryUrlStyle, HubIntegration } from '@ci-hub/common/schemas';
+import { type AppInfo, type FormField, HUB_OWNED_APP_ENV_VARS, type MemoryUrlStyle, type HubIntegration } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { normalizeStoredHostname } from '@ci-hub/common/types';
 import { buildFqdnSubdomain, buildPublicWebIdentity, extractDeviceSlug, resolvePublicDomainRoot, sanitizeAppSubdomain } from '@ci-hub/common/types';
@@ -111,14 +111,33 @@ const HUB_ONLY_SECRET_ENV_VAR_SET: ReadonlySet<string> = new Set(HUB_ONLY_SECRET
  *
  * Those names come from the manifest, which any store can publish, so a Hub-only secret is never
  * passed through under one: `"token_env": "JWT_SECRET"` would otherwise hand the app that secret.
+ * Nor is a value the Hub sets for the app itself (`HUB_OWNED_APP_ENV_VARS`).
  */
 export function appInheritableHubEnvKeys(config: Pick<AppInfo, 'hub_integration'>): ReadonlySet<string> {
   const keys = new Set(HUB_ENV_KEYS_INHERITED_BY_APPS);
   const memory = config.hub_integration?.memory;
   for (const name of [memory?.url_env, memory?.token_env]) {
-    if (name && !HUB_ONLY_SECRET_ENV_VAR_SET.has(name)) keys.add(name);
+    if (name && !HUB_ONLY_SECRET_ENV_VAR_SET.has(name) && !HUB_OWNED_APP_ENV_VARS.has(name)) keys.add(name);
   }
   return keys;
+}
+
+/**
+ * Whether a manifest may have the Hub write `name` into the app's env: not a value the Hub sets for
+ * the app itself (`HUB_OWNED_APP_ENV_VARS`). The manifest schema refuses those names already; this is
+ * for a manifest that reaches the env some other way.
+ */
+function manifestMayWriteEnv(name: string): boolean {
+  return !HUB_OWNED_APP_ENV_VARS.has(name);
+}
+
+/**
+ * Whether a field's manifest default may decide its value. Not for a field that writes
+ * `APP_BASE_URL`: the Hub takes the host of that URL as one of the app's own hosts
+ * (`APP_BASE_HOST`), so it comes from the operator or from the Hub, never from the manifest.
+ */
+function manifestDefaultMayDecide(field: Pick<FormField, 'env_variable' | 'alias_env_variables'>): boolean {
+  return field.env_variable !== 'APP_BASE_URL' && !(field.alias_env_variables ?? []).includes('APP_BASE_URL');
 }
 
 /**
@@ -198,7 +217,9 @@ export function applyHubInferenceEnv(options: {
 
     const value = hubKey === 'llm_base_url' && stripV1 ? resolved.replace(/\/v1\/?$/, '') : resolved;
 
-    options.envMap.set(appEnvVar, value);
+    if (manifestMayWriteEnv(appEnvVar)) {
+      options.envMap.set(appEnvVar, value);
+    }
   }
 }
 
@@ -396,7 +417,8 @@ export class AppHelpers {
       entries.set(INFERENCE_ERROR_ENV_KEY, aiEnv.CI_INFERENCE_ERROR);
     }
 
-    const providerSwitch = config.hub_integration?.inference_provider;
+    const configuredSwitch = config.hub_integration?.inference_provider;
+    const providerSwitch = configuredSwitch && manifestMayWriteEnv(configuredSwitch.env) ? configuredSwitch : undefined;
     if (providerSwitch) {
       const usesOpenAiCompatible = (this.config.getInferencePreferences().preferredBackend ?? 'ollama') !== 'ollama';
       entries.set(providerSwitch.env, usesOpenAiCompatible ? providerSwitch.openai_compatible : providerSwitch.ollama);
@@ -408,7 +430,11 @@ export class AppHelpers {
       ...Object.values(config.hub_integration?.inference ?? {}),
     ]);
     if (providerSwitch) ownedKeys.add(providerSwitch.env);
-    return { entries, ownedKeys: [...ownedKeys].filter((key): key is string => typeof key === 'string' && key.length > 0), aiEnv };
+    return {
+      entries,
+      ownedKeys: [...ownedKeys].filter((key): key is string => typeof key === 'string' && key.length > 0 && manifestMayWriteEnv(key)),
+      aiEnv,
+    };
   }
 
   /**
@@ -594,6 +620,12 @@ export class AppHelpers {
     const appEnv = await this.appFilesManager.getAppEnv(appUrn);
     const existingAppEnvMap = this.envUtils.envStringToMap(appEnv.content);
 
+    // A manifest that names a value the Hub sets for the app gets the Hub's value. The manifest
+    // schema refuses such a manifest, so this is only for one that reaches here some other way.
+    const leaveOutManifestEnv = (name: string, source: string) => {
+      this.logger.warn(`[AppHelpers] ${appUrn}: ${source} names ${name}, which the Hub sets for the app; the Hub's value is kept`);
+    };
+
     if (config.generate_vapid_keys) {
       if (existingAppEnvMap.has('VAPID_PUBLIC_KEY') && existingAppEnvMap.has('VAPID_PRIVATE_KEY')) {
         envMap.set('VAPID_PUBLIC_KEY', existingAppEnvMap.get('VAPID_PUBLIC_KEY') as string);
@@ -610,8 +642,12 @@ export class AppHelpers {
         continue;
       }
 
-      const formValue = mergedForm[field.env_variable];
       const envVar = field.env_variable;
+      if (!manifestMayWriteEnv(envVar)) {
+        leaveOutManifestEnv(envVar, 'a form field');
+        continue;
+      }
+      const formValue = manifestDefaultMayDecide(field) ? mergedForm[envVar] : form[envVar];
 
       if (field.type === 'random') {
         if (existingAppEnvMap.has(envVar)) {
@@ -632,7 +668,7 @@ export class AppHelpers {
         continue;
       }
 
-      if (field.default !== undefined) {
+      if (field.default !== undefined && manifestDefaultMayDecide(field)) {
         envMap.set(envVar, String(field.default));
         continue;
       }
@@ -654,9 +690,11 @@ export class AppHelpers {
     // Open action use the same browser-reachable host.
     const browserHost = resolveBrowserHost(internalIp);
 
-    // 3. `APP_INTERNAL_AUTHORITY`: host and port for URLs and CSRF origin checks.
-    if (config.port || form.port) {
-      envMap.set('APP_INTERNAL_AUTHORITY', `${browserHost}:${form.port ? form.port : config.port}`);
+    // 3. `APP_INTERNAL_AUTHORITY`: host and port for URLs and CSRF origin checks. The values below
+    // that derive from it read this one, not the env's, which a form field may have written.
+    const internalAuthority = config.port || form.port ? `${browserHost}:${form.port ? form.port : config.port}` : undefined;
+    if (internalAuthority) {
+      envMap.set('APP_INTERNAL_AUTHORITY', internalAuthority);
     }
 
     // --- Exposure state variables ---
@@ -755,21 +793,14 @@ export class AppHelpers {
     if (isExposed) {
       envMap.set('APP_DOMAIN', publicHostname);
       envMap.set('APP_EXPOSED_DOMAIN', publicHostname);
-    } else {
-      const internalAuthority = envMap.get('APP_INTERNAL_AUTHORITY');
-      if (internalAuthority) {
-        envMap.set('APP_DOMAIN', internalAuthority);
-      }
+    } else if (internalAuthority) {
+      envMap.set('APP_DOMAIN', internalAuthority);
     }
 
     // `APP_URL` is the full browser access URL.
-    if (isExposed) {
-      envMap.set('APP_URL', publicUrl);
-    } else {
-      const internalAuthority = envMap.get('APP_INTERNAL_AUTHORITY');
-      if (internalAuthority) {
-        envMap.set('APP_URL', `http://${internalAuthority}`);
-      }
+    const hubAppUrl = isExposed ? publicUrl : internalAuthority ? `http://${internalAuthority}` : undefined;
+    if (hubAppUrl) {
+      envMap.set('APP_URL', hubAppUrl);
     }
 
     const configDomain = domain;
@@ -795,7 +826,7 @@ export class AppHelpers {
      */
     const suggestedPublicUrl = isExposed && syncedCustomDomain ? publicUrl : platformPublicUrl;
 
-    const defaultAppBaseUrl = (suggestedPublicUrl ?? envMap.get('APP_URL') ?? '').replace(/\/+$/, '');
+    const defaultAppBaseUrl = (suggestedPublicUrl ?? hubAppUrl ?? '').replace(/\/+$/, '');
 
     /*
      * Preserve an existing base URL when an operator pinned it. A value equal to
@@ -859,6 +890,10 @@ export class AppHelpers {
       }
 
       const envVar = field.env_variable;
+      if (!manifestMayWriteEnv(envVar)) {
+        leaveOutManifestEnv(envVar, 'a form field');
+        continue;
+      }
       const formValue = form[envVar];
       const hasValidFormValue = formValue !== undefined && formValue !== '' && formValue !== null;
 
@@ -868,7 +903,7 @@ export class AppHelpers {
         resolvedBaseUrl = followExposedIdentity(String(formValue).replace(/\/+$/, ''));
       } else if (existingAppEnvMap.has(envVar)) {
         resolvedBaseUrl = followExposedIdentity(String(existingAppEnvMap.get(envVar)).replace(/\/+$/, ''));
-      } else if (field.default !== undefined && String(field.default).trim() !== '') {
+      } else if (field.default !== undefined && String(field.default).trim() !== '' && manifestDefaultMayDecide(field)) {
         resolvedBaseUrl = String(field.default).replace(/\/+$/, '');
       } else if (defaultAppBaseUrl) {
         resolvedBaseUrl = defaultAppBaseUrl;
@@ -885,7 +920,11 @@ export class AppHelpers {
 
       const aliasValue = field.trailing_slash ? `${resolvedBaseUrl}/` : resolvedBaseUrl;
       for (const alias of field.alias_env_variables ?? []) {
-        envMap.set(alias, aliasValue);
+        if (manifestMayWriteEnv(alias)) {
+          envMap.set(alias, aliasValue);
+        } else {
+          leaveOutManifestEnv(alias, `the aliases of form field ${envVar}`);
+        }
       }
     }
 
@@ -999,7 +1038,11 @@ export class AppHelpers {
     // declare the issuer variable plus an optional discovery path. Limiting writes
     // to opted-in apps protects third-party identity-provider variables with the
     // same name.
-    const oidcIntegration = config.hub_integration?.oidc;
+    const oidcIntegration =
+      config.hub_integration?.oidc && manifestMayWriteEnv(config.hub_integration.oidc.issuer_env) ? config.hub_integration.oidc : undefined;
+    if (config.hub_integration?.oidc && !oidcIntegration) {
+      leaveOutManifestEnv(config.hub_integration.oidc.issuer_env, 'hub_integration.oidc.issuer_env');
+    }
     if (oidcIntegration) {
       if (normalizedCloudUrl) {
         const suffix = oidcIntegration.issuer_path?.trim().replace(/^\/+/, '').replace(/\/+$/, '');
@@ -1116,7 +1159,13 @@ export class AppHelpers {
     // credentials take precedence; operator-entered values apply only when no
     // brokered connection exists.
     const memoryIntegration = config.hub_integration?.memory;
-    if (memoryIntegration?.url_env && memoryIntegration?.token_env) {
+    const refusedMemoryEnv = [memoryIntegration?.url_env, memoryIntegration?.token_env].filter(
+      (name): name is string => name !== undefined && !manifestMayWriteEnv(name),
+    );
+    for (const name of refusedMemoryEnv) {
+      leaveOutManifestEnv(name, 'hub_integration.memory');
+    }
+    if (memoryIntegration?.url_env && memoryIntegration?.token_env && refusedMemoryEnv.length === 0) {
       // The app URN lets its wrapper query the per-app Companion Memory connect
       // state endpoint (`/api/memory-connect/apps/:urn/state`) to decide whether
       // to show the connect interstitial.

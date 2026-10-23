@@ -3,6 +3,36 @@ import { zodAppUrn } from '../types/app-urn.js';
 import { agentConfigSchema } from './agent-config.js';
 
 /**
+ * Values the Hub writes into every app's env that its checks take as the app's own.
+ *
+ * The Traefik label check takes `${APP_ID}` as the app's id and `${APP_DOMAIN}`,
+ * `${APP_LOCAL_DOMAIN}` and `${APP_BASE_HOST}` as its hosts, and the sandbox takes
+ * `${APP_DATA_DIR}` as its data directory. `APP_NAME`, `APP_STORE_ID` and `APP_URN` say which app it
+ * is. The Hub sets them before it writes the manifest's form fields, so a field of the same name,
+ * its default or an alias would replace them, and a Hub integration that names one would too. A
+ * manifest may name none of them, and the Hub writes none of them from a manifest.
+ */
+export const HUB_OWNED_APP_ENV_VARS: ReadonlySet<string> = new Set([
+  'APP_ID',
+  'APP_NAME',
+  'APP_STORE_ID',
+  'APP_URN',
+  'APP_DOMAIN',
+  'APP_LOCAL_DOMAIN',
+  'APP_BASE_HOST',
+  'APP_DATA_DIR',
+]);
+
+/** An env variable a manifest has the Hub write for the app: never one of {@link HUB_OWNED_APP_ENV_VARS}. */
+function appWrittenEnvName(schema: z.ZodString): z.ZodString {
+  return schema.superRefine((name, ctx) => {
+    if (HUB_OWNED_APP_ENV_VARS.has(name)) {
+      ctx.addIssue({ code: 'custom', message: `${name} is set by the Hub for every app, so a manifest can't set it` });
+    }
+  });
+}
+
+/**
  * Standardized inference variable names that apps can request from the Hub.
  * When declared in `hub_integration.inference`, the Hub resolves the value at
  * env-generation time and writes it into the app's `app.env` under the
@@ -33,7 +63,7 @@ export type InferenceVariable = (typeof INFERENCE_VARIABLES)[number];
 // subset of inference vars (e.g. ci-memory declares llm_* only), so this must
 // be a partial record — otherwise marketplace config fails safeParse and the
 // Hub reports "App ci-memory:ci-marketplace not found".
-export const inferenceEnvMappingSchema = z.partialRecord(z.enum(INFERENCE_VARIABLES), z.string().min(1));
+export const inferenceEnvMappingSchema = z.partialRecord(z.enum(INFERENCE_VARIABLES), appWrittenEnvName(z.string().min(1)));
 
 /**
  * Dual-provider apps (e.g. AnythingLLM) expose an internal provider switch env var.
@@ -42,10 +72,12 @@ export const inferenceEnvMappingSchema = z.partialRecord(z.enum(INFERENCE_VARIAB
  */
 export const inferenceProviderSchema = z.object({
   /** Env variable the app reads its LLM provider mode from (e.g. APP_LLM_PROVIDER). */
-  env: z
-    .string()
-    .min(1)
-    .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'env must be a valid environment variable name'),
+  env: appWrittenEnvName(
+    z
+      .string()
+      .min(1)
+      .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'env must be a valid environment variable name'),
+  ),
   /** Value to write when Hub AI Settings use Ollama as the chat backend. */
   ollama: z.string().min(1),
   /** Value to write when Hub AI Settings use vLLM, Lemonade, or cloud. */
@@ -116,10 +148,12 @@ export const hubIntegrationSchema = z
          * Must be a valid environment variable name so it is never written as a
          * malformed/whitespace-padded key (which would silently misconfigure OIDC).
          */
-        issuer_env: z
-          .string()
-          .min(1)
-          .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'issuer_env must be a valid environment variable name'),
+        issuer_env: appWrittenEnvName(
+          z
+            .string()
+            .min(1)
+            .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'issuer_env must be a valid environment variable name'),
+        ),
         /**
          * Optional path appended to the paired Portal origin to form the issuer
          * (e.g. "/api/auth" for discovery-based clients that resolve
@@ -165,17 +199,19 @@ export const hubIntegrationSchema = z
     memory: z
       .object({
         /** Env var to receive the resolved Companion Memory URL (must be a valid env name). */
-        url_env: z
-          .string()
-          .min(1)
-          .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'url_env must be a valid environment variable name')
-          .optional(),
+        url_env: appWrittenEnvName(
+          z
+            .string()
+            .min(1)
+            .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'url_env must be a valid environment variable name'),
+        ).optional(),
         /** Env var to receive the minted, memory-scoped api key (must be a valid env name). */
-        token_env: z
-          .string()
-          .min(1)
-          .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'token_env must be a valid environment variable name')
-          .optional(),
+        token_env: appWrittenEnvName(
+          z
+            .string()
+            .min(1)
+            .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'token_env must be a valid environment variable name'),
+        ).optional(),
         /**
          * The SHAPE of the URL this app wants in `url_env`. The provider is reachable
          * at `http://<service>:<port>`, but its gateway only proxies the API under
@@ -616,25 +652,38 @@ export type FieldType = (typeof FIELD_TYPES)[number];
 export const RANDOM_ENCODINGS = ['hex', 'base64'] as const;
 export type RandomEncoding = (typeof RANDOM_ENCODINGS)[number];
 
-export const formFieldSchema = z.object({
-  type: z.enum(FIELD_TYPES),
-  label: z.string(),
-  placeholder: z.string().optional(),
-  max: z.number().optional(),
-  min: z.number().optional(),
-  hint: z.string().optional(),
-  options: z.object({ label: z.string(), value: z.string() }).array().optional(),
-  required: z.boolean().optional().default(false),
-  default: z.union([z.boolean(), z.string(), z.number()]).optional(),
-  regex: z.string().optional(),
-  pattern_error: z.string().optional(),
-  env_variable: z.string(),
-  encoding: z.enum(RANDOM_ENCODINGS).optional(),
-  /** When set on `app_base_url`, also write the resolved value to these env vars. */
-  alias_env_variables: z.array(z.string().min(1)).optional(),
-  /** When true, append a trailing slash to alias env var values. */
-  trailing_slash: z.boolean().optional(),
-});
+export const formFieldSchema = z
+  .object({
+    type: z.enum(FIELD_TYPES),
+    label: z.string(),
+    placeholder: z.string().optional(),
+    max: z.number().optional(),
+    min: z.number().optional(),
+    hint: z.string().optional(),
+    options: z.object({ label: z.string(), value: z.string() }).array().optional(),
+    required: z.boolean().optional().default(false),
+    default: z.union([z.boolean(), z.string(), z.number()]).optional(),
+    regex: z.string().optional(),
+    pattern_error: z.string().optional(),
+    env_variable: appWrittenEnvName(z.string()),
+    encoding: z.enum(RANDOM_ENCODINGS).optional(),
+    /** When set on `app_base_url`, also write the resolved value to these env vars. */
+    alias_env_variables: z.array(appWrittenEnvName(z.string().min(1))).optional(),
+    /** When true, append a trailing slash to alias env var values. */
+    trailing_slash: z.boolean().optional(),
+  })
+  .superRefine((field, ctx) => {
+    // The Hub takes the host of `APP_BASE_URL` as one of the app's own hosts (`APP_BASE_HOST`), so
+    // the URL is the operator's or the Hub's, never a manifest default.
+    const writesBaseUrl = field.env_variable === 'APP_BASE_URL' || (field.alias_env_variables ?? []).includes('APP_BASE_URL');
+    if (writesBaseUrl && field.default !== undefined && String(field.default).trim() !== '') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['default'],
+        message: "A field that writes APP_BASE_URL can't have a default: the Hub gives the app its address",
+      });
+    }
+  });
 
 function normalizeReplaces(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
