@@ -623,6 +623,19 @@ describe('AiSetupStep', () => {
       expect((await continueWith(onComplete)).preferredModelId).toBe('qwen3-8b');
     });
 
+    it('leaves no Default when the last ticked chat model is unticked, so the next one ticked becomes it', async () => {
+      api.profile = laptopProfile(['qwen3-5-4b', 'nomic-embed-text']);
+      const user = userEvent.setup();
+      renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      await user.click(screen.getByTestId('model-checkbox-qwen3-5-4b'));
+      expect(isMarkedDefault('qwen3-5-4b')).toBe(false);
+
+      await user.click(screen.getByTestId('model-checkbox-qwen3-8b'));
+      expect(isMarkedDefault('qwen3-8b')).toBe(true);
+    });
+
     it('saves the highest recommended model ticked when the Default card itself is not ticked', async () => {
       api.profile = laptopProfile([]);
       const user = userEvent.setup();
@@ -656,6 +669,22 @@ describe('AiSetupStep', () => {
       expect(isMarkedDefault('qwen3-8b')).toBe(true);
       const config = await continueWith(onComplete);
       expect(config).toMatchObject({ selectedModels: ['gemma4-e4b', 'qwen3-5-0-8b', 'qwen3-8b'], preferredModelId: 'qwen3-8b' });
+    });
+
+    it('does not tick a model a re-check finds just because it would have been Default, while the Default stands', async () => {
+      api.profile = laptopProfile(['gemma3-270m']);
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText('1 model selected')).toBeInTheDocument());
+
+      // Qwen 3.5 0.8B comes before Gemma 3 270M in the catalog, and neither is recommended.
+      await user.click(screen.getByTestId('other-group-small'));
+      api.profile = laptopProfile(['gemma3-270m', 'qwen3-5-0-8b']);
+      await user.click(screen.getByTestId('ollama-recheck-btn'));
+      await waitFor(() => expect(within(screen.getByTestId('model-row-qwen3-5-0-8b')).getByText('Installed')).toBeInTheDocument());
+
+      expect(await continueWith(onComplete)).toMatchObject({ selectedModels: ['gemma3-270m'], preferredModelId: 'gemma3-270m' });
     });
 
     it('ticks a model a re-check finds as the Default when nothing else is ticked, as the first load would', async () => {
