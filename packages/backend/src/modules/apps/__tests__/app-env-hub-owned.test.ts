@@ -30,6 +30,7 @@ describe('AppHelpers.generateEnvFile keeps the values the Hub sets for the app',
   let inferenceEnv = mock<InferenceEnvResolver>();
   let memoryConnection = mock<MemoryConnectionService>();
   let deviceRegistrationRepository = mock<DeviceRegistrationRepository>();
+  let filesystem = mock<FilesystemService>();
   let written = '';
 
   const appInfo = (overrides: Partial<AppInfo> = {}): AppInfo =>
@@ -86,7 +87,8 @@ describe('AppHelpers.generateEnvFile keeps the values the Hub sets for the app',
     config.getInferencePreferences.mockReturnValue(fromPartial({ preferredBackend: 'ollama' }));
     inferenceEnv.resolve.mockResolvedValue(fromPartial({ CI_CHAT_MODEL: OTHER }));
     memoryConnection.getInjectableCreds.mockResolvedValue(fromPartial({ url: OTHER, token: OTHER }));
-    moduleRef.get(FilesystemService).readTextFile.mockResolvedValue('');
+    filesystem = moduleRef.get(FilesystemService);
+    filesystem.readTextFile.mockResolvedValue('');
     deviceRegistrationRepository = moduleRef.get(DeviceRegistrationRepository);
     deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(fromPartial({ slug: 'acme' }));
     appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/app-data/home/app/app.env', content: '' });
@@ -169,6 +171,33 @@ describe('AppHelpers.generateEnvFile keeps the values the Hub sets for the app',
       const expected = (await generate(appInfo({ port: undefined, exposable: false }), {})).get(name);
       expect((await generate(local, { [name]: OTHER })).get(name)).toBe(expected);
     });
+  });
+
+  // The staleness check compares the keys the inference block owns with app.env. One it can never
+  // write would read as stale on every check.
+  it('leaves the values it keeps out of the keys the inference block owns', async () => {
+    const inference = await appHelpers.buildInferenceEnv('app', {
+      categories: ['ai'],
+      hub_integration: fromPartial({
+        inference: { chat_model: 'APP_ID', embedding_model: 'EMBED_MODEL' },
+        inference_provider: { env: 'APP_DOMAIN', ollama: OTHER, openai_compatible: OTHER },
+      }),
+    });
+    expect(inference.ownedKeys).toContain('EMBED_MODEL');
+    expect(inference.ownedKeys).not.toContain('APP_ID');
+    expect(inference.ownedKeys).not.toContain('APP_DOMAIN');
+    expect(inference.entries.has('APP_ID')).toBe(false);
+    expect(inference.entries.has('APP_DOMAIN')).toBe(false);
+  });
+
+  it('inherits none of them from the Hub’s .env under a Memory variable name', async () => {
+    filesystem.readTextFile.mockResolvedValue(`APP_LOCAL_DOMAIN=${OTHER}.hub.lan\nMEMORY_TOKEN=pinned\n`);
+    const env = await generate(
+      appInfo({ exposable: false, hub_integration: fromPartial({ memory: { url_env: 'APP_LOCAL_DOMAIN', token_env: 'MEMORY_TOKEN' } }) }),
+      {},
+    );
+    expect(env.get('APP_LOCAL_DOMAIN')).toBeUndefined();
+    expect(env.get('MEMORY_TOKEN')).toBe('pinned');
   });
 
   it('writes the variables the manifest names that the Hub doesn’t own', async () => {
