@@ -100,14 +100,28 @@ describe('withAppStartingPage', () => {
     expect(labels['traefik.http.routers.ci-planning-ci-marketplace-tailscale.middlewares']).toBe(APP_STARTING_MIDDLEWARE);
   });
 
-  it('extends a chain under the spelling it was given instead of adding a second one', () => {
+  // One chain, under the spelling TraefikConfigService reads: its file-provider copy of the router
+  // matches the option `middlewares` exactly, so a chain left under another spelling lost the Hub
+  // login there.
+  it('extends a chain given under another spelling, under the spelling TraefikConfigService reads', () => {
     const labels = withAppStartingPage({
       'traefik.http.routers.app.rule': 'Host(`app.ci.lan`)',
       'traefik.http.routers.app.Middlewares': 'ci-hub@file',
     });
 
-    expect(labels['traefik.http.routers.app.Middlewares']).toBe('ci-hub@file,ci-hub-app-starting@file');
-    expect(labels).not.toHaveProperty('traefik.http.routers.app.middlewares');
+    expect(labels['traefik.http.routers.app.middlewares']).toBe('ci-hub@file,ci-hub-app-starting@file');
+    expect(labels).not.toHaveProperty('traefik.http.routers.app.Middlewares');
+  });
+
+  it('merges a router’s chains under two spellings into one', () => {
+    const labels = withAppStartingPage({
+      'traefik.http.routers.app.rule': 'Host(`app.ci.lan`)',
+      'traefik.http.routers.app.middlewares': 'ci-hub@file',
+      'traefik.http.routers.APP.MIDDLEWARES': 'app-headers@docker,CI-HUB@file',
+    });
+
+    expect(Object.keys(labels).filter((key) => key.toLowerCase().endsWith('.middlewares'))).toEqual(['traefik.http.routers.app.middlewares']);
+    expect(labels['traefik.http.routers.app.middlewares']).toBe('ci-hub@file,app-headers@docker,ci-hub-app-starting@file');
   });
 
   it('adds it once, wherever a chain already has it', () => {

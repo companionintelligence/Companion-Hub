@@ -156,6 +156,9 @@ function middlewareList(value: unknown): string[] {
 /**
  * Whether a router, service or middleware name is the app's own: its id alone or followed by a dash.
  * A dash, so `{{CI_HUB_APP_ID}}x` can't become another app's id.
+ *
+ * In a value, nothing after the id may be a compose expansion: compose expands it after this check,
+ * so what it names can't be known here.
  */
 function isOwnName(name: string, appId: string | undefined, valueSide: boolean): boolean {
   let rest: string | undefined;
@@ -167,7 +170,7 @@ function isOwnName(name: string, appId: string | undefined, valueSide: boolean):
   } else if (appId && name.toLowerCase().startsWith(appId.toLowerCase())) {
     rest = name.slice(appId.length);
   }
-  return rest !== undefined && (rest === '' || rest.startsWith('-'));
+  return rest !== undefined && (rest === '' || rest.startsWith('-')) && !(valueSide && rest.includes('$'));
 }
 
 /** A reference to one of the app's own services or middlewares, on the Docker provider. */

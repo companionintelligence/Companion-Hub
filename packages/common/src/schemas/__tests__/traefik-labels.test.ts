@@ -147,6 +147,9 @@ describe('collectTraefikLabelIssues', () => {
     ],
     ['traefik.http.routers.{{CI_HUB_APP_ID}}.middlewares', '{{CI_HUB_APP_ID}}-a, other@file', 'other@file'],
     ['traefik.http.middlewares.{{CI_HUB_APP_ID}}-all.chain.middlewares', 'n8n-ci-marketplace-errors', 'n8n-ci-marketplace-errors'],
+    // A compose expansion after the id: compose expands it after the check, so it can't be checked.
+    ['traefik.http.routers.{{CI_HUB_APP_ID}}.middlewares', '${APP_ID}-${M}', '${APP_ID}-${M}'],
+    ['traefik.http.routers.{{CI_HUB_APP_ID}}.middlewares', '{{CI_HUB_APP_ID}}-${M}@docker', '{{CI_HUB_APP_ID}}-${M}@docker'],
   ])('refuses %s set to %s', (label, value, target) => {
     expect(collectTraefikLabelIssues({ [label]: value })).toEqual([
       { label, message: 'CUSTOM_APP_ERROR_TRAEFIK_MIDDLEWARE_NOT_OWN', params: { label, target, placeholder: '{{CI_HUB_APP_ID}}' } },

@@ -50,10 +50,11 @@ export function withHubMiddlewaresFirst(
   labels: Record<string, string | boolean>,
   hubLabels: Record<string, string | boolean>,
 ): Record<string, string | boolean> {
-  const hubChains = new Map<string, { key: string; chain: string[] }>();
+  const hubChains = new Map<string, { key: string; chain: string[]; hasForwardAuth: boolean }>();
   for (const [key, value] of Object.entries(hubLabels)) {
     if (HTTP_ROUTER_LABEL.exec(key)?.[2]?.toLowerCase() === 'middlewares') {
-      hubChains.set(key.toLowerCase(), { key, chain: middlewareChain(value) });
+      const chain = middlewareChain(value);
+      hubChains.set(key.toLowerCase(), { key, chain, hasForwardAuth: chain.some((name) => HUB_FORWARD_AUTH_MIDDLEWARES.has(name.toLowerCase())) });
     }
   }
 
@@ -69,11 +70,10 @@ export function withHubMiddlewaresFirst(
       chain = [...hub.chain];
       chains.set(hub.key, chain);
     }
-    const hasForwardAuth = hub.chain.some((name) => HUB_FORWARD_AUTH_MIDDLEWARES.has(name.toLowerCase()));
     for (const name of middlewareChain(value)) {
       const lower = name.toLowerCase();
       const known = chain.some((existing) => existing.toLowerCase() === lower);
-      if (!known && !(hasForwardAuth && HUB_FORWARD_AUTH_MIDDLEWARES.has(lower))) {
+      if (!known && !(hub.hasForwardAuth && HUB_FORWARD_AUTH_MIDDLEWARES.has(lower))) {
         chain.push(name);
       }
     }
@@ -101,20 +101,28 @@ export function withHubMiddlewaresFirst(
  * 401s, redirects and 5xx reach the visitor untouched: someone who is not signed in gets the login,
  * never the page. The visitor-set headers the edge middleware strips are also gone by then, and
  * Traefik copies the request's headers into its request for the page.
+ *
+ * Routers are told apart without regard to case, as Traefik tells them apart. A router spelled two
+ * ways is one router with one chain: a second chain key, here or added here, would leave Traefik to
+ * read only one of the two, which could be the one without the Hub login.
  */
 export function withAppStartingPage(labels: Record<string, string | boolean>): Record<string, string | boolean> {
-  const routers = new Set<string>();
-  // An existing chain under the spelling it was given, so it is extended rather than doubled.
-  const chainKeys = new Map<string, string>();
+  // Each router under the first spelling seen, with every key that sets its chain, so an existing
+  // chain is extended rather than doubled.
+  const routers = new Map<string, { name: string; chainKeys: string[] }>();
   for (const key of Object.keys(labels)) {
     const match = HTTP_ROUTER_LABEL.exec(key);
     const [, router, option] = match ?? [];
     if (!router || !option) {
       continue;
     }
-    routers.add(router);
+    let entry = routers.get(router.toLowerCase());
+    if (!entry) {
+      entry = { name: router, chainKeys: [] };
+      routers.set(router.toLowerCase(), entry);
+    }
     if (option.toLowerCase() === 'middlewares') {
-      chainKeys.set(router, key);
+      entry.chainKeys.push(key);
     }
   }
 
@@ -123,13 +131,63 @@ export function withAppStartingPage(labels: Record<string, string | boolean>): R
   }
 
   const result = { ...labels };
-  for (const router of routers) {
-    const key = chainKeys.get(router) ?? `traefik.http.routers.${router}.middlewares`;
-    const chain = middlewareChain(result[key]);
+  for (const { name, chainKeys } of routers.values()) {
+    // One chain under the spelling TraefikConfigService reads for its file-provider copy.
+    const key = `traefik.http.routers.${name}.middlewares`;
+    const chain: string[] = [];
+    for (const chainKey of chainKeys) {
+      for (const middleware of middlewareChain(result[chainKey])) {
+        if (!chain.some((existing) => existing.toLowerCase() === middleware.toLowerCase())) {
+          chain.push(middleware);
+        }
+      }
+      delete result[chainKey];
+    }
     if (!chain.includes(APP_STARTING_MIDDLEWARE)) {
       chain.push(APP_STARTING_MIDDLEWARE);
     }
     result[key] = chain.join(',');
+  }
+  return result;
+}
+
+/** The app id placeholders `ServiceBuilder.interpolateVariables` writes the app id into. */
+const APP_ID_PLACEHOLDER = /\{\{\s*(?:CI_HUB_APP_ID|RUNTIPI_APP_ID|RUNCIHUB_APP_ID)\s*\}\}/g;
+
+/** The router a label sets, as Traefik names it once `appId` is written in, and the option's last part. */
+function routerOption(label: string, appId: string): { router: string; option: string } | undefined {
+  const [, router, option] = HTTP_ROUTER_LABEL.exec(label) ?? [];
+  if (!router || !option) {
+    return undefined;
+  }
+  const lowerOption = option.toLowerCase();
+  return { router: router.replace(APP_ID_PLACEHOLDER, appId).toLowerCase(), option: lowerOption.slice(lowerOption.lastIndexOf('.') + 1) };
+}
+
+/**
+ * The other labels in `labels` of each router whose `middlewares` label is in `leftOut`, each with
+ * that `middlewares` label. Without its chain such a router still serves, with no Hub login in front
+ * of it when the chain held one, so the builder leaves the whole router out. The Hub's own labels
+ * for a router of its own are not in `labels`, so its router keeps its chain.
+ */
+export function labelsOfRoutersLosingTheirChain(leftOut: Iterable<string>, labels: Record<string, unknown>, appId: string): Map<string, string> {
+  const chainLabels = new Map<string, string>();
+  for (const label of leftOut) {
+    const parsed = routerOption(label, appId);
+    if (parsed?.option === 'middlewares' && !chainLabels.has(parsed.router)) {
+      chainLabels.set(parsed.router, label);
+    }
+  }
+  const result = new Map<string, string>();
+  if (chainLabels.size === 0) {
+    return result;
+  }
+  for (const label of Object.keys(labels)) {
+    const router = routerOption(label, appId)?.router;
+    const chainLabel = router === undefined ? undefined : chainLabels.get(router);
+    if (chainLabel !== undefined && chainLabel !== label) {
+      result.set(label, chainLabel);
+    }
   }
   return result;
 }

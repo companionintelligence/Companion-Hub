@@ -141,8 +141,10 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
           </AlertIcon>
           <div>
             <AlertHeading>{t('CUSTOM_APP_EDIT_REFUSED_LABELS_TITLE')}</AlertHeading>
-            {refusedLabels.map((refusal) => (
-              <AlertDescription key={refusal}>{i18n.exists(refusal) ? t(refusal) : refusal}</AlertDescription>
+            {refusedLabels.map((refusal, index) => (
+              // By position too: two overrides without an architecture can name the same label in the same words.
+              // biome-ignore lint/suspicious/noArrayIndexKey: the list only changes when the config is read again
+              <AlertDescription key={`${index}-${refusal}`}>{i18n.exists(refusal) ? t(refusal) : refusal}</AlertDescription>
             ))}
             <AlertDescription>{t('CUSTOM_APP_EDIT_REFUSED_LABELS_HINT')}</AlertDescription>
           </div>

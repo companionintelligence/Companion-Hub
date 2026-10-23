@@ -1435,4 +1435,51 @@ describe('DockerComposeBuilder — an app’s Traefik labels stay inside the app
       'traefik.http.services.my-app-_user-admin.loadbalancer.server.port': '8080',
     });
   });
+
+  // A router keeps all of its labels or none: the chain it asked for may hold the Hub login.
+  it('leaves out the whole of a router whose chain it leaves out', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const labels = await labelsFor(
+        { exposureMode: 'cloudflare', enableAuth: true },
+        {
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-api.rule': 'Host(`${APP_LOCAL_DOMAIN}`) && PathPrefix(`/api`)',
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-api.entrypoints': 'web',
+          'traefik.http.routers.my-app-_user-api.service': 'my-app-_user',
+          'traefik.http.routers.{{CI_HUB_APP_ID}}-api.middlewares': 'ci-hub@file,authelia-ci-marketplace@docker',
+          // On the Hub's router, only the app's labels go: the Hub's own keep it and its chain.
+          'traefik.http.routers.{{CI_HUB_APP_ID}}.middlewares': 'ci-hub@file,authelia-ci-marketplace@docker',
+          'traefik.http.routers.{{CI_HUB_APP_ID}}.rule': 'Host(`${APP_LOCAL_DOMAIN}`)',
+        },
+      );
+
+      expect(Object.keys(labels).filter((key) => key.includes('-api'))).toEqual([]);
+      expect(labels['traefik.http.routers.my-app-_user.rule']).toBe(`Host(\`${ORIGIN}\`)`);
+      expect(labels['traefik.http.routers.my-app-_user.middlewares']).toBe('ci-hub-edge-headers@file,ci-hub@file,ci-hub-app-starting@file');
+      expect(warn.mock.calls.map(([line]) => String(line))).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(
+            /label traefik\.http\.routers\.my-app-_user-api\.service was left out \[CUSTOM_APP_ERROR_TRAEFIK_MIDDLEWARE_NOT_OWN on /,
+          ),
+        ]),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // Traefik reads a router spelled two ways as one router and only one of its two chains.
+  it('gives a router spelled in another case no second chain', async () => {
+    const labels = await labelsFor(
+      { exposureMode: 'cloudflare', enableAuth: true },
+      { 'traefik.http.routers.MY-APP-_user.entrypoints': 'websecure' },
+    );
+
+    expect(
+      Object.keys(labels)
+        .filter((key) => key.toLowerCase().endsWith('.middlewares'))
+        .sort(),
+    ).toEqual(['traefik.http.routers.my-app-_user-insecure.middlewares', 'traefik.http.routers.my-app-_user.middlewares']);
+    expect(labels['traefik.http.routers.my-app-_user.middlewares']).toBe('ci-hub-edge-headers@file,ci-hub@file,ci-hub-app-starting@file');
+  });
 });
