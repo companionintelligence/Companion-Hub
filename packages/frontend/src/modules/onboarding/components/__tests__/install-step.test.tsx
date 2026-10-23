@@ -493,6 +493,38 @@ describe('InstallStep', () => {
       ]);
     });
 
+    it("says the Hub's shared refusal once and keeps the step's own reason on a model still downloading", async () => {
+      const unknownVram = "The Hub doesn't know this GPU's memory yet (VRAM Unknown), so it can't tell whether a pinned model fits.";
+      vi.useFakeTimers();
+      fetchTrackedModels.mockResolvedValue([{ catalogId: 'gemma4-26b', state: 'pulling', pullProgress: 30 }] as never);
+      pinInferenceModel.mockRejectedValue(new Error(unknownVram));
+
+      render(
+        <InstallStep
+          apps={[]}
+          onComplete={onComplete}
+          aiSetupConfig={{ ...onDiskConfig, selectedModels: ['gemma3-270m', 'nomic-embed-text', 'gemma4-26b'] }}
+        />,
+      );
+
+      await act(async () => {
+        await vi.runAllTimersAsync();
+      });
+      vi.useRealTimers();
+
+      const failures = await screen.findByTestId('pin-models-failures');
+      expect(screen.getByTestId('pin-models-refusal')).toHaveTextContent(unknownVram);
+      expect(
+        within(failures)
+          .getAllByRole('listitem')
+          .map((line) => line.textContent),
+      ).toEqual([
+        'gemma3-270m is not pinned.',
+        'nomic-embed-text is not pinned.',
+        'gemma4-26b is not pinned: it is still downloading. Pin it from Settings > AI once it is done.',
+      ]);
+    });
+
     it('says a model that was still downloading was not pinned, instead of checking the row', async () => {
       vi.useFakeTimers();
       fetchTrackedModels.mockResolvedValue([{ catalogId: 'gemma4-26b', state: 'pulling', pullProgress: 30 }] as never);
