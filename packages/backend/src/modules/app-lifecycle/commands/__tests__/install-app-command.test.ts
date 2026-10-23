@@ -39,10 +39,12 @@ vi.mock('node:fs', async () => ({
   },
 }));
 
-vi.mock('@ci-hub/common/schemas', async (importOriginal) => ({
-  ...((await importOriginal()) as any),
-  parseComposeJson: vi.fn().mockReturnValue({ services: [], overrides: [] }),
-}));
+// The host-device preflight reads the installed compose with parseInstalledComposeJson: one stub
+// stands for both parses.
+vi.mock('@ci-hub/common/schemas', async (importOriginal) => {
+  const parse = vi.fn().mockReturnValue({ services: [], overrides: [] });
+  return { ...((await importOriginal()) as any), parseComposeJson: parse, parseInstalledComposeJson: parse };
+});
 
 vi.mock('@/modules/inference/host-rocm-availability', () => ({
   isRocmKfdPassthroughAvailable: vi.fn().mockResolvedValue(true),

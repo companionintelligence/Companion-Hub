@@ -101,14 +101,14 @@ vi.mock('@/common/helpers/bind-mount-helpers', async (importOriginal) => ({
 }));
 
 /*
- * `parseComposeJson` throws a plain Error today, so the ZodError arm of the catch block is only
- * reachable through a collaborator. Keep the real parser as the default implementation — every
+ * `parseInstalledComposeJson` throws a plain Error today, so the ZodError arm of the catch block is
+ * only reachable through a collaborator. Keep the real parser as the default implementation — every
  * other test then exercises real schema parsing — and swap in a thrown ZodError for that one case.
  */
 vi.mock('@ci-hub/common/schemas', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@ci-hub/common/schemas')>();
-  schemaSpy.original = actual.parseComposeJson;
-  return { ...actual, parseComposeJson: schemaSpy.parse };
+  schemaSpy.original = actual.parseInstalledComposeJson;
+  return { ...actual, parseInstalledComposeJson: schemaSpy.parse };
 });
 
 const APP_URN = 'nextcloud:migrated' as AppUrn;
@@ -473,6 +473,45 @@ describe('prepareAppComposeDir', () => {
       // The generic thrown message names no cause, so losing either log leaves nothing to debug.
       expect(stubs.logger.error).toHaveBeenCalledWith(`Error generating docker-compose.yml file for app ${APP_URN}`);
       expect(stubs.logger.error).toHaveBeenCalledWith(cause);
+    });
+  });
+
+  // An app saved before a label rule existed: the builder leaves those labels out, so they don't stop
+  // the start. Every other refusal still does.
+  describe('labels the builder leaves out', () => {
+    const OLD_LABELS = { 'traefik.docker.network': 'ci-hub_network', 'ci-hub.appurn': 'other-app:ci-marketplace', 'com.example.team': 'web' };
+    const storedCompose = (main: Record<string, unknown>) => {
+      const [nextcloud, redis] = composeJsonFixture().services;
+      return { schemaVersion: 2, services: [{ ...nextcloud, ...main }, redis] };
+    };
+
+    it('builds an installed compose that holds them, handing the builder the labels as stored', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.appFilesManager.getDockerComposeJson.mockResolvedValue({
+        path: '/data/apps/nextcloud/docker-compose.json',
+        content: storedCompose({ extraLabels: OLD_LABELS }),
+      });
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+      expect(lastComposeCall().services[0]).toMatchObject({ name: 'nextcloud', extraLabels: OLD_LABELS });
+      expect(stubs.appFilesManager.writeDockerComposeYml).toHaveBeenCalledWith(APP_URN, builderSpy.output);
+    });
+
+    it('still refuses an installed compose with a privileged service, labels or not', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.appFilesManager.getDockerComposeJson.mockResolvedValue({
+        path: '/data/apps/nextcloud/docker-compose.json',
+        content: storedCompose({ privileged: true, extraLabels: OLD_LABELS }),
+      });
+
+      await expect(prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm())).rejects.toThrow(
+        `Error generating docker-compose.yml file for app ${APP_URN}.`,
+      );
+      expect(stubs.logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining('CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED') }),
+      );
+      expect(stubs.appFilesManager.writeDockerComposeYml).not.toHaveBeenCalled();
     });
   });
 

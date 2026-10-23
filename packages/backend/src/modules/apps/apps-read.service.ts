@@ -7,7 +7,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import { CURRENT_SCHEMA_VERSION, parseComposeJson } from '@ci-hub/common/schemas';
+import { CURRENT_SCHEMA_VERSION, parseInstalledComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { hasUpdateAvailable } from '../marketplace/app-version';
 import { MarketplaceService } from '../marketplace/marketplace.service';
@@ -61,7 +61,7 @@ export class AppsReadService {
           try {
             const compose = await this.appFilesManager.getDockerComposeJson(appUrn);
             if (compose.content) {
-              const parsed = parseComposeJson(compose.content) as unknown as { _schemaVersion: number };
+              const parsed = parseInstalledComposeJson(compose.content) as unknown as { _schemaVersion: number };
               composeSchemaVersion = parsed._schemaVersion;
             }
           } catch (error) {
@@ -256,7 +256,7 @@ export class AppsReadService {
     try {
       const compose = await this.appFilesManager.getDockerComposeJson(appUrn);
       if (compose.content) {
-        const parsed = parseComposeJson(compose.content) as unknown as { _schemaVersion: number };
+        const parsed = parseInstalledComposeJson(compose.content) as unknown as { _schemaVersion: number };
         composeSchemaVersion = parsed._schemaVersion;
       }
     } catch (error) {

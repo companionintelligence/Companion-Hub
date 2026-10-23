@@ -19,10 +19,11 @@ import type { CommandExecutionContext } from '../command';
 import type { AppUrn } from '@ci-hub/common/types';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 
-vi.mock('@ci-hub/common/schemas', async (importOriginal) => ({
-  ...((await importOriginal()) as any),
-  parseComposeJson: vi.fn().mockReturnValue({ services: [], overrides: [] }),
-}));
+// An installed compose is read with parseInstalledComposeJson: one stub stands for both parses.
+vi.mock('@ci-hub/common/schemas', async (importOriginal) => {
+  const parse = vi.fn().mockReturnValue({ services: [], overrides: [] });
+  return { ...((await importOriginal()) as any), parseComposeJson: parse, parseInstalledComposeJson: parse };
+});
 
 describe('UpdateAppCommand', () => {
   let command: UpdateAppCommand;

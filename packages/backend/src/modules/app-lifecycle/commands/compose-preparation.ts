@@ -14,7 +14,7 @@ import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import { ResourceAllocatorService } from '@/modules/system/resource-allocator.service';
 import { HEALTHCHECK_START_INTERVAL_MIN_ENGINE_MAJOR, withoutUnsupportedStartInterval } from '@/modules/docker/healthcheck-start-interval';
-import { hostPortStaysOnLoopback, parseComposeJson } from '@ci-hub/common/schemas';
+import { hostPortStaysOnLoopback, parseInstalledComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { buildOriginServerName, buildPublicWebIdentity, normalizeStoredHostname, resolvePublicDomainRoot } from '@ci-hub/common/types';
 import type { ModuleRef } from '@nestjs/core';
@@ -67,7 +67,7 @@ export async function prepareAppComposeDir(
   }
 
   try {
-    const { services, overrides } = parseComposeJson(composeJson.content);
+    const { services, overrides } = parseInstalledComposeJson(composeJson.content);
     const architecture = configService.get('architecture');
 
     // Merge architecture-specific overrides with base services

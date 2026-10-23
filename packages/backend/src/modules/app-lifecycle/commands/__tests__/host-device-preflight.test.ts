@@ -381,3 +381,31 @@ describe('assertHostDevicesAvailable', () => {
     await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).rejects.toMatchObject({ errorCode: ROCM_KFD_MISSING_CODE });
   });
 });
+
+// An app saved before a label rule existed still gets its device check at start; a privileged one is
+// still refused.
+describe('assertHostDevicesAvailable on a compose saved before a label rule', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    requestedUrns.length = 0;
+    vi.mocked(isRocmKfdPassthroughAvailable).mockResolvedValue(false);
+  });
+
+  const withMain = (main: Record<string, unknown>) => {
+    const compose = composeManifest(['/dev/kfd']) as { services: Array<Record<string, unknown>> };
+    compose.services[0] = { ...compose.services[0], ...main };
+    return compose;
+  };
+
+  it('checks the devices of a compose whose labels the builder leaves out', async () => {
+    const composeJson = withMain({ extraLabels: { 'traefik.docker.network': 'ci-hub_network', 'ci-hub.appurn': 'other-app:ci-marketplace' } });
+
+    await expect(assertHostDevicesAvailable(createModuleRef({ composeJson }), APP_URN)).rejects.toMatchObject({ errorCode: ROCM_KFD_MISSING_CODE });
+  });
+
+  it('still refuses a privileged service', async () => {
+    const composeJson = withMain({ privileged: true, extraLabels: { 'traefik.docker.network': 'ci-hub_network' } });
+
+    await expect(assertHostDevicesAvailable(createModuleRef({ composeJson }), APP_URN)).rejects.toThrow('CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED');
+  });
+});

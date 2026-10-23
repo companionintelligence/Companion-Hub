@@ -39,6 +39,20 @@ describe('custom app DTOs — reserved labels', () => {
     );
   });
 
+  // One Traefik reads every app's labels, so a router of this app's could send its traffic to another app's backend.
+  it('answers 400 naming a Traefik label that reaches another app', () => {
+    const label = 'traefik.http.routers.{{CI_HUB_APP_ID}}.service';
+    const response = refusal(UpdateCustomAppDto, { config: config({ [label]: 'n8n-ci-marketplace' }) });
+
+    expect(response.message).toContainEqual(
+      expect.objectContaining({
+        message: 'CUSTOM_APP_ERROR_TRAEFIK_SERVICE_NOT_OWN',
+        path: ['config', 'services', 0, 'extraLabels', label],
+        params: { label, target: 'n8n-ci-marketplace', placeholder: '{{CI_HUB_APP_ID}}' },
+      }),
+    );
+  });
+
   it('keeps accepting labels outside the Hub namespace', () => {
     const body = { config: config({ 'com.example.team': 'web' }) };
 

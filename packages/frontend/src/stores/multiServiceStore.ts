@@ -61,7 +61,7 @@ type ComposeIssue = { message: string; path: PropertyKey[]; params?: Record<stri
  * "Service web in the arm64 override: A custom app can't run a privileged container." Falls back to
  * "Invalid configuration." when no issue carries a message the Hub has words for.
  */
-function describeComposeIssue(issues: readonly ComposeIssue[], values: Partial<MultiServiceFormData>): string {
+export function describeComposeIssue(issues: readonly ComposeIssue[], values: Partial<MultiServiceFormData>): string {
   const issue = issues.find((candidate) => i18next.exists(candidate.message));
   if (!issue) {
     return 'MULTI_SERVICE_ERROR_INVALID_CONFIGURATION';
