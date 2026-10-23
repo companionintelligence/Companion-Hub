@@ -6,8 +6,9 @@
  * router, send a router of its own to another app's service or claim another app's host. Its route
  * then reached that app's backend with no Hub login, showed in place of that app or took it offline.
  *
- * An app's Traefik labels may set `traefik.enable` and its own HTTP routers, middlewares and
- * load-balanced services, under names that start with the app's id:
+ * An app's Traefik labels may set `traefik.enable`, `traefik.docker.network` to a Hub network the app's
+ * container is on, and its own HTTP routers, middlewares and load-balanced services, under names that
+ * start with the app's id:
  * - a router's `service`, and an `errors` middleware's, is one of the app's own services;
  * - a `middlewares` list names the app's own middlewares or the Hub's shared ones;
  * - a router's `rule` keeps it to the app's own hosts;
@@ -56,11 +57,24 @@ const HTTP_OBJECT_LABEL = /^traefik\.http\.(routers|services|middlewares)\.([^.]
 /** Every refusal {@link collectTraefikLabelIssues} gives, by its message. */
 export const TRAEFIK_LABEL_REFUSALS: ReadonlySet<string> = new Set([
   'CUSTOM_APP_ERROR_TRAEFIK_LABEL_NOT_ALLOWED',
+  'CUSTOM_APP_ERROR_TRAEFIK_NETWORK_NOT_HUB',
   'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN',
   'CUSTOM_APP_ERROR_TRAEFIK_SERVICE_NOT_OWN',
   'CUSTOM_APP_ERROR_TRAEFIK_MIDDLEWARE_NOT_OWN',
   'CUSTOM_APP_ERROR_TRAEFIK_RULE_NOT_OWN_HOST',
 ]);
+
+/**
+ * The Hub networks the Hub puts an app's main containers on, under the names a Hub uses unless it runs
+ * under another container name: see `hubAppNetworkNames` in the backend, whose names the compose
+ * builder passes in.
+ */
+export const HUB_APP_NETWORK_NAMES: readonly string[] = ['ci-hub_network', 'ci-os-hub_network'];
+
+export interface TraefikLabelCheckOptions {
+  /** The Hub networks the service's container is on, which `traefik.docker.network` may name. */
+  hubNetworks?: readonly string[];
+}
 
 export interface TraefikLabelIssue {
   label: string;
@@ -74,10 +88,15 @@ export interface TraefikLabelIssue {
  * `appId` is the app's interpolated id, for a caller that knows it. Names may then also start with
  * the id itself, as well as with `{{CI_HUB_APP_ID}}`.
  */
-export function collectTraefikLabelIssues(labels: Record<string, unknown> | undefined, appId?: string): TraefikLabelIssue[] {
+export function collectTraefikLabelIssues(
+  labels: Record<string, unknown> | undefined,
+  appId?: string,
+  options: TraefikLabelCheckOptions = {},
+): TraefikLabelIssue[] {
+  const hubNetworks = options.hubNetworks ?? HUB_APP_NETWORK_NAMES;
   const issues: TraefikLabelIssue[] = [];
   for (const [label, value] of Object.entries(labels ?? {})) {
-    const issue = traefikLabelIssue(label, value, appId);
+    const issue = traefikLabelIssue(label, value, appId, hubNetworks);
     if (issue) {
       issues.push(issue);
     }
@@ -85,10 +104,17 @@ export function collectTraefikLabelIssues(labels: Record<string, unknown> | unde
   return issues;
 }
 
-function traefikLabelIssue(label: string, value: unknown, appId: string | undefined): TraefikLabelIssue | undefined {
+function traefikLabelIssue(label: string, value: unknown, appId: string | undefined, hubNetworks: readonly string[]): TraefikLabelIssue | undefined {
   const lower = label.toLowerCase();
   if (!lower.startsWith('traefik.') || lower === 'traefik.enable') {
     return undefined;
+  }
+  if (lower === 'traefik.docker.network') {
+    // Which of the container's networks Traefik reaches it on. A container on more than one needs it,
+    // or Traefik may pick a network it isn't on. Only a Hub network the container is on will do.
+    return typeof value === 'string' && hubNetworks.includes(value)
+      ? undefined
+      : { label, message: 'CUSTOM_APP_ERROR_TRAEFIK_NETWORK_NOT_HUB', params: { label, networks: hubNetworks.join(', ') } };
   }
 
   const [, kind, name, option] = HTTP_OBJECT_LABEL.exec(label) ?? [];

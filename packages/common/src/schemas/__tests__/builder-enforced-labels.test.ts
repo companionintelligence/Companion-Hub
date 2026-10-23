@@ -10,7 +10,7 @@ const web = (extra: Record<string, unknown> = {}) => ({ name: 'web', image: 'ngi
 /** Labels an app saved before the label rules may hold: a Traefik option of its own and the Hub's own label. */
 const OLD_LABELS = {
   'com.example.team': 'web',
-  'traefik.docker.network': 'ci-hub_network',
+  'traefik.docker.network': 'another-app_network',
   'traefik.http.routers.web.entrypoints': 'web',
   'ci-hub.appurn': 'other-app:ci-marketplace',
 };
@@ -28,6 +28,7 @@ describe('BUILDER_ENFORCED_LABEL_REFUSALS', () => {
   it('names every refusal the Traefik label check gives', () => {
     const issues = collectTraefikLabelIssues({
       'traefik.tcp.routers.{{CI_HUB_APP_ID}}.rule': 'HostSNI(`*`)',
+      'traefik.docker.network': 'another-app_network',
       'traefik.http.routers.web.rule': 'Host(`${APP_DOMAIN}`)',
       'traefik.http.routers.{{CI_HUB_APP_ID}}-a.service': 'another-app-ci-marketplace',
       'traefik.http.routers.{{CI_HUB_APP_ID}}-b.middlewares': 'another-app-ci-marketplace-auth@docker',
@@ -63,7 +64,7 @@ describe('parseInstalledComposeJson', () => {
     expect(refusals(() => parseComposeJson(compose))).toEqual(
       expect.arrayContaining([
         'CUSTOM_APP_ERROR_LABEL_RESERVED',
-        'CUSTOM_APP_ERROR_TRAEFIK_LABEL_NOT_ALLOWED',
+        'CUSTOM_APP_ERROR_TRAEFIK_NETWORK_NOT_HUB',
         'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN',
       ]),
     );
@@ -79,7 +80,7 @@ describe('parseInstalledComposeJson', () => {
   it('reads the labels of an override the same way', () => {
     const compose = {
       schemaVersion: 2,
-      services: [web({ extraLabels: { 'traefik.docker.network': 'ci-hub_network' } })],
+      services: [web({ extraLabels: { 'traefik.docker.network': 'another-app_network' } })],
       overrides: [{ architecture: 'arm64', services: [{ name: 'web', extraLabels: { 'traefik.http.routers.web.entrypoints': 'web' } }] }],
     };
 
@@ -121,7 +122,7 @@ describe('safeParseKeepingBuilderEnforcedLabels', () => {
     expect(result.labelIssues.map((issue) => [issue.message, issue.path])).toEqual(
       expect.arrayContaining([
         ['CUSTOM_APP_ERROR_LABEL_RESERVED', ['services', 0, 'extraLabels', 'ci-hub.appurn']],
-        ['CUSTOM_APP_ERROR_TRAEFIK_LABEL_NOT_ALLOWED', ['services', 0, 'extraLabels', 'traefik.docker.network']],
+        ['CUSTOM_APP_ERROR_TRAEFIK_NETWORK_NOT_HUB', ['services', 0, 'extraLabels', 'traefik.docker.network']],
         ['CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN', ['services', 0, 'extraLabels', 'traefik.http.routers.web.entrypoints']],
       ]),
     );

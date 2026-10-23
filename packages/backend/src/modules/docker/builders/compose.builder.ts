@@ -488,11 +488,11 @@ export class DockerComposeBuilder {
       service.setEnvFile([envFile]);
     }
 
-    if ((params.isMain || params.addToMainNetwork) && !isolation?.disableMainNetwork) {
-      hubAppNetworkNames().forEach((networkName, index) => {
-        service.setNetwork(networkName, index === 0 ? 1 : 0);
-      });
-    }
+    // The Hub networks this service's container is on, which its labels may pin Traefik to.
+    const hubNetworks = (params.isMain || params.addToMainNetwork) && !isolation?.disableMainNetwork ? hubAppNetworkNames() : [];
+    hubNetworks.forEach((networkName, index) => {
+      service.setNetwork(networkName, index === 0 ? 1 : 0);
+    });
 
     const effectiveExposureMode = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
 
@@ -536,7 +536,7 @@ export class DockerComposeBuilder {
     // a v1 compose never meets that check, and an installed compose saved before a rule existed is
     // read with them kept (`parseInstalledComposeJson`), so this is where they are left out.
     const appId = `${appName}-${appStoreId}`;
-    const leftOutLabels = new Map(collectTraefikLabelIssues(params.extraLabels, appId).map((issue) => [issue.label, issue.message]));
+    const leftOutLabels = new Map(collectTraefikLabelIssues(params.extraLabels, appId, { hubNetworks }).map((issue) => [issue.label, issue.message]));
     for (const key of Object.keys(params.extraLabels ?? {})) {
       if (isReservedHubLabel(key)) {
         leftOutLabels.set(key, 'CUSTOM_APP_ERROR_LABEL_RESERVED');
