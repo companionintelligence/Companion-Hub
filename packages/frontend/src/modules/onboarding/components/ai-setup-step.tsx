@@ -186,13 +186,13 @@ export const AiSetupStep = ({
 
   /*
    * ⚠ ONLY WHAT THE WIZARD RECOMMENDS, NOT EVERY MODEL THE ENGINE HAS. The wizard pins what is ticked,
-   * so ticking all of Ollama pinned all of it, and marked the smallest Default. Of the models already
+   * so ticking all of Ollama pinned all of it and marked the smallest Default. Of the models already
    * on the active backend (and Ollama's embedders when chat is vLLM or oMLX), it ticks the ones on its
    * recommended list. The Default is always ticked, so when none of them is a chat model, the first
    * chat model the engine has is ticked as the Default. An embedder is ticked the same way, or a Hub
-   * whose only embedder is off the list would save none, and Memory would be handed the recommended
+   * whose only embedder is off the list would save none. Memory would then be handed the recommended
    * one to download in place of the one its index was built with. `defaultId` is the Default to keep
-   * ticked; it defaults to the one the wizard would mark.
+   * ticked. Left out (or passed as `undefined`), it is the one the wizard would mark.
    */
   const getDefaultSelectedModelIds = (
     data: HardwareProfileResponse,
@@ -362,11 +362,16 @@ export const AiSetupStep = ({
       const preferred = preferredModelIdRef.current;
       const keptPreferred = preferred && (nextInstalled.has(preferred) || stillSelected.includes(preferred)) ? preferred : undefined;
       // Preserve earlier opt-outs while selecting newly detected models, which are ticked as the first
-      // load would tick them, around the Default kept above.
-      const newlySelectable = getDefaultSelectedModelIds(data, backend, keptPreferred).filter((id) => !previouslyInstalled.has(id));
+      // load would tick them, around the Default kept above. With that one gone, a chat model still
+      // ticked stands as the Default, so a model off the list that arrives is not ticked in its place.
+      // Only with no chat model ticked is a new one ticked as the Default.
+      const standingDefault = keptPreferred ?? getDefaultPreferredModelId(data, backend, stillSelected, true);
+      const newlySelectable = getDefaultSelectedModelIds(data, backend, standingDefault).filter((id) => !previouslyInstalled.has(id));
       const nextSelected = [...new Set([...stillSelected, ...newlySelectable])];
       setSelectedModelIds(nextSelected);
-      setPreferredModelId(keptPreferred ?? getDefaultPreferredModelId(data, backend, nextSelected));
+      // Someone who unticked every chat model left no Default. The re-check keeps it that way unless it
+      // ticked a model, so the Default never lands on a card left unticked.
+      setPreferredModelId(keptPreferred ?? getDefaultPreferredModelId(data, backend, nextSelected, !preferred));
     } catch (e) {
       // Keep the in-progress setup after a secondary refresh fails, but retain a diagnostic.
       console.warn('Re-check could not refresh the installed model list', e);
@@ -471,10 +476,10 @@ export const AiSetupStep = ({
     if (!profile) return;
     const model = profile.availableModels.find((m) => m.id === modelId);
     if (!model) return;
-    const installed = new Set(profile?.installedCatalogIds ?? []);
+    const installed = new Set(profile.installedCatalogIds ?? []);
     // Host-served backends cannot hot-swap, so uninstalled models open their model page.
     // Hub-loadable backends remain selectable.
-    if (isHostServedBackend(model?.backend) && !installed.has(modelId) && !selectedModelIds.includes(modelId)) {
+    if (isHostServedBackend(model.backend) && !installed.has(modelId) && !selectedModelIds.includes(modelId)) {
       openExternal(`https://huggingface.co/${model.backendModelId}`);
       return;
     }
@@ -482,7 +487,7 @@ export const AiSetupStep = ({
     const isRemoving = selectedModelIds.includes(modelId);
     const next = isRemoving ? selectedModelIds.filter((id) => id !== modelId) : [...selectedModelIds, modelId];
     setSelectedModelIds(next);
-    const isAgent = profile?.availableModels.some((m) => m.id === modelId && m.backend === selectedBackend && isAgentModel(m)) ?? false;
+    const isAgent = model.backend === selectedBackend && isAgentModel(model);
     if (isRemoving && modelId === preferredModelId) {
       // The agent's preferred model was removed: the same rule picks the next among the ticked ones.
       setPreferredModelId(getDefaultPreferredModelId(profile, selectedBackend, next, true));

@@ -522,9 +522,9 @@ describe('AiSetupStep', () => {
 
   /*
    * #2113: the wizard ticked every model the engine had and marked the first in catalog order Default,
-   * so the Qwen 3.5 0.8B a Hub happened to have beat the recommended Qwen 3.5 4B, and finishing pinned
-   * all of them. Now it ticks the installed models it recommends, marks the highest of them Default,
-   * and ticks the first installed chat model as the Default only when none of those is installed.
+   * so the Qwen 3.5 0.8B a Hub happened to have beat the recommended Qwen 3.5 4B. Finishing pinned
+   * all of them. Now it ticks the installed models it recommends and marks the highest of them Default.
+   * It ticks the first installed chat model as the Default only when none of those is installed.
    */
   describe('which installed models start ticked and which is Default', () => {
     const continueWith = async (onComplete: ReturnType<typeof vi.fn>) => {
@@ -552,7 +552,7 @@ describe('AiSetupStep', () => {
       });
     });
 
-    it('marks MiniMax M2 Default on 128 GB when the engine has it and Gemma 4 E4B, and leaves Gemma unticked', async () => {
+    it('marks MiniMax M2 Default on 128 GB when the engine has it beside Gemma 4 E4B and leaves Gemma unticked', async () => {
       api.profile = unified128Profile(['gemma4-e4b', 'minimax-m2-community-230b']);
       const { onComplete } = renderStep();
       await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
@@ -678,7 +678,7 @@ describe('AiSetupStep', () => {
       await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
       await waitFor(() => expect(screen.getByText('1 model selected')).toBeInTheDocument());
 
-      // Qwen 3.5 0.8B comes before Gemma 3 270M in the catalog, and neither is recommended.
+      // Qwen 3.5 0.8B comes before Gemma 3 270M in the catalog. Neither is recommended.
       await user.click(screen.getByTestId('other-group-small'));
       api.profile = laptopProfile(['gemma3-270m', 'qwen3-5-0-8b']);
       await user.click(screen.getByTestId('ollama-recheck-btn'));
@@ -698,6 +698,40 @@ describe('AiSetupStep', () => {
       await waitFor(() => expect(screen.getByText('1 model selected')).toBeInTheDocument());
 
       expect(await continueWith(onComplete)).toMatchObject({ selectedModels: ['gemma3-270m'], preferredModelId: 'gemma3-270m' });
+    });
+
+    it('does not tick a model off the list a re-check finds while a chat model the person ticked stands', async () => {
+      api.profile = laptopProfile([]);
+      const user = userEvent.setup();
+      const { onComplete } = renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      // The Default card (Qwen 3.5 4B) stays unticked. Qwen 3 8B is ticked to download.
+      await user.click(screen.getByTestId('model-checkbox-qwen3-8b'));
+      api.profile = laptopProfile(['gemma3-270m']);
+      await user.click(screen.getByTestId('ollama-recheck-btn'));
+      await user.click(screen.getByTestId('other-group-small'));
+      await waitFor(() => expect(within(screen.getByTestId('model-row-gemma3-270m')).getByText('Installed')).toBeInTheDocument());
+
+      expect(isTicked('gemma3-270m')).toBe(false);
+      expect(await continueWith(onComplete)).toMatchObject({ selectedModels: ['qwen3-8b'], preferredModelId: 'qwen3-8b' });
+    });
+
+    it('leaves no Default through a re-check after the person unticked every chat model', async () => {
+      api.profile = laptopProfile(['qwen3-5-4b', 'nomic-embed-text']);
+      const user = userEvent.setup();
+      renderStep();
+      await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+      await user.click(screen.getByTestId('model-checkbox-qwen3-5-4b'));
+      api.profile = laptopProfile(['qwen3-5-4b', 'nomic-embed-text', 'embeddinggemma']);
+      await user.click(screen.getByTestId('ollama-recheck-btn'));
+      await user.click(screen.getByTestId('other-group-embedding'));
+      await waitFor(() => expect(within(screen.getByTestId('model-row-embeddinggemma')).getByText('Installed')).toBeInTheDocument());
+
+      expect(isMarkedDefault('qwen3-5-4b')).toBe(false);
+      await user.click(screen.getByTestId('model-checkbox-qwen3-8b'));
+      expect(isMarkedDefault('qwen3-8b')).toBe(true);
     });
   });
 
