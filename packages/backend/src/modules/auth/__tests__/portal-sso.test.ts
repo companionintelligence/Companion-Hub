@@ -20,6 +20,7 @@ import {
   resolveSameOriginRedirectUrl,
   resolveTrustedReturnOrigin,
   toDesktopRedirectPath,
+  portalBindingMatches,
 } from '../portal-sso';
 import { HUB_FAVICON_LINK_TAG, HUB_FAVICON_PATH } from '../hub-favicon';
 import { EVERY_ADDRESS_FAILED, axiosEveryAddressFailed } from '@/tests/utils/network-failures';
@@ -574,5 +575,26 @@ describe('portal-sso helpers', () => {
         cookieHeader: 'ci.session=abc',
       }),
     ).resolves.toBe('portal@example.com');
+  });
+
+  describe('portalBindingMatches', () => {
+    it('accepts an exact match', () => {
+      expect(portalBindingMatches('abc123', 'abc123')).toBe(true);
+    });
+
+    it('rejects a different value', () => {
+      expect(portalBindingMatches('abc123', 'abc124')).toBe(false);
+    });
+
+    it('rejects values of different length', () => {
+      expect(portalBindingMatches('abc', 'abcdef')).toBe(false);
+    });
+
+    it('fails closed when either side is missing', () => {
+      expect(portalBindingMatches(undefined, 'abc123')).toBe(false);
+      expect(portalBindingMatches('abc123', undefined)).toBe(false);
+      expect(portalBindingMatches('', '')).toBe(false);
+      expect(portalBindingMatches(null, null)).toBe(false);
+    });
   });
 });

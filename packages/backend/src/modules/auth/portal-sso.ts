@@ -24,6 +24,39 @@ export interface PortalSsoState {
    * 'packaged', which is the safe default (see resolvePortalDesktopDeepLinkScheme).
    */
   desktopChannel?: DesktopChannel;
+  /**
+   * Ties this sign-in to the browser that started it. `/start` mints this value,
+   * stores it here and also drops it as a short-lived httpOnly cookie. `/callback`
+   * only completes the sign-in when the request carries the same value back, so a
+   * callback opened in a different browser cannot finish this flow or take over the
+   * initiating browser's session.
+   */
+  binding: string;
+}
+
+/** Name of the httpOnly cookie that binds a Portal sign-in to its initiating browser. */
+export const PORTAL_SSO_BINDING_COOKIE_NAME = 'ci_hub_portal_sso';
+
+/** Scope the binding cookie to the Portal sign-in routes; both `/start` and `/callback` live here. */
+export const PORTAL_SSO_COOKIE_PATH = '/api/auth/portal';
+
+/** Lifetime of a Portal sign-in state and its binding cookie. Keep both in step. */
+export const PORTAL_SSO_STATE_TTL_SECONDS = 10 * 60;
+
+/**
+ * Constant-time check that the browser presented the same binding the `/start` state stored.
+ * Returns false when either side is missing so a state without a stored binding fails closed.
+ */
+export function portalBindingMatches(stored: string | null | undefined, presented: string | null | undefined): boolean {
+  if (!stored || !presented) {
+    return false;
+  }
+  const storedBytes = Buffer.from(stored);
+  const presentedBytes = Buffer.from(presented);
+  if (storedBytes.length !== presentedBytes.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(storedBytes, presentedBytes);
 }
 
 export interface PortalDesktopExchange {

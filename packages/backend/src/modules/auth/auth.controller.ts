@@ -94,6 +94,10 @@ import {
   isDesktopSignInWaitProof,
   isDirectLoopbackRequest,
   probePortalReachable,
+  portalBindingMatches,
+  PORTAL_SSO_BINDING_COOKIE_NAME,
+  PORTAL_SSO_COOKIE_PATH,
+  PORTAL_SSO_STATE_TTL_SECONDS,
   type PortalDesktopExchange,
   type PortalSsoErrorCode,
   type PortalSsoState,
@@ -246,6 +250,42 @@ export class AuthController {
       secure: options.secure,
       sameSite: 'lax',
       domain: options.domain,
+    });
+  }
+
+  /**
+   * Secure/Domain for the binding cookie, decided the same way {@link setSessionCookie} decides them:
+   * dev insecure-cookie mode drops Secure and the Domain, otherwise both follow the forwarded origin.
+   */
+  private portalBindingCookieSecurity(req: Request): { secure: boolean; domain?: string } {
+    if (this.config.get('userSettings').experimental.insecureCookie) {
+      return { secure: false };
+    }
+    const options = this.sessionCookieOptions(req);
+    return { secure: options.secure, domain: options.domain };
+  }
+
+  /**
+   * Drop the binding cookie that ties a Portal sign-in to the browser that ran `/start`.
+   * Scoped to the Portal sign-in path, with a lifetime that matches the sign-in state's cache TTL.
+   */
+  private setPortalBindingCookie(res: Response, req: Request, value: string) {
+    res.cookie(PORTAL_SSO_BINDING_COOKIE_NAME, value, {
+      httpOnly: true,
+      sameSite: 'lax',
+      path: PORTAL_SSO_COOKIE_PATH,
+      maxAge: PORTAL_SSO_STATE_TTL_SECONDS * 1000,
+      ...this.portalBindingCookieSecurity(req),
+    });
+  }
+
+  /** Must pass the same Path/Domain/Secure flags as Set-Cookie or the browser keeps the stale binding. */
+  private clearPortalBindingCookie(res: Response, req: Request) {
+    res.clearCookie(PORTAL_SSO_BINDING_COOKIE_NAME, {
+      httpOnly: true,
+      sameSite: 'lax',
+      path: PORTAL_SSO_COOKIE_PATH,
+      ...this.portalBindingCookieSecurity(req),
     });
   }
 
@@ -682,9 +722,20 @@ export class AuthController {
     const state = crypto.randomUUID();
     const codeVerifier = crypto.randomBytes(32).toString('base64url');
     const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('base64url');
+    // Binds this sign-in to the browser that started it: stored with the state and dropped as a
+    // short-lived cookie, then required back at the callback (see portalCallback).
+    const binding = crypto.randomBytes(32).toString('base64url');
     // A short callback window limits stale PKCE state.
-    const portalState: PortalSsoState = { codeVerifier, redirectUrl: redirectUrl || null, hubOrigin, desktop: isDesktop, desktopChannel: channel };
-    this.cache.set(`portal_sso:${state}`, JSON.stringify(portalState), 10 * 60);
+    const portalState: PortalSsoState = {
+      codeVerifier,
+      redirectUrl: redirectUrl || null,
+      hubOrigin,
+      desktop: isDesktop,
+      desktopChannel: channel,
+      binding,
+    };
+    this.cache.set(`portal_sso:${state}`, JSON.stringify(portalState), PORTAL_SSO_STATE_TTL_SECONDS);
+    this.setPortalBindingCookie(res, req, binding);
 
     const authorizeUrl = new URL('/api/auth/oauth2/authorize', portalBaseUrl);
     authorizeUrl.searchParams.set('client_id', 'ci-hub');
@@ -737,6 +788,7 @@ export class AuthController {
       let codeVerifier: string;
       let redirectUrl: string | null;
       let hubOrigin: string;
+      let binding: string | undefined;
 
       try {
         const parsed = JSON.parse(cached) as PortalSsoState;
@@ -745,8 +797,18 @@ export class AuthController {
         hubOrigin = parsed.hubOrigin;
         desktop = parsed.desktop;
         desktopChannel = parsed.desktopChannel ?? 'packaged';
+        binding = parsed.binding;
       } catch {
         return redirectError(null, 'callback_error');
+      }
+
+      // Only the browser that ran `/start` holds the matching binding cookie. A callback from any
+      // other browser cannot complete this sign-in, so it never reaches the code exchange and never
+      // replaces the initiating browser's session. Fail closed when either side is absent.
+      if (!portalBindingMatches(binding, req.cookies?.[PORTAL_SSO_BINDING_COOKIE_NAME])) {
+        this.logger.warn('Portal OAuth callback rejected: sign-in was not completed in the browser that started it', { hubOrigin });
+        this.clearPortalBindingCookie(res, req);
+        return redirectError(hubOrigin, 'state_expired');
       }
 
       const callbackUrl = resolvePortalCallbackUrl(hubOrigin);
@@ -808,6 +870,8 @@ export class AuthController {
       const sessionId = await this.sessionManager.createSession(operator.id);
       await this.replacePresentedSessions(req, sessionId);
       await this.setSessionCookie(res, sessionId, req);
+      // The binding has done its job; drop it so it cannot linger past this sign-in.
+      this.clearPortalBindingCookie(res, req);
 
       const handoffToDesktop = shouldHandoffPortalLoginToDesktop({
         desktop,
