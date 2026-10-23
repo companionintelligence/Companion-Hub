@@ -163,6 +163,17 @@ describe('PortExposeService', () => {
       ).rejects.toMatchObject({ message: 'CUSTOM_APP_ERROR_DUPLICATE_NAME' });
     });
 
+    // `my-workload` here is `my-workload-_user`, the id of app `my` from a store `workload-_user`.
+    it('refuses a name whose app id an installed app already has, before anything is written', async () => {
+      appsRepository.getApps.mockResolvedValue([{ appName: 'my', appStoreSlug: 'workload-_user' }] as any);
+
+      await expect(service.createPortExposeApp({ name: 'my-workload', port: 8080, exposureMode: 'local' })).rejects.toMatchObject({
+        message: 'APP_ERROR_APP_ID_IN_USE',
+      });
+      expect(filesystem.createDirectories).not.toHaveBeenCalled();
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
+    });
+
     it('does not publish a port the Hub cannot open', async () => {
       vi.mocked(assertHubCanReachPort).mockRejectedValueOnce(
         new TranslatableError('PORT_EXPOSE_PORT_UNREACHABLE', { port: '18765', host: 'host.docker.internal' }, 400),

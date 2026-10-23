@@ -34,7 +34,7 @@ interface BuilderConstruction {
   domain: string;
   localDomain: string;
   posixPermissionsSupported: boolean;
-  options?: { loopbackHostPort?: boolean; defaultAppCpuLimit?: string };
+  options?: { loopbackHostPort?: boolean; defaultAppCpuLimit?: string; knownAppIds?: Iterable<string>; hostVariables?: Iterable<string> };
 }
 
 const { builderSpy, posixProbe, schemaSpy } = vi.hoisted(() => ({
@@ -162,13 +162,13 @@ interface Stubs {
     writeDockerComposeYml: Stub;
     setAppDataDirPermissions: Stub;
   };
-  marketplaceService: { getAppInfoFromAppStoreOrInstalled: Stub; copyAppFromRepoToInstalled: Stub };
+  marketplaceService: { getAppInfoFromAppStoreOrInstalled: Stub; copyAppFromRepoToInstalled: Stub; listedAppUrns: Stub };
   logger: { info: Stub; warn: Stub; error: Stub };
   subnetManager: { allocateSubnet: Stub };
   configService: { get: Stub; getConfig: Stub };
   resourceAllocator: { getEffectiveAppDefaults: Stub; getDockerCapacity: Stub; getDockerServerVersion: Stub };
   registrationService: { getDeviceRegistrationInfo: Stub };
-  appsRepository: { getAppCustomDomain: Stub };
+  appsRepository: { getAppCustomDomain: Stub; getApps: Stub };
   docker: { pruneContainers: Stub };
 }
 
@@ -186,6 +186,7 @@ const createHarness = () => {
     marketplaceService: {
       getAppInfoFromAppStoreOrInstalled: vi.fn().mockResolvedValue({ id: 'nextcloud' }),
       copyAppFromRepoToInstalled: vi.fn().mockResolvedValue(undefined),
+      listedAppUrns: vi.fn().mockResolvedValue([]),
     },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     subnetManager: { allocateSubnet: vi.fn().mockResolvedValue('10.128.7.0/24') },
@@ -207,7 +208,7 @@ const createHarness = () => {
       getDockerServerVersion: vi.fn().mockResolvedValue('29.6.1'),
     },
     registrationService: { getDeviceRegistrationInfo: vi.fn().mockResolvedValue({ hubSubdomain: 'hub-desk-acme', slug: 'acme' }) },
-    appsRepository: { getAppCustomDomain: vi.fn().mockResolvedValue(null) },
+    appsRepository: { getAppCustomDomain: vi.fn().mockResolvedValue(null), getApps: vi.fn().mockResolvedValue([]) },
     docker: { pruneContainers: vi.fn().mockResolvedValue({ ContainersDeleted: [], SpaceReclaimed: 0 }) },
   };
 
@@ -291,6 +292,60 @@ describe('prepareAppComposeDir', () => {
     expect(stubs.appFilesManager.getAppEnv).toHaveBeenCalledWith(APP_URN);
     expect(stubs.marketplaceService.getAppInfoFromAppStoreOrInstalled).toHaveBeenCalledWith(APP_URN);
     expect(stubs.appFilesManager.setAppDataDirPermissions).toHaveBeenCalledWith(APP_URN);
+  });
+
+  /*
+   * The builder gives a Traefik name to the app with the longest id that covers it, so it needs every
+   * id the Hub knows: an app installed from any store, a custom app and an app a store lists that
+   * is not installed yet, which may be installed after this app.
+   */
+  it('hands the builder the id of every installed app and every app the stores list', async () => {
+    const { stubs, moduleRef, docker } = createHarness();
+    stubs.appsRepository.getApps.mockResolvedValue([
+      { appName: 'nextcloud', appStoreSlug: 'migrated' },
+      { appName: 'my-app', appStoreSlug: '_user' },
+    ]);
+    stubs.marketplaceService.listedAppUrns.mockResolvedValue(['nextcloud:migrated-lab', 'app:ci-marketplace']);
+
+    await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+    expect([...(lastConstruction().options?.knownAppIds ?? [])].sort()).toEqual([
+      'app-ci-marketplace',
+      'my-app-_user',
+      'nextcloud-migrated',
+      'nextcloud-migrated-lab',
+    ]);
+  });
+
+  // compose expands a host the Hub left unset from wherever else it finds it, so a rule may name only
+  // the ones the app's env holds.
+  it('hands the builder the hosts the Hub set in the app’s env', async () => {
+    const { stubs, moduleRef, docker } = createHarness();
+    stubs.appFilesManager.getAppEnv.mockResolvedValue({
+      path: APP_ENV_PATH,
+      content: [APP_ENV_CONTENT, 'APP_DOMAIN=nextcloud-desk-acme.companion.example', 'APP_LOCAL_DOMAIN=', 'APP_BASE_HOST=cloud.example.org'].join(
+        '\n',
+      ),
+    });
+
+    await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+    expect(lastConstruction().options?.hostVariables).toEqual(['APP_DOMAIN', 'APP_BASE_HOST']);
+  });
+
+  // A store's listing is what any store publishes: it must not stop an app from starting.
+  it('skips a listed name that is no app URN and keeps the installed ids when the listing fails', async () => {
+    const { stubs, moduleRef, docker } = createHarness();
+    stubs.appsRepository.getApps.mockResolvedValue([{ appName: 'nextcloud', appStoreSlug: 'migrated' }]);
+    stubs.marketplaceService.listedAppUrns.mockResolvedValueOnce([':odd', 'app:home-lab']);
+
+    await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+    expect([...(lastConstruction().options?.knownAppIds ?? [])].sort()).toEqual(['app-home-lab', 'nextcloud-migrated']);
+
+    stubs.marketplaceService.listedAppUrns.mockRejectedValueOnce(new Error('EACCES: permission denied'));
+    await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+    expect([...(lastConstruction().options?.knownAppIds ?? [])]).toEqual(['nextcloud-migrated']);
+    expect(stubs.logger.warn).toHaveBeenCalledWith(expect.stringContaining('EACCES: permission denied'));
   });
 
   describe('domain resolution', () => {
@@ -746,7 +801,7 @@ describe('prepareAppComposeDir', () => {
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm({ exposureMode: 'local' }));
 
       // The manifest rides along so the route builder can fall back to its edge-auth default.
-      expect(lastConstruction().options).toEqual({ loopbackHostPort: true, manifest });
+      expect(lastConstruction().options).toEqual({ loopbackHostPort: true, manifest, knownAppIds: [], hostVariables: [] });
     });
 
     it('keeps the host port on loopback for an app that asks for edge auth', async () => {
@@ -761,7 +816,7 @@ describe('prepareAppComposeDir', () => {
       // The stored enableAuth is no opt-out: an install that never decided also reads `false`.
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm({ exposureMode: 'local', enableAuth: false }));
 
-      expect(lastConstruction().options).toEqual({ loopbackHostPort: true, manifest });
+      expect(lastConstruction().options).toEqual({ loopbackHostPort: true, manifest, knownAppIds: [], hostVariables: [] });
     });
 
     it('publishes on every interface for an app with neither', async () => {
@@ -771,7 +826,7 @@ describe('prepareAppComposeDir', () => {
 
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm({ exposureMode: 'local', enableAuth: true }));
 
-      expect(lastConstruction().options).toEqual({ loopbackHostPort: false, manifest });
+      expect(lastConstruction().options).toEqual({ loopbackHostPort: false, manifest, knownAppIds: [], hostVariables: [] });
     });
 
     it('keeps the all-interfaces default and says so when the listing cannot be resolved', async () => {
@@ -781,7 +836,7 @@ describe('prepareAppComposeDir', () => {
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
 
       // No manifest to hand the route builder either: it decides from the form and the port alone.
-      expect(lastConstruction().options).toEqual({ loopbackHostPort: false, manifest: undefined });
+      expect(lastConstruction().options).toEqual({ loopbackHostPort: false, manifest: undefined, knownAppIds: [], hostVariables: [] });
       expect(stubs.logger.warn).toHaveBeenCalledWith(expect.stringContaining(`No manifest for ${APP_URN}`));
     });
   });

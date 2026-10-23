@@ -96,6 +96,8 @@ describe('StartAppCommand — pull policy', () => {
     traefikConfigService.regenerateTraefikConfig.mockResolvedValue();
 
     const marketplaceService = mock<MarketplaceService>();
+
+    marketplaceService.listedAppUrns.mockResolvedValue([]);
     marketplaceService.copyAppFromRepoToInstalled.mockResolvedValue();
 
     const subnetManagerMock = mock<SubnetManagerService>();
@@ -107,6 +109,8 @@ describe('StartAppCommand — pull policy', () => {
     ]);
 
     const appsRepository = mock<AppsRepository>();
+
+    appsRepository.getApps.mockResolvedValue([]);
     appsRepository.getAppByUrn.mockResolvedValue({
       id: 1,
       subnet: '10.128.10.0/24',

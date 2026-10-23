@@ -73,6 +73,18 @@ export interface ComposeBuilderOptions {
    * host-sized recommendation: see the limits in `buildService`.
    */
   defaultAppCpuLimit?: string;
+  /**
+   * The ids of the apps the Hub knows about: installed ones and the ones its enabled stores list.
+   * An app's Traefik label names a router, service or middleware of its own only when no longer id
+   * among these covers the name (`collectTraefikLabelIssues`).
+   */
+  knownAppIds?: Iterable<string>;
+  /**
+   * Which of `APP_DOMAIN`, `APP_LOCAL_DOMAIN` and `APP_BASE_HOST` the Hub set in the app's env. An
+   * app's router rule may name only those (`collectTraefikLabelIssues`). Left out, a rule may name
+   * all three, as when the caller can't tell.
+   */
+  hostVariables?: Iterable<string>;
 }
 
 interface Network {
@@ -160,6 +172,8 @@ export class DockerComposeBuilder {
   private loopbackHostPort = false;
   private manifest?: Parameters<typeof requiresHubLoginOnPublicRoute>[1];
   private defaultAppCpuLimit?: string;
+  private knownAppIds: string[] = [];
+  private hostVariables?: string[];
 
   /**
    * @param posixPermissionsSupported Whether the app-data filesystem can carry POSIX
@@ -241,6 +255,12 @@ export class DockerComposeBuilder {
     }
     if (options.defaultAppCpuLimit !== undefined) {
       this.defaultAppCpuLimit = options.defaultAppCpuLimit.trim() || undefined;
+    }
+    if (options.knownAppIds !== undefined) {
+      this.knownAppIds = [...options.knownAppIds];
+    }
+    if (options.hostVariables !== undefined) {
+      this.hostVariables = [...options.hostVariables];
     }
     return this;
   }
@@ -536,7 +556,13 @@ export class DockerComposeBuilder {
     // a v1 compose never meets that check, and an installed compose saved before a rule existed is
     // read with them kept (`parseInstalledComposeJson`), so this is where they are left out.
     const appId = `${appName}-${appStoreId}`;
-    const leftOutLabels = new Map(collectTraefikLabelIssues(params.extraLabels, appId, { hubNetworks }).map((issue) => [issue.label, issue.message]));
+    const leftOutLabels = new Map(
+      collectTraefikLabelIssues(params.extraLabels, appId, {
+        hubNetworks,
+        knownAppIds: this.knownAppIds,
+        hostVariables: this.hostVariables,
+      }).map((issue) => [issue.label, issue.params.owner ? `${issue.message}, it is ${issue.params.owner}'s` : issue.message]),
+    );
     for (const key of Object.keys(params.extraLabels ?? {})) {
       if (isReservedHubLabel(key)) {
         leftOutLabels.set(key, 'CUSTOM_APP_ERROR_LABEL_RESERVED');

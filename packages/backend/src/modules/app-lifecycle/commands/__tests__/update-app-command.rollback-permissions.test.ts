@@ -92,6 +92,7 @@ describe.skipIf(!canEnforcePermissions)('UpdateAppCommand rollback over data the
     const configuration = mock<ConfigurationService>();
     configuration.get.mockReturnValue({ maxBackups: 0 } as never);
     const appsRepository = mock<AppsRepository>();
+    appsRepository.getApps.mockResolvedValue([]);
     appsRepository.getAppByUrn.mockResolvedValue({ maxBackups: null } as never);
 
     docker = mock<DockerService>();

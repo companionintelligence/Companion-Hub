@@ -223,6 +223,39 @@ describe('collectTraefikLabelIssues', () => {
     });
   });
 
+  // compose expands a host variable the Hub left unset from wherever else it finds it, or to nothing.
+  describe('with the hosts the Hub set for the app', () => {
+    const rules = (value: string, hostVariables: string[]) =>
+      collectTraefikLabelIssues({ 'traefik.http.routers.{{CI_HUB_APP_ID}}-web.rule': value }, 'app-home', { hostVariables }).map(
+        ({ message }) => message,
+      );
+
+    it('takes a rule that names only those hosts', () => {
+      expect(rules('Host(`${APP_DOMAIN}`) && PathPrefix(`/api`)', ['APP_DOMAIN'])).toEqual([]);
+      expect(rules('Host(`${APP_LOCAL_DOMAIN}`) || Host(`${APP_BASE_HOST}`)', ['APP_DOMAIN', 'APP_LOCAL_DOMAIN', 'APP_BASE_HOST'])).toEqual([]);
+    });
+
+    it.each([
+      ['Host(`${APP_LOCAL_DOMAIN}`)', ['APP_DOMAIN', 'APP_BASE_HOST']],
+      ['Host(`${APP_LOCAL_DOMAIN}`) || Host(`${APP_BASE_HOST}`)', ['APP_BASE_HOST']],
+      ['Host(`${APP_DOMAIN}`) && PathPrefix(`/api`)', []],
+      // Only the three host variables count as hosts, and only they may be expanded in a rule.
+      ['Host(`${APP_ID}`)', ['APP_ID', 'APP_DOMAIN']],
+      ['Host(`${APP_DOMAIN}`) && Header(`X-App`, `${APP_ID}`)', ['APP_ID', 'APP_DOMAIN']],
+    ])('refuses %s when the Hub set only %j', (value, hostVariables) => {
+      expect(rules(value, hostVariables)).toEqual(['CUSTOM_APP_ERROR_TRAEFIK_RULE_NOT_OWN_HOST']);
+    });
+
+    it('takes all three when the caller doesn’t say', () => {
+      expect(
+        collectTraefikLabelIssues(
+          { 'traefik.http.routers.{{CI_HUB_APP_ID}}.rule': 'Host(`${APP_LOCAL_DOMAIN}`) || Host(`${APP_BASE_HOST}`)' },
+          'app-home',
+        ),
+      ).toEqual([]);
+    });
+  });
+
   describe('with the app id the builder knows', () => {
     it('accepts the id written out', () => {
       expect(
@@ -240,6 +273,217 @@ describe('collectTraefikLabelIssues', () => {
       expect(messages({ 'traefik.http.routers.n8n-ci-marketplace.rule': 'Host(`${APP_DOMAIN}`)' }, 'my-app-_user')).toEqual([
         ['traefik.http.routers.n8n-ci-marketplace.rule', 'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN'],
       ]);
+    });
+  });
+
+  /*
+   * An app's id is its name and its store's slug joined by a dash. Both may hold dashes. The same app
+   * in stores `home` and `home-lab` is `app-home` and `app-home-lab`, so `app-home` and a dash begin
+   * the other app's id. So do its other names.
+   */
+  describe('with the ids of the other apps the Hub knows', () => {
+    const owned = (labels: Record<string, string | boolean>, appId: string, knownAppIds: string[]) =>
+      collectTraefikLabelIssues(labels, appId, { knownAppIds }).map(({ label, message, params }) => [label, message, params.owner]);
+
+    it('gives a name to the app with the longer id that covers it', () => {
+      expect(
+        owned(
+          {
+            'traefik.http.routers.{{CI_HUB_APP_ID}}-lab.rule': 'Host(`${APP_DOMAIN}`)',
+            'traefik.http.services.{{CI_HUB_APP_ID}}-lab-web.loadbalancer.server.port': '80',
+            'traefik.http.middlewares.app-home-lab-strip.stripprefix.prefixes': '/x',
+            'traefik.http.routers.{{CI_HUB_APP_ID}}-side.service': '{{CI_HUB_APP_ID}}-lab-web',
+            'traefik.http.routers.{{CI_HUB_APP_ID}}-side.middlewares': 'ci-hub@file,${APP_ID}-lab-strip@docker',
+          },
+          'app-home',
+          ['app-home', 'app-home-lab'],
+        ),
+      ).toEqual([
+        ['traefik.http.routers.{{CI_HUB_APP_ID}}-lab.rule', 'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN', 'app-home-lab'],
+        ['traefik.http.services.{{CI_HUB_APP_ID}}-lab-web.loadbalancer.server.port', 'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN', 'app-home-lab'],
+        ['traefik.http.middlewares.app-home-lab-strip.stripprefix.prefixes', 'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN', 'app-home-lab'],
+        ['traefik.http.routers.{{CI_HUB_APP_ID}}-side.service', 'CUSTOM_APP_ERROR_TRAEFIK_SERVICE_NOT_OWN', 'app-home-lab'],
+        ['traefik.http.routers.{{CI_HUB_APP_ID}}-side.middlewares', 'CUSTOM_APP_ERROR_TRAEFIK_MIDDLEWARE_NOT_OWN', 'app-home-lab'],
+      ]);
+    });
+
+    it('keeps the names the longer id does not cover', () => {
+      expect(
+        owned(
+          {
+            'traefik.http.routers.{{CI_HUB_APP_ID}}.rule': 'Host(`${APP_DOMAIN}`)',
+            'traefik.http.routers.{{CI_HUB_APP_ID}}-web.service': '{{CI_HUB_APP_ID}}-web',
+            // `app-home-labs` is not `app-home-lab` followed by a dash.
+            'traefik.http.services.{{CI_HUB_APP_ID}}-labs.loadbalancer.server.port': '80',
+            'traefik.http.routers.app-home-admin.middlewares': '${APP_ID}-strip@docker,ci-hub@docker',
+          },
+          'app-home',
+          ['app-home-lab'],
+        ),
+      ).toEqual([]);
+    });
+
+    it('leaves the app with the longer id its own names', () => {
+      expect(
+        owned(
+          {
+            'traefik.http.routers.{{CI_HUB_APP_ID}}.rule': 'Host(`${APP_DOMAIN}`)',
+            'traefik.http.routers.{{CI_HUB_APP_ID}}-web.service': 'app-home-lab-web',
+          },
+          'app-home-lab',
+          ['app-home', 'app-home-lab'],
+        ),
+      ).toEqual([]);
+      // The shorter id's own names are not this app's: they don't start with its id.
+      expect(owned({ 'traefik.http.routers.app-home-web.rule': 'Host(`${APP_DOMAIN}`)' }, 'app-home-lab', ['app-home'])).toEqual([
+        ['traefik.http.routers.app-home-web.rule', 'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN', undefined],
+      ]);
+    });
+
+    it('names the longest of several ids that cover a name', () => {
+      expect(
+        owned({ 'traefik.http.routers.{{CI_HUB_APP_ID}}-lab-east-web.rule': 'Host(`${APP_DOMAIN}`)' }, 'app-home', [
+          'app-home-lab',
+          'app-home-lab-east',
+          'app-home-labs',
+        ]),
+      ).toEqual([['traefik.http.routers.{{CI_HUB_APP_ID}}-lab-east-web.rule', 'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN', 'app-home-lab-east']]);
+    });
+
+    // The builder writes the id in for every placeholder in a name, not only the first.
+    it('decides by the name the builder writes, with the id in place of every placeholder', () => {
+      expect(
+        owned(
+          {
+            'traefik.http.services.{{CI_HUB_APP_ID}}-{{CI_HUB_APP_ID}}.loadbalancer.server.port': '80',
+            'traefik.http.routers.{{CI_HUB_APP_ID}}-web.service': '{{CI_HUB_APP_ID}}-{{ RUNTIPI_APP_ID }}',
+          },
+          'app-home',
+          ['app-home-app'],
+        ),
+      ).toEqual([
+        [
+          'traefik.http.services.{{CI_HUB_APP_ID}}-{{CI_HUB_APP_ID}}.loadbalancer.server.port',
+          'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN',
+          'app-home-app',
+        ],
+        ['traefik.http.routers.{{CI_HUB_APP_ID}}-web.service', 'CUSTOM_APP_ERROR_TRAEFIK_SERVICE_NOT_OWN', 'app-home-app'],
+      ]);
+      expect(owned({ 'traefik.http.services.{{CI_HUB_APP_ID}}-{{CI_HUB_APP_ID}}.loadbalancer.server.port': '80' }, 'app-home', [])).toEqual([]);
+    });
+
+    it('reads the ids without regard to case, as Traefik reads names', () => {
+      expect(owned({ 'traefik.http.routers.{{CI_HUB_APP_ID}}-LAB-web.rule': 'Host(`${APP_DOMAIN}`)' }, 'app-home', ['App-Home-Lab'])).toEqual([
+        ['traefik.http.routers.{{CI_HUB_APP_ID}}-LAB-web.rule', 'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN', 'app-home-lab'],
+      ]);
+    });
+
+    it('keeps an app’s names when another app has the very same id', () => {
+      const labels = {
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-web.rule': 'Host(`${APP_DOMAIN}`)',
+        'traefik.http.routers.{{CI_HUB_APP_ID}}-web.service': '{{CI_HUB_APP_ID}}-web',
+      };
+      // `a-b` in store `c` and `a` in store `b-c` are both `a-b-c`.
+      expect(owned(labels, 'a-b-c', ['a-b-c', 'a-b-c'])).toEqual([]);
+    });
+
+    // A store whose slug splits an official app's id at a dash: app `app` in a store `ci` is `app-ci`.
+    it('gives the official store’s names to the official app', () => {
+      expect(
+        owned(
+          {
+            'traefik.http.routers.{{CI_HUB_APP_ID}}-marketplace.rule': 'Host(`${APP_DOMAIN}`)',
+            'traefik.http.routers.{{CI_HUB_APP_ID}}-side.service': '{{CI_HUB_APP_ID}}-marketplace',
+            'traefik.http.routers.{{CI_HUB_APP_ID}}-side.rule': 'Host(`${APP_DOMAIN}`)',
+          },
+          'app-ci',
+          ['app-ci-marketplace', 'other-ci-marketplace'],
+        ),
+      ).toEqual([
+        ['traefik.http.routers.{{CI_HUB_APP_ID}}-marketplace.rule', 'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN', 'app-ci-marketplace'],
+        ['traefik.http.routers.{{CI_HUB_APP_ID}}-side.service', 'CUSTOM_APP_ERROR_TRAEFIK_SERVICE_NOT_OWN', 'app-ci-marketplace'],
+      ]);
+    });
+
+    it('accepts a custom app’s id written out', () => {
+      expect(
+        owned(
+          {
+            'traefik.http.routers.my-app-_user-admin.rule': 'Host(`${APP_DOMAIN}`) && PathPrefix(`/admin`)',
+            'traefik.http.routers.my-app-_user-admin.service': 'my-app-_user-admin',
+          },
+          'my-app-_user',
+          ['my-app-_user', 'my-_user', 'app-ci-marketplace'],
+        ),
+      ).toEqual([]);
+    });
+
+    /*
+     * The Hub container defines the router, service and middleware `ci-hub` on the Docker provider,
+     * and its files define `ci-hub-edge-headers`, `hub-service` and the rest. App `ci` in a store
+     * `hub` is `ci-hub`, and app `ci` in a store `hub-edge` is `ci-hub-edge`.
+     */
+    it('gives the Hub its own names, also over an app id as long as one of them', () => {
+      expect(
+        owned(
+          {
+            'traefik.http.routers.{{CI_HUB_APP_ID}}.rule': 'Host(`${APP_DOMAIN}`)',
+            'traefik.http.services.{{CI_HUB_APP_ID}}.loadbalancer.server.port': '80',
+            'traefik.http.middlewares.{{CI_HUB_APP_ID}}-strip.stripprefix.prefixes': '/x',
+          },
+          'ci-hub',
+          ['ci-hub'],
+        ),
+      ).toEqual([
+        ['traefik.http.routers.{{CI_HUB_APP_ID}}.rule', 'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN', 'the Hub'],
+        ['traefik.http.services.{{CI_HUB_APP_ID}}.loadbalancer.server.port', 'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN', 'the Hub'],
+        ['traefik.http.middlewares.{{CI_HUB_APP_ID}}-strip.stripprefix.prefixes', 'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN', 'the Hub'],
+      ]);
+      expect(
+        owned(
+          {
+            'traefik.http.middlewares.{{CI_HUB_APP_ID}}-headers.headers.customrequestheaders.X-Test': 'x',
+            'traefik.http.routers.{{CI_HUB_APP_ID}}-web.middlewares': '{{CI_HUB_APP_ID}}-headers@docker',
+            'traefik.http.routers.{{CI_HUB_APP_ID}}.rule': 'Host(`${APP_DOMAIN}`)',
+          },
+          'ci-hub-edge',
+          [],
+        ),
+      ).toEqual([
+        [
+          'traefik.http.middlewares.{{CI_HUB_APP_ID}}-headers.headers.customrequestheaders.X-Test',
+          'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN',
+          'the Hub',
+        ],
+        ['traefik.http.routers.{{CI_HUB_APP_ID}}-web.middlewares', 'CUSTOM_APP_ERROR_TRAEFIK_MIDDLEWARE_NOT_OWN', 'the Hub'],
+      ]);
+      expect(owned({ 'traefik.http.routers.{{CI_HUB_APP_ID}}.service': 'hub-service' }, 'hub-service', [])).toEqual([
+        ['traefik.http.routers.{{CI_HUB_APP_ID}}.service', 'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN', 'the Hub'],
+      ]);
+    });
+
+    it('leaves an app whose id is longer than the Hub’s name its own names', () => {
+      expect(
+        owned(
+          {
+            'traefik.http.routers.{{CI_HUB_APP_ID}}.rule': 'Host(`${APP_DOMAIN}`)',
+            'traefik.http.routers.{{CI_HUB_APP_ID}}-web.service': '{{CI_HUB_APP_ID}}',
+          },
+          'ci-hub-lab',
+          [],
+        ),
+      ).toEqual([]);
+      expect(owned({ 'traefik.http.routers.{{CI_HUB_APP_ID}}-web.rule': 'Host(`${APP_DOMAIN}`)' }, 'CI-Hub', [])).toEqual([
+        ['traefik.http.routers.{{CI_HUB_APP_ID}}-web.rule', 'CUSTOM_APP_ERROR_TRAEFIK_NAME_NOT_OWN', 'the Hub'],
+      ]);
+    });
+
+    it('leaves the check as it was without an app id', () => {
+      expect(
+        collectTraefikLabelIssues({ 'traefik.http.routers.{{CI_HUB_APP_ID}}-lab.rule': 'Host(`${APP_DOMAIN}`)' }, undefined, {
+          knownAppIds: ['app-home-lab'],
+        }),
+      ).toEqual([]);
     });
   });
 });

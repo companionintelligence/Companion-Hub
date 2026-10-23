@@ -11,6 +11,7 @@ import { buildOriginServerName, deriveAppSlug, RESERVED_APP_NAMES, sanitizeAppSu
 import { isPortExposeApp, PORT_EXPOSE_KIND, type AppInfo } from '@ci-hub/common/schemas';
 import path from 'node:path';
 import { AppsRepository } from '../apps/apps.repository';
+import { assertAppIdFree } from '../apps/app-id.helpers';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { publishesCloudflarePublicRoute } from '../apps/app-public-routing.helpers';
 import { ExposureSyncService } from '../app-lifecycle/exposure-sync.service';
@@ -65,6 +66,8 @@ export class PortExposeService {
     if (existingApp) {
       throw new TranslatableError('CUSTOM_APP_ERROR_DUPLICATE_NAME', { name: displayName }, HttpStatus.CONFLICT);
     }
+    // Its Traefik router and service are named by its id too (`syncPortExposeRoutes`).
+    assertAppIdFree(appUrn, await this.appsRepository.getApps());
 
     const appsWithSamePort = await this.appsRepository.getAppsByPort(port);
     if (appsWithSamePort.length > 0) {

@@ -16,6 +16,20 @@ interface TraefikLabelsArgs {
   httpsBackend?: boolean;
 }
 
+/** The app's router on the `web` entry point, which the Cloudflare tunnel connects to: `<app id>-insecure`. */
+const INSECURE_ROUTER_SUFFIX = '-insecure';
+/** The app's Private VPN router: `<app id>-tailscale`. */
+const TAILSCALE_ROUTER_SUFFIX = '-tailscale';
+/** The app's middleware that sets the forwarded public host: `<app id>-public-host`. */
+const PUBLIC_HOST_MIDDLEWARE_SUFFIX = '-public-host';
+
+/**
+ * What the builder adds to an app's id for its other routers and its public-host middleware. An app
+ * whose id is another app's id plus one of these would get a router or middleware of the same name
+ * as that app's.
+ */
+export const HUB_ROUTE_NAME_SUFFIXES: readonly string[] = [INSECURE_ROUTER_SUFFIX, TAILSCALE_ROUTER_SUFFIX, PUBLIC_HOST_MIDDLEWARE_SUFFIX];
+
 /** The file-provider middleware that strips visitor-set forwarded headers from tunnel requests. */
 export const EDGE_HEADERS_MIDDLEWARE = 'ci-hub-edge-headers@file';
 
@@ -218,7 +232,7 @@ export class TraefikLabelsBuilder {
     }
 
     const hostRule = `Host(\`${this.params.cloudflareOriginHostname}\`)`;
-    const publicHostMiddleware = `${this.params.appId}-${this.params.storeId}-public-host`;
+    const publicHostMiddleware = `${this.params.appId}-${this.params.storeId}${PUBLIC_HOST_MIDDLEWARE_SUFFIX}`;
     // First, auth or not: drops the forwarded headers a tunnel visitor can set and no edge hop
     // replaces (X-Real-Ip and the rest), which Traefik keeps because it trusts cloudflared's
     // forwarded headers. See `ci-hub-edge-headers` in assets/traefik/dynamic/dynamic.yml.
@@ -243,9 +257,9 @@ export class TraefikLabelsBuilder {
 
     Object.assign(this.labels, {
       'traefik.enable': true,
-      [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.rule`]: hostRule,
-      [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.entrypoints`]: 'web',
-      [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.service`]: `${this.params.appId}-${this.params.storeId}`,
+      [`traefik.http.routers.${this.params.appId}-${this.params.storeId}${INSECURE_ROUTER_SUFFIX}.rule`]: hostRule,
+      [`traefik.http.routers.${this.params.appId}-${this.params.storeId}${INSECURE_ROUTER_SUFFIX}.entrypoints`]: 'web',
+      [`traefik.http.routers.${this.params.appId}-${this.params.storeId}${INSECURE_ROUTER_SUFFIX}.service`]: `${this.params.appId}-${this.params.storeId}`,
       [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.rule`]: hostRule,
       [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.entrypoints`]: 'websecure',
       [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.service`]: `${this.params.appId}-${this.params.storeId}`,
@@ -264,7 +278,7 @@ export class TraefikLabelsBuilder {
       const middlewareChain = middlewares.join(',');
       Object.assign(this.labels, {
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.middlewares`]: middlewareChain,
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.middlewares`]: middlewareChain,
+        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}${INSECURE_ROUTER_SUFFIX}.middlewares`]: middlewareChain,
       });
     }
 
@@ -277,9 +291,9 @@ export class TraefikLabelsBuilder {
 
       Object.assign(this.labels, {
         'traefik.enable': true,
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-tailscale.rule`]: `Host(\`${hostname}\`)`,
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-tailscale.entrypoints`]: 'web',
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-tailscale.service`]: `${this.params.appId}-${this.params.storeId}`,
+        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}${TAILSCALE_ROUTER_SUFFIX}.rule`]: `Host(\`${hostname}\`)`,
+        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}${TAILSCALE_ROUTER_SUFFIX}.entrypoints`]: 'web',
+        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}${TAILSCALE_ROUTER_SUFFIX}.service`]: `${this.params.appId}-${this.params.storeId}`,
       });
     }
     return this;

@@ -8,8 +8,28 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
-import { appInfoSchema, parseInstalledComposeJson } from '@ci-hub/common/schemas';
+import { parseInstalledAppInfo, parseInstalledComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
+
+/** What was last logged as left out of each app's installed manifest. */
+const loggedLeftOut = new Map<string, string>();
+
+/**
+ * Logs what `parseInstalledAppInfo` left out of an app's installed manifest, once until that changes.
+ * The manifest is read on every app list, status check and env build, and it says the same thing
+ * until the app is updated.
+ */
+export function warnHubOwnedEnvLeftOut(logger: Pick<LoggerService, 'warn'>, appUrn: AppUrn, leftOut: readonly string[], file: string): void {
+  if (leftOut.length === 0) {
+    return;
+  }
+  const said = leftOut.join(', ');
+  if (loggedLeftOut.get(appUrn) === said) {
+    return;
+  }
+  loggedLeftOut.set(appUrn, said);
+  logger.warn(`App ${appUrn}: its ${file} names values the Hub sets for every app, read without ${said}`);
+}
 
 /** Single-quote a path for `sh`. */
 function shellQuotePath(value: string): string {
@@ -89,7 +109,8 @@ export class AppFilesManager {
         const configFile = await this.filesystem.readTextFile(path.join(appInstalledDir, 'config.json'));
 
         const config = JSON.parse(configFile ?? '{}');
-        const parsedConfig = appInfoSchema.safeParse({ ...config, urn: appUrn });
+        const { parsed: parsedConfig, leftOut } = parseInstalledAppInfo({ ...config, urn: appUrn });
+        warnHubOwnedEnvLeftOut(this.logger, appUrn, leftOut, 'config.json');
 
         if (!parsedConfig.success) {
           this.logger.error(`App ${appUrn} config error:`);
@@ -116,6 +137,24 @@ export class AppFilesManager {
     }
 
     return null;
+  }
+
+  /**
+   * The defaults the installed manifest gave its fields that write `APP_BASE_URL`, by the field's
+   * variable, which `getInstalledAppInfo` reads it without (`parseInstalledAppInfo`). Empty when the
+   * manifest gives none or can't be read.
+   */
+  public async getInstalledBaseUrlDefaults(appUrn: AppUrn): Promise<ReadonlyMap<string, string>> {
+    try {
+      const configPath = path.join(this.getAppPaths(appUrn).appInstalledDir, 'config.json');
+      if (await this.filesystem.pathExists(configPath)) {
+        const config = JSON.parse((await this.filesystem.readTextFile(configPath)) ?? '{}');
+        return new Map(Object.entries(parseInstalledAppInfo({ ...config, urn: appUrn }).baseUrlDefaults));
+      }
+    } catch {
+      // Read as having none, as `getInstalledAppInfo` reads a manifest it can't parse as no manifest.
+    }
+    return new Map();
   }
 
   /**

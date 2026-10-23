@@ -5,6 +5,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { appIdOf } from '@/modules/apps/app-id.helpers';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { publishesCloudflarePublicRoute } from '@/modules/apps/app-public-routing.helpers';
 import { DockerComposeBuilder } from '@/modules/docker/builders/compose.builder';
@@ -21,6 +22,43 @@ import type { ModuleRef } from '@nestjs/core';
 import Dockerode from 'dockerode';
 import { ZodError } from 'zod';
 import { fromError } from 'zod-validation-error';
+
+/** The app's own hosts in its env, which its Traefik router rules may name. */
+const OWN_HOST_VARIABLES = ['APP_DOMAIN', 'APP_LOCAL_DOMAIN', 'APP_BASE_HOST'];
+
+/**
+ * The id of every app the Hub knows about: each installed app (custom apps among them) and each app
+ * the enabled stores list, so that an app installed later counts too. The compose builder gives a
+ * Traefik name to the app with the longest of these ids that covers it.
+ *
+ * A store's listing is a folder of names any store can publish. One that is no app URN is skipped.
+ * A listing that can't be read leaves the installed apps' ids. Neither stops the app starting.
+ */
+async function knownAppIds(
+  moduleRef: ModuleRef,
+  marketplaceService: Pick<MarketplaceService, 'listedAppUrns'>,
+  logger: Pick<LoggerService, 'warn'>,
+): Promise<string[]> {
+  const [installed, listed] = await Promise.all([
+    moduleRef.get(AppsRepository, { strict: false }).getApps(),
+    Promise.resolve()
+      .then(() => marketplaceService.listedAppUrns())
+      .catch((error: unknown): AppUrn[] => {
+        logger.warn(`[compose] Could not list the stores' apps, so Traefik names are checked against installed apps only: ${String(error)}`);
+        return [];
+      }),
+  ]);
+  const ids = new Set(installed.map((app) => appIdOf(app.appName, app.appStoreSlug)));
+  for (const urn of listed) {
+    try {
+      const { appName, appStoreId } = extractAppUrn(urn);
+      ids.add(appIdOf(appName, appStoreId));
+    } catch {
+      // Not an app URN: no app of that id can be installed.
+    }
+  }
+  return [...ids];
+}
 
 /**
  * Generates an app's docker-compose.yml from its marketplace manifest.
@@ -68,6 +106,13 @@ export async function prepareAppComposeDir(
 
   try {
     const { services, overrides } = parseInstalledComposeJson(composeJson.content);
+
+    // A database read and a listing of every store's folder, which the builder needs only at the end:
+    // started now so it runs beside the reads below. Handled at once so a failure that stops the
+    // build first is not left unhandled.
+    const knownAppIdsLookup = knownAppIds(moduleRef, marketplaceService, logger);
+    knownAppIdsLookup.catch(() => undefined);
+
     const architecture = configService.get('architecture');
 
     // Merge architecture-specific overrides with base services
@@ -228,6 +273,10 @@ export async function prepareAppComposeDir(
       loopbackHostPort,
       manifest: appInfo ?? undefined,
       defaultAppCpuLimit,
+      knownAppIds: await knownAppIdsLookup,
+      // The hosts the Hub set for this app. compose expands one it left unset from the Hub's own
+      // environment or a user env file, so an app's router rule may name only these.
+      hostVariables: OWN_HOST_VARIABLES.filter((name) => envMap.has(name)),
     });
     const subnet = await subnetManager.allocateSubnet(appUrn, 0, options?.excludeSubnets ?? []);
 

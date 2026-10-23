@@ -161,6 +161,8 @@ describe('InstallAppCommand — pull policy', () => {
     appFilesManager.deleteAppDataDir.mockResolvedValue(true);
 
     const marketplaceService = mock<MarketplaceService>();
+
+    marketplaceService.listedAppUrns.mockResolvedValue([]);
     marketplaceService.getDockerComposeJson.mockResolvedValue({ content: '{}', path: '/tmp/compose.json' });
     marketplaceService.copyAppFromRepoToInstalled.mockResolvedValue();
     marketplaceService.copyDataDir.mockResolvedValue();
@@ -178,6 +180,8 @@ describe('InstallAppCommand — pull policy', () => {
     portManager.allocatePorts.mockResolvedValue([]);
 
     const appsRepository = mock<AppsRepository>();
+
+    appsRepository.getApps.mockResolvedValue([]);
 
     const cloudflareService = mock<CloudflareClientService>();
 
@@ -939,6 +943,10 @@ describe('InstallAppCommand — plan-based pre-flight', () => {
     } as any);
 
     const marketplaceService = mock<MarketplaceService>();
+
+    marketplaceService.listedAppUrns.mockResolvedValue([]);
+    const appsRepository = mock<AppsRepository>();
+    appsRepository.getApps.mockResolvedValue([]);
     marketplaceService.getDockerComposeJson.mockResolvedValue({ content: '{}', path: '/tmp/compose.json' });
     marketplaceService.copyAppFromRepoToInstalled.mockResolvedValue();
     marketplaceService.copyDataDir.mockResolvedValue();
@@ -964,6 +972,7 @@ describe('InstallAppCommand — plan-based pre-flight', () => {
         if (token === ConfigurationService) return config;
         if (token === AppFilesManager) return appFilesManager;
         if (token === MarketplaceService) return marketplaceService;
+        if (token === AppsRepository) return appsRepository;
         if (token === DockerService) return dockerService;
         if (token === DockerReadFacade) return dockerReadFacade;
         if (token === AppHelpers) return appHelpers;
